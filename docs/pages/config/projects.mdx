@@ -150,8 +150,8 @@ behavior (URL shape `/{projectId}/{architecture}/{chainId}`) is covered in
 | `server.aliasing.rules` | `[]*AliasingRuleConfig` | `nil` | First rule whose `matchDomain` wildcard-matches the request Host (port stripped) wins; later rules ignored. Match errors are logged and the rule skipped. |
 | `server.aliasing.rules[].matchDomain` | string (wildcard) | — | e.g. `"*"`, `"eth.mycompany.com"`. |
 | `server.aliasing.rules[].serveProject` | string | `""` | Pre-selects projectId; path may still override with an explicit 3-segment path. |
-| `server.aliasing.rules[].serveArchitecture` | string | `""` | Pre-selects architecture (only `"evm"` is valid). |
-| `server.aliasing.rules[].serveChain` | string | `""` | Pre-selects chainId. Combination project+chain WITHOUT architecture is rejected: "it is not possible to alias for project and chain WITHOUT architecture". |
+| `server.aliasing.rules[].serveArchitecture` | string | `""` | Pre-selects architecture (`"evm"` or `"svm"`). |
+| `server.aliasing.rules[].serveChain` | string | `""` | Pre-selects the chain identifier — the numeric chainId for EVM, the cluster (`mainnet-beta`, or `<chain>:<cluster>` for a fork) for SVM. Combination project+chain WITHOUT architecture is rejected: "it is not possible to alias for project and chain WITHOUT architecture". |
 
 ### `rateLimiters.budgets[].*` — global rate-limit budget config
 

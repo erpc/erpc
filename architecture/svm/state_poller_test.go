@@ -3,6 +3,7 @@ package svm
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"testing"
@@ -207,7 +208,17 @@ func newPollerWithUpstream(t *testing.T, up common.Upstream) *SvmStatePoller {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	return newPollerOnCtx(t, ctx, up)
+}
 
+// newPollerOnCtx is newPollerWithUpstream with a caller-supplied appCtx, so a
+// test can cancel the context SEVERAL pollers share and observe every loop tear
+// down. Each poller gets its own shared-state registry: the counter key is
+// derived from the upstream identity, and two pollers sharing one registry
+// would land on the same counter instance and cross-fire each other's OnValue
+// callbacks.
+func newPollerOnCtx(t *testing.T, appCtx context.Context, up common.Upstream) *SvmStatePoller {
+	t.Helper()
 	cfg := &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{
 			Driver: common.DriverMemory,
@@ -219,11 +230,11 @@ func newPollerWithUpstream(t *testing.T, up common.Upstream) *SvmStatePoller {
 		LockTtl:         common.Duration(2 * time.Second),
 	}
 	cfg.SetDefaults("test")
-	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, cfg)
+	ssr, err := data.NewSharedStateRegistry(appCtx, &log.Logger, cfg)
 	require.NoError(t, err)
 
 	return NewSvmStatePoller(
-		"test", ctx, &log.Logger, up,
+		"test", appCtx, &log.Logger, up,
 		health.NewTracker(&log.Logger, "test", time.Minute),
 		ssr,
 	)
@@ -774,4 +785,258 @@ func TestSvmStatePoller_Bootstrap_StartsAtMostOneLoop(t *testing.T) {
 	cancel()
 	require.Eventually(t, func() bool { return p.loopsRunning.Load() == 0 },
 		2*time.Second, 5*time.Millisecond, "appCtx cancellation must stop the poll loop")
+}
+
+// blockingUpstream parks inside Forward until the CALLER's context is done, so
+// a test can hold a poller mid-poll and prove cancellation interrupts work in
+// flight rather than only an idle ticker.
+type blockingUpstream struct {
+	fakeUpstreamForPoller
+	entered     chan struct{} // closed once Forward has been entered at least once
+	enteredOnce sync.Once
+}
+
+func newBlockingUpstream() *blockingUpstream {
+	return &blockingUpstream{entered: make(chan struct{})}
+}
+
+func (b *blockingUpstream) Forward(ctx context.Context, _ *common.NormalizedRequest, _, _ bool) (*common.NormalizedResponse, error) {
+	b.enteredOnce.Do(func() { close(b.entered) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestSvmStatePoller_AppCtxCancellation_DrainsEveryLoop pins process shutdown.
+// Every SVM upstream owns a poller and every poller owns a ticker goroutine; on
+// appCtx cancellation ALL of them must exit, including one parked mid-poll on an
+// upstream that has not answered yet. A loop that only checks appCtx between
+// ticks (or a Poll that ignores the derived context) would leave the blocked
+// poller running until process exit.
+func TestSvmStatePoller_AppCtxCancellation_DrainsEveryLoop(t *testing.T) {
+	// No t.Parallel: asserts a goroutine-lifecycle invariant with real tickers.
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	responsive := newScriptedUpstream()
+	scriptAllFour(responsive)
+	stuck := newBlockingUpstream()
+
+	pollers := []*SvmStatePoller{
+		newPollerOnCtx(t, appCtx, responsive),
+		newPollerOnCtx(t, appCtx, stuck),
+	}
+	for _, p := range pollers {
+		require.NoError(t, p.Bootstrap(context.Background()))
+	}
+
+	liveLoops := func() int32 {
+		var n int32
+		for _, p := range pollers {
+			n += p.loopsRunning.Load()
+		}
+		return n
+	}
+	require.Eventually(t, func() bool { return liveLoops() == int32(len(pollers)) },
+		2*time.Second, 5*time.Millisecond, "every bootstrapped poller must bring up its loop")
+
+	// Do not cancel until the stuck poller is genuinely inside Poll — otherwise
+	// the test would only re-prove the idle-ticker teardown.
+	select {
+	case <-stuck.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocking upstream was never called; the poller never entered a poll")
+	}
+
+	cancel()
+	require.Eventually(t, func() bool { return liveLoops() == 0 },
+		5*time.Second, 5*time.Millisecond,
+		"appCtx cancellation must drain every poll loop, including one blocked mid-poll")
+}
+
+// TestSvmStatePoller_ConcurrentSuggestionsDuringPoll_StaySlotMonotonic runs the
+// slot surface the way production does — many concurrent traffic-fed
+// suggestions (upstreamPostForward_trackContextSlot fires on every response)
+// racing the poller's own fan-out — and asserts the invariant survives, not
+// merely that nothing crashed:
+//
+//   - no reader ever observes a slot moving BACKWARDS, and
+//   - the final value is exactly the highest slot anyone suggested, so no
+//     concurrent update is lost to a failed compare-and-swap.
+//
+// Every value stays inside a DefaultToleratedSlotRollback-wide window on
+// purpose: a drop LARGER than that is a deliberate reorg signal the counter
+// accepts, so a wider spread would make backwards movement correct behavior and
+// the invariant meaningless.
+//
+// Run under -race; the shared-counter CAS loops and the poller's atomics are
+// what this is aimed at.
+func TestSvmStatePoller_ConcurrentSuggestionsDuringPoll_StaySlotMonotonic(t *testing.T) {
+	// No t.Parallel: the point is to saturate cores and widen interleavings.
+	const (
+		seed      = uint64(0x51075EED) // fixed so a red run reproduces exactly
+		writers   = 8
+		perWriter = 250
+		spread    = 400 // < DefaultToleratedSlotRollback (1024)
+
+		latestBase    = int64(10_000)
+		finalizedBase = int64(9_900)
+		// The poller's own observations land mid-window, so the maximum can only
+		// come from a writer — that is what makes the final equality check
+		// sensitive to a lost update.
+		polledProcessed = latestBase + spread/2
+		polledFinalized = finalizedBase + spread/2
+	)
+	t.Logf("deterministic seed: %#x (rerun reproduces the exact suggestion order)", seed)
+
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", fmt.Appendf(nil, `%d`, polledProcessed))
+	up.script("getSlot:finalized", fmt.Appendf(nil, `%d`, polledFinalized))
+	up.script("getMaxShredInsertSlot", fmt.Appendf(nil, `%d`, polledProcessed))
+
+	p := newPollerWithUpstream(t, up)
+
+	wantLatest := latestBase + spread - 1
+	wantFinalized := finalizedBase + spread - 1
+
+	var (
+		wg         sync.WaitGroup
+		violations = make(chan string, 64)
+		stop       = make(chan struct{})
+	)
+
+	// Reader: the monotonicity contract must hold at EVERY observation, not just
+	// after the dust settles.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var prevLatest, prevFinalized int64
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if got := p.LatestSlot(); got < prevLatest {
+				select {
+				case violations <- fmt.Sprintf("latest slot went backwards: %d → %d", prevLatest, got):
+				default:
+				}
+			} else {
+				prevLatest = got
+			}
+			if got := p.FinalizedSlot(); got < prevFinalized {
+				select {
+				case violations <- fmt.Sprintf("finalized slot went backwards: %d → %d", prevFinalized, got):
+				default:
+				}
+			} else {
+				prevFinalized = got
+			}
+		}
+	}()
+
+	// Poller: keeps fanning out real polls (which write both slot views through
+	// the private suggest path) while the writers hammer the public one.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := p.Poll(context.Background()); err != nil {
+				select {
+				case violations <- fmt.Sprintf("poll failed: %v", err):
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	for w := range writers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			// Per-writer deterministic stream: each goroutine walks its own
+			// shuffled slice of the window, so out-of-order suggestions (the
+			// case the counter must reject) are guaranteed, reproducibly.
+			rng := rand.New(rand.NewPCG(seed, uint64(w)))
+			for range perWriter {
+				off := int64(rng.IntN(spread))
+				p.SuggestLatestSlot(latestBase + off)
+				p.SuggestFinalizedSlot(finalizedBase + off)
+			}
+			// Guarantee the window maximum is offered by every writer, so the
+			// final-value assertion does not depend on the RNG covering it.
+			p.SuggestLatestSlot(wantLatest)
+			p.SuggestFinalizedSlot(wantFinalized)
+		}(w)
+	}
+
+	// Writers finish on their own; the reader and poller run until told to stop.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	// Let the writers drain, then release the two open-ended goroutines.
+	require.Eventually(t, func() bool {
+		return p.LatestSlot() == wantLatest && p.FinalizedSlot() == wantFinalized
+	}, 30*time.Second, time.Millisecond,
+		"slot surface never reached the highest suggested value; a concurrent update was lost")
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("workers did not finish")
+	}
+	close(violations)
+
+	for v := range violations {
+		t.Errorf("slot monotonicity violated: %s", v)
+	}
+	require.Equal(t, wantLatest, p.LatestSlot())
+	require.Equal(t, wantFinalized, p.FinalizedSlot())
+}
+
+// TestSvmStatePoller_ConcurrentBootstrap_StartsExactlyOneLoop is the racing twin
+// of TestSvmStatePoller_Bootstrap_StartsAtMostOneLoop. The upstream initializer
+// can re-run bootstrap from more than one goroutine (retry after a failed
+// genesis validation, plus PrepareUpstreamsForNetwork on another network), so
+// the guard has to be a compare-and-swap, not a load-then-store — which only
+// the race detector and real concurrency can tell apart.
+func TestSvmStatePoller_ConcurrentBootstrap_StartsExactlyOneLoop(t *testing.T) {
+	// No t.Parallel: goroutine-lifecycle invariant.
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	up := newScriptedUpstream()
+	scriptAllFour(up)
+	p := newPollerOnCtx(t, appCtx, up)
+
+	const racers = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range racers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			require.NoError(t, p.Bootstrap(context.Background()))
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	require.Eventually(t, func() bool { return p.loopsRunning.Load() == 1 },
+		2*time.Second, 5*time.Millisecond, "exactly one poll loop must come up")
+	// Give any loser goroutine time to register itself before re-asserting.
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, int32(1), p.loopsRunning.Load(),
+		"concurrent Bootstrap calls each leaked a ticker goroutine")
+
+	cancel()
+	require.Eventually(t, func() bool { return p.loopsRunning.Load() == 0 },
+		2*time.Second, 5*time.Millisecond, "appCtx cancellation must stop the surviving loop")
 }

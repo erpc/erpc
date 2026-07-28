@@ -102,8 +102,10 @@ https://docs.erpc.cloud/config/projects/upstreams.llms.txt`}
 **Config-time pipeline.** When eRPC loads a project, each upstream in `upstreams[]`
 first runs `ApplyDefaults` against `upstreamDefaults` — only-if-unset for scalar
 fields; all-or-nothing for `tags`, `failsafe`, and `routing`; per-field merge for
-EVM sub-fields — then `SetDefaults` fills remaining gaps: deriving an `id` if empty,
-forcing `type: evm`, injecting `ignoreMethods: ["*"]` when `allowMethods` is set
+EVM sub-fields; wholesale-then-per-field for SVM sub-fields — then `SetDefaults` fills
+remaining gaps: deriving an `id` if empty,
+defaulting `type` to `evm` **only when it was omitted** (so an SVM upstream must say
+`type: svm`), injecting `ignoreMethods: ["*"]` when `allowMethods` is set
 without an explicit `ignoreMethods`. Endpoints using a vendor shorthand
 (`alchemy://KEY`, `drpc://KEY`, and 20+ other prefixes) are converted into provider
 configs at this stage; the rest of the upstream block travels as a `"*"` override.
@@ -171,7 +173,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
 | `upstreams[*].id` | string | Derived: native-scheme endpoint → `<hostname>-<N>`; non-native → `<scheme>-<N>`; if `vendorName` set → `<vendorName>-<N>` (<SourceLink file="common/defaults.go" lines="1596-1615" />) | Used in task names, metrics labels, `use-upstream` matching, admin cordon RPCs. |
-| `upstreams[*].type` | `UpstreamType` | `"evm"` (<SourceLink file="common/defaults.go" lines="1616-1619" />) | Only `evm` is supported at runtime. The `evm+<vendor>` shorthand schemes are normalized to `"evm"` at defaults time. |
+| `upstreams[*].type` | `UpstreamType` | `"evm"` when omitted (<SourceLink file="common/defaults.go" lines="1715-1718" />) | `evm` and `svm` are both supported at runtime. The `evm+<vendor>` shorthand schemes are normalized to `"evm"` at defaults time. **Footgun**: `svm` is never inferred — an upstream serving Solana that omits `type` silently becomes an EVM upstream and fails to bootstrap. Always write `type: svm` explicitly. |
 | `upstreams[*].endpoint` | string | `""` (required) | Native schemes: `http://`, `https://`, `grpc://`, `grpc+bds://`. Non-native (e.g. `alchemy://KEY`) converts the upstream into a provider. `ws://`/`wss://` pass validation but fail at client creation with "websocket client not implemented yet" — retries forever. Redacted in JSON/YAML output. |
 | `upstreams[*].tags` | `[]string` | nil; all-or-nothing inheritance from `upstreamDefaults.tags` (<SourceLink file="common/defaults.go" lines="1505-1510" />) | `<dim>:<value>` convention. Matched by `use-upstream` and policy stdlib. **Footgun**: one tag on the upstream drops ALL defaults tags. |
 | `upstreams[*].vendorName` | string | `""`; at runtime filled by URL pattern match or `guessVendorName()` | When non-empty, forces name-lookup only — `OwnsUpstream` URL matching is skipped. Mismatch silently applies the wrong error normalizer. No warning is logged. |
@@ -222,6 +224,9 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].evm.integrity.eth_getBlockReceipts.checkLogsBloom` | `*bool` | nil | Sub-check: verify logs bloom filter consistency. |
 | `upstreams[*].evm.getLogsMaxAllowedRange` / `getLogsMaxAllowedAddresses` / `getLogsMaxAllowedTopics` / `getLogsSplitOnError` / `getLogsMaxBlockRange` | int64 / int64 / int64 / `*bool` / int64 | all zero/nil | **Deprecated and ignored at runtime.** Tagged `json:"-"` so invisible in JSON config dumps. A WARN is logged at registration if any `maxAllowed*` value `> 0` or `getLogsSplitOnError != nil`. Migrate to `networks[*].evm.*` equivalents. (<SourceLink file="upstream/registry.go" lines="107-118" />) |
 | `upstreams[*].evm.queryShim.*` | object | all zero/nil | Query-shim feature config (`enabled`, `allowedMethods`, `concurrency`, `maxBlockRange`, `maxLimit`, `defaultLimit`). Covered by the query-shim reference; listed here because the fields live on `EvmUpstreamConfig`. |
+| `upstreams[*].svm.cluster` | string | `""`; inherited from `upstreamDefaults.svm.cluster` | The cluster this upstream serves. Must match the network-level `svm.cluster` for the upstream to be eligible for that network. Unlike the network side, cluster **is** inherited here — on an upstream it only says "which cluster do I serve", and a pool homogeneous across one cluster is the common case. |
+| `upstreams[*].svm.chain` | string | `""` → treated as `"solana"`; inherited from `upstreamDefaults.svm.chain` | Which SVM chain this upstream serves. Must match the network-level `svm.chain`. |
+| `upstreams[*].svm.checkGenesisHash` | bool | `false` | Opts an **unknown** `(chain, cluster)` pair into `getGenesisHash` validation at bootstrap. Known Solana clusters (`mainnet-beta`, `devnet`, `testnet`) are always validated regardless of this flag: a mismatch **or a fetch failure** fails the upstream, catching nodes mis-pointed at the wrong cluster and refusing to register one that could not be verified. For unknown clusters the same check (with no table comparison) runs only when this flag is set, so private and local clusters with no published genesis hash still work. |
 | `upstreamDefaults` | `*UpstreamConfig` | nil | Project-level template. Gets its own `SetDefaults(nil)` first. Each upstream runs `ApplyDefaults` then `SetDefaults`. |
 | `proxyPools[*].id` | string | required | Pool name referenced by `upstreams[*].jsonRpc.proxyPool`. |
 | `proxyPools[*].urls` | `[]string` | required, min 1 | Proxy URLs. Accepted schemes: `http://`, `https://`, `socks5://` (case-insensitive prefix check — `socks4://` rejected at startup). |
@@ -235,6 +240,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 - **`failsafe`**: all-or-nothing — any `failsafe` entry on the upstream means none from defaults apply.
 - **`routing`**: all-or-nothing — same rule.
 - **EVM sub-fields** (`statePollerInterval`, `statePollerDebounce`, `maxAvailableRecentBlocks`, auto-splitting thresholds, `integrity`): per-field merge when both sides are non-nil.
+- **SVM sub-fields** (`chain`, `cluster`, `checkGenesisHash`): an upstream with no `svm` block inherits `upstreamDefaults.svm` **wholesale** (copied, not pointer-shared); one with a partial block fills only its empty fields. This is the field set that lets a homogeneous pool declare `chain`/`cluster` once instead of repeating it per upstream.
 - **`jsonRpc`**: shallow-copied from defaults only when the upstream has no `jsonRpc` block at all; even `jsonRpc: {}` blocks inheritance.
 
 **Block-availability bound kinds and probe types** (for `earliestBlockPlus` bounds):
@@ -705,6 +711,59 @@ export default createConfig({
 });`}
 />
 
+**6. A Solana upstream pool with `upstreamDefaults.svm`.** `type: svm` must be explicit on
+every upstream — it is never inferred from the endpoint or from the network. `chain` and
+`cluster` are the two fields that decide network eligibility, and unlike the network side
+they *are* inheritable, so a pool homogeneous across one cluster declares them once. Each
+SVM upstream gets its own slot/health poller automatically:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  focusYaml="4-8,11,15,19-21"
+  focusTs="3-6,9,12,15-17"
+  yaml={`projects:
+  - id: main
+    upstreamDefaults:
+      # type is NOT inferred — declaring it here covers the whole pool
+      type: svm
+      svm:
+        # cluster IS inherited on upstreams (it is network identity only on networks)
+        cluster: mainnet-beta
+    upstreams:
+      - id: solana-labs-mainnet
+        endpoint: https://api.mainnet-beta.solana.com
+      - id: helius-mainnet
+        endpoint: https://mainnet.helius-rpc.com/?api-key=\${HELIUS_KEY}
+      # a fork lives in its own network; checkGenesisHash opts the unknown
+      # (chain, cluster) pair into bootstrap verification
+      - id: fogo-mainnet
+        endpoint: https://mainnet.fogo.io
+        svm:
+          chain: fogo
+          cluster: mainnet
+          checkGenesisHash: true`}
+  ts={`projects: [{
+  id: "main",
+  upstreamDefaults: {
+    // type is NOT inferred — declaring it here covers the whole pool
+    type: "svm",
+    // cluster IS inherited on upstreams (it is network identity only on networks)
+    svm: { cluster: "mainnet-beta" },
+  },
+  upstreams: [
+    { id: "solana-labs-mainnet", endpoint: "https://api.mainnet-beta.solana.com" },
+    { id: "helius-mainnet", endpoint: "https://mainnet.helius-rpc.com/?api-key=\${HELIUS_KEY}" },
+    // a fork lives in its own network; checkGenesisHash opts the unknown
+    // (chain, cluster) pair into bootstrap verification
+    {
+      id: "fogo-mainnet",
+      endpoint: "https://mainnet.fogo.io",
+      svm: { chain: "fogo", cluster: "mainnet", checkGenesisHash: true },
+    },
+  ],
+}]`}
+/>
+
 ### Request/response behavior
 
 - `shouldSkip` runs before every `Forward` call. Skip reasons surface as
@@ -810,6 +869,21 @@ export default createConfig({
     allowlist, eRPC retries on another upstream. If all upstreams return malformed
     responses the request ends as `ErrUpstreamsExhausted`. HTTP status code on propagation
     is 400 (method-level), but the JSON-RPC wire response to the caller is still HTTP 200.
+21. **`type` is not inferred from the endpoint.** A Solana endpoint without `type: svm`
+    defaults to `evm`, and bootstrap then tries `eth_chainId` against it. Set `type: svm`
+    on the upstream or on `upstreamDefaults`.
+22. **An SVM upstream whose `svm.chain`/`svm.cluster` do not match the network's is not
+    eligible for it.** There is no fuzzy match — an upstream with `cluster: mainnet-beta`
+    never serves the `svm:testnet` network. Remember `chain: ""` means `solana`, so an
+    upstream omitting `chain` cannot serve a `chain: fogo` network.
+23. **Genesis-hash validation is fail-closed for known clusters.** For Solana
+    `mainnet-beta`/`devnet`/`testnet`, both a hash mismatch **and** a `getGenesisHash`
+    fetch failure fail the upstream — eRPC refuses to register one it could not verify.
+    `checkGenesisHash` only affects *unknown* `(chain, cluster)` pairs.
+24. **SVM upstreams are cordoned by their own state poller.** Beyond manual and
+    breaker-driven cordons, a failing `getHealth` or a shred-insert lag above 100 slots
+    removes an SVM upstream from selection until it recovers. See
+    [SVM slot tracking & health](/reference/svm/slot-tracking).
 
 ### Observability
 
@@ -849,6 +923,8 @@ export default createConfig({
 - [Matcher / use-upstream](/config/matcher) — directive that pins a request to a specific upstream or tag.
 - [Admin API](/operation/admin) — cordon/uncordon RPCs and listing cordoned upstreams.
 - [getLogs splitting](/reference/evm/getlogs-splitting) — auto-splitting thresholds for `eth_getLogs` and `trace_filter`.
+- [SVM slot tracking & health](/reference/svm/slot-tracking) — the per-upstream Solana slot/health poller and its cordoning behavior.
+- [SVM commitment & finality](/reference/svm/commitment) — how requests are normalized before they reach an SVM upstream.
 - [Survive provider outages](/use-cases/survive-provider-outages) — how upstreams + failsafe combine to keep requests flowing.
 
 </AISection>

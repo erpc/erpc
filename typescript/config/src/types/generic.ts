@@ -47,7 +47,7 @@ import type {
   /**
    * Suported network architecture
    */
-  export type NetworkArchitecture = "evm";
+  export type NetworkArchitecture = "evm" | "svm";
   
   /**
    * Supported connector driver type overide
@@ -109,7 +109,8 @@ import type {
     | "evm+erpc"
     | "evm+blockpi"
     | "evm+ankr"
-    | "evm+routemesh";
+    | "evm+routemesh"
+    | "svm";
   
   /**
    * Supported auth type

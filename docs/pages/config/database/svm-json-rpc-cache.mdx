@@ -1,0 +1,438 @@
+---
+title: SVM JSON-RPC cache
+description: Cache Solana JSON-RPC responses without ever serving a stale account balance — eRPC classifies every SVM read by Solana's own commitment rules, keys base58 params case-sensitively, and refuses to treat a moving rooted head as immutable.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
+
+<LLMsTxtLink />
+
+# SVM JSON-RPC cache
+
+Solana's `finalized` commitment is **not** an immutability guarantee — it is the state at the latest *rooted* slot, and that slot advances roughly every 400 ms. A cache that reads "finalized" as "safe forever" will happily serve a two-hour-old `getBalance` result. eRPC's SVM cache is built around that single fact: only responses pinned to a specific past slot or signature are cached as immutable; everything that tracks the rooted head is treated as realtime and bounded by a TTL.
+
+**What you get**
+
+- Finality classification that follows Solana commitment semantics, not EVM block-depth semantics
+- Case-preserving cache keys — two base58 pubkeys differing only in letter case never collide
+- Effectful and sub-slot methods (`sendTransaction`, `requestAirdrop`, `getLatestBlockhash`, …) hard-excluded from both reads and writes, regardless of policy
+- The same connectors, policies, and zstd compression as the EVM cache, on a disjoint key namespace
+
+## Quick taste
+
+Illustrative, not a tuned production config — cache slot-pinned finalized reads forever, everything else briefly:
+
+<ConfigTabs
+  path="database.svmJsonRpcCache"
+  focusYaml="2-3,8-11,13-17"
+  focusTs="2-4,7-9,10-13"
+  yaml={`database:
+  svmJsonRpcCache:
+    connectors:
+      - id: mem
+        driver: memory
+        memory: { maxItems: 100000 }
+    policies:
+      # getBlock / getTransaction at commitment:finalized are pinned to a slot
+      # that is already rooted — genuinely immutable, safe to keep forever.
+      - connector: mem
+        network: "*"
+        method: "*"
+        finality: finalized
+        ttl: 0
+      # Everything else tracks the rooted head. TTL is the ONLY staleness bound.
+      - connector: mem
+        network: "*"
+        method: "*"
+        finality: realtime
+        ttl: 2s`}
+  ts={`database: {
+  svmJsonRpcCache: {
+    connectors: [{ id: "mem", driver: "memory", memory: { maxItems: 100000 } }],
+    policies: [
+      // getBlock / getTransaction at commitment:finalized are pinned to a slot
+      // that is already rooted — genuinely immutable, safe to keep forever.
+      { connector: "mem", network: "*", method: "*", finality: "finalized", ttl: 0 },
+      // Everything else tracks the rooted head. TTL is the ONLY staleness bound.
+      { connector: "mem", network: "*", method: "*", finality: "realtime", ttl: "2s" },
+    ],
+  },
+}`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="set up SVM caching from scratch"
+	defaultOpen
+	prompt={`I want to cache Solana JSON-RPC responses in eRPC. Add a database.svmJsonRpcCache block
+with an in-memory connector and one policy per finality bucket (finalized, unfinalized,
+realtime), with TTLs that respect Solana commitment semantics — remember that
+commitment:finalized state reads are moving-head, not immutable. Work with my existing
+eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/database/svm-json-rpc-cache.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="explain why getBalance is never cached permanently"
+	prompt={`My eRPC SVM cache has a catch-all policy with finality: finalized and ttl: 0, but
+getBalance and getAccountInfo requests still hit upstreams every time even when I pass
+commitment: finalized. Explain the finality classification eRPC applies to SVM methods and
+tell me which policies I am missing. Reference:
+https://docs.erpc.cloud/config/database/svm-json-rpc-cache.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="share one Redis backend between EVM and SVM networks"
+	prompt={`I run both EVM and SVM networks in one eRPC project and want a single Redis connector
+behind both caches without key collisions. Set up database.evmJsonRpcCache and
+database.svmJsonRpcCache pointing at the same Redis connector definition and explain why
+the keyspaces stay disjoint. Reference:
+https://docs.erpc.cloud/config/database/svm-json-rpc-cache.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="cache large getBlock payloads without blowing up storage"
+	prompt={`Solana getBlock responses in my deployment are multiple megabytes. Configure
+database.svmJsonRpcCache so finalized getBlock/getTransaction results are cached
+permanently in Redis with zstd compression, and add a size limit so pathological
+responses are skipped rather than stored. Reference:
+https://docs.erpc.cloud/config/database/svm-json-rpc-cache.llms.txt`}
+/>
+
+<AISection title="SVM JSON-RPC cache — full agent reference">
+
+### How it works
+
+**Separate config block, shared machinery.** SVM caching is configured under `database.svmJsonRpcCache` and takes the *same* `CacheConfig` schema as [`database.evmJsonRpcCache`](/config/database/evm-json-rpc-cache) — identical `connectors`, `policies`, and `compression` sub-blocks, identical [drivers](/config/database/drivers). The two blocks are independent: an EVM-only config is unaffected, and an SVM network with no `svmJsonRpcCache` block simply never caches. `SvmJsonRpcCache` implements the same `common.CacheDAL` interface as its EVM counterpart, so the network layer calls it through the same seam.
+
+**Key namespaces are disjoint by construction.** The partition key is prefixed with the network id (`svm:mainnet-beta`, `svm:fogo:mainnet`, `evm:1`), so pointing both caches at one Redis or DynamoDB connector is safe and is the intended deployment for mixed projects.
+
+**Finality classification — the load-bearing part.** `GetFinality` resolves an SVM request to a `DataFinalityState` in four ordered steps:
+
+| Step | Predicate | Result |
+|---|---|---|
+| 1 | `neverCacheMethods` | `realtime` — *and* hard-skipped by the cache layer |
+| 2 | `alwaysFinalizedMethods` | `finalized` (immutable by construction) |
+| 3 | `slotPinnedMethods` **and** effective commitment is `finalized` | `finalized` |
+| 4 | `slotPinnedMethods` at any weaker commitment | `unfinalized` |
+| 5 | everything else | `realtime` (moving-head read) |
+
+Step 5 is the rule that matters, and it is why step 3 needs an explicit table at all. **`commitment: finalized` on Solana means "the state at the latest ROOTED slot", and the rooted slot advances roughly every 400 ms — it is a moving head, not an immutability promise.** `getBalance`, `getAccountInfo`, `getProgramAccounts`, and `getTokenAccountBalance` at `finalized` therefore answer a *different question every slot*, exactly like EVM's `latest` block tag. Classifying them `finalized` would be a permanent-cache bug: `finalized` is the zero value of the Go enum that a policy with no explicit `finality` matches, and an unset TTL means "no expiry" in every connector — so a later transfer would never invalidate the cached balance.
+
+Only a response pinned to an explicit positional identifier — a slot number or a transaction signature — is genuinely immutable once that slot is rooted. That is the whole content of `slotPinnedMethods`:
+
+```
+slotPinnedMethods  = getBlock, getTransaction
+```
+
+At `finalized` these are promoted to `finalized`. Below `finalized` they are `unfinalized`: still pinned to a slot, but a not-yet-rooted slot can be dropped by a minority-fork switch, so the answer can still change.
+
+```
+alwaysFinalizedMethods = getInflationReward   (defined only over finalized epochs)
+                         getBlockTime         (takes no commitment param; stable once the slot exists)
+```
+
+```
+neverCacheMethods = sendTransaction, sendRawTransaction, simulateTransaction, requestAirdrop,
+                    getLatestBlockhash, getRecentBlockhash, getFeeForMessage,
+                    getSignatureStatuses, getVoteAccounts, getLeaderSchedule, getEpochInfo,
+                    getSlotLeaders, getRecentPerformanceSamples, getRecentPrioritizationFees
+```
+
+Two categories live in `neverCacheMethods`: **mutating or effectful** calls, where caching would break the at-least-once semantics callers expect, and **transient realtime snapshots** that go stale in under one slot. `getEpochSchedule` is deliberately *excluded* — its constants only change at epoch boundaries (~432,000 slots), so it falls through to the moving-head bucket and is cached under the realtime policy's TTL.
+
+**Never-cache is hard-enforced, not policy-driven.** `realtime` is still a *cacheable* finality at the policy layer, so mapping these methods to `realtime` is not sufficient on its own. `Get` and `Set` both check `neverCacheMethods` **before** policy matching and return early. An operator's stray `finality: realtime` catch-all therefore cannot cache `sendTransaction`.
+
+**Finality reflects the commitment that actually reaches the upstream.** Step 3 calls `resolveCommitment` — the same predicate the [commitment-injection hook](/reference/svm/commitment) uses — so classification tracks the commitment the upstream really sees, not merely whether a network default exists. When injection legitimately skips a request (legacy encoding-string form, missing positional args, a non-injectable method), no default reaches the upstream and the response is classified `unfinalized` rather than wrongly trusting the network default.
+
+**Cache-key derivation.** Two keys, as in EVM, but both dimensions differ:
+
+- **Partition key: `<networkId>:<slotRef>`.** `slotRef` is the request's `minContextSlot` when one is present in any object param, otherwise the literal `"*"`. This replaces EVM's `blockRef` dimension. Because `slotRef` is derived purely from the request params, a given `(method, params)` tuple always produces the same partition key on both `Set` and `Get` — so SVM always reads `ConnectorMainIndex` and never needs EVM's reverse-index wildcard fallback.
+- **Request key: `<method>:<sha256(method ‖ 0x00 ‖ json(params))>`.** Derived by `svmRequestKey`, **not** by the shared `req.CacheHash()`.
+
+**Cache keys are case-preserving, and this is a correctness requirement.** The shared EVM hasher lowercases every string param, which is the right normalization for hex but catastrophic for Solana: base58 pubkeys and transaction signatures are **case-sensitive**, so two distinct valid accounts differing only by letter case would collapse onto one key and be served each other's data. `svmRequestKey` preserves case exactly. It marshals params with `encoding/json` (not sonic) on purpose — the standard library documents that it sorts map keys, which is what makes the key deterministic across runs and across Go map iteration order, and its grammar is both type- and structure-delimiting, so `"abc"`, `["a","bc"]`, and `{"a":"bc"}` cannot collide, nor can the number `1` and the string `"1"`. The method name is both hashed and prefixed, so a method name containing `:` cannot forge another method's key. Params `nil` and `params: []` normalize to the same key.
+
+**No block-timestamp age guard.** EVM re-checks a realtime hit's block timestamp against the policy TTL before accepting it. SVM has no equivalent: because only genuinely immutable responses are classified `finalized`, the **TTL on the realtime policy is the staleness bound** — the same lever EVM uses for `latest`. There is consequently no `erpc_cache_get_age_guard_reject_total` traffic on SVM networks.
+
+**Get is sequential, not a parallel fan-out.** `Get` walks the matched policies in list order and returns the first non-empty hit; there is no goroutine race, no `fanCtx`, and no peer cancellation. **Order your policies fastest-connector-first** — with SVM this is not a tie-break hint, it is the actual probe order. `Set` likewise writes to matched connectors sequentially.
+
+**Writes.** Responses carrying a JSON-RPC `error` body are never stored. Size limits gate on the **original** (uncompressed) payload — they express a response-size ceiling, not a storage-footprint one. zstd compression runs at most once per request and only after some policy has accepted the payload, so a multi-megabyte `getBlock` that every policy rejects on size never pays for compression.
+
+**Compression.** Identical to the EVM cache: enabled by default (the `compression` block is auto-created even when omitted), `threshold` default 1024 bytes, and detection on read is by the zstd magic bytes `0x28 0xB5 0x2F 0xFD` — so entries written while compression was enabled stay readable after it is turned off. Solana `getBlock` payloads routinely exceed a megabyte, so leaving compression on is the right default.
+
+### Config schema
+
+All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig` schema as `database.evmJsonRpcCache`** — see the [EVM cache page's config schema](/config/database/evm-json-rpc-cache) for the full field-by-field tables of `connectors[*]`, `policies[*]`, and `compression`. Only the SVM-specific semantics are restated here.
+
+| Field | Type | Default | SVM-specific behavior |
+|---|---|---|---|
+| `database.svmJsonRpcCache` | `*CacheConfig` | `nil` (no SVM caching) | Independent of `evmJsonRpcCache`. Validated at startup; a broken block fails config validation rather than silently disabling the cache. |
+| `policies[*].finality` | enum | `finalized` (Go zero value) | `finalized` matches only `getBlock`/`getTransaction` at commitment `finalized`, plus `getInflationReward`/`getBlockTime`. **Every other SVM read is `realtime`.** |
+| `policies[*].ttl` | Duration | `0` (no expiry) | On a `realtime` SVM policy this is the *only* staleness bound — there is no block-timestamp age guard to catch an over-long TTL. |
+| `policies[*].network` | string | `"*"` | Matches the SVM network id: `svm:<cluster>` or `svm:<chain>:<cluster>`. |
+| `policies[*].method` | string | `"*"` | Matches Solana method names (`getBlock`, `getAccountInfo`, …). Methods in `neverCacheMethods` are excluded before matching and cannot be re-enabled by any policy. |
+
+### Worked examples
+
+**1. The three-bucket baseline.** `finalized` for the two slot-pinned reads, `unfinalized` for those same reads below `finalized` commitment, and `realtime` for everything else. Without the `realtime` policy the overwhelming majority of SVM traffic — every account and token read — bypasses the cache entirely:
+
+<ConfigTabs
+  path="database.svmJsonRpcCache"
+  yaml={`database:
+  svmJsonRpcCache:
+    connectors:
+      - id: mem
+        driver: memory
+        memory: { maxItems: 500000, maxTotalSize: 4GB }
+    policies:
+      # Immutable: getBlock/getTransaction pinned to a rooted slot, plus
+      # getBlockTime and getInflationReward.
+      - connector: mem
+        network: "*"
+        method: "*"
+        finality: finalized
+        ttl: 0
+      # getBlock/getTransaction at confirmed/processed — pinned to a slot, but a
+      # fork switch can still drop it. ~2 slots of tolerance.
+      - connector: mem
+        network: "*"
+        method: "*"
+        finality: unfinalized
+        ttl: 800ms
+      # Everything else: getBalance, getAccountInfo, getProgramAccounts, getSlot,
+      # getBlockHeight, getSignaturesForAddress, ... all moving-head reads.
+      - connector: mem
+        network: "*"
+        method: "*"
+        finality: realtime
+        ttl: 2s`}
+  ts={`database: {
+  svmJsonRpcCache: {
+    connectors: [{ id: "mem", driver: "memory", memory: { maxItems: 500000, maxTotalSize: "4GB" } }],
+    policies: [
+      // Immutable: getBlock/getTransaction pinned to a rooted slot, plus
+      // getBlockTime and getInflationReward.
+      { connector: "mem", network: "*", method: "*", finality: "finalized", ttl: 0 },
+      // getBlock/getTransaction at confirmed/processed — pinned to a slot, but a
+      // fork switch can still drop it. ~2 slots of tolerance.
+      { connector: "mem", network: "*", method: "*", finality: "unfinalized", ttl: "800ms" },
+      // Everything else: getBalance, getAccountInfo, getProgramAccounts, getSlot,
+      // getBlockHeight, getSignaturesForAddress, ... all moving-head reads.
+      { connector: "mem", network: "*", method: "*", finality: "realtime", ttl: "2s" },
+    ],
+  },
+}`}
+/>
+
+**2. Two tiers: memory in front, Redis for the immutable pool.** Historical `getBlock`/`getTransaction` results are large, read repeatedly, and never change once rooted — they belong in a durable shared tier that survives restarts. Moving-head reads have a 2 s lifetime and never justify a network round-trip. Note that SVM probes policies **in list order**, so the memory connector must come first:
+
+<ConfigTabs
+  path="database.svmJsonRpcCache"
+  yaml={`database:
+  svmJsonRpcCache:
+    connectors:
+      - id: mem
+        driver: memory
+        memory: { maxItems: 200000, maxTotalSize: 2GB }
+      - id: redis
+        driver: redis
+        redis:
+          uri: "redis://\${REDIS_HOST}:6379/0"
+    policies:
+      # Memory FIRST: Get walks policies in order and returns the first hit —
+      # unlike EVM there is no parallel race, so order IS the probe order.
+      - connector: mem
+        network: "*"
+        method: "getBlock|getTransaction"
+        finality: finalized
+        ttl: 0
+      - connector: redis
+        network: "*"
+        method: "getBlock|getTransaction"
+        finality: finalized
+        # Durable and permanent: a rooted slot's block never changes.
+        ttl: 0
+      # Moving-head reads stay local — a Redis RTT costs more than the upstream
+      # call it would save at a 2s TTL.
+      - connector: mem
+        network: "*"
+        method: "*"
+        finality: realtime
+        ttl: 2s`}
+  ts={`database: {
+  svmJsonRpcCache: {
+    connectors: [
+      { id: "mem", driver: "memory", memory: { maxItems: 200000, maxTotalSize: "2GB" } },
+      { id: "redis", driver: "redis", redis: { uri: "redis://\${REDIS_HOST}:6379/0" } },
+    ],
+    policies: [
+      // Memory FIRST: Get walks policies in order and returns the first hit —
+      // unlike EVM there is no parallel race, so order IS the probe order.
+      { connector: "mem", network: "*", method: "getBlock|getTransaction", finality: "finalized", ttl: 0 },
+      {
+        connector: "redis", network: "*", method: "getBlock|getTransaction", finality: "finalized",
+        // Durable and permanent: a rooted slot's block never changes.
+        ttl: 0,
+      },
+      // Moving-head reads stay local — a Redis RTT costs more than the upstream
+      // call it would save at a 2s TTL.
+      { connector: "mem", network: "*", method: "*", finality: "realtime", ttl: "2s" },
+    ],
+  },
+}`}
+/>
+
+**3. One Redis backend behind both architectures.** A mixed EVM + SVM project can share storage. The network-id prefix on every partition key (`evm:1:…` vs `svm:mainnet-beta:…`) keeps the namespaces disjoint, so no coordination is needed beyond declaring the connector in both blocks:
+
+<ConfigTabs
+  path="database"
+  yaml={`database:
+  evmJsonRpcCache:
+    connectors:
+      - id: redis
+        driver: redis
+        redis:
+          uri: "redis://\${REDIS_HOST}:6379/0"
+    policies:
+      - connector: redis
+        network: "*"
+        method: "*"
+        finality: finalized
+        ttl: 0
+  svmJsonRpcCache:
+    # Same physical Redis. Partition keys are prefixed with the network id, so
+    # evm:1 and svm:mainnet-beta entries cannot collide.
+    connectors:
+      - id: redis
+        driver: redis
+        redis:
+          uri: "redis://\${REDIS_HOST}:6379/0"
+    policies:
+      - connector: redis
+        network: "*"
+        method: "getBlock|getTransaction"
+        finality: finalized
+        ttl: 0`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [{ id: "redis", driver: "redis", redis: { uri: "redis://\${REDIS_HOST}:6379/0" } }],
+    policies: [{ connector: "redis", network: "*", method: "*", finality: "finalized", ttl: 0 }],
+  },
+  svmJsonRpcCache: {
+    // Same physical Redis. Partition keys are prefixed with the network id, so
+    // evm:1 and svm:mainnet-beta entries cannot collide.
+    connectors: [{ id: "redis", driver: "redis", redis: { uri: "redis://\${REDIS_HOST}:6379/0" } }],
+    policies: [{ connector: "redis", network: "*", method: "getBlock|getTransaction", finality: "finalized", ttl: 0 }],
+  },
+}`}
+/>
+
+**4. Slot-partitioned caching for monotonic readers.** Clients that pass `minContextSlot` to enforce read-your-writes get a partition key per slot floor, so a request at `minContextSlot: N` never reads an entry stored for a different floor. This is a natural fit for indexers that advance a cursor; it also means a client that varies `minContextSlot` on every call gets a fresh partition every time and effectively bypasses the cache:
+
+<ConfigTabs
+  path="database.svmJsonRpcCache"
+  yaml={`database:
+  svmJsonRpcCache:
+    connectors:
+      - id: mem
+        driver: memory
+        memory: { maxItems: 1000000, maxTotalSize: 4GB }
+    policies:
+      - connector: mem
+        network: "svm:mainnet-beta"
+        method: "*"
+        finality: realtime
+        # High item count: a distinct minContextSlot value means a distinct
+        # partition key, so key cardinality scales with distinct slot floors.
+        ttl: 2s`}
+  ts={`database: {
+  svmJsonRpcCache: {
+    connectors: [{ id: "mem", driver: "memory", memory: { maxItems: 1000000, maxTotalSize: "4GB" } }],
+    policies: [{
+      connector: "mem", network: "svm:mainnet-beta", method: "*", finality: "realtime",
+      // High item count: a distinct minContextSlot value means a distinct
+      // partition key, so key cardinality scales with distinct slot floors.
+      ttl: "2s",
+    }],
+  },
+}`}
+/>
+
+### Request/response behavior
+
+- **Cache key structure.** Partition key `<networkId>:<slotRef>` where `slotRef` is the request's `minContextSlot` or `"*"`. Request key `<method>:<sha256(method ‖ 0x00 ‖ json(params))>`, case-preserving. Always read from `ConnectorMainIndex` — no reverse index.
+- **`neverCacheMethods` short-circuit both directions.** `Get` returns a miss and `Set` returns without writing, before any policy is consulted.
+- **Responses with a JSON-RPC `error` field are never cached.** Native Solana error codes and `error.data` are preserved to the client instead — see the [error reference](/reference/errors#svm-solana-error-contract).
+- **A `getSlot` response is corrected after the cache read.** The post-forward hook enforces the highest known slot for the request's commitment even on a cache hit, so a cached value can never make the slot number appear to move backwards. See [slot tracking](/reference/svm/slot-tracking).
+- **No realtime age gate.** A `realtime` hit is accepted on TTL alone. There is no block-timestamp cross-check and no `ttl_rejected` outcome on SVM.
+- **`X-ERPC-Skip-Cache-Read`** works identically to EVM — `"true"` skips every connector, a glob pattern skips matching connector ids.
+
+### Best practices
+
+- **Always define a `realtime` policy.** It is not an edge case on SVM — it is the majority of your traffic. `getBalance`, `getAccountInfo`, `getProgramAccounts`, `getTokenAccountBalance`, `getSlot`, `getBlockHeight`, and `getSignaturesForAddress` are all `realtime` at *every* commitment level, including `finalized`. A config with only a `finality: finalized` policy caches almost nothing.
+- **Never "fix" a low hit rate by forcing state reads to `finalized`.** There is no config knob to do this on SVM, and that is deliberate — it would be a permanent-cache correctness bug, not a tuning win. If you need higher hit rates on account reads, raise the `realtime` TTL knowingly.
+- **Keep `realtime` TTL in the 1–3 s range.** One Solana slot is ~400 ms. A 2 s TTL means a caller may observe state up to ~5 slots old; anything much larger starts to surface visibly stale balances.
+- **Set `unfinalized` TTL to roughly two slots (≈800 ms).** That bucket only ever holds `getBlock`/`getTransaction` below `finalized` commitment, where a fork switch is the risk being bounded.
+- **Order policies fastest-connector-first.** SVM's `Get` is a sequential walk, so a slow remote connector listed before a local memory connector adds its full latency to every hit.
+- **Leave compression enabled.** `getBlock` payloads regularly exceed a megabyte; zstd at the default threshold pays for itself immediately.
+- **Point EVM and SVM at the same connector definitions** in a mixed project. The keyspaces cannot collide, and one storage tier is one thing to operate.
+
+### Edge cases & gotchas
+
+1. **`finality: finalized` is the Go zero value — omitting `finality` creates a finalized-only policy.** On SVM this is far more surprising than on EVM, because the `finalized` bucket holds only four methods (`getBlock`, `getTransaction` at `finalized` commitment, plus `getInflationReward` and `getBlockTime`). A catch-all policy with no explicit `finality` will look like the cache is broken.
+2. **`commitment: finalized` does not promote a state read.** `getBalance(pubkey, {commitment: "finalized"})` is `realtime`, by design. Solana `finalized` is the latest *rooted* slot — a head that moves every ~400 ms — so the answer changes continuously.
+3. **`minContextSlot` is not a promotion signal either.** Per the Solana RPC reference it is the minimum bank slot at which the request may be *evaluated* — a node-freshness floor, not a lower bound on returned history. `getBalance(pubkey, {minContextSlot: 1})` still answers at the current head. It affects the cache *partition key* only.
+4. **Cache keys are case-sensitive.** This is the opposite of the EVM cache, which lowercases string params. Base58 is case-significant, so `getAccountInfo("Abc…")` and `getAccountInfo("abc…")` are different accounts and get different keys. Do not normalize pubkey case in a client layer expecting eRPC to fold it.
+5. **`getSignaturesForAddress` is `realtime`, deliberately.** The signature list for an address *grows* as new transactions land, so it tracks the head even though it names an address rather than a slot.
+6. **`getBlocks` / `getBlocksWithLimit` are `realtime`, and a fully-historical range is not promoted.** `getBlocks(start)` with no end slot runs to the current head, and either form can name an upper bound the chain has not reached yet. A fully-in-the-past range *is* immutable and only gets realtime-TTL caching here; promoting it would make finality depend on mutable poller state and therefore vary over time for an identical request. `getBlocks` is cheap next to `getBlock`.
+7. **`getEpochInfo` is never cached but `getEpochSchedule` is.** `getEpochInfo` carries the live slot index; `getEpochSchedule` returns epoch constants that change only at epoch boundaries.
+8. **`getBlockTime` is treated as final by construction.** A slot's timestamp can in principle change if a not-yet-rooted slot is dropped. This is a low-risk simplification, not a guarantee.
+9. **A `realtime` policy cannot resurrect a `neverCacheMethods` entry.** The hard skip runs before policy matching in both `Get` and `Set`.
+10. **`params: null` and `params: []` share one key.** They are the same call; the encoder normalizes them so `json.Marshal` cannot emit `null` for one and `[]` for the other.
+11. **No per-connector write timeout.** Unlike the EVM cache's hard 5 s `Set` ceiling, SVM `Set` relies on the connector's own configuration and the request context. Configure `failsafeForSets` on the connector if you need a bound.
+12. **Constructor failures are downgraded to a warning at startup.** `erpc/init.go` logs a WARN and continues if `NewSvmJsonRpcCache` fails, which would leave the cache silently absent — this is exactly why the config block is schema-validated eagerly at startup instead.
+
+### Observability
+
+The SVM cache emits the **same `erpc_cache_*` metric family** as the EVM cache, so existing dashboards work unchanged. The `network` label distinguishes SVM traffic (`svm:mainnet-beta`, …).
+
+| Metric | Type | When it fires |
+|---|---|---|
+| `erpc_cache_get_success_hit_total` | counter | A policy returned a non-empty stored value |
+| `erpc_cache_get_success_miss_total` | counter | Every matched policy missed |
+| `erpc_cache_get_skipped_total` | counter | No policy matched the request's network/method/finality |
+| `erpc_cache_get_error_total` | counter | A connector `Get` errored; the walk continues to the next policy |
+| `erpc_cache_set_skipped_total` | counter | Payload rejected by a policy's size limits |
+| `erpc_cache_set_error_total` | counter | A connector `Set` errored (logged at WARN, swallowed) |
+| `erpc_cache_set_original_bytes` / `erpc_cache_set_compressed_bytes` | counter | Pre- and post-zstd payload accounting; the compressed counter only advances when compression actually shrank the value |
+| `erpc_cache_get_success_hit_duration` / `erpc_cache_get_success_miss_duration` | histogram | Hit and miss latency |
+
+**Notably absent on SVM:** `erpc_cache_get_age_guard_reject_total` never fires — there is no block-timestamp age gate.
+
+**Debug/warn logs:** `"svm cache get failed; trying next policy"` (DEBUG, per-policy connector error) and `"svm cache set failed"` (WARN, carries `groupKey` and `requestKey`).
+
+### Source code entry points
+
+- [`architecture/svm/json_rpc_cache.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/json_rpc_cache.go) — `SvmJsonRpcCache`: `Get`/`Set`, `generateKeys`, `svmRequestKey` (case-preserving hashing), `extractSlotRef`, zstd compress/decompress, `doGet` main-index rationale.
+- [`architecture/svm/finality.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/finality.go) — `GetFinality`, `neverCacheMethods`, `alwaysFinalizedMethods`, `slotPinnedMethods`, `IsFinalizedCommitment`, and the moving-head rationale in full.
+- <SourceLink file="common/config.go" lines="273-275" label="common/config.go — DatabaseConfig.SvmJsonRpcCache" />
+- <SourceLink file="common/validation.go" lines="258-266" label="common/validation.go — eager svmJsonRpcCache validation" />
+
+### Related pages
+
+- [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache) — the shared `CacheConfig` schema in full: connectors, policies, compression, size limits.
+- [Storage connectors](/config/database/drivers) — memory, Redis, DynamoDB, PostgreSQL driver options.
+- [SVM commitment & finality](/reference/svm/commitment) — how the effective commitment is resolved and injected.
+- [SVM slot tracking & health](/reference/svm/slot-tracking) — the state poller, `getSlot` correction, and ingestion-lag cordoning.
+- [Networks](/config/projects/networks) — declaring an SVM network and its `svm.*` options.
+- [Error taxonomy](/reference/errors#svm-solana-error-contract) — the SVM error contract and missing-data family.
+
+</AISection>

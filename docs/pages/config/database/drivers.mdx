@@ -11,6 +11,8 @@ import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from ".
 
 Pick the back-end that fits your deployment — in-process LRU for a single node, Redis for multi-instance scale, PostgreSQL or DynamoDB for managed persistence, or a read-only gRPC BDS layer for historical chain data. Swap drivers by changing one line. Wrap any connector with retry, circuit-breaker, hedge, or timeout policies so a slow cache never slows down your upstream calls.
 
+Connectors are architecture-neutral. The examples on this page use `database.evmJsonRpcCache.connectors[]`; the identical connector schema lives under `database.svmJsonRpcCache.connectors[]` for SVM networks, and both caches can reference the same physical backend — partition keys are prefixed with the network id (`evm:1`, `svm:mainnet-beta`), so the keyspaces are disjoint. See [SVM JSON-RPC cache](/config/database/svm-json-rpc-cache).
+
 ## Quick taste
 
 Illustrative, not a tuned production config — add a Redis connector:

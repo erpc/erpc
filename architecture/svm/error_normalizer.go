@@ -163,9 +163,24 @@ func (e *JsonRpcErrorExtractor) Extract(
 		)
 	}
 
-	// Prefer JSON-RPC error body; fall back to HTTP status if upstream returned a
-	// bare HTTP failure (no JSON body at all).
-	if jr == nil || jr.Error == nil {
+	// Prefer a genuine JSON-RPC error body; fall back to HTTP status when the
+	// upstream returned a bare HTTP failure.
+	//
+	// `jr.Error == nil` alone is NOT a sufficient test. The parse layer never
+	// yields a nil error for an unparseable body: normalizeJsonRpcError takes jr
+	// from nr.JsonRpcResponse(), which SYNTHESIZES a -32700 error object instead.
+	// So this gate never fired in the production HTTP path, and a plaintext or
+	// HTML 429 from a CDN in front of a provider (Cloudflare and nginx emit
+	// neither JSON nor a JSON-RPC envelope) fell through to the -32700 case
+	// below and became a hard non-retryable client error — no failover to a
+	// healthy upstream, no capacity signal for rate-limit auto-tune, and the
+	// caller saw a parse error instead of a rate limit. Measured end to end
+	// through the real HTTP path, not inferred.
+	//
+	// A synthesized -32700 next to a failing status means "the body told us
+	// nothing", so classify from the status — the only trustworthy signal left.
+	unparseableBody := code == svmCodeParseError && resp.StatusCode >= 400
+	if jr == nil || jr.Error == nil || unparseableBody {
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
 			// -32000 (agave's generic server-error bucket, and what vendors use
@@ -280,17 +295,32 @@ func (e *JsonRpcErrorExtractor) Extract(
 	//   -32015: caller omitted/undersized maxSupportedTransactionVersion — a
 	//     versioned transaction is present regardless of which node answers.
 	//   -32018: caller-supplied slot is not an epoch boundary.
-	//   -32602/-32700: standard JSON-RPC codes; passed through rather than
-	//     collapsed to -32600, which lost the invalid-params/parse-error
-	//     distinction that every JSON-RPC client already understands.
+	//   -32602: standard JSON-RPC invalid-params; passed through rather than
+	//     collapsed to -32600, which lost a distinction every JSON-RPC client
+	//     already understands.
 	// WithRetryableTowardNetwork(false) scopes the opt-out to SVM only — EVM
 	// ClientSideException still retries (its default).
 	case svmCodeSendTxPreflightFailure, svmCodeTxSignatureVerifyFailure,
 		svmCodeTxPrecompileVerifyFailure, svmCodeTxSignatureLenMismatch,
 		svmCodeUnsupportedTxVersion, svmCodeSlotNotEpochBoundary,
-		svmCodeInvalidRequest, svmCodeInvalidParams, svmCodeParseError:
+		svmCodeInvalidRequest, svmCodeInvalidParams:
 		wrapped := common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorClientSideException), msg, nil, details)
 		return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
+
+	// --- Unparseable upstream response ----------------------------------------
+	//
+	// -32700 is NOT the caller's fault here and must not sit with the client
+	// errors above. eRPC serializes the outbound request itself, so a parse
+	// error never means "the caller sent bad JSON" — it means eRPC could not
+	// parse what THIS upstream sent back (the parse layer synthesizes -32700 for
+	// any unparseable body). That is an upstream fault, so it stays retryable
+	// and the request can fail over to a healthy node. The failing-status case
+	// is intercepted earlier and classified from the status instead.
+	case svmCodeParseError:
+		return common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorServerSideException), msg, nil, details),
+			details, resp.StatusCode,
+		)
 
 	// --- Chain-state condition (non-retryable, not the caller's fault) --------
 	//

@@ -73,6 +73,62 @@ func TestExtract_HTTP500_NoJsonBody_BecomesServerSide(t *testing.T) {
 	}
 }
 
+// TestExtract_SynthesizedParseError_ClassifiedFromFailingStatus pins the gate
+// that makes the two tests above reachable at all.
+//
+// The `jr == nil` shape they pass in cannot occur in production:
+// NormalizedResponse.JsonRpcResponse() synthesizes a -32700 error object for
+// any unparseable body, so a plaintext/HTML/empty 429 from a CDN arrives here
+// looking exactly like a JSON-RPC parse error. Classification must therefore
+// come from the STATUS whenever the status is itself a failure — a -32700 next
+// to a 4xx/5xx means "the body told us nothing", not "the caller sent bad
+// JSON". Only on a 2xx does the -32700 case get to speak for itself.
+//
+// The end-to-end rows live in erpc/svm_hardening_e2e_test.go
+// (TestSvm_BareHttpFailure_ClassifiedFromStatusAndFailsOver); this is the
+// unit-level statement of the same rule.
+func TestExtract_SynthesizedParseError_ClassifiedFromFailingStatus(t *testing.T) {
+	t.Parallel()
+	// What the parse layer actually synthesizes (common/response.go).
+	synthesized := func() *common.ErrJsonRpcExceptionExternal {
+		return common.NewErrJsonRpcExceptionExternal(
+			int(common.JsonRpcErrorParseException),
+			"cannot parse json-rpc response: invalid char", "")
+	}
+	for _, tc := range []struct {
+		name      string
+		status    int
+		wantCode  common.ErrorCode
+		wantWire  common.JsonRpcErrorNumber
+		retryable bool
+	}{
+		{"429 is a quota verdict", 429, common.ErrCodeEndpointCapacityExceeded, -32000, true},
+		{"503 is an upstream failure", 503, common.ErrCodeEndpointServerSideException, -32603, true},
+		{"400 is a request/config problem", 400, common.ErrCodeEndpointClientSideException, -32600, false},
+		// No failing status to defer to: the upstream still produced bytes eRPC
+		// could not parse, which is the UPSTREAM's fault, and the raw -32700
+		// reaches the client.
+		{"200 keeps the parse-error passthrough", 200, common.ErrCodeEndpointServerSideException, -32700, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := extractWith(t, synthesized(), tc.status)
+			if !common.HasErrorCode(err, tc.wantCode) {
+				t.Fatalf("HTTP %d + synthesized -32700: expected %s, got %T: %v",
+					tc.status, tc.wantCode, err, err)
+			}
+			if got := wireCodeOf(t, err); got != tc.wantWire {
+				t.Errorf("HTTP %d + synthesized -32700: wire code %d, want %d",
+					tc.status, got, tc.wantWire)
+			}
+			if got := common.IsRetryableTowardNetwork(err); got != tc.retryable {
+				t.Errorf("HTTP %d + synthesized -32700: retryableTowardNetwork=%v, want %v",
+					tc.status, got, tc.retryable)
+			}
+		})
+	}
+}
+
 func TestExtract_NonSvmUpstream_IsNoOp(t *testing.T) {
 	t.Parallel()
 	e := NewJsonRpcErrorExtractor()
@@ -125,7 +181,13 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 		{"-32018 slot not epoch boundary", -32018, "Slot 12345 is not an epoch boundary", common.ErrCodeEndpointClientSideException, true},
 		{"-32600 invalid request", -32600, "Malformed request", common.ErrCodeEndpointClientSideException, true},
 		{"-32602 invalid params", -32602, "Invalid parameters", common.ErrCodeEndpointClientSideException, true},
-		{"-32700 parse error", -32700, "JSON parse error", common.ErrCodeEndpointClientSideException, true},
+
+		// -32700 is NOT in the client-side family. eRPC serializes the outbound
+		// request itself, so a parse error never means "the caller sent bad JSON";
+		// it means eRPC could not parse what THIS upstream sent back (the parse
+		// layer synthesizes -32700 for any unparseable body). Upstream fault =>
+		// server-side and retryable, so the request fails over to a healthy node.
+		{"-32700 parse error", -32700, "JSON parse error", common.ErrCodeEndpointServerSideException, false},
 
 		// Epoch-global chain-state condition — identical answer cluster-wide, so
 		// ExecutionException (non-retryable by construction in common/errors.go).
@@ -462,6 +524,15 @@ func dataOf(t *testing.T, err error) interface{} {
 	return jre.Details["data"]
 }
 
+// extractNoJr drives the extractor with NO json-rpc response at all.
+//
+// This shape is NOT producible by the production HTTP path:
+// NormalizedResponse.JsonRpcResponse() synthesizes a -32700 error object for
+// every unparseable body, so `jr == nil` only ever happens in a test. Treating
+// these two helpers as coverage of "a bare HTTP failure" is what let a plaintext
+// 429 become a non-retryable parse error for so long. The real coverage is
+// TestExtract_SynthesizedParseError_ClassifiedFromFailingStatus (unit) and
+// TestSvm_BareHttpFailure_ClassifiedFromStatusAndFailsOver (end to end).
 func extractNoJr(t *testing.T, status int) error {
 	t.Helper()
 	e := NewJsonRpcErrorExtractor()

@@ -349,6 +349,36 @@ func TestNetworkPreForward_InjectCommitment_ShapeAware(t *testing.T) {
 	} else if m, ok := p[1].(map[string]interface{}); !ok || m["commitment"] != "confirmed" {
 		t.Errorf("getLeaderSchedule [null,{cfg}]: expected commitment merged into param 1, got %+v", p[1])
 	}
+	// Explicit `null` epoch slot with no config object. This is the one
+	// getLeaderSchedule shape where the trailing param exists but is NOT an
+	// object, so the injector must APPEND rather than merge — and it must leave
+	// the caller's explicit null in place at index 0. Dropping or overwriting it
+	// would turn "current epoch, please" into a config-only call whose slot
+	// argument silently disappeared.
+	if p := paramsOf("getLeaderSchedule", `[null]`); len(p) != 2 {
+		t.Errorf("getLeaderSchedule [null]: expected options appended at index 1, got %+v", p)
+	} else {
+		if p[0] != nil {
+			t.Errorf("getLeaderSchedule [null]: caller's explicit null slot must survive at index 0, got %+v", p[0])
+		}
+		if m, ok := p[1].(map[string]interface{}); !ok || m["commitment"] != "confirmed" {
+			t.Errorf("getLeaderSchedule [null]: expected {commitment} at index 1, got %+v", p[1])
+		}
+	}
+
+	// getBlocks with only its required start slot: the options object appends
+	// AFTER it (agave parses param 1 as an untagged end-slot|config), and the
+	// start slot must not be displaced.
+	if p := paramsOf("getBlocks", `[100]`); len(p) != 2 {
+		t.Errorf("getBlocks [start]: expected options appended at index 1, got %+v", p)
+	} else {
+		if n, ok := p[0].(float64); !ok || n != 100 {
+			t.Errorf("getBlocks [start]: required start slot must stay at index 0, got %+v", p[0])
+		}
+		if m, ok := p[1].(map[string]interface{}); !ok || m["commitment"] != "confirmed" {
+			t.Errorf("getBlocks [start]: expected {commitment} at index 1, got %+v", p[1])
+		}
+	}
 }
 
 // TestNetworkPreForward_InjectCommitment_ClampsToLegalCommitment pins the

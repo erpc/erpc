@@ -234,7 +234,7 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 
 1. `matchFinality: ["latest"]` silently never matches. Valid values: `finalized`, `unfinalized`, `realtime`, `unknown`.
 2. Stacking upstream retry (`maxAttempts: 3`) with network retry (`maxAttempts: 3`) can produce up to 9 upstream calls per request.
-3. Write methods (`eth_sendTransaction`, filter-creation methods) are excluded from hedging. `eth_sendRawTransaction` is intentionally NOT excluded — it supports idempotent broadcast.
+3. Write methods are excluded from hedging, and the excluded set is per-architecture. **EVM**: `eth_sendTransaction` and the filter-creation methods; `eth_sendRawTransaction` is intentionally NOT excluded — it supports idempotent broadcast. **SVM**: `sendTransaction`, `sendRawTransaction`, and `requestAirdrop` are all excluded from hedging *and* from retry — so unlike EVM, an SVM raw-transaction broadcast is never hedged. `simulateTransaction` is read-only and stays hedgeable. See [the SVM write-method guard](/reference/errors#svm-write-method-guard).
 4. `emptyResultMaxAttempts` is a shared counter across all network retry rounds, not per-round. With the default value of 2, one original attempt plus one empty-type retry fires — at most 1 empty-type retry across the entire request lifetime.
 5. Consensus `ignoreFields` is a set-replacement, not a merge. Setting any entry replaces the entire built-in default map (which suppresses `blockTimestamp` disagreements for `eth_getLogs` and receipts methods).
 6. The circuit breaker's rolling window must fill to `failureThresholdCapacity` (default 80) before it can trip — early-startup behavior is Closed regardless of error rate.

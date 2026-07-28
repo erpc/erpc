@@ -5,6 +5,37 @@
 > (`svm:<chain>:<cluster>`), and four correctness fixes landed after review.
 > It adds end-to-end workflow diagrams, an EVM-vs-Solana comparison, and an
 > honest **Gaps & Limitations** section.
+>
+> ### Corrections to this document
+>
+> v0.5 is the design of record, but review after it was written changed several decisions. The
+> list is here so a reader does not have to diff the doc against the code; each item is also
+> corrected inline at the section named. Where v0's corrections banner covers the same ground it
+> is cited as *v0 item N*.
+>
+> 1. **The `getSignaturesForAddress` slot-window guard was deleted, not refined** (§2 hook
+>    table, §3 diagram, §9 gap 3). v0.5 kept it and merely called it "coarse". It is gone: the
+>    method paginates by *signature* cursors (`before`/`until`) plus a `limit`, so there is no
+>    slot range to bound — and the `minContextSlot` the guard read is a node-freshness floor,
+>    the minimum bank slot at which a request may be **evaluated**, never a bound on returned
+>    history. Its `maxSlotsPerSignaturesQuery` config key went with it (v0 item 1).
+> 2. **Finality is per-method, not a commitment-level fallback** (§0 table, §4, §5).
+>    `commitment: finalized` is the latest **rooted** slot — a head advancing every ~400 ms, not
+>    immutability. Only *slot-pinned* reads (`getBlock`, `getTransaction`) classify `Finalized`,
+>    and only at `finalized`; every moving-head read is `Realtime` at **every** commitment level.
+>    `getBlocks` and `getSignaturesForAddress` are moving-head, not slot-pinned — v0.5 grouped
+>    them with `getBlock`/`getTransaction` (v0 item 4).
+> 3. **`optionsAppend` was split into two sentinels** (§6). A single trailing-object bucket
+>    cannot express both `getLeaderSchedule`, whose config may legally sit at param 0, and
+>    `getBlocks`, which requires a positional start slot first. A `clampCommitmentForMethod`
+>    step was added alongside it.
+> 4. **The cache key is two parts and case-PRESERVING** (§5) — not the single
+>    `<networkId>:<slotRef>:<method>:<sha256(params)>` string described there.
+> 5. **`slot` and `blockHeight` are different counters** (§1 table). Only `getSlot` is
+>    tip-corrected, and per commitment; `getBlockHeight` passes through untouched (v0 item 6).
+> 6. **The non-retryable write set includes `requestAirdrop`** (§2 hook table, §3 diagram) —
+>    it *mints* per call, so a failover after an effective first attempt mints twice
+>    (v0 item 8).
 
 ---
 
@@ -14,7 +45,8 @@
 |------|----|------|
 | Network identity | `svm:<cluster>` (Solana only) | `svm:<cluster>` **and** `svm:<chain>:<cluster>` (Fogo, Eclipse, forks) |
 | Commitment injection | network pre-forward (after cache read) | **project pre-forward (before cache read)** — fixes a permanent cache miss |
-| Finality of `getBlock`/`getTransaction`/`getBlocks`/`getSignaturesForAddress` | always finalized | **commitment-sensitive** (confirmed ⇒ unfinalized) |
+| Finality of `getBlock`/`getTransaction` | always finalized | **slot-pinned** — `Finalized` only at `commitment: finalized`, `Unfinalized` below it (corrections item 2) |
+| Finality of `getBlocks`/`getSignaturesForAddress` | always finalized | **moving-head** — `Realtime` at every commitment level; both grow toward the head (corrections item 2) |
 | Commitment param injection | blind "append/mutate last map" | **per-method options-index, shape-aware** |
 | `getInflationRate` | wrongly commitment-injected (→ `-32602`) | excluded (takes no params) |
 
@@ -43,14 +75,14 @@ finality, and consensus machinery rely on:
 
 | Concept | EVM | SVM (Solana) |
 |---------|-----|--------------|
-| Chain progress unit | **block number** (height) | **slot** (~400 ms; some slots are empty/skipped) |
+| Chain progress unit | **block number** (height) | **slot** (~400 ms; some slots are empty/skipped). Solana *also* has a block height, and it is a **different counter**: a skipped slot advances the slot but not the height, so `getSlot` and `getBlockHeight` diverge permanently (corrections item 5) |
 | Block identity | `blockHash` (re-org → new hash) | `blockhash` of a slot; slots can be skipped |
 | Finality model | depth-based (`latest`/`safe`/`finalized` ≈ N confirmations) | **commitment**: `processed` < `confirmed` < `finalized` |
 | "Is this final?" | block ≤ finalized head | response commitment == `finalized` |
 | Re-org exposure | re-org rewrites recent blocks | confirmed (non-rooted) slots can be dropped on fork switch |
 | Chain id | numeric (`eth_chainId` = 1) | cluster genesis hash (immutable) |
 | Tip freshness signal | `eth_blockNumber` | `getSlot` / `getLatestBlockhash` |
-| Write idempotency | `eth_sendRawTransaction` (hash-keyed) | `sendTransaction` (must NOT be blindly retried across nodes) |
+| Write idempotency | `eth_sendRawTransaction` (hash-keyed) | `sendTransaction`, `sendRawTransaction` and `requestAirdrop` must NOT be blindly retried across nodes — the first two can double-broadcast once the original propagates, and `requestAirdrop` *mints* per call |
 | Commitment in request | n/a | optional `{commitment}` options object, **position varies per method** |
 
 Key consequence: **a "confirmed" Solana response is not final.** Treating it as
@@ -78,8 +110,8 @@ Hook points (called by the generic pipeline):
 | Hook | Layer | SVM responsibility |
 |------|-------|--------------------|
 | `HandleProjectPreForward` | project (pre-cache) | getGenesisHash short-circuit; **commitment injection** |
-| `HandleNetworkPreForward` | network (post-selection) | `getSignaturesForAddress` slot-window guard |
-| `HandleUpstreamPostForward` | upstream | `sendTransaction` no-retry; opportunistic slot tracking |
+| `HandleNetworkPreForward` | network (post-selection) | per-method validation gates (`getBlock` availability guard); `minContextSlot` and consensus slot-lag upstream prefilters. **No `getSignaturesForAddress` guard** — deleted (corrections item 1) |
+| `HandleUpstreamPostForward` | upstream | non-retryable write guard (`sendTransaction`, `sendRawTransaction`, `requestAirdrop`); opportunistic slot tracking |
 | `NewJsonRpcErrorExtractor` | upstream | SVM error-code normalization |
 
 ---
@@ -98,14 +130,14 @@ flowchart TD
     G -- hit --> Z
     G -- miss --> H[policy engine: ordered upstreams]
     H --> I{HandleNetworkPreForward}
-    I -- getSignaturesForAddress out of slot window --> I1[reject -32602-class] --> Z
+    I -- getBlock slot above pool's indexed frontier --> I1[short-circuit:\nindexing-lag retry] --> Z
     I -- else --> J[per-upstream forward\n(failsafe: retry/hedge/cb/timeout)]
     J --> K[HandleUpstreamPreForward → upstream RPC → HandleUpstreamPostForward]
-    K -- sendTransaction failed --> K1[strip retryability\n(no cross-node rebroadcast)]
-    K --> L[GetFinality(req,resp)\ncommitment-aware]
-    L --> M{cacheable?\nnot realtime}
-    M -- yes --> N[cache SET\nkey = post-injection params]
-    M -- no --> Z
+    K -- write method failed\n(sendTransaction/sendRawTransaction/requestAirdrop) --> K1[strip retryability\n(no cross-node rebroadcast, no double mint)]
+    K --> L[GetFinality(req,resp)\nper-method: neverCache / alwaysFinalized /\nslotPinned@finalized / else realtime]
+    L --> M{neverCacheMethods?}
+    M -- yes --> Z
+    M -- no --> N[cache SET\nper matching policy's finality + TTL]
     N --> Z
 ```
 
@@ -130,8 +162,8 @@ EVM eth_getBalance                         SVM getBalance
                                                   at the method's options index
 3. cache GET by (network, blockRef, params) 3. cache GET by (network, slotRef, params)
 4. select upstreams (block-height aware)     4. select upstreams (slot aware)
-5. forward; finality = block ≤ finalized     5. forward; finality = commitment level
-6. cache SET if finalized/unfinalized        6. cache SET (realtime methods skipped)
+5. forward; finality = block ≤ finalized     5. forward; finality = per-method table (§5)
+6. cache SET if finalized/unfinalized        6. cache SET (never-cache methods hard-skipped)
 ```
 
 Tip tracking parallels:
@@ -147,76 +179,176 @@ EVM evmStatePoller                          SVM svmStatePoller
 
 ## 5. Finality & caching semantics (corrected)
 
-`architecture/svm/finality.go` resolves finality in priority order:
+`architecture/svm/finality.go` resolves finality in priority order. **CORRECTED — step 3 is not
+a commitment-level fallback** (corrections item 2); v0.5 still had one.
 
 ```
-1. neverCacheMethods         → Realtime, AND hard-skipped by the cache layer
-      sendTransaction, simulateTransaction, requestAirdrop,
-      getLatestBlockhash, getFeeForMessage, getSignatureStatuses,
+1. neverCacheMethods      → Realtime, AND hard-skipped by the cache layer
+      sendTransaction, sendRawTransaction, simulateTransaction, requestAirdrop,
+      getLatestBlockhash, getRecentBlockhash, getFeeForMessage, getSignatureStatuses,
       getVoteAccounts, getLeaderSchedule, getEpochInfo, getSlotLeaders,
-      getRecentPerformanceSamples, getRecentPrioritizationFees, …
-2. alwaysFinalizedMethods    → Finalized (final by construction)
+      getRecentPerformanceSamples, getRecentPrioritizationFees
+2. alwaysFinalizedMethods → Finalized (final by construction)
       getInflationReward (finalized epochs only), getBlockTime
-3. effective commitment (resolveCommitment — the SAME predicate injection uses):
-      finalized            → Finalized
-      confirmed/processed   → Unfinalized
-4. unknown (no effective commitment) → Unfinalized (re-org-aware; TTL bounds staleness)
+3. slotPinnedMethods      → Finalized at commitment == finalized, else Unfinalized
+      getBlock, getTransaction (+ getConfirmedBlock / getConfirmedTransaction aliases)
+4. everything else        → Realtime (moving-head read), at EVERY commitment level
+      getBalance, getAccountInfo, getProgramAccounts, getTokenAccountBalance,
+      getBlocks, getBlocksWithLimit, getSignaturesForAddress, getEpochSchedule, …
 ```
 
-**Never-cache is hard-enforced.** `Realtime` is still a *cacheable* finality at
-the policy layer (EVM caches realtime reads with a short TTL + age guard), so to
-honor the "never cached" guarantee the SVM cache `Get`/`Set` hard-skip any method
-in `neverCacheMethods` before policy matching — an operator's stray
-`finality: realtime` policy can no longer cache an effectful method.
+**Why step 4 is the load-bearing rule.** `commitment: finalized` on Solana is the state at the
+latest **rooted** slot, and the rooted slot advances roughly every 400 ms. It is a moving head,
+not EVM's immutability horizon. A read whose answer depends on where the head is therefore
+answers a different question every slot even at `finalized` — exactly like EVM's `latest` tag,
+which `erpc/networks.go` already maps to Realtime. Classifying those `Finalized` would be a
+permanent-cache bug: `DataFinalityStateFinalized` is the zero value a policy with no explicit
+`finality` matches, and an unset TTL means "no expiry" in the connectors, so a cached balance
+would never be invalidated by a later transfer.
 
-**Finality tracks the *effective* commitment, not just the network default.**
-Step 3 uses `resolveCommitment`, the single predicate that also drives injection.
-So when injection legitimately skips a request (legacy `getBlock(slot,"base64")`
-form, missing args, non-injectable method), no default reaches the upstream and
-the response is classified Unfinalized — the network default is never
-over-trusted. Because the predicate reads request shape + config (not mutation
-state), this holds whether finality is computed before or after injection (it is
-memoized on the first call, which happens pre-injection in `erpc/projects.go`).
+**What changed from v0.5's own table.** v0.5 correctly demoted `getBlock`/`getTransaction` from
+"always finalized" to commitment-sensitive, but put `getBlocks` and `getSignaturesForAddress` in
+the same bucket. They do not belong there:
 
-`getBlock`, `getTransaction`, `getBlocks`, `getSignaturesForAddress` flow through
-steps 3–4 (they were wrongly always-finalized in v0). A `confirmed` response is
-**Unfinalized**, so it is cached re-org-aware (short TTL) rather than as a
-permanent finalized record that a fork switch could falsify.
+- `getSignaturesForAddress` — the signature list for an address *grows* as transactions land, so
+  it tracks the head even though it names an address.
+- `getBlocks` / `getBlocksWithLimit` — range queries. `getBlocks(start)` with no end slot runs to
+  the current head, and either form can name an upper bound the chain has not reached, returning
+  a partial list that grows. A fully-in-the-past `getBlocks(start, end)` range *is* immutable and
+  knowingly gets only realtime-TTL caching: promoting it would require comparing `end` against
+  the poller's finalized slot, which would make finality depend on mutable poller state and so
+  vary over time for an identical request. Accepted knowingly — `getBlocks` is cheap next to
+  `getBlock`.
+- `getEpochSchedule` is not never-cache either: its constants (`slotsPerEpoch`,
+  `leaderScheduleSlotOffset`, …) change only at epoch boundaries (~432,000 slots / ~2 days), so
+  it falls through to step 4 and is cached under the realtime policy's TTL.
 
-**Cache key**: `<networkId>:<slotRef>:<method>:<sha256(params)>`. `networkId`
-carries the chain (`svm:fogo:mainnet` ≠ `svm:mainnet-beta`), so chains/clusters
-never collide. `slotRef` is the request's `minContextSlot` or `*`.
+`minContextSlot` is not a promotion signal either: it is the minimum bank slot at which the
+request may be *evaluated*, so `getBalance(pubkey, {minContextSlot: 1})` still answers at the
+current head.
+
+**Never-cache is hard-enforced.** `Realtime` is still a *cacheable* finality at the policy layer
+(EVM caches realtime reads with a short TTL + age guard), so to honor the "never cached"
+guarantee the SVM cache `Get`/`Set` hard-skip any method in `neverCacheMethods` before policy
+matching — an operator's stray `finality: realtime` policy can no longer cache an effectful
+method.
+
+**Finality tracks the *effective* commitment, not just the network default.** Step 3 uses
+`resolveCommitment`, the single predicate that also drives injection. So when injection
+legitimately skips a request (legacy `getBlock(slot,"base64")` form, missing args,
+non-injectable method), no default reaches the upstream and the response is classified
+Unfinalized — the network default is never over-trusted. Because the predicate reads request
+shape + config (not mutation state), this holds whether finality is computed before or after
+injection (it is memoized on the first call, which happens pre-injection in `erpc/projects.go`).
+
+**Routing asks a different question.** `IsFinalizedCommitment` answers "which slot does the node
+evaluate this at" — true for `getBalance` at `commitment: finalized` — and is what the upstream
+slot-lag prefilter consults. `GetFinality` answers "is this response immutable enough to cache".
+Since the moving-head fix the two have diverged; conflating them is the trap to avoid.
+
+**Cache key — CORRECTED** (corrections item 4). It is two parts, not one string, and the request
+half is case-**preserving**:
+
+```
+partition key : <networkId>:<slotRef>
+request key   : <method>:<type- and structure-delimited digest of params>
+```
+
+`networkId` carries the chain (`svm:fogo:mainnet` ≠ `svm:mainnet-beta`), so chains and clusters
+never collide and an SVM network can share one Redis/DynamoDB connector with `evm:1`. `slotRef`
+is the request's own `minContextSlot` or the literal `*` — derived from params, never from the
+poller, so a given `(method, params)` tuple yields the same partition key on `Set` and on `Get`
+(deriving it from live poller state would move the key under a request every 400 ms and
+guarantee a permanent miss). The request key deliberately avoids the shared `req.CacheHash()`,
+which lowercases string params: right for EVM hex, catastrophic for base58 pubkeys and
+signatures, where `So111…` ≠ `so111…` and collapsing case would serve one account's data under
+another's key. The digest is type- and structure-delimited, so `["1"]` and `[1]`, or `[[a],[b]]`
+and `[a,b]`, cannot collide.
 
 ---
 
 ## 6. Commitment injection — shape-aware (fix #3)
 
-Solana's options/config object lives at a **method-specific param index**, and a
-few methods take no params at all. Blind append/mutate corrupts requests. v0.5
-uses a per-method `commitmentOptionsIndex` table:
+Solana's options/config object lives at a **method-specific param index**, and a few methods take
+no params at all. Blind append/mutate corrupts requests, so injection is driven by a per-method
+`commitmentOptionsIndex` table (`architecture/svm/hooks.go`).
+
+**CORRECTED — one trailing-object bucket was not enough** (corrections item 3). v0.5 had a single
+`optionsAppend`. The shipped table has two sentinels, because "the options object is the trailing
+param" means different things depending on whether a positional arg is *required* first:
 
 ```
-optionsIndex 0  → getSlot, getEpochInfo, getSupply, getBlockHeight, …  ([] → [{commitment}])
-optionsIndex 1  → getBalance, getAccountInfo, getBlock, getTransaction, …
-optionsIndex 2  → getTokenAccountsByOwner/Delegate, getBlocksWithLimit
-optionsAppend   → getBlocks (variable arity; trailing object)
-(absent)        → getInflationRate, getVersion, getHealth, getGenesisHash, sendTransaction, …
+optionsIndex 0               → getBlockHeight, getBlockProduction, getEpochInfo,
+                               getInflationGovernor, getLargestAccounts, getLatestBlockhash,
+                               getSlot, getSlotLeader, getStakeMinimumDelegation, getSupply,
+                               getTransactionCount, getVoteAccounts
+optionsIndex 1               → getAccountInfo, getBalance, getBlock, getTransaction,
+                               getMultipleAccounts, getProgramAccounts, getSignaturesForAddress,
+                               getStakeActivation, getTokenAccountBalance,
+                               getTokenLargestAccounts, getTokenSupply, isBlockhashValid,
+                               getMinimumBalanceForRentExemption
+optionsIndex 2               → getBlocksWithLimit, getTokenAccountsByOwner,
+                               getTokenAccountsByDelegate
+optionsTrailing        (-1)  → getLeaderSchedule. NO positional arg is required, so the config
+                               object may legally be param 0: its first arg is an OPTIONAL epoch
+                               slot which may be omitted or null, and agave accepts a config
+                               object in its place (RpcLeaderScheduleConfigWrapper is an untagged
+                               SlotOnly|ConfigOnly enum). Shapes: [] | [{cfg}] | [slot] |
+                               [slot, {cfg}]
+optionsTrailingAfterOne (-2) → getBlocks. At least one positional arg MUST precede the config
+                               object ([start] | [start, end]); appending one to [] would put it
+                               where the required start slot belongs
+(absent)                     → no-param methods — getInflationRate, getVersion, getHealth,
+                               getGenesisHash, getIdentity, getBlockTime, … (appending an options
+                               object yields -32602 "No parameters were expected");
+                               getSignatureStatuses, whose only option is
+                               searchTransactionHistory and which has no commitment field; and
+                               every write method, which carries commitment in its own field
+                               (below)
 ```
 
-Injection rules at the options index:
+That distinction is exactly what lets `getLeaderSchedule` take its config at param 0 while
+`getBlocks` keeps its required start slot.
+
+Injection rules at the resolved index:
 
 ```
-slot is an object with commitment   → honor caller (skip)
-slot is an object without commitment → set commitment, invalidate CacheHash
-slot is the next free position       → append {commitment}, invalidate CacheHash
-slot occupied by a non-object        → SKIP (legacy getBlock(slot,"base64") form;
-                                              never produce an invalid 3rd param)
-required positional args missing      → SKIP (let upstream report it)
+slot is an object with commitment     → honor caller (skip)
+slot is an object without commitment  → set commitment, invalidate CacheHash
+slot is the next free position        → create {commitment}, invalidate CacheHash
+slot occupied by a non-object         → SKIP (legacy getBlock(slot,"base64") /
+                                        getTransaction(sig,"json") encoding-string form;
+                                        never produce an invalid param)
+required positional args missing      → SKIP (let the upstream report it)
 ```
 
-This fixes: `getInflationRate` (no params → `-32602`), the legacy
-`getBlock(slot,"enc")` / `getTransaction(sig,"enc")` form, and commitment
-landing on `getTokenAccountsByOwner`'s filter object instead of its config.
+**Plus a clamp step, new since v0.5.** `clampCommitmentForMethod` narrows the commitment about to
+be injected to a level the target method actually accepts. `getBlock`, `getBlocks`,
+`getBlocksWithLimit`, `getSignaturesForAddress` and `getTransaction` reject `processed` outright —
+agave answers `-32602` "Method does not support commitment below `confirmed`", because a
+processed slot can sit on a minority fork that is later abandoned. A configured `processed`
+default is therefore clamped to `confirmed` for those five. (`getBlockProduction`,
+`getLeaderSchedule` and every write method do accept `processed`, verified field-by-field against
+the JSON-RPC reference, and are deliberately not in the set.)
+
+The policy is **clamp, not skip**. Skipping injection for these methods would leave each upstream
+on its own server-side default — precisely the cross-upstream divergence injection exists to
+eliminate — and would make `resolveCommitment` report `""`, so the finality classification and
+the cache key would lose the commitment too. Clamping to the nearest legal level keeps every
+upstream in lockstep and stays as close as legally possible to the operator's "freshest data"
+intent. It applies **only** to the injected network default: a caller-supplied commitment is
+classified explicit and never rewritten, so if a client explicitly asks `getBlock` for
+`processed`, the upstream's `-32602` is the honest answer — silently upgrading it would hand back
+data the client did not ask for.
+
+Note that `getBlockHeight` *is* commitment-injectable at index 0 but is **not** tip-corrected:
+block height is a different counter from slot (corrections item 5).
+
+This fixes: `getInflationRate` (no params → `-32602`), the legacy `getBlock(slot,"enc")` /
+`getTransaction(sig,"enc")` form, commitment landing on `getTokenAccountsByOwner`'s filter object
+instead of its config, `getLeaderSchedule` and `getBlocks` needing opposite trailing-object
+treatment, and an injected `processed` default drawing `-32602` from the five confirmed-or-higher
+methods.
 
 ### Write-path commitment (round 3)
 
@@ -282,11 +414,19 @@ to the table.
 
 ## 8. Consensus & slot-lag pre-filter
 
-For SVM networks with an active consensus policy and a `Finalized` request, the
-network prunes upstreams whose `FinalizedSlot` trails the pool leader by more
-than `MaxFinalizedSlotLag` (default 100 slots ≈ 40 s) before consensus runs, so
-a lagging node can't drag the agreed result backward. Non-consensus paths rely
-on the existing score-based selection.
+For SVM networks with an active consensus policy and a request whose resolved finality is
+`Finalized` — which, per §5, means a slot-pinned read at `commitment: finalized` — the network
+prunes upstreams whose `FinalizedSlot` trails the reference slot by more than
+`maxFinalizedSlotLag` before consensus runs, so a lagging node cannot drag the agreed result
+backward. Non-consensus paths rely on the existing score-based selection.
+
+`maxFinalizedSlotLag` is a `*int64` so three states stay distinguishable: omitted → 100 slots
+(≈40 s), explicit `0` → filter **disabled**, `>0` → that value. The reference slot is not the raw
+pool max (see §11 item 3 for the single-liar clamp), and the filter never returns an empty pool:
+if every upstream is excluded the original list passes through, because serving possibly-stale
+data beats deadlocking the request — the failsafe consensus policy is the right layer to detect
+divergence. An upstream with no finalized-slot sample yet also passes; unknown is not the same as
+trailing.
 
 ---
 
@@ -304,9 +444,12 @@ Honest accounting of what this design does **not** yet do well:
    validation silently no-ops. There is no automated discovery of fork genesis
    hashes.
 
-3. **`getSignaturesForAddress` slot-window guard is coarse.** It bounds only via
-   `minContextSlot` vs latest slot; `before`/`until` are signatures (not slots),
-   so a large signature-range scan without `minContextSlot` is not bounded.
+3. **`getSignaturesForAddress` pagination is not bounded at all.** The slot-window guard this
+   section described was deleted rather than refined (corrections item 1): it rested on reading
+   `minContextSlot` as a bound on returned history, which it is not. Solana bounds the method by
+   signature cursors (`before`/`until`) plus a `limit`, so eRPC has nothing slot-shaped to
+   validate and passes the request straight through. A client that pages naively can still issue
+   an expensive scan; cursor-following auto-pagination remains a follow-up.
 
 4. **Commitment options-index table is hand-maintained.** New Solana RPC methods
    (or vendor-specific methods) won't be commitment-injected until added to the

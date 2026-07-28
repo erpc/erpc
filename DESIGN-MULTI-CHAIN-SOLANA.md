@@ -1,8 +1,76 @@
 # SVM Support in eRPC: Architecture Design
 
-**Status:** Draft  
+**Status:** Superseded — historical. See [`DESIGN-MULTI-CHAIN-SOLANA_v0.5.md`](./DESIGN-MULTI-CHAIN-SOLANA_v0.5.md) for the design of record, and the shipped code for the authority.  
 **Authors:** Andre Claro  
 **Date:** 2026-04-21
+
+> ### Corrections to this document
+>
+> This is the original Phase-1 proposal, kept for its rationale and decision log. Several
+> technical claims below did **not** survive implementation and review. The list is here so a
+> reader does not have to diff the doc against the code; each item is also corrected inline at
+> the section named.
+>
+> 1. **`maxSlotsPerSignaturesQuery` was never implemented and has been dropped** — both the
+>    guard and the config key (§8 config struct, §9.5, §12 example, §16 Q2). It was modelled on
+>    EVM's `getLogs` range cap, but `getSignaturesForAddress` is bounded by *signature* cursors
+>    (`before`/`until`) plus a `limit`, not by a slot range, so the key described a limit Solana
+>    does not express. An early implementation used `minContextSlot` as a stand-in lower bound
+>    on returned history; that reading is wrong — `minContextSlot` is the minimum bank slot at
+>    which a request may be **evaluated** (a node-freshness floor), and it never restricts how
+>    far back a query looks. The guard was deleted rather than rewritten and no field replaced
+>    it. If you are migrating a config that still sets this key, remove it: `LoadConfig` runs
+>    with `KnownFields(true)`, so an unknown key is a hard startup error, not a warning.
+> 2. **`svm.commitment` has no default** (§8 claimed `"confirmed"`). When unset, nothing is
+>    injected and each upstream's own server-side default governs.
+> 3. **The poller field is `statePollerDebounce`, default 400 ms** (§8 claimed
+>    `statePollerInterval: 500ms`). The ticker is fixed at 400 ms — one slot — and the config
+>    value is a *gate* on the fan-out, not the ticker period.
+> 4. **Cache finality is not a commitment-level fallback** (§9.3). The shipped rule is
+>    per-method: never-cache → realtime; always-finalized → finalized; **slot-pinned**
+>    (`getBlock`, `getTransaction`) → finalized only at `commitment: finalized`; **everything
+>    else → realtime at every commitment level**. `commitment: finalized` is the latest
+>    *rooted* slot, a head that advances every ~400 ms — not an immutability guarantee.
+> 5. **The cache key is not commitment-and-poller-derived** (§9.4). Partition key is
+>    `<networkId>:<slotRef>` where `slotRef` comes from the request's `minContextSlot` (or
+>    `*`); the request key is a case-**preserving** hash, because base58 is case-sensitive.
+> 6. **`getSlot` and `getBlockHeight` are different counters and are handled differently**
+>    (§9.2 equated slot with EVM block number). Only `getSlot` is corrected to a tip;
+>    `getBlockHeight` is passed through untouched.
+> 7. **`maxFinalizedSlotLag` defaults to 100 slots, not 5** (§10), and an explicit `0`
+>    disables the filter.
+> 8. **The non-retryable write set includes `requestAirdrop`** (§9.5 listed only
+>    `sendTransaction`/`sendRawTransaction`).
+> 9. **Shred-insert lag is `maxShredInsertSlot − processedSlot`** — §9.2 stated this
+>    correctly, and the implementation was later fixed to match the doc.
+> 10. **The per-method file layout in §9.1 was not adopted.** The shipped package is
+>     `hooks.go`, `handler.go`, `finality.go`, `json_rpc_cache.go`, `error_normalizer.go`,
+>     `slot_lag.go`, `svm_state_poller.go`, `util.go`.
+> 11. **`SvmUpstreamConfig` has no `slotAvailability` field** (§8 presented one as live). The
+>     shipped struct is `chain` / `cluster` / `checkGenesisHash`. Operator-declared slot
+>     windows were never built; the shipped mechanism is the network-level
+>     `enforceBlockAvailability` guard, which compares against the pool's
+>     `getMaxShredInsertSlot` frontier instead of declared bounds.
+> 12. **The §12 and §10 YAML examples would not have loaded at all.** Independently of the
+>     dropped key they used a network `id:` field (networks have none — identity comes from
+>     `svm.chain`/`svm.cluster`), a network-level `cache:` block (SVM caching lives at
+>     `database.svmJsonRpcCache`), `methods:`/`commitment:` cache-policy keys that do not
+>     exist, a string-valued `auth.strategies[].secret`, and `consensus.requiredParticipants:
+>     2` — which is a *list of tag quotas*, not a participant count. The count key is
+>     `maxParticipants`, and `agreementThreshold` is a **count** (validated `<=
+>     maxParticipants`), never a percentage. Both examples were rewritten against the shipped
+>     schema and verified with `erpc validate`.
+> 13. **Several §9.6 error rows named the wrong condition.** `-32002` is
+>     `SendTransactionPreflightFailure` (not "tx already processed"), `-32003` is
+>     `TransactionSignatureVerificationFailure` (not "blockhash not found"), `-32006` is
+>     `TransactionPrecompileVerificationFailure` (not "node behind"), `-32013` is
+>     `TransactionSignatureLenMismatch`, `-32014` is `BlockStatusNotAvailableYet`, and
+>     `-32015` is `UnsupportedTransactionVersion`. The shipped normalizer also **preserves**
+>     the native code and `error.data` rather than rewriting them, classifies HTTP 401/403
+>     ahead of the JSON-RPC body, and treats a synthesized `-32700` as an upstream fault.
+> 14. **§10 set `req.Finality` from the commitment level.** It does not — finality is
+>     per-method (item 4). Upstream *routing* asks `IsFinalizedCommitment`, which is a
+>     deliberately different question from cacheability.
 
 ---
 
@@ -18,9 +86,9 @@ The design goal is zero behavior change for EVM. All existing EVM logic stays in
 
 | Concept | EVM equivalent | Notes |
 |---|---|---|
-| Slot | Block number | Monotonically increasing; ~400 ms each |
-| Block | Block | A slot may be _skipped_ (no block produced) |
-| Commitment level | Finality | `processed` ≈ latest; `confirmed` ≈ safe; `finalized` ≈ finalized |
+| Slot | — (nearest: block number) | Monotonically increasing; ~400 ms each. **Not** a block height: a skipped slot advances the slot counter but not the block height, so `getSlot` and `getBlockHeight` are two different counters and diverge permanently. |
+| Block | Block | A slot may be _skipped_ (no block produced) — hence the divergence above |
+| Commitment level | Block **tag**, not finality depth | `processed` ≈ `latest`; `confirmed` has no EVM analogue; `finalized` = the latest **rooted** slot. Crucially, `finalized` is a *moving head* advancing every ~400 ms, not EVM's immutability horizon. |
 | Transaction signature | Tx hash | Base-58, 88 chars |
 | Account | Contract / EOA | Programs are accounts with `executable=true` |
 | Cluster | Network | `mainnet-beta`, `devnet`, `testnet` — not numeric IDs |
@@ -39,7 +107,7 @@ Transport is identical (JSON-RPC 2.0 over HTTP). The differences are in network 
 - Network ID format: `svm:<cluster>` (e.g., `svm:mainnet-beta`, `svm:fogo-mainnet`)
 - Commitment-level-aware caching and finality
 - Slot-number state poller per upstream (`getSlot`, `getHealth`, `getMaxShredInsertSlot` polled concurrently)
-- Shred-insert lag detection per upstream — nodes that receive shreds but fail to process them are marked degraded
+- Shred-insert lag detection per upstream — nodes that receive shreds but fail to replay them are cordoned out of rotation
 - Error normalization for common SVM error codes
 - Score-based upstream selection and failover (same algorithm as EVM)
 - Config structs: `SvmNetworkConfig`, `SvmUpstreamConfig`
@@ -426,28 +494,76 @@ type NetworkConfig struct {
     Svm *SvmNetworkConfig `yaml:"svm,omitempty" json:"svm"`
 }
 
+// CORRECTED — the shipped struct (common/config.go). See the corrections banner at
+// the top of this document; the original proposal is preserved in the comment block
+// that follows.
 type SvmNetworkConfig struct {
-    // Default commitment applied to requests that omit it. One of:
-    // "processed", "confirmed", "finalized". Default: "confirmed".
+    // Which SVM chain. Empty means "solana". Set it for forks (fogo, eclipse) so
+    // NetworkId becomes "svm:<chain>:<cluster>" instead of "svm:<cluster>".
+    Chain string `yaml:"chain,omitempty" json:"chain"`
+
+    // Cluster the upstreams of this network serve. Network identity.
+    Cluster string `yaml:"cluster,omitempty" json:"cluster"`
+
+    // Default commitment injected into requests that omit one. One of
+    // "processed", "confirmed", "finalized". NO DEFAULT: when unset nothing is
+    // injected and each upstream's own server-side default governs.
     Commitment string `yaml:"commitment,omitempty" json:"commitment"`
 
-    // Slot polling interval. Default: 500ms (one Solana slot).
-    StatePollerInterval *Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval"`
+    // Minimum interval between poll fan-outs. Default 400ms (one slot). This is a
+    // GATE, not the ticker period — the ticker is pinned at 400ms.
+    StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce"`
 
-    // Analogous to EVM's getLogs maxBlockRange. Default: 1000.
-    MaxSlotsPerSignaturesQuery int64 `yaml:"maxSlotsPerSignaturesQuery,omitempty" json:"maxSlotsPerSignaturesQuery"`
+    // Slots an upstream's finalized slot may trail the pool reference before it is
+    // excluded from consensus voting on finalized data. Pointer for tri-state:
+    // nil => 100 (default), explicit 0 => filter disabled, >0 => that value.
+    MaxFinalizedSlotLag *int64 `yaml:"maxFinalizedSlotLag,omitempty" json:"maxFinalizedSlotLag,omitempty"`
 
-    SlotAvailability *SvmSlotAvailabilityConfig `yaml:"slotAvailability,omitempty" json:"slotAvailability"`
+    // Gates the getBlock/getConfirmedBlock guard that short-circuits slots above
+    // the pool's indexed frontier. nil => true.
+    EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
-type SvmSlotAvailabilityConfig struct {
-    Lower *SvmSlotRef `yaml:"lower,omitempty" json:"lower"`
-}
-
-type SvmSlotRef struct {
-    LatestSlotMinus *int64 `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus"`
-    Absolute        *int64 `yaml:"absolute,omitempty" json:"absolute"`
-}
+// ---------------------------------------------------------------------------
+// ORIGINAL PROPOSAL (not shipped) — kept for the record:
+//
+// type SvmNetworkConfig struct {
+//     // Default commitment applied to requests that omit it. One of:
+//     // "processed", "confirmed", "finalized". Default: "confirmed".
+//     //   REVERSED: there is no default. An unset commitment means each upstream
+//     //   applies its own server-side default.
+//     Commitment string
+//
+//     // Slot polling interval. Default: 500ms (one Solana slot).
+//     //   RENAMED to StatePollerDebounce; default 400ms; semantics changed from
+//     //   "ticker period" to "gate on the fan-out".
+//     StatePollerInterval *Duration
+//
+//     // Analogous to EVM's getLogs maxBlockRange. Default: 1000.
+//     //   DELETED. getSignaturesForAddress is bounded by signature cursors
+//     //   (before/until), not by a slot range, so this key expressed a limit the
+//     //   Solana API does not have. The guard that read it used minContextSlot as a
+//     //   lower bound on returned history, which is a misreading: minContextSlot is
+//     //   the minimum bank slot at which a request may be EVALUATED, and never
+//     //   restricts how far back a query looks.
+//     MaxSlotsPerSignaturesQuery int64
+//
+//     // Per-upstream slot windows, mirroring EVM blockAvailability.
+//     //   NOT SHIPPED in Phase 1. The shipped mechanism is the network-level
+//     //   EnforceBlockAvailability guard above, which compares against the pool's
+//     //   getMaxShredInsertSlot frontier rather than operator-declared bounds.
+//     SlotAvailability *SvmSlotAvailabilityConfig
+// }
+//
+// type SvmSlotAvailabilityConfig struct {
+//     Lower *SvmSlotRef
+// }
+//
+// type SvmSlotRef struct {
+//     LatestSlotMinus *int64
+//     Absolute        *int64
+// }
+// ---------------------------------------------------------------------------
 
 type UpstreamConfig struct {
     // ... existing fields
@@ -455,14 +571,21 @@ type UpstreamConfig struct {
     Svm *SvmUpstreamConfig `yaml:"svm,omitempty" json:"svm"`
 }
 
+// CORRECTED — the shipped struct. `SlotAvailability` was proposed here but never built
+// (corrections item 11), and `Chain` was added for multi-chain SVM support.
 type SvmUpstreamConfig struct {
-    // Cluster this upstream serves (e.g., "mainnet-beta", "devnet", "fogo-mainnet").
-    // For known clusters, genesis hash is validated at bootstrap against the hardcoded
-    // table — no RPC call needed. For unknown clusters, set CheckGenesisHash: true to
-    // validate via getGenesisHash on bootstrap.
-    Cluster          string                     `yaml:"cluster,omitempty"          json:"cluster"`
-    CheckGenesisHash bool                       `yaml:"checkGenesisHash,omitempty" json:"checkGenesisHash"`
-    SlotAvailability *SvmSlotAvailabilityConfig `yaml:"slotAvailability,omitempty" json:"slotAvailability"`
+    // Which SVM chain this upstream serves. Must match the network-level Chain.
+    // Empty defaults to "solana".
+    Chain string `yaml:"chain,omitempty" json:"chain"`
+
+    // Cluster this upstream serves (e.g., "mainnet-beta", "devnet", "mainnet").
+    Cluster string `yaml:"cluster,omitempty" json:"cluster"`
+
+    // Opts an UNKNOWN cluster in to getGenesisHash validation at bootstrap. Known
+    // clusters are validated regardless of this flag, and both a hash mismatch AND a
+    // fetch failure fail the upstream, so a node mis-pointed at the wrong cluster
+    // never joins the pool.
+    CheckGenesisHash bool `yaml:"checkGenesisHash,omitempty" json:"checkGenesisHash"`
 }
 ```
 
@@ -488,14 +611,20 @@ architecture/svm/
   common.go            — shared constants (commitment level type, cluster map)
 ```
 
+**CORRECTED — this layout was not adopted** (corrections item 10). Per-method files proved to
+be the wrong cut: the commitment, finality and cache decisions are cross-method tables, not
+per-method logic. The shipped package is `handler.go`, `hooks.go`, `finality.go`,
+`json_rpc_cache.go`, `error_normalizer.go`, `slot_lag.go`, `svm_state_poller.go`, `util.go` —
+and `commitment.go` never existed, its content living in `finality.go` and `hooks.go`.
+
 ### 9.2 State Poller: Slot Tracking
 
-Mirrors `EvmStatePoller` in structure. Fans out **four RPC calls concurrently** per poll tick (~400 ms):
+Mirrors `EvmStatePoller` in structure. Fans out up to **four RPC calls concurrently** per poll tick (~400 ms). ("Up to" because a later round added traffic-gated polling: when `context.slot` harvested from live responses has kept both slot views fresh inside the debounce window, the two `getSlot` calls are skipped — bounded at 4 consecutive skips, and `getHealth` / `getMaxShredInsertSlot` always run.)
 
 ```
 getHealth                           → IsHealthy()           (node health)
-getSlot {"commitment":"processed"}  → LatestSlot()          (≈ EVM latest block)
-getSlot {"commitment":"finalized"}  → FinalizedSlot()       (≈ EVM finalized block)
+getSlot {"commitment":"processed"}  → LatestSlot()          (processed tip)
+getSlot {"commitment":"finalized"}  → FinalizedSlot()       (latest ROOTED slot)
 getMaxShredInsertSlot               → shred-insert lag      (silent stale detection)
 ```
 
@@ -511,7 +640,29 @@ var (
 )
 ```
 
-**Shred-insert lag** (`maxShredInsertSlot − processedSlot`) detects nodes that receive block shreds from the network but fail to process them. These nodes pass `getHealth` but serve stale state. A lag exceeding `MaxShredInsertSlotLagThreshold` (100 slots) marks the upstream degraded.
+**Shred-insert lag** (`maxShredInsertSlot − processedSlot`) detects nodes that receive block
+shreds from the network but fail to replay them. The watermark is structurally ≥ the replayed
+slot, so that subtraction *is* the silent-stale detector: shreds keep arriving while replay
+stalls, so the watermark runs away from the processed slot while the node still answers
+`getHealth` "ok". A lag exceeding `MaxShredInsertSlotLagThreshold` (100 slots) makes
+`IsHealthy()` false.
+
+**CORRECTED — "degraded" is not the shipped effect.** `IsHealthy()` needed a production
+consumer, so the poller publishes its verdict through `Cordon("*")` / `Uncordon("*")` (the
+default selection policy runs `.removeCordoned()`, and `EvmStatePoller.cordonForChainIdMismatch`
+is the precedent). It is **edge-triggered**: the calls fire only on a transition, never once per
+tick, because re-cordoning every 400 ms would restamp the reason, spawn a fresh
+`erpc_upstream_cordoned` gauge series per tick, and reset the cordon-duration observation. A
+cold poller cannot cordon — `healthy` starts true and the lag stays 0 until a real
+`getMaxShredInsertSlot` sample lands, so "not yet observed" reads as healthy. Unknown is not
+unhealthy.
+
+**CORRECTED — slot is not block height** (corrections item 6, and §2's table). A skipped slot
+advances the slot counter but not the block height, so the two counters diverge permanently.
+Only `getSlot` is tip-corrected, and per commitment: `finalized` against the finalized tip,
+`processed` (or unset) against the processed tip, and `confirmed` passed through
+**uncorrected**, because no confirmed tip is tracked. `getBlockHeight` is a different counter
+and is passed through untouched — correcting it against a slot tip would be a category error.
 
 Slot state is stored via `common.SlotSharedVariable` (a narrow interface on `data.CounterInt64SharedVariable`) keyed by `UniqueUpstreamKey`, so horizontal replicas converge without extra polling. Shared state keys use the architecture prefix:
 
@@ -534,7 +685,7 @@ type SvmStatePoller interface {
     SuggestFinalizedSlot(slot int64)
 }
 
-// MaxShredInsertSlotLagThreshold: upstream is degraded above this lag.
+// MaxShredInsertSlotLagThreshold: above this lag the upstream is cordoned out of rotation.
 const MaxShredInsertSlotLagThreshold int64 = 100
 ```
 
@@ -542,111 +693,110 @@ const MaxShredInsertSlotLagThreshold int64 = 100
 
 ### 9.3 Finality Mapping
 
-Lives in `architecture/svm/finality.go`. Method-level tables take **highest priority**; commitment level is the fallback.
+Lives in `architecture/svm/finality.go`. **CORRECTED — there is no commitment-level fallback**
+(corrections item 4). The shipped rule is per-method; commitment only ever *promotes* a
+slot-pinned read.
+
+The load-bearing fact this proposal missed: `commitment: finalized` on Solana is the state at
+the latest **rooted** slot, and the rooted slot advances roughly every 400 ms. It is a moving
+head, not EVM's immutability horizon. So a read whose answer depends on where the head is —
+`getBalance`, `getAccountInfo`, `getProgramAccounts`, `getTokenAccountBalance`, … — answers a
+*different question* every slot even at `finalized`, exactly like EVM's `latest` tag (which
+`erpc/networks.go` already maps to Realtime). Classifying those `Finalized` would be a
+permanent-cache bug: `DataFinalityStateFinalized` is the zero value that a policy with no
+explicit `finality` matches, and an unset TTL means "no expiry" in the connectors — so a cached
+balance would never be invalidated by a later transfer.
+
+Priority, as shipped:
 
 ```go
-// architecture/svm/finality.go
-
-// neverCacheMethods are always ephemeral regardless of commitment.
-var neverCacheMethods = map[string]bool{
-    // Blockhash — changes every ~400 ms; caching causes tx rejections
-    "getLatestBlockhash":          true,
-    "getRecentBlockhash":          true, // deprecated alias
-    "getFeeForMessage":            true,
-    // Transaction submission — side-effecting; must never be cached or deduplicated
-    "sendTransaction":             true,
-    "sendRawTransaction":          true,
-    "simulateTransaction":         true,
-    // Real-time statuses — meaningful only for in-flight transactions
-    "getSignatureStatuses":        true,
-    "getSignatureStatus":          true, // deprecated alias
-    // Cluster / validator state — changes every epoch/slot
-    "getVoteAccounts":             true,
-    "getLeaderSchedule":           true,
-    "getEpochInfo":                true,
-    "getEpochSchedule":            true,
-    "getSlotLeaders":              true,
-    "getRecentPerformanceSamples": true,
-    "getRecentPrioritizationFees": true,
-    // Airdrops — side-effecting
-    "requestAirdrop":              true,
-}
-
-// alwaysFinalizedMethods are immutable once finalized — cache indefinitely.
-var alwaysFinalizedMethods = map[string]bool{
-    "getBlock":                true,
-    "getTransaction":          true,
-    "getConfirmedBlock":       true, // deprecated alias
-    "getConfirmedTransaction": true, // deprecated alias
-    "getInflationReward":      true,
-    "getBlocks":               true,
-    "getBlockTime":            true,
-    "getSignaturesForAddress": true, // historical sigs don't change once finalized
-}
-
-type SvmCommitment string
-
-const (
-    CommitmentProcessed SvmCommitment = "processed"
-    CommitmentConfirmed SvmCommitment = "confirmed"
-    CommitmentFinalized SvmCommitment = "finalized"
-)
-
-// GetFinality maps a request to a DataFinalityState for cache decisions.
-// Priority: neverCacheMethods > alwaysFinalizedMethods > commitment level.
-func GetFinality(ctx context.Context, _ common.Network, req *common.NormalizedRequest, _ *common.NormalizedResponse) common.DataFinalityState {
-    method, err := req.Method()
-    if err != nil {
-        return common.DataFinalityStateUnknown
-    }
-    if neverCacheMethods[strings.ToLower(method)] {
-        return common.DataFinalityStateRealtime
-    }
-    if alwaysFinalizedMethods[strings.ToLower(method)] {
-        return common.DataFinalityStateFinalized
-    }
-    switch SvmCommitment(strings.ToLower(extractCommitment(req))) {
-    case CommitmentProcessed:
-        return common.DataFinalityStateRealtime    // no cache
-    case CommitmentConfirmed:
-        return common.DataFinalityStateUnfinalized // short TTL
-    case CommitmentFinalized:
-        return common.DataFinalityStateFinalized   // cache forever
-    default:
-        return common.DataFinalityStateUnfinalized
-    }
-}
+// architecture/svm/finality.go — GetFinality
+//  1. neverCacheMethods      → Realtime  (the cache layer additionally hard-skips these)
+//  2. alwaysFinalizedMethods → Finalized (immutable by construction)
+//  3. slotPinnedMethods      → Finalized at commitment == finalized,
+//                              otherwise Unfinalized (pinned, but fork-droppable)
+//  4. everything else        → Realtime  (moving-head read)
 ```
 
-Default cache TTLs (added to `common/defaults.go`):
+| Bucket | Members | Result |
+|---|---|---|
+| `neverCacheMethods` | effectful: `sendTransaction`, `sendRawTransaction`, `simulateTransaction`, `requestAirdrop`; sub-slot snapshots: `getLatestBlockhash`, `getRecentBlockhash`, `getFeeForMessage`, `getSignatureStatuses`, `getVoteAccounts`, `getLeaderSchedule`, `getEpochInfo`, `getSlotLeaders`, `getRecentPerformanceSamples`, `getRecentPrioritizationFees` | `Realtime`, **and** hard-skipped in `Get`/`Set` so a stray `finality: realtime` policy cannot cache an effectful method |
+| `alwaysFinalizedMethods` | `getInflationReward` (defined only over finalized epochs), `getBlockTime` (takes no commitment; stable once the slot exists) | `Finalized` |
+| `slotPinnedMethods` | `getBlock`, `getTransaction`, plus the deprecated `getConfirmedBlock` / `getConfirmedTransaction` aliases | `Finalized` **only** at commitment `finalized`; `Unfinalized` below it |
+| everything else | `getBalance`, `getAccountInfo`, `getProgramAccounts`, `getBlocks`, `getBlocksWithLimit`, `getSignaturesForAddress`, `getEpochSchedule`, … | `Realtime` at **every** commitment level |
 
-| Rule | TTL |
-|---|---|
-| `neverCacheMethods` | no cache |
-| `alwaysFinalizedMethods` | 0 (forever) |
-| commitment `finalized` | 0 (forever) |
-| commitment `confirmed` | 3 s |
-| commitment `processed` | no cache |
+Four entries the original tables got wrong:
+
+- **`getBlock` / `getTransaction` are not unconditionally finalized.** They accept a commitment
+  parameter and can return *confirmed*, not-yet-rooted data that a minority-fork switch can
+  still drop. They are promoted only at `commitment: finalized`.
+- **`getSignaturesForAddress` is not slot-pinned at all.** The signature list for an address
+  *grows* as new transactions land, so it tracks the head even though it names an address.
+- **`getBlocks` / `getBlocksWithLimit` are not slot-pinned.** They are range queries:
+  `getBlocks(start)` with no end slot runs to the current head, and either form can name an
+  upper bound the chain has not reached, returning a partial list that grows. A
+  fully-in-the-past `getBlocks(start, end)` range *is* immutable and knowingly gets only
+  realtime-TTL caching — promoting it would require comparing `end` against the poller's
+  finalized slot, which would make finality depend on mutable poller state and therefore vary
+  over time for an identical request. Not worth it: `getBlocks` is cheap next to `getBlock`.
+- **`getEpochSchedule` is not never-cache.** Epoch-schedule constants (`slotsPerEpoch`,
+  `leaderScheduleSlotOffset`, …) change only at epoch boundaries (~432,000 slots / ~2 days), so
+  it falls through to the moving-head bucket and is cached under the realtime policy's TTL.
+
+`minContextSlot` is **not** a promotion signal either: it is the minimum bank slot at which the
+request may be *evaluated*, so `getBalance(pubkey, {minContextSlot: 1})` still answers at the
+current head.
+
+Step 3 resolves the commitment with `resolveCommitment` — the *same* predicate the injection
+hook uses — so finality reflects the commitment that actually reaches the upstream, not merely
+whether a network default exists. When injection legitimately skips a request (legacy
+encoding-string form, missing args, non-injectable method), no default reaches the upstream and
+the response is `Unfinalized` rather than wrongly trusting the network default. Because the
+predicate reads request shape plus config and not mutation state, this holds whether finality is
+computed before or after injection.
+
+`IsFinalizedCommitment` is a **separate** predicate, for upstream *routing*: "which slot does
+the node evaluate this at". Conflating it with `GetFinality` ("is this response immutable enough
+to cache") is the trap to avoid — `getBalance` at `commitment: finalized` is `Realtime` for
+caching but finalized for routing.
+
+There is no hardcoded per-commitment TTL table. Operators set TTLs per finality bucket under
+`database.svmJsonRpcCache.policies[*]`; on a `realtime` policy the TTL is the *only* staleness
+bound, because SVM has no block-timestamp age guard to catch an over-long value.
 
 > **Q6 — `DataFinalityStateRealtime` — Decided:** Add in Phase 1. Cache policy for `Realtime` = always skip. EVM never uses it; no regression risk.
 
 ### 9.4 Cache Key Strategy
 
-SVM uses slot number derived from the commitment level as the primary cache key dimension:
+**CORRECTED — the key is neither commitment- nor poller-derived** (corrections item 5).
+`architecture/svm/json_rpc_cache.go` produces two parts, matching the shared `data.Connector`
+contract:
 
-```go
-// architecture/svm/json_rpc_cache.go
-func buildCacheKey(req *NormalizedRequest, state *SvmChainState) string {
-    commitment := extractCommitment(req)              // from params or network default
-    slot       := resolveSlot(req, state, commitment) // finalized/latest slot from poller
-    return fmt.Sprintf("%s:%s:%s:%d:%s",
-        req.NetworkId(), req.Method(), commitment, slot, paramsHash(req))
-}
+```
+partition key : <networkId>:<slotRef>
+request key   : <method>:<type- and structure-delimited, case-PRESERVING digest of params>
 ```
 
-For `finalized` data the slot is immutable — TTL 0. For `confirmed` the slot may advance — TTL 3 s. Methods without a slot dimension (`getHealth`, `getVersion`, `getClusterNodes`) use method-only keys with a fixed TTL.
+- **`slotRef`** is the request's own `minContextSlot` when present, else the literal `*`. It is
+  derived from params, never from the poller — so a given `(method, params)` tuple always yields
+  the same partition key on `Set` and on `Get`. Deriving it from live poller state would move
+  the key under a request every 400 ms and guarantee a permanent miss. Because of that,
+  `ConnectorMainIndex` is always the right index for SVM; the reverse-index wildcard fallback
+  that EVM needs for its bespoke `blockRef` dimension cannot matter here.
+- **The request key is case-PRESERVING.** It deliberately does *not* use the shared
+  `req.CacheHash()`, which lowercases string params — right for EVM hex, catastrophic for
+  Solana, where base58 pubkeys and signatures are case-**sensitive** and `So111…` ≠ `so111…`.
+  Collapsing case would serve one account's data under another's key. The digest is also type-
+  and structure-delimited, so `["1"]` and `[1]`, or `[[a],[b]]` and `[a,b]`, cannot collide.
+- **`networkId` prefixes the partition key**, so `svm:mainnet-beta`, `svm:fogo:mainnet` and
+  `evm:1` can share one Redis or DynamoDB connector without collision — the intended deployment
+  for mixed projects.
+- **The commitment is not a key dimension.** It reaches the key indirectly, through the params
+  the injector has already written: injection runs in `HandleProjectPreForward`, *before* the
+  cache read, so `Get` and `Set` see identical post-injection params.
 
-Cache key format: `svm:<cluster>:<method>:<commitment>:<slot>:<params_hash>`
+There is no per-commitment TTL rule here either. Cacheability is the finality classification of
+§9.3; the TTL is whatever the matching `database.svmJsonRpcCache` policy sets.
 
 ### 9.5 Hooks
 
@@ -654,53 +804,96 @@ Most hooks return `(false, nil, nil)` (no-op). The meaningful ones:
 
 **`HandleProjectPreForward`**
 - `getGenesisHash` — short-circuit with the hardcoded value from `knownSvmClusters` (analogous to EVM's `eth_chainId` short-circuit)
-- `getClusterNodes`, `getVersion` — optional short-circuit from config-provided values
+- **Not shipped:** the proposed optional `getClusterNodes` / `getVersion` short-circuits from config-provided values were never built. `getGenesisHash` is the only short-circuit — and it is skipped when the request carries a skip-cache-read directive, so an operator can always force a real round-trip.
 
 **`HandleNetworkPreForward`**
-- All methods — inject default commitment from `SvmNetworkConfig.Commitment` if params omit it; set `req.Finality` from the resolved commitment so the failsafe consensus policy activates correctly (see §10)
-- `getSignaturesForAddress` — validate slot range; return error if range exceeds `MaxSlotsPerSignaturesQuery` (Phase 2: auto-split)
+- All methods — inject the default commitment from `SvmNetworkConfig.Commitment` when params omit one. **CORRECTED — this moved, and it does not touch `req.Finality`.** Injection runs in `HandleProjectPreForward`, *before* the network-layer cache read, so `Get` and `Set` key on identical post-injection params; doing it here left `Get` keyed on pre-injection params and `Set` on post-injection params — a permanent cache miss for every request that relied on the network default. Nor is finality assigned from the resolved commitment: it is computed per-method by `GetFinality` (§9.3, corrections items 4 and 14). What actually remains in `HandleNetworkPreForward` is per-method validation gates plus the consensus slot-lag pre-filter (§10).
+- `getSignaturesForAddress` — **no guard.** The proposed slot-range validation was dropped (corrections item 1): Solana paginates this method by *signature* cursors (`before`, `until`) plus a `limit`, so there is no slot range for eRPC to validate. Requests pass through untouched, and clients page by feeding the last signature of a batch back as `before`. Auto-pagination remains a Phase-2 idea (§16 Q2).
 
 **`HandleUpstreamPostForward`**
-- All responses — extract `context.slot` from the response (present on most read methods); call `SuggestLatestSlot()` on the poller; set `resp.Finality` from the commitment in the original request
-- `sendTransaction` / `sendRawTransaction` errors — wrap as `ClientSideException` with `WithRetryableTowardNetwork(false)` to prevent the failsafe retry loop from re-submitting the same transaction to a different upstream (double-spend risk). Note: this requires a prerequisite fix in `upstream/failsafe.go` — the network-scope retry predicate's non-retryable branch was falling through to the default "err != nil → retry" rule without an explicit `return false`.
+- All responses — extract `context.slot` from the response (present on most read methods) and feed the upstream's poller through `SuggestLatestSlot()` / `SuggestFinalizedSlot()`, keeping the slot view fresh between ticks. **CORRECTED — `resp.Finality` is not set from the original request's commitment**; response finality is the per-method classification of §9.3.
+- Non-retryable write errors — **the set is `sendTransaction`, `sendRawTransaction` *and* `requestAirdrop`** (corrections item 8), centralized in `IsNonRetryableWriteMethod` (`architecture/svm/util.go`) so call sites gate on the helper rather than re-listing names. Errors from these are wrapped as `ClientSideException` with `WithRetryableTowardNetwork(false)` so the failsafe loop cannot re-submit to a second upstream: a resubmitted transaction may double-broadcast once the original propagates through the cluster, and `requestAirdrop` *mints* per call, so a failover after an effective first attempt mints twice. They are excluded from hedging for the same reason. `simulateTransaction` is deliberately **not** in the set — it is read-only and safe to retry or hedge (though it is still never cached). Note: this required a prerequisite fix in `upstream/failsafe.go` — the network-scope retry predicate's non-retryable branch fell through to the default "err != nil → retry" rule without an explicit `return false`.
 
 **`HandleUpstreamPreForward`**
 - No-op for Phase 1
 
 ### 9.6 Error Normalization
 
-SVM errors use a JSON object in `error.data.err` rather than a numeric code at the top level:
+SVM errors carry the actionable half of their payload in `error.data` rather than in the message
+string:
 
 ```json
-{"code": -32002, "message": "Transaction simulation failed", "data": {"err": "InsufficientFundsForFee"}}
+{"code": -32002, "message": "Transaction simulation failed",
+ "data": {"err": "InsufficientFundsForFee", "logs": ["..."], "unitsConsumed": 0}}
 ```
 
-Key mappings for `error_normalizer.go`:
+**CORRECTED** (corrections item 13). Several rows of the original table named the wrong
+condition, and the shipped normalizer's central guarantee is the *opposite* of what that table
+implied. The authoritative per-code table now lives in `docs/pages/reference/errors.mdx` →
+"SVM (Solana) error contract"; what follows is only what changed relative to this proposal.
 
-| SVM Error | eRPC Code | Retried? | Notes |
+**The native code and `error.data` reach the client unchanged.** This is the opposite of the EVM
+path's normalize-the-number behavior. Solana clients dispatch on the exact number — `@solana/kit`
+maps `-32002`/`-32005`/`-32016`/… to named error classes, and `@solana/web3.js` raises
+`SendTransactionError` with populated `.logs` only when it sees `-32002` — so rewriting the code
+to an eRPC constant silently breaks them. eRPC's routing verdict lives entirely in the **outer
+`StandardError` class** (retryable / capacity / client-vs-server), never in the wire number.
+
+That has a consequence worth stating: `common.JsonRpcErrorNumber` reuses `-32005` for
+`CapacityExceeded` and `-32016` for `Unauthorized`, while Solana assigns them to `NodeUnhealthy`
+and `MinContextSlotNotReached`. The invariant keeping them apart is that on an SVM path eRPC
+never *synthesizes* either number — its own capacity verdict goes out as HTTP 429 with `-32000`,
+and its auth verdict as HTTP 401/403 with `-32600`.
+
+Codes this proposal mislabelled (all now map 1:1 to agave's `RpcCustomError`, `-32001`…`-32019`):
+
+| Code | Actual condition | This document said | Shipped class |
 |---|---|---|---|
-| `-32005` `NodeBehind` | `ErrCodeEndpointServerSideException` | Yes (failover) | Node is behind; try another |
-| `-32006` (node behind / not impl) | `ErrCodeEndpointServerSideException` | Yes (failover) | |
-| `-32004` (block not available) | `ErrCodeEndpointMissingData` | Yes | |
-| `-32007` (slot skipped) | `ErrCodeEndpointMissingData` | Yes | Null result passthrough |
-| `-32008` (no snapshot) | `ErrCodeEndpointMissingData` | Yes | |
-| `-32009` (slot not available) | `ErrCodeEndpointMissingData` | Yes | |
-| `-32015` (block status not available) | `ErrCodeEndpointMissingData` | Yes | |
-| `-32016` (min context slot not reached) | `ErrCodeEndpointServerSideException` | Yes (failover) | QuickNode variant |
-| `-32601` (method not found) | `ErrCodeEndpointUnsupported` | Yes (failover) | Try upstream that supports it |
-| `-32002` (tx already processed) | `ErrCodeEndpointClientSideException` | No | Deterministic; don't retry |
-| `-32003` (blockhash not found) | `ErrCodeEndpointClientSideException` | No | Client must re-sign |
-| `-32013` (unsupported tx version) | `ErrCodeEndpointClientSideException` | No | |
-| `-32000` w/ simulation/blockhash msg | `ErrCodeEndpointClientSideException` | No | Disambiguate by message text |
-| `-32000` w/ rate-limit msg | `ErrCodeEndpointCapacityExceeded` | Auto-tunes rate limiter | |
-| `-32000` (other) | `ErrCodeEndpointServerSideException` | Yes (failover) | |
-| `SendTransactionPreflightFailure` | `ErrCodeEndpointExecutionException` | No | |
-| `InsufficientFundsForFee` | `ErrCodeEndpointExecutionException` | No | |
-| `TransactionSignatureVerificationFailure` | `ErrCodeEndpointClientSideException` | No | |
-| HTTP 429 | `ErrCodeEndpointThrottled` | Auto-tunes rate limiter | |
-| HTTP 500/502/503/504 | `ErrCodeEndpointServerSideException` | Yes (failover) | |
+| `-32002` | `SendTransactionPreflightFailure` | "tx already processed" | `ClientSideException`, not retryable |
+| `-32003` | `TransactionSignatureVerificationFailure` | "blockhash not found" | `ClientSideException`, not retryable |
+| `-32006` | `TransactionPrecompileVerificationFailure` | "node behind / not impl", retryable | `ClientSideException`, **not** retryable |
+| `-32013` | `TransactionSignatureLenMismatch` | "unsupported tx version" | `ClientSideException`, not retryable |
+| `-32014` | `BlockStatusNotAvailableYet` | absent from the table | `MissingData`, retryable |
+| `-32015` | `UnsupportedTransactionVersion` | "block status not available", retryable `MissingData` | `ClientSideException`, **not** retryable |
+| `-32016` | `MinContextSlotNotReached` | "QuickNode variant" | `ServerSideException`, retryable — a standard agave code, not a vendor extension |
 
-**Important:** `ClientSideException` errors for SVM (e.g. `-32002`, `-32003`) must be marked non-retryable **toward the network** via `WithRetryableTowardNetwork(false)` in `HandleUpstreamPostForward`. EVM callers rely on `ClientSideException` being retryable across upstreams (one node may lack a capability); the SVM non-retry guard must be scoped to Solana only.
+Three rules this proposal did not have at all:
+
+1. **HTTP 401/403 outrank the JSON-RPC body.** An auth failure is a verdict about the
+   credential, not about the RPC call, so it is classified from the status even when a JSON-RPC
+   error body is present. Helius and QuickNode return 401/403 *with* an error object;
+   classifying from the body first sent expired API keys down whichever generic path their code
+   happened to map to and never reached eRPC's unauthorized/billing handling. The codeless
+   fallback is deliberately `-32600`, not eRPC's `-32016`, which an SVM client would decode as
+   `MinContextSlotNotReached` and answer by retrying against a fresher node forever instead of
+   fixing its key.
+2. **A synthesized `-32700` is an UPSTREAM fault, not a caller error.** eRPC serializes the
+   outbound request itself, so a parse error never means "the caller sent bad JSON" — it means
+   eRPC could not parse what *this* upstream sent back (the parse layer synthesizes `-32700` for
+   any unparseable body). On a failing HTTP status it is classified from the status; otherwise it
+   stays a retryable `ServerSideException`. Grouping it with the caller-side client errors is
+   what turned a plaintext or HTML 429 from a CDN in front of a provider into a hard
+   non-retryable parse error — no failover, no capacity signal for rate-limit auto-tune, and a
+   caller who saw a parse error instead of a rate limit.
+3. **`permanent` and `terminal` are separate flags on missing-data errors.** `-32007`
+   (`SlotSkipped`) is permanent but still retryable across upstreams — eRPC sweeps every
+   provider once and then stops, because waiting cannot un-skip a slot. `-32009`
+   (`LongTermStorageSlotSkipped`) is permanent **and** terminal: the node already consulted
+   long-term storage, so the verdict is cluster-wide and eRPC does not fail over at all.
+   `-32019` (`LongTermStorageUnreachable`) is a statement about *this node's* backend and stays
+   retryable.
+
+**Mixed causes resolve deterministically.** When every upstream fails, `orderCauses` imposes a
+total order over the causes — retryable-toward-network first, then by upstream id — before
+`TranslateToJsonRpcException` picks the dominant code. So one upstream reporting `-32004
+BlockNotAvailable` and another `-32007 SlotSkipped` for the same slot always shows the client the
+retryable `-32004`: reporting the terminal `-32007` could make an indexer permanently skip a slot
+that does exist, while reporting `-32004` only costs a retry.
+
+**SVM `ClientSideException` is non-retryable toward the network**, via an explicit
+`WithRetryableTowardNetwork(false)` on every client-side branch. That opt-out is scoped to SVM:
+EVM's `ClientSideException` stays retryable by default, because there one node may simply lack a
+capability another has.
 
 ### 9.7 Genesis Hash Validation
 
@@ -768,40 +961,61 @@ func (u *Upstream) svmVerifyGenesisHash(ctx context.Context, cluster string) err
 
 ## 10. Consensus for SVM Chains
 
-eRPC's consensus engine operates on response hashes and is triggered by `MatchFinality` on the failsafe policy. It is already chain-agnostic. The SVM adapter's job is to set `req.Finality` correctly so the policy activates at the right time.
+eRPC's consensus engine operates on response hashes and is triggered by `MatchFinality` on the failsafe policy. It is already chain-agnostic. **CORRECTED — the SVM adapter's job is not "to set `req.Finality`".** It supplies `GetFinality` (§9.3), which the pipeline calls to classify each request per method, and `IsFinalizedCommitment` for routing decisions. The policy activates on that classification.
 
 ### Rules
 
-**`sendTransaction` / `sendVersionedTransaction`** — never consensus-eligible. Write methods are already excluded from hedging (`upstream/failsafe.go` skips hedge for non-retryable writes), which also prevents double-send in consensus.
+**Write methods** — never consensus-eligible. The shipped non-retryable write set is
+`sendTransaction`, `sendRawTransaction` and `requestAirdrop` (`IsNonRetryableWriteMethod`); there
+is no `sendVersionedTransaction` RPC method — versioned transactions travel through
+`sendTransaction`. These are excluded from hedging as well, which is what prevents a double-send
+during consensus.
 
-**`confirmed` commitment** — do not use consensus. Upstreams legitimately disagree at the `confirmed` level — two nodes can be at different confirmed slots at the same instant. Consensus would false-positive constantly. The adapter sets `req.Finality = DataFinalityStateUnfinalized`; the failsafe policy must use `MatchFinality: [finalized]` to stay inactive.
+**CORRECTED — the adapter does not set `req.Finality` from the commitment level** (corrections
+items 4 and 14). Finality is per-method (§9.3), so `commitment: finalized` alone does not make a
+response `Finalized`: only a slot-pinned read (`getBlock`, `getTransaction`) at that commitment
+does. Consensus therefore activates for slot-pinned finalized reads, and a
+`matchFinality: [finalized]` policy stays inactive for moving-head reads at *any* commitment.
 
-**`finalized` commitment** — consensus is valid. All honest nodes agree on finalized data. The adapter sets `req.Finality = DataFinalityStateFinalized`; a network-level consensus policy with `MatchFinality: [finalized]` activates automatically.
+That inactivity is the desired outcome, and it subsumes the original `confirmed` rule below. Two
+honest nodes at adjacent rooted slots legitimately disagree about a balance — the rooted head
+moves every ~400 ms — so voting on `getBalance` would false-positive constantly no matter which
+commitment was asked for. The original rules reached the right answer for `confirmed` by the
+wrong route, and the wrong answer for `finalized` moving-head reads.
+
+Routing asks a different question from caching. `IsFinalizedCommitment` answers "which slot does
+the node evaluate this at" and *is* true for `getBalance` at `commitment: finalized`; that is the
+predicate the slot-lag pre-filter uses. `GetFinality` answers "is this response immutable enough
+to cache". Conflating the two is the trap.
 
 ### Slot-Lag Pre-Filter
 
-Even for `finalized`, upstreams can disagree if they are at different finalized slots. An upstream at finalized slot 100 and one at finalized slot 110 will return different `getAccountInfo` results for an account that changed between those slots. The EVM analogy is consensus across upstreams at different finalized block numbers.
+Even among upstreams serving finalized data, one at finalized slot 100 and one at 110 answer
+differently for state that changed in between. `architecture/svm/slot_lag.go` excludes upstreams
+whose `FinalizedSlot()` trails a reference slot by more than `maxFinalizedSlotLag`.
 
-**Recommendation:** add a pre-filter step in the SVM adapter's `HandleNetworkPreForward` that excludes upstreams whose `FinalizedSlot()` is more than N slots behind the network's highest known finalized slot (default N = 5, configurable via `SvmNetworkConfig`). This is equivalent to the EVM block-lag penalty but applied as a hard exclude rather than a score penalty, specifically for consensus-eligible requests.
+**CORRECTED — the default is 100 slots (≈40 s), not 5** (corrections item 7). The field is
+`*int64` precisely so three states stay distinguishable: omitted → 100, explicit `0` → filter
+**disabled**, `>0` → that value.
 
-```go
-// architecture/svm/hooks.go
-func filterByFinalizedSlotLag(upstreams []Upstream, maxLag int64, networkFinalizedSlot int64) []Upstream {
-    var eligible []Upstream
-    for _, u := range upstreams {
-        if sp, ok := u.StatePoller().(SvmStatePoller); ok {
-            if networkFinalizedSlot-sp.FinalizedSlot() <= maxLag {
-                eligible = append(eligible, u)
-            }
-        }
-    }
-    return eligible
-}
-```
+Two properties the original sketch lacked:
 
-> **Q7 — Slot-lag filter — Decided:** Hard exclude for consensus-eligible requests (`finalized` + consensus policy active). Score penalty already handles general lag for all other requests.
+- **The reference is not the raw pool max.** Plain pool-max is poisonable: one upstream reporting
+  a wildly inflated finalized slot becomes the reference, every honest upstream then trails it by
+  more than `maxLag`, and the filter can shrink the pool to just the liar. `ReferenceFinalizedSlot`
+  clamps — when the leader outruns the runner-up by more than `maxLag`, the runner-up becomes the
+  reference. The leader still passes (the filter only drops trailers) but can no longer drag the
+  bar above the honest pack. This defends a single liar, not colluding upstreams, which would
+  need a majority/vote-based baseline.
+- **It never empties the pool.** If every upstream is filtered out, `FilterByFinalizedSlotLag`
+  returns the original list: serving potentially-stale data beats deadlocking the request, and the
+  failsafe consensus policy is the correct layer to detect divergence. An upstream with no
+  finalized-slot sample yet also passes — unknown is not the same as trailing.
 
-This filter is only applied when `commitment == "finalized"` and consensus is enabled on the network.
+> **Q7 — Slot-lag filter — Decided:** Hard exclude for consensus-eligible requests. Score penalty already handles general lag for all other requests.
+
+The filter runs only when a consensus policy is active **and** the request's resolved finality is
+`Finalized`.
 
 ### Config
 
@@ -809,14 +1023,18 @@ No new consensus config is needed — users configure it the same way as EVM:
 
 ```yaml
 networks:
-  - id: svm:mainnet-beta
-    architecture: svm
+  # No `id` field: identity comes from svm.chain + svm.cluster.
+  - architecture: svm
+    svm:
+      cluster: mainnet-beta
     failsafe:
       - matchMethod: "*"
         matchFinality: [finalized]
         consensus:
-          requiredParticipants: 2
-          agreementThreshold: 100      # 100% agreement required for finalized data
+          # Both are COUNTS; validation enforces agreementThreshold <= maxParticipants.
+          # "every participant must agree" is threshold == maxParticipants, not 100.
+          maxParticipants: 2
+          agreementThreshold: 2
 ```
 
 ---
@@ -833,20 +1051,26 @@ Phase 2 will follow the same pattern as `thirdparty/alchemy.go` — implement `S
 
 ## 12. Configuration Example
 
+Verified to load with `erpc validate` against the shipped schema — see corrections item 12 for
+what the original example got wrong.
+
 ```yaml
 projects:
   - id: my-project
     auth:
       strategies:
         - type: secret
-          secret: ${PROJECT_SECRET}
+          secret:
+            value: ${PROJECT_SECRET}
     networks:
+      # Networks carry no `id` field. Identity is derived from svm.chain +
+      # svm.cluster: chain omitted => "solana" => networkId "svm:mainnet-beta".
       - architecture: svm
-        id: svm:mainnet-beta
         svm:
+          cluster: mainnet-beta
           commitment: confirmed
-          statePollerInterval: 500ms
-          maxSlotsPerSignaturesQuery: 1000
+          statePollerDebounce: 400ms
+          maxFinalizedSlotLag: 100
         failsafe:
           - matchMethod: "*"
             timeout:
@@ -857,18 +1081,9 @@ projects:
           - matchMethod: "*"
             matchFinality: [finalized]
             consensus:
-              requiredParticipants: 2
-              agreementThreshold: 100
-        cache:
-          policies:
-            - methods: ["getAccountInfo", "getBalance", "getTokenAccountBalance", "getBlock"]
-              commitment: finalized
-              ttl: 0
-              connector: redis
-            - methods: ["getAccountInfo", "getBalance"]
-              commitment: confirmed
-              ttl: 3s
-              connector: memory
+              # Counts, not percentages: agreementThreshold <= maxParticipants.
+              maxParticipants: 2
+              agreementThreshold: 2
 
     upstreams:
       - id: helius-mainnet
@@ -881,11 +1096,45 @@ projects:
             timeout:
               duration: 8s
 
-      - id: alchemy-mainnet
-        endpoint: https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
+      - id: triton-mainnet
+        endpoint: https://${TRITON_HOST}.rpcpool.com/${TRITON_KEY}
         type: svm
         svm:
           cluster: mainnet-beta
+
+# SVM caching is a root-level `database` block, not a per-network one.
+database:
+  svmJsonRpcCache:
+    connectors:
+      - id: memory
+        driver: memory
+        memory:
+          maxItems: 100000
+      - id: redis
+        driver: redis
+        redis:
+          uri: redis://${REDIS_HOST}:6379/0
+    policies:
+      # Immutable: getBlock/getTransaction pinned to a rooted slot, plus
+      # getInflationReward/getBlockTime. Safe to keep forever.
+      - connector: redis
+        network: "svm:mainnet-beta"
+        method: "*"
+        finality: finalized
+        ttl: 0
+      # Pinned to a slot but still fork-droppable: below `finalized` commitment.
+      - connector: memory
+        network: "svm:mainnet-beta"
+        method: "*"
+        finality: unfinalized
+        ttl: 3s
+      # Every other read is moving-head (getBalance, getAccountInfo, ...). This
+      # TTL is the ONLY staleness bound — SVM has no block-timestamp age guard.
+      - connector: memory
+        network: "svm:mainnet-beta"
+        method: "*"
+        finality: realtime
+        ttl: 2s
 ```
 
 ---
@@ -911,7 +1160,7 @@ Following the repo's existing patterns (`util.ResetGock()`, `util.SetupMocksForE
 - `architecture/svm/error_normalizer_test.go` — mapping correctness
 - `architecture/svm/json_rpc_cache_test.go` — cache key generation, commitment injection, TTL
 - `architecture/svm/svm_state_poller_test.go` — polling lifecycle with gock mocks
-- `architecture/svm/commitment_test.go` — finality state mapping
+- `architecture/svm/finality_test.go` — finality state mapping (the proposed `commitment_test.go` never existed; see corrections item 10)
 
 ### Integration tests
 
@@ -978,8 +1227,8 @@ gock.New(sol1Url).Post("").Filter(func(r *http.Request) bool {
 | **1 — Foundation** | `ArchitectureSvm` constant, config structs, validation helpers, composite cache, composite error extractor | `common/network.go`, `common/config.go`, `erpc/composite_cache.go`, `upstream/composite_error_extractor.go` | 1 day |
 | **2 — State Poller** | `common/architecture_svm.go`, `architecture/svm/svm_state_poller.go` with concurrent 4-call polling (`getHealth`, `getSlot(processed)`, `getSlot(finalized)`, `getMaxShredInsertSlot`), shred-insert lag detection, bootstrap integration, `svmVerifyGenesisHash` with all edge cases | `architecture/svm/`, `upstream/upstream.go` | 2 days |
 | **3 — Error Normalizer** | Full SVM error table (see §9.6), retryability classification, `-32000` message-text disambiguation | `architecture/svm/error_normalizer.go` | 1 day |
-| **4 — Cache & Finality** | `neverCacheMethods`/`alwaysFinalizedMethods` tables, commitment injection, cache key design, TTL defaults, `DataFinalityStateRealtime` | `architecture/svm/finality.go`, `architecture/svm/json_rpc_cache.go`, `common/defaults.go` | 1 day |
-| **5 — Hooks** | All hook implementations, `getGenesisHash` short-circuit, `sendTransaction` non-retry guard, slot-lag filter for consensus | `architecture/svm/hooks.go`, per-method files | 2 days |
+| **4 — Cache & Finality** | `neverCacheMethods` / `alwaysFinalizedMethods` / `slotPinnedMethods` tables, commitment injection, cache key design, `DataFinalityStateRealtime` | `architecture/svm/finality.go`, `architecture/svm/json_rpc_cache.go`, `common/defaults.go` | 1 day |
+| **5 — Hooks** | All hook implementations, `getGenesisHash` short-circuit, non-retryable write guard (`sendTransaction`, `sendRawTransaction`, `requestAirdrop`), slot-lag filter for consensus | `architecture/svm/hooks.go`, `architecture/svm/slot_lag.go` | 2 days |
 | **6 — Vendors** | _(Phase 2 — deferred)_ Helius, Alchemy, QuickNode, Triton | `thirdparty/helius.go`, etc. | — |
 | **7 — Tests** | 14 integration tests (see §14), unit tests, gock helpers with host guard | `*_test.go`, `util/test_helpers_svm.go` | 2 days |
 | **8 — Docs & Config** | YAML example, README | — | 0.5 day |
@@ -992,7 +1241,7 @@ gock.New(sol1Url).Post("").Filter(func(r *http.Request) bool {
 | # | Question | Recommendation | Status |
 |---|---|---|---|
 | **Q1** | `UpstreamConfig.Type` vs `NetworkConfig.Architecture` — unify or keep separate? | Keep separate: `type` (e.g., `svm`, `svm+helius` in Phase 2) controls vendor client construction; `architecture` (`svm`) controls handler. Both use `svm` as the prefix — validation rejects configs where the `type` prefix doesn't match the network `architecture`. | Decided |
-| **Q2** | `getSignaturesForAddress` auto-pagination? | Phase 2. Document the 1000-slot limit in Phase 1 config and return an explicit error if exceeded, same as EVM's `getLogs` pre-split guard. | Deferred |
+| **Q2** | `getSignaturesForAddress` auto-pagination? | Phase 2. **The Phase-1 half of this answer was wrong** and has been dropped (corrections item 1): there is no slot range to cap, because Solana pages this method by signature cursors (`before`/`until`) plus a `limit`. Any Phase-2 work is cursor-following, not range-splitting, and it is not analogous to EVM's `getLogs` pre-split guard. | Deferred |
 | **Q3** | EVM stubs on `Network` interface — needed for SVM? | No. `ArchitectureHandler` approach uses a single `Network` struct for all architectures; a `SvmNetwork` type is never created. Extract `EvmNetwork` sub-interface in a follow-up. | Decided |
 | **Q4** | Rename shared state keys (`latestBlock/` → `statePoller/latest/`)? | Yes, rename in Phase 1. No Redis migration needed — this is a fresh deployment; keys do not exist yet. | Decided |
 | **Q5** | Cluster name vs genesis hash as network ID? | Use `svm:<cluster>`. Genesis hashes for known clusters are hardcoded in `knownSvmClusters` — validated at bootstrap with no RPC call. `checkGenesisHash: true` triggers a `getGenesisHash` call only for unknown/custom clusters. | Decided |

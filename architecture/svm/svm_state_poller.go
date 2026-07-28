@@ -41,8 +41,6 @@ var (
 var _ common.SvmStatePoller = (*SvmStatePoller)(nil)
 
 type SvmStatePoller struct {
-	Enabled bool
-
 	projectId string
 	appCtx    context.Context
 	logger    *zerolog.Logger
@@ -182,7 +180,6 @@ func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
 	if e.debounceInterval.Load() <= 0 {
 		e.debounceInterval.Store(int64(DefaultPollInterval))
 	}
-	e.Enabled = true
 	e.logger.Debug().
 		Dur("tickInterval", DefaultPollInterval).
 		Dur("debounce", time.Duration(e.debounceInterval.Load())).
@@ -333,7 +330,7 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 		if latest := e.LatestSlot(); latest > 0 {
 			// getMaxShredInsertSlot is the BLOCKSTORE-INGESTION watermark and is
 			// structurally >= the replayed (processed) slot, so ingestion lag is
-			// `maxShredInsertSlot - processedSlot` (DESIGN-MULTI-CHAIN-SOLANA.md:531).
+			// `maxShredInsertSlot - processedSlot` (DESIGN-MULTI-CHAIN-SOLANA.md §9.2).
 			// That subtraction IS the silent-stale detector: shreds keep arriving
 			// while replay stalls, so the watermark runs away from the processed
 			// slot while the node still answers getHealth "ok". Subtracting the

@@ -609,6 +609,18 @@ export interface ProjectConfig {
    * Configure user agent tracking at the project level
    */
   userAgentMode?: UserAgentTrackingMode;
+  /**
+   * TrustUserIdHeader makes erpc read the caller's user identity from the
+   * X-ERPC-User-Id request header (see common.HeaderUserId) and use it for the
+   * `user` metric/log label — but only when no auth strategy resolved a user
+   * (auth wins) and only for attribution (no rate-limit budget is derived).
+   * This is for deployments that authenticate callers in front of erpc (e.g. a
+   * gateway) and want per-user erpc telemetry without erpc performing auth.
+   * erpc does NOT validate the header, so enable this ONLY when erpc is reachable
+   * solely by a trusted proxy that sets the header and strips any client copy —
+   * otherwise callers can spoof their own attribution. Default false.
+   */
+  trustUserIdHeader?: boolean;
   forwardHeaders?: string[];
   allowClientDirectives?: string;
   ignoreMethods?: string[];
@@ -1092,7 +1104,11 @@ export interface ConsensusPolicyConfig {
  * `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
  * matched against each upstream's `tags`; `MinParticipants` is the minimum
  * number of matching upstreams that must be in the consensus participant
- * set. A single upstream can satisfy multiple entries it matches.
+ * set (pool quota, best-effort). `MinAgreement` is the minimum number of
+ * matching upstreams that must be part of the WINNING response group
+ * (winner-composition quota, hard-enforced: a winner that does not satisfy
+ * it becomes a composition dispute regardless of disputeBehavior). A single
+ * upstream can satisfy multiple entries it matches.
  */
 export interface ConsensusRequiredParticipant {
   tag: string;
@@ -1338,20 +1354,27 @@ export interface SvmNetworkConfig {
    */
   statePollerDebounce?: Duration;
   /**
-   * MaxSlotsPerSignaturesQuery caps the slot range a single getSignaturesForAddress
-   * call may span. Requests exceeding this range are rejected pre-forward.
-   * Default: 1000.
-   */
-  maxSlotsPerSignaturesQuery?: number /* int64 */;
-  /**
    * MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
    * trail the pool's highest FinalizedSlot before it is excluded from
-   * consensus voting on finalized data. A zero value disables the filter
-   * entirely (every upstream participates regardless of lag). Default: 100.
-   * Only applied when a consensus policy is active AND the request's
-   * resolved finality is Finalized.
+   * consensus voting on finalized data. Only applied when a consensus policy
+   * is active AND the request's resolved finality is Finalized.
+   * Pointer so an explicit 0 is distinguishable from "unset": nil takes the
+   * 100-slot default (filled by SetDefaults, the only place that materializes
+   * it), an explicit 0 disables the filter entirely. A plain int64 collapses
+   * those two cases and makes the documented disable switch unreachable.
+   * Readers downstream of SetDefaults just check `lag != nil && *lag > 0`.
    */
   maxFinalizedSlotLag?: number /* int64 */;
+  /**
+   * EnforceBlockAvailability controls whether the networkPreForward_getBlock
+   * guard is active. When enabled (default), getBlock/getConfirmedBlock
+   * requests for slots above the highest indexed slot known to any upstream
+   * are short-circuited with ErrEndpointMissingData before hitting providers
+   * — saving quota and triggering the 500ms indexing-lag retry immediately.
+   * Set to false to disable the guard when ShredInsertSlot tracking is
+   * unavailable or unreliable on a given deployment.
+   */
+  enforceBlockAvailability?: boolean;
 }
 /**
  * SvmUpstreamConfig carries per-upstream SVM settings.

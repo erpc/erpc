@@ -852,3 +852,101 @@ func TestTranslateToJsonRpcException_AllTerminalKeepsTerminalCode(t *testing.T) 
 		require.EqualValues(t, -32009, clientWireCode(t, TranslateToJsonRpcException(exhausted)))
 	}
 }
+
+// serverSideCause is a retryable upstream failure that is NOT missing-data, so
+// a bundle containing it carries TWO distinct outer error codes. That is what
+// makes the dominance tally observable: with one code in play, "the dominant
+// bucket's representative" and "the first ordered cause" are the same error and
+// no assertion can tell a running scan from a skipped one.
+func serverSideCause(t *testing.T, code int) error {
+	t.Helper()
+	return NewErrEndpointServerSideException(
+		NewErrJsonRpcExceptionInternal(code, JsonRpcErrorNumber(code),
+			fmt.Sprintf("upstream internal error (%d)", code), nil, nil),
+		nil, 500,
+	)
+}
+
+// TestTranslateToJsonRpcException_RetryExceededWrapper_RunsDominanceScan is the
+// assertion that actually pins findUpstreamsExhausted, and it exists because
+// TestTranslateToJsonRpcException_MixedMissingDataIsDeterministic does not.
+//
+// The network retry loop hands translation an ErrFailsafeRetryExceeded wrapping
+// the exhausted bundle. The old `err.(*ErrUpstreamsExhausted)` type assertion
+// failed on that wrapper, so the dominance scan never ran and the wrapper fell
+// through to the generic tail. In the mixed-missing-data bundle that is
+// undetectable: every cause shares one outer code, and the wire code a client
+// reads comes from errors.As walking the joined causes in orderCauses order —
+// which lands on the same retryable representative the scan would have picked.
+// So that test stays green with the scan disabled.
+//
+// This bundle breaks the tie deliberately: the SINGLETON code sorts first by
+// upstream id, the dominant (2-of-3) code sorts after it, and all three causes
+// are retryable so ordering is decided by id alone. errors.As therefore reaches
+// the singleton -32603 first, while the dominance scan must report the -32004
+// that two of three upstreams actually agreed on. Skipping the scan changes the
+// number on the wire.
+func TestTranslateToJsonRpcException_RetryExceededWrapper_RunsDominanceScan(t *testing.T) {
+	causes := map[string]error{
+		"up-a": serverSideCause(t, -32603),               // singleton code, sorts FIRST by id
+		"up-b": missingDataCause(t, -32004, true, false), // dominant code, 2 of 3
+		"up-c": missingDataCause(t, -32004, true, false),
+	}
+	orders := [][]string{
+		{"up-a", "up-b", "up-c"}, {"up-a", "up-c", "up-b"},
+		{"up-b", "up-a", "up-c"}, {"up-b", "up-c", "up-a"},
+		{"up-c", "up-a", "up-b"}, {"up-c", "up-b", "up-a"},
+	}
+
+	raw := map[JsonRpcErrorNumber]int{}
+	wrapped := map[JsonRpcErrorNumber]int{}
+	for _, order := range orders {
+		// Replayed because sync.Map.Range randomizes independently of the
+		// insertion order being permuted here.
+		for range 50 {
+			exhausted := newExhausted(t, order, causes)
+			raw[clientWireCode(t, TranslateToJsonRpcException(exhausted))]++
+			retryExceeded := NewErrFailsafeRetryExceeded(ScopeNetwork, exhausted, nil)
+			wrapped[clientWireCode(t, TranslateToJsonRpcException(retryExceeded))]++
+		}
+	}
+
+	require.Len(t, raw, 1, "raw exhausted path returned varying wire codes: %v", raw)
+	require.Len(t, wrapped, 1, "retry-exceeded path returned varying wire codes: %v", wrapped)
+	for code := range raw {
+		require.EqualValues(t, -32004, code,
+			"the code two of three upstreams agreed on must win the dominance tally")
+	}
+	for code := range wrapped {
+		require.EqualValues(t, -32004, code,
+			"ErrFailsafeRetryExceeded defeated the dominance scan; the client got the "+
+				"first-ordered singleton cause instead of the dominant verdict")
+	}
+}
+
+// The other half of findUpstreamsExhausted's contract: it walks only the linear
+// Cause chain. An exhausted bundle reached through a MULTI-error fan-out is a
+// sibling of some unrelated failure, not the subject of the error being
+// translated, so it must not hijack the wire code — otherwise a consensus
+// dispute that happens to contain an exhausted branch would report that
+// branch's dominant cause as the client's answer.
+func TestTranslateToJsonRpcException_ExhaustedInsideFanOut_DoesNotHijack(t *testing.T) {
+	causes := map[string]error{
+		"up-b": missingDataCause(t, -32004, true, false),
+		"up-c": missingDataCause(t, -32004, true, false),
+	}
+	for range 50 {
+		exhausted := newExhausted(t, []string{"up-b", "up-c"}, causes)
+		// A StandardError whose cause is a fan-out containing the bundle. The
+		// sibling is listed FIRST so errors.As reaches its -32011 before the
+		// bundle's causes: that is what makes a wrongly-descending
+		// findUpstreamsExhausted observable, because only the dominance scan
+		// could promote the bundle's -32004 over it.
+		fanOut := NewErrEndpointServerSideException(
+			errors.Join(serverSideCause(t, -32011), exhausted),
+			nil, 500,
+		)
+		require.EqualValues(t, -32011, clientWireCode(t, TranslateToJsonRpcException(fanOut)),
+			"an exhausted bundle behind a fan-out must not supply the client-visible code")
+	}
+}
