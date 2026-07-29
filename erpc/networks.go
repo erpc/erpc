@@ -381,15 +381,11 @@ func (n *Network) gatherEvmTipInputsForMethod(
 	return out
 }
 
-// eligibleTipUpstreams returns the upstreams the selection policy considers
-// eligible for `method`, WITHOUT applying the request's `use-upstream` selector.
-// Falls back to the full registered set when the policy is absent or has not yet
-// produced a decision.
-//
-// Split out from tipCandidateUpstreams so callers that must not be scoped by a
-// client-supplied routing preference (see EvmHighestSafeBlockNumber) can reuse
-// the operator-level eligibility without the selector narrowing.
-func (n *Network) eligibleTipUpstreams(ctx context.Context, method string) []common.Upstream {
+// tipCandidateUpstreams returns the eligible upstreams that feed the served-tip
+// picker for `method`, sourced from the selection policy so head tracking and
+// routing share one notion of "which upstreams count". Falls back to the full
+// registered set when the policy is absent or has not yet produced a decision.
+func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []common.Upstream {
 	var ups []common.Upstream
 	if n.policyEngine != nil {
 		if eligible := n.policyEngine.GetOrdered(n.networkId, method, "*"); len(eligible) > 0 {
@@ -408,18 +404,6 @@ func (n *Network) eligibleTipUpstreams(ctx context.Context, method string) []com
 		for _, u := range raw {
 			ups = append(ups, u)
 		}
-	}
-	return ups
-}
-
-// tipCandidateUpstreams returns the eligible upstreams that feed the served-tip
-// picker for `method`, sourced from the selection policy so head tracking and
-// routing share one notion of "which upstreams count". Falls back to the full
-// registered set when the policy is absent or has not yet produced a decision.
-func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []common.Upstream {
-	ups := n.eligibleTipUpstreams(ctx, method)
-	if ups == nil {
-		return nil
 	}
 
 	// Selector-scoped served tip: when the request targets a subset of
@@ -716,85 +700,6 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	return n.servedTip(ctx, span, true, "finalized", &n.servedFinalizedAnchor, "")
 }
 
-// evmSafeBlockPoller is the narrow capability the safe-head resolver needs from
-// a state poller. Declared here (rather than widened onto common.EvmStatePoller)
-// so an opt-in feature does not force every poller implementation and test fake
-// to grow a method they never use — a poller that lacks it simply contributes no
-// authoritative safe head, which is the correct fail-closed default.
-type evmSafeBlockPoller interface {
-	SafeBlock() int64
-}
-
-// EvmHighestSafeBlockNumber resolves the `safe` block tag for this network from
-// the upstreams the operator designated as authoritative
-// (evm.safeBlock.source), returning 0 when trusted resolution is disabled or no
-// authoritative safe head has been observed yet.
-//
-// It is deliberately NOT derived from the latest head. The safe head advances
-// only as batch data lands on L1, so its distance behind `latest` is unbounded
-// during a batcher or derivation stall — any `latest - N` estimate would keep
-// marching forward past a frozen safe head and start reporting unsafe blocks as
-// safe, which is the exact failure this resolver exists to avoid.
-//
-// The value is the MAX across matching, non-syncing upstreams: sources enforcing
-// the same confirmation policy converge on the same head, so taking the max
-// keeps one lagging peer from dragging the network's answer backwards, while a
-// looser non-source provider can never raise it.
-//
-// The candidate set is eligibleTipUpstreams, NOT tipCandidateUpstreams: the
-// latter additionally narrows by the request's `use-upstream` selector, which
-// would let a client-supplied routing preference decide whether the operator's
-// trust boundary can be satisfied at all — a request pinned away from the
-// authoritative sources would fail `safe` closed even while those sources are
-// healthy and reporting. Which upstreams DEFINE `safe` is an operator decision;
-// which upstreams SERVE the resulting concrete block is still subject to
-// selection and any request pinning. Same reasoning as the skip-interpolation
-// directive not being able to bypass this feature.
-//
-// Operator-level selection-policy eligibility IS still respected: an upstream
-// the operator cordoned or excluded is not a source. That is an operator
-// decision, so it belongs on this side of the boundary.
-func (n *Network) EvmHighestSafeBlockNumber(ctx context.Context) int64 {
-	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestSafeBlockNumber", trace.WithAttributes(
-		attribute.String("network.id", n.networkId),
-	))
-	defer span.End()
-
-	if n.cfg == nil {
-		return 0
-	}
-	source := n.cfg.Evm.SafeBlockSource()
-	if source == "" {
-		return 0
-	}
-
-	var maxBlock int64
-	var sources int
-	for _, cu := range n.eligibleTipUpstreams(ctx, "*") {
-		if matched, err := common.UpstreamMatchesSelector(source, cu); err != nil || !matched {
-			continue
-		}
-		u, ok := cu.(common.EvmUpstream)
-		if !ok || u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-			continue
-		}
-		poller, ok := u.EvmStatePoller().(evmSafeBlockPoller)
-		if !ok {
-			continue
-		}
-		sources++
-		if b := poller.SafeBlock(); b > maxBlock {
-			maxBlock = b
-		}
-	}
-
-	span.SetAttributes(
-		attribute.Int("safe_sources", sources),
-		attribute.Int64("safe_block", maxBlock),
-	)
-	return maxBlock
-}
-
 // guaranteedMethodFloor returns the lowest majority served tip across the
 // configured GuaranteedMethods' supporting (eligible) upstream sets, or 0 when
 // no guaranteed methods are configured or none constrain the tip. Each method's
@@ -1000,6 +905,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if resp, ok := n.tryServeStaticResponse(ctx, &lg, req, method); ok {
 			forwardSpan.SetAttributes(attribute.Bool("static_response.hit", true))
 			return resp, nil
+		}
+	}
+
+	// Route safe-tagged requests before multiplexing and cache lookup.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
+			common.SetTraceSpanError(forwardSpan, err)
+			return nil, err
 		}
 	}
 
@@ -1659,12 +1572,6 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 			)
 		}
 		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
-		// Fail closed when a `safe`-tagged request could not be resolved from a
-		// configured authoritative source — see EnforceSafeBlockResolved. No-op
-		// for networks that did not opt in.
-		if err := evm.EnforceSafeBlockResolved(ctx, n, nr); err != nil {
-			return err
-		}
 	default:
 		return common.NewErrJsonRpcExceptionInternal(
 			0,

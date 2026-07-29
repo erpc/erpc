@@ -1467,17 +1467,9 @@ func (e *EvmNetworkConfig) Validate() error {
 			}
 		}
 	}
-	if e.SafeBlock != nil {
-		src := strings.TrimSpace(e.SafeBlock.Source)
-		if src == "" {
-			// Fail loudly rather than silently degrading to verbatim
-			// pass-through: an operator who wrote a safeBlock block asked for
-			// the guarantee, and a typo'd/empty source would quietly not give
-			// it to them.
-			return fmt.Errorf("network.*.evm.safeBlock.source is required (an upstream id or tag selector whose 'safe' head is authoritative, e.g. \"tier:internal\")")
-		}
-		if err := ValidatePattern(src); err != nil {
-			return fmt.Errorf("network.*.evm.safeBlock.source has invalid selector %q: %w", src, err)
+	if e.SafeBlockSource != "" {
+		if err := ValidatePattern(e.SafeBlockSource); err != nil {
+			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
 		}
 	}
 	return nil

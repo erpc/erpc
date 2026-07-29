@@ -561,18 +561,6 @@ export interface ProjectConfig {
    * Configure user agent tracking at the project level
    */
   userAgentMode?: UserAgentTrackingMode;
-  /**
-   * TrustUserIdHeader makes erpc read the caller's user identity from the
-   * X-ERPC-User-Id request header (see common.HeaderUserId) and use it for the
-   * `user` metric/log label — but only when no auth strategy resolved a user
-   * (auth wins) and only for attribution (no rate-limit budget is derived).
-   * This is for deployments that authenticate callers in front of erpc (e.g. a
-   * gateway) and want per-user erpc telemetry without erpc performing auth.
-   * erpc does NOT validate the header, so enable this ONLY when erpc is reachable
-   * solely by a trusted proxy that sets the header and strips any client copy —
-   * otherwise callers can spoof their own attribution. Default false.
-   */
-  trustUserIdHeader?: boolean;
   forwardHeaders?: string[];
   allowClientDirectives?: string;
   ignoreMethods?: string[];
@@ -1054,11 +1042,7 @@ export interface ConsensusPolicyConfig {
  * `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
  * matched against each upstream's `tags`; `MinParticipants` is the minimum
  * number of matching upstreams that must be in the consensus participant
- * set (pool quota, best-effort). `MinAgreement` is the minimum number of
- * matching upstreams that must be part of the WINNING response group
- * (winner-composition quota, hard-enforced: a winner that does not satisfy
- * it becomes a composition dispute regardless of disputeBehavior). A single
- * upstream can satisfy multiple entries it matches.
+ * set. A single upstream can satisfy multiple entries it matches.
  */
 export interface ConsensusRequiredParticipant {
   tag: string;
@@ -1355,23 +1339,12 @@ export interface EvmNetworkConfig {
    */
   emptyResultConfidence?: AvailbilityConfidence;
   /**
-   * SafeBlock configures how the network resolves the `safe` block tag.
-   * Unlike `latest` and `finalized`, `safe` has no single cross-provider
-   * meaning: on op-stack chains each node decides how many L1 confirmations
-   * to keep before deriving L2 data (op-node's `verifier.l1-confs`, default
-   * 0), so providers legitimately disagree about which block is "safe".
-   * Forwarding the tag verbatim therefore lets the loosest provider in the
-   * pool define the answer, and a quorum of loose providers can outvote a
-   * stricter one.
-   * When set, the network resolves `safe` to a concrete block number
-   * observed on the upstreams matching `source` (the ones whose definition
-   * of `safe` the operator trusts) and forwards that concrete number to
-   * every upstream. Nil (default) keeps today's verbatim pass-through.
-   * Unrelated to listing "safe" in ServedTip.EnabledFor: that selects the
-   * majority-tip mode for the finalized axis and does not change which
-   * block the `safe` tag resolves to.
+   * SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
+   * requests carrying the `safe` block tag. Matching upstreams define and
+   * serve `safe`; empty (without an inherited network default) keeps existing
+   * provider-defined routing. This does not affect eth_query* or gRPC Query.
    */
-  safeBlock?: EvmSafeBlockConfig;
+  safeBlockSource?: string;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -1406,31 +1379,6 @@ export interface EvmServedTipConfig {
    * Empty means only the global (all-eligible) majority is computed.
    */
   guaranteedMethods?: string[];
-}
-/**
- * EvmSafeBlockConfig configures trusted resolution of the `safe` block tag.
- * The `safe` head is chain state derived from data already published to L1 —
- * it is not a fixed distance behind `latest`. During a batcher or derivation
- * stall the sequencer keeps producing blocks while the safe head stops
- * advancing, so the safe-to-latest gap is unbounded. Anything that estimates
- * `safe` from `latest` will therefore eventually report an unsafe block as
- * safe. This config instead reads the real safe head from upstreams the
- * operator designates as authoritative.
- */
-export interface EvmSafeBlockConfig {
-  /**
-   * Source selects the upstreams whose `safe` head is authoritative for this
-   * network. It is an upstream selector — an id or a tag, with glob support —
-   * matched exactly like the `use-upstream` directive (see
-   * UpstreamMatchesSelector). Example: `tier:internal`.
-   * The resolved value is the MAX safe block across the matching, non-syncing
-   * upstreams: peers enforcing the same confirmation policy converge, and one
-   * lagging peer cannot drag the network's answer backwards. Every matching
-   * upstream must enforce the confirmation depth the operator wants — the
-   * selector is the trust boundary.
-   * Required when SafeBlock is set.
-   */
-  source?: string;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

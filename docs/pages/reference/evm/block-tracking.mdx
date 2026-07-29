@@ -93,6 +93,25 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 
 Each upstream gets its own `EvmStatePoller` background goroutine. On each tick of `statePollerInterval` (default 30 s), three concurrent goroutines fetch the latest block, finalized block, and syncing state. A synchronous `Poll()` runs once at bootstrap time to seed the upstream before any request traffic arrives.
 
+**Routing the `safe` tag.** On op-stack chains, `safe` is node-relative because each verifier chooses its own L1 confirmation depth. If providers in one pool use different depths, they can honestly return different blocks for the same tag. Set `evm.safeBlockSource` to an upstream id/tag selector when one pool should define that answer:
+
+```yaml
+networks:
+  - architecture: evm
+    evm:
+      chainId: 8453
+      safeBlockSource: "tier:trusted"
+
+upstreams:
+  - id: node-a
+    tags: ["tier:trusted"]
+  - id: node-b
+    tags: ["tier:trusted"]
+  - id: provider-a
+```
+
+eRPC keeps the `safe` tag verbatim and routes standard block-tagged JSON-RPC requests only to matching upstreams, so the selected pool defines both block height and hash. Cache reads are skipped because an older entry may have been produced by a different source. Operator routing overrides client `use-upstream`; retry and consensus still run inside the selected JSON-RPC pool, so configure participant thresholds accordingly. `eth_query*` and direct gRPC Query APIs retain their existing behavior and are outside this option's scope. If no source is configured or inherited, routing is unchanged. If trusted sources are unavailable, prefer `finalized` for a provider-independent answer.
+
 **Debounce resolution.** To avoid redundant RPC calls, each fetch is gated by `resolveDebounce()`, which picks the first applicable value from:
 1. `upstream.evm.statePollerDebounce` — hard per-upstream override; short-circuits all other steps.
 2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — EMA-derived; active after ≥3 samples.
@@ -120,14 +139,6 @@ When `servedTip.enabledFor` includes `"latest"` or `"finalized"`, the pure funct
 The result is monotonically clamped via a cross-pod shared counter so the served tip never regresses, even across pods.
 
 **Selector-scoped served tip.** When a `use-upstream` selector is present, `tipCandidateUpstreams` narrows to the matching upstreams. A "simple group selector" is a single glob pattern (optionally negated with `!` at position 0), containing no whitespace or `()|&,` characters, of length ≤128, that matches 2–(N−1) upstreams. For such selectors, a per-group `servedTipPartition` is lazily materialized: `partitionKeyFor` resolves the matched upstream ID set, sorts it, SHA-256 hashes the sorted `\0`-joined IDs, truncates to 8 bytes, and encodes as hex (key = `"grp:" + hex`). Equivalent selectors (same matched set) share one partition. Up to 16 partitions are allowed per network; beyond this, extra selectors fall back to stateless cluster-min. Boolean-expression selectors (containing `|`, `&`, `(`, `)`) always use the stateless path. Source: [`erpc/networks.go:L466-L506`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L466-L506)
-
-**Trusted `safe` tag resolution.** `latest` and `finalized` mean the same thing on every provider, so eRPC can interpolate them from its own tracked state. `safe` does not: on op-stack chains each node chooses how many L1 blocks to stay behind the L1 head before deriving L2 data (op-node's `verifier.l1-confs`, **default 0**), so two honest providers legitimately return different `safe` blocks — and with consensus enabled, a quorum of loose providers can outvote a stricter node. By default eRPC forwards `safe` verbatim and inherits that ambiguity.
-
-Setting `networks[*].evm.safeBlock.source` makes it explicit instead. The selector names the upstreams whose definition of `safe` is authoritative; each matching upstream then polls `eth_getBlockByNumber("safe")` alongside latest/finalized, and `EvmHighestSafeBlockNumber` returns the **maximum** safe block across those matching, non-syncing upstreams. Requests carrying the `safe` tag are rewritten to that concrete block number before forwarding, so every upstream — trusted or not — is asked the same unambiguous question, and consensus then validates the block's *contents* rather than deciding what "safe" means.
-
-Two consequences are deliberate. First, the poll is scoped: only upstreams matching the selector pay the extra RPC per interval, so enabling this on one network does not add a call for every provider on every chain. Second, resolution is **not** derived from `latest`. The safe head advances only as batch data lands on L1, so its distance behind `latest` is unbounded whenever batch submission or derivation stalls — the sequencer keeps producing blocks while the safe head freezes. Any `latest − N` estimate would keep marching forward past a frozen safe head and start reporting unsafe blocks as safe, which is precisely the failure this resolver exists to prevent.
-
-When the tag cannot be resolved — no matching upstream has reported a safe head yet, all of them are syncing, or none supports the tag — the request fails closed with `ErrEvmSafeBlockUnavailable` rather than falling back to verbatim `safe`. An explicit error is recoverable by the caller; silently returning a weaker guarantee than the operator configured is not.
 
 **Syncing state machine.** `eth_syncing` is called with a 5 s sub-context on each tick. The upstream is declared fully synced only after 4 consecutive "not syncing" responses (`synced counter ≥ 4`); any syncing response resets the counter to 1. The non-standard `{Ok: bool}` response shape is supported: `Ok=false` is treated as still-syncing. After 10 consecutive failures with no prior success, `skipSyncingCheck` is set permanently and the state is fixed at `Unknown` for the process lifetime.
 
@@ -162,8 +173,6 @@ When the tag cannot be resolved — no matching upstream has reported a safe hea
 | `networks[*].evm.servedTip.enabledFor` | []string | `[]` (max mode for all tags) | Tags for which cluster-min mode is active. Valid: `"latest"`, `"finalized"`, `"safe"` (`"safe"` is an alias for `"finalized"`). Source: <SourceLink file="common/config.go" lines="2272" /> |
 | `networks[*].evm.servedTip.clusterDelta` | int64 | `0` (auto-derive) | Max block gap between adjacent sorted upstream tips that still groups them into one cluster. Auto-derive: `clamp(ceil(2.0 / blockTimeSec), 2, 10)`. Examples: Ethereum (12 s) → 2; Polygon (2 s) → 1, clamped to 2; Arbitrum (0.25 s) → 8; sub-100 ms → 10 (ceiling). When block time is unknown (EMA not warmed up) the fallback is 2. Source: <SourceLink file="architecture/evm/served_tip.go" lines="225-246" /> |
 | `networks[*].evm.servedTip.guaranteedMethods` | []string | `[]` | Glob patterns (e.g. `"trace_*"`). For each pattern the served tip is clamped down to the cluster-min of supporting upstreams only, ensuring `"latest"` is always servable for these methods. Source: <SourceLink file="erpc/networks.go" lines="705-747" /> |
-| `networks[*].evm.safeBlock` | \*EvmSafeBlockConfig | `nil` (verbatim pass-through) | When nil, the `safe` tag is forwarded to upstreams unchanged and each provider answers with its own L1 confirmation depth. Source: <SourceLink file="architecture/evm/json_rpc.go" lines="101-118" /> |
-| `networks[*].evm.safeBlock.source` | string | `""` (required when `safeBlock` is set) | Upstream selector (id or tag, glob-capable — same matcher as the `use-upstream` directive) naming the upstreams whose `safe` head is authoritative. Resolution is the MAX across matching non-syncing upstreams, so a lagging peer cannot drag the answer down and a non-matching provider can never raise it. Every matching upstream must enforce the confirmation depth you want — the selector is the trust boundary. An empty or blank value is a config-load error, not a silent fallback. Source: <SourceLink file="common/config.go" lines="2459-2491" /> |
 
 ### Worked examples
 
@@ -244,51 +253,11 @@ When the tag cannot be resolved — no matching upstream has reported a safe hea
 }]`}
 />
 
-**5. Pin the `safe` tag to nodes you trust on an op-stack chain.** Providers disagree about `safe` because `verifier.l1-confs` is a per-node setting. Tag the upstreams that enforce your required confirmation depth and name them as the authoritative source; eRPC then resolves `safe` from those nodes and asks every upstream for that concrete block:
-
-<ConfigTabs
-  path="networks[].evm.safeBlock"
-  yaml={`networks:
-  - architecture: evm
-    evm:
-      chainId: 8453
-      safeBlock:
-        # only these upstreams define what "safe" means for this network
-        source: "tier:trusted"
-
-upstreams:
-  - id: own-node-a
-    tags: ["tier:trusted"]
-  - id: own-node-b
-    tags: ["tier:trusted"]
-  - id: provider-a
-  - id: provider-b`}
-  ts={`networks: [{
-  architecture: "evm",
-  evm: {
-    chainId: 8453,
-    safeBlock: {
-      // only these upstreams define what "safe" means for this network
-      source: "tier:trusted",
-    },
-  },
-}],
-upstreams: [
-  { id: "own-node-a", tags: ["tier:trusted"] },
-  { id: "own-node-b", tags: ["tier:trusted"] },
-  { id: "provider-a" },
-  { id: "provider-b" },
-]`}
-/>
-
 ### Request/response behavior
 
 - In cluster mode, eRPC gates routing so only upstreams at or above the served tip are eligible. A request for `"latest"` receives a block number ≤ the served tip, guaranteed to be present on the upstream that handles it.
 - `ErrFinalizedBlockUnavailable` is retryable (N:yes). Requests are automatically retried on a different upstream. On the wire it maps to HTTP 200 with JSON-RPC error code `-32603`.
 - `ErrUpstreamBlockUnavailable` is produced by `CheckBlockRangeAvailability` (used for `eth_getLogs`, `trace_filter`, `arbtrace_filter`) when both block bounds are outside the upstream's availability window. Retryable at the network level.
-- With `evm.safeBlock.source` set, a `safe`-tagged request is rewritten to a concrete block number before forwarding, so upstreams never see the literal string `safe`. The request keeps a tag-shaped block ref, so its cache identity and realtime finality classification match `latest`/`finalized` tag requests (short-TTL, freshness-guarded) rather than being cached as an immutable numbered block.
-- `ErrEvmSafeBlockUnavailable` is returned when `evm.safeBlock.source` is configured but the tag was not resolved from an authoritative source. On the wire it is HTTP 200 with JSON-RPC `−32603`, like other application errors — alert on the error code, not on an HTTP status. `details.reason` distinguishes `no_authoritative_source_reporting` (no source is reporting a safe head) from `interpolation_skipped_by_directive` (the caller sent skip-interpolation, which cannot bypass the trust boundary). This is fail-closed by design — the alternative would silently answer with a looser provider's definition of `safe`.
-- The `safe` head is resolved from the authoritative sources regardless of any `use-upstream` pinning on the request. Which upstreams *define* `safe` is an operator decision; which upstreams *serve* the resulting concrete block still honors selection and request pinning. Operator-level selection-policy eligibility is respected, so a cordoned or excluded upstream is not a source.
 - `erpc_network_served_tip_block_number` and `erpc_network_served_tip_lag_blocks` are **only emitted in cluster mode** — they are absent in max mode. Alerting rules referencing them will silently produce no data in default deployments. [<SourceLink file="erpc/networks.go" lines="521-527" />]
 - The `SuggestLatestBlock` fast path (called when a response is observed during request forwarding) is non-blocking and uses no debounce. `SuggestFinalizedBlock` uses `TryLock` and is async — suggestions may be dropped under high concurrency.
 
@@ -297,7 +266,6 @@ upstreams: [
 - Enable cluster mode (`servedTip.enabledFor: ["latest", "finalized"]`) in any production deployment with multiple upstreams — it eliminates the class of "block not found" failures caused by routing to a lagging node.
 - Lower `fallbackStatePollerDebounce` to 200–500 ms on sub-second chains (Arbitrum, Base, Optimism) so warm-up doesn't stall on a 5 s default.
 - Use `guaranteedMethods: ["trace_*"]` when mixing archive and non-archive upstreams — prevents the served tip from advancing past what trace-capable nodes have.
-- On op-stack chains where consumers rely on the `safe` tag, set `evm.safeBlock.source` and point it at nodes whose `verifier.l1-confs` you control. Run at least two so a single node restart does not fail the tag closed. If you cannot host such nodes, prefer the `finalized` tag over `safe` — it is the one answer every provider computes identically.
 - Avoid setting `dynamicBlockTimeDebounceMultiplier: 0`; it is silently ignored and the default 0.7 is used. To impose a fixed debounce, use `statePollerDebounce` on the upstream instead.
 - Monitor `erpc_upstream_block_head_lag` per upstream. A node consistently lagging more than `clusterDelta` blocks will be excluded from the dominant cluster and effectively deprioritized.
 - Alert on `erpc_network_served_tip_lag_blocks` rising with a flat `erpc_network_served_tip_block_number` — this is the diagnostic signature of a monotonic clamp hold-down after fleet regression (all nodes temporarily reported lower blocks but the counter held the old high-water mark).
@@ -309,7 +277,7 @@ upstreams: [
 2. **Velocity gate is inactive on cold start.** If `lastServedBlock == 0` (cold start) or `BlockTimeSeconds == 0` (EMA not warmed up), all candidates pass to clustering. A misbehaving upstream reporting a far-future block during cold start can become the sole cluster and win.
 3. **Monotonic clamp survives fleet regression.** Per-upstream shared counters are forward-only. A reorg or mass node reboot causing all upstreams to report lower blocks is silently ignored — the counter holds the previous high-water mark. `erpc_network_served_tip_lag_blocks` grows unboundedly; a flat `served_tip_block_number` alongside rising lag is the diagnostic signature.
 4. **`dynamicBlockTimeDebounceMultiplier: 0` is silently treated as unset.** The guard `> 0` causes the value to fall through to the default 0.7.
-5. **`"safe"` in `servedTip.enabledFor` is unrelated to `evm.safeBlock`.** In `enabledFor`, `"safe"` is an alias for `"finalized"` and only selects cluster mode on the finalized axis — it does not change which block the `safe` *tag* resolves to. Trusted `safe` tag resolution is configured separately via `evm.safeBlock.source`.
+5. **`"safe"` is an alias for `"finalized"` in `enabledFor`.** Listing `"safe"` enables cluster mode on the finalized axis only.
 6. **Selector-scoped tip is stateless for boolean-expression selectors.** Selectors containing `|`, `&`, `(`, `)`, or multiple `!` characters fail `isSimpleGroupSelector` and always use stateless cluster-min (no monotonic guarantee, no metrics).
 7. **Maximum 16 selector partitions per network.** Beyond the cap, additional selectors fall back to stateless cluster-min. Equivalent selectors (same matched upstream set) dedup to one partition.
 8. **`clusterDelta` auto-derive uses the EMA block time.** During warm-up (fewer than 3 EMA samples), `blockTimeSec = 0` and `clusterDelta` defaults to 2. A 2-block spread between an early and late upstream will erroneously split into two clusters until the EMA warms up (typically within the first 3 produced blocks).
@@ -324,9 +292,6 @@ upstreams: [
 17. **`eth_syncing` result `{Ok: false}` is interpreted as SYNCING.** The non-standard `{Ok: bool}` response shape is handled by `!Ok`: `Ok=false` means not-ok = still syncing. Source: [`architecture/evm/evm_state_poller.go:L1087-L1100`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L1087-L1100)
 18. **`erpc_network_served_tip_lag_blocks` uses `MaxEligible` (post-velocity-gate), not `MaxObserved`.** A far-future tip from a misbehaving upstream is velocity-dropped and does not inflate the lag gauge. The gauge accurately reflects deliberate lag vs. the highest plausible eligible upstream tip.
 19. **Finalized block polling is permanently skipped on unsupported chains.** After 10 consecutive `eth_getBlockByNumber("finalized")` failures without any prior success, `skipFinalizedCheck = true`. `IsBlockFinalized` then falls back exclusively to `latestBlock − FallbackFinalityDepth`. On PoW chains or chains without EIP-4895 finality, this is the only reachable path.
-20. **`safe` polling is scoped to the configured source, and gives up like the finalized axis.** Only upstreams matching `evm.safeBlock.source` poll `eth_getBlockByNumber("safe")`. After 10 consecutive failures with no prior success, that upstream stops polling the tag for the process lifetime (same `skip*Check` semantics as latest/finalized). If every matching upstream gives up, the tag fails closed with `ErrEvmSafeBlockUnavailable` rather than falling back to verbatim `safe`.
-21. **A `safe` tag mixed into a block *range* is resolved per-bound, and is still covered by the fail-closed guard.** `eth_getLogs` with `fromBlock: "latest", toBlock: "safe"` has each bound resolved independently. The request's *block ref* keeps the existing collapse behavior (`latest` wins), so cache identity is unchanged — but the guard inspects the block **params**, not the ref, so an unresolved `safe` bound is rejected even when a sibling bound is a tag or a concrete number. The guard walks the same `reqRefs` positions normalization does, so "could have been rewritten" and "is checked" are the same set by construction.
-22. **Selector typos fail closed, not open.** `evm.safeBlock.source` is validated as a pattern at config load, but a syntactically valid selector that matches no upstream is not a load-time error — it surfaces at request time as `ErrEvmSafeBlockUnavailable` on every `safe` request. Check the `safe_sources` attribute on the `Network.EvmHighestSafeBlockNumber` span if the tag is unexpectedly erroring.
 
 ### Observability
 
@@ -345,7 +310,7 @@ upstreams: [
 | `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | `MaxEligible − served`; **cluster mode only**; grows during monotonic clamp hold-down |
 | `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream excluded from pick; `reason="velocity"` or `"outlier"`; **cluster mode only, network-wide pick only** |
 
-**OTel trace spans** (under detailed tracing): `EvmStatePoller.PollLatestBlockNumber`, `EvmStatePoller.PollFinalizedBlockNumber`, `EvmStatePoller.PollSafeBlockNumber` (only when `evm.safeBlock.source` matches the upstream), `Network.EvmHighestLatestBlockNumber`, `Network.EvmHighestFinalizedBlockNumber`, `Network.EvmHighestSafeBlockNumber` (attributes: `safe_sources`, `safe_block`), `Evm.ExtractBlockReferenceFromRequest`, `Evm.ExtractBlockReferenceFromResponse`. The network span includes attributes: `served_tip.axis`, `served_tip.candidate`, `served_tip.max_observed`, `served_tip.cluster_count`, `served_tip.dominant_size`, `served_tip.outliers_count`, `served_tip.velocity_dropped`, `served_tip.lag_vs_max`. Source: <SourceLink file="erpc/networks.go" lines="777-793" />
+**OTel trace spans** (under detailed tracing): `EvmStatePoller.PollLatestBlockNumber`, `EvmStatePoller.PollFinalizedBlockNumber`, `Network.EvmHighestLatestBlockNumber`, `Network.EvmHighestFinalizedBlockNumber`, `Evm.ExtractBlockReferenceFromRequest`, `Evm.ExtractBlockReferenceFromResponse`. The network span includes attributes: `served_tip.axis`, `served_tip.candidate`, `served_tip.max_observed`, `served_tip.cluster_count`, `served_tip.dominant_size`, `served_tip.outliers_count`, `served_tip.velocity_dropped`, `served_tip.lag_vs_max`. Source: <SourceLink file="erpc/networks.go" lines="777-793" />
 
 **Notable log messages:**
 
@@ -357,7 +322,6 @@ upstreams: [
 | `WARN` | `"upstream does not support fetching latest block number ... after N consecutive failures, will give up"` | `skipLatestBlockCheck` flip |
 | `WARN` | `"upstream does not support fetching finalized block number ... after N consecutive failures, will give up"` | `skipFinalizedCheck` flip |
 | `WARN` | `"failed to poll evm state"` | `Poll()` returns a non-cancel error |
-| `WARN` | `"upstream does not support fetching safe block number ... after N consecutive failures, will give up"` | `skipSafeCheck` flip (only on upstreams matching `evm.safeBlock.source`) |
 | `INFO` | `"initial earliest block detection completed for this instance"` | Binary search for `earliestBlockPlus` bound completes |
 | `INFO` | `"started periodic scheduler for earliest block availability bound"` | `updateRate` configured and scheduler goroutine launched |
 
