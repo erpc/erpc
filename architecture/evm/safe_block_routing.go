@@ -7,7 +7,10 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-var accessListBlockRefs = [][]interface{}{{1}}
+var specialSafeBlockRefs = map[string][][]interface{}{
+	"eth_createaccesslist": {{1}},
+	"eth_newfilter":        {{0, "fromBlock"}, {0, "toBlock"}},
+}
 
 // ApplySafeBlockSource routes requests carrying the `safe` block tag to the
 // upstreams selected by evm.safeBlockSource. The tag stays verbatim so the
@@ -35,8 +38,8 @@ func ApplySafeBlockSource(ctx context.Context, network common.Network, req *comm
 	if methodCfg != nil {
 		refs = methodCfg.ReqRefs
 	}
-	if len(refs) == 0 && strings.EqualFold(method, "eth_createAccessList") {
-		refs = accessListBlockRefs
+	if len(refs) == 0 {
+		refs = specialSafeBlockRefs[strings.ToLower(method)]
 	}
 	if len(refs) == 0 {
 		return nil

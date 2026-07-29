@@ -29,6 +29,7 @@ func TestApplySafeBlockSource(t *testing.T) {
 		{name: "safe upper bound routes with numeric sibling", source: source, method: "eth_getLogs", params: `[{"fromBlock":"0x1","toBlock":"safe"}]`, routed: true},
 		{name: "EIP-1898 blockNumber routes", source: source, method: "eth_call", params: `[{},{"blockNumber":"safe"}]`, routed: true},
 		{name: "access list block parameter routes", source: source, method: "eth_createAccessList", params: `[{"to":"0xabc"},"safe"]`, routed: true},
+		{name: "new filter range routes", source: source, method: "eth_newFilter", params: `[{"fromBlock":"safe","toBlock":"latest"}]`, routed: true},
 	}
 
 	for _, tt := range tests {
