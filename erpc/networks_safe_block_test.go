@@ -409,9 +409,12 @@ func TestNetwork_SafeBlock_TagResolution(t *testing.T) {
 		assert.Equal(t, "latest", params[1])
 	})
 
-	// Prior collapse behavior must survive the new tag: a mixed range keeps the
-	// ref it had before, so the gate (which only fires on a "safe" ref) does
-	// not start rejecting perfectly serviceable range requests.
+	// A mixed range whose `safe` bound RESOLVES is none of the gate's business:
+	// after normalization no verbatim `safe` is left anywhere in the params, so
+	// there is nothing to fail closed on. The ref collapsing to "latest" here is
+	// incidental — the gate no longer consults the ref at all, and
+	// TestNetwork_SafeBlock_SiblingBoundCannotBypassTheGate covers the
+	// UNRESOLVABLE half of this same shape, which is now rejected.
 	t.Run("mixed latest and safe range keeps the latest ref and is not rejected", func(t *testing.T) {
 		ntw := safeBlockNetwork(t, ctx, safeSourceTag, reportingSource())
 
@@ -437,6 +440,179 @@ func TestNetwork_SafeBlock_TagResolution(t *testing.T) {
 		require.Len(t, params, 2)
 		assert.Equal(t, "pending", params[1])
 		assert.Nil(t, req.EvmBlockRef(), "pending must not be recorded as a resolvable ref")
+	})
+}
+
+// ─── a sibling bound is not proof that `safe` was resolved ───────────────────
+
+// TestNetwork_SafeBlock_SiblingBoundCannotBypassTheGate is the regression for a
+// bypass of the fail-closed gate that a range request could trigger by
+// accident, or reach for on purpose.
+//
+// The gate used to decide "was the tag rewritten?" from two pieces of
+// normalization METADATA rather than from the params themselves, and a range
+// request carrying a second bound could forge both:
+//
+//   - EvmBlockNumber is cached for ANY numeric block param the walk sees, so on
+//     eth_getLogs(fromBlock: 0x100, toBlock: "safe") the concrete `fromBlock`
+//     alone set it to 256, and the gate read that as "the tag resolved";
+//   - EvmBlockRef collapses to "latest" whenever `latest` and `safe` appear
+//     together, and the gate only fired on a "safe" ref — so a latest/safe
+//     range skipped it outright.
+//
+// Either way an unresolved, verbatim `safe` went to the wire, and whichever
+// provider answered got to define it — including one running zero L1
+// confirmations. That is the entire hole evm.safeBlock.source exists to close.
+//
+// The gate now asks the question literally: is a raw `safe` still sitting in one
+// of this method's block params? A sibling bound cannot answer that for it.
+func TestNetwork_SafeBlock_SiblingBoundCannotBypassTheGate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reportingSource := func() common.Upstream {
+		return fakeUpstream("op-node-a", stalledLatestHead, trustedSafeHead, safeSourceTag)
+	}
+	// Configured and selected, but no safe head observed yet.
+	coldSource := func() common.Upstream {
+		return fakeUpstream("op-node-a", stalledLatestHead, 0, safeSourceTag)
+	}
+
+	// A concrete lower bound plus a `safe` upper bound: the shape that forged
+	// EvmBlockNumber. 0x100 is already canonical hex, so normalization cannot
+	// rewrite it out from under the assertions, and it differs from
+	// trustedSafeHex so the two bounds can never be confused.
+	const (
+		concreteFrom       = "0x100"
+		concreteFromNumber = int64(256)
+		numericSiblingBody = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs",` +
+			`"params":[{"fromBlock":"0x100","toBlock":"safe"}]}`
+	)
+
+	logsFilter := func(t *testing.T, params []interface{}) map[string]interface{} {
+		t.Helper()
+		require.Len(t, params, 1)
+		obj, ok := params[0].(map[string]interface{})
+		require.True(t, ok, "eth_getLogs carries a single filter object")
+		return obj
+	}
+
+	t.Run("concrete sibling bound is not proof the safe bound resolved", func(t *testing.T) {
+		ntw := safeBlockNetwork(t, ctx, safeSourceTag, coldSource())
+
+		req, params, gateErr := normalizeSafeRequest(t, ctx, ntw, numericSiblingBody)
+
+		// Preconditions: both signals the old gate trusted are present and
+		// pointing the wrong way. Without them this fixture would reject for
+		// ordinary reasons and prove nothing about the bypass.
+		require.Equal(t, "safe", req.EvmBlockRef(),
+			"precondition: the ref must reach the gate as safe, or the old code never got as far as the second check")
+		require.Equal(t, concreteFromNumber, req.EvmBlockNumber(),
+			"precondition: the concrete fromBlock must have populated the number the old gate read as proof of resolution")
+
+		requireSafeBlockUnavailable(t, gateErr, common.SafeBlockUnresolvedNoSource)
+		// And the leak the gate is holding back: the tag really is still raw.
+		assert.Equal(t, "safe", logsFilter(t, params)["toBlock"],
+			"nothing rewrote the tag, so forwarding this would hand `safe` to whichever provider answered")
+	})
+
+	// Same forged proof, different protection: skipInterpolation keeps the tag
+	// verbatim by design, and the numeric sibling used to buy a pass out of the
+	// gate that catches it. The source here is HEALTHY and reporting, so the
+	// refusal can only be about the directive — hence the distinct reason.
+	t.Run("concrete sibling bound does not rescue skipInterpolation either", func(t *testing.T) {
+		ntw := safeBlockNetwork(t, ctx, safeSourceTag, reportingSource())
+		require.Equal(t, trustedSafeHead, ntw.EvmHighestSafeBlockNumber(ctx),
+			"precondition: a source IS reporting, so a rejection here can only be the directive")
+
+		req, params, gateErr := normalizeSafeRequestWithDirectives(t, ctx, ntw, numericSiblingBody,
+			&common.RequestDirectives{SkipInterpolation: true})
+
+		require.Equal(t, concreteFromNumber, req.EvmBlockNumber(),
+			"precondition: skipInterpolation suppresses tag translation but not number caching, which is what made this shape a bypass")
+
+		requireSafeBlockUnavailable(t, gateErr, common.SafeBlockUnresolvedSkipInterpolation)
+		assert.Equal(t, "safe", logsFilter(t, params)["toBlock"])
+	})
+
+	// The other forged signal: `latest` alongside `safe` collapses the ref to
+	// "latest", which used to skip the gate entirely. Rejecting this is an
+	// intended behavior change — a mixed range whose safe bound cannot be
+	// resolved now fails closed instead of leaking the tag.
+	t.Run("unresolvable safe bound is rejected even when the ref collapses to latest", func(t *testing.T) {
+		ntw := safeBlockNetwork(t, ctx, safeSourceTag, coldSource())
+
+		req, params, gateErr := normalizeSafeRequest(t, ctx, ntw,
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"safe","toBlock":"latest"}]}`)
+
+		require.Equal(t, "latest", req.EvmBlockRef(),
+			"precondition: the safe bound must be masked by the latest collapse, or this is not the shape that used to skip the gate")
+
+		requireSafeBlockUnavailable(t, gateErr, common.SafeBlockUnresolvedNoSource)
+		assert.Equal(t, "safe", logsFilter(t, params)["fromBlock"])
+	})
+
+	// The counterweight: the gate must not have become "reject any range that
+	// mentions safe". With a source reporting, the exact same request shape
+	// sails through and ONLY the safe bound is rewritten — the concrete sibling
+	// keeps its own value rather than being overwritten by the trusted head.
+	t.Run("a resolvable safe bound passes and only that bound is rewritten", func(t *testing.T) {
+		ntw := safeBlockNetwork(t, ctx, safeSourceTag, reportingSource())
+
+		_, params, gateErr := normalizeSafeRequest(t, ctx, ntw, numericSiblingBody)
+		require.NoError(t, gateErr, "a safe bound that resolved is not a trust-boundary failure")
+
+		obj := logsFilter(t, params)
+		assert.Equal(t, trustedSafeHex, obj["toBlock"], "the safe bound must carry the trusted head")
+		assert.Equal(t, concreteFrom, obj["fromBlock"], "the caller's own lower bound must survive untouched")
+	})
+}
+
+// TestNetwork_SafeBlock_GateWalksNestedObjectParams pins that the gate descends
+// into object params instead of only glancing at positional ones.
+//
+// eth_getBlockReceipts is the discriminating method: its ReqRefs are {0},
+// {0,"blockHash"} and {0,"blockNumber"}, so for the object form the POSITIONAL
+// ref peeks a map — never the string "safe" — and only the nested ref sees the
+// tag. A gate that inspected params[i] and stopped would find nothing here and
+// wave an unresolved `safe` straight through to an upstream.
+//
+// Normalization walks these same paths, which is the invariant the pair below
+// locks together: every position that can be REWRITTEN is a position that is
+// CHECKED. Give a method another nested ref and both halves move at once.
+func TestNetwork_SafeBlock_GateWalksNestedObjectParams(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const nestedBody = `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts",` +
+		`"params":[{"blockNumber":"safe"}]}`
+
+	nestedBlockNumber := func(t *testing.T, params []interface{}) interface{} {
+		t.Helper()
+		require.Len(t, params, 1)
+		obj, ok := params[0].(map[string]interface{})
+		require.True(t, ok, "the block param must stay an object, not be flattened by normalization")
+		return obj["blockNumber"]
+	}
+
+	t.Run("unresolvable nested safe tag is rejected", func(t *testing.T) {
+		ntw := safeBlockNetwork(t, ctx, safeSourceTag,
+			fakeUpstream("op-node-a", stalledLatestHead, 0, safeSourceTag))
+
+		_, params, gateErr := normalizeSafeRequest(t, ctx, ntw, nestedBody)
+
+		requireSafeBlockUnavailable(t, gateErr, common.SafeBlockUnresolvedNoSource)
+		assert.Equal(t, "safe", nestedBlockNumber(t, params),
+			"the tag is still raw inside the object, which is exactly what must not be forwarded")
+	})
+
+	t.Run("resolvable nested safe tag is rewritten in place", func(t *testing.T) {
+		ntw := safeBlockNetwork(t, ctx, safeSourceTag,
+			fakeUpstream("op-node-a", stalledLatestHead, trustedSafeHead, safeSourceTag))
+
+		_, params, gateErr := normalizeSafeRequest(t, ctx, ntw, nestedBody)
+		require.NoError(t, gateErr)
+		assert.Equal(t, trustedSafeHex, nestedBlockNumber(t, params))
 	})
 }
 

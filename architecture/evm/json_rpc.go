@@ -74,15 +74,21 @@ func safeBlockSourceConfigured(network common.Network) bool {
 	return cfg.Evm.SafeBlockSource() != ""
 }
 
-// EnforceSafeBlockResolved rejects a `safe`-tagged request when the network
-// configured an authoritative source for the tag but normalization did not
-// resolve it.
+// EnforceSafeBlockResolved rejects a request that is still carrying a verbatim
+// `safe` block param after normalization, on a network that configured an
+// authoritative source for the tag.
 //
 // Must be called right after NormalizeHttpJsonRpc so it observes the outcome of
-// that pass: a resolved request carries a concrete EvmBlockNumber, an
-// unresolved one still carries the literal tag. Without this the request would
-// fall through to verbatim `safe`, and any provider in the pool — including one
-// running zero L1 confirmations — could define the answer.
+// that pass. It inspects the block params directly rather than inferring from
+// EvmBlockNumber: that field is set by ANY numeric block param, so on a request
+// like eth_getLogs(fromBlock: 0x100, toBlock: "safe") the numeric sibling would
+// look like proof that `safe` had been resolved and the verbatim tag would be
+// forwarded anyway. The question this gate asks is literally "is a raw `safe`
+// about to reach an upstream", so it reads the params, not a proxy for them.
+//
+// Without this the request would fall through to verbatim `safe`, and any
+// provider in the pool — including one running zero L1 confirmations — could
+// define the answer.
 //
 // The skip-interpolation directive does NOT grant an exemption. That directive
 // is client-supplied while `evm.safeBlock.source` is an operator trust
@@ -96,11 +102,7 @@ func EnforceSafeBlockResolved(ctx context.Context, network common.Network, nrq *
 	if nrq == nil || !safeBlockSourceConfigured(network) {
 		return nil
 	}
-	if ref, ok := nrq.EvmBlockRef().(string); !ok || ref != "safe" {
-		return nil
-	}
-	if bn, ok := nrq.EvmBlockNumber().(int64); ok && bn > 0 {
-		// Normalization rewrote the tag to a trusted concrete block.
+	if !requestCarriesVerbatimSafeTag(ctx, network, nrq) {
 		return nil
 	}
 	reason := common.SafeBlockUnresolvedNoSource
@@ -108,6 +110,40 @@ func EnforceSafeBlockResolved(ctx context.Context, network common.Network, nrq *
 		reason = common.SafeBlockUnresolvedSkipInterpolation
 	}
 	return common.NewErrEvmSafeBlockUnavailable(network.Id(), network.Config().Evm.SafeBlockSource(), reason)
+}
+
+// requestCarriesVerbatimSafeTag reports whether any of the request's block
+// params is still the literal string `safe` after normalization.
+//
+// It walks the same ReqRefs paths NormalizeHttpJsonRpc walks, so the two stay in
+// agreement by construction: every position that could have been rewritten is
+// every position that is checked here. Only reached when the network opted into
+// trusted safe resolution, so unconfigured networks pay nothing.
+func requestCarriesVerbatimSafeTag(ctx context.Context, network common.Network, nrq *common.NormalizedRequest) bool {
+	jrq, err := nrq.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return false
+	}
+	method, err := nrq.Method()
+	if err != nil {
+		return false
+	}
+	methodCfg := getMethodConfig(method, network)
+	if methodCfg == nil || len(methodCfg.ReqRefs) == 0 {
+		return false
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+	for _, ref := range methodCfg.ReqRefs {
+		val, err := jrq.PeekByPath(ref...)
+		if err != nil {
+			continue
+		}
+		if s, ok := val.(string); ok && s == "safe" {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveBlockTagToHex resolves well-known tags to concrete hex numbers using highest known state.

@@ -374,6 +374,73 @@ func TestNetwork_SafeBlock_Forward_SkipInterpolationCannotBypassTrustBoundary(t 
 		"the literal safe tag must never reach an upstream")
 }
 
+// TestNetwork_SafeBlock_Forward_SiblingBoundCannotBypassTrustBoundary is the
+// end-to-end half of TestNetwork_SafeBlock_SiblingBoundCannotBypassTheGate: the
+// unit test proves the gate returns an error, this one proves no upstream ever
+// sees the bytes.
+//
+// eth_getLogs(fromBlock: 0x100, toBlock: "safe") used to satisfy the gate's
+// "the tag was rewritten" proxy with the number cached from `fromBlock`, and the
+// verbatim `safe` in `toBlock` went out on the wire. Both hosts are wired to
+// answer such a request with 200, so a regression surfaces as a successful
+// response plus a non-zero hit count rather than as some unrelated error.
+func TestNetwork_SafeBlock_Forward_SiblingBoundCannotBypassTrustBoundary(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	// The authoritative source cannot answer the tag — same shape as
+	// TestNetwork_SafeBlock_Forward_UnresolvedFailsClosed.
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"safe"`)
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+
+	var verbatimSafeHits atomic.Int64
+	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+		gock.New(host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if !strings.Contains(body, "eth_getLogs") || !strings.Contains(body, `"safe"`) {
+					return false
+				}
+				verbatimSafeHits.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": []interface{}{}})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ntw := safeBlockForwardNetwork(t, ctx, safeSourceTag)
+
+	// Give the poller several intervals to try (and fail to) learn a safe head.
+	time.Sleep(500 * time.Millisecond)
+	require.Zero(t, ntw.EvmHighestSafeBlockNumber(ctx),
+		"no authoritative safe head should be known in this fixture")
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"safe"}]}`))
+	resp, err := ntw.Forward(ctx, req)
+	if resp != nil {
+		resp.Release()
+	}
+
+	require.Error(t, err, "a concrete sibling bound must not buy a verbatim safe forward")
+	requireSafeBlockUnavailable(t, err, common.SafeBlockUnresolvedNoSource)
+	assert.Zero(t, verbatimSafeHits.Load(),
+		"the literal safe tag must never reach an upstream")
+}
+
 // TestNetwork_SafeBlock_Forward_UnconfiguredNetworkIsUnchanged is the
 // no-regression guard: a network that never opted in must keep forwarding the
 // literal tag and must never see the fail-closed rejection.
