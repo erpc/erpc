@@ -590,7 +590,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				} else {
 					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 					if err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails, common.NetworkArchitecture(architecture))
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -1614,11 +1614,13 @@ func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
 	}
 }
 
-func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool) interface{} {
+func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	err := origErr
 
-	// Build the response first, then log with it
-	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails)
+	// Build the response first, then log with it. Authentication runs before
+	// network resolution, so its caller passes the URL-parsed architecture as a
+	// hint; later errors can derive it from nq.Network().
+	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails, architectureHint...)
 
 	// Log the error with the response
 	if !common.IsNull(err) {
@@ -1657,8 +1659,8 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	return resp
 }
 
-// buildErrorResponseBody constructs the error response without logging
-func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, includeErrorDetails *bool) interface{} {
+// buildErrorResponseBody constructs the error response without logging.
+func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
 	exe := &common.ErrEndpointExecutionException{}
 	if errors.As(err, &exe) {
@@ -1677,6 +1679,21 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	var jsonrpcVersion string = "2.0"
 	var reqId interface{} = nil
 	var method string = ""
+	isSvmRequest := len(architectureHint) > 0 && architectureHint[0] == common.ArchitectureSvm
+	if !isSvmRequest && nq != nil {
+		isSvmRequest = strings.HasPrefix(nq.NetworkId(), "svm:")
+		// Body-routed requests have no URL architecture hint and auth still runs
+		// before network resolution. Capture networkId before JsonRpcRequest()
+		// consumes nq.Body(), without moving network lookup ahead of authentication.
+		if !isSvmRequest && nq.Network() == nil && (len(architectureHint) == 0 || architectureHint[0] == "") {
+			var envelope struct {
+				NetworkID string `json:"networkId"`
+			}
+			if common.SonicCfg.Unmarshal(nq.Body(), &envelope) == nil {
+				isSvmRequest = strings.HasPrefix(envelope.NetworkID, "svm:")
+			}
+		}
+	}
 	if nq != nil {
 		jrr, _ := nq.JsonRpcRequest()
 		if jrr != nil {
@@ -1688,8 +1705,24 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		message := jre.Message
+		wireCode := jre.NormalizedCode()
+		// eRPC's generic capacity code is -32005, but Solana assigns -32005 to
+		// NodeUnhealthy. Local admission limits (auth/project/network/upstream
+		// budgets) never came from a Solana node, so expose them in Solana's
+		// collision-free generic server bucket instead. Keep native upstream
+		// -32005 untouched: it really does mean NodeUnhealthy and its outer error
+		// chain contains none of these local limiter codes.
+		if wireCode == common.JsonRpcErrorCapacityExceeded && isSvmRequest &&
+			common.HasErrorCode(err,
+				common.ErrCodeAuthRateLimitRuleExceeded,
+				common.ErrCodeProjectRateLimitRuleExceeded,
+				common.ErrCodeNetworkRateLimitRuleExceeded,
+				common.ErrCodeUpstreamRateLimitRuleExceeded,
+			) {
+			wireCode = common.JsonRpcErrorNumber(-32000)
+		}
 		errObj := map[string]interface{}{
-			"code":    jre.NormalizedCode(),
+			"code":    wireCode,
 			"message": message,
 		}
 		// Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
