@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -34,6 +35,12 @@ const (
 	// publication (and with it the safe head) sat frozen at trustedSafeHead.
 	// The gap is ~286M blocks: no fixed `latest - N` estimate survives it.
 	stalledLatestHead = int64(286397576)
+
+	// pinnedLatestHead is a NON-authoritative provider's own latest head. It
+	// sits below stalledLatestHead so selector scoping of the served tip stays
+	// observable: a request pinned to that provider must be told its head, not
+	// the network-wide one.
+	pinnedLatestHead = stalledLatestHead - 1024
 )
 
 // safeHeadPoller reports a `safe` head. common.FakeEvmStatePoller deliberately
@@ -431,4 +438,176 @@ func TestNetwork_SafeBlock_TagResolution(t *testing.T) {
 		assert.Equal(t, "pending", params[1])
 		assert.Nil(t, req.EvmBlockRef(), "pending must not be recorded as a resolvable ref")
 	})
+}
+
+// ─── the trust boundary vs. client-supplied routing ──────────────────────────
+
+// safeRequestPinnedTo builds the request a client sends when it carries a
+// `use-upstream` selector, and binds it to ctx the way Network.Forward does
+// (common.RequestContextKey). That binding is the only channel through which
+// requestSelector — and therefore the tip-candidate narrowing — can see the
+// selector, so a test that only calls SetDirectives would exercise nothing.
+func safeRequestPinnedTo(
+	t *testing.T,
+	ctx context.Context,
+	ntw *Network,
+	body string,
+	selector string,
+) (context.Context, *common.NormalizedRequest, *common.JsonRpcRequest) {
+	t.Helper()
+	req := common.NewNormalizedRequest([]byte(body))
+	req.SetNetwork(ntw)
+	req.SetDirectives(&common.RequestDirectives{UseUpstream: selector})
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	return context.WithValue(ctx, common.RequestContextKey, req), req, jrq
+}
+
+func upstreamIds(ups []common.Upstream) []string {
+	ids := make([]string, 0, len(ups))
+	for _, u := range ups {
+		ids = append(ids, u.Id())
+	}
+	return ids
+}
+
+// TestNetwork_SafeBlock_UseUpstreamCannotUnresolveTrustedSafe pins the trust
+// boundary as an OPERATOR decision that a client cannot narrow.
+//
+// `use-upstream` is a client-supplied routing preference. Resolving `safe` from
+// the selector-narrowed candidate set made that preference decide whether the
+// operator's boundary could be satisfied at all: a caller pinned away from the
+// authoritative sources got 0 from the resolver and its request was failed
+// CLOSED, even though those sources were healthy and reporting. Which upstreams
+// DEFINE `safe` is the operator's call (evm.safeBlock.source plus operator-level
+// selection-policy eligibility); which upstreams SERVE the resulting concrete
+// block still honors the pin.
+//
+// Each row is a real header a client can send. The fixture is doubly
+// discriminating: the pinned-to provider reports a far HIGHER safe head
+// (stalledLatestHead, the shape of a provider running zero L1 confirmations),
+// so a resolver that lost the trust boundary would answer with that value,
+// while a resolver that keeps the selector narrowing answers 0. Only correct
+// behavior yields trustedSafeHead.
+func TestNetwork_SafeBlock_UseUpstreamCannotUnresolveTrustedSafe(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const body = `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["safe",false]}`
+
+	for _, tc := range []struct {
+		name     string
+		selector string
+	}{
+		// X-ERPC-Use-Upstream: provider-x — the single most common shape.
+		{"pinned by id to a non-authoritative upstream", "provider-x"},
+		// A whole tier pinned by tag.
+		{"pinned by tag to a non-authoritative group", publicProviderTag},
+		// Negation matches on the id only, so this excludes every source.
+		{"negated selector excluding every authoritative source", "!op-node-*"},
+		// A typo or a decommissioned id: the candidate set is empty. The
+		// request cannot be served at all, but that must surface as a routing
+		// failure downstream, never as "eRPC forgot its safe head".
+		{"selector matching no upstream at all", "ghost-node-7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ntw := safeBlockNetwork(t, ctx, safeSourceTag,
+				fakeUpstream("op-node-a", stalledLatestHead, trustedSafeHead, safeSourceTag),
+				fakeUpstream("provider-x", stalledLatestHead, stalledLatestHead, publicProviderTag),
+			)
+			reqCtx, req, jrq := safeRequestPinnedTo(t, ctx, ntw, body, tc.selector)
+
+			// Precondition: the pin really does exclude the only authoritative
+			// source from the ROUTING set. Without this the row could pass
+			// while never reproducing the condition it exists to cover.
+			require.NotContains(t, upstreamIds(ntw.tipCandidateUpstreams(reqCtx, "*")), "op-node-a",
+				"selector %q must pin AWAY from the source, otherwise this row proves nothing", tc.selector)
+
+			assert.Equal(t, trustedSafeHead, ntw.EvmHighestSafeBlockNumber(reqCtx),
+				"a client's routing preference must not narrow the operator's trust boundary")
+
+			// ...and the request that carried the pin is resolved and served,
+			// not rejected. This is the user-visible half of the regression.
+			evm.NormalizeHttpJsonRpc(reqCtx, req, jrq)
+			require.NoError(t, evm.EnforceSafeBlockResolved(reqCtx, ntw, req),
+				"healthy reporting sources must not fail a safe request closed because the caller pinned elsewhere")
+			require.Len(t, jrq.Params, 2)
+			assert.Equal(t, trustedSafeHex, jrq.Params[0])
+			assert.Equal(t, int64(trustedSafeHead), req.EvmBlockNumber())
+		})
+	}
+}
+
+// TestNetwork_SafeBlock_SelectorScopesServedTipNotTrustBoundary guards the split
+// between eligibleTipUpstreams (no selector narrowing) and
+// tipCandidateUpstreams (selector narrowing), from BOTH directions, in one
+// fixture and under one selector:
+//
+//   - collapse tipCandidateUpstreams into eligibleTipUpstreams and the `latest`
+//     assertion reddens — a request pinned to a lagging provider would be
+//     promised the network-wide head, which is the "block not found" churn
+//     selector-scoped served tip exists to prevent;
+//   - point EvmHighestSafeBlockNumber back at tipCandidateUpstreams and the
+//     `safe` assertion reddens.
+//
+// Broader selector-scoped served-tip coverage lives in
+// TestServedTip_SelectorScoped; this one pins the two helpers' DIVERGENCE so it
+// cannot be silently refactored away.
+func TestNetwork_SafeBlock_SelectorScopesServedTipNotTrustBoundary(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const body = `{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["safe",false]}`
+
+	ntw := safeBlockNetwork(t, ctx, safeSourceTag,
+		fakeUpstream("op-node-a", stalledLatestHead, trustedSafeHead, safeSourceTag),
+		fakeUpstream("provider-x", pinnedLatestHead, stalledLatestHead, publicProviderTag),
+	)
+	pinned, _, _ := safeRequestPinnedTo(t, ctx, ntw, body, "provider-x")
+
+	// Unpinned baseline: both heads are network-wide.
+	require.Equal(t, stalledLatestHead, ntw.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, trustedSafeHead, ntw.EvmHighestSafeBlockNumber(ctx))
+
+	assert.Equal(t, pinnedLatestHead, ntw.EvmHighestLatestBlockNumber(pinned),
+		"`latest` MUST stay selector-scoped: advertising a head the pinned upstream lacks causes block-not-found churn")
+	assert.Equal(t, trustedSafeHead, ntw.EvmHighestSafeBlockNumber(pinned),
+		"`safe` MUST NOT be selector-scoped: it is an operator trust decision, not a routing one")
+}
+
+// ─── the wire status of a fail-closed safe request ───────────────────────────
+
+// TestSafeBlockUnavailable_WireStatusIsDeliberately200 pins a DIVERGENCE, and
+// the pair of assertions is the point: ErrEvmSafeBlockUnavailable reports 503
+// from ErrorStatusCode(), but the HTTP layer never consults that method for this
+// code — determineResponseStatusCode has no 503 branch — so a client actually
+// receives HTTP 200 with a JSON-RPC error body.
+//
+// That is deliberate: a JSON-RPC batch carrying one failed `safe` item must not
+// fail the whole HTTP response and take unrelated sub-requests down with it.
+// Callers alert on the error code, not on an HTTP status.
+//
+// If someone later adds a 503 branch, this test reddens — which is the signal to
+// update the documented status table (and to think about batch semantics) rather
+// than to relax the assertion.
+func TestSafeBlockUnavailable_WireStatusIsDeliberately200(t *testing.T) {
+	err := common.NewErrEvmSafeBlockUnavailable(
+		util.EvmNetworkId(123), safeSourceTag, common.SafeBlockUnresolvedNoSource)
+
+	var sbErr *common.ErrEvmSafeBlockUnavailable
+	require.ErrorAs(t, err, &sbErr)
+	assert.Equal(t, http.StatusServiceUnavailable, sbErr.ErrorStatusCode(),
+		"the error's own severity: eRPC cannot answer safely right now")
+
+	assert.Equal(t, http.StatusOK, determineResponseStatusCode(err),
+		"the WIRE status: a failed safe item must not fail the whole HTTP response")
+	assert.Equal(t, http.StatusOK, determineResponseStatusCode(&HttpJsonRpcErrorResponse{Cause: err}),
+		"the error-body path the server actually writes must agree with the bare-error path")
+
+	// Control: the mapper IS live in this test. Without it, an assertion of 200
+	// would also hold if determineResponseStatusCode had stopped inspecting the
+	// error at all.
+	require.Equal(t, http.StatusUnauthorized,
+		determineResponseStatusCode(common.NewErrAuthUnauthorized("secret", "bad key")),
+		"precondition: transport-level codes still map, so the 200 above is a decision and not a no-op")
 }

@@ -381,11 +381,15 @@ func (n *Network) gatherEvmTipInputsForMethod(
 	return out
 }
 
-// tipCandidateUpstreams returns the eligible upstreams that feed the served-tip
-// picker for `method`, sourced from the selection policy so head tracking and
-// routing share one notion of "which upstreams count". Falls back to the full
-// registered set when the policy is absent or has not yet produced a decision.
-func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []common.Upstream {
+// eligibleTipUpstreams returns the upstreams the selection policy considers
+// eligible for `method`, WITHOUT applying the request's `use-upstream` selector.
+// Falls back to the full registered set when the policy is absent or has not yet
+// produced a decision.
+//
+// Split out from tipCandidateUpstreams so callers that must not be scoped by a
+// client-supplied routing preference (see EvmHighestSafeBlockNumber) can reuse
+// the operator-level eligibility without the selector narrowing.
+func (n *Network) eligibleTipUpstreams(ctx context.Context, method string) []common.Upstream {
 	var ups []common.Upstream
 	if n.policyEngine != nil {
 		if eligible := n.policyEngine.GetOrdered(n.networkId, method, "*"); len(eligible) > 0 {
@@ -404,6 +408,18 @@ func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []co
 		for _, u := range raw {
 			ups = append(ups, u)
 		}
+	}
+	return ups
+}
+
+// tipCandidateUpstreams returns the eligible upstreams that feed the served-tip
+// picker for `method`, sourced from the selection policy so head tracking and
+// routing share one notion of "which upstreams count". Falls back to the full
+// registered set when the policy is absent or has not yet produced a decision.
+func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []common.Upstream {
+	ups := n.eligibleTipUpstreams(ctx, method)
+	if ups == nil {
+		return nil
 	}
 
 	// Selector-scoped served tip: when the request targets a subset of
@@ -724,6 +740,20 @@ type evmSafeBlockPoller interface {
 // the same confirmation policy converge on the same head, so taking the max
 // keeps one lagging peer from dragging the network's answer backwards, while a
 // looser non-source provider can never raise it.
+//
+// The candidate set is eligibleTipUpstreams, NOT tipCandidateUpstreams: the
+// latter additionally narrows by the request's `use-upstream` selector, which
+// would let a client-supplied routing preference decide whether the operator's
+// trust boundary can be satisfied at all — a request pinned away from the
+// authoritative sources would fail `safe` closed even while those sources are
+// healthy and reporting. Which upstreams DEFINE `safe` is an operator decision;
+// which upstreams SERVE the resulting concrete block is still subject to
+// selection and any request pinning. Same reasoning as the skip-interpolation
+// directive not being able to bypass this feature.
+//
+// Operator-level selection-policy eligibility IS still respected: an upstream
+// the operator cordoned or excluded is not a source. That is an operator
+// decision, so it belongs on this side of the boundary.
 func (n *Network) EvmHighestSafeBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestSafeBlockNumber", trace.WithAttributes(
 		attribute.String("network.id", n.networkId),
@@ -740,7 +770,7 @@ func (n *Network) EvmHighestSafeBlockNumber(ctx context.Context) int64 {
 
 	var maxBlock int64
 	var sources int
-	for _, cu := range n.tipCandidateUpstreams(ctx, "*") {
+	for _, cu := range n.eligibleTipUpstreams(ctx, "*") {
 		if matched, err := common.UpstreamMatchesSelector(source, cu); err != nil || !matched {
 			continue
 		}

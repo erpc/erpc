@@ -771,6 +771,15 @@ var NewErrEvmSafeBlockUnavailable = func(networkId string, source string, reason
 	}
 }
 
+// ErrorStatusCode reports 503: the condition is "eRPC cannot answer this safely
+// right now", not a malformed request.
+//
+// NOTE: this is not the wire status. The HTTP layer decides that in
+// determineResponseStatusCode, which has no 503 branch, so clients see HTTP 200
+// with a JSON-RPC error body — the same treatment ErrUpstreamBlockUnavailable
+// gets despite also reporting 503 here. That is deliberate: a JSON-RPC batch
+// carrying one failed `safe` item must not fail the whole HTTP response and take
+// unrelated sub-requests with it. Alert on the error code, not on an HTTP status.
 func (e *ErrEvmSafeBlockUnavailable) ErrorStatusCode() int {
 	return http.StatusServiceUnavailable
 }

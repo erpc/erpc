@@ -226,7 +226,7 @@ Legend:
 | 71 | `ErrGetLogsExceededMaxAllowedTopics` | yes | yes | 200 | −32012 | — |
 | 72 | `ErrEndpointContentValidation` | no | yes | 200 | −32603 | try different upstream |
 | 73 | `ErrEndpointNonceException` | yes | no | 200 | −32003 | reason: `already_known` or `nonce_too_low`; idempotency |
-| 74 | `ErrEvmSafeBlockUnavailable` | yes | yes | 503 | −32603 | `evm.safeBlock.source` configured but no authoritative `safe` head known; fail-closed instead of forwarding the tag verbatim |
+| 74 | `ErrEvmSafeBlockUnavailable` | yes | yes | 200 | −32603 | `evm.safeBlock.source` configured but the `safe` tag was not resolved from an authoritative source; fail-closed instead of forwarding the tag verbatim. `details.reason` is `no_authoritative_source_reporting` or `interpolation_skipped_by_directive`. `ErrorStatusCode()` reports 503, but the wire status is 200 like other application errors — `determineResponseStatusCode` has no 503 branch, and a batch must not fail unrelated sub-requests |
 
 Non-`StandardError` types: `ErrJsonRpcExceptionExternal` (normalizer input), `TaskFatalError` (initializer stop signal), `ErrDynamicTimeoutExceeded` (sentinel distinguishing failsafe-policy timeout from HTTP server deadline).
 
