@@ -85,6 +85,15 @@ type EvmStatePoller struct {
 	finalizedBlockSuccessfulOnce bool
 	finalizedBlockShared         data.CounterInt64SharedVariable
 
+	// Safe head tracking. Only polled when the network opts into trusted `safe`
+	// resolution (EvmNetworkConfig.SafeBlock) — chains and providers that don't
+	// support the tag must not pay an extra RPC per interval for a feature
+	// nobody asked for.
+	skipSafeCheck           bool
+	safeBlockFailureCount   int
+	safeBlockSuccessfulOnce bool
+	safeBlockShared         data.CounterInt64SharedVariable
+
 	// The reason to not use latestBlockTimestamp is to avoid thundering herd,
 	// when a node is actively syncing and timestamp is always way in the past.
 	skipLatestBlockCheck      bool
@@ -138,6 +147,7 @@ func NewEvmStatePoller(
 
 	lbs := sharedState.GetCounterInt64(sharedCounterKey("latestBlock", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
 	fbs := sharedState.GetCounterInt64(sharedCounterKey("finalizedBlock", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
+	sbs := sharedState.GetCounterInt64(sharedCounterKey("safeBlock", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
 
 	e := &EvmStatePoller{
 		projectId:                    projectId,
@@ -147,6 +157,7 @@ func NewEvmStatePoller(
 		tracker:                      tracker,
 		latestBlockShared:            lbs,
 		finalizedBlockShared:         fbs,
+		safeBlockShared:              sbs,
 		sharedStateRegistry:          sharedState,
 		networkLabel:                 "n/a",
 		earliestByProbe:              make(map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable),
@@ -298,6 +309,22 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			ermu.Unlock()
 		}
 	}()
+
+	// Fetch safe block — only when this network opted into trusted `safe`
+	// resolution and this upstream is a configured source for it.
+	if e.safeBlockPollingEnabled() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := e.PollSafeBlockNumber(ctx)
+			if err != nil {
+				e.logger.Debug().Err(err).Msg("failed to get safe block number in evm state poller")
+				ermu.Lock()
+				errs = append(errs, err)
+				ermu.Unlock()
+			}
+		}()
+	}
 
 	// Fetch "syncing" state
 	wg.Add(1)
@@ -818,6 +845,100 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 
 func (e *EvmStatePoller) FinalizedBlock() int64 {
 	return e.finalizedBlockShared.GetValue()
+}
+
+// safeBlockPollingEnabled reports whether this poller should track the `safe`
+// head. Gated on the network opting in AND this upstream matching the
+// configured authoritative source, so a pool of many providers only pays the
+// extra poll on the few upstreams whose answer is actually used.
+func (e *EvmStatePoller) safeBlockPollingEnabled() bool {
+	e.stateMu.RLock()
+	src := e.cfg.SafeBlockSource()
+	skip := e.skipSafeCheck
+	e.stateMu.RUnlock()
+	if src == "" || skip {
+		return false
+	}
+	matched, err := common.UpstreamMatchesSelector(src, e.upstream)
+	return err == nil && matched
+}
+
+// PollSafeBlockNumber fetches this upstream's `safe` head.
+//
+// Mirrors PollFinalizedBlockNumber, including the give-up-after-N-failures
+// behavior for upstreams that don't support the tag and the chain-identity gate
+// on a major forward jump. Returns (0, nil) when the tag is unsupported — the
+// network-level resolver treats an unknown safe head as "no authoritative
+// answer" and fails closed rather than falling back to a looser source.
+func (e *EvmStatePoller) PollSafeBlockNumber(ctx context.Context) (int64, error) {
+	if !e.safeBlockPollingEnabled() {
+		return 0, nil
+	}
+	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollSafeBlockNumber",
+		trace.WithAttributes(
+			attribute.String("upstream.id", e.upstream.Id()),
+			attribute.String("network.id", e.upstream.NetworkId()),
+		),
+	)
+	defer span.End()
+
+	e.stateMu.RLock()
+	cfg := e.cfg
+	e.stateMu.RUnlock()
+
+	dbi := e.resolveDebounce(cfg)
+
+	return e.safeBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
+		e.logger.Trace().Msg("fetching safe block number for evm state poller")
+
+		blockNum, _, err := e.fetchBlock(ctx, "safe")
+		if err != nil || blockNum == 0 {
+			if err == nil ||
+				common.HasErrorCode(err,
+					common.ErrCodeUpstreamRequestSkipped,
+					common.ErrCodeUpstreamMethodIgnored,
+					common.ErrCodeEndpointUnsupported,
+					common.ErrCodeEndpointMissingData,
+				) || common.IsClientError(err) {
+				e.stateMu.Lock()
+				if !e.safeBlockSuccessfulOnce {
+					e.safeBlockFailureCount++
+					if e.safeBlockFailureCount >= 10 {
+						e.skipSafeCheck = true
+						e.logger.Warn().Err(err).Msgf("upstream does not support fetching safe block number in evm state poller after %d consecutive failures, will give up", e.safeBlockFailureCount)
+					} else {
+						e.logger.Debug().Err(err).Msgf("upstream does not seem to support fetching safe block number in evm state poller after %d consecutive failures, will retry again", e.safeBlockFailureCount)
+					}
+				}
+				e.stateMu.Unlock()
+				return 0, nil
+			}
+			e.logger.Warn().Err(err).Msg("failed to get safe block number in evm state poller")
+			return 0, err
+		}
+
+		e.stateMu.Lock()
+		e.safeBlockSuccessfulOnce = true
+		e.safeBlockFailureCount = 0
+		e.stateMu.Unlock()
+
+		// Same chain-identity gate as the latest/finalized ratchets (see there).
+		if !e.verifyChainIdOnMajorHeadMove(ctx, "safe", e.safeBlockShared.GetValue(), blockNum) {
+			return 0, nil
+		}
+
+		e.logger.Debug().
+			Int64("blockNumber", blockNum).
+			Msg("fetched safe block")
+
+		return blockNum, nil
+	})
+}
+
+// SafeBlock returns the last observed `safe` head for this upstream, or 0 when
+// it was never observed (not polled, unsupported, or still cold).
+func (e *EvmStatePoller) SafeBlock() int64 {
+	return e.safeBlockShared.GetValue()
 }
 
 func (e *EvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {

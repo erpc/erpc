@@ -2380,6 +2380,26 @@ type EvmNetworkConfig struct {
 	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
 
+	// SafeBlock configures how the network resolves the `safe` block tag.
+	//
+	// Unlike `latest` and `finalized`, `safe` has no single cross-provider
+	// meaning: on op-stack chains each node decides how many L1 confirmations
+	// to keep before deriving L2 data (op-node's `verifier.l1-confs`, default
+	// 0), so providers legitimately disagree about which block is "safe".
+	// Forwarding the tag verbatim therefore lets the loosest provider in the
+	// pool define the answer, and a quorum of loose providers can outvote a
+	// stricter one.
+	//
+	// When set, the network resolves `safe` to a concrete block number
+	// observed on the upstreams matching `source` (the ones whose definition
+	// of `safe` the operator trusts) and forwards that concrete number to
+	// every upstream. Nil (default) keeps today's verbatim pass-through.
+	//
+	// Unrelated to listing "safe" in ServedTip.EnabledFor: that selects the
+	// majority-tip mode for the finalized axis and does not change which
+	// block the `safe` tag resolves to.
+	SafeBlock *EvmSafeBlockConfig `yaml:"safeBlock,omitempty" json:"safeBlock,omitempty"`
+
 	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
 	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
 	// numeric distance band is gone — use emptyResultConfidence instead.
@@ -2434,6 +2454,40 @@ func (c *EvmNetworkConfig) ServedTipEnabledFor(tag string) bool {
 		}
 	}
 	return false
+}
+
+// EvmSafeBlockConfig configures trusted resolution of the `safe` block tag.
+//
+// The `safe` head is chain state derived from data already published to L1 —
+// it is not a fixed distance behind `latest`. During a batcher or derivation
+// stall the sequencer keeps producing blocks while the safe head stops
+// advancing, so the safe-to-latest gap is unbounded. Anything that estimates
+// `safe` from `latest` will therefore eventually report an unsafe block as
+// safe. This config instead reads the real safe head from upstreams the
+// operator designates as authoritative.
+type EvmSafeBlockConfig struct {
+	// Source selects the upstreams whose `safe` head is authoritative for this
+	// network. It is an upstream selector — an id or a tag, with glob support —
+	// matched exactly like the `use-upstream` directive (see
+	// UpstreamMatchesSelector). Example: `tier:internal`.
+	//
+	// The resolved value is the MAX safe block across the matching, non-syncing
+	// upstreams: peers enforcing the same confirmation policy converge, and one
+	// lagging peer cannot drag the network's answer backwards. Every matching
+	// upstream must enforce the confirmation depth the operator wants — the
+	// selector is the trust boundary.
+	//
+	// Required when SafeBlock is set.
+	Source string `yaml:"source,omitempty" json:"source,omitempty"`
+}
+
+// SafeBlockSource returns the configured authoritative-source selector for the
+// `safe` tag, or "" when trusted safe resolution is disabled. Nil-receiver safe.
+func (c *EvmNetworkConfig) SafeBlockSource() string {
+	if c == nil || c.SafeBlock == nil {
+		return ""
+	}
+	return c.SafeBlock.Source
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

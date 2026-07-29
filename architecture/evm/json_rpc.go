@@ -52,9 +52,68 @@ func deepCopyValue(val interface{}) interface{} {
 	}
 }
 
+// evmSafeBlockNetwork is the narrow capability the `safe` tag resolution needs
+// from a network. Kept local to this package (rather than widened onto
+// common.Network) so an opt-in feature does not force every Network
+// implementation and test fake to grow a method they never use — a network that
+// lacks it never translates `safe`, which is the pre-existing behavior.
+type evmSafeBlockNetwork interface {
+	EvmHighestSafeBlockNumber(ctx context.Context) int64
+}
+
+// safeBlockSourceConfigured reports whether the network opted into trusted
+// `safe` resolution (evm.safeBlock.source). Nil-safe.
+func safeBlockSourceConfigured(network common.Network) bool {
+	if network == nil {
+		return false
+	}
+	cfg := network.Config()
+	if cfg == nil {
+		return false
+	}
+	return cfg.Evm.SafeBlockSource() != ""
+}
+
+// EnforceSafeBlockResolved rejects a `safe`-tagged request when the network
+// configured an authoritative source for the tag but normalization did not
+// resolve it.
+//
+// Must be called right after NormalizeHttpJsonRpc so it observes the outcome of
+// that pass: a resolved request carries a concrete EvmBlockNumber, an
+// unresolved one still carries the literal tag. Without this the request would
+// fall through to verbatim `safe`, and any provider in the pool — including one
+// running zero L1 confirmations — could define the answer.
+//
+// The skip-interpolation directive does NOT grant an exemption. That directive
+// is client-supplied while `evm.safeBlock.source` is an operator trust
+// boundary, and honoring it here would let any caller opt itself back into
+// "answer my safe request from whichever upstream replies" — re-opening exactly
+// the hole this feature closes. Same reasoning as
+// ErrConsensusCompositionDispute being non-bypassable by `disputeBehavior`: a
+// data-trust boundary is not a liveness preference. The two refusal paths carry
+// distinct reasons so the error message stays accurate.
+func EnforceSafeBlockResolved(ctx context.Context, network common.Network, nrq *common.NormalizedRequest) error {
+	if nrq == nil || !safeBlockSourceConfigured(network) {
+		return nil
+	}
+	if ref, ok := nrq.EvmBlockRef().(string); !ok || ref != "safe" {
+		return nil
+	}
+	if bn, ok := nrq.EvmBlockNumber().(int64); ok && bn > 0 {
+		// Normalization rewrote the tag to a trusted concrete block.
+		return nil
+	}
+	reason := common.SafeBlockUnresolvedNoSource
+	if dirs := nrq.Directives(); dirs != nil && dirs.SkipInterpolation {
+		reason = common.SafeBlockUnresolvedSkipInterpolation
+	}
+	return common.NewErrEvmSafeBlockUnavailable(network.Id(), network.Config().Evm.SafeBlockSource(), reason)
+}
+
 // resolveBlockTagToHex resolves well-known tags to concrete hex numbers using highest known state.
-// IMPORTANT: Only translates tags we can accurately represent. "safe" and "pending" are passed
-// through unchanged as we don't have the necessary state information for accurate translation.
+// IMPORTANT: Only translates tags we can accurately represent. "pending" is passed through
+// unchanged, and "safe" is only translated when the network configured an authoritative
+// source for it (see EvmSafeBlockConfig).
 func resolveBlockTagToHex(ctx context.Context, network common.Network, tag string) (string, bool) {
 	if network == nil {
 		return "", false
@@ -74,10 +133,22 @@ func resolveBlockTagToHex(ctx context.Context, network common.Network, tag strin
 				return hx, true
 			}
 		}
-		// "safe" and "pending" are intentionally NOT translated here:
-		// - "safe": Represents a specific consensus state between finalized and latest that we don't track
-		// - "pending": Represents state including mempool transactions, which we don't have visibility into
-		// These tags should be passed through to the upstream unchanged
+	case "safe":
+		// "safe" has no cross-provider definition — each node picks its own L1
+		// confirmation depth — so it is only translated when the operator named
+		// the upstreams whose answer is authoritative. Without that config it is
+		// forwarded unchanged (pre-existing behavior); eRPC deliberately does not
+		// synthesize a safe head from `latest`, because the safe-to-latest
+		// distance is unbounded whenever batch publication or derivation stalls.
+		if ntw, ok := network.(evmSafeBlockNetwork); ok {
+			if bn := ntw.EvmHighestSafeBlockNumber(ctx); bn > 0 {
+				if hx, err := common.NormalizeHex(bn); err == nil {
+					return hx, true
+				}
+			}
+		}
+		// "pending" is intentionally NOT translated here: it represents state
+		// including mempool transactions, which we don't have visibility into.
 	}
 	return "", false
 }
@@ -136,6 +207,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		needsUpdate   bool
 		seenLatest    bool
 		seenFinalized bool
+		seenSafe      bool
 	)
 
 	// Helper: cache numeric block number when safe.
@@ -270,6 +342,43 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 							}
 						}
 					}
+				case "safe":
+					seenSafe = true
+					// No per-method translate flag: unlike latest/finalized —
+					// where eth_getBlockByNumber is deliberately the source of
+					// truth and must reach the upstream untranslated — a `safe`
+					// tag is exactly the ambiguous question eRPC must answer
+					// itself, on every method. Resolution is gated by
+					// evm.safeBlock.source instead, and resolveBlockTagToHex
+					// returns ok=false when it is unset.
+					if !skipInterpolation {
+						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
+							if !isTopLevelParamOfMap {
+								newVal = hx
+								changed = true
+							}
+							var resolvedNum int64
+							if n, herr := common.HexToInt64(hx); herr == nil {
+								resolvedNum = n
+								cacheBlockNumber(n)
+							}
+							if network != nil && network.Logger() != nil {
+								lg := network.Logger()
+								ev := lg.Debug().
+									Str("component", "evm").
+									Str("method", method).
+									Interface("requestId", reqId).
+									Str("tag", blockRef).
+									Str("resolvedHex", hx).
+									Int64("resolvedNumber", resolvedNum).
+									Interface("path", p.path).
+									Str("networkId", network.Id()).
+									Str("networkLabel", network.Label()).
+									Bool("skipInterpolation", skipInterpolation)
+								ev.Msg("interpolated safe block tag to trusted concrete block number")
+							}
+						}
+					}
 				default:
 					if network != nil && network.Logger() != nil {
 						lg := network.Logger()
@@ -283,7 +392,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 							Str("networkLabel", network.Label()).
 							Msg("passed through block tag")
 					}
-					// "safe", "pending", "earliest" and any other strings or a hash "0x..." are passed through unchanged.
+					// "pending", "earliest" and any other strings or a hash "0x..." are passed through unchanged.
 				}
 			}
 		}
@@ -294,13 +403,20 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		}
 	}
 
-	// Set EvmBlockRef from observed tags: collapse only when both appear
+	// Set EvmBlockRef from observed tags: collapse only when both appear.
+	// `safe` never participates in the collapse (it only sets the ref when it is
+	// the sole tag seen) so mixed ranges keep their existing ref, and a
+	// safe-only request keeps a tag-shaped ref even after it was rewritten to a
+	// concrete number — which keeps its cache identity and realtime finality
+	// classification the same as latest/finalized tag requests.
 	if seenLatest && seenFinalized {
 		nrq.SetEvmBlockRef("*")
 	} else if seenLatest {
 		nrq.SetEvmBlockRef("latest")
 	} else if seenFinalized {
 		nrq.SetEvmBlockRef("finalized")
+	} else if seenSafe {
+		nrq.SetEvmBlockRef("safe")
 	}
 
 	// Apply changes
