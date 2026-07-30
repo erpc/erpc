@@ -93,6 +93,25 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 
 Each upstream gets its own `EvmStatePoller` background goroutine. On each tick of `statePollerInterval` (default 30 s), three concurrent goroutines fetch the latest block, finalized block, and syncing state. A synchronous `Poll()` runs once at bootstrap time to seed the upstream before any request traffic arrives.
 
+**Routing the `safe` tag.** On op-stack chains, `safe` is node-relative because each verifier chooses its own L1 confirmation depth. If providers in one pool use different depths, they can honestly return different blocks for the same tag. Set `evm.safeBlockSource` to an upstream id/tag selector when one pool should define that answer:
+
+```yaml
+networks:
+  - architecture: evm
+    evm:
+      chainId: 8453
+      safeBlockSource: "tier:trusted"
+
+upstreams:
+  - id: node-a
+    tags: ["tier:trusted"]
+  - id: node-b
+    tags: ["tier:trusted"]
+  - id: provider-a
+```
+
+eRPC keeps the `safe` tag verbatim and routes standard block-tagged JSON-RPC requests only to matching upstreams, so the selected pool defines both block height and hash. Cache reads are skipped because an older entry may have been produced by a different source. Operator routing overrides client `use-upstream`; retry and consensus still run inside the selected JSON-RPC pool, so configure participant thresholds accordingly. `eth_query*` and direct gRPC Query APIs retain their existing behavior and are outside this option's scope. If no source is configured or inherited, routing is unchanged. If trusted sources are unavailable, prefer `finalized` for a provider-independent answer.
+
 **Debounce resolution.** To avoid redundant RPC calls, each fetch is gated by `resolveDebounce()`, which picks the first applicable value from:
 1. `upstream.evm.statePollerDebounce` — hard per-upstream override; short-circuits all other steps.
 2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — EMA-derived; active after ≥3 samples.

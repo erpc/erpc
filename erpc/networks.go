@@ -908,6 +908,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
+	// Route safe-tagged requests before multiplexing and cache lookup.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
+			common.SetTraceSpanError(forwardSpan, err)
+			return nil, err
+		}
+	}
+
 	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer (follower path)
