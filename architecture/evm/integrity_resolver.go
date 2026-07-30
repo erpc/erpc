@@ -64,5 +64,5 @@ func (r *integrityResolver) CanonicalHeader(ctx context.Context, blockRef string
 	if n, err := common.HexToInt64(blockRef); err == nil {
 		return r.view.headerByNumber(ctx, n, blockRef)
 	}
-	return r.view.resolveHeader(ctx, "eth_getBlockByNumber", blockRef)
+	return r.view.resolveHeader(ctx, "eth_getBlockByNumber", blockRef, false)
 }

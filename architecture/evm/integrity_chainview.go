@@ -211,7 +211,9 @@ func (c *chainView) ReconfirmPin(ctx context.Context, number int64) (string, int
 		return pin, integrity.PinRateLimited
 	}
 	h, ok := doOnce(&c.flightMu, c.hInflight, fmt.Sprintf("reconfirm:%d", number), func() (*integrity.Header, bool) {
-		return c.resolveHeader(ctx, "eth_getBlockByNumber", fmt.Sprintf("0x%x", number))
+		// fresh=true: this is the pin-vs-response tie-break, so it must reach
+		// upstreams rather than replay the cached entry that seeded the pin.
+		return c.resolveHeader(ctx, "eth_getBlockByNumber", fmt.Sprintf("0x%x", number), true)
 	})
 	if !ok || h == nil || h.Hash == "" {
 		return "", integrity.PinUnverifiable
@@ -256,7 +258,7 @@ func (c *chainView) headerByHash(ctx context.Context, hash string) (*integrity.H
 		return h, true
 	}
 	return doOnce(&c.flightMu, c.hInflight, hash, func() (*integrity.Header, bool) {
-		return c.resolveHeader(ctx, "eth_getBlockByHash", hash)
+		return c.resolveHeader(ctx, "eth_getBlockByHash", hash, false)
 	})
 }
 
@@ -272,7 +274,7 @@ func (c *chainView) headerByNumber(ctx context.Context, number int64, blockRef s
 	}
 	c.mu.RUnlock()
 	return doOnce(&c.flightMu, c.hInflight, fmt.Sprintf("n:%d", number), func() (*integrity.Header, bool) {
-		return c.resolveHeader(ctx, "eth_getBlockByNumber", blockRef)
+		return c.resolveHeader(ctx, "eth_getBlockByNumber", blockRef, false)
 	})
 }
 
@@ -305,10 +307,17 @@ func (c *chainView) CachedReceipts(blockHash string) ([]integrity.Receipt, bool)
 // fetchDirectives marks the force-fetch internal (no recursion into the engine) and
 // pins it to the ChainView's node group, so a receipt from one group is only
 // ever corroborated against same-group nodes. Empty selector = network-wide.
-func (c *chainView) fetchDirectives() *common.RequestDirectives {
+// fetchDirectives builds the directives for an aux force-fetch. fresh=true adds
+// a cache-read bypass and MUST be used for anything that re-checks a disputed
+// pin: the shared cache is where the disputed value came from, so reading it
+// back is not corroboration, it is an echo. See ReconfirmPin.
+func (c *chainView) fetchDirectives(fresh bool) *common.RequestDirectives {
 	d := &common.RequestDirectives{IsInternal: true}
 	if c.selector != "" {
 		d.UseUpstream = c.selector
+	}
+	if fresh {
+		d.SkipCacheRead = "true"
 	}
 	return d
 }
@@ -331,13 +340,13 @@ func (c *chainView) finalityLabel(number int64) string {
 
 // resolveHeader force-fetches a header via the trusted network path (group-scoped,
 // inheriting the network's failsafe/consensus) and feeds it back into the view.
-func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string) (*integrity.Header, bool) {
+func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string, fresh bool) (*integrity.Header, bool) {
 	if c.network == nil {
 		return nil, false
 	}
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"%s","params":["%s",false]}`, method, blockRef)))
-	req.SetDirectives(c.fetchDirectives())
+	req.SetDirectives(c.fetchDirectives(fresh))
 	req.SetNetwork(c.network)
 
 	resp, err := c.network.Forward(ctx, req)
@@ -392,7 +401,7 @@ func (c *chainView) resolveReceipts(ctx context.Context, blockHash string) ([]in
 	}
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["%s"]}`, blockHash)))
-	req.SetDirectives(c.fetchDirectives())
+	req.SetDirectives(c.fetchDirectives(false))
 	req.SetNetwork(c.network)
 
 	resp, err := c.network.Forward(ctx, req)
