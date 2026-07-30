@@ -1351,6 +1351,18 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 //	                        and sub-calls in this response; alongside X-ERPC-Credits.
 //	X-ERPC-Credits-Version: the eRPC version the built-in vendor tables
 //	                        shipped with; only alongside X-ERPC-Credits.
+//	X-ERPC-Network-Id:      canonical network id of the routed call
+//	                        (e.g. `evm:42161`).
+//	X-ERPC-Network-Alias:   its configured alias — the SAME value eRPC's own
+//	                        `network` metric label carries (NetworkLabel:
+//	                        alias when set, else the id), so a proxy in front
+//	                        can attribute usage per network without parsing
+//	                        bodies or re-deriving the network from the URL.
+//	                        Both are emitted only when every routed sub-call
+//	                        resolved to ONE network: a batch is addressed to a
+//	                        single network, so a disagreement means the value
+//	                        is not a fact about the response and is omitted
+//	                        rather than guessed.
 //
 // Early errors that never routed a request get no cost headers — there is
 // no routed call to account for.
@@ -1362,6 +1374,8 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 	methods := map[string]struct{}{}
 	credits := map[string]int64{} // "vendor:method" → units
 	var creditsTotal int64
+	networkId, networkAlias := "", ""
+	networkAmbiguous := false
 	for _, item := range items {
 		if isBillableItem(ctx, item) {
 			billable++
@@ -1369,6 +1383,17 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 		req := extractRequest(item)
 		if req == nil {
 			continue
+		}
+		// Network of the routed call. "n/a" is what NetworkId/NetworkLabel
+		// return when the network was never resolved (e.g. internal
+		// eth_chainId probes), so it is not a network and is skipped.
+		if id := req.NetworkId(); id != "" && id != "n/a" {
+			switch {
+			case networkId == "":
+				networkId, networkAlias = id, req.NetworkLabel()
+			case networkId != id:
+				networkAmbiguous = true
+			}
 		}
 		method, _ := req.Method()
 		if method != "" {
@@ -1388,6 +1413,12 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 	}
 	setInt(w, "X-ERPC-Calls", len(items))
 	setInt(w, "X-ERPC-Billable", billable)
+	if networkId != "" && !networkAmbiguous {
+		w.Header().Set("X-ERPC-Network-Id", networkId)
+		if networkAlias != "" && networkAlias != "n/a" {
+			w.Header().Set("X-ERPC-Network-Alias", networkAlias)
+		}
+	}
 	if len(methods) > 0 {
 		names := make([]string, 0, len(methods))
 		for m := range methods {

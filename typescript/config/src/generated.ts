@@ -1363,6 +1363,13 @@ export interface EvmNetworkConfig {
    *     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
    */
   emptyResultConfidence?: AvailbilityConfidence;
+  /**
+   * SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
+   * requests carrying the `safe` block tag. Matching upstreams define and
+   * serve `safe`; empty (without an inherited network default) keeps existing
+   * provider-defined routing. This does not affect eth_query* or gRPC Query.
+   */
+  safeBlockSource?: string;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"

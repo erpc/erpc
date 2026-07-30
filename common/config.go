@@ -2401,6 +2401,12 @@ type EvmNetworkConfig struct {
 	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
 
+	// SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
+	// requests carrying the `safe` block tag. Matching upstreams define and
+	// serve `safe`; empty (without an inherited network default) keeps existing
+	// provider-defined routing. This does not affect eth_query* or gRPC Query.
+	SafeBlockSource string `yaml:"safeBlockSource,omitempty" json:"safeBlockSource,omitempty"`
+
 	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
 	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
 	// numeric distance band is gone — use emptyResultConfidence instead.

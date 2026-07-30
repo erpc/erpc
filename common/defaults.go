@@ -1946,6 +1946,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				cp := *defaults.Evm.ServedTip
 				n.Evm.ServedTip = &cp
 			}
+			if n.Evm.SafeBlockSource == "" {
+				n.Evm.SafeBlockSource = defaults.Evm.SafeBlockSource
+			}
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
 			}
