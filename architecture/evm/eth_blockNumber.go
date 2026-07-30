@@ -148,6 +148,9 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 	corrected := common.NewNormalizedResponse().
 		WithRequest(nq).
 		WithJsonRpcResponse(jrr)
+	if ups != nil {
+		corrected.SetUpstream(ups)
+	}
 	if nr.FromCache() {
 		// Preserve cache attribution: the value was upgraded in-memory and no
 		// upstream call was made to produce this response.
