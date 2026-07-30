@@ -3,6 +3,8 @@ package telemetry
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -13,6 +15,19 @@ import (
 type counterKey struct {
 	vec *prometheus.CounterVec
 	key string
+}
+
+// cachedCounterHandle pairs a child counter with the label tuple that
+// created it and an idle timestamp, so SweepIdleCounterHandles can evict
+// the cache entry AND release the underlying series via DeleteLabelValues.
+// Without the explicit delete, every label combination ever observed stays
+// in the Prometheus registry for the process lifetime (append-only model) —
+// which is unbounded for label-sets keyed by caller-controlled inputs
+// (method, userId, agentName, ...).
+type cachedCounterHandle struct {
+	counter          prometheus.Counter
+	vals             []string
+	lastAccessedAtMs atomic.Int64
 }
 
 type gaugeKey struct {
@@ -55,15 +70,52 @@ func labelsKey(labels []string) string {
 	return b.String()
 }
 
-// CounterHandle returns a cached child counter for the given labels.
+// CounterHandle returns a cached child counter for the given labels and
+// refreshes its idle timestamp. Callers must re-fetch the handle per use
+// (CounterHandle(...).Inc()) rather than holding the returned Counter —
+// after an idle sweep evicts the series, a held child mutates an object
+// that is no longer collected.
 func CounterHandle(cv *prometheus.CounterVec, labels ...string) prometheus.Counter {
 	k := counterKey{vec: cv, key: labelsKey(labels)}
+	nowMs := time.Now().UnixMilli()
 	if v, ok := counterHandleCache.Load(k); ok {
-		return v.(prometheus.Counter)
+		h := v.(*cachedCounterHandle)
+		h.lastAccessedAtMs.Store(nowMs)
+		return h.counter
 	}
-	c := cv.WithLabelValues(labels...)
-	actual, _ := counterHandleCache.LoadOrStore(k, c)
-	return actual.(prometheus.Counter)
+	h := &cachedCounterHandle{
+		counter: cv.WithLabelValues(labels...),
+		vals:    append([]string(nil), labels...),
+	}
+	h.lastAccessedAtMs.Store(nowMs)
+	actual, _ := counterHandleCache.LoadOrStore(k, h)
+	ah := actual.(*cachedCounterHandle)
+	ah.lastAccessedAtMs.Store(nowMs)
+	return ah.counter
+}
+
+// SweepIdleCounterHandles evicts cached counter handles not touched since
+// cutoffMs and deletes their label-sets from the parent CounterVec,
+// releasing the series from the Prometheus registry so /metrics stops
+// re-emitting stale label combinations. Driven by the health tracker's
+// idle sweep, at the same cadence and threshold as the observer sweep.
+// Returns the number of evicted series. Safe to call concurrently with
+// CounterHandle: a racing re-fetch recreates the series fresh at zero,
+// which is the same semantics as a process restart.
+func SweepIdleCounterHandles(cutoffMs int64) int {
+	evicted := 0
+	counterHandleCache.Range(func(key, value any) bool {
+		h := value.(*cachedCounterHandle)
+		if h.lastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		k := key.(counterKey)
+		counterHandleCache.Delete(key)
+		k.vec.DeleteLabelValues(h.vals...)
+		evicted++
+		return true
+	})
+	return evicted
 }
 
 // GaugeHandle returns a cached child gauge for the given labels.

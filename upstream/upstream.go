@@ -668,24 +668,12 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					finality,
 				)
 			}
-			// TODO(memory): this and the matching MetricUpstreamErrorTotal /
-			// MetricUpstreamWrongEmptyResponseTotal / MetricUpstreamCanceledTotal
-			// sites in this file + erpc/networks.go all emit label-sets
-			// keyed by user-controlled inputs (method, finality, userId,
-			// agentName, etc.) WITHOUT going through a tracker cache, so
-			// the Prometheus registry accumulates one series per unique
-			// combo forever — even after the in-memory caches added in
-			// the 826df9f5 idle-sweep get cleared.
-			//
-			// The fix is parallel to the urdObsCache / remoteRateLimited
-			// pattern: wrap each WithLabelValues call in a cached*-style
-			// indirection that remembers the label tuple + a
-			// lastAccessedAtMs, then sweep on idle with
-			// MetricVec.DeleteLabelValues. Each direct call site needs the
-			// same retrofit. Out of scope for this PR — flagged for a
-			// follow-up titled "sweep direct Prom emissions in
-			// upstream/erpc hot paths".
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
+			// These direct counter emissions carry label-sets keyed by
+			// caller-controlled inputs (method, finality, userId, agentName).
+			// They go through telemetry.CounterHandle so the health tracker's
+			// idle sweep can evict stale label combinations and release the
+			// series via DeleteLabelValues (see SweepIdleCounterHandles).
+			telemetry.CounterHandle(telemetry.MetricUpstreamRequestTotal,
 				u.ProjectId,
 				u.VendorName(),
 				u.NetworkLabel(),
@@ -695,8 +683,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				nrq.CompositeType(),
 				finality.String(),
 				nrq.UserId(),
-				nrq.AgentName(),
-			).Inc()
+				nrq.AgentName()).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
 			preReqSpan.End()
@@ -762,7 +749,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(
+					telemetry.CounterHandle(telemetry.MetricUpstreamMissingDataErrorTotal,
 						u.ProjectId,
 						u.VendorName(),
 						u.NetworkLabel(),
@@ -770,8 +757,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						method,
 						finality.String(),
 						nrq.UserId(),
-						nrq.AgentName(),
-					).Inc()
+						nrq.AgentName()).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
 					// Cancelled request (hedge lost the race or client
 					// disconnected). Not attributable to upstream quality
@@ -798,7 +784,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						)
 					}
 					severity := common.ClassifySeverity(errCall)
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
+					telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
 						u.ProjectId,
 						u.VendorName(),
 						u.NetworkLabel(),
@@ -809,8 +795,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.CompositeType(),
 						finality.String(),
 						nrq.UserId(),
-						nrq.AgentName(),
-					).Inc()
+						nrq.AgentName()).Inc()
 				}
 
 				// Only ExecutionException (EVM revert) feeds the latency

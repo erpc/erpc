@@ -664,6 +664,12 @@ func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
 		)
 		return true
 	})
+
+	// Direct counter emissions (upstream/erpc hot paths) route through
+	// telemetry.CounterHandle; sweep their idle label-sets on the same
+	// threshold so caller-controlled label combinations (method, userId,
+	// agentName, ...) don't accumulate in the registry forever.
+	telemetry.SweepIdleCounterHandles(cutoffMs)
 }
 
 // getUpsKeys expands a (upstream, method, finality) record into the
