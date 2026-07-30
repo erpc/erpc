@@ -579,28 +579,52 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 
 // allPhantomTransactions returns true when every transaction in the slice is a
 // "phantom" system transaction that does not participate in the transactions
-// trie. Some chains (Polygon PoS, BSC) inject these for internal bookkeeping;
-// they have from=0x0 and gas=0x0. When a block contains only phantoms the
-// empty trie root is expected even though the transactions array is non-empty.
+// trie. Various chains inject these for internal bookkeeping; when a block
+// contains only phantoms the empty trie root is expected even though the
+// transactions array is non-empty. See isPhantomTransaction for the recognized
+// conventions.
 func allPhantomTransactions(txs []any) bool {
 	for _, tx := range txs {
-		switch t := tx.(type) {
-		case map[string]interface{}:
-			from, _ := t["from"].(string)
-			gas, _ := t["gas"].(string)
-			if !isZeroishHex(gas) || !isZeroishHex(from) {
-				// At least one real transaction — not all phantoms.
-				return false
-			}
-		case string:
-			// Hash-only response — we can't inspect the tx, so we must
-			// assume it is a real transaction (conservative).
+		t, ok := tx.(map[string]interface{})
+		if !ok {
+			// Hash-only response (string) or unexpected type — we can't
+			// inspect the tx, so we conservatively treat it as real.
 			return false
-		default:
+		}
+		if !isPhantomTransaction(t) {
+			// At least one real transaction — not all phantoms.
 			return false
 		}
 	}
 	return true
+}
+
+// isPhantomTransaction reports whether a single transaction object is a
+// "phantom"/system transaction that is intentionally excluded from the
+// transactions trie. Two conventions are recognized:
+//
+//   - Polygon PoS / BSC: state-sync system txs carry from=0x0 and gas=0x0.
+//   - HyperEVM (nanoreth): system txs arrive unsigned and are stamped with a
+//     synthetic signature where r=0x1 and gasPrice=0. The sender is encoded in
+//     s (usually s==from, but HYPE bridge 0x2222… uses s=1), and gas/from are
+//     non-zero — so the Polygon heuristic misses them. Matching r=0x1 and
+//     gasPrice=0 covers the full nanoreth encoding table without chain gating;
+//     a genuinely signed tx with both is cryptographically / economically
+//     negligible.
+func isPhantomTransaction(t map[string]interface{}) bool {
+	from, _ := t["from"].(string)
+	gas, _ := t["gas"].(string)
+	if isZeroishHex(from) && isZeroishHex(gas) {
+		return true
+	}
+
+	r, _ := t["r"].(string)
+	gasPrice, _ := t["gasPrice"].(string)
+	if isOneHex(r) && isZeroishHex(gasPrice) {
+		return true
+	}
+
+	return false
 }
 
 // isZeroishHex returns true if h is a hex string representing zero or empty
@@ -616,6 +640,29 @@ func isZeroishHex(h string) bool {
 		}
 	}
 	return true
+}
+
+// normHex canonicalizes a hex quantity for comparison: it lowercases, strips a
+// leading "0x", and trims leading zeros. Empty/zero values normalize to "0".
+func normHex(h string) string {
+	h = strings.ToLower(h)
+	h = strings.TrimPrefix(h, "0x")
+	h = strings.TrimLeft(h, "0")
+	if h == "" {
+		return "0"
+	}
+	return h
+}
+
+// eqHex reports whether two hex quantities are numerically equal, ignoring the
+// "0x" prefix, leading zeros, and case.
+func eqHex(a, b string) bool {
+	return normHex(a) == normHex(b)
+}
+
+// isOneHex reports whether h represents exactly 1 (e.g. "0x1", "0x01").
+func isOneHex(h string) bool {
+	return h != "" && normHex(h) == "1"
 }
 
 func validateHeaderFieldLengths(u common.Upstream, block *blockValidationBlockLite) error {

@@ -222,7 +222,9 @@ All patterns below are distilled from real production fleets; comments explain t
 }`}
 />
 
-**2. Non-standard chain: disable validateTransactionsRoot.** zkSync Era, Kaia, Filecoin, HyperEVM, Sophon, Abstract, and Etherlink all use non-standard transaction-trie roots that fail eRPC's `validateTransactionsRoot` check. Production configs disable it per-network while inheriting all other defaults. zkSync and similar ZK-rollups also disable `enforceNonNullTaggedBlocks` because their chains can legitimately return null for certain block tags:
+**2. Non-standard chain: disable validateTransactionsRoot.** zkSync Era, Kaia, Filecoin, Sophon, Abstract, and Etherlink all use non-standard transaction-trie roots that fail eRPC's `validateTransactionsRoot` check. Production configs disable it per-network while inheriting all other defaults. zkSync and similar ZK-rollups also disable `enforceNonNullTaggedBlocks` because their chains can legitimately return null for certain block tags.
+
+HyperEVM does **not** need this override: its native/L1 system txs are recognized as phantoms (`r=0x1`, `gasPrice=0`), so `validateTransactionsRoot` can stay on.
 
 <ConfigTabs
   path="projects[].networks[].directiveDefaults"
