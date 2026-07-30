@@ -94,15 +94,45 @@ func CounterHandle(cv *prometheus.CounterVec, labels ...string) prometheus.Count
 	return ah.counter
 }
 
-// SweepIdleCounterHandles evicts cached counter handles not touched since
-// cutoffMs and deletes their label-sets from the parent CounterVec,
-// releasing the series from the Prometheus registry so /metrics stops
-// re-emitting stale label combinations. Driven by the health tracker's
-// idle sweep, at the same cadence and threshold as the observer sweep.
-// Returns the number of evicted series. Safe to call concurrently with
-// CounterHandle: a racing re-fetch recreates the series fresh at zero,
-// which is the same semantics as a process restart.
-func SweepIdleCounterHandles(cutoffMs int64) int {
+// DefaultCounterIdleEvictionAfter is the conservative default idle threshold
+// for counter series eviction: long enough that only clearly-dead label
+// combinations are released. Overridden via metrics.counterIdleEvictionAfter
+// (see common.MetricsConfig; wired in erpc/init.go via
+// SetCounterIdleEvictionAfter).
+const DefaultCounterIdleEvictionAfter = 24 * time.Hour
+
+var counterIdleEvictionAfterMs atomic.Int64
+
+func init() {
+	counterIdleEvictionAfterMs.Store(DefaultCounterIdleEvictionAfter.Milliseconds())
+}
+
+// SetCounterIdleEvictionAfter overrides the idle threshold for counter series
+// eviction. Zero (or negative) disables eviction entirely. Typically called
+// once at startup from config.
+func SetCounterIdleEvictionAfter(d time.Duration) {
+	counterIdleEvictionAfterMs.Store(d.Milliseconds())
+}
+
+// SweepIdleCounterHandles evicts cached counter handles idle for at least
+// the configured threshold (DefaultCounterIdleEvictionAfter unless overridden)
+// and deletes their label-sets from the parent CounterVec, releasing the
+// series from the Prometheus registry so /metrics stops re-emitting stale
+// label combinations. Driven by the health tracker's idle sweep cadence.
+// Returns the number of evicted series; no-op (0) when eviction is disabled.
+func SweepIdleCounterHandles() int {
+	afterMs := counterIdleEvictionAfterMs.Load()
+	if afterMs <= 0 {
+		return 0
+	}
+	return sweepIdleCounterHandlesBefore(time.Now().UnixMilli() - afterMs)
+}
+
+// sweepIdleCounterHandlesBefore evicts cached counter handles not touched
+// since cutoffMs. Safe to call concurrently with CounterHandle: a racing
+// re-fetch recreates the series fresh at zero, which is the same semantics
+// as a process restart.
+func sweepIdleCounterHandlesBefore(cutoffMs int64) int {
 	evicted := 0
 	counterHandleCache.Range(func(key, value any) bool {
 		h := value.(*cachedCounterHandle)

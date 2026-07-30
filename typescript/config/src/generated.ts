@@ -561,6 +561,18 @@ export interface ProjectConfig {
    * Configure user agent tracking at the project level
    */
   userAgentMode?: UserAgentTrackingMode;
+  /**
+   * TrustUserIdHeader makes erpc read the caller's user identity from the
+   * X-ERPC-User-Id request header (see common.HeaderUserId) and use it for the
+   * `user` metric/log label — but only when no auth strategy resolved a user
+   * (auth wins) and only for attribution (no rate-limit budget is derived).
+   * This is for deployments that authenticate callers in front of erpc (e.g. a
+   * gateway) and want per-user erpc telemetry without erpc performing auth.
+   * erpc does NOT validate the header, so enable this ONLY when erpc is reachable
+   * solely by a trusted proxy that sets the header and strips any client copy —
+   * otherwise callers can spoof their own attribution. Default false.
+   */
+  trustUserIdHeader?: boolean;
   forwardHeaders?: string[];
   allowClientDirectives?: string;
   ignoreMethods?: string[];
@@ -1042,7 +1054,11 @@ export interface ConsensusPolicyConfig {
  * `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
  * matched against each upstream's `tags`; `MinParticipants` is the minimum
  * number of matching upstreams that must be in the consensus participant
- * set. A single upstream can satisfy multiple entries it matches.
+ * set (pool quota, best-effort). `MinAgreement` is the minimum number of
+ * matching upstreams that must be part of the WINNING response group
+ * (winner-composition quota, hard-enforced: a winner that does not satisfy
+ * it becomes a composition dispute regardless of disputeBehavior). A single
+ * upstream can satisfy multiple entries it matches.
  */
 export interface ConsensusRequiredParticipant {
   tag: string;
@@ -1588,6 +1604,18 @@ export interface MetricsConfig {
    * Value is the list of label names to keep for that metric.
    */
   histogramLabelOverrides?: { [key: string]: string[]};
+  /**
+   * CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
+   * counters whose label-sets are keyed by caller-controlled inputs
+   * (method, user, agentName, ...). Counter series idle for at least this
+   * duration are evicted from the Prometheus registry (DeleteLabelValues)
+   * by the health tracker's idle sweep; a series that becomes active again
+   * restarts at zero — the same semantics rate()/increase() consumers
+   * already handle across process restarts. Defaults to 24h (conservative:
+   * only clearly-dead label combinations are released). Set to 0 to
+   * disable eviction entirely.
+   */
+  counterIdleEvictionAfter?: Duration;
 }
 /**
  * RateLimitStoreConfig defines where rate limit counters are stored

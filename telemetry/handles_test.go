@@ -38,7 +38,7 @@ func TestSweepIdleCounterHandles_EvictsIdleSeries(t *testing.T) {
 		t.Fatalf("precondition: expected 2 series, got %d", got)
 	}
 
-	evicted := SweepIdleCounterHandles(time.Now().UnixMilli() + 1000)
+	evicted := sweepIdleCounterHandlesBefore(time.Now().UnixMilli() + 1000)
 	if evicted != 2 {
 		t.Fatalf("expected 2 evicted, got %d", evicted)
 	}
@@ -55,7 +55,7 @@ func TestSweepIdleCounterHandles_RetainsActiveSeries(t *testing.T) {
 	CounterHandle(vec, "x", "1").Inc()
 	CounterHandle(vec, "y", "2").Inc()
 
-	if evicted := SweepIdleCounterHandles(time.Now().UnixMilli() - 60_000); evicted != 0 {
+	if evicted := sweepIdleCounterHandlesBefore(time.Now().UnixMilli() - 60_000); evicted != 0 {
 		t.Fatalf("expected 0 evicted with past cutoff, got %d", evicted)
 	}
 	if got := testutil.CollectAndCount(vec); got != 2 {
@@ -80,7 +80,7 @@ func TestCounterHandle_TouchRefreshPreventsEviction(t *testing.T) {
 	sleepMs(t)
 	CounterHandle(vec, "x", "1") // touch refreshes lastAccessedAtMs past cutoff
 
-	if evicted := SweepIdleCounterHandles(cutoff); evicted != 0 {
+	if evicted := sweepIdleCounterHandlesBefore(cutoff); evicted != 0 {
 		t.Fatalf("expected 0 evicted after touch refresh, got %d", evicted)
 	}
 	if got := testutil.CollectAndCount(vec); got != 1 {
@@ -97,7 +97,7 @@ func TestCounterHandle_RebirthAfterEvictionStartsAtZero(t *testing.T) {
 	h.Inc()
 	h.Inc()
 
-	if evicted := SweepIdleCounterHandles(time.Now().UnixMilli() + 1000); evicted != 1 {
+	if evicted := sweepIdleCounterHandlesBefore(time.Now().UnixMilli() + 1000); evicted != 1 {
 		t.Fatalf("expected 1 evicted, got %d", evicted)
 	}
 
@@ -125,7 +125,7 @@ func TestSweepIdleCounterHandles_PerEntryEvictionAcrossVecs(t *testing.T) {
 	CounterHandle(vecB, "x", "1").Inc()
 	CounterHandle(vecB, "y", "2").Inc() // B's entries are at/after cutoff
 
-	if evicted := SweepIdleCounterHandles(cutoff); evicted != 2 {
+	if evicted := sweepIdleCounterHandlesBefore(cutoff); evicted != 2 {
 		t.Fatalf("expected exactly 2 evicted (vec A only), got %d", evicted)
 	}
 	if got := testutil.CollectAndCount(vecA); got != 0 {
@@ -133,5 +133,42 @@ func TestSweepIdleCounterHandles_PerEntryEvictionAcrossVecs(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(vecB); got != 2 {
 		t.Fatalf("expected vec B untouched with 2 series, got %d", got)
+	}
+}
+
+// SetCounterIdleEvictionAfter(0) disables eviction: the public sweep returns
+// 0 and leaves the series registered, even for entries old enough that any
+// positive threshold would have evicted them.
+func TestSweepIdleCounterHandles_DisabledThresholdEvictsNothing(t *testing.T) {
+	t.Cleanup(func() { SetCounterIdleEvictionAfter(DefaultCounterIdleEvictionAfter) })
+	vec := newTestCounterVec(t, "test_sweep_disabled_total")
+
+	SetCounterIdleEvictionAfter(0)
+	CounterHandle(vec, "x", "1").Inc()
+	sleepMs(t) // old enough that a 1ms threshold would evict it
+
+	if evicted := SweepIdleCounterHandles(); evicted != 0 {
+		t.Fatalf("expected 0 evicted with eviction disabled, got %d", evicted)
+	}
+	if got := testutil.CollectAndCount(vec); got != 1 {
+		t.Fatalf("expected series retained with eviction disabled, got %d", got)
+	}
+}
+
+// The public no-arg sweep respects the configured threshold: with a 1ms
+// threshold, an entry idle for >=5ms is evicted and its series released.
+func TestSweepIdleCounterHandles_ConfiguredThresholdEvicts(t *testing.T) {
+	t.Cleanup(func() { SetCounterIdleEvictionAfter(DefaultCounterIdleEvictionAfter) })
+	vec := newTestCounterVec(t, "test_sweep_configured_total")
+
+	SetCounterIdleEvictionAfter(1 * time.Millisecond)
+	CounterHandle(vec, "x", "1").Inc()
+	time.Sleep(5 * time.Millisecond)
+
+	if evicted := SweepIdleCounterHandles(); evicted < 1 {
+		t.Fatalf("expected >=1 evicted past configured threshold, got %d", evicted)
+	}
+	if got := testutil.CollectAndCount(vec); got != 0 {
+		t.Fatalf("expected series released after threshold sweep, got %d", got)
 	}
 }
