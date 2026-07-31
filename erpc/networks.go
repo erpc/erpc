@@ -725,9 +725,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// upstream demonstrably having the block. partitionUpstreamsByLatestBlock
 	// is stable so it composes with the tier and score orderings layered
 	// on top.
+	//
+	// Near-tip eth_getBlockByNumber also pins UseUpstream to EvmLeaderUpstream
+	// (typically the WS ingress that SuggestLatestBlock advanced) so the
+	// first attempt hits the node that already has the head — same idea as
+	// EnforceHighestBlock's tip re-fetch pin, but for direct client tip reads.
 	if n.Architecture() == common.ArchitectureEvm {
 		if bn := requestBlockNumber(ctx, req); bn > 0 {
 			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
+			n.pinNearTipGetBlockToLeader(ctx, req, method, bn)
 		}
 	}
 
@@ -2230,6 +2236,40 @@ func partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.U
 		}
 	}
 	return out
+}
+
+// pinNearTipGetBlockToLeader sets UseUpstream to EvmLeaderUpstream when the
+// request is eth_getBlockByNumber for the leader tip or tip+1 (sibling import
+// race window). Skips if the client/config already set UseUpstream.
+func (n *Network) pinNearTipGetBlockToLeader(ctx context.Context, req *common.NormalizedRequest, method string, bn int64) {
+	if n == nil || req == nil || method != "eth_getBlockByNumber" || bn <= 0 {
+		return
+	}
+	leader := n.EvmLeaderUpstream(ctx)
+	if leader == nil {
+		return
+	}
+	eu, ok := leader.(common.EvmUpstream)
+	if !ok {
+		return
+	}
+	sp := eu.EvmStatePoller()
+	if sp == nil || sp.IsObjectNull() {
+		return
+	}
+	l := sp.LatestBlock()
+	if l <= 0 || bn < l || bn > l+1 {
+		return
+	}
+	dr := req.Directives()
+	if dr == nil {
+		dr = &common.RequestDirectives{}
+		req.SetDirectives(dr)
+	}
+	if dr.UseUpstream != "" {
+		return
+	}
+	dr.UseUpstream = leader.Id()
 }
 
 // requestBlockNumber resolves the specific block number a request targets,
