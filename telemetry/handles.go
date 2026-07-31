@@ -70,6 +70,15 @@ func labelsKey(labels []string) string {
 	return b.String()
 }
 
+// counterHandleCreateMu serializes CounterHandle's miss path (create +
+// cache-store) against sweep eviction (cache-delete + DeleteLabelValues).
+// Without it, a miss between the sweep's cache delete and its registry
+// delete would re-cache the still-registered child right before the sweep
+// removes it from the vec — leaving a hot cached handle whose increments
+// are never scraped again. The hit path stays lock-free: misses happen once
+// per label tuple per (re)birth, so the lock is off the hot path.
+var counterHandleCreateMu sync.Mutex
+
 // CounterHandle returns a cached child counter for the given labels and
 // refreshes its idle timestamp. Callers must re-fetch the handle per use
 // (CounterHandle(...).Inc()) rather than holding the returned Counter —
@@ -83,15 +92,24 @@ func CounterHandle(cv *prometheus.CounterVec, labels ...string) prometheus.Count
 		h.lastAccessedAtMs.Store(nowMs)
 		return h.counter
 	}
+	counterHandleCreateMu.Lock()
+	defer counterHandleCreateMu.Unlock()
+	// Re-check under the lock: another miss may have created the entry, or
+	// a sweep may have just evicted it (in which case WithLabelValues below
+	// creates a fresh series — never a doomed one, since eviction holds the
+	// same lock across cache-delete + registry-delete).
+	if v, ok := counterHandleCache.Load(k); ok {
+		h := v.(*cachedCounterHandle)
+		h.lastAccessedAtMs.Store(nowMs)
+		return h.counter
+	}
 	h := &cachedCounterHandle{
 		counter: cv.WithLabelValues(labels...),
 		vals:    append([]string(nil), labels...),
 	}
 	h.lastAccessedAtMs.Store(nowMs)
-	actual, _ := counterHandleCache.LoadOrStore(k, h)
-	ah := actual.(*cachedCounterHandle)
-	ah.lastAccessedAtMs.Store(nowMs)
-	return ah.counter
+	counterHandleCache.Store(k, h)
+	return h.counter
 }
 
 // DefaultCounterIdleEvictionAfter is the conservative default idle threshold
@@ -129,9 +147,13 @@ func SweepIdleCounterHandles() int {
 }
 
 // sweepIdleCounterHandlesBefore evicts cached counter handles not touched
-// since cutoffMs. Safe to call concurrently with CounterHandle: a racing
-// re-fetch recreates the series fresh at zero, which is the same semantics
-// as a process restart.
+// since cutoffMs. Cache delete and registry delete happen atomically with
+// respect to CounterHandle's miss path (counterHandleCreateMu), so a racing
+// re-fetch either lands before eviction (refreshing the timestamp, which the
+// under-lock re-check honors) or after it (recreating the series fresh at
+// zero — the same semantics as a process restart). A hit-path caller that
+// obtained the child just before eviction may lose the increments of that
+// single use; bounded, restart-equivalent.
 func sweepIdleCounterHandlesBefore(cutoffMs int64) int {
 	evicted := 0
 	counterHandleCache.Range(func(key, value any) bool {
@@ -139,9 +161,18 @@ func sweepIdleCounterHandlesBefore(cutoffMs int64) int {
 		if h.lastAccessedAtMs.Load() >= cutoffMs {
 			return true
 		}
+		counterHandleCreateMu.Lock()
+		// Re-check under the lock: a miss-path fetch may have refreshed or
+		// replaced the entry since the lock-free check above.
+		v, ok := counterHandleCache.Load(key)
+		if !ok || v.(*cachedCounterHandle).lastAccessedAtMs.Load() >= cutoffMs {
+			counterHandleCreateMu.Unlock()
+			return true
+		}
 		k := key.(counterKey)
 		counterHandleCache.Delete(key)
-		k.vec.DeleteLabelValues(h.vals...)
+		k.vec.DeleteLabelValues(v.(*cachedCounterHandle).vals...)
+		counterHandleCreateMu.Unlock()
 		evicted++
 		return true
 	})

@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -170,5 +171,55 @@ func TestSweepIdleCounterHandles_ConfiguredThresholdEvicts(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(vec); got != 0 {
 		t.Fatalf("expected series released after threshold sweep, got %d", got)
+	}
+}
+
+// Regression stress test for the sweep/fetch orphan race: the old ordering in
+// sweepIdleCounterHandlesBefore deleted the cache entry BEFORE
+// vec.DeleteLabelValues, so a concurrent CounterHandle miss could re-cache the
+// still-registered child that the sweep then deregistered — a permanently
+// orphaned hot handle whose increments never reach the registry. The fix
+// serializes the miss path against eviction (counterHandleCreateMu).
+//
+// Invariant defended: after any sweep/fetch interleaving quiesces, an Inc()
+// through CounterHandle must be visible via vec.WithLabelValues on the same
+// label tuple. WithLabelValues on a swept tuple recreates the series at 0 —
+// fine; the invariant is DELTA visibility, not absolute counts.
+func TestCounterHandle_SweepRaceNeverOrphansHandles(t *testing.T) {
+	vec := newTestCounterVec(t, "test_sweep_race_orphan_total")
+	labels := []string{"x", "1"}
+	key := counterKey{vec: vec, key: labelsKey(labels)}
+
+	CounterHandle(vec, labels...).Inc() // seed the cache entry
+
+	for round := range 600 {
+		// Age the cached entry deterministically so the sweep sees it stale.
+		v, ok := counterHandleCache.Load(key)
+		if !ok {
+			t.Fatalf("round %d: cache entry missing before aging", round)
+		}
+		v.(*cachedCounterHandle).lastAccessedAtMs.Store(time.Now().UnixMilli() - 10_000)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			sweepIdleCounterHandlesBefore(time.Now().UnixMilli() - 5_000)
+		}()
+		go func() {
+			defer wg.Done()
+			CounterHandle(vec, labels...).Inc()
+		}()
+		wg.Wait()
+
+		// Orphan detector: an Inc through the cached handle must land on the
+		// vec's currently-registered child. If the race re-cached a
+		// deregistered child, `after` stays at `before`.
+		before := testutil.ToFloat64(vec.WithLabelValues(labels...))
+		CounterHandle(vec, labels...).Inc()
+		after := testutil.ToFloat64(vec.WithLabelValues(labels...))
+		if after != before+1 {
+			t.Fatalf("round %d: orphaned counter handle: before=%v after=%v — Inc through cached handle is invisible in the registry", round, before, after)
+		}
 	}
 }
