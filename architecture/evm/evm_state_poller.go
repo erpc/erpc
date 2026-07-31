@@ -311,7 +311,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 		e.stateMu.RUnlock()
 
 		upsCfg := e.upstream.Config()
-		if upsCfg.Evm != nil && upsCfg.Evm.IgnoreSyncingCheck != nil && *upsCfg.Evm.IgnoreSyncingCheck {
+		if upsCfg.Evm != nil && upsCfg.Evm.SkipSyncingCheck != nil && *upsCfg.Evm.SkipSyncingCheck {
 			e.stateMu.Lock()
 			e.syncingState = common.EvmSyncingStateNotSyncing
 			e.stateMu.Unlock()
