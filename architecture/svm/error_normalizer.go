@@ -33,7 +33,13 @@ func NewJsonRpcErrorExtractor() *JsonRpcErrorExtractor {
 // matching in the -32000 bucket below. Codes newer than -32019 (agave keeps
 // appending) intentionally fall to the safe retryable server-side default.
 //
-// The normalized taxonomy is intentionally narrower than EVM: SVM lacks
+// Wire policy: upstream-derived Solana / JSON-RPC codes are preserved on the
+// wire via JsonRpcErrorNumber(code). ErrEndpoint* classification (retry,
+// metrics, HTTP class) is independent of the numeric code the client sees.
+// eRPC-synthetic errors (HTTP 429 → CapacityExceeded, bare HTTP 5xx, etc.)
+// still emit eRPC's normalized numbers.
+//
+// The internal taxonomy is intentionally narrower than EVM: SVM lacks
 // "execution reverted" semantics at the error level, and rate-limit hints are
 // almost always conveyed by HTTP 429 rather than a JSON-RPC code.
 const (
@@ -79,11 +85,10 @@ func (e *JsonRpcErrorExtractor) Extract(
 		return nil
 	}
 
-	// Extract details up front — reused by every branch below.
-	details := map[string]interface{}{
-		"statusCode": resp.StatusCode,
-		"headers":    util.ExtractUsefulHeaders(resp),
-	}
+	// Extract details up front — reused by every branch below. When the upstream
+	// JSON-RPC error carries a `data` field (Solana preflight simulation logs,
+	// program err, accounts, …), forward it so the client can parse it.
+	details := buildDetails(resp, jr)
 
 	// Prefer JSON-RPC error body; fall back to HTTP status if upstream returned a
 	// bare HTTP failure (no JSON body at all).
@@ -106,7 +111,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 			// Surface auth failures as a distinct, actionable class (missing/invalid
 			// API key) rather than a generic client-side error.
 			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorClientSideException,
+				common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorUnauthorized,
 					fmt.Sprintf("svm upstream unauthorized (HTTP %d)", resp.StatusCode),
 					nil, details),
 			)
@@ -123,12 +128,13 @@ func (e *JsonRpcErrorExtractor) Extract(
 
 	code := jr.Error.Code
 	msg := jr.Error.Message
+	wire := common.JsonRpcErrorNumber(code)
 
 	switch code {
 	// --- Unsupported method ---------------------------------------------------
 	case svmCodeMethodNotFound:
 		return common.NewErrEndpointUnsupported(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorUnsupportedException, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details),
 		)
 
 	// --- Missing data (retryable across upstreams) ----------------------------
@@ -156,7 +162,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 	case svmCodeBlockCleanedUp, svmCodeBlockNotAvailable, svmCodeSlotSkipped, svmCodeNoSnapshot,
 		svmCodeKeyExcludedFromIndex, svmCodeTxHistoryNotAvailable, svmCodeBlockStatusNotAvail:
 		return common.NewErrEndpointMissingData(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details),
 			upstream,
 		)
 
@@ -179,9 +185,10 @@ func (e *JsonRpcErrorExtractor) Extract(
 	//   -32016: node hasn't reached the request's minContextSlot; a fresher
 	//           upstream satisfies it (selection also pre-filters on this).
 	//   -32019: this node's long-term storage backend is unreachable.
+	// Wire code is the Solana code (not JsonRpcErrorServerSideException/-32603).
 	case svmCodeNodeUnhealthy, svmCodeScanError, svmCodeMinContextSlotNotReached, svmCodeLongTermStorageUnreachable:
 		return common.NewErrEndpointServerSideException(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details),
 			details, resp.StatusCode,
 		)
 
@@ -194,13 +201,15 @@ func (e *JsonRpcErrorExtractor) Extract(
 	//   -32015: caller omitted/undersized maxSupportedTransactionVersion — a
 	//     versioned transaction is present regardless of which node answers.
 	//   -32018: caller-supplied slot is not an epoch boundary.
+	//   -32600/-32602/-32700: standard JSON-RPC malformed-request codes —
+	//     preserved on the wire (do NOT collapse -32602/-32700 into -32600).
 	// WithRetryableTowardNetwork(false) scopes the opt-out to SVM only — EVM
 	// ClientSideException still retries (its default).
 	case svmCodeSendTxPreflightFailure, svmCodeTxSignatureVerifyFailure,
 		svmCodeTxPrecompileVerifyFailure, svmCodeTxSignatureLenMismatch,
 		svmCodeUnsupportedTxVersion, svmCodeSlotNotEpochBoundary,
 		svmCodeInvalidRequest, svmCodeInvalidParams, svmCodeParseError:
-		wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+		wrapped := common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details)
 		return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
 
 	// --- Chain-state condition (non-retryable, not the caller's fault) --------
@@ -210,7 +219,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// ExecutionException is eRPC's "the chain said no, retrying won't change it"
 	// class (same treatment as preflight failures in the -32000 bucket).
 	case svmCodeEpochRewardsPeriodActive:
-		wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+		wrapped := common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details)
 		return common.NewErrEndpointExecutionException(wrapped)
 
 	// --- Generic -32000 bucket — disambiguate by message ----------------------
@@ -218,6 +227,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 		low := strings.ToLower(msg)
 		switch {
 		case isRateLimitMessage(low):
+			// eRPC-synthetic capacity code (not a Solana RpcCustomError).
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),
 			)
@@ -229,41 +239,64 @@ func (e *JsonRpcErrorExtractor) Extract(
 			// Codeless -32007 variant ("missing due to ledger jump to recent
 			// snapshot") — this node lost the slot locally; others have it.
 			return common.NewErrEndpointMissingData(
-				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
+				common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details),
 				upstream,
 			)
 		case strings.Contains(low, "preflight") ||
-			strings.Contains(low, "transaction simulation failed") ||
-			strings.Contains(low, "blockhash not found"):
-			// Preflight / blockhash failures — the caller's transaction is the problem.
-			// Mark non-retryable to guard against double-spend on retry.
-			wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+			strings.Contains(low, "transaction simulation failed"):
+			// Vendors sometimes emit these under bare -32000. Surface the Solana
+			// preflight code (-32002) so SDKs matching on that code still work.
+			wrapped := common.NewErrJsonRpcExceptionInternal(
+				code, common.JsonRpcErrorNumber(svmCodeSendTxPreflightFailure), msg, nil, details,
+			)
+			return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
+		case strings.Contains(low, "blockhash not found"):
+			// Keep upstream's -32000 — blockhash-not-found is not SendTxPreflightFailure.
+			wrapped := common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details)
 			return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
 		case strings.Contains(low, "invalid") && (strings.Contains(low, "signature") || strings.Contains(low, "transaction") || strings.Contains(low, "instruction")):
-			wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+			wrapped := common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details)
 			return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
 		}
-		// Default bucket — treat as retryable server-side error.
+		// Default bucket — preserve -32000 on the wire; classify as retryable server-side.
 		return common.NewErrEndpointServerSideException(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details),
 			details, resp.StatusCode,
 		)
 
 	// --- Internal error (retry across upstreams) ------------------------------
 	case svmCodeInternalError:
 		return common.NewErrEndpointServerSideException(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details),
 			details, resp.StatusCode,
 		)
 	}
 
-	// Unknown JSON-RPC code — keep the raw code, mark as server-side so the network
-	// can try another upstream. Solana validator adds new codes occasionally; this
-	// makes the default safe rather than surprising.
+	// Unknown JSON-RPC code — preserve the raw code on the wire, mark as
+	// server-side so the network can try another upstream. Solana validator
+	// adds new codes occasionally; this makes the default safe rather than
+	// surprising (and avoids remapping future -320NN codes to -32603).
 	return common.NewErrEndpointServerSideException(
-		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+		common.NewErrJsonRpcExceptionInternal(code, wire, msg, nil, details),
 		details, resp.StatusCode,
 	)
+}
+
+// buildDetails assembles the ErrJsonRpcExceptionInternal details map. When the
+// upstream JSON-RPC error includes a `data` payload (Solana simulation logs,
+// program error object, …), copy it through so http_server can emit error.data.
+func buildDetails(resp *http.Response, jr *common.JsonRpcResponse) map[string]interface{} {
+	details := map[string]interface{}{
+		"statusCode": resp.StatusCode,
+		"headers":    util.ExtractUsefulHeaders(resp),
+	}
+	if jr != nil && jr.Error != nil && jr.Error.Data != nil {
+		if s, ok := jr.Error.Data.(string); ok && s == "" {
+			return details
+		}
+		details["data"] = jr.Error.Data
+	}
+	return details
 }
 
 // isRateLimitMessage covers vendor-specific rate-limit wording that arrives in

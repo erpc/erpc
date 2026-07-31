@@ -1928,6 +1928,14 @@ func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
 		if er, ok := e.Cause.(*ErrJsonRpcExceptionInternal); ok {
 			switch er.NormalizedCode() {
 			case JsonRpcErrorEvmReverted, JsonRpcErrorCallException, JsonRpcErrorTransactionRejected:
+				// EVM revert / call-exception / tx-rejected are valid execution
+				// outcomes — HTTP 200 + JSON-RPC error (not 400).
+				return 200
+			case JsonRpcErrorNumber(-32002), JsonRpcErrorNumber(-32006), JsonRpcErrorNumber(-32013):
+				// Solana preflight / precompile / signature-len failures: agave
+				// returns HTTP 200 with JSON-RPC error; match that so clients
+				// that only gate on HTTP status still see the -32002 body.
+				// -32003 is already covered by JsonRpcErrorTransactionRejected.
 				return 200
 			}
 		}
