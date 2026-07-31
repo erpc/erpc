@@ -309,6 +309,15 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 		e.stateMu.RLock()
 		skip := e.skipSyncingCheck
 		e.stateMu.RUnlock()
+
+		upsCfg := e.upstream.Config()
+		if upsCfg.Evm != nil && upsCfg.Evm.IgnoreSyncingCheck != nil && *upsCfg.Evm.IgnoreSyncingCheck {
+			e.stateMu.Lock()
+			e.syncingState = common.EvmSyncingStateNotSyncing
+			e.stateMu.Unlock()
+			return
+		}
+
 		if e.synced >= FullySyncedThreshold || skip {
 			return
 		}
@@ -355,7 +364,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			e.synced++
 		}
 
-		upsCfg := e.upstream.Config()
+		upsCfg = e.upstream.Config()
 		if upsCfg.Evm == nil {
 			upsCfg.Evm = &common.EvmUpstreamConfig{}
 		}

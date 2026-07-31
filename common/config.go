@@ -1259,6 +1259,10 @@ type EvmUpstreamConfig struct {
 	// the feature.
 	TraceFilterAutoSplittingRangeThreshold int64                    `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
 	SkipWhenSyncing                        *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	// IgnoreSyncingCheck disables eth_syncing polling for this upstream, treating it as always synced.
+	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
+	// misleading and causes circuit breaker false positives.
+	IgnoreSyncingCheck                     *bool                    `yaml:"ignoreSyncingCheck,omitempty" json:"ignoreSyncingCheck"`
 	Integrity                              *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
 	// @deprecated: use blockAvailability bounds instead; kept for config back-compat only
@@ -1387,6 +1391,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.SkipWhenSyncing != nil {
 		v := *c.SkipWhenSyncing
 		copied.SkipWhenSyncing = &v
+	}
+	if c.IgnoreSyncingCheck != nil {
+		v := *c.IgnoreSyncingCheck
+		copied.IgnoreSyncingCheck = &v
 	}
 	if c.Integrity != nil {
 		copied.Integrity = c.Integrity.Copy()
