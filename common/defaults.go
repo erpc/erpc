@@ -768,6 +768,11 @@ func (m *MetricsConfig) SetDefaults() error {
 	if m.ErrorLabelMode == "" {
 		m.ErrorLabelMode = ErrorLabelModeCompact
 	}
+	if m.CounterIdleEvictionAfter == nil {
+		// Mirrors telemetry.DefaultCounterIdleEvictionAfter — conservative
+		// 24h so only clearly-dead label combinations are released.
+		m.CounterIdleEvictionAfter = Duration(24 * time.Hour).Ptr()
+	}
 
 	return nil
 }

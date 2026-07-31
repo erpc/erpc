@@ -2705,6 +2705,17 @@ type MetricsConfig struct {
 	// "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
 	// Value is the list of label names to keep for that metric.
 	HistogramLabelOverrides map[string][]string `yaml:"histogramLabelOverrides,omitempty" json:"histogramLabelOverrides,omitempty"`
+
+	// CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
+	// counters whose label-sets are keyed by caller-controlled inputs
+	// (method, user, agentName, ...). Counter series idle for at least this
+	// duration are evicted from the Prometheus registry (DeleteLabelValues)
+	// by the health tracker's idle sweep; a series that becomes active again
+	// restarts at zero — the same semantics rate()/increase() consumers
+	// already handle across process restarts. Defaults to 24h (conservative:
+	// only clearly-dead label combinations are released). Set to 0 to
+	// disable eviction entirely.
+	CounterIdleEvictionAfter *Duration `yaml:"counterIdleEvictionAfter,omitempty" json:"counterIdleEvictionAfter,omitempty"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.
