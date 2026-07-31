@@ -724,6 +724,79 @@ func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
 	})
 }
 
+// applyUserDirectiveGate simulates the http_server logic for allowClientDirectivesUsers:
+// if usersPattern is set, only matching users get the directive matcher; everyone else is denied.
+func applyUserDirectiveGate(t *testing.T, req *NormalizedRequest, directiveMatcher MatcherFunc, usersPattern string) {
+	t.Helper()
+	if usersPattern == "" {
+		req.SetAllowClientDirectiveMatcher(directiveMatcher)
+		return
+	}
+	um, err := NewWildcardMatcher(usersPattern)
+	if err != nil {
+		t.Fatalf("bad users pattern %q: %v", usersPattern, err)
+	}
+	u := req.User()
+	if u == nil || !um(u.Id) {
+		req.SetAllowClientDirectiveMatcher(DenyAllClientDirectives)
+	} else {
+		req.SetAllowClientDirectiveMatcher(directiveMatcher)
+	}
+}
+
+func TestAllowClientDirectivesUsers(t *testing.T) {
+	t.Run("matching user gets directive matcher applied", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		req.SetUser(&User{Id: "ops-user"})
+		applyUserDirectiveGate(t, req, nil, "ops-*") // nil = allow all directives
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Cache-Read", "true")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir == nil || dir.SkipCacheRead != "true" {
+			t.Fatalf("expected SkipCacheRead=true for allowed user, got %v", dir)
+		}
+	})
+
+	t.Run("non-matching user blocked even if allowClientDirectives is wildcard", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		req.SetUser(&User{Id: "external-caller"})
+		applyUserDirectiveGate(t, req, nil, "ops-*") // nil = allow all, but user doesn't match
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Cache-Read", "true")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir != nil && dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked for non-allowed user, got %q", dir.SkipCacheRead)
+		}
+	})
+
+	t.Run("nil user blocked when users pattern is set", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		applyUserDirectiveGate(t, req, nil, "ops-*")
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Consensus", "true")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir != nil && dir.SkipConsensus {
+			t.Fatal("expected SkipConsensus blocked for nil user")
+		}
+	})
+
+	t.Run("no users pattern leaves directive matcher unchanged", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		// usersPattern="" means allowClientDirectivesUsers not configured → everyone uses directive matcher
+		applyUserDirectiveGate(t, req, DenyAllClientDirectives, "")
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Cache-Read", "true")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir != nil && dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked by directive matcher, got %q", dir.SkipCacheRead)
+		}
+	})
+}
+
 func newReqForUser() *NormalizedRequest {
 	return NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
 }

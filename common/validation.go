@@ -749,6 +749,11 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			return fmt.Errorf("project.*.allowClientDirectives pattern is invalid: %w", err)
 		}
 	}
+	if p.AllowClientDirectivesUsers != nil && *p.AllowClientDirectivesUsers != "" {
+		if _, err := NewWildcardMatcher(*p.AllowClientDirectivesUsers); err != nil {
+			return fmt.Errorf("project.*.allowClientDirectivesUsers pattern is invalid: %w", err)
+		}
+	}
 	if p.RateLimitBudget != "" {
 		if !c.HasRateLimiterBudget(p.RateLimitBudget) {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)

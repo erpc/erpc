@@ -221,6 +221,13 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 			pp.allowClientDirectiveMatcher = matcher
 		}
 	}
+	if prjCfg.AllowClientDirectivesUsers != nil && *prjCfg.AllowClientDirectivesUsers != "" {
+		matcher, err := common.NewWildcardMatcher(*prjCfg.AllowClientDirectivesUsers)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse AllowClientDirectivesUsers: %w", err)
+		}
+		pp.allowClientDirectivesUserMatcher = matcher
+	}
 	r.preparedProjects[prjCfg.Id] = pp
 
 	r.logger.Info().Msgf("registered project %s", prjCfg.Id)

@@ -602,11 +602,12 @@ type ProjectConfig struct {
 	// erpc does NOT validate the header, so enable this ONLY when erpc is reachable
 	// solely by a trusted proxy that sets the header and strips any client copy —
 	// otherwise callers can spoof their own attribution. Default false.
-	TrustUserIdHeader     bool     `yaml:"trustUserIdHeader,omitempty" json:"trustUserIdHeader"`
-	ForwardHeaders        []string `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
-	AllowClientDirectives *string  `yaml:"allowClientDirectives,omitempty" json:"allowClientDirectives"`
-	IgnoreMethods         []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
-	AllowMethods          []string `yaml:"allowMethods,omitempty" json:"allowMethods"`
+	TrustUserIdHeader          bool     `yaml:"trustUserIdHeader,omitempty" json:"trustUserIdHeader"`
+	ForwardHeaders             []string `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
+	AllowClientDirectives      *string  `yaml:"allowClientDirectives,omitempty" json:"allowClientDirectives"`
+	AllowClientDirectivesUsers *string  `yaml:"allowClientDirectivesUsers,omitempty" json:"allowClientDirectivesUsers"`
+	IgnoreMethods              []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
+	AllowMethods               []string `yaml:"allowMethods,omitempty" json:"allowMethods"`
 
 	// ScoreMetricsWindowSize is the tumbling window the per-upstream
 	// health tracker uses for its rolling counters (errorRate, p50/p70/

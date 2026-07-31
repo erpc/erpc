@@ -25,8 +25,9 @@ type PreparedProject struct {
 	rateLimitersRegistry        *upstream.RateLimitersRegistry
 	upstreamsRegistry           *upstream.UpstreamsRegistry
 	policyEngine                *policy.Engine
-	allowClientDirectiveMatcher common.MatcherFunc
-	cfgMu                       sync.RWMutex
+	allowClientDirectiveMatcher      common.MatcherFunc
+	allowClientDirectivesUserMatcher common.MatcherFunc
+	cfgMu                            sync.RWMutex
 }
 
 type ProjectHealthInfo struct {
