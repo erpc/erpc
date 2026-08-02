@@ -730,6 +730,11 @@ func groupChainView(ctx context.Context, n common.Network, selector string) *cha
 		if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
 			view.follower = newChainFollower(view, networkLatest(n), cfg.Integrity.Follow)
 			view.follower.start()
+			// The state prober rides on the follower: its verified headers are
+			// the only sound anchor for judging an upstream's state claims.
+			if cfg.Integrity.StateProbe.IsEnabled() {
+				startStateProber(n, view, cfg.Integrity.StateProbe)
+			}
 		}
 	}
 	return view

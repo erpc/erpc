@@ -333,6 +333,33 @@ var (
 		Help:      "Total data-integrity check violations, by check id, verdict (reject = failed over; soft_flag = recorded but served) and target-block finality (finalized/unfinalized/unknown — separates genuine finalized/deterministic catches from reorg-prone unfinalized ones).",
 	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict", "finality"})
 
+	// MetricUpstreamStateProvenBlock is the highest block at which the state
+	// probe PROVED the upstream holds that block's state (execution-context
+	// call and/or getProof verified against the follower's verified header).
+	MetricUpstreamStateProvenBlock = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_proven_block",
+		Help:      "Highest block at which the integrity state probe proved this upstream holds the state trie.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
+	// MetricUpstreamStateProvenLag is claimed latest minus proven — how far the
+	// upstream's claims outrun what it has actually proven. The headline
+	// number for the silent-stale-state problem.
+	MetricUpstreamStateProvenLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_proven_lag",
+		Help:      "Blocks between the upstream's claimed latest and its state-proven head.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
+	// MetricUpstreamStateProbe counts probe outcomes, by probe kind
+	// (context = execution-context call, proof = eth_getProof) and outcome
+	// (match/mismatch/unsupported/error).
+	MetricUpstreamStateProbe = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_probe_total",
+		Help:      "Total state-trie probes by kind (context/proof) and outcome (match/mismatch/unsupported/error).",
+	}, []string{"project", "vendor", "network", "upstream", "probe", "outcome"})
+
 	// MetricIntegrityFollowHead is the highest block of the CONTIGUOUS,
 	// parent-linked segment the ChainView follower has verified block by block
 	// (not the network head — see MetricIntegrityFollowLag for the difference).

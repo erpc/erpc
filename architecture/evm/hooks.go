@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -112,8 +113,59 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 		return upstreamPreForward_trace_filter(ctx, n, u, r)
 	case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
 		return upstreamPreForward_eth_query(ctx, n, u, r)
+	case "eth_call", "eth_getbalance", "eth_getcode", "eth_getstorageat",
+		"eth_gettransactioncount", "eth_estimategas":
+		return upstreamPreForward_stateBoundary(ctx, n, u, r, method)
 	default:
 		return false, nil, nil
+	}
+}
+
+// upstreamPreForward_stateBoundary refuses to send a state query to an
+// upstream whose STATE-PROVEN head does not cover the requested block. Nodes
+// sometimes answer state methods from older state while reporting a current
+// head; the proven head (advanced only by verified probes — see the state
+// prober) is the boundary that cannot silently outrun reality.
+//
+// Inert unless the state prober is running for this network, so the default
+// behavior is byte-identical with the feature off.
+func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, method string) (bool, *common.NormalizedResponse, error) {
+	if stateProberFor(n.Id()) == nil {
+		return false, nil, nil
+	}
+	// The probes themselves are internal state calls aimed at upstreams whose
+	// boundary has NOT advanced yet — gating them would deadlock the proving.
+	if dirs := r.Directives(); dirs != nil && dirs.IsInternal {
+		return false, nil, nil
+	}
+	_, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, r)
+	if err != nil || blockNumber <= 0 {
+		// Tags (latest/pending) and unparseable refs are not gated here: the
+		// proven boundary is a statement about a CONCRETE height.
+		return false, nil, nil
+	}
+	eu, ok := u.(common.EvmUpstream)
+	if !ok {
+		return false, nil, nil
+	}
+	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceStateProven, false, blockNumber)
+	if err != nil || available {
+		return false, nil, nil
+	}
+	var proven int64
+	if r, ok := u.(common.EvmStateProvenReader); ok {
+		proven = r.EvmStateProvenBlock()
+	}
+	return true, nil, &common.ErrUpstreamBlockUnavailable{
+		BaseError: common.BaseError{
+			Code:    common.ErrCodeUpstreamBlockUnavailable,
+			Message: fmt.Sprintf("state for block %d is not yet PROVEN on this node (stateProvenBlock: %d) for %s", blockNumber, proven, method),
+			Details: map[string]interface{}{
+				"upstreamId":       u.Id(),
+				"blockNumber":      blockNumber,
+				"stateProvenBlock": proven,
+			},
+		},
 	}
 }
 

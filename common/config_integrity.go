@@ -30,6 +30,14 @@ type IntegritySettings struct {
 	// keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
 	// deep-reorg chains (e.g. polygon 256).
 	ReorgWindow int `yaml:"reorgWindow,omitempty" json:"reorgWindow,omitempty"`
+	// StateProbe proves, per upstream, that the node actually holds the state
+	// trie it claims: on each new followed block, probe every upstream with an
+	// execution-context call (and eth_getProof where supported) verified
+	// against the follower's verified header, and advance that upstream's
+	// state-proven head only on success. Routing for state methods (eth_call,
+	// eth_getBalance, ...) then refuses to outrun proof. Requires follow to be
+	// enabled (the verified header is the trust anchor). Off by default.
+	StateProbe *IntegrityStateProbeConfig `yaml:"stateProbe,omitempty" json:"stateProbe,omitempty"`
 	// Follow turns the ChainView into an actual chain follower: it walks the
 	// chain forward block by block, requires each block to name its
 	// predecessor's hash, and reconciles reorgs by finding the common ancestor.
@@ -58,6 +66,32 @@ type IntegrityFollowConfig struct {
 	// MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
 	// follower starting far behind converges steadily instead of bursting.
 	MaxBlocksPerTick int `yaml:"maxBlocksPerTick,omitempty" json:"maxBlocksPerTick,omitempty"`
+}
+
+// IntegrityStateProbeConfig configures the per-upstream state-trie probes.
+type IntegrityStateProbeConfig struct {
+	// Enabled turns the probes on. Default false.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Interval is the minimum time between probes of the same upstream
+	// (default 2s) — a bound on probe cost, not a schedule; probes fire on
+	// followed-block arrival.
+	Interval Duration `yaml:"interval,omitempty" json:"interval" tstype:"Duration"`
+}
+
+func (c *IntegrityStateProbeConfig) IsEnabled() bool {
+	return c != nil && c.Enabled != nil && *c.Enabled
+}
+
+func (c *IntegrityStateProbeConfig) Copy() *IntegrityStateProbeConfig {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if c.Enabled != nil {
+		v := *c.Enabled
+		cp.Enabled = &v
+	}
+	return &cp
 }
 
 func (c *IntegrityFollowConfig) Copy() *IntegrityFollowConfig {
@@ -139,6 +173,9 @@ func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
 	if over.Follow != nil {
 		out.Follow = over.Follow
 	}
+	if over.StateProbe != nil {
+		out.StateProbe = over.StateProbe
+	}
 	if over.ReorgWindow != 0 {
 		out.ReorgWindow = over.ReorgWindow
 	}
@@ -176,6 +213,7 @@ func (c *IntegritySettings) Copy() *IntegritySettings {
 		InvalidBehavior: c.InvalidBehavior.Copy(),
 		ReorgWindow:     c.ReorgWindow,
 		Follow:          c.Follow.Copy(),
+		StateProbe:      c.StateProbe.Copy(),
 		// Shared, not deep-copied: destination configs are read-only after load.
 		MisbehaviorsDestination: c.MisbehaviorsDestination,
 	}

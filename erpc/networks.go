@@ -513,6 +513,18 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string,
 // the lane. Used by served-tip latest-block tracking (servedTipPartitionFor) AND by
 // the integrity module, so both corroborate/track within the SAME group a request was
 // pinned to (whatever node groups the use-upstream selector carves out) — one grouping, not two.
+// EvmAllUpstreams exposes the network's upstreams to the architecture layer
+// (interface-asserted from architecture/evm, which cannot import this package).
+// Used by the integrity state prober to enumerate probe targets.
+func (n *Network) EvmAllUpstreams(ctx context.Context) []common.Upstream {
+	ups := n.AllUpstreams()
+	out := make([]common.Upstream, 0, len(ups))
+	for _, u := range ups {
+		out = append(out, u)
+	}
+	return out
+}
+
 func (n *Network) EvmUpstreamGroupForSelector(ctx context.Context, selector string) (key string, lane string) {
 	k, ids := n.partitionKeyFor(ctx, selector)
 	if k == "" {

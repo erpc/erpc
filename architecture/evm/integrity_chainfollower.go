@@ -132,6 +132,11 @@ func (f *chainFollower) advance(ctx context.Context) {
 	c.mu.RLock()
 	newHead := c.followHead
 	c.mu.RUnlock()
+	if newHead > cursor {
+		if p := stateProberFor(c.network.Id()); p != nil {
+			p.onNewHead(newHead)
+		}
+	}
 	telemetry.MetricIntegrityFollowHead.WithLabelValues(c.projectId(), c.networkLabel(), c.group).Set(float64(newHead))
 	if lag := head - newHead; lag >= 0 {
 		telemetry.MetricIntegrityFollowLag.WithLabelValues(c.projectId(), c.networkLabel(), c.group).Set(float64(lag))
