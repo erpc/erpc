@@ -1,5 +1,5 @@
-FROM prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac as prometheus
-FROM grafana/grafana:12.4.5@sha256:26b8f35a9e4e4431995cf64c3f396505a4faf17bcfc19f9ed84943ec6bfd5ecd as grafana
+FROM prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69 as prometheus
+FROM grafana/grafana:12.4.6@sha256:c2cd7057f6116f708b6ab11dc36089f4b34bcf5065c4457ca6b55daa42a9eb8c as grafana
 
 FROM ubuntu:22.10@sha256:e322f4808315c387868a9135beeb11435b5b83130a8599fd7d0014452c34f489
 
