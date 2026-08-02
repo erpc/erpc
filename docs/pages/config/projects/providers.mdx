@@ -197,7 +197,7 @@ Chain discovery: remote catalog (default `https://app-api.alchemy.com/trpc/confi
 | `recheckInterval` | no | `24h` |
 | `creditUnits` | no | Alchemy's documented CU table |
 
-Cost accounting: implements `CreditUnitsProvider` with Alchemy's [documented compute-unit costs](https://www.alchemy.com/docs/reference/compute-unit-costs) (`eth_call` 26, `eth_getLogs` 60, `eth_blockNumber` 10, `"*"` 20, …); `settings.creditUnits` overrides per method. <SourceLink file="thirdparty/alchemy.go" lines="186-231" />
+Cost accounting: implements `CreditUnitsProvider` with Alchemy's [documented compute-unit costs](https://www.alchemy.com/docs/reference/compute-unit-costs) (`eth_call` 26, `eth_getLogs` 60, `eth_blockNumber` 10, `"*"` 20, …). The table is **auto-fetched** from the docs' Markdown endpoint (`compute-unit-costs.md`) and cached ~1 week (refreshed off the hot path from `SupportsNetwork`/`GenerateConfigs`), so pricing tracks Alchemy without a redeploy; the built-in table is the cold-start / fetch-failure fallback. `settings.creditUnits` overrides per method. <SourceLink file="thirdparty/alchemy.go" lines="186-320" />
 
 OwnsUpstream: `alchemy://`/`evm+alchemy://` prefix, `vendorName=="alchemy"`, or endpoint contains `.alchemy.com`/`.alchemyapi.io`. <SourceLink file="thirdparty/alchemy.go" lines="156-326" />
 
@@ -378,7 +378,7 @@ Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoint
 | `tagLabels` | no | `nil` |
 | `creditUnits` | no | QuickNode's published credit model |
 
-Cost accounting: implements `CreditUnitsProvider` with QuickNode's [published API-credit model](https://www.quicknode.com/api-credits) (base 20 on EVM, 2x debug/trace = 40, 4x trace replays = 80); `settings.creditUnits` overrides per method. <SourceLink file="thirdparty/quicknode.go" lines="28-60" />
+Cost accounting: implements `CreditUnitsProvider`. When the account `apiKey` is set, the **account-accurate** per-method table is **auto-fetched** from QuickNode's Admin API ([`GET /v0/api-credits/{chain}`](https://www.quicknode.com/docs/admin-api/api-credits/v0-api-credits-chain), `x-api-key`; the chain slug is resolved from the already-discovered endpoint list) and cached ~1 week off the hot path. The built-in [published model](https://www.quicknode.com/api-credits) (base 20 on EVM, 2x debug/trace = 40, 4x trace replays = 80) is the fallback when no key is set or the fetch fails. `settings.creditUnits` overrides per method. <SourceLink file="thirdparty/quicknode.go" lines="28-120" />
 
 <SourceLink file="thirdparty/quicknode.go" lines="44-452" />
 
