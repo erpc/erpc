@@ -61,7 +61,7 @@ const DefaultQuicknodeCreditUnitsRecheckInterval = 7 * 24 * time.Hour
 // x-api-key). Costs are for the account's billing version, so the table is
 // fetched per account+chain rather than shipped static. Declared as a var so
 // tests can point it at a mock server.
-var quicknodeApiCreditsBaseURL = "https://api.quicknode.com/v0/api-credits/"
+var quicknodeApiCreditsBaseURL = "https://api.quicknode.com/v0/api-credits/" // #nosec G101 -- public API base URL, not a credential (gosec matches "Credits" in the name)
 
 // CreditUnits implements common.CreditUnitsProvider: QuickNode's credit model
 // (account-accurate table from the Admin API when available, built-in

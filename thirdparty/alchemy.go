@@ -232,7 +232,7 @@ const DefaultAlchemyCreditUnitsRecheckInterval = 7 * 24 * time.Hour
 // stable, unauthenticated artifact of the per-method CU table. It is the
 // closest thing Alchemy offers to a machine-readable CU API — there is no
 // JSON endpoint. Declared as a var so tests can point it at a mock server.
-var alchemyCreditUnitsURL = "https://www.alchemy.com/docs/reference/compute-unit-costs.md"
+var alchemyCreditUnitsURL = "https://www.alchemy.com/docs/reference/compute-unit-costs.md" // #nosec G101 -- public docs URL, not a credential (gosec matches "Credit" in the name)
 
 // alchemyCreditUnitsSections is the allowlist of Markdown H1 sections in
 // compute-unit-costs.md whose pipe tables carry the generic EVM JSON-RPC
