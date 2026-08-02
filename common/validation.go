@@ -1239,6 +1239,12 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		if rp.MinParticipants > c.MaxParticipants {
 			return fmt.Errorf("consensus.requiredParticipants[%d].minParticipants (%d) cannot exceed maxParticipants (%d)", i, rp.MinParticipants, c.MaxParticipants)
 		}
+		if rp.MinAgreement < 0 {
+			return fmt.Errorf("consensus.requiredParticipants[%d].minAgreement must not be negative", i)
+		}
+		if rp.MinAgreement > rp.MinParticipants {
+			return fmt.Errorf("consensus.requiredParticipants[%d].minAgreement (%d) cannot exceed minParticipants (%d): the pool quota must invite at least as many matching upstreams as the winning group is required to contain", i, rp.MinAgreement, rp.MinParticipants)
+		}
 	}
 
 	return nil
@@ -1476,6 +1482,11 @@ func (e *EvmNetworkConfig) Validate() error {
 			if err := ValidatePattern(m); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)
 			}
+		}
+	}
+	if e.SafeBlockSource != "" {
+		if err := ValidatePattern(e.SafeBlockSource); err != nil {
+			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
 		}
 	}
 	return nil

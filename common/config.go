@@ -1795,10 +1795,15 @@ type ConsensusPolicyConfig struct {
 // `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
 // matched against each upstream's `tags`; `MinParticipants` is the minimum
 // number of matching upstreams that must be in the consensus participant
-// set. A single upstream can satisfy multiple entries it matches.
+// set (pool quota, best-effort). `MinAgreement` is the minimum number of
+// matching upstreams that must be part of the WINNING response group
+// (winner-composition quota, hard-enforced: a winner that does not satisfy
+// it becomes a composition dispute regardless of disputeBehavior). A single
+// upstream can satisfy multiple entries it matches.
 type ConsensusRequiredParticipant struct {
 	Tag             string `yaml:"tag" json:"tag"`
 	MinParticipants int    `yaml:"minParticipants" json:"minParticipants"`
+	MinAgreement    int    `yaml:"minAgreement,omitempty" json:"minAgreement,omitempty"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -2392,6 +2397,12 @@ type EvmNetworkConfig struct {
 	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
 
+	// SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
+	// requests carrying the `safe` block tag. Matching upstreams define and
+	// serve `safe`; empty (without an inherited network default) keeps existing
+	// provider-defined routing. This does not affect eth_query* or gRPC Query.
+	SafeBlockSource string `yaml:"safeBlockSource,omitempty" json:"safeBlockSource,omitempty"`
+
 	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
 	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
 	// numeric distance band is gone — use emptyResultConfidence instead.
@@ -2723,6 +2734,17 @@ type MetricsConfig struct {
 	// "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
 	// Value is the list of label names to keep for that metric.
 	HistogramLabelOverrides map[string][]string `yaml:"histogramLabelOverrides,omitempty" json:"histogramLabelOverrides,omitempty"`
+
+	// CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
+	// counters whose label-sets are keyed by caller-controlled inputs
+	// (method, user, agentName, ...). Counter series idle for at least this
+	// duration are evicted from the Prometheus registry (DeleteLabelValues)
+	// by the health tracker's idle sweep; a series that becomes active again
+	// restarts at zero — the same semantics rate()/increase() consumers
+	// already handle across process restarts. Defaults to 24h (conservative:
+	// only clearly-dead label combinations are released). Set to 0 to
+	// disable eviction entirely.
+	CounterIdleEvictionAfter *Duration `yaml:"counterIdleEvictionAfter,omitempty" json:"counterIdleEvictionAfter,omitempty"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.

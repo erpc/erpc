@@ -128,21 +128,54 @@ func init() {
 }
 
 // allPhantomRawTxs reports whether every raw transaction is a phantom/system
-// transaction (from=0x0, gas=0x0) that does not participate in the
-// transactions trie. A hash-only entry is treated as a real transaction.
+// transaction that does not participate in the transactions trie, so an empty
+// trie root is expected even though the list is non-empty. A hash-only entry is
+// treated as a real transaction.
 func allPhantomRawTxs(raw []any) bool {
 	for _, t := range raw {
 		obj, ok := t.(map[string]any)
 		if !ok {
 			return false
 		}
-		from, _ := obj["from"].(string)
-		gas, _ := obj["gas"].(string)
-		if !isZeroishHex(gas) || !isZeroishHex(from) {
+		if !isPhantomRawTx(obj) {
 			return false
 		}
 	}
 	return true
+}
+
+// isPhantomRawTx recognises the system-transaction shapes that chains inject
+// into the RPC response but leave out of the trie.
+//
+// There are two, and knowing only the first is what made this check unusable on
+// HyperEVM: its native/L1 system transactions carry a real-looking sender and
+// non-zero gas, so they read as ordinary transactions and a block containing
+// only them was rejected as inconsistent. They are instead marked by a
+// synthetic signature — r=0x1 with a zero gasPrice — which also covers the HYPE
+// bridge case where s=1 does not equal the sender.
+func isPhantomRawTx(obj map[string]any) bool {
+	from, _ := obj["from"].(string)
+	gas, _ := obj["gas"].(string)
+	// Polygon PoS / BSC state-sync and system transactions.
+	if isZeroishHex(from) && isZeroishHex(gas) {
+		return true
+	}
+	// HyperEVM native/L1 system transactions.
+	r, _ := obj["r"].(string)
+	gasPrice, _ := obj["gasPrice"].(string)
+	if isOneHex(r) && isZeroishHex(gasPrice) {
+		return true
+	}
+	return false
+}
+
+// isOneHex reports whether a hex quantity is exactly one ("0x1", "0x01", ...).
+func isOneHex(h string) bool {
+	if h == "" {
+		return false
+	}
+	t := strings.TrimLeft(strings.TrimPrefix(h, "0x"), "0")
+	return t == "1"
 }
 
 // isZeroishHex reports whether a hex string represents zero (e.g. "0x", "0x0",

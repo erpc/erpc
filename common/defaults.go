@@ -768,6 +768,11 @@ func (m *MetricsConfig) SetDefaults() error {
 	if m.ErrorLabelMode == "" {
 		m.ErrorLabelMode = ErrorLabelModeCompact
 	}
+	if m.CounterIdleEvictionAfter == nil {
+		// Mirrors telemetry.DefaultCounterIdleEvictionAfter — conservative
+		// 24h so only clearly-dead label combinations are released.
+		m.CounterIdleEvictionAfter = Duration(24 * time.Hour).Ptr()
+	}
 
 	return nil
 }
@@ -1444,6 +1449,10 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "satelink", "evm+satelink":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
 	case "blockdaemon", "evm+blockdaemon":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
@@ -1946,6 +1955,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.ServedTip == nil && defaults.Evm.ServedTip != nil {
 				cp := *defaults.Evm.ServedTip
 				n.Evm.ServedTip = &cp
+			}
+			if n.Evm.SafeBlockSource == "" {
+				n.Evm.SafeBlockSource = defaults.Evm.SafeBlockSource
 			}
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence

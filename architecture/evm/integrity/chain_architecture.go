@@ -145,8 +145,14 @@ var architectures = map[string]Architecture{
 	// recompute family AND the structural has-txs ⟺ non-empty-root check.
 	// Fee uncharacterised: sampled windows sat at a constant 100000000.
 	"hyperevm": {
-		Name:    "hyperevm",
-		Disable: append(append([]string{}, recomputeFamily...), "transactionsRootConsistency"),
+		Name: "hyperevm",
+		// transactionsRootConsistency is NOT disabled any more: its phantom
+		// predicate now recognises HyperEVM's native/L1 system transactions
+		// (synthetic signature r=0x1 with zero gasPrice), so the check works
+		// here instead of being switched off. The cryptographic recompute
+		// family still cannot work — those txs are committed in the roots but
+		// absent from the response, so the root can never be reproduced.
+		Disable: recomputeFamily,
 		Header:  postMergeHeader,
 	},
 }

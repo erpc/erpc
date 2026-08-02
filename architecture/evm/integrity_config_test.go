@@ -129,11 +129,19 @@ func TestParseBehavior(t *testing.T) {
 func TestCompileIntegrity_ChainProfiles(t *testing.T) {
 	authoritative := &common.IntegritySettings{Level: "authoritative"}
 
-	t.Run("hyperevm drops the whole root family", func(t *testing.T) {
+	t.Run("hyperevm drops the cryptographic recompute pair", func(t *testing.T) {
 		cs, _ := compileIntegritySettings(authoritative, 999)
-		for _, id := range []string{"transactionsRootRecompute", "receiptsRootRecompute", "transactionsRootConsistency"} {
-			assert.False(t, cs.For(id).Enabled, "%s must be profile-disabled on hyperevm", id)
+		for _, id := range []string{"transactionsRootRecompute", "receiptsRootRecompute"} {
+			assert.False(t, cs.For(id).Enabled,
+				"%s cannot work on hyperevm: system txs are committed in the roots but absent from the response", id)
 		}
+		// This used to be disabled here too, because HyperEVM's native/L1 system
+		// txs carry a real-looking sender and non-zero gas and so read as
+		// ordinary transactions, making an all-system block look inconsistent.
+		// The phantom predicate now recognises their synthetic signature
+		// (r=0x1, gasPrice=0), so the check works rather than being switched off.
+		assert.True(t, cs.For("transactionsRootConsistency").Enabled,
+			"the consistency check works on hyperevm now that its phantom shape is recognised")
 		assert.True(t, cs.For("blockHashRecompute").Enabled, "unrelated checks stay on")
 	})
 

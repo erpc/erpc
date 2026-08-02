@@ -2645,6 +2645,47 @@ func (e *ErrConsensusDispute) ErrorStatusCode() int {
 	return http.StatusConflict
 }
 
+// ErrConsensusCompositionDispute is returned when a response group won
+// consensus by count (agreementThreshold) but does not satisfy the
+// winner-composition quotas (`requiredParticipants[].minAgreement`), e.g.
+// the agreeing upstreams are all from one provider cluster while the
+// operator requires at least one matching a given tag. It is intentionally
+// NOT bypassable by disputeBehavior: composition is a data-trust boundary,
+// not a liveness preference.
+type ErrConsensusCompositionDispute struct{ BaseError }
+
+const ErrCodeConsensusCompositionDispute ErrorCode = "ErrConsensusCompositionDispute"
+
+var NewErrConsensusCompositionDispute = func(message string, participants []ParticipantInfo, causes []error) error {
+	return &ErrConsensusCompositionDispute{
+		BaseError{
+			Code:    ErrCodeConsensusCompositionDispute,
+			Message: message,
+			Cause:   errors.Join(causes...),
+			Details: map[string]interface{}{
+				"participants": participants,
+			},
+		},
+	}
+}
+
+func (e *ErrConsensusCompositionDispute) Errors() []error {
+	if e.Cause == nil {
+		return nil
+	}
+
+	errs, ok := e.Cause.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+
+	return errs.Unwrap()
+}
+
+func (e *ErrConsensusCompositionDispute) ErrorStatusCode() int {
+	return http.StatusConflict
+}
+
 type ErrConsensusLowParticipants struct{ BaseError }
 
 const ErrCodeConsensusLowParticipants ErrorCode = "ErrConsensusLowParticipants"

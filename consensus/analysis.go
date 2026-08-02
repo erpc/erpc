@@ -46,10 +46,15 @@ type consensusAnalysis struct {
 	config            *config
 	groups            map[string]*responseGroup
 	totalParticipants int
-	validParticipants int
-	originalRequest   *common.NormalizedRequest
-	leaderUpstream    common.Upstream
-	method            string // The RPC method being called (e.g., "eth_getTransactionCount")
+	// collectedResponses is the RAW response count before upstream
+	// deduplication — the number of participant slots that have answered.
+	// Use for "how many more can arrive" math; use totalParticipants for
+	// vote counting.
+	collectedResponses int
+	validParticipants  int
+	originalRequest    *common.NormalizedRequest
+	leaderUpstream     common.Upstream
+	method             string // The RPC method being called (e.g., "eth_getTransactionCount")
 
 	// Cached computed values
 	cachedBestNonEmpty *responseGroup
@@ -62,9 +67,8 @@ type consensusAnalysis struct {
 
 func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *config, responses []*execResult) *consensusAnalysis {
 	analysis := &consensusAnalysis{
-		config:            config,
-		groups:            make(map[string]*responseGroup),
-		totalParticipants: len(responses),
+		config: config,
+		groups: make(map[string]*responseGroup),
 	}
 
 	// Try to extract original request and compute leader upstream once
@@ -79,10 +83,22 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 		}
 	}
 
-	// Classify, hash, and group all responses
+	// Classify and hash all responses first so deduplication can rank them.
 	for _, r := range responses {
 		classifyAndHashResponse(r, ctx, config)
+	}
 
+	// Deduplicate by upstream ID: hedge/retry can reselect an upstream that
+	// already produced a response for another participant slot, and a single
+	// node must not vote twice toward agreementThreshold. Keep the most
+	// useful response per upstream (see responseTypeVoteRank); participant
+	// counts below reflect distinct upstreams only.
+	analysis.collectedResponses = len(responses)
+	responses = dedupeByUpstream(responses)
+	analysis.totalParticipants = len(responses)
+
+	// Group all responses
+	for _, r := range responses {
 		if r.CachedResponseType != ResponseTypeInfrastructureError {
 			analysis.validParticipants++
 		}
@@ -153,8 +169,63 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 	return analysis
 }
 
+// responseTypeVoteRank orders response types by their usefulness as a
+// consensus vote: a real result beats a consensus-valid error, which beats
+// an infrastructure error. Used by dedupeByUpstream to pick which of an
+// upstream's duplicate responses keeps its vote.
+func responseTypeVoteRank(rt ResponseType) int {
+	switch rt {
+	case ResponseTypeNonEmpty:
+		return 3
+	case ResponseTypeEmpty:
+		return 2
+	case ResponseTypeConsensusError:
+		return 1
+	default: // ResponseTypeInfrastructureError
+		return 0
+	}
+}
+
+// dedupeByUpstream returns responses with at most one entry per upstream ID
+// so a single upstream reselected via hedge/retry counts only once toward
+// consensus. Responses must already be classified. The best-ranked response
+// wins (e.g. a valid result from a later slot replaces an earlier
+// infrastructure error from the same upstream); on equal rank the LAST
+// arrival wins — a node answering twice at the chain tip may see advanced
+// state, and its latest answer is its vote (keeping the first would drop a
+// fresher vote that agrees with the eventual winner and manufacture a
+// dispute). The kept entry stays at its first-seen position so arrival
+// order is preserved. Responses without an upstream are kept as-is.
+// Dropped responses are not released here: the executor's release path
+// iterates the raw responses slice and covers them.
+func dedupeByUpstream(responses []*execResult) []*execResult {
+	byUpstream := make(map[string]int, len(responses)) // upstream ID -> index in out
+	out := make([]*execResult, 0, len(responses))
+	for _, r := range responses {
+		if r.Upstream == nil {
+			out = append(out, r)
+			continue
+		}
+		id := r.Upstream.Id()
+		if i, seen := byUpstream[id]; seen {
+			if responseTypeVoteRank(r.CachedResponseType) >= responseTypeVoteRank(out[i].CachedResponseType) {
+				out[i] = r
+			}
+			continue
+		}
+		byUpstream[id] = len(out)
+		out = append(out, r)
+	}
+	return out
+}
+
+// hasRemaining reports whether more responses can still arrive this round.
+// It compares against the RAW collected count, not the deduplicated
+// totalParticipants: a deduplicated duplicate consumed a participant slot —
+// counting it as still-arriving capacity would suppress short-circuits (and
+// hold composition-dispute rounds open) after every slot already answered.
 func (a *consensusAnalysis) hasRemaining() bool {
-	return a.config.maxParticipants > a.totalParticipants
+	return a.config.maxParticipants > a.collectedResponses
 }
 
 func (a *consensusAnalysis) participants() []common.ParticipantInfo {
@@ -163,6 +234,31 @@ func (a *consensusAnalysis) participants() []common.ParticipantInfo {
 		participants = append(participants, group.participants()...)
 	}
 	return participants
+}
+
+// groupOf returns the response group that produced the winner's result or
+// error, matching by pointer identity. Returns nil for synthesized winners
+// (dispute/low-participants errors constructed by rules have no backing
+// group).
+func (a *consensusAnalysis) groupOf(sr *slotResult) *responseGroup {
+	if sr == nil {
+		return nil
+	}
+	for _, g := range a.groups {
+		if sr.Error != nil && g.FirstError == sr.Error {
+			return g
+		}
+		for _, r := range g.Results {
+			if r == nil {
+				continue
+			}
+			if (sr.Result != nil && r.Result == sr.Result) ||
+				(sr.Error != nil && r.Err == sr.Error) {
+				return g
+			}
+		}
+	}
+	return nil
 }
 
 // getValidGroups returns all groups of non-empty, empty, or valid consensus errors, skipping infrastructure errors
