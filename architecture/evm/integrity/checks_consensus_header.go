@@ -2,6 +2,7 @@ package integrity
 
 import (
 	"context"
+	"math/big"
 	"strings"
 )
 
@@ -11,6 +12,9 @@ import (
 // EVM chain produces. It is still declared per-architecture rather than assumed
 // universal: a proof-of-work chain (Ethereum Classic and friends) legitimately
 // has real ommers, and enforcing this there would reject every block.
+// gasPerBlob is the EIP-4844 blob gas unit; blob space is sold in whole blobs.
+const gasPerBlob = 131072
+
 const emptyUnclesHash = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
 
 func init() {
@@ -51,6 +55,15 @@ func init() {
 				checked = true
 				if !isZeroHex(h.Nonce) {
 					return failf("nonce %s is non-zero on a chain whose consensus fixes it at zero", h.Nonce)
+				}
+			}
+
+			if cfg.boolParam("blobGasMultiple", false) && h.BlobGasUsed != "" {
+				checked = true
+				if v, ok := hexToBig(h.BlobGasUsed); ok {
+					if new(big.Int).Mod(v, big.NewInt(gasPerBlob)).Sign() != 0 {
+						return failf("blobGasUsed %s is not a whole number of blobs (%d gas each)", v.String(), gasPerBlob)
+					}
 				}
 			}
 

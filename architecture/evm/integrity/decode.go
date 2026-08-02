@@ -68,6 +68,10 @@ type Header struct {
 	Sha3Uncles string `json:"sha3Uncles"`
 	Difficulty string `json:"difficulty"`
 	Nonce      string `json:"nonce"`
+	// EIP-4844 blob accounting. Only the granularity of blobGasUsed is checked;
+	// the excess-blob-gas UPDATE RULE is deliberately not modelled (see
+	// HeaderInvariants.BlobGasMultiple).
+	BlobGasUsed string `json:"blobGasUsed"`
 	// Consecutive-header fields: only meaningful against the PARENT header, so
 	// they are used exclusively by checks that run over a verified contiguous
 	// chain segment (see ChainSegment).

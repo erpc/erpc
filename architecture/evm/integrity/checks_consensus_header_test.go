@@ -16,6 +16,11 @@ func headerBody(uncles, difficulty, nonce string) []byte {
 		uncles, difficulty, nonce))
 }
 
+func blobBody(blobGasUsed string) []byte {
+	return []byte(fmt.Sprintf(
+		`{"number":"0x65","hash":"0xabc","parentHash":"0xpar","blobGasUsed":"%s"}`, blobGasUsed))
+}
+
 func runHeaderCheck(t *testing.T, body []byte, params map[string]string) Result {
 	t.Helper()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x65",false]}`))
@@ -73,6 +78,57 @@ func TestHeaderConsensusInvariants(t *testing.T) {
 		assert.Equal(t, "skip", outcomeOf(res, "headerConsensusInvariants"),
 			"reporting a pass would claim a verification that never happened")
 	})
+}
+
+// EIP-4844 sells blob space in whole blobs, so blobGasUsed is blob-granular
+// where the chain implements it that way — measured true on mainnet and FALSE
+// on Base, hence per-architecture like everything else here.
+//
+// Only the GRANULARITY is checked. The excess-blob-gas update rule is not
+// modelled: on mainnet no constant target reproduces it (best of 48 candidates
+// fits 12.8% of 179 consecutive pairs) and two independent vendors agree on the
+// values, so the data is sound and the rule is simply not something we can
+// state. A check built on a guess there would reject ~87% of mainnet blocks.
+func TestBlobGasGranularity(t *testing.T) {
+	on := map[string]string{"blobGasMultiple": "true"}
+
+	t.Run("a whole number of blobs passes", func(t *testing.T) {
+		res := runHeaderCheck(t, blobBody(fmt.Sprintf("0x%x", 6*gasPerBlob)), on)
+		require.NoError(t, res.Err)
+		assert.Equal(t, "pass", outcomeOf(res, "headerConsensusInvariants"))
+	})
+
+	t.Run("zero blobs passes", func(t *testing.T) {
+		res := runHeaderCheck(t, blobBody("0x0"), on)
+		require.NoError(t, res.Err)
+	})
+
+	t.Run("a partial blob is rejected", func(t *testing.T) {
+		res := runHeaderCheck(t, blobBody(fmt.Sprintf("0x%x", 3*gasPerBlob+1)), on)
+		require.Error(t, res.Err)
+	})
+
+	t.Run("chains that are not blob-granular do not declare it", func(t *testing.T) {
+		cs := CheckSet{"headerConsensusInvariants": CheckConfig{Enabled: true}}
+		ApplyChainProfile(cs, 8453) // Base: measured NOT blob-granular
+		assert.Empty(t, cs["headerConsensusInvariants"].Params["blobGasMultiple"])
+		cs2 := CheckSet{"headerConsensusInvariants": CheckConfig{Enabled: true}}
+		ApplyChainProfile(cs2, 1)
+		assert.Equal(t, "true", cs2["headerConsensusInvariants"].Params["blobGasMultiple"])
+	})
+}
+
+// Base's fee could not be characterised, and that is a measured conclusion
+// rather than a gap: its base fee sits at exactly 5000000 across three windows
+// spanning a week, and a series that never moves is reproduced by any
+// parameters. Enabling the derivation on a guess would pass while the fee is
+// floored and reject every block once the chain gets busy.
+func TestOpStackFeeRemainsUncharacterised(t *testing.T) {
+	assert.Nil(t, ChainFeeModel(8453), "Base's constants are unidentifiable from its own history, not merely unsampled")
+	cs := CheckSet{"baseFeeDerivation": CheckConfig{Enabled: true}}
+	ApplyChainProfile(cs, 8453)
+	_, ok := cs["baseFeeDerivation"]
+	assert.False(t, ok, "an unidentifiable fee model must not run the derivation")
 }
 
 // The per-architecture wiring must match what was measured on each chain.

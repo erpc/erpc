@@ -48,10 +48,27 @@ type HeaderInvariants struct {
 	ZeroDifficulty bool
 	// ZeroNonce — the header nonce is fixed at zero.
 	ZeroNonce bool
+	// BlobGasMultiple — blobGasUsed is always an exact multiple of the
+	// per-blob gas unit (EIP-4844 sells blob space in whole blobs).
+	//
+	// Chain-specific like the rest: measured true on mainnet over 60
+	// consecutive blocks and FALSE on Base, whose blobGasUsed is not a multiple
+	// of that unit at all. Granularity only — the excess-blob-gas UPDATE rule
+	// is NOT modelled anywhere, because it could not be identified: on mainnet
+	// in 2026 no constant target reproduces it (the best of 48 candidates fits
+	// 12.8% of 179 consecutive pairs) and a used/3 rule cannot produce the
+	// observed decreases. Two independent vendors agree on the values, so the
+	// data is sound and the rule is simply not something we can state — and a
+	// derivation check built on a guess would reject ~87% of mainnet blocks.
+	BlobGasMultiple bool
 }
 
 // postMergeHeader is the full set a post-merge / PoS-style regime guarantees.
 var postMergeHeader = &HeaderInvariants{EmptyUncles: true, ZeroDifficulty: true, ZeroNonce: true}
+
+// ethereumHeader adds the blob-granularity invariant, measured on mainnet and
+// NOT true of the OP Stack, so it cannot live in postMergeHeader.
+var ethereumHeader = &HeaderInvariants{EmptyUncles: true, ZeroDifficulty: true, ZeroNonce: true, BlobGasMultiple: true}
 
 // recomputeFamily is the check set that synthetic/system transactions break:
 // the protocol commits them in the header roots but omits them from the RPC
@@ -63,7 +80,7 @@ var architectures = map[string]Architecture{
 	"ethereum": {
 		Name:   "ethereum",
 		Fee:    EIP1559Mainnet,
-		Header: postMergeHeader,
+		Header: ethereumHeader,
 	},
 
 	// OP Stack (Base, Optimism, ...): runs EIP-1559 with its OWN elasticity and
@@ -73,7 +90,18 @@ var architectures = map[string]Architecture{
 	// A chain earns constants in the chain layer once measured.
 	"op-stack": {
 		Name: "op-stack",
-		// Measured on Base: empty ommers, zero difficulty, zero nonce.
+		// Measured on Base: empty ommers, zero difficulty, zero nonce. Its
+		// blobGasUsed is NOT blob-granular, so that invariant is not declared.
+		//
+		// Fee: still uncharacterised, and now known to be UNIDENTIFIABLE from
+		// Base rather than merely unsampled — the base fee sits at exactly
+		// 5000000 across three windows spanning a week (recent, ~1d, ~1w). A
+		// series that never moves is reproduced by any parameters, so nothing
+		// can be inferred from it. Enabling the derivation on a guess would be
+		// a latent landmine: it would pass while the fee is floored and start
+		// rejecting every block the moment the chain gets busy. To identify the
+		// constants, sample a congested period where the fee actually moves and
+		// run scripts/solve-eip1559-params.py against that range.
 		Header: postMergeHeader,
 	},
 

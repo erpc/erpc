@@ -118,6 +118,9 @@ func applyHeaderInvariants(cs CheckSet, inv *HeaderInvariants) {
 	if inv.ZeroNonce {
 		cfg.Params["zeroNonce"] = "true"
 	}
+	if inv.BlobGasMultiple {
+		cfg.Params["blobGasMultiple"] = "true"
+	}
 	cs["headerConsensusInvariants"] = cfg
 }
 
