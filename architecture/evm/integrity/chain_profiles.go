@@ -23,6 +23,9 @@ type ChainSpec struct {
 	// Fee overrides the family's fee model — for a chain that has been measured
 	// while its family has not, or that clamps at its own floor.
 	Fee *EIP1559Model
+	// Header overrides the family's declared header invariants, for a chain
+	// whose consensus fixes a different set than its stack normally does.
+	Header *HeaderInvariants
 }
 
 var chains = map[int64]ChainSpec{
@@ -40,6 +43,7 @@ type ChainProfile struct {
 	Architecture string
 	Disable      []string
 	Fee          *EIP1559Model
+	Header       *HeaderInvariants
 }
 
 // ProfileFor resolves a chain's profile. An unknown chain gets an empty profile
@@ -53,11 +57,15 @@ func ProfileFor(chainId int64) ChainProfile {
 	if arch, ok := architectures[spec.Architecture]; ok {
 		p.Disable = append(p.Disable, arch.Disable...)
 		p.Fee = arch.Fee
+		p.Header = arch.Header
 	}
 	// Chain-specific additions win over the family's.
 	p.Disable = append(p.Disable, spec.Disable...)
 	if spec.Fee != nil {
 		p.Fee = spec.Fee
+	}
+	if spec.Header != nil {
+		p.Header = spec.Header
 	}
 	return p
 }
@@ -77,11 +85,40 @@ func ApplyChainProfile(cs CheckSet, chainId int64) {
 	// risk: of the chains measured so far most deviate, and a wrong constant
 	// rejects every block instead of a rare bad one. For a chain nobody has
 	// characterised, silence is the safe answer.
+	applyHeaderInvariants(cs, p.Header)
+
 	if p.Fee != nil && p.Fee.Derivable {
 		applyFeeParams(cs, p.Fee)
 		return
 	}
 	delete(cs, "baseFeeDerivation")
+}
+
+// applyHeaderInvariants tells the header check which constants this chain's
+// consensus fixes. A chain with no declaration keeps the check enabled but it
+// verifies nothing and reports skip, which is honest — the alternative would be
+// asserting invariants nobody has measured for that chain.
+func applyHeaderInvariants(cs CheckSet, inv *HeaderInvariants) {
+	if inv == nil {
+		return
+	}
+	cfg, ok := cs["headerConsensusInvariants"]
+	if !ok {
+		return
+	}
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	if inv.EmptyUncles {
+		cfg.Params["emptyUncles"] = "true"
+	}
+	if inv.ZeroDifficulty {
+		cfg.Params["zeroDifficulty"] = "true"
+	}
+	if inv.ZeroNonce {
+		cfg.Params["zeroNonce"] = "true"
+	}
+	cs["headerConsensusInvariants"] = cfg
 }
 
 // applyFeeParams hands the chain's constants to the derivation check.

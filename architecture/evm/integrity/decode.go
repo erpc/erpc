@@ -63,6 +63,11 @@ type Header struct {
 	ReceiptsRoot     string `json:"receiptsRoot"`
 	LogsBloom        string `json:"logsBloom"`
 	Number           string `json:"number"`
+	// Consensus-regime fields: constants a chain's consensus fixes (no uncles,
+	// zero difficulty/nonce under PoS). Which of them apply is per-architecture.
+	Sha3Uncles string `json:"sha3Uncles"`
+	Difficulty string `json:"difficulty"`
+	Nonce      string `json:"nonce"`
 	// Consecutive-header fields: only meaningful against the PARENT header, so
 	// they are used exclusively by checks that run over a verified contiguous
 	// chain segment (see ChainSegment).

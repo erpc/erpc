@@ -27,7 +27,31 @@ type Architecture struct {
 	Disable []string
 	// Fee is the family's base-fee mechanism. Nil = uncharacterised.
 	Fee *EIP1559Model
+	// Header lists the header constants this family's consensus fixes. Nil =
+	// uncharacterised, and the header-invariant check does not judge the chain.
+	Header *HeaderInvariants
 }
+
+// HeaderInvariants are header fields a consensus regime pins to a constant.
+//
+// Measured, not inferred — the differences between regimes are not guessable.
+// Across six chains sha3Uncles is the empty-ommers hash on every one, while
+// difficulty is zero only on mainnet, OP Stack and hyperevm (polygon reports
+// 0x1, arbitrum 0x1, bsc 0x2), and the nonce is zero everywhere except
+// arbitrum. Declaring false simply means "not guaranteed here", never "known to
+// be violated".
+type HeaderInvariants struct {
+	// EmptyUncles — sha3Uncles is always the empty-ommers hash (no proof-of-work
+	// ommers are produced).
+	EmptyUncles bool
+	// ZeroDifficulty — difficulty is fixed at zero.
+	ZeroDifficulty bool
+	// ZeroNonce — the header nonce is fixed at zero.
+	ZeroNonce bool
+}
+
+// postMergeHeader is the full set a post-merge / PoS-style regime guarantees.
+var postMergeHeader = &HeaderInvariants{EmptyUncles: true, ZeroDifficulty: true, ZeroNonce: true}
 
 // recomputeFamily is the check set that synthetic/system transactions break:
 // the protocol commits them in the header roots but omits them from the RPC
@@ -37,8 +61,9 @@ var recomputeFamily = []string{"transactionsRootRecompute", "receiptsRootRecompu
 var architectures = map[string]Architecture{
 	// The reference EVM.
 	"ethereum": {
-		Name: "ethereum",
-		Fee:  EIP1559Mainnet,
+		Name:   "ethereum",
+		Fee:    EIP1559Mainnet,
+		Header: postMergeHeader,
 	},
 
 	// OP Stack (Base, Optimism, ...): runs EIP-1559 with its OWN elasticity and
@@ -48,6 +73,8 @@ var architectures = map[string]Architecture{
 	// A chain earns constants in the chain layer once measured.
 	"op-stack": {
 		Name: "op-stack",
+		// Measured on Base: empty ommers, zero difficulty, zero nonce.
+		Header: postMergeHeader,
 	},
 
 	// Arbitrum Nitro: ArbOS internal transactions are committed but not listed,
@@ -57,6 +84,9 @@ var architectures = map[string]Architecture{
 		Name:    "arbitrum-nitro",
 		Disable: recomputeFamily,
 		Fee:     EIP1559NotDerivable,
+		// Nitro reports difficulty 0x1 and uses a non-zero header nonce, so only
+		// the ommers invariant holds.
+		Header: &HeaderInvariants{EmptyUncles: true},
 	},
 
 	// Polygon PoS (bor): state-sync transactions are committed but not listed.
@@ -68,6 +98,8 @@ var architectures = map[string]Architecture{
 		Name:    "polygon-pos",
 		Disable: recomputeFamily,
 		Fee:     EIP1559NotDerivable,
+		// bor reports difficulty 0x1 (validator span weight), nonce zero.
+		Header: &HeaderInvariants{EmptyUncles: true, ZeroNonce: true},
 	},
 
 	// BNB Smart Chain: base fee is a constant 0, so there is no fee market to
@@ -76,6 +108,8 @@ var architectures = map[string]Architecture{
 	"bsc": {
 		Name: "bsc",
 		Fee:  EIP1559NotDerivable,
+		// Parlia reports difficulty 0x2 (in-turn/out-of-turn), nonce zero.
+		Header: &HeaderInvariants{EmptyUncles: true, ZeroNonce: true},
 	},
 
 	// HyperEVM: HyperCore system transactions are committed in the header roots
@@ -85,6 +119,7 @@ var architectures = map[string]Architecture{
 	"hyperevm": {
 		Name:    "hyperevm",
 		Disable: append(append([]string{}, recomputeFamily...), "transactionsRootConsistency"),
+		Header:  postMergeHeader,
 	},
 }
 
