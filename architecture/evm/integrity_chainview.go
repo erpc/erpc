@@ -56,6 +56,18 @@ type chainView struct {
 	// a fresh canonical fetch (guarded by mu, evicted with the window).
 	reconfirmedAt map[int64]time.Time
 
+	// followBase..followHead is the CONTIGUOUS, PARENT-LINKED segment this view
+	// has verified block by block: every height in the range is held and every
+	// adjacent pair satisfies chain[n].parentHash == chain[n-1].hash. Outside
+	// that range the view still holds opportunistic pins learned from traffic,
+	// which are individually trustworthy but say nothing about linkage.
+	// Zero/zero when nothing has been followed yet. Guarded by mu.
+	followBase int64
+	followHead int64
+
+	// follower drives this view forward block by block when enabled.
+	follower *chainFollower
+
 	flightMu  sync.Mutex
 	hInflight map[string]*flight[*integrity.Header]
 	rInflight map[string]*flight[[]integrity.Receipt]
@@ -148,6 +160,150 @@ func (c *chainView) observe(number int64, hash string, header *integrity.Header)
 	}
 	c.evictLocked()
 }
+
+// adoptFollowed records a block the follower verified and advances the
+// contiguous segment to it.
+func (c *chainView) adoptFollowed(n int64, h *integrity.Header) {
+	if h == nil || h.Hash == "" {
+		return
+	}
+	c.observe(n, h.Hash, h)
+	c.mu.Lock()
+	if c.followBase == 0 || n < c.followBase {
+		c.followBase = n
+	}
+	if n > c.followHead {
+		c.followHead = n
+	}
+	c.mu.Unlock()
+}
+
+// FollowedRange reports the contiguous parent-linked segment this view has
+// verified, block by block. ok=false when nothing has been followed — callers
+// must not treat a sparse, traffic-learned pin as part of a verified chain.
+func (c *chainView) FollowedRange() (from, to int64, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.followHead == 0 {
+		return 0, 0, false
+	}
+	return c.followBase, c.followHead, true
+}
+
+// reconcile resolves a block that does NOT link to the block we hold beneath
+// it, the way an indexer resolves a reorg: walk back along the new block's
+// ancestry until reaching a height where the branch and the followed chain
+// agree — the common ancestor — then unwind everything above it and adopt the
+// branch in order.
+//
+// Returns the reorg depth (how many blocks were replaced) and whether the walk
+// succeeded. It fails, deliberately, when no common ancestor exists within the
+// reorg window: at that point the branch is not a reorg of the chain we are
+// following but an unrelated history, and adopting it would silently replace
+// our view with an unverified one.
+func (c *chainView) reconcile(ctx context.Context, h *integrity.Header) (int, bool) {
+	if h == nil || h.Hash == "" || h.Number == "" {
+		return 0, false
+	}
+	n, err := common.HexToInt64(h.Number)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+
+	// Collected newest-first while walking back; adopted oldest-first at the end
+	// so the segment is only ever extended through linked blocks.
+	branch := []*integrity.Header{h}
+	numbers := []int64{n}
+	cur := h
+	curNum := n
+
+	// Snapshot the verified segment once: it bounds what counts as a reorg of
+	// the chain we follow, as opposed to unrelated history.
+	c.mu.RLock()
+	followBase, followHead := c.followBase, c.followHead
+	c.mu.RUnlock()
+
+	for depth := 1; depth <= c.window; depth++ {
+		parentNum := curNum - 1
+		if parentNum < 0 {
+			return 0, false
+		}
+		c.mu.RLock()
+		held, ok := c.canonical[parentNum]
+		c.mu.RUnlock()
+
+		if ok && eqHexFold(held, cur.ParentHash) {
+			// Common ancestor: the branch rejoins the chain we are following.
+			c.applyReorg(parentNum, branch, numbers)
+			return depth, true
+		}
+		if !ok {
+			// Nothing held at that height. If we are FOLLOWING, the verified
+			// segment is contiguous, so a walk that reaches below its base
+			// without ever rejoining it has not found a reorg of our chain —
+			// it is a different history. Anchoring there would swap the chain
+			// we verified block by block for one we never checked, which is
+			// precisely the failure this whole design exists to prevent.
+			if followHead != 0 && parentNum < followBase {
+				return 0, false
+			}
+			// Not following (sparse, traffic-learned pins): there is genuinely
+			// nothing to contradict the branch, so anchor it here.
+			c.applyReorg(parentNum, branch, numbers)
+			return depth, true
+		}
+
+		// Still diverging: pull the parent and keep walking back. Fresh, because
+		// this is exactly the tie-break the cache cannot be trusted for.
+		parent, ok2 := c.resolveHeader(ctx, "eth_getBlockByHash", cur.ParentHash, true)
+		if !ok2 || parent == nil || parent.Number == "" {
+			return 0, false
+		}
+		pn, err := common.HexToInt64(parent.Number)
+		if err != nil || pn != parentNum {
+			return 0, false
+		}
+		branch = append(branch, parent)
+		numbers = append(numbers, pn)
+		cur = parent
+		curNum = pn
+	}
+	return 0, false
+}
+
+// applyReorg drops everything above the common ancestor and installs the branch
+// (given newest-first) in ascending order.
+func (c *chainView) applyReorg(ancestor int64, branch []*integrity.Header, numbers []int64) {
+	c.mu.Lock()
+	for k := range c.canonical {
+		if k > ancestor {
+			delete(c.canonical, k)
+		}
+	}
+	c.mu.Unlock()
+
+	for i := len(branch) - 1; i >= 0; i-- {
+		c.observe(numbers[i], branch[i].Hash, branch[i])
+	}
+
+	c.mu.Lock()
+	if c.followBase == 0 || ancestor+1 < c.followBase {
+		c.followBase = ancestor + 1
+	}
+	if top := numbers[0]; top > c.followHead {
+		c.followHead = top
+	} else {
+		c.followHead = top
+	}
+	c.mu.Unlock()
+
+	telemetry.MetricIntegrityReorgDepth.WithLabelValues(c.projectId(), c.networkLabel(), c.group).
+		Observe(float64(len(branch)))
+}
+
+// eqHexFold compares two hex strings case-insensitively (upstreams differ on
+// the case of hash payloads).
+func eqHexFold(a, b string) bool { return strings.EqualFold(a, b) }
 
 // observeHeader caches a block's header by hash WITHOUT touching the number→hash
 // pin. This is the by-hash lookup path: the caller named the hash, so the
@@ -476,6 +632,22 @@ func (c *chainView) emitAux(kind, method, finality string, ok bool) {
 	).Inc()
 }
 
+// projectId / networkLabel are nil-safe metric label helpers (a view built for
+// tests may carry no network).
+func (c *chainView) projectId() string {
+	if c.network == nil {
+		return ""
+	}
+	return c.network.ProjectId()
+}
+
+func (c *chainView) networkLabel() string {
+	if c.network == nil {
+		return ""
+	}
+	return c.network.Label()
+}
+
 var chainViewStore sync.Map // "networkId\x00groupKey" -> *chainView
 
 // groupChainView returns the ChainView for a network + node GROUP, deriving the group
@@ -507,8 +679,29 @@ func groupChainView(ctx context.Context, n common.Network, selector string) *cha
 		window = cfg.Integrity.ReorgWindow
 	}
 	created := newChainView(n, window, fetchSelector, group, networkFinalized(n))
-	actual, _ := chainViewStore.LoadOrStore(storeKey, created)
-	return actual.(*chainView)
+	actual, loaded := chainViewStore.LoadOrStore(storeKey, created)
+	view := actual.(*chainView)
+	// Start the follower exactly once per view, and only for the view that won
+	// the LoadOrStore race — otherwise a concurrent miss would leave a second
+	// follower fetching the same blocks.
+	if !loaded {
+		if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
+			view.follower = newChainFollower(view, networkLatest(n), cfg.Integrity.Follow)
+			view.follower.start()
+		}
+	}
+	return view
+}
+
+// networkLatest returns the network's current head-height getter, or nil when
+// the network cannot report one (the follower then has nothing to follow).
+func networkLatest(n common.Network) func(context.Context) int64 {
+	if fn, ok := n.(interface {
+		EvmHighestLatestBlockNumber(context.Context) int64
+	}); ok {
+		return fn.EvmHighestLatestBlockNumber
+	}
+	return nil
 }
 
 // networkFinalized returns a best-effort finalized-height getter for the aux finality

@@ -333,6 +333,46 @@ var (
 		Help:      "Total data-integrity check violations, by check id, verdict (reject = failed over; soft_flag = recorded but served) and target-block finality (finalized/unfinalized/unknown — separates genuine finalized/deterministic catches from reorg-prone unfinalized ones).",
 	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict", "finality"})
 
+	// MetricIntegrityFollowHead is the highest block of the CONTIGUOUS,
+	// parent-linked segment the ChainView follower has verified block by block
+	// (not the network head — see MetricIntegrityFollowLag for the difference).
+	MetricIntegrityFollowHead = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_head",
+		Help:      "Highest block of the contiguous parent-linked chain segment verified by the integrity follower.",
+	}, []string{"project", "network", "group"})
+
+	// MetricIntegrityFollowLag is how far the followed chain trails the network
+	// head. Steady-state should hover near zero; a growing lag means the
+	// follower cannot keep up (fetch failures, or a chain faster than
+	// maxBlocksPerTick).
+	MetricIntegrityFollowLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_lag",
+		Help:      "Blocks between the network head and the integrity follower's verified chain head.",
+	}, []string{"project", "network", "group"})
+
+	// MetricIntegrityFollowStall counts follower advances abandoned this tick,
+	// by reason. "unreconciled" means a forked block found no common ancestor
+	// within the reorg window — the follower is holding a chain the network no
+	// longer extends, which needs operator attention (window too small, or an
+	// upstream serving unrelated history).
+	MetricIntegrityFollowStall = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_stall_total",
+		Help:      "Total integrity follower advances abandoned, by reason (unreconciled = no common ancestor within the reorg window).",
+	}, []string{"project", "network", "group", "reason"})
+
+	// MetricIntegrityReorgDepth observes how many blocks each reconciled reorg
+	// replaced. A depth of 1-2 is routine chain churn; a deep tail means the
+	// reorgWindow needs to cover it or reconciliation will start failing.
+	MetricIntegrityReorgDepth = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "integrity_reorg_depth",
+		Help:      "Depth (blocks replaced) of each reorg reconciled by the integrity chain follower.",
+		Buckets:   []float64{1, 2, 3, 5, 8, 13, 21, 34, 64, 128, 256},
+	}, []string{"project", "network", "group"})
+
 	// MetricIntegrityCheck counts EVERY integrity check evaluation by outcome:
 	// pass (ran, no violation), skip (could not evaluate — unmodeled field /
 	// hashes-only response / missing data), reject (failed → response failed

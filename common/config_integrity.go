@@ -30,11 +30,51 @@ type IntegritySettings struct {
 	// keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
 	// deep-reorg chains (e.g. polygon 256).
 	ReorgWindow int `yaml:"reorgWindow,omitempty" json:"reorgWindow,omitempty"`
+	// Follow turns the ChainView into an actual chain follower: it walks the
+	// chain forward block by block, requires each block to name its
+	// predecessor's hash, and reconciles reorgs by finding the common ancestor.
+	// Off by default — it costs one eth_getBlockByNumber per block per network.
+	Follow *IntegrityFollowConfig `yaml:"follow,omitempty" json:"follow,omitempty"`
 	// MisbehaviorsDestination durably archives every integrity catch (reject or
 	// soft-flag) as a JSONL record — same file/S3 destination shape as the
 	// consensus policy's misbehaviorsDestination. Catches are rare, so the
 	// volume is low; the archive is the forensic record metrics can't carry.
 	MisbehaviorsDestination *MisbehaviorsDestinationConfig `yaml:"misbehaviorsDestination,omitempty" json:"misbehaviorsDestination,omitempty"`
+}
+
+// IntegrityFollowConfig configures the ChainView chain follower.
+//
+// Following gives the module a CONTIGUOUS, parent-linked view of the chain
+// instead of the sparse scatter of heights that client traffic happens to
+// touch. That is what lets it answer "is this block canonical" from a verified
+// chain rather than from whichever source was observed first, and it is the
+// precondition for any check that compares consecutive headers.
+type IntegrityFollowConfig struct {
+	// Enabled turns the follower on for this network. Default false.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Interval is how often to check for new blocks (default 1s). Keep it below
+	// the chain's block time or the follower will run a step behind.
+	Interval Duration `yaml:"interval,omitempty" json:"interval" tstype:"Duration"`
+	// MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
+	// follower starting far behind converges steadily instead of bursting.
+	MaxBlocksPerTick int `yaml:"maxBlocksPerTick,omitempty" json:"maxBlocksPerTick,omitempty"`
+}
+
+func (c *IntegrityFollowConfig) Copy() *IntegrityFollowConfig {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if c.Enabled != nil {
+		v := *c.Enabled
+		cp.Enabled = &v
+	}
+	return &cp
+}
+
+// IsEnabled reports whether the follower should run (nil config = off).
+func (c *IntegrityFollowConfig) IsEnabled() bool {
+	return c != nil && c.Enabled != nil && *c.Enabled
 }
 
 // IntegrityConfig is an IntegritySettings plus the per-request header-control
@@ -96,6 +136,9 @@ func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
 	if over.InvalidBehavior != nil {
 		out.InvalidBehavior = over.InvalidBehavior.Copy()
 	}
+	if over.Follow != nil {
+		out.Follow = over.Follow
+	}
 	if over.ReorgWindow != 0 {
 		out.ReorgWindow = over.ReorgWindow
 	}
@@ -132,6 +175,7 @@ func (c *IntegritySettings) Copy() *IntegritySettings {
 		Budget:          c.Budget.Copy(),
 		InvalidBehavior: c.InvalidBehavior.Copy(),
 		ReorgWindow:     c.ReorgWindow,
+		Follow:          c.Follow.Copy(),
 		// Shared, not deep-copied: destination configs are read-only after load.
 		MisbehaviorsDestination: c.MisbehaviorsDestination,
 	}
