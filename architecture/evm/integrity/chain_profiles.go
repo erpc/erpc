@@ -23,7 +23,12 @@ var chainProfiles = map[int64][]string{
 	// has-txs⟺non-empty-root consistency check.
 	999: {"transactionsRootRecompute", "receiptsRootRecompute", "transactionsRootConsistency", "baseFeeDerivation"},
 	// Polygon PoS: bor's state-sync transactions are committed but not listed.
-	137: {"transactionsRootRecompute", "receiptsRootRecompute"},
+	// Its EIP-1559 fee parameters are also NOT mainnet's: with the mainnet
+	// elasticity/denominator the derivation rejected across three independent
+	// vendors (alchemy, chainstack, quicknode) within minutes of going live on
+	// the shadow — all-upstream rejects on one chain are the protocol, not
+	// corruption.
+	137: {"transactionsRootRecompute", "receiptsRootRecompute", "baseFeeDerivation"},
 	// Arbitrum One: ArbOS internal transactions are committed but not listed.
 	// Its base fee is also set by ArbOS rather than derived from the parent by
 	// the EIP-1559 formula, so that derivation is protocol-invalid here.

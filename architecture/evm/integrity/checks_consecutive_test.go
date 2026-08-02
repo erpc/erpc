@@ -177,10 +177,12 @@ func TestTimestampMonotonicity(t *testing.T) {
 // A wrong EIP-1559 constant would reject honest data on EVERY block, so chains
 // whose parameters are not mainnet's must be excluded rather than assumed.
 func TestBaseFeeDerivationIsExcludedWhereParametersDiffer(t *testing.T) {
-	for _, chainId := range []int64{42161, 8453, 999} {
+	for _, chainId := range []int64{42161, 8453, 999, 137} {
 		assert.Contains(t, ChainProfileDisables(chainId), "baseFeeDerivation",
 			"chain %d does not use mainnet EIP-1559 parameters and must not run the derivation", chainId)
 	}
+	// Mainnet is the one chain proven compatible against live blocks (53 passes,
+	// 0 rejects on the shadow). Every other chain must earn inclusion the same
+	// way rather than be assumed.
 	assert.NotContains(t, ChainProfileDisables(1), "baseFeeDerivation")
-	assert.NotContains(t, ChainProfileDisables(137), "baseFeeDerivation")
 }
