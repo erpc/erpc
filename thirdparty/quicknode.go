@@ -134,6 +134,14 @@ func (v *QuicknodeVendor) refreshCreditUnitsAsync(logger *zerolog.Logger, apiKey
 // the returned per-method credits over the built-in table (so a partial
 // response never loses coverage or the "*" fallback). Run in the
 // RemoteDataCache refresh goroutine with a self-contained timeout ctx.
+//
+// Response shape confirmed against the live Admin API (2026-08-02):
+// {"data":[{"method":<string>,"credits":<int>}],"error":<null|string>} — one
+// row per method, integer credits, error null on success. The short slug from
+// /v0/endpoints (e.g. "eth", "matic", "ftm") is a valid api-credits path and
+// returns real data; costs vary per chain (base eth_call is 20 on Ethereum
+// but 40 on Fantom, 30 on Gnosis, 50 on Polygon zkEVM), which is why the
+// table is cached per chain ID rather than shipped static.
 func fetchQuicknodeCreditUnits(ctx context.Context, apiKey, slug string) (map[string]int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, quicknodeApiCreditsBaseURL+url.PathEscape(slug), nil)
 	if err != nil {
