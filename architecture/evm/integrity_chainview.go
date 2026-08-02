@@ -372,7 +372,18 @@ func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string, 
 	if h == nil {
 		return nil, false
 	}
-	if num >= 0 {
+	// Only a by-NUMBER answer states what the chain IS at a height, so only it
+	// may move the pin. A by-hash fetch resolves a block the caller already
+	// named, which may legitimately be an ORPHAN — corroborating a block a
+	// client asked for by hash is how indexers unwind a reorg — so it
+	// contributes its immutable header and nothing else. observeBlockView has
+	// applied this rule to client responses since the by-hash scoping fix; the
+	// aux path never did, which left the pin poisonable through the back door:
+	// one orphan corroboration would pin the orphan at its height and then fail
+	// continuity on every honest by-number response that followed.
+	if method == "eth_getBlockByHash" {
+		c.observeHeader(h.Hash, h)
+	} else if num >= 0 {
 		c.observe(num, h.Hash, h)
 	}
 	return h, true
