@@ -510,7 +510,20 @@ func (c *chainView) finalityLabel(number int64) string {
 
 // resolveHeader force-fetches a header via the trusted network path (group-scoped,
 // inheriting the network's failsafe/consensus) and feeds it back into the view.
+// auxKind labels why a header fetch happened. The follower ingests EVERY block,
+// so folding its fetches in with check-driven corroboration would swamp the
+// metric and make the thing operators actually care about — what the checks
+// cost — unmeasurable.
+const (
+	auxKindHeader = "canonical_header"
+	auxKindFollow = "chain_follow"
+)
+
 func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string, fresh bool) (*integrity.Header, bool) {
+	return c.resolveHeaderKind(ctx, method, blockRef, fresh, auxKindHeader)
+}
+
+func (c *chainView) resolveHeaderKind(ctx context.Context, method, blockRef string, fresh bool, kind string) (*integrity.Header, bool) {
 	if c.network == nil {
 		return nil, false
 	}
@@ -538,7 +551,7 @@ func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string, 
 	if h != nil && !headerMatchesRef(h, num, method, blockRef) {
 		h = nil
 	}
-	c.emitAux("canonical_header", method, c.finalityLabel(num), h != nil)
+	c.emitAux(kind, method, c.finalityLabel(num), h != nil)
 	if h == nil {
 		return nil, false
 	}

@@ -44,6 +44,22 @@ func init() {
 			if err != nil || n <= 0 {
 				return Skipped
 			}
+			// Inside a FOLLOWED segment this check is redundant, and worse, it
+			// is the weaker of two overlapping tests. hashStability compares the
+			// response's own hash against the verified chain at this height,
+			// which is the direct question; blockHashRecompute independently
+			// proves the header hashes to the hash it claims. Together those
+			// force parentHash to equal chain[n-1] — so linking against the
+			// PARENT's pin adds no coverage there while carrying the whole cost
+			// of the parent-pin dispute (every false positive this module has
+			// produced came through this path). Outside a followed segment the
+			// parent pin may be the only thing we hold, so the check still earns
+			// its place.
+			if seg := segmentFrom(ctx); seg != nil {
+				if from, to, ok := seg.FollowedRange(); ok && n >= from && n <= to {
+					return Skipped
+				}
+			}
 			prev, ok := hist.HashAt(n - 1)
 			if !ok {
 				return Skipped // parent not observed yet — nothing to link against

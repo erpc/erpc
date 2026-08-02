@@ -199,5 +199,5 @@ func (c *chainView) fetchFollowHeader(ctx context.Context, n int64) (*integrity.
 			fresh = false // settled history: the cache cannot be wrong about it
 		}
 	}
-	return c.resolveHeader(ctx, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), fresh)
+	return c.resolveHeaderKind(ctx, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), fresh, auxKindFollow)
 }
