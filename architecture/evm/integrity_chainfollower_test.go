@@ -203,3 +203,32 @@ func mustFollowHead(t *testing.T, v *chainView) int64 {
 	require.True(t, ok)
 	return to
 }
+
+// FollowedRange is a promise: every height in it was verified block by block.
+// The consecutive-header checks decide whether a parent is trustworthy purely
+// from that promise, so the range must never outlive the pins behind it.
+// Eviction used to drop pins while leaving followBase pointing at the bootstrap
+// height, so the range silently grew to cover heights whose pins came from
+// ordinary traffic — possibly on another fork.
+func TestFollowedRangeNeverClaimsEvictedHeights(t *testing.T) {
+	chain := newFakeChain()
+	chain.build(100, 200, "a", "0xgenesis")
+	head := int64(100)
+	v := newChainView(chain.network(t), 8, "", "", nil) // small window to force eviction
+	f := newChainFollower(v, func(ctx context.Context) int64 { return head }, nil)
+
+	f.advance(context.Background()) // bootstrap at 100
+	for head = 105; head <= 140; head += 5 {
+		f.advance(context.Background())
+	}
+
+	from, to, ok := v.FollowedRange()
+	require.True(t, ok)
+	assert.LessOrEqual(t, to-from, int64(v.window),
+		"the claimed segment cannot be wider than the window that retains it")
+
+	for n := from; n <= to; n++ {
+		_, held := v.HashAt(n)
+		assert.True(t, held, "height %d is claimed as followed but its pin was evicted", n)
+	}
+}

@@ -406,6 +406,21 @@ func (c *chainView) evictLocked() {
 			delete(c.reconfirmedAt, k)
 		}
 	}
+	// The followed segment must not claim heights that were just evicted.
+	// FollowedRange is a promise that EVERY height in it was verified block by
+	// block, and the consecutive-header checks lean on exactly that promise to
+	// decide whether a parent is genuinely the block before this one on one
+	// chain. Left unmaintained, followBase keeps pointing at the bootstrap
+	// height forever, so the range grows to cover heights whose pins were
+	// re-learned from ordinary traffic — pins that may sit on another fork.
+	// Those checks would then compare across a fork boundary and could reject
+	// honest data, which is the one failure they exist to avoid.
+	if c.followHead != 0 && c.followBase < lo {
+		c.followBase = lo
+	}
+	if c.followBase > c.followHead {
+		c.followBase, c.followHead = 0, 0
+	}
 	max := c.window + cacheSlack
 	for len(c.headerOrder) > max {
 		h := c.headerOrder[0]
