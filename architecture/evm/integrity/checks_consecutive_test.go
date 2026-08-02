@@ -99,7 +99,7 @@ func TestBaseFeeDerivation(t *testing.T) {
 			Number: "0x64", Hash: "0xparent",
 			BaseFeePerGas: "0x3b9aca00", GasLimit: "0x1c9c380", GasUsed: "0x1c9c380",
 		}
-		want, ok := nextBaseFee(full, feeParams{elasticity: 2, denominator: 8})
+		want, ok := NextBaseFee(full, EIP1559Model{Derivable: true, Elasticity: 2, Denominator: 8})
 		require.True(t, ok)
 		assert.Equal(t, "1125000000", want.String(), "1 gwei + 1/8 of 1 gwei")
 
@@ -223,9 +223,9 @@ func TestFeeParamsDriveTheDerivation(t *testing.T) {
 		Number: "0x64", Hash: "0xparent",
 		BaseFeePerGas: "0x3b9aca00", GasLimit: "0x1c9c380", GasUsed: "0x1c9c380", // full block
 	}
-	mainnet, ok := nextBaseFee(parent, feeParams{elasticity: 2, denominator: 8})
+	mainnet, ok := NextBaseFee(parent, EIP1559Model{Derivable: true, Elasticity: 2, Denominator: 8})
 	require.True(t, ok)
-	opStack, ok := nextBaseFee(parent, feeParams{elasticity: 6, denominator: 250})
+	opStack, ok := NextBaseFee(parent, EIP1559Model{Derivable: true, Elasticity: 6, Denominator: 250})
 	require.True(t, ok)
 	assert.NotEqual(t, mainnet.String(), opStack.String(),
 		"different chain constants must produce different expected fees — that is why they cannot be assumed")
@@ -235,8 +235,8 @@ func TestFeeParamsDriveTheDerivation(t *testing.T) {
 			Number: "0x64", Hash: "0xparent",
 			BaseFeePerGas: "0x3b9aca00", GasLimit: "0x1c9c380", GasUsed: "0x0", // empty → fee falls
 		}
-		unclamped, _ := nextBaseFee(draining, feeParams{elasticity: 2, denominator: 8})
-		clamped, _ := nextBaseFee(draining, feeParams{elasticity: 2, denominator: 8, minBaseFee: 999999999})
+		unclamped, _ := NextBaseFee(draining, EIP1559Model{Derivable: true, Elasticity: 2, Denominator: 8})
+		clamped, _ := NextBaseFee(draining, EIP1559Model{Derivable: true, Elasticity: 2, Denominator: 8, MinBaseFee: 999999999})
 		assert.Equal(t, "999999999", clamped.String())
 		assert.NotEqual(t, unclamped.String(), clamped.String())
 	})
