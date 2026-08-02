@@ -8342,6 +8342,316 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
+          "description": "Vendor credit-unit burn rate (credits/sec) by vendor & method, across every physical upstream attempt (retries/hedges/consensus). Vendor's own units (Alchemy CU, QuickNode credits, dRPC CU) \u2014 not comparable across vendors.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 12,
+            "x": 0,
+            "y": 329
+          },
+          "id": 950,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_upstream_credit_units_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (vendor, category)",
+              "interval": "",
+              "legendFormat": "{{vendor}}, {{category}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Vendor Credit Units /s",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Credit-unit burn rate (credits/sec) by JSON-RPC method \u2014 surfaces which methods drive vendor cost (e.g. eth_getLogs on Alchemy = 60 CU).",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 12,
+            "x": 12,
+            "y": 329
+          },
+          "id": 951,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_upstream_credit_units_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (category)",
+              "interval": "",
+              "legendFormat": "{{category}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Credit Units /s by Method",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 341
+          },
+          "id": 952,
+          "options": {
+            "displayLabels": [
+              "name",
+              "value"
+            ],
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "values": [
+                "percent"
+              ]
+            },
+            "pieType": "pie",
+            "reduceOptions": {
+              "calcs": [
+                "sum"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "sort": "desc",
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum by (vendor) (increase(erpc_upstream_credit_units_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    vendor!=\"n/a\",\n    finality=~\"${finality:regex}\"\n}[$__range]))",
+              "format": "time_series",
+              "instant": true,
+              "interval": "1m",
+              "legendFormat": "{{vendor}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Vendor Credit Share (Top 20)",
+          "transformations": [
+            {
+              "id": "sortBy",
+              "options": {
+                "desc": true,
+                "fields": [
+                  "Value"
+                ],
+                "sort": [
+                  {
+                    "field": "Value"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "limit",
+              "options": {
+                "limit": 20,
+                "offset": 0
+              }
+            }
+          ],
+          "transparent": false,
+          "type": "piechart",
+          "description": "Share of total credit units accrued per vendor over the selected range."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "fieldConfig": {
             "defaults": {
               "color": {

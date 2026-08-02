@@ -634,7 +634,7 @@ projects:
 
 	// --- Behavioral: build a real network from the resolved configs and serve ---
 	const chainID = int64(5042002)
-	const chainIDHex = "0x4cef52" // 5042002
+	const chainIDHex = "0x4cef52"    // 5042002
 	const staleTip = int64(0x4c4b40) // 5,000,000
 	const finalizedHex = "0x4c4b30"  // staleTip - 16
 	const freshBlockHex = "0x4c4b41" // staleTip + 1 (the block the client saw via newHeads)

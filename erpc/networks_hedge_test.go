@@ -214,9 +214,9 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		// Set up network with quantile-based hedge
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
 			Delay: &common.AdaptiveDuration{
-				Base:     common.Duration(50 * time.Millisecond), // Base delay
-				Quantile: 0.9,                                    // 90th percentile
-				Min:      common.Duration(20 * time.Millisecond), // Min boundary
+				Base:     common.Duration(50 * time.Millisecond),  // Base delay
+				Quantile: 0.9,                                     // 90th percentile
+				Min:      common.Duration(20 * time.Millisecond),  // Min boundary
 				Max:      common.Duration(200 * time.Millisecond), // Max boundary
 			},
 			MaxCount: 1,
@@ -1797,7 +1797,6 @@ func TestNetwork_LatePrimaryResponseAfterHedgeWin_NoDoubleCounting(t *testing.T)
 		assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
 	}
 }
-
 
 func getUpstreamPair(t *testing.T, network *Network) (rpc1, rpc2 *upstream.Upstream) {
 	t.Helper()

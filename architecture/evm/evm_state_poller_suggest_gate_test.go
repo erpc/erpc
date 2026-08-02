@@ -62,16 +62,16 @@ func (u *suggestGateUpstream) isCordoned() bool {
 }
 
 // common.Upstream
-func (u *suggestGateUpstream) Id() string                      { return u.id }
-func (u *suggestGateUpstream) VendorName() string              { return "" }
-func (u *suggestGateUpstream) NetworkId() string               { return "evm:123" }
-func (u *suggestGateUpstream) NetworkLabel() string            { return "evm:123" }
-func (u *suggestGateUpstream) Config() *common.UpstreamConfig  { return u.cfg }
-func (u *suggestGateUpstream) Logger() *zerolog.Logger         { return &u.logger }
-func (u *suggestGateUpstream) Vendor() common.Vendor           { return nil }
-func (u *suggestGateUpstream) Tracker() common.HealthTracker   { return nil }
-func (u *suggestGateUpstream) IgnoreMethod(string)             {}
-func (u *suggestGateUpstream) Uncordon(_, _ string)            {}
+func (u *suggestGateUpstream) Id() string                     { return u.id }
+func (u *suggestGateUpstream) VendorName() string             { return "" }
+func (u *suggestGateUpstream) NetworkId() string              { return "evm:123" }
+func (u *suggestGateUpstream) NetworkLabel() string           { return "evm:123" }
+func (u *suggestGateUpstream) Config() *common.UpstreamConfig { return u.cfg }
+func (u *suggestGateUpstream) Logger() *zerolog.Logger        { return &u.logger }
+func (u *suggestGateUpstream) Vendor() common.Vendor          { return nil }
+func (u *suggestGateUpstream) Tracker() common.HealthTracker  { return nil }
+func (u *suggestGateUpstream) IgnoreMethod(string)            {}
+func (u *suggestGateUpstream) Uncordon(_, _ string)           {}
 func (u *suggestGateUpstream) ShouldHandleMethod(string) (bool, error) {
 	return true, nil
 }
@@ -97,10 +97,12 @@ func (u *suggestGateUpstream) EvmIsBlockFinalized(context.Context, int64, bool) 
 func (u *suggestGateUpstream) EvmAssertBlockAvailability(context.Context, string, common.AvailbilityConfidence, bool, int64) (bool, error) {
 	return true, nil
 }
-func (u *suggestGateUpstream) EvmSyncingState() common.EvmSyncingState { return common.EvmSyncingStateUnknown }
-func (u *suggestGateUpstream) EvmStatePoller() common.EvmStatePoller   { return nil }
-func (u *suggestGateUpstream) EvmEffectiveLatestBlock() int64          { return 0 }
-func (u *suggestGateUpstream) EvmEffectiveFinalizedBlock() int64       { return 0 }
+func (u *suggestGateUpstream) EvmSyncingState() common.EvmSyncingState {
+	return common.EvmSyncingStateUnknown
+}
+func (u *suggestGateUpstream) EvmStatePoller() common.EvmStatePoller { return nil }
+func (u *suggestGateUpstream) EvmEffectiveLatestBlock() int64        { return 0 }
+func (u *suggestGateUpstream) EvmEffectiveFinalizedBlock() int64     { return 0 }
 func (u *suggestGateUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
 	return math.MinInt64, math.MaxInt64
 }

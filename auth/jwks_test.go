@@ -179,8 +179,8 @@ func TestJwtStrategyStaticKeysOverrideJwksKid(t *testing.T) {
 
 	cfg := &common.JwtStrategyConfig{
 		VerificationJwksUrl: jwksURL,
-		VerificationKeys:  map[string]string{"shared-kid": testJwtHMACSecret},
-		AllowedAlgorithms: []string{"HS256"},
+		VerificationKeys:    map[string]string{"shared-kid": testJwtHMACSecret},
+		AllowedAlgorithms:   []string{"HS256"},
 	}
 
 	logger := zerolog.Nop()

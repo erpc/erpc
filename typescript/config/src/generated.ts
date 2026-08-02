@@ -647,6 +647,24 @@ export interface ProviderConfig {
   upstreamIdTemplate?: string;
   overrides?: { [key: string]: UpstreamConfig | undefined};
 }
+/**
+ * RateLimitCountMode selects the accounting unit an upstream's rate-limit
+ * budget charges per call.
+ */
+export type RateLimitCountMode = string;
+/**
+ * RateLimitCountModeRequest (default) charges a flat 1 hit per call,
+ * regardless of method — the historical eRPC behavior.
+ */
+export const RateLimitCountModeRequest: RateLimitCountMode = "request";
+/**
+ * RateLimitCountModeCredit charges the request's resolved vendor
+ * credit-unit cost (the same table used for cost accounting), so a
+ * heavy eth_getLogs consumes more budget than a cheap eth_blockNumber.
+ * The pre-flight table estimate is used (the real cost is not known
+ * until after the call); a 0-CU method consumes nothing.
+ */
+export const RateLimitCountModeCredit: RateLimitCountMode = "credit";
 export interface UpstreamConfig {
   id?: string;
   type?: TsUpstreamType;
@@ -679,6 +697,13 @@ export interface UpstreamConfig {
   failsafe?: (FailsafeConfig | undefined)[];
   rateLimitBudget?: string;
   rateLimitAutoTune?: RateLimitAutoTuneConfig;
+  /**
+   * RateLimitCountMode selects how this upstream's rate-limit budget
+   * counts a call: "request" (default) charges 1 hit, "credit" charges the
+   * request's resolved vendor credit-unit cost. Empty resolves to
+   * "request". Applies to the upstream-level budget only.
+   */
+  rateLimitCountMode?: RateLimitCountMode;
   /**
    * CreditUnits overrides the vendor's built-in per-method credit table
    * (CreditUnitsProvider) for this upstream, merged per method over the

@@ -107,6 +107,27 @@ func (u *Upstream) attemptCreditUnits(req *common.NormalizedRequest) int64 {
 	return defaultCreditUnitsPerRequest
 }
 
+// rateLimitHits returns the hit weight one rate-limit permit acquisition
+// consumes from this upstream's budget: a flat 1 in the default
+// request-count mode, or the request's PRE-FLIGHT estimated vendor
+// credit-unit cost when the upstream opts into credit counting
+// (RateLimitCountMode == "credit"). The estimate is table-based — the real
+// cost is not known until after the call — and a 0-CU method consumes
+// nothing. Clamped into uint32 for the Envoy hits-addend.
+func (u *Upstream) rateLimitHits(req *common.NormalizedRequest) uint32 {
+	if u == nil || u.config == nil || u.config.RateLimitCountMode != common.RateLimitCountModeCredit {
+		return 1
+	}
+	est := u.attemptCreditUnits(req)
+	if est <= 0 {
+		return 0
+	}
+	if est > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(est)
+}
+
 // deriveSelectionReason answers "why was this upstream picked for this
 // attempt" for the per-attempt record (UpstreamAttempt.Reason, the
 // X-ERPC-Upstreams trace, and erpc_upstream_selection_total).
@@ -543,7 +564,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream")
+			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitHits(nrq))
 			if err != nil {
 				common.SetTraceSpanError(span, err)
 				return nil, err
@@ -641,6 +662,23 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					string(reason),
 					finality.String(),
 				).Inc()
+				// Fold this attempt's vendor cost into the per-(project,
+				// network, upstream, vendor, method, finality) credit counter.
+				// The per-request aggregate (X-ERPC-Credits, CreditUnitsByVendor,
+				// CreditUnitsTotal) derives from the attempt log recorded just
+				// above, so no extra bookkeeping is needed for it here. Cost
+				// accrues for every attempt that dialed the vendor; 0-cost
+				// attempts (opted-out or never-dialed) are skipped.
+				if vendorName := u.VendorName(); creditUnits > 0 && vendorName != "" {
+					telemetry.MetricUpstreamCreditUnitsTotal.WithLabelValues(
+						u.ProjectId,
+						nrq.NetworkLabel(),
+						cfg.Id,
+						vendorName,
+						method,
+						finality.String(),
+					).Add(float64(creditUnits))
+				}
 			}()
 
 			// Span to track pre-request overhead (metrics, finality calculation)

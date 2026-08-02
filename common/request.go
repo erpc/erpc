@@ -272,6 +272,26 @@ func (r *NormalizedRequest) ExecState() *ExecState {
 	return r.execStateHolder.get()
 }
 
+// CreditUnitsTotal returns the total vendor credit units this request has
+// accrued across every upstream attempt (retries / hedges / consensus
+// included). Thread-safe. See ExecState.CreditUnitsTotal.
+func (r *NormalizedRequest) CreditUnitsTotal() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.ExecState().CreditUnitsTotal()
+}
+
+// CreditUnitsByVendor returns this request's per-vendor credit-unit totals,
+// summed across all attempts against each vendor. Nil when nothing has
+// accrued. Thread-safe. See ExecState.CreditUnitsByVendor.
+func (r *NormalizedRequest) CreditUnitsByVendor() map[string]int64 {
+	if r == nil {
+		return nil
+	}
+	return r.ExecState().CreditUnitsByVendor()
+}
+
 // IsInternal returns true when the request was constructed by an
 // internal subsystem (state poller, chainId probe, vendor detection).
 // Internal requests bypass retry, hedge, and breaker policies; only
