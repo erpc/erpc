@@ -49,6 +49,9 @@ var levelMembership = map[Level][]string{
 	},
 	LevelCorroborated: {
 		"parentHashLinkage", "hashStability", "getLogsCompleteness", "txPinConsistency",
+		// Judged against the PARENT header, so they need the follower's verified
+		// contiguous chain; without it they skip.
+		"baseFeeDerivation", "timestampMonotonicity",
 	},
 	LevelAuthoritative: {
 		"receiptVsBlock", "receiptsRootRecompute",

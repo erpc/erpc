@@ -190,6 +190,20 @@ func (c *chainView) FollowedRange() (from, to int64, ok bool) {
 	return c.followBase, c.followHead, true
 }
 
+// HeaderAt implements integrity.ChainSegment: the header committed at a height.
+// Cache-only — a consecutive-header check must never trigger a fetch, and a
+// miss simply means the check skips.
+func (c *chainView) HeaderAt(number int64) (*integrity.Header, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	hash, ok := c.canonical[number]
+	if !ok {
+		return nil, false
+	}
+	h, ok := c.headers[hash]
+	return h, ok
+}
+
 // reconcile resolves a block that does NOT link to the block we hold beneath
 // it, the way an indexer resolves a reorg: walk back along the new block's
 // ancestry until reaching a height where the branch and the followed chain
@@ -809,3 +823,9 @@ func (c *chainView) observeNarrowAnchors(fin int64, result []byte) {
 		pinIfFinal(one.BlockNumber, one.BlockHash)
 	}
 }
+
+// chainView satisfies the optional History extensions the checks look for.
+var (
+	_ integrity.History      = (*chainView)(nil)
+	_ integrity.ChainSegment = (*chainView)(nil)
+)

@@ -68,3 +68,46 @@ func historyFrom(ctx context.Context) History {
 	h, _ := ctx.Value(historyKey{}).(History)
 	return h
 }
+
+// ChainSegment optionally extends History with the CONTIGUOUS, parent-linked
+// chain segment a follower has verified block by block.
+//
+// It exists to keep a hard line between two very different kinds of knowledge.
+// HashAt answers from whatever the view happens to hold, including sparse pins
+// learned from passing traffic — fine for "have I seen this height", useless as
+// a basis for reasoning about adjacency. A check that compares a block to its
+// PARENT (base-fee derivation, timestamp ordering, gas-limit drift) is only
+// sound when the parent is genuinely the block before it on one verified
+// chain — otherwise it would compare across a fork boundary and reject honest
+// data. Checks therefore ask for the segment first and skip when the height
+// they need is outside it.
+type ChainSegment interface {
+	// FollowedRange is the inclusive verified segment; ok=false when nothing
+	// has been followed (the follower is off or still bootstrapping).
+	FollowedRange() (from, to int64, ok bool)
+	// HeaderAt returns the header committed at a height within that segment.
+	HeaderAt(number int64) (*Header, bool)
+}
+
+// segmentFrom returns the verified chain segment, if the History implementation
+// provides one.
+func segmentFrom(ctx context.Context) ChainSegment {
+	seg, _ := historyFrom(ctx).(ChainSegment)
+	return seg
+}
+
+// parentInSegment returns the header for number-1 when BOTH it and number sit
+// inside the verified segment, so the caller knows the two are genuinely
+// adjacent on one chain. Any other situation returns false and the caller must
+// skip rather than guess.
+func parentInSegment(ctx context.Context, number int64) (*Header, bool) {
+	seg := segmentFrom(ctx)
+	if seg == nil || number <= 0 {
+		return nil, false
+	}
+	from, to, ok := seg.FollowedRange()
+	if !ok || number < from+1 || number > to {
+		return nil, false
+	}
+	return seg.HeaderAt(number - 1)
+}

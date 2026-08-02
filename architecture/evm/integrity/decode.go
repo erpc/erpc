@@ -63,7 +63,14 @@ type Header struct {
 	ReceiptsRoot     string `json:"receiptsRoot"`
 	LogsBloom        string `json:"logsBloom"`
 	Number           string `json:"number"`
-	RawTransactions  []any  `json:"transactions"`
+	// Consecutive-header fields: only meaningful against the PARENT header, so
+	// they are used exclusively by checks that run over a verified contiguous
+	// chain segment (see ChainSegment).
+	Timestamp       string `json:"timestamp"`
+	GasLimit        string `json:"gasLimit"`
+	GasUsed         string `json:"gasUsed"`
+	BaseFeePerGas   string `json:"baseFeePerGas"`
+	RawTransactions []any  `json:"transactions"`
 }
 
 // Decoded is a response result decoded once into normalized EVM views. Each

@@ -21,11 +21,19 @@ var chainProfiles = map[int64][]string{
 	// roots but omitted from eth_getBlock*'s transactions list — the whole
 	// tx/receipt-root family is unreproducible, including the structural
 	// has-txs⟺non-empty-root consistency check.
-	999: {"transactionsRootRecompute", "receiptsRootRecompute", "transactionsRootConsistency"},
+	999: {"transactionsRootRecompute", "receiptsRootRecompute", "transactionsRootConsistency", "baseFeeDerivation"},
 	// Polygon PoS: bor's state-sync transactions are committed but not listed.
 	137: {"transactionsRootRecompute", "receiptsRootRecompute"},
 	// Arbitrum One: ArbOS internal transactions are committed but not listed.
-	42161: {"transactionsRootRecompute", "receiptsRootRecompute"},
+	// Its base fee is also set by ArbOS rather than derived from the parent by
+	// the EIP-1559 formula, so that derivation is protocol-invalid here.
+	42161: {"transactionsRootRecompute", "receiptsRootRecompute", "baseFeeDerivation"},
+	// Base (OP Stack): EIP-1559 is implemented with DIFFERENT parameters than
+	// mainnet's (elasticity/denominator), so the mainnet derivation would
+	// mismatch on every block. Excluded until the constants are verified per
+	// chain rather than assumed — a wrong constant here rejects honest data on
+	// every single block, which is the worst failure this module can have.
+	8453: {"baseFeeDerivation"},
 }
 
 // ApplyChainProfile removes the checks that are protocol-invalid on the given
