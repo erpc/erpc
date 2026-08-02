@@ -3,6 +3,7 @@ package integrity
 import (
 	"context"
 	"math/big"
+	"strconv"
 
 	"github.com/erpc/erpc/common"
 )
@@ -22,11 +23,13 @@ import (
 // checks buy their strength from the follower and must not pretend to it
 // otherwise.
 
-// eip1559ElasticityMultiplier and eip1559BaseFeeChangeDenominator are the
-// protocol constants that make the next base fee a pure function of the parent.
+// Mainnet's EIP-1559 constants, used only as the fallback when a caller
+// supplies none. Which constants apply is a per-chain fact (see ChainProfile /
+// FeeModel), established by replaying live blocks rather than assumed — the
+// chain profile normally injects them as check params.
 const (
-	eip1559ElasticityMultiplier     = 2
-	eip1559BaseFeeChangeDenominator = 8
+	defaultElasticity  = 2
+	defaultDenominator = 8
 )
 
 func init() {
@@ -60,7 +63,7 @@ func init() {
 			if parent.BaseFeePerGas == "" || parent.GasLimit == "" || parent.GasUsed == "" {
 				return Skipped
 			}
-			want, ok := nextBaseFee(parent)
+			want, ok := nextBaseFee(parent, feeParamsFrom(cfg))
 			if !ok {
 				return Skipped
 			}
@@ -69,8 +72,10 @@ func init() {
 				return Skipped
 			}
 			if want.Cmp(got) != 0 {
-				return failf("block %d baseFeePerGas %s does not follow from parent (gasUsed %s, gasLimit %s, baseFee %s) — expected %s",
-					n, got.String(), parent.GasUsed, parent.GasLimit, parent.BaseFeePerGas, want.String())
+				fp := feeParamsFrom(cfg)
+				return failf("block %d baseFeePerGas %s does not follow from parent (gasUsed %s, gasLimit %s, baseFee %s) with elasticity %d / denominator %d — expected %s",
+					n, got.String(), parent.GasUsed, parent.GasLimit, parent.BaseFeePerGas,
+					fp.elasticity, fp.denominator, want.String())
 			}
 			return nil
 		},
@@ -110,9 +115,33 @@ func init() {
 	})
 }
 
-// nextBaseFee computes the base fee a child of `parent` must carry, per
-// EIP-1559. Returns ok=false when the parent's fields cannot be parsed.
-func nextBaseFee(parent *Header) (*big.Int, bool) {
+// feeParams are the chain's EIP-1559 constants for this evaluation.
+type feeParams struct {
+	elasticity  int64
+	denominator int64
+	minBaseFee  int64
+}
+
+// feeParamsFrom reads the constants the chain profile injected, falling back to
+// mainnet's when a caller supplies none (library use).
+func feeParamsFrom(cfg CheckConfig) feeParams {
+	p := feeParams{elasticity: defaultElasticity, denominator: defaultDenominator}
+	if v, err := strconv.ParseInt(cfg.param("elasticity", ""), 10, 64); err == nil && v > 0 {
+		p.elasticity = v
+	}
+	if v, err := strconv.ParseInt(cfg.param("denominator", ""), 10, 64); err == nil && v > 0 {
+		p.denominator = v
+	}
+	if v, err := strconv.ParseInt(cfg.param("minBaseFee", ""), 10, 64); err == nil && v > 0 {
+		p.minBaseFee = v
+	}
+	return p
+}
+
+// nextBaseFee computes the base fee a child of `parent` must carry under the
+// EIP-1559 formula with the given chain constants. Returns ok=false when the
+// parent's fields cannot be parsed.
+func nextBaseFee(parent *Header, fp feeParams) (*big.Int, bool) {
 	parentBaseFee, ok1 := hexToBig(parent.BaseFeePerGas)
 	parentGasLimit, ok2 := hexToBig(parent.GasLimit)
 	parentGasUsed, ok3 := hexToBig(parent.GasUsed)
@@ -120,7 +149,7 @@ func nextBaseFee(parent *Header) (*big.Int, bool) {
 		return nil, false
 	}
 
-	gasTarget := new(big.Int).Div(parentGasLimit, big.NewInt(eip1559ElasticityMultiplier))
+	gasTarget := new(big.Int).Div(parentGasLimit, big.NewInt(fp.elasticity))
 	if gasTarget.Sign() == 0 {
 		return nil, false
 	}
@@ -128,31 +157,39 @@ func nextBaseFee(parent *Header) (*big.Int, bool) {
 	switch parentGasUsed.Cmp(gasTarget) {
 	case 0:
 		// Exactly on target: the fee is unchanged.
-		return new(big.Int).Set(parentBaseFee), true
+		return clampFee(new(big.Int).Set(parentBaseFee), fp), true
 
 	case 1:
 		// Above target: the fee rises by at least 1 wei.
 		delta := new(big.Int).Sub(parentGasUsed, gasTarget)
 		delta.Mul(delta, parentBaseFee)
 		delta.Div(delta, gasTarget)
-		delta.Div(delta, big.NewInt(eip1559BaseFeeChangeDenominator))
+		delta.Div(delta, big.NewInt(fp.denominator))
 		if delta.Sign() == 0 {
 			delta = big.NewInt(1)
 		}
-		return new(big.Int).Add(parentBaseFee, delta), true
+		return clampFee(new(big.Int).Add(parentBaseFee, delta), fp), true
 
 	default:
 		// Below target: the fee falls, floored at zero.
 		delta := new(big.Int).Sub(gasTarget, parentGasUsed)
 		delta.Mul(delta, parentBaseFee)
 		delta.Div(delta, gasTarget)
-		delta.Div(delta, big.NewInt(eip1559BaseFeeChangeDenominator))
+		delta.Div(delta, big.NewInt(fp.denominator))
 		next := new(big.Int).Sub(parentBaseFee, delta)
 		if next.Sign() < 0 {
 			next = big.NewInt(0)
 		}
-		return next, true
+		return clampFee(next, fp), true
 	}
+}
+
+// clampFee applies the chain's floor, where it has one.
+func clampFee(v *big.Int, fp feeParams) *big.Int {
+	if fp.minBaseFee > 0 && v.Cmp(big.NewInt(fp.minBaseFee)) < 0 {
+		return big.NewInt(fp.minBaseFee)
+	}
+	return v
 }
 
 // hexToBig parses a 0x-prefixed quantity into a big.Int.

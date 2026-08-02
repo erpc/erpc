@@ -99,7 +99,7 @@ func TestBaseFeeDerivation(t *testing.T) {
 			Number: "0x64", Hash: "0xparent",
 			BaseFeePerGas: "0x3b9aca00", GasLimit: "0x1c9c380", GasUsed: "0x1c9c380",
 		}
-		want, ok := nextBaseFee(full)
+		want, ok := nextBaseFee(full, feeParams{elasticity: 2, denominator: 8})
 		require.True(t, ok)
 		assert.Equal(t, "1125000000", want.String(), "1 gwei + 1/8 of 1 gwei")
 
@@ -174,15 +174,70 @@ func TestTimestampMonotonicity(t *testing.T) {
 	})
 }
 
-// A wrong EIP-1559 constant would reject honest data on EVERY block, so chains
-// whose parameters are not mainnet's must be excluded rather than assumed.
-func TestBaseFeeDerivationIsExcludedWhereParametersDiffer(t *testing.T) {
-	for _, chainId := range []int64{42161, 8453, 999, 137} {
-		assert.Contains(t, ChainProfileDisables(chainId), "baseFeeDerivation",
-			"chain %d does not use mainnet EIP-1559 parameters and must not run the derivation", chainId)
+// The derivation runs ONLY on chains whose fee model has been characterised.
+// A wrong constant rejects EVERY block, so an uncharacterised chain must get
+// silence rather than mainnet's constants by default.
+func TestBaseFeeDerivationRunsOnlyWhereTheFeeModelIsCharacterised(t *testing.T) {
+	withCheck := func(chainId int64) (CheckConfig, bool) {
+		cs := CheckSet{"baseFeeDerivation": CheckConfig{Enabled: true}}
+		ApplyChainProfile(cs, chainId)
+		cfg, ok := cs["baseFeeDerivation"]
+		return cfg, ok
 	}
-	// Mainnet is the one chain proven compatible against live blocks (53 passes,
-	// 0 rejects on the shadow). Every other chain must earn inclusion the same
-	// way rather than be assumed.
-	assert.NotContains(t, ChainProfileDisables(1), "baseFeeDerivation")
+
+	t.Run("mainnet runs it with its verified constants", func(t *testing.T) {
+		cfg, ok := withCheck(1)
+		require.True(t, ok, "mainnet is characterised and must run the derivation")
+		assert.Equal(t, "2", cfg.Params["elasticity"])
+		assert.Equal(t, "8", cfg.Params["denominator"])
+	})
+
+	// Measured, not assumed: no (elasticity, denominator, floor) reproduces
+	// these chains' observed base-fee sequences.
+	for _, chainId := range []int64{137, 42161, 56} {
+		t.Run(fmt.Sprintf("chain %d is not derivable", chainId), func(t *testing.T) {
+			_, ok := withCheck(chainId)
+			assert.False(t, ok, "a chain whose fee provably does not follow from its parent must not run the derivation")
+		})
+	}
+
+	// Base and HyperEVM sampled with the fee pinned at a floor, which cannot
+	// identify constants — so they stay uncharacterised rather than guessed.
+	for _, chainId := range []int64{8453, 999} {
+		t.Run(fmt.Sprintf("chain %d is uncharacterised", chainId), func(t *testing.T) {
+			_, ok := withCheck(chainId)
+			assert.False(t, ok, "an uncharacterised chain must not inherit mainnet's constants")
+		})
+	}
+
+	t.Run("an unknown chain gets silence, not mainnet's constants", func(t *testing.T) {
+		_, ok := withCheck(1337424242)
+		assert.False(t, ok)
+	})
+}
+
+// The constants actually drive the arithmetic, so a chain with a different
+// model computes a different expected fee.
+func TestFeeParamsDriveTheDerivation(t *testing.T) {
+	parent := &Header{
+		Number: "0x64", Hash: "0xparent",
+		BaseFeePerGas: "0x3b9aca00", GasLimit: "0x1c9c380", GasUsed: "0x1c9c380", // full block
+	}
+	mainnet, ok := nextBaseFee(parent, feeParams{elasticity: 2, denominator: 8})
+	require.True(t, ok)
+	opStack, ok := nextBaseFee(parent, feeParams{elasticity: 6, denominator: 250})
+	require.True(t, ok)
+	assert.NotEqual(t, mainnet.String(), opStack.String(),
+		"different chain constants must produce different expected fees — that is why they cannot be assumed")
+
+	t.Run("a floor clamps the computed fee", func(t *testing.T) {
+		draining := &Header{
+			Number: "0x64", Hash: "0xparent",
+			BaseFeePerGas: "0x3b9aca00", GasLimit: "0x1c9c380", GasUsed: "0x0", // empty → fee falls
+		}
+		unclamped, _ := nextBaseFee(draining, feeParams{elasticity: 2, denominator: 8})
+		clamped, _ := nextBaseFee(draining, feeParams{elasticity: 2, denominator: 8, minBaseFee: 999999999})
+		assert.Equal(t, "999999999", clamped.String())
+		assert.NotEqual(t, unclamped.String(), clamped.String())
+	})
 }
