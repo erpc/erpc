@@ -38,6 +38,18 @@ func init() {
 				return failf("transactionsRoot %s is non-empty but block has 0 transactions; incomplete block data", h.TransactionsRoot)
 			}
 			if isEmptyRoot && count > 0 && !allPhantomRawTxs(h.RawTransactions) {
+				// A hash-only list (fullTransactions=false) cannot settle this.
+				// Whether a transaction is a system/phantom tx that stays out of
+				// the trie is a property of the transaction OBJECT — from, gas,
+				// or the synthetic signature — and none of that survives in a
+				// bare hash. On a chain that keeps system txs out of the trie,
+				// an empty root beside a hash-only list is therefore normal, and
+				// rejecting it means asserting on data we cannot evaluate. That
+				// is exactly what happened on hyperevm: 5 of 5 upstreams
+				// rejected honest blocks whose only transaction was hash-only.
+				if anyHashOnlyTx(h.RawTransactions) {
+					return Skipped
+				}
 				return failf("transactionsRoot is empty trie root but block has %d non-phantom transactions; inconsistent block data", count)
 			}
 			return nil
@@ -142,6 +154,18 @@ func allPhantomRawTxs(raw []any) bool {
 		}
 	}
 	return true
+}
+
+// anyHashOnlyTx reports whether the list contains a bare transaction hash
+// rather than a full object, which is what eth_getBlock*(fullTransactions=false)
+// returns and what makes phantom-ness undecidable.
+func anyHashOnlyTx(raw []any) bool {
+	for _, t := range raw {
+		if _, ok := t.(map[string]any); !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // isPhantomRawTx recognises the system-transaction shapes that chains inject
