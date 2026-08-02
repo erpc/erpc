@@ -63,8 +63,8 @@ func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Ne
 		Architecture: common.ArchitectureEvm,
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		SelectionPolicy: &common.SelectionPolicyConfig{
-			EvalInterval:    common.Duration(0), // frozen — tests drive ticks manually
-			EvalTimeout:     common.Duration(50 * time.Millisecond),
+			EvalInterval: common.Duration(0), // frozen — tests drive ticks manually
+			EvalTimeout:  common.Duration(50 * time.Millisecond),
 		},
 	}
 	require.NoError(t, networkConfig.SelectionPolicy.SetDefaults())

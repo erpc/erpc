@@ -814,6 +814,22 @@ func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
 	}, nil
 }
 
+// RateLimitCountMode selects the accounting unit an upstream's rate-limit
+// budget charges per call.
+type RateLimitCountMode string
+
+const (
+	// RateLimitCountModeRequest (default) charges a flat 1 hit per call,
+	// regardless of method — the historical eRPC behavior.
+	RateLimitCountModeRequest RateLimitCountMode = "request"
+	// RateLimitCountModeCredit charges the request's resolved vendor
+	// credit-unit cost (the same table used for cost accounting), so a
+	// heavy eth_getLogs consumes more budget than a cheap eth_blockNumber.
+	// The pre-flight table estimate is used (the real cost is not known
+	// until after the call); a 0-CU method consumes nothing.
+	RateLimitCountModeCredit RateLimitCountMode = "credit"
+)
+
 type UpstreamConfig struct {
 	Id   string       `yaml:"id,omitempty" json:"id"`
 	Type UpstreamType `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
@@ -849,6 +865,11 @@ type UpstreamConfig struct {
 	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
+	// RateLimitCountMode selects how this upstream's rate-limit budget
+	// counts a call: "request" (default) charges 1 hit, "credit" charges the
+	// request's resolved vendor credit-unit cost. Empty resolves to
+	// "request". Applies to the upstream-level budget only.
+	RateLimitCountMode RateLimitCountMode `yaml:"rateLimitCountMode,omitempty" json:"rateLimitCountMode,omitempty"`
 	// CreditUnits overrides the vendor's built-in per-method credit table
 	// (CreditUnitsProvider) for this upstream, merged per method over the
 	// vendor defaults ("*" = fallback for unlisted methods). Normally set

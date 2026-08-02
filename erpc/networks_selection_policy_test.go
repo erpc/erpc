@@ -11,14 +11,14 @@
 // policy against real-shaped data.
 //
 // Test pattern:
-//   1. Build the network (frozen ticker; tests drive ticks).
-//   2. Seed metrics on the tracker to simulate the observed prod state
-//      (slow upstream / erroring upstream / lagging / throttled / etc.).
-//   3. Force one policy tick — the engine reads metrics, runs the
-//      default policy chain, atomically swaps the cached upstream order.
-//   4. Set up gock mocks for the upstreams.
-//   5. Send one real request through `network.Forward(ctx, req)`.
-//   6. Assert which mocks were consumed (gock.Pending() bookkeeping).
+//  1. Build the network (frozen ticker; tests drive ticks).
+//  2. Seed metrics on the tracker to simulate the observed prod state
+//     (slow upstream / erroring upstream / lagging / throttled / etc.).
+//  3. Force one policy tick — the engine reads metrics, runs the
+//     default policy chain, atomically swaps the cached upstream order.
+//  4. Set up gock mocks for the upstreams.
+//  5. Send one real request through `network.Forward(ctx, req)`.
+//  6. Assert which mocks were consumed (gock.Pending() bookkeeping).
 package erpc
 
 import (
@@ -800,10 +800,10 @@ func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 // new probe-driven re-admission model, an excluded upstream STAYS
 // excluded forever regardless of elapsed time, until its tracker
 // counters fall back below the excludeIf threshold. Verifies that:
-//   1. A degraded upstream is excluded on the first tick.
-//   2. Even after arbitrary virtual-time advancement, it stays excluded.
-//   3. Once clean samples drag its rolling error rate below 0.7, the
-//      next tick re-admits it.
+//  1. A degraded upstream is excluded on the first tick.
+//  2. Even after arbitrary virtual-time advancement, it stays excluded.
+//  3. Once clean samples drag its rolling error rate below 0.7, the
+//     next tick re-admits it.
 //
 // The probe subsystem itself feeds those clean samples in production
 // (mirrored real traffic); this test simulates that by directly

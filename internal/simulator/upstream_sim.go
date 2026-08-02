@@ -66,7 +66,7 @@ type UpstreamHub struct {
 	mu    sync.RWMutex
 	knobs map[string]*UpstreamKnobs
 
-	heads   sync.Map // map[string]*upstreamHead — per-upstream chain view
+	heads   sync.Map     // map[string]*upstreamHead — per-upstream chain view
 	hubHead atomic.Int64 // ceiling shared across upstreams (set from max of all heads)
 
 	server   *http.Server

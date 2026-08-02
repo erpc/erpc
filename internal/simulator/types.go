@@ -31,10 +31,10 @@ import (
 //
 // Outcome model (rolled in this order, first-match wins):
 //
-//	1. r < throttleRate  →  HTTP 429
-//	2. r < +timeoutRate  →  server hangs past the eRPC timeout
-//	3. r < +errorRate    →  HTTP 500 / JSON-RPC error
-//	otherwise            →  successful JSON-RPC response
+//  1. r < throttleRate  →  HTTP 429
+//  2. r < +timeoutRate  →  server hangs past the eRPC timeout
+//  3. r < +errorRate    →  HTTP 500 / JSON-RPC error
+//     otherwise            →  successful JSON-RPC response
 //
 // BlockLag is reported via `eth_blockNumber` responses (subtracted from
 // the simulator's notion of head height). `Available=false` makes the
@@ -114,9 +114,9 @@ type TraceEvent struct {
 	//   * ConsensusSlots   — # of consensus participants spawned
 	//   * ConsensusDisputes — # of dispute events
 	//   * ConsensusLowParts — # of low-participants events
-	ConsensusSlots     int `json:"consensusSlots,omitempty"`
-	ConsensusDisputes  int `json:"consensusDisputes,omitempty"`
-	ConsensusLowParts  int `json:"consensusLowParts,omitempty"`
+	ConsensusSlots    int `json:"consensusSlots,omitempty"`
+	ConsensusDisputes int `json:"consensusDisputes,omitempty"`
+	ConsensusLowParts int `json:"consensusLowParts,omitempty"`
 
 	// RequestError is the FINAL error string returned by
 	// `Network.Forward` to the caller. This is what the client
@@ -195,19 +195,19 @@ type TraceAttempt struct {
 // Error is the eval-error string (timeout / throw / invalid_return /
 // fallback_default) when the tick failed; empty otherwise.
 type PolicyDecisionFrame struct {
-	DecisionID     string                       `json:"id"`
-	TickMs         int64                        `json:"tickMs"`
-	EvalDurationUs int64                        `json:"evalDurationUs"`
-	NetworkID      string                       `json:"networkId"`
-	Method         string                       `json:"method"`
-	Order          []string                     `json:"order"`
-	Excluded       []PolicyDecisionExcludedRow  `json:"excluded,omitempty"`
-	Scores         map[string]float64           `json:"scores,omitempty"`
-	PrimaryChanged bool                         `json:"primaryChanged,omitempty"`
-	OrderChanged   bool                         `json:"orderChanged,omitempty"`
-	Added          []string                     `json:"added,omitempty"`
-	Removed        []string                     `json:"removed,omitempty"`
-	Error          string                       `json:"error,omitempty"`
+	DecisionID     string                      `json:"id"`
+	TickMs         int64                       `json:"tickMs"`
+	EvalDurationUs int64                       `json:"evalDurationUs"`
+	NetworkID      string                      `json:"networkId"`
+	Method         string                      `json:"method"`
+	Order          []string                    `json:"order"`
+	Excluded       []PolicyDecisionExcludedRow `json:"excluded,omitempty"`
+	Scores         map[string]float64          `json:"scores,omitempty"`
+	PrimaryChanged bool                        `json:"primaryChanged,omitempty"`
+	OrderChanged   bool                        `json:"orderChanged,omitempty"`
+	Added          []string                    `json:"added,omitempty"`
+	Removed        []string                    `json:"removed,omitempty"`
+	Error          string                      `json:"error,omitempty"`
 
 	// Steps is the per-step trail the stdlib recorded during this tick's
 	// chain evaluation. One entry per chainable stdlib step invoked, in
@@ -319,21 +319,21 @@ type StatsFrame struct {
 // score chip in the UI is exactly what the policy is ranking on.
 type UpstreamStatsRow struct {
 	// Health metrics, all from eRPC's health.Tracker:
-	ErrorRate       float64 `json:"errorRate"`       // ErrorsTotal / RequestsTotal (policy-visible)
-	ThrottleRate    float64 `json:"throttleRate"`    // RemoteRateLimitedTotal / RequestsTotal
-	MisbehaviorRate float64 `json:"misbehaviorRate"` // MisbehaviorsTotal / RequestsTotal
-	P50Ms           float64 `json:"p50"`             // from ResponseQuantiles (ms)
-	P70Ms           float64 `json:"p70"`             // the quantile sortByScore(PREFER_FASTEST) uses by default
-	P90Ms           float64 `json:"p90"`
-	P95Ms           float64 `json:"p95"`
+	ErrorRate              float64 `json:"errorRate"`       // ErrorsTotal / RequestsTotal (policy-visible)
+	ThrottleRate           float64 `json:"throttleRate"`    // RemoteRateLimitedTotal / RequestsTotal
+	MisbehaviorRate        float64 `json:"misbehaviorRate"` // MisbehaviorsTotal / RequestsTotal
+	P50Ms                  float64 `json:"p50"`             // from ResponseQuantiles (ms)
+	P70Ms                  float64 `json:"p70"`             // the quantile sortByScore(PREFER_FASTEST) uses by default
+	P90Ms                  float64 `json:"p90"`
+	P95Ms                  float64 `json:"p95"`
 	BlockHeadLag           int     `json:"blockHeadLag"`
 	FinalizationLag        int     `json:"finalizationLag"`
-	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds"`    // block-count × tracker's EMA block-time
+	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds"` // block-count × tracker's EMA block-time
 	FinalizationLagSeconds float64 `json:"finalizationLagSeconds"`
-	Cordoned        bool    `json:"cordoned,omitempty"`
-	CordonedReason  string  `json:"cordonedReason,omitempty"`
-	RequestsTotal   int64   `json:"requestsTotal"` // sample size in the current window — useful for sparse-data signal
-	ErrorsTotal     int64   `json:"errorsTotal"`
+	Cordoned               bool    `json:"cordoned,omitempty"`
+	CordonedReason         string  `json:"cordonedReason,omitempty"`
+	RequestsTotal          int64   `json:"requestsTotal"` // sample size in the current window — useful for sparse-data signal
+	ErrorsTotal            int64   `json:"errorsTotal"`
 
 	// Score the JS `sortByScore` step produced this tick (lower = better).
 	PenaltyScore float64 `json:"score"`

@@ -4,37 +4,37 @@
 //
 // Architecture (browser drives traffic, backend executes real eRPC):
 //
-//   ┌──────────────────────────────────────────────────────────────────────┐
-//   │  erpc-simulator (Go)                                                 │
-//   │                                                                      │
-//   │   ┌─────────────────────┐    ┌──────────────────────────┐            │
-//   │   │ static asset server │    │  WebSocket /ws            │            │
-//   │   │ /index.html, .css,  │    │  per-conn Session:        │            │
-//   │   │ .jsx, .js (embed.FS)│    │   - reads send-batch      │            │
-//   │   └─────────────────────┘    │   - executes via          │            │
-//   │             ↑                │     Orchestrator.Execute  │            │
-//   │     HTTP    │                │   - flushes stats + traces│            │
-//   │             ↓                └────────────┬──────────────┘            │
-//   │                                           ↓                           │
-//   │                              ┌────────────────────────────┐           │
-//   │                              │  Orchestrator               │          │
-//   │                              │   ├─ real *erpc.ERPC        │          │
-//   │                              │   ├─ real *erpc.Network     │          │
-//   │                              │   │     ↓ Forward(ctx,req)  │          │
-//   │                              │   ├─ UpstreamHub (fakes)    │          │
-//   │                              │   │     ↑ HTTP loopback     │          │
-//   │                              │   └─ Rolling counters       │          │
-//   │                              │       + scenario loop       │          │
-//   │                              └────────────────────────────┘           │
-//   └──────────────────────────────────────────────────────────────────────┘
-//                                       ↑ WebSocket (JSON frames)
-//   ┌──────────────────────────────────────────────────────────────────────┐
-//   │  Browser tab                                                         │
-//   │   - React + Babel UI                                                 │
-//   │   - simulator.js: traffic generator (poisson/constant/bursty),       │
-//   │     method sampler, WS shim. Sends `send-batch` frames per tick.     │
-//   │   - flow stage, charts, policy editor, knob panel, log/drawer.       │
-//   └──────────────────────────────────────────────────────────────────────┘
+//	┌──────────────────────────────────────────────────────────────────────┐
+//	│  erpc-simulator (Go)                                                 │
+//	│                                                                      │
+//	│   ┌─────────────────────┐    ┌──────────────────────────┐            │
+//	│   │ static asset server │    │  WebSocket /ws            │            │
+//	│   │ /index.html, .css,  │    │  per-conn Session:        │            │
+//	│   │ .jsx, .js (embed.FS)│    │   - reads send-batch      │            │
+//	│   └─────────────────────┘    │   - executes via          │            │
+//	│             ↑                │     Orchestrator.Execute  │            │
+//	│     HTTP    │                │   - flushes stats + traces│            │
+//	│             ↓                └────────────┬──────────────┘            │
+//	│                                           ↓                           │
+//	│                              ┌────────────────────────────┐           │
+//	│                              │  Orchestrator               │          │
+//	│                              │   ├─ real *erpc.ERPC        │          │
+//	│                              │   ├─ real *erpc.Network     │          │
+//	│                              │   │     ↓ Forward(ctx,req)  │          │
+//	│                              │   ├─ UpstreamHub (fakes)    │          │
+//	│                              │   │     ↑ HTTP loopback     │          │
+//	│                              │   └─ Rolling counters       │          │
+//	│                              │       + scenario loop       │          │
+//	│                              └────────────────────────────┘           │
+//	└──────────────────────────────────────────────────────────────────────┘
+//	                                    ↑ WebSocket (JSON frames)
+//	┌──────────────────────────────────────────────────────────────────────┐
+//	│  Browser tab                                                         │
+//	│   - React + Babel UI                                                 │
+//	│   - simulator.js: traffic generator (poisson/constant/bursty),       │
+//	│     method sampler, WS shim. Sends `send-batch` frames per tick.     │
+//	│   - flow stage, charts, policy editor, knob panel, log/drawer.       │
+//	└──────────────────────────────────────────────────────────────────────┘
 //
 // Usage:
 //
