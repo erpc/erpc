@@ -95,3 +95,23 @@ func TestChainProfileResolvesArchitectureThenOverrides(t *testing.T) {
 		assert.Equal(t, "5000000", cfg.Params["minBaseFee"])
 	})
 }
+
+// The execution-context probe is per-architecture because block.number does NOT
+// mean "this chain's height" everywhere. Measured on Arbitrum: Multicall3
+// getBlockNumber pinned at L2 490382800 answered 25668365 — the L1 height — so
+// the standard probe mislabels every honest Nitro node as stale; the ArbSys
+// precompile's arbBlockNumber() answered the pinned height exactly.
+func TestStateContextProbePerArchitecture(t *testing.T) {
+	std := ChainStateContextProbe(1)
+	require.NotNil(t, std)
+	assert.Equal(t, "0x42cbb15c", std.Data, "standard EVMs probe via Multicall3 getBlockNumber")
+
+	arb := ChainStateContextProbe(42161)
+	require.NotNil(t, arb)
+	assert.Equal(t, "0x0000000000000000000000000000000000000064", arb.To, "Nitro probes the ArbSys precompile")
+	assert.Equal(t, "0xa3b1b31d", arb.Data, "arbBlockNumber() — block.number would answer the L1 height")
+
+	unknown := ChainStateContextProbe(987654321)
+	require.NotNil(t, unknown)
+	assert.Equal(t, std.To, unknown.To, "an unknown chain gets the standard probe — worst case it reads unsupported and never advances, it cannot mislabel")
+}

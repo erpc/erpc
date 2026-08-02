@@ -43,10 +43,10 @@ import (
 // state methods asserts AvailbilityConfidenceStateProven against it. Failure
 // just fails to advance — a mismatch at the tip can be a fork-transient, so it
 // is counted and logged, never scored as misbehavior.
-const (
-	multicall3Address        = "0xcA11bde05977b3631167028862bE2a173976CA11"
-	multicall3GetBlockNumber = "0x42cbb15c"
-)
+// The context-probe target is per-ARCHITECTURE (integrity.ChainStateContextProbe):
+// standard EVMs use Multicall3 getBlockNumber, but e.g. Nitro's block.number is
+// the L1 height and needs ArbSys arbBlockNumber instead — assuming one probe
+// for all chains mislabelled every honest arbitrum upstream as stale.
 
 // stateProbeMinInterval is the default floor between probes of one upstream.
 const stateProbeMinInterval = 2 * time.Second
@@ -55,6 +55,7 @@ type stateProber struct {
 	network  common.Network
 	view     *chainView // the follower view whose verified headers anchor the probes
 	interval time.Duration
+	ctxProbe *integrity.StateContextProbe // per-architecture "which block are you in"
 
 	mu        sync.Mutex
 	lastProbe map[string]time.Time // upstream id -> last probe start
@@ -78,10 +79,15 @@ func startStateProber(n common.Network, v *chainView, cfg *common.IntegrityState
 	if cfg != nil && cfg.Interval > 0 {
 		interval = cfg.Interval.Duration()
 	}
+	var chainId int64
+	if c := n.Config(); c != nil && c.Evm != nil {
+		chainId = c.Evm.ChainId
+	}
 	p := &stateProber{
 		network:   n,
 		view:      v,
 		interval:  interval,
+		ctxProbe:  integrity.ChainStateContextProbe(chainId),
 		lastProbe: map[string]time.Time{},
 		work:      make(chan int64, 1),
 	}
@@ -201,7 +207,7 @@ const (
 func (p *stateProber) probeContext(ctx context.Context, u common.Upstream, n int64) probeOutcome {
 	body := fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"%s","data":"%s"},"0x%x"]}`,
-		multicall3Address, multicall3GetBlockNumber, n)
+		p.ctxProbe.To, p.ctxProbe.Data, n)
 	res, err := p.forwardTo(ctx, u, body)
 	if err != nil {
 		p.count(u, "context", "error")
@@ -240,7 +246,7 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 	}
 	body := fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getProof","params":["%s",[],"0x%x"]}`,
-		multicall3Address, n)
+		p.ctxProbe.To, n)
 	res, err := p.forwardTo(ctx, u, body)
 	if err != nil {
 		if isMethodUnsupportedErr(err) {

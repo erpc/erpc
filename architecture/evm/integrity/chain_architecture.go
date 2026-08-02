@@ -30,6 +30,38 @@ type Architecture struct {
 	// Header lists the header constants this family's consensus fixes. Nil =
 	// uncharacterised, and the header-invariant check does not judge the chain.
 	Header *HeaderInvariants
+	// StateContext is how to ask this family's EVM "which block are you
+	// executing in?" for the state probe. Nil = the standard EVM probe
+	// (Multicall3 getBlockNumber). Families where block.number does NOT mean
+	// the chain's own height must override it — measured, not assumed.
+	StateContext *StateContextProbe
+}
+
+// StateContextProbe is an eth_call whose return value, executed pinned at
+// block N, must equal N.
+type StateContextProbe struct {
+	To   string // contract address
+	Data string // calldata (4-byte selector)
+}
+
+// multicall3Context is the standard-EVM context probe: Multicall3 is deployed
+// at one address on 200+ chains and getBlockNumber() returns block.number.
+var multicall3Context = &StateContextProbe{
+	To:   "0xcA11bde05977b3631167028862bE2a173976CA11",
+	Data: "0x42cbb15c", // getBlockNumber()
+}
+
+// arbSysContext is the Nitro override. On Arbitrum, block.number returns the
+// L1 (Ethereum) height, NOT the L2 height — measured live: Multicall3
+// getBlockNumber pinned at L2 490382800 answered 25668365 (mainnet's height),
+// so the standard probe mismatches on every honest Nitro node (observed as
+// 6-of-6 upstreams "failing" on the shadow, the all-upstream signature that
+// means the probe is wrong, not the nodes). The ArbSys precompile's
+// arbBlockNumber() answers the L2 height: pinned at 490382800 it returned
+// exactly 490382800.
+var arbSysContext = &StateContextProbe{
+	To:   "0x0000000000000000000000000000000000000064",
+	Data: "0xa3b1b31d", // arbBlockNumber()
 }
 
 // HeaderInvariants are header fields a consensus regime pins to a constant.
@@ -109,9 +141,10 @@ var architectures = map[string]Architecture{
 	// and ArbOS sets the base fee itself — no (elasticity, denominator, floor)
 	// reproduces the observed sequence.
 	"arbitrum-nitro": {
-		Name:    "arbitrum-nitro",
-		Disable: recomputeFamily,
-		Fee:     EIP1559NotDerivable,
+		Name:         "arbitrum-nitro",
+		Disable:      recomputeFamily,
+		Fee:          EIP1559NotDerivable,
+		StateContext: arbSysContext,
 		// Nitro reports difficulty 0x1 and uses a non-zero header nonce, so only
 		// the ommers invariant holds.
 		Header: &HeaderInvariants{EmptyUncles: true},

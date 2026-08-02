@@ -72,6 +72,7 @@ func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *
 	})
 	p := &stateProber{
 		network: pn, view: v, interval: 0,
+		ctxProbe:  integrity.ChainStateContextProbe(1),
 		lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
 	}
 	return p, v
