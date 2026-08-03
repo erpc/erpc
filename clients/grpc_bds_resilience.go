@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/blockchain-data-standards/manifesto/svm"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -98,6 +99,10 @@ type bdsConn struct {
 	conn        *grpc.ClientConn
 	rpcClient   evm.RPCQueryServiceClient
 	queryClient evm.QueryServiceClient
+	// The standardised SVM read surface, on the same connection. A BDS server
+	// serves whichever of these it implements; the dispatch switch picks by
+	// method, so an EVM-only server simply never sees an svmClient call.
+	svmClient svm.RPCQueryServiceClient
 
 	// dialedAt/maxAge drive the maintainer's age-based recycling; maxAge is
 	// per-conn jittered at dial time (0 = age recycling disabled).
@@ -387,6 +392,7 @@ func (p *bdsPool) dial() (*bdsConn, error) {
 		conn:        conn,
 		rpcClient:   evm.NewRPCQueryServiceClient(conn),
 		queryClient: evm.NewQueryServiceClient(conn),
+		svmClient:   svm.NewRPCQueryServiceClient(conn),
 		dialedAt:    time.Now(),
 		maxAge:      maxAge,
 	}, nil
