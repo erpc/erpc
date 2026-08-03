@@ -76,8 +76,9 @@ func directiveMatcherProjects(t *testing.T) *ProjectsRegistry {
 			project("allow_project", "*", "", "retry-*"),
 		},
 		ssr,
-		nil,
-		nil,
+		nil, // evmJsonRpcCache
+		nil, // svmJsonRpcCache — added on this branch
+		nil, // rateLimitersRegistry
 		thirdparty.NewVendorsRegistry(),
 		nil,
 		nil,
