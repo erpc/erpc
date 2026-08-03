@@ -46,12 +46,15 @@ var levelMembership = map[Level][]string{
 		"blockHashRecompute", "senderRecovery", "transactionsRootRecompute",
 		"getLogsFilterSanity", "txByHashIdentity", "receiptIdentity",
 		"blockByHashIdentity", "blockByNumberIdentity", "headerConsensusInvariants",
+		"traceFrameShape",
 	},
 	LevelCorroborated: {
 		"parentHashLinkage", "hashStability", "getLogsCompleteness", "txPinConsistency",
 		// Judged against the PARENT header, so they need the follower's verified
 		// contiguous chain; without it they skip.
 		"baseFeeDerivation", "timestampMonotonicity",
+		// Judged against the follower's header for the traced height.
+		"traceBlockGasReconciliation",
 	},
 	LevelAuthoritative: {
 		"receiptVsBlock", "receiptsRootRecompute",

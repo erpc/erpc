@@ -11,6 +11,9 @@ const (
 	MethodGetTransactionReceipt = "eth_gettransactionreceipt"
 	MethodGetLogs               = "eth_getlogs"
 	MethodGetTransactionByHash  = "eth_gettransactionbyhash"
+	MethodTraceBlockByNumber    = "debug_traceblockbynumber"
+	MethodTraceBlockByHash      = "debug_traceblockbyhash"
+	MethodTraceTransaction      = "debug_tracetransaction"
 )
 
 // Log is the lightweight view of a single EVM log. Only fields the checks read
@@ -104,7 +107,12 @@ type Decoded struct {
 	filter     *LogsFilter
 	filterDone bool
 
+	blockTraces   []TraceEntry
+	blockTracesOK bool
+	callTrace     *CallFrame
+
 	headerDone, txsDone, receiptsDone, logsDone bool
+	blockTracesDone, callTraceDone              bool
 }
 
 func newDecoded(method string, raw []byte) *Decoded {
