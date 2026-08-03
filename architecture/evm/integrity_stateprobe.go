@@ -225,10 +225,20 @@ func (p *stateProber) probeContext(ctx context.Context, u common.Upstream, n int
 		return probeUnknown
 	}
 	if got != n {
-		p.count(u, "context", "mismatch")
+		// The direction diagnoses the failure. executed < pinned = STALE state
+		// (the node lags what it claims). executed > pinned = PIN-IGNORING:
+		// the node silently executes at its latest head regardless of the
+		// requested block — historical state questions answered with present
+		// state. Both are silent wrong-data modes; they need different
+		// operator responses, so the metric separates them.
+		outcome := "stale"
+		if got > n {
+			outcome = "pin_ignored"
+		}
+		p.count(u, "context", outcome)
 		log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
-			Int64("pinnedBlock", n).Int64("executedBlock", got).
-			Msg("state probe: upstream executed a pinned call in a DIFFERENT block context (stale state)")
+			Int64("pinnedBlock", n).Int64("executedBlock", got).Str("mode", outcome).
+			Msg("state probe: upstream executed a pinned call in a DIFFERENT block context")
 		return probeMismatch
 	}
 	p.count(u, "context", "match")

@@ -94,6 +94,19 @@ func TestStateProber(t *testing.T) {
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
 	})
 
+	t.Run("a PIN-IGNORING node (executes at latest, not the pin) also refuses the boundary", func(t *testing.T) {
+		// Measured live on a vendor endpoint: claimed head exactly current,
+		// but every call pinned at N executed at N+3..N+4 — the node ignores
+		// the block parameter and answers historical questions with present
+		// state. Not stale; worse in a different direction.
+		pn := newProbeNetwork(t)
+		pn.execContext, pn.proofNode = head+4, trieNode
+		p, _ := proberFor(pn, head, stateRoot)
+		p.probeAll(head)
+		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock(),
+			"executing AHEAD of the pin means the pin was ignored — never proven")
+	})
+
 	t.Run("STALE EXECUTION CONTEXT refuses the boundary — the exact silent-bad-data case", func(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head-7, trieNode // claims head, executes 7 back
