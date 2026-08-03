@@ -179,3 +179,49 @@ func TestChildGasIsNotBoundedByParentGas(t *testing.T) {
 	assert.Nil(t, runTraceBlockGasReconciliation(seg, traceDecoded(raw, 1000), CheckConfig{}),
 		"reconciliation judges TOP-LEVEL gas against the header and must ignore the nesting entirely")
 }
+
+// HyperEVM traces HyperCore system transactions whose gas the header does not
+// meter, so its traced sum legitimately runs ABOVE the header — measured at 8
+// of 59 consecutive blocks, deltas clustering at ~45,059, trace counts exact
+// 60/60. Enforcing equality there would have rejected ~14% of honest HyperEVM
+// traces; Arbitrum Nitro, swept the same way, was clean 60/60 and keeps the
+// strict identity.
+func TestTraceReconciliationRespectsUnmeteredSystemTransactions(t *testing.T) {
+	const n = int64(1000)
+	unaccounted := CheckConfig{Params: map[string]string{"gasUnaccounted": "true"}}
+
+	t.Run("a traced sum above the header is honest there", func(t *testing.T) {
+		// 0x30 + 0xb033 (a ~45,059-gas system transaction) against a 0x30 header
+		d := traceDecoded(traceResponse("0x30", "0xb033"), n)
+		assert.Nil(t, runTraceBlockGasReconciliation(segmentAt(n, "0x30", 2), d, unaccounted))
+	})
+
+	t.Run("but a shortfall is still caught", func(t *testing.T) {
+		d := traceDecoded(traceResponse("0x10"), n)
+		v := runTraceBlockGasReconciliation(segmentAt(n, "0x60", 1), d, unaccounted)
+		require.NotNil(t, v)
+		require.NotEqual(t, Skipped, v)
+		assert.Contains(t, v.Reason, "missing gas")
+	})
+
+	t.Run("and chains without the deviation keep the exact identity", func(t *testing.T) {
+		d := traceDecoded(traceResponse("0x30", "0xb033"), n)
+		v := runTraceBlockGasReconciliation(segmentAt(n, "0x30", 2), d, CheckConfig{})
+		require.NotNil(t, v)
+		assert.Contains(t, v.Reason, "does not reconcile")
+	})
+}
+
+// The deviation must reach the check through the chain layer, not be hardcoded.
+func TestHyperEVMDeclaresUnmeteredTraceGas(t *testing.T) {
+	cs := CheckSet{"traceBlockGasReconciliation": CheckConfig{Enabled: true}}
+	ApplyChainProfile(cs, 999)
+	assert.Equal(t, "true", cs["traceBlockGasReconciliation"].Params["gasUnaccounted"])
+
+	for _, chainId := range []int64{1, 137, 8453, 42161} {
+		cs := CheckSet{"traceBlockGasReconciliation": CheckConfig{Enabled: true}}
+		ApplyChainProfile(cs, chainId)
+		assert.NotEqual(t, "true", cs["traceBlockGasReconciliation"].Params["gasUnaccounted"],
+			"chain %d was measured clean and must keep the strict identity", chainId)
+	}
+}
