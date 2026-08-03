@@ -107,6 +107,17 @@ func runTraceBlockGasReconciliation(ctx context.Context, d *Decoded, cfg CheckCo
 		}
 		sum += used
 	}
+	// Families that trace protocol-internal transactions the header does not
+	// meter legitimately exceed it (see TraceInvariants.GasUnaccounted), so
+	// there only a SHORTFALL is evidence — which is still the shape that
+	// matters, since dropped or truncated traces can only lower the sum.
+	if cfg.Params["gasUnaccounted"] == "true" {
+		if sum < want {
+			return failf("traces are missing gas for block %d: traces sum to %d, header commits at least %d (short by %d)",
+				number, sum, want, want-sum).disputes(number)
+		}
+		return nil
+	}
 	if sum != want {
 		return failf("traced gas does not reconcile with block %d: traces sum to %d, header commits %d (delta %d)",
 			number, sum, want, sum-want).disputes(number)

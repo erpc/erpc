@@ -35,6 +35,28 @@ type Architecture struct {
 	// (Multicall3 getBlockNumber). Families where block.number does NOT mean
 	// the chain's own height must override it — measured, not assumed.
 	StateContext *StateContextProbe
+	// Trace declares how this family's block gas accounting relates to its
+	// traces. Nil = the ordinary relationship (every traced transaction's gas
+	// is metered into the header).
+	Trace *TraceInvariants
+}
+
+// TraceInvariants captures where a family breaks the identity
+// sum(traced gasUsed) == header.gasUsed.
+type TraceInvariants struct {
+	// GasUnaccounted is set for families that trace transactions whose gas the
+	// header does not meter, making the traced sum legitimately EXCEED it.
+	//
+	// Measured on HyperEVM systx-family nodes: 8 of 59 consecutive blocks had
+	// a positive delta clustering at ~45,059 gas, with trace COUNTS matching
+	// exactly (60/60) — the signature of HyperCore system transactions being
+	// traced but not metered. The same sweep on Arbitrum Nitro, the other
+	// candidate for protocol-internal transactions, was clean 60/60.
+	//
+	// Where this is set the check keeps the LOWER bound (a traced sum BELOW the
+	// header still means traces went missing, which is the corruption shape
+	// that matters most) and stops asserting the upper one.
+	GasUnaccounted bool
 }
 
 // StateContextProbe is an eth_call whose return value, executed pinned at
@@ -179,6 +201,9 @@ var architectures = map[string]Architecture{
 	// Fee uncharacterised: sampled windows sat at a constant 100000000.
 	"hyperevm": {
 		Name: "hyperevm",
+		// HyperCore system transactions are traced but their gas is not metered
+		// into the header — see TraceInvariants.GasUnaccounted.
+		Trace: &TraceInvariants{GasUnaccounted: true},
 		// transactionsRootConsistency is NOT disabled any more: its phantom
 		// predicate now recognises HyperEVM's native/L1 system transactions
 		// (synthetic signature r=0x1 with zero gasPrice), so the check works
