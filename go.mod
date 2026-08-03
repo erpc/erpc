@@ -8,7 +8,7 @@ require (
 	github.com/DataDog/sketches-go v1.4.8
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.1
 	github.com/aws/aws-sdk-go v1.55.8
-	github.com/blockchain-data-standards/manifesto v0.0.0-20260708135603-35add417e724
+	github.com/blockchain-data-standards/manifesto v0.0.0-20260803145025-1c48f8e51cf3
 	github.com/bytedance/sonic v1.15.2
 	github.com/coder/websocket v1.8.15
 	github.com/dgraph-io/ristretto/v2 v2.4.0
@@ -50,8 +50,6 @@ require (
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20260417185455-377cced2b921
 
 require (
 	cel.dev/expr v0.25.1 // indirect

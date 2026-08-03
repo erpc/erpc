@@ -66,6 +66,9 @@ var supportedMethods = map[string]struct{}{
 	// eth_blockNumber has no native BDS gRPC method; Get derives it from the
 	// latest block (see the translation in Get).
 	"eth_blockNumber": {},
+	// SVM. Solana method names are unprefixed, so they cannot collide with the
+	// eth_* entries above and one allowlist serves both architectures.
+	"getBlock": {},
 }
 
 func NewGrpcConnector(
@@ -137,51 +140,63 @@ func NewGrpcConnector(
 				if len(gc.headers) > 0 {
 					cli.SetHeaders(gc.headers)
 				}
-				// Probe chainId with a short timeout derived from task context
-				probeCtx, cancel := context.WithTimeout(tctx, 5*time.Second)
-				defer cancel()
-				nrq := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest("eth_chainId", nil))
-				resp, rerr := cli.SendRequest(probeCtx, nrq)
-				if rerr != nil {
-					gc.logger.Warn().Err(rerr).Str("server", serverURL).Msg("chainId probe failed")
-					return rerr
-				}
-				jrr, jerr := resp.JsonRpcResponse(probeCtx)
-				if jerr != nil || jrr == nil {
-					gc.logger.Warn().Err(jerr).Str("server", serverURL).Msg("chainId response parse failed")
-					if jerr != nil {
-						return jerr
+				// Identity is either asserted by config or probed. Probing is
+				// EVM-only: it costs a round trip, and it is the thing that
+				// arms the per-request chainId assertion, so it is kept as the
+				// default wherever a chain id exists.
+				var networkId string
+				if cfg.NetworkId != "" {
+					networkId = cfg.NetworkId
+				} else {
+					// Probe chainId with a short timeout derived from task context
+					probeCtx, cancel := context.WithTimeout(tctx, 5*time.Second)
+					defer cancel()
+					nrq := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest("eth_chainId", nil))
+					resp, rerr := cli.SendRequest(probeCtx, nrq)
+					if rerr != nil {
+						gc.logger.Warn().Err(rerr).Str("server", serverURL).Msg("chainId probe failed")
+						return rerr
 					}
-					return fmt.Errorf("empty chainId response")
-				}
-				var chainHex string
-				if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &chainHex); err != nil || chainHex == "" {
-					gc.logger.Warn().Err(err).Str("server", serverURL).Msg("invalid chainId result")
-					if err != nil {
-						return err
+					jrr, jerr := resp.JsonRpcResponse(probeCtx)
+					if jerr != nil || jrr == nil {
+						gc.logger.Warn().Err(jerr).Str("server", serverURL).Msg("chainId response parse failed")
+						if jerr != nil {
+							return jerr
+						}
+						return fmt.Errorf("empty chainId response")
 					}
-					return fmt.Errorf("invalid chainId")
+					var chainHex string
+					if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &chainHex); err != nil || chainHex == "" {
+						gc.logger.Warn().Err(err).Str("server", serverURL).Msg("invalid chainId result")
+						if err != nil {
+							return err
+						}
+						return fmt.Errorf("invalid chainId")
+					}
+					// normalize to network id
+					uval, _ := evm.HexToUint64(chainHex)
+					networkId = util.EvmNetworkId(int64(uval))
+					// Arm chain-identity enforcement with the probed chainId:
+					// from here on every request to this server carries the
+					// chainId assertion and the client's pool maintainer keeps
+					// re-verifying the connections — the bootstrap probe alone
+					// cannot catch an endpoint that gets cross-wired LATER
+					// (stale DNS / reused address answering for another
+					// chain). Narrow assertion: the method is intentionally
+					// not on the GrpcBdsClient interface.
+					//
+					// There is no equivalent for a configured networkId: with
+					// nothing to assert per request, a cross-wired SVM server
+					// stays undetected. That is the cost of static binding.
+					if armer, ok := cli.(interface{ SetExpectedChainId(uint64) }); ok {
+						armer.SetExpectedChainId(uval)
+					}
 				}
-				// normalize to network id
-				uval, _ := evm.HexToUint64(chainHex)
-				val := int64(uval)
-				networkId := util.EvmNetworkId(val)
 				gc.mu.Lock()
 				defer gc.mu.Unlock()
 				if existing := gc.clientByNetwork[networkId]; existing != nil {
 					gc.logger.Error().Str("server", serverURL).Str("networkId", networkId).Msg("duplicate gRPC server for network detected; ignoring")
 					return nil
-				}
-				// Arm chain-identity enforcement with the probed chainId: from
-				// here on every request to this server carries the chainId
-				// assertion and the client's pool maintainer keeps
-				// re-verifying the connections — the bootstrap probe alone
-				// cannot catch an endpoint that gets cross-wired LATER (stale
-				// DNS / reused address answering for another chain). Narrow
-				// assertion: the method is intentionally not on the
-				// GrpcBdsClient interface.
-				if armer, ok := cli.(interface{ SetExpectedChainId(uint64) }); ok {
-					armer.SetExpectedChainId(uval)
 				}
 				gc.clientByNetwork[networkId] = cli
 				gc.logger.Info().Str("server", serverURL).Str("networkId", networkId).Msg("gRPC client initialized for network")
@@ -342,6 +357,21 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 	g.mu.RUnlock()
 
 	for nid, cli := range snapshot {
+		// The head poller speaks EVM: fetchTaggedBlock issues
+		// eth_getBlockByNumber("earliest"/"latest"/"finalized"), which a
+		// Solana BDS server answers Unimplemented. Polling it would be three
+		// wasted round trips per interval, forever, for values that stay
+		// unknown either way.
+		//
+		// Consequence worth knowing: earliest stays 0, so the fast-miss
+		// rejection in Get never fires for SVM (it is keyed on
+		// EvmBlockNumber anyway), and CacheLatestBlockTimestamp reports
+		// unknown, so the realtime age guard fails open. Only cache SVM
+		// methods under a finalized policy until there is a slot-aware
+		// poller (BDA-3111).
+		if !strings.HasPrefix(nid, "evm:") {
+			continue
+		}
 		// Label metrics by the network alias (e.g. "arbitrum-one") so they line up
 		// with every other metric; fall back to the raw networkId when no alias is
 		// configured. Internal map keys stay keyed by networkId.

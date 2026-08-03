@@ -379,6 +379,21 @@ type GrpcConnectorConfig struct {
 	Headers    map[string]string `yaml:"headers,omitempty" json:"headers"`
 	GetTimeout Duration          `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 
+	// NetworkId pins every server in this connector to one network and skips
+	// the eth_chainId bootstrap probe.
+	//
+	// Required for SVM. Solana has no numeric chain id — cluster identity is
+	// the genesis hash — and eth_chainId returns Unimplemented, so the probe
+	// fails and no client is ever registered. Probing GetGenesisHash instead
+	// is not an option either: the BDS reader deliberately does not publish
+	// one until it can verify its own, so identity here has to be asserted by
+	// configuration rather than discovered.
+	//
+	// Leave unset for EVM to keep the probe, which also arms the per-request
+	// chain-identity assertion that catches an endpoint cross-wired LATER — a
+	// static binding cannot.
+	NetworkId string `yaml:"networkId,omitempty" json:"networkId"`
+
 	// PoolSize is the number of independent gRPC connections opened to each
 	// backing server, selected round-robin per request. Larger values raise the
 	// concurrent-stream ceiling and shrink the blast radius of a single wedged
