@@ -45,7 +45,6 @@ type ChainProfile struct {
 	Fee          *EIP1559Model
 	Header       *HeaderInvariants
 	StateContext *StateContextProbe
-	Trace        *TraceInvariants
 }
 
 // ProfileFor resolves a chain's profile. An unknown chain gets an empty profile
@@ -61,7 +60,6 @@ func ProfileFor(chainId int64) ChainProfile {
 		p.Fee = arch.Fee
 		p.Header = arch.Header
 		p.StateContext = arch.StateContext
-		p.Trace = arch.Trace
 	}
 	// Chain-specific additions win over the family's.
 	p.Disable = append(p.Disable, spec.Disable...)
@@ -90,7 +88,6 @@ func ApplyChainProfile(cs CheckSet, chainId int64) {
 	// rejects every block instead of a rare bad one. For a chain nobody has
 	// characterised, silence is the safe answer.
 	applyHeaderInvariants(cs, p.Header)
-	applyTraceInvariants(cs, p.Trace)
 
 	if p.Fee != nil && p.Fee.Derivable {
 		applyFeeParams(cs, p.Fee)
@@ -127,23 +124,6 @@ func applyHeaderInvariants(cs CheckSet, inv *HeaderInvariants) {
 		cfg.Params["blobGasMultiple"] = "true"
 	}
 	cs["headerConsensusInvariants"] = cfg
-}
-
-// applyTraceInvariants tells the trace-reconciliation check where this family's
-// header gas accounting does not cover every traced transaction.
-func applyTraceInvariants(cs CheckSet, inv *TraceInvariants) {
-	if inv == nil || !inv.GasUnaccounted {
-		return
-	}
-	cfg, ok := cs["traceBlockGasReconciliation"]
-	if !ok {
-		return
-	}
-	if cfg.Params == nil {
-		cfg.Params = map[string]string{}
-	}
-	cfg.Params["gasUnaccounted"] = "true"
-	cs["traceBlockGasReconciliation"] = cfg
 }
 
 // applyFeeParams hands the chain's constants to the derivation check.

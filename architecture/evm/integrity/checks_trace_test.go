@@ -82,7 +82,7 @@ func TestTraceBlockGasReconciliation(t *testing.T) {
 		v := runTraceBlockGasReconciliation(segmentAt(n, "0x60", 3), d, CheckConfig{})
 		require.NotNil(t, v)
 		require.NotEqual(t, Skipped, v)
-		assert.Contains(t, v.Reason, "does not reconcile")
+		assert.Contains(t, v.Reason, "missing gas")
 		assert.EqualValues(t, n, v.DisputedPin,
 			"a fork at this height looks identical to corruption until the pin is re-confirmed")
 	})
@@ -180,48 +180,37 @@ func TestChildGasIsNotBoundedByParentGas(t *testing.T) {
 		"reconciliation judges TOP-LEVEL gas against the header and must ignore the nesting entirely")
 }
 
-// HyperEVM traces HyperCore system transactions whose gas the header does not
-// meter, so its traced sum legitimately runs ABOVE the header — measured at 8
-// of 59 consecutive blocks, deltas clustering at ~45,059, trace counts exact
-// 60/60. Enforcing equality there would have rejected ~14% of honest HyperEVM
-// traces; Arbitrum Nitro, swept the same way, was clean 60/60 and keeps the
-// strict identity.
-func TestTraceReconciliationRespectsUnmeteredSystemTransactions(t *testing.T) {
+// Traced gas may legitimately run ABOVE the header on any chain, so only a
+// shortfall is judged. Learned from live traffic, not the sweep: on Polygon
+// block 91375456 all three vendors traced +341,453 over the header, and on
+// 91374960 they disagreed with EACH OTHER (Alchemy exact, QuickNode and
+// Chainstack +147,758). Receipts meter gas after EIP-3529 refunds while some
+// clients report frame gas before them. Enforcing equality rejected honest
+// responses from two independent vendors in production.
+func TestTracedGasIsOnlyBoundedFromBelow(t *testing.T) {
 	const n = int64(1000)
-	unaccounted := CheckConfig{Params: map[string]string{"gasUnaccounted": "true"}}
 
-	t.Run("a traced sum above the header is honest there", func(t *testing.T) {
-		// 0x30 + 0xb033 (a ~45,059-gas system transaction) against a 0x30 header
+	t.Run("a sum above the header is honest", func(t *testing.T) {
+		// the real shape: 174 traces summing over a header that nets refunds
 		d := traceDecoded(traceResponse("0x30", "0xb033"), n)
-		assert.Nil(t, runTraceBlockGasReconciliation(segmentAt(n, "0x30", 2), d, unaccounted))
+		assert.Nil(t, runTraceBlockGasReconciliation(segmentAt(n, "0x30", 2), d, CheckConfig{}),
+			"two independent vendors produced exactly this; it cannot be corruption")
 	})
 
-	t.Run("but a shortfall is still caught", func(t *testing.T) {
+	t.Run("a shortfall is still caught", func(t *testing.T) {
 		d := traceDecoded(traceResponse("0x10"), n)
-		v := runTraceBlockGasReconciliation(segmentAt(n, "0x60", 1), d, unaccounted)
+		v := runTraceBlockGasReconciliation(segmentAt(n, "0x60", 1), d, CheckConfig{})
 		require.NotNil(t, v)
 		require.NotEqual(t, Skipped, v)
 		assert.Contains(t, v.Reason, "missing gas")
 	})
 
-	t.Run("and chains without the deviation keep the exact identity", func(t *testing.T) {
-		d := traceDecoded(traceResponse("0x30", "0xb033"), n)
-		v := runTraceBlockGasReconciliation(segmentAt(n, "0x30", 2), d, CheckConfig{})
+	t.Run("the transaction count stays exact", func(t *testing.T) {
+		// count held on every sweep and on both live rejects (174/174, 122/122),
+		// so it remains the strict half of the check.
+		d := traceDecoded(traceResponse("0x10", "0x20"), n)
+		v := runTraceBlockGasReconciliation(segmentAt(n, "0x30", 3), d, CheckConfig{})
 		require.NotNil(t, v)
-		assert.Contains(t, v.Reason, "does not reconcile")
+		assert.Contains(t, v.Reason, "transactions but the trace returned")
 	})
-}
-
-// The deviation must reach the check through the chain layer, not be hardcoded.
-func TestHyperEVMDeclaresUnmeteredTraceGas(t *testing.T) {
-	cs := CheckSet{"traceBlockGasReconciliation": CheckConfig{Enabled: true}}
-	ApplyChainProfile(cs, 999)
-	assert.Equal(t, "true", cs["traceBlockGasReconciliation"].Params["gasUnaccounted"])
-
-	for _, chainId := range []int64{1, 137, 8453, 42161} {
-		cs := CheckSet{"traceBlockGasReconciliation": CheckConfig{Enabled: true}}
-		ApplyChainProfile(cs, chainId)
-		assert.NotEqual(t, "true", cs["traceBlockGasReconciliation"].Params["gasUnaccounted"],
-			"chain %d was measured clean and must keep the strict identity", chainId)
-	}
 }
