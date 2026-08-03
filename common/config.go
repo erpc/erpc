@@ -2606,6 +2606,25 @@ type AuthStrategyConfig struct {
 	IgnoreMethods   []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods,omitempty"`
 	AllowMethods    []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
 	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	// AllowClientDirectives, if set, overrides the project-level
+	// `allowClientDirectives` pattern for users authenticated by THIS strategy.
+	// Same wildcard syntax as the project-level field ("*" = all, "" = none).
+	//
+	// Client directives (`X-ERPC-*` headers) are powerful per-request overrides —
+	// e.g. pinning an upstream bypasses the selection policy, and skipping the
+	// cache multiplies upstream load — so operators exposing erpc directly to
+	// untrusted callers typically deny them project-wide and re-enable them only
+	// for trusted strategies:
+	//
+	//	allowClientDirectives: ""      # project default: nobody
+	//	auth.strategies[0].allowClientDirectives: "*"   # this strategy: everything
+	//
+	// Left unset the caller inherits the project-level pattern, so existing
+	// configs are unaffected. The capability is attached to the user by the
+	// strategy that authenticated them, which means it can never be granted by
+	// `trustUserIdHeader` (that path sets only Id — see
+	// NormalizedRequest.SetUserFromTrustedHeader).
+	AllowClientDirectives *string `yaml:"allowClientDirectives,omitempty" json:"allowClientDirectives,omitempty"`
 
 	Type     AuthType                `yaml:"type" json:"type" tstype:"TsAuthType"`
 	Network  *NetworkStrategyConfig  `yaml:"network,omitempty" json:"network,omitempty"`

@@ -684,7 +684,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					if project.Config.UserAgentMode != "" {
 						uaMode = project.Config.UserAgentMode
 					}
-					nq.SetAllowClientDirectiveMatcher(project.allowClientDirectiveMatcher)
+					nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
 				}
 				nq.EnrichFromHttp(headers, queryArgs, uaMode)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")

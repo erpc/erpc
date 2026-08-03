@@ -211,14 +211,29 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		&lg,
 	)
 	if prjCfg.AllowClientDirectives != nil {
-		if *prjCfg.AllowClientDirectives == "" {
-			pp.allowClientDirectiveMatcher = common.DenyAllClientDirectives
-		} else {
-			matcher, err := common.NewWildcardMatcher(*prjCfg.AllowClientDirectives)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse AllowClientDirectives: %w", err)
+		matcher, err := compileClientDirectiveMatcher(*prjCfg.AllowClientDirectives)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse AllowClientDirectives: %w", err)
+		}
+		pp.allowClientDirectiveMatcher = matcher
+	}
+	if prjCfg.Auth != nil {
+		for _, strategy := range prjCfg.Auth.Strategies {
+			if strategy == nil || strategy.AllowClientDirectives == nil {
+				continue
 			}
-			pp.allowClientDirectiveMatcher = matcher
+			pattern := *strategy.AllowClientDirectives
+			if _, done := pp.strategyDirectiveMatchers[pattern]; done {
+				continue
+			}
+			matcher, err := compileClientDirectiveMatcher(pattern)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse auth strategy AllowClientDirectives: %w", err)
+			}
+			if pp.strategyDirectiveMatchers == nil {
+				pp.strategyDirectiveMatchers = make(map[string]common.MatcherFunc, len(prjCfg.Auth.Strategies))
+			}
+			pp.strategyDirectiveMatchers[pattern] = matcher
 		}
 	}
 	r.preparedProjects[prjCfg.Id] = pp
@@ -226,6 +241,17 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	r.logger.Info().Msgf("registered project %s", prjCfg.Id)
 
 	return pp, nil
+}
+
+// compileClientDirectiveMatcher turns an `allowClientDirectives` pattern into a
+// matcher. An empty pattern denies every directive; any other pattern is a
+// wildcard match over directive names. Shared by the project-level default and
+// the per-auth-strategy override so both spell "" the same way.
+func compileClientDirectiveMatcher(pattern string) (common.MatcherFunc, error) {
+	if pattern == "" {
+		return common.DenyAllClientDirectives, nil
+	}
+	return common.NewWildcardMatcher(pattern)
 }
 
 func (r *ProjectsRegistry) GetAll() []*PreparedProject {

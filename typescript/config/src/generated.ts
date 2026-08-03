@@ -24,7 +24,7 @@ import type {
  * clamped between min/max" semantics — currently consensus wait caps,
  * with timeout/hedge supporting it as an alternative entry-point.
  * Resolution rules:
- *   final = Base + adaptive
+ * 	final = Base + adaptive
  * where `adaptive` is:
  *   - `qt.GetQuantile(Quantile)` when Quantile > 0 and quantile data exists
  *   - `Min` (the floor) when Quantile > 0 but quantile data is cold (no
@@ -1527,6 +1527,24 @@ export interface AuthStrategyConfig {
   ignoreMethods?: string[];
   allowMethods?: string[];
   rateLimitBudget?: string;
+  /**
+   * AllowClientDirectives, if set, overrides the project-level
+   * `allowClientDirectives` pattern for users authenticated by THIS strategy.
+   * Same wildcard syntax as the project-level field ("*" = all, "" = none).
+   * Client directives (`X-ERPC-*` headers) are powerful per-request overrides —
+   * e.g. pinning an upstream bypasses the selection policy, and skipping the
+   * cache multiplies upstream load — so operators exposing erpc directly to
+   * untrusted callers typically deny them project-wide and re-enable them only
+   * for trusted strategies:
+   * 	allowClientDirectives: ""      # project default: nobody
+   * 	auth.strategies[0].allowClientDirectives: "*"   # this strategy: everything
+   * Left unset the caller inherits the project-level pattern, so existing
+   * configs are unaffected. The capability is attached to the user by the
+   * strategy that authenticated them, which means it can never be granted by
+   * `trustUserIdHeader` (that path sets only Id — see
+   * NormalizedRequest.SetUserFromTrustedHeader).
+   */
+  allowClientDirectives?: string;
   type: TsAuthType;
   network?: NetworkStrategyConfig;
   secret?: SecretStrategyConfig;
@@ -1917,9 +1935,22 @@ export type Upstream = any;
 //////////
 // source: user.go
 
+/**
+ * User is the authenticated caller. Beyond identity (Id) it carries the
+ * per-caller capabilities resolved at authentication time. Capability fields
+ * are populated ONLY by auth strategies; the trusted-header path
+ * (NormalizedRequest.SetUserFromTrustedHeader) sets Id alone, so an
+ * unvalidated header can never grant a capability.
+ */
 export interface User {
   id: string;
   ratelimitbudget: string;
+  /**
+   * AllowClientDirectives is the client-directive wildcard pattern granted by
+   * the strategy that authenticated this user. Nil means "no strategy-level
+   * override" — the project-level pattern applies.
+   */
+  allowclientdirectives?: string;
 }
 
 //////////
