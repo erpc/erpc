@@ -804,6 +804,11 @@ func (s *AuthStrategyConfig) Validate() error {
 	if s.Type == "" {
 		return fmt.Errorf("auth.*.type is required")
 	}
+	if s.AllowClientDirectives != nil && *s.AllowClientDirectives != "" {
+		if _, err := NewWildcardMatcher(*s.AllowClientDirectives); err != nil {
+			return fmt.Errorf("auth.*.allowClientDirectives pattern is invalid: %w", err)
+		}
+	}
 	switch s.Type {
 	case AuthTypeNetwork:
 		if s.Network == nil {
@@ -1000,6 +1005,11 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		if !c.HasRateLimiterBudget(u.RateLimitBudget) {
 			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
 		}
+	}
+	switch u.RateLimitCountMode {
+	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
+	default:
+		return fmt.Errorf("upstream.*.rateLimitCountMode '%s' is invalid, must be one of: %s, %s", u.RateLimitCountMode, RateLimitCountModeRequest, RateLimitCountModeCredit)
 	}
 	return nil
 }
@@ -1494,6 +1504,11 @@ func (e *EvmNetworkConfig) Validate() error {
 			if err := ValidatePattern(m); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)
 			}
+		}
+	}
+	if e.SafeBlockSource != "" {
+		if err := ValidatePattern(e.SafeBlockSource); err != nil {
+			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
 		}
 	}
 	return nil

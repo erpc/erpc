@@ -10,13 +10,13 @@ func TestExtractRateLimiterAddrAndDB(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		uri     string
-		addr    string
-		cfgDB   int
+		name     string
+		uri      string
+		addr     string
+		cfgDB    int
 		wantAddr string
-		wantDB  int
-		wantErr bool
+		wantDB   int
+		wantErr  bool
 	}{
 		{
 			name:     "rediss URI from SetDefaults IAM path, DB 0",

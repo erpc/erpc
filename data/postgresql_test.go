@@ -372,8 +372,6 @@ func TestPostgreSQLIAMAuthValidation(t *testing.T) {
 		require.NoError(t, base().Validate())
 	})
 
-
-
 	t.Run("missing endpoint", func(t *testing.T) {
 		cfg := base()
 		cfg.IAMAuth.Endpoint = ""
@@ -426,4 +424,3 @@ func TestPostgreSQLIAMAuthValidation(t *testing.T) {
 		require.ErrorContains(t, cfg.Validate(), "auth.mode")
 	})
 }
-

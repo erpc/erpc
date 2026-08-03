@@ -687,7 +687,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					if project.Config.UserAgentMode != "" {
 						uaMode = project.Config.UserAgentMode
 					}
-					nq.SetAllowClientDirectiveMatcher(project.allowClientDirectiveMatcher)
+					nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
 				}
 				nq.EnrichFromHttp(headers, queryArgs, uaMode)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
@@ -1346,8 +1346,12 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 //	X-ERPC-Credits:         `vendor:method=<units>` segments, sorted and
 //	                        ';'-joined — the credit units accrued by every
 //	                        physical upstream attempt (retries, hedges,
-//	                        consensus slots; see UpstreamAttempt.CreditUnits).
+//	                        consensus slots; see UpstreamAttempt.CreditUnits),
+//	                        read from the request-object aggregate
+//	                        (NormalizedRequest.CreditUnitsByVendor).
 //	                        Omitted when nothing accrued (e.g. pure cache hits).
+//	X-ERPC-Credits-Total:   the grand total credit units across all vendors
+//	                        and sub-calls in this response; alongside X-ERPC-Credits.
 //	X-ERPC-Credits-Version: the eRPC version the built-in vendor tables
 //	                        shipped with; only alongside X-ERPC-Credits.
 //	X-ERPC-Network-Id:      canonical network id of the routed call
@@ -1372,6 +1376,7 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 	billable := 0
 	methods := map[string]struct{}{}
 	credits := map[string]int64{} // "vendor:method" → units
+	var creditsTotal int64
 	networkId, networkAlias := "", ""
 	networkAmbiguous := false
 	for _, item := range items {
@@ -1397,11 +1402,15 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 		if method != "" {
 			methods[method] = struct{}{}
 		}
-		if st := req.ExecState(); st != nil {
-			for _, attempt := range st.UpstreamAttemptLog() {
-				if attempt.CreditUnits > 0 && attempt.VendorName != "" {
-					credits[attempt.VendorName+":"+method] += attempt.CreditUnits
-				}
+		// Per-vendor credit totals come from the request-object aggregate
+		// (thread-safe; sums every physical attempt against each vendor,
+		// retries/hedges/consensus included). A request carries a single
+		// method, so keying the header segment by this request's method
+		// preserves the vendor:method=units contract.
+		for vendor, units := range req.CreditUnitsByVendor() {
+			if units > 0 {
+				credits[vendor+":"+method] += units
+				creditsTotal += units
 			}
 		}
 	}
@@ -1432,6 +1441,7 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 			segments[i] = k + "=" + strconv.FormatInt(credits[k], 10)
 		}
 		w.Header().Set("X-ERPC-Credits", strings.Join(segments, ";"))
+		w.Header().Set("X-ERPC-Credits-Total", strconv.FormatInt(creditsTotal, 10))
 		w.Header().Set("X-ERPC-Credits-Version", common.ErpcVersion)
 	}
 }

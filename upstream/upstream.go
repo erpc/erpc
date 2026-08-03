@@ -108,6 +108,27 @@ func (u *Upstream) attemptCreditUnits(req *common.NormalizedRequest) int64 {
 	return defaultCreditUnitsPerRequest
 }
 
+// rateLimitHits returns the hit weight one rate-limit permit acquisition
+// consumes from this upstream's budget: a flat 1 in the default
+// request-count mode, or the request's PRE-FLIGHT estimated vendor
+// credit-unit cost when the upstream opts into credit counting
+// (RateLimitCountMode == "credit"). The estimate is table-based — the real
+// cost is not known until after the call — and a 0-CU method consumes
+// nothing. Clamped into uint32 for the Envoy hits-addend.
+func (u *Upstream) rateLimitHits(req *common.NormalizedRequest) uint32 {
+	if u == nil || u.config == nil || u.config.RateLimitCountMode != common.RateLimitCountModeCredit {
+		return 1
+	}
+	est := u.attemptCreditUnits(req)
+	if est <= 0 {
+		return 0
+	}
+	if est > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(est)
+}
+
 // deriveSelectionReason answers "why was this upstream picked for this
 // attempt" for the per-attempt record (UpstreamAttempt.Reason, the
 // X-ERPC-Upstreams trace, and erpc_upstream_selection_total).
@@ -569,7 +590,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream")
+			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitHits(nrq))
 			if err != nil {
 				common.SetTraceSpanError(span, err)
 				return nil, err
@@ -667,6 +688,23 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					string(reason),
 					finality.String(),
 				).Inc()
+				// Fold this attempt's vendor cost into the per-(project,
+				// network, upstream, vendor, method, finality) credit counter.
+				// The per-request aggregate (X-ERPC-Credits, CreditUnitsByVendor,
+				// CreditUnitsTotal) derives from the attempt log recorded just
+				// above, so no extra bookkeeping is needed for it here. Cost
+				// accrues for every attempt that dialed the vendor; 0-cost
+				// attempts (opted-out or never-dialed) are skipped.
+				if vendorName := u.VendorName(); creditUnits > 0 && vendorName != "" {
+					telemetry.MetricUpstreamCreditUnitsTotal.WithLabelValues(
+						u.ProjectId,
+						nrq.NetworkLabel(),
+						cfg.Id,
+						vendorName,
+						method,
+						finality.String(),
+					).Add(float64(creditUnits))
+				}
 			}()
 
 			// Span to track pre-request overhead (metrics, finality calculation)
@@ -694,24 +732,12 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					finality,
 				)
 			}
-			// TODO(memory): this and the matching MetricUpstreamErrorTotal /
-			// MetricUpstreamWrongEmptyResponseTotal / MetricUpstreamCanceledTotal
-			// sites in this file + erpc/networks.go all emit label-sets
-			// keyed by user-controlled inputs (method, finality, userId,
-			// agentName, etc.) WITHOUT going through a tracker cache, so
-			// the Prometheus registry accumulates one series per unique
-			// combo forever — even after the in-memory caches added in
-			// the 826df9f5 idle-sweep get cleared.
-			//
-			// The fix is parallel to the urdObsCache / remoteRateLimited
-			// pattern: wrap each WithLabelValues call in a cached*-style
-			// indirection that remembers the label tuple + a
-			// lastAccessedAtMs, then sweep on idle with
-			// MetricVec.DeleteLabelValues. Each direct call site needs the
-			// same retrofit. Out of scope for this PR — flagged for a
-			// follow-up titled "sweep direct Prom emissions in
-			// upstream/erpc hot paths".
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
+			// These direct counter emissions carry label-sets keyed by
+			// caller-controlled inputs (method, finality, userId, agentName).
+			// They go through telemetry.CounterHandle so the health tracker's
+			// idle sweep can evict stale label combinations and release the
+			// series via DeleteLabelValues (see SweepIdleCounterHandles).
+			telemetry.CounterHandle(telemetry.MetricUpstreamRequestTotal,
 				u.ProjectId,
 				u.VendorName(),
 				u.NetworkLabel(),
@@ -721,8 +747,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				nrq.CompositeType(),
 				finality.String(),
 				nrq.UserId(),
-				nrq.AgentName(),
-			).Inc()
+				nrq.AgentName()).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
 			preReqSpan.End()
@@ -788,7 +813,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(
+					telemetry.CounterHandle(telemetry.MetricUpstreamMissingDataErrorTotal,
 						u.ProjectId,
 						u.VendorName(),
 						u.NetworkLabel(),
@@ -796,8 +821,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						method,
 						finality.String(),
 						nrq.UserId(),
-						nrq.AgentName(),
-					).Inc()
+						nrq.AgentName()).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
 					// Cancelled request (hedge lost the race or client
 					// disconnected). Not attributable to upstream quality
@@ -824,7 +848,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						)
 					}
 					severity := common.ClassifySeverity(errCall)
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
+					telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
 						u.ProjectId,
 						u.VendorName(),
 						u.NetworkLabel(),
@@ -835,8 +859,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.CompositeType(),
 						finality.String(),
 						nrq.UserId(),
-						nrq.AgentName(),
-					).Inc()
+						nrq.AgentName()).Inc()
 				}
 
 				// Only ExecutionException (EVM revert) feeds the latency

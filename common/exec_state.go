@@ -164,6 +164,54 @@ func (s *ExecState) UpstreamAttemptLog() []UpstreamAttempt {
 	return out
 }
 
+// CreditUnitsTotal returns the grand total of vendor credit units accrued
+// by this request across every physical upstream attempt recorded so far —
+// retries, hedges and consensus slots included; cache hits and provably
+// never-dialed attempts (skipped / breaker-open) contribute zero. Credit
+// accounting is vendor-scoped: attempts with no vendor name (self-hosted or
+// custom upstreams) are excluded, so this always equals the sum of
+// CreditUnitsByVendor. The value is the sum of the vendors' OWN units and is
+// not comparable across vendors or convertible to money. Thread-safe.
+func (s *ExecState) CreditUnitsTotal() int64 {
+	if s == nil {
+		return 0
+	}
+	s.upstreamMu.Lock()
+	defer s.upstreamMu.Unlock()
+	var total int64
+	for i := range s.upstreamAttempts {
+		if s.upstreamAttempts[i].VendorName != "" {
+			total += s.upstreamAttempts[i].CreditUnits
+		}
+	}
+	return total
+}
+
+// CreditUnitsByVendor returns the per-vendor credit-unit totals accrued by
+// this request, summed across all of that vendor's attempts. Nil when no
+// attempt has accrued cost yet. Keys are vendor names (UpstreamAttempt.
+// VendorName); values are that vendor's own units. Thread-safe; the returned
+// map is a fresh copy the caller owns.
+func (s *ExecState) CreditUnitsByVendor() map[string]int64 {
+	if s == nil {
+		return nil
+	}
+	s.upstreamMu.Lock()
+	defer s.upstreamMu.Unlock()
+	var out map[string]int64
+	for i := range s.upstreamAttempts {
+		a := &s.upstreamAttempts[i]
+		if a.CreditUnits == 0 || a.VendorName == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]int64, 2)
+		}
+		out[a.VendorName] += a.CreditUnits
+	}
+	return out
+}
+
 // MarkUpstreamAttemptWon flags the most-recent attempt on the given
 // upstream as Won (its response contributed to the final response).
 // Called by executors at the moment a winning response is selected:

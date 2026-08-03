@@ -13,6 +13,26 @@ Every request can carry its own instructions. Add an `X-ERPC-*` header or a `?pa
 
 For production-facing projects, [`allowClientDirectives`](/config/projects) can restrict which directives clients may send — block cache-bypass or upstream-pinning headers while keeping validation directives available.
 
+When eRPC is itself the edge (no trusted proxy in front to strip headers), the restriction can be scoped **per caller** instead of per project: set `allowClientDirectives: ""` on the project to deny everyone by default, then re-grant on the individual auth strategies that trusted callers authenticate with:
+
+```yaml
+projects:
+  - id: main
+    allowClientDirectives: ""            # default: nobody
+    auth:
+      strategies:
+        - type: secret                    # operators: every directive
+          allowClientDirectives: "*"
+          secret: { id: ops, value: ${OPS_TOKEN} }
+        - type: secret                    # partners: upstream pinning only
+          allowClientDirectives: "use-upstream"
+          secret: { id: partner, value: ${PARTNER_TOKEN} }
+        - type: jwt                       # everyone else: inherits "" → denied
+          jwt: { ... }
+```
+
+The grant travels on the authenticated `User`, so it is only ever issued by the strategy that actually verified the caller's credential. A caller whose identity comes from [`trustUserIdHeader`](/config/projects) carries no grant and always falls back to the project value — spoofing the identity header cannot widen directive access.
+
 After each response, eRPC echoes back what actually happened — which upstream won, cache hit or miss, retry and hedge counts — so you always know exactly what the proxy did.
 
 ## Quick taste
@@ -222,7 +242,9 @@ All patterns below are distilled from real production fleets; comments explain t
 }`}
 />
 
-**2. Non-standard chain: disable validateTransactionsRoot.** zkSync Era, Kaia, Filecoin, HyperEVM, Sophon, Abstract, and Etherlink all use non-standard transaction-trie roots that fail eRPC's `validateTransactionsRoot` check. Production configs disable it per-network while inheriting all other defaults. zkSync and similar ZK-rollups also disable `enforceNonNullTaggedBlocks` because their chains can legitimately return null for certain block tags:
+**2. Non-standard chain: disable validateTransactionsRoot.** zkSync Era, Kaia, Filecoin, Sophon, Abstract, and Etherlink all use non-standard transaction-trie roots that fail eRPC's `validateTransactionsRoot` check. Production configs disable it per-network while inheriting all other defaults. zkSync and similar ZK-rollups also disable `enforceNonNullTaggedBlocks` because their chains can legitimately return null for certain block tags.
+
+HyperEVM does **not** need this override: its native/L1 system txs are recognized as phantoms (`r=0x1`, `gasPrice=0`), so `validateTransactionsRoot` can stay on.
 
 <ConfigTabs
   path="projects[].networks[].directiveDefaults"
@@ -357,10 +379,11 @@ Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=he
 | `X-ERPC-Calls` | routed JSON-RPC sub-calls in this HTTP response (batch size; `1` for a single request) |
 | `X-ERPC-Billable` | how many of them were billable. Successful, empty-but-valid and execution-revert responses bill (cache hits included — their *cost* is zero, not their billability; a revert is real work the node performed); protocol, transport, rate-limit and cancellation failures do not |
 | `X-ERPC-Methods` | distinct JSON-RPC methods, sorted, comma-joined |
-| `X-ERPC-Credits` | `vendor:method=<units>` segments, sorted, `;`-joined — the vendor credit units consumed by **every physical upstream attempt** (retries, hedges and consensus slots included; skipped / breaker-open attempts provably never dialed and cost 0). Omitted when nothing accrued (e.g. pure cache hits). Units come from vendors implementing `CreditUnitsProvider` (built-in tables: Alchemy CUs, QuickNode credits), merged per method with `providers[].settings.creditUnits` overrides; vendors with no table default to a **flat 1 credit per request** (opt out with `creditUnits: {"*": 0}`) |
+| `X-ERPC-Credits` | `vendor:method=<units>` segments, sorted, `;`-joined — the vendor credit units consumed by **every physical upstream attempt** (retries, hedges and consensus slots included; skipped / breaker-open attempts provably never dialed and cost 0). Read from the per-request aggregate (`NormalizedRequest.CreditUnitsByVendor`). Omitted when nothing accrued (e.g. pure cache hits). Units come from vendors implementing `CreditUnitsProvider` (built-in tables: Alchemy CUs, QuickNode credits, dRPC CUs), merged per method with `providers[].settings.creditUnits` overrides; vendors with no table default to a **flat 1 credit per request** (opt out with `creditUnits: {"*": 0}`) |
+| `X-ERPC-Credits-Total` | grand total credit units across all vendors and sub-calls in this response; present alongside `X-ERPC-Credits` |
 | `X-ERPC-Credits-Version` | the eRPC version the built-in vendor tables shipped with; only present alongside `X-ERPC-Credits` |
 
-Example: `X-ERPC-Calls: 5` · `X-ERPC-Billable: 4` · `X-ERPC-Cache: PARTIAL:2` · `X-ERPC-Credits: alchemy:eth_call=52;quicknode:eth_getLogs=40`.
+Example: `X-ERPC-Calls: 5` · `X-ERPC-Billable: 4` · `X-ERPC-Cache: PARTIAL:2` · `X-ERPC-Credits: alchemy:eth_call=52;quicknode:eth_getLogs=40` · `X-ERPC-Credits-Total: 92`.
 
 Cost-header gotchas: emitted only for routed requests — early parse/auth errors get none (there is no routed call to account for). Pricing is the **vendor's** logic (`common.CreditUnitsProvider.CreditUnits(req, upstreamCfg)`; nothing is hard-coded in the eRPC layer). A timed-out attempt still accrues credits — it dialed the vendor — while `skipped`/`breaker_open` attempts provably never left the process and cost 0. Vendors without pricing cost a flat 1 credit per request unless opted out (`creditUnits: {"*": 0}`). Source: `writeCostHeaders` in [`erpc/http_server.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go), `attemptCreditUnits` in [`upstream/upstream.go`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go), tests in [`erpc/http_server_cost_test.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server_cost_test.go) and [`upstream/credit_units_test.go`](https://github.com/erpc/erpc/blob/main/upstream/credit_units_test.go).
 

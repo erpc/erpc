@@ -833,6 +833,22 @@ func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
 	}, nil
 }
 
+// RateLimitCountMode selects the accounting unit an upstream's rate-limit
+// budget charges per call.
+type RateLimitCountMode string
+
+const (
+	// RateLimitCountModeRequest (default) charges a flat 1 hit per call,
+	// regardless of method — the historical eRPC behavior.
+	RateLimitCountModeRequest RateLimitCountMode = "request"
+	// RateLimitCountModeCredit charges the request's resolved vendor
+	// credit-unit cost (the same table used for cost accounting), so a
+	// heavy eth_getLogs consumes more budget than a cheap eth_blockNumber.
+	// The pre-flight table estimate is used (the real cost is not known
+	// until after the call); a 0-CU method consumes nothing.
+	RateLimitCountModeCredit RateLimitCountMode = "credit"
+)
+
 type UpstreamConfig struct {
 	Id   string       `yaml:"id,omitempty" json:"id"`
 	Type UpstreamType `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
@@ -869,6 +885,11 @@ type UpstreamConfig struct {
 	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
+	// RateLimitCountMode selects how this upstream's rate-limit budget
+	// counts a call: "request" (default) charges 1 hit, "credit" charges the
+	// request's resolved vendor credit-unit cost. Empty resolves to
+	// "request". Applies to the upstream-level budget only.
+	RateLimitCountMode RateLimitCountMode `yaml:"rateLimitCountMode,omitempty" json:"rateLimitCountMode,omitempty"`
 	// CreditUnits overrides the vendor's built-in per-method credit table
 	// (CreditUnitsProvider) for this upstream, merged per method over the
 	// vendor defaults ("*" = fallback for unlisted methods). Normally set
@@ -1279,9 +1300,13 @@ type EvmUpstreamConfig struct {
 	// arbtrace_filter requests whose block range exceeds this value into contiguous
 	// sub-requests executed concurrently and merged before returning. Zero disables
 	// the feature.
-	TraceFilterAutoSplittingRangeThreshold int64                    `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
-	SkipWhenSyncing                        *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
-	Integrity                              *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+	TraceFilterAutoSplittingRangeThreshold int64 `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
+	SkipWhenSyncing                        *bool `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	// SkipSyncingCheck disables eth_syncing polling for this upstream, treating it as always synced.
+	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
+	// misleading and causes circuit breaker false positives.
+	SkipSyncingCheck *bool                    `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
+	Integrity        *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
 	// @deprecated: use blockAvailability bounds instead; kept for config back-compat only
 	NodeType EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
@@ -1409,6 +1434,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.SkipWhenSyncing != nil {
 		v := *c.SkipWhenSyncing
 		copied.SkipWhenSyncing = &v
+	}
+	if c.SkipSyncingCheck != nil {
+		v := *c.SkipSyncingCheck
+		copied.SkipSyncingCheck = &v
 	}
 	if c.Integrity != nil {
 		copied.Integrity = c.Integrity.Copy()
@@ -2478,6 +2507,12 @@ type EvmNetworkConfig struct {
 	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
 
+	// SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
+	// requests carrying the `safe` block tag. Matching upstreams define and
+	// serve `safe`; empty (without an inherited network default) keeps existing
+	// provider-defined routing. This does not affect eth_query* or gRPC Query.
+	SafeBlockSource string `yaml:"safeBlockSource,omitempty" json:"safeBlockSource,omitempty"`
+
 	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
 	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
 	// numeric distance band is gone — use emptyResultConfidence instead.
@@ -2677,6 +2712,25 @@ type AuthStrategyConfig struct {
 	IgnoreMethods   []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods,omitempty"`
 	AllowMethods    []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
 	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	// AllowClientDirectives, if set, overrides the project-level
+	// `allowClientDirectives` pattern for users authenticated by THIS strategy.
+	// Same wildcard syntax as the project-level field ("*" = all, "" = none).
+	//
+	// Client directives (`X-ERPC-*` headers) are powerful per-request overrides —
+	// e.g. pinning an upstream bypasses the selection policy, and skipping the
+	// cache multiplies upstream load — so operators exposing erpc directly to
+	// untrusted callers typically deny them project-wide and re-enable them only
+	// for trusted strategies:
+	//
+	//	allowClientDirectives: ""      # project default: nobody
+	//	auth.strategies[0].allowClientDirectives: "*"   # this strategy: everything
+	//
+	// Left unset the caller inherits the project-level pattern, so existing
+	// configs are unaffected. The capability is attached to the user by the
+	// strategy that authenticated them, which means it can never be granted by
+	// `trustUserIdHeader` (that path sets only Id — see
+	// NormalizedRequest.SetUserFromTrustedHeader).
+	AllowClientDirectives *string `yaml:"allowClientDirectives,omitempty" json:"allowClientDirectives,omitempty"`
 
 	Type     AuthType                `yaml:"type" json:"type" tstype:"TsAuthType"`
 	Network  *NetworkStrategyConfig  `yaml:"network,omitempty" json:"network,omitempty"`
@@ -2797,6 +2851,17 @@ type MetricsConfig struct {
 	// "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
 	// Value is the list of label names to keep for that metric.
 	HistogramLabelOverrides map[string][]string `yaml:"histogramLabelOverrides,omitempty" json:"histogramLabelOverrides,omitempty"`
+
+	// CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
+	// counters whose label-sets are keyed by caller-controlled inputs
+	// (method, user, agentName, ...). Counter series idle for at least this
+	// duration are evicted from the Prometheus registry (DeleteLabelValues)
+	// by the health tracker's idle sweep; a series that becomes active again
+	// restarts at zero — the same semantics rate()/increase() consumers
+	// already handle across process restarts. Defaults to 24h (conservative:
+	// only clearly-dead label combinations are released). Set to 0 to
+	// disable eviction entirely.
+	CounterIdleEvictionAfter *Duration `yaml:"counterIdleEvictionAfter,omitempty" json:"counterIdleEvictionAfter,omitempty"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.

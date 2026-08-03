@@ -129,16 +129,16 @@ projects:
 }
 
 // TestLoadConfig_TypeScriptUnifiedPipeline pins the TS load path:
-//   1. function-valued `evalFunc` survives as a real sobek function
-//      (NOT stringified) — `SelectionPolicy.EvalFunc` carries only a
-//      `__ts_fn__:<id>` sentinel pointing into the user-script's
-//      `globalThis.__erpcFns` registry;
-//   2. the user's whole compiled module is attached to `cfg.UserScript`
-//      so each policy-engine pool runtime can re-evaluate it natively,
-//      preserving closures + helpers;
-//   3. the legacy `group:` key written via TS still flows through the
-//      shadow types and gets migrated to a `tier:` tag identically to
-//      the YAML path, and first-class `routing:` parses onto u.Routing.
+//  1. function-valued `evalFunc` survives as a real sobek function
+//     (NOT stringified) — `SelectionPolicy.EvalFunc` carries only a
+//     `__ts_fn__:<id>` sentinel pointing into the user-script's
+//     `globalThis.__erpcFns` registry;
+//  2. the user's whole compiled module is attached to `cfg.UserScript`
+//     so each policy-engine pool runtime can re-evaluate it natively,
+//     preserving closures + helpers;
+//  3. the legacy `group:` key written via TS still flows through the
+//     shadow types and gets migrated to a `tier:` tag identically to
+//     the YAML path, and first-class `routing:` parses onto u.Routing.
 //
 // We don't run the legacy translator hook here — that has its own
 // suite. This test just verifies that the TS object survives the
@@ -1210,4 +1210,21 @@ projects:
 		assert.Equal(t, "eth_*", network.Failsafe[1].MatchMethod)
 		assert.Equal(t, 5, network.Failsafe[1].Retry.MaxAttempts)
 	})
+}
+
+func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
+	cfg := &Config{}
+	base := func(mode RateLimitCountMode) *UpstreamConfig {
+		return &UpstreamConfig{Endpoint: "http://localhost", RateLimitCountMode: mode}
+	}
+
+	// Empty (default) and both valid modes pass.
+	assert.NoError(t, base("").Validate(cfg, false))
+	assert.NoError(t, base(RateLimitCountModeRequest).Validate(cfg, false))
+	assert.NoError(t, base(RateLimitCountModeCredit).Validate(cfg, false))
+
+	// Anything else is rejected with a helpful message.
+	err := base("credits").Validate(cfg, false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "rateLimitCountMode")
 }

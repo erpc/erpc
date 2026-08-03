@@ -52,6 +52,9 @@ func Init(
 		}
 		// Must run before SetHistogramBuckets so the new Vecs are built with the filter applied.
 		telemetry.SetHistogramLabelFilter(cfg.Metrics.HistogramDropLabels, cfg.Metrics.HistogramLabelOverrides)
+		if cfg.Metrics.CounterIdleEvictionAfter != nil {
+			telemetry.SetCounterIdleEvictionAfter(cfg.Metrics.CounterIdleEvictionAfter.Duration())
+		}
 	}
 	if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
 		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")

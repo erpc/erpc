@@ -453,6 +453,20 @@ var (
 		Help:      "Per-(upstream, method, outcome) attempt count. Outcomes: success/empty/transport_error/server_error/client_error/rate_limited/missing_data/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped.",
 	}, []string{"project", "network", "upstream", "category", "outcome", "is_hedge", "is_retry", "finality"})
 
+	// MetricUpstreamCreditUnitsTotal accumulates vendor credit-unit cost
+	// (Alchemy compute units, QuickNode API credits, dRPC CUs, …) across
+	// every physical upstream attempt — retries, hedges and consensus slots
+	// included; cache hits and never-dialed attempts cost zero by
+	// construction. Values are each vendor's OWN units: not normalized, not
+	// comparable across vendors, not money. Per-user attribution is
+	// intentionally omitted here to bound cardinality — use the
+	// X-ERPC-Credits response header or trace attributes for per-user cost.
+	MetricUpstreamCreditUnitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_credit_units_total",
+		Help:      "Total vendor credit units accrued by upstream attempts, per (project, network, upstream, vendor, method, finality). Vendor-owned units, not money; not comparable across vendors.",
+	}, []string{"project", "network", "upstream", "vendor", "category", "finality"})
+
 	// MetricNetworkRetryAttemptTotal counts retry attempts at the
 	// network scope, labeled by the reason for retry (empty_result /
 	// pending_tx / retryable_error / block_unavailable / missing_data).

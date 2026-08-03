@@ -991,6 +991,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
+	// Route safe-tagged requests before multiplexing and cache lookup.
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
+			common.SetTraceSpanError(forwardSpan, err)
+			return nil, err
+		}
+	}
+
 	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer (follower path)
@@ -1661,7 +1669,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 			upstream := key.(*upstream.Upstream)
 			finality := req.Finality(ctx)
-			telemetry.MetricUpstreamWrongEmptyResponseTotal.WithLabelValues(
+			telemetry.CounterHandle(telemetry.MetricUpstreamWrongEmptyResponseTotal,
 				n.projectId,
 				upstream.VendorName(),
 				n.Label(),
@@ -1669,8 +1677,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				method,
 				finality.String(),
 				req.UserId(),
-				req.AgentName(),
-			).Inc()
+				req.AgentName()).Inc()
 
 			// If the response block number is known, check if it falls outside
 			// this upstream's configured block availability range.
@@ -1965,12 +1972,11 @@ func (n *Network) handleBlockSkip(
 		attribute.Bool("skip_retryable", isRetryable),
 	)
 	finality := req.Finality(ctx)
-	telemetry.MetricUpstreamErrorTotal.WithLabelValues(
+	telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
 		n.projectId, u.VendorName(), n.Label(), u.Id(), method,
 		common.ErrorFingerprint(skipErr), string(common.SeverityInfo),
 		req.CompositeType(), finality.String(),
-		req.UserId(), req.AgentName(),
-	).Inc()
+		req.UserId(), req.AgentName()).Inc()
 	errToStore := skipErr
 	if !isRetryable {
 		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
