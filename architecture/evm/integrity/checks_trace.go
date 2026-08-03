@@ -16,12 +16,21 @@ import (
 // to describe. Measured before encoding, across 6 chains / 11 endpoints and 88
 // consecutive blocks (bor, geth, erigon, reth, Nitro):
 //
-//	sum(top-level frame gasUsed) == header.gasUsed   exact, 0 deviations
-//	len(traces)                  == len(block txs)   exact, 0 deviations
+//	len(traces) == len(block txs)     exact, every chain, every sweep
+//	sum(traced gasUsed) >= header.gasUsed
 //
-// The sweep deliberately spanned three full Polygon sprint cycles, where bor's
-// state-sync pseudo-transaction lands, since that is the obvious way the
-// identity could have broken.
+// The gas relation is a LOWER bound, not an equality, and that correction came
+// from live traffic rather than the sweep. On Polygon block 91375456 all three
+// vendors independently traced 57,454,476 gas against a header committing
+// 57,113,023; on 91374960 they DISAGREED with each other (Alchemy summed to the
+// header exactly, QuickNode and Chainstack ran +147,758 over). That is refund
+// accounting: a receipt/header meters gas AFTER EIP-3529 refunds, while some
+// clients report a frame's gas before them. Vendors differing on the same block
+// means a positive delta can never be evidence of corruption.
+//
+// The lower bound is what the check is actually for: dropped, truncated or
+// understated traces can only push the sum DOWN. Measured 0 blocks below the
+// header across every sweep (228 blocks, 6 chains) and across the live rejects.
 //
 // The tempting third invariant — sum(child gasUsed) <= parent gasUsed — was
 // measured and is NOT one: it fails on 75 of 12,400 honest frames, because gas
@@ -107,20 +116,9 @@ func runTraceBlockGasReconciliation(ctx context.Context, d *Decoded, cfg CheckCo
 		}
 		sum += used
 	}
-	// Families that trace protocol-internal transactions the header does not
-	// meter legitimately exceed it (see TraceInvariants.GasUnaccounted), so
-	// there only a SHORTFALL is evidence — which is still the shape that
-	// matters, since dropped or truncated traces can only lower the sum.
-	if cfg.Params["gasUnaccounted"] == "true" {
-		if sum < want {
-			return failf("traces are missing gas for block %d: traces sum to %d, header commits at least %d (short by %d)",
-				number, sum, want, want-sum).disputes(number)
-		}
-		return nil
-	}
-	if sum != want {
-		return failf("traced gas does not reconcile with block %d: traces sum to %d, header commits %d (delta %d)",
-			number, sum, want, sum-want).disputes(number)
+	if sum < want {
+		return failf("traces are missing gas for block %d: traces sum to %d, header commits at least %d (short by %d)",
+			number, sum, want, want-sum).disputes(number)
 	}
 	return nil
 }
