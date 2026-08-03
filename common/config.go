@@ -1278,9 +1278,13 @@ type EvmUpstreamConfig struct {
 	// arbtrace_filter requests whose block range exceeds this value into contiguous
 	// sub-requests executed concurrently and merged before returning. Zero disables
 	// the feature.
-	TraceFilterAutoSplittingRangeThreshold int64                    `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
-	SkipWhenSyncing                        *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
-	Integrity                              *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+	TraceFilterAutoSplittingRangeThreshold int64 `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
+	SkipWhenSyncing                        *bool `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	// SkipSyncingCheck disables eth_syncing polling for this upstream, treating it as always synced.
+	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
+	// misleading and causes circuit breaker false positives.
+	SkipSyncingCheck *bool                    `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
+	Integrity        *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
 	// @deprecated: use blockAvailability bounds instead; kept for config back-compat only
 	NodeType EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
@@ -1408,6 +1412,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.SkipWhenSyncing != nil {
 		v := *c.SkipWhenSyncing
 		copied.SkipWhenSyncing = &v
+	}
+	if c.SkipSyncingCheck != nil {
+		v := *c.SkipSyncingCheck
+		copied.SkipSyncingCheck = &v
 	}
 	if c.Integrity != nil {
 		copied.Integrity = c.Integrity.Copy()
