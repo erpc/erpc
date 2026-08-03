@@ -169,7 +169,7 @@ func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u c
 		// Divert only when someone else can actually answer. A disproved
 		// upstream that is the only one able to serve the height still serves;
 		// excluding the last resort trades wrong data for an outage.
-		if !prober.aSiblingProves(u.Id(), blockNumber) {
+		if !prober.aSiblingCanServe(ctx, u.Id(), blockNumber) {
 			return false, nil, nil
 		}
 		prober.count(u, "boundary", "diverted")
