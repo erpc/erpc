@@ -20,9 +20,9 @@ import (
 // simply counts invocations and fails, which is enough to observe how many
 // poll loops are live without standing up a real JSON-RPC endpoint.
 type fakePollerUpstream struct {
-	cfg            *common.UpstreamConfig
-	logger         zerolog.Logger
-	forwards       atomic.Int64
+	cfg             *common.UpstreamConfig
+	logger          zerolog.Logger
+	forwards        atomic.Int64
 	syncingForwards atomic.Int64
 }
 

@@ -1151,8 +1151,14 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 		FinalizedBlockSuccessfulOnce: e.finalizedBlockSuccessfulOnce,
 	}
 
+	// Also reflect operator-configured skip in diagnostics.
+	upsCfg := e.upstream.Config()
+	if upsCfg.Evm != nil && upsCfg.Evm.SkipSyncingCheck != nil && *upsCfg.Evm.SkipSyncingCheck {
+		diag.SkipSyncingCheck = true
+	}
+
 	// Build detection issue messages
-	skipSyncingCheck := e.skipSyncingCheck
+	skipSyncingCheck := e.skipSyncingCheck || diag.SkipSyncingCheck
 	syncingSuccessfulOnce := e.syncingSuccessfulOnce
 	skipLatestBlockCheck := e.skipLatestBlockCheck
 	latestBlockSuccessfulOnce := e.latestBlockSuccessfulOnce
