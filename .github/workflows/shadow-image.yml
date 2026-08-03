@@ -1,0 +1,67 @@
+# Builds the shadow-experiment image for PR #948 without needing a local
+# registry credential. Lives ONLY on build/** branches so the PR diff stays
+# clean; the tag to publish is read from .shadow-image-tag.
+#
+# Two native runners rather than QEMU: the Go builder stage is not
+# $BUILDPLATFORM-aware, so emulating arm64 would rebuild the whole toolchain
+# under emulation. Both arches are required — the shadow nodes run arm64 and
+# the repo's own validate job pulls the image on an amd64 runner.
+name: shadow-image
+
+on:
+  push:
+    branches: ['build/**']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - id: tag
+        run: echo "value=$(tr -d '[:space:]' < .shadow-image-tag)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ghcr.io/erpc/erpc:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - id: tag
+        run: echo "value=$(tr -d '[:space:]' < .shadow-image-tag)" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge per-arch images into one manifest list
+        run: |
+          T="ghcr.io/erpc/erpc:${{ steps.tag.outputs.value }}"
+          docker buildx imagetools create -t "$T" "$T-amd64" "$T-arm64"
+          docker buildx imagetools inspect "$T"
