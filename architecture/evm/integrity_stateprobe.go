@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
@@ -63,6 +64,17 @@ type stateProber struct {
 	// proofUnsupported remembers upstreams whose provider does not expose
 	// eth_getProof, so the probe is not re-attempted on every block.
 	proofUnsupported sync.Map // upstream id -> true
+
+	// disprovedStreak counts CONSECUTIVE probe mismatches per upstream.
+	//
+	// The distinction it exists to draw: an upstream that cannot be probed has
+	// merely FAILED TO PROVE itself, and must keep serving (the boundary falls
+	// back to its claimed head). An upstream that answers the probe and executes
+	// at the wrong height has proven the OPPOSITE — measured on shadow hyperevm,
+	// where one upstream returned pin_ignored on 202 of 202 probes while all six
+	// of its siblings matched on all 202. Treating those two as the same thing
+	// is what let a demonstrably wrong node keep serving state calls.
+	disprovedStreak sync.Map // upstream id -> *atomic.Int64
 
 	// work carries the newest followed head; size 1, newest wins — probing is
 	// against the tip, so intermediate heights are worthless once superseded.
@@ -170,11 +182,13 @@ func (p *stateProber) probeUpstream(ctx context.Context, u common.Upstream, n in
 	// unknown there is no evidence at all, and the boundary stays put (the
 	// assert falls back to the claimed head for such upstreams, visibly).
 	if ctxMatch == probeMismatch || proofMatch == probeMismatch {
+		p.noteDisproved(u.Id())
 		return
 	}
 	if ctxMatch != probeMatch && proofMatch != probeMatch {
-		return
+		return // no evidence either way — the streak is untouched
 	}
+	p.clearDisproved(u.Id())
 	w, ok := u.(common.EvmStateProvenWriter)
 	if !ok {
 		return
@@ -315,6 +329,65 @@ func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body str
 		return "", fmt.Errorf("no json-rpc response: %w", err)
 	}
 	return string(jrr.GetResultBytes()), nil
+}
+
+// stateProbeDisprovedStreak is how many CONSECUTIVE mismatches make an upstream
+// disproved rather than merely unproven. At the shadow's 2s interval that is
+// ~20s of unbroken evidence; the observed real case ran 202/202, so the
+// threshold exists only to rule out a transient (a probe landing across a
+// reorg, a momentary lag spike), not to be a tuning knob.
+const stateProbeDisprovedStreak = 10
+
+func (p *stateProber) noteDisproved(id string) {
+	v, _ := p.disprovedStreak.LoadOrStore(id, new(atomic.Int64))
+	v.(*atomic.Int64).Add(1)
+}
+
+func (p *stateProber) clearDisproved(id string) {
+	if v, ok := p.disprovedStreak.Load(id); ok {
+		v.(*atomic.Int64).Store(0)
+	}
+}
+
+// disproved reports whether an upstream has answered probes wrongly for long
+// enough that its silence about the state trie is evidence, not a gap.
+func (p *stateProber) disproved(id string) bool {
+	v, ok := p.disprovedStreak.Load(id)
+	if !ok {
+		return false
+	}
+	return v.(*atomic.Int64).Load() >= stateProbeDisprovedStreak
+}
+
+// aSiblingProves reports whether some OTHER upstream has PROVEN state at or
+// beyond `block`.
+//
+// Diverting away from a disproved upstream is conditioned on this because the
+// alternative is the failure mode that took Base down: a selection rule that
+// EXCLUDES rather than deprioritizes turns "every candidate looks bad" into an
+// outage. Here, if nothing else can prove the height, the disproved upstream
+// still serves — wrong data beats no data, and the operator sees it in the
+// probe metrics either way.
+func (p *stateProber) aSiblingProves(exceptId string, block int64) bool {
+	enum, ok := p.network.(interface {
+		EvmAllUpstreams(context.Context) []common.Upstream
+	})
+	if !ok {
+		return false
+	}
+	for _, u := range enum.EvmAllUpstreams(context.Background()) {
+		if u.Id() == exceptId {
+			continue
+		}
+		r, ok := u.(common.EvmStateProvenReader)
+		if !ok {
+			continue
+		}
+		if r.EvmStateProvenBlock() >= block {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *stateProber) count(u common.Upstream, probe, outcome string) {

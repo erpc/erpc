@@ -130,7 +130,8 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 // Inert unless the state prober is running for this network, so the default
 // behavior is byte-identical with the feature off.
 func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, method string) (bool, *common.NormalizedResponse, error) {
-	if stateProberFor(n.Id()) == nil {
+	prober := stateProberFor(n.Id())
+	if prober == nil {
 		return false, nil, nil
 	}
 	// The probes themselves are internal state calls aimed at upstreams whose
@@ -149,12 +150,42 @@ func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u c
 		return false, nil, nil
 	}
 	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceStateProven, false, blockNumber)
-	if err != nil || available {
+	if err != nil {
 		return false, nil, nil
 	}
 	var proven int64
 	if r, ok := u.(common.EvmStateProvenReader); ok {
 		proven = r.EvmStateProvenBlock()
+	}
+	if available {
+		// The claimed-head fallback (proven == 0) exists so that upstreams which
+		// cannot be probed keep serving. It must not shelter an upstream that
+		// ANSWERS the probe and executes at the wrong height — that node has not
+		// failed to prove itself, it has proven the opposite, and letting it
+		// serve is the silent-wrong-data case this boundary was built for.
+		if proven > 0 || !prober.disproved(u.Id()) {
+			return false, nil, nil
+		}
+		// Divert only when someone else can actually answer. A disproved
+		// upstream that is the only one able to serve the height still serves;
+		// excluding the last resort trades wrong data for an outage.
+		if !prober.aSiblingProves(u.Id(), blockNumber) {
+			return false, nil, nil
+		}
+		prober.count(u, "boundary", "diverted")
+		return true, nil, &common.ErrUpstreamBlockUnavailable{
+			BaseError: common.BaseError{
+				Code: common.ErrCodeUpstreamBlockUnavailable,
+				Message: fmt.Sprintf(
+					"state for block %d is DISPROVEN on this node (it answers pinned calls at the wrong height) for %s",
+					blockNumber, method),
+				Details: map[string]interface{}{
+					"upstreamId":  u.Id(),
+					"blockNumber": blockNumber,
+					"disproven":   true,
+				},
+			},
+		}
 	}
 	return true, nil, &common.ErrUpstreamBlockUnavailable{
 		BaseError: common.BaseError{
