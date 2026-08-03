@@ -1287,6 +1287,10 @@ type EvmUpstreamConfig struct {
 	// the feature.
 	TraceFilterAutoSplittingRangeThreshold int64 `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
 	SkipWhenSyncing                        *bool `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	// SkipSyncingCheck disables eth_syncing polling for this upstream, treating it as always synced.
+	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
+	// misleading and causes circuit breaker false positives.
+	SkipSyncingCheck *bool `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
@@ -1418,6 +1422,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 		v := *c.SkipWhenSyncing
 		copied.SkipWhenSyncing = &v
 	}
+	if c.SkipSyncingCheck != nil {
+		v := *c.SkipSyncingCheck
+		copied.SkipSyncingCheck = &v
+	}
 	if c.DeprecatedIntegrity != nil {
 		copied.DeprecatedIntegrity = c.DeprecatedIntegrity.Copy()
 	}
@@ -1444,10 +1452,10 @@ type FailsafeConfig struct {
 	// validation instead of per-request fan-out.
 	MatchRequestKind string                      `yaml:"matchRequestKind,omitempty" json:"matchRequestKind,omitempty" tstype:"'user' | 'internal' | '*'"`
 	Retry            *RetryPolicyConfig          `yaml:"retry" json:"retry"`
-	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
-	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
-	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
-	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
+	CircuitBreaker   *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
+	Timeout          *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
+	Hedge            *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
+	Consensus        *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
 }
 
 // NetworkFailsafeConfig is the scope-specific alias for network-level

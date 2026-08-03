@@ -208,6 +208,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].evm.statePollerInterval` | Duration | `30s` (<SourceLink file="common/defaults.go" lines="1718-1724" />) | Background latest/finalized poll cadence. Non-zero required. |
 | `upstreams[*].evm.statePollerDebounce` | Duration | `0` → inferred from chain block time | Minimum spacing between forced polls. |
 | `upstreams[*].evm.skipWhenSyncing` | `*bool` | `false` (<SourceLink file="common/defaults.go" lines="1766-1772" />) | Skip requests with `ErrUpstreamSyncing` while the poller reports syncing state. |
+| `upstreams[*].evm.skipSyncingCheck` | `*bool` | `false` | Disable `eth_syncing` polling for this upstream and hard-set syncing state to `NotSyncing`. Use for nodes that always return a syncing object (e.g. Pharos/Antora) even when fully caught up, which would otherwise cause permanent circuit-breaker false positives. |
 | `upstreams[*].evm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Each bound sets exactly one of `exactBlock`, `latestBlockMinus`, `earliestBlockPlus`. Cross-bound validation: `latestBlockMinus` lower value must be ≥ upper value. |
 | `upstreams[*].evm.blockAvailability.{lower,upper}.latestBlockMinus` | `*int64` | nil | Bound = latest − N. Recomputed on each check from state poller. |
 | `upstreams[*].evm.blockAvailability.{lower,upper}.earliestBlockPlus` | `*int64` | nil | Bound = detected earliest block + N via probe. Earliest `0` before detection computes `0+N`. |
