@@ -1,7 +1,10 @@
 package evm
 
 import (
+	"context"
 	"testing"
+
+	"github.com/erpc/erpc/common"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -50,11 +53,71 @@ func TestDisprovedStreak(t *testing.T) {
 	})
 }
 
-// aSiblingProves is the guard that keeps this from repeating the Base failover
-// outage: it must answer false when there is no one else, so the diversion
-// never removes the last upstream able to serve a height.
-func TestASiblingProvesRefusesWithoutAnEnumerableNetwork(t *testing.T) {
+// aSiblingCanServe is the guard that keeps this from repeating the Base
+// failover outage: it must answer false when there is no one else, so the
+// diversion never removes the last upstream able to serve a height.
+func TestASiblingCanServeRefusesWithoutAnEnumerableNetwork(t *testing.T) {
 	p := &stateProber{}
-	assert.False(t, p.aSiblingProves("u1", 100),
+	assert.False(t, p.aSiblingCanServe(context.Background(), "u1", 100),
 		"with no way to enumerate siblings the answer must be 'no alternative', which keeps the upstream serving")
+}
+
+// siblingNetwork is the minimal shape aSiblingCanServe needs: a network that
+// can enumerate its upstreams.
+type siblingNetwork struct {
+	common.Network
+	ups []common.Upstream
+}
+
+func (s *siblingNetwork) EvmAllUpstreams(ctx context.Context) []common.Upstream { return s.ups }
+
+func provenUp(id string, proven int64) common.Upstream {
+	u := common.NewFakeUpstream(id)
+	if w, ok := u.(common.EvmStateProvenWriter); ok && proven > 0 {
+		w.EvmSetStateProvenBlock(proven)
+	}
+	return u
+}
+
+// The guard has two tiers because insisting on PROOF at the exact height would
+// leave the newest blocks permanently unprotected: the proven head lags the
+// followed tip, while the defect this exists for is present at every depth
+// (the real upstream ignored the pin identically at the tip and 5,000 blocks
+// back). A sibling with no adverse evidence is still strictly better than one
+// proven to answer at the wrong height.
+func TestASiblingCanServeTiers(t *testing.T) {
+	ctx := context.Background()
+	const block = int64(1000)
+
+	t.Run("a sibling proven at the height qualifies", func(t *testing.T) {
+		p := &stateProber{network: &siblingNetwork{ups: []common.Upstream{
+			provenUp("bad", 0), provenUp("good", 1200),
+		}}}
+		assert.True(t, p.aSiblingCanServe(ctx, "bad", block))
+	})
+
+	t.Run("an unproven but unincriminated sibling still qualifies", func(t *testing.T) {
+		p := &stateProber{network: &siblingNetwork{ups: []common.Upstream{
+			provenUp("bad", 0), provenUp("warming", 0),
+		}}}
+		assert.True(t, p.aSiblingCanServe(ctx, "bad", block),
+			"otherwise the last ~15 blocks are never protected, which is where most state traffic lives")
+	})
+
+	t.Run("a DISPROVED sibling does not qualify", func(t *testing.T) {
+		p := &stateProber{network: &siblingNetwork{ups: []common.Upstream{
+			provenUp("bad", 0), provenUp("alsoBad", 0),
+		}}}
+		for i := 0; i < stateProbeDisprovedStreak; i++ {
+			p.noteDisproved("alsoBad")
+		}
+		assert.False(t, p.aSiblingCanServe(ctx, "bad", block),
+			"diverting onto another liar is not a correction")
+	})
+
+	t.Run("the upstream itself never counts as its own alternative", func(t *testing.T) {
+		p := &stateProber{network: &siblingNetwork{ups: []common.Upstream{provenUp("bad", 5000)}}}
+		assert.False(t, p.aSiblingCanServe(ctx, "bad", block),
+			"a lone upstream must keep serving — excluding the last resort trades wrong data for an outage")
+	})
 }

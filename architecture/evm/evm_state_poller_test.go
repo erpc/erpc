@@ -20,9 +20,10 @@ import (
 // simply counts invocations and fails, which is enough to observe how many
 // poll loops are live without standing up a real JSON-RPC endpoint.
 type fakePollerUpstream struct {
-	cfg      *common.UpstreamConfig
-	logger   zerolog.Logger
-	forwards atomic.Int64
+	cfg             *common.UpstreamConfig
+	logger          zerolog.Logger
+	forwards        atomic.Int64
+	syncingForwards atomic.Int64
 }
 
 func (f *fakePollerUpstream) Id() string                     { return f.cfg.Id }
@@ -35,6 +36,9 @@ func (f *fakePollerUpstream) Vendor() common.Vendor          { return nil }
 func (f *fakePollerUpstream) Tracker() common.HealthTracker  { return nil }
 func (f *fakePollerUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	f.forwards.Add(1)
+	if m, err := nq.Method(); err == nil && m == "eth_syncing" {
+		f.syncingForwards.Add(1)
+	}
 	return nil, errors.New("fake upstream: forward always fails")
 }
 func (f *fakePollerUpstream) Cordon(method string, reason string)   {}
@@ -136,6 +140,25 @@ func TestEvmStatePoller_RepeatedBootstrapDoesNotMultiplyPollRate(t *testing.T) {
 	assert.Less(t, afterRebootstrapCalls, singleTickerCalls*2+8,
 		"poll rate multiplied after repeated Bootstrap calls: first window %d calls, second window %d calls",
 		singleTickerCalls, afterRebootstrapCalls)
+}
+
+func TestEvmStatePoller_IgnoreSyncingCheck_ImmediatelyNotSyncing(t *testing.T) {
+	// ignoreSyncingCheck: true must set syncingState = NotSyncing without ever
+	// calling eth_syncing (i.e. without any Forward calls for the syncing check).
+	poller, up, ctx := newTestStatePoller(t, 40*time.Millisecond, time.Millisecond)
+
+	skipSyncing := true
+	up.cfg.Evm.SkipSyncingCheck = &skipSyncing
+
+	_ = poller.Bootstrap(ctx)
+
+	// Give the poller a couple of ticks to run.
+	time.Sleep(120 * time.Millisecond)
+
+	assert.Equal(t, common.EvmSyncingStateNotSyncing, poller.SyncingState(),
+		"ignoreSyncingCheck should mark upstream as NotSyncing immediately")
+	assert.Equal(t, int64(0), up.syncingForwards.Load(),
+		"skipSyncingCheck should not call eth_syncing on the upstream")
 }
 
 func TestEvmStatePoller_BootstrapWithZeroIntervalStartsNothing(t *testing.T) {

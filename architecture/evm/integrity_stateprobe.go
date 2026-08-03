@@ -359,35 +359,50 @@ func (p *stateProber) disproved(id string) bool {
 	return v.(*atomic.Int64).Load() >= stateProbeDisprovedStreak
 }
 
-// aSiblingProves reports whether some OTHER upstream has PROVEN state at or
-// beyond `block`.
+// aSiblingCanServe reports whether some OTHER upstream is a credible
+// alternative for `block`.
 //
 // Diverting away from a disproved upstream is conditioned on this because the
 // alternative is the failure mode that took Base down: a selection rule that
 // EXCLUDES rather than deprioritizes turns "every candidate looks bad" into an
-// outage. Here, if nothing else can prove the height, the disproved upstream
-// still serves — wrong data beats no data, and the operator sees it in the
-// probe metrics either way.
-func (p *stateProber) aSiblingProves(exceptId string, block int64) bool {
+// outage. If nothing else can serve the height, the disproved upstream still
+// serves — wrong data beats no data, and the operator sees it in the probe
+// metrics either way.
+//
+// Two tiers, because requiring PROOF at the exact height leaves the newest
+// blocks unprotected: the proven head necessarily lags the followed tip (~15
+// blocks on the shadow), while the defect is present at every depth — the
+// upstream this was built for ignored the pin identically at the tip and 5,000
+// blocks back. A sibling carrying no such evidence, whose claimed head covers
+// the height, is still strictly better than one proven to answer at the wrong
+// height.
+func (p *stateProber) aSiblingCanServe(ctx context.Context, exceptId string, block int64) bool {
 	enum, ok := p.network.(interface {
 		EvmAllUpstreams(context.Context) []common.Upstream
 	})
 	if !ok {
 		return false
 	}
-	for _, u := range enum.EvmAllUpstreams(context.Background()) {
-		if u.Id() == exceptId {
+	fallback := false
+	for _, u := range enum.EvmAllUpstreams(ctx) {
+		if u.Id() == exceptId || p.disproved(u.Id()) {
 			continue
 		}
-		r, ok := u.(common.EvmStateProvenReader)
-		if !ok {
-			continue
-		}
-		if r.EvmStateProvenBlock() >= block {
+		// Strongest: a sibling that has PROVEN state at or beyond the height.
+		if r, ok := u.(common.EvmStateProvenReader); ok && r.EvmStateProvenBlock() >= block {
 			return true
 		}
+		if fallback {
+			continue
+		}
+		if eu, ok := u.(common.EvmUpstream); ok {
+			avail, err := eu.EvmAssertBlockAvailability(ctx, "eth_call", common.AvailbilityConfidenceBlockHead, false, block)
+			if err == nil && avail {
+				fallback = true
+			}
+		}
 	}
-	return false
+	return fallback
 }
 
 func (p *stateProber) count(u common.Upstream, probe, outcome string) {
