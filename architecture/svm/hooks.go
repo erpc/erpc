@@ -66,15 +66,18 @@ var commitmentOptionsIndex = map[string]int{
 	"getBalance":                        1,
 	"getMinimumBalanceForRentExemption": 1,
 	"getBlock":                          1,
-	"getMultipleAccounts":               1,
-	"getProgramAccounts":                1,
-	"getSignaturesForAddress":           1,
-	"getStakeActivation":                1,
-	"getTokenAccountBalance":            1,
-	"getTokenLargestAccounts":           1,
-	"getTokenSupply":                    1,
-	"getTransaction":                    1,
-	"isBlockhashValid":                  1,
+	// Same signature as getBlock — slot first, options second — and routed to
+	// the same handler, so it needs the same injection index.
+	"getConfirmedBlock":       1,
+	"getMultipleAccounts":     1,
+	"getProgramAccounts":      1,
+	"getSignaturesForAddress": 1,
+	"getStakeActivation":      1,
+	"getTokenAccountBalance":  1,
+	"getTokenLargestAccounts": 1,
+	"getTokenSupply":          1,
+	"getTransaction":          1,
+	"isBlockhashValid":        1,
 	// two positional args precede the options object
 	"getBlocksWithLimit":         2,
 	"getTokenAccountsByDelegate": 2,
@@ -95,7 +98,13 @@ var commitmentOptionsIndex = map[string]int{
 // reference, verified field-by-field): getBlockProduction, getLeaderSchedule,
 // and every write method in writeCommitmentField.
 var atLeastConfirmedMethods = map[string]struct{}{
-	"getBlock":                {},
+	"getBlock": {},
+	// Deprecated alias of getBlock, and agave applies the same restriction to
+	// it. Without this the clamp is skipped and a network defaulting to
+	// processed injects an unclamped commitment, which the upstream then
+	// rejects -32602 — so the alias is broken outright on such a network,
+	// while getBlock next to it works.
+	"getConfirmedBlock":       {},
 	"getBlocks":               {},
 	"getBlocksWithLimit":      {},
 	"getSignaturesForAddress": {},

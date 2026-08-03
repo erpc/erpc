@@ -95,8 +95,14 @@ var alwaysFinalizedMethods = map[string]bool{
 //     history. getBalance(pubkey, {minContextSlot: 1}) still answers at the
 //     current head.
 var slotPinnedMethods = map[string]bool{
-	"getBlock":       true,
-	"getTransaction": true,
+	"getBlock": true,
+	// Deprecated alias of getBlock, and routed as one: handler.go dispatches
+	// both to networkPreForward_getBlock. Without it here the alias falls to
+	// step 4 and classifies Realtime, so a finalized historical read through
+	// the old name can never match an immutable cache policy — it gets the
+	// availability guard but none of the caching.
+	"getConfirmedBlock": true,
+	"getTransaction":    true,
 }
 
 // GetFinality resolves the finality of an SVM request/response pair. It is
