@@ -836,9 +836,25 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
 
-	// Iterate through executors in config order and return the first match.
-	// This respects the user-defined priority order in the config file.
+	// Matcher-based selection takes precedence: the first executor (in
+	// config order) whose matchers resolve to "include" for this request
+	// wins. Matchers can constrain on network/method/params/finality and
+	// explicitly include/exclude — a superset of matchMethod/matchFinality.
 	for _, fe := range n.failsafeExecutors {
+		if ms := fe.Matchers(); len(ms) > 0 {
+			if common.MatchMatchers(ctx, ms, req, nil) {
+				return fe
+			}
+		}
+	}
+
+	// Legacy method/finality selection (unchanged) over executors WITHOUT
+	// matchers — including the synthetic catch-all (matchMethod="*").
+	// Iterate in config order and return the first match.
+	for _, fe := range n.failsafeExecutors {
+		if len(fe.Matchers()) > 0 {
+			continue
+		}
 		mp := fe.MatchMethod()
 		methodMatches := mp == "*"
 		if !methodMatches {

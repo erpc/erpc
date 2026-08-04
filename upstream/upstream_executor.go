@@ -75,6 +75,16 @@ func NewUpstreamExecutor(cfg *common.UpstreamFailsafeConfig, logger *zerolog.Log
 	return e, nil
 }
 
+// Matchers returns the configured unified matchers (nil when none / for
+// the synthetic catch-all executor). When non-nil they supersede
+// MatchMethod/MatchFinality for selection.
+func (e *upstreamExecutor) Matchers() []*common.MatcherConfig {
+	if e == nil || e.cfg == nil {
+		return nil
+	}
+	return e.cfg.Matchers
+}
+
 // MatchMethod returns the configured method pattern (or "*").
 func (e *upstreamExecutor) MatchMethod() string { return e.method }
 

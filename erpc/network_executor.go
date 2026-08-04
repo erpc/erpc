@@ -94,6 +94,16 @@ func NewNetworkExecutor(
 	return e, nil
 }
 
+// Matchers returns the configured unified matchers (nil when none / for
+// the synthetic catch-all executor). When non-nil they supersede
+// MatchMethod/MatchFinality for selection.
+func (e *networkExecutor) Matchers() []*common.MatcherConfig {
+	if e == nil || e.cfg == nil {
+		return nil
+	}
+	return e.cfg.Matchers
+}
+
 // MatchMethod returns the configured method pattern.
 func (e *networkExecutor) MatchMethod() string { return e.method }
 
