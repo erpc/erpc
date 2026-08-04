@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/internal/policy"
@@ -256,7 +257,24 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		// found (every candidate failed), so the request errored rather than serving
 		// bad data. The rejecting check is the "why".
 		if nq.IntegrityCaught() {
-			telemetry.MetricIntegrityFailed.WithLabelValues(p.Config.Id, network.Label(), method, nq.IntegrityRejectedCheck(), nq.IntegrityRejectedFinality()).Inc()
+			rejectedCheck := nq.IntegrityRejectedCheck()
+			telemetry.MetricIntegrityFailed.WithLabelValues(p.Config.Id, network.Label(), method, rejectedCheck, nq.IntegrityRejectedFinality()).Inc()
+			// This rejection corrected nothing — no upstream produced an acceptable
+			// response. Repeated on the same (network, check) that is the all-upstream
+			// signature of a check which is protocol-invalid for the chain rather than
+			// catching corruption, and it converts straight into client errors because
+			// it defeats failover. Report it so the chain profile is reviewed in
+			// minutes rather than hours. The verdict is deliberately NOT changed here:
+			// when every vendor really is wrong, erroring beats serving known-bad data.
+			if report, count := integrity.RecordExhaustion(network.Label(), rejectedCheck); report {
+				telemetry.MetricIntegrityProtocolSuspect.WithLabelValues(p.Config.Id, network.Label(), rejectedCheck).Inc()
+				lg.Warn().
+					Str("check", rejectedCheck).
+					Str("networkLabel", network.Label()).
+					Int("exhaustionsInWindow", count).
+					Dur("window", integrity.ExhaustionWindow()).
+					Msg("integrity: check is failing across all upstreams (protocol-invalid signature) — review the chain profile for this network")
+			}
 		}
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")

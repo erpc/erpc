@@ -441,6 +441,19 @@ var (
 		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check and target-block finality (finalized/unfinalized/unknown).",
 	}, []string{"project", "network", "category", "check", "finality"})
 
+	// MetricIntegrityProtocolSuspect counts times a (network, check) pair showed
+	// the ALL-UPSTREAM signature: repeated request failures where that check
+	// rejected and no upstream produced an acceptable response. A check that
+	// rejects across every vendor of a chain is protocol-invalid for that chain
+	// far more often than it is catching corruption (independent vendors do not
+	// corrupt identically), and because it defeats failover it converts directly
+	// into client-facing errors. Non-zero here means: review the chain profile.
+	MetricIntegrityProtocolSuspect = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_protocol_suspect_total",
+		Help:      "Times a (network, check) hit the all-upstream failure signature (repeated exhaustion within the detector window) — a strong indicator the check is protocol-invalid for that chain rather than catching corruption.",
+	}, []string{"project", "network", "check"})
+
 	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_split_success_total",
