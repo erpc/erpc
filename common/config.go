@@ -254,10 +254,10 @@ type ForceTraceMatcher struct {
 }
 
 type AdminConfig struct {
-	Auth          *AuthConfig `yaml:"auth" json:"auth"`
-	CORS          *CORSConfig `yaml:"cors" json:"cors"`
-	AllowMethods  []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
-	IgnoreMethods []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods,omitempty"`
+	Auth         *AuthConfig `yaml:"auth" json:"auth"`
+	CORS         *CORSConfig `yaml:"cors" json:"cors"`
+	AllowMethods []string    `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
+	DenyMethods  []string    `yaml:"denyMethods,omitempty" json:"denyMethods,omitempty"`
 }
 
 type AliasingConfig struct {

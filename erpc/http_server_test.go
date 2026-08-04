@@ -1573,7 +1573,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 	util.SetupMocksForEvmStatePoller()
 			// 	defer util.AssertNoPendingMocks(t, 0)
 
-			// 	cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{}
+			// 	cfg.Projects[0].Upstreams[0].DenyMethods = []string{}
 
 			// 	// Set up test fixtures
 			// 	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
@@ -1646,7 +1646,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 	util.SetupMocksForEvmStatePoller()
 			// 	defer util.AssertNoPendingMocks(t, 1)
 
-			// 	cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{"ignored_method"}
+			// 	cfg.Projects[0].Upstreams[0].DenyMethods = []string{"ignored_method"}
 
 			// 	// Set up test fixtures
 			// 	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
@@ -7993,7 +7993,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 										Max:      common.Duration(10 * time.Second),
 									},
 								},
-								Retry:         &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultAccept: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
+								Retry: &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultAccept: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
 								Consensus: &common.ConsensusPolicyConfig{
 									AgreementThreshold:      2,
 									MaxParticipants:         4,
@@ -8375,10 +8375,10 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		assert.False(t, hasError, "expected no error for erpc_listCordoned with no filter")
 	})
 
-	t.Run("ignoreMethods blocks exact match", func(t *testing.T) {
+	t.Run("denyMethods blocks exact match", func(t *testing.T) {
 		baseURL, cleanup := newServer(t, &common.AdminConfig{
-			Auth:          secretAuth,
-			IgnoreMethods: []string{"erpc_listCordoned"},
+			Auth:        secretAuth,
+			DenyMethods: []string{"erpc_listCordoned"},
 		})
 		defer cleanup()
 
@@ -8390,10 +8390,10 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		assert.Contains(t, errMap["message"], "method not supported")
 	})
 
-	t.Run("ignoreMethods wildcard blocks matching methods", func(t *testing.T) {
+	t.Run("denyMethods wildcard blocks matching methods", func(t *testing.T) {
 		baseURL, cleanup := newServer(t, &common.AdminConfig{
-			Auth:          secretAuth,
-			IgnoreMethods: []string{"erpc_*Cordoned"},
+			Auth:        secretAuth,
+			DenyMethods: []string{"erpc_*Cordoned"},
 		})
 		defer cleanup()
 
@@ -8405,17 +8405,17 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		assert.Contains(t, errMap["message"], "method not supported")
 	})
 
-	t.Run("ignoreMethods does not block non-matching methods", func(t *testing.T) {
+	t.Run("denyMethods does not block non-matching methods", func(t *testing.T) {
 		baseURL, cleanup := newServer(t, &common.AdminConfig{
-			Auth:          secretAuth,
-			IgnoreMethods: []string{"erpc_cordonUpstream"},
+			Auth:        secretAuth,
+			DenyMethods: []string{"erpc_cordonUpstream"},
 		})
 		defer cleanup()
 
 		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
 		assert.Equal(t, http.StatusOK, status)
 		_, hasError := result["error"]
-		assert.False(t, hasError, "erpc_listCordoned should not be blocked when only erpc_cordonUpstream is ignored")
+		assert.False(t, hasError, "erpc_listCordoned should not be blocked when only erpc_cordonUpstream is denied")
 	})
 
 	t.Run("allowMethods restricts to listed methods", func(t *testing.T) {
@@ -8460,11 +8460,11 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		assert.Contains(t, errMap["message"], "method not supported")
 	})
 
-	t.Run("allowMethods re-admits method blocked by ignoreMethods", func(t *testing.T) {
+	t.Run("allowMethods re-admits method blocked by denyMethods", func(t *testing.T) {
 		baseURL, cleanup := newServer(t, &common.AdminConfig{
-			Auth:          secretAuth,
-			IgnoreMethods: []string{"erpc_*"},
-			AllowMethods:  []string{"erpc_listCordoned"},
+			Auth:         secretAuth,
+			DenyMethods:  []string{"erpc_*"},
+			AllowMethods: []string{"erpc_listCordoned"},
 		})
 		defer cleanup()
 
@@ -8484,8 +8484,8 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 	t.Run("invalid pattern expression returns error", func(t *testing.T) {
 		// "|" with missing right operand is invalid in the WildcardMatch expression grammar
 		baseURL, cleanup := newServer(t, &common.AdminConfig{
-			Auth:          secretAuth,
-			IgnoreMethods: []string{"erpc_list*|"},
+			Auth:        secretAuth,
+			DenyMethods: []string{"erpc_list*|"},
 		})
 		defer cleanup()
 

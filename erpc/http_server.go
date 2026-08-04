@@ -2222,12 +2222,12 @@ func stripAddrDecorations(s string) string {
 	return s
 }
 
-// isAdminMethodBlocked returns true when the admin config's IgnoreMethods/AllowMethods
+// isAdminMethodBlocked returns true when the admin config's DenyMethods/AllowMethods
 // rules prevent the given method from being handled.
-// IgnoreMethods is evaluated first; AllowMethods can re-admit a method that was ignored.
+// DenyMethods is evaluated first; AllowMethods can re-admit a method that was denied.
 func isAdminMethodBlocked(cfg *common.AdminConfig, method string) (bool, error) {
 	blocked := false
-	for _, pattern := range cfg.IgnoreMethods {
+	for _, pattern := range cfg.DenyMethods {
 		match, err := common.WildcardMatch(pattern, method)
 		if err != nil {
 			return false, err
