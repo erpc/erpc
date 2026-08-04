@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"io"
 	"sync"
 	"time"
 
@@ -94,4 +95,22 @@ func exportIntegrityCatch(ctx context.Context, n common.Network, u common.Upstre
 		log.Warn().Err(err).Str("network", n.Id()).Str("check", check).
 			Msg("integrity: failed to archive catch to misbehaviorsDestination")
 	}
+}
+
+// CloseIntegrityExporters flushes and closes every per-network misbehaviour
+// exporter. Called on graceful shutdown: the S3 exporter batches records and
+// only writes them on its flush interval, so without this a pod roll drops
+// everything buffered since the last flush — exactly the catches an operator
+// most wants to adjudicate, since a roll usually follows the incident.
+func CloseIntegrityExporters() {
+	integrityExporters.Range(func(_, v any) bool {
+		slot, ok := v.(*integrityExporterSlot)
+		if !ok || slot.exp == nil {
+			return true
+		}
+		if c, ok := slot.exp.(io.Closer); ok {
+			_ = c.Close()
+		}
+		return true
+	})
 }
