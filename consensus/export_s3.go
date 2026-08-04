@@ -50,9 +50,32 @@ type s3MisbehaviorExporter struct {
 	batches map[string]*pendingBatch
 
 	// Channel for async flush
-	flushCh chan struct{}
-	closeCh chan struct{}
-	closeWg sync.WaitGroup
+	flushCh   chan struct{}
+	closeCh   chan struct{}
+	closeWg   sync.WaitGroup
+	closeOnce sync.Once
+}
+
+// Close stops the flush worker and performs a final flush, so records buffered
+// since the last interval survive a graceful shutdown. Without it every pod
+// roll silently discarded up to FlushInterval worth of forensics — which is
+// how a month of integrity catches went missing while the archive looked
+// healthy (the only surviving batches were those whose ticker happened to fire
+// before their pod was replaced). Safe to call more than once.
+func (e *s3MisbehaviorExporter) Close() error {
+	var err error
+	e.closeOnce.Do(func() {
+		close(e.closeCh)
+		// Let the worker (if one is running) finish its own final flush first,
+		// then flush again ourselves: flush() is a no-op on an empty batch set,
+		// so this is harmless when the worker already drained, and it is the
+		// ONLY flush when no worker was started.
+		e.closeWg.Wait()
+		e.mu.Lock()
+		err = e.flush()
+		e.mu.Unlock()
+	})
+	return err
 }
 
 func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) (*s3MisbehaviorExporter, error) {

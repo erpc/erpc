@@ -187,3 +187,59 @@ func TestS3ExporterDoesNotOverwriteWithinAFlush(t *testing.T) {
 	require.Equal(t, 2, fake.uploads())
 	assert.NotEqual(t, fake.keys[0], fake.keys[1], "each object needs its own key or one silently overwrites the other")
 }
+
+// Buffered records must survive a graceful shutdown. Before Close() existed,
+// a pod roll dropped everything written since the last flush interval — which
+// is how a month of integrity catches vanished while the archive still looked
+// healthy: the only batches that ever landed were those whose ticker happened
+// to fire before the pod was replaced.
+func TestS3ExporterClosePerformsFinalFlush(t *testing.T) {
+	fake := &fakeS3{}
+	// A long interval and a high record threshold so NEITHER the ticker nor the
+	// size/count trigger can flush — only Close() can.
+	e := newTestExporter(t, fake, 10_000, time.Hour)
+
+	require.NoError(t, e.AppendWithMetadata([]byte(`{"catch":1}`), "eth_getBlockByNumber", "evm:999"))
+	require.NoError(t, e.AppendWithMetadata([]byte(`{"catch":2}`), "eth_getBlockByNumber", "evm:999"))
+	require.Equal(t, 0, fake.uploads(), "nothing should have flushed yet")
+
+	require.NoError(t, e.Close())
+
+	require.Equal(t, 1, fake.uploads(), "Close must flush the buffered batch")
+	fake.mu.Lock()
+	body := fake.bodies[0]
+	fake.mu.Unlock()
+	assert.Contains(t, body, `{"catch":1}`)
+	assert.Contains(t, body, `{"catch":2}`, "no buffered record may be dropped")
+}
+
+func TestS3ExporterCloseIsIdempotent(t *testing.T) {
+	fake := &fakeS3{}
+	e := newTestExporter(t, fake, 10_000, time.Hour)
+	require.NoError(t, e.AppendWithMetadata([]byte(`{"catch":1}`), "m", "evm:1"))
+	require.NoError(t, e.Close())
+	require.NoError(t, e.Close(), "second Close must not panic on a closed channel")
+	assert.Equal(t, 1, fake.uploads(), "and must not re-upload")
+}
+
+// With a worker running, Close must still flush exactly once and not deadlock.
+func TestS3ExporterCloseWithWorkerRunning(t *testing.T) {
+	fake := &fakeS3{}
+	e := newTestExporter(t, fake, 10_000, time.Hour)
+	e.closeWg.Add(1)
+	go e.flushWorker()
+
+	require.NoError(t, e.AppendWithMetadata([]byte(`{"catch":9}`), "m", "evm:1"))
+	done := make(chan error, 1)
+	go func() { done <- e.Close() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close deadlocked with a worker running")
+	}
+	assert.Equal(t, 1, fake.uploads(), "exactly one upload despite worker + Close both flushing")
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	assert.Contains(t, fake.bodies[0], `{"catch":9}`)
+}
