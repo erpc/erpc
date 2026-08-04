@@ -1426,8 +1426,17 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		}
 	}
 
-	// Absent encoding means json (Agave's default), which is what we produce.
-	if opts.Encoding != "" && opts.Encoding != "json" {
+	// Absent encoding means json (Agave's default). json is rendered from the
+	// structured block directly; jsonParsed additionally asks the reader to
+	// run Agave's instruction parsers server-side (includeParsed) and renders
+	// the parsed envelope. base58/base64/base64+zstd remain unserved: they are
+	// raw-payload encodings this path has no reason to reproduce.
+	var wantParsed bool
+	switch opts.Encoding {
+	case "", "json":
+	case "jsonParsed":
+		wantParsed = true
+	default:
 		return nil, common.NewErrEndpointUnsupported(
 			fmt.Errorf("%w: %s", errSvmEncodingUnsupported, opts.Encoding),
 		)
@@ -1441,6 +1450,7 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 	grpcReq := &svm.GetBlockRequest{
 		Slot:               slot,
 		TransactionDetails: details,
+		IncludeParsed:      wantParsed,
 		// Inverted: the proto's false is Agave's `rewards: true` default.
 		ExcludeRewards:                 opts.Rewards != nil && !*opts.Rewards,
 		MaxSupportedTransactionVersion: opts.MaxSupportedTransactionVersion,
@@ -1482,7 +1492,12 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		)
 	}
 
-	result := svm.BlockToJsonRpc(grpcResp.Block, grpcResp.Signatures)
+	var result map[string]interface{}
+	if wantParsed {
+		result = svm.BlockToJsonRpcParsed(grpcResp.Block, grpcResp.Signatures)
+	} else {
+		result = svm.BlockToJsonRpc(grpcResp.Block, grpcResp.Signatures)
+	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
 	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {

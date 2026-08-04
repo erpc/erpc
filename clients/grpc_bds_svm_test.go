@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -61,29 +62,30 @@ func callSvmGetBlock(t *testing.T, paramsJSON string, resp *svm.GetBlockResponse
 }
 
 // TestSvmGetBlockEncodingGuard is the highest-value guard in this file. BDS
-// returns a structured block, which renders as encoding "json" and nothing
-// else. jsonParsed is not a formatting variant — it needs per-program decoders
-// to turn opaque instruction data into named fields — and base58/base64 are a
-// different payload shape entirely. Serving json for any of them returns a
-// wrong-shaped result a client cannot distinguish from a correct one, so
-// anything but json (or absent, which means json per Agave's default) must be
-// refused as ErrEndpointUnsupported so the cache reports a miss and the
-// request falls through to a live upstream.
+// returns a structured block, which renders as encoding "json" directly, and
+// as "jsonParsed" by asking the reader to run Agave's instruction parsers
+// server-side (includeParsed) and rendering the parsed envelope. base58 /
+// base64 / base64+zstd are a different payload shape entirely: serving json
+// for them returns a wrong-shaped result a client cannot distinguish from a
+// correct one, so they must be refused as ErrEndpointUnsupported so the cache
+// reports a miss and the request falls through to a live upstream. Absent
+// encoding means json per Agave's default.
 func TestSvmGetBlockEncodingGuard(t *testing.T) {
 	tests := []struct {
-		name     string
-		params   string
-		servable bool
+		name       string
+		params     string
+		servable   bool
+		wantParsed bool
 	}{
-		{"no config object at all", `[42]`, true},
-		{"null config object", `[42,null]`, true},
-		{"empty config object", `[42,{}]`, true},
-		{"config without an encoding key", `[42,{"transactionDetails":"full"}]`, true},
-		{"explicit json", `[42,{"encoding":"json"}]`, true},
-		{"jsonParsed needs decoders BDS has none of", `[42,{"encoding":"jsonParsed"}]`, false},
-		{"base58", `[42,{"encoding":"base58"}]`, false},
-		{"base64", `[42,{"encoding":"base64"}]`, false},
-		{"base64+zstd", `[42,{"encoding":"base64+zstd"}]`, false},
+		{"no config object at all", `[42]`, true, false},
+		{"null config object", `[42,null]`, true, false},
+		{"empty config object", `[42,{}]`, true, false},
+		{"config without an encoding key", `[42,{"transactionDetails":"full"}]`, true, false},
+		{"explicit json", `[42,{"encoding":"json"}]`, true, false},
+		{"jsonParsed is served via reader-side parsers", `[42,{"encoding":"jsonParsed"}]`, true, true},
+		{"base58", `[42,{"encoding":"base58"}]`, false, false},
+		{"base64", `[42,{"encoding":"base64"}]`, false, false},
+		{"base64+zstd", `[42,{"encoding":"base64+zstd"}]`, false, false},
 	}
 
 	for _, tc := range tests {
@@ -94,6 +96,9 @@ func TestSvmGetBlockEncodingGuard(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, out)
 				assert.Equal(t, 1, fake.calls, "a servable encoding must reach the reader")
+				require.NotNil(t, fake.got)
+				assert.Equal(t, tc.wantParsed, fake.got.IncludeParsed,
+					"includeParsed decides whether the reader runs Agave's parsers; json must not pay for parsing and jsonParsed cannot render without it")
 				return
 			}
 
@@ -105,6 +110,178 @@ func TestSvmGetBlockEncodingGuard(t *testing.T) {
 			assert.Zero(t, fake.calls, "must not spend a read it cannot render")
 		})
 	}
+}
+
+// svmTestKey returns a distinct, recognizable 32-byte pubkey.
+func svmTestKey(b byte) []byte {
+	k := make([]byte, 32)
+	for i := range k {
+		k[i] = b
+	}
+	return k
+}
+
+// svmGetBlockResult drives the handler and decodes the JSON-RPC result bytes,
+// which is the only shape a client ever sees. Asserting on the decoded tree
+// rather than the bytes keeps the tests independent of key order.
+func svmGetBlockResult(t *testing.T, paramsJSON string, resp *svm.GetBlockResponse) map[string]interface{} {
+	t.Helper()
+	_, out, err := callSvmGetBlock(t, paramsJSON, resp, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	jr, err := out.JsonRpcResponse()
+	require.NoError(t, err)
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(jr.GetResultBytes(), &result))
+	return result
+}
+
+// svmFirstTx digs transactions[0]'s message and meta out of a decoded result.
+// meta comes back nil when the transaction carries none.
+func svmFirstTx(t *testing.T, result map[string]interface{}) (msg, meta map[string]interface{}) {
+	t.Helper()
+	txs, ok := result["transactions"].([]interface{})
+	require.True(t, ok, "result carries no transactions array: %v", result)
+	require.NotEmpty(t, txs)
+	tx0, ok := txs[0].(map[string]interface{})
+	require.True(t, ok, "transactions[0] is not an object: %v", txs[0])
+	txObj, ok := tx0["transaction"].(map[string]interface{})
+	require.True(t, ok, "transactions[0].transaction is not an object: %v", tx0)
+	msg, ok = txObj["message"].(map[string]interface{})
+	require.True(t, ok, "transaction.message is not an object: %v", txObj)
+	meta, _ = tx0["meta"].(map[string]interface{})
+	return msg, meta
+}
+
+// TestSvmGetBlockRenderingDispatch pins that the encoding actually selects the
+// renderer, observed through the result bytes a client decodes. The two
+// envelopes differ in exactly the places asserted here: json carries base58
+// STRING accountKeys, a message header, and meta.loadedAddresses; jsonParsed
+// carries accountKey OBJECTS over the merged (static ++ loaded) list, no
+// header, and no loadedAddresses in meta. Wiring includeParsed correctly but
+// rendering with the wrong function passes the guard test above and corrupts
+// every response; this test is what catches it.
+func TestSvmGetBlockRenderingDispatch(t *testing.T) {
+	staticKey := svmTestKey(0xAA)
+	loadedKey := svmTestKey(0xBB)
+	block := func() *svm.GetBlockResponse {
+		return &svm.GetBlockResponse{
+			SlotStatus: svm.SlotStatus_SLOT_PRESENT,
+			Block: &svm.ConfirmedBlock{
+				Slot:       42,
+				ParentSlot: 41,
+				Transactions: []*svm.ConfirmedTransaction{{
+					Transaction: &svm.Transaction{
+						Signatures: [][]byte{svmTestKey(0x01)},
+						Message: &svm.Message{
+							Header:          &svm.MessageHeader{NumRequiredSignatures: 1},
+							AccountKeys:     [][]byte{staticKey},
+							RecentBlockhash: svmTestKey(0xCC),
+						},
+					},
+					Meta: &svm.TransactionStatusMeta{
+						LoadedWritableAddresses: [][]byte{loadedKey},
+					},
+				}},
+			},
+		}
+	}
+
+	t.Run("json renders string keys, header and loadedAddresses", func(t *testing.T) {
+		msg, meta := svmFirstTx(t, svmGetBlockResult(t, `[42,{"encoding":"json"}]`, block()))
+
+		keys, ok := msg["accountKeys"].([]interface{})
+		require.True(t, ok)
+		require.Len(t, keys, 1, "json keeps the static list; loaded keys stay in meta")
+		assert.Equal(t, svm.Base58Encode(staticKey), keys[0],
+			"json accountKeys are base58 strings")
+		assert.Contains(t, msg, "header")
+
+		require.NotNil(t, meta)
+		require.Contains(t, meta, "loadedAddresses")
+		la, ok := meta["loadedAddresses"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, []interface{}{svm.Base58Encode(loadedKey)}, la["writable"])
+	})
+
+	t.Run("jsonParsed renders key objects over the merged list, no header, no loadedAddresses", func(t *testing.T) {
+		msg, meta := svmFirstTx(t, svmGetBlockResult(t, `[42,{"encoding":"jsonParsed"}]`, block()))
+
+		keys, ok := msg["accountKeys"].([]interface{})
+		require.True(t, ok)
+		require.Len(t, keys, 2, "parsed accountKeys merge static ++ loaded")
+		assert.Equal(t, map[string]interface{}{
+			"pubkey":   svm.Base58Encode(staticKey),
+			"signer":   true,
+			"writable": true,
+			"source":   "transaction",
+		}, keys[0])
+		assert.Equal(t, map[string]interface{}{
+			"pubkey":   svm.Base58Encode(loadedKey),
+			"signer":   false,
+			"writable": true,
+			"source":   "lookupTable",
+		}, keys[1])
+		assert.NotContains(t, msg, "header", "UiParsedMessage carries no header")
+
+		require.NotNil(t, meta)
+		assert.NotContains(t, meta, "loadedAddresses",
+			"parsed merges loaded keys into accountKeys instead of repeating them in meta")
+	})
+}
+
+// TestSvmGetBlockParsedInstructionSplice pins the per-instruction split under
+// jsonParsed: an instruction carrying a reader-attached ParsedInstruction is
+// spliced verbatim, one without renders Agave's partiallyDecoded shape with
+// indexes resolved to base58 pubkeys. Splicing the wrong branch (or resolving
+// against the wrong key list) yields output a client parses fine and trusts.
+func TestSvmGetBlockParsedInstructionSplice(t *testing.T) {
+	feePayer := svmTestKey(0x11)
+	account := svmTestKey(0x22)
+	program := svmTestKey(0x33)
+
+	attachment := []byte(`{"program":"system","programId":"` + svm.Base58Encode(program) +
+		`","parsed":{"type":"transfer","info":{"lamports":1}},"stackHeight":null}`)
+
+	resp := &svm.GetBlockResponse{
+		SlotStatus: svm.SlotStatus_SLOT_PRESENT,
+		Block: &svm.ConfirmedBlock{
+			Slot:       42,
+			ParentSlot: 41,
+			Transactions: []*svm.ConfirmedTransaction{{
+				Transaction: &svm.Transaction{
+					Signatures: [][]byte{svmTestKey(0x01)},
+					Message: &svm.Message{
+						Header:          &svm.MessageHeader{NumRequiredSignatures: 1},
+						AccountKeys:     [][]byte{feePayer, account, program},
+						RecentBlockhash: svmTestKey(0xCC),
+						Instructions: []*svm.CompiledInstruction{
+							{ProgramIdIndex: 2, Accounts: []byte{0, 1}, Data: []byte{2, 0, 0, 0}, Parsed: attachment},
+							{ProgramIdIndex: 2, Accounts: []byte{0, 1}, Data: []byte{9, 9}},
+						},
+					},
+				},
+			}},
+		},
+	}
+
+	msg, _ := svmFirstTx(t, svmGetBlockResult(t, `[42,{"encoding":"jsonParsed"}]`, resp))
+	instrs, ok := msg["instructions"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, instrs, 2)
+
+	var wantSpliced map[string]interface{}
+	require.NoError(t, json.Unmarshal(attachment, &wantSpliced))
+	assert.Equal(t, wantSpliced, instrs[0],
+		"a reader-attached ParsedInstruction must be spliced verbatim")
+
+	assert.Equal(t, map[string]interface{}{
+		"programId":   svm.Base58Encode(program),
+		"accounts":    []interface{}{svm.Base58Encode(feePayer), svm.Base58Encode(account)},
+		"data":        svm.Base58Encode([]byte{9, 9}),
+		"stackHeight": nil,
+	}, instrs[1],
+		"an unparsed instruction renders partiallyDecoded with indexes resolved to pubkeys")
 }
 
 // TestSvmGetBlockRewardsInversion pins the polarity flip between Agave's

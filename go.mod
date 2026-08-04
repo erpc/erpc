@@ -167,3 +167,5 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0
 )
+
+replace github.com/blockchain-data-standards/manifesto => github.com/kasrakhosravi/manifesto v0.0.0-20260804084000-92f2ca6a465a
