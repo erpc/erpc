@@ -290,7 +290,7 @@ export interface AdminConfig {
   auth?: AuthConfig;
   cors?: CORSConfig;
   allowMethods?: string[];
-  ignoreMethods?: string[];
+  denyMethods?: string[];
 }
 export interface AliasingConfig {
   rules: (AliasingRuleConfig | undefined)[];
