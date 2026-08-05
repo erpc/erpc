@@ -870,6 +870,12 @@ export interface EvmUpstreamConfig {
    */
   traceFilterAutoSplittingRangeThreshold?: number /* int64 */;
   skipWhenSyncing?: boolean;
+  /**
+   * SkipSyncingCheck disables eth_syncing polling for this upstream, treating it as always synced.
+   * Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
+   * misleading and causes circuit breaker false positives.
+   */
+  skipSyncingCheck?: boolean;
   integrity?: UpstreamIntegrityConfig;
   /**
    * @deprecated: use blockAvailability bounds instead; kept for config back-compat only
