@@ -722,6 +722,12 @@ var (
 		Help:      "Total number of panic recoveries in consensus.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
+	MetricConsensusAnalyzersInFlight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "consensus_analyzers_inflight",
+		Help:      "Consensus analyzer goroutines currently collecting participant responses. Each holds its arrived response buffers until the slowest participant finishes; a sustained rise (especially with callers abandoning) is the memory-pressure path that OOM-killed euc1 on 2026-08-05.",
+	}, []string{"project", "network"})
+
 	MetricConsensusCancellations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_cancellations_total",

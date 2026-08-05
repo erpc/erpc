@@ -378,6 +378,19 @@ func (e *executor) runAnalyzer(
 		outcomeSent = true
 	}
 
+	// Count this analyzer for the whole time it holds participant response
+	// buffers. The gauge is the direct signal for the memory-pressure path that
+	// OOM-killed euc1 on 2026-08-05: a rising in-flight count means analyzers
+	// are accumulating faster than the slowest participant lets them drain.
+	// Paired Inc/Dec — the Dec is deferred so it runs on every exit including
+	// the panic-recovery path below.
+	telemetry.MetricConsensusAnalyzersInFlight.
+		WithLabelValues(labels.projectId, labels.networkId).
+		Inc()
+	defer telemetry.MetricConsensusAnalyzersInFlight.
+		WithLabelValues(labels.projectId, labels.networkId).
+		Dec()
+
 	// analyzerDone is closed LAST (defers run LIFO). This signals to the
 	// abandon-path drain goroutine that all analyzer-side reads of
 	// winner.Result have completed and releasing it is now safe.
