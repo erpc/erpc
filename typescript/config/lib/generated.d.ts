@@ -249,6 +249,8 @@ export interface ForceTraceMatcher {
 export interface AdminConfig {
     auth?: AuthConfig;
     cors?: CORSConfig;
+    allowMethods?: string[];
+    denyMethods?: string[];
 }
 export interface AliasingConfig {
     rules: (AliasingRuleConfig | undefined)[];

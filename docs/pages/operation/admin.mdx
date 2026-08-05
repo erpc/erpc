@@ -117,6 +117,8 @@ All fields are under the top-level `admin:` key.
 | `admin.cors.exposedHeaders` | `[]string` | `nil` | Never set by defaults. When nil, `Access-Control-Expose-Headers` is omitted. Set explicitly if browser clients need to read custom eRPC response headers. |
 | `admin.cors.allowCredentials` | `*bool` | `false` (pointer) | Must stay `false` when `allowedOrigins: ["*"]` per CORS spec. Source: [`common/defaults.go:L2838-L2840`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2838-L2840) |
 | `admin.cors.maxAge` | `int` | `3600` | Preflight cache duration in seconds. `Access-Control-Max-Age` is emitted when `> 0`. Source: [`common/defaults.go:L2841-L2843`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2841-L2843) |
+| `admin.denyMethods` | `[]string` (wildcard) | `nil` | Blocks matching admin JSON-RPC methods before auth or upstream work. Wildcards (`*`, `?`) and boolean operators (`\|`, `&`, `!`) are supported. A blocked method returns JSON-RPC error `-32601` ("method not supported"). Evaluated before `allowMethods`. |
+| `admin.allowMethods` | `[]string` (wildcard) | `nil` | When set, only matching methods are served; all others are blocked. Also re-admits a method blocked by `denyMethods`. Example: `allowMethods: ["erpc_list*"]` restricts the admin endpoint to read-only list methods. |
 
 ### Worked examples
 
