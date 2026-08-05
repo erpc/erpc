@@ -15,6 +15,7 @@ import (
 	_ "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/blockchain-data-standards/manifesto/svm"
+	"github.com/blockchain-data-standards/manifesto/svm/parse"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -1426,11 +1427,12 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		}
 	}
 
-	// Absent encoding means json (Agave's default). json is rendered from the
-	// structured block directly; jsonParsed additionally asks the reader to
-	// run Agave's instruction parsers server-side (includeParsed) and renders
-	// the parsed envelope. base58/base64/base64+zstd remain unserved: they are
-	// raw-payload encodings this path has no reason to reproduce.
+	// Absent encoding means json (Agave's default). json renders from the
+	// structured block directly; jsonParsed runs Agave's instruction parsers
+	// over it HERE, in-process, via the manifesto svm/parse package — the
+	// reader ships raw instruction data and knows nothing about encodings.
+	// base58/base64/base64+zstd remain unserved: they are raw-payload
+	// encodings this path has no reason to reproduce.
 	var wantParsed bool
 	switch opts.Encoding {
 	case "", "json":
@@ -1450,7 +1452,6 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 	grpcReq := &svm.GetBlockRequest{
 		Slot:               slot,
 		TransactionDetails: details,
-		IncludeParsed:      wantParsed,
 		// Inverted: the proto's false is Agave's `rewards: true` default.
 		ExcludeRewards:                 opts.Rewards != nil && !*opts.Rewards,
 		MaxSupportedTransactionVersion: opts.MaxSupportedTransactionVersion,
@@ -1494,6 +1495,11 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 
 	var result map[string]interface{}
 	if wantParsed {
+		// Attach Agave's parsed instruction forms in-process. Instructions no
+		// parser covers (compute-budget, user programs) are left unattached
+		// and render as partiallyDecoded — exactly what a real node emits for
+		// them, so an unknown program degrades rather than corrupts.
+		parse.AttachToBlock(grpcResp.Block)
 		result = svm.BlockToJsonRpcParsed(grpcResp.Block, grpcResp.Signatures)
 	} else {
 		result = svm.BlockToJsonRpc(grpcResp.Block, grpcResp.Signatures)
