@@ -1239,6 +1239,12 @@ func writeCounterHeaders(st *common.ExecState, w http.ResponseWriter) {
 	if snap.ConsensusLowParticipants > 0 {
 		setInt(w, "X-ERPC-Consensus-Low-Participants", snap.ConsensusLowParticipants)
 	}
+	// The acceptance grade is emitted whenever consensus graded the round,
+	// including on the error paths, so a caller can always tell a strict
+	// answer from a relaxed one without inspecting logs or metrics.
+	if snap.ConsensusPolicy != "" {
+		w.Header().Set("X-ERPC-Consensus-Policy", snap.ConsensusPolicy)
+	}
 }
 
 // writeResponseMetadataHeaders emits X-ERPC-Cache, X-ERPC-Upstream,

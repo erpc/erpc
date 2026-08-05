@@ -82,9 +82,14 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		// shared state (racing the handler's read) and would also leak the
 		// capability into the cache entry. The copy is allocated only when an
 		// operator actually configured the capability.
-		if user != nil && az.cfg.AllowClientDirectives != nil {
+		if user != nil && (az.cfg.AllowClientDirectives != nil || az.cfg.ConsensusPolicies != nil) {
 			stamped := *user
-			stamped.AllowClientDirectives = az.cfg.AllowClientDirectives
+			if az.cfg.AllowClientDirectives != nil {
+				stamped.AllowClientDirectives = az.cfg.AllowClientDirectives
+			}
+			if az.cfg.ConsensusPolicies != nil {
+				stamped.ConsensusPolicies = az.cfg.ConsensusPolicies
+			}
 			user = &stamped
 		}
 
