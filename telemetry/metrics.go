@@ -828,6 +828,17 @@ var (
 		Help:      "Total number of consensus rounds that short-circuited.",
 	}, []string{"project", "network", "category", "reason", "finality", "user", "agent_name"})
 
+	// MetricConsensusPolicyServed counts consensus rounds by the acceptance
+	// grade they resolved under. Operators alert on the first round served
+	// at a relaxed grade — that is the signal that the strict composition
+	// could not be met, available immediately rather than after a rate
+	// window has accumulated.
+	MetricConsensusPolicyServed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_policy_served_total",
+		Help:      "Total number of consensus rounds served, by acceptance policy.",
+	}, []string{"project", "network", "category", "policy", "user", "agent_name"})
+
 	// MetricConsensusWaitCapped counts consensus rounds resolved early
 	// because maxWaitOnResult / maxWaitOnEmpty fired before every
 	// participant returned. High rates indicate persistently slow

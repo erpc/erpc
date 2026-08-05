@@ -1128,6 +1128,34 @@ export interface ConsensusPolicyConfig {
    * like any other low-participation tick. Empty (default) = disabled.
    */
   requiredParticipants?: (ConsensusRequiredParticipant | undefined)[];
+  /**
+   * AcceptancePolicies is an ORDERED list of named acceptance grades.
+   * Each entry states what the winning response group must look like for
+   * the round to be served under that grade. Evaluation walks the list
+   * top-down and stops at the first policy the round satisfies; the name
+   * of that policy is reported to the caller (`X-ERPC-Consensus-Policy`)
+   * and to metrics, so a relaxed answer is never silently indistinguishable
+   * from a strict one. When no policy is satisfied the round is a
+   * composition dispute.
+   * This lets an operator express "prefer a mixed internal+external
+   * agreement, but rather than hard-failing when the internal nodes are
+   * down or dissenting, serve an answer that several independent external
+   * providers agree on — and label it":
+   * 	acceptancePolicies:
+   * 	  - name: standard
+   * 	    requiredAgreement:
+   * 	      - { tag: "type:internal", minAgreement: 1 }
+   * 	      - { tag: "type:external", minAgreement: 1 }
+   * 	  - name: degraded
+   * 	    requiredAgreement:
+   * 	      - { tag: "type:external", minAgreement: 2 }
+   * Which callers may be served which grade is an authorization concern,
+   * configured per auth strategy (`consensusPolicies`), not here.
+   * Mutually exclusive with `requiredParticipants[].minAgreement`, which
+   * is the single-grade shorthand for the same mechanism. Empty (default)
+   * = disabled.
+   */
+  acceptancePolicies?: (ConsensusAcceptancePolicy | undefined)[];
 }
 /**
  * ConsensusRequiredParticipant is one tag-quota entry for
@@ -1144,6 +1172,45 @@ export interface ConsensusRequiredParticipant {
   tag: string;
   minParticipants: number /* int */;
   minAgreement?: number /* int */;
+}
+/**
+ * ConsensusAcceptancePolicy is one named acceptance grade in
+ * `consensus.acceptancePolicies`. A round is served under this policy when
+ * the agreeing upstreams both reach `AgreementThreshold` and satisfy every
+ * `RequiredAgreement` quota.
+ */
+export interface ConsensusAcceptancePolicy {
+  /**
+   * Name identifies the grade. It is reported on the response
+   * (`X-ERPC-Consensus-Policy`) and in metrics, and is what auth
+   * strategies reference in their `consensusPolicies` allowlist, so it is
+   * an operator-facing contract — keep it stable.
+   */
+  name: string;
+  /**
+   * AgreementThreshold is the number of DISTINCT agreeing upstreams this
+   * grade requires. Defaults to the sum of its `RequiredAgreement`
+   * quotas, falling back to the policy-level `agreementThreshold` when
+   * the grade declares no quotas. A relaxed grade will usually want a
+   * lower threshold than the strict one — that is what lets it resolve a
+   * round too thin for the strict grade to ever win.
+   */
+  agreementThreshold?: number /* int */;
+  /**
+   * RequiredAgreement constrains WHO must be among the agreeing
+   * upstreams. Empty means "any upstreams" — a pure count grade.
+   */
+  requiredAgreement?: (ConsensusAgreementQuota | undefined)[];
+}
+/**
+ * ConsensusAgreementQuota requires at least `MinAgreement` DISTINCT
+ * upstreams matching `Tag` (a glob pattern, `*` / `?`, matched against each
+ * upstream's `tags`) among the agreeing set. One upstream can satisfy every
+ * quota it matches.
+ */
+export interface ConsensusAgreementQuota {
+  tag: string;
+  minAgreement: number /* int */;
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";
@@ -1606,6 +1673,28 @@ export interface AuthStrategyConfig {
    * NormalizedRequest.SetUserFromTrustedHeader).
    */
   allowClientDirectives?: string;
+  /**
+   * ConsensusPolicies, if set, restricts which consensus acceptance grades
+   * (`consensus.acceptancePolicies[].name`) may be served to callers
+   * authenticated by THIS strategy. A round resolved under a policy the
+   * caller is not allowed to receive is withheld and returned as a
+   * consensus composition dispute instead.
+   * This is how "who may accept a relaxed answer" is expressed — it is an
+   * authorization decision, so it lives beside allowMethods/rateLimitBudget
+   * rather than in the consensus config, and one deployment can serve
+   * strict and relaxed callers from a single endpoint:
+   * 	- type: jwt          # settlement: strict grade only
+   * 	  consensusPolicies: ["standard"]
+   * 	- type: jwt          # indexers: may be served the relaxed grade
+   * 	  consensusPolicies: ["standard", "degraded"]
+   * Left unset (nil) the caller may be served any configured grade, so
+   * existing configs are unaffected. An empty list is meaningful and
+   * distinct from unset: it permits nothing, which disables consensus
+   * grading for that caller entirely (every round becomes a dispute).
+   * Like AllowClientDirectives this travels on the User produced by the
+   * authenticating strategy, so `trustUserIdHeader` can never widen it.
+   */
+  consensusPolicies?: string[];
   type: TsAuthType;
   network?: NetworkStrategyConfig;
   secret?: SecretStrategyConfig;
@@ -2146,6 +2235,12 @@ export interface ExecStateSnapshot {
   consensusslots: number /* int */;
   consensusdisputes: number /* int */;
   consensuslowparticipants: number /* int */;
+  /**
+   * ConsensusPolicy is the consensus acceptance grade the round was
+   * served under; empty when consensus is off or no grades are
+   * configured.
+   */
+  consensuspolicy: string;
   startedat: any /* time.Time */;
 }
 
@@ -2212,6 +2307,13 @@ export interface User {
    * override" — the project-level pattern applies.
    */
   allowclientdirectives?: string;
+  /**
+   * ConsensusPolicies is the set of consensus acceptance grades this caller
+   * may be served, granted by the strategy that authenticated them. Nil
+   * means "no strategy-level restriction" — any configured grade may be
+   * served. A non-nil empty slice permits none.
+   */
+  consensuspolicies?: string[];
 }
 
 //////////

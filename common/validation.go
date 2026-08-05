@@ -1161,6 +1161,14 @@ func (f *FailsafeConfig) Validate() error {
 			return err
 		}
 	}
+	// Consensus was previously omitted here, which left every check in
+	// ConsensusPolicyConfig.Validate unreachable outside unit tests —
+	// misconfigurations reached runtime instead of failing startup.
+	if f.Consensus != nil {
+		if err := f.Consensus.Validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1257,7 +1265,105 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	if err := c.validateAcceptancePolicies(); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// validateAcceptancePolicies checks the ordered acceptance-grade list. Beyond
+// the usual field checks it rejects two config shapes that would silently do
+// the wrong thing:
+//
+//   - Declaring both `acceptancePolicies` and a `requiredParticipants[].minAgreement`
+//     quota. Both express winner composition; having two sources would leave
+//     "which one wins" to implementation order.
+//   - A policy that is unreachable because an earlier, strictly more permissive
+//     policy always matches first. Order is the whole mechanism here, so an
+//     inverted list (relaxed before strict) is a misconfiguration that would
+//     quietly serve every round at the relaxed grade.
+func (c *ConsensusPolicyConfig) validateAcceptancePolicies() error {
+	if len(c.AcceptancePolicies) == 0 {
+		return nil
+	}
+	for i, rp := range c.RequiredParticipants {
+		if rp != nil && rp.MinAgreement > 0 {
+			return fmt.Errorf("consensus.acceptancePolicies cannot be combined with consensus.requiredParticipants[%d].minAgreement: both define winner composition — express every grade in acceptancePolicies, and keep requiredParticipants for participant selection (minParticipants) only", i)
+		}
+	}
+
+	seen := make(map[string]int, len(c.AcceptancePolicies))
+	thresholds := make([]int, len(c.AcceptancePolicies))
+	for i, p := range c.AcceptancePolicies {
+		if p == nil {
+			return fmt.Errorf("consensus.acceptancePolicies[%d] must not be null", i)
+		}
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return fmt.Errorf("consensus.acceptancePolicies[%d].name is required: the name is reported to callers and referenced by auth strategies", i)
+		}
+		if prev, dup := seen[name]; dup {
+			return fmt.Errorf("consensus.acceptancePolicies[%d].name %q duplicates acceptancePolicies[%d].name: names must be unique so auth allowlists and metrics are unambiguous", i, name, prev)
+		}
+		seen[name] = i
+
+		sum := 0
+		for j, q := range p.RequiredAgreement {
+			if q == nil {
+				return fmt.Errorf("consensus.acceptancePolicies[%d].requiredAgreement[%d] must not be null", i, j)
+			}
+			if strings.TrimSpace(q.Tag) == "" {
+				return fmt.Errorf("consensus.acceptancePolicies[%d].requiredAgreement[%d].tag is required", i, j)
+			}
+			if q.MinAgreement <= 0 {
+				return fmt.Errorf("consensus.acceptancePolicies[%d].requiredAgreement[%d].minAgreement must be greater than 0: a zero quota is expressed by omitting the entry", i, j)
+			}
+			sum += q.MinAgreement
+		}
+		if p.AgreementThreshold < 0 {
+			return fmt.Errorf("consensus.acceptancePolicies[%d].agreementThreshold must not be negative", i)
+		}
+		threshold := p.EffectiveAgreementThreshold(c.AgreementThreshold)
+		if threshold > c.MaxParticipants {
+			return fmt.Errorf("consensus.acceptancePolicies[%d] requires %d agreeing upstreams but maxParticipants is %d: this grade can never be satisfied", i, threshold, c.MaxParticipants)
+		}
+		if p.AgreementThreshold > 0 && p.AgreementThreshold < sum {
+			return fmt.Errorf("consensus.acceptancePolicies[%d].agreementThreshold (%d) is lower than the sum of its requiredAgreement quotas (%d): the quotas alone already require more agreeing upstreams", i, p.AgreementThreshold, sum)
+		}
+		thresholds[i] = threshold
+	}
+
+	// Reachability: a later policy is dead if some earlier policy is
+	// satisfied by every round that satisfies it — i.e. the earlier one asks
+	// for no more agreement and no stricter quota on any tag.
+	for i := 1; i < len(c.AcceptancePolicies); i++ {
+		for j := range i {
+			if thresholds[j] <= thresholds[i] && quotasSubsume(c.AcceptancePolicies[j], c.AcceptancePolicies[i]) {
+				return fmt.Errorf("consensus.acceptancePolicies[%d] (%q) is unreachable: acceptancePolicies[%d] (%q) is evaluated first and accepts everything this grade would — list grades strictest first", i, c.AcceptancePolicies[i].Name, j, c.AcceptancePolicies[j].Name)
+			}
+		}
+	}
+	return nil
+}
+
+// quotasSubsume reports whether policy `a` demands no more than `b` on every
+// tag b constrains, and constrains no tag b leaves free — meaning any agreeing
+// set satisfying b also satisfies a.
+func quotasSubsume(a, b *ConsensusAcceptancePolicy) bool {
+	for _, aq := range a.RequiredAgreement {
+		matched := false
+		for _, bq := range b.RequiredAgreement {
+			if bq.Tag == aq.Tag && bq.MinAgreement >= aq.MinAgreement {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate validates the MisbehaviorsDestinationConfig

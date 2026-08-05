@@ -132,6 +132,36 @@ https://docs.erpc.cloud/config/failsafe/consensus.llms.txt`}
 
 **Collection and analysis loop.** The `runAnalyzer` goroutine reads responses from a buffered channel. After each response it calls `newConsensusAnalysis` (classify, hash, deduplicate by upstream, group) and `determineWinner` (apply 24 priority-ordered rules). Responses are deduplicated by upstream ID before grouping — hedge/retry can reselect an upstream that already answered for another slot, and one node must not vote twice toward `agreementThreshold`; the best-ranked response per upstream keeps the vote (valid result &gt; consensus-valid error &gt; infrastructure error). If `shouldShortCircuit` returns true, the outcome is sent immediately and remaining requests are cancelled (or left running in fire-and-forget mode). After all participants respond — or a wait-cap deadline fires — the final outcome is sent to the caller's select.
 
+**Acceptance grading.** Every rule's winner flows through one gate, `enforceAcceptancePolicy`, before it is returned. When `acceptancePolicies` (or the `requiredParticipants[].minAgreement` shorthand) is configured, the gate walks the grades in order and serves the round under the first one whose threshold AND tag quotas the agreeing upstreams satisfy, stamping that grade name onto the result. Nothing here is stateful: the grade is a pure function of the votes in THIS round, so recovery needs no probe traffic or breaker reset — the moment a strict-grade vote arrives, the strict grade evaluates first again. Two properties keep the ordering honest: a win at any non-first grade is provisional while responses are outstanding (short-circuit is suppressed, exactly like a provisional composition dispute), so a relaxed answer is never served merely because a strict vote was slower; and the rules engine runs at the LOWEST grade's threshold so a round too thin for the strict grade still nominates a candidate, while each grade's own threshold is re-checked at the gate. If no grade matches, the winner becomes `ErrConsensusCompositionDispute`.
+
+**Caller authorization.** Grade names are also an authorization surface: `auth.strategies[].consensusPolicies` allowlists which grades a strategy's callers may be served. When a round resolves at a grade the caller may not receive, the gate stops and returns a composition dispute rather than continuing down the list — a caller is never quietly handed a weaker grade than the round achieved. This keeps strict and relaxed callers on one endpoint, and because the allowlist travels on the authenticated `User`, `trustUserIdHeader` cannot widen it.
+
+```yaml
+# Prefer a mixed internal+external agreement; if the internal nodes are down
+# or dissenting, serve what two independent externals agree on — labelled,
+# and only to callers allowed to accept it.
+consensus:
+  maxParticipants: 5
+  agreementThreshold: 2
+  acceptancePolicies:
+    - name: standard
+      requiredAgreement:
+        - { tag: "type:internal", minAgreement: 1 }
+        - { tag: "type:external", minAgreement: 1 }
+    - name: degraded
+      requiredAgreement:
+        - { tag: "type:external", minAgreement: 2 }
+
+auth:
+  strategies:
+    - type: jwt              # settlement services: strict grade only
+      consensusPolicies: ["standard"]
+    - type: jwt              # indexers: may accept the relaxed grade
+      consensusPolicies: ["standard", "degraded"]
+```
+
+Alert on `rate(erpc_consensus_policy_served_total{policy="degraded"}[5m]) > 0` to be paged on the first relaxed round, rather than after a failure-rate window has accumulated.
+
 **Response classification.** Each response is classified into one of four types: `ResponseTypeNonEmpty` (successful non-null result), `ResponseTypeEmpty` (successful but null/empty result), `ResponseTypeConsensusError` (JSON-RPC execution exception, client exception, unsupported, or missing-data), `ResponseTypeInfrastructureError` (all other errors including `ErrUpstreamsExhausted`). Infrastructure errors are excluded from `validParticipants`. `ErrUpstreamsExhausted` is always infra even when it wraps execution exceptions via the shared `ErrorsByUpstream` map. (<SourceLink file="consensus/analysis.go" lines="333-344" />) Specific error-code mappings: `ErrCodeEndpointExecutionException` (EVM revert, code 3) → `ConsensusError`; `ErrCodeEndpointClientSideException`, `ErrCodeEndpointUnsupported`, `ErrCodeEndpointMissingData` → `ConsensusError`; all other errors (timeout, network, server 500) → `InfrastructureError`; nil JSON-RPC response on a successful response object → `InfrastructureError` with hash `"error:generic"`. A successful response where `IsResultEmptyish` returns true → `ResponseTypeEmpty`.
 
 **Hashing.** Non-error responses are hashed via `JsonRpcResponse.CanonicalHash()` or `CanonicalHashWithIgnoredFields(fields)` when `ignoreFields` is configured for the method. Errors are hashed via `errorToConsensusHash`: JSON-RPC exceptions hash as `"jsonrpc:<normalized_code>"`; standard errors hash as their code; unknown errors hash as `"error:generic"`. Within each hash group, `LargestResult` tracks the member with the highest `CachedResponseSize`; the winner returns `group.LargestResult`, not the first response. (<SourceLink file="consensus/analysis.go" lines="102-117" />)
@@ -203,6 +233,11 @@ All fields under `networks[].failsafe[].consensus.` (or project-level `failsafe[
 | `requiredParticipants[].tag` | string | **Required** | Glob pattern matched against `upstream.tags[]`. Empty tag is a startup validation error. |
 | `requiredParticipants[].minParticipants` | int | **Required; no default** | Must be &gt; 0 and ≤ `maxParticipants`. Omitting or setting 0 is a startup validation error — not a silent no-op. |
 | `requiredParticipants[].minAgreement` | int | `0` (disabled) | Minimum matching upstreams that must be in the **winning** group. Unlike `minParticipants` (best-effort pool quota), this is hard-enforced: a count-winner that fails it becomes `ErrConsensusCompositionDispute` (`dispute_composition` outcome), regardless of `disputeBehavior`. Must be ≤ `minParticipants`. While responses are outstanding the dispute is provisional — short-circuit is suppressed so a late response can still complete the quota. `eth_sendRawTransaction` is exempt. The wait caps (`maxWaitOnResult`/`maxWaitOnEmpty`) are quota-aware: they start counting down only once collected responses cover every `minAgreement` tag (a tagged upstream's error counts as coverage), so fast correlated upstreams cannot time out a slower quota-tagged upstream; until coverage the round is bounded by per-upstream and request timeouts. A quota tag matching zero participants in a round logs at Warn — check for a typo'd tag or unavailable tagged upstreams. |
+| `acceptancePolicies` | `[]*ConsensusAcceptancePolicy` | `[]` (disabled) | ORDERED list of named acceptance grades, evaluated top-down; the first grade the agreeing upstreams satisfy is the one the round is served under, and its name is returned in `X-ERPC-Consensus-Policy` and counted in `erpc_consensus_policy_served_total{policy}`. When no grade matches, the round is `ErrConsensusCompositionDispute`. Mutually exclusive with `requiredParticipants[].minAgreement` (the single-grade shorthand, reported as the grade `standard`); configuring both is a startup validation error. Ordering is the whole mechanism — a grade that an earlier grade already subsumes is rejected at startup as unreachable, so grades must be listed strictest first. |
+| `acceptancePolicies[].name` | string | **Required** | Grade name, reported to callers and referenced by `auth.strategies[].consensusPolicies`. Must be unique. Operator-facing contract — keep it stable. |
+| `acceptancePolicies[].agreementThreshold` | int | `sum(requiredAgreement[].minAgreement)`, else the policy-level `agreementThreshold` | Distinct agreeing upstreams this grade requires. A relaxed grade normally wants a lower value than the strict one — that is what lets it resolve a round too thin for the strict grade to ever win (e.g. only 2 externals answered while the internal node is down). Cannot be lower than the sum of its own quotas. The rules engine runs at the LOWEST configured grade's threshold so such a round still nominates a candidate; each grade's own threshold is then enforced by the acceptance gate, so nothing is ever served below the bar of the grade it is served under. |
+| `acceptancePolicies[].requiredAgreement` | `[]*ConsensusAgreementQuota` | `[]` | `{tag, minAgreement}` entries constraining WHO must be among the agreeing upstreams. Empty = a pure count grade. Distinctness is enforced: one upstream answering twice via hedge cannot satisfy `minAgreement: 2`. |
+| `auth.strategies[].consensusPolicies` | `[]string` | `nil` (unrestricted) | Allowlist of grade names this strategy's callers may be served. A round resolving at a grade the caller may not receive is withheld as `ErrConsensusCompositionDispute` — never downgraded to a weaker grade. Unset = any grade; empty list = none. Travels on the authenticated `User`, so `trustUserIdHeader` can never widen it. |
 | `punishMisbehavior` | \*PunishMisbehaviorConfig | `nil` (disabled) | Enables cordon punishment for persistent misbehavior. |
 | `punishMisbehavior.disputeThreshold` | uint | **Required** &gt;0 | Token bucket capacity per `disputeWindow`. No `SetDefaults` entry — must be explicitly set; omitting is a startup validation error. |
 | `punishMisbehavior.disputeWindow` | Duration | **Required** &gt;0 | Token bucket window. Validated at startup AND guarded at runtime: `<= 0` silently disables punishment with a debug log. |
