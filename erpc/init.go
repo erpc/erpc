@@ -54,6 +54,12 @@ func Init(
 		if cfg.Metrics.CounterIdleEvictionAfter != nil {
 			telemetry.SetCounterIdleEvictionAfter(cfg.Metrics.CounterIdleEvictionAfter.Duration())
 		}
+		// Counters are built at package init, so installing the filter is only
+		// half the job — RebuildFilteredCounters re-creates them under it.
+		if len(cfg.Metrics.CounterDropLabels) > 0 || len(cfg.Metrics.CounterLabelOverrides) > 0 {
+			telemetry.SetCounterLabelFilter(cfg.Metrics.CounterDropLabels, cfg.Metrics.CounterLabelOverrides)
+			telemetry.RebuildFilteredCounters()
+		}
 	}
 	if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
 		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")

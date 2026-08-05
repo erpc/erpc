@@ -13,7 +13,7 @@ import (
 // Keyed by the Vec pointer plus the full labels key.
 
 type counterKey struct {
-	vec *prometheus.CounterVec
+	vec any // holds a comparable pointer (*prometheus.CounterVec or *LabeledCounter)
 	key string
 }
 
@@ -39,6 +39,13 @@ type gaugeKey struct {
 // *LabeledHistogram, so ObserverHandle can cache handles for either.
 type HistogramObservable interface {
 	WithLabelValues(labels ...string) prometheus.Observer
+}
+
+// CounterIncrementable is satisfied by both *prometheus.CounterVec and
+// *LabeledCounter, so CounterHandle can cache handles for either.
+type CounterIncrementable interface {
+	WithLabelValues(labels ...string) prometheus.Counter
+	DeleteLabelValues(labels ...string) bool
 }
 
 type observerKey struct {
@@ -84,8 +91,17 @@ var counterHandleCreateMu sync.Mutex
 // (CounterHandle(...).Inc()) rather than holding the returned Counter —
 // after an idle sweep evicts the series, a held child mutates an object
 // that is no longer collected.
-func CounterHandle(cv *prometheus.CounterVec, labels ...string) prometheus.Counter {
-	k := counterKey{vec: cv, key: labelsKey(labels)}
+func CounterHandle(cv CounterIncrementable, labels ...string) prometheus.Counter {
+	// Key on the POST-filter labels. Under a CounterLabelFilter several
+	// full-schema tuples collapse onto one underlying series; keying on the
+	// full tuple would create one cache entry per tuple sharing that series,
+	// and the idle sweep would then delete a series another live entry is
+	// still incrementing. Projecting first keeps it one entry per series.
+	keyLabels := labels
+	if lc, ok := cv.(*LabeledCounter); ok {
+		keyLabels = lc.ActiveLabelValues(labels)
+	}
+	k := counterKey{vec: cv, key: labelsKey(keyLabels)}
 	nowMs := time.Now().UnixMilli()
 	if v, ok := counterHandleCache.Load(k); ok {
 		h := v.(*cachedCounterHandle)
@@ -171,7 +187,7 @@ func sweepIdleCounterHandlesBefore(cutoffMs int64) int {
 		}
 		k := key.(counterKey)
 		counterHandleCache.Delete(key)
-		k.vec.DeleteLabelValues(v.(*cachedCounterHandle).vals...)
+		k.vec.(CounterIncrementable).DeleteLabelValues(v.(*cachedCounterHandle).vals...)
 		counterHandleCreateMu.Unlock()
 		evicted++
 		return true

@@ -53,9 +53,32 @@ export interface AdaptiveDuration {
 export const UpstreamTypeEvm: UpstreamType = "evm";
 export type EvmUpstream = 
     Upstream;
+/**
+ * EvmStateProvenReader is the OPTIONAL, separately-asserted surface for the
+ * state-proven boundary (see the integrity state prober). Deliberately NOT part
+ * of EvmUpstream: that interface is implemented outside this repo, and widening
+ * it broke every existing implementor — the chainId suggest-gate silently
+ * degraded when its upstream stopped satisfying the assertion. Optional
+ * capabilities are asserted narrowly, never added to the core interface.
+ */
+export type EvmStateProvenReader = any;
+/**
+ * EvmStateProvenWriter is the prober-facing half.
+ */
+export type EvmStateProvenWriter = any;
 export type AvailbilityConfidence = number /* int */;
 export const AvailbilityConfidenceBlockHead: AvailbilityConfidence = 1;
 export const AvailbilityConfidenceFinalized: AvailbilityConfidence = 2;
+/**
+ * AvailbilityConfidenceStateProven gates on the state-PROVEN head rather
+ * than the claimed head: the highest block for which the integrity state
+ * probe verified the upstream truly executes in that block's context /
+ * holds its state trie. Nodes sometimes answer state queries (eth_call,
+ * eth_getBalance, ...) from OLDER state while their reported head is
+ * current; this confidence exists so routing for state methods can refuse
+ * to outrun proof. Falls back to blockHead while nothing is proven yet.
+ */
+export const AvailbilityConfidenceStateProven: AvailbilityConfidence = 3;
 export type EvmNodeType = string;
 export const EvmNodeTypeUnknown: EvmNodeType = "unknown";
 export const EvmNodeTypeFull: EvmNodeType = "full";
@@ -580,6 +603,11 @@ export interface ProjectConfig {
   ignoreMethods?: string[];
   allowMethods?: string[];
   /**
+   * Integrity is the project-wide data-integrity configuration. It applies to
+   * all networks; each network may override it with its own integrity block.
+   */
+  integrity?: IntegrityConfig;
+  /**
    * ScoreMetricsWindowSize is the tumbling window the per-upstream
    * health tracker uses for its rolling counters (errorRate, p50/p70/
    * p95 latency, throttledRate, misbehaviorRate). At each tick the
@@ -808,6 +836,11 @@ export interface ShadowUpstreamConfig {
   sampleRate?: number /* float64 */;
   ignoreFields?: { [key: string]: string[]};
 }
+/**
+ * Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
+ * read at runtime). Configure data integrity via the network `integrity` block.
+ * Retained only so existing YAML still parses.
+ */
 export interface UpstreamIntegrityConfig {
   eth_getBlockReceipts?: UpstreamIntegrityEthGetBlockReceiptsConfig;
 }
@@ -876,6 +909,10 @@ export interface EvmUpstreamConfig {
    * misleading and causes circuit breaker false positives.
    */
   skipSyncingCheck?: boolean;
+  /**
+   * Deprecated: never read at runtime. Configure data integrity via the network
+   * `integrity` block instead. Retained only so existing YAML still parses.
+   */
   integrity?: UpstreamIntegrityConfig;
   /**
    * @deprecated: use blockAvailability bounds instead; kept for config back-compat only
@@ -924,6 +961,16 @@ export interface EvmAvailabilityBoundConfig {
 export interface FailsafeConfig {
   matchMethod?: string;
   matchFinality?: DataFinalityState[];
+  /**
+   * MatchRequestKind scopes this policy by who issued the request:
+   * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
+   * the integrity module's canonical corroboration), or ""/"*" for both.
+   * This is what lets an operator give INTERNAL canonical fetches a
+   * consensus policy (quorum-verified ground truth, deduplicated to ~once
+   * per block by the ChainView) while user data methods rely on integrity
+   * validation instead of per-request fan-out.
+   */
+  matchRequestKind?: 'user' | 'internal' | '*';
   retry?: RetryPolicyConfig;
   circuitBreaker?: CircuitBreakerPolicyConfig;
   timeout?: TimeoutPolicyConfig;
@@ -1142,6 +1189,11 @@ export interface S3FlushConfig {
    */
   region?: string;
   /**
+   * Custom S3 endpoint URL for S3-compatible providers (Tigris, MinIO, R2, …).
+   * Empty = real AWS S3. When set, path-style addressing is used.
+   */
+  endpoint?: string;
+  /**
    * AWS credentials config (optional). If not specified, uses standard AWS credential chain:
    * 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
    * 2. IAM role (for EC2/ECS/EKS)
@@ -1211,6 +1263,11 @@ export interface NetworkConfig {
   methods?: MethodsConfig;
   multiplexing?: boolean;
   staticResponses?: (StaticResponseConfig | undefined)[];
+  /**
+   * Integrity overrides the project-wide data-integrity configuration for this
+   * network. Merges over the project block (network wins).
+   */
+  integrity?: IntegrityConfig;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1255,48 +1312,30 @@ export interface DirectiveDefaultsConfig {
   enforceGetLogsBlockRange?: boolean;
   enforceNonNullTaggedBlocks?: boolean;
   /**
-   * ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
-   * Defaults to true. Disable for non-standard chains that use unusual trie roots.
+   * --- Deprecated data-integrity validation flags ---
+   * Deprecated: data integrity is now configured via the `integrity` block
+   * (projects[].integrity / networks[].integrity). These per-check flags are
+   * retained only so existing YAML still parses. At startup the flags that map
+   * to a current check are translated into `integrity.checks` by
+   * migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
+   * they are NOT read at runtime. The receipt-count / expected-block /
+   * receipt-to-transaction flags have no equivalent in the new model and are
+   * accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
    */
   validateTransactionsRoot?: boolean;
-  /**
-   * Validation: Header Field Lengths
-   */
   validateHeaderFieldLengths?: boolean;
-  /**
-   * Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
-   */
   validateTransactionFields?: boolean;
   validateTransactionBlockInfo?: boolean;
-  /**
-   * Validation: Receipts & Logs
-   */
   enforceLogIndexStrictIncrements?: boolean;
   validateTxHashUniqueness?: boolean;
   validateTransactionIndex?: boolean;
   validateLogFields?: boolean;
-  /**
-   * Validation: Bloom Filter (simplified to 2 checks)
-   * ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
-   */
   validateLogsBloomEmptiness?: boolean;
-  /**
-   * ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
-   */
   validateLogsBloomMatch?: boolean;
-  /**
-   * Validation: Receipt-to-Transaction Cross-Validation (requires GroundTruthTransactions in library-mode)
-   */
   validateReceiptTransactionMatch?: boolean;
   validateContractCreation?: boolean;
-  /**
-   * Validation: numeric checks
-   */
   receiptsCountExact?: number /* int64 */;
   receiptsCountAtLeast?: number /* int64 */;
-  /**
-   * Validation: Expected Ground Truths
-   */
   validationExpectedBlockHash?: string;
   validationExpectedBlockNumber?: number /* int64 */;
 }
@@ -1502,6 +1541,20 @@ export interface SelectionPolicyConfig {
    * genuinely (method, finality)-specific health.
    */
   evalScope?: EvalScope | "network" | "network-method" | "network-finality" | "network-method-finality";
+  /**
+   * EvalPerBoundary scopes selection-policy evaluation by block-availability
+   * "lane" — the set of upstreams whose configured block range can actually
+   * serve the request's block. Unlike EvalPerMethod / EvalPerFinality this is
+   * deliberately NOT folded into EvalScope: it must not change the
+   * health-tracker grain (boundary is a decision/pool axis, not a metrics
+   * axis), so the engine reads it directly as an orthogonal slot dimension.
+   * When on, a request whose block excludes some upstream is evaluated
+   * against a lane-scoped pool — an upstream that cannot serve the range is
+   * absent from the pool (a capability fact), distinct from the policy's
+   * soft health-based deprioritization. Default off. Pointer-typed so a
+   * future SetDefaults can distinguish "absent" from "explicitly false".
+   */
+  evalPerBoundary?: boolean;
   evalTimeout?: Duration;
   /**
    * EvalFunc is the per-tick evaluation function. In YAML it's a JS
@@ -1656,6 +1709,28 @@ export interface MetricsConfig {
    */
   histogramLabelOverrides?: { [key: string]: string[]};
   /**
+   * CounterDropLabels removes these labels from every counter that carries
+   * caller-controlled dimensions (user, agent_name, attempt, composite,
+   * hedge, error). Histograms and gauges are unaffected; use
+   * HistogramDropLabels for the histogram side.
+   * Counters are usually the largest contributor to /metrics size, because a
+   * label like a client-supplied user-agent is unbounded and every tuple ever
+   * seen is re-emitted on every scrape. Dropping a label collapses the series
+   * that differed only in it — sums stay correct, but the dimension stops
+   * being queryable, so check what consumes it (billing/attribution
+   * pipelines, dashboards) before dropping.
+   */
+  counterDropLabels?: string[];
+  /**
+   * CounterLabelOverrides re-adds labels for specific counters even if they
+   * appear in CounterDropLabels. Key is the metric Name (without the "erpc_"
+   * namespace prefix), e.g. "upstream_request_total". Value is the list of
+   * label names to keep for that metric. Use this to drop a label fleet-wide
+   * while preserving it on the one or two counters a downstream pipeline
+   * actually reads.
+   */
+  counterLabelOverrides?: { [key: string]: string[]};
+  /**
    * CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
    * counters whose label-sets are keyed by caller-controlled inputs
    * (method, user, agentName, ...). Counter series idle for at least this
@@ -1676,6 +1751,184 @@ export interface RateLimitStoreConfig {
   redis?: RedisConnectorConfig;
   cacheKeyPrefix?: string;
   nearLimitRatio?: number /* float32 */;
+}
+
+//////////
+// source: config_integrity.go
+
+/**
+ * IntegrityHeaderModeOff ignores per-request integrity headers entirely.
+ */
+export const IntegrityHeaderModeOff = "off";
+/**
+ * IntegrityHeaderModeProfiles lets a request select only a named profile.
+ */
+export const IntegrityHeaderModeProfiles = "profiles";
+/**
+ * IntegrityHeaderModeFull lets a request set a level / per-check overrides.
+ */
+export const IntegrityHeaderModeFull = "full";
+/**
+ * IntegritySettings is the reusable body of an integrity configuration: the
+ * front-door level plus the axes (checks / budget) and the per-finality
+ * verdict. The top-level/per-network blocks and every named profile share this
+ * shape — only IntegrityConfig adds the header surface and profiles on top.
+ */
+export interface IntegritySettings {
+  /**
+   * Level is the front-door preset: off | intrinsic | corroborated | authoritative.
+   */
+  level?: string;
+  /**
+   * Checks overrides individual checks by their catalog id (enable/disable,
+   * params, per-check failure mode).
+   */
+  checks?: { [key: string]: IntegrityCheckConfig | undefined};
+  /**
+   * Budget caps the canonical force-fetches the authoritative tier issues.
+   */
+  budget?: IntegrityBudgetConfig;
+  /**
+   * InvalidBehavior is the per-finality verdict for reorg-sensitive checks,
+   * where invalid data is ambiguously a node bug or a reorg. Deterministic
+   * checks ignore it and always reject.
+   */
+  invalidBehavior?: IntegrityInvalidBehaviorConfig;
+  /**
+   * ReorgWindow is how many blocks back from the tip the integrity ChainView
+   * keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
+   * deep-reorg chains (e.g. polygon 256).
+   */
+  reorgWindow?: number /* int */;
+  /**
+   * ObserveOnly runs every enabled check but never lets a verdict touch the
+   * response: violations that WOULD have been rejected are recorded with the
+   * outcome "would_reject" and served anyway. This is the safe way to enable
+   * integrity on a network for the first time — it reveals both bad upstream
+   * data AND the module's own gaps on that chain at zero request risk, and
+   * the would_reject rate is exactly the client-facing cost enforcement
+   * would incur.
+   * It is ABSOLUTE and overrides everything else, including a per-check
+   * onFailure: reject and invalidBehavior — so a future release adding a new
+   * check cannot start rejecting on an observe-only network. Deterministic
+   * checks are covered too, which invalidBehavior alone cannot do (they
+   * ignore it by design).
+   */
+  observeOnly?: boolean;
+  /**
+   * StateProbe proves, per upstream, that the node actually holds the state
+   * trie it claims: on each new followed block, probe every upstream with an
+   * execution-context call (and eth_getProof where supported) verified
+   * against the follower's verified header, and advance that upstream's
+   * state-proven head only on success. Routing for state methods (eth_call,
+   * eth_getBalance, ...) then refuses to outrun proof. Requires follow to be
+   * enabled (the verified header is the trust anchor). Off by default.
+   */
+  stateProbe?: IntegrityStateProbeConfig;
+  /**
+   * Follow turns the ChainView into an actual chain follower: it walks the
+   * chain forward block by block, requires each block to name its
+   * predecessor's hash, and reconciles reorgs by finding the common ancestor.
+   * Off by default — it costs one eth_getBlockByNumber per block per network.
+   */
+  follow?: IntegrityFollowConfig;
+  /**
+   * MisbehaviorsDestination durably archives every integrity catch (reject or
+   * soft-flag) as a JSONL record — same file/S3 destination shape as the
+   * consensus policy's misbehaviorsDestination. Catches are rare, so the
+   * volume is low; the archive is the forensic record metrics can't carry.
+   */
+  misbehaviorsDestination?: MisbehaviorsDestinationConfig;
+}
+/**
+ * IntegrityFollowConfig configures the ChainView chain follower.
+ * Following gives the module a CONTIGUOUS, parent-linked view of the chain
+ * instead of the sparse scatter of heights that client traffic happens to
+ * touch. That is what lets it answer "is this block canonical" from a verified
+ * chain rather than from whichever source was observed first, and it is the
+ * precondition for any check that compares consecutive headers.
+ */
+export interface IntegrityFollowConfig {
+  /**
+   * Enabled turns the follower on for this network. Default false.
+   */
+  enabled?: boolean;
+  /**
+   * Interval is how often to check for new blocks (default 1s). Keep it below
+   * the chain's block time or the follower will run a step behind.
+   */
+  interval?: Duration;
+  /**
+   * MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
+   * follower starting far behind converges steadily instead of bursting.
+   */
+  maxBlocksPerTick?: number /* int */;
+}
+/**
+ * IntegrityStateProbeConfig configures the per-upstream state-trie probes.
+ */
+export interface IntegrityStateProbeConfig {
+  /**
+   * Enabled turns the probes on. Default false.
+   */
+  enabled?: boolean;
+  /**
+   * Interval is the minimum time between probes of the same upstream
+   * (default 2s) — a bound on probe cost, not a schedule; probes fire on
+   * followed-block arrival.
+   */
+  interval?: Duration;
+}
+/**
+ * IntegrityConfig is an IntegritySettings plus the per-request header-control
+ * surface and the named profiles a request may select. It lives at the project
+ * level (applies to all networks) and the network level (overrides).
+ */
+export interface IntegrityConfig {
+  integritysettings: IntegritySettings;
+  /**
+   * HeaderMode controls whether/how per-request X-ERPC-Integrity headers may
+   * adjust integrity: off | profiles | full. Defaults to off.
+   */
+  headerMode?: string;
+  /**
+   * Profiles are named settings an operator defines; a request may select one
+   * by name via header when HeaderMode permits.
+   */
+  profiles?: { [key: string]: IntegritySettings | undefined};
+}
+/**
+ * IntegrityCheckConfig overrides a single check by its catalog id.
+ */
+export interface IntegrityCheckConfig {
+  /**
+   * Enabled forces the check on/off; nil leaves the level's decision intact.
+   */
+  enabled?: boolean;
+  /**
+   * Params are check-specific knobs (e.g. bloom equality-vs-superset).
+   */
+  params?: { [key: string]: string};
+  /**
+   * OnFailure overrides this check's failure mode: reject | soft-flag.
+   */
+  onFailure?: string;
+}
+/**
+ * IntegrityBudgetConfig caps the authoritative tier's canonical fetches.
+ */
+export interface IntegrityBudgetConfig {
+  maxPerSecond?: number /* int */;
+  maxConcurrent?: number /* int */;
+}
+/**
+ * IntegrityInvalidBehaviorConfig is the per-finality verdict for reorg-sensitive
+ * checks: reject | soft-flag | off, split by whether the response's block is
+ * finalized.
+ */
+export interface IntegrityInvalidBehaviorConfig {
+  finalized?: string;
+  unfinalized?: string;
 }
 
 //////////

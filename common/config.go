@@ -2785,6 +2785,27 @@ type MetricsConfig struct {
 	// Value is the list of label names to keep for that metric.
 	HistogramLabelOverrides map[string][]string `yaml:"histogramLabelOverrides,omitempty" json:"histogramLabelOverrides,omitempty"`
 
+	// CounterDropLabels removes these labels from every counter that carries
+	// caller-controlled dimensions (user, agent_name, attempt, composite,
+	// hedge, error). Histograms and gauges are unaffected; use
+	// HistogramDropLabels for the histogram side.
+	//
+	// Counters are usually the largest contributor to /metrics size, because a
+	// label like a client-supplied user-agent is unbounded and every tuple ever
+	// seen is re-emitted on every scrape. Dropping a label collapses the series
+	// that differed only in it — sums stay correct, but the dimension stops
+	// being queryable, so check what consumes it (billing/attribution
+	// pipelines, dashboards) before dropping.
+	CounterDropLabels []string `yaml:"counterDropLabels,omitempty" json:"counterDropLabels,omitempty"`
+
+	// CounterLabelOverrides re-adds labels for specific counters even if they
+	// appear in CounterDropLabels. Key is the metric Name (without the "erpc_"
+	// namespace prefix), e.g. "upstream_request_total". Value is the list of
+	// label names to keep for that metric. Use this to drop a label fleet-wide
+	// while preserving it on the one or two counters a downstream pipeline
+	// actually reads.
+	CounterLabelOverrides map[string][]string `yaml:"counterLabelOverrides,omitempty" json:"counterLabelOverrides,omitempty"`
+
 	// CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
 	// counters whose label-sets are keyed by caller-controlled inputs
 	// (method, user, agentName, ...). Counter series idle for at least this
