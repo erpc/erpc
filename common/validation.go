@@ -791,6 +791,11 @@ func (s *AuthStrategyConfig) Validate() error {
 	if s.Type == "" {
 		return fmt.Errorf("auth.*.type is required")
 	}
+	if s.AllowClientDirectives != nil && *s.AllowClientDirectives != "" {
+		if _, err := NewWildcardMatcher(*s.AllowClientDirectives); err != nil {
+			return fmt.Errorf("auth.*.allowClientDirectives pattern is invalid: %w", err)
+		}
+	}
 	switch s.Type {
 	case AuthTypeNetwork:
 		if s.Network == nil {

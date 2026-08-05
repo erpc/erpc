@@ -32,12 +32,34 @@ type PreparedProject struct {
 	upstreamsRegistry           *upstream.UpstreamsRegistry
 	policyEngine                *policy.Engine
 	allowClientDirectiveMatcher common.MatcherFunc
-	cfgMu                       sync.RWMutex
+	// strategyDirectiveMatchers holds the compiled matcher for every distinct
+	// `allowClientDirectives` pattern configured on an auth strategy, keyed by
+	// the raw pattern. Built once at registration and read-only afterwards, so
+	// resolving a caller's matcher is a map lookup rather than a regex compile.
+	strategyDirectiveMatchers map[string]common.MatcherFunc
+	cfgMu                     sync.RWMutex
 }
 
 type ProjectHealthInfo struct {
 	upstream.UpstreamsHealth
 	Initialization *util.InitializerStatus `json:"initialization,omitempty"`
+}
+
+// clientDirectiveMatcherFor returns the client-directive matcher that governs
+// this caller: the capability granted by the auth strategy that authenticated
+// them when present, otherwise the project-level default.
+//
+// Because the override travels on the User populated by an auth strategy, a
+// caller identified only via `trustUserIdHeader` always falls through to the
+// project default — an unvalidated header cannot widen directive access.
+func (p *PreparedProject) clientDirectiveMatcherFor(user *common.User) common.MatcherFunc {
+	if user == nil || user.AllowClientDirectives == nil {
+		return p.allowClientDirectiveMatcher
+	}
+	if m, ok := p.strategyDirectiveMatchers[*user.AllowClientDirectives]; ok {
+		return m
+	}
+	return p.allowClientDirectiveMatcher
 }
 
 func (p *PreparedProject) Bootstrap(appCtx context.Context) {
