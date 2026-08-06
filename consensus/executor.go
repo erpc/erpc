@@ -935,21 +935,23 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 	if resultsSatisfyAgreementQuotas(e.agreeingResults(analysis, g), e.config.requiredParticipants) {
 		return winner
 	}
-	// A quota tag matching zero participants in the ENTIRE round (not just
-	// the winning group) means the config is structurally unable to ever
-	// satisfy the quota right now — a typo'd tag or every tagged upstream
-	// down. That is an outage, not a routine dispute: escalate to Warn so
-	// operators see it without debug logging. Only when the round is
-	// complete (nothing can still arrive): this gate also runs on every
-	// mid-collection analysis, where a slower tagged upstream simply hasn't
-	// answered yet — warning there would fire on every healthy
-	// mixed-latency round.
+	// A tag matching zero participants in the whole round (checked only
+	// once the round is complete) means a required participant never
+	// answered — that's LowParticipants, not a CompositionDispute.
+	missingTag := false
 	for _, req := range e.config.requiredParticipants {
 		if req == nil || req.MinAgreement <= 0 {
 			continue
 		}
+		// Infrastructure errors (timeout, 5xx) mean the tagged upstream never
+		// successfully answered — that's an outage, the same "missing"
+		// condition as the upstream not being in the round at all, so those
+		// groups don't count as a match.
 		matchedAnywhere := false
 		for _, og := range analysis.groups {
+			if og.ResponseType == ResponseTypeInfrastructureError {
+				continue
+			}
 			for _, r := range og.Results {
 				if r != nil && r.Upstream != nil && upstreamMatchesTag(r.Upstream, req.Tag) {
 					matchedAnywhere = true
@@ -961,10 +963,20 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 			}
 		}
 		if !matchedAnywhere && !analysis.hasRemaining() {
+			missingTag = true
 			lg.Warn().
 				Str("tag", req.Tag).
 				Int("minAgreement", req.MinAgreement).
 				Msg("minAgreement quota tag matched ZERO participants this round — check for a typo'd tag or unavailable tagged upstreams; consensus cannot succeed while this persists")
+		}
+	}
+	if missingTag {
+		return &slotResult{
+			Error: common.NewErrConsensusLowParticipants(
+				"a requiredParticipants tag matched zero participants this round",
+				analysis.participants(),
+				nil,
+			),
 		}
 	}
 	lg.Debug().
@@ -1569,11 +1581,24 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	// how often composition (not vote count) rejected a winner.
 	isCompositionDispute := result.Error != nil &&
 		common.HasErrorCode(result.Error, common.ErrCodeConsensusCompositionDispute)
+	// A missing-required-tag can synthesize ErrConsensusLowParticipants even
+	// when the untagged responders still hit agreementThreshold on count
+	// (hasConsensus true) — key off the actual error code here rather than
+	// count alone, or the outcome label would misreport it as consensus.
+	isErrLowParticipants := result.Error != nil &&
+		common.HasErrorCode(result.Error, common.ErrCodeConsensusLowParticipants)
+	isLowParticipants = isLowParticipants || isErrLowParticipants
+	// hasConsensus reflects raw vote count only; composition/missing-tag
+	// overrides mean the count-winner was actually rejected, so the
+	// "achieved" attribute must not contradict those outcomes.
+	achieved := hasConsensus && !isCompositionDispute && !isErrLowParticipants
 
 	outcome := "success"
 	if result.Error != nil {
 		if isCompositionDispute {
 			outcome = "dispute_composition"
+		} else if isErrLowParticipants {
+			outcome = "low_participants"
 		} else if hasConsensus {
 			outcome = "consensus_on_error"
 		} else if isDispute {
@@ -1590,7 +1615,7 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 
 	span.SetAttributes(
 		attribute.String("consensus.outcome", outcome),
-		attribute.Bool("consensus.achieved", hasConsensus),
+		attribute.Bool("consensus.achieved", achieved),
 		attribute.Bool("consensus.low_participants", isLowParticipants),
 		attribute.Bool("consensus.dispute", isDispute),
 		attribute.Int("participants.total", analysis.totalParticipants),
@@ -1616,6 +1641,8 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 		errLabel := "generic_error"
 		if isCompositionDispute {
 			errLabel = "dispute_composition"
+		} else if isErrLowParticipants {
+			errLabel = "low_participants"
 		} else if hasConsensus {
 			errLabel = "consensus_on_error"
 		} else if isDispute {
