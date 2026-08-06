@@ -109,7 +109,11 @@ type LabeledCounter struct {
 }
 
 // NewLabeledCounter creates a CounterVec honoring the current filter and
-// registers it with prometheus.DefaultRegisterer.
+// registers it with prometheus.DefaultRegisterer. Prefer the package-level
+// counters (built unregistered at init, registered once via
+// RebuildFilteredCounters) for production metrics — Prometheus freezes a
+// metric's label-set hash for the life of the registry, so registering at
+// package init would make counterDropLabels impossible to apply later.
 func NewLabeledCounter(opts prometheus.CounterOpts, schema []string) *LabeledCounter {
 	return registerOrReuseCounter(newLabeledCounterUnregistered(opts, schema))
 }
@@ -149,13 +153,14 @@ func registerOrReuseCounter(lc *LabeledCounter) *LabeledCounter {
 	panic(err)
 }
 
-// Rebuild re-creates this counter under the CURRENT filter, replacing the
-// registered collector. The old series are dropped with it — a filter change
-// is a cardinality change, so there is nothing meaningful to carry over.
-// Returns the replacement; callers must reassign their package-level var.
+// Rebuild re-creates this counter under the CURRENT filter without registering
+// it. Prometheus freezes dimHashesByName for a metric's fqName even after
+// Unregister, so a label-set change cannot be applied by unregister+re-register
+// — the only safe path is the histogram one: build unregistered under the
+// filter, then register once. Returns the replacement; callers reassign their
+// package-level var, then registerOrReuseCounter.
 func (lc *LabeledCounter) Rebuild() *LabeledCounter {
-	prometheus.DefaultRegisterer.Unregister(lc)
-	return NewLabeledCounter(lc.opts, lc.schema)
+	return newLabeledCounterUnregistered(lc.opts, lc.schema)
 }
 
 func (lc *LabeledCounter) Describe(ch chan<- *prometheus.Desc) { lc.vec.Describe(ch) }
