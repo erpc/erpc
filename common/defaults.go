@@ -2460,7 +2460,10 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 	if c.MaxParticipants == 0 {
 		c.MaxParticipants = 5
 	}
-	// sum(minAgreement) is a floor for AgreementThreshold; derive it when omitted.
+	// Default AgreementThreshold to sum(minAgreement) when composition quotas
+	// are configured and the field is omitted; an explicit value (any value)
+	// is left untouched — composition is independently hard-enforced by
+	// enforceWinnerComposition regardless of agreementThreshold.
 	if derived, ok := c.agreementThresholdFromMinAgreement(); ok {
 		if c.AgreementThreshold == 0 {
 			c.AgreementThreshold = derived

@@ -1238,14 +1238,6 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
-	// sum(minAgreement) is a floor, not an exact value, for agreementThreshold.
-	if derived, ok := c.agreementThresholdFromMinAgreement(); ok && c.AgreementThreshold < derived {
-		return fmt.Errorf(
-			"consensus.agreementThreshold (%d) is below the requiredParticipants[].minAgreement floor (sum(minAgreement)=%d); omit agreementThreshold to derive it automatically, or set it to at least this value",
-			c.AgreementThreshold, derived,
-		)
-	}
-
 	return nil
 }
 

@@ -35,7 +35,7 @@ func TestSetDefaults_AgreementThresholdFromMinAgreement(t *testing.T) {
 		require.NoError(t, c.Validate())
 	})
 
-	t.Run("explicit agreementThreshold above the sum(minAgreement) floor is honored", func(t *testing.T) {
+	t.Run("explicit agreementThreshold above sum(minAgreement) is honored", func(t *testing.T) {
 		c := &ConsensusPolicyConfig{
 			MaxParticipants:    4,
 			AgreementThreshold: 3,
@@ -45,11 +45,16 @@ func TestSetDefaults_AgreementThresholdFromMinAgreement(t *testing.T) {
 			},
 		}
 		require.NoError(t, c.SetDefaults())
-		assert.Equal(t, 3, c.AgreementThreshold, "an explicit value stricter than the derived floor must not be overwritten")
+		assert.Equal(t, 3, c.AgreementThreshold, "an explicit value stricter than the derived default must not be overwritten")
 		require.NoError(t, c.Validate())
 	})
 
-	t.Run("explicit agreementThreshold below the sum(minAgreement) floor is rejected", func(t *testing.T) {
+	t.Run("explicit agreementThreshold below sum(minAgreement) is accepted", func(t *testing.T) {
+		// agreementThreshold only gates which groups are even considered as
+		// count-winners; enforceWinnerComposition independently and always
+		// enforces the true per-tag minAgreement requirement regardless of
+		// this value, so a lower explicit value is not unsatisfiable — it's
+		// just a looser count gate.
 		c := &ConsensusPolicyConfig{
 			MaxParticipants:    4,
 			AgreementThreshold: 1,
@@ -60,7 +65,7 @@ func TestSetDefaults_AgreementThresholdFromMinAgreement(t *testing.T) {
 		}
 		require.NoError(t, c.SetDefaults())
 		assert.Equal(t, 1, c.AgreementThreshold, "SetDefaults must not silently overwrite an explicit value")
-		require.ErrorContains(t, c.Validate(), "sum(minAgreement)")
+		require.NoError(t, c.Validate())
 	})
 
 	t.Run("single minAgreement entry derives that value", func(t *testing.T) {

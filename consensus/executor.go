@@ -943,8 +943,15 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 		if req == nil || req.MinAgreement <= 0 {
 			continue
 		}
+		// Infrastructure errors (timeout, 5xx) mean the tagged upstream never
+		// successfully answered — that's an outage, the same "missing"
+		// condition as the upstream not being in the round at all, so those
+		// groups don't count as a match.
 		matchedAnywhere := false
 		for _, og := range analysis.groups {
+			if og.ResponseType == ResponseTypeInfrastructureError {
+				continue
+			}
 			for _, r := range og.Results {
 				if r != nil && r.Upstream != nil && upstreamMatchesTag(r.Upstream, req.Tag) {
 					matchedAnywhere = true
@@ -1581,6 +1588,10 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	isErrLowParticipants := result.Error != nil &&
 		common.HasErrorCode(result.Error, common.ErrCodeConsensusLowParticipants)
 	isLowParticipants = isLowParticipants || isErrLowParticipants
+	// hasConsensus reflects raw vote count only; composition/missing-tag
+	// overrides mean the count-winner was actually rejected, so the
+	// "achieved" attribute must not contradict those outcomes.
+	achieved := hasConsensus && !isCompositionDispute && !isErrLowParticipants
 
 	outcome := "success"
 	if result.Error != nil {
@@ -1604,7 +1615,7 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 
 	span.SetAttributes(
 		attribute.String("consensus.outcome", outcome),
-		attribute.Bool("consensus.achieved", hasConsensus),
+		attribute.Bool("consensus.achieved", achieved),
 		attribute.Bool("consensus.low_participants", isLowParticipants),
 		attribute.Bool("consensus.dispute", isDispute),
 		attribute.Int("participants.total", analysis.totalParticipants),

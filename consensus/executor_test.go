@@ -16,6 +16,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -804,7 +806,14 @@ func TestRecordMetricsAndTracing_MissingTagLowParticipants_NotConsensusOnError(t
 		userId:      "n/a",
 		agentName:   "n/a",
 	}
-	span := trace.SpanFromContext(context.Background()) // noop span
+
+	// A real recording span (not the no-op default) is required here: the
+	// "consensus.achieved" attribute must not contradict a low_participants
+	// outcome, and a no-op span silently accepts any attribute value.
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	tracer := tp.Tracer("test")
+	_, span := tracer.Start(context.Background(), "test-span")
 
 	lowParticipantsCounter := telemetry.MetricConsensusTotal.WithLabelValues(
 		labels.projectId, labels.networkId, labels.category, "low_participants", labels.finalityStr, labels.userId, labels.agentName)
@@ -824,6 +833,8 @@ func TestRecordMetricsAndTracing_MissingTagLowParticipants_NotConsensusOnError(t
 			"a requiredParticipants tag matched zero participants this round", nil, nil),
 	}
 	e.recordMetricsAndTracing(newTestRequest(), time.Now(), result, analysis, labels, span)
+	span.End()
+	require.NoError(t, tp.ForceFlush(context.Background()))
 
 	assert.Equal(t, lowBefore+1, testutil.ToFloat64(lowParticipantsCounter),
 		"missing-tag round must be labeled low_participants even though count alone reached agreementThreshold")
@@ -833,4 +844,20 @@ func TestRecordMetricsAndTracing_MissingTagLowParticipants_NotConsensusOnError(t
 		"consensus_errors_total must also be labeled low_participants")
 	assert.Equal(t, onErrorErrBefore, testutil.ToFloat64(onErrorErrCounter),
 		"consensus_errors_total must not be mislabeled consensus_on_error")
+
+	spans := exp.GetSpans()
+	require.Len(t, spans, 1)
+	var outcome string
+	var achieved bool
+	for _, a := range spans[0].Attributes {
+		switch string(a.Key) {
+		case "consensus.outcome":
+			outcome = a.Value.AsString()
+		case "consensus.achieved":
+			achieved = a.Value.AsBool()
+		}
+	}
+	assert.Equal(t, "low_participants", outcome)
+	assert.False(t, achieved,
+		"consensus.achieved must not contradict a low_participants outcome even though the raw vote count reached agreementThreshold")
 }
