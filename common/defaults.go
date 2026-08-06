@@ -1457,6 +1457,10 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "solidrpc", "evm+solidrpc":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
 	case "erpc", "evm+erpc":
 		settings := VendorSettings{
 			"endpoint": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/"),
