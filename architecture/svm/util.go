@@ -26,3 +26,23 @@ func IsNonRetryableWriteMethod(method string) bool {
 	}
 	return false
 }
+
+// IsSingleDispatchWriteMethod reports whether a write method must reach at most
+// ONE upstream per client call, so it can never be fanned out in parallel.
+//
+// This is the strict subset of IsNonRetryableWriteMethod that is NOT a
+// transaction broadcast. The distinction matters because consensus treats the
+// two oppositely: sending the SAME signed transaction to several nodes is still
+// one transaction (consensus short-circuits to the first valid signature — see
+// consensus.isTxBroadcastMethod), whereas requestAirdrop MINTS per call, so an
+// N-participant fan-out mints N times and then disputes the N distinct
+// signatures it produced.
+//
+// Kept as a literal method switch rather than an import from consensus/:
+// erpc/ deliberately does not import consensus/ (dependency cycle), so the
+// predicate has to live where the pipeline can reach it. util_test.go pins it
+// against IsNonRetryableWriteMethod and the broadcast set so the two cannot
+// drift apart silently.
+func IsSingleDispatchWriteMethod(method string) bool {
+	return strings.EqualFold(method, "requestAirdrop")
+}
