@@ -1574,11 +1574,20 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	// how often composition (not vote count) rejected a winner.
 	isCompositionDispute := result.Error != nil &&
 		common.HasErrorCode(result.Error, common.ErrCodeConsensusCompositionDispute)
+	// A missing-required-tag can synthesize ErrConsensusLowParticipants even
+	// when the untagged responders still hit agreementThreshold on count
+	// (hasConsensus true) — key off the actual error code here rather than
+	// count alone, or the outcome label would misreport it as consensus.
+	isErrLowParticipants := result.Error != nil &&
+		common.HasErrorCode(result.Error, common.ErrCodeConsensusLowParticipants)
+	isLowParticipants = isLowParticipants || isErrLowParticipants
 
 	outcome := "success"
 	if result.Error != nil {
 		if isCompositionDispute {
 			outcome = "dispute_composition"
+		} else if isErrLowParticipants {
+			outcome = "low_participants"
 		} else if hasConsensus {
 			outcome = "consensus_on_error"
 		} else if isDispute {
