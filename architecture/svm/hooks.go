@@ -644,12 +644,41 @@ func upstreamPostForward_trackContextSlot(ctx context.Context, n common.Network,
 // ErrCodeEndpointClientSideException rather than walking retryableTowardNetwork
 // details. Without the wrap, a ServerSideException from the primary would be
 // silently failed over to the secondary.
+//
+// The wrap applies ONLY to errors from an attempt that may have reached the
+// wire. See preDispatchErrorCodes.
 func upstreamPostForward_nonRetryableWrite(rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
 	if re == nil {
 		return rs, nil
 	}
+	// A write that was never transmitted cannot have taken effect, so there is
+	// nothing to protect against a second dispatch — suppressing failover here
+	// turns a routine "this upstream is unavailable" into a hard client error
+	// while healthy upstreams sit unused.
+	if common.HasErrorCode(re, preDispatchErrorCodes...) {
+		return rs, re
+	}
 	wrapped := common.NewErrEndpointClientSideException(re).WithRetryableTowardNetwork(false)
 	return rs, wrapped
+}
+
+// preDispatchErrorCodes are failures that PROVE the request never reached the
+// upstream's wire: selection/policy rejections, local rate-limit rejections and
+// an open circuit breaker are all produced before any bytes are sent. They are
+// properties of the ROUTE, not of the transaction, so the single-dispatch
+// guarantee is not at stake and the sweep must be free to try the next upstream.
+//
+// Deliberately excluded: transport errors, timeouts and upstream 5xx. Those
+// mean the request may well have been received and executed before the failure
+// surfaced — "the server failed" is not permission to run a mint again.
+var preDispatchErrorCodes = []common.ErrorCode{
+	common.ErrCodeUpstreamRequestSkipped,
+	common.ErrCodeUpstreamMethodIgnored,
+	common.ErrCodeUpstreamShadowing,
+	common.ErrCodeUpstreamNotAllowed,
+	common.ErrCodeUpstreamExcludedByPolicy,
+	common.ErrCodeUpstreamRateLimitRuleExceeded,
+	common.ErrCodeFailsafeCircuitBreakerOpen,
 }
 
 // networkPostForward_getSlot enforces the highest-known slot on a getSlot

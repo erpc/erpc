@@ -1256,3 +1256,63 @@ func TestNetworkPostForward_GetSlot_ProcessedCommitment_UsesProcessedTip(t *test
 		t.Fatalf("processed getSlot must be floored at the processed tip, got %d", slot)
 	}
 }
+
+// TestUpstreamPostForward_NonRetryableWrite_PreDispatchErrorsStayRetryable pins
+// the distinction the write guard turns on: an attempt that never reached the
+// wire cannot have executed the write, so it must stay retryable toward the
+// network and let the sweep try a healthy upstream. Only an attempt that may
+// have transmitted gets the non-retryable client-side wrap.
+//
+// Without this split, a shadowed / method-ignored / rate-limited / breaker-open
+// first upstream turns every sendTransaction and requestAirdrop into a hard
+// client error while the rest of the pool sits idle.
+func TestUpstreamPostForward_NonRetryableWrite_PreDispatchErrorsStayRetryable(t *testing.T) {
+	t.Parallel()
+
+	preDispatch := []struct {
+		name string
+		err  error
+	}{
+		{"requestSkipped", common.NewErrUpstreamRequestSkipped(fmt.Errorf("not eligible"), "rpc1")},
+		{"methodIgnored", common.NewErrUpstreamMethodIgnored("sendTransaction", "rpc1")},
+		{"shadowing", common.NewErrUpstreamShadowing("rpc1")},
+		{"notAllowed", common.NewErrUpstreamNotAllowed("rpc2", "rpc1")},
+		{"excludedByPolicy", common.NewErrUpstreamExcludedByPolicy("rpc1")},
+		{"rateLimited", common.NewErrUpstreamRateLimitRuleExceeded("rpc1", "budget", "rule")},
+		{"breakerOpen", common.NewErrFailsafeCircuitBreakerOpen(common.ScopeUpstream, nil, nil)},
+	}
+	for _, tc := range preDispatch {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got := upstreamPostForward_nonRetryableWrite(nil, tc.err)
+			if got != tc.err {
+				t.Fatalf("pre-dispatch error must pass through untouched, got %T: %v", got, got)
+			}
+			if common.IsClientError(got) {
+				t.Error("pre-dispatch error must not be wrapped as a client error — " +
+					"that aborts the upstream sweep")
+			}
+			if !common.IsRetryableTowardNetwork(got) {
+				t.Error("pre-dispatch error must stay retryable toward the network")
+			}
+		})
+	}
+
+	// The guard's actual job: a failure that MAY have transmitted stops the
+	// sweep. A 5xx is the dangerous case — the node may have accepted the
+	// transaction before failing to answer.
+	t.Run("postDispatchServerErrorIsTerminal", func(t *testing.T) {
+		serverErr := common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorServerSideException,
+				"upstream exploded", nil, nil),
+			nil, 503,
+		)
+		_, got := upstreamPostForward_nonRetryableWrite(nil, serverErr)
+		if !common.IsClientError(got) {
+			t.Fatal("a possibly-transmitted write failure must be wrapped as a client error " +
+				"so the sweep stops")
+		}
+		if common.IsRetryableTowardNetwork(got) {
+			t.Error("a possibly-transmitted write failure must not be retryable toward the network")
+		}
+	})
+}
