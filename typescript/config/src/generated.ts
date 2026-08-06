@@ -991,9 +991,11 @@ export interface ConsensusPolicyConfig {
   /**
    * AgreementThreshold is the minimum participants that must agree on the
    * same response hash. Default 2 when no minAgreement is configured.
-   * When any requiredParticipants[].minAgreement > 0 is set, omit this
-   * field — SetDefaults derives it as sum(minAgreement), and Validate
-   * rejects an explicit value that conflicts with that sum.
+   * When any requiredParticipants[].minAgreement > 0 is set, sum(minAgreement)
+   * is a FLOOR for this field: omit it to have SetDefaults derive that
+   * sum, or set it explicitly to something >= the sum for a stricter
+   * overall agreement count. Validate rejects an explicit value below
+   * the sum, since a smaller winning group could never satisfy the quotas.
    */
   agreementThreshold?: number /* int */;
   disputeBehavior?: ConsensusDisputeBehavior;
@@ -1067,9 +1069,10 @@ export interface ConsensusPolicyConfig {
  * matching upstreams that must be part of the WINNING response group
  * (winner-composition quota, hard-enforced: a winner that does not satisfy
  * it becomes a composition dispute regardless of disputeBehavior). When any
- * entry sets MinAgreement > 0, agreementThreshold is derived as
- * sum(minAgreement) — omit the top-level field. A single upstream can
- * satisfy multiple entries it matches.
+ * entry sets MinAgreement > 0, sum(minAgreement) is a floor for the
+ * top-level agreementThreshold — omit it to have that sum derived, or set
+ * it explicitly to something >= the sum. A single upstream can satisfy
+ * multiple entries it matches.
  */
 export interface ConsensusRequiredParticipant {
   tag: string;

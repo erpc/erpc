@@ -35,7 +35,7 @@ func TestSetDefaults_AgreementThresholdFromMinAgreement(t *testing.T) {
 		require.NoError(t, c.Validate())
 	})
 
-	t.Run("leaves conflicting explicit agreementThreshold for Validate", func(t *testing.T) {
+	t.Run("explicit agreementThreshold above the sum(minAgreement) floor is honored", func(t *testing.T) {
 		c := &ConsensusPolicyConfig{
 			MaxParticipants:    4,
 			AgreementThreshold: 3,
@@ -45,7 +45,21 @@ func TestSetDefaults_AgreementThresholdFromMinAgreement(t *testing.T) {
 			},
 		}
 		require.NoError(t, c.SetDefaults())
-		assert.Equal(t, 3, c.AgreementThreshold, "SetDefaults must not silently overwrite an explicit conflict")
+		assert.Equal(t, 3, c.AgreementThreshold, "an explicit value stricter than the derived floor must not be overwritten")
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("explicit agreementThreshold below the sum(minAgreement) floor is rejected", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{
+			MaxParticipants:    4,
+			AgreementThreshold: 1,
+			RequiredParticipants: []*ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, 1, c.AgreementThreshold, "SetDefaults must not silently overwrite an explicit value")
 		require.ErrorContains(t, c.Validate(), "sum(minAgreement)")
 	})
 

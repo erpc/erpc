@@ -537,7 +537,7 @@ func TestMinAgreement_Validation(t *testing.T) {
 		require.NoError(t, cfg.Validate())
 	})
 
-	t.Run("agreementThreshold conflicting with sum(minAgreement) is rejected", func(t *testing.T) {
+	t.Run("agreementThreshold below sum(minAgreement) floor is rejected", func(t *testing.T) {
 		cfg := &common.ConsensusPolicyConfig{
 			MaxParticipants:    3,
 			AgreementThreshold: 2,
@@ -560,5 +560,17 @@ func TestMinAgreement_Validation(t *testing.T) {
 			},
 		}
 		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("agreementThreshold above sum(minAgreement) floor is accepted", func(t *testing.T) {
+		cfg := &common.ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 3,
+			RequiredParticipants: []*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, cfg.Validate(), "an explicit threshold stricter than the derived floor is a legitimate config")
 	})
 }
