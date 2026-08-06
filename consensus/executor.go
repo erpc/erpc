@@ -935,15 +935,9 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 	if resultsSatisfyAgreementQuotas(e.agreeingResults(analysis, g), e.config.requiredParticipants) {
 		return winner
 	}
-	// A quota tag matching zero participants in the ENTIRE round (not just
-	// the winning group) means a required participant is missing outright —
-	// a typo'd tag or every tagged upstream down/unreachable. That is a
-	// participation gap, not a disagreement between responses, so it's
-	// reported as LowParticipants rather than CompositionDispute. Only when
-	// the round is complete (nothing can still arrive): this gate also runs
-	// on every mid-collection analysis, where a slower tagged upstream
-	// simply hasn't answered yet — flagging it there would fire on every
-	// healthy mixed-latency round.
+	// A tag matching zero participants in the whole round (checked only
+	// once the round is complete) means a required participant never
+	// answered — that's LowParticipants, not a CompositionDispute.
 	missingTag := false
 	for _, req := range e.config.requiredParticipants {
 		if req == nil || req.MinAgreement <= 0 {

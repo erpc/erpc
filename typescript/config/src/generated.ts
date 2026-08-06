@@ -988,15 +988,6 @@ export const ConsensusDisputeBehaviorPreferBlockHeadLeader: ConsensusDisputeBeha
 export const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDisputeBehavior = "onlyBlockHeadLeader";
 export interface ConsensusPolicyConfig {
   maxParticipants: number /* int */;
-  /**
-   * AgreementThreshold is the minimum participants that must agree on the
-   * same response hash. Default 2 when no minAgreement is configured.
-   * When any requiredParticipants[].minAgreement > 0 is set, sum(minAgreement)
-   * is a FLOOR for this field: omit it to have SetDefaults derive that
-   * sum, or set it explicitly to something >= the sum for a stricter
-   * overall agreement count. Validate rejects an explicit value below
-   * the sum, since a smaller winning group could never satisfy the quotas.
-   */
   agreementThreshold?: number /* int */;
   disputeBehavior?: ConsensusDisputeBehavior;
   lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
@@ -1055,8 +1046,6 @@ export interface ConsensusPolicyConfig {
    * runs with what it can promote and the resulting participation is
    * handled by `lowParticipantsBehavior` / `agreementThreshold` exactly
    * like any other low-participation tick. Empty (default) = disabled.
-   * When any entry sets minAgreement > 0, omit agreementThreshold —
-   * it is derived as sum(minAgreement).
    */
   requiredParticipants?: (ConsensusRequiredParticipant | undefined)[];
 }
@@ -1070,9 +1059,8 @@ export interface ConsensusPolicyConfig {
  * (winner-composition quota, hard-enforced: a winner that does not satisfy
  * it becomes a composition dispute regardless of disputeBehavior). When any
  * entry sets MinAgreement > 0, sum(minAgreement) is a floor for the
- * top-level agreementThreshold — omit it to have that sum derived, or set
- * it explicitly to something >= the sum. A single upstream can satisfy
- * multiple entries it matches.
+ * top-level agreementThreshold. A single upstream can satisfy multiple
+ * entries it matches.
  */
 export interface ConsensusRequiredParticipant {
   tag: string;

@@ -1238,13 +1238,7 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
-	// When minAgreement is configured, sum(minAgreement) is the minimum
-	// winning-group size that can satisfy every composition quota (in the
-	// disjoint-tags case) — so it's a FLOOR for agreementThreshold, not an
-	// exact value. An explicit value below the floor can never satisfy the
-	// quotas and is rejected. An explicit value at or above the floor is
-	// honored as-is: an operator may legitimately want a stricter overall
-	// agreement count than the quotas alone require.
+	// sum(minAgreement) is a floor, not an exact value, for agreementThreshold.
 	if derived, ok := c.agreementThresholdFromMinAgreement(); ok && c.AgreementThreshold < derived {
 		return fmt.Errorf(
 			"consensus.agreementThreshold (%d) is below the requiredParticipants[].minAgreement floor (sum(minAgreement)=%d); omit agreementThreshold to derive it automatically, or set it to at least this value",
@@ -1256,12 +1250,7 @@ func (c *ConsensusPolicyConfig) Validate() error {
 }
 
 // agreementThresholdFromMinAgreement returns sum(minAgreement) when any
-// requiredParticipants entry sets minAgreement > 0. The sum is the
-// minimum winning-group size that can satisfy every composition quota
-// when tags are disjoint (the common mixed-node case). Overlapping tags
-// may make the derived threshold stricter than strictly necessary — a
-// single upstream matching multiple tags still only counts once toward
-// agreementThreshold — but that is safer than under-requiring agreement.
+// requiredParticipants entry sets minAgreement > 0.
 func (c *ConsensusPolicyConfig) agreementThresholdFromMinAgreement() (int, bool) {
 	if c == nil {
 		return 0, false

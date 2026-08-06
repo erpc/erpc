@@ -1715,14 +1715,7 @@ const (
 )
 
 type ConsensusPolicyConfig struct {
-	MaxParticipants int `yaml:"maxParticipants" json:"maxParticipants"`
-	// AgreementThreshold is the minimum participants that must agree on the
-	// same response hash. Default 2 when no minAgreement is configured.
-	// When any requiredParticipants[].minAgreement > 0 is set, sum(minAgreement)
-	// is a FLOOR for this field: omit it to have SetDefaults derive that
-	// sum, or set it explicitly to something >= the sum for a stricter
-	// overall agreement count. Validate rejects an explicit value below
-	// the sum, since a smaller winning group could never satisfy the quotas.
+	MaxParticipants         int                              `yaml:"maxParticipants" json:"maxParticipants"`
 	AgreementThreshold      int                              `yaml:"agreementThreshold,omitempty" json:"agreementThreshold"`
 	DisputeBehavior         ConsensusDisputeBehavior         `yaml:"disputeBehavior,omitempty" json:"disputeBehavior"`
 	LowParticipantsBehavior ConsensusLowParticipantsBehavior `yaml:"lowParticipantsBehavior,omitempty" json:"lowParticipantsBehavior"`
@@ -1778,9 +1771,6 @@ type ConsensusPolicyConfig struct {
 	// runs with what it can promote and the resulting participation is
 	// handled by `lowParticipantsBehavior` / `agreementThreshold` exactly
 	// like any other low-participation tick. Empty (default) = disabled.
-	//
-	// When any entry sets minAgreement > 0, omit agreementThreshold —
-	// it is derived as sum(minAgreement).
 	RequiredParticipants []*ConsensusRequiredParticipant `yaml:"requiredParticipants,omitempty" json:"requiredParticipants,omitempty"`
 }
 
@@ -1793,9 +1783,8 @@ type ConsensusPolicyConfig struct {
 // (winner-composition quota, hard-enforced: a winner that does not satisfy
 // it becomes a composition dispute regardless of disputeBehavior). When any
 // entry sets MinAgreement > 0, sum(minAgreement) is a floor for the
-// top-level agreementThreshold — omit it to have that sum derived, or set
-// it explicitly to something >= the sum. A single upstream can satisfy
-// multiple entries it matches.
+// top-level agreementThreshold. A single upstream can satisfy multiple
+// entries it matches.
 type ConsensusRequiredParticipant struct {
 	Tag             string `yaml:"tag" json:"tag"`
 	MinParticipants int    `yaml:"minParticipants" json:"minParticipants"`
