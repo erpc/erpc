@@ -25,6 +25,10 @@ type Input struct {
 	History History
 	// Reorg maps finality state to the behavior for reorg-sensitive mismatches.
 	Reorg ReorgPolicy
+	// ObserveOnly suppresses every rejection: checks run and violations are
+	// recorded as "would_reject", but the response is always served. Absolute —
+	// it outranks a per-check onFailure and covers Deterministic checks too.
+	ObserveOnly bool
 }
 
 // Recorded is a reorg-sensitive mismatch that was observed but not rejected
@@ -35,6 +39,12 @@ type Recorded struct {
 	Reason   string
 	Class    FailureClass
 	Finality string // "finalized"/"unfinalized"/"unknown" — for the violation metric
+	// Verdict is the label this record carries in the violation metric/log:
+	// "soft_flag" (a reorg-sensitive mismatch served by policy) or
+	// "would_reject" (observe-only suppressed a real rejection). Distinguishing
+	// them is the point of observe mode — one is routine, the other is the
+	// enforcement cost estimate.
+	Verdict string
 }
 
 // Result is the outcome of validating a response. Err is non-nil when a check
@@ -61,8 +71,10 @@ type Result struct {
 // not fully modeled; see Skipped), "reject" (failed, response rejected),
 // "soft_flag" (reorg-sensitive mismatch recorded but served), "reconfirmed"
 // (a pin-anchored mismatch cleared once the stale pin was re-confirmed
-// against a fresh canonical fetch — a reorg, not corruption; served), "off"
-// (disabled for this finality or check).
+// against a fresh canonical fetch — a reorg, not corruption; served),
+// "would_reject" (observe-only mode suppressed a rejection and served the
+// response anyway — the count is the client-facing cost enforcement would
+// incur), "off" (disabled for this finality or check).
 type CheckOutcome struct {
 	CheckID string
 	Outcome string
@@ -181,6 +193,21 @@ func Validate(ctx context.Context, in Input) Result {
 		}
 
 		if behavior == BehaviorError {
+			// Observe-only: never let a verdict touch the response. The violation
+			// is still recorded in full (metric + forensic log + archive) under a
+			// distinct outcome, so "would_reject" counts exactly what enforcing on
+			// this network would have cost clients. Applied HERE rather than in
+			// verdictFor so it covers every path that can reach a rejection —
+			// including Deterministic checks, which ignore invalidBehavior, and any
+			// check added by a later release.
+			if in.ObserveOnly {
+				res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "would_reject"})
+				res.Recorded = append(res.Recorded, Recorded{
+					CheckID: c.ID, Reason: v.Reason, Class: c.Class,
+					Finality: fin.label(ctx, in, d), Verdict: "would_reject",
+				})
+				continue
+			}
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reject"})
 			res.Err = contentValidation(c, v, in.Upstream)
 			res.RejectedCheckID = c.ID
@@ -190,7 +217,7 @@ func Validate(ctx context.Context, in Input) Result {
 		}
 		// soft-flag: surface the violation but still serve the response.
 		res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "soft_flag"})
-		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: fin.label(ctx, in, d)})
+		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: fin.label(ctx, in, d), Verdict: "soft_flag"})
 	}
 	return res
 }

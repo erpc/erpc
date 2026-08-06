@@ -283,6 +283,52 @@ what to do for those, by the block's finality (read from the upstream state poll
 - `finalized` → default `reject` (a finalized block can't reorg; a mismatch is corruption).
 - `unfinalized` → default `soft-flag` (record a metric/log, still serve — it may be a reorg). `off` skips the check (and any force-fetch) on the hot tip entirely.
 
+### Rolling out safely: `observeOnly`
+
+`observeOnly: true` runs every enabled check and reports everything, but **no verdict may
+touch the response** — a violation that would have been rejected is served anyway and
+recorded with the outcome `would_reject`. This is the way to turn integrity on for a
+network the first time: it surfaces bad upstream data *and* the module's own gaps on that
+chain at zero request risk, and
+
+```
+sum(rate(erpc_integrity_check_total{outcome="would_reject"}[5m])) by (network, check, upstream)
+```
+
+is precisely the client-facing cost enforcement would incur — read it before promoting.
+
+Interpreting what you see, by how the `would_reject`s are spread:
+
+| spread across the chain's upstreams | meaning |
+| --- | --- |
+| one upstream | that node is serving bad data — enforcement would correct it via failover |
+| **all** upstreams | a **module gap for this chain** (a protocol quirk the check does not model). Enforcing would defeat failover and fail requests. Disable that check for the chain (or add a `chainProfile`) — never enforce through it |
+
+`observeOnly` is **absolute** and deliberately outranks everything else: a per-check
+`onFailure: reject`, `invalidBehavior`, and any check a *future release* adds all cannot
+reject while it is set. That last property is the point — `invalidBehavior: soft-flag`
+cannot give you this, because the ~25 deterministic checks ignore `invalidBehavior` by
+design and always reject.
+
+It is inherited like the rest of the block, which gives the natural rollout shape — a
+project-wide safety net, promoted one chain at a time:
+
+```yaml
+projects:
+  - id: main
+    integrity:
+      level: authoritative
+      observeOnly: true          # every network observes by default
+    networks:
+      - architecture: evm
+        evm: { chainId: 8453 }
+        integrity:
+          observeOnly: false     # base graduates to enforcement
+```
+
+`off` still means off: `observeOnly` never resurrects a check you disabled, nor its
+force-fetches.
+
 ### Why continuity is by-number only
 
 Continuity answers "**what is the chain at height N**", so it runs on
@@ -360,6 +406,7 @@ fields, and the non-functional `upstreams[].integrity` block no longer exist —
 | `checks.<id>` | object | per-level | Override a check by its catalog id: `{ enabled, params, onFailure }`. `enabled:false` removes it; `enabled:true` adds it above the level. <SourceLink file="common/config_integrity.go" /> |
 | `invalidBehavior.finalized` | enum | `reject` | `reject`/`soft-flag`/`off` for reorg-sensitive checks on finalized data. |
 | `invalidBehavior.unfinalized` | enum | `soft-flag` | …on unfinalized data. `off` skips the check (and its force-fetch). |
+| `observeOnly` | bool | `false` | Run every check but never reject: suppressed rejections are served and reported as `would_reject`. **Absolute** — outranks `checks.<id>.onFailure`, `invalidBehavior`, and any check added by a later release. The safe way to enable a new network; see [Rolling out safely](#rolling-out-safely-observeonly). <SourceLink file="architecture/evm/integrity/engine.go" /> |
 | `budget.maxPerSecond` | int | conservative | Token-bucket cap on the authoritative tier's canonical fetches. |
 | `budget.maxConcurrent` | int | small | Concurrency cap on in-flight fetches. |
 | `reorgWindow` | int | `32` | How many blocks back from the tip the per-network ChainView keeps a `number→hash` pin + header and tracks reorgs. Raise for deep-reorg chains (e.g. polygon `256`). Bounds both reorg depth and memory. <SourceLink file="architecture/evm/integrity_chainview.go" /> |

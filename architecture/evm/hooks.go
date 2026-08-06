@@ -232,7 +232,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// corroboration force-fetch) are skipped to avoid recursing into the engine.
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
-		if cs, policy := resolveIntegrity(n, dirs); len(cs) > 0 {
+		if cs, policy, observeOnly := resolveIntegrity(n, dirs); len(cs) > 0 {
 			// Integrity state + corroboration are scoped to the node GROUP the request
 			// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
 			// so a receipt from one group is only checked against same-group
@@ -243,12 +243,13 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			}
 			view := groupChainView(ctx, n, selector)
 			input := integrity.Input{
-				Method:   methodLower,
-				Upstream: u,
-				Response: rs,
-				Checks:   cs,
-				Resolver: newIntegrityResolver(ctx, n, u, selector),
-				Reorg:    policy,
+				Method:      methodLower,
+				Upstream:    u,
+				Response:    rs,
+				Checks:      cs,
+				Resolver:    newIntegrityResolver(ctx, n, u, selector),
+				Reorg:       policy,
+				ObserveOnly: observeOnly,
 			}
 			if view != nil {
 				input.History = view
@@ -300,14 +301,25 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				).Inc()
 			}
 			for _, rec := range res.Recorded {
+				verdict := rec.Verdict
+				if verdict == "" {
+					verdict = "soft_flag"
+				}
+				msg := "integrity: recorded reorg-sensitive mismatch (served, not rejected)"
+				if verdict == "would_reject" {
+					// Observe-only: this WOULD have failed the request under
+					// enforcement. Logged distinctly so the enforcement-readiness
+					// review can find them without untangling routine soft-flags.
+					msg = "integrity: observe-only suppressed a rejection (served; enforcement would have failed this request)"
+				}
 				telemetry.MetricIntegrityViolation.WithLabelValues(
-					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, "soft_flag", rec.Finality,
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, verdict, rec.Finality,
 				).Inc()
 				log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
 					Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
 					Str("check", rec.CheckID).Str("finality", rec.Finality).Str("reason", rec.Reason).
-					Msg("integrity: recorded reorg-sensitive mismatch (served, not rejected)")
-				exportIntegrityCatch(ctx, n, u, rs, methodLower, "soft_flag", rec.CheckID, rec.Class.String(), rec.Finality, rec.Reason)
+					Msg(msg)
+				exportIntegrityCatch(ctx, n, u, rs, methodLower, verdict, rec.CheckID, rec.Class.String(), rec.Finality, rec.Reason)
 			}
 			if res.Err != nil {
 				telemetry.MetricIntegrityViolation.WithLabelValues(

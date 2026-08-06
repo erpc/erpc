@@ -30,6 +30,20 @@ type IntegritySettings struct {
 	// keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
 	// deep-reorg chains (e.g. polygon 256).
 	ReorgWindow int `yaml:"reorgWindow,omitempty" json:"reorgWindow,omitempty"`
+	// ObserveOnly runs every enabled check but never lets a verdict touch the
+	// response: violations that WOULD have been rejected are recorded with the
+	// outcome "would_reject" and served anyway. This is the safe way to enable
+	// integrity on a network for the first time — it reveals both bad upstream
+	// data AND the module's own gaps on that chain at zero request risk, and
+	// the would_reject rate is exactly the client-facing cost enforcement
+	// would incur.
+	//
+	// It is ABSOLUTE and overrides everything else, including a per-check
+	// onFailure: reject and invalidBehavior — so a future release adding a new
+	// check cannot start rejecting on an observe-only network. Deterministic
+	// checks are covered too, which invalidBehavior alone cannot do (they
+	// ignore it by design).
+	ObserveOnly *bool `yaml:"observeOnly,omitempty" json:"observeOnly,omitempty"`
 	// StateProbe proves, per upstream, that the node actually holds the state
 	// trie it claims: on each new followed block, probe every upstream with an
 	// execution-context call (and eth_getProof where supported) verified
@@ -179,6 +193,9 @@ func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
 	if over.ReorgWindow != 0 {
 		out.ReorgWindow = over.ReorgWindow
 	}
+	if over.ObserveOnly != nil {
+		out.ObserveOnly = over.ObserveOnly
+	}
 	if over.MisbehaviorsDestination != nil {
 		out.MisbehaviorsDestination = over.MisbehaviorsDestination
 	}
@@ -212,6 +229,7 @@ func (c *IntegritySettings) Copy() *IntegritySettings {
 		Budget:          c.Budget.Copy(),
 		InvalidBehavior: c.InvalidBehavior.Copy(),
 		ReorgWindow:     c.ReorgWindow,
+		ObserveOnly:     c.ObserveOnly,
 		Follow:          c.Follow.Copy(),
 		StateProbe:      c.StateProbe.Copy(),
 		// Shared, not deep-copied: destination configs are read-only after load.
