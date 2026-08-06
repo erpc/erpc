@@ -810,8 +810,14 @@ func TestRecordMetricsAndTracing_MissingTagLowParticipants_NotConsensusOnError(t
 		labels.projectId, labels.networkId, labels.category, "low_participants", labels.finalityStr, labels.userId, labels.agentName)
 	consensusOnErrorCounter := telemetry.MetricConsensusTotal.WithLabelValues(
 		labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr, labels.userId, labels.agentName)
+	lowErrCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+		labels.projectId, labels.networkId, labels.category, "low_participants", labels.finalityStr, labels.userId, labels.agentName)
+	onErrorErrCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+		labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr, labels.userId, labels.agentName)
 	lowBefore := testutil.ToFloat64(lowParticipantsCounter)
 	onErrorBefore := testutil.ToFloat64(consensusOnErrorCounter)
+	lowErrBefore := testutil.ToFloat64(lowErrCounter)
+	onErrorErrBefore := testutil.ToFloat64(onErrorErrCounter)
 
 	result := &slotResult{
 		Error: common.NewErrConsensusLowParticipants(
@@ -823,4 +829,8 @@ func TestRecordMetricsAndTracing_MissingTagLowParticipants_NotConsensusOnError(t
 		"missing-tag round must be labeled low_participants even though count alone reached agreementThreshold")
 	assert.Equal(t, onErrorBefore, testutil.ToFloat64(consensusOnErrorCounter),
 		"missing-tag round must not be mislabeled consensus_on_error")
+	assert.Equal(t, lowErrBefore+1, testutil.ToFloat64(lowErrCounter),
+		"consensus_errors_total must also be labeled low_participants")
+	assert.Equal(t, onErrorErrBefore, testutil.ToFloat64(onErrorErrCounter),
+		"consensus_errors_total must not be mislabeled consensus_on_error")
 }

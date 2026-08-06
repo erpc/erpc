@@ -1630,6 +1630,8 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 		errLabel := "generic_error"
 		if isCompositionDispute {
 			errLabel = "dispute_composition"
+		} else if isErrLowParticipants {
+			errLabel = "low_participants"
 		} else if hasConsensus {
 			errLabel = "consensus_on_error"
 		} else if isDispute {
