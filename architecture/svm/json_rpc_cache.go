@@ -453,6 +453,25 @@ func svmRequestKey(rpcReq *common.JsonRpcRequest) (string, error) {
 	return fmt.Sprintf("%s:%x", rpcReq.Method, h.Sum(nil)), nil
 }
 
+// RequestKey exposes the SVM request-identity key to the rest of the pipeline.
+//
+// Any component that decides "are these two requests the same request?" on an
+// SVM network must use THIS, never req.CacheHash(): the shared hasher
+// lowercases string params, which collapses case-sensitive base58 pubkeys and
+// signatures onto one identity. The cache learned that the hard way; in-flight
+// multiplexing (erpc.Network.multiplexKey) has the same requirement, because a
+// follower is handed the leader's response verbatim.
+func RequestKey(ctx context.Context, r *common.NormalizedRequest) (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("cannot derive svm request key from a nil request")
+	}
+	rpcReq, err := r.JsonRpcRequest(ctx)
+	if err != nil {
+		return "", err
+	}
+	return svmRequestKey(rpcReq)
+}
+
 // compress returns the zstd-compressed payload when compression is enabled and
 // the payload is both over the threshold and actually smaller compressed;
 // otherwise it returns payload unchanged. Callers detect which happened by

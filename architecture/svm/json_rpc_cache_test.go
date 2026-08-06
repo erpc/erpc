@@ -407,3 +407,53 @@ func (finalizedNetwork) Forward(context.Context, *common.NormalizedRequest) (*co
 func (finalizedNetwork) GetFinality(context.Context, *common.NormalizedRequest, *common.NormalizedResponse) common.DataFinalityState {
 	return common.DataFinalityStateFinalized
 }
+
+// TestRequestKey_PreservesBase58Case is the multiplexing counterpart to the
+// cache-key case fix. It asserts BOTH halves of the reason RequestKey exists:
+// the shared CacheHash collapses two distinct base58 accounts that differ only
+// by letter case, and RequestKey keeps them apart. Any component that decides
+// request identity on an SVM network (cache, in-flight multiplexer) must use
+// the latter — a follower is handed the leader's response verbatim, so a
+// collision serves one account's balance for another account's request.
+func TestRequestKey_PreservesBase58Case(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Same pubkey shape, differing only in case — two DISTINCT valid addresses.
+	lower := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["dRiFTyPePEHfLqZBUyHFLGVW3d5Fk1AmmZoRbCxDMDy"]}`))
+	upper := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":2,"method":"getBalance","params":["DRiFTyPePEHfLqZBUyHFLGVW3d5Fk1AmmZoRbCxDMDy"]}`))
+
+	// Premise: the shared hasher really does collide on these. If this ever
+	// stops being true, RequestKey is no longer load-bearing and this whole
+	// indirection can go away.
+	lowerCacheHash, err := lower.CacheHash()
+	require.NoError(t, err)
+	upperCacheHash, err := upper.CacheHash()
+	require.NoError(t, err)
+	require.Equal(t, lowerCacheHash, upperCacheHash,
+		"premise: common CacheHash is expected to collapse base58 case")
+
+	lowerKey, err := RequestKey(ctx, lower)
+	require.NoError(t, err)
+	upperKey, err := RequestKey(ctx, upper)
+	require.NoError(t, err)
+	require.NotEqual(t, lowerKey, upperKey,
+		"distinct base58 accounts must not share a request identity")
+
+	// Identical requests must still agree, or multiplexing and caching stop
+	// deduplicating anything.
+	same := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":3,"method":"getBalance","params":["dRiFTyPePEHfLqZBUyHFLGVW3d5Fk1AmmZoRbCxDMDy"]}`))
+	sameKey, err := RequestKey(ctx, same)
+	require.NoError(t, err)
+	require.Equal(t, lowerKey, sameKey, "identical params must produce one identity")
+
+	// Method is part of the identity: same params, different method.
+	otherMethod := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":4,"method":"getAccountInfo","params":["dRiFTyPePEHfLqZBUyHFLGVW3d5Fk1AmmZoRbCxDMDy"]}`))
+	otherKey, err := RequestKey(ctx, otherMethod)
+	require.NoError(t, err)
+	require.NotEqual(t, lowerKey, otherKey, "method must be part of request identity")
+}

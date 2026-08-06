@@ -2269,12 +2269,29 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 	return eligible
 }
 
+// multiplexKey derives the in-flight dedup identity for a request.
+//
+// EVM keeps req.CacheHash() byte-for-byte. SVM must not: CacheHash lowercases
+// every string param — correct normalization for EVM hex, but it collapses
+// case-sensitive base58, so two DISTINCT Solana accounts or signatures
+// differing only by letter case would share one multiplexer and the follower
+// would be served the leader's data. This is the same hazard that made the SVM
+// cache derive its own key (architecture/svm.RequestKey); multiplexing needs
+// the identical guarantee because it hands the leader's response to followers
+// verbatim.
+func (n *Network) multiplexKey(ctx context.Context, req *common.NormalizedRequest) (string, error) {
+	if n.cfg != nil && n.cfg.Architecture == common.ArchitectureSvm {
+		return svm.RequestKey(ctx, req)
+	}
+	return req.CacheHash()
+}
+
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
 	if !n.cfg.MultiplexingEnabled() {
 		return nil, nil, nil
 	}
 
-	mlxHash, err := req.CacheHash()
+	mlxHash, err := n.multiplexKey(ctx, req)
 	lg.Trace().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {
 		lg.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")
