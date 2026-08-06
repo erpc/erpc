@@ -50,7 +50,7 @@ func TestConsensus_ContentValidationErrorDoesNotDisputeMajority(t *testing.T) {
 	require.Equal(t, 2, analysis.validParticipants, "the content-validation error must not count as a valid participant")
 
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(&lg, nil, analysis)
 
 	require.NotNil(t, winner)
 	require.Nil(t, winner.Error, "two honest agreeing upstreams must win, not ErrConsensusDispute")

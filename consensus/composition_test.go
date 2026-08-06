@@ -31,15 +31,24 @@ func errorFrom(ups common.Upstream, err error, index int) *execResult {
 	return &execResult{Err: err, Upstream: ups, Index: index}
 }
 
+// analyze and winnerOf compile the config first, exactly as the builder does
+// for production, so tests exercise the same derived acceptance grades.
 func analyze(cfg *config, responses []*execResult) *consensusAnalysis {
 	lg := zerolog.Nop()
+	cfg.compile()
 	return newConsensusAnalysis(&lg, context.Background(), cfg, responses)
 }
 
 func winnerOf(cfg *config, analysis *consensusAnalysis) *slotResult {
+	return winnerOfFor(cfg, nil, analysis)
+}
+
+// winnerOfFor is winnerOf with an explicit caller, for authorization cases.
+func winnerOfFor(cfg *config, req *common.NormalizedRequest, analysis *consensusAnalysis) *slotResult {
 	lg := zerolog.Nop()
+	cfg.compile()
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	return e.determineWinner(&lg, analysis)
+	return e.determineWinner(&lg, req, analysis)
 }
 
 // dedup ----------------------------------------------------------------------
@@ -311,7 +320,7 @@ func TestMinAgreement_ShortCircuitDeferredWhileRemaining(t *testing.T) {
 		resultFrom(t, ext1, "0xaa", 0),
 		resultFrom(t, ext2, "0xaa", 1),
 	})
-	provisional := e.determineWinner(&lg, partial)
+	provisional := e.determineWinner(&lg, nil, partial)
 	require.NotNil(t, provisional.Error)
 	require.True(t, common.HasErrorCode(provisional.Error, common.ErrCodeConsensusCompositionDispute))
 
@@ -324,7 +333,7 @@ func TestMinAgreement_ShortCircuitDeferredWhileRemaining(t *testing.T) {
 		resultFrom(t, ext2, "0xaa", 1),
 		resultFrom(t, internal, "0xaa", 2),
 	})
-	final := e.determineWinner(&lg, full)
+	final := e.determineWinner(&lg, nil, full)
 	require.Nil(t, final.Error)
 	require.NotNil(t, final.Result, "late internal agreement must convert the dispute into a win")
 }
@@ -401,7 +410,7 @@ func TestMinAgreement_CompositionDisputeDoesNotPunishDissenter(t *testing.T) {
 	})
 	lg := zerolog.Nop()
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(&lg, nil, analysis)
 	require.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute))
 
 	e.trackAndPunishMisbehavingUpstreams(&lg, nil, metricsLabels{}, winner, analysis)
@@ -460,8 +469,8 @@ func TestQuota_DuplicateUpstreamCountsOnce(t *testing.T) {
 	// The wait-cap arming path checks quota coverage on the RAW pre-dedup
 	// response slice: one tagged upstream answering twice via hedge must
 	// not satisfy minAgreement: 2 by itself.
-	reqs := []*common.ConsensusRequiredParticipant{
-		{Tag: "type:internal", MinParticipants: 2, MinAgreement: 2},
+	quotas := []*common.ConsensusAgreementQuota{
+		{Tag: "type:internal", MinAgreement: 2},
 	}
 	int1 := taggedUpstream("internal-1", "type:internal")
 	int2 := taggedUpstream("internal-2", "type:internal")
@@ -470,11 +479,11 @@ func TestQuota_DuplicateUpstreamCountsOnce(t *testing.T) {
 		resultFrom(t, int1, "0xaa", 0),
 		resultFrom(t, int1, "0xaa", 1), // same upstream, second hedge leg
 	}
-	assert.False(t, resultsSatisfyAgreementQuotas(dup, reqs),
+	assert.False(t, resultsSatisfyQuotas(dup, quotas),
 		"one upstream answering twice must not count as two")
 
 	distinct := append(dup, resultFrom(t, int2, "0xaa", 2))
-	assert.True(t, resultsSatisfyAgreementQuotas(distinct, reqs))
+	assert.True(t, resultsSatisfyQuotas(distinct, quotas))
 }
 
 // config validation ------------------------------------------------------------
@@ -510,4 +519,12 @@ func TestMinAgreement_Validation(t *testing.T) {
 		}
 		require.NoError(t, cfg.Validate())
 	})
+}
+
+// newTestExecutor builds an executor over an already-compiled config, for
+// tests that call executor methods directly rather than through winnerOf.
+func newTestExecutor(cfg *config) *executor {
+	lg := zerolog.Nop()
+	cfg.compile()
+	return &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
 }
