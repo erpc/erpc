@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,24 +17,65 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// s3PutObjectAPI is the sliver of the S3 client this exporter uses. It is an
+// interface so the buffering/flush logic can be tested without AWS.
+type s3PutObjectAPI interface {
+	PutObject(*s3.PutObjectInput) (*s3.PutObjectOutput, error)
+}
+
+// pendingBatch is the set of records that will become ONE S3 object.
+//
+// Records are grouped by (method, networkId) and the file name is resolved at
+// FLUSH time. Grouping by the resolved name instead (the previous behavior) put
+// every record in its own bucket, because the default pattern embeds
+// {timestampMs}: counts never exceeded 1, so maxRecords/maxSize could never
+// fire and the only surviving flush path was the periodic tick.
+type pendingBatch struct {
+	buf       bytes.Buffer
+	count     int
+	method    string
+	networkId string
+}
+
 // s3MisbehaviorExporter implements buffered S3 uploads
 type s3MisbehaviorExporter struct {
 	mu        sync.Mutex
 	cfg       *common.MisbehaviorsDestinationConfig
 	log       *zerolog.Logger
-	s3Client  *s3.S3
+	s3Client  s3PutObjectAPI
 	bucket    string
 	keyPrefix string
 
-	// Per-key buffers and counters (key := resolved file name)
-	buffers           map[string]*bytes.Buffer
-	counts            map[string]int
-	lastPeriodicFlush time.Time
+	// Buffered records awaiting upload, keyed by (method, networkId).
+	batches map[string]*pendingBatch
 
 	// Channel for async flush
-	flushCh chan struct{}
-	closeCh chan struct{}
-	closeWg sync.WaitGroup
+	flushCh   chan struct{}
+	closeCh   chan struct{}
+	closeWg   sync.WaitGroup
+	closeOnce sync.Once
+}
+
+// Close stops the flush worker and performs a final flush, so records buffered
+// since the last interval survive a graceful shutdown. Without it every pod
+// roll silently discarded up to FlushInterval worth of forensics — which is
+// how a month of integrity catches went missing while the archive looked
+// healthy (the only surviving batches were those whose ticker happened to fire
+// before their pod was replaced). Safe to call more than once.
+func (e *s3MisbehaviorExporter) Close() error {
+	var err error
+	e.closeOnce.Do(func() {
+		close(e.closeCh)
+		// Let the worker (if one is running) finish its own final flush first,
+		// then flush again ourselves: flush() is a no-op on an empty batch set,
+		// so this is harmless when the worker already drained, and it is the
+		// ONLY flush when no worker was started.
+		e.closeWg.Wait()
+		e.mu.Lock()
+		err = e.flush()
+		e.mu.Unlock()
+	})
+	return err
 }
 
 func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) (*s3MisbehaviorExporter, error) {
@@ -67,6 +109,13 @@ func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *ze
 			Timeout: 0,
 		},
 		MaxRetries: aws.Int(5),
+	}
+
+	// S3-compatible providers (Tigris, MinIO, R2, …) — path-style keeps bucket
+	// resolution off DNS, which every compatible provider supports.
+	if cfg.S3.Endpoint != "" {
+		awsConfig.Endpoint = aws.String(cfg.S3.Endpoint)
+		awsConfig.S3ForcePathStyle = aws.Bool(true)
 	}
 
 	// Configure credentials if provided
@@ -111,16 +160,14 @@ func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *ze
 	}
 
 	exp := &s3MisbehaviorExporter{
-		cfg:               cfg,
-		log:               log,
-		s3Client:          s3Client,
-		bucket:            bucket,
-		keyPrefix:         keyPrefix,
-		buffers:           make(map[string]*bytes.Buffer),
-		counts:            make(map[string]int),
-		lastPeriodicFlush: time.Now(),
-		flushCh:           make(chan struct{}, 1),
-		closeCh:           make(chan struct{}),
+		cfg:       cfg,
+		log:       log,
+		s3Client:  s3Client,
+		bucket:    bucket,
+		keyPrefix: keyPrefix,
+		batches:   make(map[string]*pendingBatch),
+		flushCh:   make(chan struct{}, 1),
+		closeCh:   make(chan struct{}),
 	}
 
 	// Start background flush worker
@@ -147,11 +194,15 @@ func (e *s3MisbehaviorExporter) flushWorker() {
 			return
 
 		case <-ticker.C:
-			// Periodic flush
+			// Periodic flush. The tick IS the interval, so flush whatever is
+			// buffered. Re-checking elapsed time here made the flush skip every
+			// other tick: the previous flush stamped its own completion time a
+			// hair AFTER the tick that triggered it, so the next tick was always
+			// a few microseconds short of flushInterval and did nothing —
+			// doubling the worst-case time a record sat unwritten (and, with a
+			// pod restart in between, losing it).
 			e.mu.Lock()
-			if e.shouldFlush() {
-				_ = e.flush()
-			}
+			_ = e.flush()
 			e.mu.Unlock()
 
 		case <-e.flushCh:
@@ -163,21 +214,14 @@ func (e *s3MisbehaviorExporter) flushWorker() {
 	}
 }
 
-// shouldFlush determines if buffer should be flushed (called with lock held)
+// shouldFlush reports whether any batch has hit a size/record threshold (called
+// with lock held). Time-based flushing belongs to the ticker in flushWorker.
 func (e *s3MisbehaviorExporter) shouldFlush() bool {
-	// Time-based periodic flush when anything exists
-	if len(e.buffers) == 0 {
-		return false
-	}
-	if time.Since(e.lastPeriodicFlush) >= e.cfg.S3.FlushInterval.Duration() {
-		return true
-	}
-	// Size or record thresholds on any buffer
-	for key := range e.buffers {
-		if int64(e.buffers[key].Len()) >= e.cfg.S3.MaxSize {
+	for _, b := range e.batches {
+		if int64(b.buf.Len()) >= e.cfg.S3.MaxSize {
 			return true
 		}
-		if e.counts[key] >= e.cfg.S3.MaxRecords {
+		if b.count >= e.cfg.S3.MaxRecords {
 			return true
 		}
 	}
@@ -186,31 +230,56 @@ func (e *s3MisbehaviorExporter) shouldFlush() bool {
 
 // flush uploads the current buffer to S3 (called with lock held)
 func (e *s3MisbehaviorExporter) flush() error {
-	if len(e.buffers) == 0 {
+	if len(e.batches) == 0 {
 		return nil
 	}
 	now := time.Now()
-	for fileName, buf := range e.buffers {
-		if buf == nil || buf.Len() == 0 {
+	// Names already written in THIS pass. A pattern without {method}/{networkId}
+	// resolves every batch to the same name, and an S3 PUT overwrites rather
+	// than appends — so the second batch would silently erase the first.
+	used := make(map[string]struct{}, len(e.batches))
+	for groupKey, b := range e.batches {
+		if b.buf.Len() == 0 {
+			delete(e.batches, groupKey)
 			continue
 		}
-		key := e.keyPrefix + fileName
+		key := e.keyPrefix + uniqueName(resolveFilePatternWithDefaults(e.cfg, b.method, b.networkId, now), used)
 		input := &s3.PutObjectInput{
 			Bucket:      aws.String(e.bucket),
 			Key:         aws.String(key),
-			Body:        bytes.NewReader(buf.Bytes()),
+			Body:        bytes.NewReader(b.buf.Bytes()),
 			ContentType: aws.String(e.cfg.S3.ContentType),
 		}
 		if _, err := e.s3Client.PutObject(input); err != nil {
-			e.log.Error().Err(err).Str("bucket", e.bucket).Str("key", key).Int("bytes", buf.Len()).Int("records", e.counts[fileName]).Msg("failed to upload misbehavior records to S3")
+			// Keep the batch buffered so the next flush retries it.
+			e.log.Error().Err(err).Str("bucket", e.bucket).Str("key", key).Int("bytes", b.buf.Len()).Int("records", b.count).Msg("failed to upload misbehavior records to S3")
 			continue
 		}
-		e.log.Info().Str("bucket", e.bucket).Str("key", key).Int("bytes", buf.Len()).Int("records", e.counts[fileName]).Msg("uploaded misbehavior records to S3")
-		buf.Reset()
-		e.counts[fileName] = 0
+		e.log.Info().Str("bucket", e.bucket).Str("key", key).Int("bytes", b.buf.Len()).Int("records", b.count).Msg("uploaded misbehavior records to S3")
+		// Drop the batch entirely rather than Reset()ing it: a reset buffer
+		// keeps its capacity, and these hold whole block bodies, so retaining
+		// one per (method, networkId) ever seen leaked memory for the process's
+		// lifetime.
+		delete(e.batches, groupKey)
 	}
-	e.lastPeriodicFlush = now
 	return nil
+}
+
+// uniqueName disambiguates name against the ones already used in this flush,
+// inserting the suffix before the file extension (foo.jsonl -> foo-1.jsonl).
+func uniqueName(name string, used map[string]struct{}) string {
+	candidate := name
+	for i := 1; ; i++ {
+		if _, clash := used[candidate]; !clash {
+			used[candidate] = struct{}{}
+			return candidate
+		}
+		if dot := strings.LastIndex(name, "."); dot > 0 {
+			candidate = fmt.Sprintf("%s-%d%s", name[:dot], i, name[dot:])
+		} else {
+			candidate = fmt.Sprintf("%s-%d", name, i)
+		}
+	}
 }
 
 // AppendWithMetadata adds a record to the appropriate buffer and flushes if necessary
@@ -218,24 +287,23 @@ func (e *s3MisbehaviorExporter) AppendWithMetadata(line []byte, method string, n
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Derive fileName directly from provided metadata to respect user pattern
-	fileName := resolveFilePatternWithDefaults(e.cfg, method, networkId, time.Now())
-
-	// Get/Create buffer for this key
-	buf := e.buffers[fileName]
-	if buf == nil {
-		buf = new(bytes.Buffer)
-		e.buffers[fileName] = buf
+	// Group by the metadata, not by the resolved file name — the name is
+	// resolved at flush time so that records accumulate into one object.
+	groupKey := method + "\x00" + networkId
+	b := e.batches[groupKey]
+	if b == nil {
+		b = &pendingBatch{method: method, networkId: networkId}
+		e.batches[groupKey] = b
 	}
 
 	// Add to buffer
-	if _, err := buf.Write(line); err != nil {
+	if _, err := b.buf.Write(line); err != nil {
 		return err
 	}
-	if _, err := buf.Write([]byte("\n")); err != nil {
+	if err := b.buf.WriteByte('\n'); err != nil {
 		return err
 	}
-	e.counts[fileName]++
+	b.count++
 
 	// Check if we should flush
 	if e.shouldFlush() {

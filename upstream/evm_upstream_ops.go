@@ -94,6 +94,25 @@ func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
 	return u.evmStatePoller
 }
 
+// EvmStateProvenBlock returns the highest block at which the integrity state
+// probe proved this upstream truly holds/executes that block's state. 0 means
+// nothing proven yet (probing off, warming up, or unsupported) — callers fall
+// back to the claimed head.
+func (u *Upstream) EvmStateProvenBlock() int64 {
+	return u.stateProvenBlock.Load()
+}
+
+// EvmSetStateProvenBlock advances the state-proven head. Monotonic — a stale
+// probe result must never move the boundary backwards.
+func (u *Upstream) EvmSetStateProvenBlock(n int64) {
+	for {
+		cur := u.stateProvenBlock.Load()
+		if n <= cur || u.stateProvenBlock.CompareAndSwap(cur, n) {
+			return
+		}
+	}
+}
+
 // EvmAssertBlockAvailability checks if the upstream is supposed to have the data for a certain block number.
 // For full nodes it will check the first available block number, and for archive nodes it will check if the block is less than the latest block number.
 // If the requested block is beyond the current latest block, it will force-poll the latest block number once.
@@ -190,6 +209,45 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 
 		// Block is finalized and within range (or archive node)
 		return true, nil
+	case common.AvailbilityConfidenceStateProven:
+		//
+		// UPPER BOUND: the state-PROVEN head, not the claimed one. A node can
+		// report head N yet still answer state queries from older state; the
+		// probe (execution-context call / getProof vs the follower's verified
+		// header) is what earns the boundary. While nothing is proven yet —
+		// probing off, warming up, or unsupported on this upstream/chain —
+		// fall back to the claimed head so the gate cannot brown out traffic
+		// on capability gaps; the proven-lag metric keeps that visible.
+		//
+		proven := u.stateProvenBlock.Load()
+		if proven > 0 && blockNumber > proven {
+			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkLabel(),
+				u.Id(),
+				forMethod,
+				confidence.String(),
+			).Inc()
+			return false, nil
+		}
+		//
+		// LOWER BOUND: state on full nodes only reaches back
+		// maxAvailableRecentBlocks — reuse the same bound as blockHead.
+		//
+		if proven > 0 {
+			if cfg.Evm.MaxAvailableRecentBlocks > 0 {
+				available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
+				if err != nil {
+					return false, err
+				}
+				if !available {
+					return false, nil
+				}
+			}
+			return true, nil
+		}
+		fallthrough
 	case common.AvailbilityConfidenceBlockHead:
 		//
 		// UPPER BOUND: Check if block is before the latest block

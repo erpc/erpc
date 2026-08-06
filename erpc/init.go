@@ -183,6 +183,9 @@ func Init(
 	// Wait until the context is cancelled, then give the http server some time to finish draining.
 	<-appCtx.Done()
 	logger.Info().Msg("shutting down gracefully...")
+	// Flush buffered integrity forensics before the process goes away; the S3
+	// exporter otherwise loses everything written since its last interval.
+	evm.CloseIntegrityExporters()
 	if cfg.Server != nil && cfg.Server.WaitAfterShutdown != nil {
 		time.Sleep(cfg.Server.WaitAfterShutdown.Duration())
 	}

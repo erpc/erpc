@@ -153,3 +153,14 @@ type participantSnapshot struct {
 	Response json.RawMessage `json:"response,omitempty"`
 	Error    string          `json:"error,omitempty"`
 }
+
+// MisbehaviorExporter is the exported view of the JSONL exporter so other
+// subsystems (e.g. the data-integrity module's misbehaviorsDestination) can
+// reuse the same file/S3 machinery and config shape.
+type MisbehaviorExporter = misbehaviorExporter
+
+// NewMisbehaviorExporter builds the configured exporter. nil when the config
+// is unset or initialization fails — export is best-effort by design.
+func NewMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) MisbehaviorExporter {
+	return createMisbehaviorExporter(cfg, log)
+}

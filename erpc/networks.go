@@ -440,11 +440,11 @@ func requestSelector(ctx context.Context) string {
 }
 
 // servedTipPartitionFor returns the lazily-materialized telemetry lane for a
-// GROUP-scoped request, or nil to signal the unlabeled stateless path. The
-// partition key (and its bounded/DDoS-safe gating) is computed by
-// partitionKeyFor; the count is capped by maxServedTipPartitions.
+// GROUP-scoped request, or nil to signal the unlabeled stateless path. The group
+// identity (key + lane, and its bounded/DDoS-safe gating) comes from
+// EvmUpstreamGroupForSelector; the count is capped by maxServedTipPartitions.
 func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *servedTipPartition {
-	key, ids := n.partitionKeyFor(ctx, selector)
+	key, lane := n.EvmUpstreamGroupForSelector(ctx, selector)
 	if key == "" {
 		return nil
 	}
@@ -456,7 +456,7 @@ func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *s
 	if n.servedTipPartitionCount.Load() >= maxServedTipPartitions {
 		return nil
 	}
-	p := &servedTipPartition{lane: common.LaneName(ids)}
+	p := &servedTipPartition{lane: lane}
 	actual, loaded := n.servedTipPartitions.LoadOrStore(key, p)
 	if !loaded {
 		n.servedTipPartitionCount.Add(1)
@@ -506,6 +506,33 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string,
 	slices.Sort(matched)
 	sum := sha256.Sum256([]byte(strings.Join(matched, "\x00")))
 	return "grp:" + hex.EncodeToString(sum[:8]), matched
+}
+
+// EvmUpstreamGroupForSelector is the single source of node-GROUP identity: it maps a
+// use-upstream selector to a stable group key (for keying per-group state) and a
+// human-readable lane name, or ("","") when the selector doesn't carve out a real
+// sub-group. partitionKeyFor provides the dedup/bounds/cross-pod-stable key; this adds
+// the lane. Used by served-tip latest-block tracking (servedTipPartitionFor) AND by
+// the integrity module, so both corroborate/track within the SAME group a request was
+// pinned to (whatever node groups the use-upstream selector carves out) — one grouping, not two.
+// EvmAllUpstreams exposes the network's upstreams to the architecture layer
+// (interface-asserted from architecture/evm, which cannot import this package).
+// Used by the integrity state prober to enumerate probe targets.
+func (n *Network) EvmAllUpstreams(ctx context.Context) []common.Upstream {
+	ups := n.AllUpstreams()
+	out := make([]common.Upstream, 0, len(ups))
+	for _, u := range ups {
+		out = append(out, u)
+	}
+	return out
+}
+
+func (n *Network) EvmUpstreamGroupForSelector(ctx context.Context, selector string) (key string, lane string) {
+	k, ids := n.partitionKeyFor(ctx, selector)
+	if k == "" {
+		return "", ""
+	}
+	return k, common.LaneName(ids)
 }
 
 // isSimpleGroupSelector reports whether a selector is a single glob token
@@ -918,6 +945,14 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
+	// Request kind: "internal" = erpc's own auxiliary fetches (e.g. integrity's
+	// canonical corroboration), "user" = client traffic. Lets a policy give the
+	// deduplicated internal fetches consensus while user methods rely on
+	// integrity validation (matchRequestKind).
+	kind := "user"
+	if dirs := req.Directives(); dirs != nil && dirs.IsInternal {
+		kind = "internal"
+	}
 
 	// Iterate through executors in config order and return the first match.
 	// This respects the user-defined priority order in the config file.
@@ -931,7 +966,10 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		fl := fe.MatchFinality()
 		finalityMatches := len(fl) == 0 || slices.Contains(fl, finality)
 
-		if methodMatches && finalityMatches {
+		mk := fe.MatchRequestKind()
+		kindMatches := mk == "*" || mk == "" || mk == kind
+
+		if methodMatches && finalityMatches && kindMatches {
 			return fe
 		}
 	}
@@ -1046,7 +1084,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// (when EvalPerFinality is on) resolve to the bucket-specific
 		// ordering. Networks not configured per-finality see "*" and
 		// resolve to the wildcard slot regardless.
-		upsList = n.policyEngine.GetOrdered(n.networkId, method, req.Finality(ctx).String())
+		finality := req.Finality(ctx).String()
+		// When the boundary axis (EvalPerBoundary) is on, scope selection to
+		// the request's block-availability lane — the set of upstreams whose
+		// configured bounds can serve this block. laneIDs stays nil when the
+		// axis is off or the request has no resolvable block number, in which
+		// case GetOrderedInLane behaves exactly like GetOrdered.
+		var laneIDs []string
+		if n.policyEngine.PerBoundaryEnabled(n.networkId) {
+			laneIDs = n.eligibleUpstreamIDsForBoundary(ctx, method, req)
+			if common.IsTracingDetailed && len(laneIDs) > 0 {
+				upstreamSpan.SetAttributes(attribute.Int("upstreams.lane_size", len(laneIDs)))
+			}
+		}
+		upsList = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
 	}
 	if len(upsList) == 0 {
 		// Cold-start fallback: serve the raw registration order until the
@@ -2125,6 +2176,97 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 	}
 
 	return nil, false
+}
+
+// eligibleUpstreamIDsForBoundary derives the block-availability "lane" for a
+// single-block request: the IDs of upstreams whose configured availability
+// bounds can serve the request's block. It feeds the selection policy's
+// per-boundary axis (EvalPerBoundary) so the policy evaluates against — and
+// keeps health/exclusion state for — only the upstreams that can actually
+// answer this block.
+//
+// It returns nil ("no lane scoping → use the full-pool wildcard slot") when:
+//   - the network isn't EVM, or the method has a dedicated range-availability
+//     hook (eth_getLogs / trace_filter, gated by CheckBlockRangeAvailability),
+//   - the block number can't be resolved (e.g. eth_getBlockByHash carries a
+//     hash, not a number) — same fail-open as checkUpstreamBlockAvailability,
+//   - no upstream advertises any bound (a single implicit lane = everything), or
+//   - every upstream is eligible (the lane equals the full pool, so the caller
+//     reuses the wildcard slot instead of spawning an identical duplicate).
+//
+// The eligibility predicate mirrors checkUpstreamBlockAvailability's use of
+// EvmBlockAvailabilityBounds so the lane membership and the per-upstream
+// availability gate never disagree about which upstreams can serve a block.
+func (n *Network) eligibleUpstreamIDsForBoundary(ctx context.Context, method string, req *common.NormalizedRequest) []string {
+	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm {
+		return nil
+	}
+	if methodHasDedicatedRangeAvailabilityHook(method) {
+		return nil
+	}
+	// Resolve the request's block number (cached at normalization, with a
+	// defensive extraction fallback) — mirrors checkUpstreamBlockAvailability.
+	var bn int64
+	if v := req.EvmBlockNumber(); v != nil {
+		if n64, ok := v.(int64); ok {
+			bn = n64
+		}
+	}
+	if bn <= 0 {
+		if _, x, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req); ebn == nil && x > 0 {
+			bn = x
+		}
+	}
+	if bn <= 0 {
+		return nil
+	}
+
+	ups := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	if len(ups) == 0 {
+		return nil
+	}
+	bounds := make([]upstreamBlockBounds, len(ups))
+	for i, u := range ups {
+		// EvmBlockAvailabilityBounds returns (MinInt64, MaxInt64) — i.e.
+		// unbounded, hence always-eligible — for non-EVM or boundless
+		// upstreams, so no special-casing is needed here.
+		minBound, maxBound := u.EvmBlockAvailabilityBounds()
+		bounds[i] = upstreamBlockBounds{id: u.Id(), min: minBound, max: maxBound}
+	}
+	return eligibleLane(bounds, bn)
+}
+
+// upstreamBlockBounds is an upstream's resolved [min,max] availability range.
+type upstreamBlockBounds struct {
+	id       string
+	min, max int64
+}
+
+// eligibleLane returns the IDs of upstreams whose [min,max] range covers block
+// bn — the block-availability "lane" for that block. It returns nil ("no lane
+// scoping") when no upstream advertises any bound (a single implicit lane) or
+// when every upstream is eligible (the lane equals the full pool, so callers
+// reuse the wildcard slot rather than spawning a redundant duplicate). Split
+// out from eligibleUpstreamIDsForBoundary so the lane decision is unit-testable
+// without a live upstream registry.
+func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
+	eligible := make([]string, 0, len(bounds))
+	anyBounded := false
+	for _, b := range bounds {
+		if b.min != math.MinInt64 || b.max != math.MaxInt64 {
+			anyBounded = true
+		}
+		if (b.min == math.MinInt64 || bn >= b.min) && (b.max == math.MaxInt64 || bn <= b.max) {
+			eligible = append(eligible, b.id)
+		}
+	}
+	// No bounds anywhere, or every upstream eligible → a single lane that
+	// equals the full pool. Returning nil routes to the wildcard slot and
+	// avoids spawning a redundant lane identical to it.
+	if !anyBounded || len(eligible) == len(bounds) {
+		return nil
+	}
+	return eligible
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {

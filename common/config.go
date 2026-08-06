@@ -626,6 +626,10 @@ type ProjectConfig struct {
 	IgnoreMethods         []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods          []string `yaml:"allowMethods,omitempty" json:"allowMethods"`
 
+	// Integrity is the project-wide data-integrity configuration. It applies to
+	// all networks; each network may override it with its own integrity block.
+	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
+
 	// ScoreMetricsWindowSize is the tumbling window the per-upstream
 	// health tracker uses for its rolling counters (errorRate, p50/p70/
 	// p95 latency, throttledRate, misbehaviorRate). At each tick the
@@ -1151,6 +1155,9 @@ type ShadowUpstreamConfig struct {
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
+// Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
+// read at runtime). Configure data integrity via the network `integrity` block.
+// Retained only so existing YAML still parses.
 type UpstreamIntegrityConfig struct {
 	EthGetBlockReceipts *UpstreamIntegrityEthGetBlockReceiptsConfig `yaml:"eth_getBlockReceipts,omitempty" json:"eth_getBlockReceipts"`
 }
@@ -1307,8 +1314,10 @@ type EvmUpstreamConfig struct {
 	// SkipSyncingCheck disables eth_syncing polling for this upstream, treating it as always synced.
 	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
 	// misleading and causes circuit breaker false positives.
-	SkipSyncingCheck *bool                    `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
-	Integrity        *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+	SkipSyncingCheck *bool `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
+	// Deprecated: never read at runtime. Configure data integrity via the network
+	// `integrity` block instead. Retained only so existing YAML still parses.
+	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
 	// @deprecated: use blockAvailability bounds instead; kept for config back-compat only
 	NodeType EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
@@ -1441,8 +1450,8 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 		v := *c.SkipSyncingCheck
 		copied.SkipSyncingCheck = &v
 	}
-	if c.Integrity != nil {
-		copied.Integrity = c.Integrity.Copy()
+	if c.DeprecatedIntegrity != nil {
+		copied.DeprecatedIntegrity = c.DeprecatedIntegrity.Copy()
 	}
 	if c.DeprecatedGetLogsSplitOnError != nil {
 		v := *c.DeprecatedGetLogsSplitOnError
@@ -1456,13 +1465,21 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type FailsafeConfig struct {
-	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
-	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
-	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
-	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
-	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
-	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
-	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
+	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	// MatchRequestKind scopes this policy by who issued the request:
+	// "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
+	// the integrity module's canonical corroboration), or ""/"*" for both.
+	// This is what lets an operator give INTERNAL canonical fetches a
+	// consensus policy (quorum-verified ground truth, deduplicated to ~once
+	// per block by the ChainView) while user data methods rely on integrity
+	// validation instead of per-request fan-out.
+	MatchRequestKind string                      `yaml:"matchRequestKind,omitempty" json:"matchRequestKind,omitempty" tstype:"'user' | 'internal' | '*'"`
+	Retry            *RetryPolicyConfig          `yaml:"retry" json:"retry"`
+	CircuitBreaker   *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
+	Timeout          *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
+	Hedge            *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
+	Consensus        *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
 }
 
 // NetworkFailsafeConfig is the scope-specific alias for network-level
@@ -1929,6 +1946,10 @@ type S3FlushConfig struct {
 	// AWS region for S3 bucket (defaults to AWS_REGION env var)
 	Region string `yaml:"region,omitempty" json:"region"`
 
+	// Custom S3 endpoint URL for S3-compatible providers (Tigris, MinIO, R2, …).
+	// Empty = real AWS S3. When set, path-style addressing is used.
+	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint"`
+
 	// AWS credentials config (optional). If not specified, uses standard AWS credential chain:
 	// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
 	// 2. IAM role (for EC2/ECS/EKS)
@@ -1955,6 +1976,7 @@ func (c *MisbehaviorsDestinationConfig) Copy() *MisbehaviorsDestinationConfig {
 			MaxSize:       c.S3.MaxSize,
 			FlushInterval: c.S3.FlushInterval,
 			Region:        c.S3.Region,
+			Endpoint:      c.S3.Endpoint,
 			ContentType:   c.S3.ContentType,
 		}
 		if c.S3.Credentials != nil {
@@ -2188,6 +2210,9 @@ type NetworkConfig struct {
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 	StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty" json:"staticResponses,omitempty"`
+	// Integrity overrides the project-wide data-integrity configuration for this
+	// network. Merges over the project block (network wins).
+	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2302,40 +2327,32 @@ type DirectiveDefaultsConfig struct {
 	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 
-	// ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
-	// Defaults to true. Disable for non-standard chains that use unusual trie roots.
-	ValidateTransactionsRoot *bool `yaml:"validateTransactionsRoot,omitempty" json:"validateTransactionsRoot"`
-
-	// Validation: Header Field Lengths
-	ValidateHeaderFieldLengths *bool `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
-
-	// Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
-	ValidateTransactionFields    *bool `yaml:"validateTransactionFields,omitempty" json:"validateTransactionFields"`
-	ValidateTransactionBlockInfo *bool `yaml:"validateTransactionBlockInfo,omitempty" json:"validateTransactionBlockInfo"`
-
-	// Validation: Receipts & Logs
-	EnforceLogIndexStrictIncrements *bool `yaml:"enforceLogIndexStrictIncrements,omitempty" json:"enforceLogIndexStrictIncrements"`
-	ValidateTxHashUniqueness        *bool `yaml:"validateTxHashUniqueness,omitempty" json:"validateTxHashUniqueness"`
-	ValidateTransactionIndex        *bool `yaml:"validateTransactionIndex,omitempty" json:"validateTransactionIndex"`
-	ValidateLogFields               *bool `yaml:"validateLogFields,omitempty" json:"validateLogFields"`
-
-	// Validation: Bloom Filter (simplified to 2 checks)
-	// ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
-	ValidateLogsBloomEmptiness *bool `yaml:"validateLogsBloomEmptiness,omitempty" json:"validateLogsBloomEmptiness"`
-	// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
-	ValidateLogsBloomMatch *bool `yaml:"validateLogsBloomMatch,omitempty" json:"validateLogsBloomMatch"`
-
-	// Validation: Receipt-to-Transaction Cross-Validation (requires GroundTruthTransactions in library-mode)
-	ValidateReceiptTransactionMatch *bool `yaml:"validateReceiptTransactionMatch,omitempty" json:"validateReceiptTransactionMatch"`
-	ValidateContractCreation        *bool `yaml:"validateContractCreation,omitempty" json:"validateContractCreation"`
-
-	// Validation: numeric checks
-	ReceiptsCountExact   *int64 `yaml:"receiptsCountExact,omitempty" json:"receiptsCountExact"`
-	ReceiptsCountAtLeast *int64 `yaml:"receiptsCountAtLeast,omitempty" json:"receiptsCountAtLeast"`
-
-	// Validation: Expected Ground Truths
-	ValidationExpectedBlockHash   *string `yaml:"validationExpectedBlockHash,omitempty" json:"validationExpectedBlockHash"`
-	ValidationExpectedBlockNumber *int64  `yaml:"validationExpectedBlockNumber,omitempty" json:"validationExpectedBlockNumber"`
+	// --- Deprecated data-integrity validation flags ---
+	//
+	// Deprecated: data integrity is now configured via the `integrity` block
+	// (projects[].integrity / networks[].integrity). These per-check flags are
+	// retained only so existing YAML still parses. At startup the flags that map
+	// to a current check are translated into `integrity.checks` by
+	// migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
+	// they are NOT read at runtime. The receipt-count / expected-block /
+	// receipt-to-transaction flags have no equivalent in the new model and are
+	// accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
+	DeprecatedValidateTransactionsRoot        *bool   `yaml:"validateTransactionsRoot,omitempty" json:"validateTransactionsRoot"`
+	DeprecatedValidateHeaderFieldLengths      *bool   `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
+	DeprecatedValidateTransactionFields       *bool   `yaml:"validateTransactionFields,omitempty" json:"validateTransactionFields"`
+	DeprecatedValidateTransactionBlockInfo    *bool   `yaml:"validateTransactionBlockInfo,omitempty" json:"validateTransactionBlockInfo"`
+	DeprecatedEnforceLogIndexStrictIncrements *bool   `yaml:"enforceLogIndexStrictIncrements,omitempty" json:"enforceLogIndexStrictIncrements"`
+	DeprecatedValidateTxHashUniqueness        *bool   `yaml:"validateTxHashUniqueness,omitempty" json:"validateTxHashUniqueness"`
+	DeprecatedValidateTransactionIndex        *bool   `yaml:"validateTransactionIndex,omitempty" json:"validateTransactionIndex"`
+	DeprecatedValidateLogFields               *bool   `yaml:"validateLogFields,omitempty" json:"validateLogFields"`
+	DeprecatedValidateLogsBloomEmptiness      *bool   `yaml:"validateLogsBloomEmptiness,omitempty" json:"validateLogsBloomEmptiness"`
+	DeprecatedValidateLogsBloomMatch          *bool   `yaml:"validateLogsBloomMatch,omitempty" json:"validateLogsBloomMatch"`
+	DeprecatedValidateReceiptTransactionMatch *bool   `yaml:"validateReceiptTransactionMatch,omitempty" json:"validateReceiptTransactionMatch"`
+	DeprecatedValidateContractCreation        *bool   `yaml:"validateContractCreation,omitempty" json:"validateContractCreation"`
+	DeprecatedReceiptsCountExact              *int64  `yaml:"receiptsCountExact,omitempty" json:"receiptsCountExact"`
+	DeprecatedReceiptsCountAtLeast            *int64  `yaml:"receiptsCountAtLeast,omitempty" json:"receiptsCountAtLeast"`
+	DeprecatedValidationExpectedBlockHash     *string `yaml:"validationExpectedBlockHash,omitempty" json:"validationExpectedBlockHash"`
+	DeprecatedValidationExpectedBlockNumber   *int64  `yaml:"validationExpectedBlockNumber,omitempty" json:"validationExpectedBlockNumber"`
 }
 
 func (d *DirectiveDefaultsConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -2638,7 +2655,19 @@ type SelectionPolicyConfig struct {
 	EvalPerMethod *bool `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty" tstype:"-"`
 	// EvalPerFinality — same shape and translation behavior as
 	// EvalPerMethod, for the finality axis.
-	EvalPerFinality *bool    `yaml:"evalPerFinality,omitempty" json:"evalPerFinality,omitempty" tstype:"-"`
+	EvalPerFinality *bool `yaml:"evalPerFinality,omitempty" json:"evalPerFinality,omitempty" tstype:"-"`
+	// EvalPerBoundary scopes selection-policy evaluation by block-availability
+	// "lane" — the set of upstreams whose configured block range can actually
+	// serve the request's block. Unlike EvalPerMethod / EvalPerFinality this is
+	// deliberately NOT folded into EvalScope: it must not change the
+	// health-tracker grain (boundary is a decision/pool axis, not a metrics
+	// axis), so the engine reads it directly as an orthogonal slot dimension.
+	// When on, a request whose block excludes some upstream is evaluated
+	// against a lane-scoped pool — an upstream that cannot serve the range is
+	// absent from the pool (a capability fact), distinct from the policy's
+	// soft health-based deprioritization. Default off. Pointer-typed so a
+	// future SetDefaults can distinguish "absent" from "explicitly false".
+	EvalPerBoundary *bool    `yaml:"evalPerBoundary,omitempty" json:"evalPerBoundary,omitempty" tstype:"boolean"`
 	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
 	// EvalFunc is the per-tick evaluation function. In YAML it's a JS
 	// source string; in TS configs it's a real arrow function compiled

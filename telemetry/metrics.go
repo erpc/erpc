@@ -320,6 +320,140 @@ var (
 		Help:      "Total number of times a request was skipped due to requested lower bound block being less than upstream's available block range.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "confidence"})
 
+	// MetricIntegrityViolation counts data-integrity check violations by the
+	// individual check id and the verdict applied. "reject" means the response
+	// was converted to a content-validation error and failed over to another
+	// upstream; "soft_flag" means a reorg-sensitive mismatch on unfinalized data
+	// was recorded but the response was still served. Only fires on a violation
+	// (passes/skips are not counted) so cardinality stays low. The denominator
+	// for a violation rate is the existing per-method request counter.
+	MetricIntegrityViolation = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_violation_total",
+		Help:      "Total data-integrity check violations, by check id, verdict (reject = failed over; soft_flag = recorded but served) and target-block finality (finalized/unfinalized/unknown — separates genuine finalized/deterministic catches from reorg-prone unfinalized ones).",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict", "finality"})
+
+	// MetricUpstreamStateProvenBlock is the highest block at which the state
+	// probe PROVED the upstream holds that block's state (execution-context
+	// call and/or getProof verified against the follower's verified header).
+	MetricUpstreamStateProvenBlock = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_proven_block",
+		Help:      "Highest block at which the integrity state probe proved this upstream holds the state trie.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
+	// MetricUpstreamStateProvenLag is claimed latest minus proven — how far the
+	// upstream's claims outrun what it has actually proven. The headline
+	// number for the silent-stale-state problem.
+	MetricUpstreamStateProvenLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_proven_lag",
+		Help:      "Blocks between the upstream's claimed latest and its state-proven head.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
+	// MetricUpstreamStateProbe counts probe outcomes, by probe kind
+	// (context = execution-context call, proof = eth_getProof) and outcome
+	// (match/mismatch/unsupported/error).
+	MetricUpstreamStateProbe = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_probe_total",
+		Help:      "Total state-trie probes by kind (context/proof) and outcome (match/mismatch/unsupported/error).",
+	}, []string{"project", "vendor", "network", "upstream", "probe", "outcome"})
+
+	// MetricIntegrityFollowHead is the highest block of the CONTIGUOUS,
+	// parent-linked segment the ChainView follower has verified block by block
+	// (not the network head — see MetricIntegrityFollowLag for the difference).
+	MetricIntegrityFollowHead = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_head",
+		Help:      "Highest block of the contiguous parent-linked chain segment verified by the integrity follower.",
+	}, []string{"project", "network", "group"})
+
+	// MetricIntegrityFollowLag is how far the followed chain trails the network
+	// head. Steady-state should hover near zero; a growing lag means the
+	// follower cannot keep up (fetch failures, or a chain faster than
+	// maxBlocksPerTick).
+	MetricIntegrityFollowLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_lag",
+		Help:      "Blocks between the network head and the integrity follower's verified chain head.",
+	}, []string{"project", "network", "group"})
+
+	// MetricIntegrityFollowStall counts follower advances abandoned this tick,
+	// by reason. "unreconciled" means a forked block found no common ancestor
+	// within the reorg window — the follower is holding a chain the network no
+	// longer extends, which needs operator attention (window too small, or an
+	// upstream serving unrelated history).
+	MetricIntegrityFollowStall = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_stall_total",
+		Help:      "Total integrity follower advances abandoned, by reason (unreconciled = no common ancestor within the reorg window).",
+	}, []string{"project", "network", "group", "reason"})
+
+	// MetricIntegrityReorgDepth observes how many blocks each reconciled reorg
+	// replaced. A depth of 1-2 is routine chain churn; a deep tail means the
+	// reorgWindow needs to cover it or reconciliation will start failing.
+	MetricIntegrityReorgDepth = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "integrity_reorg_depth",
+		Help:      "Depth (blocks replaced) of each reorg reconciled by the integrity chain follower.",
+		Buckets:   []float64{1, 2, 3, 5, 8, 13, 21, 34, 64, 128, 256},
+	}, []string{"project", "network", "group"})
+
+	// MetricIntegrityCheck counts EVERY integrity check evaluation by outcome:
+	// pass (ran, no violation), skip (could not evaluate — unmodeled field /
+	// hashes-only response / missing data), reject (failed → response failed
+	// over), soft_flag (reorg-sensitive mismatch recorded but served), off
+	// (disabled for this finality or check). Sum over outcomes = total attempts.
+	// Higher volume than the violation counter (one series per check per request).
+	MetricIntegrityCheck = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_check_total",
+		Help:      "Total integrity check evaluations by outcome (pass/skip/reject/soft_flag/reconfirmed/off — reconfirmed = a pin-anchored mismatch that cleared once the stale pin was re-confirmed against a fresh canonical fetch, i.e. a reorg, not corruption); the sum across outcomes is total attempts.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "outcome"})
+
+	// MetricIntegrityAuxRequest counts auxiliary requests issued by integrity
+	// checks — force-fetches that are NOT part of the user's request (canonical
+	// header/receipts corroboration), by kind and outcome.
+	MetricIntegrityAuxRequest = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_aux_request_total",
+		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by node group, kind (canonical_header/canonical_receipts), the actual method sent, target-block finality (finalized/unfinalized/unknown) and outcome (ok/error).",
+	}, []string{"project", "vendor", "network", "upstream", "group", "kind", "method", "finality", "outcome"})
+
+	// MetricIntegritySaved counts requests the integrity module SAVED: a check
+	// rejected a bad response, the request failed over, and a good response was
+	// ultimately served — i.e. without the module the client would have received
+	// a wrong/invalid response. Incremented once per saved request.
+	MetricIntegritySaved = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_saved_total",
+		Help:      "Total requests where integrity rejected a bad response and a retry returned a good one (a wrong/invalid response prevented), by target-block finality (finalized/unfinalized/unknown).",
+	}, []string{"project", "network", "category", "finality"})
+
+	// MetricIntegrityFailed counts requests that FAILED toward the user because of
+	// the integrity module: a check rejected a response and no good response was
+	// found (every candidate failed), so the request errored instead of serving
+	// bad data. The `check` label is the last rejecting check — the "why".
+	MetricIntegrityFailed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_failed_total",
+		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check and target-block finality (finalized/unfinalized/unknown).",
+	}, []string{"project", "network", "category", "check", "finality"})
+
+	// MetricIntegrityProtocolSuspect counts times a (network, check) pair showed
+	// the ALL-UPSTREAM signature: repeated request failures where that check
+	// rejected and no upstream produced an acceptable response. A check that
+	// rejects across every vendor of a chain is protocol-invalid for that chain
+	// far more often than it is catching corruption (independent vendors do not
+	// corrupt identically), and because it defeats failover it converts directly
+	// into client-facing errors. Non-zero here means: review the chain profile.
+	MetricIntegrityProtocolSuspect = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_protocol_suspect_total",
+		Help:      "Times a (network, check) hit the all-upstream failure signature (repeated exhaustion within the detector window) — a strong indicator the check is protocol-invalid for that chain rather than catching corruption.",
+	}, []string{"project", "network", "check"})
+
 	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_split_success_total",
@@ -778,6 +912,7 @@ var (
 	MetricCacheGetErrorDuration               *LabeledHistogram
 	MetricRateLimiterRemoteDuration           *LabeledHistogram
 	MetricUpstreamResponseSizeBytes           *LabeledHistogram
+	MetricIntegrityOverhead                   *LabeledHistogram
 )
 
 // buildFilterAwareHistograms creates every LabeledHistogram using the current
@@ -803,6 +938,18 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user"})
+
+	// Per-request integrity latency overhead — the time a request waited on
+	// integrity data-checks plus aux force-fetches (canonical header/receipts),
+	// summed across attempts; excludes failover latency from rejections. Uses the
+	// same config-driven buckets as the other latency metrics so its quantiles are
+	// consistent and operator-tunable.
+	MetricIntegrityOverhead = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "integrity_overhead_seconds",
+		Help:      "Per-request latency overhead added by integrity checks (data-checks + aux force-fetches the request waited on).",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category"})
 
 	MetricNetworkEvmGetLogsRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -973,6 +1120,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 
 	MetricUpstreamRequestDuration = registerOrReuse(MetricUpstreamRequestDuration)
 	MetricNetworkRequestDuration = registerOrReuse(MetricNetworkRequestDuration)
+	MetricIntegrityOverhead = registerOrReuse(MetricIntegrityOverhead)
 	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
 	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
 	MetricCacheEvmGetLogsRange = registerOrReuse(MetricCacheEvmGetLogsRange)

@@ -211,6 +211,9 @@ type Upstream struct {
 	statePollerOnce      sync.Once
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
+	// Highest block at which the integrity state probe PROVED this upstream
+	// holds the state trie (0 = never proven). See EvmStateProvenBlock.
+	stateProvenBlock atomic.Int64
 }
 
 func NewUpstream(

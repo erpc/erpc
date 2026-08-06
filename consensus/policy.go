@@ -153,6 +153,17 @@ func createMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *z
 		return nil
 	}
 
+	// Defaults are applied here (on a copy) rather than trusting every config
+	// path to have run SetDefaults: the integrity module's destination never
+	// passed through the consensus defaults chain, so its FilePattern stayed
+	// empty — every S3 flush then resolved to the SAME ".jsonl" key and each
+	// upload overwrote the previous archive.
+	cfg = cfg.Copy()
+	if err := cfg.SetDefaults(); err != nil {
+		log.Error().Err(err).Msg("failed to apply misbehavior destination defaults; export disabled")
+		return nil
+	}
+
 	switch cfg.Type {
 	case common.MisbehaviorsDestinationTypeS3:
 		exp, err := newS3MisbehaviorExporter(cfg, log)
