@@ -12,10 +12,15 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	util.ConfigureTestLogger()
+}
 
 // newTestPoller builds a SvmStatePoller backed by an in-memory shared-state
 // registry. It does NOT start the background loop — tests drive state through

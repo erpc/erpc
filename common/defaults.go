@@ -2690,6 +2690,7 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 			"getRecentBlockhash", // deprecated but still served by older validators
 			"getSignatureStatuses",
 			"getStakeActivation", // removed in agave v2; harmless for older nodes
+			"getStakeMinimumDelegation",
 			"getSupply",
 			"getTokenAccountBalance",
 			"getTokenAccountsByDelegate",
