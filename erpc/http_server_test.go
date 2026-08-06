@@ -1573,7 +1573,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 	util.SetupMocksForEvmStatePoller()
 			// 	defer util.AssertNoPendingMocks(t, 0)
 
-			// 	cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{}
+			// 	cfg.Projects[0].Upstreams[0].DenyMethods = []string{}
 
 			// 	// Set up test fixtures
 			// 	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
@@ -1646,7 +1646,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 	util.SetupMocksForEvmStatePoller()
 			// 	defer util.AssertNoPendingMocks(t, 1)
 
-			// 	cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{"ignored_method"}
+			// 	cfg.Projects[0].Upstreams[0].DenyMethods = []string{"ignored_method"}
 
 			// 	// Set up test fixtures
 			// 	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
@@ -7993,7 +7993,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 										Max:      common.Duration(10 * time.Second),
 									},
 								},
-								Retry:         &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultAccept: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
+								Retry: &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultAccept: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
 								Consensus: &common.ConsensusPolicyConfig{
 									AgreementThreshold:      2,
 									MaxParticipants:         4,
@@ -8276,4 +8276,222 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	// to reconnect elsewhere.
 	resp = sendRequest()
 	require.True(t, resp.Close, "drain-window responses must carry Connection: close so pooled clients migrate before Shutdown")
+}
+
+func TestHttpServer_AdminMethodFilter(t *testing.T) {
+	const adminSecret = "test-secret"
+
+	newServer := func(t *testing.T, adminCfg *common.AdminConfig) (string, func()) {
+		t.Helper()
+		logger := log.Logger
+		ctx, cancel := context.WithCancel(context.Background())
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				ListenV4: util.BoolPtr(true),
+			},
+			Admin: adminCfg,
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm:          &common.EvmNetworkConfig{ChainId: 1},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+		require.NoError(t, err)
+		erpcInstance.Bootstrap(ctx)
+
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		require.NoError(t, err)
+
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port := listener.Addr().(*net.TCPAddr).Port
+		go func() {
+			_ = httpServer.serverV4.Serve(listener)
+		}()
+		time.Sleep(50 * time.Millisecond)
+
+		return fmt.Sprintf("http://127.0.0.1:%d", port), func() {
+			httpServer.serverV4.Shutdown(ctx) //nolint:errcheck
+			cancel()
+		}
+	}
+
+	callAdmin := func(t *testing.T, baseURL, method string) (int, map[string]interface{}) {
+		t.Helper()
+		body := strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","method":%q,"params":[{"projectId":"test_project"}],"id":1}`, method))
+		req, err := http.NewRequest("POST", baseURL+"/admin", body)
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-erpc-secret-token", adminSecret)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var result map[string]interface{}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+		return resp.StatusCode, result
+	}
+
+	secretAuth := &common.AuthConfig{
+		Strategies: []*common.AuthStrategyConfig{
+			{
+				Type:   common.AuthTypeSecret,
+				Secret: &common.SecretStrategyConfig{Value: adminSecret},
+			},
+		},
+	}
+
+	t.Run("no filter allows all methods", func(t *testing.T) {
+		baseURL, cleanup := newServer(t, &common.AdminConfig{Auth: secretAuth})
+		defer cleanup()
+
+		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
+		assert.Equal(t, http.StatusOK, status)
+		_, hasError := result["error"]
+		assert.False(t, hasError, "expected no error for erpc_listCordoned with no filter")
+	})
+
+	t.Run("denyMethods blocks exact match", func(t *testing.T) {
+		baseURL, cleanup := newServer(t, &common.AdminConfig{
+			Auth:        secretAuth,
+			DenyMethods: []string{"erpc_listCordoned"},
+		})
+		defer cleanup()
+
+		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
+		assert.Equal(t, http.StatusOK, status, "blocked methods return 200 with JSON-RPC error")
+		errObj, hasError := result["error"]
+		assert.True(t, hasError, "expected error for blocked method")
+		errMap, _ := errObj.(map[string]interface{})
+		assert.Contains(t, errMap["message"], "method not supported")
+	})
+
+	t.Run("denyMethods wildcard blocks matching methods", func(t *testing.T) {
+		baseURL, cleanup := newServer(t, &common.AdminConfig{
+			Auth:        secretAuth,
+			DenyMethods: []string{"erpc_*Cordoned"},
+		})
+		defer cleanup()
+
+		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
+		assert.Equal(t, http.StatusOK, status)
+		errObj, hasError := result["error"]
+		assert.True(t, hasError)
+		errMap, _ := errObj.(map[string]interface{})
+		assert.Contains(t, errMap["message"], "method not supported")
+	})
+
+	t.Run("denyMethods does not block non-matching methods", func(t *testing.T) {
+		baseURL, cleanup := newServer(t, &common.AdminConfig{
+			Auth:        secretAuth,
+			DenyMethods: []string{"erpc_cordonUpstream"},
+		})
+		defer cleanup()
+
+		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
+		assert.Equal(t, http.StatusOK, status)
+		_, hasError := result["error"]
+		assert.False(t, hasError, "erpc_listCordoned should not be blocked when only erpc_cordonUpstream is denied")
+	})
+
+	t.Run("allowMethods restricts to listed methods", func(t *testing.T) {
+		baseURL, cleanup := newServer(t, &common.AdminConfig{
+			Auth:         secretAuth,
+			AllowMethods: []string{"erpc_listCordoned"},
+		})
+		defer cleanup()
+
+		// listed method: allowed
+		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
+		assert.Equal(t, http.StatusOK, status)
+		_, hasError := result["error"]
+		assert.False(t, hasError)
+
+		// unlisted method: blocked
+		status, result = callAdmin(t, baseURL, "erpc_cordonUpstream")
+		assert.Equal(t, http.StatusOK, status, "blocked methods return 200 with JSON-RPC error")
+		errObj, hasError := result["error"]
+		assert.True(t, hasError)
+		errMap, _ := errObj.(map[string]interface{})
+		assert.Contains(t, errMap["message"], "method not supported")
+	})
+
+	t.Run("allowMethods wildcard allows matching methods", func(t *testing.T) {
+		baseURL, cleanup := newServer(t, &common.AdminConfig{
+			Auth:         secretAuth,
+			AllowMethods: []string{"erpc_list*"},
+		})
+		defer cleanup()
+
+		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
+		assert.Equal(t, http.StatusOK, status)
+		_, hasError := result["error"]
+		assert.False(t, hasError)
+
+		status, result = callAdmin(t, baseURL, "erpc_cordonUpstream")
+		assert.Equal(t, http.StatusOK, status, "blocked methods return 200 with JSON-RPC error")
+		errObj, hasError := result["error"]
+		assert.True(t, hasError)
+		errMap, _ := errObj.(map[string]interface{})
+		assert.Contains(t, errMap["message"], "method not supported")
+	})
+
+	t.Run("allowMethods re-admits method blocked by denyMethods", func(t *testing.T) {
+		baseURL, cleanup := newServer(t, &common.AdminConfig{
+			Auth:         secretAuth,
+			DenyMethods:  []string{"erpc_*"},
+			AllowMethods: []string{"erpc_listCordoned"},
+		})
+		defer cleanup()
+
+		// explicitly allowed despite wildcard ignore
+		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
+		assert.Equal(t, http.StatusOK, status)
+		_, hasError := result["error"]
+		assert.False(t, hasError)
+
+		// everything else still blocked
+		status, result = callAdmin(t, baseURL, "erpc_cordonUpstream")
+		assert.Equal(t, http.StatusOK, status)
+		_, hasError = result["error"]
+		assert.True(t, hasError)
+	})
+
+	t.Run("invalid pattern expression returns error", func(t *testing.T) {
+		// "|" with missing right operand is invalid in the WildcardMatch expression grammar
+		baseURL, cleanup := newServer(t, &common.AdminConfig{
+			Auth:        secretAuth,
+			DenyMethods: []string{"erpc_list*|"},
+		})
+		defer cleanup()
+
+		status, result := callAdmin(t, baseURL, "erpc_listCordoned")
+		assert.Equal(t, http.StatusOK, status)
+		_, hasError := result["error"]
+		assert.True(t, hasError, "invalid pattern expression should propagate as a request error")
+	})
 }

@@ -232,3 +232,46 @@ func TestRateLimiter_ExceedCapacity(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 }
+
+// The optional hits-addend weights how much a single acquisition consumes
+// from the budget — the mechanism behind upstream credit-count mode. A
+// weight-N call consumes N; a 0-weight call (a 0-CU method) is admitted for
+// free without touching the counter.
+func TestTryAcquirePermit_CreditWeight(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := &common.RateLimiterConfig{
+		Store: &common.RateLimitStoreConfig{Driver: "memory"},
+		Budgets: []*common.RateLimitBudgetConfig{
+			{
+				Id: "credit-budget",
+				Rules: []*common.RateLimitRuleConfig{
+					{Method: "*", MaxCount: 100, Period: common.RateLimitPeriodMinute},
+				},
+			},
+		},
+	}
+	registry, err := NewRateLimitersRegistry(context.Background(), cfg, &logger)
+	require.NoError(t, err)
+	budget, err := registry.GetBudget("credit-budget")
+	require.NoError(t, err)
+	require.NotNil(t, budget)
+
+	ctx := context.Background()
+
+	// First weight-60 acquisition fits under the 100 budget.
+	ok, err := budget.TryAcquirePermit(ctx, "", nil, "eth_getLogs", "", "", "", "upstream", 60)
+	require.NoError(t, err)
+	assert.True(t, ok, "first weighted call (60) fits under 100")
+
+	// Second weight-60 acquisition pushes the window to 120 > 100 → rejected.
+	// Proves the credit weight (not a flat 1) is what gets consumed.
+	ok, err = budget.TryAcquirePermit(ctx, "", nil, "eth_getLogs", "", "", "", "upstream", 60)
+	require.NoError(t, err)
+	assert.False(t, ok, "second weighted call exceeds the budget (60+60 > 100)")
+
+	// A 0-weight call is always admitted and consumes nothing (its own
+	// method counter, so the exhausted eth_getLogs window is irrelevant).
+	ok, err = budget.TryAcquirePermit(ctx, "", nil, "eth_chainId", "", "", "", "upstream", 0)
+	require.NoError(t, err)
+	assert.True(t, ok, "0-weight call bypasses the budget")
+}

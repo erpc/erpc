@@ -6,7 +6,7 @@ import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDr
  * clamped between min/max" semantics — currently consensus wait caps,
  * with timeout/hedge supporting it as an alternative entry-point.
  * Resolution rules:
- *   final = Base + adaptive
+ * 	final = Base + adaptive
  * where `adaptive` is:
  *   - `qt.GetQuantile(Quantile)` when Quantile > 0 and quantile data exists
  *   - `Min` (the floor) when Quantile > 0 but quantile data is cold (no
@@ -145,6 +145,7 @@ export interface ServerConfig {
     grpcPortV6?: number;
     grpcMaxRecvMsgSize?: number;
     grpcMaxSendMsgSize?: number;
+    grpcReflection?: boolean;
     maxTimeout?: Duration;
     readTimeout?: Duration;
     writeTimeout?: Duration;
@@ -167,6 +168,14 @@ export interface ServerConfig {
      * (useful for low-latency / bandwidth-constrained clients).
      */
     executionHeaders?: ExecutionHeadersMode;
+    /**
+     * CostHeaders opts into the cost/billing response headers
+     * (X-ERPC-Calls, X-ERPC-Billable, X-ERPC-Methods, X-ERPC-Credits,
+     * X-ERPC-Credits-Version) on single and batch responses. Off by
+     * default. Credit-unit pricing is vendor-level configuration — see
+     * CreditUnitsProvider and UpstreamConfig.CreditUnits.
+     */
+    costHeaders?: boolean;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -249,6 +258,8 @@ export interface ForceTraceMatcher {
 export interface AdminConfig {
     auth?: AuthConfig;
     cors?: CORSConfig;
+    allowMethods?: string[];
+    denyMethods?: string[];
 }
 export interface AliasingConfig {
     rules: (AliasingRuleConfig | undefined)[];
@@ -378,6 +389,14 @@ export interface GrpcConnectorConfig {
         [key: string]: string;
     };
     getTimeout?: Duration;
+    /**
+     * PoolSize is the number of independent gRPC connections opened to each
+     * backing server, selected round-robin per request. Larger values raise the
+     * concurrent-stream ceiling and shrink the blast radius of a single wedged
+     * connection, at the cost of more open connections per server. When unset
+     * (0) a built-in default is used.
+     */
+    poolSize?: number;
 }
 export interface MemoryConnectorConfig {
     maxItems: number;
@@ -436,6 +455,15 @@ export interface PostgreSQLConnectorConfig {
     getTimeout?: Duration;
     setTimeout?: Duration;
     iamAuth?: PostgreSQLIAMAuthConfig;
+    /**
+     * SkipSchemaSetup skips all startup DDL (CREATE TABLE/INDEX, column
+     * migrations, pg_cron) and the local expired-row cleanup DELETE loop. Set
+     * it for connectors whose ConnectionUri targets a read-only replica (e.g.
+     * an Aurora global-database secondary): DDL cannot execute there (SQLSTATE
+     * 25006) and is not write-forwarded, so the writer-region connector owns
+     * the schema and the replica receives it via storage replication.
+     */
+    skipSchemaSetup?: boolean;
 }
 export interface AwsAuthConfig {
     mode: 'file' | 'env' | 'secret';
@@ -506,7 +534,20 @@ export interface ProjectConfig {
      * Configure user agent tracking at the project level
      */
     userAgentMode?: UserAgentTrackingMode;
+    /**
+     * TrustUserIdHeader makes erpc read the caller's user identity from the
+     * X-ERPC-User-Id request header (see common.HeaderUserId) and use it for the
+     * `user` metric/log label — but only when no auth strategy resolved a user
+     * (auth wins) and only for attribution (no rate-limit budget is derived).
+     * This is for deployments that authenticate callers in front of erpc (e.g. a
+     * gateway) and want per-user erpc telemetry without erpc performing auth.
+     * erpc does NOT validate the header, so enable this ONLY when erpc is reachable
+     * solely by a trusted proxy that sets the header and strips any client copy —
+     * otherwise callers can spoof their own attribution. Default false.
+     */
+    trustUserIdHeader?: boolean;
     forwardHeaders?: string[];
+    allowClientDirectives?: string;
     ignoreMethods?: string[];
     allowMethods?: string[];
     /**
@@ -583,6 +624,24 @@ export interface ProviderConfig {
         [key: string]: UpstreamConfig | undefined;
     };
 }
+/**
+ * RateLimitCountMode selects the accounting unit an upstream's rate-limit
+ * budget charges per call.
+ */
+export type RateLimitCountMode = string;
+/**
+ * RateLimitCountModeRequest (default) charges a flat 1 hit per call,
+ * regardless of method — the historical eRPC behavior.
+ */
+export declare const RateLimitCountModeRequest: RateLimitCountMode;
+/**
+ * RateLimitCountModeCredit charges the request's resolved vendor
+ * credit-unit cost (the same table used for cost accounting), so a
+ * heavy eth_getLogs consumes more budget than a cheap eth_blockNumber.
+ * The pre-flight table estimate is used (the real cost is not known
+ * until after the call); a 0-CU method consumes nothing.
+ */
+export declare const RateLimitCountModeCredit: RateLimitCountMode;
 export interface UpstreamConfig {
     id?: string;
     type?: TsUpstreamType;
@@ -615,6 +674,23 @@ export interface UpstreamConfig {
     failsafe?: (FailsafeConfig | undefined)[];
     rateLimitBudget?: string;
     rateLimitAutoTune?: RateLimitAutoTuneConfig;
+    /**
+     * RateLimitCountMode selects how this upstream's rate-limit budget
+     * counts a call: "request" (default) charges 1 hit, "credit" charges the
+     * request's resolved vendor credit-unit cost. Empty resolves to
+     * "request". Applies to the upstream-level budget only.
+     */
+    rateLimitCountMode?: RateLimitCountMode;
+    /**
+     * CreditUnits overrides the vendor's built-in per-method credit table
+     * (CreditUnitsProvider) for this upstream, merged per method over the
+     * vendor defaults ("*" = fallback for unlisted methods). Normally set
+     * once per provider via `providers[].settings.creditUnits`, which is
+     * copied onto every upstream the provider generates.
+     */
+    creditUnits?: {
+        [key: string]: number;
+    };
     shadow?: ShadowUpstreamConfig;
     /**
      * Routing holds per-upstream routing hints consumed by the selection
@@ -750,6 +826,12 @@ export interface GrpcUpstreamConfig {
     headers?: {
         [key: string]: string;
     };
+    /**
+     * PoolSize is the number of independent gRPC connections opened to this
+     * upstream, selected round-robin per request. See GrpcConnectorConfig.PoolSize.
+     * When unset (0) a built-in default is used.
+     */
+    poolSize?: number;
 }
 export interface EvmUpstreamConfig {
     chainId: number;
@@ -771,6 +853,12 @@ export interface EvmUpstreamConfig {
      */
     traceFilterAutoSplittingRangeThreshold?: number;
     skipWhenSyncing?: boolean;
+    /**
+     * SkipSyncingCheck disables eth_syncing polling for this upstream, treating it as always synced.
+     * Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
+     * misleading and causes circuit breaker false positives.
+     */
+    skipSyncingCheck?: boolean;
     integrity?: UpstreamIntegrityConfig;
     /**
      * @deprecated: use blockAvailability bounds instead; kept for config back-compat only
@@ -986,11 +1074,16 @@ export interface ConsensusPolicyConfig {
  * `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
  * matched against each upstream's `tags`; `MinParticipants` is the minimum
  * number of matching upstreams that must be in the consensus participant
- * set. A single upstream can satisfy multiple entries it matches.
+ * set (pool quota, best-effort). `MinAgreement` is the minimum number of
+ * matching upstreams that must be part of the WINNING response group
+ * (winner-composition quota, hard-enforced: a winner that does not satisfy
+ * it becomes a composition dispute regardless of disputeBehavior). A single
+ * upstream can satisfy multiple entries it matches.
  */
 export interface ConsensusRequiredParticipant {
     tag: string;
     minParticipants: number;
+    minAgreement?: number;
 }
 export type MisbehaviorsDestinationType = string;
 export declare const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType;
@@ -1283,6 +1376,13 @@ export interface EvmNetworkConfig {
      *     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
      */
     emptyResultConfidence?: AvailbilityConfidence;
+    /**
+     * SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
+     * requests carrying the `safe` block tag. Matching upstreams define and
+     * serve `safe`; empty (without an inherited network default) keeps existing
+     * provider-defined routing. This does not affect eth_query* or gRPC Query.
+     */
+    safeBlockSource?: string;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -1424,6 +1524,24 @@ export interface AuthStrategyConfig {
     ignoreMethods?: string[];
     allowMethods?: string[];
     rateLimitBudget?: string;
+    /**
+     * AllowClientDirectives, if set, overrides the project-level
+     * `allowClientDirectives` pattern for users authenticated by THIS strategy.
+     * Same wildcard syntax as the project-level field ("*" = all, "" = none).
+     * Client directives (`X-ERPC-*` headers) are powerful per-request overrides —
+     * e.g. pinning an upstream bypasses the selection policy, and skipping the
+     * cache multiplies upstream load — so operators exposing erpc directly to
+     * untrusted callers typically deny them project-wide and re-enable them only
+     * for trusted strategies:
+     * 	allowClientDirectives: ""      # project default: nobody
+     * 	auth.strategies[0].allowClientDirectives: "*"   # this strategy: everything
+     * Left unset the caller inherits the project-level pattern, so existing
+     * configs are unaffected. The capability is attached to the user by the
+     * strategy that authenticated them, which means it can never be granted by
+     * `trustUserIdHeader` (that path sets only Id — see
+     * NormalizedRequest.SetUserFromTrustedHeader).
+     */
+    allowClientDirectives?: string;
     type: TsAuthType;
     network?: NetworkStrategyConfig;
     secret?: SecretStrategyConfig;
@@ -1474,6 +1592,10 @@ export interface JwtStrategyConfig {
     };
     verificationJwksUrl?: string;
     verificationJwksRefreshInterval?: Duration;
+    /**
+     * Skipping TLS verification is an explicit operator opt-in for the JWKS
+     * fetch, not a hardcoded bypass.
+     */
     verificationJwksTlsInsecureSkipVerify?: boolean;
     /**
      * RateLimitBudgetClaimName is the JWT claim name that, if present,
@@ -1528,6 +1650,18 @@ export interface MetricsConfig {
     histogramLabelOverrides?: {
         [key: string]: string[];
     };
+    /**
+     * CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
+     * counters whose label-sets are keyed by caller-controlled inputs
+     * (method, user, agentName, ...). Counter series idle for at least this
+     * duration are evicted from the Prometheus registry (DeleteLabelValues)
+     * by the health tracker's idle sweep; a series that becomes active again
+     * restarts at zero — the same semantics rate()/increase() consumers
+     * already handle across process restarts. Defaults to 24h (conservative:
+     * only clearly-dead label combinations are released). Set to 0 to
+     * disable eviction entirely.
+     */
+    counterIdleEvictionAfter?: Duration;
 }
 /**
  * RateLimitStoreConfig defines where rate limit counters are stored
@@ -1648,6 +1782,14 @@ export interface UpstreamAttempt {
     attemptidx: number;
     errorcode: string;
     errordetail: string;
+    /**
+     * CreditUnits is the vendor credit-unit cost this attempt accrued
+     * (the upstream's resolved table — vendor defaults merged with config
+     * overrides; vendors with no table default to a flat 1 credit per
+     * request). 0 when the attempt provably never dialed the vendor
+     * (skipped / breaker-open) or the vendor was opted out ("*": 0).
+     */
+    creditunits: number;
 }
 /**
  * ExecState centralizes the per-request execution counters and the
@@ -1768,8 +1910,27 @@ export type UpstreamType = string;
  */
 export type HealthTracker = any;
 export type Upstream = any;
+/**
+ * User is the authenticated caller. Beyond identity (Id) it carries the
+ * per-caller capabilities resolved at authentication time. Capability fields
+ * are populated ONLY by auth strategies; the trusted-header path
+ * (NormalizedRequest.SetUserFromTrustedHeader) sets Id alone, so an
+ * unvalidated header can never grant a capability.
+ */
 export interface User {
     id: string;
     ratelimitbudget: string;
+    /**
+     * AllowClientDirectives is the client-directive wildcard pattern granted by
+     * the strategy that authenticated this user. Nil means "no strategy-level
+     * override" — the project-level pattern applies.
+     */
+    allowclientdirectives?: string;
 }
+/**
+ * MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool
+ * size. It guards against a fat-fingered value opening an absurd number of
+ * connections to each backing server; it is not a recommended operating point.
+ */
+export declare const MaxGrpcConnPoolSize = 256;
 //# sourceMappingURL=generated.d.ts.map

@@ -107,6 +107,27 @@ func (u *Upstream) attemptCreditUnits(req *common.NormalizedRequest) int64 {
 	return defaultCreditUnitsPerRequest
 }
 
+// rateLimitHits returns the hit weight one rate-limit permit acquisition
+// consumes from this upstream's budget: a flat 1 in the default
+// request-count mode, or the request's PRE-FLIGHT estimated vendor
+// credit-unit cost when the upstream opts into credit counting
+// (RateLimitCountMode == "credit"). The estimate is table-based — the real
+// cost is not known until after the call — and a 0-CU method consumes
+// nothing. Clamped into uint32 for the Envoy hits-addend.
+func (u *Upstream) rateLimitHits(req *common.NormalizedRequest) uint32 {
+	if u == nil || u.config == nil || u.config.RateLimitCountMode != common.RateLimitCountModeCredit {
+		return 1
+	}
+	est := u.attemptCreditUnits(req)
+	if est <= 0 {
+		return 0
+	}
+	if est > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(est)
+}
+
 // deriveSelectionReason answers "why was this upstream picked for this
 // attempt" for the per-attempt record (UpstreamAttempt.Reason, the
 // X-ERPC-Upstreams trace, and erpc_upstream_selection_total).
@@ -188,6 +209,9 @@ type Upstream struct {
 	statePollerOnce      sync.Once
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
+	// Highest block at which the integrity state probe PROVED this upstream
+	// holds the state trie (0 = never proven). See EvmStateProvenBlock.
+	stateProvenBlock atomic.Int64
 }
 
 func NewUpstream(
@@ -543,7 +567,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream")
+			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitHits(nrq))
 			if err != nil {
 				common.SetTraceSpanError(span, err)
 				return nil, err
@@ -641,6 +665,23 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					string(reason),
 					finality.String(),
 				).Inc()
+				// Fold this attempt's vendor cost into the per-(project,
+				// network, upstream, vendor, method, finality) credit counter.
+				// The per-request aggregate (X-ERPC-Credits, CreditUnitsByVendor,
+				// CreditUnitsTotal) derives from the attempt log recorded just
+				// above, so no extra bookkeeping is needed for it here. Cost
+				// accrues for every attempt that dialed the vendor; 0-cost
+				// attempts (opted-out or never-dialed) are skipped.
+				if vendorName := u.VendorName(); creditUnits > 0 && vendorName != "" {
+					telemetry.MetricUpstreamCreditUnitsTotal.WithLabelValues(
+						u.ProjectId,
+						nrq.NetworkLabel(),
+						cfg.Id,
+						vendorName,
+						method,
+						finality.String(),
+					).Add(float64(creditUnits))
+				}
 			}()
 
 			// Span to track pre-request overhead (metrics, finality calculation)
@@ -668,24 +709,12 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					finality,
 				)
 			}
-			// TODO(memory): this and the matching MetricUpstreamErrorTotal /
-			// MetricUpstreamWrongEmptyResponseTotal / MetricUpstreamCanceledTotal
-			// sites in this file + erpc/networks.go all emit label-sets
-			// keyed by user-controlled inputs (method, finality, userId,
-			// agentName, etc.) WITHOUT going through a tracker cache, so
-			// the Prometheus registry accumulates one series per unique
-			// combo forever — even after the in-memory caches added in
-			// the 826df9f5 idle-sweep get cleared.
-			//
-			// The fix is parallel to the urdObsCache / remoteRateLimited
-			// pattern: wrap each WithLabelValues call in a cached*-style
-			// indirection that remembers the label tuple + a
-			// lastAccessedAtMs, then sweep on idle with
-			// MetricVec.DeleteLabelValues. Each direct call site needs the
-			// same retrofit. Out of scope for this PR — flagged for a
-			// follow-up titled "sweep direct Prom emissions in
-			// upstream/erpc hot paths".
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
+			// These direct counter emissions carry label-sets keyed by
+			// caller-controlled inputs (method, finality, userId, agentName).
+			// They go through telemetry.CounterHandle so the health tracker's
+			// idle sweep can evict stale label combinations and release the
+			// series via DeleteLabelValues (see SweepIdleCounterHandles).
+			telemetry.CounterHandle(telemetry.MetricUpstreamRequestTotal,
 				u.ProjectId,
 				u.VendorName(),
 				u.NetworkLabel(),
@@ -695,8 +724,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				nrq.CompositeType(),
 				finality.String(),
 				nrq.UserId(),
-				nrq.AgentName(),
-			).Inc()
+				nrq.AgentName()).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
 			preReqSpan.End()
@@ -762,7 +790,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(
+					telemetry.CounterHandle(telemetry.MetricUpstreamMissingDataErrorTotal,
 						u.ProjectId,
 						u.VendorName(),
 						u.NetworkLabel(),
@@ -770,8 +798,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						method,
 						finality.String(),
 						nrq.UserId(),
-						nrq.AgentName(),
-					).Inc()
+						nrq.AgentName()).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
 					// Cancelled request (hedge lost the race or client
 					// disconnected). Not attributable to upstream quality
@@ -798,7 +825,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						)
 					}
 					severity := common.ClassifySeverity(errCall)
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
+					telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
 						u.ProjectId,
 						u.VendorName(),
 						u.NetworkLabel(),
@@ -809,8 +836,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.CompositeType(),
 						finality.String(),
 						nrq.UserId(),
-						nrq.AgentName(),
-					).Inc()
+						nrq.AgentName()).Inc()
 				}
 
 				// Only ExecutionException (EVM revert) feeds the latency
@@ -1032,6 +1058,25 @@ func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
 	return u.evmStatePoller
 }
 
+// EvmStateProvenBlock returns the highest block at which the integrity state
+// probe proved this upstream truly holds/executes that block's state. 0 means
+// nothing proven yet (probing off, warming up, or unsupported) — callers fall
+// back to the claimed head.
+func (u *Upstream) EvmStateProvenBlock() int64 {
+	return u.stateProvenBlock.Load()
+}
+
+// EvmSetStateProvenBlock advances the state-proven head. Monotonic — a stale
+// probe result must never move the boundary backwards.
+func (u *Upstream) EvmSetStateProvenBlock(n int64) {
+	for {
+		cur := u.stateProvenBlock.Load()
+		if n <= cur || u.stateProvenBlock.CompareAndSwap(cur, n) {
+			return
+		}
+	}
+}
+
 // TODO move to evm package?
 // EvmAssertBlockAvailability checks if the upstream is supposed to have the data for a certain block number.
 // For full nodes it will check the first available block number, and for archive nodes it will check if the block is less than the latest block number.
@@ -1129,6 +1174,45 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 
 		// Block is finalized and within range (or archive node)
 		return true, nil
+	case common.AvailbilityConfidenceStateProven:
+		//
+		// UPPER BOUND: the state-PROVEN head, not the claimed one. A node can
+		// report head N yet still answer state queries from older state; the
+		// probe (execution-context call / getProof vs the follower's verified
+		// header) is what earns the boundary. While nothing is proven yet —
+		// probing off, warming up, or unsupported on this upstream/chain —
+		// fall back to the claimed head so the gate cannot brown out traffic
+		// on capability gaps; the proven-lag metric keeps that visible.
+		//
+		proven := u.stateProvenBlock.Load()
+		if proven > 0 && blockNumber > proven {
+			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkLabel(),
+				u.Id(),
+				forMethod,
+				confidence.String(),
+			).Inc()
+			return false, nil
+		}
+		//
+		// LOWER BOUND: state on full nodes only reaches back
+		// maxAvailableRecentBlocks — reuse the same bound as blockHead.
+		//
+		if proven > 0 {
+			if cfg.Evm.MaxAvailableRecentBlocks > 0 {
+				available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
+				if err != nil {
+					return false, err
+				}
+				if !available {
+					return false, nil
+				}
+			}
+			return true, nil
+		}
+		fallthrough
 	case common.AvailbilityConfidenceBlockHead:
 		//
 		// UPPER BOUND: Check if block is before the latest block

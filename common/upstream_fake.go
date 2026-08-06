@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -24,6 +25,7 @@ type FakeUpstream struct {
 	lastCordonedReason string
 	cordonMu           sync.RWMutex
 	tracker            HealthTracker
+	stateProvenBlock   atomic.Int64
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -186,6 +188,16 @@ func (u *FakeUpstream) CordonedReason() (string, bool) {
 
 func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error) {
 	return true, nil
+}
+
+func (u *FakeUpstream) EvmStateProvenBlock() int64 { return u.stateProvenBlock.Load() }
+func (u *FakeUpstream) EvmSetStateProvenBlock(n int64) {
+	for {
+		cur := u.stateProvenBlock.Load()
+		if n <= cur || u.stateProvenBlock.CompareAndSwap(cur, n) {
+			return
+		}
+	}
 }
 
 func (u *FakeUpstream) EvmEffectiveLatestBlock() int64 {

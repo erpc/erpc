@@ -18,18 +18,26 @@ import (
 )
 
 // QuicknodeVendor uses RemoteDataCache for lock-free, async-refresh access
-// to the per-apiKey endpoint list. See remote_cache.go for the
-// request-path safety rule.
+// to the per-apiKey endpoint list AND the per-chain credit-unit table (from
+// QuickNode's Admin API). See remote_cache.go for the request-path safety
+// rule.
 type QuicknodeVendor struct {
 	common.Vendor
 	cache *RemoteDataCache[[]*QuicknodeEndpoint]
+	// cuCache holds the per-method credit table keyed by numeric chain ID
+	// (as a string). Populated from GET /v0/api-credits/{slug}; CreditUnits
+	// reads it lock-free and falls back to quicknodeCreditUnits.
+	cuCache *RemoteDataCache[map[string]int64]
 }
 
-// quicknodeCreditUnits is QuickNode's published API-credit model
+// quicknodeCreditUnits is the built-in FALLBACK API-credit model
 // (https://www.quicknode.com/api-credits, 2026-07-10): a base cost per
 // method on EVM chains (20 credits on the Ethereum tier), 2x for Advanced
-// APIs (debug/trace family) and 4x for Large Calls (trace replays). Values
-// are QuickNode credits, not money.
+// APIs (debug/trace family) and 4x for Large Calls (trace replays). At
+// runtime the vendor prefers the account-accurate per-method table fetched
+// from QuickNode's Admin API (see creditUnitsTable); this map is used on
+// cold start and whenever that fetch is unavailable. Values are QuickNode
+// credits, not money.
 var quicknodeCreditUnits = map[string]int64{
 	"*":                             20,
 	"debug_traceBlockByHash":        40,
@@ -44,20 +52,156 @@ var quicknodeCreditUnits = map[string]int64{
 	"trace_replayTransaction":       80,
 }
 
-// CreditUnits implements common.CreditUnitsProvider: QuickNode's published
-// credit model, overridable per method via `providers[].settings.creditUnits`.
+// DefaultQuicknodeCreditUnitsRecheckInterval is how long a fetched per-chain
+// CU table is treated as fresh before an async refresh is triggered.
+const DefaultQuicknodeCreditUnitsRecheckInterval = 7 * 24 * time.Hour
+
+// quicknodeApiCreditsBaseURL is the QuickNode Admin API endpoint returning a
+// per-method credit table for a chain slug (GET .../{slug}, header
+// x-api-key). Costs are for the account's billing version, so the table is
+// fetched per account+chain rather than shipped static. Declared as a var so
+// tests can point it at a mock server.
+var quicknodeApiCreditsBaseURL = "https://api.quicknode.com/v0/api-credits/" // #nosec G101 -- public API base URL, not a credential (gosec matches "Credits" in the name)
+
+// CreditUnits implements common.CreditUnitsProvider: QuickNode's credit model
+// (account-accurate table from the Admin API when available, built-in
+// fallback otherwise), overridable per method via
+// `providers[].settings.creditUnits`.
 func (v *QuicknodeVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
 	method, _ := req.Method()
 	var override map[string]int64
 	if upstream != nil {
 		override = upstream.CreditUnits
 	}
-	return common.ResolveCreditUnits(quicknodeCreditUnits, override, method)
+	return common.ResolveCreditUnits(v.creditUnitsTable(upstream), override, method)
+}
+
+// creditUnitsTable returns the account-accurate per-method table fetched from
+// the Admin API for the upstream's chain, or the built-in fallback. Pure,
+// lock-free read — the hot path never triggers I/O (the fetch is kicked off
+// from SupportsNetwork / GenerateConfigs; see refreshCreditUnitsAsync).
+func (v *QuicknodeVendor) creditUnitsTable(upstream *common.UpstreamConfig) map[string]int64 {
+	if v == nil || v.cuCache == nil || upstream == nil || upstream.Evm == nil || upstream.Evm.ChainId == 0 {
+		return quicknodeCreditUnits
+	}
+	key := strconv.FormatInt(upstream.Evm.ChainId, 10)
+	table, _ := v.cuCache.Lookup(key, DefaultQuicknodeCreditUnitsRecheckInterval)
+	if table == nil {
+		return quicknodeCreditUnits
+	}
+	return table
+}
+
+// chainSlug maps a numeric chain ID to QuickNode's chain slug using the
+// already-discovered endpoint list (each endpoint carries both the probed
+// ChainID and the Chain slug). Returns "" when the endpoints aren't cached
+// yet or none match — the CU fetch is then skipped and CreditUnits falls back
+// to the built-in table until a later cycle.
+func (v *QuicknodeVendor) chainSlug(apiKey string, chainID int64) string {
+	endpoints, _ := v.cache.Lookup(apiKey, DefaultQuicknodeRecheckInterval)
+	for _, e := range endpoints {
+		if e != nil && e.ChainID == chainID && e.Chain != "" {
+			return e.Chain
+		}
+	}
+	return ""
+}
+
+// refreshCreditUnitsAsync kicks off a non-blocking, single-flight refresh of
+// the per-chain CU table when the cached snapshot is missing or stale. Called
+// from SupportsNetwork / GenerateConfigs — the hot-path-safe lifecycle points
+// that already have the account apiKey and the chain context — so the table
+// tracks the account's billing version without a redeploy and without ever
+// fetching from the request hot path (see remote_cache.go).
+func (v *QuicknodeVendor) refreshCreditUnitsAsync(logger *zerolog.Logger, apiKey string, chainID int64) {
+	if v == nil || v.cuCache == nil || apiKey == "" || chainID == 0 {
+		return
+	}
+	key := strconv.FormatInt(chainID, 10)
+	if _, fresh := v.cuCache.Lookup(key, DefaultQuicknodeCreditUnitsRecheckInterval); fresh {
+		return
+	}
+	slug := v.chainSlug(apiKey, chainID)
+	if slug == "" {
+		return // endpoints not discovered yet; retry on a later cycle
+	}
+	v.cuCache.TriggerAsyncRefresh(logger, key, func(ctx context.Context) (map[string]int64, error) {
+		return fetchQuicknodeCreditUnits(ctx, apiKey, slug)
+	})
+}
+
+// fetchQuicknodeCreditUnits calls the Admin API for one chain slug and merges
+// the returned per-method credits over the built-in table (so a partial
+// response never loses coverage or the "*" fallback). Run in the
+// RemoteDataCache refresh goroutine with a self-contained timeout ctx.
+//
+// Response shape confirmed against the live Admin API (2026-08-02):
+// {"data":[{"method":<string>,"credits":<int>}],"error":<null|string>} — one
+// row per method, integer credits, error null on success. The short slug from
+// /v0/endpoints (e.g. "eth", "matic", "ftm") is a valid api-credits path and
+// returns real data; costs vary per chain (base eth_call is 20 on Ethereum
+// but 40 on Fantom, 30 on Gnosis, 50 on Polygon zkEVM), which is why the
+// table is cached per chain ID rather than shipped static.
+func fetchQuicknodeCreditUnits(ctx context.Context, apiKey, slug string) (map[string]int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, quicknodeApiCreditsBaseURL+url.PathEscape(slug), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("quicknode api-credits returned status %d for chain %q", resp.StatusCode, slug)
+	}
+
+	var body struct {
+		Data []struct {
+			Method  string `json:"method"`
+			Credits int64  `json:"credits"`
+		} `json:"data"`
+		Error string `json:"error"`
+	}
+	if err := common.SonicCfg.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to decode quicknode api-credits response: %w", err)
+	}
+	if body.Error != "" {
+		return nil, fmt.Errorf("quicknode api-credits error: %s", body.Error)
+	}
+
+	parsed := make(map[string]int64, len(body.Data))
+	for _, d := range body.Data {
+		if d.Method != "" {
+			parsed[d.Method] = d.Credits
+		}
+	}
+	if len(parsed) == 0 {
+		return nil, fmt.Errorf("quicknode api-credits: no methods returned for chain %q", slug)
+	}
+
+	merged := make(map[string]int64, len(quicknodeCreditUnits)+len(parsed))
+	for k, cu := range quicknodeCreditUnits {
+		merged[k] = cu
+	}
+	for k, cu := range parsed {
+		merged[k] = cu
+	}
+	return merged, nil
 }
 
 type QuicknodeEndpoint struct {
 	ID      string `json:"id"`
 	HttpUrl string `json:"http_url"`
+	// Chain is QuickNode's canonical chain slug (e.g. "ethereum"), used as
+	// the path param for GET /v0/api-credits/{chain}. ChainID is discovered
+	// separately via an eth_chainId probe, so the two together map a numeric
+	// chain ID to the slug the credit API expects.
+	Chain   string `json:"chain"`
 	ChainID int64  `json:"-"`
 }
 
@@ -75,7 +219,8 @@ const DefaultQuicknodeRecheckInterval = 1 * time.Hour
 
 func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{
-		cache: NewRemoteDataCache[[]*QuicknodeEndpoint]("quicknode"),
+		cache:   NewRemoteDataCache[[]*QuicknodeEndpoint]("quicknode"),
+		cuCache: NewRemoteDataCache[map[string]int64]("quicknode-cu"),
 	}
 }
 
@@ -150,6 +295,8 @@ func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 	if !ok {
 		return false, ErrRemoteCacheCold
 	}
+	// Refresh the account-accurate CU table for this chain off the hot path.
+	v.refreshCreditUnitsAsync(logger, apiKey, chainID)
 	for _, endpoint := range endpoints {
 		if endpoint.ChainID == chainID && endpoint.HttpUrl != "" {
 			return true, nil
@@ -188,6 +335,9 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 		if !ok {
 			return nil, ErrRemoteCacheCold
 		}
+		// Endpoints (with chain slugs) are now discovered — refresh the
+		// account-accurate CU table for this chain off the hot path.
+		v.refreshCreditUnitsAsync(logger, apiKey, chainID)
 
 		var upstreams []*common.UpstreamConfig
 		for _, endpoint := range endpoints {

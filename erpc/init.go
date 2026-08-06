@@ -51,6 +51,20 @@ func Init(
 		}
 		// Must run before SetHistogramBuckets so the new Vecs are built with the filter applied.
 		telemetry.SetHistogramLabelFilter(cfg.Metrics.HistogramDropLabels, cfg.Metrics.HistogramLabelOverrides)
+		if cfg.Metrics.CounterIdleEvictionAfter != nil {
+			telemetry.SetCounterIdleEvictionAfter(cfg.Metrics.CounterIdleEvictionAfter.Duration())
+		}
+		// Counters are built unregistered at package init (Prometheus freezes
+		// a metric's label-set hash for the life of the registry, so we cannot
+		// register first and filter later). Install any filter, then register
+		// once under it. Only when metrics config is present — processes that
+		// never scrape do not need these collectors on DefaultRegisterer, and
+		// tests that call Init without metrics must not freeze the full label
+		// set before a later Init can apply counterDropLabels.
+		if len(cfg.Metrics.CounterDropLabels) > 0 || len(cfg.Metrics.CounterLabelOverrides) > 0 {
+			telemetry.SetCounterLabelFilter(cfg.Metrics.CounterDropLabels, cfg.Metrics.CounterLabelOverrides)
+		}
+		telemetry.RebuildFilteredCounters()
 	}
 	if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
 		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
@@ -172,6 +186,9 @@ func Init(
 	// Wait until the context is cancelled, then give the http server some time to finish draining.
 	<-appCtx.Done()
 	logger.Info().Msg("shutting down gracefully...")
+	// Flush buffered integrity forensics before the process goes away; the S3
+	// exporter otherwise loses everything written since its last interval.
+	evm.CloseIntegrityExporters()
 	if cfg.Server != nil && cfg.Server.WaitAfterShutdown != nil {
 		time.Sleep(cfg.Server.WaitAfterShutdown.Duration())
 	}

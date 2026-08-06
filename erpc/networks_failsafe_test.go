@@ -1342,3 +1342,62 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		assert.Contains(t, executor4.finalities, common.DataFinalityStateUnknown)
 	})
 }
+
+// matchRequestKind scopes a policy by who issued the request: "internal" =
+// erpc's own auxiliary fetches (e.g. the integrity module's canonical
+// corroboration, marked IsInternal), "user" = client traffic. This is the
+// enabler for consensus-on-aux: internal canonical fetches get a consensus
+// policy while user data methods rely on integrity validation.
+func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	failsafeConfigs := []*common.FailsafeConfig{
+		{
+			MatchMethod:      "*",
+			MatchRequestKind: "internal",
+			Retry:            &common.RetryPolicyConfig{MaxAttempts: 5},
+		},
+		{
+			MatchMethod:      "*",
+			MatchRequestKind: "user",
+			Retry:            &common.RetryPolicyConfig{MaxAttempts: 2},
+		},
+	}
+	network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+	t.Run("internal request selects the internal policy", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
+		req.SetNetwork(network)
+		req.SetDirectives(&common.RequestDirectives{IsInternal: true})
+		executor := network.getFailsafeExecutor(ctx, req)
+		require.NotNil(t, executor)
+		assert.Equal(t, "internal", executor.MatchRequestKind())
+	})
+
+	t.Run("user request skips the internal policy", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
+		req.SetNetwork(network)
+		executor := network.getFailsafeExecutor(ctx, req)
+		require.NotNil(t, executor)
+		assert.Equal(t, "user", executor.MatchRequestKind())
+	})
+
+	t.Run("unset kind matches both (backward compatible)", func(t *testing.T) {
+		anyKind := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
+			{MatchMethod: "*", Retry: &common.RetryPolicyConfig{MaxAttempts: 3}},
+		})
+		internal := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
+		internal.SetNetwork(anyKind)
+		internal.SetDirectives(&common.RequestDirectives{IsInternal: true})
+		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, internal))
+
+		user := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
+		user.SetNetwork(anyKind)
+		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, user))
+	})
+}

@@ -10,37 +10,37 @@ import (
 )
 
 var (
-	MetricUnexpectedPanicTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUnexpectedPanicTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "unexpected_panic_total",
 		Help:      "Total number of unexpected panics.",
 	}, []string{"scope", "extra", "error"})
 
-	MetricUpstreamRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamRequestTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
 		Help:      "Total number of actual requests to upstreams.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "attempt", "composite", "finality", "user", "agent_name"})
 
-	MetricUpstreamErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamErrorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_errors_total",
 		Help:      "Total number of errors for actual requests towards upstreams.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "error", "severity", "composite", "finality", "user", "agent_name"})
 
-	MetricUpstreamSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamSkippedTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_skipped_total",
 		Help:      "Total number of requests skipped by upstreams.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
 
-	MetricUpstreamMissingDataErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamMissingDataErrorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_missing_data_error_total",
 		Help:      "Total number of requests where upstream is missing data or not synced yet.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
 
-	MetricUpstreamEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamEmptyResponseTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_empty_response_total",
 		Help:      "Total number of empty responses from upstreams.",
@@ -320,37 +320,172 @@ var (
 		Help:      "Total number of times a request was skipped due to requested lower bound block being less than upstream's available block range.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "confidence"})
 
-	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
+	// MetricIntegrityViolation counts data-integrity check violations by the
+	// individual check id and the verdict applied. "reject" means the response
+	// was converted to a content-validation error and failed over to another
+	// upstream; "soft_flag" means a reorg-sensitive mismatch on unfinalized data
+	// was recorded but the response was still served. Only fires on a violation
+	// (passes/skips are not counted) so cardinality stays low. The denominator
+	// for a violation rate is the existing per-method request counter.
+	MetricIntegrityViolation = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_violation_total",
+		Help:      "Total data-integrity check violations, by check id, verdict (reject = failed over; soft_flag = recorded but served) and target-block finality (finalized/unfinalized/unknown — separates genuine finalized/deterministic catches from reorg-prone unfinalized ones).",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict", "finality"})
+
+	// MetricUpstreamStateProvenBlock is the highest block at which the state
+	// probe PROVED the upstream holds that block's state (execution-context
+	// call and/or getProof verified against the follower's verified header).
+	MetricUpstreamStateProvenBlock = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_proven_block",
+		Help:      "Highest block at which the integrity state probe proved this upstream holds the state trie.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
+	// MetricUpstreamStateProvenLag is claimed latest minus proven — how far the
+	// upstream's claims outrun what it has actually proven. The headline
+	// number for the silent-stale-state problem.
+	MetricUpstreamStateProvenLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_proven_lag",
+		Help:      "Blocks between the upstream's claimed latest and its state-proven head.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
+	// MetricUpstreamStateProbe counts probe outcomes, by probe kind
+	// (context = execution-context call, proof = eth_getProof) and outcome
+	// (match/mismatch/unsupported/error).
+	MetricUpstreamStateProbe = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_state_probe_total",
+		Help:      "Total state-trie probes by kind (context/proof) and outcome (match/mismatch/unsupported/error).",
+	}, []string{"project", "vendor", "network", "upstream", "probe", "outcome"})
+
+	// MetricIntegrityFollowHead is the highest block of the CONTIGUOUS,
+	// parent-linked segment the ChainView follower has verified block by block
+	// (not the network head — see MetricIntegrityFollowLag for the difference).
+	MetricIntegrityFollowHead = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_head",
+		Help:      "Highest block of the contiguous parent-linked chain segment verified by the integrity follower.",
+	}, []string{"project", "network", "group"})
+
+	// MetricIntegrityFollowLag is how far the followed chain trails the network
+	// head. Steady-state should hover near zero; a growing lag means the
+	// follower cannot keep up (fetch failures, or a chain faster than
+	// maxBlocksPerTick).
+	MetricIntegrityFollowLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_lag",
+		Help:      "Blocks between the network head and the integrity follower's verified chain head.",
+	}, []string{"project", "network", "group"})
+
+	// MetricIntegrityFollowStall counts follower advances abandoned this tick,
+	// by reason. "unreconciled" means a forked block found no common ancestor
+	// within the reorg window — the follower is holding a chain the network no
+	// longer extends, which needs operator attention (window too small, or an
+	// upstream serving unrelated history).
+	MetricIntegrityFollowStall = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_follow_stall_total",
+		Help:      "Total integrity follower advances abandoned, by reason (unreconciled = no common ancestor within the reorg window).",
+	}, []string{"project", "network", "group", "reason"})
+
+	// MetricIntegrityReorgDepth observes how many blocks each reconciled reorg
+	// replaced. A depth of 1-2 is routine chain churn; a deep tail means the
+	// reorgWindow needs to cover it or reconciliation will start failing.
+	MetricIntegrityReorgDepth = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "integrity_reorg_depth",
+		Help:      "Depth (blocks replaced) of each reorg reconciled by the integrity chain follower.",
+		Buckets:   []float64{1, 2, 3, 5, 8, 13, 21, 34, 64, 128, 256},
+	}, []string{"project", "network", "group"})
+
+	// MetricIntegrityCheck counts EVERY integrity check evaluation by outcome:
+	// pass (ran, no violation), skip (could not evaluate — unmodeled field /
+	// hashes-only response / missing data), reject (failed → response failed
+	// over), soft_flag (reorg-sensitive mismatch recorded but served), off
+	// (disabled for this finality or check). Sum over outcomes = total attempts.
+	// Higher volume than the violation counter (one series per check per request).
+	MetricIntegrityCheck = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_check_total",
+		Help:      "Total integrity check evaluations by outcome (pass/skip/reject/soft_flag/reconfirmed/off — reconfirmed = a pin-anchored mismatch that cleared once the stale pin was re-confirmed against a fresh canonical fetch, i.e. a reorg, not corruption); the sum across outcomes is total attempts.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "outcome"})
+
+	// MetricIntegrityAuxRequest counts auxiliary requests issued by integrity
+	// checks — force-fetches that are NOT part of the user's request (canonical
+	// header/receipts corroboration), by kind and outcome.
+	MetricIntegrityAuxRequest = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_aux_request_total",
+		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by node group, kind (canonical_header/canonical_receipts), the actual method sent, target-block finality (finalized/unfinalized/unknown) and outcome (ok/error).",
+	}, []string{"project", "vendor", "network", "upstream", "group", "kind", "method", "finality", "outcome"})
+
+	// MetricIntegritySaved counts requests the integrity module SAVED: a check
+	// rejected a bad response, the request failed over, and a good response was
+	// ultimately served — i.e. without the module the client would have received
+	// a wrong/invalid response. Incremented once per saved request.
+	MetricIntegritySaved = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_saved_total",
+		Help:      "Total requests where integrity rejected a bad response and a retry returned a good one (a wrong/invalid response prevented), by target-block finality (finalized/unfinalized/unknown).",
+	}, []string{"project", "network", "category", "finality"})
+
+	// MetricIntegrityFailed counts requests that FAILED toward the user because of
+	// the integrity module: a check rejected a response and no good response was
+	// found (every candidate failed), so the request errored instead of serving
+	// bad data. The `check` label is the last rejecting check — the "why".
+	MetricIntegrityFailed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_failed_total",
+		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check and target-block finality (finalized/unfinalized/unknown).",
+	}, []string{"project", "network", "category", "check", "finality"})
+
+	// MetricIntegrityProtocolSuspect counts times a (network, check) pair showed
+	// the ALL-UPSTREAM signature: repeated request failures where that check
+	// rejected and no upstream produced an acceptable response. A check that
+	// rejects across every vendor of a chain is protocol-invalid for that chain
+	// far more often than it is catching corruption (independent vendors do not
+	// corrupt identically), and because it defeats failover it converts directly
+	// into client-facing errors. Non-zero here means: review the chain profile.
+	MetricIntegrityProtocolSuspect = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_protocol_suspect_total",
+		Help:      "Times a (network, check) hit the all-upstream failure signature (repeated exhaustion within the detector window) — a strong indicator the check is protocol-invalid for that chain rather than catching corruption.",
+	}, []string{"project", "network", "check"})
+
+	MetricNetworkEvmGetLogsSplitSuccess = newLabeledCounterUnregistered(prometheus.CounterOpts{
+
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_split_success_total",
 		Help:      "Total number of successful split eth_getLogs sub-requests (network-scoped).",
 	}, []string{"project", "network", "user", "agent_name"})
 
-	MetricNetworkEvmGetLogsSplitFailure = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkEvmGetLogsSplitFailure = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_split_failure_total",
 		Help:      "Total number of failed split eth_getLogs sub-requests (network-scoped).",
 	}, []string{"project", "network", "user", "agent_name"})
 
-	MetricNetworkEvmGetLogsForcedSplits = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkEvmGetLogsForcedSplits = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_forced_splits_total",
 		Help:      "Total number of eth_getLogs request splits by dimension (block_range, addresses, topics), network-scoped.",
 	}, []string{"project", "network", "dimension", "user", "agent_name"})
 
-	MetricNetworkEvmTraceFilterSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkEvmTraceFilterSplitSuccess = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_trace_filter_split_success_total",
 		Help:      "Total number of successful split trace_filter/arbtrace_filter sub-requests (network-scoped).",
 	}, []string{"project", "network", "method", "user", "agent_name"})
 
-	MetricNetworkEvmTraceFilterSplitFailure = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkEvmTraceFilterSplitFailure = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_trace_filter_split_failure_total",
 		Help:      "Total number of failed split trace_filter/arbtrace_filter sub-requests (network-scoped).",
 	}, []string{"project", "network", "method", "user", "agent_name"})
 
-	MetricNetworkEvmTraceFilterForcedSplits = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkEvmTraceFilterForcedSplits = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_trace_filter_forced_splits_total",
 		Help:      "Total number of trace_filter/arbtrace_filter request splits by dimension (block_range, from_address, to_address), network-scoped.",
@@ -374,7 +509,7 @@ var (
 		Help:      "Number of times block head rolled back by a large number vs previous latest block returned by the same upstream.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
-	MetricUpstreamWrongEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamWrongEmptyResponseTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_wrong_empty_response_total",
 		Help:      "Total number of times an upstream returned a wrong empty response even though other upstreams returned data.",
@@ -397,13 +532,13 @@ var (
 		Help:      "Total number of BDS pool connections force-closed by the stuck-call watchdog.",
 	}, []string{"project", "upstream"})
 
-	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkRequestsReceived = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_received_total",
 		Help:      "Total number of requests received for a network.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
-	MetricNetworkMultiplexedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkMultiplexedRequests = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_multiplexed_request_total",
 		Help:      "Total number of multiplexed requests for a network.",
@@ -415,13 +550,13 @@ var (
 		Help:      "Total number of requests served from a configured static response without contacting any upstream.",
 	}, []string{"project", "network", "category"})
 
-	MetricNetworkHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkHedgedRequestTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_hedged_request_total",
 		Help:      "Total number of hedged requests towards a network.",
 	}, []string{"project", "network", "upstream", "category", "attempt", "finality", "user", "agent_name"})
 
-	MetricNetworkHedgeDiscardsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkHedgeDiscardsTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_hedge_discards_total",
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
@@ -453,6 +588,20 @@ var (
 		Help:      "Per-(upstream, method, outcome) attempt count. Outcomes: success/empty/transport_error/server_error/client_error/rate_limited/missing_data/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped.",
 	}, []string{"project", "network", "upstream", "category", "outcome", "is_hedge", "is_retry", "finality"})
 
+	// MetricUpstreamCreditUnitsTotal accumulates vendor credit-unit cost
+	// (Alchemy compute units, QuickNode API credits, dRPC CUs, …) across
+	// every physical upstream attempt — retries, hedges and consensus slots
+	// included; cache hits and never-dialed attempts cost zero by
+	// construction. Values are each vendor's OWN units: not normalized, not
+	// comparable across vendors, not money. Per-user attribution is
+	// intentionally omitted here to bound cardinality — use the
+	// X-ERPC-Credits response header or trace attributes for per-user cost.
+	MetricUpstreamCreditUnitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_credit_units_total",
+		Help:      "Total vendor credit units accrued by upstream attempts, per (project, network, upstream, vendor, method, finality). Vendor-owned units, not money; not comparable across vendors.",
+	}, []string{"project", "network", "upstream", "vendor", "category", "finality"})
+
 	// MetricNetworkRetryAttemptTotal counts retry attempts at the
 	// network scope, labeled by the reason for retry (empty_result /
 	// pending_tx / retryable_error / block_unavailable / missing_data).
@@ -481,19 +630,19 @@ var (
 		Help:      "Total circuit-breaker state transitions per upstream and direction (closed_to_open/half_open_to_open/half_open_to_closed/open_to_half_open).",
 	}, []string{"project", "upstream", "transition"})
 
-	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkFailedRequests = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
 		Help:      "Total number of failed requests for a network.",
 	}, []string{"project", "network", "category", "attempt", "error", "severity", "finality", "user", "agent_name"})
 
-	MetricNetworkSuccessfulRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkSuccessfulRequests = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_successful_request_total",
 		Help:      "Total number of successful requests for a network.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish", "user", "agent_name"})
 
-	MetricRateLimitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricRateLimitsTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "rate_limits_total",
 		Help:      "Unified rate limiting events (remote limits and budget decisions).",
@@ -505,13 +654,13 @@ var (
 		Help:      "Maximum number of requests allowed per second for a rate limiter budget (including auto-tuner).",
 	}, []string{"budget", "method", "scope"})
 
-	MetricRateLimiterBudgetDecisionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricRateLimiterBudgetDecisionTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "rate_limiter_budget_decision_total",
 		Help:      "[DEPRECATED] Replaced by rate_limits_total. Total number of local rate-limit decisions by budget.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name", "budget", "method", "scope", "decision"})
 
-	MetricRateLimiterFailopenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricRateLimiterFailopenTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "rate_limiter_failopen_total",
 		Help:      "Total number of rate limiter fail-open events (requests allowed due to errors/timeouts).",
@@ -546,7 +695,7 @@ var (
 		Help:      "Total number of cache set operations.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
-	MetricCacheSetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricCacheSetErrorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_error_total",
 		Help:      "Total number of cache set errors.",
@@ -570,7 +719,7 @@ var (
 		Help:      "Total number of cache get misses.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
-	MetricCacheGetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricCacheGetErrorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_error_total",
 		Help:      "Total number of cache get errors.",
@@ -642,38 +791,38 @@ var (
 		Help:      "Total number of shadow upstream responses that differ from the expected response.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "emptyish", "larger"})
 
-	MetricShadowResponseErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricShadowResponseErrorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "shadow_response_error_total",
 		Help:      "Total number of shadow upstream requests that resulted in error.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "error"})
 
 	// Authentication metrics
-	MetricAuthFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricAuthFailedTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "auth_failed_total",
 		Help:      "Total number of failed authentication attempts.",
 	}, []string{"project", "network", "strategy", "reason", "agent_name"})
 
-	MetricConsensusTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_total",
 		Help:      "Total number of consensus operations attempted.",
 	}, []string{"project", "network", "category", "outcome", "finality", "user", "agent_name"})
 
-	MetricConsensusMisbehaviorDetected = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusMisbehaviorDetected = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_misbehavior_detected_total",
 		Help:      "Total number of times an upstream returned different data (not errors) than consensus.",
 	}, []string{"project", "network", "upstream", "category", "finality", "response_type", "larger_than_consensus", "user", "agent_name"})
 
-	MetricConsensusUpstreamPunished = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusUpstreamPunished = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_upstream_punished_total",
 		Help:      "Total number of times upstreams were punished.",
 	}, []string{"project", "network", "upstream", "user", "agent_name"})
 
-	MetricConsensusShortCircuit = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusShortCircuit = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_short_circuit_total",
 		Help:      "Total number of consensus rounds that short-circuited.",
@@ -684,37 +833,37 @@ var (
 	// participant returned. High rates indicate persistently slow
 	// upstreams dragging tail latency — operators can drop those
 	// upstreams or tighten the wait caps further.
-	MetricConsensusWaitCapped = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusWaitCapped = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_wait_capped_total",
 		Help:      "Total number of consensus rounds resolved early due to MaxWaitOnResult/MaxWaitOnEmpty firing.",
 	}, []string{"project", "network", "category", "trigger", "finality", "user", "agent_name"})
 
-	MetricConsensusErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusErrors = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_errors_total",
 		Help:      "Total number of consensus errors by type.",
 	}, []string{"project", "network", "category", "error", "finality", "user", "agent_name"})
 
-	MetricConsensusUpstreamErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusUpstreamErrors = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_upstream_errors_total",
 		Help:      "Total number of errors from upstreams during consensus operations.",
 	}, []string{"project", "network", "upstream", "category", "finality", "response_type", "error_code", "user", "agent_name"})
 
-	MetricConsensusPanics = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusPanics = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_panics_total",
 		Help:      "Total number of panic recoveries in consensus.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
-	MetricConsensusCancellations = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusCancellations = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_cancellations_total",
 		Help:      "Total number of context cancellations during consensus.",
 	}, []string{"project", "network", "category", "phase", "finality", "user", "agent_name"})
 
-	MetricNetworkEvmBlockRangeRequested = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricNetworkEvmBlockRangeRequested = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_block_range_requested_total",
 		Help:      "Total requests observed by block-number buckets for heatmap.",
@@ -764,6 +913,7 @@ var (
 	MetricCacheGetErrorDuration               *LabeledHistogram
 	MetricRateLimiterRemoteDuration           *LabeledHistogram
 	MetricUpstreamResponseSizeBytes           *LabeledHistogram
+	MetricIntegrityOverhead                   *LabeledHistogram
 )
 
 // buildFilterAwareHistograms creates every LabeledHistogram using the current
@@ -789,6 +939,18 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user"})
+
+	// Per-request integrity latency overhead — the time a request waited on
+	// integrity data-checks plus aux force-fetches (canonical header/receipts),
+	// summed across attempts; excludes failover latency from rejections. Uses the
+	// same config-driven buckets as the other latency metrics so its quantiles are
+	// consistent and operator-tunable.
+	MetricIntegrityOverhead = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "integrity_overhead_seconds",
+		Help:      "Per-request latency overhead added by integrity checks (data-checks + aux force-fetches the request waited on).",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category"})
 
 	MetricNetworkEvmGetLogsRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -959,6 +1121,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 
 	MetricUpstreamRequestDuration = registerOrReuse(MetricUpstreamRequestDuration)
 	MetricNetworkRequestDuration = registerOrReuse(MetricNetworkRequestDuration)
+	MetricIntegrityOverhead = registerOrReuse(MetricIntegrityOverhead)
 	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
 	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
 	MetricCacheEvmGetLogsRange = registerOrReuse(MetricCacheEvmGetLogsRange)
@@ -980,6 +1143,104 @@ func SetHistogramBuckets(bucketsStr string) error {
 	ResetHandleCache()
 
 	return parseErr
+}
+
+// RebuildFilteredCounters re-creates every counter that carries
+// caller-controlled labels under the current CounterLabelFilter and registers
+// them with prometheus.DefaultRegisterer. Package counters are built
+// unregistered at init (before config is read); this is the step that both
+// applies the filter and exposes them on /metrics — the same two-step the
+// histogram side uses (SetHistogramLabelFilter + SetHistogramBuckets).
+//
+// Must be called exactly once per process against a given DefaultRegisterer.
+// Prometheus freezes a metric's label-set hash for the life of the registry
+// (dimHashesByName survives Unregister), so a second call with a different
+// filter panics. Call it unconditionally from erpc.Init after any
+// SetCounterLabelFilter, even when the filter is empty, so the unregistered
+// init-time counters become scrapeable.
+//
+// Counters without caller-controlled labels stay as plain promauto CounterVecs
+// and are left alone: their cardinality is bounded by deployment topology.
+func RebuildFilteredCounters() {
+	MetricUnexpectedPanicTotal = MetricUnexpectedPanicTotal.Rebuild()
+	MetricUpstreamRequestTotal = MetricUpstreamRequestTotal.Rebuild()
+	MetricUpstreamErrorTotal = MetricUpstreamErrorTotal.Rebuild()
+	MetricUpstreamSkippedTotal = MetricUpstreamSkippedTotal.Rebuild()
+	MetricUpstreamMissingDataErrorTotal = MetricUpstreamMissingDataErrorTotal.Rebuild()
+	MetricUpstreamEmptyResponseTotal = MetricUpstreamEmptyResponseTotal.Rebuild()
+	MetricNetworkEvmGetLogsSplitSuccess = MetricNetworkEvmGetLogsSplitSuccess.Rebuild()
+	MetricNetworkEvmGetLogsSplitFailure = MetricNetworkEvmGetLogsSplitFailure.Rebuild()
+	MetricNetworkEvmGetLogsForcedSplits = MetricNetworkEvmGetLogsForcedSplits.Rebuild()
+	MetricNetworkEvmTraceFilterSplitSuccess = MetricNetworkEvmTraceFilterSplitSuccess.Rebuild()
+	MetricNetworkEvmTraceFilterSplitFailure = MetricNetworkEvmTraceFilterSplitFailure.Rebuild()
+	MetricNetworkEvmTraceFilterForcedSplits = MetricNetworkEvmTraceFilterForcedSplits.Rebuild()
+	MetricUpstreamWrongEmptyResponseTotal = MetricUpstreamWrongEmptyResponseTotal.Rebuild()
+	MetricNetworkRequestsReceived = MetricNetworkRequestsReceived.Rebuild()
+	MetricNetworkMultiplexedRequests = MetricNetworkMultiplexedRequests.Rebuild()
+	MetricNetworkHedgedRequestTotal = MetricNetworkHedgedRequestTotal.Rebuild()
+	MetricNetworkHedgeDiscardsTotal = MetricNetworkHedgeDiscardsTotal.Rebuild()
+	MetricNetworkFailedRequests = MetricNetworkFailedRequests.Rebuild()
+	MetricNetworkSuccessfulRequests = MetricNetworkSuccessfulRequests.Rebuild()
+	MetricRateLimitsTotal = MetricRateLimitsTotal.Rebuild()
+	MetricRateLimiterBudgetDecisionTotal = MetricRateLimiterBudgetDecisionTotal.Rebuild()
+	MetricRateLimiterFailopenTotal = MetricRateLimiterFailopenTotal.Rebuild()
+	MetricCacheSetErrorTotal = MetricCacheSetErrorTotal.Rebuild()
+	MetricCacheGetErrorTotal = MetricCacheGetErrorTotal.Rebuild()
+	MetricShadowResponseErrorTotal = MetricShadowResponseErrorTotal.Rebuild()
+	MetricAuthFailedTotal = MetricAuthFailedTotal.Rebuild()
+	MetricConsensusTotal = MetricConsensusTotal.Rebuild()
+	MetricConsensusMisbehaviorDetected = MetricConsensusMisbehaviorDetected.Rebuild()
+	MetricConsensusUpstreamPunished = MetricConsensusUpstreamPunished.Rebuild()
+	MetricConsensusShortCircuit = MetricConsensusShortCircuit.Rebuild()
+	MetricConsensusWaitCapped = MetricConsensusWaitCapped.Rebuild()
+	MetricConsensusErrors = MetricConsensusErrors.Rebuild()
+	MetricConsensusUpstreamErrors = MetricConsensusUpstreamErrors.Rebuild()
+	MetricConsensusPanics = MetricConsensusPanics.Rebuild()
+	MetricConsensusCancellations = MetricConsensusCancellations.Rebuild()
+	MetricNetworkEvmBlockRangeRequested = MetricNetworkEvmBlockRangeRequested.Rebuild()
+
+	// Register once under the (possibly filtered) label set. registerOrReuse
+	// keeps a second call with identical labels idempotent for tests.
+	MetricUnexpectedPanicTotal = registerOrReuseCounter(MetricUnexpectedPanicTotal)
+	MetricUpstreamRequestTotal = registerOrReuseCounter(MetricUpstreamRequestTotal)
+	MetricUpstreamErrorTotal = registerOrReuseCounter(MetricUpstreamErrorTotal)
+	MetricUpstreamSkippedTotal = registerOrReuseCounter(MetricUpstreamSkippedTotal)
+	MetricUpstreamMissingDataErrorTotal = registerOrReuseCounter(MetricUpstreamMissingDataErrorTotal)
+	MetricUpstreamEmptyResponseTotal = registerOrReuseCounter(MetricUpstreamEmptyResponseTotal)
+	MetricNetworkEvmGetLogsSplitSuccess = registerOrReuseCounter(MetricNetworkEvmGetLogsSplitSuccess)
+	MetricNetworkEvmGetLogsSplitFailure = registerOrReuseCounter(MetricNetworkEvmGetLogsSplitFailure)
+	MetricNetworkEvmGetLogsForcedSplits = registerOrReuseCounter(MetricNetworkEvmGetLogsForcedSplits)
+	MetricNetworkEvmTraceFilterSplitSuccess = registerOrReuseCounter(MetricNetworkEvmTraceFilterSplitSuccess)
+	MetricNetworkEvmTraceFilterSplitFailure = registerOrReuseCounter(MetricNetworkEvmTraceFilterSplitFailure)
+	MetricNetworkEvmTraceFilterForcedSplits = registerOrReuseCounter(MetricNetworkEvmTraceFilterForcedSplits)
+	MetricUpstreamWrongEmptyResponseTotal = registerOrReuseCounter(MetricUpstreamWrongEmptyResponseTotal)
+	MetricNetworkRequestsReceived = registerOrReuseCounter(MetricNetworkRequestsReceived)
+	MetricNetworkMultiplexedRequests = registerOrReuseCounter(MetricNetworkMultiplexedRequests)
+	MetricNetworkHedgedRequestTotal = registerOrReuseCounter(MetricNetworkHedgedRequestTotal)
+	MetricNetworkHedgeDiscardsTotal = registerOrReuseCounter(MetricNetworkHedgeDiscardsTotal)
+	MetricNetworkFailedRequests = registerOrReuseCounter(MetricNetworkFailedRequests)
+	MetricNetworkSuccessfulRequests = registerOrReuseCounter(MetricNetworkSuccessfulRequests)
+	MetricRateLimitsTotal = registerOrReuseCounter(MetricRateLimitsTotal)
+	MetricRateLimiterBudgetDecisionTotal = registerOrReuseCounter(MetricRateLimiterBudgetDecisionTotal)
+	MetricRateLimiterFailopenTotal = registerOrReuseCounter(MetricRateLimiterFailopenTotal)
+	MetricCacheSetErrorTotal = registerOrReuseCounter(MetricCacheSetErrorTotal)
+	MetricCacheGetErrorTotal = registerOrReuseCounter(MetricCacheGetErrorTotal)
+	MetricShadowResponseErrorTotal = registerOrReuseCounter(MetricShadowResponseErrorTotal)
+	MetricAuthFailedTotal = registerOrReuseCounter(MetricAuthFailedTotal)
+	MetricConsensusTotal = registerOrReuseCounter(MetricConsensusTotal)
+	MetricConsensusMisbehaviorDetected = registerOrReuseCounter(MetricConsensusMisbehaviorDetected)
+	MetricConsensusUpstreamPunished = registerOrReuseCounter(MetricConsensusUpstreamPunished)
+	MetricConsensusShortCircuit = registerOrReuseCounter(MetricConsensusShortCircuit)
+	MetricConsensusWaitCapped = registerOrReuseCounter(MetricConsensusWaitCapped)
+	MetricConsensusErrors = registerOrReuseCounter(MetricConsensusErrors)
+	MetricConsensusUpstreamErrors = registerOrReuseCounter(MetricConsensusUpstreamErrors)
+	MetricConsensusPanics = registerOrReuseCounter(MetricConsensusPanics)
+	MetricConsensusCancellations = registerOrReuseCounter(MetricConsensusCancellations)
+	MetricNetworkEvmBlockRangeRequested = registerOrReuseCounter(MetricNetworkEvmBlockRangeRequested)
+
+	// The Vecs above are new objects; cached child handles point at the old
+	// ones and would otherwise increment series that are no longer collected.
+	ResetHandleCache()
 }
 
 // registerOrReuse registers lh with prometheus.DefaultRegisterer. If a

@@ -116,8 +116,15 @@ changing a registered metric's label set.
 
 An idle-eviction sweep runs every ~5 minutes and calls `DeleteLabelValues` on stale
 `erpc_upstream_request_duration_seconds` and `erpc_rate_limits_total` series to prevent
-cardinality runaway under method-flood attacks. Other high-cardinality metrics are bounded
-only by distinct (project, network, upstream, method) tuples.
+cardinality runaway under method-flood attacks. Counters emitted through
+`telemetry.CounterHandle` (upstream request/error totals, network success/hedge counters,
+etc.) are swept on the same cadence with their own, more conservative threshold —
+`metrics.counterIdleEvictionAfter`, default `24h` — so counter series whose label
+combinations go quiet (stale `method` × `user` × `agent_name` tuples) are eventually
+released instead of being re-emitted on every scrape for the process lifetime. A swept
+series that becomes active again restarts at zero, the same semantics as a process
+restart. Remaining high-cardinality metrics are bounded only by distinct
+(project, network, upstream, method) tuples.
 
 **`LabeledHistogram` label filtering.** `WithLabelValues` always receives the full canonical
 label set in schema order; the wrapper projects down to the active (post-filter) subset before
@@ -165,6 +172,9 @@ All fields under `metrics.` in the YAML root config. Struct: <SourceLink file="c
 | `metrics.histogramBuckets` | `string` | `""` → `[0.05, 0.5, 5, 30]` | Comma-separated float64 bucket boundaries for the 8 configurable `LabeledHistogram` instances: `upstream_request_duration_seconds`, `network_request_duration_seconds`, `consensus_duration_seconds`, `cache_set_success/error_duration_seconds`, `cache_get_success_hit/miss/error_duration_seconds`. Invalid float → warning + fallback to defaults. Source: <SourceLink file="telemetry/metrics.go" lines="731-736" /> |
 | `metrics.histogramDropLabels` | `[]string` | `nil` | Label names to drop from EVERY `LabeledHistogram`. Counters and gauges unaffected. Drop is permanent for the process lifetime — reconfiguring after first `SetHistogramBuckets` call panics. Common candidates: `user`, `agent_name`. Source: <SourceLink file="erpc/init.go" lines="53" /> |
 | `metrics.histogramLabelOverrides` | `map[string][]string` | `nil` | Per-metric overrides that re-add labels even if listed in `histogramDropLabels`. Key = metric name **without** `erpc_` prefix (e.g. `"network_request_duration_seconds"`). Value = labels to preserve for that metric. Source: <SourceLink file="erpc/init.go" lines="53" /> |
+| `metrics.counterDropLabels` | `[]string` | `nil` | Label names to drop from every counter carrying caller-controlled dimensions (`user`, `agent_name`, `attempt`, `composite`, `hedge`, `error`). Histograms and gauges unaffected. Sums are preserved — the series that differed only in the dropped label collapse into one — but the dimension stops being queryable, so verify nothing downstream groups by it first. Applied at `erpc.Init` via `SetCounterLabelFilter` + `RebuildFilteredCounters`. Source: <SourceLink file="erpc/init.go" lines="57-62" /> |
+| `metrics.counterLabelOverrides` | `map[string][]string` | `nil` | Per-metric overrides that re-add labels even if listed in `counterDropLabels`. Key = metric name **without** `erpc_` prefix (e.g. `"upstream_request_total"`). Lets you drop a label fleet-wide while keeping it on the one or two counters a billing/attribution pipeline actually reads. Source: <SourceLink file="erpc/init.go" lines="57-62" /> |
+| `metrics.counterIdleEvictionAfter` | `Duration` | `24h` | Idle threshold after which counter series emitted via `telemetry.CounterHandle` are evicted from the registry (`DeleteLabelValues`), bounding `/metrics` growth from caller-controlled label values (`method`, `user`, `agent_name`). `0` disables. Swept on the health tracker's sweep cadence. Source: <SourceLink file="erpc/init.go" lines="54-56" /> |
 
 **Hardcoded server constants (not configurable):**
 - Bind address: `":<port>"` (all interfaces) — <SourceLink file="erpc/init.go" lines="149" />
@@ -313,8 +323,17 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
   or clients — these two labels multiply every `LabeledHistogram`'s bucket count by the
   number of distinct values.
 - Managed Prometheus scrapers (Grafana Cloud, hosted Prometheus) typically cap the `/metrics`
-  response body at 10–64 MB. If scrape errors mention body size, add `category` to
-  `histogramDropLabels` too.
+  response body at 10–64 MB, and the cap is usually enforced on the response **whole**: past
+  it the scrape is rejected outright, so every series for that instance goes dark rather than
+  degrading. Counters — not histograms — are normally the bulk of a large payload, because an
+  unbounded label like a client-supplied user-agent is re-emitted on every scrape for the life
+  of the process. Reach for `counterDropLabels` (and `counterIdleEvictionAfter`) before
+  raising the scraper's limit; the label set is unbounded and will re-cross any new ceiling.
+- `counterDropLabels` is the counter-side twin of `histogramDropLabels`, with one important
+  difference: counter labels are more likely to be load-bearing downstream. `agent_name` or
+  `user` on a request counter often feeds billing or per-tenant attribution, so check
+  consumers before dropping and use `counterLabelOverrides` to spare the specific counters
+  that need it.
 - Never set `histogramDropLabels` after startup — the Prometheus registry rejects label-set
   changes and the process panics. Plan your drop list before first deploy.
 - Use `histogramLabelOverrides` to surgically restore a dropped label on exactly one

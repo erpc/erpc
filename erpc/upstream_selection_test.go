@@ -285,7 +285,7 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 	// Configure aggressive hedging
 	failsafeConfig := &common.FailsafeConfig{
 		Hedge: &common.HedgePolicyConfig{
-			MaxCount: 2,                                       // Allow up to 2 hedges (3 total requests)
+			MaxCount: 2,                                                // Allow up to 2 hedges (3 total requests)
 			Delay:    common.NewStaticDuration(100 * time.Millisecond), // Hedge quickly
 		},
 		Timeout: &common.TimeoutPolicyConfig{

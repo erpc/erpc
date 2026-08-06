@@ -30,8 +30,9 @@ type networkExecutor struct {
 	// consensus(retry(hedge(slotInner))) per spec §11.2.
 	consensus consensusRunner
 
-	method     string
-	finalities []common.DataFinalityState
+	method      string
+	finalities  []common.DataFinalityState
+	requestKind string // "*" (any) | "user" | "internal"
 
 	emptyResultAccept []string
 
@@ -59,6 +60,7 @@ func NewNetworkExecutor(
 	if cfg == nil {
 		return &networkExecutor{
 			method:                       "*",
+			requestKind:                  "*",
 			logger:                       logger,
 			emptyResultAccept:            common.DefaultEmptyResultAccept(),
 			dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
@@ -77,11 +79,15 @@ func NewNetworkExecutor(
 		logger:                       logger,
 		method:                       cfg.MatchMethod,
 		finalities:                   cfg.MatchFinality,
+		requestKind:                  cfg.MatchRequestKind,
 		consensus:                    consensus,
 		dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
 	}
 	if e.method == "" {
 		e.method = "*"
+	}
+	if e.requestKind == "" {
+		e.requestKind = "*"
 	}
 	if cfg.Timeout != nil {
 		e.timeout = common.NewTimeoutFunc(logger, cfg.Timeout)
@@ -99,6 +105,9 @@ func (e *networkExecutor) MatchMethod() string { return e.method }
 
 // MatchFinality returns the configured finality filter.
 func (e *networkExecutor) MatchFinality() []common.DataFinalityState { return e.finalities }
+
+// MatchRequestKind returns the configured request-kind filter ("*"/"user"/"internal").
+func (e *networkExecutor) MatchRequestKind() string { return e.requestKind }
 
 // Timeout exposes the configured TimeoutFunc (nil when no timeout).
 func (e *networkExecutor) Timeout() common.TimeoutFunc { return e.timeout }

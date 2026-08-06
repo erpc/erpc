@@ -125,11 +125,11 @@ type DecisionDiff struct {
 // Mirrors §3.1 of the spec. Built per-tick from health.Tracker.
 //
 // Lag is exposed in TWO units:
-//   * blockHeadLag / finalizationLag — count of blocks behind the network's
+//   - blockHeadLag / finalizationLag — count of blocks behind the network's
 //     latest / finalized tip. Chain-agnostic but unitless for time-based
 //     decisions (a 16-block lag means 4 min on Eth mainnet but ~32 s on a
 //     2 s chain).
-//   * blockHeadLagSeconds / finalizationLagSeconds — same lag multiplied
+//   - blockHeadLagSeconds / finalizationLagSeconds — same lag multiplied
 //     by the tracker's EMA-estimated block time for the network. Zero
 //     until the tracker has enough samples to estimate block time
 //     (typically a few seconds after first traffic). Use these when the

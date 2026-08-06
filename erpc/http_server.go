@@ -613,6 +613,30 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				if isAdmin {
 					if s.adminCfg != nil {
+						if blocked, berr := isAdminMethodBlocked(s.adminCfg, method); berr != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, berr, &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, berr)
+							return
+						} else if blocked {
+							jrr, _ := nq.JsonRpcRequest()
+							var reqId interface{}
+							jsonrpcVersion := "2.0"
+							if jrr != nil {
+								jsonrpcVersion = jrr.JSONRPC
+								reqId = jrr.ID
+							}
+							responses[index] = &HttpJsonRpcErrorResponse{
+								Jsonrpc: jsonrpcVersion,
+								Id:      reqId,
+								Error: map[string]interface{}{
+									"code":    int(common.JsonRpcErrorUnsupportedException),
+									"message": fmt.Sprintf("method not supported: %s", method),
+								},
+								Request: nq,
+							}
+							common.EndRequestSpan(requestCtx, nil, nil)
+							return
+						}
 						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
@@ -684,7 +708,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					if project.Config.UserAgentMode != "" {
 						uaMode = project.Config.UserAgentMode
 					}
-					nq.SetAllowClientDirectiveMatcher(project.allowClientDirectiveMatcher)
+					nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
 				}
 				nq.EnrichFromHttp(headers, queryArgs, uaMode)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
@@ -1343,8 +1367,12 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 //	X-ERPC-Credits:         `vendor:method=<units>` segments, sorted and
 //	                        ';'-joined — the credit units accrued by every
 //	                        physical upstream attempt (retries, hedges,
-//	                        consensus slots; see UpstreamAttempt.CreditUnits).
+//	                        consensus slots; see UpstreamAttempt.CreditUnits),
+//	                        read from the request-object aggregate
+//	                        (NormalizedRequest.CreditUnitsByVendor).
 //	                        Omitted when nothing accrued (e.g. pure cache hits).
+//	X-ERPC-Credits-Total:   the grand total credit units across all vendors
+//	                        and sub-calls in this response; alongside X-ERPC-Credits.
 //	X-ERPC-Credits-Version: the eRPC version the built-in vendor tables
 //	                        shipped with; only alongside X-ERPC-Credits.
 //	X-ERPC-Network-Id:      canonical network id of the routed call
@@ -1369,6 +1397,7 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 	billable := 0
 	methods := map[string]struct{}{}
 	credits := map[string]int64{} // "vendor:method" → units
+	var creditsTotal int64
 	networkId, networkAlias := "", ""
 	networkAmbiguous := false
 	for _, item := range items {
@@ -1394,11 +1423,15 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 		if method != "" {
 			methods[method] = struct{}{}
 		}
-		if st := req.ExecState(); st != nil {
-			for _, attempt := range st.UpstreamAttemptLog() {
-				if attempt.CreditUnits > 0 && attempt.VendorName != "" {
-					credits[attempt.VendorName+":"+method] += attempt.CreditUnits
-				}
+		// Per-vendor credit totals come from the request-object aggregate
+		// (thread-safe; sums every physical attempt against each vendor,
+		// retries/hedges/consensus included). A request carries a single
+		// method, so keying the header segment by this request's method
+		// preserves the vendor:method=units contract.
+		for vendor, units := range req.CreditUnitsByVendor() {
+			if units > 0 {
+				credits[vendor+":"+method] += units
+				creditsTotal += units
 			}
 		}
 	}
@@ -1429,6 +1462,7 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 			segments[i] = k + "=" + strconv.FormatInt(credits[k], 10)
 		}
 		w.Header().Set("X-ERPC-Credits", strings.Join(segments, ";"))
+		w.Header().Set("X-ERPC-Credits-Total", strconv.FormatInt(creditsTotal, 10))
 		w.Header().Set("X-ERPC-Credits-Version", common.ErpcVersion)
 	}
 }
@@ -2227,4 +2261,46 @@ func stripAddrDecorations(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// isAdminMethodBlocked returns true when the admin config's DenyMethods/AllowMethods
+// rules prevent the given method from being handled.
+// DenyMethods is evaluated first; AllowMethods can re-admit a method that was denied.
+func isAdminMethodBlocked(cfg *common.AdminConfig, method string) (bool, error) {
+	blocked := false
+	for _, pattern := range cfg.DenyMethods {
+		match, err := common.WildcardMatch(pattern, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			blocked = true
+			break
+		}
+	}
+	if blocked {
+		for _, pattern := range cfg.AllowMethods {
+			match, err := common.WildcardMatch(pattern, method)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	if len(cfg.AllowMethods) > 0 {
+		for _, pattern := range cfg.AllowMethods {
+			match, err := common.WildcardMatch(pattern, method)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }

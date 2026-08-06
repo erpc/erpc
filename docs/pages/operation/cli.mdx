@@ -210,6 +210,8 @@ pprof — build with `-tags pprof` to activate.
 | `metrics.histogramBuckets` | string | `""` (built-in defaults) | Comma-separated float64 bucket boundaries. Non-float values are rejected by validation. |
 | `metrics.histogramDropLabels` | []string | nil | Label names removed from every histogram to reduce cardinality. |
 | `metrics.histogramLabelOverrides` | map[string][]string | nil | Per-metric label keep-list; key is metric name without `erpc_` prefix. |
+| `metrics.counterDropLabels` | []string | nil | Label names removed from every counter carrying caller-controlled dimensions. Sums are preserved; the dimension is not. |
+| `metrics.counterLabelOverrides` | map[string][]string | nil | Per-metric label keep-list for counters; key is metric name without `erpc_` prefix. |
 
 **Environment variables**
 
