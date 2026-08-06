@@ -267,6 +267,32 @@ func TestMinAgreement_CorrelatedWinnerDisputes(t *testing.T) {
 		"winner without required internal upstream must be a composition dispute, got: %v", winner.Error)
 }
 
+func TestMinAgreement_MissingTagIsLowParticipants(t *testing.T) {
+	// Externals agree and meet agreementThreshold, but NO internal upstream
+	// answered at all this round (not merely dissenting) -> the required
+	// participant is missing outright, so this must surface as
+	// LowParticipants, not CompositionDispute.
+	cfg := &config{
+		maxParticipants:      2,
+		agreementThreshold:   2,
+		disputeBehavior:      common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+		requiredParticipants: mixedQuota(1),
+	}
+	ext1 := taggedUpstream("external-1", "type:external")
+	ext2 := taggedUpstream("external-2", "type:external")
+
+	analysis := analyze(cfg, []*execResult{
+		resultFrom(t, ext1, "0xaa", 0),
+		resultFrom(t, ext2, "0xaa", 1),
+	})
+	winner := winnerOf(cfg, analysis)
+
+	require.NotNil(t, winner.Error)
+	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),
+		"missing required tag with zero participants must be LowParticipants, got: %v", winner.Error)
+	assert.False(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute))
+}
+
 func TestMinAgreement_ZeroIsNoOp(t *testing.T) {
 	// minAgreement: 0 keeps today's behavior: the correlated externals win.
 	cfg := &config{

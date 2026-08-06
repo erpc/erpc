@@ -936,14 +936,15 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 		return winner
 	}
 	// A quota tag matching zero participants in the ENTIRE round (not just
-	// the winning group) means the config is structurally unable to ever
-	// satisfy the quota right now — a typo'd tag or every tagged upstream
-	// down. That is an outage, not a routine dispute: escalate to Warn so
-	// operators see it without debug logging. Only when the round is
-	// complete (nothing can still arrive): this gate also runs on every
-	// mid-collection analysis, where a slower tagged upstream simply hasn't
-	// answered yet — warning there would fire on every healthy
-	// mixed-latency round.
+	// the winning group) means a required participant is missing outright —
+	// a typo'd tag or every tagged upstream down/unreachable. That is a
+	// participation gap, not a disagreement between responses, so it's
+	// reported as LowParticipants rather than CompositionDispute. Only when
+	// the round is complete (nothing can still arrive): this gate also runs
+	// on every mid-collection analysis, where a slower tagged upstream
+	// simply hasn't answered yet — flagging it there would fire on every
+	// healthy mixed-latency round.
+	missingTag := false
 	for _, req := range e.config.requiredParticipants {
 		if req == nil || req.MinAgreement <= 0 {
 			continue
@@ -961,10 +962,20 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 			}
 		}
 		if !matchedAnywhere && !analysis.hasRemaining() {
+			missingTag = true
 			lg.Warn().
 				Str("tag", req.Tag).
 				Int("minAgreement", req.MinAgreement).
 				Msg("minAgreement quota tag matched ZERO participants this round — check for a typo'd tag or unavailable tagged upstreams; consensus cannot succeed while this persists")
+		}
+	}
+	if missingTag {
+		return &slotResult{
+			Error: common.NewErrConsensusLowParticipants(
+				"a requiredParticipants tag matched zero participants this round",
+				analysis.participants(),
+				nil,
+			),
 		}
 	}
 	lg.Debug().
