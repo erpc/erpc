@@ -754,6 +754,9 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)
 		}
 	}
+	if err := p.Integrity.Validate(); err != nil {
+		return fmt.Errorf("project.*: %w", err)
+	}
 	return nil
 }
 
@@ -1132,6 +1135,12 @@ func (f *FailsafeConfig) Validate() error {
 		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
 	}
 
+	switch f.MatchRequestKind {
+	case "", "*", "user", "internal":
+	default:
+		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+	}
+
 	if f.Timeout != nil {
 		if err := f.Timeout.Validate(); err != nil {
 			return err
@@ -1294,6 +1303,11 @@ func (c *S3FlushConfig) Validate() error {
 	if c.FlushInterval < 0 {
 		return fmt.Errorf("s3.flushInterval must be >= 0")
 	}
+	if c.Endpoint != "" {
+		if u, err := url.Parse(c.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("s3.endpoint must be a valid http(s) URL, got %q", c.Endpoint)
+		}
+	}
 	if c.Credentials != nil {
 		mode := strings.ToLower(strings.TrimSpace(c.Credentials.Mode))
 		switch mode {
@@ -1423,6 +1437,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
 		}
 	}
+	if err := n.Integrity.Validate(); err != nil {
+		return fmt.Errorf("network.*: %w", err)
+	}
 	return nil
 }
 
@@ -1515,6 +1532,102 @@ func (c *SelectionPolicyConfig) Validate() error {
 	}
 	if c.CompiledProgram == nil {
 		return fmt.Errorf("selectionPolicy.evalFunc failed to compile (CompiledProgram is nil)")
+	}
+	return nil
+}
+
+// --- integrity ---
+
+// integrityCheckIDs is the catalog of known integrity check ids, registered by
+// the integrity package at init time (common cannot import it — that would be
+// a cycle). When empty (a build that doesn't link the integrity package), the
+// unknown-id validation is skipped rather than false-failing every config.
+var integrityCheckIDs = map[string]struct{}{}
+
+// RegisterIntegrityCheckID adds a check id to the validation catalog. Called
+// from the integrity package's check registrations.
+func RegisterIntegrityCheckID(id string) { integrityCheckIDs[id] = struct{}{} }
+
+// isIntegrityBehavior mirrors the runtime behavior vocabulary (evm
+// parseBehavior): unrecognized values are silently ignored at runtime, so the
+// only place a typo can be caught is here.
+func isIntegrityBehavior(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "reject", "error", "hard-fail", "soft-flag", "softflag", "record", "warn", "off", "ignore", "none":
+		return true
+	}
+	return false
+}
+
+func (i *IntegrityConfig) Validate() error {
+	if i == nil {
+		return nil
+	}
+	if err := i.IntegritySettings.validate(); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(i.HeaderMode)) {
+	case "", IntegrityHeaderModeOff, IntegrityHeaderModeProfiles, IntegrityHeaderModeFull:
+	default:
+		return fmt.Errorf("integrity.headerMode '%s' is invalid, must be one of: off | profiles | full", i.HeaderMode)
+	}
+	for name, p := range i.Profiles {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("integrity.profiles contains an empty profile name")
+		}
+		if p == nil {
+			continue
+		}
+		if err := p.validate(); err != nil {
+			return fmt.Errorf("integrity.profiles.%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// validate checks an IntegritySettings body. Every rule here guards a silent
+// runtime failure: an unknown level enables ZERO checks, an unknown check id
+// does nothing, and an unknown behavior string keeps the default — none of
+// which are visible without this validation.
+func (s *IntegritySettings) validate() error {
+	switch strings.ToLower(strings.TrimSpace(s.Level)) {
+	case "", "off", "intrinsic", "corroborated", "authoritative":
+	default:
+		return fmt.Errorf("integrity.level '%s' is invalid (an unknown level silently enables zero checks), must be one of: off | intrinsic | corroborated | authoritative", s.Level)
+	}
+	for id, oc := range s.Checks {
+		if len(integrityCheckIDs) > 0 {
+			if _, ok := integrityCheckIDs[id]; !ok {
+				known := make([]string, 0, len(integrityCheckIDs))
+				for k := range integrityCheckIDs {
+					known = append(known, k)
+				}
+				slices.Sort(known)
+				return fmt.Errorf("integrity.checks.%s is not a known check id (a typo'd id silently does nothing); known ids: %s", id, strings.Join(known, ", "))
+			}
+		}
+		if oc != nil && oc.OnFailure != "" && !isIntegrityBehavior(oc.OnFailure) {
+			return fmt.Errorf("integrity.checks.%s.onFailure '%s' is invalid (an unknown value silently keeps the default), must be one of: reject | soft-flag | off", id, oc.OnFailure)
+		}
+	}
+	if ib := s.InvalidBehavior; ib != nil {
+		if ib.Finalized != "" && !isIntegrityBehavior(ib.Finalized) {
+			return fmt.Errorf("integrity.invalidBehavior.finalized '%s' is invalid (an unknown value silently keeps the default), must be one of: reject | soft-flag | off", ib.Finalized)
+		}
+		if ib.Unfinalized != "" && !isIntegrityBehavior(ib.Unfinalized) {
+			return fmt.Errorf("integrity.invalidBehavior.unfinalized '%s' is invalid (an unknown value silently keeps the default), must be one of: reject | soft-flag | off", ib.Unfinalized)
+		}
+	}
+	if b := s.Budget; b != nil && (b.MaxPerSecond < 0 || b.MaxConcurrent < 0) {
+		return fmt.Errorf("integrity.budget.maxPerSecond/maxConcurrent must be >= 0")
+	}
+	if s.ReorgWindow < 0 {
+		return fmt.Errorf("integrity.reorgWindow must be >= 0")
+	}
+	if s.MisbehaviorsDestination != nil {
+		if err := s.MisbehaviorsDestination.Validate(); err != nil {
+			return fmt.Errorf("integrity.misbehaviorsDestination: %w", err)
+		}
 	}
 	return nil
 }

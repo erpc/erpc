@@ -28,6 +28,11 @@ type Slot struct {
 	networkLabel string
 	method       string
 	finality     string
+	// boundary is the block-availability lane key ("*" = full pool). It is
+	// part of the slot's identity and keeps per-lane eval state separate;
+	// it is intentionally NOT emitted as a metric label (boundary is a
+	// decision axis, not a metrics axis — see SelectionPolicyConfig.EvalPerBoundary).
+	boundary string
 
 	upstreamsFn func() []common.Upstream
 	cfg         *common.SelectionPolicyConfig
@@ -93,7 +98,7 @@ type Slot struct {
 	wg       sync.WaitGroup
 }
 
-func newSlot(e *Engine, networkID, networkLabel, method, finality string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
+func newSlot(e *Engine, networkID, networkLabel, method, finality, boundary string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
 	if networkLabel == "" {
 		networkLabel = networkID
 	}
@@ -103,6 +108,7 @@ func newSlot(e *Engine, networkID, networkLabel, method, finality string, upstre
 		networkLabel:  networkLabel,
 		method:        method,
 		finality:      finality,
+		boundary:      boundary,
 		upstreamsFn:   upstreamsFn,
 		cfg:           cfg,
 		excludedSince: make(map[string]int64),
