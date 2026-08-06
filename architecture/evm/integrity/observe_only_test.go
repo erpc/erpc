@@ -130,3 +130,30 @@ func TestObserveOnly(t *testing.T) {
 		assert.Empty(t, res.Recorded)
 	})
 }
+
+// would_reject must be the MARGINAL cost of enforcement, not the total: a
+// violation that soft-flags under the configured invalidBehavior soft-flags in
+// observe mode too. Only verdicts that would have REJECTED get relabelled.
+// This is what makes the two knobs orthogonal — invalidBehavior sets the
+// steady-state policy, observeOnly measures the delta to enforcing it.
+func TestObserveOnly_IsMarginalOverInvalidBehavior(t *testing.T) {
+	// hashStability on an unfinalized block, default policy → soft-flag either way.
+	softFlagPolicy := DefaultReorgPolicy() // finalized: reject, unfinalized: soft-flag
+	run := func(observe bool) Result {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), blockResult("0x10", "0xnew", "0xparent"), nil)
+		rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+		return Validate(context.Background(), Input{
+			Method: "eth_getBlockByNumber", Upstream: common.NewFakeUpstream("u"), Response: rs,
+			Checks: only("hashStability", nil), History: mockHistory{0x10: "0xold"},
+			Reorg: softFlagPolicy, ObserveOnly: observe,
+		})
+	}
+	enforce, observe := run(false), run(true)
+	assert.Equal(t, "soft_flag", outcomeOf(enforce, "hashStability"))
+	assert.Equal(t, "soft_flag", outcomeOf(observe, "hashStability"),
+		"a soft-flag must NOT be relabelled would_reject — otherwise would_reject overstates the enforcement cost")
+	require.Len(t, observe.Recorded, 1)
+	assert.Equal(t, "soft_flag", observe.Recorded[0].Verdict)
+	assert.NoError(t, enforce.Err, "already served under the policy, nothing for observe mode to suppress")
+}
