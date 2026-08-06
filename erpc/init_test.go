@@ -17,7 +17,6 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 )
 
@@ -186,24 +185,18 @@ func TestInit_InvalidHttpPort(t *testing.T) {
 func TestInit_CounterDropLabels_EndToEnd(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
-
-	// Isolate from other Init tests: Prometheus freezes dimHashesByName per
-	// registry for the life of the process, so a prior Init that registered
-	// the full label set would make counterDropLabels panic here. Swap in a
-	// fresh registry for both Registerer and Gatherer (promhttp.Handler reads
-	// DefaultGatherer).
-	reg := prometheus.NewRegistry()
-	prevReg := prometheus.DefaultRegisterer
-	prevGath := prometheus.DefaultGatherer
-	prometheus.DefaultRegisterer = reg
-	prometheus.DefaultGatherer = reg
+	// Do NOT swap prometheus.DefaultRegisterer/Gatherer. Init calls
+	// SetHistogramBuckets which reassigns package-level histogram vars onto
+	// whichever Registerer is current; a private registry leaves the rest of
+	// the package observing collectors DefaultGatherer can no longer see
+	// (breaks TestUpstream_TimeoutPolicy/HistogramEmits under make test).
+	// Counters stay unregistered until an Init with metrics config runs, and
+	// this test is the one that first registers them — under the drop filter.
 	t.Cleanup(func() {
-		prometheus.DefaultRegisterer = prevReg
-		prometheus.DefaultGatherer = prevGath
-		// Clear the process-wide filter so a later Init sees the default
-		// (full schema). Do not RebuildFilteredCounters here — that would
-		// fight dimHashesByName on whatever registry is current.
-		telemetry.SetCounterLabelFilter(nil, nil)
+		// Filter is process-lifetime against DefaultRegisterer (dimHashesByName
+		// freezes the label set). Leave counters registered as-is; call sites
+		// still pass the full schema and LabeledCounter projects. Only clear
+		// the handle cache so nothing holds stale children.
 		telemetry.ResetHandleCache()
 	})
 

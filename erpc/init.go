@@ -56,17 +56,16 @@ func Init(
 		}
 		// Counters are built unregistered at package init (Prometheus freezes
 		// a metric's label-set hash for the life of the registry, so we cannot
-		// register first and filter later). Install any filter here; registration
-		// happens below unconditionally so /metrics exposes them even when no
-		// drop list is configured.
+		// register first and filter later). Install any filter, then register
+		// once under it. Only when metrics config is present — processes that
+		// never scrape do not need these collectors on DefaultRegisterer, and
+		// tests that call Init without metrics must not freeze the full label
+		// set before a later Init can apply counterDropLabels.
 		if len(cfg.Metrics.CounterDropLabels) > 0 || len(cfg.Metrics.CounterLabelOverrides) > 0 {
 			telemetry.SetCounterLabelFilter(cfg.Metrics.CounterDropLabels, cfg.Metrics.CounterLabelOverrides)
 		}
+		telemetry.RebuildFilteredCounters()
 	}
-	// Register counters once under the current filter (empty = full schema).
-	// Safe to call with no metrics config — still need the collectors registered
-	// for any process that later enables scraping or Gather()-based checks.
-	telemetry.RebuildFilteredCounters()
 	if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
 		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
 	}
