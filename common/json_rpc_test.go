@@ -738,3 +738,35 @@ func TestJsonRpcRequest_CloneDeepCopy(t *testing.T) {
 		assert.Equal(t, "0x2", originalMap["toBlock"])
 	})
 }
+
+func TestJsonRpcRequest_UnmarshalJSON_FloatIDValidation(t *testing.T) {
+    cases := []struct {
+        name    string
+        body    string
+        wantErr bool
+        wantID  interface{}
+    }{
+        {"normal int", `{"id":42,"method":"x","jsonrpc":"2.0"}`, false, int64(42)},
+        {"normal string", `{"id":"abc","method":"x","jsonrpc":"2.0"}`, false, "abc"},
+        {"oversized 26 digit", `{"id":99999999999999999999999999,"method":"x","jsonrpc":"2.0"}`, true, nil},
+        {"1e20", `{"id":1e20,"method":"x","jsonrpc":"2.0"}`, true, nil},
+        {"1e308", `{"id":1e308,"method":"x","jsonrpc":"2.0"}`, true, nil},
+        {"9.3e18 just over 2^63", `{"id":9.3e18,"method":"x","jsonrpc":"2.0"}`, true, nil},
+        {"-1e20", `{"id":-1e20,"method":"x","jsonrpc":"2.0"}`, true, nil},
+        {"exact 2^63 boundary", `{"id":9223372036854775808,"method":"x","jsonrpc":"2.0"}`, true, nil},
+        {"2^64-1", `{"id":18446744073709551615,"method":"x","jsonrpc":"2.0"}`, true, nil},
+        {"fractional 1.5", `{"id":1.5,"method":"x","jsonrpc":"2.0"}`, true, nil},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            req := &JsonRpcRequest{}
+            err := req.UnmarshalJSON([]byte(tc.body))
+            if (err != nil) != tc.wantErr {
+                t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+            }
+            if !tc.wantErr && !reflect.DeepEqual(req.ID, tc.wantID) {
+                t.Fatalf("got id=%v (%T), want %v (%T)", req.ID, req.ID, tc.wantID, tc.wantID)
+            }
+        })
+    }
+}
