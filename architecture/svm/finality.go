@@ -7,7 +7,7 @@ import (
 )
 
 // neverCacheMethods returns realtime finality — forcing the cache layer to skip
-// these entirely. Two categories, all cross-checked against the Solana JSON-RPC
+// these entirely. Three categories, cross-checked against the Solana JSON-RPC
 // reference at https://solana.com/docs/rpc/http:
 //
 //   - Mutating or effectful: sendTransaction, sendRawTransaction,
@@ -19,6 +19,11 @@ import (
 //     getSlotLeaders, getRecentPerformanceSamples, getRecentPrioritizationFees.
 //     These all reflect "now" and go stale in under one slot (~400ms); caching
 //     them would surface stale state to the caller without detection.
+//   - Direct balance reads: getBalance, getTokenAccountBalance. These already
+//     fall through to Realtime via step 4, but hardcoding them here makes the
+//     no-cache intent explicit and guards against a configmap policy with a
+//     non-zero realtime TTL inadvertently caching them. Financial callers
+//     (e.g. deposit-address sweeps) must never receive a stale balance.
 //
 // Note: getEpochSchedule is intentionally excluded — epoch schedule constants
 // (slotsPerEpoch, leaderScheduleSlotOffset, etc.) only change at epoch
@@ -39,6 +44,10 @@ var neverCacheMethods = map[string]bool{
 	"getRecentPerformanceSamples": true,
 	"getRecentPrioritizationFees": true,
 	"requestAirdrop":              true,
+	// Direct balance reads — never cache; these feed financial decisions (e.g.
+	// deposit-address sweeps) and must never return a stale value.
+	"getBalance":             true,
+	"getTokenAccountBalance": true,
 }
 
 // alwaysFinalizedMethods return finalized data by their nature — regardless of
