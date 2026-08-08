@@ -2,6 +2,70 @@
 
 This project hosts **eRPC**, a fault-tolerant EVM RPC proxy with built-in caching, failover logic and a TypeScript CLI. The repository contains Go code for the server and TypeScript packages for tooling and configuration.
 
+## Design Razor: the Weakest Hypothesis, Not the Shortest
+
+Source: M. T. Bennett, *The Optimal Choice of Hypothesis Is the Weakest, Not
+the Shortest* (AGI-23; [arXiv:2301.12987](https://arxiv.org/abs/2301.12987)).
+The result in one line: among all hypotheses that EXACTLY account for what has
+been observed, the one most likely to also hold for unseen cases is the
+**weakest** — the one with the largest *extension* (the set of possibilities it
+still admits / inputs it still handles correctly). The paper proves weakness is
+necessary and sufficient to maximise the probability of generalising, while
+shortness/simplicity is neither. Its one-line razor: **"Explanations should be
+no more specific than necessary."**
+
+Generality is a property of a design's EXTENSION, not its FORM. "All things are
+blue crabs" is short and maximally overcommitted; a verbose pass-through can
+commit to almost nothing. A tidy regex or a clean enum is not evidence of
+generality.
+
+This razor is unusually load-bearing in eRPC because nearly every dimension we
+operate on is an open-ended set: chains, vendors, JSON-RPC methods, error
+shapes, response quirks, client behaviours. New members arrive weekly and
+UNANNOUNCED — the cost of an overcommitment here is silent misbehaviour on live
+traffic, not a compile error.
+
+Concretely, for every design and review in this repo:
+
+1. **The fallthrough is the primary path.** For any open set (methods, vendor
+   errors, response shapes, chains), much of tomorrow's traffic through your
+   code will be the case you did NOT enumerate. Design and test the
+   unknown-case default first; enumerated cases are optimisations layered on
+   top. A method table, error matcher, or chain special-case is acceptable only
+   when the unmatched path is safe, correct, and observable.
+2. **No unforced commitments.** Hard-coded `eth_*` method lists, vendor
+   error-string/regex matching, chain-ID special cases in core packages,
+   thresholds derived from "all chains/vendors we checked behave this way" —
+   each is a claim about ALL future members of an open set. If today's observed
+   data doesn't force the claim, don't make it.
+3. **Weaken by deleting structure, never by adding speculation.** Prefer
+   string + discovery over enum; kind + metadata over N parallel
+   structs/tables/endpoints; verbatim pass-through over interpretation; config
+   over code constants. Speculative abstraction (layers, hooks, options for
+   imagined futures) is not weakening — unexercised machinery is itself a
+   commitment. YAGNI governs form; the razor governs claims.
+4. **Weak ≠ vague.** The design must still decide every observed case exactly
+   (verified against real fixtures and tests), and open-ended inputs must still
+   resolve INTO a bounded, low-cardinality interface: any vendor error → one of
+   the finite normalized error codes; any method → one of the finite
+   cache/routing behaviours. Weakness in the claims, boundedness at the
+   interface.
+5. **Known invariants are data, not overreach.** True wire/protocol facts
+   (JSON-RPC 2.0 framing, hex-quantity encoding, chainId immutability) are
+   encoded as explicit, validated commitments at the edge — never smeared as
+   incidental assumptions through core logic. But measured behaviour is not an
+   invariant: N vendors or chains agreeing is an observation, not a law (a
+   traced-gas bound measured across six chains was later violated by EIP-3529
+   refunds on a seventh; the fix was deleting the bound, not adding an
+   exception). When reality violates a "bound", delete it — don't stack
+   exceptions.
+6. **No knobs for never-right behaviour.** A config flag whose one setting no
+   real use-case wants is added form with negative extension — fix the
+   semantics and delete the knob instead of shipping an opt-out for wrongness.
+7. **Review test.** For every design/PR ask: *what unseen-but-plausible input
+   does this silently mishandle, and what in today's observed data forces that
+   commitment?* If nothing forces it, weaken the design.
+
 ## Local Development
 
 ### Go code
