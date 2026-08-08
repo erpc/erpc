@@ -90,9 +90,11 @@ https://docs.erpc.cloud/operation/url.llms.txt`}
 
 Routing happens in two phases. First, the server evaluates `server.aliasing.rules` against the stripped `Host` header (port removed). The first matching rule wins and pre-populates up to all three of `(projectId, architecture, chainId)`. Then `parseUrlPath` reads the remaining URL path segments and fills in any fields not yet set by domain aliasing.
 
-After path parsing, `common.IsValidArchitecture` validates the architecture string. Currently only `"evm"` is valid; any other value — including an empty string when chainId is present — returns HTTP 400. If `projectId` is still empty after all resolution, the request is also rejected with 400.
+After path parsing, `common.IsValidArchitecture` validates the architecture string. `"evm"` and `"svm"` are both valid; any other value — including an empty string when chainId is present — returns HTTP 400. If `projectId` is still empty after all resolution, the request is also rejected with 400.
 
-For POST requests where `architecture` and `chainId` are still unknown after the path, the server inspects the JSON-RPC body for a top-level `"networkId"` field of the form `"evm:42161"`. This allows project-level requests (`POST /main`) to self-describe their network inline without a URL change.
+**The third segment is not always a numeric chain id.** It is a generic identifier slot whose meaning depends on the architecture: for EVM it is the numeric chain id (`/main/evm/42161`), and for SVM it is the cluster — `/main/svm/mainnet-beta` for Solana, or `<chain>:<cluster>` for a fork, e.g. `/main/svm/fogo:mainnet`. The colon inside a fork's identifier is carried intact in that one segment and reassembled as `svm:fogo:mainnet`.
+
+For POST requests where `architecture` and `chainId` are still unknown after the path, the server inspects the JSON-RPC body for a top-level `"networkId"` field — `"evm:42161"`, `"svm:mainnet-beta"`, or `"svm:fogo:mainnet"`. The split is `SplitN(networkId, ":", 2)`, so a fork's `chain:cluster` tail stays intact as the chainId component. This allows project-level requests (`POST /main`) to self-describe their network inline without a URL change.
 
 Any request whose HTTP method is neither POST nor OPTIONS has `isHealthCheck` forced to `true` after path parsing — meaning `GET /main/evm/1` silently becomes a network-scoped healthcheck rather than an error. Architecture validation still runs first; a GET to an invalid architecture path returns 400, not 200.
 

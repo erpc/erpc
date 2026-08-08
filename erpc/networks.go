@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/internal/policy"
@@ -46,8 +47,9 @@ type Network struct {
 	// The engine pre-computes the ordered upstream list per (network, method) tick;
 	// the request path consumes the head via `policyEngine.GetOrdered`, so per-attempt
 	// permit-acquisition is no longer needed.
-	policyEngine *policy.Engine
-	initializer  *util.Initializer
+	policyEngine        *policy.Engine
+	initializer         *util.Initializer
+	architectureHandler common.ArchitectureHandler
 
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
@@ -703,6 +705,87 @@ func (n *Network) servedTip(
 	return pick.Tip
 }
 
+// SvmHighestLatestSlot returns the majority-vote latest slot across SVM
+// upstreams. Uses evm.PickServedTip (floor(N/2)-th highest) so a single
+// fast/rogue upstream cannot inflate the served tip.
+func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
+	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestLatestSlot")
+	defer span.End()
+	pick := evm.PickServedTip(n.gatherSvmTipInputs(ctx, false))
+	span.SetAttributes(attribute.Int64("highest_latest_slot", pick.Tip))
+	return pick.Tip
+}
+
+// SvmHighestFinalizedSlot is the finalized-slot counterpart. Used by the
+// slot-lag consensus filter as the reference "pool leader" value.
+func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
+	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlot")
+	defer span.End()
+	pick := evm.PickServedTip(n.gatherSvmTipInputs(ctx, true))
+	span.SetAttributes(attribute.Int64("highest_finalized_slot", pick.Tip))
+	return pick.Tip
+}
+
+// SvmEnforceBlockAvailability reports whether the networkPreForward_getBlock
+// guard is enabled. Defaults to true when unconfigured.
+func (n *Network) SvmEnforceBlockAvailability() bool {
+	if n.cfg == nil || n.cfg.Svm == nil || n.cfg.Svm.EnforceBlockAvailability == nil {
+		return true
+	}
+	return *n.cfg.Svm.EnforceBlockAvailability
+}
+
+// SvmHighestIndexedSlot returns the MAX maxShredInsertSlot across SVM upstreams.
+// This is used only by the networkPreForward_getBlock guard — its job is to
+// avoid short-circuiting requests that ANY upstream can serve. It therefore
+// uses MAX, not the majority (median) tip. This mirrors how EVM's
+// tryShortCircuitFutureBlock uses evmHighestBlockMax (not PickServedTip.Tip):
+// "never null out a block the most-ahead upstream actually has."
+// SvmHighestLatestSlot / SvmHighestFinalizedSlot remain median-based because
+// they advertise the chain head to clients — a different, conservative goal.
+func (n *Network) SvmHighestIndexedSlot(ctx context.Context) int64 {
+	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestIndexedSlot")
+	defer span.End()
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	var maxSlot int64
+	for _, u := range upstreams {
+		sp := u.SvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		slot := sp.ShredInsertSlot()
+		if slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+	span.SetAttributes(attribute.Int64("highest_indexed_slot", maxSlot))
+	return maxSlot
+}
+
+// gatherSvmTipInputs collects slot values from SVM state pollers for
+// majority-tip computation via evm.PickServedTip.
+func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []evm.ServedTipInput {
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	out := make([]evm.ServedTipInput, 0, len(upstreams))
+	for _, u := range upstreams {
+		sp := u.SvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		var slot int64
+		if useFinalized {
+			slot = sp.FinalizedSlot()
+		} else {
+			slot = sp.LatestSlot()
+		}
+		if slot <= 0 {
+			continue
+		}
+		out = append(out, evm.ServedTipInput{UpstreamID: u.Id(), BlockNumber: slot})
+	}
+	return out
+}
+
 // EvmHighestFinalizedBlockNumber is the finalized-axis sibling of
 // EvmHighestLatestBlockNumber. Same majority semantics, applied to each
 // upstream's EvmEffectiveFinalizedBlock.
@@ -1058,6 +1141,67 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
+	// Architecture-specific pruning of the upstream list. Currently only SVM
+	// uses this hook; both filters are gated on ArchitectureSvm so EVM networks
+	// never enter this block.
+	if n.cfg.Architecture == common.ArchitectureSvm && n.cfg.Svm != nil {
+		// (1) Consensus slot-lag prefilter — excludes upstreams whose
+		// FinalizedSlot trails the pool by more than MaxFinalizedSlotLag, but
+		// only when a consensus policy is active AND the request actually reads
+		// at commitment=finalized. For non-consensus paths the existing
+		// score-based retry already handles stale upstreams. The reference slot
+		// is the single-liar-safe clamped leader (see ReferenceFinalizedSlot),
+		// not the raw pool max — a lone upstream reporting an inflated finalized
+		// slot must not shrink the pool to itself.
+		//
+		// The gate is IsFinalizedCommitment, NOT req.Finality()==Finalized:
+		// a moving-head read at commitment=finalized (getBalance and friends)
+		// is classified Realtime because the rooted head advances every ~400ms,
+		// yet it still evaluates against the upstream's ROOTED slot — which is
+		// exactly what this filter compares. The two propositions used to
+		// coincide; they no longer do.
+		//
+		// An explicit 0 disables the filter; nil never reaches here (SetDefaults
+		// is the only place that fills it in).
+		if lag := n.cfg.Svm.MaxFinalizedSlotLag; lag != nil && *lag > 0 {
+			fe := n.getFailsafeExecutor(ctx, req)
+			if fe != nil && fe.consensus != nil && svm.IsFinalizedCommitment(ctx, n, req) {
+				before := len(upsList)
+				reference := svm.ReferenceFinalizedSlot(upsList, *lag)
+				upsList = svm.FilterByFinalizedSlotLag(upsList, *lag, reference)
+				if len(upsList) != before {
+					lg.Debug().
+						Int("before", before).
+						Int("after", len(upsList)).
+						Int64("maxFinalizedSlotLag", *lag).
+						Int64("referenceSlot", reference).
+						Msg("svm: filtered stale upstreams for consensus")
+				}
+			}
+		}
+		// (2) minContextSlot prefilter — an upstream whose tracked slot (at the
+		// request's commitment) is behind the caller's minContextSlot is a
+		// guaranteed -32016 round-trip; skip it before selection. Applies to any
+		// SVM request carrying the param, with or without consensus. Defensive
+		// fallback inside the filter keeps the pool non-empty so the -32016
+		// failover path still reports the truth when every upstream trails.
+		if mcs := svm.MinContextSlotOf(ctx, req); mcs > 0 {
+			before := len(upsList)
+			// Same commitment-vs-finality distinction as (1): pick the slot
+			// counter the upstream will actually evaluate minContextSlot
+			// against.
+			finalized := svm.IsFinalizedCommitment(ctx, n, req)
+			upsList = svm.FilterByMinContextSlot(upsList, mcs, finalized)
+			if len(upsList) != before {
+				lg.Debug().
+					Int("before", before).
+					Int("after", len(upsList)).
+					Int64("minContextSlot", mcs).
+					Msg("svm: filtered upstreams behind minContextSlot")
+			}
+		}
+	}
+
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
@@ -1076,17 +1220,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
-	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
-		if err != nil {
-			if mlx != nil {
-				mlx.Close(ctx, nil, err)
+	if n.architectureHandler != nil {
+		if handled, resp, err := n.architectureHandler.HandleNetworkPreForward(ctx, n, upsList, req); handled {
+			if err != nil {
+				if mlx != nil {
+					mlx.Close(ctx, nil, err)
+				}
+				return nil, err
 			}
-			return nil, err
+			if mlx != nil {
+				mlx.Close(ctx, resp, nil)
+			}
+			return resp, nil
 		}
-		if mlx != nil {
-			mlx.Close(ctx, resp, nil)
-		}
-		return resp, nil
 	}
 
 	// Future-block short-circuit: a concrete block number beyond every eligible
@@ -1363,6 +1509,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				loopSpan.SetStatus(codes.Ok, "")
 			}
 			loopSpan.End()
+
+			// An error explicitly marked non-retryable toward the network is
+			// an authoritative answer — a cluster-wide skipped slot, an
+			// OP-Stack sequencer rate limit every provider shares. Every
+			// remaining upstream returns the same verdict, so sweeping them
+			// burns latency and quota for nothing. Same stop condition
+			// shouldRetryWithReason already applies on the retry path.
+			//
+			// Stop by breaking, not returning: the caller then sees exactly
+			// the result a full sweep would have produced (bestResp if one
+			// was collected, otherwise the aggregated ErrUpstreamsExhausted),
+			// just without the wasted round-trips.
+			if err != nil && !common.IsRetryableTowardNetwork(err) {
+				break
+			}
 		}
 
 		// Check context after the loop — handles single-upstream case where
@@ -1622,6 +1783,18 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 			)
 		}
 		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
+	case common.ArchitectureSvm:
+		// SVM doesn't need any EVM-style normalization (hex padding, block tag expansion, etc.).
+		// Validate that the request parses as JSON-RPC and move on.
+		if _, err := nr.JsonRpcRequest(ctx); err != nil {
+			return common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorParseException,
+				"failed to unmarshal json-rpc request",
+				err,
+				nil,
+			)
+		}
 	default:
 		return common.NewErrJsonRpcExceptionInternal(
 			0,
@@ -1669,6 +1842,14 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 				return finality
 			}
 		}
+	}
+
+	// Architecture-specific finality resolution. SVM uses commitment + slot comparisons,
+	// EVM uses block-number comparisons against the state poller's finalized block.
+	// Keeping this switch here (rather than inside the ArchitectureHandler) avoids
+	// plumbing Network's internal upstreams registry through the generic interface.
+	if n.cfg.Architecture == common.ArchitectureSvm {
+		return svm.GetFinality(ctx, n, req, resp)
 	}
 
 	blockRef, blockNumber, _ := evm.ExtractBlockReferenceFromRequest(ctx, req)
@@ -1749,16 +1930,19 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 }
 
 func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
-	switch n.cfg.Architecture {
-	case common.ArchitectureEvm:
-		if handled, resp, err := evm.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
-			return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	h := n.architectureHandler
+	if h != nil {
+		if handled, resp, err := h.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
+			return h.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 		}
 	}
 
 	// If not handled, then fallback to the normal forward
 	resp, err := u.Forward(execSpanCtx, req, false, isHedgeAttempt)
-	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	if h != nil {
+		return h.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	}
+	return resp, err
 }
 
 // methodHasDedicatedRangeAvailabilityHook reports whether a method enforces its own
@@ -2085,12 +2269,29 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 	return eligible
 }
 
+// multiplexKey derives the in-flight dedup identity for a request.
+//
+// EVM keeps req.CacheHash() byte-for-byte. SVM must not: CacheHash lowercases
+// every string param — correct normalization for EVM hex, but it collapses
+// case-sensitive base58, so two DISTINCT Solana accounts or signatures
+// differing only by letter case would share one multiplexer and the follower
+// would be served the leader's data. This is the same hazard that made the SVM
+// cache derive its own key (architecture/svm.RequestKey); multiplexing needs
+// the identical guarantee because it hands the leader's response to followers
+// verbatim.
+func (n *Network) multiplexKey(ctx context.Context, req *common.NormalizedRequest) (string, error) {
+	if n.cfg != nil && n.cfg.Architecture == common.ArchitectureSvm {
+		return svm.RequestKey(ctx, req)
+	}
+	return req.CacheHash()
+}
+
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
 	if !n.cfg.MultiplexingEnabled() {
 		return nil, nil, nil
 	}
 
-	mlxHash, err := req.CacheHash()
+	mlxHash, err := n.multiplexKey(ctx, req)
 	lg.Trace().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {
 		lg.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")

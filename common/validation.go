@@ -253,6 +253,17 @@ func (d *DatabaseConfig) Validate() error {
 			return err
 		}
 	}
+	// SVM reuses the same CacheConfig/CachePolicyConfig types as EVM, so it gets
+	// the identical connector-uniqueness, connector-reference, item-size, TTL and
+	// appliesTo checks simply by being wired in here. Before this, a malformed
+	// svmJsonRpcCache block sailed through startup and only failed later inside
+	// svm.NewSvmJsonRpcCache — which erpc/init.go downgrades to a warning, so the
+	// cache silently did not exist.
+	if d.SvmJsonRpcCache != nil {
+		if err := d.SvmJsonRpcCache.Validate(); err != nil {
+			return err
+		}
+	}
 	if d.SharedState != nil {
 		if err := d.SharedState.Validate(); err != nil {
 			return err
@@ -734,6 +745,11 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			}
 		}
 	}
+	// Cross-object: both lists are validated individually above; this catches the
+	// pair that is individually legal but jointly useless.
+	if err := validateSvmUpstreamNetworkPairing(p.Upstreams, p.Networks); err != nil {
+		return err
+	}
 	if p.Auth != nil {
 		if err := p.Auth.Validate(); err != nil {
 			return err
@@ -958,6 +974,11 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	}
 	if u.Evm != nil {
 		if err := u.Evm.Validate(u); err != nil {
+			return err
+		}
+	}
+	if u.Svm != nil {
+		if err := u.Svm.Validate(u); err != nil {
 			return err
 		}
 	}
@@ -1404,8 +1425,16 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Architecture == "evm" && n.Evm == nil {
 		return fmt.Errorf("network.*.evm is required for evm networks")
 	}
+	if n.Architecture == ArchitectureSvm && n.Svm == nil {
+		return fmt.Errorf("network.*.svm is required for svm networks")
+	}
 	if n.Evm != nil {
 		if err := n.Evm.Validate(); err != nil {
+			return err
+		}
+	}
+	if n.Svm != nil {
+		if err := n.Svm.Validate(); err != nil {
 			return err
 		}
 	}
@@ -1497,6 +1526,113 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.SafeBlockSource != "" {
 		if err := ValidatePattern(e.SafeBlockSource); err != nil {
 			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
+		}
+	}
+	return nil
+}
+
+// isValidSvmSegment reports whether a chain or cluster name is usable as one
+// segment of an "svm:..." network id. It delegates to IsValidNetwork so config
+// validation and network-id parsing can never drift apart on what is legal
+// (notably: dots are allowed here but not by util.IsValidIdentifier).
+func isValidSvmSegment(seg string) bool {
+	// The colon test must come first: "svm:a:b" is a legal *two*-segment network
+	// id, so a colon-bearing chain or cluster would otherwise validate here and
+	// only be caught by the composite check, with a much vaguer message.
+	return seg != "" && !strings.Contains(seg, ":") && IsValidNetwork("svm:"+seg)
+}
+
+// Validate checks the SVM network block, mirroring EvmNetworkConfig.Validate.
+// Everything rejected here would otherwise surface asynchronously at request
+// time or, worse, silently disable behavior: an unrecognized commitment makes
+// the injection hook a no-op (architecture/svm/hooks.go) rather than an error,
+// so a typo like "finalised" quietly reverts every request to whatever each
+// vendor's server-side default happens to be.
+func (s *SvmNetworkConfig) Validate() error {
+	if s.Cluster == "" {
+		return fmt.Errorf("network.*.svm.cluster is required (e.g. mainnet-beta, devnet)")
+	}
+	// Chain is optional — empty legally means solana, which keeps the network id
+	// at the pre-multi-chain "svm:<cluster>" shape. Validate it, don't reject it.
+	if s.Chain != "" && !isValidSvmSegment(s.Chain) {
+		return fmt.Errorf("network.*.svm.chain '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Chain)
+	}
+	if !isValidSvmSegment(s.Cluster) {
+		return fmt.Errorf("network.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	// Belt-and-braces on the derived id: the pieces are legal individually, so
+	// this only fires if SvmNetworkId's composition rules ever change.
+	if ntwId := util.SvmNetworkId(s.Chain, s.Cluster); !IsValidNetwork(ntwId) {
+		return fmt.Errorf("network.*.svm derives an invalid network id '%s' from chain '%s' and cluster '%s'", ntwId, s.Chain, s.Cluster)
+	}
+	// Matched case-insensitively because the injection hooks lowercase before
+	// comparing; empty means "inject nothing" and is a legal opt-out.
+	switch strings.ToLower(s.Commitment) {
+	case "", "processed", "confirmed", "finalized":
+	default:
+		return fmt.Errorf("network.*.svm.commitment '%s' is invalid, must be one of: processed, confirmed, finalized", s.Commitment)
+	}
+	if s.StatePollerDebounce.Duration() < 0 {
+		return fmt.Errorf("network.*.svm.statePollerDebounce must be greater than or equal to 0")
+	}
+	// nil is "unset" (SetDefaults fills 100) and 0 is the documented disable
+	// switch; only a negative value is meaningless.
+	if s.MaxFinalizedSlotLag != nil && *s.MaxFinalizedSlotLag < 0 {
+		return fmt.Errorf("network.*.svm.maxFinalizedSlotLag must be greater than or equal to 0 (0 disables the lag filter)")
+	}
+	return nil
+}
+
+// Validate checks the per-upstream SVM block. Cluster is what upstream.go turns
+// into the upstream's networkId, so a missing one currently fails at bootstrap
+// ("svm upstream %q is missing svm.cluster") long after startup reported success.
+func (s *SvmUpstreamConfig) Validate(u *UpstreamConfig) error {
+	if s.Cluster == "" {
+		// Only fatal once the upstream is actually typed svm. UpstreamConfig
+		// .SetDefaults defaults an unset Type to evm, so by validation time this
+		// is decided — and an svm block inherited from upstreamDefaults onto an
+		// evm upstream in a mixed project is inert, not a config error.
+		if u.Type == UpstreamTypeSvm {
+			return fmt.Errorf("upstream.*.svm.cluster is required for svm upstreams (e.g. mainnet-beta, devnet)")
+		}
+		return nil
+	}
+	if s.Chain != "" && !isValidSvmSegment(s.Chain) {
+		return fmt.Errorf("upstream.*.svm.chain '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Chain)
+	}
+	if !isValidSvmSegment(s.Cluster) {
+		return fmt.Errorf("upstream.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	return nil
+}
+
+// validateSvmUpstreamNetworkPairing catches an SVM upstream whose cluster matches
+// a declared network but whose chain does not. Selection pairs on resolved chain
+// AND cluster (see erpc/healthcheck.go), so such an upstream serves nothing while
+// reporting itself perfectly healthy — the exact silent-misconfiguration this
+// validator exists to prevent.
+//
+// It only fires when some network already declares that cluster, so projects that
+// rely on lazy network creation (upstreams configured, networks not) are untouched.
+func validateSvmUpstreamNetworkPairing(upstreams []*UpstreamConfig, networks []*NetworkConfig) error {
+	for _, u := range upstreams {
+		if u == nil || u.Type != UpstreamTypeSvm || u.Svm == nil || u.Svm.Cluster == "" {
+			continue
+		}
+		upChain := ResolveSvmChain(u.Svm.Chain)
+		matched, clusterDeclared := false, false
+		for _, n := range networks {
+			if n == nil || n.Svm == nil || n.Svm.Cluster != u.Svm.Cluster {
+				continue
+			}
+			clusterDeclared = true
+			if ResolveSvmChain(n.Svm.Chain) == upChain {
+				matched = true
+				break
+			}
+		}
+		if clusterDeclared && !matched {
+			return fmt.Errorf("upstream.*.svm.chain '%s' (upstream '%s') matches no network.*.svm.chain for cluster '%s'; the upstream would never be selected", upChain, u.Id, u.Svm.Cluster)
 		}
 	}
 	return nil

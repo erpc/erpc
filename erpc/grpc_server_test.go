@@ -140,7 +140,7 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	erpcInstance, err := NewERPC(ctx, &logger, nil, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, nil, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 

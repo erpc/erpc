@@ -240,6 +240,8 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 
 #### Area 3: Block number and tip tracking
 
+> **On SVM networks these carry slots, not block heights.** The names were coined for EVM and are reused verbatim by the SVM state poller, so `erpc_upstream_latest_block_number` is the upstream's *processed slot*, `erpc_upstream_finalized_block_number` its *finalized (rooted) slot*, and the `*_lag` gauges count slots. That distinction is not cosmetic: a skipped Solana slot advances the slot counter but not the block height, so slot and height are different counters. The rollback threshold on SVM is `DefaultToleratedSlotRollback` = 1024 slots. `erpc_upstream_stale_latest_block_total` fires when a `getSlot` answer is corrected to the highest known slot for its commitment. The poller emits no `*_polled_total`, no `erpc_network_dynamic_block_time_milliseconds`, no served-tip gauges, and no metric at all for shred-insert (ingestion) lag — see [SVM slot tracking & health](/reference/svm/slot-tracking).
+
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_upstream_latest_block_number` | gauge | project, vendor, network, upstream | Upstream's latest block advanced. |

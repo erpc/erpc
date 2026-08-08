@@ -53,11 +53,11 @@ https://docs.erpc.cloud/reference/errors.llms.txt`}
 
 **Two-layer taxonomy.** Go errors are `BaseError`-rooted structs with a string `ErrorCode` constant. Upstream-attributed errors additionally carry an `UpstreamAwareError` accessor. `ErrJsonRpcExceptionExternal` is deliberately NOT a `StandardError` — it is the raw vendor JSON-RPC object used as input to normalizers only; it never propagates beyond the client layer.
 
-**Normalization pipeline.** HTTP responses go through `ExtractJsonRpcError` (`architecture/evm/error_normalizer.go`), which runs a vendor-specific hook first, then evaluates 22 ordered rules (first match wins). gRPC/BDS responses go through `ExtractGrpcErrorFromGrpcStatus` (`common/grpc_errors.go`), which checks BDS error codes first, then standard gRPC codes. Both paths produce a typed internal error wrapping `ErrJsonRpcExceptionInternal` that carries both the original vendor code and the normalized eRPC code.
+**Normalization pipeline.** Architecture-specific extractors are composed, and each no-ops on upstreams of the other type. EVM HTTP responses go through `ExtractJsonRpcError` (`architecture/evm/error_normalizer.go`), which runs a vendor-specific hook first, then evaluates 22 ordered rules (first match wins). SVM HTTP responses go through `architecture/svm/error_normalizer.go`, which classifies from the native Solana code and **preserves that code and `error.data` on the wire** — see [SVM (Solana) error contract](#svm-solana-error-contract). gRPC/BDS responses go through `ExtractGrpcErrorFromGrpcStatus` (`common/grpc_errors.go`), which checks BDS error codes first, then standard gRPC codes. All paths produce a typed internal error wrapping `ErrJsonRpcExceptionInternal` that carries both the original vendor code and the normalized eRPC code.
 
 **Retryability is dual-axis.** `IsRetryableTowardsUpstream` returns `false` if any of 10 specific codes appear anywhere in the cause chain (including joined multi-errors). `IsRetryableTowardNetwork` defaults to `true` and returns `false` only when: (a) `ErrUpstreamsExhausted` has a nil cause, (b) a multi-error cause has ALL non-retryable children, or (c) a linear cause chain carries `Details["retryableTowardNetwork"]=false`. The flag walk stops at multi-error wrappers to avoid order-dependent bugs.
 
-**Wire translation.** `TranslateToJsonRpcException` converts internal errors to a JSON-RPC numeric code. For `ErrUpstreamsExhausted`, it selects the "dominant" child error (highest occurrence count, skipping `ErrCodeUpstreamRequestSkipped` and `ErrCodeEndpointUnsupported`). HTTP status is determined by two identical switch functions in `erpc/http_server.go` — not by per-type `ErrorStatusCode()` methods, which are dead code.
+**Wire translation.** `TranslateToJsonRpcException` converts internal errors to a JSON-RPC numeric code. For `ErrUpstreamsExhausted`, it selects the "dominant" child error (highest occurrence count, skipping `ErrCodeUpstreamRequestSkipped` and `ErrCodeEndpointUnsupported`) over a **deterministically ordered** cause slice — retryable-toward-network causes first, then by upstream id — so an identical multiset of upstream failures always yields the same wire code, and a retryable cause outranks a terminal one. HTTP status is determined by two identical switch functions in `erpc/http_server.go` — not by per-type `ErrorStatusCode()` methods, which are dead code.
 
 **Error label for metrics.** Both error metrics use `common.ErrorFingerprint(err)` as the `error` label value. `ErrorFingerprint` calls `ErrorSummary` then redacts hashes/addresses/IPs/numbers and caps at 256 characters. The mode of `ErrorSummary` is controlled by `metrics.errorLabelMode`, defaulting to `compact` (code-only labels, preventing high cardinality). `verbose` mode is human-readable but creates unbounded time series — use only in development.
 
@@ -318,9 +318,117 @@ Entry point: <SourceLink file="common/grpc_errors.go" lines="12" />. BDS error c
 | gRPC `NotFound`, `OutOfRange` | `ErrEndpointMissingData` | −32014 | yes | yes |
 | gRPC `Internal`, `Unknown`, `Unavailable`, default | `ErrEndpointServerSideException` | −32603 | yes | yes |
 
-### `IsNonRetryableWriteMethod` — write-method guard
+### SVM (Solana) error contract
 
-[`architecture/evm/util.go:L7-L17`](https://github.com/erpc/erpc/blob/main/architecture/evm/util.go#L7-L17). Returns `true` for methods that MUST NOT be retried or hedged because they mutate state non-idempotently:
+Entry point: <SourceLink file="architecture/svm/error_normalizer.go" lines="68-73" />. The SVM extractor no-ops on non-SVM upstreams, so a mixed EVM/SVM project shares one composite extractor.
+
+**Native codes reach the client unchanged.** This is the central guarantee and it is the opposite of the EVM path's normalize-the-number behavior. Solana clients dispatch on the exact number — `@solana/kit` maps `-32002`/`-32005`/`-32016`/… to named error classes — so rewriting the code to an eRPC constant silently breaks them. eRPC's routing verdict lives entirely in the **outer `StandardError` class** (retryable / capacity / client-vs-server), never in the wire number.
+
+**`error.data` is carried through verbatim.** Solana packs the actionable half of an error there. Dropping it is what broke `@solana/web3.js` `SendTransactionError` (which reads `data.logs`) and `@solana/kit`. Unlike EVM there is no prefix-stripping to do — SVM payloads are structured objects, not revert strings. An empty-string `data` is treated as `ParseError`'s "no data" placeholder and omitted rather than forwarded.
+
+In particular:
+
+- **`-32002 SendTransactionPreflightFailure` carries an `RpcSimulateTransactionResult`** — `err`, `logs`, `unitsConsumed`, `accounts`. Both the code and that object survive to the client, which is precisely why `@solana/web3.js` can raise `SendTransactionError` with populated `.logs`.
+- **`-32005 NodeUnhealthy` carries `numSlotsBehind`.**
+
+**The eRPC/Solana code collision.** `common.JsonRpcErrorNumber` reuses `-32005` for `CapacityExceeded` and `-32016` for `Unauthorized`, while Solana assigns those to `NodeUnhealthy` and `MinContextSlotNotReached`. The invariant that keeps them apart: **on an SVM path eRPC never synthesizes either number.** A `-32005` or `-32016` in an SVM error body always came from the upstream and always means the agave semantic. eRPC's own verdicts are conveyed by the outer class and the HTTP status, and every fallback picks a collision-free code:
+
+| eRPC verdict on an SVM path | Wire code when the upstream sent none | Why not the eRPC constant |
+|---|---|---|
+| Unauthorized (HTTP 401/403) | `-32600` | `-32016` would be decoded as `MinContextSlotNotReached`, so a client would retry against a fresher node forever instead of fixing its key |
+| Capacity exceeded (HTTP 429, no body) | `-32000` | `-32005` would be decoded as `NodeUnhealthy` |
+| Unknown / codeless error object | `-32603` | — |
+
+#### SVM code map
+
+"Retry another upstream?" is `IsRetryableTowardNetwork`. Every row keeps the upstream's own numeric code on the wire.
+
+| Code | agave name | eRPC class | Retry another upstream? | What it tells a client |
+|---|---|---|---|---|
+| `-32601` | MethodNotFound | `ErrEndpointUnsupported` | yes | This provider does not implement the method; another may. |
+| `-32001` | BlockCleanedUp | `ErrEndpointMissingData` | yes | Pruned from **this node's** local ledger — a bigtable-backed provider still has it. |
+| `-32004` | BlockNotAvailable | `ErrEndpointMissingData` | yes | The block exists but has not reached this node yet (tip propagation). **Transient — retry.** |
+| `-32008` | NoSnapshot | `ErrEndpointMissingData` | yes | This node currently holds no snapshot. |
+| `-32010` | KeyExcludedFromSecondaryIndex | `ErrEndpointMissingData` | yes | Index coverage is per-provider (`--account-index`), so an indexed provider serves it. A deliberate divergence from routers that mark this terminal. |
+| `-32011` | TransactionHistoryNotAvailable | `ErrEndpointMissingData` | yes | This node has no transaction history (no bigtable); others do. |
+| `-32014` | BlockStatusNotAvailableYet | `ErrEndpointMissingData` | yes | Block status not computed yet on this node. **Transient — retry.** |
+| `-32007` | SlotSkipped | `ErrEndpointMissingData`, **permanent** | yes, once per provider | Ambiguous by design: *skipped*, or *lost to a ledger jump*. The ledger-jump half is node-local so the sweep tries every provider — but a skipped slot never materializes, so once all providers have answered there is no time-delayed re-sweep. **Do not poll for it.** |
+| `-32009` | LongTermStorageSlotSkipped | `ErrEndpointMissingData`, **permanent + terminal** | **no** | Emitted only after the node consulted long-term storage: the slot was skipped, permanently, cluster-wide. Every upstream would return the same verdict, so eRPC does not fail over. **Authoritative — stop asking.** |
+| `-32005` | NodeUnhealthy | `ErrEndpointServerSideException` | yes | This node is behind; `data.numSlotsBehind` says how far. A fresher upstream serves it. |
+| `-32012` | ScanError | `ErrEndpointServerSideException` | yes | Scan aborted by rooted-slot movement — transient; another node or a plain retry succeeds. |
+| `-32016` | MinContextSlotNotReached | `ErrEndpointServerSideException` | yes | This node has not caught up to the request's `minContextSlot`. Selection also pre-filters on this, so seeing it means no upstream had fresh enough tracked state. Back off; do not treat as a hard failure. |
+| `-32019` | LongTermStorageUnreachable | `ErrEndpointServerSideException` | yes | This node's bigtable backend is down — distinct from `-32009`, which is a verdict about the data. |
+| `-32002` | SendTransactionPreflightFailure | `ErrEndpointClientSideException` | **no** | The transaction itself is the problem. `data` is an `RpcSimulateTransactionResult`; read `data.logs`. |
+| `-32003` | TransactionSignatureVerificationFailure | `ErrEndpointClientSideException` | **no** | Fix the signature. |
+| `-32006` | TransactionPrecompileVerificationFailure | `ErrEndpointClientSideException` | **no** | Fix the instruction. |
+| `-32013` | TransactionSignatureLenMismatch | `ErrEndpointClientSideException` | **no** | Fix the payload. |
+| `-32015` | UnsupportedTransactionVersion | `ErrEndpointClientSideException` | **no** | Set `maxSupportedTransactionVersion`. A versioned transaction is present whichever node answers. |
+| `-32018` | SlotNotEpochBoundary | `ErrEndpointClientSideException` | **no** | The caller-supplied slot is invalid for this query. |
+| `-32600` / `-32602` / `-32700` | InvalidRequest / InvalidParams / ParseError | `ErrEndpointClientSideException` | **no** | Passed through rather than collapsed to `-32600`, preserving the distinction every JSON-RPC client already understands. |
+| `-32017` | EpochRewardsPeriodActive | `ErrEndpointExecutionException` | **no** | Epoch-rewards distribution is in progress for the queried epoch; the whole cluster reports the same until it completes. Not the caller's fault, but retrying will not change it. |
+| `-32603` | InternalError | `ErrEndpointServerSideException` | yes | Try another upstream. |
+| `-32000` | generic server-error bucket | see below | see below | Disambiguated by message text. |
+| anything else | newer agave codes | `ErrEndpointServerSideException` | yes | agave appends codes over time; the default is deliberately safe rather than surprising. The raw code is kept. |
+
+**`WithRetryableTowardNetwork(false)` on the client-side rows scopes the opt-out to SVM only** — EVM's `ClientSideException` still retries, which is its default.
+
+#### The `-32000` bucket
+
+Some vendors put everything in `-32000`. eRPC disambiguates by message text, and **every branch keeps `-32000` on the wire** — a heuristic on vendor wording is far too weak a basis for rewriting the number a client dispatches on. Only the routing verdict changes:
+
+| Message contains | eRPC class | Retry another upstream? |
+|---|---|---|
+| a rate-limit phrase | `ErrEndpointCapacityExceeded` | yes |
+| `"missing in long-term storage"` | `ErrEndpointMissingData`, permanent + terminal (codeless `-32009` variant) | **no** |
+| `"ledger jump"` | `ErrEndpointMissingData`, permanent (codeless `-32007` variant) | yes, once per provider |
+| `"preflight"`, `"transaction simulation failed"`, `"blockhash not found"` | `ErrEndpointClientSideException` | **no** |
+| `"invalid"` plus one of `"signature"`/`"transaction"`/`"instruction"` | `ErrEndpointClientSideException` | **no** |
+| anything else | `ErrEndpointServerSideException` | yes |
+
+#### HTTP-only failures (no JSON-RPC body)
+
+| Status | eRPC class | Wire code | Note |
+|---|---|---|---|
+| 401 / 403 | `ErrEndpointUnauthorized` | upstream's code, else `-32600` | **Outranks the JSON-RPC body.** Helius and QuickNode return 401/403 *with* an error object; reading that body first sent an expired API key down whichever generic path its code happened to map to. The upstream's message and `data` still ride along. |
+| 429 | `ErrEndpointCapacityExceeded` | `-32000` | |
+| 5xx | `ErrEndpointServerSideException` | `-32603` | Retryable. |
+| other 4xx | `ErrEndpointClientSideException` | `-32602` | Non-retryable toward network — typically an auth/config issue. |
+
+#### Deterministic codes when upstreams disagree
+
+When every upstream fails, the per-upstream errors are bundled into `ErrUpstreamsExhausted` and one representative is chosen for the client-visible code. That choice is **deterministic for a given multiset of causes**, and a **retryable cause outranks a terminal one**.
+
+`sync.Map.Range` yields Go-map order, which varies run to run, so `orderCauses` imposes a total order before anything downstream picks a representative:
+
+1. **Retryable-toward-network causes before terminal ones.** When upstreams disagree about the same datum — one says "not available yet", another says "gone forever" — the retryable verdict is the safe representative. Reporting "gone forever" can make a consumer permanently skip data that does exist, which is unrecoverable; reporting "not yet" merely costs a retry.
+2. **Then by upstream id**, so equally-retryable causes still have exactly one canonical order. A tie on both falls back to the error text.
+
+`TranslateToJsonRpcException` then tallies the dominant error code over that ordered slice and takes the **first** cause in the winning bucket — so with, say, one upstream reporting `-32004 BlockNotAvailable` and another reporting `-32007 SlotSkipped` for the same slot, the client deterministically sees the retryable `-32004`. Both ranks are architecture-neutral: rank 1 reads the very same flag the retry path consults, so no chain-specific error code leaks into `common/`.
+
+**Permanent vs terminal are different flags.** `-32007` is *permanent* but still retryable across upstreams: eRPC sweeps every provider once, then stops — waiting cannot un-skip a slot, so no time-delayed re-sweep runs. `-32009` is permanent **and** terminal: eRPC does not fail over at all, because every upstream would return the same authoritative verdict and the failover would only burn latency and quota. The permanent flag lives on each individual `MissingData` cause, never on the `ErrUpstreamsExhausted` wrapper — the predicate walks only a single-cause chain and stops before entering a multi-error fan-out.
+
+#### SVM write-method guard
+
+<SourceLink file="architecture/svm/util.go" lines="20-28" />. Case-insensitive, so a mis-cased method name cannot slip past the guard:
+
+```
+sendTransaction
+sendRawTransaction
+requestAirdrop
+```
+
+These are **never auto-dispatched to a second upstream** by any machinery — network hedge (<SourceLink file="erpc/network_executor.go" lines="583-587" />), upstream retry and hedge (<SourceLink file="upstream/upstream_executor.go" lines="250-251,288-289" />), and selection probe mirroring (<SourceLink file="internal/policy/prober.go" lines="433" />) all gate on this helper. On top of that, an error from one of these methods is wrapped as `ClientSideException` on the response path, which is what makes the network-level upstream loop bail out: that loop checks `common.IsClientError` — specifically for `ErrCodeEndpointClientSideException` — rather than walking `retryableTowardNetwork` details, so without the wrap a `ServerSideException` from the primary would be silently failed over to the secondary.
+
+The reasons differ per method, and the distinction matters:
+
+- `sendTransaction` / `sendRawTransaction`: Solana transaction broadcasts are **same-signature idempotent on-chain**, so the risk is not a double-spend — it is duplicate broadcasts burning vendor quota and violating the documented single-broadcast guarantee.
+- `requestAirdrop`: genuinely non-idempotent. It **mints per call**, so a failover after an effective first attempt mints twice.
+
+`simulateTransaction` is intentionally absent — it is read-only and safe to retry and hedge. (It is still never *cached*; see the [SVM cache](/config/database/svm-json-rpc-cache).) SVM and EVM method names cannot collide: EVM methods are `eth_*`-prefixed, SVM methods are bare, so call sites simply check both sets.
+
+### `IsNonRetryableWriteMethod` (EVM) — write-method guard
+
+[`architecture/evm/util.go:L7-L17`](https://github.com/erpc/erpc/blob/main/architecture/evm/util.go#L7-L17). The EVM half of the guard; the SVM twin is [above](#svm-write-method-guard). Returns `true` for methods that MUST NOT be retried or hedged because they mutate state non-idempotently:
 
 ```
 eth_sendTransaction
@@ -402,6 +510,7 @@ Entry: [`common/json_rpc.go:L1501`](https://github.com/erpc/erpc/blob/main/commo
 | Injection site | `evm.NewJsonRpcErrorExtractor()` passed to client registry | [`upstream/registry.go:L79`](https://github.com/erpc/erpc/blob/main/upstream/registry.go#L79) |
 | HTTP invocation | `c.errorExtractor.Extract(r, nr, jr, c.upstream)` | [`clients/http_json_rpc_client.go:L930`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L930) |
 | gRPC invocation | `common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)` | [`clients/grpc_bds_client.go:L925`](https://github.com/erpc/erpc/blob/main/clients/grpc_bds_client.go#L925) |
+| SVM HTTP invocation | `svm.JsonRpcErrorExtractor.Extract(resp, nr, jr, upstream)`; no-ops unless `upstream.Config().Type == svm` | <SourceLink file="architecture/svm/error_normalizer.go" lines="68-77" /> |
 | Vendor hook | `getVendorSpecificErrorIfAny` → `vn.GetVendorSpecificErrorIfAny(...)` fires BEFORE all generic rules | [`architecture/evm/error_normalizer.go:L878-L900`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L878-L900) |
 
 ### Worked examples
@@ -413,6 +522,14 @@ Entry: [`common/json_rpc.go:L1501`](https://github.com/erpc/erpc/blob/main/commo
 **3. All upstreams returning `ErrEndpointMissingData` — request retried despite "exhausted".** `ErrUpstreamsExhausted` wrapping only missing-data children is still N=true (any retryable child makes the whole error retryable). Outer retry logic will try again. If data is genuinely absent from all nodes (e.g. pruned historical state), retry will keep failing — configure a dedicated archive upstream or catch `−32014` in your client.
 
 **4. Alert fires on `severity="warning"` for hedge discards.** `ErrUpstreamHedgeCancelled` is severity=warning. This is normal — it means a sibling hedge leg won the race. Alert only on `severity="critical"` in production; `warning` includes hedge discards and client disconnects that are expected at scale.
+
+**5. A Solana client sees `−32002` with populated `logs`.** That is the designed path, not a leak: the SVM extractor preserves the native code and forwards `error.data` verbatim, so `@solana/web3.js` recognizes `-32002` and raises `SendTransactionError` with `.logs` from the `RpcSimulateTransactionResult`. eRPC classes it `ErrEndpointClientSideException` with `retryableTowardNetwork=false`, so no second upstream is tried — the transaction, not the node, is the problem.
+
+**6. Two Solana upstreams disagree on the same slot.** One returns `−32004 BlockNotAvailable` (not propagated yet), the other `−32007 SlotSkipped` (permanently gone). The client deterministically sees `−32004`: `orderCauses` sorts retryable-toward-network causes ahead of terminal ones, and the dominant-code scan takes the first cause in the winning bucket. Reporting the terminal `−32007` could make an indexer permanently skip a slot that does exist; reporting the retryable `−32004` only costs a retry.
+
+**7. Every Solana upstream returns `−32009` and eRPC does not fail over.** `LongTermStorageSlotSkipped` is emitted only after the node consulted long-term storage, so the verdict is cluster-wide. eRPC marks it terminal **and** permanent: no cross-upstream sweep, and no time-delayed re-sweep. Stop retrying in the client too. Contrast `−32019 LongTermStorageUnreachable`, which is a statement about *this node's* backend being down and stays retryable.
+
+**8. Solana `requestAirdrop` fails and is not retried.** `requestAirdrop` is in the SVM write-method guard because it **mints per call** — a failover after an effective first attempt mints twice. `sendTransaction`/`sendRawTransaction` are in the same set for a different reason: same-signature broadcasts are idempotent on-chain, so the risk is duplicate broadcasts burning vendor quota, not a double-spend.
 
 ### Best practices
 
@@ -445,6 +562,11 @@ Entry: [`common/json_rpc.go:L1501`](https://github.com/erpc/erpc/blob/main/commo
 17. **Legacy `evm.ExtractGrpcError` (dead code) has no `Canceled` branch.** The live `common.ExtractGrpcErrorFromGrpcStatus` maps gRPC `Canceled` to `ErrEndpointRequestCanceled`; the dead legacy function falls through to the default `ErrEndpointServerSideException` case. Additionally, the legacy function maps both BDS `TIMEOUT_ERROR` and gRPC `DeadlineExceeded` to `ErrEndpointServerSideException` (live path maps both to `ErrEndpointRequestTimeout`). If the legacy function is ever restored, BDS/gRPC timeout and cancellation retry behavior will regress. Source: [`architecture/evm/error_normalizer.go:L660-L876`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L660-L876) vs [`common/grpc_errors.go:L86-L97`](https://github.com/erpc/erpc/blob/main/common/grpc_errors.go#L86-L97)
 18. **`buildErrorResponseBody` sets `error.data` only under two conditions.** The `data` field is included only when `includeErrorDetails` is true AND the method is NOT `eth_call`. For `eth_call`, the revert data is intentionally suppressed in the top-level error body. Source: [`erpc/http_server.go:L1425-L1433`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1425-L1433)
 19. **`ErrJsonRpcExceptionInternal` prefixes its `CodeChain()` with the numeric normalized code.** The overridden `CodeChain()` produces `"<normalizedCode> &lt;- ErrJsonRpcExceptionInternal"` (e.g. `"-32014 <- ErrJsonRpcExceptionInternal"`). `NormalizedCode()` returns `details["normalizedCode"]` as a `JsonRpcErrorNumber`; `OriginalCode()` handles both `int` and `float64` types (JSON round-trip issue). Source: [`common/errors.go:L2202-L2222`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2202-L2222)
+20. **On an SVM path, `−32005` and `−32016` always mean the agave semantic.** They collide with eRPC's own `CapacityExceeded` and `Unauthorized` constants, so the invariant is that eRPC never *synthesizes* either number on an SVM path: a `-32005` is `NodeUnhealthy` (with `data.numSlotsBehind`), a `-32016` is `MinContextSlotNotReached`. eRPC's capacity verdict arrives as HTTP 429 with wire code `-32000`, and its auth verdict as HTTP 401/403 with `-32600`.
+21. **SVM `ErrEndpointClientSideException` is N=false, unlike EVM's.** The SVM extractor calls `WithRetryableTowardNetwork(false)` explicitly on every client-side branch, scoping the opt-out to SVM. EVM's `ClientSideException` remains N=true by default.
+22. **`permanent` and `terminal` are separate flags on SVM missing-data errors.** `-32007` is permanent but retryable: sweep every provider once, then stop (no time-delayed re-sweep, because waiting cannot un-skip a slot). `-32009` is permanent **and** terminal: no failover at all. The permanent flag lives on each individual cause, never on the `ErrUpstreamsExhausted` wrapper — the predicate stops before entering a multi-error fan-out, so the wrapper reports `false` even when every child is permanent.
+23. **HTTP 401/403 outranks an SVM JSON-RPC error body.** Helius and QuickNode return 401/403 *with* an error object; classifying from the body first sent expired API keys down whichever generic path their code happened to map to. The status wins, and the codeless fallback is deliberately `-32600` rather than eRPC's `-32016`, which an SVM client would decode as `MinContextSlotNotReached` and retry forever instead of fixing the key.
+24. **`simulateTransaction` is retryable and hedgeable on SVM.** It is read-only, so it is deliberately excluded from the SVM write-method guard — but it is still in `neverCacheMethods`, so it is never served from cache.
 
 ### Observability
 
@@ -464,6 +586,9 @@ Alert on `severity="critical"` only. `severity="info"` covers client errors and 
 
 - [`common/errors.go:L1-L2800`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1) — Complete error type definitions, all `ErrCode*` constants, retryability predicates, severity classification, `ErrorSummary`, `ErrorFingerprint`, `HasErrorCode`, `IsClientDisconnect`, `TaskFatalError`, `ErrDynamicTimeoutExceeded`, `JsonRpcErrorNumber` constants
 - [`architecture/evm/error_normalizer.go:L20-L658`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L20-L658) — `ExtractJsonRpcError`: all 22 generic HTTP normalization rules in order; vendor hook dispatch at L29-L31
+- [`architecture/svm/error_normalizer.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/error_normalizer.go) — `JsonRpcErrorExtractor.Extract`: the full SVM code map, `wireCode` native-code preservation and the eRPC/Solana collision note, `error.data` passthrough, `isRateLimitMessage`, `newAuthoritativeMissingData`, `newSweptSkipMissingData`
+- [`architecture/svm/util.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/util.go) — `IsNonRetryableWriteMethod` (SVM): `sendTransaction`, `sendRawTransaction`, `requestAirdrop`
+- [`common/errors.go` — `orderCauses`](https://github.com/erpc/erpc/blob/main/common/errors.go) — the deterministic total order over exhausted causes (retryable before terminal, then upstream id)
 - [`common/grpc_errors.go:L12-L225`](https://github.com/erpc/erpc/blob/main/common/grpc_errors.go#L12-L225) — Live gRPC/BDS error normalization; BDS code priority then gRPC code fallback
 - [`common/json_rpc.go:L1501-L1630`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1501-L1630) — `TranslateToJsonRpcException`: internal error → wire JSON-RPC numeric code; dominant-child selection for `ErrUpstreamsExhausted`
 - [`erpc/http_server.go:L1280-L1491`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1280-L1491) — `determineResponseStatusCode`, `buildErrorResponseBody`, `handleErrorResponse`; the only two places that actually set wire HTTP status
@@ -478,5 +603,7 @@ Alert on `severity="critical"` only. `severity="info"` covers client errors and 
 - [Hedge](/config/failsafe/hedge) — `ErrUpstreamHedgeCancelled` is the discard signal for losing hedge legs.
 - [Rate limiters](/config/rate-limiters) — `ErrUpstreamRateLimitRuleExceeded` / `ErrEndpointCapacityExceeded` are the rate-limit error types.
 - [Auth](/config/auth) — `ErrAuthUnauthorized` / `ErrAuthRateLimitRuleExceeded` are auth-layer errors.
+- [SVM commitment & finality](/reference/svm/commitment) — where `-32016` comes from and how the `minContextSlot` pre-filter tries to avoid it.
+- [SVM slot tracking & health](/reference/svm/slot-tracking) — the guard that turns an unindexed `getBlock` into the `-32004` family without an upstream call.
 
 </AISection>

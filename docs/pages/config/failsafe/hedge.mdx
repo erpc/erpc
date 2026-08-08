@@ -140,10 +140,18 @@ self-adjusts. Cold-start (no data yet) falls back to `min` — which `SetDefault
 auto-populates to `100ms` unless you override it.
 
 **Write-method exclusion.** `runHedge` short-circuits to a plain inner call (no hedging) for
-methods identified by `evm.IsNonRetryableWriteMethod`: `eth_sendTransaction`,
+write methods, checking both architectures' guards. `evm.IsNonRetryableWriteMethod`:
+`eth_sendTransaction`,
 `eth_createAccessList`, `eth_submitTransaction`, `eth_submitWork`, `eth_newFilter`,
 `eth_newBlockFilter`, `eth_newPendingTransactionFilter`. `eth_sendRawTransaction` is
-intentionally NOT excluded — it supports idempotent broadcast under hedge. Composite batch
+intentionally NOT excluded — it supports idempotent broadcast under hedge.
+`svm.IsNonRetryableWriteMethod`: `sendTransaction`, `sendRawTransaction`, `requestAirdrop`.
+**Note the asymmetry** — the SVM raw-transaction path *is* excluded, so the hedged-broadcast
+pattern below is EVM-only. Solana broadcasts are same-signature idempotent on-chain, but
+hedging them burns vendor quota on duplicate submissions and breaks the documented
+single-broadcast guarantee; `requestAirdrop` mints per call and is genuinely
+non-idempotent. `simulateTransaction` is read-only and stays hedgeable. Method names cannot
+collide across the two sets (EVM is `eth_*`-prefixed, SVM is bare). Composite batch
 requests also skip hedging entirely.
 
 **Interaction with retry.** Retry wraps hedge: each retry attempt fires a fresh hedge race.

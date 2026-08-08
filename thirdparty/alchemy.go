@@ -462,7 +462,16 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 
 	upstream.VendorName = v.Name()
 
-	logger.Debug().Int64("chainId", upstream.Evm.ChainId).Interface("upstream", upstream).Interface("settings", map[string]interface{}{
+	// upstream.Evm is nil for a non-EVM upstream. Alchemy sells Solana endpoints,
+	// so a user-supplied `https://solana-mainnet.g.alchemy.com/v2/KEY` with
+	// `type: svm` reaches here having skipped the endpoint-derivation branch
+	// above (which is the only thing that requires Evm). zerolog evaluates its
+	// arguments eagerly, so an unguarded deref panicked at ANY log level.
+	logEvt := logger.Debug()
+	if upstream.Evm != nil {
+		logEvt = logEvt.Int64("chainId", upstream.Evm.ChainId)
+	}
+	logEvt.Interface("upstream", upstream).Interface("settings", map[string]interface{}{
 		"recheckInterval": settings["recheckInterval"],
 	}).Msg("generated upstream from alchemy provider")
 

@@ -44,6 +44,10 @@
     let s = "0x"; for (let i = 0; i < 64; i++) s += "0123456789abcdef"[randInt(0, 15)]; return s;
   }
   function toHex(n) { return "0x" + Math.max(0, n).toString(16); }
+  const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  function randB58(n) { let s = ""; for (let i = 0; i < n; i++) s += B58[randInt(0, 57)]; return s; }
+  function randPubkey() { return randB58(44); }  // Solana account pubkey shape
+  function randSig() { return randB58(87); }     // Solana tx signature shape
 
   const PATTERNS = {
     "latest-block-number":  { label: "eth_blockNumber",                  build: () => ({ method: "eth_blockNumber", params: [] }) },
@@ -62,6 +66,19 @@
     "random-balance":       { label: "eth_getBalance (random addr @ latest)", build: () => ({ method: "eth_getBalance", params: [randAddr(), "latest"] }) },
     "random-receipt":       { label: "eth_getTransactionReceipt (random hash)", build: () => ({ method: "eth_getTransactionReceipt", params: [randHash()] }) },
     "eth-call-random":      { label: "eth_call (random to/data)",        build: () => ({ method: "eth_call", params: [{ to: randAddr(), data: "0x70a08231000000000000000000000000" + randAddr().slice(2) }, "latest"] }) },
+
+    // ---- Solana (SVM) patterns — for `-preset svm` configs. Same
+    // catalog mechanics; slot numbers ride ctx.latestBlock.
+    "sol-get-slot":          { label: "getSlot (confirmed)",             build: () => ({ method: "getSlot", params: [{ commitment: "confirmed" }] }) },
+    "sol-latest-blockhash":  { label: "getLatestBlockhash",              build: () => ({ method: "getLatestBlockhash", params: [{ commitment: "confirmed" }] }) },
+    "sol-balance":           { label: "getBalance (random pubkey)",      build: () => ({ method: "getBalance", params: [randPubkey(), { commitment: "confirmed" }] }) },
+    "sol-account-info":      { label: "getAccountInfo (random pubkey)",  build: () => ({ method: "getAccountInfo", params: [randPubkey(), { encoding: "base64", commitment: "confirmed" }] }) },
+    "sol-block-recent":      { label: "getBlock (finalized, tip-N)",     build: (ctx) => ({ method: "getBlock", params: [Math.max(1, (ctx.latestBlock || 1000) - randInt(35, 400)), { maxSupportedTransactionVersion: 0, transactionDetails: "none", rewards: false, commitment: "finalized" }] }) },
+    "sol-block-future":      { label: "getBlock (beyond tip → -32004)",  build: (ctx) => ({ method: "getBlock", params: [(ctx.latestBlock || 1000) + randInt(50, 500), { maxSupportedTransactionVersion: 0, transactionDetails: "none", commitment: "finalized" }] }) },
+    "sol-transaction":       { label: "getTransaction (random sig)",     build: () => ({ method: "getTransaction", params: [randSig(), { maxSupportedTransactionVersion: 0, commitment: "finalized" }] }) },
+    "sol-epoch-info":        { label: "getEpochInfo",                    build: () => ({ method: "getEpochInfo", params: [] }) },
+    "sol-prio-fees":         { label: "getRecentPrioritizationFees",     build: () => ({ method: "getRecentPrioritizationFees", params: [[]] }) },
+    "sol-send-tx":           { label: "sendTransaction (fake blob)",     build: () => ({ method: "sendTransaction", params: [randSig() + randSig(), { encoding: "base64", skipPreflight: true }] }) },
   };
 
   const DEFAULT_PATTERN_MIX = [
@@ -75,6 +92,22 @@
     { id: "random-receipt",          weight: 8 },
     { id: "chain-id",                weight: 4 },
     { id: "eth-call-random",         weight: 6 },
+  ];
+
+  // Default mix for SVM configs: getAccountInfo-heavy, mirroring real
+  // Solana RPC traffic (wallets/bots poll accounts; indexers pull
+  // blocks/txs; a trickle of sends exercises the write path).
+  const DEFAULT_SVM_PATTERN_MIX = [
+    { id: "sol-get-slot",         weight: 14 },
+    { id: "sol-account-info",     weight: 22 },
+    { id: "sol-balance",          weight: 12 },
+    { id: "sol-latest-blockhash", weight: 10 },
+    { id: "sol-block-recent",     weight: 14 },
+    { id: "sol-block-future",     weight: 4 },
+    { id: "sol-transaction",      weight: 12 },
+    { id: "sol-epoch-info",       weight: 4 },
+    { id: "sol-prio-fees",        weight: 4 },
+    { id: "sol-send-tx",          weight: 4 },
   ];
 
   const SCENARIOS = {
@@ -292,6 +325,15 @@
         snapshotReady: true,
         bootedAt: state.snapshotReady ? state.bootedAt : Date.now(),
       };
+      // SVM configs get the Solana traffic mix — but only while the
+      // operator hasn't customized the mix (it still equals the EVM
+      // default). Sniffing the YAML keeps the backend protocol
+      // unchanged; `-preset svm` is the only current source of svm
+      // configs and its seed always declares `architecture: svm`.
+      if (templatedYaml && /architecture:\s*svm/.test(templatedYaml) &&
+          JSON.stringify(state.patternMix) === JSON.stringify(DEFAULT_PATTERN_MIX)) {
+        newPatch.patternMix = DEFAULT_SVM_PATTERN_MIX.map(p => ({ ...p }));
+      }
       // Reset yamlDraft if either:
       //   * the user hasn't typed anything (draft is empty or matches
       //     the prior server yaml), OR
@@ -793,7 +835,7 @@
 
     return {
       get, subscribe, actions, tick, destroy,
-      PATTERNS, DEFAULT_PATTERN_MIX, SCENARIOS,
+      PATTERNS, DEFAULT_PATTERN_MIX, DEFAULT_SVM_PATTERN_MIX, SCENARIOS,
     };
   }
 
@@ -801,5 +843,5 @@
   // (Babel-in-browser doesn't have ES modules; this is the smallest
   // possible shim — components NEVER reach for this directly. They go
   // through `useSim()` / `useSimState()` in sim-context.jsx.)
-  window.eRPCSimRuntime = { createSimRuntime, PATTERNS, DEFAULT_PATTERN_MIX, SCENARIOS };
+  window.eRPCSimRuntime = { createSimRuntime, PATTERNS, DEFAULT_PATTERN_MIX, DEFAULT_SVM_PATTERN_MIX, SCENARIOS };
 })();

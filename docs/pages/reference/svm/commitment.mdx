@@ -1,0 +1,302 @@
+---
+title: Commitment & finality
+description: Pin one Solana commitment level across every upstream so the cache and consensus key on identical data — eRPC injects it shape-aware per method, clamps it where a method refuses it, and never rewrites what your client asked for.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
+
+<LLMsTxtLink />
+
+# Commitment & finality
+
+Two Solana upstreams with different server-side commitment defaults return subtly different data for the identical request — poisoning the cache and turning consensus into a permanent dispute. eRPC fixes this by stamping one network-level commitment onto every outgoing request whose params omit it, at the exact param position each method expects, and by classifying finality from the commitment that *actually reaches the upstream*.
+
+**What you get**
+
+- One commitment level observed by every upstream, regardless of vendor defaults
+- Shape-aware injection per method — the options object goes where Solana expects it, never where it corrupts a valid request
+- Automatic clamping for methods that refuse `processed`, instead of a `-32602` from the upstream
+- A caller-supplied `commitment` is never rewritten
+
+## Quick taste
+
+Illustrative, not a tuned production config — pin `confirmed` across every SVM network in the project:
+
+<ConfigTabs
+  path="projects[].networkDefaults.svm"
+  focusYaml="4-6"
+  focusTs="3-5"
+  yaml={`projects:
+  - id: main
+    networkDefaults:
+      svm:
+        # every upstream now observes the same commitment; cache keys and
+        # consensus votes compare like-for-like
+        commitment: confirmed
+    networks:
+      - architecture: svm
+        svm:
+          cluster: mainnet-beta`}
+  ts={`projects: [{
+  id: "main",
+  networkDefaults: {
+    svm: {
+      // every upstream now observes the same commitment; cache keys and
+      // consensus votes compare like-for-like
+      commitment: "confirmed",
+    },
+  },
+  networks: [{ architecture: "svm", svm: { cluster: "mainnet-beta" } }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="pin one commitment level across all Solana upstreams"
+	defaultOpen
+	prompt={`My eRPC Solana upstreams return inconsistent data for identical requests because each
+vendor has a different server-side commitment default. Set a network-level default
+commitment so every upstream observes the same level, and explain what it does to cache
+finality classification. Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/reference/svm/commitment.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="debug a -32602 'does not support commitment below confirmed'"
+	prompt={`My eRPC deployment has svm.commitment: processed and some getBlock calls fail with
+-32602 "Method does not support commitment below confirmed". Explain eRPC's clamping
+behavior, which methods are affected, and whether the error is coming from my own
+explicit commitment param or from the injected default. Reference:
+https://docs.erpc.cloud/reference/svm/commitment.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="explain why my finalized getBalance is not cached permanently"
+	prompt={`I pass commitment: finalized on getAccountInfo through eRPC and expected permanent
+caching, but every request goes to an upstream. Explain how eRPC classifies SVM finality
+versus commitment, and what cache policies I actually need. Reference:
+https://docs.erpc.cloud/reference/svm/commitment.llms.txt`}
+/>
+
+<AISection title="Commitment & finality — full agent reference">
+
+### How it works
+
+**Commitment vs finality are two different questions.** Conflating them is the trap this design exists to avoid:
+
+| Question | Answered by | `getBalance` at `commitment: finalized` |
+|---|---|---|
+| "Which slot does the node evaluate this at?" | `IsFinalizedCommitment` — used for **routing** and upstream selection | `finalized` |
+| "Is this response immutable enough to cache?" | `GetFinality` — used for **cacheability** | `realtime` |
+
+Both are thin wrappers over one predicate, `resolveCommitment`, so the forwarded commitment, the cache key, and the finality classification can never diverge. Use `IsFinalizedCommitment` semantics when reasoning about which upstream can serve a request; use `GetFinality` semantics when reasoning about cache policies.
+
+**Why `finalized` does not mean immutable.** Solana's `finalized` commitment is the state at the latest **rooted** slot, and the rooted slot advances roughly every 400 ms. It is a moving head, exactly like EVM's `latest` tag — not a finality horizon like EVM's `finalized` block. Only a response pinned to an explicit slot or transaction signature is immutable once that slot is rooted. The full classification table is on the [SVM cache page](/config/database/svm-json-rpc-cache).
+
+**`resolveCommitment` decides from request shape plus config, never from mutation state.** It returns the effective commitment (`""` when unknown — the upstream applies its own server-side default), the action injection should take, and the param index. Because it never inspects whether injection already ran, it returns the same answer called before or after injection:
+
+| Request shape | Result |
+|---|---|
+| explicit `commitment` already present in params | that value, **never rewritten** |
+| method not in the injection table, or no valid network default | `""`, injection skipped |
+| options slot holds an object | inject into it |
+| options slot is the next free position | append a new options object |
+| options slot holds a non-object (legacy `getBlock(slot, "base64")` encoding form) | `""`, injection skipped — a valid request shape is never corrupted |
+| required positional args missing (including `getBlocks` with no start slot) | `""`, injection skipped |
+
+**Injection runs at the project layer, before the cache read.** Despite the hook's name it is invoked from `HandleProjectPreForward`, ahead of the network-layer cache lookup, and it invalidates the memoized `CacheHash` so the cache keys on the rewritten body. Running it after the cache read would key every request on its pre-injection params and produce a permanent cache miss.
+
+**Options-index table.** Solana puts the config object at a different param position per method, so injection is table-driven:
+
+| Options position | Methods |
+|---|---|
+| index `0` (first/only param) | `getBlockHeight`, `getBlockProduction`, `getEpochInfo`, `getInflationGovernor`, `getLargestAccounts`, `getLatestBlockhash`, `getSlot`, `getSlotLeader`, `getStakeMinimumDelegation`, `getSupply`, `getTransactionCount`, `getVoteAccounts` |
+| index `1` (one positional arg first) | `getAccountInfo`, `getBalance`, `getMinimumBalanceForRentExemption`, `getBlock`, `getMultipleAccounts`, `getProgramAccounts`, `getSignaturesForAddress`, `getStakeActivation`, `getTokenAccountBalance`, `getTokenLargestAccounts`, `getTokenSupply`, `getTransaction`, `isBlockhashValid` |
+| index `2` (two positional args first) | `getBlocksWithLimit`, `getTokenAccountsByDelegate`, `getTokenAccountsByOwner` |
+| trailing object, ≥1 positional arg required | `getBlocks` (`[start]` \| `[start, end]`) |
+| trailing object, no positional arg required | `getLeaderSchedule` (`[]` \| `[{cfg}]` \| `[slot]` \| `[slot, {cfg}]`) |
+
+Deliberately excluded: **write/effectful methods** (they use a method-specific field, see below); **no-parameter methods** (`getGenesisHash`, `getVersion`, `getHealth`, `getIdentity`, `getInflationRate`, `getBlockTime`, …) where appending an options object yields `-32602` "No parameters were expected"; and **methods whose config carries no commitment field** (`getSignatureStatuses`, whose only option is `searchTransactionHistory`).
+
+**Clamping, not skipping.** Five methods reject `commitment: processed` outright — agave answers `-32602` "Method does not support commitment below `confirmed`", because a processed slot can sit on a minority fork that is later abandoned:
+
+```
+atLeastConfirmedMethods = getBlock, getBlocks, getBlocksWithLimit,
+                          getSignaturesForAddress, getTransaction
+```
+
+When the configured default is `processed` and the target method is in that set, eRPC injects `confirmed` instead. Clamping rather than skipping is deliberate: skipping would leave each upstream on its own server-side default — precisely the divergence injection exists to eliminate — and would make `resolveCommitment` report `""`, so finality classification and the cache key would lose the commitment too.
+
+**Clamping applies only to the injected default.** A caller-supplied commitment is classified explicit and never rewritten. If a client explicitly asks `getBlock` for `processed`, the upstream's `-32602` is the honest answer; silently upgrading it would hand back data the client did not ask for.
+
+**Write-path commitment.** Write and effectful methods express commitment through a method-specific field, so this is *not* a blanket `preflightCommitment`:
+
+| Method | Config param index | Field |
+|---|---|---|
+| `sendTransaction` | 1 | `preflightCommitment` (governs the preflight simulation; ignored when `skipPreflight` is true) |
+| `simulateTransaction` | 1 | `commitment` |
+| `requestAirdrop` | 2 | `commitment` |
+
+`sendRawTransaction` is intentionally absent — it is a non-spec alias carrying a raw transaction string with no config object to normalize. These methods are never cached, so the driver here is cross-upstream consistency, not cache-key stability. The write path honors a caller-supplied value, skips when no valid network default is set, clamps, and never corrupts a legacy non-object slot or fabricates missing positional args.
+
+**`minContextSlot` is a node-freshness floor, not a history bound.** Per the Solana RPC reference it is the minimum bank slot at which a request may be **evaluated**. It is *not* a lower bound on returned history and never restricts how far back a query may look — `getBalance(pubkey, {minContextSlot: 1})` still answers at the current head. Consequently:
+
+- It is **not** a finality-promotion signal. A `minContextSlot` on a moving-head read does not make the response immutable.
+- It **is** used to pre-filter upstreams: a request carrying `minContextSlot` skips upstreams whose tracked slot (at the request's commitment) is known to be behind it, avoiding a guaranteed `-32016` round-trip. The comparison slot matches the commitment — a finalized-commitment request needs the node's *finalized* slot at `minContextSlot`, anything weaker needs only the processed tip.
+- It **is** the SVM cache's partition dimension (`<networkId>:<slotRef>`).
+
+The upstream pre-filter is defensive: unknown state (no poller, zero slot, non-SVM upstream) never excludes, and if every upstream would be excluded the original list is returned so the `-32016` failover path reports the truth rather than an empty pool.
+
+**`getGenesisHash` short-circuit.** Cluster genesis hashes are immutable, so `getGenesisHash` is answered from a hardcoded table with no upstream round-trip — mirroring EVM's `eth_chainId` short-circuit.
+
+### Config schema
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `networks[*].svm.commitment` | string | `""` — **no default** | One of `finalized`, `confirmed`, `processed`. When unset, nothing is injected and each upstream's own server-side default governs (Solana's is `finalized`), so upstreams can disagree. Setting it pins one level across the pool; note that doing so makes finality classification track the configured level. |
+| `networkDefaults.svm.commitment` | string | `""` | Inherited by any network whose own `svm.commitment` is empty. The normal place to set it. |
+
+`svm.commitment` is deliberately **not** defaulted by `SetDefaults` — the injection hook is a no-op when it is empty, which is the correct behavior when an operator has not opted in.
+
+### Worked examples
+
+**1. Pin `finalized` for a settlement-grade reader.** Every upstream evaluates at the rooted head, and the two slot-pinned reads become permanently cacheable:
+
+<ConfigTabs
+  path="projects[].networks[]"
+  yaml={`networks:
+  - architecture: svm
+    svm:
+      cluster: mainnet-beta
+      # finalized: every upstream evaluates at its rooted head. getBlock and
+      # getTransaction become cache-finalized; state reads stay realtime
+      # because the rooted head still moves every ~400ms.
+      commitment: finalized`}
+  ts={`networks: [{
+  architecture: "svm",
+  svm: {
+    cluster: "mainnet-beta",
+    // finalized: every upstream evaluates at its rooted head. getBlock and
+    // getTransaction become cache-finalized; state reads stay realtime
+    // because the rooted head still moves every ~400ms.
+    commitment: "finalized",
+  },
+}]`}
+/>
+
+**2. Pin `processed` for a latency-sensitive frontend, and understand the clamp.** `processed` is the freshest level, but `getBlock`/`getTransaction`/`getBlocks`/`getBlocksWithLimit`/`getSignaturesForAddress` refuse it, so those five silently receive `confirmed` — which is what you want, and is why no `-32602` appears:
+
+<ConfigTabs
+  path="projects[].networkDefaults.svm"
+  yaml={`projects:
+  - id: main
+    networkDefaults:
+      svm:
+        # processed = freshest. The five atLeastConfirmed methods are clamped to
+        # confirmed automatically rather than erroring with -32602.
+        commitment: processed
+    networks:
+      - architecture: svm
+        svm: { cluster: mainnet-beta }`}
+  ts={`projects: [{
+  id: "main",
+  networkDefaults: {
+    svm: {
+      // processed = freshest. The five atLeastConfirmed methods are clamped to
+      // confirmed automatically rather than erroring with -32602.
+      commitment: "processed",
+    },
+  },
+  networks: [{ architecture: "svm", svm: { cluster: "mainnet-beta" } }],
+}]`}
+/>
+
+**3. Consensus on finalized reads only.** A consensus policy that matches `finalized` activates for exactly the requests where honest nodes must agree. Combine with a pinned commitment so all upstreams are answering the same question:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`networks:
+  - architecture: svm
+    svm:
+      cluster: mainnet-beta
+      commitment: finalized
+    failsafe:
+      - matchMethod: "getBlock|getTransaction"
+        # Only the slot-pinned reads at finalized commitment are classified
+        # finalized, so this policy activates for exactly those.
+        matchFinality: ["finalized"]
+        consensus:
+          maxParticipants: 3
+          agreementThreshold: 2`}
+  ts={`networks: [{
+  architecture: "svm",
+  svm: { cluster: "mainnet-beta", commitment: "finalized" },
+  failsafe: [{
+    matchMethod: "getBlock|getTransaction",
+    // Only the slot-pinned reads at finalized commitment are classified
+    // finalized, so this policy activates for exactly those.
+    matchFinality: ["finalized"],
+    consensus: { maxParticipants: 3, agreementThreshold: 2 },
+  }],
+}]`}
+/>
+
+### Request/response behavior
+
+- Injection **mutates outgoing params** and invalidates the memoized cache hash. The request your upstream receives may carry a `commitment` your client did not send.
+- Injection is **non-short-circuiting** — it never answers a request itself, only rewrites params.
+- An explicit caller `commitment` is passed through byte-for-byte, including a level the method will reject.
+- `context.slot` is harvested opportunistically from responses whose result shape is Solana's `RpcResponse<T>` envelope, and is routed by the request's **effective** commitment: a finalized-commitment response feeds the finalized slot view as well as the latest view; weaker commitments feed only the latest view. See [slot tracking](/reference/svm/slot-tracking).
+
+### Best practices
+
+- **Set `commitment` on `networkDefaults.svm`, not per network.** Cluster is network identity and must stay per-network; commitment is policy and is almost always uniform.
+- **Pin a commitment before enabling a consensus policy.** Without it, upstreams answer at their own defaults and consensus disputes are guaranteed rather than diagnostic.
+- **Prefer `confirmed` as the general default.** `finalized` costs ~13 s of head lag; `processed` can sit on a fork that is later abandoned. `confirmed` is the level most Solana applications already assume.
+- **Do not reach for `commitment: finalized` as a caching lever.** It promotes only `getBlock` and `getTransaction`. State reads stay realtime whatever you set, by design.
+- **Leave `commitment` unset only if you deliberately want each upstream's own default.** That is a valid choice for a single-upstream deployment and a liability for a pool.
+
+### Edge cases & gotchas
+
+1. **`svm.commitment` has no default.** An SVM network with no `commitment` injects nothing, and two upstreams can return different data for one request. This is the documented behavior, not an oversight — but it is rarely what an operator wants for a multi-upstream pool.
+2. **`processed` is silently clamped to `confirmed` for five methods.** No warning is logged. If you need to know which level actually reached the upstream, that is the value the cache key and finality classification used.
+3. **A caller's explicit `processed` on `getBlock` is *not* clamped** and will surface the upstream's `-32602`. That asymmetry is deliberate: eRPC will not hand back data the client did not ask for.
+4. **The legacy encoding-string form blocks injection.** `getBlock(slot, "base64")` and `getTransaction(sig, "json")` put a string where the config object would go; injection skips rather than corrupt the shape, and the response is classified `unfinalized` rather than trusting the network default.
+5. **The options-index table is hand-maintained.** New Solana or vendor-specific methods are not commitment-injected until added. Safe by default (unknown methods are skipped) but requires upkeep.
+6. **`getInflationRate` takes no params** and is excluded — injecting an options object into it produced `-32602` before the table was made shape-aware.
+7. **`minContextSlot` does not bound history.** Reading it as a "from this slot onward" filter is the common mistake; it only gates whether a node is fresh enough to answer at all.
+8. **No commitment-downgrade detection.** If a non-conforming upstream silently answers at a weaker commitment than requested, eRPC trusts the request's commitment for finality classification — it does not re-derive finality from the response.
+
+### Observability
+
+Commitment injection emits no metrics of its own — it is a params rewrite. Its effects are visible through:
+
+| Signal | Where |
+|---|---|
+| `finality` label on `erpc_network_*` / `erpc_upstream_*` / `erpc_cache_*` metrics | Reflects `GetFinality`, so a mispinned commitment shows up as an unexpected finality mix |
+| `erpc_upstream_request_skipped_total` | Includes upstreams skipped by the `minContextSlot` pre-filter |
+| `-32016` in `erpc_upstream_request_errors_total` | `MinContextSlotNotReached` — the pre-filter did not have fresh enough state to avoid the round-trip |
+
+### Source code entry points
+
+- [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `resolveCommitment`, `commitmentOptionsIndex`, `atLeastConfirmedMethods`, `clampCommitmentForMethod`, `writeCommitmentField`, `networkPreForward_injectCommitment`, `networkPreForward_injectWriteCommitment`, `projectPreForward_getGenesisHash`.
+- [`architecture/svm/finality.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/finality.go) — `GetFinality`, `IsFinalizedCommitment`, and the moving-head rationale.
+- [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByMinContextSlot`, `MinContextSlotOf`, `isAtOrAheadOfSlot`.
+- <SourceLink file="common/config.go" lines="2336-2342" label="common/config.go — SvmNetworkConfig.Commitment" />
+
+### Related pages
+
+- [SVM slot tracking & health](/reference/svm/slot-tracking) — the state poller, `getSlot` correction, ingestion lag, and cordoning.
+- [SVM JSON-RPC cache](/config/database/svm-json-rpc-cache) — the finality classification tables and cache-key derivation.
+- [Networks](/config/projects/networks) — declaring an SVM network and the full `svm.*` schema.
+- [Consensus](/config/failsafe/consensus) — how `matchFinality` gates a consensus policy.
+- [Error taxonomy](/reference/errors#svm-solana-error-contract) — `-32016` and the rest of the SVM error contract.
+
+</AISection>

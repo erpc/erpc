@@ -225,7 +225,8 @@ non-obvious choices.
 **1. Finality-split catch-alls (the production baseline).** Realtime/unfinalized requests
 race block-availability: a node may not have propagated the latest block yet. A non-zero
 `delay` gives the shared-state poller a few milliseconds to refresh before the next
-upstream is tried. Finalized requests have no such race — `delay: 0` rotates immediately:
+upstream is tried. On EVM, finalized requests have no such race — `delay: 0` rotates
+immediately:
 
 <ConfigTabs
   path="projects[].networks[].failsafe[]"
@@ -244,7 +245,7 @@ upstream is tried. Finalized requests have no such race — `delay: 0` rotates i
     matchFinality: ["finalized", "unknown"]
     retry:
       maxAttempts: 6
-      # Finalized data is canonical — no block-availability race, rotate instantly.
+      # Finalized EVM data is canonical — no block-availability race, rotate instantly.
       delay: 0ms
       emptyResultMaxAttempts: 2
       emptyResultDelay: 500ms`}
@@ -265,7 +266,7 @@ upstream is tried. Finalized requests have no such race — `delay: 0` rotates i
     matchFinality: ["finalized", "unknown"],
     retry: {
       maxAttempts: 6,
-      // Finalized data is canonical — no race, rotate instantly.
+      // Finalized EVM data is canonical — no race, rotate instantly.
       delay: 0,
       emptyResultMaxAttempts: 2,
       emptyResultDelay: "500ms",
@@ -273,6 +274,17 @@ upstream is tried. Finalized requests have no such race — `delay: 0` rotates i
   },
 ]`}
 />
+
+> **SVM networks: finalized data *does* have an availability race.** On Solana, consensus
+> finality and RPC indexing are separate steps: a slot can be rooted (so
+> `getSlot(finalized)` reports it) while the provider's indexer has not written the block
+> yet, and `getBlock` on it answers `-32004 BlockNotAvailable` or `-32014
+> BlockStatusNotAvailableYet`. A zero `delay` on `matchFinality: ["finalized"]` therefore
+> volleys across every upstream while they are all equally early. Give SVM finalized
+> catch-alls a non-zero `delay` (~150 ms, roughly a slot) too. eRPC already caps
+> `getSlot(finalized)` at the pool's indexed frontier and short-circuits provably
+> unindexed `getBlock` calls to shrink this window — see
+> [SVM slot tracking & health](/reference/svm/slot-tracking).
 
 **2. Aggressive `eth_getBlockByHash` retry.** During indexing, `eth_getBlockByNumber`
 may return a hash that only a few nodes have ingested yet. Null from one node is likely
@@ -355,7 +367,7 @@ unfinalized data where reorg detection matters:
       delay: 0ms
       emptyResultDelay: 500ms
       # 1 means ZERO empty-result retries (cap reached at attempt 0) — finalized
-      # data is canonical, a null here is definitive, not "not yet".
+      # EVM data is canonical, a null here is definitive, not "not yet".
       emptyResultMaxAttempts: 1`}
   ts={`failsafe: [
   {
@@ -371,7 +383,7 @@ unfinalized data where reorg detection matters:
       maxAttempts: 2,
       delay: "0ms",
       emptyResultDelay: "500ms",
-      // 1 = ZERO empty-result retries — finalized null is definitive.
+      // 1 = ZERO empty-result retries — a finalized EVM null is definitive.
       emptyResultMaxAttempts: 1,
     },
   },

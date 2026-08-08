@@ -95,7 +95,15 @@ Yes — even if you omit the `compression:` block entirely. To disable it you mu
 
 ### How do I disable caching entirely?
 
-Omit the `database.evmJsonRpcCache` key. When the pointer is nil, the cache subsystem is never created.
+Omit the `database.evmJsonRpcCache` key (and `database.svmJsonRpcCache` if you run SVM networks). When the pointer is nil, that cache subsystem is never created.
+
+### Does eRPC support Solana?
+
+Yes. Declare `architecture: svm` with an `svm.cluster`, give each upstream `type: svm` (it is never inferred), and eRPC applies the same failsafe, routing, and caching machinery it uses for EVM. Network ids are `svm:<cluster>` — or `svm:<chain>:<cluster>` for forks like Fogo and Eclipse. See [Networks](/config/projects/networks) and the [SVM reference](/reference/svm/commitment).
+
+### Why isn't my Solana `getBalance` cached even at `commitment: finalized`?
+
+Because Solana's `finalized` is the state at the latest **rooted** slot, and that slot advances roughly every 400 ms — it is a moving head, not an immutability guarantee. Only reads pinned to a specific slot or signature (`getBlock`, `getTransaction`) at `finalized` commitment are cached as immutable; every other read is `realtime` and needs a `finality: realtime` policy with a TTL. Full explanation: [SVM JSON-RPC cache](/config/database/svm-json-rpc-cache).
 
 ---
 
@@ -307,7 +315,7 @@ Key fields referenced across FAQ answers:
 
 ### Best practices
 
-- Always add a `finality: realtime` policy alongside your `finality: finalized` policy — omitting it silently bypasses the cache for all time-sensitive methods. The zero-value trap is the single most common cache misconfiguration.
+- Always add a `finality: realtime` policy alongside your `finality: finalized` policy — omitting it silently bypasses the cache for all time-sensitive methods. The zero-value trap is the single most common cache misconfiguration. On SVM this is even more pronounced: `realtime` covers nearly all traffic, because only `getBlock`/`getTransaction` at `finalized` commitment (plus `getBlockTime` and `getInflationReward`) land in the `finalized` bucket.
 - Use `erpc dump ./erpc.yaml` before deploying to verify that all defaults have been filled in as expected, especially compression and auto-tuner settings.
 - Use `erpc validate ./erpc.yaml` in CI; exit code 0 means no errors. Pipe through `jq .errors` for clean output.
 - For fleet deployments using Redis rate limiting, set a distinct `cacheKeyPrefix` per environment (`erpc_prod_`, `erpc_staging_`) to prevent quota collision between deployments sharing one Redis.
@@ -331,6 +339,9 @@ Key fields referenced across FAQ answers:
 12. **Database auth circuit-breaker limits probes to 1 per second during outage.** Only one goroutine per second is elected to probe the real DB path; all others get fail-open (if enabled) immediately. <SourceLink file="auth/strategy_database.go" lines="25-54" />
 13. **Empty `verificationKeys` rejects all JWTs.** With no keys, `findVerificationKey` always fails → every JWT token is rejected regardless of content. Add at least one `kid → keyData` entry. <SourceLink file="auth/strategy_jwt.go" lines="25-42" />
 14. **`os.ExpandEnv` in YAML runs on raw bytes before parse.** A YAML value like `password: ${REDIS_PASSWORD}` is substituted before decode. If the value contains YAML special characters (`:`, `{`), the resulting YAML will be malformed — use quoted values: `password: "${REDIS_PASSWORD}"`. <SourceLink file="common/config.go" lines="102" />
+15. **SVM cache keys are case-sensitive; EVM's are not.** The EVM hasher lowercases string params, which is correct for hex. The SVM key preserves case exactly, because base58 pubkeys and signatures are case-significant and folding them would serve one account another's data. <SourceLink file="architecture/svm/json_rpc_cache.go" lines="412-433" />
+16. **SVM has no realtime block-age guard.** The TTL on a `finality: realtime` SVM policy is the *only* staleness bound — there is no block-timestamp cross-check to catch an over-long TTL, and `erpc_cache_get_age_guard_reject_total` never fires on SVM networks. <SourceLink file="architecture/svm/json_rpc_cache.go" lines="30-33" />
+17. **`type: svm` is never inferred on an upstream.** An upstream omitting `type` defaults to `evm`, so a Solana endpoint without it fails bootstrap while trying `eth_chainId`. <SourceLink file="common/defaults.go" lines="1715-1718" />
 
 ### Observability
 

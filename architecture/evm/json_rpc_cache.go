@@ -1187,7 +1187,7 @@ func shouldCacheResponse(
 			if dirs := req.Directives(); dirs != nil && dirs.EnforceHighestBlock {
 				if ntw := req.Network(); ntw != nil {
 					if _, respBlock, err := ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlock > 0 {
-						if tip := ntw.EvmHighestLatestBlockNumber(ctx); tip > respBlock {
+						if tip := common.EvmHighestLatestBlockNumber(ntw, ctx); tip > respBlock {
 							lg.Debug().
 								Int64("responseBlockNumber", respBlock).
 								Int64("knownHighestBlock", tip).

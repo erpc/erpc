@@ -130,7 +130,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
-	erpcInstance, err := NewERPC(ctx1, &lg, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx1, &lg, ssr, nil, nil, cfg)
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
