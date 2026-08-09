@@ -16,10 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
         with:
           egress-policy: audit
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v4
         with:
           fetch-depth: 0
       - uses: xray-pr/xray-pr@489e56199b92f696dbc3757964dffd2503ec68e2 # v0.2.0
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
         with:
           egress-policy: audit
       - name: Get PR head SHA
@@ -47,7 +47,7 @@ jobs:
         run: |
           SHA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.sha')
           echo "sha=$SHA" >> $GITHUB_OUTPUT
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v4
         with:
           ref: ${{ steps.pr-info.outputs.sha }}
           fetch-depth: 0
