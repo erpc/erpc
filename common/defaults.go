@@ -557,14 +557,26 @@ var defaultCacheMethodLookupOrder = []map[string]*CacheMethodConfig{
 	DefaultStaticCacheMethods,
 }
 
+// The tables are flattened once into a by-name and a by-lowercase map, in
+// precedence order (first table to define a name wins), so resolving a method —
+// including the unknown-method case that hits neither — costs at most two map
+// lookups instead of walking four tables.
 var (
-	defaultCacheMethodLowerIndexes = func() []map[string]*CacheMethodConfig {
-		idxs := make([]map[string]*CacheMethodConfig, len(defaultCacheMethodLookupOrder))
-		for i, table := range defaultCacheMethodLookupOrder {
-			idxs[i] = lowerCacheMethodIndex(table)
+	defaultCacheMethodsByName = func() map[string]*CacheMethodConfig {
+		flat := map[string]*CacheMethodConfig{}
+		for _, table := range defaultCacheMethodLookupOrder {
+			for name, cfg := range table {
+				if cfg == nil {
+					continue
+				}
+				if _, taken := flat[name]; !taken {
+					flat[name] = cfg
+				}
+			}
 		}
-		return idxs
+		return flat
 	}()
+	defaultCacheMethodsByLower = lowerCacheMethodIndex(defaultCacheMethodsByName)
 	defaultWithBlockLowerIndex = lowerCacheMethodIndex(DefaultWithBlockCacheMethods)
 )
 
@@ -572,16 +584,12 @@ var (
 // their usual precedence order, case-insensitively (see FindCacheMethodConfig
 // for why the lookup must be case-insensitive).
 func FindDefaultCacheMethodConfig(method string) *CacheMethodConfig {
-	lower := strings.ToLower(method)
-	for i, table := range defaultCacheMethodLookupOrder {
-		if cfg, ok := table[method]; ok && cfg != nil {
-			return cfg
-		}
-		if cfg, ok := defaultCacheMethodLowerIndexes[i][lower]; ok {
-			return cfg
-		}
+	if cfg, ok := defaultCacheMethodsByName[method]; ok {
+		return cfg
 	}
-	return nil
+	// Only non-canonical casings pay for the fold; strings.ToLower does not
+	// allocate for an already-lowercase name.
+	return defaultCacheMethodsByLower[strings.ToLower(method)]
 }
 
 // DefaultWithBlockMethodConfig resolves a method against DefaultWithBlockCacheMethods

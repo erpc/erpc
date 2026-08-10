@@ -1958,3 +1958,33 @@ func TestFindDefaultCacheMethodConfig(t *testing.T) {
 	assert.Nil(t, DefaultWithBlockMethodConfig("eth_chainId"),
 		"the with-block accessor must not reach into the other tables")
 }
+
+// The flattened default index must resolve exactly like walking the four tables
+// in precedence order — the cascade it replaced.
+func TestFindDefaultCacheMethodConfigMatchesTableCascade(t *testing.T) {
+	t.Parallel()
+
+	cascade := func(method string) *CacheMethodConfig {
+		for _, table := range defaultCacheMethodLookupOrder {
+			if cfg, ok := table[method]; ok && cfg != nil {
+				return cfg
+			}
+		}
+		return nil
+	}
+
+	seen := 0
+	for _, table := range defaultCacheMethodLookupOrder {
+		for name := range table {
+			seen++
+			assert.Same(t, cascade(name), FindDefaultCacheMethodConfig(name),
+				"exact casing of %s must resolve as the cascade did", name)
+			assert.Same(t, cascade(name), FindDefaultCacheMethodConfig(strings.ToUpper(name)),
+				"upper casing of %s must resolve to the same entry", name)
+			assert.Same(t, cascade(name), FindDefaultCacheMethodConfig(strings.ToLower(name)),
+				"lower casing of %s must resolve to the same entry", name)
+		}
+	}
+	assert.Greater(t, seen, 20, "sanity: the default tables should be populated")
+	assert.Nil(t, FindDefaultCacheMethodConfig("custom_notADefaultMethod"))
+}
