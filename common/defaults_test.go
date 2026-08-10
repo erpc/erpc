@@ -1261,6 +1261,58 @@ func TestSetDefaults_ConsensusWaitCaps(t *testing.T) {
 	})
 }
 
+// TestSetDefaults_ConsensusIgnoreFields locks three contracts of the
+// IgnoreFields defaulting added for SVM consensus:
+//
+//  1. EVM invariance — the eth_* entries are byte-for-byte what they were
+//     before the SVM change (a regression guard, not a defaults echo).
+//  2. SVM context-envelope methods each ignore exactly
+//     ["context.slot","context.apiVersion"].
+//  3. Operator-supplied IgnoreFields wins wholesale: SetDefaults must not
+//     inject SVM entries into a non-nil map (nil-check semantics).
+func TestSetDefaults_ConsensusIgnoreFields(t *testing.T) {
+	t.Run("fresh config gets EVM entries unchanged and SVM envelope entries", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{MaxParticipants: 3, AgreementThreshold: 2}
+		require := assert.New(t)
+		require.NoError(c.SetDefaults())
+		require.NotNil(c.IgnoreFields)
+
+		// EVM invariance: exactly the pre-SVM values.
+		assert.Equal(t, []string{"*.blockTimestamp"}, c.IgnoreFields["eth_getLogs"])
+		assert.Equal(t, []string{"blockTimestamp", "logs.*.blockTimestamp"}, c.IgnoreFields["eth_getTransactionReceipt"])
+		assert.Equal(t, []string{"*.blockTimestamp", "*.logs.*.blockTimestamp"}, c.IgnoreFields["eth_getBlockReceipts"])
+
+		// SVM RpcResponse-enveloped methods ignore the context envelope only.
+		for _, m := range []string{
+			"getAccountInfo",
+			"getBalance",
+			"getLatestBlockhash",
+			"getMultipleAccounts",
+			"getSignatureStatuses",
+			"getTokenAccountsByOwner",
+			"simulateTransaction",
+		} {
+			assert.Equal(t, []string{"context.slot", "context.apiVersion"}, c.IgnoreFields[m], "method %s", m)
+		}
+
+		// Scalar / non-enveloped Solana methods are deliberately absent:
+		// their whole result is the payload, so nothing may be ignored.
+		assert.NotContains(t, c.IgnoreFields, "getEpochInfo")
+		assert.NotContains(t, c.IgnoreFields, "getSlot")
+	})
+
+	t.Run("operator-supplied IgnoreFields is left exactly as given", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 2,
+			IgnoreFields:       map[string][]string{"foo": {"bar"}},
+		}
+		require := assert.New(t)
+		require.NoError(c.SetDefaults())
+		assert.Equal(t, map[string][]string{"foo": {"bar"}}, c.IgnoreFields)
+	})
+}
+
 // captureWarnings rebinds the package-level zerolog `log.Logger` to a
 // JSON-encoded buffer for the duration of `fn`, then restores the
 // prior logger. Used to assert that `SetDefaults` emits a deprecation
@@ -1434,4 +1486,315 @@ func TestPostgreSQLIAMAuthDeriveFromURIExplicitOverrides(t *testing.T) {
 
 	assert.Equal(t, "custom-endpoint:5432", cfg.IAMAuth.Endpoint, "explicit Endpoint must not be overwritten")
 	assert.Equal(t, "custom-user", cfg.IAMAuth.DBUser, "explicit DBUser must not be overwritten")
+}
+
+// int64Ptr builds a *int64 for SvmNetworkConfig.MaxFinalizedSlotLag, where nil
+// ("unset") and 0 ("lag filter disabled") mean different things.
+//
+// ponytail: Go 1.26's `new(int64(0))` would replace this helper, but go.mod still
+// declares `go 1.25.1` and the compiler rejects new(expr) below 1.26. Delete this
+// and inline new(...) when the go directive is bumped.
+func int64Ptr(v int64) *int64 { return &v }
+
+func TestSetDefaults_SvmNetworkConfig_PopulatesGuards(t *testing.T) {
+	t.Run("zero values get defaults", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, nil))
+
+		require.NotNil(t, n.Svm.MaxFinalizedSlotLag, "SetDefaults must materialize the lag default")
+		if *n.Svm.MaxFinalizedSlotLag != MaxShredInsertSlotLagThreshold {
+			t.Errorf("MaxFinalizedSlotLag = %d, want %d", *n.Svm.MaxFinalizedSlotLag, MaxShredInsertSlotLagThreshold)
+		}
+		if n.Svm.StatePollerDebounce.Duration() != 400*time.Millisecond {
+			t.Errorf("StatePollerDebounce = %v, want 400ms", n.Svm.StatePollerDebounce.Duration())
+		}
+	})
+
+	t.Run("operator overrides preserved", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm: &SvmNetworkConfig{
+				Cluster:             "mainnet-beta",
+				MaxFinalizedSlotLag: int64Ptr(5000),
+				StatePollerDebounce: Duration(750 * time.Millisecond),
+			},
+		}
+		require.NoError(t, n.SetDefaults(nil, nil))
+
+		require.NotNil(t, n.Svm.MaxFinalizedSlotLag)
+		if *n.Svm.MaxFinalizedSlotLag != 5000 {
+			t.Errorf("operator value should win, got %d", *n.Svm.MaxFinalizedSlotLag)
+		}
+		if n.Svm.StatePollerDebounce.Duration() != 750*time.Millisecond {
+			t.Errorf("operator debounce should win, got %v", n.Svm.StatePollerDebounce.Duration())
+		}
+	})
+
+	// The documented contract: 0 disables the lag filter. A non-pointer int64
+	// made this unreachable — SetDefaults could not tell it from "unset" and
+	// overwrote it with 100.
+	t.Run("explicit zero disables the lag filter and survives SetDefaults", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta", MaxFinalizedSlotLag: int64Ptr(0)},
+		}
+		require.NoError(t, n.SetDefaults(nil, nil))
+
+		require.NotNil(t, n.Svm.MaxFinalizedSlotLag)
+		require.Equal(t, int64(0), *n.Svm.MaxFinalizedSlotLag,
+			"an explicit 0 must survive SetDefaults so readers see the filter as disabled")
+	})
+
+	t.Run("Architecture auto-derived from Svm", func(t *testing.T) {
+		n := &NetworkConfig{Svm: &SvmNetworkConfig{Cluster: "mainnet-beta"}}
+		require.NoError(t, n.SetDefaults(nil, nil))
+
+		if n.Architecture != ArchitectureSvm {
+			t.Errorf("expected Architecture=svm, got %q", n.Architecture)
+		}
+	})
+
+	t.Run("Architecture=svm without Svm section auto-creates it", func(t *testing.T) {
+		n := &NetworkConfig{Architecture: ArchitectureSvm}
+		require.NoError(t, n.SetDefaults(nil, nil))
+
+		if n.Svm == nil {
+			t.Fatal("Svm should be auto-created when Architecture=svm")
+		}
+		require.NotNil(t, n.Svm.MaxFinalizedSlotLag, "defaults should still apply to auto-created Svm")
+		require.Equal(t, MaxShredInsertSlotLagThreshold, *n.Svm.MaxFinalizedSlotLag)
+	})
+}
+
+func TestSetDefaults_NetworkDefaults_SvmMergesIntoNetwork(t *testing.T) {
+	defaults := &NetworkDefaults{
+		Svm: &SvmNetworkConfig{
+			Commitment:          "confirmed",
+			StatePollerDebounce: Duration(500 * time.Millisecond),
+			Cluster:             "devnet", // must be ignored when merging into network
+		},
+	}
+
+	t.Run("inherits commitment and debounce from networkDefaults", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, defaults))
+
+		require.Equal(t, "mainnet-beta", n.Svm.Cluster)
+		require.Equal(t, "confirmed", n.Svm.Commitment)
+		require.Equal(t, 500*time.Millisecond, n.Svm.StatePollerDebounce.Duration())
+	})
+
+	t.Run("network override wins over networkDefaults", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm: &SvmNetworkConfig{
+				Cluster:    "mainnet-beta",
+				Commitment: "finalized",
+			},
+		}
+		require.NoError(t, n.SetDefaults(nil, defaults))
+
+		require.Equal(t, "finalized", n.Svm.Commitment)
+	})
+
+	t.Run("cluster never copied from networkDefaults", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, defaults))
+
+		require.Equal(t, "mainnet-beta", n.Svm.Cluster)
+	})
+
+	t.Run("does not auto-create Svm from networkDefaults on non-SVM network", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureEvm,
+			Evm:          &EvmNetworkConfig{ChainId: 1},
+		}
+		require.NoError(t, n.SetDefaults(nil, defaults))
+
+		require.Nil(t, n.Svm)
+	})
+
+	// Both of these are disable switches an operator can only express as a
+	// falsy value, so a zero-test in the merge silently discarded them and the
+	// guard stayed on with no way to turn it off.
+	t.Run("networkDefaults enforceBlockAvailability=false survives the merge", func(t *testing.T) {
+		d := &NetworkDefaults{Svm: &SvmNetworkConfig{EnforceBlockAvailability: util.BoolPtr(false)}}
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, d))
+
+		require.NotNil(t, n.Svm.EnforceBlockAvailability, "an explicit false must not be dropped by the merge")
+		require.False(t, *n.Svm.EnforceBlockAvailability)
+	})
+
+	t.Run("networkDefaults maxFinalizedSlotLag=0 survives the merge and disables the filter", func(t *testing.T) {
+		d := &NetworkDefaults{Svm: &SvmNetworkConfig{MaxFinalizedSlotLag: int64Ptr(0)}}
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, d))
+
+		require.NotNil(t, n.Svm.MaxFinalizedSlotLag)
+		require.Equal(t, int64(0), *n.Svm.MaxFinalizedSlotLag,
+			"networkDefaults 0 must reach the network, not be overwritten by SetDefaults' 100")
+	})
+
+	t.Run("network-level pointer overrides win over networkDefaults", func(t *testing.T) {
+		d := &NetworkDefaults{Svm: &SvmNetworkConfig{
+			EnforceBlockAvailability: util.BoolPtr(false),
+			MaxFinalizedSlotLag:      int64Ptr(0),
+		}}
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm: &SvmNetworkConfig{
+				Cluster:                  "mainnet-beta",
+				EnforceBlockAvailability: util.BoolPtr(true),
+				MaxFinalizedSlotLag:      int64Ptr(42),
+			},
+		}
+		require.NoError(t, n.SetDefaults(nil, d))
+
+		require.True(t, *n.Svm.EnforceBlockAvailability)
+		require.Equal(t, int64(42), *n.Svm.MaxFinalizedSlotLag)
+	})
+
+	t.Run("inherited pointers are copied, not shared between networks", func(t *testing.T) {
+		d := &NetworkDefaults{Svm: &SvmNetworkConfig{MaxFinalizedSlotLag: int64Ptr(7)}}
+		a := &NetworkConfig{Architecture: ArchitectureSvm, Svm: &SvmNetworkConfig{Cluster: "mainnet-beta"}}
+		b := &NetworkConfig{Architecture: ArchitectureSvm, Svm: &SvmNetworkConfig{Cluster: "devnet"}}
+		require.NoError(t, a.SetDefaults(nil, d))
+		require.NoError(t, b.SetDefaults(nil, d))
+
+		require.NotSame(t, a.Svm.MaxFinalizedSlotLag, b.Svm.MaxFinalizedSlotLag,
+			"two networks must not alias one operator-supplied pointer")
+		require.Equal(t, int64(7), *d.Svm.MaxFinalizedSlotLag, "the defaults block itself must stay unmutated")
+	})
+}
+
+// TestSetDefaults_SvmNetworkNotPollutedByEvmDefaults regression-locks the fix
+// where networkDefaults.evm was copied into SVM networks. Because architecture
+// derivation checks n.Evm before n.Svm, an `svm:`-authored network without an
+// explicit architecture silently became architecture=evm.
+func TestSetDefaults_SvmNetworkNotPollutedByEvmDefaults(t *testing.T) {
+	newDefaults := func() *NetworkDefaults {
+		return &NetworkDefaults{
+			Evm: &EvmNetworkConfig{GetLogsMaxAllowedRange: 30000},
+		}
+	}
+
+	t.Run("svm network with architecture unset stays svm and gets no evm block", func(t *testing.T) {
+		n := &NetworkConfig{Svm: &SvmNetworkConfig{Cluster: "mainnet-beta"}}
+		require.NoError(t, n.SetDefaults(nil, newDefaults()))
+
+		assert.Nil(t, n.Evm, "networkDefaults.evm must not be injected into an svm network")
+		assert.Equal(t, ArchitectureSvm, n.Architecture, "architecture must derive to svm, not evm")
+	})
+
+	t.Run("explicit architecture=svm stays svm and gets no evm block", func(t *testing.T) {
+		n := &NetworkConfig{Architecture: ArchitectureSvm}
+		require.NoError(t, n.SetDefaults(nil, newDefaults()))
+
+		assert.Nil(t, n.Evm, "networkDefaults.evm must not be injected when architecture=svm")
+		assert.Equal(t, ArchitectureSvm, n.Architecture)
+	})
+
+	t.Run("evm invariance: network with neither evm nor svm still receives evm defaults", func(t *testing.T) {
+		n := &NetworkConfig{}
+		require.NoError(t, n.SetDefaults(nil, newDefaults()))
+
+		require.NotNil(t, n.Evm, "evm defaults must still be copied onto plain networks")
+		assert.Equal(t, ArchitectureEvm, n.Architecture, "architecture must derive to evm")
+		assert.EqualValues(t, 30000, n.Evm.GetLogsMaxAllowedRange, "copied from networkDefaults.evm")
+	})
+
+	t.Run("evm invariance: network with own evm block still field-merges from defaults", func(t *testing.T) {
+		n := &NetworkConfig{Evm: &EvmNetworkConfig{ChainId: 1}}
+		require.NoError(t, n.SetDefaults(nil, newDefaults()))
+
+		assert.EqualValues(t, 30000, n.Evm.GetLogsMaxAllowedRange, "zero field inherited from networkDefaults.evm")
+		assert.EqualValues(t, 1, n.Evm.ChainId, "operator value preserved")
+	})
+}
+
+func TestDatabaseConfig_SetDefaults_SvmJsonRpcCache(t *testing.T) {
+	d := &DatabaseConfig{
+		SvmJsonRpcCache: &CacheConfig{
+			Connectors: []*ConnectorConfig{
+				{
+					Id:     "short-term",
+					Driver: DriverMemory,
+					Memory: &MemoryConnectorConfig{},
+				},
+			},
+		},
+	}
+	require.NoError(t, d.SetDefaults("erpc-default"))
+	require.Equal(t, "1GB", d.SvmJsonRpcCache.Connectors[0].Memory.MaxTotalSize)
+	require.Equal(t, 100_000, d.SvmJsonRpcCache.Connectors[0].Memory.MaxItems)
+}
+
+// TestApplyDefaults_UpstreamDefaultsSvm locks in the wiring of
+// upstreamDefaults.svm, which was previously not merged into per-upstream SVM
+// config at all — operators had to repeat chain/cluster on every upstream.
+func TestApplyDefaults_UpstreamDefaultsSvm(t *testing.T) {
+	newDefaults := func() *UpstreamConfig {
+		return &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Chain:            "fogo",
+			Cluster:          "mainnet",
+			CheckGenesisHash: true,
+		}}
+	}
+
+	t.Run("upstream without an svm block inherits the whole template", func(t *testing.T) {
+		u := &UpstreamConfig{Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899"}
+		require.NoError(t, u.ApplyDefaults(newDefaults()))
+
+		require.NotNil(t, u.Svm, "upstreamDefaults.svm must reach the upstream")
+		require.Equal(t, "fogo", u.Svm.Chain)
+		require.Equal(t, "mainnet", u.Svm.Cluster)
+		require.True(t, u.Svm.CheckGenesisHash)
+	})
+
+	t.Run("upstream's own values win, empty fields inherit", func(t *testing.T) {
+		u := &UpstreamConfig{
+			Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899",
+			Svm: &SvmUpstreamConfig{Cluster: "testnet"},
+		}
+		require.NoError(t, u.ApplyDefaults(newDefaults()))
+
+		require.Equal(t, "testnet", u.Svm.Cluster, "explicit cluster must win")
+		require.Equal(t, "fogo", u.Svm.Chain, "empty chain must inherit")
+		require.True(t, u.Svm.CheckGenesisHash, "opt-in genesis check must propagate")
+	})
+
+	t.Run("inherited svm block is copied, not shared", func(t *testing.T) {
+		d := newDefaults()
+		a := &UpstreamConfig{Id: "a", Type: UpstreamTypeSvm, Endpoint: "http://a:8899"}
+		b := &UpstreamConfig{Id: "b", Type: UpstreamTypeSvm, Endpoint: "http://b:8899"}
+		require.NoError(t, a.ApplyDefaults(d))
+		require.NoError(t, b.ApplyDefaults(d))
+
+		a.Svm.Cluster = "devnet"
+		require.Equal(t, "mainnet", b.Svm.Cluster, "upstreams must not alias one another's svm block")
+		require.Equal(t, "mainnet", d.Svm.Cluster, "the defaults block itself must stay unmutated")
+	})
+
+	t.Run("no upstreamDefaults.svm leaves the upstream untouched", func(t *testing.T) {
+		u := &UpstreamConfig{Id: "u1", Type: UpstreamTypeEvm, Endpoint: "http://localhost:8545"}
+		require.NoError(t, u.ApplyDefaults(&UpstreamConfig{}))
+
+		require.Nil(t, u.Svm)
+	})
 }

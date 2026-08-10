@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
@@ -56,6 +57,7 @@ type ProjectsRegistry struct {
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	sharedState          data.SharedStateRegistry
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
+	svmJsonRpcCache      *svm.SvmJsonRpcCache
 	preparedProjects     map[string]*PreparedProject
 	staticProjects       []*common.ProjectConfig
 	vendorsRegistry      *thirdparty.VendorsRegistry
@@ -75,6 +77,7 @@ func NewProjectsRegistry(
 	staticProjects []*common.ProjectConfig,
 	sharedState data.SharedStateRegistry,
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
+	svmJsonRpcCache *svm.SvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	vendorsRegistry *thirdparty.VendorsRegistry,
 	proxyPoolRegistry *clients.ProxyPoolRegistry,
@@ -88,6 +91,7 @@ func NewProjectsRegistry(
 		sharedState:          sharedState,
 		rateLimitersRegistry: rateLimitersRegistry,
 		evmJsonRpcCache:      evmJsonRpcCache,
+		svmJsonRpcCache:      svmJsonRpcCache,
 		vendorsRegistry:      vendorsRegistry,
 		proxyPoolRegistry:    proxyPoolRegistry,
 		userScript:           userScript,
@@ -206,6 +210,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		upstreamsRegistry,
 		metricsTracker,
 		r.evmJsonRpcCache,
+		r.svmJsonRpcCache,
 		r.rateLimitersRegistry,
 		pp.policyEngine,
 		&lg,

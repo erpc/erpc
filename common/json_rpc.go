@@ -1392,7 +1392,11 @@ func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
 	}
 
 	if ch := r.cacheHash.Load(); ch != nil {
-		return ch.(string), nil
+		// Empty string is the "invalidated" sentinel written by
+		// InvalidateCacheHash — fall through to recompute in that case.
+		if s := ch.(string); s != "" {
+			return s, nil
+		}
 	}
 
 	hasher := sha256.New()
@@ -1406,6 +1410,17 @@ func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
 	ch := fmt.Sprintf("%s:%x", r.Method, b)
 	r.cacheHash.Store(ch)
 	return ch, nil
+}
+
+// InvalidateCacheHash discards any memoized CacheHash value so the next
+// CacheHash call recomputes against the current Params. Call this after any
+// in-place mutation of Params (e.g. pre-forward hooks that inject defaults).
+// Safe to call with no prior CacheHash invocation.
+func (r *JsonRpcRequest) InvalidateCacheHash() {
+	if r == nil {
+		return
+	}
+	r.cacheHash.Store("")
 }
 
 func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
@@ -1496,16 +1511,57 @@ func hashValue(h io.Writer, v interface{}) error {
 	}
 }
 
+// findUpstreamsExhausted locates the ErrUpstreamsExhausted bundle that carries
+// the per-upstream causes, seeing through single-cause wrappers placed on top
+// of it. The network retry loop wraps the exhausted error in an
+// ErrFailsafeRetryExceeded before it reaches translation; a direct type
+// assertion missed that entirely, so the retry-exceeded path skipped the
+// dominance scan and surfaced whichever code the generic fallback happened to
+// reach.
+//
+// Only the linear Cause chain is walked — the same discipline as
+// IsRetryableTowardNetwork. Descending into a multi-error fan-out would let an
+// exhausted bundle nested inside e.g. a consensus dispute hijack the
+// translation of an error that is not about upstream exhaustion at all.
+func findUpstreamsExhausted(err error) *ErrUpstreamsExhausted {
+	for cur := err; cur != nil; {
+		if erx, ok := cur.(*ErrUpstreamsExhausted); ok {
+			return erx
+		}
+		cse, ok := cur.(StandardError)
+		if !ok {
+			return nil
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			return nil
+		}
+		cur = next
+	}
+	return nil
+}
+
 // TranslateToJsonRpcException is mainly responsible to translate internal eRPC errors (not those coming from upstreams) to
 // a proper json-rpc error with correct numeric code.
 func TranslateToJsonRpcException(err error) error {
-	if erx, ok := err.(*ErrUpstreamsExhausted); ok {
+	if erx := findUpstreamsExhausted(err); erx != nil {
 		// Scan an UpstreamsExhausted error to detect the most frequent error among upstreams
 		// This selection helps provide somewhat user-friendly error message vs just saying that "all upstreams failed"
+		//
+		// erx.Errors() is ordered by orderCauses (retryable-toward-network
+		// first, then upstream id), so both the dominant-code tally and the
+		// representative picked out of that bucket are deterministic for a
+		// given multiset of causes. When several upstreams disagree under one
+		// error code — e.g. the same slot reported "not yet available" by one
+		// and "permanently skipped" by another — taking the FIRST of the
+		// bucket therefore surfaces the retryable verdict, which is the
+		// data-safe answer to hand a client.
 		var (
-			counts   = make(map[ErrorCode]int) // code -> occurrences
-			maxCount int
-			domErr   error
+			counts      = make(map[ErrorCode]int)   // code -> occurrences
+			firstByCode = make(map[ErrorCode]error) // code -> earliest cause with that code
+			firstAny    error
+			maxCount    int
+			domCode     ErrorCode
 		)
 		for _, cause := range erx.Errors() {
 			se, ok := cause.(StandardError)
@@ -1513,22 +1569,26 @@ func TranslateToJsonRpcException(err error) error {
 				continue
 			}
 			c := se.Base().Code
-			if counts[c] == 0 {
-				// keep the first error for each code so we don't have to iterate again later
-				// we store it only the first time we see the code which guarantees we return the earliest error
-				if domErr == nil { // fast path when first iteration becomes dominant by default
-					domErr = cause
-				}
+			if firstAny == nil {
+				// Fallback when every cause turns out to be uninteresting.
+				firstAny = cause
 			}
 			if c == ErrCodeUpstreamRequestSkipped || HasErrorCode(cause, ErrCodeEndpointUnsupported) {
 				// most often these errors are not interesting nor significant vs other errors
 				continue
 			}
+			if _, seen := firstByCode[c]; !seen {
+				firstByCode[c] = cause
+			}
 			counts[c]++
 			if counts[c] > maxCount {
 				maxCount = counts[c]
-				domErr = cause // we want the first error with the dominant code; since we update only when count is strictly greater, the earliest error for that code is kept in domErr.
+				domCode = c
 			}
+		}
+		domErr := firstAny
+		if maxCount > 0 {
+			domErr = firstByCode[domCode]
 		}
 		if domErr != nil {
 			err = domErr
