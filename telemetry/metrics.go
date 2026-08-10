@@ -9,6 +9,22 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Classifier label values for MetricUpstreamErrorClassification. The label is a
+// closed vocabulary on purpose: add a constant here rather than passing an
+// ad-hoc string at a call site, so the metric stays bounded and greppable.
+const (
+	// ErrorClassifierFallback marks an upstream error that no explicit matcher
+	// recognized, so the normalizer applied its default server-side/retryable
+	// classification.
+	ErrorClassifierFallback = "fallback"
+	// ErrorClassifierRevertResultSniff marks a 200-OK response whose result
+	// payload was reclassified as an EVM revert by ABI-selector prefix.
+	ErrorClassifierRevertResultSniff = "revert_result_sniff"
+	// ErrorClassifierInvalidJumpRewrite marks a chain-specific InvalidJump
+	// message that was rewritten to a tooling-compatible summary.
+	ErrorClassifierInvalidJumpRewrite = "invalid_jump_rewrite"
+)
+
 var (
 	MetricUnexpectedPanicTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -45,6 +61,38 @@ var (
 		Name:      "upstream_request_empty_response_total",
 		Help:      "Total number of empty responses from upstreams.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
+
+	// MetricUpstreamErrorClassification counts the error-normalizer paths where
+	// eRPC's interpretation of an upstream reply is weaker than the reply
+	// itself, so operators can see them instead of inferring them:
+	//
+	//   fallback             — no explicit matcher recognized the upstream error
+	//                          and it was classified as a server-side exception
+	//                          (retry/failover). A rate that rises on one vendor
+	//                          is the signal that its error phrasings drifted:
+	//                          an unrecognized nonce wording, for example,
+	//                          silently bypasses the eth_sendRawTransaction
+	//                          idempotency handling.
+	//   revert_result_sniff  — an HTTP-200 result whose bytes begin with the
+	//                          Error(string) selector was reclassified as an EVM
+	//                          revert. The heuristic can be wrong in both
+	//                          directions — see error_normalizer.go.
+	//   invalid_jump_rewrite — a chain-specific "EVM error: InvalidJump" message
+	//                          was rewritten to a Subgraph-compatible summary;
+	//                          the upstream's own wording is kept in the error
+	//                          details as `originalMessage`.
+	//
+	// Deliberately NOT labeled by error message or JSON-RPC code: both are
+	// open-ended and vendor-controlled. The unmatched message and the code go to
+	// a debug log line at the classification site, where operators can mine them
+	// for new matcher patterns without paying for a Prometheus series. Labels
+	// here are bounded by deployment topology, the method set, and the fixed
+	// classifier vocabulary above.
+	MetricUpstreamErrorClassification = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_error_classification_total",
+		Help:      "Total number of upstream replies that took a notable error-normalization path (classifier=fallback: no explicit matcher fired; revert_result_sniff: 200-OK result reclassified as an EVM revert; invalid_jump_rewrite: chain-specific message rewritten). Explicitly matched errors are NOT counted.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "classifier"})
 
 	MetricUpstreamBlockHeadLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",

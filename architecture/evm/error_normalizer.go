@@ -8,13 +8,112 @@ import (
 
 	bdscommon "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func init() {
 	_ = (&bdscommon.ErrorDetails{}).ProtoReflect().Descriptor()
+}
+
+// recordClassification makes one error-normalizer decision observable.
+//
+// Two channels, split by what is bounded and what is not:
+//   - the counter carries only bounded labels — deployment topology, the
+//     request method, and the closed classifier vocabulary in telemetry;
+//   - the debug log carries the open-ended parts (the upstream's own message
+//     and JSON-RPC code), which is where an operator mines for new matcher
+//     patterns without paying for a Prometheus series per vendor phrasing.
+//
+// Only notable paths call this (fallthrough and the two heuristics), never the
+// explicitly matched ones, so it stays off the hot path for recognized errors.
+func recordClassification(
+	nr *common.NormalizedResponse,
+	classifier string,
+	code common.JsonRpcErrorNumber,
+	message string,
+) {
+	project, vendor, network, upstreamId, category := classificationLabels(nr)
+	telemetry.MetricUpstreamErrorClassification.
+		WithLabelValues(project, vendor, network, upstreamId, category, classifier).
+		Inc()
+
+	log.Debug().
+		Str("classifier", classifier).
+		Str("project", project).
+		Str("vendor", vendor).
+		Str("network", network).
+		Str("upstream", upstreamId).
+		Str("method", category).
+		Int("jsonRpcCode", int(code)).
+		Str("upstreamMessage", message).
+		Msg("evm error normalizer took a notable classification path")
+}
+
+// truncateForLog caps a payload before it reaches a log line. Result bodies are
+// unbounded (trace responses reach tens of MB), so nothing derived from them is
+// logged in full.
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
+}
+
+// classificationLabels resolves the bounded label set for
+// MetricUpstreamErrorClassification. Every dimension degrades to "n/a" (the
+// convention used by NormalizedRequest.NetworkLabel) rather than to an empty
+// string, so a missing upstream/network never silently merges with a real one.
+//
+// The upstream is taken from the REQUEST (LastUpstream), not from the upstream
+// the transport was constructed with — the same source getVendorSpecificErrorIfAny
+// uses below, and for the same reason. Upstream implementations are an open set:
+// vendors build throwaway stubs for their SupportsNetwork bootstrap probe, and
+// those stubs implement only the handful of methods that path needs (see
+// thirdparty/phony.go, which satisfies common.Upstream through a nil embedded
+// interface — every other method panics on call). Those probes never go through
+// Upstream.Forward, so they never record a LastUpstream, which is exactly the
+// distinction we want: telemetry reads upstream metadata only where a real
+// upstream served the request, and is never the code that discovers a stub is
+// incomplete.
+func classificationLabels(nr *common.NormalizedResponse) (project, vendor, network, upstreamId, category string) {
+	project, vendor, network, upstreamId, category = "n/a", "n/a", "n/a", "n/a", "n/a"
+
+	req := nr.Request()
+	if req == nil {
+		return
+	}
+	if m, err := req.Method(); err == nil && m != "" {
+		category = m
+	}
+	if n := req.Network(); n != nil {
+		if p := n.ProjectId(); p != "" {
+			project = p
+		}
+	}
+	if nl := req.NetworkLabel(); nl != "" {
+		network = nl
+	}
+
+	ups := req.LastUpstream()
+	if ups == nil {
+		return
+	}
+	if v := ups.VendorName(); v != "" {
+		vendor = v
+	}
+	if id := ups.Id(); id != "" {
+		upstreamId = id
+	}
+	if network == "n/a" {
+		if nl := ups.NetworkLabel(); nl != "" {
+			network = nl
+		}
+	}
+	return
 }
 
 func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
@@ -272,7 +371,16 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			return execErr
 		}
 		// Hack for some chains (Berachain) to make the message compatible with Subgraph and other tools.
+		//
+		// The summary is rewritten, but nothing is destroyed: the upstream's own
+		// wording is kept in details["originalMessage"], so a debugger can still
+		// see what the node actually said, and the rewrite is counted as
+		// classifier="invalid_jump_rewrite" so operators can tell how often (and
+		// on which chains) this chain-specific normalization fires.
 		if strings.Contains(msg, "EVM error: InvalidJump") {
+			details["originalMessage"] = err.Message
+			details["classifiedBy"] = telemetry.ErrorClassifierInvalidJumpRewrite
+			recordClassification(nr, telemetry.ErrorClassifierInvalidJumpRewrite, code, msg)
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -605,7 +713,25 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		//----------------------------------------------------------------
 		// Fallback -> we consider it a server-side problem (failover / retry).
+		//
+		// This default is deliberately weak and stays that way: an error that no
+		// matcher above recognized is assumed transient, so the request fails
+		// over instead of being surfaced as a hard failure. What changes here is
+		// only VISIBILITY. Every unmatched error now increments
+		// erpc_upstream_error_classification_total{classifier="fallback"} and
+		// logs its raw message + JSON-RPC code at debug level.
+		//
+		// Why that matters: the matchers above are an enumeration over an
+		// open-ended set (vendor error phrasings), so vendors drift out of it
+		// silently. A wording that stops matching does not fail loudly — it just
+		// starts landing here. The documented consequence is in
+		// architecture/evm/eth_sendRawTransaction.go: an unrecognized nonce
+		// wording bypasses the per-upstream idempotency hook entirely. A rising
+		// fallback rate on one vendor/method is the drift signal, and the debug
+		// log is the raw material for the new matcher.
 		//----------------------------------------------------------------
+		details["classifiedBy"] = telemetry.ErrorClassifierFallback
+		recordClassification(nr, telemetry.ErrorClassifierFallback, code, msg)
 		return common.NewErrEndpointServerSideException(
 			common.NewErrJsonRpcExceptionInternal(
 				int(code),
@@ -622,12 +748,43 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 	// -----------------------------------------------------------------------
 	// Special-case check for reverts: Some clients return a normal 200 status,
 	// but an EVM revert payload in jr.Result.
+	//
+	// This is a heuristic on RESULT BYTES, not a protocol fact, and it can be
+	// wrong in BOTH directions:
+	//
+	//  (a) Under-matching: the same clients also return Panic(uint256)
+	//      (0x4e487b71) and custom-error selectors in `result`. Those fall
+	//      through to `return nil` and are served to the caller as a successful
+	//      response. Deliberately NOT broadened here — the repo has no fixture
+	//      or test of the revert-in-result client shape (every 0x08c379a0 in the
+	//      tests sits in error.data, not result), so extending the claim to more
+	//      selectors would be guessing at a client nobody can name today.
+	//  (b) Over-matching: legitimate return data can genuinely begin with those
+	//      four bytes — an eth_call returning `bytes` that happen to start with
+	//      0x08c379a0 is reported to the caller as a revert.
+	//
+	// Which client motivated this is not recoverable from history: it arrived in
+	// bbd5da30 (2024-08-09) commented only as "certain clients", with no vendor
+	// named, no fixture, and no coupling to a vendor file. Scoping it into one
+	// vendor's GetVendorSpecificErrorIfAny would therefore be a guess that
+	// silently changes production behavior, so the global check stays — but it
+	// now increments
+	// erpc_upstream_error_classification_total{classifier="revert_result_sniff"}
+	// and tags the error details, so the fire rate per vendor/method is
+	// measurable. That measurement is what would justify either scoping it to a
+	// vendor or deleting it.
 	// -----------------------------------------------------------------------
 	if jr != nil && jr.ResultLength() > 0 {
 		result := jr.GetResultString()
 		dt := result
 		// keccak256("Error(string)")
 		if len(dt) > 11 && dt[1:11] == "0x08c379a0" {
+			// Log a BOUNDED prefix of the payload, never the whole result:
+			// trace/debug results reach tens of MB. The prefix is what an
+			// operator needs to tell a real revert payload from an eth_call
+			// return value that merely starts with the same four bytes, and to
+			// finally name the client this heuristic was written for.
+			recordClassification(nr, telemetry.ErrorClassifierRevertResultSniff, common.JsonRpcErrorEvmReverted, truncateForLog(dt, 80))
 			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					0,
@@ -635,7 +792,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					"transaction reverted",
 					nil,
 					map[string]interface{}{
-						"data": json.RawMessage(result),
+						"data":         json.RawMessage(result),
+						"classifiedBy": telemetry.ErrorClassifierRevertResultSniff,
 					},
 				),
 			)
