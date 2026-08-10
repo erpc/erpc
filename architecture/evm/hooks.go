@@ -104,7 +104,8 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 		return false, nil, err
 	}
 
-	switch strings.ToLower(method) {
+	methodLower := strings.ToLower(method)
+	switch methodLower {
 	case "eth_getlogs":
 		return upstreamPreForward_eth_getLogs(ctx, n, u, r)
 	case "eth_chainid":
@@ -113,10 +114,14 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 		return upstreamPreForward_trace_filter(ctx, n, u, r)
 	case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
 		return upstreamPreForward_eth_query(ctx, n, u, r)
-	case "eth_call", "eth_getbalance", "eth_getcode", "eth_getstorageat",
-		"eth_gettransactioncount", "eth_estimategas":
-		return upstreamPreForward_stateBoundary(ctx, n, u, r, method)
 	default:
+		// The state-proven boundary protects a CLASS (methods answered from the
+		// state trie at a block), not a list copied to this call site. The class
+		// is defined once, in common.IsEvmStateQueryMethod, so a method joining
+		// it cannot be gated in one place and forgotten in another.
+		if common.IsEvmStateQueryMethod(methodLower) {
+			return upstreamPreForward_stateBoundary(ctx, n, u, r, method)
+		}
 		return false, nil, nil
 	}
 }
@@ -141,8 +146,10 @@ func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u c
 	}
 	_, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, r)
 	if err != nil || blockNumber <= 0 {
-		// Tags (latest/pending) and unparseable refs are not gated here: the
-		// proven boundary is a statement about a CONCRETE height.
+		// Tags (latest/pending), unparseable refs, and requests whose height the
+		// method config cannot locate are not gated here: the proven boundary is
+		// a statement about a CONCRETE height, so with no height there is nothing
+		// to compare and the request goes out as it does today.
 		return false, nil, nil
 	}
 	eu, ok := u.(common.EvmUpstream)
