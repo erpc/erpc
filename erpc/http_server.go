@@ -1709,6 +1709,26 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 		}
 	}
 
+	// determineResponseStatusCode keys 429/401 off Cause via HasErrorCode, which
+	// walks the whole tree — so Cause must hold the UNPRUNED error.
+	//
+	// TranslateToJsonRpcException below collapses an exhausted bundle to its
+	// most-frequent cause for a readable message. That prune is deliberate and
+	// stays, but it keeps exactly ONE cause, so a status-bearing sibling (429
+	// capacity, 401 unauthorized) sitting alongside plain 5xx is usually dropped
+	// and the response degrades to 200. Reordering cannot fix it: with two
+	// competing statuses, a keep-one prune can preserve at most one. Survival is
+	// the property that matters, so status reads pre-prune and the body reads post.
+	//
+	// Reachable because findUpstreamsExhausted now sees through the
+	// ErrFailsafeRetryExceeded the network retry loop always adds; the previous
+	// direct type assertion missed that wrapper, so the prune never ran here.
+	//
+	// Live instance: OP-Stack "sender is over rate limit" on eth_sendRawTransaction
+	// is marked WithRetryableTowardNetwork(false) to stop futile sequencer failover
+	// — orderCauses then sorts it last and the strict-greater scan drops it. Losing
+	// that 429 makes clients resubmit the transaction instead of backing off.
+	causeForStatus := err
 	err = common.TranslateToJsonRpcException(err)
 	var jsonrpcVersion string = "2.0"
 	var reqId interface{} = nil
@@ -1774,7 +1794,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 			Jsonrpc: jsonrpcVersion,
 			Id:      reqId,
 			Error:   errObj,
-			Cause:   err,
+			Cause:   causeForStatus,
 			Request: nq,
 		}
 	}
@@ -1788,7 +1808,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	return common.BaseError{
 		Code:    "ErrUnknown",
 		Message: "unexpected server error",
-		Cause:   err,
+		Cause:   causeForStatus,
 	}
 }
 
