@@ -390,7 +390,43 @@ export interface CacheMethodConfig {
    * are enforced for this method at the network level. When nil or true, enforcement is enabled.
    */
   enforceBlockAvailability?: boolean;
+  /**
+   * EmptyResult overrides what an emptyish result (`null`, `[]`, `0x`, `0x0`, `{}`, `""`)
+   * MEANS for this method. Unset (the default) defers to the built-in defaults —
+   * DefaultEmptyResultAccept() then DefaultMarkEmptyAsErrorMethods(), then the
+   * unknown-method fallthrough. Since JSON-RPC methods are an open set (rollup
+   * namespaces, future EIPs), this is the per-method escape hatch that does not
+   * require restating a whole list. See ResolveEmptyResultBehavior.
+   */
+  emptyResult?: EmptyResultBehavior;
 }
+/**
+ * EmptyResultBehavior is the meaning of an emptyish JSON-RPC result for one
+ * method: is the zero/empty value the canonical final answer, or a "this
+ * upstream does not have the data" signal that should send the request to
+ * another upstream?
+ * The zero value (unset) means "no opinion configured" and defers to the
+ * built-in defaults; it is NOT a third semantics.
+ */
+export type EmptyResultBehavior = string;
+/**
+ * EmptyResultBehaviorDefault (also the unset/zero value) defers to the
+ * built-in default lists and, failing those, to the unknown-method
+ * fallthrough. Spelling it explicitly is allowed so an operator can
+ * document "I looked at this method and chose the default".
+ */
+export const EmptyResultBehaviorDefault: EmptyResultBehavior = "default";
+/**
+ * EmptyResultBehaviorAccept means an emptyish result is the final answer
+ * for this method — return it instead of retrying another upstream.
+ */
+export const EmptyResultBehaviorAccept: EmptyResultBehavior = "accept";
+/**
+ * EmptyResultBehaviorError means an emptyish result signals missing data
+ * for this method — retry on another upstream (bounded by
+ * failsafe.retry.emptyResultMaxAttempts).
+ */
+export const EmptyResultBehaviorError: EmptyResultBehavior = "error";
 export interface CachePolicyConfig {
   connector: string;
   network?: string;

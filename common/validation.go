@@ -1409,6 +1409,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return err
 		}
 	}
+	if err := n.Methods.Validate(); err != nil {
+		return fmt.Errorf("network.*.methods: %w", err)
+	}
 	if n.Failsafe != nil {
 		for _, fs := range n.Failsafe {
 			if err := fs.Validate(); err != nil {
@@ -1439,6 +1442,27 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	}
 	if err := n.Integrity.Validate(); err != nil {
 		return fmt.Errorf("network.*: %w", err)
+	}
+	return nil
+}
+
+// Validate checks the per-method definitions. Method NAMES are deliberately not
+// validated against any known-method list — the method namespace is open — but a
+// field whose value set IS closed (emptyResult) is checked at the edge so a typo
+// fails at config load instead of silently selecting the default at runtime.
+func (m *MethodsConfig) Validate() error {
+	if m == nil {
+		return nil
+	}
+	for name, def := range m.Definitions {
+		if def == nil {
+			continue
+		}
+		switch def.EmptyResult {
+		case "", EmptyResultBehaviorDefault, EmptyResultBehaviorAccept, EmptyResultBehaviorError:
+		default:
+			return fmt.Errorf("definitions['%s'].emptyResult must be one of: accept, error, default (got '%s')", name, def.EmptyResult)
+		}
 	}
 	return nil
 }

@@ -2191,6 +2191,73 @@ func DefaultMarkEmptyAsErrorMethods() []string {
 	}
 }
 
+// EmptyResultSource names WHERE a resolved empty-result behavior came from.
+// One value per branch of ResolveEmptyResultBehavior — a bounded, low-cardinality
+// provenance label suitable for logs.
+type EmptyResultSource string
+
+const (
+	// EmptyResultSourceOverride: networks[].methods.definitions[method].emptyResult.
+	EmptyResultSourceOverride EmptyResultSource = "override"
+	// EmptyResultSourceAcceptList: the failsafe retry policy's emptyResultAccept
+	// list (defaulted from DefaultEmptyResultAccept).
+	EmptyResultSourceAcceptList EmptyResultSource = "acceptList"
+	// EmptyResultSourceErrorList: evm.markEmptyAsErrorMethods (defaulted from
+	// DefaultMarkEmptyAsErrorMethods).
+	EmptyResultSourceErrorList EmptyResultSource = "markAsErrorList"
+	// EmptyResultSourceFallthrough: the method is in NO list and carries no
+	// override — the open-set default path.
+	EmptyResultSourceFallthrough EmptyResultSource = "fallthrough"
+)
+
+// ResolveEmptyResultBehavior answers what an emptyish result MEANS for `method`,
+// and says where the answer came from.
+//
+// JSON-RPC methods are an open set: rollup namespaces, vendor extensions and
+// future EIPs arrive unannounced, so any closed list of method names is a claim
+// about methods that do not exist yet. This function keeps the two shipped lists
+// as DEFAULTS while letting an operator state the semantics of a single method
+// — including one nobody has enumerated — without restating a whole list.
+//
+// Precedence, most specific first:
+//
+//  1. Per-method override (networks[].methods.definitions[method].emptyResult:
+//     accept | error). `default` is not an override; it defers, like unset.
+//  2. The accept list (failsafe[].retry.emptyResultAccept) — exact-match, the
+//     comparison the retry layer has always used.
+//  3. evm.markEmptyAsErrorMethods — case-insensitive, the comparison the EVM
+//     post-forward hook that owns this list has always used.
+//  4. Fallthrough: (EmptyResultBehaviorDefault, EmptyResultSourceFallthrough).
+//
+// The fallthrough deliberately returns Default rather than picking a side: what
+// an unknown method's zero answer means is a policy decision that belongs to the
+// caller (and is visible there), not a silent commitment buried in resolution.
+// A method listed in BOTH lists resolves to accept, matching the pre-existing
+// network-retry behaviour.
+func ResolveEmptyResultBehavior(nwCfg *NetworkConfig, method string, acceptMethods []string) (EmptyResultBehavior, EmptyResultSource) {
+	if nwCfg != nil && nwCfg.Methods != nil && nwCfg.Methods.Definitions != nil {
+		if mc, ok := nwCfg.Methods.Definitions[method]; ok && mc != nil {
+			switch mc.EmptyResult {
+			case EmptyResultBehaviorAccept, EmptyResultBehaviorError:
+				return mc.EmptyResult, EmptyResultSourceOverride
+			}
+		}
+	}
+	for _, m := range acceptMethods {
+		if m == method {
+			return EmptyResultBehaviorAccept, EmptyResultSourceAcceptList
+		}
+	}
+	if nwCfg != nil && nwCfg.Evm != nil {
+		for _, m := range nwCfg.Evm.MarkEmptyAsErrorMethods {
+			if strings.EqualFold(m, method) {
+				return EmptyResultBehaviorError, EmptyResultSourceErrorList
+			}
+		}
+	}
+	return EmptyResultBehaviorDefault, EmptyResultSourceFallthrough
+}
+
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth

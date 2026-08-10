@@ -440,12 +440,28 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}
-			// If the method is in the empty-result-accept list, treat empty as valid.
+			// What an emptyish result MEANS is per-method metadata, not a
+			// property of this policy: an operator-set override wins, else the
+			// shipped accept / mark-as-error lists, else the fallthrough.
 			method, _ := req.Method()
-			for _, m := range e.emptyResultAccept {
-				if m == method {
-					return ""
-				}
+			var nwCfg *common.NetworkConfig
+			if nw := req.Network(); nw != nil {
+				nwCfg = nw.Config()
+			}
+			behavior, source := common.ResolveEmptyResultBehavior(nwCfg, method, e.emptyResultAccept)
+			if behavior == common.EmptyResultBehaviorAccept {
+				// Empty is this method's real answer — returning it beats
+				// burning the retry budget on a non-empty that never comes.
+				return ""
+			}
+			// Fallthrough: nothing in the config or the defaults has an opinion
+			// about this method, and the standing policy is to retry. That is a
+			// guess about an unknown method's zero answer, so make it visible.
+			if source == common.EmptyResultSourceFallthrough && e.logger != nil {
+				e.logger.Debug().
+					Str("method", method).
+					Str("emptyResultSource", string(source)).
+					Msg("retrying emptyish result for a method with no empty-result semantics configured (unknown-method fallthrough)")
 			}
 			return "empty_result"
 		}
