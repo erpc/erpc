@@ -205,7 +205,22 @@ func (b *RateLimitBudgetConfig) Validate() error {
 			return err
 		}
 	}
+	for method, units := range b.CreditUnits {
+		if units < 0 {
+			return fmt.Errorf("rateLimiter.*.budget.creditUnits.%s must not be negative", method)
+		}
+	}
 	return nil
+}
+
+// HasCreditRule reports whether any rule in the budget counts credits.
+func (b *RateLimitBudgetConfig) HasCreditRule() bool {
+	for _, rule := range b.Rules {
+		if rule != nil && rule.CountMode == RateLimitCountModeCredit {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *RateLimitRuleConfig) Validate() error {
@@ -224,6 +239,18 @@ func (r *RateLimitRuleConfig) Validate() error {
 		// ok
 	default:
 		return fmt.Errorf("rateLimiter.*.budget.rules.*.period must be one of: second, minute, hour, day, week, month, year")
+	}
+
+	switch r.CountMode {
+	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
+		// ok
+	default:
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.countMode '%s' is invalid, must be one of: %s, %s", r.CountMode, RateLimitCountModeRequest, RateLimitCountModeCredit)
+	}
+
+	// A zero ceiling would reject every request with a non-zero cost.
+	if r.CountMode == RateLimitCountModeCredit && r.MaxCount == 0 {
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.maxCount must be greater than 0 when countMode is %s", RateLimitCountModeCredit)
 	}
 	return nil
 }
@@ -1001,15 +1028,25 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return err
 		}
 	}
-	if u.RateLimitBudget != "" {
-		if !c.HasRateLimiterBudget(u.RateLimitBudget) {
-			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
-		}
-	}
 	switch u.RateLimitCountMode {
 	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
 	default:
 		return fmt.Errorf("upstream.*.rateLimitCountMode '%s' is invalid, must be one of: %s, %s", u.RateLimitCountMode, RateLimitCountModeRequest, RateLimitCountModeCredit)
+	}
+	if u.RateLimitBudget != "" {
+		budget := c.RateLimiterBudget(u.RateLimitBudget)
+		if budget == nil {
+			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
+		}
+		// Two cost sources for one counter; reject rather than pick silently.
+		if u.RateLimitCountMode == RateLimitCountModeCredit {
+			if len(budget.CreditUnits) > 0 {
+				return fmt.Errorf("upstream.*.rateLimitCountMode is '%s' but its budget '%s' also defines creditUnits; an upstream prices calls from its vendor's table, so remove one of them", RateLimitCountModeCredit, budget.Id)
+			}
+			if budget.HasCreditRule() {
+				return fmt.Errorf("upstream.*.rateLimitCountMode is '%s' but its budget '%s' also sets rules.*.countMode; set it in one place only", RateLimitCountModeCredit, budget.Id)
+			}
+		}
 	}
 	return nil
 }
