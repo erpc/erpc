@@ -251,6 +251,14 @@ type Tracker struct {
 	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
 	mu                 sync.RWMutex             // Protect the map
 
+	// headRollbackTolerance holds the per-network block-head rollback tolerance
+	// (`networks[*].evm.toleratedBlockHeadRollback`), registered by the EVM
+	// state poller once the network config is attached to its upstream.
+	// Networks with no registered value — including every network before its
+	// config lands, and non-EVM ones — fall back to
+	// common.DefaultToleratedBlockHeadRollback.
+	headRollbackTolerance sync.Map // map[networkId]int64
+
 	// trackByFinality switches Record* between a 2-key write (current
 	// behavior — only the all-finalities aggregate) and a 4-key write
 	// (per-finality + all-finalities + cross-method finality rollups).
@@ -495,6 +503,33 @@ func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Durati
 		upstreamsByNetwork: make(map[string][]upstreamKey),
 		idleEvictionAfter:  DefaultIdleEvictionAfter,
 	}
+}
+
+// SetToleratedBlockHeadRollback registers the block-head rollback tolerance a
+// network's config asks for. Called by the EVM state poller when the network
+// config is attached to an upstream (once per upstream, same value for every
+// upstream of the network), so the tracker and the poller judge "normal move"
+// vs "correction" by the same, chain-specific distance.
+//
+// Head samples that arrive BEFORE the config lands (bootstrap polls) are judged
+// by common.DefaultToleratedBlockHeadRollback — identical to the behavior
+// before this knob existed.
+func (t *Tracker) SetToleratedBlockHeadRollback(networkId string, blocks int64) {
+	if networkId == "" {
+		return
+	}
+	t.headRollbackTolerance.Store(networkId, blocks)
+}
+
+// toleratedBlockHeadRollback returns the tolerance registered for a network, or
+// the shared default when the network has none.
+func (t *Tracker) toleratedBlockHeadRollback(networkId string) int64 {
+	if v, ok := t.headRollbackTolerance.Load(networkId); ok {
+		if blocks, ok := v.(int64); ok {
+			return blocks
+		}
+	}
+	return common.DefaultToleratedBlockHeadRollback
 }
 
 // SetIdleEvictionAfter overrides the default idle eviction threshold.
@@ -1334,6 +1369,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 
 	mdKey := metadataKey{upstream, net}
 	ntwMdKey := metadataKey{nil, net}
+	tolerance := t.toleratedBlockHeadRollback(net)
 
 	// 1) Possibly update the network-level highest block head
 	ntwMeta := t.getMetadata(ntwMdKey)
@@ -1352,7 +1388,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		// are skipped until the timestamp advances; blockGap normalization
 		// recovers sub-second precision.
 		if blockTimestamp > 0 {
-			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp)
+			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp, tolerance)
 		}
 
 		// Atomically update timestamp when network-level block number is updated
@@ -1376,7 +1412,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
 		g := t.getLatestBlockGauge(t.projectId, vendor, netLabel, id)
 		g.Set(float64(blockNumber))
-	} else if oldUpsVal-blockNumber > common.DefaultToleratedBlockHeadRollback {
+	} else if oldUpsVal-blockNumber > tolerance {
 		// The upstream reports a head far behind the one stored for it: treat it
 		// as a correction (a deep reorg, or a previously recorded bogus sample),
 		// mirroring the shared-state counter semantics. Max-only storage would
@@ -1470,7 +1506,7 @@ const (
 // share the same timestamp, we skip the sample and do NOT advance prev — the
 // block gap accumulates until the timestamp ticks, then normalization recovers
 // sub-second precision (e.g. 1s / 4 blocks = 250ms for Arbitrum).
-func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64) {
+func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64, toleratedRollback int64) {
 	ntwMeta.evmBlockTimeMu.Lock()
 	defer ntwMeta.evmBlockTimeMu.Unlock()
 
@@ -1489,7 +1525,7 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 	// instead of stalling until the chain re-passes the old (possibly bogus) prev.
 	blockGap := blockNumber - prevBlock
 	if blockGap <= 0 {
-		if prevBlock-blockNumber > common.DefaultToleratedBlockHeadRollback {
+		if prevBlock-blockNumber > toleratedRollback {
 			ntwMeta.evmBlockTimePrevBlock = blockNumber
 			ntwMeta.evmBlockTimePrevTimestamp = blockTimestamp
 		}
@@ -1592,7 +1628,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
 		g := t.getFinalizedBlockGauge(t.projectId, vendor, netLabel, id)
 		g.Set(float64(blockNumber))
-	} else if oldUpsVal-blockNumber > common.DefaultToleratedBlockHeadRollback {
+	} else if oldUpsVal-blockNumber > t.toleratedBlockHeadRollback(net) {
 		// Same rollback semantics as SetLatestBlockNumber: accept large
 		// corrections instead of pinning a bogus sample until restart.
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)

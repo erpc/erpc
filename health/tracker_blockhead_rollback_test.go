@@ -231,6 +231,92 @@ func TestTrackerFinalizedBlockRollbackTolerance(t *testing.T) {
 	})
 }
 
+// The tolerance is a per-network setting (`networks[*].evm.
+// toleratedBlockHeadRollback`), registered by the EVM state poller once the
+// network config is attached: how many blocks a chain produces between two polls
+// depends on its block time, so a single universal 1024 either swallows genuine
+// corrections on slow chains or treats normal advances as suspicious on fast
+// ones. Networks with nothing registered keep the previous universal default.
+func TestTrackerConfiguredRollbackTolerance(t *testing.T) {
+	t.Run("WiderToleranceIgnoresRollbackThatDefaultWouldApply", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-rollback-wide")
+		ups := common.NewFakeUpstream("a")
+		tracker.SetToleratedBlockHeadRollback(ups.NetworkId(), 100_000)
+
+		tracker.SetLatestBlockNumber(ups, 1_000_000, 0)
+		// 5_000 back: beyond the 1024 default (would be applied), inside 100_000.
+		tracker.SetLatestBlockNumber(ups, 995_000, 0)
+
+		assert.Equal(t, int64(1_000_000), upstreamLatest(tracker, ups))
+		assert.Equal(t, int64(1_000_000), networkLatest(tracker, ups.NetworkId()))
+	})
+
+	t.Run("NarrowerToleranceAppliesRollbackThatDefaultWouldIgnore", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-rollback-narrow")
+		ups := common.NewFakeUpstream("a")
+		tracker.SetToleratedBlockHeadRollback(ups.NetworkId(), 10)
+
+		tracker.SetLatestBlockNumber(ups, 10_000, 0)
+		// 50 back: inside the 1024 default (would be ignored), beyond 10.
+		tracker.SetLatestBlockNumber(ups, 9_950, 0)
+
+		assert.Equal(t, int64(9_950), upstreamLatest(tracker, ups))
+		assert.Equal(t, int64(9_950), networkLatest(tracker, ups.NetworkId()))
+	})
+
+	t.Run("AppliesToFinalizedHeadToo", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-fin-rollback-configured")
+		ups := common.NewFakeUpstream("a")
+		tracker.SetToleratedBlockHeadRollback(ups.NetworkId(), 10)
+
+		tracker.SetFinalizedBlockNumber(ups, 10_000)
+		tracker.SetFinalizedBlockNumber(ups, 9_950)
+
+		assert.Equal(t, int64(9_950), upstreamFinalized(tracker, ups))
+		assert.Equal(t, int64(9_950), networkFinalized(tracker, ups.NetworkId()))
+	})
+
+	t.Run("ZeroToleranceAcceptsEveryCorrection", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-rollback-zero")
+		ups := common.NewFakeUpstream("a")
+		tracker.SetToleratedBlockHeadRollback(ups.NetworkId(), 0)
+
+		tracker.SetLatestBlockNumber(ups, 10_000, 0)
+		tracker.SetLatestBlockNumber(ups, 9_999, 0)
+
+		assert.Equal(t, int64(9_999), upstreamLatest(tracker, ups))
+	})
+
+	t.Run("UnregisteredNetworkKeepsDefault", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-rollback-unregistered")
+		ups := common.NewFakeUpstream("a")
+		tolerance := int64(common.DefaultToleratedBlockHeadRollback)
+
+		assert.Equal(t, tolerance, tracker.toleratedBlockHeadRollback(ups.NetworkId()))
+
+		tracker.SetLatestBlockNumber(ups, 10_000, 0)
+		tracker.SetLatestBlockNumber(ups, 10_000-tolerance, 0) // ignored
+		assert.Equal(t, int64(10_000), upstreamLatest(tracker, ups))
+		tracker.SetLatestBlockNumber(ups, 10_000-tolerance-1, 0) // applied
+		assert.Equal(t, 10_000-tolerance-1, upstreamLatest(tracker, ups))
+	})
+
+	t.Run("ToleranceIsPerNetwork", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-rollback-per-network")
+		fast := common.NewFakeUpstream("fast", common.WithFakeUpstreamNetworkID("evm:42161"))
+		slow := common.NewFakeUpstream("slow", common.WithFakeUpstreamNetworkID("evm:1"))
+		tracker.SetToleratedBlockHeadRollback(fast.NetworkId(), 100_000)
+
+		tracker.SetLatestBlockNumber(fast, 1_000_000, 0)
+		tracker.SetLatestBlockNumber(fast, 995_000, 0) // inside fast's tolerance
+		assert.Equal(t, int64(1_000_000), upstreamLatest(tracker, fast))
+
+		tracker.SetLatestBlockNumber(slow, 1_000_000, 0)
+		tracker.SetLatestBlockNumber(slow, 995_000, 0) // beyond the default
+		assert.Equal(t, int64(995_000), upstreamLatest(tracker, slow))
+	})
+}
+
 // After a head rollback the block-time EMA must keep sampling: its previous
 // anchor may sit at the (bogus) old head, and without re-anchoring every
 // subsequent block would look out-of-order until the chain re-passed it —
