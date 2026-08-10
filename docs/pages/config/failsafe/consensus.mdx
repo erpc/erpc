@@ -154,10 +154,18 @@ consensus:
 
 auth:
   strategies:
-    - type: jwt              # settlement services: strict grade only
-      consensusPolicies: ["standard"]
-    - type: jwt              # indexers: may accept the relaxed grade
-      consensusPolicies: ["standard", "degraded"]
+    # ONE strategy per identity provider. Grades come from the role claim the
+    # deployment already uses, unioned across every role the caller holds —
+    # cloning this block per role would duplicate the JWKS config and make a
+    # multi-role caller's grade depend on strategy order.
+    - type: jwt
+      consensusPolicies: ["standard"]        # baseline for every caller here
+      jwt:
+        claimMatchers:
+          roles: ["erpc:all"]                # who may authenticate at all
+        consensusPoliciesByClaim:
+          roles:
+            "erpc:consensus-fallback": ["degraded"]
 ```
 
 Alert on `rate(erpc_consensus_policy_served_total{policy="degraded"}[5m]) > 0` to be paged on the first relaxed round, rather than after a failure-rate window has accumulated.
@@ -238,6 +246,7 @@ All fields under `networks[].failsafe[].consensus.` (or project-level `failsafe[
 | `acceptancePolicies[].agreementThreshold` | int | `sum(requiredAgreement[].minAgreement)`, else the policy-level `agreementThreshold` | Distinct agreeing upstreams this grade requires. A relaxed grade normally wants a lower value than the strict one — that is what lets it resolve a round too thin for the strict grade to ever win (e.g. only 2 externals answered while the internal node is down). Cannot be lower than the sum of its own quotas. The rules engine runs at the LOWEST configured grade's threshold so such a round still nominates a candidate; each grade's own threshold is then enforced by the acceptance gate, so nothing is ever served below the bar of the grade it is served under. |
 | `acceptancePolicies[].requiredAgreement` | `[]*ConsensusAgreementQuota` | `[]` | `{tag, minAgreement}` entries constraining WHO must be among the agreeing upstreams. Empty = a pure count grade. Distinctness is enforced: one upstream answering twice via hedge cannot satisfy `minAgreement: 2`. |
 | `auth.strategies[].consensusPolicies` | `[]string` | `nil` (unrestricted) | Allowlist of grade names this strategy's callers may be served. A round resolving at a grade the caller may not receive is withheld as `ErrConsensusCompositionDispute` — never downgraded to a weaker grade. Unset = any grade; empty list = none. Travels on the authenticated `User`, so `trustUserIdHeader` can never widen it. |
+| `auth.strategies[].jwt.consensusPoliciesByClaim` | `map[string]map[string][]string` | `nil` | Grants grades from the caller's own claims — `claim -> value -> grades` — so ONE strategy serves every role of an identity provider instead of being cloned per role. Grants are additive and unioned across every matching value on top of the strategy-level `consensusPolicies` baseline, so a caller holding several roles gets the union of their grades regardless of ordering. Cloning strategies instead would duplicate the JWKS config and, because strategies resolve first-match-wins, make a multi-role caller's grade depend on config order. No negative grants: keep in the baseline only what every caller of the strategy may receive. Configured but no value matched = permits nothing (distinct from unset, which is unrestricted). |
 | `punishMisbehavior` | \*PunishMisbehaviorConfig | `nil` (disabled) | Enables cordon punishment for persistent misbehavior. |
 | `punishMisbehavior.disputeThreshold` | uint | **Required** &gt;0 | Token bucket capacity per `disputeWindow`. No `SetDefaults` entry — must be explicitly set; omitting is a startup validation error. |
 | `punishMisbehavior.disputeWindow` | Duration | **Required** &gt;0 | Token bucket window. Validated at startup AND guarded at runtime: `<= 0` silently disables punishment with a debug log. |

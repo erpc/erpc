@@ -528,3 +528,41 @@ func newTestExecutor(cfg *config) *executor {
 	cfg.compile()
 	return &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
 }
+
+// TestMinAgreement_BelowThresholdWinnerStillServed guards the pre-existing
+// shorthand semantics against the acceptance-grade rewrite.
+//
+// The composition gate checks WHO is in the winning group; deciding whether
+// enough upstreams agreed is the rules engine's job. Under
+// acceptMostCommonValidResult the rules engine deliberately returns a winner
+// below agreementThreshold, and such a winner was always served as long as it
+// satisfied the tag quotas. Re-checking the count inside the gate would turn
+// those rounds into composition disputes — a silent behavior change for
+// configs that combine minAgreement with a dispute behavior.
+func TestMinAgreement_BelowThresholdWinnerStillServed(t *testing.T) {
+	cfg := &config{
+		maxParticipants:       3,
+		agreementThreshold:    2,
+		disputeBehavior:       common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+		preferLargerResponses: true,
+		requiredParticipants:  mixedQuota(1),
+	}
+	int1 := taggedUpstream("internal-1", "type:internal")
+	ext1 := taggedUpstream("external-1", "type:external")
+	ext2 := taggedUpstream("external-2", "type:external")
+
+	// Three-way disagreement: nothing reaches the threshold of 2. The
+	// internal node's response is the largest, so acceptMostCommon +
+	// preferLargerResponses elects it, and it satisfies the internal quota.
+	analysis := analyze(cfg, []*execResult{
+		resultFrom(t, int1, "0xaaaaaa", 0),
+		resultFrom(t, ext1, "0xbb", 1),
+		resultFrom(t, ext2, "0xcc", 2),
+	})
+	winner := winnerOf(cfg, analysis)
+
+	require.Nil(t, winner.Error,
+		"a below-threshold winner satisfying the tag quota must still be served, got: %v", winner.Error)
+	require.NotNil(t, winner.Result)
+	assert.Equal(t, defaultAcceptancePolicyName, winner.Policy)
+}

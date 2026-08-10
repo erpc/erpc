@@ -87,8 +87,12 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 			if az.cfg.AllowClientDirectives != nil {
 				stamped.AllowClientDirectives = az.cfg.AllowClientDirectives
 			}
+			// Union rather than overwrite: a strategy may already have
+			// derived grades from the caller's own claims (JWT roles). The
+			// strategy-level list is the baseline every caller of this
+			// strategy gets; claim grants add to it.
 			if az.cfg.ConsensusPolicies != nil {
-				stamped.ConsensusPolicies = az.cfg.ConsensusPolicies
+				stamped.ConsensusPolicies = unionPolicies(*az.cfg.ConsensusPolicies, user.ConsensusPolicies)
 			}
 			user = &stamped
 		}
@@ -131,4 +135,27 @@ func (r *AuthRegistry) FindDatabaseConnector(connectorId string) (data.Connector
 		}
 	}
 	return nil, fmt.Errorf("database connector with ID '%s' not found", connectorId)
+}
+
+// unionPolicies merges the strategy-level consensus grade baseline with any
+// grades the strategy derived from the caller's own claims. Order-independent
+// by construction, so a multi-role caller is served the union of its roles'
+// grades rather than whichever role matched first.
+func unionPolicies(baseline []string, derived *[]string) *[]string {
+	if derived == nil {
+		out := append([]string(nil), baseline...)
+		return &out
+	}
+	out := make([]string, 0, len(baseline)+len(*derived))
+	seen := make(map[string]struct{}, cap(out))
+	for _, group := range [][]string{baseline, *derived} {
+		for _, p := range group {
+			if _, dup := seen[p]; dup {
+				continue
+			}
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	return &out
 }

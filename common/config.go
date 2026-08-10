@@ -2877,6 +2877,34 @@ type JwtStrategyConfig struct {
 	// will be used to set the per-user RateLimitBudget override.
 	// Defaults to "rlm".
 	RateLimitBudgetClaimName string `yaml:"rateLimitBudgetClaimName,omitempty" json:"rateLimitBudgetClaimName,omitempty"`
+
+	// ConsensusPoliciesByClaim grants consensus acceptance grades based on the
+	// caller's own claims, so one strategy can serve every role of an identity
+	// provider instead of being cloned per role (which would duplicate the
+	// JWKS/issuer config, run one refresher per copy, and — because strategies
+	// resolve first-match-wins — make the grade of a multi-role token depend on
+	// config order rather than on its roles).
+	//
+	// Shape is claim name -> claim value -> granted grades:
+	//
+	//	consensusPolicies: ["standard"]        # baseline, on the strategy
+	//	jwt:
+	//	  claimMatchers:
+	//	    roles: ["erpc:all"]                # who may authenticate at all
+	//	  consensusPoliciesByClaim:
+	//	    roles:
+	//	      "erpc:consensus-fallback": ["degraded"]
+	//
+	// Grants are ADDITIVE and unioned across every matching claim value, on
+	// top of the strategy-level `consensusPolicies` baseline: a caller holding
+	// several roles is served the union of their grades, independent of
+	// ordering. There are no negative grants — a role cannot revoke a grade
+	// the baseline already allows, so the baseline should hold only what every
+	// caller of this strategy may receive.
+	//
+	// Claim values are matched against the same normalized string list as
+	// `claimMatchers` (bare string, string array, or SCIM-style objects).
+	ConsensusPoliciesByClaim map[string]map[string][]string `yaml:"consensusPoliciesByClaim,omitempty" json:"consensusPoliciesByClaim,omitempty"`
 }
 
 type SiweStrategyConfig struct {

@@ -193,8 +193,19 @@ func buildAcceptancePolicies(
 	if !anyAgreementQuota(required) {
 		return nil
 	}
-	// Shorthand: one implicit grade carrying the minAgreement quotas, gated
-	// by the policy-level threshold exactly as before named grades existed.
+	// Shorthand: one implicit grade carrying the minAgreement quotas.
+	//
+	// threshold 0 (no count gate of its own) is deliberate and load-bearing
+	// for backward compatibility. Before named grades existed this gate
+	// checked WHO was in the winning group and nothing else — whether enough
+	// upstreams agreed was, and remains, the rules engine's decision. Under
+	// acceptMostCommonValidResult (and the block-head-leader behaviors) the
+	// rules engine deliberately elects a winner below agreementThreshold;
+	// re-checking the count here would turn those rounds into composition
+	// disputes for configs that have been running fine.
+	//
+	// Explicitly configured grades DO carry a threshold: a cascade needs to
+	// tell grades apart by count, and that config is opt-in.
 	quotas := make([]*common.ConsensusAgreementQuota, 0, len(required))
 	for _, rp := range required {
 		if rp == nil || rp.MinAgreement <= 0 {
@@ -204,7 +215,7 @@ func buildAcceptancePolicies(
 	}
 	return []*acceptancePolicy{{
 		name:      defaultAcceptancePolicyName,
-		threshold: agreementThreshold,
+		threshold: 0,
 		quotas:    quotas,
 	}}
 }
