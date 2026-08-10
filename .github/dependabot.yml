@@ -54,6 +54,9 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # Removed Unary/StreamServerInterceptor in v0.61/v0.62, which
+      # envoyproxy/ratelimit/src/server still calls. Unpin go.mod together with this.
+      - dependency-name: "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
     multi-ecosystem-group: "all-updates"
 
   - package-ecosystem: "npm"
