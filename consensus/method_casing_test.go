@@ -40,14 +40,20 @@ func TestMethodFieldsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// The raw-transaction broadcast exemptions must not turn on client casing.
-func TestSendRawTransactionExemptionCaseInsensitive(t *testing.T) {
+// The transaction-broadcast exemptions must not turn on client casing, for the
+// EVM method or either SVM alias.
+func TestTxBroadcastExemptionCaseInsensitive(t *testing.T) {
 	t.Parallel()
 
-	assert.True(t, isTxBroadcastMethod("eth_sendRawTransaction"))
-	assert.True(t, isTxBroadcastMethod("ETH_SENDRAWTRANSACTION"))
-	assert.True(t, isTxBroadcastMethod("Eth_SendRawTransaction"))
+	for _, method := range []string{
+		"eth_sendRawTransaction", "ETH_SENDRAWTRANSACTION", "Eth_SendRawTransaction",
+		"sendTransaction", "SENDTRANSACTION", "sendtransaction",
+		"sendRawTransaction", "SendRawTransaction",
+	} {
+		assert.True(t, isTxBroadcastMethod(method), "casing %s must be treated as a broadcast", method)
+	}
 	assert.False(t, isTxBroadcastMethod("eth_call"))
+	assert.False(t, isTxBroadcastMethod("getBlock"))
 
 	txHash := "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
 	jrpc, err := common.NewJsonRpcResponse(1, txHash, nil)
@@ -75,11 +81,11 @@ func TestSendRawTransactionExemptionCaseInsensitive(t *testing.T) {
 	// The first-valid-response rule fires for a mixed-case broadcast exactly as
 	// it does for canonical casing — one accepted broadcast propagates network
 	// wide, so waiting for a quorum proves nothing either way.
-	for _, casing := range []string{"eth_sendRawTransaction", "Eth_SendRawTransaction"} {
+	for _, casing := range []string{"eth_sendRawTransaction", "Eth_SendRawTransaction", "SENDTRANSACTION"} {
 		matched := false
 		for i := range consensusRules {
 			if consensusRules[i].Condition(mkAnalysis(casing)) {
-				matched = consensusRules[i].Description == "eth_sendRawTransaction: return first valid tx hash response"
+				matched = consensusRules[i].Description == "tx broadcast: return first valid tx hash/signature response"
 				break
 			}
 		}
