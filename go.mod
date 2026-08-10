@@ -35,7 +35,10 @@ require (
 	github.com/spruceid/siwe-go v0.2.1
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.10.1
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0
+	// Pinned: v0.61 removed UnaryServerInterceptor, v0.62 removed StreamServerInterceptor, and
+	// envoyproxy/ratelimit/src/server (pulled in transitively by src/redis) still calls them;
+	// unpin once ratelimit moves to otelgrpc.NewServerHandler. See .github/dependabot.yml ignore.
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.60.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0
