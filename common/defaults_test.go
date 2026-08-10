@@ -1496,3 +1496,102 @@ func TestFindCacheMethodConfig(t *testing.T) {
 			FindCacheMethodConfig(DefaultStaticCacheMethods, "ETH_CHAINID"))
 	})
 }
+
+// SetDefaults must not leave two entries that differ only in letter case: the
+// merge would otherwise resolve one logical method to different config
+// depending on the casing the client happens to send, and the stateful marker
+// would land on a phantom canonical entry instead of the operator's own key.
+func TestMethodsConfigCaseInsensitiveMerge(t *testing.T) {
+	t.Run("DifferentlyCasedOverrideReplacesTheDefault", func(t *testing.T) {
+		m := &MethodsConfig{
+			PreserveDefaultMethods: true,
+			Definitions: map[string]*CacheMethodConfig{
+				"Eth_Call": {Finalized: true},
+			},
+		}
+		require.NoError(t, m.SetDefaults())
+
+		_, hasCanonical := m.Definitions["eth_call"]
+		assert.False(t, hasCanonical, "the default entry must be replaced, not kept alongside the override")
+
+		// Every casing resolves to the operator's override — not to a default
+		// that only canonical-cased traffic would have hit.
+		for _, casing := range []string{"eth_call", "Eth_Call", "ETH_CALL"} {
+			cfg := m.FindMethodConfig(casing)
+			require.NotNil(t, cfg, "casing %s must resolve", casing)
+			assert.True(t, cfg.Finalized, "casing %s must resolve to the operator override", casing)
+		}
+	})
+
+	t.Run("StatefulMarkerLandsOnTheOperatorsOwnKey", func(t *testing.T) {
+		m := &MethodsConfig{
+			Definitions: map[string]*CacheMethodConfig{
+				"Eth_NewFilter": {Finalized: true},
+			},
+		}
+		require.NoError(t, m.SetDefaults())
+
+		_, phantom := m.Definitions["eth_newFilter"]
+		assert.False(t, phantom, "no phantom canonical entry beside the operator's key")
+		require.NotNil(t, m.Definitions["Eth_NewFilter"])
+		assert.True(t, m.Definitions["Eth_NewFilter"].Stateful,
+			"the stateful guard must apply to the operator's entry, whatever its casing")
+		assert.True(t, m.Definitions["Eth_NewFilter"].Finalized, "the operator's own config survives")
+
+		for _, casing := range []string{"eth_newFilter", "Eth_NewFilter", "ETH_NEWFILTER"} {
+			cfg := m.FindMethodConfig(casing)
+			require.NotNil(t, cfg, "casing %s must resolve", casing)
+			assert.True(t, cfg.Stateful, "casing %s must be gated as stateful", casing)
+		}
+	})
+
+	t.Run("NullDefinitionForStatefulMethodDoesNotPanic", func(t *testing.T) {
+		// YAML `eth_newFilter: ~` unmarshals to a present key with a nil value.
+		// It means "no cache config", not "not stateful".
+		m := &MethodsConfig{
+			Definitions: map[string]*CacheMethodConfig{
+				"custom_method": {Finalized: true},
+				"eth_newFilter": nil,
+			},
+		}
+		require.NotPanics(t, func() {
+			require.NoError(t, m.SetDefaults())
+		})
+		require.NotNil(t, m.Definitions["eth_newFilter"])
+		assert.True(t, m.Definitions["eth_newFilter"].Stateful)
+	})
+
+	t.Run("StatefulGuardSurvivesAnOperatorOverride", func(t *testing.T) {
+		// Same intent as TestMethodsConfigStatefulMethodOverride, but with
+		// defaults preserved — the guard must not depend on which branch ran.
+		m := &MethodsConfig{
+			PreserveDefaultMethods: true,
+			Definitions: map[string]*CacheMethodConfig{
+				"eth_newFilter": {Finalized: true, Stateful: false},
+			},
+		}
+		require.NoError(t, m.SetDefaults())
+		assert.True(t, m.Definitions["eth_newFilter"].Stateful)
+	})
+}
+
+// The built-in tables resolve non-canonical casings through their prebuilt
+// lowercase index, with the same precedence as the exact-key lookup.
+func TestFindDefaultCacheMethodConfig(t *testing.T) {
+	t.Parallel()
+
+	assert.Same(t, DefaultWithBlockCacheMethods["eth_getBlockByNumber"],
+		FindDefaultCacheMethodConfig("eth_getBlockByNumber"))
+	assert.Same(t, DefaultWithBlockCacheMethods["eth_getBlockByNumber"],
+		FindDefaultCacheMethodConfig("ETH_GETBLOCKBYNUMBER"))
+	assert.Same(t, DefaultStaticCacheMethods["eth_chainId"],
+		FindDefaultCacheMethodConfig("eth_chainid"))
+	assert.Same(t, DefaultSpecialCacheMethods["eth_getTransactionReceipt"],
+		FindDefaultCacheMethodConfig("ETH_GetTransactionReceipt"))
+	assert.Nil(t, FindDefaultCacheMethodConfig("custom_unknownMethod"))
+
+	assert.Same(t, DefaultWithBlockCacheMethods["eth_getLogs"],
+		DefaultWithBlockMethodConfig("ETH_GETLOGS"))
+	assert.Nil(t, DefaultWithBlockMethodConfig("eth_chainId"),
+		"the with-block accessor must not reach into the other tables")
+}

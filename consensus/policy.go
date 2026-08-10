@@ -1,12 +1,50 @@
 package consensus
 
 import (
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
+
+// isSendRawTransaction reports whether the method is a raw-transaction
+// broadcast. Case-insensitive to match hook dispatch: the broadcast exemptions
+// (first valid response wins, no winner-composition quota) must not turn on the
+// casing the client sent, or an accepted broadcast waits for a quorum that
+// proves nothing.
+func isSendRawTransaction(method string) bool {
+	return strings.EqualFold(method, "eth_sendRawTransaction")
+}
+
+// methodFields resolves a per-method field list from an operator-configured map
+// (ignoreFields, preferHighestValueFor) keyed by method name. Method dispatch is
+// case-insensitive (see architecture/evm/hooks.go), so these lookups must be too
+// — otherwise a non-canonical casing silently loses the operator's policy and
+// falls back to plain agreement with nothing logged. An exact key wins;
+// otherwise the match is case-insensitive, with the smallest key breaking a tie
+// so the result never depends on map iteration order.
+func methodFields(defs map[string][]string, method string) ([]string, bool) {
+	if len(defs) == 0 || method == "" {
+		return nil, false
+	}
+	if fields, ok := defs[method]; ok {
+		return fields, true
+	}
+	var bestKey string
+	var best []string
+	var found bool
+	for k, v := range defs {
+		if !strings.EqualFold(k, method) {
+			continue
+		}
+		if !found || k < bestKey {
+			bestKey, best, found = k, v, true
+		}
+	}
+	return best, found
+}
 
 // config carries the consensus-policy configuration through the
 // builder-style API.

@@ -373,25 +373,17 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 func getMethodConfig(method string, network common.Network) (cfg *common.CacheMethodConfig) {
 	// Try to get method config from network if available
 	if network != nil {
-		networkCfg := network.Config()
-		if networkCfg != nil && networkCfg.Methods != nil {
-			cfg = common.FindCacheMethodConfig(networkCfg.Methods.Definitions, method)
+		if networkCfg := network.Config(); networkCfg != nil {
+			cfg = networkCfg.Methods.FindMethodConfig(method)
 		}
 	}
 
 	if cfg == nil {
 		// If network config is not available or missing the method, we should get the method config from the default set of known methods.
 		// This is necessary so that usual blockNumber detection used in various flows still resolves correctly.
-		cfg = common.FindCacheMethodConfig(common.DefaultWithBlockCacheMethods, method)
-		if cfg == nil {
-			cfg = common.FindCacheMethodConfig(common.DefaultSpecialCacheMethods, method)
-		}
-		if cfg == nil {
-			cfg = common.FindCacheMethodConfig(common.DefaultRealtimeCacheMethods, method)
-		}
-		if cfg == nil {
-			cfg = common.FindCacheMethodConfig(common.DefaultStaticCacheMethods, method)
-		}
+		// Networks configured with preserveDefaultMethods:false keep only their own
+		// definitions, so this fallback is what still resolves the standard methods.
+		cfg = common.FindDefaultCacheMethodConfig(method)
 	}
 
 	return

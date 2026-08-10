@@ -147,9 +147,9 @@ func TestStateProber(t *testing.T) {
 // The routing gate: inert with the prober off; never gates internal (probe)
 // traffic; refuses an upstream whose proven head does not cover the block.
 func TestStateBoundaryGate(t *testing.T) {
-	mkReq := func(block string, internal bool) *common.NormalizedRequest {
+	mkReq := func(method, block string, internal bool) *common.NormalizedRequest {
 		r := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-			`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x1234"},"%s"]}`, block)))
+			`{"jsonrpc":"2.0","id":1,"method":"%s","params":[{"to":"0x1234"},"%s"]}`, method, block)))
 		if internal {
 			r.SetDirectives(&common.RequestDirectives{IsInternal: true})
 		}
@@ -163,7 +163,7 @@ func TestStateBoundaryGate(t *testing.T) {
 
 	t.Run("no prober registered: byte-identical passthrough", func(t *testing.T) {
 		n := netFor("evm:404")
-		handled, resp, err := upstreamPreForward_stateBoundary(context.Background(), n, common.NewFakeUpstream("u"), mkReq("0x100", false), "eth_call")
+		handled, resp, err := upstreamPreForward_stateBoundary(context.Background(), n, common.NewFakeUpstream("u"), mkReq("eth_call", "0x100", false), "eth_call")
 		assert.False(t, handled)
 		assert.Nil(t, resp)
 		assert.NoError(t, err)
@@ -176,11 +176,11 @@ func TestStateBoundaryGate(t *testing.T) {
 
 		u := &gateUpstream{FakeUpstream: common.NewFakeUpstream("u2").(*common.FakeUpstream), proven: 0x0f0}
 		// covered: 0x0e0 <= proven
-		handled, _, err := upstreamPreForward_stateBoundary(context.Background(), n, u, mkReq("0xe0", false), "eth_call")
+		handled, _, err := upstreamPreForward_stateBoundary(context.Background(), n, u, mkReq("eth_call", "0xe0", false), "eth_call")
 		assert.False(t, handled)
 		assert.NoError(t, err)
 		// beyond proof: refuse with a retryable block-unavailable error
-		handled, _, err = upstreamPreForward_stateBoundary(context.Background(), n, u, mkReq("0x100", false), "eth_call")
+		handled, _, err = upstreamPreForward_stateBoundary(context.Background(), n, u, mkReq("eth_call", "0x100", false), "eth_call")
 		assert.True(t, handled)
 		require.Error(t, err)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
@@ -192,7 +192,7 @@ func TestStateBoundaryGate(t *testing.T) {
 		stateProbers.Store("evm:7777", &stateProber{})
 		defer stateProbers.Delete("evm:7777")
 		u := &gateUpstream{FakeUpstream: common.NewFakeUpstream("u2").(*common.FakeUpstream), proven: 1}
-		handled, _, err := upstreamPreForward_stateBoundary(context.Background(), n, u, mkReq("0x100", true), "eth_call")
+		handled, _, err := upstreamPreForward_stateBoundary(context.Background(), n, u, mkReq("eth_call", "0x100", true), "eth_call")
 		assert.False(t, handled)
 		assert.NoError(t, err)
 	})
@@ -202,7 +202,7 @@ func TestStateBoundaryGate(t *testing.T) {
 		stateProbers.Store("evm:7777", &stateProber{})
 		defer stateProbers.Delete("evm:7777")
 		u := &gateUpstream{FakeUpstream: common.NewFakeUpstream("u2").(*common.FakeUpstream), proven: 1}
-		handled, _, err := upstreamPreForward_stateBoundary(context.Background(), n, u, mkReq("latest", false), "eth_call")
+		handled, _, err := upstreamPreForward_stateBoundary(context.Background(), n, u, mkReq("eth_call", "latest", false), "eth_call")
 		assert.False(t, handled)
 		assert.NoError(t, err)
 	})
@@ -218,13 +218,8 @@ func TestStateBoundaryGate(t *testing.T) {
 		defer stateProbers.Delete("evm:7777")
 		u := &gateUpstream{FakeUpstream: common.NewFakeUpstream("u2").(*common.FakeUpstream), proven: 0x0f0}
 
-		mkCasedReq := func(method, block string) *common.NormalizedRequest {
-			return common.NewNormalizedRequest([]byte(fmt.Sprintf(
-				`{"jsonrpc":"2.0","id":1,"method":"%s","params":[{"to":"0x1234"},"%s"]}`, method, block)))
-		}
-
 		// beyond proof: refused exactly like the lowercase request above
-		handled, _, err := HandleUpstreamPreForward(context.Background(), n, u, mkCasedReq("ETH_CALL", "0x100"), false)
+		handled, _, err := HandleUpstreamPreForward(context.Background(), n, u, mkReq("ETH_CALL", "0x100", false), false)
 		assert.True(t, handled, "an unproven block must be refused regardless of method casing")
 		require.Error(t, err)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
@@ -232,7 +227,7 @@ func TestStateBoundaryGate(t *testing.T) {
 			"canonicalization is lookup-only: the wire method string stays verbatim")
 
 		// covered by proof: passes with the same non-canonical casing
-		handled, _, err = HandleUpstreamPreForward(context.Background(), n, u, mkCasedReq("eth_Call", "0xe0"), false)
+		handled, _, err = HandleUpstreamPreForward(context.Background(), n, u, mkReq("eth_Call", "0xe0", false), false)
 		assert.False(t, handled)
 		assert.NoError(t, err)
 	})
