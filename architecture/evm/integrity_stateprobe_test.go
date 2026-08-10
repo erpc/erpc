@@ -206,6 +206,36 @@ func TestStateBoundaryGate(t *testing.T) {
 		assert.False(t, handled)
 		assert.NoError(t, err)
 	})
+
+	t.Run("non-canonical method casing is gated identically to canonical", func(t *testing.T) {
+		// Through the real dispatch: HandleUpstreamPreForward lowercases the
+		// method to route into the boundary, so the per-method config lookup
+		// (block-ref extraction) must resolve case-insensitively too —
+		// otherwise ETH_CALL resolves no block number and silently passes the
+		// gate that eth_call would have refused.
+		n := netFor("evm:7777")
+		stateProbers.Store("evm:7777", &stateProber{})
+		defer stateProbers.Delete("evm:7777")
+		u := &gateUpstream{FakeUpstream: common.NewFakeUpstream("u2").(*common.FakeUpstream), proven: 0x0f0}
+
+		mkCasedReq := func(method, block string) *common.NormalizedRequest {
+			return common.NewNormalizedRequest([]byte(fmt.Sprintf(
+				`{"jsonrpc":"2.0","id":1,"method":"%s","params":[{"to":"0x1234"},"%s"]}`, method, block)))
+		}
+
+		// beyond proof: refused exactly like the lowercase request above
+		handled, _, err := HandleUpstreamPreForward(context.Background(), n, u, mkCasedReq("ETH_CALL", "0x100"), false)
+		assert.True(t, handled, "an unproven block must be refused regardless of method casing")
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
+		assert.Contains(t, err.Error(), "ETH_CALL",
+			"canonicalization is lookup-only: the wire method string stays verbatim")
+
+		// covered by proof: passes with the same non-canonical casing
+		handled, _, err = HandleUpstreamPreForward(context.Background(), n, u, mkCasedReq("eth_Call", "0xe0"), false)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+	})
 }
 
 // gateUpstream lets a test dictate the proven head and route the assert through

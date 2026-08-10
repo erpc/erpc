@@ -1659,8 +1659,8 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	method, _ := req.Method()
-	if n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
-		if cfg, ok := n.cfg.Methods.Definitions[method]; ok {
+	if n.cfg.Methods != nil {
+		if cfg := common.FindCacheMethodConfig(n.cfg.Methods.Definitions, method); cfg != nil {
 			if cfg.Finalized {
 				finality = common.DataFinalityStateFinalized
 				return finality
@@ -1778,10 +1778,7 @@ func methodHasDedicatedRangeAvailabilityHook(method string) bool {
 // systemDefaultEnforceBlockAvailability returns the global system default for
 // EnforceBlockAvailability for a given method, or nil if no default is set.
 func systemDefaultEnforceBlockAvailability(method string) *bool {
-	if common.DefaultWithBlockCacheMethods == nil {
-		return nil
-	}
-	if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil {
+	if dmc := common.FindCacheMethodConfig(common.DefaultWithBlockCacheMethods, method); dmc != nil {
 		return dmc.EnforceBlockAvailability
 	}
 	return nil
@@ -1798,8 +1795,8 @@ func systemDefaultEnforceBlockAvailability(method string) *bool {
 // default is not a real user override.
 func (n *Network) blockAvailabilityExplicitlyDisabled(method string) bool {
 	sysDefault := systemDefaultEnforceBlockAvailability(method)
-	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
-		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
+	if n.cfg != nil && n.cfg.Methods != nil {
+		if mc := common.FindCacheMethodConfig(n.cfg.Methods.Definitions, method); mc != nil && mc.EnforceBlockAvailability != nil {
 			if sysDefault == nil || *mc.EnforceBlockAvailability != *sysDefault {
 				return !*mc.EnforceBlockAvailability
 			}
@@ -2212,8 +2209,8 @@ func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method strin
 	// Check stateful methods policy
 	// Methods.Definitions is guaranteed to be populated by SetDefaults() with all necessary stateful methods
 	isStateful := false
-	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
-		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil {
+	if n.cfg != nil && n.cfg.Methods != nil {
+		if mc := common.FindCacheMethodConfig(n.cfg.Methods.Definitions, method); mc != nil {
 			isStateful = mc.Stateful
 		}
 	}

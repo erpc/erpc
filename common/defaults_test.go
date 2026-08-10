@@ -1435,3 +1435,64 @@ func TestPostgreSQLIAMAuthDeriveFromURIExplicitOverrides(t *testing.T) {
 	assert.Equal(t, "custom-endpoint:5432", cfg.IAMAuth.Endpoint, "explicit Endpoint must not be overwritten")
 	assert.Equal(t, "custom-user", cfg.IAMAuth.DBUser, "explicit DBUser must not be overwritten")
 }
+
+// Hook dispatch (architecture/evm/hooks.go) routes method names
+// case-insensitively, so the per-method config lookup must resolve the same
+// way — otherwise a non-canonical casing dispatches into method-specific logic
+// but resolves no config (no gating, no caching, no block-ref extraction).
+// Canonicalization is lookup-only: the wire method string is forwarded
+// upstream verbatim (per JSON-RPC 2.0 the method member is case-sensitive).
+func TestFindCacheMethodConfig(t *testing.T) {
+	t.Parallel()
+
+	a := &CacheMethodConfig{Finalized: true}
+	b := &CacheMethodConfig{Realtime: true}
+
+	t.Run("ExactMatchWins", func(t *testing.T) {
+		defs := map[string]*CacheMethodConfig{"eth_call": a, "ETH_CALL": b}
+		assert.Same(t, a, FindCacheMethodConfig(defs, "eth_call"))
+		assert.Same(t, b, FindCacheMethodConfig(defs, "ETH_CALL"))
+	})
+
+	t.Run("NonCanonicalCasingResolves", func(t *testing.T) {
+		defs := map[string]*CacheMethodConfig{"eth_getBlockByNumber": a}
+		assert.Same(t, a, FindCacheMethodConfig(defs, "ETH_GETBLOCKBYNUMBER"))
+		assert.Same(t, a, FindCacheMethodConfig(defs, "eth_getblockbynumber"))
+		assert.Same(t, a, FindCacheMethodConfig(defs, "eth_GetBlockByNumber"))
+	})
+
+	t.Run("OperatorCasedKeyFoundByAnyCasing", func(t *testing.T) {
+		defs := map[string]*CacheMethodConfig{"custom_FooBar": a}
+		assert.Same(t, a, FindCacheMethodConfig(defs, "CUSTOM_foobar"))
+	})
+
+	t.Run("MissReturnsNil", func(t *testing.T) {
+		assert.Nil(t, FindCacheMethodConfig(nil, "eth_call"))
+		assert.Nil(t, FindCacheMethodConfig(map[string]*CacheMethodConfig{}, "eth_call"))
+		assert.Nil(t, FindCacheMethodConfig(map[string]*CacheMethodConfig{"eth_call": a}, "eth_getLogs"))
+	})
+
+	t.Run("NilValuedEntriesAreAbsent", func(t *testing.T) {
+		defs := map[string]*CacheMethodConfig{"eth_call": nil}
+		assert.Nil(t, FindCacheMethodConfig(defs, "eth_call"))
+		assert.Nil(t, FindCacheMethodConfig(defs, "ETH_CALL"))
+	})
+
+	t.Run("DeterministicAmongMultipleFoldMatches", func(t *testing.T) {
+		// Pathological: two non-exact casings of the requested name. The
+		// lexicographically smallest key wins, independent of map order.
+		defs := map[string]*CacheMethodConfig{"ETH_CALL": b, "eTH_CALL": a}
+		for i := 0; i < 50; i++ {
+			assert.Same(t, b, FindCacheMethodConfig(defs, "eth_call"))
+		}
+	})
+
+	t.Run("DefaultTablesResolveNonCanonicalCasing", func(t *testing.T) {
+		assert.Same(t,
+			DefaultWithBlockCacheMethods["eth_getBlockByNumber"],
+			FindCacheMethodConfig(DefaultWithBlockCacheMethods, "ETH_GETBLOCKBYNUMBER"))
+		assert.Same(t,
+			DefaultStaticCacheMethods["eth_chainId"],
+			FindCacheMethodConfig(DefaultStaticCacheMethods, "ETH_CHAINID"))
+	})
+}

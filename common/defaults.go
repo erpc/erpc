@@ -463,6 +463,43 @@ var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
 	},
 }
 
+// FindCacheMethodConfig resolves a method name against a method-config map
+// (the default tables above, or an operator's methods.definitions). An exact
+// key match wins; otherwise the match is case-insensitive. Hook dispatch
+// (architecture/evm/hooks.go) routes methods case-insensitively, so per-method
+// config MUST resolve the same way — otherwise a non-canonical casing like
+// "ETH_CALL" dispatches into method-specific logic (e.g. the state-boundary
+// gate) but resolves no config, silently disabling gating, caching, and
+// block-ref extraction for that request.
+//
+// Canonicalization is lookup-only: per JSON-RPC 2.0 the method member is
+// case-sensitive, so the wire string is forwarded to upstreams verbatim and
+// the upstream stays the authority on whether a given casing exists.
+//
+// Nil-valued entries are treated as absent (callers fall through to defaults,
+// as they do today). If a map pathologically holds two casings of the same
+// name, exact match wins and otherwise the lexicographically smallest key is
+// picked, so resolution never depends on map iteration order.
+func FindCacheMethodConfig(defs map[string]*CacheMethodConfig, method string) *CacheMethodConfig {
+	if len(defs) == 0 {
+		return nil
+	}
+	if cfg, ok := defs[method]; ok && cfg != nil {
+		return cfg
+	}
+	var bestKey string
+	var best *CacheMethodConfig
+	for k, v := range defs {
+		if v == nil || !strings.EqualFold(k, method) {
+			continue
+		}
+		if best == nil || k < bestKey {
+			bestKey, best = k, v
+		}
+	}
+	return best
+}
+
 func (c *CacheConfig) SetDefaults() error {
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {

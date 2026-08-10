@@ -374,25 +374,23 @@ func getMethodConfig(method string, network common.Network) (cfg *common.CacheMe
 	// Try to get method config from network if available
 	if network != nil {
 		networkCfg := network.Config()
-		if networkCfg != nil && networkCfg.Methods != nil && networkCfg.Methods.Definitions != nil {
-			if methodCfg, ok := networkCfg.Methods.Definitions[method]; ok {
-				cfg = methodCfg
-			}
+		if networkCfg != nil && networkCfg.Methods != nil {
+			cfg = common.FindCacheMethodConfig(networkCfg.Methods.Definitions, method)
 		}
 	}
 
 	if cfg == nil {
 		// If network config is not available or missing the method, we should get the method config from the default set of known methods.
 		// This is necessary so that usual blockNumber detection used in various flows still resolves correctly.
-		cfg = common.DefaultWithBlockCacheMethods[method]
+		cfg = common.FindCacheMethodConfig(common.DefaultWithBlockCacheMethods, method)
 		if cfg == nil {
-			cfg = common.DefaultSpecialCacheMethods[method]
+			cfg = common.FindCacheMethodConfig(common.DefaultSpecialCacheMethods, method)
 		}
 		if cfg == nil {
-			cfg = common.DefaultRealtimeCacheMethods[method]
+			cfg = common.FindCacheMethodConfig(common.DefaultRealtimeCacheMethods, method)
 		}
 		if cfg == nil {
-			cfg = common.DefaultStaticCacheMethods[method]
+			cfg = common.FindCacheMethodConfig(common.DefaultStaticCacheMethods, method)
 		}
 	}
 
