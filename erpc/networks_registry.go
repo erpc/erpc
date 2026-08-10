@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -298,13 +297,16 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		return nil, err
 	}
 
+	// Construction edge: the ONE place that decides whether an architecture is
+	// supported. Everything downstream reaches architecture-specific logic via
+	// Network.arch(), never by re-testing the architecture value.
 	switch nwCfg.Architecture {
-	case "evm":
+	case common.ArchitectureEvm:
 		if nr.evmJsonRpcCache != nil {
 			network.cacheDal = nr.evmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
 	default:
-		return nil, errors.New("unknown network architecture")
+		return nil, fmt.Errorf("unsupported architecture: %s for network: %s", nwCfg.Architecture, nwCfg.NetworkId())
 	}
 	// Register alias for lazy-created networks to support alias-based routing
 	if nwCfg.Alias != "" {
