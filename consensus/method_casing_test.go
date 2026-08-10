@@ -44,10 +44,10 @@ func TestMethodFieldsCaseInsensitive(t *testing.T) {
 func TestSendRawTransactionExemptionCaseInsensitive(t *testing.T) {
 	t.Parallel()
 
-	assert.True(t, isSendRawTransaction("eth_sendRawTransaction"))
-	assert.True(t, isSendRawTransaction("ETH_SENDRAWTRANSACTION"))
-	assert.True(t, isSendRawTransaction("Eth_SendRawTransaction"))
-	assert.False(t, isSendRawTransaction("eth_call"))
+	assert.True(t, isTxBroadcastMethod("eth_sendRawTransaction"))
+	assert.True(t, isTxBroadcastMethod("ETH_SENDRAWTRANSACTION"))
+	assert.True(t, isTxBroadcastMethod("Eth_SendRawTransaction"))
+	assert.False(t, isTxBroadcastMethod("eth_call"))
 
 	txHash := "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
 	jrpc, err := common.NewJsonRpcResponse(1, txHash, nil)

@@ -1,0 +1,396 @@
+---
+title: Slot tracking & health
+description: eRPC polls every Solana upstream for its slot, health, and ingestion watermark — then corrects backward-moving getSlot answers, short-circuits unindexed getBlock calls, and pulls silently-stale nodes out of routing before they serve you old state.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
+
+<LLMsTxtLink />
+
+# Slot tracking & health
+
+A Solana node can answer `getHealth` with `"ok"` while quietly serving state hundreds of slots old — it is receiving block shreds from the network but failing to replay them. eRPC catches that by tracking two independent signals per upstream: how far the node has *replayed* (its processed and finalized slots) and how far it has *ingested* (its blockstore watermark). The gap between them is the silent-stale detector, and a node that exceeds it is cordoned out of routing until it recovers.
+
+**What you get**
+
+- Per-upstream processed and finalized slot views, converged across pods via shared counters
+- Ingestion-lag detection that catches nodes passing `getHealth` while serving stale reads
+- Edge-triggered cordoning: an unhealthy upstream leaves routing, and rejoins on recovery, without gauge churn
+- `getSlot` answers that never move backwards through a cache window — corrected per commitment, never past the tip the caller asked for
+- Traffic-gated polling that halves background quota burn on busy networks
+
+## Quick taste
+
+Illustrative, not a tuned production config — widen the poll gate on a rate-limited vendor:
+
+<ConfigTabs
+  path="projects[].networks[].svm"
+  focusYaml="6-8"
+  focusTs="5-7"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: svm
+        svm:
+          cluster: mainnet-beta
+          # default 400ms (one slot). Raise it on metered vendors — the ticker
+          # stays at one slot, this gates the actual fan-out.
+          statePollerDebounce: 2s`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "svm",
+    svm: {
+      cluster: "mainnet-beta",
+      // default 400ms (one slot). Raise it on metered vendors — the ticker
+      // stays at one slot, this gates the actual fan-out.
+      statePollerDebounce: "2s",
+    },
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="reduce background poll quota on a metered Solana vendor"
+	defaultOpen
+	prompt={`My Helius plan is being consumed by eRPC's background Solana polling. Explain exactly
+which RPC calls the SVM state poller makes per tick, then raise statePollerDebounce
+appropriately in my eRPC config and tell me what freshness I trade away. Read the full
+reference first: https://docs.erpc.cloud/reference/svm/slot-tracking.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="diagnose a Solana upstream that keeps getting cordoned"
+	prompt={`One of my eRPC Solana upstreams keeps disappearing from routing —
+erpc_upstream_cordoned goes to 1 and back. Explain both conditions that cordon an SVM
+upstream, which log line names the reason, and what I should check on the node.
+Reference: https://docs.erpc.cloud/reference/svm/slot-tracking.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="stop getting -32004 on getBlock at the tip"
+	prompt={`Clients call getSlot then immediately getBlock on that slot through eRPC and get
+-32004 BlockNotAvailable. Explain eRPC's getSlot correction and the getBlock availability
+guard, and tell me whether enforceBlockAvailability or statePollerDebounce is the knob to
+change. Reference: https://docs.erpc.cloud/reference/svm/slot-tracking.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="disable the block-availability guard on a deployment without shred tracking"
+	prompt={`My Solana provider does not expose getMaxShredInsertSlot, and I want to turn off
+eRPC's getBlock availability guard for that network. Set enforceBlockAvailability
+correctly in my eRPC config — including at networkDefaults level — and explain what
+behavior I lose. Reference:
+https://docs.erpc.cloud/reference/svm/slot-tracking.llms.txt`}
+/>
+
+<AISection title="Slot tracking & health — full agent reference">
+
+### How it works
+
+**Slot is not block height.** These are two different counters on Solana and the distinction drives several behaviors on this page. Every slot is a ~400 ms leader window; a leader that fails to produce advances the *slot* but not the *block height*. So `getBlockHeight` trails `getSlot` by exactly the number of skipped slots since genesis, and the two can never be substituted for one another.
+
+**What the poller tracks.** Four values per upstream:
+
+| Accessor | Source call | Meaning |
+|---|---|---|
+| `LatestSlot()` | `getSlot {"commitment":"processed"}` | The processed tip — the node's replay frontier |
+| `FinalizedSlot()` | `getSlot {"commitment":"finalized"}` | The latest rooted slot |
+| `ShredInsertSlot()` | `getMaxShredInsertSlot` | Blockstore-ingestion watermark |
+| `MaxShredInsertSlotLag()` | derived | `maxShredInsertSlot − processedSlot` |
+
+**There is deliberately no confirmed tip.** Nothing polls `getSlot {"commitment":"confirmed"}`, and that absence is load-bearing for the `getSlot` correction below.
+
+**Tick cadence and the debounce gate.** The ticker fires at a fixed `DefaultPollInterval` of 400 ms — one Solana slot. `svm.statePollerDebounce` (default 400 ms) is a **gate on the fan-out**, not the ticker period: a tick that arrives inside the debounce window returns immediately without issuing any RPC. The ticker is deliberately *not* driven by the gate value, because a ticker firing at exactly the gate interval skips every other tick.
+
+**Per-tick fan-out.** Up to four concurrent calls: `getHealth`, `getSlot(processed)`, `getSlot(finalized)`, `getMaxShredInsertSlot`. Each runs in its own panic-recovered goroutine so a single bad response cannot take down the process.
+
+**Traffic-gated polling.** Solana responses whose result is the `RpcResponse<T>` envelope carry a `context.slot` telling eRPC which slot the node was at when it answered. That observation is harvested on the response path and fed into the poller, routed by the request's **effective commitment**: a finalized-commitment response feeds the finalized view *and* the latest view (a finalized slot is always a valid lower bound for the latest view); weaker commitments feed only the latest view. When both slot views are traffic-fresh within the debounce window, the tick **skips its two `getSlot` calls** — bounded at 4 consecutive skips, so live traffic can never fully starve independent verification. `getHealth` and `getMaxShredInsertSlot` always run. On busy networks this roughly halves background poll quota on metered vendors.
+
+The envelope check runs *first*, before the response body is touched: every other method returns a bare value, so peeking for `context.slot` there is a guaranteed miss — and not a free one, since the walk traverses the whole result and full `getBlock` responses reach multiple megabytes.
+
+**Cross-pod convergence.** Both slot views live in shared counters keyed by the unique upstream key, so horizontal replicas converge without each pod paying its own poll cost. The tracker is fed only from the counter's `OnValue` callback — it fires once per *accepted* value whatever the source (this poller's fetch, a live-traffic suggestion, or cross-instance propagation) and stays silent when the counter rejects a lower slot, so the tracker can never be fed a slot the counter itself refused. Rollback tolerance is `DefaultToleratedSlotRollback = 1024`; a backwards jump beyond that is recorded as a large-rollback event — the signature of a load balancer swapping in a node on another fork, a snapshot restore, or a cross-wired endpoint.
+
+**Ingestion lag is the silent-stale detector.** `getMaxShredInsertSlot` is the blockstore-ingestion watermark and is structurally **at or ahead of** the replayed (processed) slot, so:
+
+```
+ingestionLag = maxShredInsertSlot − processedSlot
+```
+
+That subtraction *is* the detector: shreds keep arriving while replay stalls, so the watermark runs away from the processed slot while the node still answers `getHealth` `"ok"`. Subtracting the other way would invert it — a degraded node would yield a negative number that clamps to zero and the detector could never fire. A negative result is treated as sampling skew (a later traffic suggestion raised the processed slot, or a shared-state peer wrote a higher slot for this upstream) and reported as **zero lag**, not as ingestion lag.
+
+**Health verdict.** `IsHealthy()` requires **both** signals:
+
+1. the last `getHealth` succeeded, **and**
+2. `MaxShredInsertSlotLag() <= MaxShredInsertSlotLagThreshold` (100 slots, ≈40 s)
+
+That threshold is a compile-time constant in `common/architecture_svm.go`, **not** a config field. Do not confuse it with `svm.maxFinalizedSlotLag`, which is a separate consensus-scoped config key that happens to share the same default of 100.
+
+**Cordoning takes the verdict to routing.** A health verdict nobody routes on is not a defense, so every tick publishes it. `Cordon("*", reason)` removes the upstream from selection — the default selection policy runs `.removeCordoned()`, so a cordoned upstream is dropped for every request until it recovers.
+
+Cordoning is **edge-triggered**: cordon and uncordon fire only on a transition, never once per tick. Re-cordoning every 400 ms would restamp the reason (spawning a fresh `erpc_upstream_cordoned` gauge series per tick and resetting the cordon-duration observation), and the flag also means a recovering poller lifts only **its own** cordon, never an operator's manual one.
+
+Exact reason strings:
+
+| Condition | Reason |
+|---|---|
+| `getHealth` failed | `svm state poller: getHealth reported unhealthy` |
+| lag over threshold, `getHealth` fine | `svm state poller: shred-insert lag N slots exceeds threshold 100 (node ingests shreds but does not replay them)` |
+| recovery | `svm state poller: getHealth ok and shred-insert lag back within threshold` |
+
+**A cold poller cannot cordon.** `healthy` starts `true` and `maxShredInsertSlotLag` stays `0` until a real `getMaxShredInsertSlot` sample lands, so "not yet observed" reads as healthy. Unknown is not unhealthy.
+
+**Recovery is observable because polling continues while cordoned.** `Upstream.Forward` does not consult cordon state — only the selection policy does — so the poller keeps polling a cordoned upstream and can therefore see it come back.
+
+**`getSlot` correction.** A post-forward hook enforces the highest slot this instance already knows for the request's commitment, so clients never observe the slot number moving backwards through a cache window. It applies to cache hits too (the corrected response preserves its from-cache marker).
+
+The floor is chosen **per commitment**, and never exceeds the tip for the commitment the caller actually asked for:
+
+| Effective commitment | Floor |
+|---|---|
+| `finalized` | `min(finalizedTip, indexedTip)`; when the indexed tip is unknown, `finalizedTip − 32`. **Clamped from both directions** — stale values are raised, values above the floor are capped down. |
+| `confirmed` | **Passed through uncorrected.** |
+| `processed`, or unset | The processed tip (`LatestSlot()`). Stale values are raised only; a value above the tip is left alone. |
+
+`confirmed` is passed through because **no confirmed tip is tracked**. The poller's `LatestSlot` is the *processed* slot, and processed runs ahead of confirmed — flooring a confirmed answer with it would hand back a slot that is not confirmed and may never be, since its fork can be abandoned. That is a commitment-contract violation, not a freshness improvement, so eRPC declines to fabricate a confirmed tip.
+
+The `finalized` branch caps downward for a different reason: `getSlot(finalized)` reflects the **consensus** layer, but `getBlock` on a just-finalized slot returns `-32004` until the provider's indexer writes it. Using `min(finalizedTip, indexedTip)` means neither a slow indexer nor a fast one can push callers into the un-indexed window. When the indexed tip is unavailable — cold poller, or a vendor that does not implement `getMaxShredInsertSlot` — the fallback is a fixed 32-slot lag.
+
+**`getBlockHeight` is never corrected.** Only `getSlot` is routed to the corrector. Block height is a different counter that trails the slot number by every skipped slot, so rewriting a `getBlockHeight` answer to a slot value would be straightforwardly wrong. It is passed through untouched.
+
+**`getBlock` availability guard.** Solana RPC nodes return `-32004` for any slot above their `maxShredInsertSlot`, so hitting all upstreams only to collect N identical `-32004`s wastes quota and delays the retry. When the requested slot is above the pool's indexed frontier, `getBlock`/`getConfirmedBlock` are short-circuited with `ErrEndpointMissingData` before any upstream call — the same error class that maps to the `missing_data` retry reason, so the indexing-lag retry fires immediately.
+
+The guard allows a **staleness margin** above the frontier snapshot, because the snapshot refreshes at most once per debounce while the chain advances one slot per ~400 ms:
+
+```
+margin ≈ statePollerDebounce / 400ms + 2
+```
+
+The `+2` covers tick scheduling and the cross-source skew between `getSlot` (served by the most-ahead upstream) and the MAX-over-snapshots frontier. Default debounce (400 ms) gives a margin of 3; a 2 s debounce gives 7. Within the margin the request forwards — the pool almost certainly indexed the slot since the last poll. Beyond it the guard still short-circuits genuinely-future slots.
+
+The guard **fails open** whenever the indexed frontier is unknown. Absence of shred-insert tracking is not evidence of unavailability, so a cold poller or a vendor without `getMaxShredInsertSlot` must not cost requests every upstream could serve.
+
+**Consensus slot-lag pre-filter.** For a request whose resolved finality is `Finalized` **and** with a consensus policy active, upstreams whose `FinalizedSlot` trails the reference by more than `svm.maxFinalizedSlotLag` are pruned before consensus runs — the same query sent to a stale upstream and a current one returns different answers for data the caller has been promised is immutable.
+
+The reference slot is **not** the raw pool max, which is poisonable: a single upstream reporting a wildly inflated finalized slot would become the reference, every honest upstream would trail it by more than the lag, and the filter could shrink the pool to just the liar. Instead, when the leader outruns the runner-up by more than `maxFinalizedSlotLag`, the **runner-up** becomes the reference — the leader still passes (the filter only drops trailers) but can no longer drag the bar above the honest pack. This defends a single liar; colluding upstreams would need a majority-based baseline.
+
+The filter is defensive throughout: an upstream with no state poller is **included** (bootstrap has not finished; excluding it would break forwarding for newly-registered upstreams), and an upstream whose poller reports slot `0` is **included** (the poller has not seen a successful tick, so we cannot tell trailing from not-yet-woken). When `maxFinalizedSlotLag` is `0` or negative, filtering is disabled entirely.
+
+### Config schema
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `networks[*].svm.statePollerDebounce` | Duration | `400ms` (one slot) | Minimum interval between poll fan-outs. A **gate**, not the ticker period — the ticker stays at 400 ms. Raising it widens the `getBlock` guard's staleness margin proportionally. |
+| `networks[*].svm.maxFinalizedSlotLag` | `*int64` | `100` slots (≈40 s) | Consensus-scoped only: applied when a consensus policy is active **and** the request's resolved finality is `Finalized`. **Tri-state** — omit for the 100-slot default, `0` to **disable** the filter entirely, `>0` for that value. |
+| `networks[*].svm.enforceBlockAvailability` | `*bool` | `true` | Gates the `getBlock`/`getConfirmedBlock` availability guard. Set `false` when shred-insert tracking is unavailable or unreliable on a deployment. |
+
+`maxFinalizedSlotLag` is a pointer precisely so an explicit `0` is distinguishable from "unset": a plain integer would collapse those two cases and make the documented disable switch unreachable. The `100` default is materialized in exactly one place (`SetDefaults`) so every reader downstream can simply test `lag != nil && *lag > 0`.
+
+`enforceBlockAvailability` is materialized at read time rather than in `SetDefaults` — `SvmEnforceBlockAvailability()` maps `nil` to `true`. Both pointer fields survive `networkDefaults.svm` inheritance: an explicit `false` or `0` set in `networkDefaults` is copied through, because the merge tests for `nil` rather than for the zero value.
+
+### Worked examples
+
+**1. Cut background poll cost on a metered vendor.** Four calls per upstream every 400 ms is ~10 requests/second/upstream at default settings. A 2 s gate cuts that by 5× at the cost of a slightly wider `getBlock` guard margin (3 → 7 slots):
+
+<ConfigTabs
+  path="projects[].networkDefaults.svm"
+  yaml={`projects:
+  - id: main
+    networkDefaults:
+      svm:
+        # Ticker stays at 400ms; this gates the fan-out. Under live traffic the
+        # poller additionally skips its two getSlot calls when context.slot
+        # observations are already fresh (bounded at 4 consecutive skips).
+        statePollerDebounce: 2s
+    networks:
+      - architecture: svm
+        svm: { cluster: mainnet-beta }`}
+  ts={`projects: [{
+  id: "main",
+  networkDefaults: {
+    svm: {
+      // Ticker stays at 400ms; this gates the fan-out. Under live traffic the
+      // poller additionally skips its two getSlot calls when context.slot
+      // observations are already fresh (bounded at 4 consecutive skips).
+      statePollerDebounce: "2s",
+    },
+  },
+  networks: [{ architecture: "svm", svm: { cluster: "mainnet-beta" } }],
+}]`}
+/>
+
+**2. Disable the consensus slot-lag filter.** Some fleets want every upstream to vote regardless of lag — for example when the pool is deliberately heterogeneous and the consensus threshold already tolerates a trailing minority. An explicit `0` is the documented disable switch:
+
+<ConfigTabs
+  path="projects[].networks[].svm"
+  yaml={`networks:
+  - architecture: svm
+    svm:
+      cluster: mainnet-beta
+      commitment: finalized
+      # 0 = DISABLED (not "zero slots of tolerance"). Omitting the key entirely
+      # would take the 100-slot default instead.
+      maxFinalizedSlotLag: 0`}
+  ts={`networks: [{
+  architecture: "svm",
+  svm: {
+    cluster: "mainnet-beta",
+    commitment: "finalized",
+    // 0 = DISABLED (not "zero slots of tolerance"). Omitting the key entirely
+    // would take the 100-slot default instead.
+    maxFinalizedSlotLag: 0,
+  },
+}]`}
+/>
+
+**3. Turn off the block-availability guard for a vendor without shred tracking.** The guard already fails open when the frontier is unknown, so this is only needed when tracking exists but is unreliable. Setting it in `networkDefaults` works — an explicit `false` survives the merge:
+
+<ConfigTabs
+  path="projects[].networkDefaults.svm"
+  yaml={`projects:
+  - id: main
+    networkDefaults:
+      svm:
+        # Explicit false is preserved through networkDefaults inheritance.
+        # Cost: getBlock for a not-yet-indexed slot fans out to every upstream
+        # and collects N identical -32004s before the retry fires.
+        enforceBlockAvailability: false
+    networks:
+      - architecture: svm
+        svm: { cluster: mainnet-beta }`}
+  ts={`projects: [{
+  id: "main",
+  networkDefaults: {
+    svm: {
+      // Explicit false is preserved through networkDefaults inheritance.
+      // Cost: getBlock for a not-yet-indexed slot fans out to every upstream
+      // and collects N identical -32004s before the retry fires.
+      enforceBlockAvailability: false,
+    },
+  },
+  networks: [{ architecture: "svm", svm: { cluster: "mainnet-beta" } }],
+}]`}
+/>
+
+**4. Tighten the consensus filter for a settlement reader.** 100 slots is ~40 s. A reader that must not vote across a 40-second spread can tighten it to a few slots — the defensive fallbacks keep the pool from emptying:
+
+<ConfigTabs
+  path="projects[].networks[]"
+  yaml={`networks:
+  - architecture: svm
+    svm:
+      cluster: mainnet-beta
+      commitment: finalized
+      # ~2s of tolerance instead of ~40s. Upstreams with no poller yet, or a
+      # zero slot, are still INCLUDED — unknown state never excludes.
+      maxFinalizedSlotLag: 5
+    failsafe:
+      - matchMethod: "getBlock|getTransaction"
+        matchFinality: ["finalized"]
+        consensus:
+          maxParticipants: 3
+          agreementThreshold: 2`}
+  ts={`networks: [{
+  architecture: "svm",
+  svm: {
+    cluster: "mainnet-beta",
+    commitment: "finalized",
+    // ~2s of tolerance instead of ~40s. Upstreams with no poller yet, or a
+    // zero slot, are still INCLUDED — unknown state never excludes.
+    maxFinalizedSlotLag: 5,
+  },
+  failsafe: [{
+    matchMethod: "getBlock|getTransaction",
+    matchFinality: ["finalized"],
+    consensus: { maxParticipants: 3, agreementThreshold: 2 },
+  }],
+}]`}
+/>
+
+### Request/response behavior
+
+- **`getSlot` responses may be rewritten**, including on cache hits, to the highest slot known for the request's commitment. `confirmed` is exempt.
+- **`getBlockHeight` responses are never rewritten.**
+- **`getBlock` / `getConfirmedBlock` may be answered without any upstream call** when the requested slot is beyond the indexed frontier plus margin. The client sees the SVM missing-data contract (`-32004` family) and eRPC's indexing-lag retry fires immediately.
+- **Cordoned upstreams still receive poller traffic**, so recovery is detected; they receive no client traffic.
+- **`getGenesisHash` never reaches an upstream** — it is answered from the immutable genesis table.
+- Unlike EVM's `eth_blockNumber`, `getSlot` returns a bare integer (not hex) and the correction is unconditional — there is no `enforceHighestBlock` directive gate.
+
+### Best practices
+
+- **Leave `statePollerDebounce` at its default unless a vendor bill says otherwise.** 400 ms is one slot; polling faster buys no fresher data, polling slower widens the `getBlock` guard margin.
+- **When you do raise `statePollerDebounce`, expect the guard margin to widen with it.** That is the intended trade, not a bug: the frontier snapshot is staler, so the guard must be more permissive to avoid false rejections at the tip.
+- **Prefer providers that implement `getMaxShredInsertSlot`.** Without it you lose the silent-stale detector, and the `getSlot(finalized)` correction falls back to a fixed 32-slot lag instead of the real indexed tip.
+- **Alert on `erpc_upstream_cordoned` for SVM upstreams.** The two cordon conditions are both genuine node faults, and the reason label tells you which.
+- **Do not tune `maxFinalizedSlotLag` expecting it to affect non-consensus routing.** It is scoped to consensus-eligible finalized requests. Score-based selection already penalizes lagging upstreams on every path.
+- **Read `erpc_upstream_latest_block_number` on an SVM network as a slot, not a block height.** The metric names are architecture-neutral; the values are slots.
+
+### Edge cases & gotchas
+
+1. **`svm.maxFinalizedSlotLag: 0` disables the filter — it does not mean "zero tolerance".** Omitting the key gives the 100-slot default; `0` turns filtering off entirely.
+2. **`MaxShredInsertSlotLagThreshold` (100) is not configurable.** It is a compile-time constant governing per-upstream health, distinct from the `maxFinalizedSlotLag` config key despite the shared default value.
+3. **`statePollerDebounce` does not change the ticker period.** The ticker is pinned at 400 ms; the setting gates the fan-out. Setting it below 400 ms therefore has no effect.
+4. **There is no Prometheus metric for ingestion lag.** It is logged (`shredInsertSlotLag` on the cordon WARN) and it drives cordoning, but no gauge exposes it. Alert on `erpc_upstream_cordoned` and read the `reason` label.
+5. **`getSlot` at `confirmed` is not corrected**, so a client polling `getSlot(confirmed)` across pods can still observe the value move backwards. Use `processed` or `finalized` if monotonicity matters more than the confirmed contract.
+6. **A `finalized` `getSlot` answer can be *lower* than what the upstream returned.** That is the indexing-lag cap doing its job — the raw consensus tip is not yet fetchable via `getBlock`.
+7. **The block-availability guard can still false-reject.** The margin is a heuristic over a snapshot; a caller far ahead of the pool's indexed frontier gets the missing-data path rather than a forward. Widen it by raising `statePollerDebounce`, or disable the guard.
+8. **A cold poller neither cordons nor guards.** Both features treat unknown state as healthy/available, so a freshly-started instance behaves as if every upstream were fine until the first samples land.
+9. **The poller does not lift a manual cordon.** The edge-trigger flag records that *this poller* cordoned; an operator's `Cordon` via the admin API is untouched by recovery.
+10. **Large-rollback events are recorded, not acted on.** A backwards slot jump beyond 1024 is surfaced as `erpc_upstream_block_head_large_rollback`; it does not itself cordon.
+11. **`context.slot` harvesting only covers envelope methods.** `getSlot`, `getBlock`, and `getTransaction` return bare values and contribute nothing to the traffic gate. `getProgramAccounts` is included because its envelope form is opt-in via `withContext: true` and the non-envelope miss is cheap.
+
+### Observability
+
+The SVM poller feeds the shared health tracker, so the standard upstream gauges populate for SVM networks. **The metric names say "block"; on an SVM network the values are slots.**
+
+| Metric | Type | SVM meaning |
+|---|---|---|
+| `erpc_upstream_latest_block_number` | gauge | The upstream's **processed slot** |
+| `erpc_upstream_finalized_block_number` | gauge | The upstream's **finalized (rooted) slot** |
+| `erpc_upstream_block_head_lag` | gauge | Processed slots behind the freshest upstream |
+| `erpc_upstream_finalization_lag` | gauge | Finalized slots behind the freshest upstream |
+| `erpc_upstream_block_head_large_rollback` | gauge | Non-zero = backwards slot jump &gt; 1024; wrong-fork / snapshot-restore signal |
+| `erpc_upstream_cordoned` | gauge | `1` while cordoned; the `reason` label carries the poller's exact string |
+| `erpc_upstream_cordon_event_total` | counter | Increments only on a cordon **transition** (edge-triggered) |
+| `erpc_upstream_cordon_duration_seconds` | histogram | Observed on uncordon |
+| `erpc_upstream_stale_latest_block_total` | counter | A `getSlot` answer was corrected upward or capped |
+| `erpc_network_retry_attempt_total{reason="missing_data"}` | counter | Includes retries triggered by the `getBlock` availability guard |
+
+**Notable log lines:**
+
+- `"svm upstream unhealthy; cordoning out of rotation"` — WARN, carries `shredInsertSlot`, `shredInsertSlotLag`, `latestSlot`, `reason`.
+- `"svm upstream recovered; uncordoning"` — INFO, carries `shredInsertSlotLag`.
+- `"upstream returned older slot than we know, falling back to highest known slot"` — DEBUG, carries `knownHighestSlot`, `responseSlot`, and either `upstreamId` or `fromCache`.
+- `"bootstrapping svm state poller"` — DEBUG, carries `tickInterval` and the effective `debounce`.
+
+**OTel span:** `Network.PostForward.getSlot`, with `request.id` and `network.id` attributes.
+
+### Source code entry points
+
+- [`architecture/svm/svm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/svm_state_poller.go) — `Poll` fan-out, debounce and traffic gates, ingestion-lag computation, `IsHealthy`, `applyHealthToRouting` (edge-triggered cordoning), slot accessors, shared-counter wiring.
+- [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `networkPostForward_getSlot` (per-commitment correction), `networkPreForward_getBlock` (availability guard), `indexedTipStalenessMargin`, `upstreamPostForward_trackContextSlot`.
+- [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByFinalizedSlotLag`, `ReferenceFinalizedSlot` (second-highest clamp), `HighestFinalizedSlot`, `FilterByMinContextSlot`.
+- <SourceLink file="common/architecture_svm.go" lines="29-59" label="common/architecture_svm.go — SvmStatePoller interface, MaxShredInsertSlotLagThreshold" />
+- <SourceLink file="common/config.go" lines="2344-2367" label="common/config.go — statePollerDebounce, maxFinalizedSlotLag, enforceBlockAvailability" />
+- <SourceLink file="common/defaults.go" lines="2197-2251" label="common/defaults.go — mergeSvmNetworkDefaults and SvmNetworkConfig.SetDefaults" />
+
+### Related pages
+
+- [SVM commitment & finality](/reference/svm/commitment) — how the effective commitment is resolved, and `minContextSlot` semantics.
+- [SVM JSON-RPC cache](/config/database/svm-json-rpc-cache) — finality classification and cache-key derivation.
+- [Networks](/config/projects/networks) — the full `networks[*].svm` schema.
+- [Upstreams](/config/projects/upstreams) — declaring `type: svm` upstreams and `svm.cluster`.
+- [Cordoning](/operation/cordoning) — how cordon state interacts with selection policies.
+- [Consensus](/config/failsafe/consensus) — the policy the slot-lag pre-filter protects.
+- [Error taxonomy](/reference/errors#svm-solana-error-contract) — `-32004`, `-32014`, and the missing-data family.
+
+</AISection>

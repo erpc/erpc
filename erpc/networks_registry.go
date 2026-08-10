@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/health"
@@ -25,6 +25,7 @@ type NetworksRegistry struct {
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	metricsTracker       *health.Tracker
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
+	svmJsonRpcCache      *svm.SvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	policyEngine         *policy.Engine
 	preparedNetworks     sync.Map // map[string]*Network
@@ -45,6 +46,7 @@ func NewNetworksRegistry(
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
+	svmJsonRpcCache *svm.SvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	policyEngine *policy.Engine,
 	logger *zerolog.Logger,
@@ -56,6 +58,7 @@ func NewNetworksRegistry(
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
 		evmJsonRpcCache:      evmJsonRpcCache,
+		svmJsonRpcCache:      svmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		policyEngine:         policyEngine,
 		preparedNetworks:     sync.Map{},
@@ -69,7 +72,9 @@ func NewNetworksRegistry(
 		project.cfgMu.RLock()
 		for _, nwCfg := range project.Config.Networks {
 			if nwCfg != nil && nwCfg.Alias != "" {
-				parts := strings.Split(nwCfg.NetworkId(), ":")
+				// SplitN limit 2: three-part SVM IDs (svm:<chain>:<cluster>) keep
+				// the chain:cluster tail as the chainID half of the alias entry.
+				parts := strings.SplitN(nwCfg.NetworkId(), ":", 2)
 				if len(parts) == 2 {
 					r.registerAlias(nwCfg.Alias, parts[0], parts[1])
 				}
@@ -168,6 +173,13 @@ func NewNetwork(
 
 	if nwCfg.Architecture == "" {
 		nwCfg.Architecture = common.ArchitectureEvm
+	}
+
+	// Wire the architecture handler so per-network hooks dispatch correctly.
+	// prepareNetwork also sets this; keeping it here means tests that construct
+	// networks via NewNetwork directly get the same behavior as production.
+	if handler, err := common.GetArchitectureHandler(nwCfg.Architecture); err == nil {
+		network.architectureHandler = handler
 	}
 
 	return network, nil
@@ -298,17 +310,30 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		return nil, err
 	}
 
+	handler, err := common.GetArchitectureHandler(nwCfg.Architecture)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported network architecture %q: %w", nwCfg.Architecture, err)
+	}
+	network.architectureHandler = handler
+
+	// Architecture-specific cache wiring. Each architecture has its own cache
+	// implementation because key partitioning differs (EVM uses blockRef, SVM
+	// uses commitment+slotRef). A given network gets exactly one cache.
 	switch nwCfg.Architecture {
-	case "evm":
+	case common.ArchitectureEvm:
 		if nr.evmJsonRpcCache != nil {
 			network.cacheDal = nr.evmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
-	default:
-		return nil, errors.New("unknown network architecture")
+	case common.ArchitectureSvm:
+		if nr.svmJsonRpcCache != nil {
+			network.cacheDal = nr.svmJsonRpcCache.WithProjectId(nr.project.Config.Id)
+		}
 	}
 	// Register alias for lazy-created networks to support alias-based routing
 	if nwCfg.Alias != "" {
-		parts := strings.Split(nwCfg.NetworkId(), ":")
+		// SplitN limit 2: three-part SVM IDs (svm:<chain>:<cluster>) keep the
+		// chain:cluster tail as the chainID half of the alias entry.
+		parts := strings.SplitN(nwCfg.NetworkId(), ":", 2)
 		if len(parts) == 2 {
 			nr.registerAlias(nwCfg.Alias, parts[0], parts[1])
 		}
@@ -341,7 +366,9 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 	if nwCfg == nil {
 		// Create a new config if none was found
 		nwCfg = &common.NetworkConfig{}
-		s := strings.Split(networkId, ":")
+		// SplitN limit 2: the tail keeps any further colons so SVM
+		// svm:<chain>:<cluster> IDs are parsed below (s[1] = "<chain>:<cluster>").
+		s := strings.SplitN(networkId, ":", 2)
 		if len(s) != 2 {
 			return nil, common.NewErrInvalidEvmChainId(networkId)
 		}
@@ -353,6 +380,18 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 				return nil, e
 			}
 			nwCfg.Evm = &common.EvmNetworkConfig{ChainId: int64(c)}
+		case common.ArchitectureSvm:
+			// s[1] is "<cluster>" (implicit solana) or "<chain>:<cluster>".
+			chain, cluster := "", s[1]
+			if i := strings.Index(s[1], ":"); i >= 0 {
+				chain, cluster = s[1][:i], s[1][i+1:]
+			}
+			if cluster == "" {
+				return nil, common.NewErrInvalidEvmChainId(networkId)
+			}
+			nwCfg.Svm = &common.SvmNetworkConfig{Chain: chain, Cluster: cluster}
+		default:
+			return nil, common.NewErrInvalidEvmChainId(networkId)
 		}
 		if err := nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults); err != nil {
 			return nil, fmt.Errorf("failed to set defaults for network config: %w", err)

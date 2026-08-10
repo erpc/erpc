@@ -24,6 +24,7 @@ packages:
         AuthType as TsAuthType,
         AuthStrategyConfig as TsAuthStrategyConfig,
         EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults,
+        SvmNetworkConfigForDefaults as TsSvmNetworkConfigForDefaults,
         SelectionPolicyEvalFunction,
         BoolOrString
       } from "./types"

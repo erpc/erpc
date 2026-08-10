@@ -925,7 +925,7 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 	if winner == nil || !anyAgreementQuota(e.config.requiredParticipants) {
 		return winner
 	}
-	if isSendRawTransaction(analysis.method) {
+	if isTxBroadcastMethod(analysis.method) {
 		return winner
 	}
 	g := analysis.groupOf(winner)

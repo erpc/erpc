@@ -990,6 +990,11 @@ func (d *DatabaseConfig) SetDefaults(defClusterKey string) error {
 			return err
 		}
 	}
+	if d.SvmJsonRpcCache != nil {
+		if err := d.SvmJsonRpcCache.SetDefaults(); err != nil {
+			return err
+		}
+	}
 	if d.SharedState != nil {
 		if err := d.SharedState.SetDefaults(defClusterKey); err != nil {
 			return err
@@ -1658,6 +1663,11 @@ func (n *NetworkDefaults) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for evm: %w", err)
 		}
 	}
+	if n.Svm != nil {
+		if err := n.Svm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for svm: %w", err)
+		}
+	}
 	if n.DirectiveDefaults != nil {
 		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for directive defaults: %w", err)
@@ -1761,6 +1771,33 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		}
 		if u.Evm.TraceFilterAutoSplittingRangeThreshold == 0 && defaults.Evm.TraceFilterAutoSplittingRangeThreshold != 0 {
 			u.Evm.TraceFilterAutoSplittingRangeThreshold = defaults.Evm.TraceFilterAutoSplittingRangeThreshold
+		}
+	}
+	// Mirrors the evm branch above: upstreamDefaults.svm is a template, so an
+	// upstream that omits its own `svm` block inherits the whole thing (copied,
+	// not pointer-shared, per the IMPORTANT note above), and one with a partial
+	// block fills only its empty fields. Without this, upstreamDefaults.svm was
+	// silently dropped and every upstream had to repeat chain/cluster.
+	//
+	// Cluster IS inherited here, unlike mergeSvmNetworkDefaults where it is
+	// network identity: on an upstream it only says "which cluster do I serve",
+	// and a pool homogeneous across one cluster is the common case.
+	if u.Svm == nil && defaults.Svm != nil {
+		cp := *defaults.Svm
+		u.Svm = &cp
+	} else if u.Svm != nil && defaults.Svm != nil {
+		if u.Svm.Chain == "" && defaults.Svm.Chain != "" {
+			u.Svm.Chain = defaults.Svm.Chain
+		}
+		if u.Svm.Cluster == "" && defaults.Svm.Cluster != "" {
+			u.Svm.Cluster = defaults.Svm.Cluster
+		}
+		// ponytail: CheckGenesisHash stays a plain bool — false is the zero
+		// value and also the "skip the check" behavior, so only an opt-in true
+		// is worth propagating. Make it *bool if a per-upstream opt-OUT of an
+		// inherited true is ever needed.
+		if defaults.Svm.CheckGenesisHash {
+			u.Svm.CheckGenesisHash = true
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
@@ -2115,9 +2152,17 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
 			}
-		} else if n.Evm == nil && defaults.Evm != nil {
+		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm {
+			// Copy EVM defaults only onto networks that are (or can become) EVM.
+			// Without the SVM guard, a mixed project with networkDefaults.evm
+			// would inject an evm block into every svm network — and the
+			// architecture derivation below checks n.Evm BEFORE n.Svm, silently
+			// flipping an `svm:`-authored network to architecture=evm.
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
+		}
+		if n.Svm != nil && defaults.Svm != nil {
+			mergeSvmNetworkDefaults(n.Svm, defaults.Svm)
 		}
 		if n.Evm != nil {
 			if err := n.Evm.SetDefaults(); err != nil {
@@ -2136,11 +2181,16 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.Architecture == "" {
 		if n.Evm != nil {
 			n.Architecture = "evm"
+		} else if n.Svm != nil {
+			n.Architecture = ArchitectureSvm
 		}
 	}
 
 	if n.Architecture == "evm" && n.Evm == nil {
 		n.Evm = &EvmNetworkConfig{}
+	}
+	if n.Architecture == ArchitectureSvm && n.Svm == nil {
+		n.Svm = &SvmNetworkConfig{}
 	}
 
 	// Apply methods defaults
@@ -2154,6 +2204,11 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.Evm != nil {
 		if err := n.Evm.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for network evm config: %w", err)
+		}
+	}
+	if n.Svm != nil {
+		if err := n.Svm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for network svm config: %w", err)
 		}
 	}
 
@@ -2334,6 +2389,72 @@ func DefaultMarkEmptyAsErrorMethods() []string {
 		"trace_block",
 		"trace_get",
 	}
+}
+
+// mergeSvmNetworkDefaults copies project-level SVM defaults into a network config.
+// Cluster is never copied — it is network identity (like chainId for EVM), so one
+// networkDefaults.svm block can front many clusters. Everything else is policy and
+// inherits. (Still true after the pointer fields below were added: neither of them
+// is identity.)
+//
+// Pointer fields are copied on nil, not on zero. An operator writing
+// `enforceBlockAvailability: false` or `maxFinalizedSlotLag: 0` under
+// networkDefaults.svm means it; a zero-test would silently drop exactly the
+// disable switch they asked for. Values are copied, not pointer-shared, so two
+// networks inheriting the same default cannot alias one another (matches the
+// evm.servedTip clone above).
+func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
+	if dst == nil || defaults == nil {
+		return
+	}
+	if dst.Chain == "" && defaults.Chain != "" {
+		dst.Chain = defaults.Chain
+	}
+	if dst.Commitment == "" && defaults.Commitment != "" {
+		dst.Commitment = defaults.Commitment
+	}
+	if dst.StatePollerDebounce.Duration() == 0 && defaults.StatePollerDebounce.Duration() != 0 {
+		dst.StatePollerDebounce = defaults.StatePollerDebounce
+	}
+	if dst.MaxFinalizedSlotLag == nil && defaults.MaxFinalizedSlotLag != nil {
+		v := *defaults.MaxFinalizedSlotLag
+		dst.MaxFinalizedSlotLag = &v
+	}
+	if dst.EnforceBlockAvailability == nil && defaults.EnforceBlockAvailability != nil {
+		v := *defaults.EnforceBlockAvailability
+		dst.EnforceBlockAvailability = &v
+	}
+}
+
+// SetDefaults populates SVM-network config fields that were left empty.
+// Called from NetworkConfig.SetDefaults so every production-loaded config
+// ends up with the same values operators would get by opting in.
+//
+// Commitment is intentionally NOT defaulted here: the commitment-injection
+// hook is a no-op when SvmNetworkConfig.Commitment is empty (the caller's
+// commitment or the upstream's server-side default wins), which is the
+// correct behavior when an operator hasn't opted in.
+func (s *SvmNetworkConfig) SetDefaults() error {
+	if s == nil {
+		return nil
+	}
+	// 400ms matches one Solana slot. Polling more often buys no fresher data
+	// and burns upstream quota; polling less often means our state lags the
+	// cluster by more than a slot.
+	if s.StatePollerDebounce.Duration() == 0 {
+		s.StatePollerDebounce = Duration(400 * time.Millisecond)
+	}
+	// 100 slots (~40s) matches MaxShredInsertSlotLagThreshold so the consensus
+	// slot-lag filter and the per-upstream health check use the same staleness
+	// bar. Operators can widen, tighten, or set 0 to disable the filter — hence
+	// the nil test: only an omitted value takes the default. This is the ONLY
+	// place the default is materialized, so readers downstream of SetDefaults
+	// can just test `lag != nil && *lag > 0`.
+	if s.MaxFinalizedSlotLag == nil {
+		v := MaxShredInsertSlotLagThreshold
+		s.MaxFinalizedSlotLag = &v
+	}
+	return nil
 }
 
 func (e *EvmNetworkConfig) SetDefaults() error {
@@ -2694,6 +2815,37 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 				"*.blockTimestamp",
 				"*.logs.*.blockTimestamp",
 			},
+		}
+		// SVM: RpcResponse-enveloped methods carry {context:{slot,apiVersion},value:…}.
+		// context.slot is the slot the node answered at — it differs across healthy
+		// upstreams on virtually every call, and context.apiVersion differs across
+		// mixed validator versions. Without ignoring them, consensus registers
+		// dissent on identical values and SVM consensus is unusable out of the box.
+		// The value payload itself is still fully compared. Method names are
+		// Solana-only, so these entries are inert for EVM networks.
+		for _, m := range []string{
+			"getAccountInfo",
+			"getBalance",
+			"getBlockProduction",
+			"getFeeForMessage",
+			"getLargestAccounts",
+			"getLatestBlockhash",
+			"getMultipleAccounts",
+			"getProgramAccounts", // enveloped only with withContext:true; ignore paths are no-ops otherwise
+			"getRecentBlockhash", // deprecated but still served by older validators
+			"getSignatureStatuses",
+			"getStakeActivation", // removed in agave v2; harmless for older nodes
+			"getStakeMinimumDelegation",
+			"getSupply",
+			"getTokenAccountBalance",
+			"getTokenAccountsByDelegate",
+			"getTokenAccountsByOwner",
+			"getTokenLargestAccounts",
+			"getTokenSupply",
+			"isBlockhashValid",
+			"simulateTransaction",
+		} {
+			c.IgnoreFields[m] = []string{"context.slot", "context.apiVersion"}
 		}
 	}
 	if c.PreferNonEmpty == nil {

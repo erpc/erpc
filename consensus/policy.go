@@ -9,15 +9,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// isSendRawTransaction reports whether the method is a raw-transaction
-// broadcast. Case-insensitive to match hook dispatch: the broadcast exemptions
-// (first valid response wins, no winner-composition quota) must not turn on the
-// casing the client sent, or an accepted broadcast waits for a quorum that
-// proves nothing.
-func isSendRawTransaction(method string) bool {
-	return strings.EqualFold(method, "eth_sendRawTransaction")
-}
-
 // methodFields resolves a per-method field list from an operator-configured map
 // (ignoreFields, preferHighestValueFor) keyed by method name. Method dispatch is
 // case-insensitive (see architecture/evm/hooks.go), so these lookups must be too

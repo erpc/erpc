@@ -32,6 +32,7 @@ export type {
   PolicyEvalArrayCondition,
   IncludeIfTarget,
   EvmNetworkConfigForDefaults,
+  SvmNetworkConfigForDefaults,
 } from "./types";
 export {
   // Data finality const exports
@@ -61,8 +62,10 @@ export {
   EvmSyncingStateNotSyncing,
   // Architecture export
   ArchitectureEvm,
+  ArchitectureSvm,
   // Upstream types const exprots
   UpstreamTypeEvm,
+  UpstreamTypeSvm,
   // Auth types
   AuthTypeSecret,
   AuthTypeJwt,
@@ -110,6 +113,7 @@ export type {
   UpstreamConfig,
   EvmUpstreamConfig,
   EvmQueryShimConfig,
+  SvmUpstreamConfig,
   UpstreamIntegrityConfig,
   UpstreamIntegrityEthGetBlockReceiptsConfig,
   RateLimitAutoTuneConfig,
@@ -125,6 +129,7 @@ export type {
   NetworkConfig,
   EvmNetworkConfig,
   EvmIntegrityConfig,
+  SvmNetworkConfig,
   SelectionPolicyConfig,
   EvalScope,
   DirectiveDefaultsConfig,

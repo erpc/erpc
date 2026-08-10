@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"sync/atomic"
 
 	_ "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/blockchain-data-standards/manifesto/svm"
+	"github.com/blockchain-data-standards/manifesto/svm/parse"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -20,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -317,6 +321,8 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleQueryTraces(ctx, conn, req, jrReq)
 	case "eth_queryTransfers":
 		resp, err = c.handleQueryTransfers(ctx, conn, req, jrReq)
+	case "getBlock":
+		resp, err = c.handleSvmGetBlock(ctx, conn, req, jrReq)
 	default:
 		err := common.NewErrEndpointUnsupported(
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
@@ -1360,4 +1366,234 @@ func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *b
 	}
 
 	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransfersResponseToJsonRpc(aggregated))
+}
+
+// svmGetBlockParams is the parsed second argument of Solana's `getBlock`.
+// Every field is optional; the zero value is Agave's default request.
+type svmGetBlockParams struct {
+	Encoding                       string  `json:"encoding"`
+	TransactionDetails             string  `json:"transactionDetails"`
+	Rewards                        *bool   `json:"rewards"`
+	Commitment                     string  `json:"commitment"`
+	MaxSupportedTransactionVersion *uint32 `json:"maxSupportedTransactionVersion"`
+	MinContextSlot                 *uint64 `json:"minContextSlot"`
+}
+
+// errSvmEncodingUnsupported means the caller asked for a payload shape this
+// path cannot produce. It is deliberately an "unsupported" error rather than a
+// failure: the cache layer treats it as a miss and the request goes to a live
+// upstream, which is the only place the other encodings exist.
+var errSvmEncodingUnsupported = errors.New("svm getBlock encoding not served by BDS")
+
+// handleSvmGetBlock serves Solana `getBlock` from the standardised
+// bds.svm.RPCQueryService.
+//
+// The correctness-critical part is the encoding guard. BDS returns a
+// structured block, which renders as `encoding: "json"` and nothing else.
+// `jsonParsed` in particular is NOT a formatting variant of it — it requires
+// per-program decoders (SPL Token, System, Stake, Vote, ATA, …) to turn opaque
+// instruction data into named fields. Serving json where jsonParsed was asked
+// for returns a wrong-shaped result that a client cannot distinguish from a
+// correct one, so anything but json falls through to a live upstream.
+func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	var params []interface{}
+	jrReq.RLock()
+	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	jrReq.RUnlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal params: %w", err)
+	}
+	if err := sonic.Unmarshal(paramsBytes, &params); err != nil {
+		return nil, fmt.Errorf("failed to parse params: %w", err)
+	}
+	if len(params) < 1 {
+		return nil, fmt.Errorf("insufficient params for getBlock")
+	}
+
+	slot, err := svmParseSlot(params[0])
+	if err != nil {
+		return nil, err
+	}
+
+	// The config object is optional: `getBlock(slot)` is a legal call.
+	var opts svmGetBlockParams
+	if len(params) > 1 && params[1] != nil {
+		optBytes, merr := sonic.Marshal(params[1])
+		if merr != nil {
+			return nil, fmt.Errorf("failed to marshal getBlock config: %w", merr)
+		}
+		if uerr := sonic.Unmarshal(optBytes, &opts); uerr != nil {
+			return nil, fmt.Errorf("failed to parse getBlock config: %w", uerr)
+		}
+	}
+
+	// Absent encoding means json (Agave's default). json renders from the
+	// structured block directly; jsonParsed runs Agave's instruction parsers
+	// over it HERE, in-process, via the manifesto svm/parse package — the
+	// reader ships raw instruction data and knows nothing about encodings.
+	// base58/base64/base64+zstd remain unserved: they are raw-payload
+	// encodings this path has no reason to reproduce.
+	var wantParsed bool
+	switch opts.Encoding {
+	case "", "json":
+	case "jsonParsed":
+		wantParsed = true
+	default:
+		return nil, common.NewErrEndpointUnsupported(
+			fmt.Errorf("%w: %s", errSvmEncodingUnsupported, opts.Encoding),
+		)
+	}
+
+	details, err := svmTransactionDetails(opts.TransactionDetails)
+	if err != nil {
+		return nil, err
+	}
+
+	grpcReq := &svm.GetBlockRequest{
+		Slot:               slot,
+		TransactionDetails: details,
+		// Inverted: the proto's false is Agave's `rewards: true` default.
+		ExcludeRewards:                 opts.Rewards != nil && !*opts.Rewards,
+		MaxSupportedTransactionVersion: opts.MaxSupportedTransactionVersion,
+		Commitment:                     svmCommitment(opts.Commitment),
+		MinContextSlot:                 opts.MinContextSlot,
+		// GenesisHash is deliberately never set: the reader does not publish
+		// its own, and asserting one it cannot verify would be refused.
+	}
+
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.SvmGetBlock",
+		trace.WithAttributes(
+			attribute.Int64("slot", int64(slot)),
+			attribute.String("transaction_details", opts.TransactionDetails),
+		),
+	)
+	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*svm.GetBlockResponse, error) {
+		return conn.svmClient.GetBlock(ctx, grpcReq)
+	})
+	if err != nil {
+		grpcSpan.SetAttributes(attribute.String("grpc_error", err.Error()))
+		common.SetTraceSpanError(grpcSpan, err)
+		grpcSpan.End()
+		return nil, svmMapGetBlockError(err)
+	}
+	grpcSpan.SetAttributes(
+		attribute.String("slot_status", grpcResp.SlotStatus.String()),
+		attribute.Bool("response_has_block", grpcResp.Block != nil),
+	)
+	grpcSpan.End()
+
+	// A skipped slot is a real, permanent answer, but Agave reports it as a
+	// JSON-RPC error (-32007/-32009) rather than a null result, and a cache
+	// connector can only return a result. Fall through so the live upstream
+	// produces the error shape clients expect.
+	// TODO(BDA-3110): cache the skip once the cache layer can hold an error.
+	if grpcResp.SlotStatus == svm.SlotStatus_SLOT_SKIPPED || grpcResp.Block == nil {
+		return nil, common.NewErrEndpointUnsupported(
+			fmt.Errorf("slot %d is skipped; not served from BDS", slot),
+		)
+	}
+
+	var result map[string]interface{}
+	if wantParsed {
+		// Attach Agave's parsed instruction forms in-process. Instructions no
+		// parser covers (compute-budget, user programs) are left unattached
+		// and render as partiallyDecoded — exactly what a real node emits for
+		// them, so an unknown program degrades rather than corrupts.
+		parse.AttachToBlock(grpcResp.Block)
+		result = svm.BlockToJsonRpcParsed(grpcResp.Block, grpcResp.Signatures)
+	} else {
+		result = svm.BlockToJsonRpc(grpcResp.Block, grpcResp.Signatures)
+	}
+
+	jsonRpcResp := &common.JsonRpcResponse{}
+	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
+	resultBytes, err := sonic.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	jsonRpcResp.SetResult(resultBytes)
+
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jsonRpcResp), nil
+}
+
+// svmParseSlot accepts the slot as the JSON number it is on the wire. Solana
+// slots are decimal, never hex — an "0x…" string here is an EVM habit, not a
+// valid request.
+//
+// float64 is the only numeric case: the caller decodes params with sonic's
+// default config, which never yields json.Number. A slot above 2^53 would lose
+// precision here, but Solana is ~9 orders of magnitude away from that.
+func svmParseSlot(v interface{}) (uint64, error) {
+	n, ok := v.(float64)
+	if !ok {
+		return 0, fmt.Errorf("invalid slot parameter type %T", v)
+	}
+	if n < 0 || n != math.Trunc(n) {
+		return 0, fmt.Errorf("invalid slot %v: must be a non-negative integer", v)
+	}
+	return uint64(n), nil
+}
+
+func svmTransactionDetails(s string) (svm.TransactionDetails, error) {
+	switch s {
+	case "", "full":
+		return svm.TransactionDetails_TRANSACTION_DETAILS_FULL, nil
+	case "signatures":
+		return svm.TransactionDetails_TRANSACTION_DETAILS_SIGNATURES, nil
+	case "none":
+		return svm.TransactionDetails_TRANSACTION_DETAILS_NONE, nil
+	case "accounts":
+		// The BDS model set has no representation for it; the reader rejects
+		// it too. Fall through rather than serve a lossy shape.
+		return 0, common.NewErrEndpointUnsupported(
+			fmt.Errorf("%w: transactionDetails=accounts", errSvmEncodingUnsupported),
+		)
+	default:
+		return 0, fmt.Errorf("invalid transactionDetails %q", s)
+	}
+}
+
+func svmCommitment(s string) svm.Commitment {
+	if s == "confirmed" {
+		return svm.Commitment_COMMITMENT_CONFIRMED
+	}
+	// Agave defaults history reads to finalized; "processed" is not servable
+	// from a finalized-sealed archive, and the caller gets the stricter level
+	// rather than a fresher-looking lie.
+	return svm.Commitment_COMMITMENT_FINALIZED
+}
+
+// svmMapGetBlockError decides, per gRPC status, whether the miss is benign
+// (fall through to a live upstream) or a genuine transport failure worth
+// scoring against the connector.
+func svmMapGetBlockError(err error) error {
+	st, ok := status.FromError(err)
+	if !ok {
+		return fmt.Errorf("gRPC call failed: %w", err)
+	}
+	switch st.Code() {
+	case codes.OutOfRange:
+		// Outside this reader's served range, or above its tip. Benign: some
+		// other upstream has it.
+		return common.NewErrEndpointUnsupported(
+			fmt.Errorf("slot outside BDS coverage: %s", st.Message()),
+		)
+	case codes.Unimplemented:
+		return common.NewErrEndpointUnsupported(
+			fmt.Errorf("method not served by BDS: %s", st.Message()),
+		)
+	case codes.InvalidArgument:
+		// Client-induced and deterministic — the version gate (Agave -32015),
+		// an unknown enum, or ACCOUNTS mode. A live upstream renders the
+		// proper JSON-RPC error, so fall through instead of inventing one.
+		return common.NewErrEndpointUnsupported(
+			fmt.Errorf("request not servable by BDS: %s", st.Message()),
+		)
+	default:
+		return fmt.Errorf("gRPC call failed: %w", err)
+	}
 }

@@ -590,7 +590,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				} else {
 					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 					if err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails, common.NetworkArchitecture(architecture))
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -674,7 +674,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						}
 						if networkIdFromBody, ok := req["networkId"].(string); ok {
 							networkId = networkIdFromBody
-							parts := strings.Split(networkId, ":")
+							// SplitN limit 2 so three-part SVM IDs (svm:<chain>:<cluster>)
+							// keep the chain:cluster tail intact as chainId; it is
+							// reassembled as architecture+":"+chainId below.
+							parts := strings.SplitN(networkId, ":", 2)
 							if len(parts) == 2 {
 								architecture = parts[0]
 								chainId = parts[1]
@@ -1053,7 +1056,7 @@ func (s *HttpServer) parseUrlPath(
 	}
 
 	if (chainId != "" || architecture != "") && !common.IsValidArchitecture(architecture) {
-		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm')", ps)
+		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm' or 'svm')", ps)
 	}
 
 	if !isPost && !isOptions {
@@ -1645,11 +1648,13 @@ func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
 	}
 }
 
-func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool) interface{} {
+func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	err := origErr
 
-	// Build the response first, then log with it
-	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails)
+	// Build the response first, then log with it. Authentication runs before
+	// network resolution, so its caller passes the URL-parsed architecture as a
+	// hint; later errors can derive it from nq.Network().
+	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails, architectureHint...)
 
 	// Log the error with the response
 	if !common.IsNull(err) {
@@ -1688,8 +1693,8 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	return resp
 }
 
-// buildErrorResponseBody constructs the error response without logging
-func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, includeErrorDetails *bool) interface{} {
+// buildErrorResponseBody constructs the error response without logging.
+func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
 	exe := &common.ErrEndpointExecutionException{}
 	if errors.As(err, &exe) {
@@ -1704,10 +1709,45 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 		}
 	}
 
+	// determineResponseStatusCode keys 429/401 off Cause via HasErrorCode, which
+	// walks the whole tree — so Cause must hold the UNPRUNED error.
+	//
+	// TranslateToJsonRpcException below collapses an exhausted bundle to its
+	// most-frequent cause for a readable message. That prune is deliberate and
+	// stays, but it keeps exactly ONE cause, so a status-bearing sibling (429
+	// capacity, 401 unauthorized) sitting alongside plain 5xx is usually dropped
+	// and the response degrades to 200. Reordering cannot fix it: with two
+	// competing statuses, a keep-one prune can preserve at most one. Survival is
+	// the property that matters, so status reads pre-prune and the body reads post.
+	//
+	// Reachable because findUpstreamsExhausted now sees through the
+	// ErrFailsafeRetryExceeded the network retry loop always adds; the previous
+	// direct type assertion missed that wrapper, so the prune never ran here.
+	//
+	// Live instance: OP-Stack "sender is over rate limit" on eth_sendRawTransaction
+	// is marked WithRetryableTowardNetwork(false) to stop futile sequencer failover
+	// — orderCauses then sorts it last and the strict-greater scan drops it. Losing
+	// that 429 makes clients resubmit the transaction instead of backing off.
+	causeForStatus := err
 	err = common.TranslateToJsonRpcException(err)
 	var jsonrpcVersion string = "2.0"
 	var reqId interface{} = nil
 	var method string = ""
+	isSvmRequest := len(architectureHint) > 0 && architectureHint[0] == common.ArchitectureSvm
+	if !isSvmRequest && nq != nil {
+		isSvmRequest = strings.HasPrefix(nq.NetworkId(), "svm:")
+		// Body-routed requests have no URL architecture hint and auth still runs
+		// before network resolution. Capture networkId before JsonRpcRequest()
+		// consumes nq.Body(), without moving network lookup ahead of authentication.
+		if !isSvmRequest && nq.Network() == nil && (len(architectureHint) == 0 || architectureHint[0] == "") {
+			var envelope struct {
+				NetworkID string `json:"networkId"`
+			}
+			if common.SonicCfg.Unmarshal(nq.Body(), &envelope) == nil {
+				isSvmRequest = strings.HasPrefix(envelope.NetworkID, "svm:")
+			}
+		}
+	}
 	if nq != nil {
 		jrr, _ := nq.JsonRpcRequest()
 		if jrr != nil {
@@ -1719,8 +1759,24 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		message := jre.Message
+		wireCode := jre.NormalizedCode()
+		// eRPC's generic capacity code is -32005, but Solana assigns -32005 to
+		// NodeUnhealthy. Local admission limits (auth/project/network/upstream
+		// budgets) never came from a Solana node, so expose them in Solana's
+		// collision-free generic server bucket instead. Keep native upstream
+		// -32005 untouched: it really does mean NodeUnhealthy and its outer error
+		// chain contains none of these local limiter codes.
+		if wireCode == common.JsonRpcErrorCapacityExceeded && isSvmRequest &&
+			common.HasErrorCode(err,
+				common.ErrCodeAuthRateLimitRuleExceeded,
+				common.ErrCodeProjectRateLimitRuleExceeded,
+				common.ErrCodeNetworkRateLimitRuleExceeded,
+				common.ErrCodeUpstreamRateLimitRuleExceeded,
+			) {
+			wireCode = common.JsonRpcErrorNumber(-32000)
+		}
 		errObj := map[string]interface{}{
-			"code":    jre.NormalizedCode(),
+			"code":    wireCode,
 			"message": message,
 		}
 		// Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
@@ -1738,7 +1794,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 			Jsonrpc: jsonrpcVersion,
 			Id:      reqId,
 			Error:   errObj,
-			Cause:   err,
+			Cause:   causeForStatus,
 			Request: nq,
 		}
 	}
@@ -1752,7 +1808,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	return common.BaseError{
 		Code:    "ErrUnknown",
 		Message: "unexpected server error",
-		Cause:   err,
+		Cause:   causeForStatus,
 	}
 }
 
