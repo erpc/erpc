@@ -254,17 +254,32 @@ func (e *JsonRpcErrorExtractor) Extract(
 	case svmCodeSlotSkipped:
 		return newSweptSkipMissingData(code, msg, details, upstream)
 
-	// --- Authoritatively-missing data (do NOT retry other upstreams) ----------
+	// -32009 is "skipped, OR missing in long-term storage" — and the "or" is
+	// load-bearing. Only the first half is chain truth. The second half is
+	// whether THIS provider runs a long-term archive (BigTable / Old Faithful)
+	// and how complete it is, which is per-provider operational policy: archive
+	// backfill depth, retention, and how far a given operator chose to go.
 	//
-	// -32009 is emitted only after the node consulted long-term storage: the
-	// slot was skipped, permanently, cluster-wide. Every upstream returns the
-	// same verdict, so failing over burns the retry budget (latency + quota)
-	// for a deterministic answer. A node whose long-term storage is *down*
-	// emits -32019 instead — that one stays retryable below. The raw -32009
-	// reaches the caller (JsonRpcErrorNumber preservation) so clients can
-	// distinguish the permanent skip from transient -32004/-32014.
+	// This was previously terminal at network scope. That made one provider's
+	// archive gap answer for the whole cluster: the first upstream to return
+	// -32009 ended the sweep (erpc/networks.go breaks out on a non-retryable
+	// verdict), so a slot another provider's archive holds was reported to the
+	// caller as permanently skipped. Answering "permanently skipped" when the
+	// data exists somewhere can make a consumer skip a real block for good;
+	// answering "not yet" only costs a retry — the same asymmetry that already
+	// governs TranslateToJsonRpcException's retryable-first cause selection.
+	//
+	// The code already concedes archive state is per-node: -32019
+	// (LongTermStorageUnreachable) exists precisely because a backend can be
+	// DOWN. Incomplete is the partial case of unavailable, so treating one as
+	// node-local and the other as cluster truth was inconsistent.
+	//
+	// So: swept like -32007 — retryable across upstreams for one pass, still
+	// permanent against a time-delayed re-fetch (waiting cannot un-skip a slot,
+	// and cannot backfill someone else's archive either). The raw -32009 still
+	// reaches the caller, so a client that wants to stop can.
 	case svmCodeLongTermStorageSlotSkipped:
-		return newAuthoritativeMissingData(code, msg, details, upstream)
+		return newSweptSkipMissingData(code, msg, details, upstream)
 
 	// --- Node health issues (failover, but treat as server-side) --------------
 	//   -32005: node unhealthy / behind. Reaches the client as a native -32005
@@ -347,8 +362,9 @@ func (e *JsonRpcErrorExtractor) Extract(
 			)
 		case strings.Contains(low, "missing in long-term storage"):
 			// Codeless -32009 variant: some vendor proxies strip/rewrite the code
-			// but keep agave's message. Same authoritative-skip treatment.
-			return newAuthoritativeMissingData(code, msg, details, upstream)
+			// but keep agave's message. Same swept treatment as the coded case —
+			// archive completeness is per-provider, so this must not be terminal.
+			return newSweptSkipMissingData(code, msg, details, upstream)
 		case strings.Contains(low, "ledger jump"):
 			// Codeless -32007 variant ("missing due to ledger jump to recent
 			// snapshot") — this node lost the slot locally; others have it.
@@ -411,26 +427,9 @@ func isRateLimitMessage(lowerMsg string) bool {
 	return false
 }
 
-// newAuthoritativeMissingData builds a MissingData error that is terminal at
-// network scope: the data is authoritatively absent cluster-wide (e.g. -32009
-// after a long-term-storage check), so failing over to another upstream cannot
-// change the answer. Keeping the MissingData class (rather than ClientSide)
-// preserves metrics/alerting semantics — this is a data-availability verdict,
-// not a malformed request.
-func newAuthoritativeMissingData(code int, msg string, details map[string]interface{}, upstream common.Upstream) error {
-	err := common.NewErrEndpointMissingData(
-		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
-		upstream,
-	)
-	if me, ok := err.(*common.ErrEndpointMissingData); ok {
-		me.WithRetryableTowardNetwork(false)
-		me.WithPermanentMissingData(true)
-	}
-	return err
-}
-
 // newSweptSkipMissingData builds a MissingData error for a slot the node reports
-// as skipped or lost to a ledger jump (-32007). It stays retryable across
+// as skipped, lost to a ledger jump (-32007), or absent from its long-term
+// storage (-32009). It stays retryable across
 // upstreams (the default) — a ledger jump is node-local, so another provider may
 // still hold the slot and the sweep tries them all — but is marked permanent: a
 // skipped slot never materializes, so once every provider has been tried the

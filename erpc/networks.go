@@ -1511,11 +1511,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			loopSpan.End()
 
 			// An error explicitly marked non-retryable toward the network is
-			// an authoritative answer — a cluster-wide skipped slot, an
-			// OP-Stack sequencer rate limit every provider shares. Every
-			// remaining upstream returns the same verdict, so sweeping them
-			// burns latency and quota for nothing. Same stop condition
-			// shouldRetryWithReason already applies on the retry path.
+			// an authoritative answer — e.g. an OP-Stack sequencer rate limit
+			// every provider shares. Every remaining upstream returns the same
+			// verdict, so sweeping them burns latency and quota for nothing.
+			// Same stop condition shouldRetryWithReason already applies on the
+			// retry path.
+			//
+			// A skipped slot is deliberately NOT an example here. Solana's
+			// -32009 reads "skipped, OR missing in long-term storage", and the
+			// second half is per-provider archive policy, not chain truth — so
+			// it sweeps (architecture/svm/error_normalizer.go). Only mark a
+			// verdict non-retryable when EVERY provider must return it by
+			// construction; "this node does not have it" never qualifies.
 			//
 			// Stop by breaking, not returning: the caller then sees exactly
 			// the result a full sweep would have produced (bestResp if one

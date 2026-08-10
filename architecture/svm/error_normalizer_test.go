@@ -138,19 +138,20 @@ func TestExtract_NonSvmUpstream_IsNoOp(t *testing.T) {
 	}
 }
 
-// TestExtract_AllMappedCodes is a table-driven lock-in for the full error
-// mapping from the design doc. Each row pairs a JSON-RPC error code with the
-// expected eRPC error category; adding a new row (or changing an existing
-// one) should be a deliberate, reviewable change to the normalizer contract.
-func TestExtract_AllMappedCodes(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name        string
-		code        int
-		msg         string
-		wantErrCode common.ErrorCode
-		nonRetry    bool // true if retryableTowardNetwork:false must be set
-	}{
+// mappedCodeCase is one row of the normalizer's code→class mapping. It lives at
+// package scope because two tests must drive the SAME surface: the per-row
+// lock-in below, and TestExtract_NoMissingDataVerdictIsTerminal, which asserts a
+// family-wide invariant over every row.
+type mappedCodeCase struct {
+	name        string
+	code        int
+	msg         string
+	wantErrCode common.ErrorCode
+	nonRetry    bool // true if retryableTowardNetwork:false must be set
+}
+
+func mappedCodeCases() []mappedCodeCase {
+	return []mappedCodeCase{
 		// Missing-data family — retryable across upstreams (another node can have it).
 		{"-32001 block cleaned up", -32001, "Block cleaned up, does not exist on node", common.ErrCodeEndpointMissingData, false},
 		{"-32004 block not available", -32004, "Block not available", common.ErrCodeEndpointMissingData, false},
@@ -160,10 +161,13 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 		{"-32011 transaction history not available", -32011, "Transaction history is not available from this node", common.ErrCodeEndpointMissingData, false},
 		{"-32014 block status not available", -32014, "Block status not available", common.ErrCodeEndpointMissingData, false},
 
-		// Authoritatively-missing data — right class (MissingData) but terminal at
-		// network scope: long-term storage was consulted, every upstream agrees.
-		// The MissingData+non-retryable PAIR is the invariant (skip, no failover).
-		{"-32009 long-term storage slot skipped", -32009, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointMissingData, true},
+		// -32009 folds "skipped" (chain truth) with "missing in long-term storage"
+		// (per-provider archive policy: BigTable/Old Faithful presence, backfill
+		// depth, retention). The archive half means another provider can still
+		// serve the slot, so the verdict is SWEPT, not terminal — the same axis
+		// pair as -32007. Terminal let the first upstream returning -32009 end the
+		// sweep, reporting a slot another archive holds as permanently skipped.
+		{"-32009 long-term storage slot skipped", -32009, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointMissingData, false},
 
 		// Node-health family — retryable (server-side); another node succeeds.
 		{"-32005 node unhealthy", -32005, "Node is behind by 42 slots", common.ErrCodeEndpointServerSideException, false},
@@ -200,7 +204,7 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 		// client-side (invalid tx state) with retryableTowardNetwork:false.
 		{"-32000 blockhash not found → execution", -32000, "Blockhash not found in recent list", common.ErrCodeEndpointClientSideException, true},
 		{"-32000 invalid signature → client-side", -32000, "Invalid signature on tx", common.ErrCodeEndpointClientSideException, true},
-		{"-32000 long-term storage → terminal missing-data", -32000, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointMissingData, true},
+		{"-32000 long-term storage → swept missing-data", -32000, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointMissingData, false},
 		{"-32000 ledger jump → retryable missing-data", -32000, "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot", common.ErrCodeEndpointMissingData, false},
 		{"-32000 generic → server-side", -32000, "something unexpected happened", common.ErrCodeEndpointServerSideException, false},
 
@@ -209,8 +213,15 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 		{"-32042 unknown future agave code", -32042, "Brand new solana error", common.ErrCodeEndpointServerSideException, false},
 		{"-39999 unknown code", -39999, "Brand new solana error", common.ErrCodeEndpointServerSideException, false},
 	}
+}
 
-	for _, tc := range cases {
+// TestExtract_AllMappedCodes is a table-driven lock-in for the full error
+// mapping from the design doc. Each row pairs a JSON-RPC error code with the
+// expected eRPC error category; adding a new row (or changing an existing
+// one) should be a deliberate, reviewable change to the normalizer contract.
+func TestExtract_AllMappedCodes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range mappedCodeCases() {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -238,8 +249,8 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 // to ledger jump to recent snapshot" (node-local, post-restart). The node-local
 // half means another provider can genuinely serve the slot, so the class stays
 // retryable; the truly-skipped half is bounded by the retry budget, and the raw
-// -32007 reaching the caller lets clients stop on their side. Contrast -32009,
-// which is authoritative (long-term storage consulted) and terminal.
+// -32007 reaching the caller lets clients stop on their side. -32009 folds the
+// same shape (skip OR per-provider archive gap) and is treated identically.
 func TestExtract_SlotSkipped_IsRetryableAndPreservesCode(t *testing.T) {
 	t.Parallel()
 	err := extract(t, -32007, "Slot 12345 was skipped", 200)
@@ -258,14 +269,20 @@ func TestExtract_SlotSkipped_IsRetryableAndPreservesCode(t *testing.T) {
 	}
 }
 
-func TestExtract_LongTermStorage_IsNonRetryableAndPreservesCode(t *testing.T) {
+// -32009 is "skipped, OR missing in long-term storage", and the "or" is
+// load-bearing: the second half is whether THIS provider runs a long-term
+// archive and how far it backfilled, which is per-provider operational policy,
+// not chain truth. So the verdict sweeps every upstream once instead of ending
+// the sweep on the first -32009. The raw code still reaches the caller, so a
+// client that wants to stop can.
+func TestExtract_LongTermStorage_IsSweptAndPreservesCode(t *testing.T) {
 	t.Parallel()
-	err := extract(t, -32009, "Long-term storage slot not reachable", 200)
+	err := extract(t, -32009, "Slot 12345 was skipped, or missing in long-term storage", 200)
 	if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 		t.Fatalf("expected ErrEndpointMissingData, got %T: %v", err, err)
 	}
-	if common.IsRetryableTowardNetwork(err) {
-		t.Fatal("-32009 (permanent) must be non-retryable toward network")
+	if !common.IsRetryableTowardNetwork(err) {
+		t.Fatal("-32009 must sweep every upstream once: the long-term-storage half is per-provider archive policy, not chain truth")
 	}
 	var jre *common.ErrJsonRpcExceptionInternal
 	if !errors.As(err, &jre) {
@@ -329,17 +346,19 @@ func TestExtract_LedgerJump_IsPermanentButRetryable(t *testing.T) {
 	}
 }
 
-// -32009 (authoritative: long-term storage was consulted) is permanent AND
-// terminal at network scope. Pins newAuthoritativeMissingData's
-// WithPermanentMissingData(true); retryable-false re-asserted for locality.
-func TestExtract_LongTermStorage_IsPermanent(t *testing.T) {
+// The two axes are orthogonal, so a future change could break either one alone.
+// -32009 is permanent (no time-delayed re-fetch can un-skip a slot, nor backfill
+// another operator's archive) AND retryable toward the network (sweep every
+// upstream once, because archive completeness is per-provider). Pins
+// newSweptSkipMissingData's WithPermanentMissingData(true) on the -32009 path.
+func TestExtract_LongTermStorage_IsPermanentAndRetryable(t *testing.T) {
 	t.Parallel()
 	err := extract(t, -32009, "Slot 12345 was skipped, or missing in long-term storage", 200)
 	if !common.IsPermanentlyMissingData(err) {
-		t.Fatal("-32009 (authoritative long-term-storage skip) must be permanent")
+		t.Fatal("-32009 must stay permanent: waiting cannot un-skip a slot or backfill an archive")
 	}
-	if common.IsRetryableTowardNetwork(err) {
-		t.Fatal("-32009 must be non-retryable toward network")
+	if !common.IsRetryableTowardNetwork(err) {
+		t.Fatal("-32009 must be retryable toward network: another provider's archive may hold the slot")
 	}
 }
 
