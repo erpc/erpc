@@ -103,6 +103,17 @@ func (v *DwellirVendor) Name() string {
 	return "dwellir"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("dwellir", buildDwellirSettings)
+}
+
+// buildDwellirSettings parses the `dwellir://<apiKey>` endpoint shorthand.
+func buildDwellirSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *DwellirVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

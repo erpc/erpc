@@ -32,6 +32,17 @@ func (v *ThirdwebVendor) Name() string {
 	return "thirdweb"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("thirdweb", buildThirdwebSettings)
+}
+
+// buildThirdwebSettings parses the `thirdweb://<clientId>` endpoint shorthand.
+func buildThirdwebSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"clientId": endpoint.Host,
+	}, nil
+}
+
 func (v *ThirdwebVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

@@ -189,6 +189,17 @@ func (v *AlchemyVendor) Name() string {
 	return "alchemy"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("alchemy", buildAlchemySettings)
+}
+
+// buildAlchemySettings parses the `alchemy://<apiKey>` endpoint shorthand.
+func buildAlchemySettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 // alchemyCreditUnits is the built-in FALLBACK per-method compute-unit (CU)
 // cost table (https://www.alchemy.com/docs/reference/compute-unit-costs,
 // 2026-07-10). At runtime the vendor prefers the live table fetched from

@@ -43,6 +43,34 @@ func (v *GoldskyVendor) Name() string {
 	return "goldsky"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("goldsky", buildGoldskySettings)
+}
+
+// buildGoldskySettings parses the `goldsky://<secret>[?tier=<tier>]` endpoint
+// shorthand — the authority segment is the Edge secret token (the host is
+// always edge.goldsky.com). Falls back to a ?secret= query param when the
+// authority is empty.
+func buildGoldskySettings(endpoint *url.URL) (common.VendorSettings, error) {
+	settings := common.VendorSettings{}
+	if endpoint.Host != "" {
+		settings["secret"] = endpoint.Host
+	}
+	if endpoint.RawQuery != "" {
+		params, err := url.ParseQuery(endpoint.RawQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse goldsky query parameters: %w", err)
+		}
+		if secret := params.Get("secret"); secret != "" {
+			settings["secret"] = secret
+		}
+		if tier := params.Get("tier"); tier != "" {
+			settings["tier"] = tier
+		}
+	}
+	return settings, nil
+}
+
 func (v *GoldskyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

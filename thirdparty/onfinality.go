@@ -52,6 +52,17 @@ func (v *OnFinalityVendor) Name() string {
 	return "onfinality"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("onfinality", buildOnFinalitySettings)
+}
+
+// buildOnFinalitySettings parses the `onfinality://<apiKey>` endpoint shorthand.
+func buildOnFinalitySettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *OnFinalityVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

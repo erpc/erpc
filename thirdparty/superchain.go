@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -107,6 +108,22 @@ func CreateSuperchainVendor() common.Vendor {
 
 func (v *SuperchainVendor) Name() string {
 	return "superchain"
+}
+
+func init() {
+	common.RegisterVendorSettingsBuilder("superchain", buildSuperchainSettings)
+}
+
+// buildSuperchainSettings parses the `superchain://<spec>` endpoint shorthand,
+// where <spec> is the registry URL (host plus optional path).
+func buildSuperchainSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	spec := endpoint.Host
+	if endpoint.Path != "" && endpoint.Path != "/" {
+		spec += endpoint.Path
+	}
+	return common.VendorSettings{
+		"registryUrl": spec,
+	}, nil
 }
 
 func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {

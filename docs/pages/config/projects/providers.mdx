@@ -711,7 +711,7 @@ export default createConfig({
 7. **infura's Avalanche `/ext/bc/C/rpc` branch is unreachable** — map keys are `avalanche-mainnet`/`avalanche-fuji` but branch tests `ava-mainnet`/`ava-testnet`. <SourceLink file="thirdparty/infura.go" lines="90-93" />
 8. **`overrides` first-match is Go map-iteration order** (nondeterministic for overlapping patterns). Pattern-match errors are silently skipped. <SourceLink file="thirdparty/provider.go" lines="81-91" />
 9. **quicknode cache key is `apiKey` only** — two providers with the same apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Chainstack includes filters in its cache key and is safe. <SourceLink file="thirdparty/quicknode.go" lines="184-205" />
-10. **`erpc://host:8080` shorthand forces HTTPS** — `buildProviderSettings` hardcodes `https://`. Use `providers[].settings.endpoint` with an explicit URL for non-TLS targets. <SourceLink file="common/defaults.go" lines="1389-1404" />
+10. **`erpc://host:8080` shorthand forces HTTPS** — `buildErpcSettings` hardcodes `https://`. Use `providers[].settings.endpoint` with an explicit URL for non-TLS targets. <SourceLink file="thirdparty/erpc.go" lines="35-57" />
 11. **`onlyNetworks`/`ignoreNetworks` are exact string matches** (not wildcards), require `evm:<positiveInt>`, and are mutually exclusive. `ignoreNetworks` is dropped from `MarshalJSON`. <SourceLink file="thirdparty/provider.go" lines="34-49" />
 12. **`os.ExpandEnv` runs on every provider-generated endpoint** — a literal `$` in an API key is substituted from the environment (often to empty). Static upstreams do not get this treatment. <SourceLink file="thirdparty/provider.go" lines="63-71" />
 13. **Provider ids must be unique only by convention** — no duplicate-id check; two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="thirdparty/providers_registry.go" lines="15-34" />
@@ -757,7 +757,7 @@ Notable log messages:
 - <SourceLink file="thirdparty/provider.go" lines="13-162" /> — `SupportsNetwork` gating, `GenerateUpstreamConfigs`, id templating, env expansion
 - <SourceLink file="thirdparty/remote_cache.go" lines="13-78" /> — `RemoteDataCache[T]` algorithm; request-path safety rationale; `ErrRemoteCacheCold`
 - <SourceLink file="common/defaults.go" lines="1113-1241" /> — default-provider injection, shorthand upstream→provider conversion
-- <SourceLink file="common/defaults.go" lines="1243-1425" /> — `buildProviderSettings` per-vendor settings derivation
+- <SourceLink file="common/vendors.go" lines="21-56" /> — shorthand builder registry (`RegisterVendorSettingsBuilder`) + vendor-name lookup; each vendor's own derivation lives in `thirdparty/<vendor>.go` (`build<Vendor>Settings`, registered from that file's `init()`)
 - <SourceLink file="upstream/registry.go" lines="155-293" /> — lazy `PrepareUpstreamsForNetwork`, provider task scheduling, readiness wait loop
 - <SourceLink file="common/validation.go" lines="780-815" /> — ProviderConfig validation rules
 - <SourceLink file="architecture/evm/error_normalizer.go" lines="878-900" /> — vendor-specific error hook invocation

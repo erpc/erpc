@@ -34,6 +34,27 @@ func (v *RoutemeshVendor) Name() string {
 	return "routemesh"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("routemesh", buildRoutemeshSettings)
+}
+
+// buildRoutemeshSettings parses the `routemesh://<host>/rpc/<chainId>/<apiKey>`
+// endpoint shorthand.
+func buildRoutemeshSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	settings := common.VendorSettings{
+		"baseURL": endpoint.Host,
+	}
+	// Extract apiKey from path: /rpc/<chainId>/<apiKey>
+	// Path segments: ["", "rpc", "<chainId>", "<apiKey>"]
+	pathParts := strings.Split(strings.TrimPrefix(endpoint.Path, "/"), "/")
+	if len(pathParts) >= 3 && pathParts[0] == "rpc" {
+		settings["apiKey"] = pathParts[2] // apiKey is the 3rd segment (index 2)
+	} else {
+		return nil, fmt.Errorf("routemesh endpoint path must be in format /rpc/<chainId>/<apiKey>, got: %s", endpoint.Path)
+	}
+	return settings, nil
+}
+
 func (v *RoutemeshVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

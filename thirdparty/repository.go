@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,18 @@ func CreateRepositoryVendor() common.Vendor {
 
 func (v *RepositoryVendor) Name() string {
 	return "repository"
+}
+
+func init() {
+	common.RegisterVendorSettingsBuilder("repository", buildRepositorySettings)
+}
+
+// buildRepositorySettings parses the `repository://<host>/<path>[?query]`
+// endpoint shorthand into the https repository URL.
+func buildRepositorySettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"repositoryUrl": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/") + "?" + endpoint.RawQuery,
+	}, nil
 }
 
 func (v *RepositoryVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {

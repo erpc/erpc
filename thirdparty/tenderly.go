@@ -31,6 +31,17 @@ func (v *TenderlyVendor) Name() string {
 	return "tenderly"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("tenderly", buildTenderlySettings)
+}
+
+// buildTenderlySettings parses the `tenderly://<apiKey>` endpoint shorthand.
+func buildTenderlySettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 const DefaultTenderlyRecheckInterval = 24 * time.Hour
 const tenderlyApiUrl = "https://api.tenderly.co/api/v1/supported-networks"
 

@@ -228,6 +228,65 @@ func (v *QuicknodeVendor) Name() string {
 	return "quicknode"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("quicknode", buildQuicknodeSettings)
+}
+
+// buildQuicknodeSettings parses the
+// `quicknode://<apiKey>[?tagIds=1,2&tagLabels=a,b]` endpoint shorthand.
+func buildQuicknodeSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	settings := common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}
+
+	// Parse query parameters for tag filters
+	if endpoint.RawQuery != "" {
+		params, err := url.ParseQuery(endpoint.RawQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse quicknode query parameters: %w", err)
+		}
+
+		// Parse tagIds - can be comma-separated or multiple values
+		if tagIds := params.Get("tagIds"); tagIds != "" {
+			// Split comma-separated values
+			ids := strings.Split(tagIds, ",")
+			if len(ids) == 1 {
+				// Single value - try to parse as int
+				if id, err := strconv.Atoi(strings.TrimSpace(ids[0])); err == nil {
+					settings["tagIds"] = id
+				}
+			} else {
+				// Multiple values - parse as int array
+				intIds := make([]int, 0, len(ids))
+				for _, idStr := range ids {
+					if id, err := strconv.Atoi(strings.TrimSpace(idStr)); err == nil {
+						intIds = append(intIds, id)
+					}
+				}
+				if len(intIds) > 0 {
+					settings["tagIds"] = intIds
+				}
+			}
+		}
+
+		// Parse tagLabels - can be comma-separated or multiple values
+		if tagLabels := params.Get("tagLabels"); tagLabels != "" {
+			// Split comma-separated values
+			labels := strings.Split(tagLabels, ",")
+			for i := range labels {
+				labels[i] = strings.TrimSpace(labels[i])
+			}
+			if len(labels) == 1 {
+				settings["tagLabels"] = labels[0]
+			} else {
+				settings["tagLabels"] = labels
+			}
+		}
+	}
+
+	return settings, nil
+}
+
 func (v *QuicknodeVendor) extractFilterParams(settings common.VendorSettings) *QuicknodeFilterParams {
 	params := &QuicknodeFilterParams{}
 

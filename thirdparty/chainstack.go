@@ -68,6 +68,35 @@ func (v *ChainstackVendor) Name() string {
 	return "chainstack"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("chainstack", buildChainstackSettings)
+}
+
+// buildChainstackSettings parses the `chainstack://<apiKey>[?project=&region=&…]`
+// endpoint shorthand — every query parameter is copied into settings verbatim.
+func buildChainstackSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	settings := common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}
+
+	// Parse query parameters for additional filters
+	if endpoint.RawQuery != "" {
+		params, err := url.ParseQuery(endpoint.RawQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse chainstack query parameters: %w", err)
+		}
+		for key, values := range params {
+			if len(values) == 1 {
+				settings[key] = values[0]
+			} else {
+				settings[key] = values
+			}
+		}
+	}
+
+	return settings, nil
+}
+
 // SupportsNetwork follows the request-path safety rule: lock-free read,
 // async refresh on staleness, retryable error on cold-start.
 func (v *ChainstackVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {

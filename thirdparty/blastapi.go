@@ -106,6 +106,17 @@ func (v *BlastApiVendor) Name() string {
 	return "blastapi"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("blastapi", buildBlastApiSettings)
+}
+
+// buildBlastApiSettings parses the `blastapi://<apiKey>` endpoint shorthand.
+func buildBlastApiSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *BlastApiVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

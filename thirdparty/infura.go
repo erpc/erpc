@@ -58,6 +58,17 @@ func (v *InfuraVendor) Name() string {
 	return "infura"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("infura", buildInfuraSettings)
+}
+
+// buildInfuraSettings parses the `infura://<apiKey>` endpoint shorthand.
+func buildInfuraSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *InfuraVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
