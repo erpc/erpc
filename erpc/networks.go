@@ -947,8 +947,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// Route safe-tagged requests before multiplexing and cache lookup.
-	if n.cfg.Architecture == common.ArchitectureEvm {
-		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
+	if arch := n.arch(); arch != nil {
+		if err := arch.applySafeBlockSource(ctx, n, req); err != nil {
 			common.SetTraceSpanError(forwardSpan, err)
 			return nil, err
 		}
@@ -1076,17 +1076,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
-	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
-		if err != nil {
-			if mlx != nil {
-				mlx.Close(ctx, nil, err)
+	if arch := n.arch(); arch != nil {
+		if handled, resp, err := arch.networkPreForward(ctx, n, upsList, req); handled {
+			if err != nil {
+				if mlx != nil {
+					mlx.Close(ctx, nil, err)
+				}
+				return nil, err
 			}
-			return nil, err
+			if mlx != nil {
+				mlx.Close(ctx, resp, nil)
+			}
+			return resp, nil
 		}
-		if mlx != nil {
-			mlx.Close(ctx, resp, nil)
-		}
-		return resp, nil
 	}
 
 	// Future-block short-circuit: a concrete block number beyond every eligible
@@ -1544,10 +1546,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		// Extract block number from successful response for block availability bounds check below.
 		var respBlockNumber int64
-		if n.cfg.Architecture == common.ArchitectureEvm {
-			if _, bn, err := evm.ExtractBlockReferenceFromResponse(ctx, resp); err == nil && bn > 0 {
-				respBlockNumber = bn
-			}
+		if arch := n.arch(); arch != nil {
+			respBlockNumber = arch.responseBlockNumber(ctx, resp)
 		}
 
 		// If response is not empty, but at least one upstream responded empty we track in a metric.
@@ -1609,20 +1609,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 }
 
 func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
-	switch n.Architecture() {
-	case common.ArchitectureEvm:
-		jsonRpcReq, err := nr.JsonRpcRequest(ctx)
-		if err != nil {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorParseException,
-				"failed to unmarshal json-rpc request",
-				err,
-				nil,
-			)
-		}
-		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
-	default:
+	arch := n.arch()
+	if arch == nil {
 		return common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorServerSideException,
@@ -1632,7 +1620,7 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 		)
 	}
 
-	return nil
+	return arch.prepareRequest(ctx, nr)
 }
 
 func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {
@@ -1749,16 +1737,19 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 }
 
 func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
-	switch n.cfg.Architecture {
-	case common.ArchitectureEvm:
-		if handled, resp, err := evm.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
-			return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	arch := n.arch()
+	if arch != nil {
+		if handled, resp, err := arch.upstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
+			return arch.upstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 		}
 	}
 
 	// If not handled, then fallback to the normal forward
 	resp, err := u.Forward(execSpanCtx, req, false, isHedgeAttempt)
-	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	if arch == nil {
+		return resp, err
+	}
+	return arch.upstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 
 // methodHasDedicatedRangeAvailabilityHook reports whether a method enforces its own
@@ -1891,6 +1882,18 @@ func (n *Network) recordHedgeDiscard(
 	common.SetTraceSpanError(span, common.NewErrUpstreamHedgeCancelled(u.Id(), err))
 }
 
+// checkUpstreamBlockAvailability dispatches per-upstream block-availability
+// gating through the architecture seam. An architecture with no availability
+// model — and any network assembled without one — allows the request through,
+// which is the same fail-open answer this returned for non-EVM networks before.
+func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
+	arch := n.arch()
+	if arch == nil {
+		return nil, false
+	}
+	return arch.checkUpstreamBlockAvailability(ctx, n, u, req, method)
+}
+
 // checkUpstreamBlockAvailability performs per-upstream gating for the request based on
 // the upstream's configured block availability bounds. It is invoked just before
 // forwarding to an upstream to avoid copying/filtering the list.
@@ -1917,10 +1920,7 @@ func (n *Network) recordHedgeDiscard(
 //
 // FAIL-OPEN BEHAVIOR: If we cannot determine the bounds or block number (e.g. state
 // poller not ready), we allow the request to proceed rather than blocking traffic.
-func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
-	if n.cfg.Architecture != common.ArchitectureEvm {
-		return nil, false
-	}
+func (a evmBehavior) checkUpstreamBlockAvailability(ctx context.Context, n *Network, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
 	// Range methods (eth_getLogs, trace_filter, arbtrace_filter) enforce block
 	// availability via their own range-aware pre-forward hooks; gating them here on a
 	// single extracted block number would conflict with that.
@@ -1943,20 +1943,7 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 		return nil, false
 	}
 
-	// Prefer the cached block number from normalization. Fall back to extracting
-	// from the request (defensive: handles paths that bypass json_rpc.go's
-	// normalization, and methods whose params haven't been pre-cached yet).
-	var bn int64
-	if v := req.EvmBlockNumber(); v != nil {
-		if n64, ok := v.(int64); ok {
-			bn = n64
-		}
-	}
-	if bn <= 0 {
-		if _, x, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req); ebn == nil && x > 0 {
-			bn = x
-		}
-	}
+	bn := a.requestBlockNumber(ctx, req)
 	if bn <= 0 {
 		// If still unknown, skip gating (fail-open)
 		return nil, false
@@ -1994,6 +1981,18 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 	return nil, false
 }
 
+// eligibleUpstreamIDsForBoundary dispatches boundary-lane derivation through
+// the architecture seam. An architecture with no block-availability model —
+// and any network assembled without one — yields no lane scoping, which is the
+// same answer this returned for non-EVM networks before.
+func (n *Network) eligibleUpstreamIDsForBoundary(ctx context.Context, method string, req *common.NormalizedRequest) []string {
+	arch := n.arch()
+	if arch == nil {
+		return nil
+	}
+	return arch.eligibleUpstreamIDsForBoundary(ctx, n, method, req)
+}
+
 // eligibleUpstreamIDsForBoundary derives the block-availability "lane" for a
 // single-block request: the IDs of upstreams whose configured availability
 // bounds can serve the request's block. It feeds the selection policy's
@@ -2002,8 +2001,8 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 // answer this block.
 //
 // It returns nil ("no lane scoping → use the full-pool wildcard slot") when:
-//   - the network isn't EVM, or the method has a dedicated range-availability
-//     hook (eth_getLogs / trace_filter, gated by CheckBlockRangeAvailability),
+//   - the method has a dedicated range-availability hook (eth_getLogs /
+//     trace_filter, gated by CheckBlockRangeAvailability),
 //   - the block number can't be resolved (e.g. eth_getBlockByHash carries a
 //     hash, not a number) — same fail-open as checkUpstreamBlockAvailability,
 //   - no upstream advertises any bound (a single implicit lane = everything), or
@@ -2013,26 +2012,14 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 // The eligibility predicate mirrors checkUpstreamBlockAvailability's use of
 // EvmBlockAvailabilityBounds so the lane membership and the per-upstream
 // availability gate never disagree about which upstreams can serve a block.
-func (n *Network) eligibleUpstreamIDsForBoundary(ctx context.Context, method string, req *common.NormalizedRequest) []string {
-	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm {
-		return nil
-	}
+func (a evmBehavior) eligibleUpstreamIDsForBoundary(ctx context.Context, n *Network, method string, req *common.NormalizedRequest) []string {
 	if methodHasDedicatedRangeAvailabilityHook(method) {
 		return nil
 	}
-	// Resolve the request's block number (cached at normalization, with a
-	// defensive extraction fallback) — mirrors checkUpstreamBlockAvailability.
-	var bn int64
-	if v := req.EvmBlockNumber(); v != nil {
-		if n64, ok := v.(int64); ok {
-			bn = n64
-		}
-	}
-	if bn <= 0 {
-		if _, x, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req); ebn == nil && x > 0 {
-			bn = x
-		}
-	}
+	// Resolve the request's block number through the same seam resolver
+	// checkUpstreamBlockAvailability uses, so the lane and the per-upstream
+	// gate can never disagree about which block the request targets.
+	bn := a.requestBlockNumber(ctx, req)
 	if bn <= 0 {
 		return nil
 	}
@@ -2269,88 +2256,99 @@ func filterMethodEligible(ups []common.Upstream, method string) ([]common.Upstre
 	return eligible, dropped
 }
 
+// enrichStatePoller dispatches head-observation feedback through the
+// architecture seam. The span is opened unconditionally (as before) so the
+// trace shape does not depend on the architecture.
 func (n *Network) enrichStatePoller(ctx context.Context, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EnrichStatePoller")
 	defer span.End()
 
-	switch n.Architecture() {
-	case common.ArchitectureEvm:
-		// TODO Move the logic to evm package as a post-forward hook?
-		if method == "eth_getBlockByNumber" {
-			// Prefer the original block reference preserved by normalization.
-			// This stays "latest"/"finalized" even if params were interpolated to hex.
-			var blkTag string
-			if ref := req.EvmBlockRef(); ref != nil {
-				if s, ok := ref.(string); ok && (s == "latest" || s == "finalized") {
+	arch := n.arch()
+	if arch == nil {
+		return
+	}
+	arch.enrichStatePoller(ctx, n, method, req, resp)
+}
+
+// enrichStatePoller feeds head observations carried by a served response back
+// into the responding upstream's state poller.
+//
+// TODO Move the logic to evm package as a post-forward hook?
+func (evmBehavior) enrichStatePoller(ctx context.Context, n *Network, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
+	if method == "eth_getBlockByNumber" {
+		// Prefer the original block reference preserved by normalization.
+		// This stays "latest"/"finalized" even if params were interpolated to hex.
+		var blkTag string
+		if ref := req.EvmBlockRef(); ref != nil {
+			if s, ok := ref.(string); ok && (s == "latest" || s == "finalized") {
+				blkTag = s
+			}
+		}
+		if lg := n.logger; lg != nil && lg.GetLevel() <= zerolog.TraceLevel {
+			lg.Trace().
+				Str("blkTagFromEvmBlockRef", blkTag).
+				Interface("evmBlockRefRaw", req.EvmBlockRef()).
+				Msg("enrichStatePoller: resolved block tag from request EvmBlockRef")
+		}
+		// Fallback to inspecting the request param only if we couldn't resolve from EvmBlockRef
+		if blkTag == "" {
+			jrq, err := req.JsonRpcRequest(ctx)
+			if err != nil {
+				return
+			}
+			jrq.RLock()
+			if len(jrq.Params) > 0 {
+				if s, ok := jrq.Params[0].(string); ok && (s == "latest" || s == "finalized") {
 					blkTag = s
 				}
 			}
-			if lg := n.logger; lg != nil && lg.GetLevel() <= zerolog.TraceLevel {
-				lg.Trace().
-					Str("blkTagFromEvmBlockRef", blkTag).
-					Interface("evmBlockRefRaw", req.EvmBlockRef()).
-					Msg("enrichStatePoller: resolved block tag from request EvmBlockRef")
-			}
-			// Fallback to inspecting the request param only if we couldn't resolve from EvmBlockRef
-			if blkTag == "" {
-				jrq, err := req.JsonRpcRequest(ctx)
-				if err != nil {
-					return
-				}
-				jrq.RLock()
-				if len(jrq.Params) > 0 {
-					if s, ok := jrq.Params[0].(string); ok && (s == "latest" || s == "finalized") {
-						blkTag = s
-					}
-				}
-				jrq.RUnlock()
-				if lg := n.logger; lg != nil {
-					lg.Trace().
-						Str("blkTagFromParams", blkTag).
-						Msg("enrichStatePoller: resolved block tag from request params")
-				}
-			}
-			if blkTag == "" {
-				return
-			}
-			jrs, _ := resp.JsonRpcResponse(ctx)
-			bnh, err := jrs.PeekStringByPath(ctx, "number")
-			if err != nil {
-				return
-			}
-			blockNumber, err := common.HexToInt64(bnh)
-			if err != nil {
-				return
-			}
+			jrq.RUnlock()
 			if lg := n.logger; lg != nil {
 				lg.Trace().
-					Str("blkTag", blkTag).
-					Int64("blockNumber", blockNumber).
-					Str("method", method).
-					Msg("enrichStatePoller: suggesting block number to state poller")
+					Str("blkTagFromParams", blkTag).
+					Msg("enrichStatePoller: resolved block tag from request params")
 			}
-			if ups := resp.Upstream(); ups != nil {
-				if ups, ok := ups.(common.EvmUpstream); ok {
-					// These methods are non-blocking and handle async updates internally
-					switch blkTag {
-					case "finalized":
-						ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
-					case "latest":
-						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
-					}
+		}
+		if blkTag == "" {
+			return
+		}
+		jrs, _ := resp.JsonRpcResponse(ctx)
+		bnh, err := jrs.PeekStringByPath(ctx, "number")
+		if err != nil {
+			return
+		}
+		blockNumber, err := common.HexToInt64(bnh)
+		if err != nil {
+			return
+		}
+		if lg := n.logger; lg != nil {
+			lg.Trace().
+				Str("blkTag", blkTag).
+				Int64("blockNumber", blockNumber).
+				Str("method", method).
+				Msg("enrichStatePoller: suggesting block number to state poller")
+		}
+		if ups := resp.Upstream(); ups != nil {
+			if ups, ok := ups.(common.EvmUpstream); ok {
+				// These methods are non-blocking and handle async updates internally
+				switch blkTag {
+				case "finalized":
+					ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+				case "latest":
+					ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 				}
 			}
-		} else if method == "eth_blockNumber" {
-			jrs, _ := resp.JsonRpcResponse(ctx)
-			bnh, err := jrs.PeekStringByPath(ctx)
+		}
+	} else if method == "eth_blockNumber" {
+		jrs, _ := resp.JsonRpcResponse(ctx)
+		bnh, err := jrs.PeekStringByPath(ctx)
+		if err == nil {
+			blockNumber, err := common.HexToInt64(bnh)
 			if err == nil {
-				blockNumber, err := common.HexToInt64(bnh)
-				if err == nil {
-					if ups := resp.Upstream(); ups != nil {
-						if ups, ok := ups.(common.EvmUpstream); ok {
-							// This method is non-blocking and handles async updates internally
-							ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
-						}
+				if ups := resp.Upstream(); ups != nil {
+					if ups, ok := ups.(common.EvmUpstream); ok {
+						// This method is non-blocking and handles async updates internally
+						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 					}
 				}
 			}

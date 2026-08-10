@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
@@ -241,9 +240,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			upstreamId = upstream.Id()
 		}
 
-		if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
-			// Record block-range heatmap using dynamic buckets and human-readable labels
-			recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+		if arch := network.arch(); arch != nil {
+			if bn := arch.responseBlockNumber(ctx, resp); bn > 0 {
+				// Record block-range heatmap using dynamic buckets and human-readable labels
+				recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+			}
 		}
 		telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
 			p.Config.Id,
@@ -333,17 +334,20 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	switch network.cfg.Architecture {
-	case common.ArchitectureEvm:
+	arch := network.arch()
+	if arch != nil {
 		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)
-		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
-			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+		if handled, resp, err := arch.projectPreForward(ctx, network, nq); handled {
+			return arch.networkPostForward(ctx, network, nq, resp, err)
 		}
 	}
 
 	// If not handled, then fallback to the normal forward
 	resp, err := network.Forward(ctx, nq)
-	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	if arch == nil {
+		return resp, err
+	}
+	return arch.networkPostForward(ctx, network, nq, resp, err)
 }
 
 func (p *PreparedProject) AcquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {
