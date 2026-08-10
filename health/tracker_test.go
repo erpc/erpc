@@ -944,7 +944,7 @@ func TestRecordUpstreamMisbehavior_WrongEmpty(t *testing.T) {
 // with controlled block timestamps, bypassing SetLatestBlockNumber.
 func feedBlockDetection(tracker *Tracker, networkId, netLabel string, blockNumber, blockTimestamp int64) {
 	ntwMeta := tracker.getMetadata(metadataKey{nil, networkId})
-	tracker.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp)
+	tracker.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp, tracker.toleratedBlockHeadRollback(networkId))
 }
 
 func TestGetNetworkBlockTime(t *testing.T) {

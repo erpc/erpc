@@ -1939,6 +1939,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
 				n.Evm.FallbackFinalityDepth = defaults.Evm.FallbackFinalityDepth
 			}
+			if n.Evm.ToleratedBlockHeadRollback == nil && defaults.Evm.ToleratedBlockHeadRollback != nil {
+				v := *defaults.Evm.ToleratedBlockHeadRollback
+				n.Evm.ToleratedBlockHeadRollback = &v
+			}
 			if n.Evm.GetLogsMaxAllowedAddresses == 0 && defaults.Evm.GetLogsMaxAllowedAddresses != 0 {
 				n.Evm.GetLogsMaxAllowedAddresses = defaults.Evm.GetLogsMaxAllowedAddresses
 			}
@@ -2103,13 +2107,30 @@ const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
 const DefaultBlockUnavailableDelayMultiplier = 1.0
 
-// DefaultToleratedBlockHeadRollback is the tolerance (in blocks) applied when a
-// freshly observed block head is behind the stored one: decreases within the
-// tolerance are noise from lagging providers and are ignored, while larger
-// decreases are a genuine correction (a deep reorg, or a previously recorded
-// bogus sample) and are accepted. Shared by the state-poller shared counters
-// and the health tracker so both layers converge on the same head.
+// DefaultToleratedBlockHeadRollback is the DEFAULT tolerance (in blocks)
+// applied when a freshly observed block head is behind the stored one:
+// decreases within the tolerance are noise from lagging providers and are
+// ignored, while larger decreases are a genuine correction (a deep reorg, or a
+// previously recorded bogus sample) and are accepted. The same distance also
+// separates a normal head advance from a MAJOR one that must re-prove chain
+// identity before it is accepted.
+//
+// This is a default, NOT a property of EVM chains: block times (and therefore
+// how many blocks a chain produces between two polls) are chain-specific, so
+// networks override it via `networks[*].evm.toleratedBlockHeadRollback`.
 const DefaultToleratedBlockHeadRollback = 1024
+
+// GetToleratedBlockHeadRollback returns the effective head-rollback tolerance
+// for this network: the configured value when set, otherwise
+// DefaultToleratedBlockHeadRollback. Nil-safe on purpose — an EVM state poller
+// runs before (and sometimes without) a network config being attached, and must
+// then behave exactly as it did before the field existed.
+func (e *EvmNetworkConfig) GetToleratedBlockHeadRollback() int64 {
+	if e == nil || e.ToleratedBlockHeadRollback == nil {
+		return DefaultToleratedBlockHeadRollback
+	}
+	return *e.ToleratedBlockHeadRollback
+}
 
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
@@ -2197,6 +2218,10 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if e.FallbackStatePollerDebounce == 0 {
 		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
+	}
+	if e.ToleratedBlockHeadRollback == nil {
+		d := int64(DefaultToleratedBlockHeadRollback)
+		e.ToleratedBlockHeadRollback = &d
 	}
 	if e.DynamicBlockTimeDebounceMultiplier == nil {
 		d := DefaultDynamicBlockTimeDebounceMultiplier

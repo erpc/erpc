@@ -2359,6 +2359,22 @@ type EvmNetworkConfig struct {
 	FallbackStatePollerDebounce Duration            `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce" tstype:"Duration"`
 	Integrity                   *EvmIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
+	// ToleratedBlockHeadRollback bounds, in blocks, what counts as a NORMAL
+	// block-head move on this network. A head sample that moves further than
+	// this — in either direction — is treated as a MAJOR move: a forward jump is
+	// re-verified against a fresh eth_chainId probe before it may enter the
+	// shared counters, and a backward jump is accepted as a genuine correction
+	// (deep reorg, or a previously recorded bogus sample) instead of being
+	// ignored as lagging-provider noise.
+	//
+	// The right value is chain-specific and NOT universal: a sub-second
+	// block-time chain can legitimately produce more than the default 1024
+	// blocks between two polls (making every poll look "major"), while a slow
+	// chain never should. Nil keeps DefaultToleratedBlockHeadRollback (1024,
+	// i.e. unchanged behavior); an explicit 0 tolerates nothing — every
+	// backward move is applied and every forward move is verified.
+	ToleratedBlockHeadRollback *int64 `yaml:"toleratedBlockHeadRollback,omitempty" json:"toleratedBlockHeadRollback,omitempty"`
+
 	// ServedTip configures how the network derives the "latest"/"finalized"
 	// block it advertises to clients (and enforces via block-availability).
 	// Nil or disabled selects the default max mode (MAX latest across eligible

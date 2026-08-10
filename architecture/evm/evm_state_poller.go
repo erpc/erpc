@@ -27,8 +27,12 @@ const FullySyncedThreshold = 4
 // networks (not statically configured in erpc.yaml). at the moment an "evm state poller"
 // might be initiated "before" a network is physically created and configured
 // (e.g. when a new network is lazy-loaded from a Repository Provider)
-// Alias of the shared default so the poller counters and the health tracker
-// apply the same rollback tolerance to block heads.
+// Alias of the shared DEFAULT rollback tolerance. The poller's own gates and
+// the health tracker use the per-network value
+// (`networks[*].evm.toleratedBlockHeadRollback`, read via
+// EvmStatePoller.toleratedBlockHeadRollback) once the network config is
+// attached; the cross-pod shared counters below are built in the constructor,
+// before any network config exists, so they keep the default.
 const DefaultToleratedBlockHeadRollback = common.DefaultToleratedBlockHeadRollback
 
 var _ common.EvmStatePoller = &EvmStatePoller{}
@@ -73,6 +77,11 @@ type EvmStatePoller struct {
 	// stop querying after a threshold (similar to latest/finalized block logic).
 	syncingFailureCount   int
 	syncingSuccessfulOnce bool
+
+	// syncingShapeUnknownLogged keeps the "shape we cannot interpret" report to
+	// one WARN per upstream (subsequent ones are DEBUG): the shape comes from
+	// the client, so it repeats on every poll for the process lifetime.
+	syncingShapeUnknownLogged bool
 
 	// Avoid making redundant calls based on a networks block time
 	// i.e. latest/finalized block is not going to change within the debounce interval
@@ -265,6 +274,23 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 	} else {
 		e.networkLabel = cfg.NetworkId()
 	}
+
+	// The health tracker applies the same "normal move vs correction" distance
+	// to the heads it stores, but it only ever sees an upstream — hand it the
+	// network's tolerance here, the one place where poller and network config
+	// meet. Until this runs (bootstrap polls, lazy-loaded networks) the tracker
+	// uses common.DefaultToleratedBlockHeadRollback, exactly as before.
+	e.tracker.SetToleratedBlockHeadRollback(cfg.NetworkId(), cfg.Evm.GetToleratedBlockHeadRollback())
+}
+
+// toleratedBlockHeadRollback returns how far a head sample may move — in either
+// direction — before it counts as a MAJOR move for this network. Falls back to
+// the shared default while no network config is attached.
+func (e *EvmStatePoller) toleratedBlockHeadRollback() int64 {
+	e.stateMu.RLock()
+	cfg := e.cfg
+	e.stateMu.RUnlock()
+	return cfg.GetToleratedBlockHeadRollback()
 }
 
 func (e *EvmStatePoller) Poll(ctx context.Context) error {
@@ -324,7 +350,8 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 
 		syncCtx, syncCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer syncCancel()
-		syncing, err := e.fetchSyncingState(syncCtx)
+		state, err := e.fetchSyncingState(syncCtx)
+		syncing := state == common.EvmSyncingStateSyncing
 		if err != nil {
 			// Handle consecutive failures to determine if we should stop querying eth_syncing
 			e.stateMu.Lock()
@@ -351,6 +378,15 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			} else {
 				e.logger.Info().Bool("syncingResult", syncing).Err(err).Msg("upstream does not support eth_syncing method for evm state poller, will skip")
 			}
+			return
+		}
+
+		// The upstream answered, but in a shape this poller cannot interpret
+		// (fetchSyncingState already logged it). That is evidence of nothing:
+		// leave the syncing state and the synced counter exactly as they were,
+		// keep polling — the same client may answer a recognized shape once it
+		// finishes syncing — and do NOT fail the poll over an advisory check.
+		if state == common.EvmSyncingStateUnknown {
 			return
 		}
 
@@ -541,7 +577,7 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	// eth_chainId call, so it runs OFF the hot path and this function stays
 	// non-blocking. Small advances (the common keep-fresh case) still apply
 	// inline with zero added latency, exactly as before.
-	if currentValue > 0 && blockNumber-currentValue > common.DefaultToleratedBlockHeadRollback {
+	if currentValue > 0 && blockNumber-currentValue > e.toleratedBlockHeadRollback() {
 		e.verifyThenSuggestLatestBlock(blockNumber)
 		return
 	}
@@ -577,7 +613,7 @@ func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64) {
 		if blockNumber <= currentValue {
 			return
 		}
-		if blockNumber-currentValue > common.DefaultToleratedBlockHeadRollback &&
+		if blockNumber-currentValue > e.toleratedBlockHeadRollback() &&
 			!e.verifyChainIdOnMajorHeadMove(ctx, "latest", currentValue, blockNumber) {
 			e.logger.Warn().
 				Int64("blockNumber", blockNumber).
@@ -618,7 +654,7 @@ func (e *EvmStatePoller) OnLatestBlock(cb func(int64)) {
 // record or load balancer briefly answering for another chain — produces, and
 // once a bogus sample enters the shared counters and the tracker, every
 // lag-based routing decision is skewed until corrected. Built from existing
-// primitives only: the shared tolerance constant, EvmGetChainId (always a
+// primitives only: the network's rollback tolerance, EvmGetChainId (always a
 // real upstream call), and Cordon on proven mismatch (the selection policy
 // already excludes cordoned upstreams). Legitimate deep reorgs and
 // post-downtime catch-ups pass the probe and are accepted unchanged; a failed
@@ -635,7 +671,7 @@ func (e *EvmStatePoller) OnLatestBlock(cb func(int64)) {
 // or keeps serving the wrong chain) would otherwise leave the bogus head pinned
 // in the shared counter and skew lag-based routing until manually corrected.
 func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag string, current, polled int64) bool {
-	if current <= 0 || absInt64(polled-current) <= common.DefaultToleratedBlockHeadRollback {
+	if current <= 0 || absInt64(polled-current) <= e.toleratedBlockHeadRollback() {
 		return true
 	}
 	cfgChainId := int64(0)
@@ -809,7 +845,7 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 		// cross-wired endpoint reporting another chain's height must not enter the
 		// shared finalized counter. Already off the hot path here (own goroutine),
 		// so the live eth_chainId call is safe to make.
-		if blockNumber-currentValue > common.DefaultToleratedBlockHeadRollback &&
+		if blockNumber-currentValue > e.toleratedBlockHeadRollback() &&
 			!e.verifyChainIdOnMajorHeadMove(ctx, "finalized", currentValue, blockNumber) {
 			e.logger.Warn().
 				Int64("blockNumber", blockNumber).
@@ -1262,7 +1298,20 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	return blockNum, blockTimestamp, nil
 }
 
-func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
+// fetchSyncingState asks the upstream for eth_syncing and maps the answer onto
+// the three states the rest of the poller understands.
+//
+// Transport and JSON-RPC failures are errors and propagate (they drive the
+// skip-after-10-failures silencer). A result we simply cannot interpret is NOT
+// a failure: eth_syncing has no single wire shape across clients — the spec
+// says false-or-object, Arbitrum answers with msgCount, some clients answer
+// {Ok: bool}, and the next client will invent another shape. Reporting those as
+// errors made every poll (and therefore Bootstrap) fail until the silencer
+// tripped, for a check that is advisory in the first place. So an unrecognized
+// shape returns EvmSyncingStateUnknown with a nil error: the syncing state
+// stays whatever it was (unknown until proven otherwise), and every other
+// signal the poll collects keeps working.
+func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (common.EvmSyncingState, error) {
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
 
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
@@ -1279,34 +1328,31 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 			e.skipSyncingCheck = true
 			e.stateMu.Unlock()
 		}
-		return false, err
+		return common.EvmSyncingStateUnknown, err
 	}
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
-		return false, err
+		return common.EvmSyncingStateUnknown, err
 	}
 
 	if jrr == nil || jrr.Error != nil {
-		return false, jrr.Error
+		return common.EvmSyncingStateUnknown, jrr.Error
 	}
 
 	result := jrr.GetResultBytes()
 
 	var syncing interface{}
-	err = common.SonicCfg.Unmarshal(result, &syncing)
-	if err != nil {
-		return false, &common.BaseError{
-			Code:    "ErrEvmStatePoller",
-			Message: "cannot parse syncing state result (must be boolean or object)",
-			Details: map[string]interface{}{
-				"result": result,
-			},
-		}
+	if err := common.SonicCfg.Unmarshal(result, &syncing); err != nil {
+		e.logUnrecognizedSyncingShape(result, err)
+		return common.EvmSyncingStateUnknown, nil
 	}
 
 	if s, ok := syncing.(bool); ok {
-		return s, nil
+		if s {
+			return common.EvmSyncingStateSyncing, nil
+		}
+		return common.EvmSyncingStateNotSyncing, nil
 	}
 
 	if objectSync, ok := syncing.(map[string]interface{}); ok {
@@ -1317,29 +1363,57 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		// For other EVM chains, returning an object containing "currentBlock" means the node is syncing.
 		// Ref. https://ethereum.org/en/developers/docs/apis/json-rpc/#eth_syncing
 		if objectSync["currentBlock"] != nil || objectSync["msgCount"] != nil {
-			return true, nil
+			return common.EvmSyncingStateSyncing, nil
 		}
 		// Handle non-standard structure {Ok: bool}
 		if okVal, exists := objectSync["Ok"]; exists {
 			if b, ok := okVal.(bool); ok {
 				// Interpret Ok=true as not syncing, Ok=false as syncing (best-effort).
-				return !b, nil
+				return syncingStateFromOk(b), nil
 			}
 		}
 		if okVal, exists := objectSync["ok"]; exists { // lowercase variant just in case
 			if b, ok := okVal.(bool); ok {
-				return !b, nil
+				return syncingStateFromOk(b), nil
 			}
 		}
 	}
 
-	return false, &common.BaseError{
-		Code:    "ErrEvmStatePoller",
-		Message: "cannot parse syncing state result (must be boolean or object)",
-		Details: map[string]interface{}{
-			"result": result,
-		},
+	e.logUnrecognizedSyncingShape(result, nil)
+	return common.EvmSyncingStateUnknown, nil
+}
+
+// syncingStateFromOk maps the non-standard {Ok: bool} shape: Ok=true means the
+// node is fine (not syncing), Ok=false means it is still syncing.
+func syncingStateFromOk(ok bool) common.EvmSyncingState {
+	if ok {
+		return common.EvmSyncingStateNotSyncing
 	}
+	return common.EvmSyncingStateSyncing
+}
+
+// logUnrecognizedSyncingShape reports an eth_syncing result the poller cannot
+// interpret, once per upstream, with the raw payload so the shape can be
+// supported later if it turns out to be meaningful. Once per upstream (not per
+// poll) because the shape is a property of the client, and a poller that logged
+// it every tick would emit it forever.
+func (e *EvmStatePoller) logUnrecognizedSyncingShape(result []byte, cause error) {
+	e.stateMu.Lock()
+	first := !e.syncingShapeUnknownLogged
+	e.syncingShapeUnknownLogged = true
+	e.stateMu.Unlock()
+
+	raw := string(result)
+	if len(raw) > 256 {
+		raw = raw[:256]
+	}
+	ev := e.logger.Debug()
+	if first {
+		ev = e.logger.Warn()
+	}
+	ev.Err(cause).
+		Str("result", raw).
+		Msg("unrecognized eth_syncing result shape, treating syncing state as unknown")
 }
 
 // --- Probes & Earliest search helpers ---

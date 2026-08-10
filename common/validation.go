@@ -1474,6 +1474,11 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.FallbackStatePollerDebounce == 0 {
 		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")
 	}
+	// 0 is meaningful (tolerate no rollback at all); only a negative distance is
+	// nonsense — it would make every head move "major" including no move at all.
+	if e.ToleratedBlockHeadRollback != nil && *e.ToleratedBlockHeadRollback < 0 {
+		return fmt.Errorf("network.*.evm.toleratedBlockHeadRollback must be greater than or equal to 0")
+	}
 	if e.GetLogsMaxAllowedRange == 0 {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
