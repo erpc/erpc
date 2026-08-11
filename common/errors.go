@@ -1373,6 +1373,39 @@ var NewErrNetworkInitializing = func(project string, network string) error {
 
 func (e *ErrNetworkInitializing) ErrorStatusCode() int { return http.StatusServiceUnavailable }
 
+// ErrNetworkNoUpstreamsAvailable is the terminal counterpart of
+// ErrNetworkInitializing: the network has been initializing for longer than
+// NoUpstreamsAvailableAfter and still has zero upstreams registered.
+//
+// It exists because "initializing; please retry shortly" is true of the first
+// seconds and a lie after the first hour. A chain that no configured upstream
+// or provider serves — removed from config, deprecated, never supported — sits
+// in that state permanently, so callers keep retrying and operators read the
+// message as a temporary blip. This one names the actual condition.
+type ErrNetworkNoUpstreamsAvailable struct{ BaseError }
+
+const ErrCodeNetworkNoUpstreamsAvailable ErrorCode = "ErrNetworkNoUpstreamsAvailable"
+
+var NewErrNetworkNoUpstreamsAvailable = func(project string, network string) error {
+	return &ErrNetworkNoUpstreamsAvailable{
+		BaseError{
+			Code: ErrCodeNetworkNoUpstreamsAvailable,
+			Message: fmt.Sprintf(
+				"no RPC providers are available for network '%s' in project '%s'",
+				network, project,
+			),
+			Details: map[string]interface{}{
+				"project": project,
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkNoUpstreamsAvailable) ErrorStatusCode() int {
+	return http.StatusServiceUnavailable
+}
+
 // ErrNetworkNotSupported indicates that providers do not support the requested network
 // and no static upstreams exist. It should be treated as fatal for initialization tasks.
 type ErrNetworkNotSupported struct{ BaseError }
