@@ -487,7 +487,7 @@ func TestTipTrajectory_HaltSweepCannotElectAStaticGroup(t *testing.T) {
 		require.NotNil(t, tr.fit.Load(), "precondition: the referee is warm and confident")
 
 		rogue := frozen + ahead
-		overrides, elected := 0, 0
+		overrides, contended := 0, 0
 		for k := 0; k < 240; k++ { // 20 minutes of halt, sampled every 5s
 			d := tr.Observe(now, ballotOf(
 				in("r1", rogue), in("r2", rogue),
@@ -497,14 +497,15 @@ func TestTipTrajectory_HaltSweepCannotElectAStaticGroup(t *testing.T) {
 				overrides++
 			}
 			if d.Declined {
-				elected++
+				contended++
 			}
 			now = now.Add(tipSampleInterval)
 		}
 		assert.Zero(t, overrides,
 			"a static group cannot have produced the chain progress the fit describes, "+
 				"however close the sweeping expected head passes to it (offset +%d)", ahead)
-		t.Logf("offset +%-6d : 0 overrides, %d evaluations where the sweep put it on trajectory", ahead, elected)
+		t.Logf("offset +%-6d : 0 overrides, %d evaluations where the sweep made the static pair the ELECTED group",
+			ahead, contended)
 	}
 }
 
