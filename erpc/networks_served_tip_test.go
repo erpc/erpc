@@ -1197,6 +1197,203 @@ func TestServedTip_RegressionGuard_SingleRogueUpstreamDoesNotDisarmIt(t *testing
 // once they return. main, which remembers nothing, recovers on the next
 // evaluation; the memory must not make us worse than that.
 func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
+	// fantasyFleet returns a network whose eligible set can be reshaped at will:
+	// the syncing state is how an upstream leaves and RE-ENTERS the ballot (the
+	// order-pinning helper only ever removes, and removes from the registry).
+	fantasyFleet := func(t *testing.T, ctx context.Context) (*Network, func(id string, in bool), func(time.Duration)) {
+		util.SetupMocksForEvmStatePoller()
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+			{id: "rogue-1", chainID: 123, latestBlock: 100_000_000},
+			{id: "rogue-2", chainID: 123, latestBlock: 100_000_000},
+			{id: "h1", chainID: 123, latestBlock: 10_000},
+			{id: "h2", chainID: 123, latestBlock: 10_000},
+			{id: "h3", chainID: 123, latestBlock: 10_000},
+			{id: "stuck-1", chainID: 123, latestBlock: 5},
+			{id: "stuck-2", chainID: 123, latestBlock: 5},
+		})
+		byID := map[string]*upstream.Upstream{}
+		for _, u := range ups {
+			byID[u.Id()] = u
+		}
+		eligible := func(id string, in bool) {
+			st := common.EvmSyncingStateSyncing
+			if in {
+				st = common.EvmSyncingStateNotSyncing
+			}
+			byID[id].EvmStatePoller().SetSyncingState(st)
+		}
+		for _, id := range []string{"rogue-1", "rogue-2", "h1", "h2", "h3", "stuck-1", "stuck-2"} {
+			eligible(id, false)
+		}
+		return network, eligible, advance
+	}
+
+	// The armed case: a fresh memory refuses an uncorroborated leap.
+	t.Run("WhileArmed", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, eligible, advance := fantasyFleet(t, ctx)
+
+		for _, id := range []string{"h1", "h2", "h3"} {
+			eligible(id, true)
+		}
+		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load())
+
+		// Both rogues return, two honest upstreams drop out: the ballot is
+		// [100M, 100M, 10000] and the majority pick IS the fantasy.
+		eligible("rogue-1", true)
+		eligible("rogue-2", true)
+		eligible("h2", false)
+		eligible("h3", false)
+		advance(time.Second)
+		require.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx),
+			"precondition: the majority of this eligible set really is far-future")
+		assert.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load(),
+			"an uncorroborated leap must never become the value the guard holds the network to")
+
+		eligible("h2", true)
+		eligible("h3", true)
+		eligible("rogue-2", false)
+		advance(time.Second)
+		assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+			"recovery must be immediate, not after the guard's TTL expires")
+	})
+
+	// THE UNARMED CASE, and the one that mattered: every fail-open DISARMS, and
+	// an empty memory used to arm at whatever pick appeared next. The window
+	// right after a fail-open is exactly when a rogue majority is most likely,
+	// so that is precisely where the continuity check is needed.
+	t.Run("AfterFailOpenDisarm", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, eligible, advance := fantasyFleet(t, ctx)
+		anchor := &network.servedLatestAnchor
+
+		// 1. Armed at the honest head.
+		for _, id := range []string{"h1", "h2", "h3"} {
+			eligible(id, true)
+		}
+		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(10_000), anchor.lastGoodValue.Load())
+
+		// 2. A poisoned ballot is held.
+		eligible("h2", false)
+		eligible("h3", false)
+		eligible("stuck-1", true)
+		eligible("stuck-2", true)
+		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+			"precondition: the guard is holding the poisoned ballot")
+
+		// 3. The hold outlasts its window: fail open, and disarm.
+		advance(servedTipRegressionTTL + time.Second)
+		require.Equal(t, int64(5), network.EvmHighestLatestBlockNumber(ctx))
+		require.Zero(t, anchor.lastGoodValue.Load(), "precondition: failing open disarms the memory")
+
+		// 4. One majority-rogue evaluation. It must SERVE the rogue value — no
+		//    arming rule may ever constrain what is served — and must commit
+		//    nothing, because 100M has no continuity with anything this process
+		//    has served.
+		eligible("stuck-1", false)
+		eligible("stuck-2", false)
+		eligible("rogue-1", true)
+		eligible("rogue-2", true)
+		advance(time.Second)
+		assert.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx),
+			"serving is never constrained by an arming rule: the pick is the pick")
+		assert.Zero(t, anchor.lastGoodValue.Load(),
+			"but an unarmed guard must not commit a value discontinuous with what it just served")
+
+		// 5. The honest fleet returns: immediate recovery, and the memory arms
+		//    at the honest head.
+		eligible("h2", true)
+		eligible("h3", true)
+		eligible("rogue-1", false)
+		eligible("rogue-2", false)
+		advance(time.Second)
+		assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+			"recovery on the very next evaluation, exactly as a guardless process behaves")
+		assert.Equal(t, int64(10_000), anchor.lastGoodValue.Load(),
+			"and the memory re-arms at the honest head")
+	})
+
+	// A true first evaluation has no history to be continuous with, so it arms
+	// unconditionally: one evaluation of exposure, which is what a process with
+	// no guard at all has permanently. The value must still not survive contact
+	// with the honest fleet.
+	t.Run("AtColdBoot", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, eligible, advance := fantasyFleet(t, ctx)
+		anchor := &network.servedLatestAnchor
+
+		// The very first evaluation this process ever makes is majority-rogue.
+		eligible("rogue-1", true)
+		eligible("rogue-2", true)
+		eligible("h1", true)
+		require.Zero(t, anchor.seenValue.Load(), "precondition: nothing has ever been served")
+		require.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx))
+		require.Equal(t, int64(100_000_000), anchor.lastGoodValue.Load(),
+			"with no history at all there is nothing to be continuous with")
+
+		// The honest fleet arrives.
+		eligible("h2", true)
+		eligible("h3", true)
+		eligible("rogue-1", false)
+		eligible("rogue-2", false)
+		advance(time.Second)
+		assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+			"a boot-time fantasy must not survive the first honest evaluation")
+	})
+}
+
+// A hold may only ever RAISE the served value toward the corroborated past. A
+// memory that is stale-LOW (the live corroborated head is what tripped the
+// tolerance, not the memory) must never drag the tip below the pick the ballot
+// produced — that is the harm the guard exists to prevent, inflicted by the
+// guard itself. Driven through guardServedTipRegression directly, because the
+// shape needs a memory the fleet has long since left behind.
+func TestServedTip_RegressionGuard_AHoldNeverLowersTheTip(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pinServedTipClock(t)
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 10_000},
+		{id: "u2", chainID: 123, latestBlock: 10_000},
+	})
+
+	var anchor servedTipAnchor
+	anchor.lastGoodValue.Store(100)
+	at := servedTipClock()
+	anchor.lastGoodAt.Store(&at)
+
+	// The ballot's own corroborated head is 10_000, so a pick of 5_000 trips the
+	// guard — but the memory (100) is far below the pick.
+	served := network.guardServedTipRegression("latest", "", &anchor, 5_000,
+		servedTipReference{Corroborated: 10_000, Max: 10_000})
+
+	assert.GreaterOrEqual(t, served, int64(5_000),
+		"a hold must never serve a block LOWER than the pick it was suppressing")
+	assert.Equal(t, int64(5_000), served, "with nothing better to offer, the guard is transparent")
+}
+
+// The guard runs several times per request, so its steady state must not
+// allocate. The only heap allocation on the healthy path is the time.Time the
+// atomic pointer owns, and the once-a-second throttle keeps it off every other
+// evaluation.
+func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1205,48 +1402,27 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 	defer cancel()
 	advance := pinServedTipClock(t)
 
-	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "rogue-1", chainID: 123, latestBlock: 100_000_000},
-		{id: "rogue-2", chainID: 123, latestBlock: 100_000_000},
-		{id: "h1", chainID: 123, latestBlock: 10_000},
-		{id: "h2", chainID: 123, latestBlock: 10_000},
-		{id: "h3", chainID: 123, latestBlock: 10_000},
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 10_000},
+		{id: "u2", chainID: 123, latestBlock: 10_000},
 	})
-	// The syncing state is how an upstream leaves and RE-ENTERS the ballot; the
-	// order-pinning helper only ever removes.
-	eligible := func(i int, in bool) {
-		st := common.EvmSyncingStateSyncing
-		if in {
-			st = common.EvmSyncingStateNotSyncing
-		}
-		ups[i].EvmStatePoller().SetSyncingState(st)
-	}
 
-	// Honest steady state arms the guard at the honest head.
-	eligible(0, false)
-	eligible(1, false)
-	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
-	require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load())
+	var anchor servedTipAnchor
+	ref := servedTipReference{Corroborated: 10_000, Max: 10_000}
+	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "", &anchor, 10_000, ref),
+		"arm the guard first; that evaluation is the one allowed to allocate")
 
-	// The window: both rogues return, two honest upstreams drop out. The ballot
-	// is [100M, 100M, 10000] and the majority pick IS the fantasy.
-	eligible(0, true)
-	eligible(1, true)
-	eligible(3, false)
-	eligible(4, false)
-	advance(time.Second)
-	require.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx),
-		"precondition: the majority of this eligible set really is far-future")
-	assert.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load(),
-		"but an uncorroborated leap must never become the value the guard holds the network to")
+	allocs := testing.AllocsPerRun(200, func() {
+		network.guardServedTipRegression("latest", "", &anchor, 10_000, ref)
+	})
+	assert.Zero(t, allocs, "the throttled healthy path must not allocate at all")
 
-	// The honest fleet returns (one rogue still eligible, as in a real recovery).
-	eligible(3, true)
-	eligible(4, true)
-	eligible(1, false)
-	advance(time.Second)
-	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
-		"recovery must be immediate, not after the guard's TTL expires")
+	// And the throttle is a throttle, not a disable: past a second the clock is
+	// refreshed again.
+	advance(2 * time.Second)
+	before := anchor.lastGoodAt.Load()
+	network.guardServedTipRegression("latest", "", &anchor, 10_000, ref)
+	assert.NotEqual(t, before, anchor.lastGoodAt.Load(), "the TTL clock still advances")
 }
 
 // The off switch, symmetric with trajectoryWindow: 0.

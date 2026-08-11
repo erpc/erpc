@@ -1162,13 +1162,15 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 		minAcceptable = reference - tolerance
 	}
 	if pick >= minAcceptable {
-		if n.rememberServedTipPick(anchor, pick, lastGood, lastGoodAt, ref, tolerance) {
-			at := servedTipClock()
-			// F5: the timestamp is a TTL clock, not an audit log. Refreshing it at
+		now := servedTipClock()
+		if n.rememberServedTipPick(anchor, pick, lastGood, lastGoodAt, ref, tolerance, now) {
+			// The timestamp is a TTL clock, not an audit log: refreshing it at
 			// most once a second keeps a 60s window exact to within its own
-			// granularity while removing a pointer store (and its allocation) from
-			// every evaluation of every request.
-			if lastGoodAt == nil || at.Sub(*lastGoodAt) >= time.Second {
+			// granularity, and keeps the ONLY heap allocation on this path — the
+			// time.Time the atomic pointer must own — off all but one evaluation
+			// per second. (Measured: 0 allocs/op on the throttled path.)
+			if lastGoodAt == nil || now.Sub(*lastGoodAt) >= time.Second {
+				at := now
 				anchor.lastGoodAt.Store(&at)
 			}
 		}
@@ -1199,6 +1201,14 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 	if ref.Max > 0 && ref.Max < served {
 		served = ref.Max
 	}
+	if served <= pick {
+		// A HOLD MAY ONLY EVER RAISE. A memory at or below the current pick has
+		// nothing to offer, and serving it would drag the tip DOWN — the exact
+		// harm the guard exists to prevent, inflicted by the guard. Reachable
+		// whenever the memory is stale-low and it is the live corroborated head,
+		// not the memory, that tripped the tolerance.
+		return pick
+	}
 	if n.noteServedTipGuardTransition(anchor, servedTipGuardHolding, axis, pick, reference, held) {
 		telemetry.MetricNetworkServedTipRegressionTotal.
 			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "held").
@@ -1215,32 +1225,54 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 //
 //   - A LIVE ballot. A capped pick must never become the remembered value, or a
 //     serving range would become the block the network is later held to.
+//
 //   - CORROBORATED BY TWO. The pick must sit at or below the second-highest live
 //     head, i.e. at least two live upstreams already have it. (With a single
 //     live input that head IS the reference, so a one-upstream network behaves
 //     as before.)
-//   - NO UNCORROBORATED LEAP. A memory that is still fresh may not be RAISED by
-//     more than the regression tolerance in one step. Without this, a moment in
-//     which the eligible set is majority far-future — two rogues outvoting one
-//     honest upstream while the rest are lag-excluded — commits the fantasy
-//     into the memory, and when the honest fleet returns the guard holds that
-//     fantasy against them for the full TTL. main recovers on the next
-//     evaluation because it remembers nothing; that regression is what this
-//     condition removes.
 //
-// The leap rule constrains only what is REMEMBERED, never what is SERVED: the
-// healthy branch serves the pick either way, so it cannot hold, freeze or lower
-// a tip. A legitimate leap (a halt resuming, an L2 landing a large batch) simply
-// leaves the memory where it was; the memory then ages out of its TTL and the
-// next healthy evaluation adopts the new height. Nothing is pinned, and the
-// detection reference is unaffected — it takes the higher of the memory and the
-// live corroborated head, so a memory left behind by a burst is simply ignored.
-func (n *Network) rememberServedTipPick(anchor *servedTipAnchor, pick int64, lastGood int64, lastGoodAt *time.Time, ref servedTipReference, tolerance int64) bool {
+//   - CONTINUITY. A value may enter the memory only if it is within the
+//     regression tolerance ABOVE the last value this process already trusted:
+//     the memory itself while that is fresh, and otherwise the tip this process
+//     most recently SERVED. Without it, a moment in which the eligible set is
+//     majority far-future — two rogues outvoting one honest upstream while the
+//     rest are lag-excluded — commits the fantasy, and when the honest fleet
+//     returns the guard holds that fantasy against them for a full TTL. main
+//     recovers on the next evaluation because it remembers nothing, and a
+//     memory that makes us worse than no memory is not worth having.
+//
+//     Gating only a FRESH memory was not enough: every fail-open disarms
+//     (deliberately — a value that outlived its window is not evidence), and an
+//     empty memory then armed at whatever pick appeared. The window between a
+//     fail-open and the next honest evaluation is exactly when a rogue majority
+//     is most likely, so an unarmed guard is precisely where the continuity
+//     check is needed. Falling back to the last served value closes it without
+//     any new state: that value is this process's own recent history.
+//
+//     A TRUE first evaluation — nothing remembered and nothing ever served —
+//     arms unconditionally. There is no history to be continuous with, and one
+//     evaluation of exposure is exactly what a process without a guard has at
+//     all times.
+//
+// None of this constrains what is SERVED. The healthy branch returns the pick
+// either way, so no arming rule can hold, freeze or lower a tip; only what
+// enters the memory is gated. A legitimate leap (a halt resuming, an L2 landing
+// a batch) simply leaves the memory where it was until it ages out of its TTL,
+// after which the next healthy evaluation adopts the new height — and the
+// detection reference already takes the HIGHER of the memory and the live
+// corroborated head, so a memory left behind is ignored rather than harmful.
+func (n *Network) rememberServedTipPick(anchor *servedTipAnchor, pick int64, lastGood int64, lastGoodAt *time.Time, ref servedTipReference, tolerance int64, now time.Time) bool {
 	if ref.Max <= 0 || pick > ref.Corroborated {
 		return false
 	}
-	if lastGood > 0 && lastGoodAt != nil && pick > lastGood+tolerance &&
-		servedTipClock().Sub(*lastGoodAt) < servedTipRegressionTTL {
+	// The last value this process trusted: the memory while it is still fresh,
+	// otherwise the tip it most recently served (0 = nothing yet, i.e. a true
+	// first evaluation).
+	trusted := anchor.seenValue.Load()
+	if lastGood > 0 && lastGoodAt != nil && now.Sub(*lastGoodAt) < servedTipRegressionTTL {
+		trusted = lastGood
+	}
+	if trusted > 0 && pick > trusted+tolerance {
 		return false
 	}
 	if lastGood != pick {
