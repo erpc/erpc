@@ -93,12 +93,14 @@ func doOnce[T any](mu *sync.Mutex, inflight map[string]*flight[T], key string, f
 	inflight[key] = f
 	mu.Unlock()
 
-	f.val, f.ok = fn()
+	defer func() {
+		mu.Lock()
+		delete(inflight, key)
+		mu.Unlock()
+		f.wg.Done()
+	}()
 
-	mu.Lock()
-	delete(inflight, key)
-	mu.Unlock()
-	f.wg.Done()
+	f.val, f.ok = fn()
 	return f.val, f.ok
 }
 
