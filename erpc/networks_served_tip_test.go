@@ -40,9 +40,14 @@ type servedTipFixture struct {
 	// this block, so its effective latest is the bound rather than a head
 	// observation (the celo "legacy" upstream shape).
 	upperExactBlock int64
-	syncing         bool
-	ignoreMethods   []string
-	tags            []string
+	// upperLatestMinus, when set, configures blockAvailability.upper.latestBlockMinus
+	// — a bound DERIVED from the upstream's own head, so it tracks the chain at
+	// a fixed lag and remains a head observation (the "serve up to head-N"
+	// shape).
+	upperLatestMinus *int64
+	syncing          bool
+	ignoreMethods    []string
+	tags             []string
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -81,6 +86,11 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 			upper := f.upperExactBlock
 			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{
 				Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: &upper},
+			}
+		}
+		if f.upperLatestMinus != nil {
+			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: f.upperLatestMinus},
 			}
 		}
 		upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
@@ -699,6 +709,131 @@ func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 	assert.Equal(t, int64(9_998), network.EvmHighestLatestBlockNumber(ctx),
 		"a bound-capped upstream declares what it SERVES, not where the head is; "+
 			"it must not vote a cap onto the ballot while live heads exist")
+}
+
+// A DERIVED upper bound is still a head observation. `upper.latestBlockMinus: N`
+// tracks the chain at a fixed lag — such an upstream knows exactly where the head
+// is, it just declines to serve the last N blocks — so it must keep voting. The
+// earlier dynamic classification ("the resolved upper bound is below the head")
+// could not tell it apart from a frozen serving range and dropped all three of
+// them here, handing the tip to the single unbounded upstream: a tip four of four
+// upstreams could serve became one only one of them could.
+func TestServedTip_LatestBlockMinusUpstreamsStillVote(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	minus := int64(5)
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 10_000},
+		{id: "u2", chainID: 123, latestBlock: 10_000, upperLatestMinus: &minus},
+		{id: "u3", chainID: 123, latestBlock: 10_000, upperLatestMinus: &minus},
+		{id: "u4", chainID: 123, latestBlock: 10_000, upperLatestMinus: &minus},
+	})
+
+	served := network.EvmHighestLatestBlockNumber(ctx)
+	assert.Equal(t, int64(9_995), served,
+		"the ballot is [10000, 9995, 9995, 9995]: a lagging-but-live bound is a head observation")
+
+	// And the point of the majority pick holds: the advertised tip is servable
+	// by a majority of the upstreams that produced it.
+	canServe := 0
+	for _, u := range ups {
+		ok, err := u.EvmAssertBlockAvailability(ctx, "eth_call", common.AvailbilityConfidenceBlockHead, false, served)
+		require.NoError(t, err)
+		if ok {
+			canServe++
+		}
+	}
+	assert.Greater(t, canServe, len(ups)/2,
+		"served tip %d must be servable by a majority; only %d of %d upstreams can serve it",
+		served, canServe, len(ups))
+}
+
+// The guaranteed-method floor was the second door onto the incident value: its
+// ballot took raw effective heads and ran AFTER the guard, so a static cap that
+// the network ballot had just refused came back as a "floor" and was served.
+// The floor now builds its per-method ballot with the same rule.
+func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const legacyCap = int64(21_615_999)
+	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
+		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
+		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
+		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+	}, &common.EvmServedTipConfig{
+		EnabledFor:        []string{"latest"},
+		GuaranteedMethods: []string{"eth_getLogs"},
+	})
+
+	require.Greater(t, network.EvmHighestLatestBlockNumber(ctx), legacyCap,
+		"precondition: with the full fleet eligible the tip is a live head")
+
+	// The incident ballot: one live upstream lag-excluded.
+	network.PinUpstreamOrderForTest("celo-mainnet-nirvana", "quicknode-celo", "celo-mainnet-nirvana-legacy", "quicknode-celo-legacy")
+
+	assert.Greater(t, network.EvmHighestLatestBlockNumber(ctx), legacyCap,
+		"the guaranteed-method floor must not re-admit the serving range the ballot filter removed")
+}
+
+// The floor's PURPOSE is unchanged by that filter: when only capped upstreams
+// support a guaranteed method, they are the only upstreams that can serve it at
+// all, so their cap is exactly the floor the tip must respect.
+func TestServedTip_GuaranteedMethodFloor_CapsStillSetTheFloorWhenAloneOnAMethod(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "live-1", chainID: 123, latestBlock: 10_000, ignoreMethods: []string{"trace_block"}},
+		{id: "live-2", chainID: 123, latestBlock: 10_000, ignoreMethods: []string{"trace_block"}},
+		{id: "archive-1", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+		{id: "archive-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+	}, &common.EvmServedTipConfig{
+		EnabledFor:        []string{"latest"},
+		GuaranteedMethods: []string{"trace_block"},
+	})
+
+	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
+		"only the capped pair serves trace_block, so their range IS the guarantee")
+}
+
+// A ballot the filter shrinks to a SINGLE live upstream is served as that
+// upstream's head — deliberately. One live witness is thin evidence, but the
+// alternative is advertising a serving range that stopped tracking the chain
+// years ago, and the regression guard bounds how far the tip may move from what
+// this process last saw corroborated.
+func TestServedTip_CapFilterMayShrinkTheBallotToOneLiveUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pinServedTipClock(t)
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "live-1", chainID: 123, latestBlock: 10_000},
+		{id: "capped-1", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+		{id: "capped-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+	})
+
+	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"one live head beats two serving ranges; the ballot is [10000], not [10000,5000,5000]")
 }
 
 // The all-capped pool is the legitimate case for a cap to be served: a network

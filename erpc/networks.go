@@ -428,24 +428,36 @@ func (n *Network) Logger() *zerolog.Logger {
 // the per-method eligible set (a capability lane). Falls back to the full
 // registered set on cold start / when the policy has produced no decision yet.
 //
-// BOUND-CAPPED UPSTREAMS DO NOT VOTE (when any live head is present). An
-// upstream whose effective head is its configured blockAvailability.upper bound
-// is declaring a SERVING RANGE ("I answer up to block X"), not observing where
-// the chain's head is — see evmTipObservation. Letting such a declaration into
-// the ballot is what broke celo (evm:42220) on 2026-08-11: two legacy upstreams
-// pinned at `upper.exactBlock: 21615999` outvoted the live heads (74.5M) the
-// moment a third live upstream was excluded for lag, "latest" interpolated to a
-// September-2023 block, the availability gate then admitted ONLY those two
-// upstreams (the live ones start at 21616000), and funded accounts read 0x0.
-//
-// The second return value is the regression guard's view of the LIVE heads on
-// this ballot (see servedTipReference).
+// The ballot itself (who votes, and the guard's live reference) is
+// evmTipBallot's rule.
 func (n *Network) gatherEvmTipInputsForMethod(
 	ctx context.Context,
 	useFinalized bool,
 	method string,
 ) ([]evm.ServedTipInput, servedTipReference) {
-	upstreams := n.tipCandidateUpstreams(ctx, method)
+	return evmTipBallot(n.tipCandidateUpstreams(ctx, method), useFinalized)
+}
+
+// evmTipBallot turns one candidate set into the served-tip ballot for an axis,
+// plus the regression guard's view of its live heads (servedTipReference).
+//
+// STATIC-CAP UPSTREAMS DO NOT VOTE while any live head is present. An upstream
+// configured with `blockAvailability.upper.exactBlock` below the chain's head is
+// declaring a SERVING RANGE ("I answer up to block X"), not observing where the
+// head is — see evmTipObservation. Letting such a declaration onto the ballot is
+// what broke celo (evm:42220) on 2026-08-11: two legacy upstreams pinned at
+// `upper.exactBlock: 21615999` outvoted the live heads (74.5M) the moment a
+// third live upstream was excluded for lag, "latest" interpolated to a
+// September-2023 block, the availability gate then admitted ONLY those two
+// upstreams (the live ones start at 21616000), and funded accounts read 0x0.
+//
+// MIXED POOL vs ALL-CAPPED POOL. The rule applies per candidate set, which is
+// what lets the same function build the network-wide ballot AND each
+// guaranteed-method's floor ballot: caps are dropped only when the SAME set
+// contains at least one live head. A set of only historical/frozen upstreams
+// legitimately serves its cap — that cap is the freshest block anyone in it can
+// serve — so it keeps voting.
+func evmTipBallot(upstreams []common.Upstream, useFinalized bool) ([]evm.ServedTipInput, servedTipReference) {
 	out := make([]evm.ServedTipInput, 0, len(upstreams))
 	var capped []evm.ServedTipInput
 	var liveTop, liveSecond int64
@@ -478,11 +490,10 @@ func (n *Network) gatherEvmTipInputsForMethod(
 		out = append(out, in)
 	}
 	if len(out) == 0 {
-		// All-capped pool: a network of only historical/frozen upstreams
-		// legitimately serves its cap as "latest" — there is no live head to
-		// prefer, so the caps remain the only observations available. (No live
-		// head means no live reference for the regression guard either; it falls
-		// back to its own last corroborated pick, see guardServedTipRegression.)
+		// All-capped set: there is no live head to prefer, so the caps remain
+		// the only observations available. (No live head means no live reference
+		// for the regression guard either; it falls back to its own last
+		// corroborated pick, see guardServedTipRegression.)
 		return capped, servedTipReference{}
 	}
 	if liveSecond <= 0 {
@@ -493,7 +504,7 @@ func (n *Network) gatherEvmTipInputsForMethod(
 
 // servedTipReference is what the LIVE (non-capped) heads of one ballot say,
 // in the two distinct roles the regression guard needs. Both are 0 when every
-// candidate is bound-capped.
+// candidate is capped.
 type servedTipReference struct {
 	// Corroborated is the SECOND-highest live head — the freshest view that two
 	// live upstreams both reach — or the only live head when there is exactly
@@ -517,13 +528,25 @@ type servedTipReference struct {
 }
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
-// whether that value is CAPPED by the upstream's configured
-// blockAvailability.upper bound rather than being an observation of the chain
-// head.
+// whether that value is a STATIC SERVING-RANGE DECLARATION rather than an
+// observation of the chain head.
 //
-// Upstream.EvmEffectiveLatestBlock computes min(head, upper) and discards which
-// side won; this recovers that distinction from the same two inputs, so a
-// serving-range declaration can be told apart from a head observation.
+// The classification is a property of the CONFIG, not of a resolved bound:
+// `blockAvailability.upper.exactBlock` is a constant an operator wrote down
+// ("this upstream answers up to block X"), so once the chain passes X the
+// upstream's effective latest stops moving and stops being a head observation.
+// Every OTHER upper form is derived from the upstream's own head — most of all
+// `latestBlockMinus: N`, which tracks the chain at a fixed lag — and those are
+// live observations: an upstream that serves up to head-5 still knows exactly
+// where the head is. The earlier dynamic test ("the resolved upper bound is
+// below the head") could not tell the two apart and disenfranchised every
+// latestBlockMinus upstream, turning a tip four of four upstreams could serve
+// into one only one of them could.
+//
+// Reading the configured constant also drops the SECOND resolveAvailabilityBounds
+// call per upstream per evaluation that the dynamic test required — the largest
+// per-request cost this feature added — and with it a torn two-load snapshot
+// (bound and head resolved at different instants, off the same moving head).
 func evmTipObservation(u common.EvmUpstream, useFinalized bool) (blk int64, boundCapped bool) {
 	if useFinalized {
 		blk = u.EvmEffectiveFinalizedBlock()
@@ -533,19 +556,31 @@ func evmTipObservation(u common.EvmUpstream, useFinalized bool) (blk int64, boun
 	if blk <= 0 {
 		return blk, false
 	}
-	_, upper := u.EvmBlockAvailabilityBounds()
-	if upper == math.MaxInt64 {
+	exact := configuredUpperExactBlock(u)
+	if exact == nil {
 		return blk, false
 	}
 	sp := u.EvmStatePoller()
 	if sp == nil {
 		return blk, false
 	}
+	// Per axis: a cap the FINALIZED head has not reached yet still caps nothing
+	// on the finalized ballot, even while it caps the latest one.
 	head := sp.LatestBlock()
 	if useFinalized {
 		head = sp.FinalizedBlock()
 	}
-	return blk, head > 0 && upper < head
+	return blk, head > 0 && *exact < head
+}
+
+// configuredUpperExactBlock returns the upstream's configured
+// blockAvailability.upper.exactBlock, or nil when it declares no such constant.
+func configuredUpperExactBlock(u common.Upstream) *int64 {
+	cfg := u.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.BlockAvailability == nil || cfg.Evm.BlockAvailability.Upper == nil {
+		return nil
+	}
+	return cfg.Evm.BlockAvailability.Upper.ExactBlock
 }
 
 // tipCandidateUpstreams returns the eligible upstreams that feed the served-tip
@@ -1280,6 +1315,20 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 // no guaranteed methods are configured or none constrain the tip. Each method's
 // supporting set is the selection-policy-eligible set for that method (which,
 // via autoIgnoreUnsupportedMethods, excludes upstreams that don't support it).
+//
+// Each method's ballot is built by evmTipBallot, i.e. by exactly the rule the
+// network-wide ballot uses — including the static-cap filter, applied to THAT
+// method's supporting set. Without it the floor was a second door onto the
+// incident value: with `guaranteedMethods` configured, the floor ballot took raw
+// effective heads and ran AFTER the guard, so the celo pair's 21,615,999 came
+// back as a "floor" and was served, on a branch whose whole premise is that a
+// serving range never defines the head.
+//
+// The per-set mixed-pool rule is what keeps that from breaking the floor's
+// purpose: capped upstreams drop out of a method's ballot only when some LIVE
+// upstream also supports that method. If only capped upstreams support it, they
+// set the floor — which is the entire point of the floor, since they are the
+// only upstreams that can serve the method at all.
 func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) int64 {
 	if n.cfg == nil || n.cfg.Evm == nil || n.cfg.Evm.ServedTip == nil {
 		return 0
@@ -1289,27 +1338,18 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 		return 0
 	}
 	eligible := n.tipCandidateUpstreams(ctx, "*")
+	supporting := make([]common.Upstream, 0, len(eligible))
 	var floor int64
 	for _, m := range methods {
-		tips := make([]evm.ServedTipInput, 0, len(eligible))
+		supporting = supporting[:0]
 		for _, cu := range eligible {
-			u, ok := cu.(common.EvmUpstream)
-			if !ok || u.EvmStatePoller() == nil || u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-				continue
-			}
 			// Supporting set = eligible upstreams that handle this method.
 			if handle, _ := cu.ShouldHandleMethod(m); !handle {
 				continue
 			}
-			blk := u.EvmEffectiveLatestBlock()
-			if useFinalized {
-				blk = u.EvmEffectiveFinalizedBlock()
-			}
-			if blk <= 0 {
-				continue
-			}
-			tips = append(tips, evm.ServedTipInput{UpstreamID: u.Id(), BlockNumber: blk})
+			supporting = append(supporting, cu)
 		}
+		tips, _ := evmTipBallot(supporting, useFinalized)
 		if len(tips) == 0 {
 			// No supporting upstream for this method → no constraint (fall through
 			// rather than pinning the tip to 0).
