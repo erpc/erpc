@@ -27,12 +27,17 @@ import (
 // servedTipFixture is a compact description of one upstream's poller state
 // at test time. Used to drive the lighter setupServedTipNetwork helper.
 type servedTipFixture struct {
-	id            string
-	chainID       int64
-	latestBlock   int64
-	syncing       bool
-	ignoreMethods []string
-	tags          []string
+	id          string
+	chainID     int64
+	latestBlock int64
+	// upperExactBlock, when > 0, configures blockAvailability.upper.exactBlock —
+	// the upstream still polls latestBlock as its head, but only SERVES up to
+	// this block, so its effective latest is the bound rather than a head
+	// observation (the celo "legacy" upstream shape).
+	upperExactBlock int64
+	syncing         bool
+	ignoreMethods   []string
+	tags            []string
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -66,15 +71,20 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 			cid = chainID
 		}
 		endpoint := "http://" + f.id + ".localhost"
+		evmCfg := &common.EvmUpstreamConfig{ChainId: cid}
+		if f.upperExactBlock > 0 {
+			upper := f.upperExactBlock
+			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: &upper},
+			}
+		}
 		upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
 			Type:          common.UpstreamTypeEvm,
 			Id:            f.id,
 			Endpoint:      endpoint,
 			IgnoreMethods: f.ignoreMethods,
 			Tags:          f.tags,
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: cid,
-			},
+			Evm:           evmCfg,
 		})
 
 		gock.New(endpoint).
@@ -655,4 +665,86 @@ func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 	}
 	assert.Equal(t, int64(600), network.EvmHighestLatestBlockNumber(ctx),
 		"the post-halt burst must be served on the first pick that sees it")
+}
+
+// ─── Availability bounds are not head observations (2026-08 celo) ────────────
+
+// A blockAvailability.upper bound is a SERVING-RANGE declaration, not a view of
+// the chain head, so it must not appear on the ballot while any live head does.
+// Two upstreams pinned at `upper.exactBlock` (their pollers sitting at the live
+// tip) used to outvote the live heads as soon as the eligible set shrank —
+// exactly how celo served September-2023 state on 2026-08-11.
+func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "live-1", chainID: 123, latestBlock: 10_000},
+		{id: "live-2", chainID: 123, latestBlock: 9_998},
+		{id: "capped-1", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+		{id: "capped-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+	})
+
+	// Ballot without the caps: [10000, 9998] → the lower live head.
+	// With them it would be [10000, 9998, 5000, 5000] → 3rd highest = 5000.
+	assert.Equal(t, int64(9_998), network.EvmHighestLatestBlockNumber(ctx),
+		"a bound-capped upstream declares what it SERVES, not where the head is; "+
+			"it must not vote a cap onto the ballot while live heads exist")
+}
+
+// The all-capped pool is the legitimate case for a cap to be served: a network
+// of only historical/frozen upstreams has no live head to prefer, and its cap
+// IS the freshest block anyone can serve. Unchanged by the filter.
+func TestServedTip_AllCappedPool_ServesTheCap(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "capped-1", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+		{id: "capped-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+		{id: "capped-3", chainID: 123, latestBlock: 10_000, upperExactBlock: 4_000},
+	})
+
+	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
+		"with no live head on the ballot the caps are the only observations there are; "+
+			"the majority of [5000,5000,4000] must still be served")
+}
+
+// Every candidate filtered (all syncing here) → the tip is UNKNOWN, and unknown
+// must stay unknown: eth_blockNumber falls through untouched and "latest" is
+// left uninterpolated (architecture/evm: resolveBlockTagToHex and the
+// eth_blockNumber pin both fail open on <= 0 — "never synthesize a block number
+// from nothing"). The regression guard must not resurrect a remembered tip
+// here either: with nothing to corroborate it, a held value would be exactly
+// the frozen tip served from memory that this design forbids.
+func TestServedTip_AllInputsFiltered_FailsOpenToZero(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 10_000},
+		{id: "u2", chainID: 123, latestBlock: 10_000},
+		{id: "u3", chainID: 123, latestBlock: 10_000},
+	})
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"healthy pick first, so the guard has a corroborated value to (not) serve")
+
+	for _, u := range ups {
+		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+	}
+
+	assert.Equal(t, int64(0), network.EvmHighestLatestBlockNumber(ctx),
+		"no eligible observations → unknown tip (0), never a remembered one")
 }

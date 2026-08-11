@@ -351,6 +351,16 @@ func (n *Network) Logger() *zerolog.Logger {
 // network-wide eligible set (the global served tip); a concrete method yields
 // the per-method eligible set (a capability lane). Falls back to the full
 // registered set on cold start / when the policy has produced no decision yet.
+//
+// BOUND-CAPPED UPSTREAMS DO NOT VOTE (when any live head is present). An
+// upstream whose effective head is its configured blockAvailability.upper bound
+// is declaring a SERVING RANGE ("I answer up to block X"), not observing where
+// the chain's head is — see evmTipObservation. Letting such a declaration into
+// the ballot is what broke celo (evm:42220) on 2026-08-11: two legacy upstreams
+// pinned at `upper.exactBlock: 21615999` outvoted the live heads (74.5M) the
+// moment a third live upstream was excluded for lag, "latest" interpolated to a
+// September-2023 block, the availability gate then admitted ONLY those two
+// upstreams (the live ones start at 21616000), and funded accounts read 0x0.
 func (n *Network) gatherEvmTipInputsForMethod(
 	ctx context.Context,
 	useFinalized bool,
@@ -358,6 +368,7 @@ func (n *Network) gatherEvmTipInputsForMethod(
 ) []evm.ServedTipInput {
 	upstreams := n.tipCandidateUpstreams(ctx, method)
 	out := make([]evm.ServedTipInput, 0, len(upstreams))
+	var capped []evm.ServedTipInput
 	for _, cu := range upstreams {
 		u, ok := cu.(common.EvmUpstream)
 		if !ok || u.EvmStatePoller() == nil {
@@ -366,21 +377,59 @@ func (n *Network) gatherEvmTipInputsForMethod(
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			continue
 		}
-		var blk int64
-		if useFinalized {
-			blk = u.EvmEffectiveFinalizedBlock()
-		} else {
-			blk = u.EvmEffectiveLatestBlock()
-		}
+		blk, boundCapped := evmTipObservation(u, useFinalized)
 		if blk <= 0 {
 			continue
 		}
-		out = append(out, evm.ServedTipInput{
+		in := evm.ServedTipInput{
 			UpstreamID:  u.Id(),
 			BlockNumber: blk,
-		})
+		}
+		if boundCapped {
+			capped = append(capped, in)
+			continue
+		}
+		out = append(out, in)
+	}
+	if len(out) == 0 {
+		// All-capped pool: a network of only historical/frozen upstreams
+		// legitimately serves its cap as "latest" — there is no live head to
+		// prefer, so the caps remain the only observations available.
+		return capped
 	}
 	return out
+}
+
+// evmTipObservation returns an upstream's effective head for the axis, plus
+// whether that value is CAPPED by the upstream's configured
+// blockAvailability.upper bound rather than being an observation of the chain
+// head.
+//
+// Upstream.EvmEffectiveLatestBlock computes min(head, upper) and discards which
+// side won; this recovers that distinction from the same two inputs, so a
+// serving-range declaration can be told apart from a head observation.
+func evmTipObservation(u common.EvmUpstream, useFinalized bool) (blk int64, boundCapped bool) {
+	if useFinalized {
+		blk = u.EvmEffectiveFinalizedBlock()
+	} else {
+		blk = u.EvmEffectiveLatestBlock()
+	}
+	if blk <= 0 {
+		return blk, false
+	}
+	_, upper := u.EvmBlockAvailabilityBounds()
+	if upper == math.MaxInt64 {
+		return blk, false
+	}
+	sp := u.EvmStatePoller()
+	if sp == nil {
+		return blk, false
+	}
+	head := sp.LatestBlock()
+	if useFinalized {
+		head = sp.FinalizedBlock()
+	}
+	return blk, head > 0 && upper < head
 }
 
 // tipCandidateUpstreams returns the eligible upstreams that feed the served-tip
