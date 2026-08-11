@@ -948,6 +948,13 @@ func servedTipTrajectoryCount(n *Network, axis, outcome string) float64 {
 		WithLabelValues(n.projectId, n.Label(), servedTipLaneAll, axis, outcome))
 }
 
+// servedTipRefereeOverriding reports whether the network-wide latest lane is
+// CURRENTLY being overridden by the referee — the state the transition log and
+// counter are driven from.
+func servedTipRefereeOverriding(n *Network) bool {
+	return n.servedLatestAnchor.trajectoryOverriding.Load()
+}
+
 // setupTrajectoryNetwork builds a `count`-upstream network with the pinned
 // served-tip clock, and returns the clock's advance function.
 func setupTrajectoryNetwork(t *testing.T, ctx context.Context, count int, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream, func(time.Duration)) {
@@ -1064,6 +1071,102 @@ func TestServedTip_TrajectoryReferee_StalledMajorityLosesToFreshMinority(t *test
 		"raising the tip to the live pair is not a regression; the guard must stay out of it")
 }
 
+// A routine transient: two of four upstreams fall behind for 15 seconds (a
+// poller hiccup, a vendor blip) and catch up. Nothing is wrong with the fleet,
+// and the value every upstream can serve is the lagged head — an intervention
+// here would advertise a block only half the fleet has, for minutes. This shape
+// is why corroboration has to be earned over time rather than in one instant.
+func TestServedTip_TrajectoryReferee_TransientHalfFleetLagIsNotAnOverride(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 4, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+	head := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+	lagged := head
+
+	before := servedTipTrajectoryCount(network, "latest", "override")
+
+	// Three ticks in which only u1/u2 advance: u3/u4 end 300 blocks (15s of this
+	// 20 blocks/s chain) behind — past the 200-block cluster width, so the fleet
+	// reads as two groups of two.
+	fresh, served := stallMajority(t, ctx, network, ups, advance, head, 2, 3)
+
+	assert.Equal(t, lagged, served,
+		"a 15-second divergence must keep serving the value all four upstreams have (fresh pair was at %d)", fresh)
+	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"),
+		"and must not be counted as an intervention")
+}
+
+// A PERMANENTLY split fleet (the flashblocks shape: two upstreams always ~300
+// blocks ahead, both halves advancing at the same velocity) is a normal
+// topology, not a stall. The trajectory is fitted to the MEDIAN of the live
+// heads, so no permanently-offset group is ever closer to it than the median's
+// own — the referee has nothing to correct and stays silent forever.
+func TestServedTip_TrajectoryReferee_PermanentlySplitFleetIsSilent(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 4, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+	before := servedTipTrajectoryCount(network, "latest", "override")
+
+	head := trajectoryStartHead
+	for i := 0; i < trajectoryWarmSamples+40; i++ {
+		for j, u := range ups {
+			target := head
+			if j < 2 {
+				target = head + 300 // the always-ahead pair
+			}
+			suggestServedTipHead(u, target)
+		}
+		network.EvmHighestLatestBlockNumber(ctx)
+		advance(servedTipSampleInterval)
+		head += trajectoryBlocksPerSample
+	}
+
+	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"),
+		"a permanently split fleet must never trigger an override")
+}
+
+// The referee's intervention EXPIRES on its own. Once the group it elected stops
+// advancing, that group can no longer have produced the chain progress the fit
+// describes, and the override ends without any operator action — the property
+// that makes an upward-only referee unable to pin a tip the way the 2026-06
+// clamp did.
+func TestServedTip_TrajectoryReferee_OverrideSelfExpires(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+	fresh, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
+	require.Equal(t, fresh, served, "precondition: the referee is holding the tip on the corroborated pair")
+
+	require.True(t, servedTipRefereeOverriding(network), "precondition: the referee reports itself as overriding")
+
+	// Now the whole chain stops: nobody advances, including the elected pair.
+	for i := 0; i < 240; i++ {
+		advance(servedTipSampleInterval)
+		network.EvmHighestLatestBlockNumber(ctx)
+		if !servedTipRefereeOverriding(network) {
+			t.Logf("override expired after %v of a fully halted chain", time.Duration(i+1)*servedTipSampleInterval)
+			return
+		}
+	}
+	t.Fatalf("the override never expired over %v of a halted chain", 240*servedTipSampleInterval)
+}
+
 // The inverse split, and the reason a group is elected by its DISTANCE to the
 // trajectory rather than by its freshness: two upstreams running far past where
 // the chain can possibly be (wrong chain, garbage endpoint) must lose to the
@@ -1136,8 +1239,10 @@ func TestServedTip_TrajectoryReferee_ColdProcessIsInert(t *testing.T) {
 // hides, so extrapolating across one is guessing — and the referee stands down.
 // The paired sub-tests differ ONLY in the size of that gap.
 func TestServedTip_TrajectoryReferee_StaleTrackFailsOpen(t *testing.T) {
-	// After `gap` of silence the fresh pair sits exactly on the trajectory
-	// (20 blocks/s), i.e. the referee's evidence is otherwise perfect.
+	// After `gap` of silence the fresh pair returns exactly on the trajectory
+	// (20 blocks/s) and then HOLDS it for longer than the dwell — i.e. the
+	// referee's evidence is otherwise perfect, and the only difference between
+	// the sub-tests is whether the hole in the track is inside the tolerance.
 	run := func(t *testing.T, gap time.Duration) (served, frozen, fresh int64, overrides float64) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -1156,13 +1261,24 @@ func TestServedTip_TrajectoryReferee_StaleTrackFailsOpen(t *testing.T) {
 			suggestServedTipHead(u, fresh)
 		}
 		served = network.EvmHighestLatestBlockNumber(ctx)
+
+		// Eight more samples (40s) of the pair tracking the chain: enough dwell
+		// for a group that is genuinely where the head should be.
+		for i := 0; i < 8; i++ {
+			advance(servedTipSampleInterval)
+			fresh += trajectoryBlocksPerSample
+			for _, u := range ups[:2] {
+				suggestServedTipHead(u, fresh)
+			}
+			served = network.EvmHighestLatestBlockNumber(ctx)
+		}
 		return served, frozen, fresh, servedTipTrajectoryCount(network, "latest", "override") - before
 	}
 
 	t.Run("ContinuousTrackOverrides", func(t *testing.T) {
 		served, _, fresh, overrides := run(t, servedTipMaxSampleGap-5*time.Second)
 		assert.Equal(t, fresh, served, "an unbroken track lets the referee act")
-		assert.Equal(t, float64(1), overrides)
+		assert.Positive(t, overrides)
 	})
 
 	t.Run("GappedTrackFailsOpen", func(t *testing.T) {

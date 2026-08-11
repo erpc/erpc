@@ -23,6 +23,13 @@ func tipsFromInts(blocks ...int64) []ServedTipInput {
 	return out
 }
 
+// ballot is what the network hands the referee: the pick's own descending,
+// zero-filtered slice (ServedTipPick.Sorted). Tests go through PickServedTip so
+// they exercise the same single sort the request path performs.
+func ballot(blocks ...int64) []ServedTipInput {
+	return PickServedTip(tipsFromInts(blocks...)).Sorted
+}
+
 func itoa(i int) string {
 	if i == 0 {
 		return "0"
@@ -191,7 +198,7 @@ func trajectoryParams() TipTrajectoryParams {
 func warmTrajectory(tr *TipTrajectory, start time.Time, head int64, perSample int64, samples int) (time.Time, int64) {
 	now := start
 	for i := 0; i < samples; i++ {
-		tr.Observe(now, tipsFromInts(head), head, trajectoryParams())
+		tr.Observe(now, ballot(head, head), head, trajectoryParams())
 		now = now.Add(tipSampleInterval)
 		head += perSample
 	}
@@ -219,7 +226,7 @@ func TestTipTrajectory_PoisonedSampleDoesNotMoveTheFit(t *testing.T) {
 	require.NotNil(t, clean)
 
 	// One wrong-chain / garbage observation lands in the middle of the track.
-	tr.Observe(now, tipsFromInts(head), 999_999_999, trajectoryParams())
+	tr.Observe(now, ballot(head, head), 999_999_999, trajectoryParams())
 	now, _ = warmTrajectory(&tr, now.Add(tipSampleInterval), head+100, 100, 70)
 
 	poisoned := tr.fit.Load()
@@ -237,7 +244,7 @@ func TestTipTrajectory_ConfidenceGate(t *testing.T) {
 		var tr TipTrajectory
 		now := time.Now()
 		for i := 0; i < tipMinSamples-1; i++ {
-			d := tr.Observe(now, tipsFromInts(1_000_000+int64(i)*100, 999_000), 999_000, params)
+			d := tr.Observe(now, ballot(1_000_000+int64(i)*100, 999_000), 999_000, params)
 			require.False(t, d.Overrode, "sample %d: a cold tracker must never override", i)
 			now = now.Add(tipSampleInterval)
 		}
@@ -253,7 +260,7 @@ func TestTipTrajectory_ConfidenceGate(t *testing.T) {
 		require.Less(t, fit.spanMs, params.Window.Milliseconds())
 
 		// A stalled majority + a fresh pair: the shape that WOULD be overridden.
-		d := tr.Observe(now, tipsFromInts(head, head, head-20_000, head-20_000, head-20_000), head-20_000, params)
+		d := tr.Observe(now, ballot(head, head, head-20_000, head-20_000, head-20_000), head-20_000, params)
 		assert.False(t, d.Overrode, "span below the configured window must keep the referee inert")
 	})
 
@@ -265,7 +272,7 @@ func TestTipTrajectory_ConfidenceGate(t *testing.T) {
 		// Nothing evaluated for longer than the maximum gap: the fit no longer
 		// describes the present, whatever it says.
 		now = now.Add(tipMaxSampleGap + time.Second)
-		d := tr.Observe(now, tipsFromInts(head+1200, head+1200, head, head, head), head, params)
+		d := tr.Observe(now, ballot(head+1200, head+1200, head, head, head), head, params)
 		assert.False(t, d.Overrode, "a gap past tipMaxSampleGap must stand the referee down")
 	})
 
@@ -275,7 +282,7 @@ func TestTipTrajectory_ConfidenceGate(t *testing.T) {
 		// off. The majority pick is already the right answer for a halted chain.
 		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 0, 130)
 		require.NotNil(t, tr.fit.Load())
-		d := tr.Observe(now, tipsFromInts(head+5_000, head+5_000, head, head, head), head, params)
+		d := tr.Observe(now, ballot(head+5_000, head+5_000, head, head, head), head, params)
 		assert.False(t, d.Overrode, "v <= 0 must stand the referee down")
 	})
 
@@ -284,7 +291,7 @@ func TestTipTrajectory_ConfidenceGate(t *testing.T) {
 		off := TipTrajectoryParams{Window: 0, ToleranceFloor: 1024}
 		now := time.Now()
 		for i := 0; i < 200; i++ {
-			tr.Observe(now, tipsFromInts(1_000_000+int64(i)*100), 1_000_000+int64(i)*100, off)
+			tr.Observe(now, ballot(1_000_000+int64(i)*100, 1_000_000+int64(i)*100), 1_000_000+int64(i)*100, off)
 			now = now.Add(tipSampleInterval)
 		}
 		assert.Zero(t, tr.SampleCount(), "trajectoryWindow: 0 must record nothing at all")
@@ -306,10 +313,10 @@ func TestTipTrajectory_GroupElection(t *testing.T) {
 		for i := 0; i < 24; i++ {
 			now = now.Add(tipSampleInterval)
 			head += 100
-			tr.Observe(now, tipsFromInts(head, head, frozen, frozen, frozen), frozen, params)
+			tr.Observe(now, ballot(head, head, frozen, frozen, frozen), frozen, params)
 		}
 
-		d := tr.Observe(now.Add(time.Second), tipsFromInts(head, head, frozen, frozen, frozen), frozen, params)
+		d := tr.Observe(now.Add(time.Second), ballot(head, head, frozen, frozen, frozen), frozen, params)
 		assert.True(t, d.Overrode, "the on-trajectory pair must outvote the stalled majority")
 		assert.Equal(t, head, d.Pick, "the pick is the fresh group's MINIMUM — both members have it")
 		assert.False(t, d.Declined, "an override is not a near miss")
@@ -323,10 +330,10 @@ func TestTipTrajectory_GroupElection(t *testing.T) {
 		for i := 0; i < 24; i++ {
 			now = now.Add(tipSampleInterval)
 			head += 100
-			tr.Observe(now, tipsFromInts(head, frozen, frozen, frozen, frozen), frozen, params)
+			tr.Observe(now, ballot(head, frozen, frozen, frozen, frozen), frozen, params)
 		}
 
-		d := tr.Observe(now.Add(time.Second), tipsFromInts(head, frozen, frozen, frozen, frozen), frozen, params)
+		d := tr.Observe(now.Add(time.Second), ballot(head, frozen, frozen, frozen, frozen), frozen, params)
 		assert.False(t, d.Overrode,
 			"one upstream matching the trajectory perfectly is still one witness")
 		assert.Equal(t, frozen, d.Pick)
@@ -340,7 +347,7 @@ func TestTipTrajectory_GroupElection(t *testing.T) {
 		// group to where the head should be, but still further than the
 		// tolerance. The referee elects it and then refuses it — a near miss,
 		// which is the one non-override outcome worth counting.
-		d := tr.Observe(now, tipsFromInts(head+3_000, head+3_000, head-20_000, head-20_000, head-20_000), head-20_000, params)
+		d := tr.Observe(now, ballot(head+3_000, head+3_000, head-20_000, head-20_000, head-20_000), head-20_000, params)
 		assert.False(t, d.Overrode)
 		assert.True(t, d.Declined, "a refused raise is the fallback outcome")
 		assert.Equal(t, head-20_000, d.Pick)
@@ -351,7 +358,7 @@ func TestTipTrajectory_GroupElection(t *testing.T) {
 		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
 
 		// Two upstreams jump far past where the chain can possibly be.
-		d := tr.Observe(now, tipsFromInts(head+500_000, head+500_000, head, head, head), head, params)
+		d := tr.Observe(now, ballot(head+500_000, head+500_000, head, head, head), head, params)
 		assert.False(t, d.Overrode, "a group that far off the trajectory must not win")
 		assert.Equal(t, head, d.Pick)
 	})
@@ -363,7 +370,7 @@ func TestTipTrajectory_GroupElection(t *testing.T) {
 		// Three upstreams run ahead, two sit exactly on the trajectory: the
 		// on-trajectory group wins the election, but electing it would LOWER
 		// the majority pick, so the referee stands down instead.
-		d := tr.Observe(now, tipsFromInts(head+50_000, head+50_000, head+50_000, head, head), head+50_000, params)
+		d := tr.Observe(now, ballot(head+50_000, head+50_000, head+50_000, head, head), head+50_000, params)
 		assert.False(t, d.Overrode, "the referee may never lower or hold the pick")
 		assert.Equal(t, head+50_000, d.Pick)
 	})
@@ -373,12 +380,11 @@ func TestTipTrajectory_GroupElection(t *testing.T) {
 		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
 
 		// Normal propagation skew, well inside one cluster width.
-		heads := tipsFromInts(head, head-1, head-3, head-7, head-11)
-		median := PickServedTip(heads).Tip
-		d := tr.Observe(now, heads, median, params)
+		pick := PickServedTip(tipsFromInts(head, head-1, head-3, head-7, head-11))
+		d := tr.Observe(now, pick.Sorted, pick.Tip, params)
 		assert.False(t, d.Overrode)
 		assert.False(t, d.Declined, "a fleet in one cluster is not even a near miss")
-		assert.Equal(t, median, d.Pick)
+		assert.Equal(t, pick.Tip, d.Pick)
 	})
 }
 
@@ -394,7 +400,7 @@ func TestTipTrajectory_BurstyChainWidensItsOwnTolerance(t *testing.T) {
 		if i%10 == 9 {
 			head += 1000
 		}
-		bursty.Observe(now, tipsFromInts(head), head, trajectoryParams())
+		bursty.Observe(now, ballot(head, head), head, trajectoryParams())
 		now = now.Add(tipSampleInterval)
 	}
 
@@ -416,7 +422,7 @@ func TestTipTrajectory_SampleThrottleAndBufferBound(t *testing.T) {
 
 	// A hot request path: 500 evaluations inside one sample interval.
 	for i := 0; i < 500; i++ {
-		tr.Observe(now.Add(time.Duration(i)*time.Millisecond), tipsFromInts(1_000_000), 1_000_000, params)
+		tr.Observe(now.Add(time.Duration(i)*time.Millisecond), ballot(1_000_000, 1_000_000), 1_000_000, params)
 	}
 	assert.Equal(t, 1, tr.SampleCount(), "the throttle admits one sample per interval, whatever the QPS")
 
@@ -441,7 +447,7 @@ func TestTipTrajectory_ConcurrentObserve(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
 				head := int64(1_000_000 + i*100)
-				tr.Observe(start.Add(time.Duration(i)*tipSampleInterval), tipsFromInts(head, head-1), head, params)
+				tr.Observe(start.Add(time.Duration(i)*tipSampleInterval), ballot(head, head-1), head, params)
 			}
 		}()
 	}
@@ -450,6 +456,212 @@ func TestTipTrajectory_ConcurrentObserve(t *testing.T) {
 	assert.Positive(t, tr.SampleCount())
 	assert.LessOrEqual(t, tr.SampleCount(), tipBufferCapacity(params.Window),
 		"the ring must stay bounded however many goroutines record into it")
+}
+
+// ─── Corroboration must be EARNED (dwell + velocity agreement) ───────────────
+//
+// Matching the trajectory in one instant is not evidence. These pin the two
+// exploits of the instant test, both confirmed by simulation against the first
+// version of the referee.
+
+// in / ballotOf build a ballot with EXPLICIT upstream ids, so a test can change
+// a group's MEMBERSHIP without changing any head value.
+func in(id string, blk int64) ServedTipInput { return ServedTipInput{UpstreamID: id, BlockNumber: blk} }
+func ballotOf(ins ...ServedTipInput) []ServedTipInput {
+	return PickServedTip(ins).Sorted
+}
+
+// A GENUINE chain halt, with no traffic gap at all: the process evaluates every
+// 5s, the honest majority is frozen at the last real head, and two upstreams sit
+// at a FIXED higher block (a fork, a wrong-chain pair, a shared counter frozen
+// mid-flight). Because the fitted trajectory keeps extrapolating, the expected
+// head SWEEPS upward through every fixed offset — so the static pair is "on
+// trajectory" for as long as the sweep takes to cross it. Measured against the
+// instant test, the +2000 pair won 74 of 240 halt evaluations, i.e. minutes of a
+// halted chain served from a fork.
+func TestTipTrajectory_HaltSweepCannotElectAStaticGroup(t *testing.T) {
+	for _, ahead := range []int64{2_000, 6_000, 20_000} {
+		var tr TipTrajectory
+		p := trajectoryParams()
+		now, frozen := warmTrajectory(&tr, time.Now(), 74_500_000, 100, 140)
+		require.NotNil(t, tr.fit.Load(), "precondition: the referee is warm and confident")
+
+		rogue := frozen + ahead
+		overrides, elected := 0, 0
+		for k := 0; k < 240; k++ { // 20 minutes of halt, sampled every 5s
+			d := tr.Observe(now, ballotOf(
+				in("r1", rogue), in("r2", rogue),
+				in("h1", frozen), in("h2", frozen), in("h3", frozen),
+			), frozen, p)
+			if d.Overrode {
+				overrides++
+			}
+			if d.Declined {
+				elected++
+			}
+			now = now.Add(tipSampleInterval)
+		}
+		assert.Zero(t, overrides,
+			"a static group cannot have produced the chain progress the fit describes, "+
+				"however close the sweeping expected head passes to it (offset +%d)", ahead)
+		t.Logf("offset +%-6d : 0 overrides, %d evaluations where the sweep put it on trajectory", ahead, elected)
+	}
+}
+
+func TestTipTrajectory_DwellMustBeEarned(t *testing.T) {
+	p := trajectoryParams()
+
+	// The confirmed false-override shape: two of four upstreams pause for 15s
+	// (a poller hiccup, a vendor blip) and then catch up. Nothing is wrong with
+	// the fleet, and the divergence is over long before the dwell completes.
+	t.Run("TransientDivergenceNeverWins", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		overrides := 0
+		paused := head
+		for k := 0; k < 3; k++ { // 15s of two-of-four divergence
+			head += 100
+			d := tr.Observe(now, ballotOf(
+				in("u1", head), in("u2", head),
+				in("u3", paused), in("u4", paused),
+			), paused, p)
+			if d.Overrode {
+				overrides++
+			}
+			now = now.Add(tipSampleInterval)
+		}
+		// The pair catches up: one cluster again.
+		head += 100
+		d := tr.Observe(now, ballotOf(in("u1", head), in("u2", head), in("u3", head), in("u4", head)), head, p)
+		assert.False(t, d.Overrode)
+		assert.Zero(t, overrides,
+			"a 15-second divergence must not hand the tip to half the fleet")
+	})
+
+	// The headline case still works — and only after the group has held its
+	// place for the dwell.
+	t.Run("StalledMajorityLosesOnlyAfterTheDwell", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+		start := now
+
+		frozen := head
+		var firstOverride time.Duration = -1
+		for k := 0; k < 24; k++ {
+			head += 100
+			d := tr.Observe(now, ballotOf(
+				in("u1", head), in("u2", head),
+				in("u3", frozen), in("u4", frozen), in("u5", frozen),
+			), frozen, p)
+			if d.Overrode && firstOverride < 0 {
+				firstOverride = now.Sub(start)
+			}
+			now = now.Add(tipSampleInterval)
+		}
+		require.GreaterOrEqual(t, firstOverride, time.Duration(0),
+			"the corroborated fresh pair must still win a genuine majority stall")
+		assert.GreaterOrEqual(t, firstOverride, tipDwellDuration,
+			"and never before it has held its place for the dwell")
+	})
+
+	// A group is a SET of upstreams, not a pair of head values: replacing a
+	// member restarts the corroboration from zero, because the new set has
+	// proven nothing.
+	t.Run("MembershipChangeRestartsTheDwell", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		frozen := head
+		stall := func(freshA, freshB string) TipTrajectoryDecision {
+			head += 100
+			d := tr.Observe(now, ballotOf(
+				in(freshA, head), in(freshB, head),
+				in("u3", frozen), in("u4", frozen), in("u5", frozen),
+			), frozen, p)
+			now = now.Add(tipSampleInterval)
+			return d
+		}
+		for k := 0; k < 24; k++ {
+			stall("u1", "u2")
+		}
+		require.True(t, stall("u1", "u2").Overrode, "precondition: {u1,u2} has earned its override")
+
+		d := stall("u1", "u6")
+		assert.False(t, d.Overrode, "a different set of upstreams starts a new dwell")
+		assert.True(t, d.Declined, "and the refusal is the fallback outcome, not silence")
+	})
+}
+
+// The gap rule is about the WINDOW, not about the newest sample: standing the
+// referee down for the single evaluation that notices a hole let the next
+// evaluation — a millisecond later — extrapolate straight across it.
+func TestTipTrajectory_GapMustLeaveTheWindow(t *testing.T) {
+	p := trajectoryParams()
+
+	t.Run("TheEvaluationAfterTheGapIsInertToo", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 74_500_000, 100, 140)
+
+		// A 10-minute traffic hole: the chain kept going, the process saw none
+		// of it. Then the stall shape — 2 fresh, 3 frozen far behind.
+		gap := 10 * time.Minute
+		now = now.Add(gap)
+		head += int64(gap.Seconds()) * 20
+		frozen := head - 30_000
+		tips := ballotOf(
+			in("a", head), in("b", head),
+			in("c", frozen), in("d", frozen), in("e", frozen),
+		)
+
+		d1 := tr.Observe(now, tips, frozen, p)
+		d2 := tr.Observe(now.Add(time.Millisecond), tips, frozen, p)
+		assert.False(t, d1.Overrode, "the evaluation that notices the gap is inert")
+		assert.False(t, d2.Overrode,
+			"and so is the next one: the fit still spans the hole it cannot see across")
+	})
+
+	t.Run("HaltInsideTheGapCannotLiftExpected", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 74_500_000, 100, 140)
+
+		// 10 minutes of neither traffic nor chain progress. The robust intercept
+		// would otherwise lift the fit's anchor by a whole gap of chain, putting
+		// "expected" thousands of blocks above the true halted head — exactly
+		// where a rogue pair would be waiting.
+		now = now.Add(10 * time.Minute)
+		_ = tr.Observe(now, ballotOf(in("h1", head), in("h2", head), in("h3", head)), head, p)
+
+		fit := tr.fit.Load()
+		require.NotNil(t, fit)
+		nowMs := int64(now.Sub(*tr.base.Load()) / time.Millisecond)
+		inflation := int64(fit.expectedAt(nowMs)) - head
+		require.Positive(t, inflation, "precondition: the raw fit does extrapolate across the hole")
+
+		d := tr.Observe(now.Add(time.Millisecond), ballotOf(
+			in("r1", head+inflation), in("r2", head+inflation),
+			in("h1", head), in("h2", head), in("h3", head),
+		), head, p)
+		assert.False(t, d.Overrode,
+			"a pair sitting exactly where the gap-inflated fit expects the head must not win")
+		assert.Zero(t, d.Expected, "the fit is refused outright, so nothing is even compared to it")
+	})
+}
+
+// A ballot that cannot form a group can never produce a decision, so it must not
+// pay for one: no ring, no fit, no periodic O(n log n) refit. Most chains in a
+// large deployment have exactly one upstream.
+func TestTipTrajectory_BallotBelowGroupSizeRecordsNothing(t *testing.T) {
+	var tr TipTrajectory
+	p := trajectoryParams()
+	now := time.Now()
+	for i := 0; i < 200; i++ {
+		head := 1_000_000 + int64(i)*100
+		tr.Observe(now, ballot(head), head, p)
+		now = now.Add(tipSampleInterval)
+	}
+	assert.Zero(t, tr.SampleCount(), "a single-upstream network must not materialize a head track")
+	assert.Nil(t, tr.fit.Load())
 }
 
 func TestTipClusterWidth(t *testing.T) {

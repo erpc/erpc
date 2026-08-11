@@ -805,7 +805,7 @@ func (n *Network) servedTip(
 	// network's head has been going for the last ten minutes. Advisory and
 	// upward-only — it can only replace the majority pick with a higher block
 	// that at least two live upstreams already have.
-	pick.Tip = n.refereeServedTip(axis, lane, anchor, tips, pick.Tip, maxLiveHead)
+	pick.Tip = n.refereeServedTip(axis, lane, anchor, pick.Sorted, pick.Tip, maxLiveHead)
 
 	// Regression guard: "latest" cannot drop far below the freshest live head
 	// in one evaluation. Runs BEFORE the guaranteed-method floor, which is a
@@ -868,11 +868,16 @@ func (n *Network) servedTip(
 //     majority;
 //   - it can only RAISE the pick, and only to the minimum of a group of ≥2
 //     live upstreams — a value they can all serve, and one at most as high as
-//     the freshest live head. It can neither hold the tip back nor invent one.
+//     the freshest live head. It can neither hold the tip back nor invent one;
+//   - and that group must have EARNED it: half a minute of continuously
+//     matching the trajectory while advancing its own head (evm.TipTrajectory's
+//     dwell and velocity-agreement conditions), so neither a static fork swept
+//     over by a halting chain's expected head nor a routine 15-second
+//     divergence can trigger an intervention.
 //
 // The pick stays ≤ evm.ServedTipPick.Freshest (the 2nd-highest head) for the
 // same reason, so the served-tip lag gauge never reads negative.
-func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAnchor, tips []evm.ServedTipInput, median int64, maxLiveHead int64) int64 {
+func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAnchor, sorted []evm.ServedTipInput, median int64, maxLiveHead int64) int64 {
 	if anchor == nil || median <= 0 || maxLiveHead <= 0 {
 		// maxLiveHead > 0 is also what makes `tips` safe to sample and cluster:
 		// gatherEvmTipInputsForMethod only returns bound-capped observations
@@ -885,7 +890,7 @@ func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAn
 		return median
 	}
 
-	decision := anchor.trajectory.Observe(servedTipClock(), tips, median, evm.TipTrajectoryParams{
+	decision := anchor.trajectory.Observe(servedTipClock(), sorted, median, evm.TipTrajectoryParams{
 		Window:         window,
 		ToleranceFloor: n.servedTipMaxRegressionBlocks(),
 	})

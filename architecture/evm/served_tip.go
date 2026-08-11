@@ -40,6 +40,12 @@ type ServedTipPick struct {
 
 	// Inputs is the number of valid (BlockNumber > 0) observations.
 	Inputs int
+
+	// Sorted is the valid inputs, DESCENDING by block number — the order
+	// statistic's own working slice, exposed so the trajectory referee can
+	// cluster the very same ballot without sorting it a second time. Nil when
+	// there are no valid inputs; never mutate it.
+	Sorted []ServedTipInput
 }
 
 // PickServedTip returns the freshest block number that a strict majority of
@@ -73,26 +79,31 @@ type ServedTipPick struct {
 // Examples (heads descending): N=1 → that head; N=2 → the LOWER (never
 // advertise a block only one upstream claims); N=3 → 2nd; N=4 → 3rd; N=5 → 3rd.
 func PickServedTip(tips []ServedTipInput) ServedTipPick {
-	heads := make([]int64, 0, len(tips))
+	// One sorted slice serves the whole evaluation: the order statistic here
+	// and the referee's clustering downstream (ServedTipPick.Sorted). The
+	// UpstreamIDs travel with it because group IDENTITY — not just the head
+	// values — is what the referee's dwell test is keyed on.
+	sorted := make([]ServedTipInput, 0, len(tips))
 	for _, t := range tips {
 		if t.BlockNumber > 0 {
-			heads = append(heads, t.BlockNumber)
+			sorted = append(sorted, t)
 		}
 	}
-	if len(heads) == 0 {
+	if len(sorted) == 0 {
 		return ServedTipPick{}
 	}
-	sort.Slice(heads, func(i, j int) bool { return heads[i] > heads[j] })
-	freshest := heads[0]
-	if len(heads) > 1 {
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].BlockNumber > sorted[j].BlockNumber })
+	freshest := sorted[0].BlockNumber
+	if len(sorted) > 1 {
 		// Corroborated freshest: a single rogue far-future tip must not be
 		// able to inflate the lag reference (see ServedTipPick.Freshest).
-		freshest = heads[1]
+		freshest = sorted[1].BlockNumber
 	}
 	return ServedTipPick{
-		Tip:      heads[len(heads)/2],
+		Tip:      sorted[len(sorted)/2].BlockNumber,
 		Freshest: freshest,
-		Inputs:   len(heads),
+		Inputs:   len(sorted),
+		Sorted:   sorted,
 	}
 }
 
@@ -130,6 +141,16 @@ func PickServedTip(tips []ServedTipInput) ServedTipPick {
 //     velocity decays, and the referee stops participating on its own after
 //     roughly half a window. Its intervention has a built-in expiry that no
 //     configuration can extend.
+//   - CORROBORATION IS EARNED OVER TIME, NOT IN AN INSTANT. Matching the
+//     trajectory in one sample is not evidence: during a chain halt the expected
+//     head SWEEPS upward through every fixed offset, so any static fork/pair sits
+//     "on trajectory" for as long as the sweep takes to cross it, and a routine
+//     15-second divergence puts a healthy pair "ahead" for one evaluation. Both
+//     were confirmed exploits of the instant test. A group must therefore hold
+//     its place — elected AND within tolerance — for a continuous tipDwellDuration
+//     before it may win, and must have ADVANCED its own head over that stretch at
+//     a fraction of the fitted velocity (tipDwellMinVelocityFraction). A frozen
+//     group can never satisfy the second condition, whatever the first says.
 //   - FAIL OPEN ON ANY UNCERTAINTY, and no shared state: everything below is
 //     per-process, in-memory, rebuilt from live observations after a restart.
 //     Per-pod independence is the point — a shared head counter is how the
@@ -146,16 +167,53 @@ const (
 	// a handful of points could define a "trajectory" on noise alone.
 	tipMinSamples = 30
 
-	// tipMaxSampleGap is how stale the freshest sample may be (as of the START
-	// of an evaluation) for the fit to still describe the present. A gap larger
-	// than this is where a halt or a burst hides, and extrapolating across it
-	// is guessing — the referee steps aside instead.
+	// tipMaxSampleGap is how large a hole the window may contain — both at its
+	// newest end (the age of the freshest sample as of the START of an
+	// evaluation) and ANYWHERE INSIDE it (tipFit.maxGapMs). A gap larger than
+	// this is where a halt or a burst hides, and a fit whose window straddles
+	// one is extrapolating across the very thing it cannot see: the residuals
+	// of the samples before the hole then pull the robust intercept up by a
+	// whole gap of chain progress, which is exactly how a rogue pair sitting at
+	// "where the head would be if the chain had not stopped" wins an election.
+	// Checking only the newest sample's age stood the referee down for a single
+	// evaluation — the next one, a millisecond later, extrapolated across the
+	// hole regardless. The gap must therefore leave the WINDOW before the fit
+	// counts as describing the present.
 	tipMaxSampleGap = time.Minute
 
 	// tipMinGroupSize is the corroboration rule: one witness is not evidence,
 	// however perfectly it matches the trajectory. A group must contain at
 	// least two upstreams to be electable.
+	//
+	// It stays 2 for a fleet of ANY size, deliberately: the whole point of the
+	// referee is that two upstreams which genuinely hold the chain's head must
+	// be able to outvote a larger stalled group, and scaling the requirement
+	// with the fleet would hand the stalled majority a veto in exactly the
+	// topology the referee exists for. What makes two trustworthy is not the
+	// count but the dwell and velocity conditions below: two witnesses that
+	// have tracked the network's own trajectory for half a minute, advancing
+	// their own heads while doing so.
 	tipMinGroupSize = 2
+
+	// tipDwellDuration is how long the elected group must hold its place —
+	// continuously within tolerance of the expected head — before it may
+	// outvote the majority. Six samples at the 5s throttle: long enough that a
+	// routine divergence (a 15s poller hiccup on half the fleet, the confirmed
+	// false-override shape) resolves before it can win, short enough that a
+	// genuine majority stall is corrected inside one block-explorer refresh.
+	tipDwellDuration = 30 * time.Second
+
+	// tipDwellMinVelocityFraction is the share of the fitted velocity the
+	// elected group must have delivered FROM ITS OWN HEAD over the dwell. It is
+	// a lower bound only — closeness to expected already bounds the group from
+	// above — and its job is to disqualify anything that is not moving: a fork,
+	// a wrong-chain pair, a frozen shared counter parked at a fixed offset. A
+	// static group's advance is 0 and the threshold is strictly positive
+	// whenever the referee is confident at all (confident() requires v > 0 and
+	// the dwell is ≥30s), so a static group can never be elected — not merely
+	// unlikely to be. Half the fitted velocity leaves room for a group that is
+	// catching up in bursts.
+	tipDwellMinVelocityFraction = 0.5
 
 	// tipToleranceSigmas (k) scales the window's OWN residual spread into the
 	// distance-from-expected a group may sit at and still count as
@@ -240,12 +298,13 @@ type tipSample struct {
 // tipFit is the robust linear fit over the buffer, recomputed on insertion and
 // read lock-free on every evaluation.
 type tipFit struct {
-	refMs   int64   // timestamp of the newest sample in the fit
-	refHead float64 // FITTED head at refMs (not the raw sample: one poisoned sample must not define the anchor)
-	vPerSec float64 // robust velocity, blocks/second
-	spread  float64 // median absolute residual around the fit, blocks
-	spanMs  int64   // newest − oldest sample timestamp
-	count   int
+	refMs    int64   // timestamp of the newest sample in the fit
+	refHead  float64 // FITTED head at refMs (not the raw sample: one poisoned sample must not define the anchor)
+	vPerSec  float64 // robust velocity, blocks/second
+	spread   float64 // median absolute residual around the fit, blocks
+	spanMs   int64   // newest − oldest sample timestamp
+	maxGapMs int64   // largest interval BETWEEN two consecutive samples in the window
+	count    int
 }
 
 // expectedAt extrapolates the fit to an instant on the tracker's timeline.
@@ -265,7 +324,11 @@ func (f *tipFit) confident(nowMs int64, prevSampleAgeMs int64, p TipTrajectoryPa
 		// Also the warm-up condition: an empty buffer after boot has no span.
 		return false
 	}
-	if prevSampleAgeMs > tipMaxSampleGap.Milliseconds() {
+	if prevSampleAgeMs > tipMaxSampleGap.Milliseconds() || f.maxGapMs > tipMaxSampleGap.Milliseconds() {
+		// Both ends of the same rule: the track must be unbroken up to now AND
+		// unbroken across the whole window it was fitted over (see
+		// tipMaxSampleGap). A hole inside the window stands the referee down
+		// until the hole has scrolled out of the ring.
 		return false
 	}
 	if !(f.vPerSec > 0) || math.IsInf(f.vPerSec, 0) {
@@ -300,6 +363,28 @@ type TipTrajectory struct {
 	base         atomic.Pointer[time.Time]
 	lastSampleMs atomic.Int64
 	fit          atomic.Pointer[tipFit]
+
+	// dwell is the current corroboration stretch: which group has been the
+	// elected one, since when, and where its head was then. nil = no stretch in
+	// progress. Immutable once stored, so a dwell that is simply CONTINUING
+	// costs one atomic load per evaluation and no write at all.
+	dwell atomic.Pointer[tipDwell]
+}
+
+// tipDwell is one continuous stretch during which the same group of upstreams
+// has been elected by the trajectory and has stayed within tolerance of the
+// expected head. Its fields are never mutated after the Store; a change of
+// group, a miss, or a loss of confidence replaces or clears the whole struct.
+type tipDwell struct {
+	// group is the order-independent identity of the group's MEMBERS
+	// (groupIdentity), not of their head values: a stretch belongs to a set of
+	// upstreams, and any change to that set starts a new one.
+	group uint64
+
+	// startMs is when the stretch began, and startHead the group's max head at
+	// that instant — the two ends of the velocity-agreement measurement.
+	startMs   int64
+	startHead int64
 }
 
 // SampleCount returns how many samples the tracker holds. Diagnostics and
@@ -313,14 +398,22 @@ func (t *TipTrajectory) SampleCount() int {
 // Observe records this evaluation's live-head median (throttled) and returns
 // the trajectory's advice for it.
 //
-// `tips` must be the LIVE head observations of this same evaluation (the
-// caller drops availability-bound-capped upstreams first — a serving range is
-// not a head), and `median` the plain majority pick over them. Both the sample
-// and the candidate groups come from those heads, so the referee's own output
-// never feeds back into its evidence.
-func (t *TipTrajectory) Observe(now time.Time, tips []ServedTipInput, median int64, p TipTrajectoryParams) TipTrajectoryDecision {
+// `sorted` must be ServedTipPick.Sorted for the LIVE head observations of this
+// same evaluation (the caller drops availability-bound-capped upstreams first —
+// a serving range is not a head), i.e. already filtered and DESCENDING, and
+// `median` the plain majority pick over them. Both the sample and the candidate
+// groups come from those heads, so the referee's own output never feeds back
+// into its evidence.
+func (t *TipTrajectory) Observe(now time.Time, sorted []ServedTipInput, median int64, p TipTrajectoryParams) TipTrajectoryDecision {
 	d := TipTrajectoryDecision{Pick: median}
 	if p.Window <= 0 || median <= 0 {
+		return d
+	}
+	if len(sorted) < tipMinGroupSize {
+		// Nothing here can ever produce a decision — no group of two can form —
+		// so nothing is recorded either. A single-upstream network (the majority
+		// of chains in a large deployment) therefore allocates no ring, runs no
+		// fit, and costs two comparisons per evaluation.
 		return d
 	}
 
@@ -328,19 +421,11 @@ func (t *TipTrajectory) Observe(now time.Time, tips []ServedTipInput, median int
 
 	fit := t.fit.Load()
 	if !fit.confident(nowMs, prevSampleAgeMs, p) {
+		// No confident fit means no elected group, so any stretch in progress is
+		// over: a group must re-earn its dwell once the referee can see again.
+		t.breakDwell()
 		return d
 	}
-
-	heads := make([]int64, 0, len(tips))
-	for _, in := range tips {
-		if in.BlockNumber > 0 {
-			heads = append(heads, in.BlockNumber)
-		}
-	}
-	if len(heads) < tipMinGroupSize {
-		return d
-	}
-	sort.Slice(heads, func(i, j int) bool { return heads[i] > heads[j] })
 
 	expected := fit.expectedAt(nowMs)
 	tolerance := float64(p.ToleranceFloor)
@@ -358,16 +443,18 @@ func (t *TipTrajectory) Observe(now time.Time, tips []ServedTipInput, median int
 	// slowest member) sits closest to where the trajectory says the head is.
 	width := tipClusterWidth(fit.vPerSec)
 	bestDistance := math.Inf(1)
-	var bestMin int64
-	for i := 0; i < len(heads); {
+	var bestMin, bestMax int64
+	var bestGroup uint64
+	for i := 0; i < len(sorted); {
 		j := i + 1
-		for j < len(heads) && heads[j-1]-heads[j] <= width {
+		for j < len(sorted) && sorted[j-1].BlockNumber-sorted[j].BlockNumber <= width {
 			j++
 		}
 		if j-i >= tipMinGroupSize {
-			groupMax, groupMin := heads[i], heads[j-1]
+			groupMax, groupMin := sorted[i].BlockNumber, sorted[j-1].BlockNumber
 			if distance := math.Abs(float64(groupMax) - expected); distance < bestDistance {
-				bestDistance, bestMin = distance, groupMin
+				bestDistance, bestMin, bestMax = distance, groupMin, groupMax
+				bestGroup = groupIdentity(sorted[i:j])
 			}
 		}
 		i = j
@@ -375,15 +462,31 @@ func (t *TipTrajectory) Observe(now time.Time, tips []ServedTipInput, median int
 
 	if bestDistance > tolerance {
 		// No candidate group at all (+Inf), or the elected one is nowhere near
-		// the trajectory — nothing here is better evidence than the majority.
+		// the trajectory — nothing here is better evidence than the majority,
+		// and whatever stretch was in progress just missed.
+		t.breakDwell()
 		d.Declined = bestMin > median
 		return d
 	}
+
+	// The elected group keeps (or starts) its dwell whether or not it is above
+	// the majority pick: in steady state the whole fleet is that group, and it
+	// arrives at a stall with its corroboration already earned.
+	corroborated := t.corroborate(nowMs, bestGroup, bestMax, fit.vPerSec)
+
 	if bestMin <= median {
 		// UPWARD-ONLY (see the section comment): the referee exists to let a
 		// corroborated fresh minority outvote a stalled majority. Lowering or
 		// holding the tip is the majority picker's and the regression guard's
 		// job, and is the only direction from which a frozen tip is reachable.
+		return d
+	}
+	if !corroborated {
+		// An override was on the table and the group has not held its place long
+		// enough (or has not moved its own head) to earn it — the same outcome,
+		// and the same counter, as a group that sits too far from the
+		// trajectory.
+		d.Declined = true
 		return d
 	}
 
@@ -393,6 +496,65 @@ func (t *TipTrajectory) Observe(now time.Time, tips []ServedTipInput, median int
 	d.Pick = bestMin
 	d.Overrode = true
 	return d
+}
+
+// corroborate reports whether `group` has EARNED the right to outvote the
+// majority, and keeps the dwell state that answers it.
+//
+// Two conditions, both measured over one continuous stretch of being the
+// elected group:
+//
+//   - it has been that group for at least tipDwellDuration. A chain halt sweeps
+//     the expected head upward through every fixed offset, so an instant match
+//     says only "the sweep is passing over this group right now";
+//   - its own head has advanced over the stretch by at least
+//     tipDwellMinVelocityFraction of what the fitted velocity says the chain
+//     produced. A fork, a wrong-chain pair, or a frozen counter parked at a
+//     plausible offset advances by nothing and can never pass.
+//
+// Concurrency: several serving goroutines may race here; the only outcomes are
+// "the stretch restarts" and "the stretch continues", and a restart is the
+// conservative direction (it can delay an override, never cause one).
+func (t *TipTrajectory) corroborate(nowMs int64, group uint64, groupMax int64, vPerSec float64) bool {
+	d := t.dwell.Load()
+	if d == nil || d.group != group || nowMs < d.startMs {
+		t.dwell.Store(&tipDwell{group: group, startMs: nowMs, startHead: groupMax})
+		return false
+	}
+	seconds := float64(nowMs-d.startMs) / 1000
+	if seconds < tipDwellDuration.Seconds() {
+		return false
+	}
+	return float64(groupMax-d.startHead) >= tipDwellMinVelocityFraction*vPerSec*seconds
+}
+
+// breakDwell ends any stretch in progress. Load-first, so the common case (no
+// stretch, or a fleet that has been in one cluster for hours) writes nothing.
+func (t *TipTrajectory) breakDwell() {
+	if t.dwell.Load() != nil {
+		t.dwell.Store(nil)
+	}
+}
+
+// groupIdentity fingerprints a group by its MEMBERS. The fold is commutative
+// (a sum of per-id FNV-1a hashes), so the identity is a property of the SET and
+// needs no sorting or allocation on the request path; the caller's slice is
+// already in head order, which is not the order the identity may depend on.
+func groupIdentity(group []ServedTipInput) uint64 {
+	const (
+		fnvOffset64 = uint64(14695981039346656037)
+		fnvPrime64  = uint64(1099511628211)
+	)
+	var sum uint64
+	for _, in := range group {
+		h := fnvOffset64
+		for i := 0; i < len(in.UpstreamID); i++ {
+			h ^= uint64(in.UpstreamID[i])
+			h *= fnvPrime64
+		}
+		sum += h
+	}
+	return sum
 }
 
 // record appends a sample if at least tipSampleInterval has passed since the
@@ -498,7 +660,13 @@ func (t *TipTrajectory) refit() {
 	// blocks, never epoch milliseconds or 8-digit block numbers, so float64
 	// keeps full precision on chains of any height.
 	resid := t.resid[:0]
-	for _, s := range ord {
+	var maxGapMs int64
+	for i, s := range ord {
+		if i > 0 {
+			if gap := s.atMs - ord[i-1].atMs; gap > maxGapMs {
+				maxGapMs = gap
+			}
+		}
 		ts := float64(s.atMs-newest.atMs) / 1000
 		resid = append(resid, float64(s.head-newest.head)-vPerSec*ts)
 	}
@@ -509,12 +677,13 @@ func (t *TipTrajectory) refit() {
 	}
 
 	t.fit.Store(&tipFit{
-		refMs:   newest.atMs,
-		refHead: float64(newest.head) + intercept,
-		vPerSec: vPerSec,
-		spread:  medianInPlace(resid),
-		spanMs:  newest.atMs - ord[0].atMs,
-		count:   n,
+		refMs:    newest.atMs,
+		refHead:  float64(newest.head) + intercept,
+		vPerSec:  vPerSec,
+		spread:   medianInPlace(resid),
+		spanMs:   newest.atMs - ord[0].atMs,
+		maxGapMs: maxGapMs,
+		count:    n,
 	})
 }
 
