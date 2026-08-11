@@ -889,7 +889,7 @@ func (n *Network) servedTip(
 	anchor *servedTipAnchor,
 	lane string,
 ) int64 {
-	tips, liveReference := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
+	tips, ref := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
 	pick := evm.PickServedTip(tips)
 
 	// Trajectory referee: when the live heads split and the majority is the
@@ -898,13 +898,13 @@ func (n *Network) servedTip(
 	// upward-only — it can only replace the majority pick with a higher block
 	// that at least two live upstreams already have.
 	majority := pick.Tip
-	decision := n.refereeServedTip(anchor, pick.Sorted, pick.Tip, liveReference)
+	decision := n.refereeServedTip(anchor, pick.Sorted, pick.Tip, ref)
 	pick.Tip = decision.Pick
 
 	// Regression guard: "latest" cannot drop far below the corroborated live
 	// head in one evaluation. Runs BEFORE the guaranteed-method floor, which is
 	// a deliberate operator-configured clamp the guard must not fight.
-	pick.Tip = n.guardServedTipRegression(axis, lane, anchor, pick.Tip, liveReference)
+	pick.Tip = n.guardServedTipRegression(axis, lane, anchor, pick.Tip, ref)
 
 	// Capability guarantee (#855): the served tip must never exceed what any
 	// configured guaranteed-method's supporting upstreams can serve, so a
@@ -960,8 +960,11 @@ func (n *Network) servedTip(
 // It is deliberately the weakest intervention that answers that:
 //
 //   - it never runs without an anchor (arbitrary use-upstream selectors
-//     materialize no state), without a pick, or without a live head — the same
-//     conditions the regression guard stands down on;
+//     materialize no state), without a pick, or without a live head. That last
+//     condition is stricter than the guard's, which measures against its own
+//     last corroborated pick when the live heads are gone: the referee's
+//     evidence is a HEAD TRACK, and a ballot of serving ranges must never enter
+//     one;
 //   - it never runs when the config disables it (trajectoryWindow: 0), and it
 //     is a no-op until every confidence condition in evm.TipTrajectory holds,
 //     so a cold or stale process behaves byte-identically to the plain
@@ -975,8 +978,9 @@ func (n *Network) servedTip(
 //     over by a halting chain's expected head nor a routine 15-second
 //     divergence can trigger an intervention.
 //
-// The pick stays ≤ evm.ServedTipPick.Freshest (the 2nd-highest head) for the
-// same reason, so the served-tip lag gauge never reads negative.
+// Serving a winning group's MINIMUM also keeps the pick ≤
+// evm.ServedTipPick.Freshest (the 2nd-highest head): a group has at least two
+// members, so at least two heads sit at or above what it serves.
 func (n *Network) refereeServedTip(anchor *servedTipAnchor, sorted []evm.ServedTipInput, median int64, ref servedTipReference) evm.TipTrajectoryDecision {
 	stood := evm.TipTrajectoryDecision{Pick: median}
 	if anchor == nil || median <= 0 || ref.Max <= 0 {
