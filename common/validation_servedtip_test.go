@@ -56,6 +56,20 @@ func TestEvmNetworkConfig_Validate_ServedTip(t *testing.T) {
 		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}}
 		require.NoError(t, e.Validate())
 	})
+
+	t.Run("negative trajectoryWindow rejected", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{TrajectoryWindow: Duration(-1).Ptr()}
+		err := e.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "trajectoryWindow")
+	})
+
+	t.Run("zero trajectoryWindow disables the referee", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}, TrajectoryWindow: Duration(0).Ptr()}
+		require.NoError(t, e.Validate())
+	})
 }
 
 // TestNetworkConfig_SetDefaults_InheritsServedTip ensures a global

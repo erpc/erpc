@@ -1613,6 +1613,21 @@ export interface EvmServedTipConfig {
    * layers agree on what counts as a genuine deep correction.
    */
   maxRegressionBlocks?: number /* int64 */;
+  /**
+   * TrajectoryWindow is how much recorded head history the trajectory referee
+   * needs before it may participate in the pick. The referee tracks where this
+   * network's head has been over the window and, when a stalled group holds
+   * the majority, serves the corroborated group that is actually where the
+   * chain should be by now (see architecture/evm's TipTrajectory: advisory,
+   * upward-only, in-process, and a no-op until every confidence condition
+   * holds). Unset uses DefaultServedTipTrajectoryWindow (10m); an explicit 0
+   * disables the referee entirely — nothing is recorded and the pick is the
+   * plain majority. Values much below a few minutes are self-defeating (the
+   * window must be long enough that a stall cannot look like a trajectory),
+   * and values beyond about an hour never warm up at all: the sample ring is
+   * capped, so the span the referee requires would never be reached.
+   */
+  trajectoryWindow?: Duration;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

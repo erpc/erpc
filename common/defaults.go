@@ -2166,6 +2166,15 @@ const DefaultBlockUnavailableDelayMultiplier = 1.0
 // and the health tracker so both layers converge on the same head.
 const DefaultToleratedBlockHeadRollback = 1024
 
+// DefaultServedTipTrajectoryWindow is how much head history the served-tip
+// trajectory referee needs before it may participate in a pick
+// (EvmServedTipConfig.TrajectoryWindow). Ten minutes is long enough that a
+// majority stall cannot masquerade as the trajectory (the referee's evidence is
+// the median of live heads, so a stall of half the window already flattens the
+// fit and stands the referee down), and short enough to be warm well within a
+// pod's lifetime.
+const DefaultServedTipTrajectoryWindow = 10 * time.Minute
+
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
 // ErrUpstreamBlockUnavailable): one original attempt + one retry after ~one block.

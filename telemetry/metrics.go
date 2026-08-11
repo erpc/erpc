@@ -167,6 +167,25 @@ var (
 		Help:      "Served-tip picks rejected as a regression far below the freshest live upstream head, by outcome (held = last corroborated pick served instead; failed_open = the pick was served anyway after the guard's window).",
 	}, []string{"project", "network", "lane", "axis", "outcome"})
 
+	// MetricNetworkServedTipTrajectoryTotal counts the evaluations where the
+	// long-term trajectory referee had a FRESHER corroborated group of live
+	// heads on the table than the majority pick. outcome="override" = that
+	// group matched the network's own head trajectory and was served instead of
+	// a stalled majority — rare, and the reason to page someone: some upstreams
+	// froze while remaining eligible. outcome="fallback" = it did not match
+	// closely enough, so the majority pick stood.
+	//
+	// Both are silent in steady state by construction: a fleet whose live heads
+	// form one cluster elects that cluster, and a fleet permanently split around
+	// its own median elects the median's group (the trajectory is fitted to the
+	// median, so no permanently-offset group is ever closer to it). Any sustained
+	// rate here means the fleet's groups are genuinely diverging.
+	MetricNetworkServedTipTrajectoryTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_trajectory_total",
+		Help:      "Served-tip evaluations where a corroborated group of live heads sat above the majority pick, by outcome (override = that group matched the network's head trajectory and was served; fallback = it did not, and the majority pick stood).",
+	}, []string{"project", "network", "lane", "axis", "outcome"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

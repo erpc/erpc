@@ -123,6 +123,18 @@ type servedTipAnchor struct {
 	// on transitions, so a sustained regression reports twice (once when it
 	// starts holding, once if it gives up) instead of once per request.
 	guardState atomic.Int32
+
+	// trajectory is this lane+axis's long-term head track — the referee that
+	// lets a corroborated FRESH MINORITY outvote a stalled majority
+	// (refereeServedTip). It holds no pick either: its samples are the plain
+	// majority over live heads, its output is always one of the head values the
+	// live upstreams offer in the same evaluation, and it can only ever raise
+	// the pick. See evm.TipTrajectory.
+	trajectory evm.TipTrajectory
+
+	// trajectoryOverriding mirrors guardState for the referee: the override is
+	// logged on transitions only.
+	trajectoryOverriding atomic.Bool
 }
 
 const (
@@ -764,13 +776,19 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 }
 
 // servedTip computes the majority served tip for one axis over the
-// selection-policy-eligible upstreams — the freshest block a strict majority
-// of them already has (see evm.PickServedTip) — guards it against a regression
-// far below the live heads, applies the guaranteed-method floor, and exports
-// the gauges. The pick itself carries NO history: nothing is persisted and
-// nothing predicted, so no inherited or rogue value can pin, freeze or poison
-// the result (networks_served_tip_invariants_test.go pins those outcomes
-// against the 2026-06 production incident).
+// selection-policy-eligible upstreams — the freshest block a strict majority of
+// them already has (see evm.PickServedTip) — lets the trajectory referee prefer
+// a corroborated on-trajectory group when that majority has stalled, guards the
+// result against a regression far below the live heads, applies the
+// guaranteed-method floor, and exports the gauges.
+//
+// Both history-aware layers are in-process, bounded and one-directional (the
+// referee can only raise the pick; the guard can only hold it, and only
+// briefly), and NEITHER can produce a block that no live upstream reports in
+// the very same evaluation. Nothing is persisted and nothing is predicted, so
+// no inherited or rogue value can pin, freeze or poison the result
+// (networks_served_tip_invariants_test.go pins those outcomes against the
+// 2026-06 production incident).
 func (n *Network) servedTip(
 	ctx context.Context,
 	span trace.Span,
@@ -781,6 +799,13 @@ func (n *Network) servedTip(
 ) int64 {
 	tips, maxLiveHead := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
 	pick := evm.PickServedTip(tips)
+
+	// Trajectory referee: when the live heads split and the majority is the
+	// STALLED group, serve the corroborated group that matches where this
+	// network's head has been going for the last ten minutes. Advisory and
+	// upward-only — it can only replace the majority pick with a higher block
+	// that at least two live upstreams already have.
+	pick.Tip = n.refereeServedTip(axis, lane, anchor, tips, pick.Tip, maxLiveHead)
 
 	// Regression guard: "latest" cannot drop far below the freshest live head
 	// in one evaluation. Runs BEFORE the guaranteed-method floor, which is a
@@ -817,6 +842,101 @@ func (n *Network) servedTip(
 	}
 	n.observeServedTipMetrics(axis, lane, pick, advanceAge)
 	return pick.Tip
+}
+
+// refereeServedTip returns the tip to serve for `median` (the plain majority
+// pick), letting the network's long-term head trajectory choose between the
+// groups the LIVE heads of this same evaluation form.
+//
+// Every mechanism before this one is a snapshot of one instant, which is what a
+// majority stall defeats: if N upstreams freeze while staying inside the
+// lag-exclusion threshold — or a fleet-wide shared-counter freeze stalls the
+// lag metric itself — the majority IS the stale group, and the two upstreams
+// that genuinely hold the chain's head are outvoted. The trajectory is the one
+// piece of evidence that separates "the chain stopped" from "those upstreams
+// stopped": where this network's head has actually been going for the last ten
+// minutes (evm.TipTrajectory).
+//
+// It is deliberately the weakest intervention that answers that:
+//
+//   - it never runs without an anchor (arbitrary use-upstream selectors
+//     materialize no state), without a pick, or without a live head — the same
+//     conditions the regression guard stands down on;
+//   - it never runs when the config disables it (trajectoryWindow: 0), and it
+//     is a no-op until every confidence condition in evm.TipTrajectory holds,
+//     so a cold or stale process behaves byte-identically to the plain
+//     majority;
+//   - it can only RAISE the pick, and only to the minimum of a group of ≥2
+//     live upstreams — a value they can all serve, and one at most as high as
+//     the freshest live head. It can neither hold the tip back nor invent one.
+//
+// The pick stays ≤ evm.ServedTipPick.Freshest (the 2nd-highest head) for the
+// same reason, so the served-tip lag gauge never reads negative.
+func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAnchor, tips []evm.ServedTipInput, median int64, maxLiveHead int64) int64 {
+	if anchor == nil || median <= 0 || maxLiveHead <= 0 {
+		// maxLiveHead > 0 is also what makes `tips` safe to sample and cluster:
+		// gatherEvmTipInputsForMethod only returns bound-capped observations
+		// when there is no live head at all, and a serving range must never
+		// enter a head trajectory.
+		return median
+	}
+	window := n.servedTipTrajectoryWindow()
+	if window <= 0 {
+		return median
+	}
+
+	decision := anchor.trajectory.Observe(servedTipClock(), tips, median, evm.TipTrajectoryParams{
+		Window:         window,
+		ToleranceFloor: n.servedTipMaxRegressionBlocks(),
+	})
+
+	switch {
+	case decision.Overrode:
+		telemetry.MetricNetworkServedTipTrajectoryTotal.
+			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "override").
+			Inc()
+	case decision.Declined:
+		telemetry.MetricNetworkServedTipTrajectoryTotal.
+			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "fallback").
+			Inc()
+	}
+	n.logServedTipTrajectoryTransition(anchor, axis, median, decision)
+
+	return decision.Pick
+}
+
+// logServedTipTrajectoryTransition logs only when the referee STARTS or STOPS
+// overriding, so a stall that persists across thousands of requests produces
+// one line at each end of it.
+func (n *Network) logServedTipTrajectoryTransition(anchor *servedTipAnchor, axis string, median int64, d evm.TipTrajectoryDecision) {
+	if anchor.trajectoryOverriding.Swap(d.Overrode) == d.Overrode {
+		return
+	}
+	if !d.Overrode {
+		n.logger.Warn().
+			Str("axis", axis).
+			Int64("pick", d.Pick).
+			Msg("served tip is back on the majority pick; the trajectory referee is no longer overriding")
+		return
+	}
+	n.logger.Error().
+		Str("axis", axis).
+		Int64("pick", d.Pick).
+		Int64("majorityPick", median).
+		Int64("expectedBlock", d.Expected).
+		Int64("tolerance", d.Tolerance).
+		Float64("blocksPerSecond", d.VelocityPerSec).
+		Msg("majority of the eligible upstreams is off the network's long-term head trajectory; serving the corroborated group that is on it")
+}
+
+// servedTipTrajectoryWindow is how much recorded head history the trajectory
+// referee needs before it may participate. Unset uses
+// DefaultServedTipTrajectoryWindow; an explicit 0 disables the referee.
+func (n *Network) servedTipTrajectoryWindow() time.Duration {
+	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTip != nil && n.cfg.Evm.ServedTip.TrajectoryWindow != nil {
+		return n.cfg.Evm.ServedTip.TrajectoryWindow.Duration()
+	}
+	return common.DefaultServedTipTrajectoryWindow
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting

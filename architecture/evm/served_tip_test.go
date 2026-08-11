@@ -1,9 +1,13 @@
 package evm
 
 import (
+	"math"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The served-tip contract: PickServedTip returns the freshest block a strict
@@ -165,4 +169,295 @@ func TestPickServedTip_Scenario_HaltedChainHoldsHonestly(t *testing.T) {
 	frozen := tipsFromInts(500, 500, 499)
 	assert.Equal(t, int64(500), PickServedTip(frozen).Tip)
 	assert.Equal(t, PickServedTip(frozen), PickServedTip(frozen), "pure function: same inputs, same pick")
+}
+
+// ─── Long-term trajectory referee ────────────────────────────────────────────
+//
+// These pin the tracker's own mechanics: the fit it derives from a head track,
+// the confidence gate that keeps it inert, and the group election. The
+// end-to-end behaviour (which block a network actually serves) is pinned in
+// package erpc's networks_served_tip_test.go.
+
+// trajectoryParams is the referee's config as a network with default settings
+// supplies it: a 10-minute window and the 1024-block regression tolerance.
+func trajectoryParams() TipTrajectoryParams {
+	return TipTrajectoryParams{Window: 10 * time.Minute, ToleranceFloor: 1024}
+}
+
+// warmTrajectory feeds `samples` observations one tipSampleInterval apart,
+// advancing the head by `perSample` blocks each time, and returns the clock and
+// head it stopped at. Every sample goes through Observe, i.e. the same entry
+// point the request path uses.
+func warmTrajectory(tr *TipTrajectory, start time.Time, head int64, perSample int64, samples int) (time.Time, int64) {
+	now := start
+	for i := 0; i < samples; i++ {
+		tr.Observe(now, tipsFromInts(head), head, trajectoryParams())
+		now = now.Add(tipSampleInterval)
+		head += perSample
+	}
+	return now, head
+}
+
+func TestTipTrajectory_FitRecoversVelocityAndExpectedHead(t *testing.T) {
+	var tr TipTrajectory
+	// 20 blocks/s (100 blocks per 5s sample), 130 samples ≈ 10m50s of history.
+	now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+	fit := tr.fit.Load()
+	require.NotNil(t, fit)
+	assert.InDelta(t, 20.0, fit.vPerSec, 0.001, "robust velocity must recover the 20 blocks/s track")
+	assert.InDelta(t, 0.0, fit.spread, 0.001, "a perfectly linear track has no residual spread")
+
+	// The head the fit expects one sample-interval on is the next sample's.
+	assert.InDelta(t, float64(head), fit.expectedAt(int64(now.Sub(*tr.base.Load())/time.Millisecond)), 1.0)
+}
+
+func TestTipTrajectory_PoisonedSampleDoesNotMoveTheFit(t *testing.T) {
+	var tr TipTrajectory
+	now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 60)
+	clean := tr.fit.Load()
+	require.NotNil(t, clean)
+
+	// One wrong-chain / garbage observation lands in the middle of the track.
+	tr.Observe(now, tipsFromInts(head), 999_999_999, trajectoryParams())
+	now, _ = warmTrajectory(&tr, now.Add(tipSampleInterval), head+100, 100, 70)
+
+	poisoned := tr.fit.Load()
+	require.NotNil(t, poisoned)
+	assert.InDelta(t, clean.vPerSec, poisoned.vPerSec, 0.001,
+		"a single poisoned sample must not move the median-of-lagged-slopes velocity")
+	assert.Less(t, poisoned.spread, float64(1024),
+		"nor may it inflate the residual spread past the tolerance floor")
+}
+
+func TestTipTrajectory_ConfidenceGate(t *testing.T) {
+	params := trajectoryParams()
+
+	t.Run("ColdBufferIsInert", func(t *testing.T) {
+		var tr TipTrajectory
+		now := time.Now()
+		for i := 0; i < tipMinSamples-1; i++ {
+			d := tr.Observe(now, tipsFromInts(1_000_000+int64(i)*100, 999_000), 999_000, params)
+			require.False(t, d.Overrode, "sample %d: a cold tracker must never override", i)
+			now = now.Add(tipSampleInterval)
+		}
+		assert.Nil(t, tr.fit.Load(), "no fit below tipMinSamples")
+	})
+
+	t.Run("ShortWindowIsInert", func(t *testing.T) {
+		var tr TipTrajectory
+		// 60 samples = 5 minutes of span: enough points, not enough window.
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 60)
+		fit := tr.fit.Load()
+		require.NotNil(t, fit)
+		require.Less(t, fit.spanMs, params.Window.Milliseconds())
+
+		// A stalled majority + a fresh pair: the shape that WOULD be overridden.
+		d := tr.Observe(now, tipsFromInts(head, head, head-20_000, head-20_000, head-20_000), head-20_000, params)
+		assert.False(t, d.Overrode, "span below the configured window must keep the referee inert")
+	})
+
+	t.Run("StaleTrackIsInert", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+		require.True(t, tr.fit.Load().spanMs >= params.Window.Milliseconds())
+
+		// Nothing evaluated for longer than the maximum gap: the fit no longer
+		// describes the present, whatever it says.
+		now = now.Add(tipMaxSampleGap + time.Second)
+		d := tr.Observe(now, tipsFromInts(head+1200, head+1200, head, head, head), head, params)
+		assert.False(t, d.Overrode, "a gap past tipMaxSampleGap must stand the referee down")
+	})
+
+	t.Run("HaltedChainIsInert", func(t *testing.T) {
+		var tr TipTrajectory
+		// A completely flat track: velocity 0, so there is no trajectory to be
+		// off. The majority pick is already the right answer for a halted chain.
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 0, 130)
+		require.NotNil(t, tr.fit.Load())
+		d := tr.Observe(now, tipsFromInts(head+5_000, head+5_000, head, head, head), head, params)
+		assert.False(t, d.Overrode, "v <= 0 must stand the referee down")
+	})
+
+	t.Run("DisabledRecordsNothing", func(t *testing.T) {
+		var tr TipTrajectory
+		off := TipTrajectoryParams{Window: 0, ToleranceFloor: 1024}
+		now := time.Now()
+		for i := 0; i < 200; i++ {
+			tr.Observe(now, tipsFromInts(1_000_000+int64(i)*100), 1_000_000+int64(i)*100, off)
+			now = now.Add(tipSampleInterval)
+		}
+		assert.Zero(t, tr.SampleCount(), "trajectoryWindow: 0 must record nothing at all")
+		assert.Nil(t, tr.fit.Load())
+	})
+}
+
+func TestTipTrajectory_GroupElection(t *testing.T) {
+	params := trajectoryParams()
+
+	t.Run("StalledMajorityLosesToCorroboratedFreshPair", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		// The stall: three heads freeze, two keep the track. The tracker keeps
+		// sampling the (frozen) majority median throughout — its evidence is
+		// never its own output.
+		frozen := head
+		for i := 0; i < 24; i++ {
+			now = now.Add(tipSampleInterval)
+			head += 100
+			tr.Observe(now, tipsFromInts(head, head, frozen, frozen, frozen), frozen, params)
+		}
+
+		d := tr.Observe(now.Add(time.Second), tipsFromInts(head, head, frozen, frozen, frozen), frozen, params)
+		assert.True(t, d.Overrode, "the on-trajectory pair must outvote the stalled majority")
+		assert.Equal(t, head, d.Pick, "the pick is the fresh group's MINIMUM — both members have it")
+		assert.False(t, d.Declined, "an override is not a near miss")
+	})
+
+	t.Run("SingletonIsNeverCorroboration", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		frozen := head
+		for i := 0; i < 24; i++ {
+			now = now.Add(tipSampleInterval)
+			head += 100
+			tr.Observe(now, tipsFromInts(head, frozen, frozen, frozen, frozen), frozen, params)
+		}
+
+		d := tr.Observe(now.Add(time.Second), tipsFromInts(head, frozen, frozen, frozen, frozen), frozen, params)
+		assert.False(t, d.Overrode,
+			"one upstream matching the trajectory perfectly is still one witness")
+		assert.Equal(t, frozen, d.Pick)
+	})
+
+	t.Run("NearMissIsDeclinedNotOverridden", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		// Everything is off the trajectory: the freshest pair is the closest
+		// group to where the head should be, but still further than the
+		// tolerance. The referee elects it and then refuses it — a near miss,
+		// which is the one non-override outcome worth counting.
+		d := tr.Observe(now, tipsFromInts(head+3_000, head+3_000, head-20_000, head-20_000, head-20_000), head-20_000, params)
+		assert.False(t, d.Overrode)
+		assert.True(t, d.Declined, "a refused raise is the fallback outcome")
+		assert.Equal(t, head-20_000, d.Pick)
+	})
+
+	t.Run("RunawayPairIsOutsideTolerance", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		// Two upstreams jump far past where the chain can possibly be.
+		d := tr.Observe(now, tipsFromInts(head+500_000, head+500_000, head, head, head), head, params)
+		assert.False(t, d.Overrode, "a group that far off the trajectory must not win")
+		assert.Equal(t, head, d.Pick)
+	})
+
+	t.Run("UpwardOnly", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		// Three upstreams run ahead, two sit exactly on the trajectory: the
+		// on-trajectory group wins the election, but electing it would LOWER
+		// the majority pick, so the referee stands down instead.
+		d := tr.Observe(now, tipsFromInts(head+50_000, head+50_000, head+50_000, head, head), head+50_000, params)
+		assert.False(t, d.Overrode, "the referee may never lower or hold the pick")
+		assert.Equal(t, head+50_000, d.Pick)
+	})
+
+	t.Run("HealthyFleetIsOneGroupAndNeverIntervenes", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		// Normal propagation skew, well inside one cluster width.
+		heads := tipsFromInts(head, head-1, head-3, head-7, head-11)
+		median := PickServedTip(heads).Tip
+		d := tr.Observe(now, heads, median, params)
+		assert.False(t, d.Overrode)
+		assert.False(t, d.Declined, "a fleet in one cluster is not even a near miss")
+		assert.Equal(t, median, d.Pick)
+	})
+}
+
+func TestTipTrajectory_BurstyChainWidensItsOwnTolerance(t *testing.T) {
+	var steady, bursty TipTrajectory
+
+	_, _ = warmTrajectory(&steady, time.Now(), 1_000_000, 100, 130)
+
+	// Same average velocity, delivered in bursts: 9 samples of nothing, then a
+	// 1000-block batch (the L2-sequencer shape).
+	now, head := time.Now(), int64(1_000_000)
+	for i := 0; i < 130; i++ {
+		if i%10 == 9 {
+			head += 1000
+		}
+		bursty.Observe(now, tipsFromInts(head), head, trajectoryParams())
+		now = now.Add(tipSampleInterval)
+	}
+
+	steadyFit, burstyFit := steady.fit.Load(), bursty.fit.Load()
+	require.NotNil(t, steadyFit)
+	require.NotNil(t, burstyFit)
+	assert.InDelta(t, steadyFit.vPerSec, burstyFit.vPerSec, 2.0,
+		"both tracks average the same velocity")
+	assert.Greater(t, burstyFit.spread*tipToleranceSigmas, float64(1024),
+		"a chain that pauses and bursts must widen its own tolerance past the floor")
+	assert.Less(t, steadyFit.spread*tipToleranceSigmas, float64(1024),
+		"a metronomic chain keeps the configured floor")
+}
+
+func TestTipTrajectory_SampleThrottleAndBufferBound(t *testing.T) {
+	var tr TipTrajectory
+	params := trajectoryParams()
+	now := time.Now()
+
+	// A hot request path: 500 evaluations inside one sample interval.
+	for i := 0; i < 500; i++ {
+		tr.Observe(now.Add(time.Duration(i)*time.Millisecond), tipsFromInts(1_000_000), 1_000_000, params)
+	}
+	assert.Equal(t, 1, tr.SampleCount(), "the throttle admits one sample per interval, whatever the QPS")
+
+	// And the ring never grows past the capacity derived from the window.
+	_, _ = warmTrajectory(&tr, now.Add(tipSampleInterval), 1_000_100, 100, 4_000)
+	assert.Equal(t, tipBufferCapacity(params.Window), tr.SampleCount())
+	assert.LessOrEqual(t, tr.fit.Load().spanMs, int64(tipBufferCapacity(params.Window))*tipSampleInterval.Milliseconds())
+}
+
+// The request path calls Observe from every serving goroutine at once, so the
+// throttle's double-checked lock, the refit and the lock-free fit read all have
+// to hold up under -race.
+func TestTipTrajectory_ConcurrentObserve(t *testing.T) {
+	var tr TipTrajectory
+	params := trajectoryParams()
+	start := time.Now()
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				head := int64(1_000_000 + i*100)
+				tr.Observe(start.Add(time.Duration(i)*tipSampleInterval), tipsFromInts(head, head-1), head, params)
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.Positive(t, tr.SampleCount())
+	assert.LessOrEqual(t, tr.SampleCount(), tipBufferCapacity(params.Window),
+		"the ring must stay bounded however many goroutines record into it")
+}
+
+func TestTipClusterWidth(t *testing.T) {
+	// Sub-second-block chains and slow chains alike keep the floor; a fast
+	// chain gets 10 seconds of its own progress.
+	assert.Equal(t, int64(tipMinClusterWidth), tipClusterWidth(0.083), "12s blocks → floor")
+	assert.Equal(t, int64(tipMinClusterWidth), tipClusterWidth(1), "1s blocks → floor")
+	assert.Equal(t, int64(40), tipClusterWidth(4), "250ms blocks → 10s of progress")
+	assert.Equal(t, int64(tipMinClusterWidth), tipClusterWidth(math.NaN()), "NaN must fall to the floor")
+	assert.Equal(t, tipMaxClusterWidth, tipClusterWidth(math.MaxFloat64), "no int64 overflow")
 }

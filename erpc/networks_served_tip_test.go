@@ -3,11 +3,13 @@ package erpc
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
@@ -912,4 +914,388 @@ func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
 		"the guard cannot trip without a live head to compare against")
 	assert.Zero(t, network.servedLatestAnchor.lastGoodValue.Load(),
 		"an uncorroborated cap must never be remembered as a good pick")
+}
+
+// ─── Long-term trajectory referee ────────────────────────────────────────────
+//
+// Every mechanism above is a snapshot of one instant, and a majority stall
+// defeats all of them at once: when N upstreams freeze while staying eligible,
+// the majority IS the stale group and the 2 upstreams holding the real head are
+// outvoted. These tests pin the referee that breaks that tie from the network's
+// own 10-minute head trajectory — and, just as importantly, pin how narrowly it
+// is allowed to act.
+
+const (
+	// servedTipSampleInterval mirrors the tracker's unexported sample throttle
+	// (architecture/evm: tipSampleInterval) — the cadence a warm-up must tick
+	// at for the buffer to fill.
+	servedTipSampleInterval = 5 * time.Second
+
+	// servedTipMaxSampleGap mirrors architecture/evm's tipMaxSampleGap.
+	servedTipMaxSampleGap = time.Minute
+
+	// The warm-up track: 100 blocks per 5s sample = 20 blocks/s, a fast-L2
+	// cadence that makes one stalled sample worth 100 blocks and keeps the
+	// scenarios legible. 130 samples ≈ 10m45s, just past the default window.
+	trajectoryStartHead       = int64(1_000_000)
+	trajectoryBlocksPerSample = int64(100)
+	trajectoryWarmSamples     = 130
+)
+
+// servedTipTrajectoryCount reads the referee's counter for a network/axis/outcome.
+func servedTipTrajectoryCount(n *Network, axis, outcome string) float64 {
+	return promUtil.ToFloat64(telemetry.MetricNetworkServedTipTrajectoryTotal.
+		WithLabelValues(n.projectId, n.Label(), servedTipLaneAll, axis, outcome))
+}
+
+// setupTrajectoryNetwork builds a `count`-upstream network with the pinned
+// served-tip clock, and returns the clock's advance function.
+func setupTrajectoryNetwork(t *testing.T, ctx context.Context, count int, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream, func(time.Duration)) {
+	t.Helper()
+	advance := pinServedTipClock(t)
+	fixtures := make([]servedTipFixture, count)
+	for i := range fixtures {
+		fixtures[i] = servedTipFixture{id: "u" + strconv.Itoa(i+1), chainID: 123, latestBlock: trajectoryStartHead}
+	}
+	network, ups := setupServedTipNetworkWith(t, ctx, fixtures, stCfg)
+	return network, ups, advance
+}
+
+// suggestServedTipHead moves an upstream's poller head up to `head` in steps no
+// larger than the poller's major-jump threshold. A single larger suggestion is
+// deliberately deferred to an asynchronous chain-identity check
+// (verifyThenSuggestLatestBlock), which these deterministic scenarios must not
+// race against.
+func suggestServedTipHead(u *upstream.Upstream, head int64) {
+	for {
+		current := u.EvmStatePoller().LatestBlock()
+		if current >= head {
+			return
+		}
+		next := head
+		if head-current > common.DefaultToleratedBlockHeadRollback {
+			next = current + common.DefaultToleratedBlockHeadRollback
+		}
+		u.EvmStatePoller().SuggestLatestBlock(next)
+		if u.EvmStatePoller().LatestBlock() < next {
+			return // the poller refused it; let the assertion report the state
+		}
+	}
+}
+
+// warmServedTipTrajectory drives `samples` real evaluations one sample interval
+// apart with every upstream advancing together, so the network's tracker sees a
+// clean linear head track through the ordinary request path. Returns the head
+// every upstream ends on (the clock sits on the last sample).
+func warmServedTipTrajectory(t *testing.T, ctx context.Context, network *Network, ups []*upstream.Upstream, advance func(time.Duration), samples int) int64 {
+	t.Helper()
+	head := trajectoryStartHead
+	for i := 0; i < samples; i++ {
+		for _, u := range ups {
+			u.EvmStatePoller().SuggestLatestBlock(head)
+		}
+		require.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx),
+			"warm-up sample %d: an agreeing fleet must serve its agreed head", i)
+		if i < samples-1 {
+			advance(servedTipSampleInterval)
+			head += trajectoryBlocksPerSample
+		}
+	}
+	return head
+}
+
+// stallMajority freezes every upstream except the first `fresh` of them, which
+// keep the warm-up track for `samples` more evaluations. Returns the head the
+// fresh group ends on and the last served value.
+func stallMajority(t *testing.T, ctx context.Context, network *Network, ups []*upstream.Upstream, advance func(time.Duration), head int64, fresh int, samples int) (int64, int64) {
+	t.Helper()
+	served := int64(0)
+	for i := 0; i < samples; i++ {
+		advance(servedTipSampleInterval)
+		head += trajectoryBlocksPerSample
+		for _, u := range ups[:fresh] {
+			u.EvmStatePoller().SuggestLatestBlock(head)
+		}
+		served = network.EvmHighestLatestBlockNumber(ctx)
+	}
+	return head, served
+}
+
+// THE headline case, and the requirement the referee exists for: in an N-vs-2
+// split where the 2 sit at the higher block, use the 2. Three upstreams freeze
+// inside the lag-exclusion threshold (a shared-counter freeze, a stuck vendor
+// region) while two keep the chain's head; the strict majority is now the stale
+// group, so the plain majority pick — and every instantaneous rule — serves a
+// block the chain left minutes ago.
+func TestServedTip_TrajectoryReferee_StalledMajorityLosesToFreshMinority(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+
+	beforeOverride := servedTipTrajectoryCount(network, "latest", "override")
+	beforeHeld := servedTipRegressionCount(network, "latest", "held")
+
+	fresh, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
+
+	// What the plain majority pick WOULD be over the very same ballot: the
+	// frozen head, held by 3 of the 5 upstreams.
+	majority := evm.PickServedTip([]evm.ServedTipInput{
+		{UpstreamID: "u1", BlockNumber: fresh},
+		{UpstreamID: "u2", BlockNumber: fresh},
+		{UpstreamID: "u3", BlockNumber: frozen},
+		{UpstreamID: "u4", BlockNumber: frozen},
+		{UpstreamID: "u5", BlockNumber: frozen},
+	}).Tip
+	require.Equal(t, frozen, majority,
+		"precondition: the stalled group holds the majority, so the plain pick is the stale head")
+
+	assert.Equal(t, fresh, served,
+		"the corroborated pair that is where the chain should be by now must define the tip; "+
+			"the plain majority would have served %d, %d blocks behind", majority, fresh-majority)
+	assert.Greater(t, servedTipTrajectoryCount(network, "latest", "override"), beforeOverride,
+		"an override is an intervention and must be counted")
+	assert.Equal(t, beforeHeld, servedTipRegressionCount(network, "latest", "held"),
+		"raising the tip to the live pair is not a regression; the guard must stay out of it")
+}
+
+// The inverse split, and the reason a group is elected by its DISTANCE to the
+// trajectory rather than by its freshness: two upstreams running far past where
+// the chain can possibly be (wrong chain, garbage endpoint) must lose to the
+// healthy group, however corroborated they are with each other.
+func TestServedTip_TrajectoryReferee_RunawayMinorityLoses(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// maxRegressionBlocks is widened so the branch's regression guard (which
+	// measures against the RAW max live head, and would hold the tip the moment
+	// any upstream runs 1024 blocks ahead) stays out of the way: what is under
+	// test here is the referee's own election.
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{
+		EnabledFor:          []string{"latest"},
+		MaxRegressionBlocks: 100_000,
+	})
+	head := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+
+	beforeOverride := servedTipTrajectoryCount(network, "latest", "override")
+	beforeFallback := servedTipTrajectoryCount(network, "latest", "fallback")
+
+	// Two upstreams run 20k blocks (≈16 minutes of this chain) ahead; the other
+	// three stay exactly on the track.
+	advance(servedTipSampleInterval)
+	head += trajectoryBlocksPerSample
+	for _, u := range ups {
+		suggestServedTipHead(u, head)
+	}
+	for _, u := range ups[:2] {
+		suggestServedTipHead(u, head+20_000)
+	}
+
+	assert.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx),
+		"the runaway pair is nowhere near the trajectory; the healthy majority keeps the tip")
+	assert.Equal(t, beforeOverride, servedTipTrajectoryCount(network, "latest", "override"),
+		"no override happened")
+	assert.Equal(t, beforeFallback, servedTipTrajectoryCount(network, "latest", "fallback"),
+		"the healthy group is elected outright, so this is not even a near miss")
+}
+
+// Warm-up inertness: until the tracker has a window's worth of history the
+// referee is a no-op and the network behaves exactly as it does without it.
+// This is also the boot behaviour of every pod after every deploy.
+func TestServedTip_TrajectoryReferee_ColdProcessIsInert(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+	// Half a window: enough samples for a fit, nowhere near enough span.
+	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples/2)
+
+	before := servedTipTrajectoryCount(network, "latest", "override")
+	_, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
+
+	assert.Equal(t, frozen, served,
+		"a cold tracker must leave the plain majority pick untouched")
+	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"))
+}
+
+// Staleness: the fit describes the present only if the track is continuous. A
+// gap larger than the tracker's tolerance is exactly where a halt or a burst
+// hides, so extrapolating across one is guessing — and the referee stands down.
+// The paired sub-tests differ ONLY in the size of that gap.
+func TestServedTip_TrajectoryReferee_StaleTrackFailsOpen(t *testing.T) {
+	// After `gap` of silence the fresh pair sits exactly on the trajectory
+	// (20 blocks/s), i.e. the referee's evidence is otherwise perfect.
+	run := func(t *testing.T, gap time.Duration) (served, frozen, fresh int64, overrides float64) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+		frozen = warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+		before := servedTipTrajectoryCount(network, "latest", "override")
+
+		advance(gap)
+		fresh = frozen + trajectoryBlocksPerSample*int64(gap/servedTipSampleInterval)
+		for _, u := range ups[:2] {
+			suggestServedTipHead(u, fresh)
+		}
+		served = network.EvmHighestLatestBlockNumber(ctx)
+		return served, frozen, fresh, servedTipTrajectoryCount(network, "latest", "override") - before
+	}
+
+	t.Run("ContinuousTrackOverrides", func(t *testing.T) {
+		served, _, fresh, overrides := run(t, servedTipMaxSampleGap-5*time.Second)
+		assert.Equal(t, fresh, served, "an unbroken track lets the referee act")
+		assert.Equal(t, float64(1), overrides)
+	})
+
+	t.Run("GappedTrackFailsOpen", func(t *testing.T) {
+		served, frozen, _, overrides := run(t, servedTipMaxSampleGap+time.Second)
+		assert.Equal(t, frozen, served,
+			"one sample past the gap tolerance the same evidence must be refused")
+		assert.Zero(t, overrides)
+	})
+}
+
+// A chain that pauses and bursts (an L2 landing batches) has a large residual
+// spread of its own, which widens the referee's tolerance automatically — and a
+// legitimate fleet-wide jump keeps every head in ONE cluster, where the referee
+// has nothing to choose between. Neither may produce a false override.
+func TestServedTip_TrajectoryReferee_PauseThenBurstDoesNotFalsePositive(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+
+	// Same average velocity as the linear warm-up, delivered in batches: nine
+	// samples of nothing, then 1000 blocks at once.
+	head := trajectoryStartHead
+	for i := 0; i < trajectoryWarmSamples; i++ {
+		if i%10 == 9 {
+			head += trajectoryBlocksPerSample * 10
+		}
+		for _, u := range ups {
+			u.EvmStatePoller().SuggestLatestBlock(head)
+		}
+		require.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx))
+		advance(servedTipSampleInterval)
+	}
+
+	beforeOverride := servedTipTrajectoryCount(network, "latest", "override")
+	beforeFallback := servedTipTrajectoryCount(network, "latest", "fallback")
+
+	// The whole fleet lands the next batch, with ordinary propagation skew.
+	head += 5_000
+	for i, u := range ups {
+		suggestServedTipHead(u, head-int64(i%2)*50)
+	}
+	served := network.EvmHighestLatestBlockNumber(ctx)
+
+	assert.Equal(t, head, served,
+		"a legitimate fleet-wide burst is one cluster; the majority pick stands")
+	assert.Equal(t, beforeOverride, servedTipTrajectoryCount(network, "latest", "override"))
+	assert.Equal(t, beforeFallback, servedTipTrajectoryCount(network, "latest", "fallback"),
+		"a fleet in one cluster does not even register a disagreement")
+}
+
+// Corroboration, not agreement with the model: a single upstream sitting
+// exactly where the trajectory says the head is proves nothing — it is the one
+// endpoint that could be wrong in the same direction as everyone else being
+// stuck. A group of one is never electable.
+func TestServedTip_TrajectoryReferee_SingletonIsNotCorroboration(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+
+	before := servedTipTrajectoryCount(network, "latest", "override")
+	_, served := stallMajority(t, ctx, network, ups, advance, frozen, 1, 24)
+
+	assert.Equal(t, frozen, served,
+		"one on-trajectory witness cannot move the tip, however well it fits")
+	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"))
+}
+
+// Composition with the regression guard: the referee runs first and the guard
+// judges whatever comes out of it. Once a stall has handed the tip to the fresh
+// pair, losing that pair from the eligible set drops the majority pick far below
+// the best live head — and the guard holds the last corroborated value exactly
+// as it does for any other poisoned ballot.
+func TestServedTip_TrajectoryReferee_ComposesWithRegressionGuard(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+	fresh, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
+	require.Equal(t, fresh, served, "precondition: the referee is holding the tip on the fresh pair")
+	require.Greater(t, fresh-frozen, int64(common.DefaultToleratedBlockHeadRollback),
+		"precondition: the stall is deeper than the regression tolerance")
+
+	before := servedTipRegressionCount(network, "latest", "held")
+
+	// One fresh upstream leaves the eligible set: the remaining ballot is
+	// [fresh, frozen, frozen] — a lone fresh head is no group, so the referee
+	// stands down and the majority pick collapses onto the stalled pair.
+	network.PinUpstreamOrderForTest("u1", "u3", "u4")
+
+	assert.Equal(t, fresh, network.EvmHighestLatestBlockNumber(ctx),
+		"the guard must hold the last corroborated pick, as it does for any poisoned ballot")
+	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "held"))
+}
+
+// The off switch is a real off switch: trajectoryWindow: 0 records nothing and
+// decides nothing, so the network serves the plain majority pick — the stale
+// head — through the exact scenario the referee exists to fix.
+func TestServedTip_TrajectoryReferee_DisabledByZeroWindow(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{
+		EnabledFor:       []string{"latest"},
+		TrajectoryWindow: common.Duration(0).Ptr(),
+	})
+	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+
+	before := servedTipTrajectoryCount(network, "latest", "override")
+	_, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
+
+	assert.Equal(t, frozen, served,
+		"with the referee off the stalled majority defines the tip again")
+	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"))
+	assert.Zero(t, network.servedLatestAnchor.trajectory.SampleCount(),
+		"a disabled referee must not even record a head track")
 }

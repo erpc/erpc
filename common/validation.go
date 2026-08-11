@@ -1520,6 +1520,9 @@ func (e *EvmNetworkConfig) Validate() error {
 		if e.ServedTip.MaxRegressionBlocks < 0 {
 			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0 (0 uses the default rollback tolerance)")
 		}
+		if e.ServedTip.TrajectoryWindow != nil && *e.ServedTip.TrajectoryWindow < 0 {
+			return fmt.Errorf("network.*.evm.servedTip.trajectoryWindow must be >= 0 (0 disables the trajectory referee)")
+		}
 		for _, m := range e.ServedTip.GuaranteedMethods {
 			if err := ValidatePattern(m); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)
