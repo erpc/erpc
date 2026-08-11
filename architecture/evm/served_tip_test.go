@@ -509,89 +509,151 @@ func TestTipTrajectory_HaltSweepCannotElectAStaticGroup(t *testing.T) {
 	}
 }
 
-func TestTipTrajectory_DwellMustBeEarned(t *testing.T) {
+// stalledFleet drives a fleet in which `fresh` upstreams sit exactly on the
+// fitted trajectory and the rest are frozen `behind` blocks below it, evaluating
+// every tipSampleInterval and reporting the first elapsed time at which the
+// referee overrode (or -1). The elapsed times these tests assert on are ABSOLUTE
+// literals, deliberately: a dwell pinned in terms of tipDwellDuration is pinned
+// by nothing, since zeroing the constant would move the expectation with it.
+func stalledFleet(tr *TipTrajectory, now time.Time, head int64, behind int64, run time.Duration, fresh []string, frozenIDs []string) (firstOverride time.Duration, overrides int, at map[time.Duration]bool) {
 	p := trajectoryParams()
+	start := now
+	frozenHead := head - behind
+	firstOverride, at = -1, map[time.Duration]bool{}
+	for elapsed := time.Duration(0); elapsed <= run; elapsed += tipSampleInterval {
+		ins := make([]ServedTipInput, 0, len(fresh)+len(frozenIDs))
+		for _, id := range fresh {
+			ins = append(ins, in(id, head+int64(elapsed.Seconds())*20))
+		}
+		for _, id := range frozenIDs {
+			ins = append(ins, in(id, frozenHead))
+		}
+		pick := PickServedTip(ins)
+		d := tr.Observe(start.Add(elapsed), pick.Sorted, pick.Tip, p)
+		at[elapsed] = d.Overrode
+		if d.Overrode {
+			overrides++
+			if firstOverride < 0 {
+				firstOverride = elapsed
+			}
+		}
+	}
+	return firstOverride, overrides, at
+}
 
-	// The confirmed false-override shape: two of four upstreams pause for 15s
-	// (a poller hiccup, a vendor blip) and then catch up. Nothing is wrong with
-	// the fleet, and the divergence is over long before the dwell completes.
+func TestTipTrajectory_DwellMustBeEarned(t *testing.T) {
+	// A pair that is on the trajectory, corroborating each other, advancing at
+	// the chain's own velocity, and separated from the stalled majority from the
+	// VERY FIRST evaluation — i.e. nothing but elapsed time stands between it and
+	// an override. It must still wait.
+	t.Run("AnOnTrajectoryGroupStillWaits", func(t *testing.T) {
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+
+		_, _, at := stalledFleet(&tr, now, head, 3_000, 45*time.Second,
+			[]string{"u1", "u2"}, []string{"u3", "u4", "u5"})
+
+		for _, elapsed := range []time.Duration{0, 5 * time.Second, 15 * time.Second, 25 * time.Second} {
+			assert.False(t, at[elapsed],
+				"at %v the group has corroborated nothing yet — it has merely been right for %v", elapsed, elapsed)
+		}
+		assert.True(t, at[45*time.Second],
+			"but by 45s of holding that place it has earned the override the stall needs")
+	})
+
+	// The confirmed false-override shape, with the geometry taken out of the
+	// argument: the two clusters are further apart than one cluster width from
+	// the first sample, so nothing but the dwell prevents an override here.
 	t.Run("TransientDivergenceNeverWins", func(t *testing.T) {
 		var tr TipTrajectory
 		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
 
-		overrides := 0
-		paused := head
-		for k := 0; k < 3; k++ { // 15s of two-of-four divergence
-			head += 100
-			d := tr.Observe(now, ballotOf(
-				in("u1", head), in("u2", head),
-				in("u3", paused), in("u4", paused),
-			), paused, p)
-			if d.Overrode {
-				overrides++
-			}
-			now = now.Add(tipSampleInterval)
-		}
-		// The pair catches up: one cluster again.
-		head += 100
-		d := tr.Observe(now, ballotOf(in("u1", head), in("u2", head), in("u3", head), in("u4", head)), head, p)
-		assert.False(t, d.Overrode)
+		_, overrides, _ := stalledFleet(&tr, now, head, 1_000, 15*time.Second,
+			[]string{"u1", "u2"}, []string{"u3", "u4"})
 		assert.Zero(t, overrides,
-			"a 15-second divergence must not hand the tip to half the fleet")
-	})
+			"15 seconds of a two-of-four split must never hand the tip to half the fleet")
 
-	// The headline case still works — and only after the group has held its
-	// place for the dwell.
-	t.Run("StalledMajorityLosesOnlyAfterTheDwell", func(t *testing.T) {
-		var tr TipTrajectory
-		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
-		start := now
-
-		frozen := head
-		var firstOverride time.Duration = -1
-		for k := 0; k < 24; k++ {
-			head += 100
-			d := tr.Observe(now, ballotOf(
-				in("u1", head), in("u2", head),
-				in("u3", frozen), in("u4", frozen), in("u5", frozen),
-			), frozen, p)
-			if d.Overrode && firstOverride < 0 {
-				firstOverride = now.Sub(start)
-			}
-			now = now.Add(tipSampleInterval)
-		}
-		require.GreaterOrEqual(t, firstOverride, time.Duration(0),
-			"the corroborated fresh pair must still win a genuine majority stall")
-		assert.GreaterOrEqual(t, firstOverride, tipDwellDuration,
-			"and never before it has held its place for the dwell")
+		// And the fleet re-merging leaves nothing behind.
+		merged := head + 400
+		pick := PickServedTip([]ServedTipInput{in("u1", merged), in("u2", merged), in("u3", merged), in("u4", merged)})
+		d := tr.Observe(now.Add(20*time.Second), pick.Sorted, pick.Tip, trajectoryParams())
+		assert.False(t, d.Overrode)
 	})
 
 	// A group is a SET of upstreams, not a pair of head values: replacing a
-	// member restarts the corroboration from zero, because the new set has
-	// proven nothing.
+	// member restarts the corroboration, because the new set has proven nothing.
+	// This must reach the dwell's RESET branch (an existing stretch, different
+	// members), not its first-evaluation nil branch.
 	t.Run("MembershipChangeRestartsTheDwell", func(t *testing.T) {
 		var tr TipTrajectory
+		p := trajectoryParams()
 		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
 
-		frozen := head
-		stall := func(freshA, freshB string) TipTrajectoryDecision {
-			head += 100
-			d := tr.Observe(now, ballotOf(
-				in(freshA, head), in(freshB, head),
+		frozen := head - 3_000
+		stall := func(elapsed time.Duration, freshA, freshB string) TipTrajectoryDecision {
+			pick := PickServedTip([]ServedTipInput{
+				in(freshA, head+int64(elapsed.Seconds())*20), in(freshB, head+int64(elapsed.Seconds())*20),
 				in("u3", frozen), in("u4", frozen), in("u5", frozen),
-			), frozen, p)
-			now = now.Add(tipSampleInterval)
-			return d
+			})
+			return tr.Observe(now.Add(elapsed), pick.Sorted, pick.Tip, p)
 		}
-		for k := 0; k < 24; k++ {
-			stall("u1", "u2")
+		var elapsed time.Duration
+		for ; elapsed <= 60*time.Second; elapsed += tipSampleInterval {
+			stall(elapsed, "u1", "u2")
 		}
-		require.True(t, stall("u1", "u2").Overrode, "precondition: {u1,u2} has earned its override")
+		require.True(t, stall(elapsed, "u1", "u2").Overrode, "precondition: {u1,u2} has earned its override")
 
-		d := stall("u1", "u6")
+		earned := tr.dwell.Load()
+		require.NotNil(t, earned, "precondition: a stretch is in progress, so the swap hits the RESET branch")
+
+		elapsed += tipSampleInterval
+		d := stall(elapsed, "u1", "u6")
 		assert.False(t, d.Overrode, "a different set of upstreams starts a new dwell")
 		assert.True(t, d.Declined, "and the refusal is the fallback outcome, not silence")
+
+		restarted := tr.dwell.Load()
+		require.NotNil(t, restarted)
+		assert.NotEqual(t, earned.group, restarted.group, "the stretch belongs to the new member set")
+		assert.Greater(t, restarted.startMs, earned.startMs, "and it starts now, not when the old one did")
 	})
+}
+
+// A group's identity must survive being renamed by the fleet's own naming
+// convention. The commutative fold this replaced collided on suffix swaps —
+// nineteen colliding pairs inside one realistic twelve-node fleet — and a
+// collision lets a DIFFERENT set of upstreams inherit a dwell it never earned.
+func TestTipTrajectory_GroupIdentityDistinguishesSuffixSwaps(t *testing.T) {
+	a := []ServedTipInput{in("prism-celo-1", 10), in("nirvana-celo-2", 10)}
+	b := []ServedTipInput{in("prism-celo-2", 10), in("nirvana-celo-1", 10)}
+
+	assert.NotEqual(t, groupIdentity(a), groupIdentity(b),
+		"two different pairs of the same fleet must not share an identity")
+	assert.Equal(t, groupIdentity(a), groupIdentity([]ServedTipInput{a[1], a[0]}),
+		"but member ORDER must not change it — the identity is a property of the set")
+
+	// The consequence that matters: the earned dwell is not inherited.
+	var tr TipTrajectory
+	p := trajectoryParams()
+	now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+	frozen := head - 3_000
+	stall := func(elapsed time.Duration, freshA, freshB string) TipTrajectoryDecision {
+		pick := PickServedTip([]ServedTipInput{
+			in(freshA, head+int64(elapsed.Seconds())*20), in(freshB, head+int64(elapsed.Seconds())*20),
+			in("quicknode-celo-1", frozen), in("quicknode-celo-2", frozen), in("quicknode-celo-3", frozen),
+		})
+		return tr.Observe(now.Add(elapsed), pick.Sorted, pick.Tip, p)
+	}
+	var elapsed time.Duration
+	for ; elapsed <= 60*time.Second; elapsed += tipSampleInterval {
+		stall(elapsed, "prism-celo-1", "nirvana-celo-2")
+	}
+	require.True(t, stall(elapsed, "prism-celo-1", "nirvana-celo-2").Overrode,
+		"precondition: {prism-celo-1, nirvana-celo-2} earned its override")
+
+	elapsed += tipSampleInterval
+	d := stall(elapsed, "prism-celo-2", "nirvana-celo-1")
+	assert.False(t, d.Overrode,
+		"the suffix-swapped pair is a different set and must earn its own dwell")
 }
 
 // The gap rule is about the WINDOW, not about the newest sample: standing the

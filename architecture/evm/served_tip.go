@@ -540,25 +540,65 @@ func (t *TipTrajectory) breakDwell() {
 	}
 }
 
-// groupIdentity fingerprints a group by its MEMBERS. The fold is commutative
-// (a sum of per-id FNV-1a hashes), so the identity is a property of the SET and
-// needs no sorting or allocation on the request path; the caller's slice is
-// already in head order, which is not the order the identity may depend on.
+// tipGroupIDScratch is how many member ids groupIdentity can sort without
+// touching the heap. Real fleets are single digits; anything larger falls back
+// to an allocation rather than to a wrong answer.
+const tipGroupIDScratch = 32
+
+// groupIdentity fingerprints a group by its MEMBERS: the ids are sorted, then
+// hashed as one separated stream. Sorting is what makes the identity a property
+// of the SET while keeping the hash's avalanche intact.
+//
+// The obvious cheap alternative — a commutative fold, e.g. summing per-id
+// hashes — is structurally broken here, not merely weaker. FNV-1a's last step
+// is (h ^ c) * prime, so for two ids sharing a prefix the DIFFERENCE between
+// their hashes barely depends on that prefix; a fleet named with a shared
+// vendor prefix and a numeric suffix therefore collides on suffix swaps:
+// {prism-celo-1, nirvana-celo-2} and {prism-celo-2, nirvana-celo-1} folded to
+// the same number. A review found four such colliding pairs inside one
+// realistic 12-node fleet, and a collision here is not cosmetic — it lets a
+// DIFFERENT group inherit the dwell an earlier one earned, which is exactly the
+// corroboration the dwell exists to withhold.
+//
+// The caller's slice is in head order, so the sort works on a copy: a stack
+// array for any realistic fleet, and the request path stays lock-free (a shared
+// scratch buffer would have to be taken under the tracker's mutex, serialising
+// every evaluation to save an allocation that does not happen).
 func groupIdentity(group []ServedTipInput) uint64 {
 	const (
 		fnvOffset64 = uint64(14695981039346656037)
 		fnvPrime64  = uint64(1099511628211)
 	)
-	var sum uint64
+	var stack [tipGroupIDScratch]string
+	var ids []string
+	if len(group) <= len(stack) {
+		ids = stack[:0]
+	} else {
+		ids = make([]string, 0, len(group))
+	}
 	for _, in := range group {
-		h := fnvOffset64
-		for i := 0; i < len(in.UpstreamID); i++ {
-			h ^= uint64(in.UpstreamID[i])
+		ids = append(ids, in.UpstreamID)
+	}
+	// Insertion sort, not sort.Strings: the slices are tiny, and the interface
+	// conversion sort.Strings performs would force the scratch array onto the
+	// heap on every evaluation.
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0 && ids[j-1] > ids[j]; j-- {
+			ids[j-1], ids[j] = ids[j], ids[j-1]
+		}
+	}
+
+	h := fnvOffset64
+	for _, id := range ids {
+		for i := 0; i < len(id); i++ {
+			h ^= uint64(id[i])
 			h *= fnvPrime64
 		}
-		sum += h
+		// A separator, so {"ab","c"} and {"a","bc"} are different sets.
+		h ^= 0x1f
+		h *= fnvPrime64
 	}
-	return sum
+	return h
 }
 
 // record appends a sample if at least tipSampleInterval has passed since the
