@@ -526,6 +526,17 @@ type servedTipReference struct {
 	// a regression, so the guard never took its healthy branch, never recorded a
 	// corroborated value, and sat permanently disarmed — emitting no metric and
 	// no log at all.
+	//
+	// BOUNDARY, stated because it is a real one: this tolerates ONE Byzantine
+	// head, not two. Two upstreams reporting the same far-future block are
+	// indistinguishable from two upstreams that are simply ahead, so they can
+	// still raise the reference and leave the guard unarmed (silently — the
+	// guard only records a corroborated value on its healthy branch). Nothing
+	// available in a single evaluation separates those cases; what limits the
+	// damage is elsewhere: the majority pick itself needs a MAJORITY to move,
+	// rememberServedTipPick refuses to commit an uncorroborated leap into the
+	// memory, and the trajectory referee's dwell refuses to elect a group that
+	// has not tracked the chain for half a minute.
 	Corroborated int64
 
 	// Max is the highest live head: the ceiling a HELD value may not exceed, so
@@ -1151,15 +1162,15 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 		minAcceptable = reference - tolerance
 	}
 	if pick >= minAcceptable {
-		if ref.Max > 0 {
-			// Only a LIVE-corroborated pick may be remembered: promoting a capped
-			// pick here would let a serving range become the value the network is
-			// later held to.
-			if lastGood != pick {
-				anchor.lastGoodValue.Store(pick)
-			}
+		if n.rememberServedTipPick(anchor, pick, lastGood, lastGoodAt, ref, tolerance) {
 			at := servedTipClock()
-			anchor.lastGoodAt.Store(&at)
+			// F5: the timestamp is a TTL clock, not an audit log. Refreshing it at
+			// most once a second keeps a 60s window exact to within its own
+			// granularity while removing a pointer store (and its allocation) from
+			// every evaluation of every request.
+			if lastGoodAt == nil || at.Sub(*lastGoodAt) >= time.Second {
+				anchor.lastGoodAt.Store(&at)
+			}
 		}
 		n.noteServedTipGuardTransition(anchor, servedTipGuardHealthy, axis, pick, reference, 0)
 		return pick
@@ -1194,6 +1205,48 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 			Inc()
 	}
 	return served
+}
+
+// rememberServedTipPick decides whether `pick` may become the value the guard
+// holds the network to, and stores it if so. It reports whether the memory is
+// now current (so the caller may refresh its TTL clock).
+//
+// Three conditions, each closing a way the memory could be poisoned:
+//
+//   - A LIVE ballot. A capped pick must never become the remembered value, or a
+//     serving range would become the block the network is later held to.
+//   - CORROBORATED BY TWO. The pick must sit at or below the second-highest live
+//     head, i.e. at least two live upstreams already have it. (With a single
+//     live input that head IS the reference, so a one-upstream network behaves
+//     as before.)
+//   - NO UNCORROBORATED LEAP. A memory that is still fresh may not be RAISED by
+//     more than the regression tolerance in one step. Without this, a moment in
+//     which the eligible set is majority far-future — two rogues outvoting one
+//     honest upstream while the rest are lag-excluded — commits the fantasy
+//     into the memory, and when the honest fleet returns the guard holds that
+//     fantasy against them for the full TTL. main recovers on the next
+//     evaluation because it remembers nothing; that regression is what this
+//     condition removes.
+//
+// The leap rule constrains only what is REMEMBERED, never what is SERVED: the
+// healthy branch serves the pick either way, so it cannot hold, freeze or lower
+// a tip. A legitimate leap (a halt resuming, an L2 landing a large batch) simply
+// leaves the memory where it was; the memory then ages out of its TTL and the
+// next healthy evaluation adopts the new height. Nothing is pinned, and the
+// detection reference is unaffected — it takes the higher of the memory and the
+// live corroborated head, so a memory left behind by a burst is simply ignored.
+func (n *Network) rememberServedTipPick(anchor *servedTipAnchor, pick int64, lastGood int64, lastGoodAt *time.Time, ref servedTipReference, tolerance int64) bool {
+	if ref.Max <= 0 || pick > ref.Corroborated {
+		return false
+	}
+	if lastGood > 0 && lastGoodAt != nil && pick > lastGood+tolerance &&
+		servedTipClock().Sub(*lastGoodAt) < servedTipRegressionTTL {
+		return false
+	}
+	if lastGood != pick {
+		anchor.lastGoodValue.Store(pick)
+	}
+	return true
 }
 
 // noteServedTipGuardTransition records the guard's state and reports whether it

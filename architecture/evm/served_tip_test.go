@@ -196,9 +196,13 @@ func trajectoryParams() TipTrajectoryParams {
 // head it stopped at. Every sample goes through Observe, i.e. the same entry
 // point the request path uses.
 func warmTrajectory(tr *TipTrajectory, start time.Time, head int64, perSample int64, samples int) (time.Time, int64) {
+	return warmTrajectoryWith(tr, start, head, perSample, samples, trajectoryParams())
+}
+
+func warmTrajectoryWith(tr *TipTrajectory, start time.Time, head int64, perSample int64, samples int, p TipTrajectoryParams) (time.Time, int64) {
 	now := start
 	for i := 0; i < samples; i++ {
-		tr.Observe(now, ballot(head, head), head, trajectoryParams())
+		tr.Observe(now, ballot(head, head), head, p)
 		now = now.Add(tipSampleInterval)
 		head += perSample
 	}
@@ -709,6 +713,37 @@ func TestTipTrajectory_GapMustLeaveTheWindow(t *testing.T) {
 			"a pair sitting exactly where the gap-inflated fit expects the head must not win")
 		assert.Zero(t, d.Expected, "the fit is refused outright, so nothing is even compared to it")
 	})
+}
+
+// The params are re-read on every evaluation so a config reload takes effect
+// without rebuilding the tracker — but the ring was sized once, at first use. An
+// operator RAISING trajectoryWindow therefore asked for a span the existing ring
+// could never hold, and the referee stood down forever while looking configured.
+// A window change now rebuilds the ring and re-warms.
+func TestTipTrajectory_WindowChangeRebuildsTheRing(t *testing.T) {
+	var tr TipTrajectory
+	now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
+	require.NotNil(t, tr.fit.Load(), "precondition: warm and confident at the original window")
+	require.Greater(t, tr.SampleCount(), tipMinSamples)
+
+	// The same tracker, now asked for a window its ring cannot span.
+	raised := TipTrajectoryParams{Window: 30 * time.Minute, ToleranceFloor: 1024}
+	require.Greater(t, tipBufferCapacity(raised.Window), tipBufferCapacity(10*time.Minute),
+		"precondition: the raised window needs a bigger ring")
+
+	tr.Observe(now, ballot(head, head), head, raised)
+	assert.Equal(t, 1, tr.SampleCount(), "the track restarts on the new window")
+	assert.Nil(t, tr.fit.Load(), "and no fit from the old one survives it")
+	assert.Nil(t, tr.dwell.Load(), "nor any corroboration earned under it")
+
+	// Re-warming at the new window works — i.e. the referee comes back rather
+	// than standing down forever.
+	now, _ = warmTrajectoryWith(&tr, now.Add(tipSampleInterval), head+100, 100, 420, raised)
+	fit := tr.fit.Load()
+	require.NotNil(t, fit)
+	assert.GreaterOrEqual(t, fit.spanMs, raised.Window.Milliseconds(),
+		"the rebuilt ring can span the window the operator asked for")
+	_ = now
 }
 
 // A ballot that cannot form a group can never produce a decision, so it must not

@@ -1190,6 +1190,65 @@ func TestServedTip_RegressionGuard_SingleRogueUpstreamDoesNotDisarmIt(t *testing
 		"the armed guard holds the corroborated pick when the ballot collapses")
 }
 
+// The guard's memory must not be able to commit a FANTASY. If the eligible set
+// is momentarily majority far-future — two wrong-chain upstreams outvoting one
+// honest head while the rest are lag-excluded — the pick IS that fantasy, and a
+// guard that remembers it holds it against the honest fleet for the whole TTL
+// once they return. main, which remembers nothing, recovers on the next
+// evaluation; the memory must not make us worse than that.
+func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	advance := pinServedTipClock(t)
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "rogue-1", chainID: 123, latestBlock: 100_000_000},
+		{id: "rogue-2", chainID: 123, latestBlock: 100_000_000},
+		{id: "h1", chainID: 123, latestBlock: 10_000},
+		{id: "h2", chainID: 123, latestBlock: 10_000},
+		{id: "h3", chainID: 123, latestBlock: 10_000},
+	})
+	// The syncing state is how an upstream leaves and RE-ENTERS the ballot; the
+	// order-pinning helper only ever removes.
+	eligible := func(i int, in bool) {
+		st := common.EvmSyncingStateSyncing
+		if in {
+			st = common.EvmSyncingStateNotSyncing
+		}
+		ups[i].EvmStatePoller().SetSyncingState(st)
+	}
+
+	// Honest steady state arms the guard at the honest head.
+	eligible(0, false)
+	eligible(1, false)
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load())
+
+	// The window: both rogues return, two honest upstreams drop out. The ballot
+	// is [100M, 100M, 10000] and the majority pick IS the fantasy.
+	eligible(0, true)
+	eligible(1, true)
+	eligible(3, false)
+	eligible(4, false)
+	advance(time.Second)
+	require.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx),
+		"precondition: the majority of this eligible set really is far-future")
+	assert.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load(),
+		"but an uncorroborated leap must never become the value the guard holds the network to")
+
+	// The honest fleet returns (one rogue still eligible, as in a real recovery).
+	eligible(3, true)
+	eligible(4, true)
+	eligible(1, false)
+	advance(time.Second)
+	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"recovery must be immediate, not after the guard's TTL expires")
+}
+
 // The off switch, symmetric with trajectoryWindow: 0.
 func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
 	util.ResetGock()

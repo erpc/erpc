@@ -353,6 +353,16 @@ type TipTrajectory struct {
 	next    int // ring write cursor
 	count   int
 
+	// window is the TipTrajectoryParams.Window the ring was sized for. The
+	// params are re-read on every evaluation (a config reload takes effect
+	// without rebuilding the tracker), but the ring is sized once — so a raised
+	// window would otherwise demand a span the existing ring can never hold, and
+	// the referee would stand down forever while looking configured. A change
+	// therefore rebuilds the ring and clears the fit and the dwell: the tracker
+	// re-warms from live observations, which is the same inert-then-confident
+	// path every process takes after a deploy.
+	window time.Duration
+
 	// ordered / slopes / resid are refit scratch, retained so the periodic fit
 	// allocates nothing after warm-up.
 	ordered []tipSample
@@ -639,8 +649,16 @@ func (t *TipTrajectory) record(now time.Time, head int64, p TipTrajectoryParams)
 		prevAgeMs = nowMs - last
 	}
 
-	if t.samples == nil {
+	if t.samples == nil || t.window != p.Window {
+		// First use, or the operator changed trajectoryWindow under a live
+		// process (see TipTrajectory.window): size the ring for the window in
+		// force and start the track again, since neither the old samples' span
+		// nor a fit over them describes the new configuration.
 		t.samples = make([]tipSample, tipBufferCapacity(p.Window))
+		t.window = p.Window
+		t.next, t.count = 0, 0
+		t.fit.Store(nil)
+		t.dwell.Store(nil)
 	}
 	t.samples[t.next] = tipSample{atMs: nowMs, head: head}
 	t.next = (t.next + 1) % len(t.samples)
