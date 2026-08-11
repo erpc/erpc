@@ -137,10 +137,22 @@ type servedTipAnchor struct {
 	// the pick. See evm.TipTrajectory.
 	trajectory evm.TipTrajectory
 
-	// trajectoryOverriding mirrors guardState for the referee: the override is
-	// logged on transitions only.
-	trajectoryOverriding atomic.Bool
+	// refereeState is one of the servedTipReferee* constants: like guardState,
+	// both the referee's counter and its log fire on state ENTRY only.
+	refereeState atomic.Int32
 }
+
+const (
+	// servedTipRefereeIdle: the referee is not intervening.
+	servedTipRefereeIdle int32 = iota
+	// servedTipRefereeOverriding: a corroborated group is being served in place
+	// of the majority pick.
+	servedTipRefereeOverriding
+	// servedTipRefereeDeclining: a fresher corroborated group sat above the
+	// majority pick and was refused — too far off the trajectory, or it has not
+	// held its place long enough to have earned it.
+	servedTipRefereeDeclining
+)
 
 const (
 	// servedTipGuardHealthy: the pick tracks the live heads.
@@ -885,7 +897,9 @@ func (n *Network) servedTip(
 	// network's head has been going for the last ten minutes. Advisory and
 	// upward-only — it can only replace the majority pick with a higher block
 	// that at least two live upstreams already have.
-	pick.Tip = n.refereeServedTip(axis, lane, anchor, pick.Sorted, pick.Tip, liveReference)
+	majority := pick.Tip
+	decision := n.refereeServedTip(anchor, pick.Sorted, pick.Tip, liveReference)
+	pick.Tip = decision.Pick
 
 	// Regression guard: "latest" cannot drop far below the corroborated live
 	// head in one evaluation. Runs BEFORE the guaranteed-method floor, which is
@@ -901,6 +915,12 @@ func (n *Network) servedTip(
 			pick.Tip = floor
 		}
 	}
+
+	// The referee's outcome is reported only now, against the value the network
+	// actually serves: an override the guaranteed-method floor pulled back to
+	// (or below) the majority pick changed nothing, and counting or logging it
+	// would page someone about an intervention that did not happen.
+	n.observeServedTipRefereeTransition(axis, lane, anchor, majority, pick.Tip, decision)
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
@@ -957,66 +977,77 @@ func (n *Network) servedTip(
 //
 // The pick stays ≤ evm.ServedTipPick.Freshest (the 2nd-highest head) for the
 // same reason, so the served-tip lag gauge never reads negative.
-func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAnchor, sorted []evm.ServedTipInput, median int64, ref servedTipReference) int64 {
+func (n *Network) refereeServedTip(anchor *servedTipAnchor, sorted []evm.ServedTipInput, median int64, ref servedTipReference) evm.TipTrajectoryDecision {
+	stood := evm.TipTrajectoryDecision{Pick: median}
 	if anchor == nil || median <= 0 || ref.Max <= 0 {
 		// A live head is also what makes `sorted` safe to sample and cluster:
 		// gatherEvmTipInputsForMethod only returns bound-capped observations
 		// when there is no live head at all, and a serving range must never
 		// enter a head trajectory.
-		return median
+		return stood
 	}
 	window := n.servedTipTrajectoryWindow()
 	if window <= 0 {
-		return median
+		return stood
 	}
 
-	decision := anchor.trajectory.Observe(servedTipClock(), sorted, median, evm.TipTrajectoryParams{
+	return anchor.trajectory.Observe(servedTipClock(), sorted, median, evm.TipTrajectoryParams{
 		Window: window,
 		// maxRegressionBlocks: -1 turns the GUARD off; for the referee it only
 		// removes the floor under the tolerance, which the window's own residual
 		// spread then sets on its own.
 		ToleranceFloor: max(0, n.servedTipMaxRegressionBlocks()),
 	})
+}
 
+// observeServedTipRefereeTransition counts and logs the referee's outcome ONCE
+// PER STATE CHANGE, against `final` — the value the network actually serves
+// after the guaranteed-method floor.
+//
+// Transitions, not evaluations: EvmHighestLatestBlockNumber runs several times
+// per request, so a per-evaluation counter scales with RPS and reads as a storm
+// of interventions when there is exactly one. Counting entries is what makes
+// "any non-zero rate is alert-worthy" true.
+func (n *Network) observeServedTipRefereeTransition(axis string, lane string, anchor *servedTipAnchor, majority int64, final int64, d evm.TipTrajectoryDecision) {
+	if anchor == nil {
+		return
+	}
+	state := servedTipRefereeIdle
 	switch {
-	case decision.Overrode:
+	case d.Overrode && final > majority:
+		state = servedTipRefereeOverriding
+	case d.Declined:
+		state = servedTipRefereeDeclining
+	}
+
+	// Load first: "still idle" is the answer on essentially every evaluation
+	// this process ever makes.
+	if anchor.refereeState.Load() == state || anchor.refereeState.Swap(state) == state {
+		return
+	}
+	switch state {
+	case servedTipRefereeOverriding:
 		telemetry.MetricNetworkServedTipTrajectoryTotal.
 			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "override").
 			Inc()
-	case decision.Declined:
+		n.logger.Error().
+			Str("axis", axis).
+			Int64("pick", final).
+			Int64("majorityPick", majority).
+			Int64("expectedBlock", d.Expected).
+			Int64("tolerance", d.Tolerance).
+			Float64("blocksPerSecond", d.VelocityPerSec).
+			Msg("majority of the eligible upstreams is off the network's long-term head trajectory; serving the corroborated group that is on it")
+	case servedTipRefereeDeclining:
 		telemetry.MetricNetworkServedTipTrajectoryTotal.
 			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "fallback").
 			Inc()
-	}
-	n.logServedTipTrajectoryTransition(anchor, axis, median, decision)
-
-	return decision.Pick
-}
-
-// logServedTipTrajectoryTransition logs only when the referee STARTS or STOPS
-// overriding, so a stall that persists across thousands of requests produces
-// one line at each end of it.
-func (n *Network) logServedTipTrajectoryTransition(anchor *servedTipAnchor, axis string, median int64, d evm.TipTrajectoryDecision) {
-	// Load first (see logServedTipGuardTransition): "still not overriding" is
-	// the answer on essentially every evaluation this process ever makes.
-	if anchor.trajectoryOverriding.Load() == d.Overrode || anchor.trajectoryOverriding.Swap(d.Overrode) == d.Overrode {
-		return
-	}
-	if !d.Overrode {
+	default:
 		n.logger.Warn().
 			Str("axis", axis).
-			Int64("pick", d.Pick).
+			Int64("pick", final).
 			Msg("served tip is back on the majority pick; the trajectory referee is no longer overriding")
-		return
 	}
-	n.logger.Error().
-		Str("axis", axis).
-		Int64("pick", d.Pick).
-		Int64("majorityPick", median).
-		Int64("expectedBlock", d.Expected).
-		Int64("tolerance", d.Tolerance).
-		Float64("blocksPerSecond", d.VelocityPerSec).
-		Msg("majority of the eligible upstreams is off the network's long-term head trajectory; serving the corroborated group that is on it")
 }
 
 // servedTipTrajectoryWindow is how much recorded head history the trajectory
@@ -1126,7 +1157,7 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 			at := servedTipClock()
 			anchor.lastGoodAt.Store(&at)
 		}
-		n.logServedTipGuardTransition(anchor, servedTipGuardHealthy, axis, pick, reference, 0)
+		n.noteServedTipGuardTransition(anchor, servedTipGuardHealthy, axis, pick, reference, 0)
 		return pick
 	}
 
@@ -1135,10 +1166,11 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 	}
 	held := servedTipClock().Sub(*lastGoodAt)
 	if held >= servedTipRegressionTTL {
-		n.logServedTipGuardTransition(anchor, servedTipGuardFailedOpen, axis, pick, reference, held)
-		telemetry.MetricNetworkServedTipRegressionTotal.
-			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "failed_open").
-			Inc()
+		if n.noteServedTipGuardTransition(anchor, servedTipGuardFailedOpen, axis, pick, reference, held) {
+			telemetry.MetricNetworkServedTipRegressionTotal.
+				WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "failed_open").
+				Inc()
+		}
 		anchor.lastGoodValue.Store(0)
 		anchor.lastGoodAt.Store(nil)
 		return pick
@@ -1152,21 +1184,25 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 	if ref.Max > 0 && ref.Max < served {
 		served = ref.Max
 	}
-	n.logServedTipGuardTransition(anchor, servedTipGuardHolding, axis, pick, reference, held)
-	telemetry.MetricNetworkServedTipRegressionTotal.
-		WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "held").
-		Inc()
+	if n.noteServedTipGuardTransition(anchor, servedTipGuardHolding, axis, pick, reference, held) {
+		telemetry.MetricNetworkServedTipRegressionTotal.
+			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "held").
+			Inc()
+	}
 	return served
 }
 
-// logServedTipGuardTransition logs only when the guard CHANGES state, so a
-// regression that persists across thousands of requests produces one line when
-// the hold starts and one when it gives up.
-func (n *Network) logServedTipGuardTransition(anchor *servedTipAnchor, state int32, axis string, pick int64, reference int64, held time.Duration) {
+// noteServedTipGuardTransition records the guard's state and reports whether it
+// CHANGED, so both the log line and the counter fire once when a hold starts and
+// once when it gives up — never once per evaluation. EvmHighestLatestBlockNumber
+// runs several times per request, so a per-evaluation counter would scale with
+// RPS and read as thousands of suppressed picks where there is one sustained
+// regression.
+func (n *Network) noteServedTipGuardTransition(anchor *servedTipAnchor, state int32, axis string, pick int64, reference int64, held time.Duration) bool {
 	// Load first: the steady state is "still healthy", read by every serving
 	// core on every evaluation, and it must not cost an exclusive line.
 	if anchor.guardState.Load() == state || anchor.guardState.Swap(state) == state {
-		return
+		return false
 	}
 	switch state {
 	case servedTipGuardHolding:
@@ -1190,6 +1226,7 @@ func (n *Network) logServedTipGuardTransition(anchor *servedTipAnchor, state int
 			Int64("reference", reference).
 			Msg("served tip recovered; the regression guard is no longer holding")
 	}
+	return true
 }
 
 // servedTipMaxRegressionBlocks is how far below the corroborated live head a

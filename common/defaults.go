@@ -2175,6 +2175,29 @@ const DefaultToleratedBlockHeadRollback = 1024
 // pod's lifetime.
 const DefaultServedTipTrajectoryWindow = 10 * time.Minute
 
+// ServedTipTrajectorySampleInterval and ServedTipTrajectoryMaxSamples are the
+// referee's recording cadence and its hard ring cap (architecture/evm's
+// tipSampleInterval / tipMaxBufferCapacity, which read them from here so the
+// config bounds below cannot drift from the mechanism they describe).
+const (
+	ServedTipTrajectorySampleInterval = 5 * time.Second
+	ServedTipTrajectoryMaxSamples     = 1024
+)
+
+// MinServedTipTrajectoryWindow / MaxServedTipTrajectoryWindow bound a configured
+// EvmServedTipConfig.TrajectoryWindow to the values that can actually work.
+//
+// Below a minute the window is self-defeating: it must be long enough that a
+// stall cannot look like a trajectory, and a fit over seconds of history is
+// noise. Above 80% of what the ring can span (cadence × capacity) the required
+// span is never reached, so the referee would stand down forever while looking
+// configured — the failure mode a range check exists to prevent, since nothing
+// in the metrics distinguishes "never warm" from "never needed".
+const (
+	MinServedTipTrajectoryWindow = time.Minute
+	MaxServedTipTrajectoryWindow = ServedTipTrajectorySampleInterval * ServedTipTrajectoryMaxSamples * 4 / 5
+)
+
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
 // ErrUpstreamBlockUnavailable): one original attempt + one retry after ~one block.

@@ -1603,14 +1603,16 @@ export interface EvmServedTipConfig {
    */
   guaranteedMethods?: string[];
   /**
-   * MaxRegressionBlocks is how far below the freshest LIVE upstream head the
-   * majority pick may fall before it is treated as a poisoned ballot rather
-   * than as reality. While a pick is below that bound the network keeps
-   * serving its last corroborated pick (in-process, for at most one minute,
-   * then it fails open and serves the pick as computed). 0 uses
-   * DefaultToleratedBlockHeadRollback (1024) — the same rollback tolerance the
-   * state poller and health tracker apply to a retreating head, so all three
-   * layers agree on what counts as a genuine deep correction.
+   * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
+   * (the second-highest live head) the majority pick may fall before it is
+   * treated as a poisoned ballot rather than as reality. While a pick is below
+   * that bound the network keeps serving its last corroborated pick
+   * (in-process, for at most one minute, then it fails open and serves the
+   * pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the
+   * same rollback tolerance the state poller and health tracker apply to a
+   * retreating head, so all three layers agree on what counts as a genuine
+   * deep correction. -1 disables the regression guard entirely (the symmetric
+   * opposite of trajectoryWindow: 0); no other negative value is accepted.
    */
   maxRegressionBlocks?: number /* int64 */;
   /**
@@ -1622,10 +1624,13 @@ export interface EvmServedTipConfig {
    * upward-only, in-process, and a no-op until every confidence condition
    * holds). Unset uses DefaultServedTipTrajectoryWindow (10m); an explicit 0
    * disables the referee entirely — nothing is recorded and the pick is the
-   * plain majority. Values much below a few minutes are self-defeating (the
-   * window must be long enough that a stall cannot look like a trajectory),
-   * and values beyond about an hour never warm up at all: the sample ring is
-   * capped, so the span the referee requires would never be reached.
+   * plain majority. Any other value must be between
+   * MinServedTipTrajectoryWindow and MaxServedTipTrajectoryWindow: below the
+   * minimum the window is self-defeating (it must be long enough that a stall
+   * cannot look like a trajectory), and above the maximum the sample ring can
+   * never span it, so the referee would stand down forever while looking
+   * configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
+   * bare number is parsed as MILLISECONDS.
    */
   trajectoryWindow?: Duration;
 }

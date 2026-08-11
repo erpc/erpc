@@ -2587,10 +2587,13 @@ type EvmServedTipConfig struct {
 	// upward-only, in-process, and a no-op until every confidence condition
 	// holds). Unset uses DefaultServedTipTrajectoryWindow (10m); an explicit 0
 	// disables the referee entirely — nothing is recorded and the pick is the
-	// plain majority. Values much below a few minutes are self-defeating (the
-	// window must be long enough that a stall cannot look like a trajectory),
-	// and values beyond about an hour never warm up at all: the sample ring is
-	// capped, so the span the referee requires would never be reached.
+	// plain majority. Any other value must be between
+	// MinServedTipTrajectoryWindow and MaxServedTipTrajectoryWindow: below the
+	// minimum the window is self-defeating (it must be long enough that a stall
+	// cannot look like a trajectory), and above the maximum the sample ring can
+	// never span it, so the referee would stand down forever while looking
+	// configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
+	// bare number is parsed as MILLISECONDS.
 	TrajectoryWindow *Duration `yaml:"trajectoryWindow,omitempty" json:"trajectoryWindow,omitempty"`
 }
 

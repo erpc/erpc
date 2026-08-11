@@ -1520,8 +1520,14 @@ func (e *EvmNetworkConfig) Validate() error {
 		if e.ServedTip.MaxRegressionBlocks < -1 {
 			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0, or -1 to disable the regression guard (0 uses the default rollback tolerance)")
 		}
-		if e.ServedTip.TrajectoryWindow != nil && *e.ServedTip.TrajectoryWindow < 0 {
-			return fmt.Errorf("network.*.evm.servedTip.trajectoryWindow must be >= 0 (0 disables the trajectory referee)")
+		if w := e.ServedTip.TrajectoryWindow; w != nil && w.Duration() != 0 {
+			if d := w.Duration(); d < MinServedTipTrajectoryWindow || d > MaxServedTipTrajectoryWindow {
+				return fmt.Errorf(
+					"network.*.evm.servedTip.trajectoryWindow must be 0 (disables the trajectory referee) "+
+						"or between %s and %s, got %s — NOTE a bare number in YAML is parsed as MILLISECONDS, "+
+						"so write trajectoryWindow: \"10m\", not trajectoryWindow: 10",
+					MinServedTipTrajectoryWindow, MaxServedTipTrajectoryWindow, d)
+			}
 		}
 		for _, m := range e.ServedTip.GuaranteedMethods {
 			if err := ValidatePattern(m); err != nil {

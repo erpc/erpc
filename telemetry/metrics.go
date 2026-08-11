@@ -154,36 +154,47 @@ var (
 		Help:      "Seconds since the served-tip value last changed (observed in-process, exported at pick time); sustained high values on a live chain = stuck tip.",
 	}, []string{"project", "network", "lane", "axis"})
 
-	// MetricNetworkServedTipRegressionTotal counts the picks that fell further
-	// than the configured tolerance below the freshest LIVE upstream head — a
-	// ballot poisoned by values that are not head observations (the 2026-08 celo
-	// incident: two upstreams voting their blockAvailability.upper bound). Any
-	// non-zero rate is alert-worthy. outcome="held" = the network kept serving
-	// its last corroborated pick; outcome="failed_open" = the regression
-	// outlasted the guard's window and the pick was served as computed.
+	// MetricNetworkServedTipRegressionTotal counts the TRANSITIONS into a guard
+	// state: a pick fell further than the configured tolerance below the
+	// corroborated live head, i.e. a ballot poisoned by values that are not head
+	// observations (the 2026-08 celo incident: two upstreams voting their
+	// blockAvailability.upper bound). outcome="held" = the network started
+	// serving its last corroborated pick instead; outcome="failed_open" = a hold
+	// outlasted the guard's window and the pick is served as computed.
+	//
+	// TRANSITIONS, NOT EVALUATIONS: the served tip is computed several times per
+	// request, so a per-evaluation counter would scale with RPS and report one
+	// sustained regression as thousands. One sustained hold is +1 held, then +1
+	// failed_open if it never recovers — which is what makes any non-zero rate
+	// alert-worthy.
 	MetricNetworkServedTipRegressionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_regression_total",
-		Help:      "Served-tip picks rejected as a regression far below the freshest live upstream head, by outcome (held = last corroborated pick served instead; failed_open = the pick was served anyway after the guard's window).",
+		Help:      "Transitions into a served-tip regression-guard state (counts state ENTRIES, not evaluations; any nonzero rate is alert-worthy), by outcome: held = the last corroborated pick is being served instead of a pick far below the corroborated live head; failed_open = that hold outlasted the guard's window and the pick is served as computed.",
 	}, []string{"project", "network", "lane", "axis", "outcome"})
 
-	// MetricNetworkServedTipTrajectoryTotal counts the evaluations where the
-	// long-term trajectory referee had a FRESHER corroborated group of live
-	// heads on the table than the majority pick. outcome="override" = that
-	// group matched the network's own head trajectory and was served instead of
-	// a stalled majority — rare, and the reason to page someone: some upstreams
-	// froze while remaining eligible. outcome="fallback" = it did not match
-	// closely enough, so the majority pick stood.
+	// MetricNetworkServedTipTrajectoryTotal counts the TRANSITIONS into a
+	// trajectory-referee state: a FRESHER corroborated group of live heads sat
+	// above the majority pick. outcome="override" = that group matched the
+	// network's own head trajectory, earned its dwell, and is being served
+	// instead of a stalled majority — rare, and the reason to page someone: some
+	// upstreams froze while remaining eligible. outcome="fallback" = it was
+	// refused (too far from the trajectory, or it has not held its place long
+	// enough), so the majority pick stands.
 	//
-	// Both are silent in steady state by construction: a fleet whose live heads
-	// form one cluster elects that cluster, and a fleet permanently split around
-	// its own median elects the median's group (the trajectory is fitted to the
-	// median, so no permanently-offset group is ever closer to it). Any sustained
-	// rate here means the fleet's groups are genuinely diverging.
+	// TRANSITIONS, NOT EVALUATIONS (see MetricNetworkServedTipRegressionTotal),
+	// and an override the guaranteed-method floor pulls back to the majority pick
+	// is not counted at all — it changed nothing.
+	//
+	// Both outcomes are silent in steady state by construction: a fleet whose
+	// live heads form one cluster elects that cluster, and a fleet permanently
+	// split around its own median elects the median's group (the trajectory is
+	// fitted to the median, so no permanently-offset group is ever closer to it).
+	// Any nonzero rate here means the fleet's groups are genuinely diverging.
 	MetricNetworkServedTipTrajectoryTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_trajectory_total",
-		Help:      "Served-tip evaluations where a corroborated group of live heads sat above the majority pick, by outcome (override = that group matched the network's head trajectory and was served; fallback = it did not, and the majority pick stood).",
+		Help:      "Transitions into a served-tip trajectory-referee state (counts state ENTRIES, not evaluations; any nonzero rate is alert-worthy), by outcome: override = a corroborated group of live heads matched the network's head trajectory and is served in place of a stalled majority; fallback = such a group sat above the majority pick and was refused.",
 	}, []string{"project", "network", "lane", "axis", "outcome"})
 
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{

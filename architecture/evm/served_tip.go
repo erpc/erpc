@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/erpc/erpc/common"
 )
 
 // ServedTipInput is a single observation: an upstream's last-known tip block.
@@ -160,8 +162,9 @@ const (
 	// tipSampleInterval throttles recording to one sample per evaluation-with-
 	// this-much-elapsed. Fast enough that the default 10-minute window holds
 	// 120 samples, slow enough that the O(n log n) refit runs at most 0.2 Hz
-	// per network+axis while reads stay O(1).
-	tipSampleInterval = 5 * time.Second
+	// per network+axis while reads stay O(1). It lives in common because the
+	// config validator derives the allowed trajectoryWindow range from it.
+	tipSampleInterval = common.ServedTipTrajectorySampleInterval
 
 	// tipMinSamples is the smallest buffer the fit is computed over: below it
 	// a handful of points could define a "trajectory" on noise alone.
@@ -240,9 +243,10 @@ const (
 	tipMaxClusterWidth = int64(1) << 40
 
 	// tipMinBufferCapacity / tipMaxBufferCapacity bound the ring derived from
-	// the configured window (tipBufferCapacity).
+	// the configured window (tipBufferCapacity). The cap is shared with the
+	// config validator, which rejects a window this ring could never span.
 	tipMinBufferCapacity = 64
-	tipMaxBufferCapacity = 1024
+	tipMaxBufferCapacity = common.ServedTipTrajectoryMaxSamples
 )
 
 // TipTrajectoryParams are the per-network knobs the referee reads on every
