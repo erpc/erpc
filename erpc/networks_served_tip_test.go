@@ -787,6 +787,57 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 		"the guaranteed-method floor must not re-admit the serving range the ballot filter removed")
 }
 
+// THE COMPOSITION of the two doors: the guard correctly refuses a cap-only
+// ballot (no live head → it holds its last corroborated pick), and the
+// guaranteed-method floor — which runs AFTER the guard — then recomputes that
+// same collapsed instant and drags the served value back to the cap. Each fix
+// was correct alone; together they still served 21,615,999.
+//
+// The live upstreams here go SYNCING rather than being un-pinned: that is the
+// production shape (lag-excluded, cordoned, mid-restart upstreams stay
+// REGISTERED), and registration is what tells the floor that a cap-only ballot
+// is transient rather than the operator's configuration.
+func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	advance := pinServedTipClock(t)
+
+	const legacyCap = int64(21_615_999)
+	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
+		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
+		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
+		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+	}, &common.EvmServedTipConfig{
+		EnabledFor:        []string{"latest"},
+		GuaranteedMethods: []string{"eth_getLogs"},
+	})
+
+	healthy := network.EvmHighestLatestBlockNumber(ctx)
+	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
+
+	// Every live upstream drops out of the ballot at once; only the two
+	// 2023-capped ones remain servable, and they support eth_getLogs.
+	for _, u := range ups[:3] {
+		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+	}
+
+	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
+		"the floor must not undo the guard's hold: live upstreams serve eth_getLogs, "+
+			"they are merely absent, so the cap-only floor is a transient lie")
+	assert.Zero(t, network.guaranteedMethodFloor(ctx, false),
+		"and the method must contribute no floor at all while that is true")
+
+	advance(servedTipRegressionTTL + time.Second)
+	assert.Equal(t, legacyCap, network.EvmHighestLatestBlockNumber(ctx),
+		"past the guard's TTL the cap is served — bounded fail-open, not a wedge")
+}
+
 // The floor's PURPOSE is unchanged by that filter: when only capped upstreams
 // support a guaranteed method, they are the only upstreams that can serve it at
 // all, so their cap is exactly the floor the tip must respect.
@@ -798,7 +849,7 @@ func TestServedTip_GuaranteedMethodFloor_CapsStillSetTheFloorWhenAloneOnAMethod(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
 		{id: "live-1", chainID: 123, latestBlock: 10_000, ignoreMethods: []string{"trace_block"}},
 		{id: "live-2", chainID: 123, latestBlock: 10_000, ignoreMethods: []string{"trace_block"}},
 		{id: "archive-1", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
@@ -810,6 +861,15 @@ func TestServedTip_GuaranteedMethodFloor_CapsStillSetTheFloorWhenAloneOnAMethod(
 
 	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
 		"only the capped pair serves trace_block, so their range IS the guarantee")
+
+	// And it stays the guarantee when the live upstreams leave the ballot: no
+	// live upstream is CONFIGURED to serve trace_block, so this cap-only ballot
+	// is the permanent case, not a transient one.
+	for _, u := range ups[:2] {
+		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+	}
+	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
+		"a permanently cap-only method must keep flooring the tip")
 }
 
 // A ballot the filter shrinks to a SINGLE live upstream is served as that

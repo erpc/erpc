@@ -1370,6 +1370,26 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 // upstream also supports that method. If only capped upstreams support it, they
 // set the floor — which is the entire point of the floor, since they are the
 // only upstreams that can serve the method at all.
+//
+// STATIC CONFIG DECIDES THAT, NOT TRANSIENT ELIGIBILITY. A cap-only ballot has
+// two very different causes, and only one of them is a floor:
+//
+//   - PERMANENT: no live upstream is configured to serve the method at all
+//     (the archive-only trace_* shape). The cap is genuinely the freshest block
+//     anyone can serve, so it floors the tip.
+//   - TRANSIENT: live upstreams DO serve the method, they are just absent from
+//     this instant's eligible set — lag-excluded, cordoned, mid-restart. Their
+//     absence is exactly the condition the regression guard is holding through,
+//     and flooring to the cap would hand the incident value back the moment the
+//     eligible set collapsed. That composition (the guard correctly holding
+//     74.5M while the floor dragged the served value to 21,615,999) was live at
+//     the previous head of this branch.
+//
+// So a cap-only ballot floors only when the REGISTERED set — the operator's
+// configuration, which eligibility churn cannot change — has no live upstream
+// serving that method. Otherwise the method sets no floor for this evaluation
+// and the guard's hold (and its bounded fail-open) governs, exactly as it does
+// when the whole ballot goes cap-only.
 func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) int64 {
 	if n.cfg == nil || n.cfg.Evm == nil || n.cfg.Evm.ServedTip == nil {
 		return 0
@@ -1390,10 +1410,17 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 			}
 			supporting = append(supporting, cu)
 		}
-		tips, _ := evmTipBallot(supporting, useFinalized)
+		tips, ref := evmTipBallot(supporting, useFinalized)
 		if len(tips) == 0 {
 			// No supporting upstream for this method → no constraint (fall through
 			// rather than pinning the tip to 0).
+			continue
+		}
+		if ref.Max <= 0 && n.liveUpstreamServesMethod(ctx, m, useFinalized) {
+			// Cap-only ballot, but the configuration says live upstreams serve
+			// this method — they are merely absent right now. See the comment
+			// above: that floor is a transient lie, and serving it is the celo
+			// value.
 			continue
 		}
 		if t := evm.PickServedTip(tips).Tip; t > 0 && (floor == 0 || t < floor) {
@@ -1401,6 +1428,34 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 		}
 	}
 	return floor
+}
+
+// liveUpstreamServesMethod reports whether any REGISTERED upstream that is not a
+// static serving-range cap is configured to serve `method` — the static-config
+// question guaranteedMethodFloor asks before letting a cap-only ballot set a
+// floor. It reads the registered set, not the eligible one, precisely because
+// eligibility is the thing that churns.
+//
+// An upstream with no head yet counts as live: "we cannot tell" must fall on the
+// side of skipping the floor, since serving a stale cap is the failure this
+// whole change exists to prevent. Only reached when a method's ballot came back
+// cap-only, i.e. approximately never on the hot path.
+func (n *Network) liveUpstreamServesMethod(ctx context.Context, method string, useFinalized bool) bool {
+	if n.upstreamsRegistry == nil {
+		return false
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		if handle, _ := u.ShouldHandleMethod(method); !handle {
+			continue
+		}
+		if eu, ok := common.Upstream(u).(common.EvmUpstream); ok {
+			if _, capped := evmTipObservation(eu, useFinalized); capped {
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // observeServedTipMetrics exports the served-tip gauges. axis
