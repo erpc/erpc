@@ -4,16 +4,19 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -747,4 +750,166 @@ func TestServedTip_AllInputsFiltered_FailsOpenToZero(t *testing.T) {
 
 	assert.Equal(t, int64(0), network.EvmHighestLatestBlockNumber(ctx),
 		"no eligible observations → unknown tip (0), never a remembered one")
+}
+
+// ─── Regression guard: the tip cannot fall far below the best live head ──────
+
+// servedTipRegressionCount reads the guard's counter for a network/axis/outcome.
+func servedTipRegressionCount(n *Network, axis, outcome string) float64 {
+	return promUtil.ToFloat64(telemetry.MetricNetworkServedTipRegressionTotal.
+		WithLabelValues(n.projectId, n.Label(), servedTipLaneAll, axis, outcome))
+}
+
+// pinServedTipClock freezes the guard's clock for the duration of a test and
+// returns a function that advances it (mirrors integrity's exhaustionClock).
+func pinServedTipClock(t *testing.T) func(time.Duration) {
+	t.Helper()
+	var mu sync.Mutex
+	now := time.Now()
+	prev := servedTipClock
+	servedTipClock = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	t.Cleanup(func() { servedTipClock = prev })
+	return func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		now = now.Add(d)
+	}
+}
+
+// A pick that drops more than the tolerance below the freshest live head is a
+// poisoned ballot, not a chain that moved: the last corroborated pick is served
+// instead. Here the two upstreams stuck at block 5 become the majority the
+// moment the healthy pair leaves the eligible set — the same shape as celo's
+// bound-capped pair, reached without any bounds at all (which is why the guard
+// exists independently of the bounds filter).
+func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pinServedTipClock(t)
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "live-1", chainID: 123, latestBlock: 10_000},
+		{id: "live-2", chainID: 123, latestBlock: 10_000},
+		{id: "live-3", chainID: 123, latestBlock: 10_000},
+		{id: "stuck-1", chainID: 123, latestBlock: 5},
+		{id: "stuck-2", chainID: 123, latestBlock: 5},
+	})
+
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"majority of [10000,10000,10000,5,5] = 10000, corroborated by the live heads")
+	before := servedTipRegressionCount(network, "latest", "held")
+
+	// The healthy pair drops out (policy exclusion / cordon): the ballot
+	// becomes [10000, 5, 5] and the majority pick collapses to 5.
+	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
+
+	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"a pick 9995 blocks below the live head is a poisoned ballot; "+
+			"the last corroborated pick must be served instead")
+	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "held"),
+		"the guard must count what it suppressed")
+}
+
+// The guard is a bounded pause, never a wedge: once the regression outlasts
+// servedTipRegressionTTL, reality is the better explanation and the pick is
+// served as computed. This is the property whose absence (a clamp that could
+// hold forever) froze the fleet in 2026-06.
+func TestServedTip_RegressionGuard_FailsOpenAfterTTL(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	advance := pinServedTipClock(t)
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "live-1", chainID: 123, latestBlock: 10_000},
+		{id: "live-2", chainID: 123, latestBlock: 10_000},
+		{id: "live-3", chainID: 123, latestBlock: 10_000},
+		{id: "stuck-1", chainID: 123, latestBlock: 5},
+		{id: "stuck-2", chainID: 123, latestBlock: 5},
+	})
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"inside the window the guard holds")
+
+	before := servedTipRegressionCount(network, "latest", "failed_open")
+	advance(servedTipRegressionTTL + time.Second)
+
+	assert.Equal(t, int64(5), network.EvmHighestLatestBlockNumber(ctx),
+		"past the guard window the pick must be served as computed (fail open)")
+	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "failed_open"),
+		"failing open is still worth counting")
+}
+
+// A genuine reorg/lag inside the tolerance is reality, not poison: it passes
+// through untouched and becomes the new corroborated value (so the guard can
+// never ratchet the tip upward across small legitimate steps back).
+func TestServedTip_RegressionGuard_SmallReorgPassesThrough(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pinServedTipClock(t)
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "live-1", chainID: 123, latestBlock: 10_000},
+		{id: "live-2", chainID: 123, latestBlock: 10_000},
+		{id: "live-3", chainID: 123, latestBlock: 10_000},
+		{id: "behind-1", chainID: 123, latestBlock: 9_500},
+		{id: "behind-2", chainID: 123, latestBlock: 9_500},
+	})
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	before := servedTipRegressionCount(network, "latest", "held")
+
+	// [10000, 9500, 9500] → 9500: 500 blocks back, inside the 1024 tolerance.
+	network.PinUpstreamOrderForTest("live-1", "behind-1", "behind-2")
+
+	assert.Equal(t, int64(9_500), network.EvmHighestLatestBlockNumber(ctx),
+		"a regression inside the tolerance is reality and must pass through")
+	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
+		"a tolerated regression is not a guard trip")
+	assert.Equal(t, int64(9_500), network.servedLatestAnchor.lastGoodValue.Load(),
+		"the tolerated pick becomes the new corroborated value")
+}
+
+// With no live head on the ballot there is nothing to measure a regression
+// against, so the guard steps aside entirely — and records nothing, because a
+// cap must never become the value it later holds the network to.
+func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pinServedTipClock(t)
+
+	// Every upstream's poller sits at 10_000 while serving only up to 5_000:
+	// were the raw heads a live reference, 5_000 would trip the guard.
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "capped-1", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+		{id: "capped-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+		{id: "capped-3", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
+	})
+	before := servedTipRegressionCount(network, "latest", "held")
+
+	assert.Equal(t, int64(5_000), network.EvmHighestLatestBlockNumber(ctx),
+		"no live head → no reference → the guard must not interfere")
+	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
+		"the guard cannot trip without a live head to compare against")
+	assert.Zero(t, network.servedLatestAnchor.lastGoodValue.Load(),
+		"an uncorroborated cap must never be remembered as a good pick")
 }

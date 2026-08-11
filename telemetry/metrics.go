@@ -154,6 +154,19 @@ var (
 		Help:      "Seconds since the served-tip value last changed (observed in-process, exported at pick time); sustained high values on a live chain = stuck tip.",
 	}, []string{"project", "network", "lane", "axis"})
 
+	// MetricNetworkServedTipRegressionTotal counts the picks that fell further
+	// than the configured tolerance below the freshest LIVE upstream head — a
+	// ballot poisoned by values that are not head observations (the 2026-08 celo
+	// incident: two upstreams voting their blockAvailability.upper bound). Any
+	// non-zero rate is alert-worthy. outcome="held" = the network kept serving
+	// its last corroborated pick; outcome="failed_open" = the regression
+	// outlasted the guard's window and the pick was served as computed.
+	MetricNetworkServedTipRegressionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_regression_total",
+		Help:      "Served-tip picks rejected as a regression far below the freshest live upstream head, by outcome (held = last corroborated pick served instead; failed_open = the pick was served anyway after the guard's window).",
+	}, []string{"project", "network", "lane", "axis", "outcome"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

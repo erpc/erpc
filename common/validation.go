@@ -1517,6 +1517,9 @@ func (e *EvmNetworkConfig) Validate() error {
 		if e.ServedTip.ClusterDelta < 0 {
 			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
 		}
+		if e.ServedTip.MaxRegressionBlocks < 0 {
+			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0 (0 uses the default rollback tolerance)")
+		}
 		for _, m := range e.ServedTip.GuaranteedMethods {
 			if err := ValidatePattern(m); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)

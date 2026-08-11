@@ -2566,6 +2566,16 @@ type EvmServedTipConfig struct {
 	// (membership auto-detected via ShouldHandleMethod — no per-upstream config).
 	// Empty means only the global (all-eligible) majority is computed.
 	GuaranteedMethods []string `yaml:"guaranteedMethods,omitempty" json:"guaranteedMethods,omitempty"`
+
+	// MaxRegressionBlocks is how far below the freshest LIVE upstream head the
+	// majority pick may fall before it is treated as a poisoned ballot rather
+	// than as reality. While a pick is below that bound the network keeps
+	// serving its last corroborated pick (in-process, for at most one minute,
+	// then it fails open and serves the pick as computed). 0 uses
+	// DefaultToleratedBlockHeadRollback (1024) — the same rollback tolerance the
+	// state poller and health tracker apply to a retreating head, so all three
+	// layers agree on what counts as a genuine deep correction.
+	MaxRegressionBlocks int64 `yaml:"maxRegressionBlocks,omitempty" json:"maxRegressionBlocks,omitempty"`
 }
 
 // ServedTipEnabledFor reports whether the majority served tip is enabled for
