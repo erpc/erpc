@@ -304,11 +304,9 @@ func (c *chainView) applyReorg(ancestor int64, branch []*integrity.Header, numbe
 	if c.followBase == 0 || ancestor+1 < c.followBase {
 		c.followBase = ancestor + 1
 	}
-	if top := numbers[0]; top > c.followHead {
-		c.followHead = top
-	} else {
-		c.followHead = top
-	}
+	// Everything above the ancestor was dropped above, so the branch head is
+	// the new head unconditionally — it may move backwards on a deeper reorg.
+	c.followHead = numbers[0]
 	c.mu.Unlock()
 
 	telemetry.MetricIntegrityReorgDepth.WithLabelValues(c.projectId(), c.networkLabel(), c.group).
