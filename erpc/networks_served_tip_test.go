@@ -916,6 +916,143 @@ func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
 		"an uncorroborated cap must never be remembered as a good pick")
 }
 
+// THE remaining door onto the celo incident value, and the reason the guard no
+// longer stands down without a live head: when EVERY live upstream leaves the
+// eligible set while the bound-capped ones stay, the ballot legitimately falls
+// back to the caps — and a guard that requires a live reference is absent on the
+// exact ballot shape that caused the outage. With no live head it measures
+// against its own last corroborated pick instead, holds it UNCLAMPED for the
+// TTL, and only then fails open to the cap.
+func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	advance := pinServedTipClock(t)
+
+	const legacyCap = int64(21_615_999)
+	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
+		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
+		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
+		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+	}, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+
+	healthy := network.EvmHighestLatestBlockNumber(ctx)
+	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
+	beforeHeld := servedTipRegressionCount(network, "latest", "held")
+	beforeOpen := servedTipRegressionCount(network, "latest", "failed_open")
+
+	// All three live upstreams drop out at once (a vendor incident, a policy
+	// exclusion sweep): only the two 2023-capped ones remain eligible.
+	network.PinUpstreamOrderForTest("celo-mainnet-nirvana-legacy", "quicknode-celo-legacy")
+
+	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
+		"with no live head left the guard must hold its last corroborated pick, "+
+			"not hand `latest` to a September-2023 serving range")
+	assert.Equal(t, beforeHeld+1, servedTipRegressionCount(network, "latest", "held"))
+
+	advance(servedTipRegressionTTL + time.Second)
+	assert.Equal(t, legacyCap, network.EvmHighestLatestBlockNumber(ctx),
+		"and past the TTL it must still fail open: a guard that can hold forever is the wedge")
+	assert.Equal(t, beforeOpen+1, servedTipRegressionCount(network, "latest", "failed_open"))
+}
+
+// The guard's reference is the SECOND-highest live head, so a single far-future
+// upstream cannot make every honest pick look like a regression. Measured
+// against the raw max it did exactly that — and because a corroborated value is
+// only recorded on the healthy branch, the guard then sat permanently disarmed
+// while emitting no metric and no log at all.
+func TestServedTip_RegressionGuard_SingleRogueUpstreamDoesNotDisarmIt(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pinServedTipClock(t)
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "rogue", chainID: 123, latestBlock: 100_000_000},
+		{id: "live-1", chainID: 123, latestBlock: 10_000},
+		{id: "live-2", chainID: 123, latestBlock: 10_000},
+		{id: "live-3", chainID: 123, latestBlock: 10_000},
+		{id: "stuck-1", chainID: 123, latestBlock: 5},
+		{id: "stuck-2", chainID: 123, latestBlock: 5},
+	})
+
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"the majority pick ignores the rogue, as it always did")
+	require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load(),
+		"and the guard must be ARMED by that honest pick, not silently disabled by the rogue")
+
+	// Armed means it still protects: lose the honest majority to a stuck pair.
+	network.PinUpstreamOrderForTest("rogue", "live-1", "stuck-1", "stuck-2")
+	assert.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"the armed guard holds the corroborated pick when the ballot collapses")
+}
+
+// The off switch, symmetric with trajectoryWindow: 0.
+func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pinServedTipClock(t)
+
+	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "live-1", chainID: 123, latestBlock: 10_000},
+		{id: "live-2", chainID: 123, latestBlock: 10_000},
+		{id: "live-3", chainID: 123, latestBlock: 10_000},
+		{id: "stuck-1", chainID: 123, latestBlock: 5},
+		{id: "stuck-2", chainID: 123, latestBlock: 5},
+	}, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}, MaxRegressionBlocks: -1})
+
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+	before := servedTipRegressionCount(network, "latest", "held")
+
+	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
+	assert.Equal(t, int64(5), network.EvmHighestLatestBlockNumber(ctx),
+		"maxRegressionBlocks: -1 means the operator gets the raw pick, poisoned or not")
+	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"))
+	assert.Zero(t, network.servedLatestAnchor.lastGoodValue.Load(),
+		"a disabled guard records nothing either")
+}
+
+// The lag gauge is a lag gauge: while the guard serves ABOVE the corroborated
+// freshest view it must read 0, not a negative number no dashboard can plot.
+func TestServedTip_LagGaugeNeverReadsNegative(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pinServedTipClock(t)
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "live-1", chainID: 123, latestBlock: 10_000},
+		{id: "live-2", chainID: 123, latestBlock: 10_000},
+		{id: "live-3", chainID: 123, latestBlock: 10_000},
+		{id: "stuck-1", chainID: 123, latestBlock: 5},
+		{id: "stuck-2", chainID: 123, latestBlock: 5},
+	})
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+
+	network.PinUpstreamOrderForTest("live-1", "stuck-1", "stuck-2")
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
+		"precondition: the guard is holding above the ballot's freshest corroborated view")
+
+	lag := promUtil.ToFloat64(telemetry.MetricNetworkServedTipLagBlocks.
+		WithLabelValues(network.projectId, network.Label(), servedTipLaneAll, "latest"))
+	assert.GreaterOrEqual(t, lag, float64(0), "the deliberate-lag gauge must never read negative")
+}
+
 // ─── Long-term trajectory referee ────────────────────────────────────────────
 //
 // Every mechanism above is a snapshot of one instant, and a majority stall

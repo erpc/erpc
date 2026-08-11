@@ -1517,8 +1517,8 @@ func (e *EvmNetworkConfig) Validate() error {
 		if e.ServedTip.ClusterDelta < 0 {
 			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
 		}
-		if e.ServedTip.MaxRegressionBlocks < 0 {
-			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0 (0 uses the default rollback tolerance)")
+		if e.ServedTip.MaxRegressionBlocks < -1 {
+			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0, or -1 to disable the regression guard (0 uses the default rollback tolerance)")
 		}
 		if e.ServedTip.TrajectoryWindow != nil && *e.ServedTip.TrajectoryWindow < 0 {
 			return fmt.Errorf("network.*.evm.servedTip.trajectoryWindow must be >= 0 (0 disables the trajectory referee)")

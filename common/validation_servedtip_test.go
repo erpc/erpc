@@ -43,12 +43,18 @@ func TestEvmNetworkConfig_Validate_ServedTip(t *testing.T) {
 		assert.Contains(t, err.Error(), "clusterDelta")
 	})
 
-	t.Run("negative maxRegressionBlocks rejected", func(t *testing.T) {
+	t.Run("maxRegressionBlocks below -1 rejected", func(t *testing.T) {
 		e := baseValidEvmNetworkConfig()
-		e.ServedTip = &EvmServedTipConfig{MaxRegressionBlocks: -1}
+		e.ServedTip = &EvmServedTipConfig{MaxRegressionBlocks: -2}
 		err := e.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "maxRegressionBlocks")
+	})
+
+	t.Run("maxRegressionBlocks -1 disables the guard", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}, MaxRegressionBlocks: -1}
+		require.NoError(t, e.Validate())
 	})
 
 	t.Run("zero maxRegressionBlocks means the default tolerance", func(t *testing.T) {

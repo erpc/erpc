@@ -112,12 +112,17 @@ type servedTipAnchor struct {
 	seenValue   atomic.Int64
 	changedAtMs atomic.Int64
 
-	// lastGoodValue / lastGoodAtMs is the most recent pick the guard saw
+	// lastGoodValue / lastGoodAt is the most recent pick the guard saw
 	// corroborated by a live head (within tolerance), and when it recorded it.
-	// Only a corroborated pick is stored, so the guard can never hold a value
-	// that no live upstream ever backed.
+	// Only a LIVE-corroborated pick is stored, so the guard can never hold a
+	// value that no live upstream ever backed.
+	//
+	// The timestamp is a monotonic time.Time, not a wall-clock UnixMilli: the
+	// guard's TTL is a duration measured across an interval, and an NTP step
+	// (or a container clock correction) must not be able to expire — or extend
+	// — a hold that is bounded precisely so it cannot become a wedge.
 	lastGoodValue atomic.Int64
-	lastGoodAtMs  atomic.Int64
+	lastGoodAt    atomic.Pointer[time.Time]
 
 	// guardState is one of the servedTipGuard* constants. The guard logs only
 	// on transitions, so a sustained regression reports twice (once when it
@@ -161,7 +166,16 @@ var servedTipClock = time.Now
 
 // observe records v as the latest served value, stamping the anchor when the
 // value changed since the last observation.
+//
+// LOAD FIRST: the served tip is read several times per request and is the same
+// value on almost every one of them, so the steady state must be a shared READ
+// of this cache line, not an exclusive read-modify-write from every serving
+// core. The Swap survives only on the (rare) path where the value really moved,
+// where it is what makes exactly one caller see the transition.
 func (a *servedTipAnchor) observe(v int64) {
+	if a.seenValue.Load() == v {
+		return
+	}
 	if old := a.seenValue.Swap(v); old != v && old != 0 {
 		a.changedAtMs.Store(time.Now().UnixMilli())
 	}
@@ -424,18 +438,17 @@ func (n *Network) Logger() *zerolog.Logger {
 // September-2023 block, the availability gate then admitted ONLY those two
 // upstreams (the live ones start at 21616000), and funded accounts read 0x0.
 //
-// The second return value is the highest LIVE (non-capped) head among the
-// candidates, or 0 when every candidate is capped — the regression guard's
-// reference (see servedTip).
+// The second return value is the regression guard's view of the LIVE heads on
+// this ballot (see servedTipReference).
 func (n *Network) gatherEvmTipInputsForMethod(
 	ctx context.Context,
 	useFinalized bool,
 	method string,
-) ([]evm.ServedTipInput, int64) {
+) ([]evm.ServedTipInput, servedTipReference) {
 	upstreams := n.tipCandidateUpstreams(ctx, method)
 	out := make([]evm.ServedTipInput, 0, len(upstreams))
 	var capped []evm.ServedTipInput
-	var maxLiveHead int64
+	var liveTop, liveSecond int64
 	for _, cu := range upstreams {
 		u, ok := cu.(common.EvmUpstream)
 		if !ok || u.EvmStatePoller() == nil {
@@ -456,8 +469,11 @@ func (n *Network) gatherEvmTipInputsForMethod(
 			capped = append(capped, in)
 			continue
 		}
-		if blk > maxLiveHead {
-			maxLiveHead = blk
+		switch {
+		case blk > liveTop:
+			liveTop, liveSecond = blk, liveTop
+		case blk > liveSecond:
+			liveSecond = blk
 		}
 		out = append(out, in)
 	}
@@ -465,10 +481,39 @@ func (n *Network) gatherEvmTipInputsForMethod(
 		// All-capped pool: a network of only historical/frozen upstreams
 		// legitimately serves its cap as "latest" — there is no live head to
 		// prefer, so the caps remain the only observations available. (No live
-		// head means no reference for the regression guard either → 0.)
-		return capped, 0
+		// head means no live reference for the regression guard either; it falls
+		// back to its own last corroborated pick, see guardServedTipRegression.)
+		return capped, servedTipReference{}
 	}
-	return out, maxLiveHead
+	if liveSecond <= 0 {
+		liveSecond = liveTop // a single live input corroborates only itself
+	}
+	return out, servedTipReference{Corroborated: liveSecond, Max: liveTop}
+}
+
+// servedTipReference is what the LIVE (non-capped) heads of one ballot say,
+// in the two distinct roles the regression guard needs. Both are 0 when every
+// candidate is bound-capped.
+type servedTipReference struct {
+	// Corroborated is the SECOND-highest live head — the freshest view that two
+	// live upstreams both reach — or the only live head when there is exactly
+	// one. It is what a regression is MEASURED against, and it is second-highest
+	// for the same reason ServedTipPick.Freshest is: measured against the raw
+	// max, one far-future/wrong-chain upstream made every honest pick look like
+	// a regression, so the guard never took its healthy branch, never recorded a
+	// corroborated value, and sat permanently disarmed — emitting no metric and
+	// no log at all.
+	Corroborated int64
+
+	// Max is the highest live head: the ceiling a HELD value may not exceed, so
+	// the guard can never advertise a block no live upstream has (the invariant
+	// the old monotonic clamp broke). It is deliberately the raw max and not the
+	// corroborated view — a ceiling that a single rogue can only RAISE cannot be
+	// used to make the guard serve anything the rogue chose, while a ceiling of
+	// the second-highest head would collapse the hold back onto the poisoned
+	// pick in the very shape the guard exists for (one live witness left, two
+	// stuck upstreams outvoting it).
+	Max int64
 }
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
@@ -797,7 +842,7 @@ func (n *Network) servedTip(
 	anchor *servedTipAnchor,
 	lane string,
 ) int64 {
-	tips, maxLiveHead := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
+	tips, liveReference := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
 	pick := evm.PickServedTip(tips)
 
 	// Trajectory referee: when the live heads split and the majority is the
@@ -805,12 +850,12 @@ func (n *Network) servedTip(
 	// network's head has been going for the last ten minutes. Advisory and
 	// upward-only — it can only replace the majority pick with a higher block
 	// that at least two live upstreams already have.
-	pick.Tip = n.refereeServedTip(axis, lane, anchor, pick.Sorted, pick.Tip, maxLiveHead)
+	pick.Tip = n.refereeServedTip(axis, lane, anchor, pick.Sorted, pick.Tip, liveReference)
 
-	// Regression guard: "latest" cannot drop far below the freshest live head
-	// in one evaluation. Runs BEFORE the guaranteed-method floor, which is a
-	// deliberate operator-configured clamp the guard must not fight.
-	pick.Tip = n.guardServedTipRegression(axis, lane, anchor, pick.Tip, maxLiveHead)
+	// Regression guard: "latest" cannot drop far below the corroborated live
+	// head in one evaluation. Runs BEFORE the guaranteed-method floor, which is
+	// a deliberate operator-configured clamp the guard must not fight.
+	pick.Tip = n.guardServedTipRegression(axis, lane, anchor, pick.Tip, liveReference)
 
 	// Capability guarantee (#855): the served tip must never exceed what any
 	// configured guaranteed-method's supporting upstreams can serve, so a
@@ -877,9 +922,9 @@ func (n *Network) servedTip(
 //
 // The pick stays ≤ evm.ServedTipPick.Freshest (the 2nd-highest head) for the
 // same reason, so the served-tip lag gauge never reads negative.
-func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAnchor, sorted []evm.ServedTipInput, median int64, maxLiveHead int64) int64 {
-	if anchor == nil || median <= 0 || maxLiveHead <= 0 {
-		// maxLiveHead > 0 is also what makes `tips` safe to sample and cluster:
+func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAnchor, sorted []evm.ServedTipInput, median int64, ref servedTipReference) int64 {
+	if anchor == nil || median <= 0 || ref.Max <= 0 {
+		// A live head is also what makes `sorted` safe to sample and cluster:
 		// gatherEvmTipInputsForMethod only returns bound-capped observations
 		// when there is no live head at all, and a serving range must never
 		// enter a head trajectory.
@@ -891,8 +936,11 @@ func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAn
 	}
 
 	decision := anchor.trajectory.Observe(servedTipClock(), sorted, median, evm.TipTrajectoryParams{
-		Window:         window,
-		ToleranceFloor: n.servedTipMaxRegressionBlocks(),
+		Window: window,
+		// maxRegressionBlocks: -1 turns the GUARD off; for the referee it only
+		// removes the floor under the tolerance, which the window's own residual
+		// spread then sets on its own.
+		ToleranceFloor: max(0, n.servedTipMaxRegressionBlocks()),
 	})
 
 	switch {
@@ -914,7 +962,9 @@ func (n *Network) refereeServedTip(axis string, lane string, anchor *servedTipAn
 // overriding, so a stall that persists across thousands of requests produces
 // one line at each end of it.
 func (n *Network) logServedTipTrajectoryTransition(anchor *servedTipAnchor, axis string, median int64, d evm.TipTrajectoryDecision) {
-	if anchor.trajectoryOverriding.Swap(d.Overrode) == d.Overrode {
+	// Load first (see logServedTipGuardTransition): "still not overriding" is
+	// the answer on essentially every evaluation this process ever makes.
+	if anchor.trajectoryOverriding.Load() == d.Overrode || anchor.trajectoryOverriding.Swap(d.Overrode) == d.Overrode {
 		return
 	}
 	if !d.Overrode {
@@ -944,84 +994,130 @@ func (n *Network) servedTipTrajectoryWindow() time.Duration {
 	return common.DefaultServedTipTrajectoryWindow
 }
 
-// guardServedTipRegression returns the tip to serve for `pick`, substituting
-// the last corroborated pick when `pick` sits further than the configured
-// tolerance below `maxLiveHead` (the freshest LIVE upstream head of this same
-// evaluation, 0 when there is none).
+// guardServedTipRegression returns the tip to serve for `pick`, substituting the
+// last corroborated pick when `pick` sits further than the configured tolerance
+// below the best CORROBORATED evidence of where the chain is.
 //
 // This is a physics check, independent of which voters are honest: a chain's
-// head does not fall a thousand blocks between two evaluations while an
-// upstream still reports the old one, so a pick that far below the best live
-// head is a poisoned ballot — an availability bound voting as a head (the
-// 2026-08 celo incident), a bogus vendor head, a rolled-back shared counter.
-// It is deliberately independent of the bound-capped filter in
-// gatherEvmTipInputsForMethod: that removes ONE known source of low votes,
-// this bounds the damage of any other.
+// head does not fall a thousand blocks between two evaluations while an upstream
+// still reports the old one, so a pick that far below corroborated evidence is a
+// poisoned ballot — an availability bound voting as a head (the 2026-08 celo
+// incident), a bogus vendor head, a rolled-back shared counter. It is
+// deliberately independent of the bound-capped filter in
+// gatherEvmTipInputsForMethod: that removes ONE known source of low votes, this
+// bounds the damage of any other.
+//
+// TWO SOURCES OF EVIDENCE, ONE CEILING. A regression is measured against the
+// higher of (a) `ref.Corroborated`, the second-highest LIVE head of this
+// evaluation, and (b) the last pick this process saw live-corroborated. Neither
+// alone is enough: (a) alone is defeated by the guard's own headline shape —
+// one live upstream left, two stuck ones outvoting it, where the second-highest
+// live head IS the poison — and (b) alone would be memory with no present-tense
+// check. A HELD value is then capped at `ref.Max`, the highest live head, so the
+// guard can never advertise a block no live upstream has.
 //
 // It never blocks serving and never persists anything:
-//   - no live head to compare against, no pick, or no anchor for this lane
-//     (arbitrary use-upstream selectors deliberately materialize no state) →
-//     returns the pick untouched;
-//   - within tolerance → the pick becomes the new corroborated value;
-//   - below tolerance, for up to servedTipRegressionTTL since the last
-//     corroborated pick → serves that pick instead, never above the best live
-//     head;
-//   - past the TTL → fails open and serves the pick as computed.
+//   - no pick, or no anchor for this lane (arbitrary use-upstream selectors
+//     deliberately materialize no state), or maxRegressionBlocks: -1 → returns
+//     the pick untouched;
+//   - within tolerance → a LIVE-corroborated pick becomes the new remembered
+//     value (a capped one never does);
+//   - below tolerance, for up to servedTipRegressionTTL since that value was
+//     recorded → serves it instead, never above the highest live head;
+//   - past the TTL → fails open, serves the pick as computed, and DISARMS: a
+//     value that has outlived the window is no longer evidence, so the guard
+//     re-arms from whatever the live heads corroborate next instead of measuring
+//     forever against a number the chain has left behind.
 //
-// While it holds, the served-tip lag gauge (Freshest - Tip) can read negative:
-// the served value is above the corroborated freshest view. That IS the hold —
-// erpc_network_served_tip_regression_total says so explicitly.
+// NO LIVE HEAD IS NOT A REASON TO STAND DOWN. When every live upstream leaves the
+// eligible set while bound-capped ones remain, the ballot legitimately falls back
+// to the caps — and a guard that requires a live reference would be exactly as
+// absent as it was during the celo incident, on the one ballot shape that caused
+// it. With no live head the guard measures against its own last corroborated pick
+// and holds it UNCLAMPED (there is no live head to clamp to) for the same bounded
+// TTL, then fails open to the capped pick. Networks that are genuinely all-capped
+// never armed the guard in the first place — nothing live ever corroborated a
+// pick — so they keep passing straight through.
 //
-// The reference is the raw max, not the corroborated 2nd-highest head the lag
-// gauge uses, so a single far-future/wrong-chain upstream can make honest picks
-// look like regressions. That direction is the cheap one to be wrong about: a
-// false trip costs a tip held ≤ servedTipRegressionTTL (after which it fails
-// open and stays open, since a held pick never refreshes its own timestamp) plus
-// an alert on an upstream that genuinely needs one, while a missed trip is the
-// celo outage — ancient state served as "latest".
-func (n *Network) guardServedTipRegression(axis string, lane string, anchor *servedTipAnchor, pick int64, maxLiveHead int64) int64 {
-	if anchor == nil || pick <= 0 || maxLiveHead <= 0 {
+// COVERAGE BOUNDARY: the remembered value's freshness comes from REQUEST TRAFFIC —
+// the guard only runs when someone asks for the tip. A network that goes idle for
+// longer than servedTipRegressionTTL therefore fails open on its first poisoned
+// evaluation after the quiet period, exactly as a cold process does. That is the
+// deliberate direction: this guard bounds the damage of a poisoned ballot on a
+// busy network; it is not a memory that survives silence, because a memory that
+// survives silence is the frozen-tip absorbing state this design forbids.
+//
+// While it holds, the served-tip lag gauge (Freshest - Tip) would read negative —
+// the served value is above the corroborated freshest view — so it is clamped at
+// 0; erpc_network_served_tip_regression_total is what says a hold is in progress.
+func (n *Network) guardServedTipRegression(axis string, lane string, anchor *servedTipAnchor, pick int64, ref servedTipReference) int64 {
+	if anchor == nil || pick <= 0 {
+		return pick
+	}
+	tolerance := n.servedTipMaxRegressionBlocks()
+	if tolerance < 0 {
+		// maxRegressionBlocks: -1 — the operator turned the guard off, the
+		// symmetric opposite of trajectoryWindow: 0.
 		return pick
 	}
 
-	// Regressions are measured against the live head, floored at 0 so an
-	// absurd tolerance disables the guard rather than underflowing.
+	lastGood, lastGoodAt := anchor.lastGoodValue.Load(), anchor.lastGoodAt.Load()
+	armed := lastGood > 0 && lastGoodAt != nil
+	reference := ref.Corroborated
+	if armed && lastGood > reference {
+		reference = lastGood
+	}
+	if reference <= 0 {
+		// Nothing live and nothing remembered (cold start, or a genuinely
+		// all-capped network): there is no evidence to measure against, and a cap
+		// must never become the reference.
+		return pick
+	}
+
+	// Regressions are measured against the reference, floored at 0 so an absurd
+	// tolerance disables the guard rather than underflowing.
 	var minAcceptable int64
-	if tolerance := n.servedTipMaxRegressionBlocks(); tolerance < maxLiveHead {
-		minAcceptable = maxLiveHead - tolerance
+	if tolerance < reference {
+		minAcceptable = reference - tolerance
 	}
 	if pick >= minAcceptable {
-		anchor.lastGoodValue.Store(pick)
-		anchor.lastGoodAtMs.Store(servedTipClock().UnixMilli())
-		n.logServedTipGuardTransition(anchor, servedTipGuardHealthy, axis, pick, maxLiveHead, 0)
+		if ref.Max > 0 {
+			// Only a LIVE-corroborated pick may be remembered: promoting a capped
+			// pick here would let a serving range become the value the network is
+			// later held to.
+			if lastGood != pick {
+				anchor.lastGoodValue.Store(pick)
+			}
+			at := servedTipClock()
+			anchor.lastGoodAt.Store(&at)
+		}
+		n.logServedTipGuardTransition(anchor, servedTipGuardHealthy, axis, pick, reference, 0)
 		return pick
 	}
 
-	lastGood, lastGoodAtMs := anchor.lastGoodValue.Load(), anchor.lastGoodAtMs.Load()
-	if lastGood <= 0 || lastGoodAtMs <= 0 {
-		// Nothing corroborated yet in this process (cold start, or every
-		// evaluation so far had no live head): there is no better answer to
-		// serve than the pick itself.
+	if !armed {
 		return pick
 	}
-
-	held := servedTipClock().Sub(time.UnixMilli(lastGoodAtMs))
+	held := servedTipClock().Sub(*lastGoodAt)
 	if held >= servedTipRegressionTTL {
-		n.logServedTipGuardTransition(anchor, servedTipGuardFailedOpen, axis, pick, maxLiveHead, held)
+		n.logServedTipGuardTransition(anchor, servedTipGuardFailedOpen, axis, pick, reference, held)
 		telemetry.MetricNetworkServedTipRegressionTotal.
 			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "failed_open").
 			Inc()
+		anchor.lastGoodValue.Store(0)
+		anchor.lastGoodAt.Store(nil)
 		return pick
 	}
 
-	// Serve the last corroborated pick — but never above the best live head,
-	// so the guard cannot advertise a block no upstream has (the invariant the
-	// old monotonic clamp broke).
+	// Serve the remembered pick — but never above the highest live head, so the
+	// guard cannot advertise a block no live upstream has (the invariant the old
+	// monotonic clamp broke). With no live head there is nothing to clamp to and
+	// the remembered value stands as recorded.
 	served := lastGood
-	if maxLiveHead < served {
-		served = maxLiveHead
+	if ref.Max > 0 && ref.Max < served {
+		served = ref.Max
 	}
-	n.logServedTipGuardTransition(anchor, servedTipGuardHolding, axis, pick, maxLiveHead, held)
+	n.logServedTipGuardTransition(anchor, servedTipGuardHolding, axis, pick, reference, held)
 	telemetry.MetricNetworkServedTipRegressionTotal.
 		WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "held").
 		Inc()
@@ -1031,8 +1127,10 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 // logServedTipGuardTransition logs only when the guard CHANGES state, so a
 // regression that persists across thousands of requests produces one line when
 // the hold starts and one when it gives up.
-func (n *Network) logServedTipGuardTransition(anchor *servedTipAnchor, state int32, axis string, pick int64, maxLiveHead int64, held time.Duration) {
-	if anchor.guardState.Swap(state) == state {
+func (n *Network) logServedTipGuardTransition(anchor *servedTipAnchor, state int32, axis string, pick int64, reference int64, held time.Duration) {
+	// Load first: the steady state is "still healthy", read by every serving
+	// core on every evaluation, and it must not cost an exclusive line.
+	if anchor.guardState.Load() == state || anchor.guardState.Swap(state) == state {
 		return
 	}
 	switch state {
@@ -1040,31 +1138,33 @@ func (n *Network) logServedTipGuardTransition(anchor *servedTipAnchor, state int
 		n.logger.Error().
 			Str("axis", axis).
 			Int64("pick", pick).
-			Int64("maxLiveHead", maxLiveHead).
+			Int64("reference", reference).
 			Int64("lastGoodPick", anchor.lastGoodValue.Load()).
-			Msg("served tip regressed far below the freshest live upstream head; serving the last corroborated tip")
+			Msg("served tip regressed far below the corroborated live head; serving the last corroborated tip")
 	case servedTipGuardFailedOpen:
 		n.logger.Error().
 			Str("axis", axis).
 			Int64("pick", pick).
-			Int64("maxLiveHead", maxLiveHead).
+			Int64("reference", reference).
 			Dur("heldFor", held).
 			Msg("served tip regression outlasted the guard window; failing open and serving the current pick")
 	default:
 		n.logger.Warn().
 			Str("axis", axis).
 			Int64("pick", pick).
-			Int64("maxLiveHead", maxLiveHead).
+			Int64("reference", reference).
 			Msg("served tip recovered; the regression guard is no longer holding")
 	}
 }
 
-// servedTipMaxRegressionBlocks is how far below the freshest live head a pick
-// may fall before the regression guard treats it as poisoned. Defaults to the
-// rollback tolerance the state poller and health tracker already use, so every
-// layer agrees on what a genuine deep correction looks like.
+// servedTipMaxRegressionBlocks is how far below the corroborated live head a
+// pick may fall before the regression guard treats it as poisoned. Defaults to
+// the rollback tolerance the state poller and health tracker already use, so
+// every layer agrees on what a genuine deep correction looks like. A configured
+// -1 is returned as-is: it disables the guard, the symmetric opposite of
+// trajectoryWindow: 0.
 func (n *Network) servedTipMaxRegressionBlocks() int64 {
-	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTip != nil && n.cfg.Evm.ServedTip.MaxRegressionBlocks > 0 {
+	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTip != nil && n.cfg.Evm.ServedTip.MaxRegressionBlocks != 0 {
 		return n.cfg.Evm.ServedTip.MaxRegressionBlocks
 	}
 	return common.DefaultToleratedBlockHeadRollback
@@ -1236,11 +1336,20 @@ func (n *Network) observeServedTipMetrics(axis string, lane string, pick evm.Ser
 		telemetry.MetricNetworkServedTipBlockNumber.
 			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
 			Set(float64(pick.Tip))
-		// Deliberate lag: how far the majority tip sits behind the single
-		// freshest upstream view in the same set.
+		// Deliberate lag: how far the majority tip sits behind the corroborated
+		// freshest upstream view in the same set. Clamped at 0 because the tip
+		// can legitimately sit ABOVE that view — while the regression guard
+		// holds its last corroborated pick, and on the evaluation a referee
+		// override raises the tip to a fresh group — and a lag gauge that reads
+		// negative is a broken dashboard, not a signal. Both of those states
+		// have their own counters (…_regression_total / …_trajectory_total).
+		lag := pick.Freshest - pick.Tip
+		if lag < 0 {
+			lag = 0
+		}
 		telemetry.MetricNetworkServedTipLagBlocks.
 			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(pick.Freshest - pick.Tip))
+			Set(float64(lag))
 	}
 	// Universal stuck-tip signal: seconds since this process last saw the
 	// served value change. Skipped until a first change is observed.
