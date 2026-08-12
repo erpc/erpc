@@ -1731,7 +1731,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[$rate_window])) by (le, network, category))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -1833,7 +1833,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[$rate_window])) by (le, network, category, finality))",
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -1938,7 +1938,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[$rate_window])) by (le, network, category, finality))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -2040,7 +2040,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[$rate_window])) by (le, network, category, finality, vendor))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}, {{vendor}}",
               "range": true,
@@ -2142,7 +2142,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[$rate_window])) by (le, network, category, finality, vendor))",
               "legendFormat": "{{network}}, {{category}}, {{vendor}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -2243,7 +2243,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    user=~\"${user:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    user=~\"${user:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[$rate_window])) by (le, network, category, finality, vendor))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{vendor}}, {{finality}}",
               "range": true,
@@ -2368,7 +2368,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, rate(erpc_network_timeout_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]))",
+              "expr": "histogram_quantile(0.99, rate(erpc_network_timeout_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[$rate_window]))",
               "interval": "",
               "legendFormat": "p99 {{project}}, {{network}}, {{category}}",
               "range": true,
@@ -4438,7 +4438,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", user=~\"${user:regex}\", upstream=~\"${upstream:regex}\", category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\", finality=~\"realtime|unfinalized\", network=~\"^${network:regex}$\", project=~\"^${project:regex}$\", cluster=~\"^${cluster:regex}$\", category=~\"${category:regex}\", finality=~\"${finality:regex}\"}[$__rate_interval]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\", finality=~\"realtime|unfinalized\", network=~\"^${network:regex}$\", project=~\"^${project:regex}$\", cluster=~\"^${cluster:regex}$\", vendor=~\"${vendor:regex}\", upstream=~\"${upstream:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\", finality=~\"${finality:regex}\"}[$__rate_interval])) > 0.2))",
+              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", user=~\"${user:regex}\", upstream=~\"${upstream:regex}\", category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\", finality=~\"realtime|unfinalized\", network=~\"^${network:regex}$\", project=~\"^${project:regex}$\", cluster=~\"^${cluster:regex}$\", category=~\"${category:regex}\", finality=~\"${finality:regex}\"}[$rate_window]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\", finality=~\"realtime|unfinalized\", network=~\"^${network:regex}$\", project=~\"^${project:regex}$\", cluster=~\"^${cluster:regex}$\", vendor=~\"${vendor:regex}\", upstream=~\"${upstream:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\", finality=~\"${finality:regex}\"}[$rate_window])) > 0.2))",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -5371,7 +5371,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "histogram_quantile(0.95, sum by (le, network, reason) (rate(erpc_network_data_unavailable_wait_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\", project=~\"^${project:regex}$\", cluster=~\"^${cluster:regex}$\", category=~\"${category:regex}\", finality=~\"${finality:regex}\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.95, sum by (le, network, reason) (rate(erpc_network_data_unavailable_wait_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\", project=~\"^${project:regex}$\", cluster=~\"^${cluster:regex}$\", category=~\"${category:regex}\", finality=~\"${finality:regex}\"}[$rate_window])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{reason}}",
@@ -8186,7 +8186,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum by (le, network, category) (rate(erpc_integrity_overhead_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.5, sum by (le, network, category) (rate(erpc_integrity_overhead_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\"}[$rate_window])))",
               "legendFormat": "p50 {{network}}, {{category}}",
               "range": true,
               "instant": false,
@@ -8198,7 +8198,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum by (le, network, category) (rate(erpc_integrity_overhead_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.9, sum by (le, network, category) (rate(erpc_integrity_overhead_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\"}[$rate_window])))",
               "legendFormat": "p90 {{network}}, {{category}}",
               "range": true,
               "instant": false,
@@ -8210,7 +8210,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum by (le, network, category) (rate(erpc_integrity_overhead_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.99, sum by (le, network, category) (rate(erpc_integrity_overhead_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\"}[$rate_window])))",
               "legendFormat": "p99 {{network}}, {{category}}",
               "range": true,
               "instant": false,
@@ -9358,7 +9358,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[$rate_window])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "C"
@@ -9465,7 +9465,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[$rate_window])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "B"
@@ -9572,7 +9572,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\",\n    upstream=~\"${upstream:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[30s])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\",\n    upstream=~\"${upstream:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[$rate_window])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "A"
@@ -9687,7 +9687,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[$rate_window])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "B"
@@ -9793,7 +9793,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[$rate_window])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "B"
@@ -9900,7 +9900,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[30s])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[$rate_window])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -10942,7 +10942,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[$rate_window])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "p50",
@@ -10955,7 +10955,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[$rate_window])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "p95",
@@ -10968,7 +10968,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[$rate_window])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "p99",
@@ -14030,7 +14030,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$rate_window])) by (le, project, network, category, connector))",
               "hide": false,
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -14042,7 +14042,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$rate_window])) by (le, project, network, category, connector, policy, ttl))",
               "hide": true,
               "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
               "range": true,
@@ -14245,7 +14245,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$rate_window])) by (le, project, network, category, connector, policy, ttl))",
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
               "range": true,
               "refId": "A"
@@ -14256,7 +14256,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$rate_window])) by (le, project, network, category, connector, policy, ttl))",
               "hide": false,
               "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
               "range": true,
@@ -14466,7 +14466,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", cluster=~\"${cluster:regex}\"}[30s])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", cluster=~\"${cluster:regex}\"}[$rate_window])) by (le, project, network, category, connector))",
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -14477,7 +14477,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", cluster=~\"${cluster:regex}\"}[30s])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", cluster=~\"${cluster:regex}\"}[$rate_window])) by (le, project, network, category, connector))",
               "hide": false,
               "legendFormat": "p99 - {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -14683,7 +14683,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[30s])) by (le, region, project, network, category, connector))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$rate_window])) by (le, region, project, network, category, connector))",
               "hide": true,
               "legendFormat": "p50 - {{region}}, {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -14695,7 +14695,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[30s])) by (le, region, project, network, category, connector))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$rate_window])) by (le, region, project, network, category, connector))",
               "hide": false,
               "legendFormat": "p95 - {{region}}, {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -14900,7 +14900,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", error!~\".*(ErrRecordNotFound|MissingData).*\", project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector, error))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", error!~\".*(ErrRecordNotFound|MissingData).*\", project=~\"${project:regex}\"}[$rate_window])) by (le, project, network, category, connector, error))",
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{error}}",
               "range": true,
               "refId": "A"
@@ -14911,7 +14911,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", error!~\"ErrRecordNotFound.*\", project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector, error))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", error!~\"ErrRecordNotFound.*\", project=~\"${project:regex}\"}[$rate_window])) by (le, project, network, category, connector, error))",
               "hide": false,
               "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{error}}",
               "range": true,
@@ -15412,7 +15412,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_evm_get_logs_range_bucket{namespace=~\"${namespace:regex}\", cluster=~\"${cluster:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", project=~\"${project:regex}\", outcome=\"hit\"}[1m])) by (le, project, network, connector))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_evm_get_logs_range_bucket{namespace=~\"${namespace:regex}\", cluster=~\"${cluster:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", project=~\"${project:regex}\", outcome=\"hit\"}[$rate_window])) by (le, project, network, connector))",
               "legendFormat": "{{connector}} ({{network}})",
               "range": true,
               "refId": "A"
@@ -15520,7 +15520,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_cache_evm_get_logs_range_bucket{namespace=~\"${namespace:regex}\", cluster=~\"${cluster:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", project=~\"${project:regex}\", outcome=\"hit\"}[1m])) by (le, project, network, connector))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_cache_evm_get_logs_range_bucket{namespace=~\"${namespace:regex}\", cluster=~\"${cluster:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", project=~\"${project:regex}\", outcome=\"hit\"}[$rate_window])) by (le, project, network, connector))",
               "legendFormat": "{{connector}} ({{network}})",
               "range": true,
               "refId": "A"
@@ -15935,7 +15935,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(1, sum(rate(erpc_consensus_agreement_count_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\"}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(1, sum(rate(erpc_consensus_agreement_count_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\"}[$rate_window])) by (le, network, category, finality))",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -16145,7 +16145,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(1, sum(rate(erpc_consensus_responses_collected_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\"}[1m])) by (le, network, category, short_circuited, finality))",
+              "expr": "histogram_quantile(1, sum(rate(erpc_consensus_responses_collected_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\"}[$rate_window])) by (le, network, category, short_circuited, finality))",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{finality}}, short-circuited={{short_circuited}}",
               "range": true,
@@ -17878,7 +17878,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\"}[1m])) by (le, project, network, user, finality))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\"}[$rate_window])) by (le, project, network, user, finality))",
               "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -17985,7 +17985,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\"}[1m])) by (le, project, network, user, finality))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", project=~\"${project:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\"}[$rate_window])) by (le, project, network, user, finality))",
               "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -18124,6 +18124,31 @@
         "refresh": 1,
         "regex": "",
         "type": "datasource"
+      },
+      {
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
+        "current": {
+          "selected": false,
+          "text": "5m",
+          "value": "5m"
+        },
+        "description": "Rate window used by every histogram_quantile panel. A quantile is only meaningful when the window spans several scrape intervals; at 1-2 samples the per-bucket rates are dominated by sampling noise and the quantile degenerates to the highest finite bucket bound. Widen this if quantile panels show flat lines pinned to a bucket boundary — especially where the _bucket series are re-aggregated before storage (remote write, recording rules, federation), which can leave the le series sample-misaligned.",
+        "label": "rate window",
+        "name": "rate_window",
+        "options": [
+          { "selected": false, "text": "1m", "value": "1m" },
+          { "selected": false, "text": "2m", "value": "2m" },
+          { "selected": true, "text": "5m", "value": "5m" },
+          { "selected": false, "text": "10m", "value": "10m" },
+          { "selected": false, "text": "30m", "value": "30m" },
+          { "selected": false, "text": "1h", "value": "1h" }
+        ],
+        "query": "1m,2m,5m,10m,30m,1h",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "interval"
       },
       {
         "name": "cluster_group",
