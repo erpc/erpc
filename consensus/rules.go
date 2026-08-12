@@ -159,9 +159,18 @@ var consensusRules = []consensusRule{
 			// unchanged) when no percentage is configured for the method,
 			// or when there are fewer than two candidates to compare.
 			if maxPct, ok := a.config.preferHighestValueForMaxDeviationPct[a.method]; ok && maxPct > 0 && len(candidates) > 1 {
-				primaryValues := make([]*big.Int, len(candidates))
-				for i, vg := range candidates {
-					primaryValues[i] = vg.values[0]
+				// Weight the median by each candidate's agreement count: a
+				// value two upstreams reported should count twice against a
+				// value only one upstream reported, otherwise a 2-vote
+				// majority and a 1-vote outlier are treated as equally
+				// "central" and the median lands between them — rejecting
+				// the majority value along with the outlier instead of
+				// keeping it.
+				var primaryValues []*big.Int
+				for _, vg := range candidates {
+					for i := 0; i < vg.count; i++ {
+						primaryValues = append(primaryValues, vg.values[0])
+					}
 				}
 				median := medianBigInt(primaryValues)
 

@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"slices"
@@ -1258,6 +1259,9 @@ func (c *ConsensusPolicyConfig) Validate() error {
 	}
 
 	for method, pct := range c.PreferHighestValueForMaxDeviationPct {
+		if math.IsNaN(pct) || math.IsInf(pct, 0) {
+			return fmt.Errorf("consensus.preferHighestValueForMaxDeviationPct[%s] must be a finite number", method)
+		}
 		if pct < 0 {
 			return fmt.Errorf("consensus.preferHighestValueForMaxDeviationPct[%s] must not be negative", method)
 		}

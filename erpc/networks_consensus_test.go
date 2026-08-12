@@ -2357,6 +2357,36 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedResult: &expectedResult{jsonRpcResult: `"0x1f4"`}, // Unchanged: highest wins, no deviation check
 		},
 		{
+			name:          "prefer_highest_value_max_deviation_majority_survives_single_outlier",
+			description:   "A 2-vote majority must not be averaged with a 1-vote outlier when computing the median: the median has to be weighted by agreement count, or a common majority-plus-outlier case would incorrectly reject the majority too",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // Every distinct value independently qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+				PreferHighestValueForMaxDeviationPct: map[string]float64{
+					// Unweighted median of the two distinct values [5, 500] is
+					// 252.5, which puts both more than 50% away and would
+					// incorrectly reject everything (dispute). Weighted by
+					// vote count, the median of [5, 5, 500] is 5, so the
+					// 2-vote majority survives and wins; only the 1-vote
+					// outlier (500) is rejected.
+					"eth_getTransactionCount": 50,
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},   // nonce = 5 (agreed x2)
+				{status: 200, body: jsonRpcSuccess("0x5")},   // nonce = 5 (agreed x2)
+				{status: 200, body: jsonRpcSuccess("0x1f4")}, // nonce = 500 (1-vote outlier, rejected)
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x5"`}, // Majority wins, not a dispute
+		},
+		{
 			name:          "prefer_highest_value_max_deviation_all_candidates_rejected_returns_dispute",
 			description:   "When both qualifying candidates sit equally far from their median, a tight bound filters out both and returns a consensus dispute",
 			requestMethod: "eth_getTransactionCount",
