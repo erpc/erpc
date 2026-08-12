@@ -611,15 +611,19 @@ var (
 		Help:      "Total number of requests that were killed by the timeout policy (fixed or quantile-based).",
 	}, []string{"project", "network", "category", "finality", "scope"})
 
-	// MetricNetworkNoUpstreamsAvailableTotal counts requests rejected because a
-	// network stayed in initialization past NoUpstreamsAvailableAfter with zero
-	// upstreams registered. Non-zero means a chain nothing serves is still being
-	// asked for — a config or provider-coverage problem, not a traffic one — so
-	// alert on it directly rather than inferring it from error-rate ratios.
+	// MetricNetworkNoUpstreamsAvailableTotal counts bootstrap attempts that
+	// concluded a network stayed in initialization past
+	// NoUpstreamsAvailableAfter with zero upstreams registered. The
+	// initializer's per-task retry backoff throttles those attempts, so this is
+	// NOT a count of rejected requests — requests arriving during a backoff
+	// interval are served the cached error without incrementing it. Non-zero
+	// means a chain nothing serves is still being asked for — a config or
+	// provider-coverage problem, not a traffic one — so alert on it directly
+	// rather than inferring it from error-rate ratios.
 	MetricNetworkNoUpstreamsAvailableTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_no_upstreams_available_total",
-		Help:      "Total number of requests rejected because no upstream could be initialized for the network.",
+		Help:      "Total number of network bootstrap attempts that found no upstream could be initialized (throttled by initializer retry backoff; not a per-request count).",
 	}, []string{"project", "network"})
 
 	// MetricUpstreamSelectionTotal counts each upstream pick by the
