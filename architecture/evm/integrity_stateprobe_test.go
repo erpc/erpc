@@ -208,6 +208,97 @@ func TestStateBoundaryGate(t *testing.T) {
 	})
 }
 
+// The boundary protects a CLASS of methods — everything answered from the state
+// trie at a block — and the routing switch is where a member gets forgotten: an
+// ungated state method reaches the upstream with no proof at all, which is the
+// silent-wrong-data case the gate exists to prevent. Every case here goes
+// through the public hook entry point, so dropping a method from the dispatch
+// fails this test rather than silently disabling the protection for it.
+//
+// The params are written the way a client sends them (block parameter in its
+// real position, later arguments present), so a wrong ReqRefs position shows up
+// as an ungated request instead of passing by accident.
+func TestStateBoundaryGate_StateMethodCoverage(t *testing.T) {
+	const proven = int64(0x0f0)
+
+	cases := []struct {
+		method string
+		params string // %s is where the block parameter goes
+	}{
+		// Already covered before this test existed — pinned so the six cannot
+		// regress while the class is being widened.
+		{"eth_call", `[{"to":"0x1234"},"%s"]`},
+		{"eth_getBalance", `["0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842","%s"]`},
+		{"eth_getCode", `["0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842","%s"]`},
+		{"eth_getStorageAt", `["0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842","0x0","%s"]`},
+		{"eth_getTransactionCount", `["0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842","%s"]`},
+		{"eth_estimateGas", `[{"to":"0x1234"},"%s"]`},
+		// The state trie itself: block is the THIRD param, after the storage keys.
+		{"eth_getProof", `["0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842",["0x00"],"%s"]`},
+		// EVM execution at a block, exactly like eth_call: block is the SECOND param.
+		{"eth_simulateV1", `[{"blockStateCalls":[{"calls":[{"to":"0x1234"}]}]},"%s"]`},
+		// Same, with a trailing tracer config the extraction must not mistake
+		// for the block parameter.
+		{"debug_traceCall", `[{"to":"0x1234"},"%s",{"tracer":"callTracer"}]`},
+	}
+
+	mkReq := func(method, params, block string) *common.NormalizedRequest {
+		return common.NewNormalizedRequest([]byte(fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":1,"method":"%s","params":%s}`,
+			method, fmt.Sprintf(params, block))))
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			n := &mockNetwork{}
+			n.On("Id").Return("evm:7777").Maybe()
+			stateProbers.Store("evm:7777", &stateProber{})
+			defer stateProbers.Delete("evm:7777")
+			u := &gateUpstream{FakeUpstream: common.NewFakeUpstream("u2").(*common.FakeUpstream), proven: proven}
+
+			// Below the proven head: the upstream demonstrably holds this state.
+			handled, _, err := HandleUpstreamPreForward(context.Background(), n, u, mkReq(tc.method, tc.params, "0xe0"), false)
+			assert.False(t, handled, "a block the upstream has PROVEN must pass through")
+			assert.NoError(t, err)
+
+			// Above the proven head: no proof covers it, so refuse and let
+			// retry/consensus route to an upstream that can prove it.
+			handled, _, err = HandleUpstreamPreForward(context.Background(), n, u, mkReq(tc.method, tc.params, "0x100"), false)
+			assert.True(t, handled, "an unproven block must not be forwarded ungated")
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable), err.Error())
+			assert.Contains(t, err.Error(), tc.method, "the refusal must name the method it refused")
+
+			// A tag names no concrete height, so there is nothing to compare it
+			// against — unchanged from before this method joined the class.
+			handled, _, err = HandleUpstreamPreForward(context.Background(), n, u, mkReq(tc.method, tc.params, "latest"), false)
+			assert.False(t, handled, "tag requests are not gated (the boundary is about concrete heights)")
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// Widening the class must not pull in chain-data methods: those read blocks,
+// receipts and logs, which a node with stale STATE still answers correctly, and
+// they have their own availability enforcement.
+func TestStateBoundaryGate_ChainDataMethodsStayUngated(t *testing.T) {
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`,
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x100"]}`,
+		`{"jsonrpc":"2.0","id":1,"method":"debug_traceBlockByNumber","params":["0x100"]}`,
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xdead"]}`,
+	} {
+		n := &mockNetwork{}
+		n.On("Id").Return("evm:7777").Maybe()
+		stateProbers.Store("evm:7777", &stateProber{})
+		u := &gateUpstream{FakeUpstream: common.NewFakeUpstream("u2").(*common.FakeUpstream), proven: 0x0f0}
+		handled, _, err := HandleUpstreamPreForward(context.Background(), n, u, common.NewNormalizedRequest([]byte(body)), false)
+		stateProbers.Delete("evm:7777")
+		assert.False(t, handled, body)
+		assert.NoError(t, err, body)
+	}
+}
+
 // gateUpstream lets a test dictate the proven head and route the assert through
 // the real StateProven semantics (refuse above proven, allow at/below).
 type gateUpstream struct {

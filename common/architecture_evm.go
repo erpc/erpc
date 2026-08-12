@@ -190,11 +190,40 @@ type EvmProbeEarliestInfo struct {
 // IsEvmStateQueryMethod reports whether a method reads the STATE TRIE at a
 // block (as opposed to chain data like blocks/receipts/logs). These are the
 // methods a node can silently answer from older state, so they are the ones
-// the state-proven boundary applies to.
+// the state-proven boundary applies to (architecture/evm/hooks.go).
+//
+// Membership is a two-part test, and BOTH parts must hold:
+//
+//  1. the method's answer is a function of the state trie at the requested
+//     block (a balance, a slot, code, an account proof, or an EVM execution in
+//     that block's context) — a node with stale state answers it wrongly while
+//     reporting a current head; and
+//  2. the requested block is resolvable from the request through the method's
+//     ReqRefs (common/defaults.go), because a boundary that cannot name a
+//     height cannot enforce one.
+//
+// This list is an enumeration over an open set, so its unmatched path is the
+// one that matters: an unlisted state method is simply NOT gated (fail-open,
+// exactly today's behavior for it). Adding a method here can only ever refuse
+// or divert traffic the proven head does not cover, so extend it whenever parts
+// 1 and 2 both hold. Known state-reading methods still absent:
+//
+//   - eth_createAccessList, debug_traceCallMany — no method config at all, so
+//     part 2 fails and gating them would be inert until they get one.
+//   - trace_call — its block parameter is the second OR third argument
+//     depending on the client, and on the variant where trace types occupy the
+//     second argument the extraction errors out, so the gate would be inert for
+//     exactly those requests. Pin the position first.
+//   - the arbtrace_call family — parts 1 and 2 both hold; left out only to keep
+//     this change to the methods the gap review named.
 func IsEvmStateQueryMethod(methodLower string) bool {
 	switch methodLower {
 	case "eth_call", "eth_getbalance", "eth_getcode", "eth_getstorageat",
-		"eth_gettransactioncount", "eth_estimategas":
+		"eth_gettransactioncount", "eth_estimategas",
+		// eth_getProof IS the state trie (params[2] is the block); eth_simulateV1
+		// (params[1]) and debug_traceCall (params[1]) execute the EVM against the
+		// state at the requested block exactly like eth_call does.
+		"eth_getproof", "eth_simulatev1", "debug_tracecall":
 		return true
 	}
 	return false
