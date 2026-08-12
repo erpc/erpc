@@ -58,6 +58,22 @@ type RateLimiterBudget struct {
 
 type RateLimitRule struct {
 	Config *common.RateLimitRuleConfig
+
+	// key isolates this rule's counter from other rules in the budget. The envoy
+	// cache key excludes the limit value, so overlapping rules would otherwise
+	// share one counter and each increment it.
+	key string
+}
+
+// ruleKeyFor returns a stable identity for a rule. Two byte-identical rules map
+// to the same key, which is correct: they are the same limit. Resolved once at
+// construction so an autotuned MaxCount does not move the key mid-window.
+func ruleKeyFor(c *common.RateLimitRuleConfig) string {
+	scope := c.ScopeString()
+	if scope == "" {
+		scope = "global"
+	}
+	return fmt.Sprintf("method:%s scope:%s maxCount:%d period:%s", c.Method, scope, c.MaxCount, c.Period)
 }
 
 func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, error) {
@@ -266,8 +282,12 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 		return true // Fail-open when no cache is available
 	}
 
-	// Build descriptor entries
-	entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "method", Value: method}}
+	// Build descriptor entries. "rule" gives each rule its own counter; without it
+	// rules resolving to the same {method, scope} at the same period collide.
+	entries := []*pb_struct.RateLimitDescriptor_Entry{
+		{Key: "rule", Value: rule.key},
+		{Key: "method", Value: method},
+	}
 	if rule.Config.PerIP && clientIP != "" && clientIP != "n/a" {
 		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "ip", Value: clientIP})
 	}
