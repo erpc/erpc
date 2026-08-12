@@ -34,8 +34,10 @@ type MemoryConnector struct {
 		setsDropped  uint64
 		setsRejected uint64
 	}
-	metricsMutex sync.RWMutex
-	stopMetrics  context.CancelFunc
+	metricsMutex     sync.RWMutex
+	stopMetrics      context.CancelFunc
+	stopCacheWatcher context.CancelFunc
+	closeCacheOnce   *sync.Once
 }
 
 func NewMemoryConnector(
@@ -86,10 +88,11 @@ func NewMemoryConnector(
 	}
 
 	c := &MemoryConnector{
-		id:          id,
-		logger:      &lg,
-		cache:       cache,
-		emitMetrics: enableMetrics,
+		id:             id,
+		logger:         &lg,
+		cache:          cache,
+		emitMetrics:    enableMetrics,
+		closeCacheOnce: &sync.Once{},
 	}
 
 	// Start metrics collection goroutine if enabled
@@ -105,9 +108,15 @@ func NewMemoryConnector(
 	// currently calls MemoryConnector.Close(), so tie the cache's lifetime to ctx here;
 	// otherwise every connector created over the life of a process (e.g. hundreds of
 	// short-lived instances in a single test binary) leaks 2 goroutines forever.
+	// Close() also cancels this watcher's own context so callers using a non-cancelable
+	// ctx (context.Background()) and relying solely on Close() don't leak the watcher itself.
+	// Both paths close the cache through closeCacheOnce since ristretto.Cache.Close() panics
+	// (send on closed channel) if it ever runs twice concurrently.
+	watcherCtx, stopWatcher := context.WithCancel(ctx)
+	c.stopCacheWatcher = stopWatcher
 	go func() {
-		<-ctx.Done()
-		cache.Close()
+		<-watcherCtx.Done()
+		c.closeCacheOnce.Do(cache.Close)
 	}()
 
 	return c, nil
@@ -363,7 +372,10 @@ func (m *MemoryConnector) Close() error {
 		m.stopMetrics()
 	}
 	if m.cache != nil {
-		m.cache.Close()
+		m.closeCacheOnce.Do(m.cache.Close)
+	}
+	if m.stopCacheWatcher != nil {
+		m.stopCacheWatcher()
 	}
 	return nil
 }

@@ -314,9 +314,6 @@ func TestMemoryConnector_ReverseIndex_SvmDelete(t *testing.T) {
 		"expected ErrRecordNotFound, got %T %v", err, err)
 }
 
-// TestIsReverseIndexable_Filters validates the predicate's rejection rules so
-// single-segment keys (e.g. internal bookkeeping) don't pollute the reverse
-// index and wildcard writes don't recursively index themselves.
 // Ristretto's Cache.processItems/defaultPolicy.processItems goroutines only stop via
 // cache.Close() — they don't watch the connector's ctx on their own. Nothing in erpc calls
 // MemoryConnector.Close() directly (it's only reachable via ctx cancellation), so a process
@@ -343,6 +340,37 @@ func TestMemoryConnector_ClosesRistrettoGoroutinesOnContextCancel(t *testing.T) 
 		"goroutine count should return close to baseline after connector contexts are cancelled, got %d (baseline %d)", runtime.NumGoroutine(), before)
 }
 
+// TestMemoryConnector_ClosesRistrettoGoroutinesOnExplicitClose covers callers that build a
+// connector with a non-cancelable ctx (context.Background(), as several call sites in this repo
+// do) and rely solely on calling Close() themselves. The ctx-watcher goroutine added to fix the
+// Ristretto leak must not become its own permanent leak in that case.
+func TestMemoryConnector_ClosesRistrettoGoroutinesOnExplicitClose(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+
+	before := runtime.NumGoroutine()
+
+	const n = 20
+	connectors := make([]*MemoryConnector, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := NewMemoryConnector(context.Background(), &logger, fmt.Sprintf("leak-test-close-%d", i), &common.MemoryConnectorConfig{
+			MaxItems: 1_000, MaxTotalSize: "10MB",
+		})
+		require.NoError(t, err)
+		connectors = append(connectors, c)
+	}
+	for _, c := range connectors {
+		require.NoError(t, c.Close())
+	}
+
+	require.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= before+5
+	}, 2*time.Second, 20*time.Millisecond,
+		"goroutine count should return close to baseline after explicit Close(), got %d (baseline %d)", runtime.NumGoroutine(), before)
+}
+
+// TestIsReverseIndexable_Filters validates the predicate's rejection rules so
+// single-segment keys (e.g. internal bookkeeping) don't pollute the reverse
+// index and wildcard writes don't recursively index themselves.
 func TestIsReverseIndexable_Filters(t *testing.T) {
 	cases := []struct {
 		name string
