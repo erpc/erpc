@@ -100,6 +100,16 @@ func NewMemoryConnector(
 		lg.Info().Msg("Ristretto metrics collection enabled")
 	}
 
+	// Ristretto's own background goroutines (Cache.processItems, defaultPolicy.processItems)
+	// only stop via cache.Close() — they don't watch ctx themselves. Nothing else in erpc
+	// currently calls MemoryConnector.Close(), so tie the cache's lifetime to ctx here;
+	// otherwise every connector created over the life of a process (e.g. hundreds of
+	// short-lived instances in a single test binary) leaks 2 goroutines forever.
+	go func() {
+		<-ctx.Done()
+		cache.Close()
+	}()
+
 	return c, nil
 }
 

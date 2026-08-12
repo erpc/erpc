@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime"
 	"testing"
 	"time"
 
@@ -316,6 +317,32 @@ func TestMemoryConnector_ReverseIndex_SvmDelete(t *testing.T) {
 // TestIsReverseIndexable_Filters validates the predicate's rejection rules so
 // single-segment keys (e.g. internal bookkeeping) don't pollute the reverse
 // index and wildcard writes don't recursively index themselves.
+// Ristretto's Cache.processItems/defaultPolicy.processItems goroutines only stop via
+// cache.Close() — they don't watch the connector's ctx on their own. Nothing in erpc calls
+// MemoryConnector.Close() directly (it's only reachable via ctx cancellation), so a process
+// that creates many short-lived connectors (e.g. this package's own test binary, which builds
+// one per test/subtest) leaks 2 goroutines per connector forever.
+func TestMemoryConnector_ClosesRistrettoGoroutinesOnContextCancel(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+
+	before := runtime.NumGoroutine()
+
+	const n = 20
+	for i := 0; i < n; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := NewMemoryConnector(ctx, &logger, fmt.Sprintf("leak-test-%d", i), &common.MemoryConnectorConfig{
+			MaxItems: 1_000, MaxTotalSize: "10MB",
+		})
+		require.NoError(t, err)
+		cancel()
+	}
+
+	require.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= before+5
+	}, 2*time.Second, 20*time.Millisecond,
+		"goroutine count should return close to baseline after connector contexts are cancelled, got %d (baseline %d)", runtime.NumGoroutine(), before)
+}
+
 func TestIsReverseIndexable_Filters(t *testing.T) {
 	cases := []struct {
 		name string
