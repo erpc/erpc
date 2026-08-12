@@ -1615,6 +1615,11 @@ func determineResponseStatusCode(res interface{}) int {
 		common.ErrCodeNetworkRateLimitRuleExceeded,
 		common.ErrCodeEndpointCapacityExceeded):
 		return http.StatusTooManyRequests
+	// 503 Service Unavailable - no upstream could be initialized for this
+	// network at all. Deliberately last: a more specific verdict already on the
+	// cause chain (404 unsupported, 429 quota) describes the failure better.
+	case common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable):
+		return http.StatusServiceUnavailable
 	}
 
 	// All other errors (JSON-RPC application errors) return 200
@@ -1846,6 +1851,11 @@ func handleErrorResponse(
 		common.ErrCodeNetworkRateLimitRuleExceeded,
 		common.ErrCodeEndpointCapacityExceeded):
 		statusCode = http.StatusTooManyRequests
+	// 503 Service Unavailable - no upstream could be initialized for this
+	// network at all. Deliberately last: a more specific verdict already on the
+	// cause chain (404 unsupported, 429 quota) describes the failure better.
+	case common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable):
+		statusCode = http.StatusServiceUnavailable
 	}
 	// Emit X-ERPC-* headers BEFORE WriteHeader — once WriteHeader fires
 	// the header map is sealed. processErrorBody attaches `nq` to the

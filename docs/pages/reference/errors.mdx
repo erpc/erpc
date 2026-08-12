@@ -82,6 +82,7 @@ StandardError interface
     ├── Project / Network
     │   ├── ErrProjectNotFound, ErrProjectAlreadyExists
     │   ├── ErrNetworkNotFound, ErrNetworkNotSupported, ErrNetworkInitializing
+    │   ├── ErrNetworkNoUpstreamsAvailable
     │   ├── ErrUnknownNetworkID, ErrUnknownNetworkArchitecture
     │   ├── ErrInvalidEvmChainId, ErrFinalizedBlockUnavailable, ErrNetworkRequestTimeout
     │
@@ -174,7 +175,8 @@ Legend:
 | 20 | `ErrNoUpstreamsLeftToSelect` | yes | yes | 200 | −32603 | per-upstream states in details |
 | 21 | `ErrNoUpstreamsDefined` | yes | yes | 200 | −32603 | **Dead code** — zero production call sites |
 | 22 | `ErrNoUpstreamsFound` | yes | yes | 200 | −32603 | — |
-| 23 | `ErrNetworkInitializing` | yes | yes | 200 | −32603 | retry shortly |
+| 23 | `ErrNetworkInitializing` | yes | yes | 200 | −32603 | retry shortly; becomes `ErrNetworkNoUpstreamsAvailable` past the threshold |
+| 23b | `ErrNetworkNoUpstreamsAvailable` | yes | yes | 503 | −32603 | network stuck initializing with zero upstreams for `upstream.NoUpstreamsAvailableAfter` (5m) |
 | 24 | `ErrNetworkNotSupported` | yes | yes | 404 | −32603 | no provider covers network |
 | 25 | `ErrUpstreamNetworkNotDetected` | yes | yes | — | — | **Dead code** — zero production call sites |
 | 26 | `ErrUpstreamInitialization` | yes | yes | — | — | — |
@@ -530,6 +532,8 @@ Entry: [`common/json_rpc.go:L1501`](https://github.com/erpc/erpc/blob/main/commo
 **7. Every Solana upstream returns `−32009` and eRPC does not fail over.** `LongTermStorageSlotSkipped` is emitted only after the node consulted long-term storage, so the verdict is cluster-wide. eRPC marks it terminal **and** permanent: no cross-upstream sweep, and no time-delayed re-sweep. Stop retrying in the client too. Contrast `−32019 LongTermStorageUnreachable`, which is a statement about *this node's* backend being down and stays retryable.
 
 **8. Solana `requestAirdrop` fails and is not retried.** `requestAirdrop` is in the SVM write-method guard because it **mints per call** — a failover after an effective first attempt mints twice. `sendTransaction`/`sendRawTransaction` are in the same set for a different reason: same-signature broadcasts are idempotent on-chain, so the risk is duplicate broadcasts burning vendor quota, not a double-spend.
+
+**9. A chain answers `is initializing; please retry shortly` forever.** That message is only correct while a bootstrap is in progress. Once a network has been in initialization for `upstream.NoUpstreamsAvailableAfter` (5 minutes) with **zero** upstreams registered, eRPC swaps it for `ErrNetworkNoUpstreamsAvailable` — `no RPC providers are available for network '<id>' in project '<id>'` on HTTP 503, and increments `erpc_network_no_upstreams_available_total{project,network}`. It means no configured upstream or provider covers that chain (removed from config, deprecated, or never supported), so retrying will not help; fix the config or provider coverage. The initializer keeps re-attempting in the background, so a network that later gains an upstream recovers on its own.
 
 ### Best practices
 

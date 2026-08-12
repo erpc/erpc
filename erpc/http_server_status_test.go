@@ -240,3 +240,21 @@ func TestBuildErrorResponseBody_PrunedBodyKeepsDominantCauseWhileStatusKeepsBund
 			"iteration %d: serialized wire message changed", i)
 	}
 }
+
+// A network no provider serves must not reach the client as a plain JSON-RPC
+// application error on HTTP 200: 503 is what makes client-side backoff and
+// multi-provider failover engage, and the body has to name the actual
+// condition rather than promising that a retry will help.
+func TestDetermineResponseStatusCode_NoUpstreamsAvailableIs503(t *testing.T) {
+	err := common.NewErrNetworkNoUpstreamsAvailable("prjA", "evm:534351")
+
+	require.Equal(t, http.StatusServiceUnavailable, determineResponseStatusCode(err))
+
+	body := buildErrorResponseBody(nil, err, err, nil)
+	require.Equal(t, http.StatusServiceUnavailable, determineResponseStatusCode(body))
+
+	encoded, jerr := common.SonicCfg.Marshal(body)
+	require.NoError(t, jerr)
+	require.Contains(t, string(encoded), "no RPC providers are available for network 'evm:534351'")
+	require.NotContains(t, string(encoded), "retry shortly")
+}
