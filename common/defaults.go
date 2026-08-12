@@ -2166,6 +2166,38 @@ const DefaultBlockUnavailableDelayMultiplier = 1.0
 // and the health tracker so both layers converge on the same head.
 const DefaultToleratedBlockHeadRollback = 1024
 
+// DefaultServedTipTrajectoryWindow is how much head history the served-tip
+// trajectory referee needs before it may participate in a pick
+// (EvmServedTipConfig.TrajectoryWindow). Ten minutes is long enough that a
+// majority stall cannot masquerade as the trajectory (the referee's evidence is
+// the median of live heads, so a stall of half the window already flattens the
+// fit and stands the referee down), and short enough to be warm well within a
+// pod's lifetime.
+const DefaultServedTipTrajectoryWindow = 10 * time.Minute
+
+// ServedTipTrajectorySampleInterval and ServedTipTrajectoryMaxSamples are the
+// referee's recording cadence and its hard ring cap (architecture/evm's
+// tipSampleInterval / tipMaxBufferCapacity, which read them from here so the
+// config bounds below cannot drift from the mechanism they describe).
+const (
+	ServedTipTrajectorySampleInterval = 5 * time.Second
+	ServedTipTrajectoryMaxSamples     = 1024
+)
+
+// MinServedTipTrajectoryWindow / MaxServedTipTrajectoryWindow bound a configured
+// EvmServedTipConfig.TrajectoryWindow to the values that can actually work.
+//
+// Below a minute the window is self-defeating: it must be long enough that a
+// stall cannot look like a trajectory, and a fit over seconds of history is
+// noise. Above 80% of what the ring can span (cadence × capacity) the required
+// span is never reached, so the referee would stand down forever while looking
+// configured — the failure mode a range check exists to prevent, since nothing
+// in the metrics distinguishes "never warm" from "never needed".
+const (
+	MinServedTipTrajectoryWindow = time.Minute
+	MaxServedTipTrajectoryWindow = ServedTipTrajectorySampleInterval * ServedTipTrajectoryMaxSamples * 4 / 5
+)
+
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
 // ErrUpstreamBlockUnavailable): one original attempt + one retry after ~one block.

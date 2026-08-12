@@ -233,3 +233,55 @@ func TestServedTipInvariant_Fixture_ServedTipModeActive(t *testing.T) {
 	require.Equal(t, int64(100), network2.EvmHighestLatestBlockNumber(ctx),
 		"served-tip mode must be live (max mode would return 200)")
 }
+
+// THE 2026-08-11 incident (celo / evm:42220, 12:36–12:41 UTC): two "legacy"
+// upstreams configured with `blockAvailability.upper.exactBlock: 21615999`
+// polled the live head (74.5M) but reported the BOUND as their effective
+// latest. While all five upstreams were eligible the three live heads carried
+// the majority. Then the selection policy excluded one live upstream for lag,
+// the ballot became [74550978, 74550974, 21615999, 21615999], and the pick —
+// the 3rd of 4 — fell to 21,615,999. "latest" was interpolated to that
+// September-2023 block, the availability gate then admitted ONLY the two legacy
+// upstreams (the live ones declare a lower bound of 21,616,000), and they
+// correctly served state from 2023: eth_getBalance returned 0x0 for funded
+// accounts and eth_call reverted.
+//
+// INVARIANT: an upstream that is only DECLARING a serving range must never
+// define the network's head while any upstream is actually observing one — with
+// the full fleet eligible and with any subset of it eligible.
+func TestServedTipInvariant_AvailabilityBoundNeverDefinesTheHead(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const legacyCap = int64(21_615_999)
+	const liveHead = int64(74_550_978)
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "prism-celo", chainID: 123, latestBlock: liveHead},
+		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
+		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
+		// The legacy pair: pollers at the live tip, serving range frozen in 2023.
+		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: liveHead, upperExactBlock: legacyCap},
+		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: liveHead, upperExactBlock: legacyCap},
+	})
+
+	served := network.EvmHighestLatestBlockNumber(ctx)
+	require.Greater(t, served, legacyCap,
+		"with the full fleet eligible the served tip must be a live head, not the legacy serving bound")
+
+	// 12:36 UTC: prism-celo's head froze ~30s and the selection policy excluded
+	// it for lag. This is the exact production ballot that broke.
+	network.PinUpstreamOrderForTest("celo-mainnet-nirvana", "quicknode-celo", "celo-mainnet-nirvana-legacy", "quicknode-celo-legacy")
+
+	served = network.EvmHighestLatestBlockNumber(ctx)
+	require.Greater(t, served, legacyCap,
+		"losing one live upstream must not hand the tip to the availability bounds: "+
+			"served %d, the legacy cap is %d — this is the celo outage (eth_getBalance = 0x0 on funded accounts)",
+		served, legacyCap)
+	require.LessOrEqual(t, served, liveHead,
+		"the served tip must still be a block the live upstreams actually have")
+}

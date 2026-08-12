@@ -1602,6 +1602,37 @@ export interface EvmServedTipConfig {
    * Empty means only the global (all-eligible) majority is computed.
    */
   guaranteedMethods?: string[];
+  /**
+   * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
+   * (the second-highest live head) the majority pick may fall before it is
+   * treated as a poisoned ballot rather than as reality. While a pick is below
+   * that bound the network keeps serving its last corroborated pick
+   * (in-process, for at most one minute, then it fails open and serves the
+   * pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the
+   * same rollback tolerance the state poller and health tracker apply to a
+   * retreating head, so all three layers agree on what counts as a genuine
+   * deep correction. -1 disables the regression guard entirely (the symmetric
+   * opposite of trajectoryWindow: 0); no other negative value is accepted.
+   */
+  maxRegressionBlocks?: number /* int64 */;
+  /**
+   * TrajectoryWindow is how much recorded head history the trajectory referee
+   * needs before it may participate in the pick. The referee tracks where this
+   * network's head has been over the window and, when a stalled group holds
+   * the majority, serves the corroborated group that is actually where the
+   * chain should be by now (see architecture/evm's TipTrajectory: advisory,
+   * upward-only, in-process, and a no-op until every confidence condition
+   * holds). Unset uses DefaultServedTipTrajectoryWindow (10m); an explicit 0
+   * disables the referee entirely — nothing is recorded and the pick is the
+   * plain majority. Any other value must be between
+   * MinServedTipTrajectoryWindow and MaxServedTipTrajectoryWindow: below the
+   * minimum the window is self-defeating (it must be long enough that a stall
+   * cannot look like a trajectory), and above the maximum the sample ring can
+   * never span it, so the referee would stand down forever while looking
+   * configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
+   * bare number is parsed as MILLISECONDS.
+   */
+  trajectoryWindow?: Duration;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
