@@ -178,6 +178,12 @@ func (c *SvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, nil
 	}
 
+	// Which of these two we saw decides the `reason` label on the miss counter
+	// below. Tracking both matters: without it a connector that is erroring or
+	// timing out is indistinguishable from a cold cache, which reads as a
+	// hit-rate problem instead of a latency problem — the exact confusion the
+	// label was added to prevent.
+	sawMiss, sawError := false, false
 	for _, policy := range policies {
 		connector := policy.GetConnector()
 		if req.ShouldSkipCacheRead(connector.Id()) {
@@ -186,6 +192,25 @@ func (c *SvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		ttlLabel := ttlString(policy.GetTTL())
 		jrr, err := c.doGet(ctx, connector, req, rpcReq)
 		if err != nil {
+			// Semantic-miss errors: the connector is signalling "no key" /
+			// "expired" / "data not available here", not a real failure. Every
+			// data driver reports a cold key this way (memory, redis, dynamodb,
+			// postgresql all return ErrRecordNotFound), so without this guard a
+			// cold cache is indistinguishable from a broken one — it invents a
+			// cache error rate, logs a failure per cold read, and pins the miss
+			// counter to connector_error, which is the exact inversion the
+			// reason label was added to prevent. Mirrors the EVM cache
+			// (architecture/evm/json_rpc_cache.go).
+			//   ErrRecordNotFound      — generic data connector miss
+			//   ErrRecordExpired       — connector miss past TTL
+			//   ErrEndpointMissingData — gRPC connector (prism) "range outside
+			//                            available" / cold storage range
+			if common.HasErrorCode(err, common.ErrCodeRecordNotFound) ||
+				common.HasErrorCode(err, common.ErrCodeRecordExpired) ||
+				common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+				sawMiss = true
+				continue
+			}
 			telemetry.MetricCacheGetErrorTotal.WithLabelValues(
 				c.projectId, req.NetworkLabel(), rpcReq.Method,
 				connector.Id(), policy.String(), ttlLabel,
@@ -193,6 +218,7 @@ func (c *SvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			).Inc()
 			c.logger.Debug().Err(err).Str("connector", connector.Id()).
 				Msg("svm cache get failed; trying next policy")
+			sawError = true
 			continue
 		}
 		if jrr != nil {
@@ -209,14 +235,32 @@ func (c *SvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				WithFromCache(true).
 				WithJsonRpcResponse(jrr), nil
 		}
+		sawMiss = true
 	}
 	// Every matched policy either errored or returned a miss — record one miss
 	// against the first policy so dashboards show a flat miss count.
+	//
+	// Precedence mirrors the EVM cache: a genuine miss outranks an error, so a
+	// pool where one connector is down but another simply has no entry still
+	// reads as a cold cache rather than an outage. `empty_result` is the
+	// default for the case where every policy was skipped by the
+	// skip-cache-read directive and nothing was actually attempted.
+	//
+	// SVM has no ttl_rejected branch — that guard is EVM's block-timestamp age
+	// check, and there is no slot-based equivalent here.
+	missReason := "empty_result"
+	switch {
+	case sawMiss:
+		missReason = "connector_miss"
+	case sawError:
+		missReason = "connector_error"
+	}
 	firstPolicy := policies[0]
 	firstTTL := ttlString(firstPolicy.GetTTL())
 	telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 		c.projectId, req.NetworkLabel(), rpcReq.Method,
 		firstPolicy.GetConnector().Id(), firstPolicy.String(), firstTTL,
+		missReason,
 	).Inc()
 	telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 		c.projectId, req.NetworkLabel(), rpcReq.Method,
