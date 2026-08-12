@@ -142,12 +142,48 @@ var consensusRules = []consensusRule{
 				}
 			}
 
-			// Find the highest value that meets the threshold
-			var best *valueGroup
+			// Candidates are value groups that meet the minimum agreement.
+			var candidates []*valueGroup
 			for _, vg := range valueGroups {
-				if vg.count < threshold {
-					continue // Doesn't meet minimum agreement
+				if vg.count >= threshold {
+					candidates = append(candidates, vg)
 				}
+			}
+
+			// Bounded-deviation check: when configured for this method, drop
+			// any candidate whose primary value strays too far from the
+			// median of the other qualifying candidates. Guards against a
+			// single outlier upstream (stale cache, corrupted state, bug)
+			// winning outright just because it independently meets
+			// agreementThreshold. Disabled (candidates pass through
+			// unchanged) when no percentage is configured for the method,
+			// or when there are fewer than two candidates to compare.
+			if maxPct, ok := a.config.preferHighestValueForMaxDeviationPct[a.method]; ok && maxPct > 0 && len(candidates) > 1 {
+				primaryValues := make([]*big.Int, len(candidates))
+				for i, vg := range candidates {
+					primaryValues[i] = vg.values[0]
+				}
+				median := medianBigInt(primaryValues)
+
+				filtered := candidates[:0:0]
+				for _, vg := range candidates {
+					if withinMaxDeviation(vg.values[0], median, maxPct) {
+						filtered = append(filtered, vg)
+					} else if lg := a.config.logger; lg != nil {
+						lg.Debug().
+							Str("method", a.method).
+							Str("value", vg.values[0].String()).
+							Str("median", median.FloatString(0)).
+							Float64("maxDeviationPct", maxPct).
+							Msg("preferHighestValueFor: rejected candidate outside max deviation from median")
+					}
+				}
+				candidates = filtered
+			}
+
+			// Find the highest value among the surviving candidates.
+			var best *valueGroup
+			for _, vg := range candidates {
 				if best == nil || compareValueChains(vg.values, best.values) > 0 {
 					best = vg
 				}

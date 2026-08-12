@@ -3,6 +3,7 @@ package consensus
 import (
 	"encoding/json"
 	"math/big"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -133,6 +134,44 @@ func valuesToKey(values []*big.Int) string {
 		}
 	}
 	return strings.Join(parts, ":")
+}
+
+// medianBigInt returns the median of values as a big.Rat, or nil if values
+// is empty. For an even-length input the median is the exact average of the
+// two middle values (via big.Rat, so no float rounding on large numbers).
+func medianBigInt(values []*big.Int) *big.Rat {
+	if len(values) == 0 {
+		return nil
+	}
+	sorted := make([]*big.Int, len(values))
+	copy(sorted, values)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Cmp(sorted[j]) < 0 })
+
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return new(big.Rat).SetInt(sorted[mid])
+	}
+	sum := new(big.Int).Add(sorted[mid-1], sorted[mid])
+	return new(big.Rat).SetFrac(sum, big.NewInt(2))
+}
+
+// withinMaxDeviation reports whether value is within maxPct percent of
+// median: |value - median| / median <= maxPct / 100. A nil or zero median
+// makes percentage deviation undefined (division by zero), so the check is
+// treated as a no-op (value passes) in that case — there is no data forcing
+// a specific behavior for a method whose consensus value is legitimately
+// zero.
+func withinMaxDeviation(value *big.Int, median *big.Rat, maxPct float64) bool {
+	if median == nil || median.Sign() == 0 {
+		return true
+	}
+	diff := new(big.Rat).SetInt(value)
+	diff.Sub(diff, median)
+	diff.Abs(diff)
+
+	bound := new(big.Rat).Abs(new(big.Rat).Mul(median, new(big.Rat).SetFloat64(maxPct/100)))
+
+	return diff.Cmp(bound) <= 0
 }
 
 // compareValueChains compares two value chains. Returns:

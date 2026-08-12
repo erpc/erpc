@@ -11,23 +11,24 @@ import (
 // config carries the consensus-policy configuration through the
 // builder-style API.
 type config struct {
-	maxParticipants         int
-	agreementThreshold      int
-	disputeBehavior         common.ConsensusDisputeBehavior
-	lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
-	punishMisbehavior       *common.PunishMisbehaviorConfig
-	misbehaviorsDestination *common.MisbehaviorsDestinationConfig
-	timeout                 time.Duration
-	logger                  *zerolog.Logger
-	disputeLogLevel         zerolog.Level
-	ignoreFields            map[string][]string
-	preferNonEmpty          bool
-	preferLargerResponses   bool
-	preferHighestValueFor   map[string][]string
-	fireAndForget           bool
-	maxWaitOnResult         *common.AdaptiveDuration
-	maxWaitOnEmpty          *common.AdaptiveDuration
-	requiredParticipants    []*common.ConsensusRequiredParticipant
+	maxParticipants                      int
+	agreementThreshold                   int
+	disputeBehavior                      common.ConsensusDisputeBehavior
+	lowParticipantsBehavior              common.ConsensusLowParticipantsBehavior
+	punishMisbehavior                    *common.PunishMisbehaviorConfig
+	misbehaviorsDestination              *common.MisbehaviorsDestinationConfig
+	timeout                              time.Duration
+	logger                               *zerolog.Logger
+	disputeLogLevel                      zerolog.Level
+	ignoreFields                         map[string][]string
+	preferNonEmpty                       bool
+	preferLargerResponses                bool
+	preferHighestValueFor                map[string][]string
+	preferHighestValueForMaxDeviationPct map[string]float64
+	fireAndForget                        bool
+	maxWaitOnResult                      *common.AdaptiveDuration
+	maxWaitOnEmpty                       *common.AdaptiveDuration
+	requiredParticipants                 []*common.ConsensusRequiredParticipant
 }
 
 // builder is the internal builder used by NewConsensus.
@@ -91,6 +92,10 @@ func (b *builder) WithPreferLargerResponses(v bool) *builder {
 }
 func (b *builder) WithPreferHighestValueFor(m map[string][]string) *builder {
 	b.cfg.preferHighestValueFor = m
+	return b
+}
+func (b *builder) WithPreferHighestValueForMaxDeviationPct(m map[string]float64) *builder {
+	b.cfg.preferHighestValueForMaxDeviationPct = m
 	return b
 }
 func (b *builder) WithFireAndForget(v bool) *builder { b.cfg.fireAndForget = v; return b }

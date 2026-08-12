@@ -1257,6 +1257,15 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	for method, pct := range c.PreferHighestValueForMaxDeviationPct {
+		if pct < 0 {
+			return fmt.Errorf("consensus.preferHighestValueForMaxDeviationPct[%s] must not be negative", method)
+		}
+		if _, ok := c.PreferHighestValueFor[method]; !ok {
+			return fmt.Errorf("consensus.preferHighestValueForMaxDeviationPct[%s] has no corresponding consensus.preferHighestValueFor[%s] entry", method, method)
+		}
+	}
+
 	for i, rp := range c.RequiredParticipants {
 		if rp == nil {
 			return fmt.Errorf("consensus.requiredParticipants[%d] must not be null", i)
