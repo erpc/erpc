@@ -37,7 +37,14 @@ type MemoryConnector struct {
 	metricsMutex     sync.RWMutex
 	stopMetrics      context.CancelFunc
 	stopCacheWatcher context.CancelFunc
-	closeCacheOnce   *sync.Once
+
+	// closeMu/closed guard every Ristretto access against a concurrent Close(): Ristretto's
+	// Cache.Close() closes internal channels, so a Set/Get/Delete racing a Close() can panic
+	// ("send on closed channel") or data-race rather than just erroring. Close() takes the
+	// write lock, flips closed, and only then closes the cache — so it can't run until every
+	// in-flight cache op (holding a read lock) has finished, and no new one can start after.
+	closeMu sync.RWMutex
+	closed  bool
 }
 
 func NewMemoryConnector(
@@ -88,11 +95,10 @@ func NewMemoryConnector(
 	}
 
 	c := &MemoryConnector{
-		id:             id,
-		logger:         &lg,
-		cache:          cache,
-		emitMetrics:    enableMetrics,
-		closeCacheOnce: &sync.Once{},
+		id:          id,
+		logger:      &lg,
+		cache:       cache,
+		emitMetrics: enableMetrics,
 	}
 
 	// Start metrics collection goroutine if enabled
@@ -110,13 +116,11 @@ func NewMemoryConnector(
 	// short-lived instances in a single test binary) leaks 2 goroutines forever.
 	// Close() also cancels this watcher's own context so callers using a non-cancelable
 	// ctx (context.Background()) and relying solely on Close() don't leak the watcher itself.
-	// Both paths close the cache through closeCacheOnce since ristretto.Cache.Close() panics
-	// (send on closed channel) if it ever runs twice concurrently.
 	watcherCtx, stopWatcher := context.WithCancel(ctx)
 	c.stopCacheWatcher = stopWatcher
 	go func() {
 		<-watcherCtx.Done()
-		c.closeCacheOnce.Do(cache.Close)
+		c.closeCache()
 	}()
 
 	return c, nil
@@ -127,6 +131,12 @@ func (m *MemoryConnector) Id() string {
 }
 
 func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
+	m.closeMu.RLock()
+	defer m.closeMu.RUnlock()
+	if m.closed {
+		return nil
+	}
+
 	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing to memory (ristretto)")
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
@@ -176,6 +186,12 @@ func isReverseIndexable(partitionKey string) bool {
 }
 
 func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
+	m.closeMu.RLock()
+	defer m.closeMu.RUnlock()
+	if m.closed {
+		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, MemoryDriverName)
+	}
+
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
 		fullKey, found := m.cache.Get(memoryReverseIndexPrefix + "#" + partitionKey + "#" + rangeKey)
 		// Replace wildcard partitionKey with the resolved concrete value if found
@@ -337,6 +353,12 @@ func (m *MemoryConnector) collectAndEmitMetrics() {
 }
 
 func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
+	m.closeMu.RLock()
+	defer m.closeMu.RUnlock()
+	if m.closed {
+		return nil
+	}
+
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("deleting from memory (ristretto)")
 
@@ -371,11 +393,25 @@ func (m *MemoryConnector) Close() error {
 	if m.stopMetrics != nil {
 		m.stopMetrics()
 	}
-	if m.cache != nil {
-		m.closeCacheOnce.Do(m.cache.Close)
-	}
+	m.closeCache()
 	if m.stopCacheWatcher != nil {
 		m.stopCacheWatcher()
 	}
 	return nil
+}
+
+// closeCache marks the connector closed and closes the underlying Ristretto cache exactly
+// once. The write lock can only be acquired once every in-flight Set/Get/Delete (each holding
+// a read lock) has returned, and closed is checked before starting any new one — so this can
+// never race a live cache operation, unlike calling cache.Close() directly would.
+func (m *MemoryConnector) closeCache() {
+	m.closeMu.Lock()
+	defer m.closeMu.Unlock()
+	if m.closed {
+		return
+	}
+	m.closed = true
+	if m.cache != nil {
+		m.cache.Close()
+	}
 }

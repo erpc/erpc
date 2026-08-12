@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -366,6 +367,42 @@ func TestMemoryConnector_ClosesRistrettoGoroutinesOnExplicitClose(t *testing.T) 
 		return runtime.NumGoroutine() <= before+5
 	}, 2*time.Second, 20*time.Millisecond,
 		"goroutine count should return close to baseline after explicit Close(), got %d (baseline %d)", runtime.NumGoroutine(), before)
+}
+
+// TestMemoryConnector_SetRacingContextCancelDoesNotPanic reproduces the shape of
+// TestSvmStatePoller_ConcurrentSuggestionsDuringPoll_StaySlotMonotonic: a background goroutine
+// keeps calling Set() while the connector's ctx is cancelled out from under it (e.g. request
+// handling still in flight during shutdown). Ristretto's Cache.Close() closes internal channels,
+// so calling it concurrently with Set()/Get()/Delete() is unsafe on its own — must run under
+// -race to actually catch a regression here.
+func TestMemoryConnector_SetRacingContextCancelDoesNotPanic(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	connector, err := NewMemoryConnector(ctx, &logger, "race-test", &common.MemoryConnectorConfig{
+		MaxItems: 1_000, MaxTotalSize: "10MB",
+	})
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = connector.Set(ctx, "pk", fmt.Sprintf("rk-%d", i), []byte("v"), nil)
+			}
+		}
+	}()
+
+	time.Sleep(5 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
 
 // TestIsReverseIndexable_Filters validates the predicate's rejection rules so
