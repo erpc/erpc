@@ -767,11 +767,17 @@ var (
 		Help:      "Total number of cache get hits.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
+	// `reason` distinguishes a connector that genuinely had no entry
+	// ("connector_miss"), one that failed or timed out ("connector_error"), an
+	// entry rejected by the freshness/TTL guard ("ttl_rejected"), and a stored
+	// empty result under CacheEmptyBehaviorIgnore ("empty_result"). Without it
+	// a slow or erroring cache backend is indistinguishable from a cold cache,
+	// which reads as a hit-rate problem instead of a latency problem.
 	MetricCacheGetSuccessMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_miss_total",
 		Help:      "Total number of cache get misses.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "reason"})
 
 	MetricCacheGetErrorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
