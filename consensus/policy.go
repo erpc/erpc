@@ -1,12 +1,41 @@
 package consensus
 
 import (
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
+
+// methodFields resolves a per-method field list from an operator-configured map
+// (ignoreFields, preferHighestValueFor) keyed by method name. Method dispatch is
+// case-insensitive (see architecture/evm/hooks.go), so these lookups must be too
+// — otherwise a non-canonical casing silently loses the operator's policy and
+// falls back to plain agreement with nothing logged. An exact key wins;
+// otherwise the match is case-insensitive, with the smallest key breaking a tie
+// so the result never depends on map iteration order.
+func methodFields(defs map[string][]string, method string) ([]string, bool) {
+	if len(defs) == 0 || method == "" {
+		return nil, false
+	}
+	if fields, ok := defs[method]; ok {
+		return fields, true
+	}
+	var bestKey string
+	var best []string
+	var found bool
+	for k, v := range defs {
+		if !strings.EqualFold(k, method) {
+			continue
+		}
+		if !found || k < bestKey {
+			bestKey, best, found = k, v, true
+		}
+	}
+	return best, found
+}
 
 // config carries the consensus-policy configuration through the
 // builder-style API.

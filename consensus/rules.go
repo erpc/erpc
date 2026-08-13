@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"math/big"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 )
@@ -25,9 +26,12 @@ type shortCircuitRule struct {
 // own, so waiting for agreement only adds duplicate broadcasts.
 // Covers EVM eth_sendRawTransaction and the SVM equivalents
 // (sendTransaction plus its sendRawTransaction alias).
+//
+// Matched case-insensitively to agree with dispatch (architecture/*/hooks.go),
+// so the exemption never turns on the casing the client happened to send.
 func isTxBroadcastMethod(method string) bool {
-	switch method {
-	case "eth_sendRawTransaction", "sendTransaction", "sendRawTransaction":
+	switch strings.ToLower(method) {
+	case "eth_sendrawtransaction", "sendtransaction", "sendrawtransaction":
 		return true
 	}
 	return false
@@ -79,10 +83,7 @@ var consensusRules = []consensusRule{
 		Description: "prefer-highest-value-for: return highest value where at least agreementThreshold upstreams agree",
 		Condition: func(a *consensusAnalysis) bool {
 			// Check if this method has preferHighestValueFor configured
-			if a.config.preferHighestValueFor == nil || a.method == "" {
-				return false
-			}
-			fields, ok := a.config.preferHighestValueFor[a.method]
+			fields, ok := methodFields(a.config.preferHighestValueFor, a.method)
 			if !ok || len(fields) == 0 {
 				return false
 			}
@@ -97,7 +98,7 @@ var consensusRules = []consensusRule{
 			return false // No extractable values, fall through to other rules
 		},
 		Action: func(a *consensusAnalysis) *slotResult {
-			fields := a.config.preferHighestValueFor[a.method]
+			fields, _ := methodFields(a.config.preferHighestValueFor, a.method)
 			threshold := a.config.agreementThreshold
 			if threshold < 1 {
 				threshold = 1
@@ -891,10 +892,8 @@ var shortCircuitRules = []shortCircuitRule{
 			}
 			// Don't short-circuit when preferHighestValueFor is configured for this method;
 			// we need all responses to find the truly highest value.
-			if a.config.preferHighestValueFor != nil && a.method != "" {
-				if _, ok := a.config.preferHighestValueFor[a.method]; ok {
-					return false
-				}
+			if _, ok := methodFields(a.config.preferHighestValueFor, a.method); ok {
+				return false
 			}
 			// Don't short-circuit to an error under AcceptMostCommon when a preference
 			// could change the winner (PreferNonEmpty or PreferLargerResponses).
@@ -919,10 +918,8 @@ var shortCircuitRules = []shortCircuitRule{
 			if a.hasRemaining() {
 				// Do not short-circuit when preferHighestValueFor is configured for this method;
 				// we need all responses to find the truly highest value.
-				if a.config.preferHighestValueFor != nil && a.method != "" {
-					if _, ok := a.config.preferHighestValueFor[a.method]; ok {
-						return false
-					}
+				if _, ok := methodFields(a.config.preferHighestValueFor, a.method); ok {
+					return false
 				}
 				// Do not short-circuit while PreferLargerResponses is enabled; a larger result
 				// arriving later may change the final decision even if the current leader is

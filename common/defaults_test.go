@@ -1798,3 +1798,193 @@ func TestApplyDefaults_UpstreamDefaultsSvm(t *testing.T) {
 		require.Nil(t, u.Svm)
 	})
 }
+
+// Hook dispatch (architecture/evm/hooks.go) routes method names
+// case-insensitively, so the per-method config lookup must resolve the same
+// way — otherwise a non-canonical casing dispatches into method-specific logic
+// but resolves no config (no gating, no caching, no block-ref extraction).
+// Canonicalization is lookup-only: the wire method string is forwarded
+// upstream verbatim (per JSON-RPC 2.0 the method member is case-sensitive).
+func TestFindCacheMethodConfig(t *testing.T) {
+	t.Parallel()
+
+	a := &CacheMethodConfig{Finalized: true}
+	b := &CacheMethodConfig{Realtime: true}
+
+	t.Run("ExactMatchWins", func(t *testing.T) {
+		defs := map[string]*CacheMethodConfig{"eth_call": a, "ETH_CALL": b}
+		assert.Same(t, a, FindCacheMethodConfig(defs, "eth_call"))
+		assert.Same(t, b, FindCacheMethodConfig(defs, "ETH_CALL"))
+	})
+
+	t.Run("NonCanonicalCasingResolves", func(t *testing.T) {
+		defs := map[string]*CacheMethodConfig{"eth_getBlockByNumber": a}
+		assert.Same(t, a, FindCacheMethodConfig(defs, "ETH_GETBLOCKBYNUMBER"))
+		assert.Same(t, a, FindCacheMethodConfig(defs, "eth_getblockbynumber"))
+		assert.Same(t, a, FindCacheMethodConfig(defs, "eth_GetBlockByNumber"))
+	})
+
+	t.Run("OperatorCasedKeyFoundByAnyCasing", func(t *testing.T) {
+		defs := map[string]*CacheMethodConfig{"custom_FooBar": a}
+		assert.Same(t, a, FindCacheMethodConfig(defs, "CUSTOM_foobar"))
+	})
+
+	t.Run("MissReturnsNil", func(t *testing.T) {
+		assert.Nil(t, FindCacheMethodConfig(nil, "eth_call"))
+		assert.Nil(t, FindCacheMethodConfig(map[string]*CacheMethodConfig{}, "eth_call"))
+		assert.Nil(t, FindCacheMethodConfig(map[string]*CacheMethodConfig{"eth_call": a}, "eth_getLogs"))
+	})
+
+	t.Run("NilValuedEntriesAreAbsent", func(t *testing.T) {
+		defs := map[string]*CacheMethodConfig{"eth_call": nil}
+		assert.Nil(t, FindCacheMethodConfig(defs, "eth_call"))
+		assert.Nil(t, FindCacheMethodConfig(defs, "ETH_CALL"))
+	})
+
+	t.Run("DeterministicAmongMultipleFoldMatches", func(t *testing.T) {
+		// Pathological: two non-exact casings of the requested name. The
+		// lexicographically smallest key wins, independent of map order.
+		defs := map[string]*CacheMethodConfig{"ETH_CALL": b, "eTH_CALL": a}
+		for i := 0; i < 50; i++ {
+			assert.Same(t, b, FindCacheMethodConfig(defs, "eth_call"))
+		}
+	})
+
+	t.Run("DefaultTablesResolveNonCanonicalCasing", func(t *testing.T) {
+		assert.Same(t,
+			DefaultWithBlockCacheMethods["eth_getBlockByNumber"],
+			FindCacheMethodConfig(DefaultWithBlockCacheMethods, "ETH_GETBLOCKBYNUMBER"))
+		assert.Same(t,
+			DefaultStaticCacheMethods["eth_chainId"],
+			FindCacheMethodConfig(DefaultStaticCacheMethods, "ETH_CHAINID"))
+	})
+}
+
+// SetDefaults must not leave two entries that differ only in letter case: the
+// merge would otherwise resolve one logical method to different config
+// depending on the casing the client happens to send, and the stateful marker
+// would land on a phantom canonical entry instead of the operator's own key.
+func TestMethodsConfigCaseInsensitiveMerge(t *testing.T) {
+	t.Run("DifferentlyCasedOverrideReplacesTheDefault", func(t *testing.T) {
+		m := &MethodsConfig{
+			PreserveDefaultMethods: true,
+			Definitions: map[string]*CacheMethodConfig{
+				"Eth_Call": {Finalized: true},
+			},
+		}
+		require.NoError(t, m.SetDefaults())
+
+		_, hasCanonical := m.Definitions["eth_call"]
+		assert.False(t, hasCanonical, "the default entry must be replaced, not kept alongside the override")
+
+		// Every casing resolves to the operator's override — not to a default
+		// that only canonical-cased traffic would have hit.
+		for _, casing := range []string{"eth_call", "Eth_Call", "ETH_CALL"} {
+			cfg := m.FindMethodConfig(casing)
+			require.NotNil(t, cfg, "casing %s must resolve", casing)
+			assert.True(t, cfg.Finalized, "casing %s must resolve to the operator override", casing)
+		}
+	})
+
+	t.Run("StatefulMarkerLandsOnTheOperatorsOwnKey", func(t *testing.T) {
+		m := &MethodsConfig{
+			Definitions: map[string]*CacheMethodConfig{
+				"Eth_NewFilter": {Finalized: true},
+			},
+		}
+		require.NoError(t, m.SetDefaults())
+
+		_, phantom := m.Definitions["eth_newFilter"]
+		assert.False(t, phantom, "no phantom canonical entry beside the operator's key")
+		require.NotNil(t, m.Definitions["Eth_NewFilter"])
+		assert.True(t, m.Definitions["Eth_NewFilter"].Stateful,
+			"the stateful guard must apply to the operator's entry, whatever its casing")
+		assert.True(t, m.Definitions["Eth_NewFilter"].Finalized, "the operator's own config survives")
+
+		for _, casing := range []string{"eth_newFilter", "Eth_NewFilter", "ETH_NEWFILTER"} {
+			cfg := m.FindMethodConfig(casing)
+			require.NotNil(t, cfg, "casing %s must resolve", casing)
+			assert.True(t, cfg.Stateful, "casing %s must be gated as stateful", casing)
+		}
+	})
+
+	t.Run("NullDefinitionForStatefulMethodDoesNotPanic", func(t *testing.T) {
+		// YAML `eth_newFilter: ~` unmarshals to a present key with a nil value.
+		// It means "no cache config", not "not stateful".
+		m := &MethodsConfig{
+			Definitions: map[string]*CacheMethodConfig{
+				"custom_method": {Finalized: true},
+				"eth_newFilter": nil,
+			},
+		}
+		require.NotPanics(t, func() {
+			require.NoError(t, m.SetDefaults())
+		})
+		require.NotNil(t, m.Definitions["eth_newFilter"])
+		assert.True(t, m.Definitions["eth_newFilter"].Stateful)
+	})
+
+	t.Run("StatefulGuardSurvivesAnOperatorOverride", func(t *testing.T) {
+		// Same intent as TestMethodsConfigStatefulMethodOverride, but with
+		// defaults preserved — the guard must not depend on which branch ran.
+		m := &MethodsConfig{
+			PreserveDefaultMethods: true,
+			Definitions: map[string]*CacheMethodConfig{
+				"eth_newFilter": {Finalized: true, Stateful: false},
+			},
+		}
+		require.NoError(t, m.SetDefaults())
+		assert.True(t, m.Definitions["eth_newFilter"].Stateful)
+	})
+}
+
+// The built-in tables resolve non-canonical casings through their prebuilt
+// lowercase index, with the same precedence as the exact-key lookup.
+func TestFindDefaultCacheMethodConfig(t *testing.T) {
+	t.Parallel()
+
+	assert.Same(t, DefaultWithBlockCacheMethods["eth_getBlockByNumber"],
+		FindDefaultCacheMethodConfig("eth_getBlockByNumber"))
+	assert.Same(t, DefaultWithBlockCacheMethods["eth_getBlockByNumber"],
+		FindDefaultCacheMethodConfig("ETH_GETBLOCKBYNUMBER"))
+	assert.Same(t, DefaultStaticCacheMethods["eth_chainId"],
+		FindDefaultCacheMethodConfig("eth_chainid"))
+	assert.Same(t, DefaultSpecialCacheMethods["eth_getTransactionReceipt"],
+		FindDefaultCacheMethodConfig("ETH_GetTransactionReceipt"))
+	assert.Nil(t, FindDefaultCacheMethodConfig("custom_unknownMethod"))
+
+	assert.Same(t, DefaultWithBlockCacheMethods["eth_getLogs"],
+		DefaultWithBlockMethodConfig("ETH_GETLOGS"))
+	assert.Nil(t, DefaultWithBlockMethodConfig("eth_chainId"),
+		"the with-block accessor must not reach into the other tables")
+}
+
+// The flattened default index must resolve exactly like walking the four tables
+// in precedence order — the cascade it replaced.
+func TestFindDefaultCacheMethodConfigMatchesTableCascade(t *testing.T) {
+	t.Parallel()
+
+	cascade := func(method string) *CacheMethodConfig {
+		for _, table := range defaultCacheMethodLookupOrder {
+			if cfg, ok := table[method]; ok && cfg != nil {
+				return cfg
+			}
+		}
+		return nil
+	}
+
+	seen := 0
+	for _, table := range defaultCacheMethodLookupOrder {
+		for name := range table {
+			seen++
+			assert.Same(t, cascade(name), FindDefaultCacheMethodConfig(name),
+				"exact casing of %s must resolve as the cascade did", name)
+			assert.Same(t, cascade(name), FindDefaultCacheMethodConfig(strings.ToUpper(name)),
+				"upper casing of %s must resolve to the same entry", name)
+			assert.Same(t, cascade(name), FindDefaultCacheMethodConfig(strings.ToLower(name)),
+				"lower casing of %s must resolve to the same entry", name)
+		}
+	}
+	assert.Greater(t, seen, 20, "sanity: the default tables should be populated")
+	assert.Nil(t, FindDefaultCacheMethodConfig("custom_notADefaultMethod"))
+}

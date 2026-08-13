@@ -2531,15 +2531,13 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	method, _ := req.Method()
-	if n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
-		if cfg, ok := n.cfg.Methods.Definitions[method]; ok {
-			if cfg.Finalized {
-				finality = common.DataFinalityStateFinalized
-				return finality
-			} else if cfg.Realtime {
-				finality = common.DataFinalityStateRealtime
-				return finality
-			}
+	if cfg := n.cfg.Methods.FindMethodConfig(method); cfg != nil {
+		if cfg.Finalized {
+			finality = common.DataFinalityStateFinalized
+			return finality
+		} else if cfg.Realtime {
+			finality = common.DataFinalityStateRealtime
+			return finality
 		}
 	}
 
@@ -2661,10 +2659,7 @@ func methodHasDedicatedRangeAvailabilityHook(method string) bool {
 // systemDefaultEnforceBlockAvailability returns the global system default for
 // EnforceBlockAvailability for a given method, or nil if no default is set.
 func systemDefaultEnforceBlockAvailability(method string) *bool {
-	if common.DefaultWithBlockCacheMethods == nil {
-		return nil
-	}
-	if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil {
+	if dmc := common.DefaultWithBlockMethodConfig(method); dmc != nil {
 		return dmc.EnforceBlockAvailability
 	}
 	return nil
@@ -2681,8 +2676,8 @@ func systemDefaultEnforceBlockAvailability(method string) *bool {
 // default is not a real user override.
 func (n *Network) blockAvailabilityExplicitlyDisabled(method string) bool {
 	sysDefault := systemDefaultEnforceBlockAvailability(method)
-	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
-		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
+	if n.cfg != nil {
+		if mc := n.cfg.Methods.FindMethodConfig(method); mc != nil && mc.EnforceBlockAvailability != nil {
 			if sysDefault == nil || *mc.EnforceBlockAvailability != *sysDefault {
 				return !*mc.EnforceBlockAvailability
 			}
@@ -3112,8 +3107,8 @@ func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method strin
 	// Check stateful methods policy
 	// Methods.Definitions is guaranteed to be populated by SetDefaults() with all necessary stateful methods
 	isStateful := false
-	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
-		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil {
+	if n.cfg != nil {
+		if mc := n.cfg.Methods.FindMethodConfig(method); mc != nil {
 			isStateful = mc.Stateful
 		}
 	}
@@ -3134,7 +3129,10 @@ func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method strin
 		}
 	}
 
-	if method == "eth_accounts" || method == "eth_sign" {
+	// Case-insensitive for the same reason the method-config lookup above is:
+	// dispatch treats method names case-insensitively, so a non-canonical casing
+	// must not slip past a guard that canonical casing is rejected by.
+	if strings.EqualFold(method, "eth_accounts") || strings.EqualFold(method, "eth_sign") {
 		return common.NewErrNotImplemented("eth_accounts and eth_sign are not supported")
 	}
 

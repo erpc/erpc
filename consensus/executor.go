@@ -925,7 +925,7 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 	if winner == nil || !anyAgreementQuota(e.config.requiredParticipants) {
 		return winner
 	}
-	if analysis.method == "eth_sendRawTransaction" {
+	if isTxBroadcastMethod(analysis.method) {
 		return winner
 	}
 	g := analysis.groupOf(winner)
@@ -987,7 +987,7 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 // hashes into a different group, and its upstream must still count toward
 // the composition quota.
 func (e *executor) agreeingResults(analysis *consensusAnalysis, g *responseGroup) []*execResult {
-	fields := e.config.preferHighestValueFor[analysis.method]
+	fields, _ := methodFields(e.config.preferHighestValueFor, analysis.method)
 	if len(fields) == 0 {
 		return g.Results
 	}

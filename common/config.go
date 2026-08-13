@@ -2196,6 +2196,11 @@ type ProxyPoolConfig struct {
 type MethodsConfig struct {
 	PreserveDefaultMethods bool                          `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
 	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
+
+	// lowerIndex is a lowercase-keyed snapshot of Definitions built by
+	// SetDefaults so FindMethodConfig resolves a non-canonical casing with one
+	// map lookup instead of scanning every entry per request.
+	lowerIndex map[string]*CacheMethodConfig
 }
 
 type NetworkConfig struct {
