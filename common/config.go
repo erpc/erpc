@@ -2480,6 +2480,14 @@ type EvmNetworkConfig struct {
 	// TraceFilterSplitConcurrency caps in-flight sub-requests when a trace_filter
 	// or arbtrace_filter request is split. Zero falls back to 10.
 	TraceFilterSplitConcurrency int `yaml:"traceFilterSplitConcurrency,omitempty" json:"traceFilterSplitConcurrency"`
+	// BlockAvailability sets a network-level lower (and optionally upper) block availability
+	// bound. When a request's block number falls outside this range, eRPC short-circuits
+	// before selecting any upstream and returns a JSON-RPC error (-32001) to the client.
+	// This is evaluated after the cache layer, so cached responses are still served. Only
+	// LatestBlockMinus and ExactBlock are meaningful at the network level; EarliestBlockPlus
+	// is upstream-specific and is ignored here (treated as unbounded).
+	BlockAvailability *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability,omitempty"`
+
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.

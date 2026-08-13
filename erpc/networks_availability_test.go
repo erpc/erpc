@@ -1789,3 +1789,180 @@ func TestHandleBlockSkip_NonRetryableDoesNotTriggerRefresh(t *testing.T) {
 	require.Equal(t, int64(0x11118888), eu.EvmStatePoller().LatestBlock(),
 		"state poller should NOT have been updated for non-retryable block unavailability")
 }
+
+// Network-level blockAvailability tests
+
+func newNetworkWithBound(ctx context.Context, t *testing.T, bound *common.EvmBlockAvailabilityConfig) (*Network, *upstream.UpstreamsRegistry) {
+	t.Helper()
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+		},
+	}
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, nil)
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId:          123,
+			BlockAvailability: bound,
+		},
+	}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
+	upr.Bootstrap(ctx)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+	network.PinUpstreamOrderForTest()
+	time.Sleep(1000 * time.Millisecond) // let state poller warm up
+	return network, upr
+}
+
+// Block below network-level ExactBlock lower bound returns JSON-RPC -32001 without hitting upstream.
+func TestNetworkBlockAvailability_NetworkLevel_ExactBlock_BelowBound(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := newNetworkWithBound(ctx, t, &common.EvmBlockAvailabilityConfig{
+		Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1000)},
+	})
+
+	// block 0x1 (= 1) < 1000 → should short-circuit
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "network-level short-circuit should return response, not error")
+	require.NotNil(t, resp)
+	jrr, jErr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jErr)
+	require.NotNil(t, jrr.Error, "expected JSON-RPC error in response")
+	require.Equal(t, -32001, jrr.Error.Code)
+	require.Contains(t, jrr.Error.Message, "historical block not available")
+	resp.Release()
+}
+
+// Block at or above network-level ExactBlock lower bound passes through to upstream normally.
+func TestNetworkBlockAvailability_NetworkLevel_ExactBlock_WithinBound(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "0x3e8")
+		}).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x3e8"}}`))
+
+	network, _ := newNetworkWithBound(ctx, t, &common.EvmBlockAvailabilityConfig{
+		Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1000)},
+	})
+
+	// block 0x3e8 (= 1000) == lower bound → passes through
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, jErr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jErr)
+	require.Nil(t, jrr.Error, "block at lower bound should pass through without error")
+	resp.Release()
+}
+
+// Block below network-level latestBlockMinus lower bound returns JSON-RPC -32001.
+func TestNetworkBlockAvailability_NetworkLevel_LatestBlockMinus_BelowBound(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// State poller mock returns latest = 0x11118888 = 286361736.
+	// latestBlockMinus = 286361000 → lower bound = 286361736 - 286361000 = 736.
+	// Requesting block 0x1 (= 1) < 736 → short-circuit.
+	network, _ := newNetworkWithBound(ctx, t, &common.EvmBlockAvailabilityConfig{
+		Lower: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(286361000)},
+	})
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, jErr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jErr)
+	require.NotNil(t, jrr.Error)
+	require.Equal(t, -32001, jrr.Error.Code)
+	require.Contains(t, jrr.Error.Message, "historical block not available")
+	resp.Release()
+}
+
+// Unresolvable block number (by-hash lookup) fails open and passes through.
+func TestNetworkBlockAvailability_NetworkLevel_ByHash_FailOpen(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBlockByHash")
+		}).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1"}}`))
+
+	network, _ := newNetworkWithBound(ctx, t, &common.EvmBlockAvailabilityConfig{
+		Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1000)},
+	})
+
+	// eth_getBlockByHash carries a hash, not a block number → fail-open
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByHash","params":["0xabc123",false]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, jErr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jErr)
+	require.Nil(t, jrr.Error, "by-hash request should pass through even with network-level bound")
+	resp.Release()
+}
