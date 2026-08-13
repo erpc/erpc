@@ -1053,6 +1053,46 @@ func (e *EvmStatePoller) runPeriodicEarliestBlockBoundUpdateLoop(probe common.Ev
 	}
 }
 
+// fallbackFinalityMinAge is the minimum WALL-CLOCK age a block must reach
+// before the SYNTHETIC finalized head can cover it. It applies only on the
+// fallback path — when an upstream reports no finalized block at all — and only
+// ever DEEPENS the configured block depth, never shortens it.
+//
+// A block count alone cannot express "old enough that a reorg is implausible".
+// DefaultEvmFinalityDepth's 1024 blocks is ~3.4 hours of a 12s chain but only a
+// couple of minutes of a sub-second one, so the same constant is far more
+// conservative than needed on slow chains and potentially SHALLOWER than the
+// chain's real reorg risk on fast ones — and this value decides what erpc
+// treats as immutable and therefore permanently cacheable. Getting it wrong in
+// the shallow direction caches data that can still be reorged away.
+//
+// 30 minutes sits comfortably beyond Ethereum's ~13-minute finality and beyond
+// the unsafe-head reorg windows typical L2s expose. On any chain where the
+// configured block depth already represents more than this, nothing changes.
+const fallbackFinalityMinAge = 30 * time.Minute
+
+// fallbackFinalityDepth is how far below the head the synthetic finalized block
+// sits: the DEEPER of the configured block count and fallbackFinalityMinAge of
+// chain progress. Taking the deeper of the two is what makes this safe to ship
+// unconditionally — the synthetic finalized head can only ever move further
+// from the tip, never closer, so no block becomes "final" earlier than it does
+// today. While the block time is unknown the configured count stands alone.
+func (e *EvmStatePoller) fallbackFinalityDepth() int64 {
+	e.stateMu.RLock()
+	depth := int64(common.DefaultEvmFinalityDepth)
+	if e.cfg != nil && e.cfg.FallbackFinalityDepth > 0 {
+		depth = e.cfg.FallbackFinalityDepth
+	}
+	e.stateMu.RUnlock()
+
+	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime > 0 {
+		if byAge := int64(fallbackFinalityMinAge / blockTime); byAge > depth {
+			depth = byAge
+		}
+	}
+	return depth
+}
+
 func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	finalizedBlock := e.finalizedBlockShared.GetValue()
 	latestBlock := e.latestBlockShared.GetValue()
@@ -1080,24 +1120,14 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	}
 
 	var fb int64
-	e.stateMu.RLock()
-	defer e.stateMu.RUnlock()
-	if e.cfg != nil && e.cfg.FallbackFinalityDepth > 0 {
-		if latestBlock > e.cfg.FallbackFinalityDepth {
-			fb = latestBlock - e.cfg.FallbackFinalityDepth
-		} else {
-			fb = 0
-		}
-	} else {
-		if latestBlock > common.DefaultEvmFinalityDepth {
-			fb = latestBlock - common.DefaultEvmFinalityDepth
-		} else {
-			fb = 0
-		}
+	depth := e.fallbackFinalityDepth()
+	if latestBlock > depth {
+		fb = latestBlock - depth
 	}
 
 	e.logger.Debug().
 		Int64("inferredFinalizedBlock", fb).
+		Int64("fallbackFinalityDepth", depth).
 		Int64("latestBlock", latestBlock).
 		Int64("blockNumber", blockNumber).
 		Msgf("calculating block finality using inferred finalized block")

@@ -1318,6 +1318,41 @@ func (n *Network) noteServedTipGuardTransition(anchor *servedTipAnchor, state in
 	return true
 }
 
+// defaultMaxRetryableBlockDistance is the block-count fallback used when the
+// network does not configure MaxRetryableBlockDistance and the block time is
+// not known yet.
+const defaultMaxRetryableBlockDistance = int64(128)
+
+// retryableBlockHorizon is how far ahead of an upstream's head a requested
+// block may sit and still be worth retrying, expressed as chain progress.
+//
+// The question — "is this block close enough that the upstream may catch up?" —
+// is about how soon it arrives, so a block count answers it differently on
+// every chain: 128 blocks is ~25 minutes of a 12s chain but ~30 seconds of a
+// 4 blocks/s one. A minute of chain progress means the same thing everywhere.
+const retryableBlockHorizon = 60 * time.Second
+
+// maxRetryableBlockDistance is the larger of the block-count default and
+// retryableBlockHorizon of chain progress.
+//
+// Larger is the safe direction here: the value only decides whether to keep
+// trying, so widening it can cost a few extra retries but can never turn a
+// serveable request into a failure. An explicit operator setting is returned
+// untouched — the derived floor exists to give the DEFAULT a sane meaning
+// per chain, not to override a deliberate choice.
+func (n *Network) maxRetryableBlockDistance() int64 {
+	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.MaxRetryableBlockDistance != nil {
+		return *n.cfg.Evm.MaxRetryableBlockDistance
+	}
+	distance := defaultMaxRetryableBlockDistance
+	if blockTime := n.EvmBlockTime(); blockTime > 0 {
+		if byTime := int64(retryableBlockHorizon / blockTime); byTime > distance {
+			distance = byTime
+		}
+	}
+	return distance
+}
+
 // servedTipMaxRegressionBlocks is how far below the corroborated live head a
 // pick may fall before the regression guard treats it as poisoned. Defaults to
 // the rollback tolerance the state poller and health tracker already use, so
@@ -2860,11 +2895,7 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 		latestBlock, finalizedBlock := n.upstreamHeads(eu)
 		blockErr := common.NewErrUpstreamBlockUnavailable(eu.Id(), bn, latestBlock, finalizedBlock)
 		if bn > latestBlock && latestBlock > 0 {
-			maxDistance := int64(128) // default
-			if n.cfg.Evm != nil && n.cfg.Evm.MaxRetryableBlockDistance != nil {
-				maxDistance = *n.cfg.Evm.MaxRetryableBlockDistance
-			}
-			return blockErr, bn-latestBlock <= maxDistance
+			return blockErr, bn-latestBlock <= n.maxRetryableBlockDistance()
 		}
 		return blockErr, false
 	}
