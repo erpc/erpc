@@ -378,7 +378,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 | `erpc_upstream_finalized_block_number` | Gauge | `project`, `vendor`, `network`, `upstream` | On every `OnValue` callback from `finalizedBlockShared` counter via `tracker.SetFinalizedBlockNumber` |
 | `erpc_upstream_latest_block_polled_total` | Counter | `project`, `vendor`, `network`, `upstream` | Each time `PollLatestBlockNumber` issues an actual RPC call (not debounced by `TryUpdateIfStale`) |
 | `erpc_upstream_finalized_block_polled_total` | Counter | `project`, `vendor`, `network`, `upstream` | Each time `PollFinalizedBlockNumber` issues an actual RPC call |
-| `erpc_upstream_block_head_large_rollback` | Gauge | `project`, `vendor`, `network`, `upstream` | On `OnLargeRollback` callback; value is the rollback size in blocks |
+| `erpc_upstream_block_head_large_rollback` | Gauge | `project`, `vendor`, `network`, `upstream`, `finality` | On `OnLargeRollback` callback; value is the rollback size in blocks. `finality` is the head axis that rolled back (`latest` or `finalized`), not a `DataFinalityState`. Sticky: never reset, so it holds the last rollback size for the life of the process |
 | `erpc_unexpected_panic_total` | Counter | `component`, `context`, `fingerprint` | On panic recovery inside `initCounterSync` (`component="shared-state-counter-sync"`), `messageLoop` (`component="redis-pubsub-message-loop"`), or `pollingLoop` (`component="redis-pubsub-polling-loop"`) |
 
 **OTel trace spans:**

@@ -292,7 +292,7 @@ type Tracker struct {
 	headLagGaugeCache             sync.Map // map[ubKey]prometheus.Gauge
 	finalizationLagGaugeCache     sync.Map // map[ubKey]prometheus.Gauge
 	cordonedGaugeCache            sync.Map // map[cordKey]prometheus.Gauge
-	rollbackGaugeCache            sync.Map // map[ubKey]prometheus.Gauge
+	rollbackGaugeCache            sync.Map // map[rbKey]prometheus.Gauge
 }
 
 // urdoKey uniquely identifies a MetricUpstreamRequestDuration time series.
@@ -466,13 +466,25 @@ func (t *Tracker) getCordonedGauge(up common.Upstream, method, reason string) pr
 	return actual.(prometheus.Gauge)
 }
 
-func (t *Tracker) getRollbackGauge(up common.Upstream) prometheus.Gauge {
-	key := ubKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id()}
+// rbKey is ubKey plus the block-head axis. The latest and finalized state
+// pollers both record rollbacks for the same upstream, so the axis has to be
+// part of the key or the two would share one gauge and overwrite each other.
+type rbKey struct {
+	project  string
+	vendor   string
+	network  string
+	upstream string
+	finality string
+}
+
+// finality is the head axis that rolled back: "latest" or "finalized".
+func (t *Tracker) getRollbackGauge(up common.Upstream, finality string) prometheus.Gauge {
+	key := rbKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), finality}
 	if v, ok := t.rollbackGaugeCache.Load(key); ok {
 		return v.(prometheus.Gauge)
 	}
 	g := telemetry.MetricUpstreamBlockHeadLargeRollback.WithLabelValues(
-		t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(),
+		key.project, key.vendor, key.network, key.upstream, key.finality,
 	)
 	actual, _ := t.rollbackGaugeCache.LoadOrStore(key, g)
 	return actual.(prometheus.Gauge)
@@ -1692,10 +1704,11 @@ func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finalit
 	net := upstream.NetworkId()
 	lg := upstream.Logger().With().Str("networkId", net).Logger()
 	lg.Debug().
+		Str("finality", finality).
 		Int64("currentValue", currentVal).
 		Int64("newValue", newVal).
 		Int64("rollback", rollback).
 		Msgf("recording block rollback in tracker")
 
-	t.getRollbackGauge(upstream).Set(float64(rollback))
+	t.getRollbackGauge(upstream, finality).Set(float64(rollback))
 }
