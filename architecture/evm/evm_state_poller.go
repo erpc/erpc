@@ -31,6 +31,20 @@ const FullySyncedThreshold = 4
 // apply the same rollback tolerance to block heads.
 const DefaultToleratedBlockHeadRollback = common.DefaultToleratedBlockHeadRollback
 
+const (
+	// chainIdVerifyChainProgress is how much CHAIN PROGRESS a head move must
+	// represent before it is treated as major and re-verified against a live
+	// eth_chainId (see majorHeadMoveThreshold). One minute is comfortably more
+	// chain than a healthy poller can miss between samples — the default state
+	// poller interval is 5s — while staying far below the height difference any
+	// two unrelated chains exhibit.
+	chainIdVerifyChainProgress = 60 * time.Second
+
+	// chainIdVerifyMinBlocks keeps the derived threshold off zero on a chain
+	// whose measured block time is longer than the window itself.
+	chainIdVerifyMinBlocks = 2
+)
+
 var _ common.EvmStatePoller = &EvmStatePoller{}
 
 type EvmStatePoller struct {
@@ -541,7 +555,7 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	// eth_chainId call, so it runs OFF the hot path and this function stays
 	// non-blocking. Small advances (the common keep-fresh case) still apply
 	// inline with zero added latency, exactly as before.
-	if currentValue > 0 && blockNumber-currentValue > common.DefaultToleratedBlockHeadRollback {
+	if currentValue > 0 && blockNumber-currentValue > e.majorHeadMoveThreshold() {
 		e.verifyThenSuggestLatestBlock(blockNumber)
 		return
 	}
@@ -577,7 +591,7 @@ func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64) {
 		if blockNumber <= currentValue {
 			return
 		}
-		if blockNumber-currentValue > common.DefaultToleratedBlockHeadRollback &&
+		if blockNumber-currentValue > e.majorHeadMoveThreshold() &&
 			!e.verifyChainIdOnMajorHeadMove(ctx, "latest", currentValue, blockNumber) {
 			e.logger.Warn().
 				Int64("blockNumber", blockNumber).
@@ -634,8 +648,42 @@ func (e *EvmStatePoller) OnLatestBlock(cb func(int64)) {
 // cross-wired upstream that never returns a correct low sample (it errors out
 // or keeps serving the wrong chain) would otherwise leave the bogus head pinned
 // in the shared counter and skew lag-based routing until manually corrected.
+// majorHeadMoveThreshold is how far a head may move, in blocks, before the move
+// counts as major and is re-verified against eth_chainId.
+//
+// The question it answers — "does this move represent more chain than we could
+// plausibly have missed?" — is about TIME, so the threshold is
+// chainIdVerifyChainProgress of chain progress converted through the network's
+// measured block time. A fixed block count cannot ask it across a multi-chain
+// fleet: DefaultToleratedBlockHeadRollback's 1024 blocks is ~3.4 hours of a 12s
+// chain and ~4 minutes of a 4 blocks/s one, so the same constant gates almost
+// nothing on the slow chains and a fair amount on the fast ones. Two chains
+// cross-wired at similar heights therefore slip through on exactly the chains
+// where the check is loosest.
+//
+// Clamped to DefaultToleratedBlockHeadRollback at the top so this can only ever
+// ADD verification relative to the previous behaviour, never remove it —
+// including on a sub-60ms-block chain, where a raw window would derive a LOOSER
+// threshold than the old constant. While the block time is still unknown (cold
+// start) it falls back to that constant, so nothing changes until there is a
+// measurement to act on.
+func (e *EvmStatePoller) majorHeadMoveThreshold() int64 {
+	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+	if blockTime <= 0 {
+		return common.DefaultToleratedBlockHeadRollback
+	}
+	blocks := int64(chainIdVerifyChainProgress / blockTime)
+	if blocks < chainIdVerifyMinBlocks {
+		return chainIdVerifyMinBlocks
+	}
+	if blocks > common.DefaultToleratedBlockHeadRollback {
+		return common.DefaultToleratedBlockHeadRollback
+	}
+	return blocks
+}
+
 func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag string, current, polled int64) bool {
-	if current <= 0 || absInt64(polled-current) <= common.DefaultToleratedBlockHeadRollback {
+	if current <= 0 || absInt64(polled-current) <= e.majorHeadMoveThreshold() {
 		return true
 	}
 	cfgChainId := int64(0)
@@ -809,7 +857,7 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 		// cross-wired endpoint reporting another chain's height must not enter the
 		// shared finalized counter. Already off the hot path here (own goroutine),
 		// so the live eth_chainId call is safe to make.
-		if blockNumber-currentValue > common.DefaultToleratedBlockHeadRollback &&
+		if blockNumber-currentValue > e.majorHeadMoveThreshold() &&
 			!e.verifyChainIdOnMajorHeadMove(ctx, "finalized", currentValue, blockNumber) {
 			e.logger.Warn().
 				Int64("blockNumber", blockNumber).
