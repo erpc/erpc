@@ -546,11 +546,22 @@ var (
 		Help:      "Total number of times the finalized block was pro-actively polled from an upstream.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	// The "finality" label carries the block-head axis that rolled back --
+	// "latest" or "finalized" -- and NOT a common.DataFinalityState like the
+	// same-named label on the request metrics. Without it both state pollers
+	// write one series, so a consumer cannot tell a customer-visible latest-head
+	// rollback apart from a finalized-head one, and cannot alert on the former
+	// alone.
+	//
+	// This is a gauge Set to the SIZE of the last rollback (currentValue -
+	// newValue, in blocks). It is not a count and it is never reset, so it is
+	// sticky for the life of the process: rate()/increase() are meaningless on
+	// it, and a bare "> 0" latches forever after the first rollback.
 	MetricUpstreamBlockHeadLargeRollback = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_block_head_large_rollback",
-		Help:      "Number of times block head rolled back by a large number vs previous latest block returned by the same upstream.",
-	}, []string{"project", "vendor", "network", "upstream"})
+		Help:      "Size in blocks of the most recent large rollback of an upstream's shared block-head counter, per head axis (latest/finalized).",
+	}, []string{"project", "vendor", "network", "upstream", "finality"})
 
 	MetricUpstreamWrongEmptyResponseTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
