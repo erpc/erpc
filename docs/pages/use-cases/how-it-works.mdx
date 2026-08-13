@@ -80,7 +80,10 @@ before any auth or rate-limit checks.
 **2. RequestProcessor** (`erpc/request_processor.go:35–67`)
 
 `ProcessUnary` is the entry point for both HTTP and gRPC. It resolves the project, wraps raw
-JSON bytes in `NormalizedRequest`, calls `Validate()` (missing `method` → immediate error),
+JSON bytes in `NormalizedRequest`, calls `Validate()` (JSON-RPC envelope check: `method`
+present, a string, and shaped like a method name — at most 128 bytes of `[a-zA-Z0-9_.-]`;
+`params` absent, `null`, or an array — anything else is an immediate 400 before auth, rate
+limiting or any metric),
 authenticates the consumer via `project.AuthenticateConsumer`, resolves
 `networkID = "{architecture}:{chainId}"`, applies directive defaults from
 `network.Config().DirectiveDefaults`, then delegates to `project.Forward`.

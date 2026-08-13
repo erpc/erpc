@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/rs/zerolog"
 )
 
@@ -237,14 +238,14 @@ type NormalizedRequest struct {
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
-	lastValidResponse      atomic.Pointer[NormalizedResponse]
-	integrityCaught        atomic.Bool  // an integrity check rejected a response during this request
+	lastValidResponse         atomic.Pointer[NormalizedResponse]
+	integrityCaught           atomic.Bool  // an integrity check rejected a response during this request
 	integrityRejectedCheck    atomic.Value // id of the last check that rejected (the "why")
 	integrityRejectedFinality atomic.Value // finality of the last rejected block (for saved/failed metric)
 	integrityOverheadNs       atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
-	lastUpstream           atomic.Value
-	evmBlockRef            atomic.Value
-	evmBlockNumber         atomic.Value
+	lastUpstream              atomic.Value
+	evmBlockRef               atomic.Value
+	evmBlockNumber            atomic.Value
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -883,13 +884,44 @@ func (r *NormalizedRequest) Method() (string, error) {
 	}
 
 	if len(r.body) > 0 {
-		method, err := sonic.Get(r.body, "method")
+		method, err := sonic.GetWithOptions(r.body, noCopySearch, "method")
 		if err != nil {
 			return "", NewErrJsonRpcRequestUnmarshal(err, r.body)
 		}
+		// JSON-RPC 2.0 §4: `method` MUST be a String. ast.Node.String()
+		// happily coerces numbers and booleans ({"method":123} would yield
+		// "123"), which would let a non-string method through this lazy path
+		// and only fail later — after it had already been used as a metric
+		// label and a matcher subject. `null` stays an empty method so the
+		// caller reports it as missing rather than as a type error.
+		switch method.Type() {
+		case ast.V_STRING:
+		case ast.V_NULL:
+			return "", nil
+		default:
+			return "", NewErrInvalidRequest(fmt.Errorf("method must be a string"))
+		}
+		// Size the decode before performing it: Raw() is a zero-copy view of
+		// the token. Without this a megabyte-long method name would be
+		// materialised out of the body just to be rejected two frames later
+		// by Validate.
+		raw, err := method.Raw()
+		if err != nil {
+			return "", NewErrJsonRpcRequestUnmarshal(err, r.body)
+		}
+		if len(raw) > maxMethodRawLength {
+			// raw is the JSON token, quotes included; strip them so the error
+			// echoes the name the client sent, not its encoding.
+			return "", errInvalidMethodName(strings.Trim(raw, `"`))
+		}
 		m, err := method.String()
-		r.method = m
-		return m, err
+		// MUST own the bytes. noCopySearch nodes alias r.body, and for an
+		// unescaped token String() hands back a substring of it — but r.body
+		// is a POOLED buffer (util.ReadAll + the handler's deferred cleanup),
+		// so an aliased r.method silently mutates once the buffer is recycled.
+		// It is used as a sync.Map key and a metric label long after that.
+		r.method = strings.Clone(m)
+		return r.method, err
 	}
 
 	return "", NewErrJsonRpcRequestUnresolvableMethod(r.body)
@@ -1024,6 +1056,15 @@ func (r *NormalizedRequest) CacheHash(ctx ...context.Context) (string, error) {
 	return "", fmt.Errorf("request is not valid to generate cache hash")
 }
 
+// Validate applies the JSON-RPC 2.0 framing invariants at the edge, before the
+// request reaches auth, rate limiting, network bootstrap or any metric. Both
+// inbound entrypoints (HTTP handler and the shared gRPC/query RequestProcessor)
+// call it as their first step.
+//
+// It deliberately works off the lazy key-lookup path rather than a full
+// unmarshal: the checks cost two native key lookups and a byte scan of the
+// method, and the raw body must stay intact for the body-`networkId` fallback
+// in the HTTP handler (JsonRpcRequest drops it on a successful parse).
 func (r *NormalizedRequest) Validate() error {
 	if r == nil {
 		return NewErrInvalidRequest(fmt.Errorf("request is nil"))
@@ -1035,6 +1076,11 @@ func (r *NormalizedRequest) Validate() error {
 
 	method, err := r.Method()
 	if err != nil {
+		if HasErrorCode(err, ErrCodeInvalidRequest) {
+			// Already classified (e.g. non-string method) — re-wrapping would
+			// only nest an identical envelope in the client-visible cause.
+			return err
+		}
 		return NewErrInvalidRequest(err)
 	}
 
@@ -1042,7 +1088,46 @@ func (r *NormalizedRequest) Validate() error {
 		return NewErrInvalidRequest(fmt.Errorf("method is required"))
 	}
 
+	if !IsValidMethodName(method) {
+		return errInvalidMethodName(method)
+	}
+
+	if err := r.validateParams(); err != nil {
+		return NewErrInvalidRequest(err)
+	}
+
 	return nil
+}
+
+// validateParams enforces that `params`, when present, is a JSON array.
+//
+// JSON-RPC 2.0 §4.2 allows Array or Object; eRPC's JsonRpcRequest.Params is
+// `[]interface{}`, so an object has always been rejected — but only once the
+// full unmarshal ran deep inside Network.Forward, after the request had
+// acquired a rate-limit permit, bootstrapped a network and incremented
+// erpc_network_request_received_total. This moves the same rejection to the
+// edge; the HTTP status (400) is unchanged.
+func (r *NormalizedRequest) validateParams() error {
+	if r.jsonRpcRequest.Load() != nil {
+		// Already unmarshalled into []interface{}; the shape is guaranteed.
+		return nil
+	}
+	if len(r.body) == 0 {
+		return nil
+	}
+	params, err := sonic.GetWithOptions(r.body, noCopySearch, "params")
+	if err != nil {
+		// Absent (ErrNotExist) or unreachable — `params` is optional, and a
+		// body malformed enough to break the lookup already failed on
+		// `method` above.
+		return nil
+	}
+	switch params.Type() {
+	case ast.V_ARRAY, ast.V_NULL, ast.V_NONE:
+		return nil
+	default:
+		return fmt.Errorf("params must be a json array")
+	}
 }
 
 // IsCompositeRequest returns whether this request is a top-level composite request
