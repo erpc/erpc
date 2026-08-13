@@ -242,16 +242,17 @@ func TestBuildErrorResponseBody_PrunedBodyKeepsDominantCauseWhileStatusKeepsBund
 }
 
 // A network no provider serves must not reach the client as a plain JSON-RPC
-// application error on HTTP 200: 503 is what makes client-side backoff and
-// multi-provider failover engage, and the body has to name the actual
-// condition rather than promising that a retry will help.
-func TestDetermineResponseStatusCode_NoUpstreamsAvailableIs503(t *testing.T) {
+// application error on HTTP 200. It is a coverage gap rather than a server
+// fault, and it is terminal — 404 names it honestly, stops a retry loop that
+// cannot succeed, and still engages client-side failover in multi-provider
+// setups. The body must name the condition, not promise that a retry helps.
+func TestDetermineResponseStatusCode_NoUpstreamsAvailableIs404(t *testing.T) {
 	err := common.NewErrNetworkNoUpstreamsAvailable("prjA", "evm:534351")
 
-	require.Equal(t, http.StatusServiceUnavailable, determineResponseStatusCode(err))
+	require.Equal(t, http.StatusNotFound, determineResponseStatusCode(err))
 
 	body := buildErrorResponseBody(nil, err, err, nil)
-	require.Equal(t, http.StatusServiceUnavailable, determineResponseStatusCode(body))
+	require.Equal(t, http.StatusNotFound, determineResponseStatusCode(body))
 
 	encoded, jerr := common.SonicCfg.Marshal(body)
 	require.NoError(t, jerr)

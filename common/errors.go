@@ -1382,6 +1382,14 @@ func (e *ErrNetworkInitializing) ErrorStatusCode() int { return http.StatusServi
 // or provider serves — removed from config, deprecated, never supported — sits
 // in that state permanently, so callers keep retrying and operators read the
 // message as a temporary blip. This one names the actual condition.
+//
+// It maps to 404, not 503. The state is terminal rather than transient: once a
+// network has sat past NoUpstreamsAvailableAfter with zero upstreams registered,
+// no amount of caller retrying changes the outcome — the project does not serve
+// that network. A 5xx invites a retry that cannot succeed and reports what is
+// really a coverage gap as a server fault. Operators should alert on the
+// erpc_network_no_upstreams_available_total counter, which is emitted regardless
+// of the wire status.
 type ErrNetworkNoUpstreamsAvailable struct{ BaseError }
 
 const ErrCodeNetworkNoUpstreamsAvailable ErrorCode = "ErrNetworkNoUpstreamsAvailable"
@@ -1403,7 +1411,7 @@ var NewErrNetworkNoUpstreamsAvailable = func(project string, network string) err
 }
 
 func (e *ErrNetworkNoUpstreamsAvailable) ErrorStatusCode() int {
-	return http.StatusServiceUnavailable
+	return http.StatusNotFound
 }
 
 // ErrNetworkNotSupported indicates that providers do not support the requested network
