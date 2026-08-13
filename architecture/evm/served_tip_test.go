@@ -379,6 +379,50 @@ func TestTipTrajectory_GroupElection(t *testing.T) {
 		assert.Equal(t, head+50_000, d.Pick)
 	})
 
+	t.Run("PersistentSplitOnAHealthyFleetIsDeclinedNotOverridden", func(t *testing.T) {
+		// The production shape this gate exists for. A ~1.6 blocks/s chain with
+		// four upstreams, every one of them advancing, split wider than one
+		// cluster width: the top pair is the only electable group (the other two
+		// are singletons, which tipMinGroupSize rejects), so it wins the election
+		// unopposed and sits well inside the 1024-block tolerance.
+		//
+		// Nothing has stalled — the majority tracks the chain — so the referee
+		// must decline. Before the majority-stall gate it let the pair earn a 30s
+		// dwell and then raised the tip by the width of the split, indefinitely.
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 30_000_000, 8, 130)
+
+		for i := 0; i < 240; i++ { // 20 minutes — far past tipDwellDuration
+			now = now.Add(tipSampleInterval)
+			head += 8
+			pick := PickServedTip(tipsFromInts(head, head, head-24, head-64))
+			d := tr.Observe(now, pick.Sorted, pick.Tip, params)
+			require.False(t, d.Overrode,
+				"sample %d: a fleet whose majority is on the trajectory must never be overridden (pick %d, majority %d, expected %d)",
+				i, d.Pick, pick.Tip, d.Expected)
+			require.Equal(t, pick.Tip, d.Pick, "sample %d: the majority pick must survive intact", i)
+		}
+	})
+
+	t.Run("SlowChainStallIsStillCorrected", func(t *testing.T) {
+		// The same slow chain, but the majority genuinely stops. The gate is
+		// chain-relative, so a stall crosses it after tipMajorityStallSeconds
+		// however few blocks that is — 48 here, against the 2400 a 20 blocks/s
+		// chain would produce in the same time.
+		var tr TipTrajectory
+		now, head := warmTrajectory(&tr, time.Now(), 30_000_000, 8, 130)
+
+		frozen := head
+		var d TipTrajectoryDecision
+		for i := 0; i < 24; i++ { // 2 minutes of a frozen majority
+			now = now.Add(tipSampleInterval)
+			head += 8
+			d = tr.Observe(now, ballot(head, head, frozen, frozen, frozen), frozen, params)
+		}
+		assert.True(t, d.Overrode, "a genuine stall must still be corrected on a slow chain")
+		assert.Equal(t, head, d.Pick, "the pick is the fresh group's minimum")
+	})
+
 	t.Run("HealthyFleetIsOneGroupAndNeverIntervenes", func(t *testing.T) {
 		var tr TipTrajectory
 		now, head := warmTrajectory(&tr, time.Now(), 1_000_000, 100, 130)
