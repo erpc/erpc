@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -227,4 +228,38 @@ func IsEvmStateQueryMethod(methodLower string) bool {
 		return true
 	}
 	return false
+}
+
+// ResolveBlockAvailabilityBounds computes [minBound, maxBound] from cfg using the
+// supplied latest block. Returns (math.MinInt64, math.MaxInt64) when a side is
+// unbounded or unresolvable. EarliestBlockPlus is not supported here — it requires
+// a per-upstream state poller; callers needing it should use Upstream.EvmBlockAvailabilityBounds.
+func ResolveBlockAvailabilityBounds(cfg *EvmBlockAvailabilityConfig, latest int64) (int64, int64) {
+	if cfg == nil {
+		return math.MinInt64, math.MaxInt64
+	}
+	bound := func(b *EvmAvailabilityBoundConfig, isLower bool) int64 {
+		unbounded := int64(math.MaxInt64)
+		if isLower {
+			unbounded = math.MinInt64
+		}
+		if b == nil {
+			return unbounded
+		}
+		if b.ExactBlock != nil {
+			return *b.ExactBlock
+		}
+		if b.LatestBlockMinus != nil {
+			if latest <= 0 {
+				return unbounded
+			}
+			return latest - *b.LatestBlockMinus
+		}
+		return unbounded // EarliestBlockPlus/probe/updateRate → unbounded at network level
+	}
+	min, max := bound(cfg.Lower, true), bound(cfg.Upper, false)
+	if min != math.MinInt64 && max != math.MaxInt64 && min > max {
+		return math.MinInt64, math.MaxInt64 // invalid range → fail-open
+	}
+	return min, max
 }

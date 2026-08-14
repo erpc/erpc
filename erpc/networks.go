@@ -878,14 +878,25 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	return resp, true
 }
 
+// resolveRequestBlockNumber returns the concrete block number for the request,
+// or 0 if it cannot be determined (fail-open). Prefers the cached value from
+// normalization, falls back to extraction.
+func resolveRequestBlockNumber(ctx context.Context, req *common.NormalizedRequest) int64 {
+	if v := req.EvmBlockNumber(); v != nil {
+		if n64, ok := v.(int64); ok && n64 > 0 {
+			return n64
+		}
+	}
+	if _, x, err := evm.ExtractBlockReferenceFromRequest(ctx, req); err == nil && x > 0 {
+		return x
+	}
+	return 0
+}
+
 // tryShortCircuitNetworkBlockUnavailable returns a JSON-RPC -32001 error response
-// (ok=true) when the network has a blockAvailability lower/upper bound configured and
-// the request's block number falls outside it. Returns (nil, false) on any condition
-// that requires fail-open: unresolvable block number, no-block-param static methods,
-// unresolvable tags (finalized/safe/pending), no bound configured, or non-EVM networks.
-//
-// Range methods (eth_getLogs, trace_filter, arbtrace_filter) are handled explicitly:
-// the lower bound is checked against fromBlock, the upper bound against toBlock (max).
+// (ok=true) when the network has a blockAvailability bound configured and the
+// request's concrete block number falls outside it. Fails open on unresolvable
+// block numbers (by-hash, tags, range methods, static methods).
 func (n *Network) tryShortCircuitNetworkBlockUnavailable(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.cfg.Evm == nil {
 		return nil, false
@@ -895,74 +906,22 @@ func (n *Network) tryShortCircuitNetworkBlockUnavailable(ctx context.Context, re
 		return nil, false
 	}
 
-	blockRef, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
-	if err != nil {
-		return nil, false
-	}
-
 	latest := n.EvmHighestLatestBlockNumber(ctx)
-
-	// Resolve named tags to concrete block numbers.
-	// "*" with bn==0 → truly static method (eth_chainId etc.) → fail-open.
-	// "*" with bn>0  → range method (fromBlock≠toBlock); bn=max(from,to); fromBlock extracted below.
-	// "latest"       → resolve to current head; fail-open if head unknown.
-	// "earliest"     → block 0 (genesis); valid concrete reference.
-	// "finalized"/"safe"/"pending" → can't resolve without upstream query → fail-open.
-	switch blockRef {
-	case "*":
-		if bn <= 0 {
-			return nil, false // static no-block-param method
-		}
-		// Range method: bn = max(fromBlock, toBlock). Fall through to bound checks;
-		// fromBlock extraction for the lower bound happens below.
-	case "latest":
-		if latest <= 0 {
-			return nil, false
-		}
-		bn = latest
-	case "earliest":
-		bn = 0
-	case "finalized", "safe", "pending":
-		return nil, false
-	default:
-		if bn < 0 {
-			return nil, false
-		}
+	minBound, maxBound := common.ResolveBlockAvailabilityBounds(ba, latest)
+	if minBound == math.MinInt64 && maxBound == math.MaxInt64 {
+		return nil, false // nothing to enforce
 	}
 
-	resolveBound := func(bound *common.EvmAvailabilityBoundConfig) (int64, bool) {
-		switch {
-		case bound.ExactBlock != nil:
-			return *bound.ExactBlock, true
-		case bound.LatestBlockMinus != nil:
-			if latest <= 0 {
-				return 0, false // fail-open: head unknown
-			}
-			return latest - *bound.LatestBlockMinus, true
-		default:
-			return 0, false // EarliestBlockPlus not meaningful at network level; fail-open
-		}
+	bn := resolveRequestBlockNumber(ctx, req)
+	if bn <= 0 {
+		return nil, false // fail-open: unresolvable
 	}
 
 	var msg string
-	if ba.Lower != nil {
-		if minBound, ok := resolveBound(ba.Lower); ok {
-			// For range methods use fromBlock (lower end); for all others use bn directly.
-			checkBn := bn
-			if blockRef == "*" && methodHasDedicatedRangeAvailabilityHook(method) {
-				if fb, ok := networkRangeFromBlock(req); ok {
-					checkBn = fb
-				}
-			}
-			if checkBn < minBound {
-				msg = fmt.Sprintf("historical block not available: block %d is below this network's availability window (latestBlock: %d)", checkBn, latest)
-			}
-		}
-	}
-	if msg == "" && ba.Upper != nil {
-		if maxBound, ok := resolveBound(ba.Upper); ok && bn > maxBound {
-			msg = fmt.Sprintf("block %d is above this network's availability window (latestBlock: %d)", bn, latest)
-		}
+	if minBound != math.MinInt64 && bn < minBound {
+		msg = fmt.Sprintf("historical block not available: block %d is below this network's availability window (latestBlock: %d)", bn, latest)
+	} else if maxBound != math.MaxInt64 && bn > maxBound {
+		msg = fmt.Sprintf("block %d is above this network's availability window (latestBlock: %d)", bn, latest)
 	}
 	if msg == "" {
 		return nil, false
@@ -972,39 +931,7 @@ func (n *Network) tryShortCircuitNetworkBlockUnavailable(ctx context.Context, re
 	if err != nil {
 		return nil, false
 	}
-	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
-	resp.SetEvmBlockNumber(bn)
-	return resp, true
-}
-
-// networkRangeFromBlock extracts the fromBlock value from a range-method request
-// (eth_getLogs / trace_filter / arbtrace_filter). Returns (0, false) on any parse
-// failure so callers fail-open. Only hex block numbers and "earliest" are resolved;
-// "latest" and other tags are left to the caller as fail-open.
-func networkRangeFromBlock(req *common.NormalizedRequest) (int64, bool) {
-	jrr, err := req.JsonRpcRequest()
-	if err != nil || jrr == nil {
-		return 0, false
-	}
-	val, err := jrr.PeekByPath(0, "fromBlock")
-	if err != nil {
-		return 0, false
-	}
-	s, ok := val.(string)
-	if !ok {
-		return 0, false
-	}
-	if s == "earliest" {
-		return 0, true
-	}
-	if strings.HasPrefix(s, "0x") {
-		n, err := common.HexToInt64(s)
-		if err != nil {
-			return 0, false
-		}
-		return n, true
-	}
-	return 0, false // "latest", "finalized", tags → fail-open
+	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), true
 }
 
 // servedTip computes the majority served tip for one axis over the
