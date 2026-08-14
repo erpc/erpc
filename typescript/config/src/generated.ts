@@ -1504,6 +1504,13 @@ export interface EvmNetworkConfig {
    */
   traceFilterSplitConcurrency?: number /* int */;
   /**
+   * BlockAvailability sets a network-level lower/upper block availability bound.
+   * Requests outside the configured range are short-circuited before upstream selection
+   * and returned a JSON-RPC -32001 error. Evaluated after the cache layer.
+   * Only LatestBlockMinus and ExactBlock are meaningful here; EarliestBlockPlus is upstream-specific.
+   */
+  blockAvailability?: EvmBlockAvailabilityConfig;
+  /**
    * EnforceBlockAvailability controls whether the network should enforce per-upstream
    * block availability bounds (upper/lower) for methods by default. Method-level config may override.
    * When nil or true, enforcement is enabled.

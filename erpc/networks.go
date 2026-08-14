@@ -879,46 +879,61 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 }
 
 // tryShortCircuitNetworkBlockUnavailable returns a JSON-RPC -32001 error response
-// (ok=true) when the network has a blockAvailability.lower bound configured and the
-// request's block number falls below it. Returns (nil, false) on any condition that
-// requires fail-open: unresolvable block number, no bound configured, range methods
-// (which have their own hooks), or non-EVM networks.
+// (ok=true) when the network has a blockAvailability lower/upper bound configured and
+// the request's block number falls outside it. Returns (nil, false) on any condition
+// that requires fail-open: unresolvable block number, wildcard/static methods (e.g.
+// eth_chainId returns blockRef="*"), no bound configured, or non-EVM networks.
+// Range methods (eth_getLogs, trace_filter, arbtrace_filter) are NOT excluded here —
+// the network-level gate fires before upstream selection for all methods.
 func (n *Network) tryShortCircuitNetworkBlockUnavailable(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
-	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm ||
-		n.cfg.Evm == nil || n.cfg.Evm.BlockAvailability == nil ||
-		n.cfg.Evm.BlockAvailability.Lower == nil {
+	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.cfg.Evm == nil {
 		return nil, false
 	}
-	if methodHasDedicatedRangeAvailabilityHook(method) {
-		return nil, false
-	}
-
-	_, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
-	if err != nil || bn <= 0 {
+	ba := n.cfg.Evm.BlockAvailability
+	if ba == nil || (ba.Lower == nil && ba.Upper == nil) {
 		return nil, false
 	}
 
-	lower := n.cfg.Evm.BlockAvailability.Lower
-	var minBound int64
-	switch {
-	case lower.ExactBlock != nil:
-		minBound = *lower.ExactBlock
-	case lower.LatestBlockMinus != nil:
-		latest := n.EvmHighestLatestBlockNumber(ctx)
-		if latest <= 0 {
-			return nil, false // fail-open: head unknown
-		}
-		minBound = latest - *lower.LatestBlockMinus
-	default:
-		return nil, false // EarliestBlockPlus not meaningful at network level; fail-open
-	}
-
-	if bn >= minBound {
+	blockRef, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
+	// Fail-open: extraction error, wildcard sentinel (static/finalized methods like
+	// eth_chainId return blockRef="*" with bn=1), or unresolvable block number.
+	// Note: bn=0 is ambiguous — genesis (0x0) and "no block param" both produce it;
+	// we fail-open to avoid incorrectly gating parameterless methods.
+	if err != nil || blockRef == "*" || bn <= 0 {
 		return nil, false
 	}
 
 	latest := n.EvmHighestLatestBlockNumber(ctx)
-	msg := fmt.Sprintf("historical block not available: block %d is below this network's availability window (latestBlock: %d)", bn, latest)
+
+	resolveBound := func(bound *common.EvmAvailabilityBoundConfig) (int64, bool) {
+		switch {
+		case bound.ExactBlock != nil:
+			return *bound.ExactBlock, true
+		case bound.LatestBlockMinus != nil:
+			if latest <= 0 {
+				return 0, false // fail-open: head unknown
+			}
+			return latest - *bound.LatestBlockMinus, true
+		default:
+			return 0, false // EarliestBlockPlus not meaningful at network level; fail-open
+		}
+	}
+
+	var msg string
+	if ba.Lower != nil {
+		if minBound, ok := resolveBound(ba.Lower); ok && bn < minBound {
+			msg = fmt.Sprintf("historical block not available: block %d is below this network's availability window (latestBlock: %d)", bn, latest)
+		}
+	}
+	if msg == "" && ba.Upper != nil {
+		if maxBound, ok := resolveBound(ba.Upper); ok && bn > maxBound {
+			msg = fmt.Sprintf("block %d is above this network's availability window (latestBlock: %d)", bn, latest)
+		}
+	}
+	if msg == "" {
+		return nil, false
+	}
+
 	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, common.NewErrJsonRpcExceptionExternal(-32001, msg, ""))
 	if err != nil {
 		return nil, false

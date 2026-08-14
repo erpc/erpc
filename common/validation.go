@@ -1540,6 +1540,11 @@ func (e *EvmNetworkConfig) Validate() error {
 			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
 		}
 	}
+	if e.BlockAvailability != nil {
+		if err := e.BlockAvailability.Validate(); err != nil {
+			return fmt.Errorf("network.*.evm.blockAvailability: %w", err)
+		}
+	}
 	return nil
 }
 
