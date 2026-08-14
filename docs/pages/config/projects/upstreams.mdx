@@ -137,6 +137,34 @@ skip into `ErrUpstreamBlockUnavailable`, retryable when the block is within 128 
 of the tip (configurable via `networks[].evm.maxRetryableBlockDistance`).
 (<SourceLink file="erpc/networks.go" lines="1919-1987" />)
 
+Set it once for a whole project under `upstreamDefaults` instead of repeating it on
+every upstream — useful when a pool is uniformly pruned (e.g. nodes started with a
+retention window). An upstream that declares its own `blockAvailability` **or** the
+deprecated `maxAvailableRecentBlocks` keeps its own value; the project default only
+fills upstreams that declare neither, and it takes precedence over the 128-block
+window otherwise derived from `nodeType: full`.
+(<SourceLink file="common/defaults.go" lines="2029-2042" />)
+
+```yaml
+projects:
+  - id: main
+    upstreamDefaults:
+      evm:
+        blockAvailability:
+          lower:
+            latestBlockMinus: 604800 # serve only the most recent ~604800 blocks
+```
+
+When every upstream skips the block, the client receives a JSON-RPC error with code
+`-32014` ("block not available") rather than a generic internal error, so a pruned
+range is distinguishable from eRPC itself failing.
+(<SourceLink file="common/json_rpc.go" lines="1715-1740" />)
+
+Every upstream must agree. If one of them instead timed out or returned a server
+error, that upstream never answered, so the request falls back to a generic
+retryable error rather than claiming the block is definitively absent.
+(<SourceLink file="common/json_rpc.go" lines="1588-1606" />)
+
 **Cordoning.** Cordon state lives on the health tracker as an explicit flag — it is
 NOT a rolling-window metric and survives window rotation and idle eviction. Admin
 RPCs via the [Admin API](/operation/admin): `erpc_cordonUpstream`,

@@ -1541,9 +1541,75 @@ func findUpstreamsExhausted(err error) *ErrUpstreamsExhausted {
 	return nil
 }
 
+// hasLinearErrorCode reports whether err, or any error on its SINGLE-cause chain,
+// carries one of codes. It stops at multi-error wrappers (ErrUpstreamsExhausted,
+// consensus bundles, errors.Join) rather than descending into them, because
+// membership in a bundle only says one upstream hit the condition — not that the
+// condition is the verdict for the request. Mirrors the traversal rule
+// IsRetryableTowardNetwork uses for the same reason.
+func hasLinearErrorCode(err error, codes ...ErrorCode) bool {
+	for cur := err; cur != nil; {
+		se, ok := cur.(StandardError)
+		if !ok {
+			return false
+		}
+		base := se.Base()
+		if base == nil {
+			return false
+		}
+		for _, c := range codes {
+			if base.Code == c {
+				return true
+			}
+		}
+		next := se.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			return false
+		}
+		cur = next
+	}
+	return false
+}
+
+// isBlockUnavailableVerdict reports whether "this block is outside the served
+// window" is the answer for the WHOLE request, rather than something one upstream
+// happened to say.
+//
+// For a multi-upstream bundle that requires every non-skipped cause to agree. A
+// plurality is not enough: -32014 tells a client the data is definitively absent,
+// and a consumer may act on that by permanently skipping the block, so a single
+// dissenting timeout or server error — an upstream that never actually answered —
+// must fall back to a generic failure the client will retry. Skips carry no
+// verdict (the upstream was never asked) and are ignored.
+//
+// Must be evaluated BEFORE the dominance scan in TranslateToJsonRpcException,
+// which collapses the bundle to one representative cause and thereby makes a
+// plurality indistinguishable from unanimity.
+func isBlockUnavailableVerdict(err error) bool {
+	erx := findUpstreamsExhausted(err)
+	if erx == nil {
+		return hasLinearErrorCode(err, ErrCodeUpstreamBlockUnavailable)
+	}
+	agreed := 0
+	for _, cause := range erx.Errors() {
+		if HasErrorCode(cause, ErrCodeUpstreamRequestSkipped) {
+			continue
+		}
+		if !hasLinearErrorCode(cause, ErrCodeUpstreamBlockUnavailable) {
+			return false
+		}
+		agreed++
+	}
+	return agreed > 0
+}
+
 // TranslateToJsonRpcException is mainly responsible to translate internal eRPC errors (not those coming from upstreams) to
 // a proper json-rpc error with correct numeric code.
 func TranslateToJsonRpcException(err error) error {
+	// Decided against the intact bundle: the dominance scan below replaces err
+	// with a single representative cause, after which unanimity is unrecoverable.
+	blockUnavailableIsVerdict := isBlockUnavailableVerdict(err)
+
 	if erx := findUpstreamsExhausted(err); erx != nil {
 		// Scan an UpstreamsExhausted error to detect the most frequent error among upstreams
 		// This selection helps provide somewhat user-friendly error message vs just saying that "all upstreams failed"
@@ -1642,6 +1708,32 @@ func TranslateToJsonRpcException(err error) error {
 			0,
 			JsonRpcErrorUnsupportedException,
 			"method ignored by upstream: "+reason,
+			err,
+			nil,
+		)
+	}
+	// A block outside every upstream's availability window (pruned history, or an
+	// explicit blockAvailability bound) is missing data, not an internal failure.
+	// Without this it falls through to the generic -32603 server-side exception,
+	// which reads as "eRPC broke" and is indistinguishable from a real outage.
+	// -32014 is the code eRPC already uses for this condition elsewhere (see
+	// architecture/evm/block_range.go), so it round-trips correctly back to
+	// ErrEndpointMissingData when one eRPC sits behind another.
+	//
+	// Gated on the pre-collapse verdict rather than a code match on err: only an
+	// unanimous bundle (or a plain block-unavailable error) may claim the data is
+	// definitively absent. See isBlockUnavailableVerdict.
+	if blockUnavailableIsVerdict {
+		var reason string
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		} else {
+			reason = err.Error()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorMissingData,
+			"block not available: "+reason,
 			err,
 			nil,
 		)
