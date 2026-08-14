@@ -1956,7 +1956,7 @@ func TestNetworkBlockAvailability_NetworkLevel_ByHash_FailOpen(t *testing.T) {
 	})
 
 	// eth_getBlockByHash carries a hash, not a block number → fail-open
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByHash","params":["0xabc123",false]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByHash","params":["0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",false]}`))
 	req.SetNetwork(network)
 
 	resp, err := network.Forward(ctx, req)
@@ -1965,5 +1965,36 @@ func TestNetworkBlockAvailability_NetworkLevel_ByHash_FailOpen(t *testing.T) {
 	jrr, jErr := resp.JsonRpcResponse(ctx)
 	require.NoError(t, jErr)
 	require.Nil(t, jrr.Error, "by-hash request should pass through even with network-level bound")
+	resp.Release()
+}
+
+func TestNetworkBlockAvailability_NetworkLevel_StaticMethod_FailOpen(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// No upstream mock: eth_chainId is answered by the network pre-forward hook
+	// from the configured chainId — it never reaches the upstream.
+
+	// Lower bound well above the static-method sentinel (bn=1)
+	network, _ := newNetworkWithBound(ctx, t, &common.EvmBlockAvailabilityConfig{
+		Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1000)},
+	})
+
+	// eth_chainId has no block param; extractor returns ("*", 1) sentinel → must fail-open.
+	// The network pre-forward hook answers it from config without touching any upstream.
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, jErr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jErr)
+	require.Nil(t, jrr.Error, "static method (eth_chainId) must not be gated by network-level bound")
 	resp.Release()
 }
