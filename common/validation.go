@@ -1544,6 +1544,31 @@ func (e *EvmNetworkConfig) Validate() error {
 		if err := e.BlockAvailability.Validate(); err != nil {
 			return fmt.Errorf("network.*.evm.blockAvailability: %w", err)
 		}
+		if err := validateNetworkBlockAvailabilityBound(e.BlockAvailability.Lower, "lower"); err != nil {
+			return fmt.Errorf("network.*.evm.blockAvailability: %w", err)
+		}
+		if err := validateNetworkBlockAvailabilityBound(e.BlockAvailability.Upper, "upper"); err != nil {
+			return fmt.Errorf("network.*.evm.blockAvailability: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateNetworkBlockAvailabilityBound rejects bound shapes that are
+// upstream-only (earliestBlockPlus, probe, updateRate) and silently ignored
+// by the network-level gate.
+func validateNetworkBlockAvailabilityBound(b *EvmAvailabilityBoundConfig, side string) error {
+	if b == nil {
+		return nil
+	}
+	if b.EarliestBlockPlus != nil {
+		return fmt.Errorf("%s.earliestBlockPlus is upstream-only; network-level blockAvailability supports only exactBlock and latestBlockMinus", side)
+	}
+	if b.Probe != "" {
+		return fmt.Errorf("%s.probe is upstream-only; network-level blockAvailability supports only exactBlock and latestBlockMinus", side)
+	}
+	if b.UpdateRate != 0 {
+		return fmt.Errorf("%s.updateRate is upstream-only; network-level blockAvailability supports only exactBlock and latestBlockMinus", side)
 	}
 	return nil
 }

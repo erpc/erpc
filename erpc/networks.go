@@ -881,10 +881,11 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 // tryShortCircuitNetworkBlockUnavailable returns a JSON-RPC -32001 error response
 // (ok=true) when the network has a blockAvailability lower/upper bound configured and
 // the request's block number falls outside it. Returns (nil, false) on any condition
-// that requires fail-open: unresolvable block number, wildcard/static methods (e.g.
-// eth_chainId returns blockRef="*"), no bound configured, or non-EVM networks.
-// Range methods (eth_getLogs, trace_filter, arbtrace_filter) are NOT excluded here —
-// the network-level gate fires before upstream selection for all methods.
+// that requires fail-open: unresolvable block number, no-block-param static methods,
+// unresolvable tags (finalized/safe/pending), no bound configured, or non-EVM networks.
+//
+// Range methods (eth_getLogs, trace_filter, arbtrace_filter) are handled explicitly:
+// the lower bound is checked against fromBlock, the upper bound against toBlock (max).
 func (n *Network) tryShortCircuitNetworkBlockUnavailable(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.cfg.Evm == nil {
 		return nil, false
@@ -895,15 +896,39 @@ func (n *Network) tryShortCircuitNetworkBlockUnavailable(ctx context.Context, re
 	}
 
 	blockRef, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
-	// Fail-open: extraction error, wildcard sentinel (static/finalized methods like
-	// eth_chainId return blockRef="*" with bn=1), or unresolvable block number.
-	// Note: bn=0 is ambiguous — genesis (0x0) and "no block param" both produce it;
-	// we fail-open to avoid incorrectly gating parameterless methods.
-	if err != nil || blockRef == "*" || bn <= 0 {
+	if err != nil {
 		return nil, false
 	}
 
 	latest := n.EvmHighestLatestBlockNumber(ctx)
+
+	// Resolve named tags to concrete block numbers.
+	// "*" with bn==0 → truly static method (eth_chainId etc.) → fail-open.
+	// "*" with bn>0  → range method (fromBlock≠toBlock); bn=max(from,to); fromBlock extracted below.
+	// "latest"       → resolve to current head; fail-open if head unknown.
+	// "earliest"     → block 0 (genesis); valid concrete reference.
+	// "finalized"/"safe"/"pending" → can't resolve without upstream query → fail-open.
+	switch blockRef {
+	case "*":
+		if bn <= 0 {
+			return nil, false // static no-block-param method
+		}
+		// Range method: bn = max(fromBlock, toBlock). Fall through to bound checks;
+		// fromBlock extraction for the lower bound happens below.
+	case "latest":
+		if latest <= 0 {
+			return nil, false
+		}
+		bn = latest
+	case "earliest":
+		bn = 0
+	case "finalized", "safe", "pending":
+		return nil, false
+	default:
+		if bn < 0 {
+			return nil, false
+		}
+	}
 
 	resolveBound := func(bound *common.EvmAvailabilityBoundConfig) (int64, bool) {
 		switch {
@@ -921,8 +946,17 @@ func (n *Network) tryShortCircuitNetworkBlockUnavailable(ctx context.Context, re
 
 	var msg string
 	if ba.Lower != nil {
-		if minBound, ok := resolveBound(ba.Lower); ok && bn < minBound {
-			msg = fmt.Sprintf("historical block not available: block %d is below this network's availability window (latestBlock: %d)", bn, latest)
+		if minBound, ok := resolveBound(ba.Lower); ok {
+			// For range methods use fromBlock (lower end); for all others use bn directly.
+			checkBn := bn
+			if blockRef == "*" && methodHasDedicatedRangeAvailabilityHook(method) {
+				if fb, ok := networkRangeFromBlock(req); ok {
+					checkBn = fb
+				}
+			}
+			if checkBn < minBound {
+				msg = fmt.Sprintf("historical block not available: block %d is below this network's availability window (latestBlock: %d)", checkBn, latest)
+			}
 		}
 	}
 	if msg == "" && ba.Upper != nil {
@@ -941,6 +975,36 @@ func (n *Network) tryShortCircuitNetworkBlockUnavailable(ctx context.Context, re
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	resp.SetEvmBlockNumber(bn)
 	return resp, true
+}
+
+// networkRangeFromBlock extracts the fromBlock value from a range-method request
+// (eth_getLogs / trace_filter / arbtrace_filter). Returns (0, false) on any parse
+// failure so callers fail-open. Only hex block numbers and "earliest" are resolved;
+// "latest" and other tags are left to the caller as fail-open.
+func networkRangeFromBlock(req *common.NormalizedRequest) (int64, bool) {
+	jrr, err := req.JsonRpcRequest()
+	if err != nil || jrr == nil {
+		return 0, false
+	}
+	val, err := jrr.PeekByPath(0, "fromBlock")
+	if err != nil {
+		return 0, false
+	}
+	s, ok := val.(string)
+	if !ok {
+		return 0, false
+	}
+	if s == "earliest" {
+		return 0, true
+	}
+	if strings.HasPrefix(s, "0x") {
+		n, err := common.HexToInt64(s)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false // "latest", "finalized", tags → fail-open
 }
 
 // servedTip computes the majority served tip for one axis over the

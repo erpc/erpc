@@ -1932,6 +1932,92 @@ func TestNetworkBlockAvailability_NetworkLevel_LatestBlockMinus_BelowBound(t *te
 	resp.Release()
 }
 
+// eth_getLogs with fromBlock below lower bound returns JSON-RPC -32001 (range method, lower check uses fromBlock).
+func TestNetworkBlockAvailability_NetworkLevel_Range_FromBlockBelowLower(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := newNetworkWithBound(ctx, t, &common.EvmBlockAvailabilityConfig{
+		Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1000)},
+	})
+
+	// fromBlock=0x1 < 1000, toBlock=0x3e8 (=1000) — fromBlock is below bound, should short-circuit.
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x3e8"}]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "network-level short-circuit should return response, not error")
+	require.NotNil(t, resp)
+	jrr, jErr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jErr)
+	require.NotNil(t, jrr.Error, "expected JSON-RPC error")
+	require.Equal(t, -32001, jrr.Error.Code)
+	require.Contains(t, jrr.Error.Message, "historical block not available")
+	resp.Release()
+}
+
+// eth_getBlockByNumber("earliest") below positive lower bound returns JSON-RPC -32001.
+func TestNetworkBlockAvailability_NetworkLevel_EarliestTag_BelowLower(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := newNetworkWithBound(ctx, t, &common.EvmBlockAvailabilityConfig{
+		Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1000)},
+	})
+
+	// "earliest" resolves to block 0, which is below lower bound 1000.
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["earliest",false]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "network-level short-circuit should return response, not error")
+	require.NotNil(t, resp)
+	jrr, jErr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jErr)
+	require.NotNil(t, jrr.Error, "earliest below lower bound should return JSON-RPC error")
+	require.Equal(t, -32001, jrr.Error.Code)
+	resp.Release()
+}
+
+// eth_getBlockByNumber("latest") above upper bound returns JSON-RPC -32001.
+func TestNetworkBlockAvailability_NetworkLevel_LatestTag_AboveUpper(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// State poller returns latest = 0x11118888 = 286361736.
+	// Upper bound exactBlock = 1000 → "latest" (286361736) > 1000 → short-circuit.
+	network, _ := newNetworkWithBound(ctx, t, &common.EvmBlockAvailabilityConfig{
+		Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(1000)},
+	})
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "network-level short-circuit should return response, not error")
+	require.NotNil(t, resp)
+	jrr, jErr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jErr)
+	require.NotNil(t, jrr.Error, "latest above upper bound should return JSON-RPC error")
+	require.Equal(t, -32001, jrr.Error.Code)
+	resp.Release()
+}
+
 // Unresolvable block number (by-hash lookup) fails open and passes through.
 func TestNetworkBlockAvailability_NetworkLevel_ByHash_FailOpen(t *testing.T) {
 	util.ResetGock()
