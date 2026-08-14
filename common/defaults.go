@@ -1755,11 +1755,20 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	// TODO Should we refactor so this won't happen?
 	if u.Evm == nil && defaults.Evm != nil {
 		u.Evm = &EvmUpstreamConfig{
-			ChainId:                  defaults.Evm.ChainId,
-			NodeType:                 defaults.Evm.NodeType,
-			StatePollerInterval:      defaults.Evm.StatePollerInterval,
-			StatePollerDebounce:      defaults.Evm.StatePollerDebounce,
-			MaxAvailableRecentBlocks: defaults.Evm.MaxAvailableRecentBlocks,
+			ChainId:             defaults.Evm.ChainId,
+			NodeType:            defaults.Evm.NodeType,
+			StatePollerInterval: defaults.Evm.StatePollerInterval,
+			StatePollerDebounce: defaults.Evm.StatePollerDebounce,
+			// Carried here rather than left to SetDefaults: by the time SetDefaults
+			// runs, MaxAvailableRecentBlocks has already been copied onto this
+			// upstream, and the legacy back-compat mapping would otherwise
+			// synthesise a window from it and shadow the configured one.
+			BlockAvailability: defaults.Evm.BlockAvailability.Copy(),
+			// Only when no explicit window came with it. MaxAvailableRecentBlocks is
+			// enforced as an independent second lower bound by
+			// EvmAssertBlockAvailability, so carrying both would narrow the
+			// configured window to whichever is smaller.
+			MaxAvailableRecentBlocks: maxRecentBlocksFor(defaults.Evm),
 		}
 		if err := u.Evm.SetDefaults(defaults.Evm); err != nil {
 			return fmt.Errorf("failed to set defaults for evm upstream: %w", err)
@@ -1771,7 +1780,16 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.StatePollerDebounce == 0 && defaults.Evm.StatePollerDebounce != 0 {
 			u.Evm.StatePollerDebounce = defaults.Evm.StatePollerDebounce
 		}
-		if u.Evm.MaxAvailableRecentBlocks == 0 && defaults.Evm.MaxAvailableRecentBlocks != 0 {
+		// Must precede the MaxAvailableRecentBlocks copy below: once that value is
+		// inherited, this upstream is indistinguishable from one that set it itself,
+		// and SetDefaults' legacy back-compat mapping would synthesise a window from
+		// it that shadows the configured one.
+		if u.Evm.BlockAvailability == nil && u.Evm.MaxAvailableRecentBlocks == 0 &&
+			defaults.Evm.BlockAvailability != nil {
+			u.Evm.BlockAvailability = defaults.Evm.BlockAvailability.Copy()
+		}
+		if u.Evm.MaxAvailableRecentBlocks == 0 && u.Evm.BlockAvailability == nil &&
+			defaults.Evm.MaxAvailableRecentBlocks != 0 {
 			u.Evm.MaxAvailableRecentBlocks = defaults.Evm.MaxAvailableRecentBlocks
 		}
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
@@ -1976,6 +1994,19 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 	return nil
 }
 
+// maxRecentBlocksFor returns the legacy MaxAvailableRecentBlocks to carry from a
+// defaults template, which is none when that template also carries an explicit
+// blockAvailability window. The two express the same lower bound but are enforced
+// separately — EvmAssertBlockAvailability applies MaxAvailableRecentBlocks on top
+// of the resolved bounds — so propagating both would clamp the configured window
+// to whichever is smaller.
+func maxRecentBlocksFor(defaults *EvmUpstreamConfig) int64 {
+	if defaults == nil || defaults.BlockAvailability != nil {
+		return 0
+	}
+	return defaults.MaxAvailableRecentBlocks
+}
+
 func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.StatePollerInterval == 0 {
 		if defaults != nil && defaults.StatePollerInterval != 0 {
@@ -1995,7 +2026,27 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	if e.MaxAvailableRecentBlocks == 0 {
+	// Inherit blockAvailability from upstreamDefaults when this upstream declares no
+	// availability config of its own — neither the modern blockAvailability nor the
+	// deprecated maxAvailableRecentBlocks. This is what makes the bound configurable
+	// once per project (`projects[].upstreamDefaults.evm.blockAvailability`) instead
+	// of repeated on every upstream. Copied, not shared: bounds are recomputed per
+	// upstream at runtime against that upstream's own state poller.
+	//
+	// Runs before the MaxAvailableRecentBlocks defaulting below so the inherited
+	// value wins over the NodeType-derived 128-block window, while an upstream that
+	// sets either field explicitly keeps its own.
+	if e.BlockAvailability == nil && e.MaxAvailableRecentBlocks == 0 &&
+		defaults != nil && defaults.BlockAvailability != nil {
+		e.BlockAvailability = defaults.BlockAvailability.Copy()
+	}
+
+	// Guarded on BlockAvailability being unset: EvmAssertBlockAvailability enforces
+	// MaxAvailableRecentBlocks as a SECOND, independent lower bound on top of the
+	// resolved bounds, so deriving it here next to an explicit window would silently
+	// narrow that window to whichever is smaller — e.g. a configured 604800 reduced
+	// to the 128 implied by `nodeType: full`.
+	if e.MaxAvailableRecentBlocks == 0 && e.BlockAvailability == nil {
 		if defaults != nil && defaults.MaxAvailableRecentBlocks != 0 {
 			e.MaxAvailableRecentBlocks = defaults.MaxAvailableRecentBlocks
 		} else {
