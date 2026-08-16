@@ -1,7 +1,7 @@
 FROM prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69 as prometheus
 FROM grafana/grafana:12.4.7@sha256:0b059afc13dc5bd60ac35b8655976faa1b6f61ef83fc87491a03a7cdb8bf9d18 as grafana
 
-FROM ubuntu:22.10@sha256:e322f4808315c387868a9135beeb11435b5b83130a8599fd7d0014452c34f489
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 
 RUN apt-get update && apt-get install -y curl
 
