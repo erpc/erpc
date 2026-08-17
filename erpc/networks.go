@@ -2752,11 +2752,9 @@ func (n *Network) handleBlockSkip(
 		attribute.Bool("skip_retryable", isRetryable),
 	)
 	finality := req.Finality(ctx)
-	telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
+	telemetry.MetricUpstreamSkippedTotal.WithLabelValues(
 		n.projectId, u.VendorName(), n.Label(), u.Id(), method,
-		common.ErrorFingerprint(skipErr), string(common.SeverityInfo),
-		req.CompositeType(), finality.String(),
-		req.UserId(), req.AgentName()).Inc()
+		finality.String(), req.UserId(), req.AgentName()).Inc()
 	errToStore := skipErr
 	if !isRetryable {
 		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
