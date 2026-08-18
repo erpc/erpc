@@ -1060,6 +1060,119 @@ func TestNetworkPreForwardGetBlock_NoIndexedTip_FailsOpen(t *testing.T) {
 	}
 }
 
+// At finalized commitment the bound is min(finalizedTip, indexedTip), not the
+// indexed frontier alone. The indexed frontier sits ~60 slots above finalized on
+// Solana, and an upstream answers -32004 for anything above its own finalized
+// root whatever it has indexed — so the whole band between the two tips was
+// forwarded only to be rejected by every upstream. Slot 1030 is inside that band
+// (below indexedTip 1060, above finalizedTip 1000): it forwarded before, it must
+// short-circuit now.
+func TestNetworkPreForwardGetBlock_FinalizedCommitment_BoundedByFinalizedTip(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:   1060,
+		finalizedSlot: 1000,
+	}
+	for _, method := range []string{"getBlock", "getConfirmedBlock"} {
+		req := newReq(method, `[1030, {"commitment":"finalized"}]`)
+		handled, resp, err := networkPreForward_getBlock(context.Background(), net, req)
+		if !handled {
+			t.Fatalf("%s: slot 1030 is above finalizedTip 1000 + margin 2 — expected short-circuit", method)
+		}
+		if resp != nil {
+			t.Fatalf("%s: expected nil response on short-circuit", method)
+		}
+		if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			t.Fatalf("%s: expected ErrEndpointMissingData, got %T: %v", method, err, err)
+		}
+		if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
+			t.Fatalf("%s: guard error must carry ErrJsonRpcExceptionInternal for the -32014 wire code, got %T: %v", method, err, err)
+		}
+	}
+}
+
+// The tightened finalized bound still honours the staleness margin, and must not
+// reject anything at or below the finalized tip.
+func TestNetworkPreForwardGetBlock_FinalizedCommitment_WithinBound_PassesThrough(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:   1060,
+		finalizedSlot: 1000,
+	}
+	// 995,1000 below/at the finalized tip; 1001,1002 inside the 2-slot margin.
+	for _, slot := range []int64{995, 1000, 1001, 1002} {
+		req := newReq("getBlock", fmt.Sprintf(`[%d, {"commitment":"finalized"}]`, slot))
+		handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+		if handled || err != nil {
+			t.Fatalf("slot %d within finalizedTip 1000 + margin 2: expected pass-through, got handled=%v err=%v", slot, handled, err)
+		}
+	}
+}
+
+// Non-finalized commitments keep the indexed-frontier bound. Slots between the
+// finalized and indexed tips ARE held at processed/confirmed, so bounding them by
+// the finalized tip would reject a wide band every upstream can answer.
+func TestNetworkPreForwardGetBlock_NonFinalizedCommitment_KeepsIndexedBound(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:   1060,
+		finalizedSlot: 1000,
+	}
+	for _, commitment := range []string{"confirmed", "processed"} {
+		req := newReq("getBlock", fmt.Sprintf(`[1030, {"commitment":%q}]`, commitment))
+		handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+		if handled || err != nil {
+			t.Fatalf("commitment %s: slot 1030 is below indexedTip 1060 and must forward, got handled=%v err=%v", commitment, handled, err)
+		}
+	}
+}
+
+// A zero finalized tip means UNKNOWN, never a literal bound — treating it as one
+// would collapse min(0, indexedTip) to 0 and gate every request.
+func TestNetworkPreForwardGetBlock_FinalizedCommitment_ZeroFinalizedTipIsUnknown(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:   1000,
+		finalizedSlot: 0, // poller cold
+	}
+	// Far below indexedTip: gated only if 0 were treated as the bound.
+	req := newReq("getBlock", `[500, {"commitment":"finalized"}]`)
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+	if handled || err != nil {
+		t.Fatalf("zero finalized tip must fall back to the indexed bound, got handled=%v err=%v", handled, err)
+	}
+	// The indexed bound still applies beyond the margin.
+	req2 := newReq("getBlock", `[1003, {"commitment":"finalized"}]`)
+	handled2, _, err2 := networkPreForward_getBlock(context.Background(), net, req2)
+	if !handled2 || !common.HasErrorCode(err2, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("slot 1003 beyond indexedTip 1000 + margin 2: expected short-circuit, got handled=%v err=%v", handled2, err2)
+	}
+}
+
+// The commitment need not be in the params: when the request omits it, the
+// network default (svm.commitment) applies — that is the deployed configuration
+// on solana-devnet, so this path is the one carrying production traffic.
+func TestNetworkPreForwardGetBlock_FinalizedFromNetworkDefault_BoundedByFinalizedTip(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureSvm,
+			Svm:          &common.SvmNetworkConfig{Commitment: "finalized"},
+		},
+		indexedSlot:   1060,
+		finalizedSlot: 1000,
+	}
+	req := newReq("getBlock", `[1030, {"encoding":"jsonParsed"}]`)
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+	if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("network-default finalized commitment must bound by finalizedTip, got handled=%v err=%v", handled, err)
+	}
+}
+
 // A hostile or bogus indexed tip near math.MaxInt64 must not overflow the
 // tip+margin arithmetic into a negative bound, which would turn the guard into
 // a reject-everything gate.
