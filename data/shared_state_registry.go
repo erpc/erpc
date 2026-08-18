@@ -330,10 +330,17 @@ func (r *sharedStateRegistry) bumpCordonNotify(ctx context.Context, projectId, u
 	counter.TryUpdate(ctx, time.Now().UnixMilli())
 }
 
+func (r *sharedStateRegistry) cordonLockKey(projectId, upstreamId string) string {
+	return fmt.Sprintf("%s/cordon-lock/%s/%s", r.clusterKey, projectId, upstreamId)
+}
+
 func (r *sharedStateRegistry) SetCordonState(ctx context.Context, projectId, upstreamId string, entry CordonStateEntry) error {
+	lock, err := r.connector.Lock(ctx, r.cordonLockKey(projectId, upstreamId), r.lockTtl)
+	if err != nil {
+		return fmt.Errorf("failed to acquire cordon lock: %w", err)
+	}
+	defer lock.Unlock(ctx)
 	pk, rk := r.cordonMapKey(projectId, upstreamId)
-	// ponytail: optimistic read-modify-write; concurrent cordons could race, but
-	// cordon ops are rare operator actions so last-write-wins is acceptable.
 	m, err := r.readCordonMap(ctx, pk, rk)
 	if err != nil {
 		return err
@@ -347,6 +354,11 @@ func (r *sharedStateRegistry) SetCordonState(ctx context.Context, projectId, ups
 }
 
 func (r *sharedStateRegistry) DeleteCordonState(ctx context.Context, projectId, upstreamId, method string) error {
+	lock, err := r.connector.Lock(ctx, r.cordonLockKey(projectId, upstreamId), r.lockTtl)
+	if err != nil {
+		return fmt.Errorf("failed to acquire cordon lock: %w", err)
+	}
+	defer lock.Unlock(ctx)
 	pk, rk := r.cordonMapKey(projectId, upstreamId)
 	m, err := r.readCordonMap(ctx, pk, rk)
 	if err != nil {

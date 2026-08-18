@@ -673,9 +673,13 @@ func (e *ERPC) handleCordonUpstream(_ context.Context, nq *common.NormalizedRequ
 		}
 	}
 	if cordon {
-		u.CordonAdmin(p.Method, reason)
+		if err := u.CordonAdmin(p.Method, reason); err != nil {
+			return nil, err
+		}
 	} else {
-		u.UncordonAdmin(p.Method, reason)
+		if err := u.UncordonAdmin(p.Method, reason); err != nil {
+			return nil, err
+		}
 	}
 	return makeSelectionResponse(nq, map[string]interface{}{
 		"projectId": p.ProjectID,

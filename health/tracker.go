@@ -938,6 +938,35 @@ func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (strin
 	return "", false
 }
 
+// IsExactlyCordonedForMethod returns true only if the exact (upstream, method)
+// cell is cordoned, without wildcard fallback. Used by reconciliation so that
+// per-method entries are always applied regardless of whether "*" is also active.
+func (t *Tracker) IsExactlyCordonedForMethod(upstream common.Upstream, method string) bool {
+	val, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll})
+	if !ok {
+		return false
+	}
+	return val.(*TrackedMetrics).Cordoned.Load()
+}
+
+// CordonAt is like Cordon but uses an explicit cordonedAtMs (unix milliseconds)
+// instead of time.Now(). Used when restoring persisted cordon state to preserve
+// the original start time for duration accounting.
+func (t *Tracker) CordonAt(upstream common.Upstream, method, reason string, cordonedAtMs int64) {
+	lg := upstream.Logger()
+	lg.Debug().Str("method", method).Str("reason", reason).Msg("cordoning upstream to disable routing")
+	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
+	wasCordoned := tm.Cordoned.Swap(true)
+	tm.LastCordonedReason.Store(reason)
+	if !wasCordoned {
+		tm.CordonedAtMs.Store(cordonedAtMs)
+		telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			t.projectId, upstream.NetworkId(), upstream.Id(), "cordon",
+		).Inc()
+	}
+	t.getCordonedGauge(upstream, method, reason).Set(1)
+}
+
 // GetCordonedMethods returns a map of method→reason for all methods currently
 // cordoned for the given upstream. Used by shared-state reconciliation.
 func (t *Tracker) GetCordonedMethods(upstream common.Upstream) map[string]string {

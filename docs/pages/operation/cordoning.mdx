@@ -74,9 +74,12 @@ Uncordoning records the duration (`erpc_upstream_cordon_duration_seconds`) and e
 overwrite the reason but do not reset the start timestamp, so duration accounting is
 continuous even if the reason is updated mid-incident.
 
-Cordon state is in-process only — it survives metric window rotations but is lost on
-process restart. Use it for outages measured in minutes to hours. For permanent exclusion,
-remove the upstream from config or set `ignoreMethods: ["*"]` and redeploy.
+When a `sharedState` connector is configured, admin cordon state is persisted to Redis and
+propagated to all replicas automatically. A new replica reads the full cordon map on startup
+and re-applies it, so cordons survive pod restarts. Without a shared-state connector, state
+is in-process only and is lost on restart. Use it for outages measured in minutes to hours.
+For permanent exclusion, remove the upstream from config or set `ignoreMethods: ["*"]` and
+redeploy.
 
 ### Config schema
 
@@ -209,8 +212,9 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
 - **Remember the 15 s propagation delay.** The tracker is updated immediately, but the
   ordered-list cache is rebuilt on the next eval tick. Build runbooks around this delay
   (e.g. wait 20 s before verifying traffic shifted).
-- **Do not use cordon for permanent exclusions.** Cordon state is in-process only; it is
-  lost on restart. For a vendor you want permanently removed, update the config.
+- **Do not use cordon for permanent exclusions.** Even with shared-state persistence, cordon
+  is designed for temporary outage management. For a vendor you want permanently removed,
+  update the config.
 - **Watch for stale gauge series after reason updates.** `erpc_upstream_cordoned` is
   labeled by `reason`; calling `erpc_cordonUpstream` with a new reason on an already-cordoned
   upstream leaves the old gauge series at `1`. Alert on label value, not just the metric
@@ -232,8 +236,9 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
    upstream leaves the old gauge series at `1`. The old series is not cleared until an
    `erpc_uncordonUpstream` call with the exact matching reason label or a process restart.
    Source: <SourceLink file="health/tracker.go" lines="805-817" />.
-4. **Cordon survives `Rotate()` but not restart.** In-process only; no persistence to any
-   storage backend. For permanent exclusion use config changes.
+4. **Cordon survives `Rotate()` and, with shared-state configured, pod restarts.** Without
+   a shared-state connector, state is in-process only. For permanent exclusion use config
+   changes.
 5. **Custom evalFunc without `.removeCordoned()` ignores all admin cordons.** The cordon
    flag is set on the tracker and `cordonedReason` is populated on the JS upstream object,
    but no routing effect occurs unless `.removeCordoned()` (or equivalent logic) appears
@@ -255,12 +260,26 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
     If the `admin:` section is entirely missing, it returns `"admin is not enabled for this
     project"`. Both are 401 responses.
     Source: <SourceLink file="erpc/admin.go" lines="26-30" /> and <SourceLink file="erpc/http_server.go" lines="597-610" />.
+11. **Cross-replica propagation has a sub-second delay.** `erpc_cordonUpstream` writes to
+    Redis and publishes a counter bump via pub/sub. Other replicas receive the notification
+    nearly immediately and call `reconcileCordonState`, but there is a short window (typically
+    &lt;100 ms, bounded by Redis round-trip) during which a replica may still route to an
+    upstream that was just cordoned on another replica. Build runbooks with this in mind: wait
+    at least one eval interval (15 s by default) after issuing an admin cordon before
+    assuming all replicas have stopped routing.
+12. **Concurrent admin cordons on different replicas are safe but last-write-wins per method.**
+    `SetCordonState` and `DeleteCordonState` use a distributed lock, so the full
+    read-modify-write is atomic. However, if two operators cordon different methods on the
+    same upstream simultaneously, each operation is serialized and both persist correctly.
+    If they cordon the **same** method with different reasons concurrently, the lock ensures
+    one write completes before the other, and the surviving reason is whichever acquired the
+    lock last — this is expected last-write-wins behaviour.
 
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category (=method), reason | Set to 1 on cordon, 0 on uncordon; persists until uncordon or process restart |
+| `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category (=method), reason | Set to 1 on cordon, 0 on uncordon; persists until uncordon (survives restarts when shared-state is configured) |
 | `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Edge transitions only: OFF→ON (`action="cordon"`) and ON→OFF (`action="uncordon"`); repeated cordons do not increment |
 | `erpc_upstream_cordon_duration_seconds` | histogram | project, network, upstream | Observed once per uncordon; value = `now − CordonedAtMs`; buckets 1 s … 86400 s |
 | `erpc_selection_position{upstream=…}` | gauge | project, network, method, upstream | Set to `-1` for every excluded (including cordoned) upstream after each eval tick |
