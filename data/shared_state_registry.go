@@ -304,7 +304,7 @@ func (r *sharedStateRegistry) readCordonMap(ctx context.Context, pk, rk string) 
 	}
 	var m map[string]CordonStateEntry
 	if err := common.SonicCfg.Unmarshal(raw, &m); err != nil {
-		return map[string]CordonStateEntry{}, nil
+		return nil, fmt.Errorf("cordon map unmarshal failed: %w", err)
 	}
 	return m, nil
 }

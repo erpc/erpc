@@ -1506,6 +1506,19 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 
 func (u *Upstream) Cordon(method string, reason string) {
 	u.metricsTracker.Cordon(u, method, reason)
+}
+
+func (u *Upstream) Uncordon(method string, reason string) {
+	u.metricsTracker.Uncordon(u, method, reason)
+}
+
+// CordonAdmin cordons the upstream and persists the state to shared state so
+// other replicas pick it up and it survives pod restarts. Only the
+// operator-driven admin path should call this; automatic/ephemeral cordons
+// (consensus sit-out, health checks) use Cordon directly to avoid leaking
+// timer-owned state into persistent storage.
+func (u *Upstream) CordonAdmin(method string, reason string) {
+	u.metricsTracker.Cordon(u, method, reason)
 	if u.sharedStateRegistry != nil {
 		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)
 		defer cancel()
@@ -1516,7 +1529,10 @@ func (u *Upstream) Cordon(method string, reason string) {
 	}
 }
 
-func (u *Upstream) Uncordon(method string, reason string) {
+// UncordonAdmin uncordons the upstream and removes the persisted state from
+// shared state. Counterpart to CordonAdmin — only the operator-driven admin
+// path should call this.
+func (u *Upstream) UncordonAdmin(method string, reason string) {
 	u.metricsTracker.Uncordon(u, method, reason)
 	if u.sharedStateRegistry != nil {
 		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)

@@ -673,9 +673,9 @@ func (e *ERPC) handleCordonUpstream(_ context.Context, nq *common.NormalizedRequ
 		}
 	}
 	if cordon {
-		u.Cordon(p.Method, reason)
+		u.CordonAdmin(p.Method, reason)
 	} else {
-		u.Uncordon(p.Method, reason)
+		u.UncordonAdmin(p.Method, reason)
 	}
 	return makeSelectionResponse(nq, map[string]interface{}{
 		"projectId": p.ProjectID,
