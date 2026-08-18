@@ -540,7 +540,7 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 
 	// Wrap with ErrJsonRpcExceptionInternal(-32014) so TranslateToJsonRpcException
 	// preserves the wire code. Without this, the guard returns -32603 to clients;
-	// sol-client only maps -32004/-32014 to BlockNotAvailableException (wait-retry).
+	// Solana clients only map -32004/-32014 to BlockNotAvailableException (wait-retry).
 	return true, nil, common.NewErrEndpointMissingData(
 		common.NewErrJsonRpcExceptionInternal(
 			svmCodeBlockStatusNotAvail,

@@ -745,7 +745,7 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 //  3. getBlock(10064, finalized) returns -32004: block not yet indexed.
 //  4. getBlock(10032, finalized) — the highest indexed slot — returns a valid block.
 //
-// Without the fix the hook passes 10064 through, getBlock fails, and sol-client
+// Without the fix the hook passes 10064 through, getBlock fails, and the Solana client
 // enters a -32004 retry loop. With the fix the hook clamps to min(finalizedTip,
 // shredInsertSlot) = min(10064, 10032) = 10032 and getBlock succeeds.
 func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
@@ -837,7 +837,7 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 }
 
 // setupTestSvmNetworkFinalized is setupTestSvmNetwork with commitment:finalized,
-// matching the production default that causes sol-client's BlockPollingLeader to
+// matching the production default that causes the Solana client's BlockPollingLeader to
 // call getBlock(getSlot(), commitment:finalized).
 // Returns the network and the upstreams registry so callers can seed slot state.
 func setupTestSvmNetworkFinalized(t *testing.T, ctx context.Context, upstreams []*common.UpstreamConfig) (*Network, *upstream.UpstreamsRegistry) {
