@@ -50,6 +50,9 @@ func NewConsensus(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger) (*C
 	if cfg.PreferHighestValueFor != nil {
 		b = b.WithPreferHighestValueFor(cfg.PreferHighestValueFor)
 	}
+	if cfg.PreferHighestValueForMaxDeviationPct != nil {
+		b = b.WithPreferHighestValueForMaxDeviationPct(cfg.PreferHighestValueForMaxDeviationPct)
+	}
 	if cfg.DisputeLogLevel != "" {
 		level, err := zerolog.ParseLevel(cfg.DisputeLogLevel)
 		if err == nil {

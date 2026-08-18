@@ -262,3 +262,135 @@ func TestCompareValueChains(t *testing.T) {
 		})
 	}
 }
+
+func TestMedianBigInt(t *testing.T) {
+	tests := []struct {
+		name     string
+		values   []*big.Int
+		expected *big.Rat
+	}{
+		{
+			name:     "empty",
+			values:   nil,
+			expected: nil,
+		},
+		{
+			name:     "single_value",
+			values:   []*big.Int{big.NewInt(5)},
+			expected: big.NewRat(5, 1),
+		},
+		{
+			name:     "odd_count_unsorted",
+			values:   []*big.Int{big.NewInt(30), big.NewInt(10), big.NewInt(20)},
+			expected: big.NewRat(20, 1),
+		},
+		{
+			name:     "even_count_averages_middle_two",
+			values:   []*big.Int{big.NewInt(10), big.NewInt(20)},
+			expected: big.NewRat(15, 1),
+		},
+		{
+			name:     "even_count_odd_average",
+			values:   []*big.Int{big.NewInt(10), big.NewInt(21)},
+			expected: big.NewRat(31, 2),
+		},
+		{
+			name:     "does_not_mutate_input_order",
+			values:   []*big.Int{big.NewInt(100), big.NewInt(1), big.NewInt(50)},
+			expected: big.NewRat(50, 1),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := medianBigInt(tc.values)
+			if tc.expected == nil {
+				assert.Nil(t, result)
+				return
+			}
+			assert.NotNil(t, result)
+			assert.Equal(t, 0, result.Cmp(tc.expected))
+		})
+	}
+}
+
+func TestWithinMaxDeviation(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    *big.Int
+		median   *big.Rat
+		maxPct   float64
+		expected bool
+	}{
+		{
+			name:     "exact_median",
+			value:    big.NewInt(100),
+			median:   big.NewRat(100, 1),
+			maxPct:   10,
+			expected: true,
+		},
+		{
+			name:     "within_bound",
+			value:    big.NewInt(105),
+			median:   big.NewRat(100, 1),
+			maxPct:   10,
+			expected: true,
+		},
+		{
+			name:     "at_bound_boundary",
+			value:    big.NewInt(110),
+			median:   big.NewRat(100, 1),
+			maxPct:   10,
+			expected: true,
+		},
+		{
+			name:     "just_outside_bound",
+			value:    big.NewInt(111),
+			median:   big.NewRat(100, 1),
+			maxPct:   10,
+			expected: false,
+		},
+		{
+			name:     "outlier_far_above",
+			value:    big.NewInt(500),
+			median:   big.NewRat(6, 1),
+			maxPct:   50,
+			expected: false,
+		},
+		{
+			name:     "below_median_within_bound",
+			value:    big.NewInt(90),
+			median:   big.NewRat(100, 1),
+			maxPct:   10,
+			expected: true,
+		},
+		{
+			name:     "nil_median_is_noop",
+			value:    big.NewInt(999999),
+			median:   nil,
+			maxPct:   1,
+			expected: true,
+		},
+		{
+			name:     "zero_median_is_noop",
+			value:    big.NewInt(999999),
+			median:   big.NewRat(0, 1),
+			maxPct:   1,
+			expected: true,
+		},
+		{
+			name:     "large_values",
+			value:    new(big.Int).SetUint64(18446744073709551615), // max uint64
+			median:   new(big.Rat).SetInt(new(big.Int).SetUint64(18446744073709551000)),
+			maxPct:   1,
+			expected: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := withinMaxDeviation(tc.value, tc.median, tc.maxPct)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}

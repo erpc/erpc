@@ -1801,6 +1801,18 @@ type ConsensusPolicyConfig struct {
 	// or field name for nested result objects (e.g., "nonce" for result.nonce).
 	// When multiple fields are specified, they act as tie-breakers in order.
 	PreferHighestValueFor map[string][]string `yaml:"preferHighestValueFor,omitempty" json:"preferHighestValueFor"`
+	// PreferHighestValueForMaxDeviationPct bounds preferHighestValueFor: for a
+	// given method, a candidate value is only eligible to win if it falls
+	// within this percent of the median across all candidate values that
+	// already met agreementThreshold. Guards against a single upstream's
+	// outlier (stale cache, corrupted state, bug) winning outright just
+	// because it satisfies the threshold on its own. Map key is method name,
+	// matching PreferHighestValueFor's keying — natural spread differs by
+	// method (a nonce should track tightly, a fee estimate may legitimately
+	// vary), so one global percentage would misfit at least one of them.
+	// A method with no entry here (or a zero value) disables the check for
+	// that method — the historical, unfiltered behavior.
+	PreferHighestValueForMaxDeviationPct map[string]float64 `yaml:"preferHighestValueForMaxDeviationPct,omitempty" json:"preferHighestValueForMaxDeviationPct,omitempty"`
 	// FireAndForget when true, allows consensus to return a response to the client immediately
 	// upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
 	// This is useful for write operations like eth_sendRawTransaction where you want to
@@ -1887,6 +1899,13 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 		for method, fields := range c.PreferHighestValueFor {
 			copied.PreferHighestValueFor[method] = make([]string, len(fields))
 			copy(copied.PreferHighestValueFor[method], fields)
+		}
+	}
+
+	if c.PreferHighestValueForMaxDeviationPct != nil {
+		copied.PreferHighestValueForMaxDeviationPct = make(map[string]float64, len(c.PreferHighestValueForMaxDeviationPct))
+		for method, pct := range c.PreferHighestValueForMaxDeviationPct {
+			copied.PreferHighestValueForMaxDeviationPct[method] = pct
 		}
 	}
 
