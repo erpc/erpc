@@ -1019,6 +1019,7 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 		return math.MinInt64, math.MaxInt64
 	}
 	latest := int64(0)
+	upperFromZeroLatest := false // set when upper latestBlockMinus is computed with latest==0
 
 	compute := func(bound *common.EvmAvailabilityBoundConfig, isLower bool) int64 {
 		if bound == nil {
@@ -1069,16 +1070,28 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 					Str("boundType", map[bool]string{true: "lower", false: "upper"}[isLower]).
 					Str("upstreamId", u.config.Id).
 					Msg("computed bound from latest block")
-			} else {
+			} else if isLower {
+				// Lower bound when latestBlock is unknown: fail-open (MinInt64) so that
+				// non-negative block numbers are not falsely rejected as below the lower bound.
 				u.logger.Debug().
-					Str("boundType", map[bool]string{true: "lower", false: "upper"}[isLower]).
 					Str("upstreamId", u.config.Id).
-					Msg("latest block not available; treating bound as unbounded")
-				if isLower {
-					val = math.MinInt64
-				} else {
-					val = math.MaxInt64
-				}
+					Msg("latest block not available; treating lower bound as unbounded")
+				val = math.MinInt64
+			} else {
+				// Upper bound when latestBlock is unknown (state poller not yet run, or
+				// transport failure sustained): compute as if latest=0. For latestBlockMinus:0
+				// this gives maxBound=0, so any block > 0 exceeds the bound and the upstream
+				// is skipped pre-request. This is correct for explicit head-gating: an upstream
+				// that has not confirmed any block should not serve specific block numbers.
+				// ponytail: brief startup exclusion (~first poll cycle) is acceptable trade-off
+				// vs allowing transport-failed upstreams to break isBlockUnavailableVerdict.
+				val = -*bound.LatestBlockMinus
+				upperFromZeroLatest = true
+				u.logger.Debug().
+					Int64("latestBlockMinus", *bound.LatestBlockMinus).
+					Int64("computedBound", val).
+					Str("upstreamId", u.config.Id).
+					Msg("latest block not available; computing upper bound as 0 - latestBlockMinus")
 			}
 		} else {
 			// No-op bound
@@ -1096,7 +1109,10 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 	maxVal := compute(cfg.Evm.BlockAvailability.Upper, false)
 	// If both sides are finite and the computed range is invalid (min > max),
 	// fail-open for safety: treat as unbounded to avoid breaking production traffic.
-	if minVal != math.MinInt64 && maxVal != math.MaxInt64 && minVal > maxVal {
+	// Exception: when the upper was computed from latest==0 (state poller unresolved),
+	// the apparent inversion is intentional — the zero-based cap is restrictive by design,
+	// and the safety net would silently undo the fix for transport-failed upstreams.
+	if !upperFromZeroLatest && minVal != math.MinInt64 && maxVal != math.MaxInt64 && minVal > maxVal {
 		u.logger.Warn().
 			Int64("computedMinBound", minVal).
 			Int64("computedMaxBound", maxVal).
