@@ -1742,3 +1742,123 @@ func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
 		setCallMu.Unlock()
 	})
 }
+
+// TestCounterInt64_ZeroIsNotAHeadObservation covers the case where a shared head
+// counter is asked to move to zero.
+//
+// Zero is the zero VALUE of an unset CounterInt64State, not an observation of a
+// chain. When it reaches a head counter it is read as a rollback the size of the
+// entire chain, which is by definition larger than ignoreRollbackOf, so the
+// "only real reorgs get applied" rule waves it through and the shared head goes
+// to 0 across every instance that receives it.
+//
+// Observed in production on the goldsky ECS edge on 2026-08-18: upstreams on
+// unrelated networks and unrelated vendors recorded
+// erpc_upstream_block_head_large_rollback values equal to their chain's full
+// height (gravity-mainnet 129,890,975 against a head of 129,890,991;
+// zksync-mainnet 71,589,976 against 71,589,993), in region-synchronised bursts
+// that lined up with task restarts rather than with anything happening on-chain.
+func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
+	newHeadCounter := func(current int64) *counterInt64 {
+		c := &counterInt64{
+			ignoreRollbackOf: 1024, // latest/finalized heads: DefaultToleratedBlockHeadRollback
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+		c.value.Store(current)
+		c.updatedAtUnixMs.Store(1)
+		return c
+	}
+
+	t.Run("remote zero does not roll the head back", func(t *testing.T) {
+		counter := newHeadCounter(129_890_991)
+
+		var rollbacks int
+		counter.OnLargeRollback(func(int64, int64) { rollbacks++ })
+
+		// Exactly what a restarting instance pushes when it has not polled yet:
+		// a well-formed state, a fresher timestamp, and an empty value.
+		updated := counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{
+			Value:     0,
+			UpdatedAt: 2,
+			UpdatedBy: "instance-that-just-started",
+		})
+
+		assert.False(t, updated, "a zero head must be rejected, not applied")
+		assert.Equal(t, int64(129_890_991), counter.GetValue(), "head must survive a remote zero")
+		assert.Zero(t, rollbacks, "a zero head is not a reorg and must not fire the rollback callback")
+	})
+
+	t.Run("the rejected zero must not keep winning reconciliation", func(t *testing.T) {
+		counter := newHeadCounter(129_890_991)
+
+		counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{
+			Value:     0,
+			UpdatedAt: 500,
+			UpdatedBy: "instance-that-just-started",
+		})
+
+		// Same handling as a rejected small rollback: our higher local value has
+		// to out-rank the remote zero, or reconciliation pushes the zero straight
+		// back at us on the next tick and the counter flaps forever.
+		assert.Greater(t, counter.updatedAtMs(), int64(500),
+			"local timestamp must advance past the rejected remote state")
+	})
+
+	t.Run("local zero does not roll the head back", func(t *testing.T) {
+		counter := newHeadCounter(71_589_993)
+
+		var rollbacks int
+		counter.OnLargeRollback(func(int64, int64) { rollbacks++ })
+
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 0)
+
+		assert.False(t, updated, "a zero head must be rejected on the local path too")
+		assert.Equal(t, int64(71_589_993), counter.GetValue())
+		assert.Zero(t, rollbacks)
+	})
+
+	t.Run("negative values are rejected too", func(t *testing.T) {
+		counter := newHeadCounter(1_000_000)
+
+		assert.False(t, counter.processNewValue(UpdateSourceTryUpdate, -1))
+		assert.Equal(t, int64(1_000_000), counter.GetValue())
+	})
+
+	t.Run("a real reorg is still applied", func(t *testing.T) {
+		counter := newHeadCounter(1_000_000)
+
+		var rollbacks int
+		counter.OnLargeRollback(func(int64, int64) { rollbacks++ })
+
+		// The guard must not blunt the behaviour it sits next to: a genuine deep
+		// reorg is a positive value and still exceeds ignoreRollbackOf.
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 995_000)
+
+		assert.True(t, updated, "a real reorg must still be applied")
+		assert.Equal(t, int64(995_000), counter.GetValue())
+		assert.Equal(t, 1, rollbacks)
+	})
+
+	t.Run("earliest-block counters may still hold zero", func(t *testing.T) {
+		// evm_state_poller creates the earliest-block counter with
+		// ignoreRollbackOf=0. An archive node's earliest block IS 0, so the floor
+		// must not apply there.
+		counter := &counterInt64{
+			ignoreRollbackOf: 0,
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+		counter.value.Store(5_000_000)
+		counter.updatedAtUnixMs.Store(1)
+
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 0)
+
+		assert.True(t, updated, "earliest-block counters legitimately move to 0")
+		assert.Equal(t, int64(0), counter.GetValue())
+	})
+}
