@@ -3,8 +3,10 @@ package data
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -281,11 +283,8 @@ func (r *sharedStateRegistry) GetFallbackTimeout() time.Duration {
 	return r.fallbackTimeout
 }
 
-// cordonMapKey returns (partitionKey, rangeKey) for the cordon map blob.
-// All cordons for an upstream are stored as a single JSON map at this key,
-// avoiding a full SCAN on LoadCordonStates.
-func (r *sharedStateRegistry) cordonMapKey(projectId, upstreamId string) (string, string) {
-	return fmt.Sprintf("%s/cordon-map/%s/%s", r.clusterKey, projectId, upstreamId), "methods"
+func (r *sharedStateRegistry) cordonMapKey(projectId, upstreamId string) string {
+	return fmt.Sprintf("%s/cordon-map/%s/%s", r.clusterKey, projectId, upstreamId)
 }
 
 func (r *sharedStateRegistry) cordonNotifyKey(projectId, upstreamId string) string {
@@ -340,13 +339,13 @@ func (r *sharedStateRegistry) SetCordonState(ctx context.Context, projectId, ups
 		return fmt.Errorf("failed to acquire cordon lock: %w", err)
 	}
 	defer lock.Unlock(ctx)
-	pk, rk := r.cordonMapKey(projectId, upstreamId)
-	m, err := r.readCordonMap(ctx, pk, rk)
+	pk := r.cordonMapKey(projectId, upstreamId)
+	m, err := r.readCordonMap(ctx, pk, "methods")
 	if err != nil {
 		return err
 	}
 	m[entry.Method] = entry
-	if err := r.writeCordonMap(ctx, pk, rk, m); err != nil {
+	if err := r.writeCordonMap(ctx, pk, "methods", m); err != nil {
 		return err
 	}
 	r.bumpCordonNotify(ctx, projectId, upstreamId)
@@ -359,13 +358,13 @@ func (r *sharedStateRegistry) DeleteCordonState(ctx context.Context, projectId, 
 		return fmt.Errorf("failed to acquire cordon lock: %w", err)
 	}
 	defer lock.Unlock(ctx)
-	pk, rk := r.cordonMapKey(projectId, upstreamId)
-	m, err := r.readCordonMap(ctx, pk, rk)
+	pk := r.cordonMapKey(projectId, upstreamId)
+	m, err := r.readCordonMap(ctx, pk, "methods")
 	if err != nil {
 		return err
 	}
 	delete(m, method)
-	if err := r.writeCordonMap(ctx, pk, rk, m); err != nil {
+	if err := r.writeCordonMap(ctx, pk, "methods", m); err != nil {
 		return err
 	}
 	r.bumpCordonNotify(ctx, projectId, upstreamId)
@@ -373,16 +372,11 @@ func (r *sharedStateRegistry) DeleteCordonState(ctx context.Context, projectId, 
 }
 
 func (r *sharedStateRegistry) LoadCordonStates(ctx context.Context, projectId, upstreamId string) ([]CordonStateEntry, error) {
-	pk, rk := r.cordonMapKey(projectId, upstreamId)
-	m, err := r.readCordonMap(ctx, pk, rk)
+	m, err := r.readCordonMap(ctx, r.cordonMapKey(projectId, upstreamId), "methods")
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]CordonStateEntry, 0, len(m))
-	for _, e := range m {
-		entries = append(entries, e)
-	}
-	return entries, nil
+	return slices.Collect(maps.Values(m)), nil
 }
 
 func (r *sharedStateRegistry) WatchCordonNotifications(projectId, upstreamId string) CounterInt64SharedVariable {

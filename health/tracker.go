@@ -840,30 +840,7 @@ func (t *Tracker) getNtwMetrics(k networkKey) *TrackedMetrics {
 // --------------------
 
 func (t *Tracker) Cordon(upstream common.Upstream, method, reason string) {
-	lg := upstream.Logger()
-	lg.Debug().
-		Str("method", method).
-		Str("reason", reason).
-		Msg("cordoning upstream to disable routing")
-
-	// Cordon state is finality-agnostic — operators cordon "drpc for
-	// eth_call", not "drpc for eth_call when reading finalized data".
-	// Store on the all-finalities key so every finality-specific
-	// lookup sees the same cordon flag.
-	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
-	wasCordoned := tm.Cordoned.Swap(true)
-	tm.LastCordonedReason.Store(reason)
-	if !wasCordoned {
-		// Only record the start timestamp on the OFF→ON transition so
-		// repeated cordons (e.g. operator updating the reason) don't
-		// reset the duration accounting mid-cordon.
-		tm.CordonedAtMs.Store(time.Now().UnixMilli())
-		telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-			t.projectId, upstream.NetworkId(), upstream.Id(), "cordon",
-		).Inc()
-	}
-
-	t.getCordonedGauge(upstream, method, reason).Set(1)
+	t.CordonAt(upstream, method, reason, time.Now().UnixMilli())
 }
 
 func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason string) {
@@ -965,25 +942,6 @@ func (t *Tracker) CordonAt(upstream common.Upstream, method, reason string, cord
 		).Inc()
 	}
 	t.getCordonedGauge(upstream, method, reason).Set(1)
-}
-
-// GetCordonedMethods returns a map of method→reason for all methods currently
-// cordoned for the given upstream. Used by shared-state reconciliation.
-func (t *Tracker) GetCordonedMethods(upstream common.Upstream) map[string]string {
-	result := map[string]string{}
-	t.upsMetrics.Range(func(k, v any) bool {
-		key, ok := k.(upstreamKey)
-		if !ok || key.ups != upstream || key.finality != common.DataFinalityStateAll {
-			return true
-		}
-		tm := v.(*TrackedMetrics)
-		if tm.Cordoned.Load() {
-			reason, _ := tm.LastCordonedReason.Load().(string)
-			result[key.method] = reason
-		}
-		return true
-	})
-	return result
 }
 
 // ------------------------------------
