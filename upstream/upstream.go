@@ -215,6 +215,7 @@ type Upstream struct {
 	evmStatePoller       common.EvmStatePoller
 	svmStatePoller       common.SvmStatePoller
 	statePollerOnce      sync.Once
+	cordonSyncOnce       sync.Once
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 	// Highest block at which the integrity state probe PROVED this upstream
@@ -362,9 +363,13 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 
 	if u.sharedStateRegistry != nil {
 		// Restore any cordon state persisted from a previous run or another replica.
+		// Runs on every Bootstrap retry so state is re-applied even after a partial failure.
 		restoreCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		u.reconcileCordonState(restoreCtx)
 		cancel()
+		// Register the notification watch and periodic ticker exactly once — Bootstrap
+		// can be retried, and spawning a second goroutine would leak on re-execution.
+		u.cordonSyncOnce.Do(func() {
 		// Watch for cross-replica cordon/uncordon events via pub/sub notification.
 		notifyVar := u.sharedStateRegistry.WatchCordonNotifications(u.ProjectId, u.Id())
 		notifyVar.OnValue(func(_ int64) {
@@ -387,6 +392,7 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 				}
 			}
 		}()
+		}) // cordonSyncOnce.Do
 	}
 
 	return nil
