@@ -223,7 +223,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// The raw Solana code is preserved on the wire (JsonRpcErrorNumber(code))
 	// so callers receive -32004/-32008/-32014/… instead of a normalized
 	// -32014 — normalizing everything to JsonRpcErrorMissingData sent
-	// sol-client into an infinite BlockNotAvailableException retry loop for
+	// Solana clients into an infinite BlockNotAvailableException retry loop for
 	// unindexed finalized slots.
 	//
 	// Another upstream can genuinely have this data:
