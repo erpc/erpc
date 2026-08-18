@@ -340,7 +340,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 - **Block-number reads** (`latestBlock`, `finalizedBlock`) used by the upstream selector and tag-aware routing come from the in-process atomic copy — zero latency on the request path.
 - **Block-number refreshes** are debounced via `TryUpdateIfStale`; the foreground caller waits at most `updateMaxWait` (default 50 ms). If the refresh completes within that window the fresh value influences the current request; otherwise the stale value is used and the refresh completes asynchronously for the next request.
 - **Served-tip counters** (`servedLatestBlock`, `servedFinalizedBlock`) are updated after a response is selected and do not add latency. They gate the "never serve older than seen" invariant that prevents block-number regressions across requests in a scaled fleet.
-- A broken or unreachable shared-state connector degrades to per-pod local state — no error is returned to the client; routing quality degrades silently.
+- A broken or unreachable shared-state connector degrades to per-pod local state — no error is returned to the client for block-routing decisions; however, `erpc_cordonUpstream` and `erpc_uncordonUpstream` admin RPCs will return an error if persistence to shared state fails.
 
 ### Best practices
 

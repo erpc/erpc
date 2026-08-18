@@ -74,7 +74,7 @@ Uncordoning records the duration (`erpc_upstream_cordon_duration_seconds`) and e
 overwrite the reason but do not reset the start timestamp, so duration accounting is
 continuous even if the reason is updated mid-incident.
 
-When a `sharedState` connector is configured, admin cordon state is persisted to Redis and
+When a `sharedState` connector is configured, admin cordon state is persisted to the shared-state backend and
 propagated to all replicas automatically. A new replica reads the full cordon map on startup
 and re-applies it, so cordons survive pod restarts. Without a shared-state connector, state
 is in-process only and is lost on restart. Use it for outages measured in minutes to hours.
@@ -261,12 +261,13 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
     project"`. Both are 401 responses.
     Source: <SourceLink file="erpc/admin.go" lines="26-30" /> and <SourceLink file="erpc/http_server.go" lines="597-610" />.
 11. **Cross-replica propagation has a sub-second delay.** `erpc_cordonUpstream` writes to
-    Redis and publishes a counter bump via pub/sub. Other replicas receive the notification
-    nearly immediately and call `reconcileCordonState`, but there is a short window (typically
-    &lt;100 ms, bounded by Redis round-trip) during which a replica may still route to an
-    upstream that was just cordoned on another replica. Build runbooks with this in mind: wait
-    at least one eval interval (15 s by default) after issuing an admin cordon before
-    assuming all replicas have stopped routing.
+    the shared-state backend and publishes a counter bump via pub/sub. Other replicas receive
+    the notification nearly immediately and call `reconcileCordonState`, but there is a short
+    window (typically &lt;100 ms via pub/sub, bounded by the shared-state round-trip) during
+    which a replica may still route to an upstream that was just cordoned on another replica.
+    A 30 s periodic fallback reconcile ensures convergence even when pub/sub delivery fails.
+    Build runbooks with this in mind: wait at least one eval interval (15 s by default) after
+    issuing an admin cordon before assuming all replicas have stopped routing.
 12. **Concurrent admin cordons on different replicas are safe but last-write-wins per method.**
     `SetCordonState` and `DeleteCordonState` use a distributed lock, so the full
     read-modify-write is atomic. However, if two operators cordon different methods on the

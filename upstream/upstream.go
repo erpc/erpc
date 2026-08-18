@@ -200,11 +200,11 @@ type Upstream struct {
 	cfgMu  sync.RWMutex
 	vendor common.Vendor
 
-	networkId            atomic.Value
-	networkLabel         atomic.Value
-	supportedMethods     sync.Map
-	metricsTracker       *health.Tracker
-	sharedStateRegistry  data.SharedStateRegistry
+	networkId           atomic.Value
+	networkLabel        atomic.Value
+	supportedMethods    sync.Map
+	metricsTracker      *health.Tracker
+	sharedStateRegistry data.SharedStateRegistry
 	// adminCordonedMethods tracks methods explicitly cordoned via CordonAdmin on
 	// this replica. Reconciliation uses it to scope uncordon diffs to admin-owned
 	// state, leaving automatic/ephemeral cordons (consensus, health) untouched.
@@ -372,6 +372,21 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 			defer cancel()
 			u.reconcileCordonState(reconcileCtx)
 		})
+		// Periodic fallback: reconcile every 30 s in case pub/sub delivery fails.
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-u.appCtx.Done():
+					return
+				case <-ticker.C:
+					reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
+					u.reconcileCordonState(reconcileCtx)
+					cancel()
+				}
+			}
+		}()
 	}
 
 	return nil
@@ -1526,7 +1541,7 @@ func (u *Upstream) Uncordon(method string, reason string) {
 // applied regardless; callers should surface the error so the operator knows
 // other replicas may not have received the update.
 func (u *Upstream) CordonAdmin(method string, reason string) error {
-	u.metricsTracker.Cordon(u, method, reason)
+	u.metricsTracker.CordonAdmin(u, method, reason)
 	u.adminCordonedMethods.Store(method, struct{}{})
 	if u.sharedStateRegistry != nil {
 		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)
@@ -1548,7 +1563,7 @@ func (u *Upstream) CordonAdmin(method string, reason string) error {
 // applied regardless; callers should surface the error so the operator knows
 // other replicas may still have the upstream cordoned.
 func (u *Upstream) UncordonAdmin(method string, reason string) error {
-	u.metricsTracker.Uncordon(u, method, reason)
+	u.metricsTracker.UncordonAdmin(u, method)
 	u.adminCordonedMethods.Delete(method)
 	if u.sharedStateRegistry != nil {
 		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)
@@ -1584,9 +1599,7 @@ func (u *Upstream) reconcileCordonState(ctx context.Context) {
 	}
 	for method, e := range remote {
 		u.adminCordonedMethods.Store(method, struct{}{})
-		if !u.metricsTracker.IsExactlyCordonedForMethod(u, method) {
-			u.metricsTracker.CordonAt(u, method, e.Reason, e.CordonedAtMs)
-		}
+		u.metricsTracker.ApplyAdminCordon(u, method, e.Reason, e.CordonedAtMs)
 	}
 	// Only uncordon methods that were admin-cordoned on this replica and are now
 	// absent from the remote map (another replica called UncordonAdmin).
@@ -1594,7 +1607,7 @@ func (u *Upstream) reconcileCordonState(ctx context.Context) {
 		method := k.(string)
 		if _, ok := remote[method]; !ok {
 			u.adminCordonedMethods.Delete(method)
-			u.metricsTracker.Uncordon(u, method, "shared-state: remote uncordon")
+			u.metricsTracker.ClearAdminCordon(u, method)
 		}
 		return true
 	})

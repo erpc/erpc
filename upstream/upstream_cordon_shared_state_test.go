@@ -24,8 +24,8 @@ func (m *mockSharedStateRegistry) GetCounterInt64(key string, ignoreRollbackOf i
 	v, _ := args.Get(0).(data.CounterInt64SharedVariable)
 	return v
 }
-func (m *mockSharedStateRegistry) GetLockTtl() time.Duration          { return time.Second }
-func (m *mockSharedStateRegistry) GetFallbackTimeout() time.Duration  { return time.Second }
+func (m *mockSharedStateRegistry) GetLockTtl() time.Duration         { return time.Second }
+func (m *mockSharedStateRegistry) GetFallbackTimeout() time.Duration { return time.Second }
 func (m *mockSharedStateRegistry) SetCordonState(ctx context.Context, projectId, upstreamId string, entry data.CordonStateEntry) error {
 	return m.Called(ctx, projectId, upstreamId, entry).Error(0)
 }
@@ -125,7 +125,7 @@ func TestReconcileCordonState_UncordonsAdminOnly(t *testing.T) {
 
 	u := newTestUpstream(t, ssr)
 	// Simulate eth_call having been admin-cordoned on this replica previously.
-	u.metricsTracker.Cordon(u, "eth_call", "admin: manual cordon")
+	u.metricsTracker.CordonAdmin(u, "eth_call", "admin: manual cordon")
 	u.adminCordonedMethods.Store("eth_call", struct{}{})
 	// Simulate an automatic cordon for eth_getBalance (should NOT be uncordoned by reconcile).
 	u.metricsTracker.Cordon(u, "eth_getBalance", "consensus sit-out")
