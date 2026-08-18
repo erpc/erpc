@@ -102,9 +102,8 @@ type SvmStatePoller struct {
 	lastExternalFinalizedAt atomic.Int64
 	// slotPollSkips counts consecutive traffic-gated skips; guarded by pollMu.
 	slotPollSkips int
-	// pollCount counts completed polls; drives slowSignalPollEveryNTicks so the
-	// health/shred pair runs on the first poll (cold start) and every Nth after.
-	// Guarded by pollMu.
+	// pollCount counts completed polls; drives healthPollEveryNTicks so getHealth
+	// runs on the first poll (cold start) and every Nth after. Guarded by pollMu.
 	pollCount int
 	pollMu    sync.Mutex
 

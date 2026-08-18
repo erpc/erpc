@@ -489,7 +489,7 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 		// Guard against a vacuous pass: pollCount increments on every poll that
 		// ran, so a debounce-dropped iteration is caught here, not mistaken for
 		// a gated one. (getHealth no longer works as this witness — it is
-		// throttled to every slowSignalPollEveryNTicks-th poll.)
+		// throttled to every healthPollEveryNTicks-th poll.)
 		if got := p.pollCount; got != i+1 {
 			t.Fatalf("poll %d did not run: pollCount=%d, want %d", i+1, got, i+1)
 		}
