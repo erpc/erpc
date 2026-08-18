@@ -1281,6 +1281,27 @@ func (c *ConsensusPolicyConfig) Validate() error {
 	return nil
 }
 
+// agreementThresholdFromMinAgreement returns sum(minAgreement) when any
+// requiredParticipants entry sets minAgreement > 0.
+func (c *ConsensusPolicyConfig) agreementThresholdFromMinAgreement() (int, bool) {
+	if c == nil {
+		return 0, false
+	}
+	sum := 0
+	active := false
+	for _, rp := range c.RequiredParticipants {
+		if rp == nil || rp.MinAgreement <= 0 {
+			continue
+		}
+		active = true
+		sum += rp.MinAgreement
+	}
+	if !active {
+		return 0, false
+	}
+	return sum, true
+}
+
 // Validate validates the MisbehaviorsDestinationConfig
 func (c *MisbehaviorsDestinationConfig) Validate() error {
 	t := strings.ToLower(string(c.Type))
