@@ -356,6 +356,20 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		}
 	}
 
+	if u.sharedStateRegistry != nil {
+		// Restore any cordon state persisted from a previous run or another replica.
+		restoreCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		u.reconcileCordonState(restoreCtx)
+		cancel()
+		// Watch for cross-replica cordon/uncordon events via pub/sub notification.
+		notifyVar := u.sharedStateRegistry.WatchCordonNotifications(u.ProjectId, u.Id())
+		notifyVar.OnValue(func(_ int64) {
+			reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
+			defer cancel()
+			u.reconcileCordonState(reconcileCtx)
+		})
+	}
+
 	return nil
 }
 
@@ -1492,10 +1506,50 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 
 func (u *Upstream) Cordon(method string, reason string) {
 	u.metricsTracker.Cordon(u, method, reason)
+	if u.sharedStateRegistry != nil {
+		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)
+		defer cancel()
+		entry := data.CordonStateEntry{Method: method, Reason: reason, CordonedAtMs: time.Now().UnixMilli()}
+		if err := u.sharedStateRegistry.SetCordonState(ctx, u.ProjectId, u.Id(), entry); err != nil {
+			u.logger.Warn().Err(err).Str("method", method).Msg("failed to persist cordon state to shared state")
+		}
+	}
 }
 
 func (u *Upstream) Uncordon(method string, reason string) {
 	u.metricsTracker.Uncordon(u, method, reason)
+	if u.sharedStateRegistry != nil {
+		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)
+		defer cancel()
+		if err := u.sharedStateRegistry.DeleteCordonState(ctx, u.ProjectId, u.Id(), method); err != nil {
+			u.logger.Warn().Err(err).Str("method", method).Msg("failed to delete cordon state from shared state")
+		}
+	}
+}
+
+// reconcileCordonState reads cordon state from shared state and reconciles
+// it with the in-memory tracker: applies new remote cordons and clears any
+// that were removed remotely.
+func (u *Upstream) reconcileCordonState(ctx context.Context) {
+	entries, err := u.sharedStateRegistry.LoadCordonStates(ctx, u.ProjectId, u.Id())
+	if err != nil {
+		u.logger.Warn().Err(err).Msg("failed to load cordon state from shared state for reconciliation")
+		return
+	}
+	remote := make(map[string]string, len(entries))
+	for _, e := range entries {
+		remote[e.Method] = e.Reason
+	}
+	for method, reason := range remote {
+		if !u.metricsTracker.IsCordoned(u, method) {
+			u.metricsTracker.Cordon(u, method, reason)
+		}
+	}
+	for method := range u.metricsTracker.GetCordonedMethods(u) {
+		if _, ok := remote[method]; !ok {
+			u.metricsTracker.Uncordon(u, method, "shared-state: remote uncordon")
+		}
+	}
 }
 
 // CordonedReason returns the cordon reason and whether the (upstream,

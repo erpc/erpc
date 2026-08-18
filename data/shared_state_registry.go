@@ -39,6 +39,14 @@ type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
 	GetLockTtl() time.Duration
 	GetFallbackTimeout() time.Duration
+	// Cordon-state persistence. All methods no-op when registry is nil.
+	SetCordonState(ctx context.Context, projectId, upstreamId string, entry CordonStateEntry) error
+	DeleteCordonState(ctx context.Context, projectId, upstreamId, method string) error
+	LoadCordonStates(ctx context.Context, projectId, upstreamId string) ([]CordonStateEntry, error)
+	// WatchCordonNotifications returns a counter used as a change-notification
+	// channel. Register OnValue callbacks; value is a unix-ms timestamp that
+	// bumps on every cordon/uncordon, broadcasting to all replicas via pubsub.
+	WatchCordonNotifications(projectId, upstreamId string) CounterInt64SharedVariable
 }
 
 type sharedStateRegistry struct {
@@ -271,4 +279,100 @@ func (r *sharedStateRegistry) GetLockTtl() time.Duration {
 
 func (r *sharedStateRegistry) GetFallbackTimeout() time.Duration {
 	return r.fallbackTimeout
+}
+
+// cordonMapKey returns (partitionKey, rangeKey) for the cordon map blob.
+// All cordons for an upstream are stored as a single JSON map at this key,
+// avoiding a full SCAN on LoadCordonStates.
+func (r *sharedStateRegistry) cordonMapKey(projectId, upstreamId string) (string, string) {
+	return fmt.Sprintf("%s/cordon-map/%s/%s", r.clusterKey, projectId, upstreamId), "methods"
+}
+
+func (r *sharedStateRegistry) cordonNotifyKey(projectId, upstreamId string) string {
+	return fmt.Sprintf("cordon-notify/%s/%s", projectId, upstreamId)
+}
+
+// readCordonMap fetches the current map[method]CordonStateEntry from Redis.
+// Returns an empty map (not nil) when the key does not exist.
+func (r *sharedStateRegistry) readCordonMap(ctx context.Context, pk, rk string) (map[string]CordonStateEntry, error) {
+	raw, err := r.connector.Get(ctx, ConnectorMainIndex, pk, rk, nil)
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return map[string]CordonStateEntry{}, nil
+		}
+		return nil, err
+	}
+	var m map[string]CordonStateEntry
+	if err := common.SonicCfg.Unmarshal(raw, &m); err != nil {
+		return map[string]CordonStateEntry{}, nil
+	}
+	return m, nil
+}
+
+func (r *sharedStateRegistry) writeCordonMap(ctx context.Context, pk, rk string, m map[string]CordonStateEntry) error {
+	if len(m) == 0 {
+		// Clean up rather than persist an empty map.
+		err := r.connector.Delete(ctx, pk, rk)
+		if err != nil && !common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return err
+		}
+		return nil
+	}
+	payload, err := common.SonicCfg.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return r.connector.Set(ctx, pk, rk, payload, nil)
+}
+
+func (r *sharedStateRegistry) bumpCordonNotify(ctx context.Context, projectId, upstreamId string) {
+	counter := r.GetCounterInt64(r.cordonNotifyKey(projectId, upstreamId), 0)
+	counter.TryUpdate(ctx, time.Now().UnixMilli())
+}
+
+func (r *sharedStateRegistry) SetCordonState(ctx context.Context, projectId, upstreamId string, entry CordonStateEntry) error {
+	pk, rk := r.cordonMapKey(projectId, upstreamId)
+	// ponytail: optimistic read-modify-write; concurrent cordons could race, but
+	// cordon ops are rare operator actions so last-write-wins is acceptable.
+	m, err := r.readCordonMap(ctx, pk, rk)
+	if err != nil {
+		return err
+	}
+	m[entry.Method] = entry
+	if err := r.writeCordonMap(ctx, pk, rk, m); err != nil {
+		return err
+	}
+	r.bumpCordonNotify(ctx, projectId, upstreamId)
+	return nil
+}
+
+func (r *sharedStateRegistry) DeleteCordonState(ctx context.Context, projectId, upstreamId, method string) error {
+	pk, rk := r.cordonMapKey(projectId, upstreamId)
+	m, err := r.readCordonMap(ctx, pk, rk)
+	if err != nil {
+		return err
+	}
+	delete(m, method)
+	if err := r.writeCordonMap(ctx, pk, rk, m); err != nil {
+		return err
+	}
+	r.bumpCordonNotify(ctx, projectId, upstreamId)
+	return nil
+}
+
+func (r *sharedStateRegistry) LoadCordonStates(ctx context.Context, projectId, upstreamId string) ([]CordonStateEntry, error) {
+	pk, rk := r.cordonMapKey(projectId, upstreamId)
+	m, err := r.readCordonMap(ctx, pk, rk)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]CordonStateEntry, 0, len(m))
+	for _, e := range m {
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+func (r *sharedStateRegistry) WatchCordonNotifications(projectId, upstreamId string) CounterInt64SharedVariable {
+	return r.GetCounterInt64(r.cordonNotifyKey(projectId, upstreamId), 0)
 }

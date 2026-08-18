@@ -37,6 +37,14 @@ type CounterInt64State struct {
 	UpdatedBy string `json:"b,omitempty"`
 }
 
+// CordonStateEntry is the JSON payload stored per (projectId, upstreamId)
+// cordon map. The map key is the method name (e.g. "*" or "eth_call").
+type CordonStateEntry struct {
+	Method       string `json:"method"`
+	Reason       string `json:"reason"`
+	CordonedAtMs int64  `json:"cordonedAtMs"`
+}
+
 type Connector interface {
 	Id() string
 	Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error)

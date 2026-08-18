@@ -938,6 +938,25 @@ func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (strin
 	return "", false
 }
 
+// GetCordonedMethods returns a map of method→reason for all methods currently
+// cordoned for the given upstream. Used by shared-state reconciliation.
+func (t *Tracker) GetCordonedMethods(upstream common.Upstream) map[string]string {
+	result := map[string]string{}
+	t.upsMetrics.Range(func(k, v any) bool {
+		key, ok := k.(upstreamKey)
+		if !ok || key.ups != upstream || key.finality != common.DataFinalityStateAll {
+			return true
+		}
+		tm := v.(*TrackedMetrics)
+		if tm.Cordoned.Load() {
+			reason, _ := tm.LastCordonedReason.Load().(string)
+			result[key.method] = reason
+		}
+		return true
+	})
+	return result
+}
+
 // ------------------------------------
 // Basic Request & Failure Tracking
 // ------------------------------------
