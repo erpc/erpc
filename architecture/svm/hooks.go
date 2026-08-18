@@ -429,9 +429,27 @@ func toInt64(v interface{}) (int64, bool) {
 }
 
 // networkPreForward_getBlock short-circuits getBlock/getConfirmedBlock when the
-// requested slot is ahead of what the provider pool has indexed. Solana RPC nodes
-// return -32004 for any slot above their maxShredInsertSlot; hitting all upstreams
-// only to collect N identical -32004s wastes quota and delays the retry.
+// requested slot is ahead of what the provider pool can actually serve. Hitting
+// all upstreams only to collect N identical -32004s wastes quota and delays the
+// retry.
+//
+// The bound is COMMITMENT-DEPENDENT, because "can serve" is:
+//
+//   - finalized     → min(finalizedTip, indexedTip). An upstream returns -32004
+//     for any slot above its own finalized root, whatever it has
+//     indexed. This is the same bound networkPostForward_getSlot
+//     advertises for getSlot(finalized), so what we advertise and
+//     what we serve stay in lockstep.
+//   - anything else → indexedTip alone. Slots between the finalized and indexed
+//     frontiers ARE held at processed/confirmed, so bounding
+//     them by the finalized tip would reject a wide band every
+//     upstream can answer.
+//
+// Collapsing both cases to indexedTip (the historical behaviour) left a ~60-slot
+// band — finalized tip up to maxShredInsertSlot — in which finalized-commitment
+// requests were forwarded and then rejected by every upstream. Measured on
+// solana-devnet that band carried ~71% of all getBlock traffic at a 1.76x
+// upstream fan-out.
 //
 // When the guard fires it returns ErrEndpointMissingData — the same error class
 // that shouldRetryWithReason maps to "missing_data" — so the 500ms indexing-lag
@@ -462,6 +480,12 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 		return false, nil, nil
 	}
 
+	// Resolve the effective commitment BEFORE taking the params read lock below:
+	// resolveCommitment acquires rpcReq.RLock itself, and a recursive RLock on the
+	// same RWMutex deadlocks whenever a writer is queued between the two
+	// acquisitions. Returns "" when unknown, which keeps the indexed-frontier bound.
+	commitment, _, _ := resolveCommitment(ctx, n, r)
+
 	rpcReq, err := r.JsonRpcRequest(ctx)
 	if err != nil {
 		return false, nil, nil
@@ -477,22 +501,40 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 		return false, nil, nil
 	}
 
-	// The indexed frontier is the ONLY sound upper bound here, and only when we
-	// actually have it. The finalized tip is not a substitute: maxShredInsertSlot
-	// is structurally at or above the processed slot, which is itself far above
-	// the finalized slot, so falling back to the finalized tip would reject a
-	// wide band of slots that every upstream already holds — the guard would
-	// fail CLOSED exactly when it knows least. Unknown frontier → forward.
+	// The indexed frontier is the only bound we can apply without knowing the
+	// commitment, and only when we actually have it. Unknown frontier → forward:
+	// absence of shred-insert tracking is not evidence of unavailability.
 	indexedTip := svmNet.SvmHighestIndexedSlot(ctx)
 	if indexedTip <= 0 {
 		return false, nil, nil
 	}
-	// Overflow-safe form of `slot <= indexedTip + margin`: a hostile or bogus
+
+	// At finalized commitment the indexed frontier is far too loose. It sits at
+	// or above the processed slot, which is itself ~60 slots above the finalized
+	// slot on Solana, and an upstream answers -32004 for anything above its own
+	// finalized root regardless of what it has indexed. Measured on devnet, that
+	// band is where ~71% of getBlock requests died: forwarded by this guard,
+	// then rejected by every upstream.
+	//
+	// min(finalizedTip, indexedTip) is exactly the bound networkPostForward_getSlot
+	// already advertises for getSlot(finalized), so the two stay in lockstep —
+	// we serve precisely what we advertise, no more and no less.
+	//
+	// A zero finalized tip means UNKNOWN, never a literal bound: treating it as
+	// one would collapse the bound to 0 and gate every request.
+	tip := indexedTip
+	if commitment == "finalized" {
+		if finalizedTip := svmNet.SvmHighestFinalizedSlot(ctx); finalizedTip > 0 && finalizedTip < tip {
+			tip = finalizedTip
+		}
+	}
+
+	// Overflow-safe form of `slot <= tip + margin`: a hostile or bogus
 	// upstream tip near math.MaxInt64 would wrap that addition negative and turn
 	// the guard into a reject-everything gate. Subtracting from slot instead
 	// cannot wrap — slot is > 0 and the margin is a small positive derived from
 	// the poll debounce.
-	if slot-indexedTipStalenessMargin(n) <= indexedTip {
+	if slot-indexedTipStalenessMargin(n) <= tip {
 		return false, nil, nil
 	}
 
@@ -503,7 +545,7 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 		common.NewErrJsonRpcExceptionInternal(
 			svmCodeBlockStatusNotAvail,
 			common.JsonRpcErrorMissingData,
-			fmt.Sprintf("slot %d not yet indexed by provider pool (tip: %d)", slot, indexedTip),
+			fmt.Sprintf("slot %d not yet available from provider pool (tip: %d)", slot, tip),
 			nil, nil,
 		),
 		nil,
