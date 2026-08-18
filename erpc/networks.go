@@ -2752,7 +2752,7 @@ func (n *Network) handleBlockSkip(
 		attribute.Bool("skip_retryable", isRetryable),
 	)
 	finality := req.Finality(ctx)
-	telemetry.MetricUpstreamSkippedTotal.WithLabelValues(
+	telemetry.CounterHandle(telemetry.MetricUpstreamSkippedTotal,
 		n.projectId, u.VendorName(), n.Label(), u.Id(), method,
 		finality.String(), req.UserId(), req.AgentName()).Inc()
 	errToStore := skipErr
