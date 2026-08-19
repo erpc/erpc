@@ -26,6 +26,7 @@ func (m *mockSharedStateRegistry) GetCounterInt64(key string, ignoreRollbackOf i
 }
 func (m *mockSharedStateRegistry) GetLockTtl() time.Duration         { return time.Second }
 func (m *mockSharedStateRegistry) GetFallbackTimeout() time.Duration { return time.Second }
+func (m *mockSharedStateRegistry) IsRemote() bool                    { return true }
 func (m *mockSharedStateRegistry) SetCordonState(ctx context.Context, projectId, upstreamId string, entry data.CordonStateEntry) error {
 	return m.Called(ctx, projectId, upstreamId, entry).Error(0)
 }

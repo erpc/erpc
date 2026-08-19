@@ -195,6 +195,13 @@ func (m *TrackedMetrics) MisbehaviorRate() float64 {
 }
 
 func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
+	effectiveCordoned := m.Cordoned.Load() || m.AdminCordoned.Load()
+	var effectiveReason interface{}
+	if m.AdminCordoned.Load() {
+		effectiveReason = m.AdminCordonReason.Load()
+	} else {
+		effectiveReason = m.LastCordonedReason.Load()
+	}
 	return common.SonicCfg.Marshal(map[string]interface{}{
 		"responseQuantiles":      m.ResponseQuantiles,
 		"errorsTotal":            m.ErrorsTotal.Load(),
@@ -203,8 +210,8 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 		"misbehaviorsTotal":      m.MisbehaviorsTotal.Load(),
 		"blockHeadLag":           m.BlockHeadLag.Load(),
 		"finalizationLag":        m.FinalizationLag.Load(),
-		"cordoned":               m.Cordoned.Load(),
-		"lastCordonedReason":     m.LastCordonedReason.Load(),
+		"cordoned":               effectiveCordoned,
+		"lastCordonedReason":     effectiveReason,
 		"errorRate":              m.ErrorRate(),
 		"throttledRate":          m.ThrottledRate(),
 		"misbehaviorRate":        m.MisbehaviorRate(),
@@ -945,8 +952,9 @@ func (t *Tracker) CordonAt(upstream common.Upstream, method, reason string, cord
 
 // CordonAdmin sets the admin cordon bit for (upstream, method). Emits the
 // cordon event counter on the first OFF→ON transition; repeated calls update
-// the reason without resetting the duration start time.
-func (t *Tracker) CordonAdmin(upstream common.Upstream, method, reason string) {
+// the reason without resetting the duration start time. Returns the stored
+// AdminCordonedAtMs so callers can persist the original timestamp unchanged.
+func (t *Tracker) CordonAdmin(upstream common.Upstream, method, reason string) int64 {
 	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
 	wasAdmin := tm.AdminCordoned.Swap(true)
 	tm.AdminCordonReason.Store(reason)
@@ -957,6 +965,7 @@ func (t *Tracker) CordonAdmin(upstream common.Upstream, method, reason string) {
 		).Inc()
 	}
 	t.getCordonedGauge(upstream, method, reason).Set(1)
+	return tm.AdminCordonedAtMs.Load()
 }
 
 // UncordonAdmin clears the admin cordon bit. Emits duration and uncordon event

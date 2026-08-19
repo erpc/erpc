@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"runtime/debug"
 	"slices"
@@ -41,6 +42,11 @@ type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
 	GetLockTtl() time.Duration
 	GetFallbackTimeout() time.Duration
+	// IsRemote returns true when the backing connector is a network-remote store
+	// (Redis, PostgreSQL, DynamoDB). Returns false for the in-memory driver.
+	// Used to skip periodic cross-replica reconciliation when shared state is
+	// process-local.
+	IsRemote() bool
 	// Cordon-state persistence. All methods no-op when registry is nil.
 	SetCordonState(ctx context.Context, projectId, upstreamId string, entry CordonStateEntry) error
 	DeleteCordonState(ctx context.Context, projectId, upstreamId, method string) error
@@ -63,6 +69,7 @@ type sharedStateRegistry struct {
 	lockMaxWait     time.Duration
 	updateMaxWait   time.Duration
 	initializer     *util.Initializer
+	isRemote        bool
 }
 
 func NewSharedStateRegistry(
@@ -106,6 +113,7 @@ func NewSharedStateRegistry(
 		lockMaxWait:     lockMaxWait,
 		updateMaxWait:   updateMaxWait,
 		initializer:     util.NewInitializer(appCtx, &lg, nil),
+		isRemote:        cfg.Connector.Driver != "memory",
 	}, nil
 }
 
@@ -283,12 +291,14 @@ func (r *sharedStateRegistry) GetFallbackTimeout() time.Duration {
 	return r.fallbackTimeout
 }
 
+func (r *sharedStateRegistry) IsRemote() bool { return r.isRemote }
+
 func (r *sharedStateRegistry) cordonMapKey(projectId, upstreamId string) string {
-	return fmt.Sprintf("%s/cordon-map/%s/%s", r.clusterKey, projectId, upstreamId)
+	return fmt.Sprintf("%s/cordon-map/%s/%s", r.clusterKey, url.PathEscape(projectId), url.PathEscape(upstreamId))
 }
 
 func (r *sharedStateRegistry) cordonNotifyKey(projectId, upstreamId string) string {
-	return fmt.Sprintf("cordon-notify/%s/%s", projectId, upstreamId)
+	return fmt.Sprintf("cordon-notify/%s/%s", url.PathEscape(projectId), url.PathEscape(upstreamId))
 }
 
 // readCordonMap fetches the current map[method]CordonStateEntry from Redis.
@@ -330,7 +340,7 @@ func (r *sharedStateRegistry) bumpCordonNotify(ctx context.Context, projectId, u
 }
 
 func (r *sharedStateRegistry) cordonLockKey(projectId, upstreamId string) string {
-	return fmt.Sprintf("%s/cordon-lock/%s/%s", r.clusterKey, projectId, upstreamId)
+	return fmt.Sprintf("%s/cordon-lock/%s/%s", r.clusterKey, url.PathEscape(projectId), url.PathEscape(upstreamId))
 }
 
 func (r *sharedStateRegistry) SetCordonState(ctx context.Context, projectId, upstreamId string, entry CordonStateEntry) error {
@@ -338,15 +348,23 @@ func (r *sharedStateRegistry) SetCordonState(ctx context.Context, projectId, ups
 	if err != nil {
 		return fmt.Errorf("failed to acquire cordon lock: %w", err)
 	}
-	defer lock.Unlock(ctx)
 	pk := r.cordonMapKey(projectId, upstreamId)
 	m, err := r.readCordonMap(ctx, pk, "methods")
 	if err != nil {
+		unlockCtx, ulCancel := context.WithTimeout(r.appCtx, r.lockTtl)
+		_ = lock.Unlock(unlockCtx)
+		ulCancel()
 		return err
 	}
 	m[entry.Method] = entry
-	if err := r.writeCordonMap(ctx, pk, "methods", m); err != nil {
-		return err
+	writeErr := r.writeCordonMap(ctx, pk, "methods", m)
+	// Unlock before bumping: triggerValueCallback fires OnValue callbacks synchronously,
+	// which call reconcileCordonState and perform another Redis read under the same lock.
+	unlockCtx, ulCancel := context.WithTimeout(r.appCtx, r.lockTtl)
+	_ = lock.Unlock(unlockCtx)
+	ulCancel()
+	if writeErr != nil {
+		return writeErr
 	}
 	r.bumpCordonNotify(ctx, projectId, upstreamId)
 	return nil
@@ -357,15 +375,23 @@ func (r *sharedStateRegistry) DeleteCordonState(ctx context.Context, projectId, 
 	if err != nil {
 		return fmt.Errorf("failed to acquire cordon lock: %w", err)
 	}
-	defer lock.Unlock(ctx)
 	pk := r.cordonMapKey(projectId, upstreamId)
 	m, err := r.readCordonMap(ctx, pk, "methods")
 	if err != nil {
+		unlockCtx, ulCancel := context.WithTimeout(r.appCtx, r.lockTtl)
+		_ = lock.Unlock(unlockCtx)
+		ulCancel()
 		return err
 	}
 	delete(m, method)
-	if err := r.writeCordonMap(ctx, pk, "methods", m); err != nil {
-		return err
+	writeErr := r.writeCordonMap(ctx, pk, "methods", m)
+	// Unlock before bumping: triggerValueCallback fires OnValue callbacks synchronously,
+	// which call reconcileCordonState and perform another Redis read under the same lock.
+	unlockCtx, ulCancel := context.WithTimeout(r.appCtx, r.lockTtl)
+	_ = lock.Unlock(unlockCtx)
+	ulCancel()
+	if writeErr != nil {
+		return writeErr
 	}
 	r.bumpCordonNotify(ctx, projectId, upstreamId)
 	return nil

@@ -216,6 +216,9 @@ type Upstream struct {
 	svmStatePoller       common.SvmStatePoller
 	statePollerOnce      sync.Once
 	cordonSyncOnce       sync.Once
+	// reconcileMu serializes concurrent reconcileCordonState calls so an older
+	// Redis read completing after a newer one cannot clobber in-memory state.
+	reconcileMu sync.Mutex
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 	// Highest block at which the integrity state probe PROVED this upstream
@@ -370,28 +373,38 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		// Register the notification watch and periodic ticker exactly once — Bootstrap
 		// can be retried, and spawning a second goroutine would leak on re-execution.
 		u.cordonSyncOnce.Do(func() {
-		// Watch for cross-replica cordon/uncordon events via pub/sub notification.
-		notifyVar := u.sharedStateRegistry.WatchCordonNotifications(u.ProjectId, u.Id())
-		notifyVar.OnValue(func(_ int64) {
-			reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
-			defer cancel()
-			u.reconcileCordonState(reconcileCtx)
-		})
-		// Periodic fallback: reconcile every 30 s in case pub/sub delivery fails.
-		go func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-u.appCtx.Done():
-					return
-				case <-ticker.C:
-					reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
-					u.reconcileCordonState(reconcileCtx)
-					cancel()
-				}
+			// Watch for cross-replica cordon/uncordon events via pub/sub notification.
+			notifyVar := u.sharedStateRegistry.WatchCordonNotifications(u.ProjectId, u.Id())
+			notifyVar.OnValue(func(_ int64) {
+				reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
+				defer cancel()
+				u.reconcileCordonState(reconcileCtx)
+			})
+			// Periodic fallback: reconcile every 30 s in case pub/sub delivery fails.
+			// Skipped for in-memory registry (process-local, no cross-replica sync needed).
+			if u.sharedStateRegistry.IsRemote() {
+				go func() {
+					// Jitter so all upstreams don't fire at the same wall-clock instant.
+					jitter := time.Duration(time.Now().UnixNano() % int64(10*time.Second))
+					select {
+					case <-u.appCtx.Done():
+						return
+					case <-time.After(jitter):
+					}
+					ticker := time.NewTicker(30 * time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-u.appCtx.Done():
+							return
+						case <-ticker.C:
+							reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
+							u.reconcileCordonState(reconcileCtx)
+							cancel()
+						}
+					}
+				}()
 			}
-		}()
 		}) // cordonSyncOnce.Do
 	}
 
@@ -1547,12 +1560,12 @@ func (u *Upstream) Uncordon(method string, reason string) {
 // applied regardless; callers should surface the error so the operator knows
 // other replicas may not have received the update.
 func (u *Upstream) CordonAdmin(method string, reason string) error {
-	u.metricsTracker.CordonAdmin(u, method, reason)
+	ts := u.metricsTracker.CordonAdmin(u, method, reason)
 	u.adminCordonedMethods.Store(method, struct{}{})
 	if u.sharedStateRegistry != nil {
 		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)
 		defer cancel()
-		entry := data.CordonStateEntry{Method: method, Reason: reason, CordonedAtMs: time.Now().UnixMilli()}
+		entry := data.CordonStateEntry{Method: method, Reason: reason, CordonedAtMs: ts}
 		if err := u.sharedStateRegistry.SetCordonState(ctx, u.ProjectId, u.Id(), entry); err != nil {
 			u.logger.Warn().Err(err).Str("method", method).Msg("failed to persist cordon state to shared state")
 			return err
@@ -1594,6 +1607,8 @@ func (u *Upstream) UncordonAdmin(method string, reason string) error {
 // Redis are uncordoned. Automatic cordons (consensus, health) are never
 // touched by this diff.
 func (u *Upstream) reconcileCordonState(ctx context.Context) {
+	u.reconcileMu.Lock()
+	defer u.reconcileMu.Unlock()
 	entries, err := u.sharedStateRegistry.LoadCordonStates(ctx, u.ProjectId, u.Id())
 	if err != nil {
 		u.logger.Warn().Err(err).Msg("failed to load cordon state from shared state for reconciliation")
