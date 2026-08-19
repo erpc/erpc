@@ -154,6 +154,21 @@ Source: [<SourceLink file="erpc/http_server.go" lines="852-991" />]
 
 Note: `GET /main/foo/healthcheck` where `foo` is neither a valid alias nor `"evm"` returns HTTP 400, not 200, because architecture validation runs before healthcheck dispatch.
 
+**Edge validation of the JSON-RPC envelope.** `NormalizedRequest.Validate()` is the first thing the per-request goroutine does, before forwarded headers, `ignoreMethods`/`allowMethods`, auth, rate limiting, network bootstrap and every metric increment. It runs off the lazy `sonic` key lookup — the raw body is never fully unmarshalled here, so the body-`networkId` fallback above still sees it. Failures return HTTP 400 with `ErrInvalidRequest`.
+
+| Condition | Error message |
+|---|---|
+| `method` missing, `null`, or `""` | `"method is required"` |
+| `method` is not a JSON string (`123`, `true`, `[]`) | `"method must be a string"` — `ast.Node.String()` would otherwise coerce `123` to `"123"` |
+| `method` empty, over 128 bytes, or containing anything outside `[a-zA-Z0-9_.-]` | `"method must be 1-128 characters of [a-zA-Z0-9_.-], got: <truncated>"` |
+| `params` present and not a JSON array or `null` | `"params must be a json array"` |
+
+The method character set is deliberately shape-based, not a method allowlist: eRPC never enumerates methods, and any new `<vendor>_<name>`, camelCase or `rpc.`-prefixed method passes unchanged. What it rejects is input that is not a method name at all — scanner payloads such as `eth_call0QIdoFZC') OR 157=(SELECT 157 FROM PG_SLEEP(15))--`. eRPC stamps the method onto the `category` label of ~40 metric families, and a Prometheus registry is append-only, so one series per distinct payload is unbounded memory. Source: <SourceLink file="common/json_rpc_validate.go" lines="1-97" />, <SourceLink file="common/request.go" lines="1044-1127" />
+
+`params` is checked for shape only — its contents are never inspected here. JSON-RPC 2.0 §4.2 permits an Array or an Object; eRPC's `JsonRpcRequest.Params` is a `[]interface{}`, so an object has always been rejected, just later (deep inside `Network.Forward`, after the request had already acquired a rate-limit permit and incremented `erpc_network_request_received_total`). The HTTP status is unchanged at 400.
+
+**Chain ids are accepted in canonical form only.** `util.IsValidNetworkId` requires an `evm:` chain id to be plain decimal digits with no sign and no leading zero, within `int64`, and the whole network id to be at most 64 bytes. `evm:007`, `evm:-1` and `evm:+1` used to pass (`strconv.Atoi` accepts all three) and each became its own network id — its own permanent `BootstrapTask` in the project initializer, its own lazily-built `NetworkConfig` appended to the project, and its own `network` metric label, for what is the same chain or no chain at all. They now return 400 `"invalid network id format"` before any of that state is created. Source: <SourceLink file="util/ids.go" lines="33-105" />
+
 ### Config schema
 
 **Domain aliasing** — `server.aliasing.rules[]` (struct: <SourceLink file="common/config.go" lines="253-262" />):
@@ -300,6 +315,9 @@ Content-Type: application/json
 14. **Unknown network may succeed on first call for provider-based projects.** Networks are lazily initialized. `ErrNetworkNotFound` (HTTP 404) is returned only when resolution definitively fails. Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />
 15. **`serveArchitecture: "evm"` with no `serveChain` lets callers omit `evm` from the path.** With a domain alias pre-selecting architecture, the URL becomes `POST /<project>/<chainId>` — no need to include `evm` in every call. Source: <SourceLink file="erpc/http_server.go" lines="963-983" />
 16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="161-177" />
+17. **The method character set is a shape check, not an allowlist.** Any method matching `[a-zA-Z0-9_.-]{1,128}` is forwarded, known or not — but a method carrying a quote, space, parenthesis, `<`, `=`, `;` or any non-ASCII byte is rejected with 400 before routing. A client that genuinely needs such a method name cannot be proxied; no config knob relaxes this. Source: <SourceLink file="common/json_rpc_validate.go" lines="37-53" />
+18. **`evm:007` and `evm:7` are no longer both accepted.** Only the canonical decimal spelling of a chain id routes; leading zeros and a leading `+`/`-` return 400 `"invalid network id format"` instead of lazily bootstrapping a duplicate network. Callers that pad chain ids in their URLs must stop. Source: <SourceLink file="util/ids.go" lines="87-105" />
+19. **Object `params` is rejected, though JSON-RPC 2.0 allows it.** `JsonRpcRequest.Params` is a `[]interface{}`; by-name parameters have never worked. The rejection now happens at the edge with `"params must be a json array"` rather than as a sonic type-mismatch deep in the forward path. Source: <SourceLink file="common/request.go" lines="1098-1127" />
 
 ### Observability
 
@@ -331,6 +349,10 @@ Content-Type: application/json
 - [`common/config.go:L1995-L2006`](https://github.com/erpc/erpc/blob/main/common/config.go#L1995-L2006) — `NetworkConfig.Alias` field
 - [`common/network_alias.go:L10-L34`](https://github.com/erpc/erpc/blob/main/common/network_alias.go#L10-L34) — process-global `NetworkAlias` resolver (cross-component metric-label consistency)
 - [`common/network.go:L35-L37`](https://github.com/erpc/erpc/blob/main/common/network.go#L35-L37) — `IsValidArchitecture` (currently only `"evm"`)
+- [`common/json_rpc_validate.go`](https://github.com/erpc/erpc/blob/main/common/json_rpc_validate.go) — `IsValidMethodName`, `MaxMethodNameLength`, the no-copy `sonic` search options, and the shared rejection error
+- [`common/request.go:L1044-L1127`](https://github.com/erpc/erpc/blob/main/common/request.go#L1044-L1127) — `NormalizedRequest.Validate` / `validateParams`: the edge gate for both the HTTP and gRPC entrypoints
+- [`util/ids.go:L33-L105`](https://github.com/erpc/erpc/blob/main/util/ids.go#L33-L105) — `IsValidNetworkId`, `isCanonicalChainId`, `MaxNetworkIdLength`
+- [`erpc/http_server_malformed_request_test.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server_malformed_request_test.go) — end-to-end rejection of scanner payloads, plus the assertions that no metric series and no bootstrap task survive a rejected request
 - [`erpc/http_server_test.go:L3378-L3709`](https://github.com/erpc/erpc/blob/main/erpc/http_server_test.go#L3378-L3709) — `TestHttpServer_ParseUrlPath`: 30+ cases covering all alias combinations, network alias resolution, invalid architectures, healthcheck suffix placement
 - [`erpc/projects_registry.go:L118`](https://github.com/erpc/erpc/blob/main/erpc/projects_registry.go#L118) — `ErrProjectNotFound` returned by `GetProject` on unknown projectId
 

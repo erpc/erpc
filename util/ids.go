@@ -30,10 +30,28 @@ func IsValidIdentifier(s string) bool {
 	return validIdentifierRegex.MatchString(s)
 }
 
+// MaxNetworkIdLength bounds a network id accepted off the wire. Every real id
+// is far shorter ("evm:11155111", "svm:eclipse:mainnet-beta"); the cap stops
+// an arbitrarily long path segment from becoming a Prometheus label value.
+const MaxNetworkIdLength = 64
+
+// IsValidNetworkId reports whether s is a network id eRPC will lazily
+// bootstrap a network for.
+//
+// Every accepted id costs a permanent BootstrapTask in the project's
+// initializer, a lazily-created NetworkConfig appended to the project config,
+// and a distinct `network` label value across the metric families — so the
+// accepted set must be one id per real network, not one per spelling of it.
+// For "evm:" that means the CANONICAL decimal chain id only: strconv.Atoi
+// used to accept "evm:007", "evm:-1" and "evm:+1" as distinct-but-equivalent
+// ids, which is an unbounded family of aliases for chain 7 / an impossible
+// chain.
 func IsValidNetworkId(s string) bool {
+	if len(s) > MaxNetworkIdLength {
+		return false
+	}
 	if strings.HasPrefix(s, "evm:") {
-		_, err := strconv.Atoi(s[4:])
-		return err == nil
+		return isCanonicalChainId(s[4:])
 	}
 	if strings.HasPrefix(s, "svm:") {
 		// Two accepted shapes: "svm:<cluster>" (implicit solana, back-compat)
@@ -64,6 +82,26 @@ func IsValidNetworkId(s string) bool {
 		return true
 	}
 	return false
+}
+
+// isCanonicalChainId reports whether s is the one canonical decimal spelling
+// of a positive chain id: digits only, no sign, no leading zero, and within
+// int64 (what EvmNetworkConfig.ChainId holds).
+func isCanonicalChainId(s string) bool {
+	// Digits only, no sign, no leading zero — so exactly one spelling of any
+	// given chain id reaches the network registry.
+	if s == "" || s[0] == '0' {
+		return false
+	}
+	for i := range len(s) {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	// Overflow check only; the scan above already ruled out everything else
+	// ParseInt would tolerate. Reached only on a network-registry cache miss.
+	_, err := strconv.ParseInt(s, 10, 64)
+	return err == nil
 }
 
 var counters = make(map[string]int)
