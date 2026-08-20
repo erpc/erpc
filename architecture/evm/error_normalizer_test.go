@@ -183,40 +183,98 @@ func TestExtractJsonRpcError_ExceededMaxLimit_IsNotASizeComplaint(t *testing.T) 
 	}
 	if common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge) {
 		t.Fatalf("a rate/quota complaint must not normalize to ErrEndpointRequestTooLarge, got %v", err)
-// TestExtractJsonRpcError_MempoolPriorityRejections verifies mempool priority and
-// reject messages (-32603) are classified as ExecutionException, not ServerSideException,
-// and are not retried across upstreams for eth_sendRawTransaction.
-func TestExtractJsonRpcError_MempoolPriorityRejections(t *testing.T) {
+	}
+}
+
+// TestExtractJsonRpcError_MempoolPolicyRejections verifies that mempool policy
+// rejections (observed from Monad's EthTxPoolDropReason, all surfaced as
+// -32603 with NO data field) normalize to ErrEndpointExecutionException, not
+// ErrEndpointServerSideException, so they never count toward the circuit
+// breaker. For eth_sendRawTransaction they stay retryable toward the network
+// (pool contents/policies are node-local; another upstream may accept the
+// broadcast), consistent with the -32003 "transaction rejected" branch. For
+// other methods they are terminal.
+//
+// data is modeled as nil — the wire shape when the "data" field is absent —
+// because a non-nil data value used to be appended to the matched message
+// (" Data: <nil>"), which silently broke whole-message checks.
+func TestExtractJsonRpcError_MempoolPolicyRejections(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name      string
+		method    string
 		message   string
+		data      interface{}
 		wantMatch bool
+		wantRetry bool
 	}{
 		{
 			name:      "existing transaction had higher priority",
+			method:    "eth_sendRawTransaction",
 			message:   "An existing transaction had higher priority",
 			wantMatch: true,
+			wantRetry: true,
 		},
 		{
 			name:      "newer transaction had higher priority",
+			method:    "eth_sendRawTransaction",
 			message:   "A newer transaction had higher priority",
 			wantMatch: true,
+			wantRetry: true,
 		},
 		{
-			name:      "bare rejected",
+			name:      "transaction fee too low",
+			method:    "eth_sendRawTransaction",
+			message:   "Transaction fee too low",
+			wantMatch: true,
+			wantRetry: true,
+		},
+		{
+			name:      "bare rejected with nil data (wire shape)",
+			method:    "eth_sendRawTransaction",
 			message:   "rejected",
 			wantMatch: true,
+			wantRetry: true,
 		},
 		{
-			name:      "rejected with surrounding whitespace",
-			message:   " rejected ",
+			name:      "rejected with whitespace and casing",
+			method:    "eth_sendRawTransaction",
+			message:   " Rejected ",
 			wantMatch: true,
+			wantRetry: true,
+		},
+		{
+			name:      "rejected with empty-string data",
+			method:    "eth_sendRawTransaction",
+			message:   "rejected",
+			data:      "",
+			wantMatch: true,
+			wantRetry: true,
+		},
+		{
+			name:      "non-sendRaw method is matched but terminal",
+			method:    "eth_call",
+			message:   "An existing transaction had higher priority",
+			wantMatch: true,
+			wantRetry: false,
 		},
 		{
 			name:      "higher priority fee suggestion is not reclassified",
+			method:    "eth_sendRawTransaction",
 			message:   "try a higher priority fee",
+			wantMatch: false,
+		},
+		{
+			name:      "rejected as substring is not reclassified",
+			method:    "eth_sendRawTransaction",
+			message:   "transaction rejected by policy",
+			wantMatch: false,
+		},
+		{
+			name:      "pool full stays a server-side (breaker-visible) error",
+			method:    "eth_sendRawTransaction",
+			message:   "Transaction pool is full",
 			wantMatch: false,
 		},
 	}
@@ -227,15 +285,12 @@ func TestExtractJsonRpcError_MempoolPriorityRejections(t *testing.T) {
 			t.Parallel()
 
 			req := common.NewNormalizedRequest([]byte(
-				`{"jsonrpc":"2.0","method":"eth_sendRawTransaction","params":[],"id":1}`))
+				`{"jsonrpc":"2.0","method":"` + tc.method + `","params":[],"id":1}`))
 			nr := common.NewNormalizedResponse().WithRequest(req)
 
 			r := &http.Response{StatusCode: 200, Header: http.Header{}}
-			jrErr := common.NewErrJsonRpcExceptionExternal(
-				-32603,
-				tc.message,
-				"",
-			)
+			jrErr := common.NewErrJsonRpcExceptionExternal(-32603, tc.message, "")
+			jrErr.Data = tc.data
 			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
 
 			err := ExtractJsonRpcError(r, nr, jr, nil)
@@ -249,11 +304,16 @@ func TestExtractJsonRpcError_MempoolPriorityRejections(t *testing.T) {
 				if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 					t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
 				}
-				if common.IsRetryableTowardNetwork(err) {
-					t.Fatalf("expected non-retryable toward network for eth_sendRawTransaction")
+				if got := common.IsRetryableTowardNetwork(err); got != tc.wantRetry {
+					t.Fatalf("IsRetryableTowardNetwork = %v, want %v (err: %v)", got, tc.wantRetry, err)
 				}
-			} else if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-				t.Fatalf("expected not ErrEndpointExecutionException for %q, got %v", tc.message, err)
+			} else {
+				if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+					t.Fatalf("expected not ErrEndpointExecutionException for %q, got %v", tc.message, err)
+				}
+				if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+					t.Fatalf("expected ErrEndpointServerSideException fallback for %q, got %T: %v", tc.message, err, err)
+				}
 			}
 		})
 	}
