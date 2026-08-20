@@ -950,3 +950,67 @@ func TestTranslateToJsonRpcException_ExhaustedInsideFanOut_DoesNotHijack(t *test
 			"an exhausted bundle behind a fan-out must not supply the client-visible code")
 	}
 }
+
+// TestJsonRpcRequest_UnmarshalID_NumericPrecision pins the contract that a
+// numeric request id is either preserved exactly as an int64 or rejected — it
+// must never be silently truncated/clamped into a different internal id (see
+// issue #869). Sonic decodes JSON numbers as float64, so a naive int64(v) cast
+// silently corrupts fractional and out-of-int64-range ids.
+func TestJsonRpcRequest_UnmarshalID_NumericPrecision(t *testing.T) {
+	t.Parallel()
+
+	type tc struct {
+		name    string
+		idJSON  string      // raw JSON for the "id" field
+		wantErr bool        // true => UnmarshalJSON must reject it
+		wantID  interface{} // expected typed r.ID when wantErr is false
+	}
+
+	cases := []tc{
+		// Lossy numeric ids that previously collapsed onto a wrong int64.
+		{"fractional", "1.5", true, nil},
+		{"exp_1e20", "1e20", true, nil},
+		{"exp_1e308", "1e308", true, nil},
+		{"exp_9.3e18", "9.3e18", true, nil},
+		{"neg_exp", "-1e20", true, nil},
+		{"int64_overflow_by_one", "9223372036854775808", true, nil}, // MaxInt64 + 1
+		{"uint64_max", "18446744073709551615", true, nil},           // > MaxInt64
+		{"huge_integer", "99999999999999999999999999", true, nil},
+
+		// Valid ids that must round-trip unchanged.
+		{"small_positive", "42", false, int64(42)},
+		{"negative", "-42", false, int64(-42)},
+		{"zero", "0", false, int64(0)},
+		{"string_id", `"request-42"`, false, "request-42"},
+
+		// int64 boundaries must be representable exactly.
+		{"max_int64", "9223372036854775807", false, int64(9223372036854775807)},
+		{"min_int64", "-9223372036854775808", false, int64(-9223372036854775808)},
+
+		// Large plain integers within int64 range (e.g. nanosecond timestamps)
+		// exceed float64's 53-bit mantissa; they must survive exactly rather
+		// than being rounded via a float64 round-trip.
+		{"nanosecond_timestamp", "1755648000000000123", false, int64(1755648000000000123)},
+		{"two_pow_53_plus_one", "9007199254740993", false, int64(9007199254740993)},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":%s}`, c.idJSON)
+			var r JsonRpcRequest
+			err := r.UnmarshalJSON([]byte(body))
+
+			if c.wantErr {
+				require.Error(t, err, "lossy id %s must be rejected, not silently converted", c.idJSON)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, c.wantID, r.ID, "typed id for %s", c.idJSON)
+			// The verbatim bytes must always be preserved for the client echo.
+			require.Equal(t, c.idJSON, string(r.IDRawBytes()), "idRaw for %s", c.idJSON)
+		})
+	}
+}

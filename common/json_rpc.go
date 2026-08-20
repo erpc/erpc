@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1349,7 +1350,19 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 		}
 		switch v := id.(type) {
 		case float64:
-			r.ID = int64(v)
+			// Sonic decodes every JSON number as float64, which cannot hold
+			// large or fractional ids losslessly. Recover the exact integer
+			// from the verbatim id bytes instead of casting the float: the cast
+			// silently truncates fractional ids (1.5 -> 1) and clamps
+			// out-of-range ids to MaxInt64/MinInt64, collapsing distinct ids
+			// onto the same internal id. idRaw still preserves the original
+			// bytes for the client echo, but this typed ID feeds the upstream
+			// request body and internal identity, so it must not be corrupted.
+			idInt, err := strconv.ParseInt(string(bytes.TrimSpace(aux.ID)), 10, 64)
+			if err != nil {
+				return fmt.Errorf("json-rpc request id %s cannot be represented as a 64-bit integer", aux.ID)
+			}
+			r.ID = idInt
 		case string:
 			r.ID = v
 		}
