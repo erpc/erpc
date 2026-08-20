@@ -271,13 +271,38 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			}
 			return execErr
 		}
-		// Hack for some chains (Berachain) to make the message compatible with Subgraph and other tools.
-		if strings.Contains(msg, "EVM error: InvalidJump") {
+		// EVM HALTS reported as "EVM error: <HaltReason>".
+		//
+		// A halt — out of gas, invalid opcode, insufficient funds, stack
+		// overflow — is an EXECUTION outcome, exactly like a revert: the
+		// EVM ran and stopped for a protocol reason, and every upstream
+		// agrees on that verdict. It is not an endpoint failure and must
+		// not be scored as one.
+		//
+		// Without this, upstreams that use revm's own wording fell through
+		// to the generic server-side-exception branch below and every
+		// out-of-gas call in the stream was counted against the endpoint.
+		// Measured 2026-08-20 on a shadow stream: an upstream whose real
+		// failure rate was 0.01% read as 7% because its halts were graded
+		// as errors.
+		//
+		// This began as a one-line special case for "EVM error: InvalidJump"
+		// (Berachain); the prefix is what actually identifies the class, so
+		// it is matched as a prefix and the reason carried through. The
+		// InvalidJump wording stays mapped to the geth phrasing Subgraph
+		// and other tools already parse.
+		if strings.Contains(msg, "EVM error: ") {
+			normalized := "revert: " + strings.TrimSpace(
+				msg[strings.Index(msg, "EVM error: ")+len("EVM error: "):],
+			)
+			if strings.Contains(msg, "EVM error: InvalidJump") {
+				normalized = "revert: invalid jump destination"
+			}
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmReverted,
-					"revert: invalid jump destination",
+					normalized,
 					nil,
 					details,
 				),
