@@ -134,3 +134,54 @@ func TestExtractJsonRpcError_InsufficientFunds_TracingMethodsRetryable(t *testin
 		})
 	}
 }
+
+// TestExtractJsonRpcError_ResponseTooBig_JsonRpseeSizeCap verifies that
+// jsonrpsee's oversized-response rejection — used by reth and anything else
+// built on it — normalizes to ErrEndpointRequestTooLarge, so the eth_getLogs /
+// trace_filter splitters narrow the range instead of the caller taking a hard
+// failure. Before this, the message matched none of the range-shaped phrases
+// and fell through to a generic server-side exception, which does not split.
+func TestExtractJsonRpcError_ResponseTooBig_JsonRpseeSizeCap(t *testing.T) {
+	t.Parallel()
+
+	r := &http.Response{StatusCode: 200, Header: http.Header{}}
+	jrErr := common.NewErrJsonRpcExceptionExternal(
+		-32008,
+		"Response is too big",
+		"Exceeded max limit of 167772160",
+	)
+	jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+	err := ExtractJsonRpcError(r, nil, jr, nil)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge) {
+		t.Fatalf("expected ErrEndpointRequestTooLarge, got %T: %v", err, err)
+	}
+}
+
+// TestExtractJsonRpcError_ExceededMaxLimit_IsNotASizeComplaint pins the
+// deliberate narrowness of the match above. "Exceeded max limit of ..." is the
+// Data half of the jsonrpsee message, but the phrasing says nothing about SIZE
+// — matching on it would turn a quota or rate complaint into a range-splitting
+// retry, which neither fixes the problem nor reports it honestly.
+func TestExtractJsonRpcError_ExceededMaxLimit_IsNotASizeComplaint(t *testing.T) {
+	t.Parallel()
+
+	r := &http.Response{StatusCode: 200, Header: http.Header{}}
+	jrErr := common.NewErrJsonRpcExceptionExternal(
+		int(common.JsonRpcErrorServerSideException),
+		"Exceeded max limit of 100 requests per second",
+		"",
+	)
+	jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+	err := ExtractJsonRpcError(r, nil, jr, nil)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge) {
+		t.Fatalf("a rate/quota complaint must not normalize to ErrEndpointRequestTooLarge, got %v", err)
+	}
+}
