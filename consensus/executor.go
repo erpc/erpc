@@ -1611,8 +1611,14 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	// errors (severity info) are the caller's failure that upstreams merely
 	// agreed on (e.g. nonce-too-low on eth_sendRawTransaction broadcast), not a
 	// consensus failure — keep them out of the error counter.
+	// Similarly, when all upstreams unanimously agreed the block is outside the
+	// availability window (hasConsensus + ErrUpstreamBlockUnavailable), that is
+	// a deterministic gate outcome — the client requested a block that no
+	// upstream will serve. Counting it as consensus_on_error inflates infra
+	// error metrics with expected, by-design client behaviour.
+	blockUnavailableConsensus := hasConsensus && common.HasErrorCode(result.Error, common.ErrCodeUpstreamBlockUnavailable)
 	severity := common.ClassifySeverity(result.Error)
-	if result.Error != nil && (severity == common.SeverityWarning || severity == common.SeverityCritical) {
+	if result.Error != nil && !blockUnavailableConsensus && (severity == common.SeverityWarning || severity == common.SeverityCritical) {
 		errLabel := "generic_error"
 		if isCompositionDispute {
 			errLabel = "dispute_composition"
