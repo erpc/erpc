@@ -379,6 +379,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		}
 
+		if strings.Contains(ml, "existing transaction had higher priority") ||
+			strings.Contains(ml, "newer transaction had higher priority") ||
+			strings.TrimSpace(ml) == "rejected" {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
 		//----------------------------------------------------------------
 		// "Insufficient funds / balance" errors
 		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors.

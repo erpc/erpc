@@ -183,5 +183,78 @@ func TestExtractJsonRpcError_ExceededMaxLimit_IsNotASizeComplaint(t *testing.T) 
 	}
 	if common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge) {
 		t.Fatalf("a rate/quota complaint must not normalize to ErrEndpointRequestTooLarge, got %v", err)
+// TestExtractJsonRpcError_MempoolPriorityRejections verifies mempool priority and
+// reject messages (-32603) are classified as ExecutionException, not ServerSideException,
+// and are not retried across upstreams for eth_sendRawTransaction.
+func TestExtractJsonRpcError_MempoolPriorityRejections(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		message   string
+		wantMatch bool
+	}{
+		{
+			name:      "existing transaction had higher priority",
+			message:   "An existing transaction had higher priority",
+			wantMatch: true,
+		},
+		{
+			name:      "newer transaction had higher priority",
+			message:   "A newer transaction had higher priority",
+			wantMatch: true,
+		},
+		{
+			name:      "bare rejected",
+			message:   "rejected",
+			wantMatch: true,
+		},
+		{
+			name:      "rejected with surrounding whitespace",
+			message:   " rejected ",
+			wantMatch: true,
+		},
+		{
+			name:      "higher priority fee suggestion is not reclassified",
+			message:   "try a higher priority fee",
+			wantMatch: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","method":"eth_sendRawTransaction","params":[],"id":1}`))
+			nr := common.NewNormalizedResponse().WithRequest(req)
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(
+				-32603,
+				tc.message,
+				"",
+			)
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if tc.wantMatch {
+				if common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+					t.Fatalf("expected not ErrEndpointServerSideException, got %v", err)
+				}
+				if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+					t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+				}
+				if common.IsRetryableTowardNetwork(err) {
+					t.Fatalf("expected non-retryable toward network for eth_sendRawTransaction")
+				}
+			} else if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				t.Fatalf("expected not ErrEndpointExecutionException for %q, got %v", tc.message, err)
+			}
+		})
 	}
 }
