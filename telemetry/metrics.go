@@ -717,7 +717,7 @@ var (
 		Namespace: "erpc",
 		Name:      "rate_limiter_budget_max_count",
 		Help:      "Maximum number of requests allowed per second for a rate limiter budget (including auto-tuner).",
-	}, []string{"budget", "method", "scope"})
+	}, []string{"budget", "method", "scope", "countMode"})
 
 	MetricRateLimiterBudgetDecisionTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",

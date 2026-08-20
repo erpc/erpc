@@ -108,25 +108,27 @@ func (u *Upstream) attemptCreditUnits(req *common.NormalizedRequest) int64 {
 	return defaultCreditUnitsPerRequest
 }
 
-// rateLimitHits returns the hit weight one rate-limit permit acquisition
-// consumes from this upstream's budget: a flat 1 in the default
-// request-count mode, or the request's PRE-FLIGHT estimated vendor
-// credit-unit cost when the upstream opts into credit counting
-// (RateLimitCountMode == "credit"). The estimate is table-based — the real
-// cost is not known until after the call — and a 0-CU method consumes
-// nothing. Clamped into uint32 for the Envoy hits-addend.
-func (u *Upstream) rateLimitHits(req *common.NormalizedRequest) uint32 {
+// rateLimitCost returns what one rate-limit permit acquisition consumes from
+// this upstream's budget: a flat 1 in the default request-count mode, or the
+// request's PRE-FLIGHT estimated vendor credit-unit cost when the upstream
+// opts into credit counting (RateLimitCountMode == "credit"). The estimate is
+// table-based -- the real cost is not known until after the call -- and a
+// 0-CU method consumes nothing. Clamped into uint32 for the Envoy hits-addend.
+func (u *Upstream) rateLimitCost(req *common.NormalizedRequest) PermitCost {
 	if u == nil || u.config == nil || u.config.RateLimitCountMode != common.RateLimitCountModeCredit {
-		return 1
+		return requestPermit
 	}
+	cost := PermitCost{Mode: common.RateLimitCountModeCredit}
 	est := u.attemptCreditUnits(req)
-	if est <= 0 {
-		return 0
+	switch {
+	case est <= 0:
+		cost.Hits = 0
+	case est > math.MaxUint32:
+		cost.Hits = math.MaxUint32
+	default:
+		cost.Hits = uint32(est)
 	}
-	if est > math.MaxUint32 {
-		return math.MaxUint32
-	}
-	return uint32(est)
+	return cost
 }
 
 // deriveSelectionReason answers "why was this upstream picked for this
@@ -593,7 +595,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitHits(nrq))
+			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitCost(nrq))
 			if err != nil {
 				common.SetTraceSpanError(span, err)
 				return nil, err
