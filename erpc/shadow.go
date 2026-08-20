@@ -80,7 +80,26 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 		// unparseable ref, a non-EVM upstream or an errored assertion all
 		// mirror as before. Only a CONCRETE height the upstream states it
 		// does not have is skipped.
-		if _, blockNumber, err := evm.ExtractBlockReferenceFromRequest(ctx, origReq); err == nil && blockNumber > 0 {
+		blockNumber := int64(0)
+		if _, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, origReq); err == nil && bn > 0 {
+			blockNumber = bn
+		} else if bn, ok := resp.EvmBlockNumber().(int64); ok && bn > 0 {
+			// BLOCK-HASH selectors carry no number in the request, so the
+			// extraction above yields nothing and the availability gate
+			// used to fail open — mirroring tip-follow traffic (indexers
+			// select by hash for reorg safety, at the chain head) to
+			// replicas that trail the head by seconds and cannot have that
+			// block YET. Measured on a live mirror: ~23/s of guaranteed
+			// "unknown hash" errors, the largest error class the shadow
+			// stream produced, invisible to request-side extraction.
+			//
+			// The PRIMARY has already answered by the time shadow runs, so
+			// its response knows the resolved block number — use it. Same
+			// fail-open shape as above: only a concrete height the
+			// upstream states it does not have is skipped.
+			blockNumber = bn
+		}
+		if blockNumber > 0 {
 			available, err := ups.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, blockNumber)
 			if err == nil && !available {
 				p.Logger.Debug().
