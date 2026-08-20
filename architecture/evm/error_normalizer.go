@@ -88,7 +88,21 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "too many results") ||
 			strings.Contains(msg, "try paginating") ||
 			(strings.Contains(msg, "maximum") && strings.Contains(msg, "blocks distance")) ||
-			strings.Contains(msg, "eth_getLogs is limited") {
+			strings.Contains(msg, "eth_getLogs is limited") ||
+			// jsonrpsee — which reth and everything built on it uses — rejects an
+			// oversized response body with "Response is too big" and carries the
+			// byte cap in Data ("Exceeded max limit of 167772160"). That is a SIZE
+			// complaint, so narrowing the block range is exactly the right remedy
+			// and the eth_getLogs / trace_filter splitters already know how. It
+			// matched none of the range-shaped phrases above, so it fell through to
+			// a generic server-side exception, which does not split and surfaces to
+			// the caller as a hard failure.
+			//
+			// Matched on "is too big" rather than the full sentence so a reworded
+			// subject ("Result is too big") still lands here, and deliberately NOT
+			// on the Data prefix "Exceeded max limit of" — that phrasing is not
+			// specific to size and would swallow rate/quota complaints.
+			strings.Contains(msg, "is too big") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -271,13 +285,38 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			}
 			return execErr
 		}
-		// Hack for some chains (Berachain) to make the message compatible with Subgraph and other tools.
-		if strings.Contains(msg, "EVM error: InvalidJump") {
+		// EVM HALTS reported as "EVM error: <HaltReason>".
+		//
+		// A halt — out of gas, invalid opcode, insufficient funds, stack
+		// overflow — is an EXECUTION outcome, exactly like a revert: the
+		// EVM ran and stopped for a protocol reason, and every upstream
+		// agrees on that verdict. It is not an endpoint failure and must
+		// not be scored as one.
+		//
+		// Without this, upstreams that use revm's own wording fell through
+		// to the generic server-side-exception branch below and every
+		// out-of-gas call in the stream was counted against the endpoint.
+		// Measured 2026-08-20 on a shadow stream: an upstream whose real
+		// failure rate was 0.01% read as 7% because its halts were graded
+		// as errors.
+		//
+		// This began as a one-line special case for "EVM error: InvalidJump"
+		// (Berachain); the prefix is what actually identifies the class, so
+		// it is matched as a prefix and the reason carried through. The
+		// InvalidJump wording stays mapped to the geth phrasing Subgraph
+		// and other tools already parse.
+		if strings.Contains(msg, "EVM error: ") {
+			normalized := "revert: " + strings.TrimSpace(
+				msg[strings.Index(msg, "EVM error: ")+len("EVM error: "):],
+			)
+			if strings.Contains(msg, "EVM error: InvalidJump") {
+				normalized = "revert: invalid jump destination"
+			}
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmReverted,
-					"revert: invalid jump destination",
+					normalized,
 					nil,
 					details,
 				),
