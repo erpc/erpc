@@ -148,6 +148,61 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 
 			// Execute the request against the shadow upstream (do bypass exclusion because we have to enforce method exclusion locally here - to ignore the shadow flag checking)
 			shadowResp, errForward := ups.Forward(shadowCtx, shadowReq, true, false)
+			// An EXECUTION EXCEPTION is an answer, not a failure.
+			//
+			// A revert or an EVM halt (out of gas, invalid opcode,
+			// insufficient funds) means the shadow upstream ran the call
+			// and reached a verdict. Scoring that as a shadow ERROR
+			// conflates "this upstream is broken" with "this contract
+			// reverts", and the second is a correct answer every upstream
+			// agrees on. Measured 2026-08-20: an upstream whose real
+			// failure rate was 0.01% read as 7% because its halts were
+			// counted here.
+			//
+			// So it is COMPARED instead. The primary's own JSON-RPC
+			// envelope carries its error, so the two verdicts can be put
+			// side by side: both reverted is identical, one reverting and
+			// the other returning is a genuine mismatch worth seeing.
+			if errForward != nil && common.HasErrorCode(errForward, common.ErrCodeEndpointExecutionException) {
+				primaryReverted := false
+				if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil && jrr.Error != nil {
+					primaryReverted = true
+				}
+				if primaryReverted {
+					telemetry.MetricShadowResponseIdenticalTotal.WithLabelValues(
+						p.Config.Id,
+						ups.VendorName(),
+						network.Label(),
+						ups.Id(),
+						method,
+					).Inc()
+					p.Logger.Trace().
+						Str("component", "shadowTraffic").
+						Str("networkId", network.Id()).
+						Str("upstreamId", ups.Id()).
+						Str("method", method).
+						Msg("shadow and primary both reached an execution verdict")
+				} else {
+					telemetry.MetricShadowResponseMismatchTotal.WithLabelValues(
+						p.Config.Id,
+						ups.VendorName(),
+						network.Label(),
+						ups.Id(),
+						method,
+						"n/a",
+						"false",
+						"false",
+					).Inc()
+					p.Logger.Warn().Err(errForward).
+						Str("component", "shadowTraffic").
+						Str("networkId", network.Id()).
+						Str("upstreamId", ups.Id()).
+						Str("method", method).
+						Object("request", shadowReq).
+						Msg("shadow reverted but primary returned a result")
+				}
+				return
+			}
 			if errForward != nil {
 				telemetry.MetricShadowResponseErrorTotal.WithLabelValues(
 					p.Config.Id,
