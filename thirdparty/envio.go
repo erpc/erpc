@@ -119,6 +119,17 @@ func (v *EnvioVendor) Name() string {
 	return "envio"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("envio", buildEnvioSettings)
+}
+
+// buildEnvioSettings parses the `envio://<rootDomain>` endpoint shorthand.
+func buildEnvioSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"rootDomain": endpoint.Host,
+	}, nil
+}
+
 func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

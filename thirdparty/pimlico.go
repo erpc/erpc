@@ -103,6 +103,17 @@ func (v *PimlicoVendor) Name() string {
 	return "pimlico"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("pimlico", buildPimlicoSettings)
+}
+
+// buildPimlicoSettings parses the `pimlico://<apiKey>` endpoint shorthand.
+func buildPimlicoSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

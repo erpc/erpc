@@ -75,6 +75,17 @@ func (v *AnkrVendor) Name() string {
 	return "ankr"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("ankr", buildAnkrSettings)
+}
+
+// buildAnkrSettings parses the `ankr://<apiKey>` endpoint shorthand.
+func buildAnkrSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *AnkrVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

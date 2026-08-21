@@ -56,6 +56,17 @@ func (v *EtherspotVendor) Name() string {
 	return "etherspot"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("etherspot", buildEtherspotSettings)
+}
+
+// buildEtherspotSettings parses the `etherspot://<apiKey>` endpoint shorthand.
+func buildEtherspotSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *EtherspotVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

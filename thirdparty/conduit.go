@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,17 @@ func CreateConduitVendor() common.Vendor {
 
 func (v *ConduitVendor) Name() string {
 	return "conduit"
+}
+
+func init() {
+	common.RegisterVendorSettingsBuilder("conduit", buildConduitSettings)
+}
+
+// buildConduitSettings parses the `conduit://<apiKey>` endpoint shorthand.
+func buildConduitSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
 }
 
 func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {

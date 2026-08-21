@@ -83,6 +83,17 @@ func (v *BlockPiVendor) Name() string {
 	return "blockpi"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("blockpi", buildBlockPiSettings)
+}
+
+// buildBlockPiSettings parses the `blockpi://<apiKey>` endpoint shorthand.
+func buildBlockPiSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *BlockPiVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

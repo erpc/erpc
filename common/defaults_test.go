@@ -2,7 +2,6 @@ package common
 
 import (
 	"bytes"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -206,71 +205,9 @@ func TestServerConfigSetDefaults_GrpcPortDefaultsToHttpPort(t *testing.T) {
 }
 
 func TestSetDefaults_UpstreamConfig(t *testing.T) {
-	t.Run("SchemeBasedUpstreamConfigConversionToProvider", func(t *testing.T) {
-		cfg := &Config{
-			Projects: []*ProjectConfig{
-				{
-					Id: "test1",
-					Upstreams: []*UpstreamConfig{
-						{
-							Endpoint: "http://rpc1.localhost",
-						},
-						{
-							Endpoint: "alchemy://some_test_api",
-						},
-						{
-							Endpoint: "http://rpc3.localhost",
-						},
-					},
-				},
-			},
-		}
-		err := cfg.SetDefaults(&DefaultOptions{})
-		assert.Nil(t, err)
-		assert.Len(t, cfg.Projects[0].Upstreams, 2)
-		assert.Len(t, cfg.Projects[0].Providers, 1)
-		assert.EqualValues(t, "alchemy", cfg.Projects[0].Providers[0].Vendor)
-		assert.ObjectsAreEqual(map[string]string{
-			"apiKey": "some_test_api",
-		}, cfg.Projects[0].Providers[0].Settings)
-		assert.EqualValues(t, "http://rpc1.localhost", cfg.Projects[0].Upstreams[0].Endpoint)
-		assert.EqualValues(t, "http://rpc3.localhost", cfg.Projects[0].Upstreams[1].Endpoint)
-	})
-
-	t.Run("OnlyProviderShouldValidateSuccessfully", func(t *testing.T) {
-		cfg := &Config{
-			Projects: []*ProjectConfig{
-				{
-					Id: "test-alchemy-only",
-					Upstreams: []*UpstreamConfig{
-						{
-							Endpoint: "alchemy://some_test_api_key",
-						},
-					},
-				},
-			},
-		}
-
-		err := cfg.SetDefaults(&DefaultOptions{})
-		assert.Nil(t, err, "SetDefaults should not return an error")
-
-		// Verify that the alchemy upstream has been converted to a provider
-		project := cfg.Projects[0]
-		assert.Len(t, project.Upstreams, 0, "Upstreams should be empty after converting alchemy upstream to provider")
-		assert.Len(t, project.Providers, 1, "Providers should contain one provider after conversion")
-
-		// Verify the provider's details
-		provider := project.Providers[0]
-		assert.Equal(t, "alchemy", provider.Vendor, "Provider vendor should be 'alchemy'")
-		expectedSettings := VendorSettings{
-			"apiKey": "some_test_api_key",
-		}
-		assert.Equal(t, expectedSettings, provider.Settings, "Provider settings should match expected values")
-
-		// Validate the configuration
-		err = project.Validate(cfg)
-		assert.Nil(t, err, "Validate should pass when only a provider is present")
-	})
+	// The `<vendor>://…` shorthand → provider conversion cases live in
+	// thirdparty/vendor_settings_test.go: the vendors register their own
+	// shorthand parsers, and this package cannot import thirdparty.
 
 	t.Run("UpstreamFailsafeMatchMethodPreservedWhenNoMatchingDefault", func(t *testing.T) {
 		// User defines failsafe for specific method, defaults define different method
@@ -1145,87 +1082,10 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 	})
 }
 
-func TestBuildProviderSettings(t *testing.T) {
-	// Goldsky shorthand: authority is the Edge secret token.
-	t.Run("goldsky with secret in authority", func(t *testing.T) {
-		endpoint, _ := url.Parse("goldsky://my-edge-secret")
-		settings, err := buildProviderSettings("goldsky", endpoint)
-		assert.NoError(t, err)
-		assert.Equal(t, "my-edge-secret", settings["secret"])
-		assert.Nil(t, settings["tier"])
-	})
-
-	t.Run("goldsky with tier query param", func(t *testing.T) {
-		endpoint, _ := url.Parse("goldsky://my-edge-secret?tier=custom")
-		settings, err := buildProviderSettings("goldsky", endpoint)
-		assert.NoError(t, err)
-		assert.Equal(t, "my-edge-secret", settings["secret"])
-		assert.Equal(t, "custom", settings["tier"])
-	})
-
-	t.Run("goldsky with secret query param fallback", func(t *testing.T) {
-		endpoint, _ := url.Parse("goldsky://?secret=query-secret")
-		settings, err := buildProviderSettings("goldsky", endpoint)
-		assert.NoError(t, err)
-		assert.Equal(t, "query-secret", settings["secret"])
-	})
-
-	// Test case for Chainstack with query parameters
-	t.Run("chainstack with filters", func(t *testing.T) {
-		endpoint, _ := url.Parse("chainstack://test-api-key?project=proj-123&organization=org-456&region=us-east-1&provider=aws&type=dedicated")
-		settings, err := buildProviderSettings("chainstack", endpoint)
-		assert.NoError(t, err)
-		assert.Equal(t, "test-api-key", settings["apiKey"])
-		assert.Equal(t, "proj-123", settings["project"])
-		assert.Equal(t, "org-456", settings["organization"])
-		assert.Equal(t, "us-east-1", settings["region"])
-		assert.Equal(t, "aws", settings["provider"])
-		assert.Equal(t, "dedicated", settings["type"])
-	})
-
-	t.Run("chainstack with partial filters", func(t *testing.T) {
-		endpoint, _ := url.Parse("chainstack://test-api-key?project=proj-123&type=shared")
-		settings, err := buildProviderSettings("chainstack", endpoint)
-		assert.NoError(t, err)
-		assert.Equal(t, "test-api-key", settings["apiKey"])
-		assert.Equal(t, "proj-123", settings["project"])
-		assert.Equal(t, "shared", settings["type"])
-		assert.Nil(t, settings["organization"])
-		assert.Nil(t, settings["region"])
-		assert.Nil(t, settings["provider"])
-	})
-
-	t.Run("chainstack without filters", func(t *testing.T) {
-		endpoint, _ := url.Parse("chainstack://test-api-key")
-		settings, err := buildProviderSettings("chainstack", endpoint)
-		assert.NoError(t, err)
-		assert.Equal(t, "test-api-key", settings["apiKey"])
-		assert.Nil(t, settings["project"])
-		assert.Nil(t, settings["organization"])
-		assert.Nil(t, settings["region"])
-		assert.Nil(t, settings["provider"])
-		assert.Nil(t, settings["type"])
-	})
-
-	// Test case for QuickNode with tag filters
-	t.Run("quicknode with filters", func(t *testing.T) {
-		endpoint, _ := url.Parse("quicknode://test-api-key?tagIds=123,456&tagLabels=production,staging")
-		settings, err := buildProviderSettings("quicknode", endpoint)
-		assert.NoError(t, err)
-		assert.Equal(t, "test-api-key", settings["apiKey"])
-		assert.Equal(t, []int{123, 456}, settings["tagIds"])
-		assert.Equal(t, []string{"production", "staging"}, settings["tagLabels"])
-	})
-
-	t.Run("quicknode without filters", func(t *testing.T) {
-		endpoint, _ := url.Parse("quicknode://test-api-key")
-		settings, err := buildProviderSettings("quicknode", endpoint)
-		assert.NoError(t, err)
-		assert.Equal(t, "test-api-key", settings["apiKey"])
-		assert.Nil(t, settings["tagIds"])
-		assert.Nil(t, settings["tagLabels"])
-	})
-}
+// NOTE: the `<vendor>://…` endpoint shorthand translation is exercised in
+// thirdparty/vendor_settings_test.go — each vendor now owns its own parser and
+// registers it with common at init time, so a test in this package (which
+// cannot import thirdparty) would see an empty builder catalog.
 
 func TestSetDefaults_ConsensusWaitCaps(t *testing.T) {
 	t.Run("populates adaptive defaults when unset", func(t *testing.T) {

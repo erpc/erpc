@@ -5,25 +5,10 @@
 // Blockdaemon vendor (erpc PR #861). It is NOT compiled inside the Satelink
 // monorepo — it targets erpc's module (github.com/erpc/erpc).
 //
-// Wiring it into erpc requires two one-line edits alongside this file:
-//
-//  1. thirdparty/vendors_registry.go — register the vendor:
-//
-//     r.Register(CreateSatelinkVendor())
-//
-//  2. common/defaults.go, buildProviderSettings() — parse the URL scheme:
-//
-//     case "satelink", "evm+satelink":
-//         // satelink://<api_key>@polygon  (authority userinfo = API key)
-//         // satelink://<api_key>          (authority host = API key)
-//         // satelink://free@polygon       ("free" = keyless free tier)
-//         settings := VendorSettings{}
-//         if endpoint.User != nil && endpoint.User.Username() != "" {
-//             settings["apiKey"] = endpoint.User.Username()
-//         } else if endpoint.Host != "" {
-//             settings["apiKey"] = endpoint.Host
-//         }
-//         return settings, nil
+// Wiring it into erpc requires one line alongside this file:
+// thirdparty/vendors_registry.go — r.Register(CreateSatelinkVendor()).
+// The `satelink://` endpoint shorthand is parsed by buildSatelinkSettings
+// below, which self-registers with common at init time.
 package thirdparty
 
 import (
@@ -69,6 +54,19 @@ func CreateSatelinkVendor() common.Vendor {
 
 func (v *SatelinkVendor) Name() string {
 	return "satelink"
+}
+
+func init() {
+	common.RegisterVendorSettingsBuilder("satelink", buildSatelinkSettings)
+}
+
+// buildSatelinkSettings parses the `satelink://<apiKey>` endpoint shorthand.
+// The authority is taken verbatim as the api key, so `satelink://free` selects
+// the keyless free tier (see satelinkFreeKeySentinel).
+func buildSatelinkSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
 }
 
 func (v *SatelinkVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {

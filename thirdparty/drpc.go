@@ -204,6 +204,17 @@ func (v *DrpcVendor) Name() string {
 	return "drpc"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("drpc", buildDrpcSettings)
+}
+
+// buildDrpcSettings parses the `drpc://<apiKey>` endpoint shorthand.
+func buildDrpcSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 // drpcCreditUnits is dRPC's published compute-unit (CU) model
 // (https://drpc.org/docs/pricing/compute-units, 2026-07-23). Since dRPC's
 // 2025-06-02 move to flat pricing there is no tier/multiplier structure: a

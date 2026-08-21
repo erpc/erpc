@@ -2,7 +2,10 @@ package common
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/rs/zerolog"
 )
@@ -13,6 +16,43 @@ type Vendor interface {
 	GenerateConfigs(ctx context.Context, logger *zerolog.Logger, baseConfig *UpstreamConfig, settings VendorSettings) ([]*UpstreamConfig, error)
 	SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings VendorSettings, networkId string) (bool, error)
 	GetVendorSpecificErrorIfAny(req *NormalizedRequest, resp *http.Response, bodyObject interface{}, details map[string]interface{}) error
+}
+
+// VendorSettingsBuilder translates an upstream endpoint written in a vendor's
+// `<vendor>://…` shorthand into the VendorSettings that same vendor reads back
+// at config-generation time. Both ends of that translation belong to the
+// vendor, so the parser lives next to the vendor implementation
+// (thirdparty/<vendor>.go) rather than in a table here — config loading only
+// needs to know THAT a vendor claims a scheme, never which vendors exist.
+type VendorSettingsBuilder func(endpoint *url.URL) (VendorSettings, error)
+
+// vendorSettingsBuilders is the catalog of shorthand parsers keyed by vendor
+// name, registered by the thirdparty package at init time (common cannot
+// import it — that would be a cycle). Same shape as the integrity check id
+// catalog in validation.go. Registration happens during package init, before
+// any config is parsed, so no locking is needed.
+var vendorSettingsBuilders = map[string]VendorSettingsBuilder{}
+
+// RegisterVendorSettingsBuilder registers a vendor's endpoint shorthand parser
+// under its Name(). Call it from the vendor file's init() — a build that links
+// the vendor can then resolve its shorthand without any VendorsRegistry having
+// been constructed yet (config defaults run long before that).
+func RegisterVendorSettingsBuilder(vendorName string, build VendorSettingsBuilder) {
+	vendorSettingsBuilders[vendorName] = build
+}
+
+// buildProviderSettings resolves the `<vendor>://…` upstream endpoint shorthand
+// into provider settings, by handing the parsed URL to whichever vendor
+// registered that name. `evm+<vendor>` is an alias of the bare vendor name.
+func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings, error) {
+	build, ok := vendorSettingsBuilders[vendorName]
+	if !ok {
+		build, ok = vendorSettingsBuilders[strings.TrimPrefix(vendorName, "evm+")]
+	}
+	if !ok {
+		return nil, fmt.Errorf("unsupported vendor name in vendor.settings: %s", vendorName)
+	}
+	return build(endpoint)
 }
 
 // CreditUnitsProvider is an OPTIONAL capability a Vendor may implement to

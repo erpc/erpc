@@ -64,6 +64,17 @@ func (v *BlockdaemonVendor) Name() string {
 	return "blockdaemon"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("blockdaemon", buildBlockdaemonSettings)
+}
+
+// buildBlockdaemonSettings parses the `blockdaemon://<apiKey>` endpoint shorthand.
+func buildBlockdaemonSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
+}
+
 func (v *BlockdaemonVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

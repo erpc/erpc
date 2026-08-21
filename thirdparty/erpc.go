@@ -32,6 +32,30 @@ func (v *ErpcVendor) Name() string {
 	return "erpc"
 }
 
+func init() {
+	common.RegisterVendorSettingsBuilder("erpc", buildErpcSettings)
+}
+
+// buildErpcSettings parses the `erpc://<host>[/<path>][?secret=]` endpoint
+// shorthand. The target is always https.
+func buildErpcSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	settings := common.VendorSettings{
+		"endpoint": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/"),
+	}
+
+	if endpoint.RawQuery != "" {
+		params, err := url.ParseQuery(endpoint.RawQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse erpc query parameters: %w", err)
+		}
+
+		if secret := params.Get("secret"); secret != "" {
+			settings["secret"] = secret
+		}
+	}
+	return settings, nil
+}
+
 func (v *ErpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

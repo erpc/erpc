@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -30,6 +31,17 @@ func CreateLlamaVendor() common.Vendor {
 
 func (v *LlamaVendor) Name() string {
 	return "llama"
+}
+
+func init() {
+	common.RegisterVendorSettingsBuilder("llama", buildLlamaSettings)
+}
+
+// buildLlamaSettings parses the `llama://<apiKey>` endpoint shorthand.
+func buildLlamaSettings(endpoint *url.URL) (common.VendorSettings, error) {
+	return common.VendorSettings{
+		"apiKey": endpoint.Host,
+	}, nil
 }
 
 func (v *LlamaVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
