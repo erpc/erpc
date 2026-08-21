@@ -374,6 +374,13 @@ func (e *executor) runAnalyzer(
 		if outcomeSent {
 			return
 		}
+		// Record the acceptance grade on the exact outcome being published,
+		// before the caller is released. Both publish paths (short-circuit
+		// and wait-all) funnel through here, so the reported grade can never
+		// be a stale provisional one from an earlier mid-collection pass.
+		if o.winner != nil {
+			originalReq.ExecState().SetConsensusPolicy(o.winner.Policy)
+		}
 		outcomeCh <- o // non-blocking: outcomeCh is buffered size 1
 		outcomeSent = true
 	}
@@ -471,24 +478,24 @@ func (e *executor) runAnalyzer(
 			return
 		}
 		// The caps mean "a usable answer is in hand; stragglers get this
-		// much longer". With minAgreement quotas, a response set that
-		// cannot yet satisfy the winner-composition quota is NOT a usable
-		// answer — arming the countdown off it would resolve the round
-		// before the required tagged upstream responds, converting every
-		// such round into a retryable composition dispute. Hold arming
-		// until the collected responses cover every quota tag with
-		// DISTINCT upstreams (resultsSatisfyAgreementQuotas dedupes by ID
-		// — the raw slice may hold the same upstream twice via hedge).
-		// Slot timeouts and the overall request timeout still bound the
-		// round. Deliberate ceiling: an errored or dissenting tagged
-		// response counts as coverage. When several tagged upstreams are
-		// in the round, an early tagged error/dissent can arm the cap and
-		// time out a slower tagged sibling that would have completed the
-		// quota — the failure is a retryable composition dispute, and the
-		// alternative (hold caps until a tagged vote joins the WINNER)
-		// would disable the caps on every genuine-disagreement round.
-		if anyAgreementQuota(e.config.requiredParticipants) &&
-			!resultsSatisfyAgreementQuotas(responses, e.config.requiredParticipants) {
+		// much longer". With acceptance quotas, a response set that cannot
+		// yet satisfy ANY configured grade is NOT a usable answer — arming
+		// the countdown off it would resolve the round before the required
+		// tagged upstream responds, converting every such round into a
+		// retryable composition dispute. Hold arming until the collected
+		// responses cover some grade's quota tags with DISTINCT upstreams
+		// (resultsSatisfyQuotas dedupes by ID — the raw slice may hold the
+		// same upstream twice via hedge). Slot timeouts and the overall
+		// request timeout still bound the round. Deliberate ceiling: an
+		// errored or dissenting tagged response counts as coverage. When
+		// several tagged upstreams are in the round, an early tagged
+		// error/dissent can arm the cap and time out a slower tagged
+		// sibling that would have completed the quota — the failure is a
+		// retryable composition dispute, and the alternative (hold caps
+		// until a tagged vote joins the WINNER) would disable the caps on
+		// every genuine-disagreement round.
+		if anyQuotaTag(e.config.acceptancePolicies) &&
+			!anyPolicyQuotasCovered(responses, e.config.acceptancePolicies) {
 			return
 		}
 		now := time.Now()
@@ -543,7 +550,7 @@ func (e *executor) runAnalyzer(
 		considerWaitCap(resp)
 
 		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
-		winner = e.determineWinner(lg, analysis)
+		winner = e.determineWinner(lg, originalReq, analysis)
 		if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
 			shortCircuited = true
 			shortCircuitReason = reason
@@ -576,7 +583,7 @@ func (e *executor) runAnalyzer(
 	// final analysis and send the winner now.
 	if analysis == nil {
 		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
-		winner = e.determineWinner(lg, analysis)
+		winner = e.determineWinner(lg, originalReq, analysis)
 	}
 	if !shortCircuited {
 		// Short-circuit branch already marked winners; mark here only
@@ -825,10 +832,20 @@ func (e *executor) executeParticipant(
 func (e *executor) shouldShortCircuit(winner *slotResult, analysis *consensusAnalysis) (string, bool) {
 	// A composition dispute is provisional while more responses can still
 	// arrive: a later response may join the leading group (or grow another
-	// group) and satisfy the minAgreement quota. Never cancel remaining
-	// participants because of it — the final pass after collection decides.
+	// group) and satisfy a quota. Never cancel remaining participants
+	// because of it — the final pass after collection decides.
 	if winner != nil && winner.Error != nil && analysis.hasRemaining() &&
 		common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute) {
+		return "", false
+	}
+	// Same reasoning one step up the cascade: a win at a RELAXED grade is
+	// provisional while responses are outstanding, because a late vote can
+	// still complete a stricter grade. Cancelling here would serve a
+	// degraded answer that the round was about to earn honestly, making the
+	// grade depend on response timing rather than on what the upstreams
+	// actually agreed. Only the first (strictest) grade may short-circuit.
+	if winner != nil && winner.Policy != "" && analysis.hasRemaining() &&
+		!e.isStrictestPolicy(winner.Policy) {
 		return "", false
 	}
 	for _, rule := range shortCircuitRules {
@@ -883,7 +900,7 @@ func markWinningParticipants(req *common.NormalizedRequest, winner *slotResult, 
 	}
 }
 
-func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalysis) *slotResult {
+func (e *executor) determineWinner(lg *zerolog.Logger, req *common.NormalizedRequest, analysis *consensusAnalysis) *slotResult {
 	// Since we know R is *common.NormalizedResponse at runtime, we can safely work with it
 	// Evaluate rules in priority order
 	for _, rule := range consensusRules {
@@ -893,7 +910,7 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 			lg.Debug().
 				Str("rule", rule.Description).
 				Msg("consensus rule matched")
-			return e.enforceWinnerComposition(lg, analysis, rule.Action(analysis))
+			return e.enforceAcceptancePolicy(lg, req, analysis, rule.Action(analysis))
 		}
 	}
 
@@ -904,12 +921,18 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 	}
 }
 
-// enforceWinnerComposition applies the winner-composition quotas
-// (`requiredParticipants[].minAgreement`) to the winner produced by the
-// rules engine. This is the single enforcement point: every rule's output
-// flows through here, so no individual rule needs to be composition-aware.
+// enforceAcceptancePolicy grades the winner produced by the rules engine
+// against the ordered acceptance policies. This is the single enforcement
+// point: every rule's output flows through here, so no individual rule needs
+// to be composition-aware.
 //
-//   - Opt-in: no-op unless some entry sets minAgreement > 0.
+// The first grade the agreeing set satisfies — and that this caller is
+// authorized to be served — wins, and its name travels with the result. A
+// relaxed grade is therefore never silently indistinguishable from a strict
+// one, and ordering (strictest first) is what makes the strict grade
+// preferred rather than any runtime state.
+//
+//   - Opt-in: no-op unless at least one grade is configured.
 //   - eth_sendRawTransaction is exempt: a broadcast accepted by any node
 //     propagates network-wide, so winner composition proves nothing there
 //     (mirrors the dedicated first-success rule/short-circuit).
@@ -917,12 +940,13 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 //     infrastructure-error groups pass through: they never assert data
 //     correctness, and converting one error into another would only mask
 //     the original failure.
-//   - A failing winner becomes ErrConsensusCompositionDispute. While
-//     responses are still outstanding the dispute is provisional — see the
-//     guard in shouldShortCircuit — because a later response can still
-//     complete the quota.
-func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consensusAnalysis, winner *slotResult) *slotResult {
-	if winner == nil || !anyAgreementQuota(e.config.requiredParticipants) {
+//   - When no grade matches the result becomes
+//     ErrConsensusCompositionDispute. While responses are still outstanding
+//     that dispute is provisional — see the guard in shouldShortCircuit —
+//     because a later response can still complete a quota.
+func (e *executor) enforceAcceptancePolicy(lg *zerolog.Logger, req *common.NormalizedRequest, analysis *consensusAnalysis, winner *slotResult) *slotResult {
+	policies := e.config.acceptancePolicies
+	if winner == nil || len(policies) == 0 {
 		return winner
 	}
 	if isTxBroadcastMethod(analysis.method) {
@@ -932,51 +956,92 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 	if g == nil || g.ResponseType == ResponseTypeInfrastructureError {
 		return winner
 	}
-	if resultsSatisfyAgreementQuotas(e.agreeingResults(analysis, g), e.config.requiredParticipants) {
-		return winner
-	}
-	// A quota tag matching zero participants in the ENTIRE round (not just
-	// the winning group) means the config is structurally unable to ever
-	// satisfy the quota right now — a typo'd tag or every tagged upstream
-	// down. That is an outage, not a routine dispute: escalate to Warn so
-	// operators see it without debug logging. Only when the round is
-	// complete (nothing can still arrive): this gate also runs on every
-	// mid-collection analysis, where a slower tagged upstream simply hasn't
-	// answered yet — warning there would fire on every healthy
-	// mixed-latency round.
-	for _, req := range e.config.requiredParticipants {
-		if req == nil || req.MinAgreement <= 0 {
+
+	agreeing := e.agreeingResults(analysis, g)
+	user := req.User()
+	var withheld []string
+	for _, p := range policies {
+		if !p.satisfiedBy(agreeing) {
 			continue
 		}
-		matchedAnywhere := false
-		for _, og := range analysis.groups {
-			for _, r := range og.Results {
-				if r != nil && r.Upstream != nil && upstreamMatchesTag(r.Upstream, req.Tag) {
-					matchedAnywhere = true
-					break
-				}
-			}
-			if matchedAnywhere {
-				break
-			}
+		// The round resolves at this grade. Whether THIS caller may receive
+		// it is a separate, authorization question: an unauthorized caller
+		// gets a dispute rather than a lower-graded answer, and evaluation
+		// stops here either way — a caller must never be served a grade
+		// weaker than the one the round actually achieved.
+		if !user.MayBeServedConsensusPolicy(p.name) {
+			withheld = append(withheld, p.name)
+			break
 		}
-		if !matchedAnywhere && !analysis.hasRemaining() {
-			lg.Warn().
-				Str("tag", req.Tag).
-				Int("minAgreement", req.MinAgreement).
-				Msg("minAgreement quota tag matched ZERO participants this round — check for a typo'd tag or unavailable tagged upstreams; consensus cannot succeed while this persists")
+		winner.Policy = p.name
+		return winner
+	}
+
+	e.warnOnStructurallyUnsatisfiableQuotas(lg, analysis, policies)
+
+	if len(withheld) > 0 {
+		lg.Debug().
+			Strs("withheldPolicies", withheld).
+			Msg("consensus resolved at an acceptance grade this caller is not authorized to receive")
+		return &slotResult{
+			Error: common.NewErrConsensusCompositionDispute(
+				fmt.Sprintf("consensus resolved under acceptance policy %q, which this caller is not authorized to be served", withheld[0]),
+				analysis.participants(),
+				nil,
+			),
 		}
 	}
+
 	lg.Debug().
 		Str("hash", g.Hash).
 		Int("count", g.Count).
-		Msg("winning group does not satisfy minAgreement composition quotas")
+		Msg("agreeing upstreams do not satisfy any configured acceptance policy")
 	return &slotResult{
 		Error: common.NewErrConsensusCompositionDispute(
-			"winning group does not satisfy requiredParticipants minAgreement quotas",
+			"agreeing upstreams do not satisfy any configured acceptance policy",
 			analysis.participants(),
 			nil,
 		),
+	}
+}
+
+// warnOnStructurallyUnsatisfiableQuotas escalates the case where a quota tag
+// matched ZERO participants in the ENTIRE round (not just the winning group):
+// a typo'd tag or every tagged upstream down means the grade cannot be
+// satisfied at all right now. That is an outage, not a routine dispute, so it
+// deserves Warn rather than debug-only visibility. Only reported once the
+// round is complete — this gate also runs on every mid-collection analysis,
+// where a slower tagged upstream simply has not answered yet, and warning
+// there would fire on every healthy mixed-latency round.
+func (e *executor) warnOnStructurallyUnsatisfiableQuotas(lg *zerolog.Logger, analysis *consensusAnalysis, policies []*acceptancePolicy) {
+	if analysis.hasRemaining() {
+		return
+	}
+	for _, p := range policies {
+		for _, q := range p.quotas {
+			if q == nil || q.MinAgreement <= 0 {
+				continue
+			}
+			matchedAnywhere := false
+			for _, og := range analysis.groups {
+				for _, r := range og.Results {
+					if r != nil && r.Upstream != nil && upstreamMatchesTag(r.Upstream, q.Tag) {
+						matchedAnywhere = true
+						break
+					}
+				}
+				if matchedAnywhere {
+					break
+				}
+			}
+			if !matchedAnywhere {
+				lg.Warn().
+					Str("policy", p.name).
+					Str("tag", q.Tag).
+					Int("minAgreement", q.MinAgreement).
+					Msg("acceptance policy quota tag matched ZERO participants this round — check for a typo'd tag or unavailable tagged upstreams; this grade cannot be satisfied while this persists")
+			}
+		}
 	}
 }
 
@@ -1586,6 +1651,13 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 		common.SetTraceSpanError(span, result.Error)
 	} else {
 		span.SetStatus(codes.Ok, "Consensus successful")
+	}
+
+	if result != nil && result.Policy != "" {
+		telemetry.MetricConsensusPolicyServed.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, result.Policy, labels.userId, labels.agentName).
+			Inc()
+		span.SetAttributes(attribute.String("consensus.policy", result.Policy))
 	}
 
 	span.SetAttributes(

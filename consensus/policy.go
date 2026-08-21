@@ -57,6 +57,14 @@ type config struct {
 	maxWaitOnResult         *common.AdaptiveDuration
 	maxWaitOnEmpty          *common.AdaptiveDuration
 	requiredParticipants    []*common.ConsensusRequiredParticipant
+	// acceptancePolicyConfigs are the acceptance grades as configured;
+	// compile() turns them (or the requiredParticipants shorthand) into
+	// acceptancePolicies.
+	acceptancePolicyConfigs []*common.ConsensusAcceptancePolicy
+	// acceptancePolicies are the ordered acceptance grades in evaluation
+	// order. Nil = no composition requirement (gate is a no-op). Derived —
+	// always produced by compile(), never set directly.
+	acceptancePolicies []*acceptancePolicy
 }
 
 // builder is the internal builder used by NewConsensus.
@@ -136,9 +144,17 @@ func (b *builder) WithRequiredParticipants(v []*common.ConsensusRequiredParticip
 	return b
 }
 
+// WithAcceptancePolicies stores the raw acceptance grades. They are compiled
+// into evaluation order by config.compile().
+func (b *builder) WithAcceptancePolicies(v []*common.ConsensusAcceptancePolicy) *builder {
+	b.cfg.acceptancePolicyConfigs = v
+	return b
+}
+
 // build snapshots the config and constructs the runtime consensus policy.
 func (b *builder) build() *consensusPolicy {
 	hCopy := b.cfg
+	hCopy.compile()
 	log := hCopy.logger.With().Str("component", "consensus").Logger()
 
 	disputeLevel := hCopy.disputeLogLevel
