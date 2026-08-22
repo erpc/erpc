@@ -490,6 +490,20 @@ export interface GrpcConnectorConfig {
   headers?: { [key: string]: string};
   getTimeout?: Duration;
   /**
+   * NetworkId pins every server in this connector to one network and skips
+   * the eth_chainId bootstrap probe.
+   * Required for SVM. Solana has no numeric chain id — cluster identity is
+   * the genesis hash — and eth_chainId returns Unimplemented, so the probe
+   * fails and no client is ever registered. Probing GetGenesisHash instead
+   * is not an option either: the BDS reader deliberately does not publish
+   * one until it can verify its own, so identity here has to be asserted by
+   * configuration rather than discovered.
+   * Leave unset for EVM to keep the probe, which also arms the per-request
+   * chain-identity assertion that catches an endpoint cross-wired LATER — a
+   * static binding cannot.
+   */
+  networkId?: string;
+  /**
    * PoolSize is the number of independent gRPC connections opened to each
    * backing server, selected round-robin per request. Larger values raise the
    * concurrent-stream ceiling and shrink the blast radius of a single wedged
@@ -959,6 +973,15 @@ export interface EvmUpstreamConfig {
    * misleading and causes circuit breaker false positives.
    */
   skipSyncingCheck?: boolean;
+  /**
+   * HeadLagToleranceBlocks lets the block-availability gate send requests pinned up to N blocks
+   * ABOVE this upstream's observed head instead of rerouting them as stale. Useful for upstreams
+   * that follow the chain tightly but become able to serve a new block a moment after it is
+   * announced elsewhere (they hold or briefly wait for the block internally): with a hard
+   * head comparison every request pinned at head+1 in that moment is rerouted even though the
+   * upstream would have answered it. 0 (default) keeps the exact head comparison.
+   */
+  headLagToleranceBlocks?: number /* int64 */;
   /**
    * Deprecated: never read at runtime. Configure data integrity via the network
    * `integrity` block instead. Retained only so existing YAML still parses.
