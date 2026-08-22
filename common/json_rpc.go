@@ -1478,24 +1478,63 @@ func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
 	return current, nil
 }
 
+// hashValue writes a deterministic, structure-preserving encoding of v into h,
+// used to derive request-identity keys (CacheHash / in-flight multiplexing).
+//
+// The old encoding recursively flattened params into the hash stream with no
+// type tags, lengths, or container markers, so structurally distinct requests
+// collapsed to the same byte stream and therefore the same key (#1034):
+// topics [[A,B]] and [A,B] were indistinguishable, "ab"+"c" aliased "a"+"bc",
+// and %f rounded 25.0000001 to "25.000000". Because that key drives both the
+// persistent cache and in-flight multiplexing, a follower request could be
+// handed the leader's response.
+//
+// This encoding is injective across JSON value shapes: every value carries a
+// one-byte type tag, every string/number/container is length- or count-
+// delimited, and object keys are emitted in sorted order. Two self-delimiting
+// tokens cannot concatenate into a third, so different params can never produce
+// the same bytes.
+//
+//	null    -> "N"
+//	bool    -> "B0" | "B1"
+//	number  -> "F" <len> ":" <shortest-round-tripping decimal>
+//	string  -> "S" <len> ":" <lowercased bytes>
+//	array   -> "A" <count> ":" <encoded element>...
+//	object  -> "O" <count> ":" ("K" <len> ":" <key>) <encoded value> ...
+//
+// String params are lowercased, preserving the long-standing EVM hex
+// normalization: a checksummed address and its lowercase form are the same
+// request and share a cache entry / multiplex group. The type tags make that
+// safe against cross-type aliasing that lowercasing alone would create — the
+// string "true" (S4:true) and the boolean true (B1) no longer collide. (SVM
+// needs the opposite, case-preserving key; see svmRequestKey, which is why it
+// does not route through this function.)
 func hashValue(h io.Writer, v interface{}) error {
 	switch t := v.(type) {
+	case nil:
+		_, err := io.WriteString(h, "N")
+		return err
 	case bool:
-		_, err := io.WriteString(h, fmt.Sprintf("%t", t))
+		s := "B0"
+		if t {
+			s = "B1"
+		}
+		_, err := io.WriteString(h, s)
 		return err
 	case int:
-		_, err := io.WriteString(h, fmt.Sprintf("%d", t))
-		return err
+		return writeHashToken(h, 'F', strconv.FormatInt(int64(t), 10))
 	case float64:
-		_, err := io.WriteString(h, fmt.Sprintf("%f", t))
-		return err
+		// 'g'/-1 emits the shortest decimal that round-trips to the same
+		// float64, preserving full precision (25 vs 25.0000001) unlike %f.
+		return writeHashToken(h, 'F', strconv.FormatFloat(t, 'g', -1, 64))
 	case string:
-		_, err := io.WriteString(h, strings.ToLower(t))
-		return err
+		return writeHashToken(h, 'S', strings.ToLower(t))
 	case []interface{}:
+		if err := writeHashHeader(h, 'A', len(t)); err != nil {
+			return err
+		}
 		for _, i := range t {
-			err := hashValue(h, i)
-			if err != nil {
+			if err := hashValue(h, i); err != nil {
 				return err
 			}
 		}
@@ -1506,22 +1545,51 @@ func hashValue(h io.Writer, v interface{}) error {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+		if err := writeHashHeader(h, 'O', len(keys)); err != nil {
+			return err
+		}
 		for _, k := range keys {
-			if _, err := h.Write([]byte(k)); err != nil {
+			// Keys are emitted verbatim (not lowercased): they are JSON-RPC
+			// field names, not EVM hex values. Length-prefixing keeps a key
+			// from bleeding into the following value.
+			if err := writeHashToken(h, 'K', k); err != nil {
 				return err
 			}
-			err := hashValue(h, t[k])
-			if err != nil {
+			if err := hashValue(h, t[k]); err != nil {
 				return err
 			}
 		}
 		return nil
-	case nil:
-		_, err := h.Write([]byte("null"))
-		return err
 	default:
 		return fmt.Errorf("unsupported type for value during hash: %+v", v)
 	}
+}
+
+// writeHashHeader writes a container header — the type tag, the element count,
+// and a ':' terminator (e.g. "A3:" or "O2:") — into the hash stream.
+func writeHashHeader(h io.Writer, tag byte, n int) error {
+	var buf [24]byte
+	b := append(buf[:0], tag)
+	b = strconv.AppendInt(b, int64(n), 10)
+	b = append(b, ':')
+	_, err := h.Write(b)
+	return err
+}
+
+// writeHashToken writes a length-delimited leaf token — the type tag, the byte
+// length of s, a ':' terminator, and then s itself. The length prefix is what
+// makes adjacent tokens unambiguous: "ab"+"c" (S2:abS1:c) can never match
+// "a"+"bc" (S1:aS2:bc).
+func writeHashToken(h io.Writer, tag byte, s string) error {
+	var buf [24]byte
+	b := append(buf[:0], tag)
+	b = strconv.AppendInt(b, int64(len(s)), 10)
+	b = append(b, ':')
+	if _, err := h.Write(b); err != nil {
+		return err
+	}
+	_, err := io.WriteString(h, s)
+	return err
 }
 
 // findUpstreamsExhausted locates the ErrUpstreamsExhausted bundle that carries
