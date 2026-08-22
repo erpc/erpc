@@ -1412,14 +1412,19 @@ func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
 		}
 	}
 
-	hasher := sha256.New()
+	// Encode into a single pooled buffer, then hash once. Streaming each token
+	// straight into an io.Writer forces the small length/tag scratch to escape
+	// to the heap on every token; a concrete *bytes.Buffer lets the digits be
+	// written byte-by-byte with no per-token allocation. This mirrors the
+	// pooled-buffer pattern canonicalizeTo already uses for responses.
+	buf := util.BorrowBuf()
+	defer util.ReturnBuf(buf)
 	for _, p := range r.Params {
-		err := hashValue(hasher, p)
-		if err != nil {
+		if err := hashValue(buf, p); err != nil {
 			return "", err
 		}
 	}
-	b := sha256.Sum256(hasher.Sum(nil))
+	b := sha256.Sum256(buf.Bytes())
 	ch := fmt.Sprintf("%s:%x", r.Method, b)
 	r.cacheHash.Store(ch)
 	return ch, nil
@@ -1509,32 +1514,33 @@ func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
 // string "true" (S4:true) and the boolean true (B1) no longer collide. (SVM
 // needs the opposite, case-preserving key; see svmRequestKey, which is why it
 // does not route through this function.)
-func hashValue(h io.Writer, v interface{}) error {
+func hashValue(buf *bytes.Buffer, v interface{}) error {
 	switch t := v.(type) {
 	case nil:
-		_, err := io.WriteString(h, "N")
-		return err
+		buf.WriteByte('N')
+		return nil
 	case bool:
-		s := "B0"
 		if t {
-			s = "B1"
+			buf.WriteString("B1")
+		} else {
+			buf.WriteString("B0")
 		}
-		_, err := io.WriteString(h, s)
-		return err
+		return nil
 	case int:
-		return writeHashToken(h, 'F', strconv.FormatInt(int64(t), 10))
+		writeHashToken(buf, 'F', strconv.FormatInt(int64(t), 10))
+		return nil
 	case float64:
 		// 'g'/-1 emits the shortest decimal that round-trips to the same
 		// float64, preserving full precision (25 vs 25.0000001) unlike %f.
-		return writeHashToken(h, 'F', strconv.FormatFloat(t, 'g', -1, 64))
+		writeHashToken(buf, 'F', strconv.FormatFloat(t, 'g', -1, 64))
+		return nil
 	case string:
-		return writeHashToken(h, 'S', strings.ToLower(t))
+		writeHashToken(buf, 'S', strings.ToLower(t))
+		return nil
 	case []interface{}:
-		if err := writeHashHeader(h, 'A', len(t)); err != nil {
-			return err
-		}
+		writeHashHeader(buf, 'A', len(t))
 		for _, i := range t {
-			if err := hashValue(h, i); err != nil {
+			if err := hashValue(buf, i); err != nil {
 				return err
 			}
 		}
@@ -1545,17 +1551,13 @@ func hashValue(h io.Writer, v interface{}) error {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		if err := writeHashHeader(h, 'O', len(keys)); err != nil {
-			return err
-		}
+		writeHashHeader(buf, 'O', len(keys))
 		for _, k := range keys {
 			// Keys are emitted verbatim (not lowercased): they are JSON-RPC
 			// field names, not EVM hex values. Length-prefixing keeps a key
 			// from bleeding into the following value.
-			if err := writeHashToken(h, 'K', k); err != nil {
-				return err
-			}
-			if err := hashValue(h, t[k]); err != nil {
+			writeHashToken(buf, 'K', k)
+			if err := hashValue(buf, t[k]); err != nil {
 				return err
 			}
 		}
@@ -1566,30 +1568,43 @@ func hashValue(h io.Writer, v interface{}) error {
 }
 
 // writeHashHeader writes a container header — the type tag, the element count,
-// and a ':' terminator (e.g. "A3:" or "O2:") — into the hash stream.
-func writeHashHeader(h io.Writer, tag byte, n int) error {
-	var buf [24]byte
-	b := append(buf[:0], tag)
-	b = strconv.AppendInt(b, int64(n), 10)
-	b = append(b, ':')
-	_, err := h.Write(b)
-	return err
+// and a ':' terminator (e.g. "A3:" or "O2:").
+func writeHashHeader(buf *bytes.Buffer, tag byte, n int) {
+	buf.WriteByte(tag)
+	writeUint(buf, uint64(n))
+	buf.WriteByte(':')
 }
 
 // writeHashToken writes a length-delimited leaf token — the type tag, the byte
 // length of s, a ':' terminator, and then s itself. The length prefix is what
 // makes adjacent tokens unambiguous: "ab"+"c" (S2:abS1:c) can never match
 // "a"+"bc" (S1:aS2:bc).
-func writeHashToken(h io.Writer, tag byte, s string) error {
-	var buf [24]byte
-	b := append(buf[:0], tag)
-	b = strconv.AppendInt(b, int64(len(s)), 10)
-	b = append(b, ':')
-	if _, err := h.Write(b); err != nil {
-		return err
+func writeHashToken(buf *bytes.Buffer, tag byte, s string) {
+	buf.WriteByte(tag)
+	writeUint(buf, uint64(len(s)))
+	buf.WriteByte(':')
+	buf.WriteString(s)
+}
+
+// writeUint appends the decimal digits of n to buf one byte at a time. The
+// scratch array is indexed only (never passed as a slice to an escaping call),
+// so it stays on the stack — this is what keeps the encoder allocation-free per
+// token, unlike strconv.AppendInt into a heap-escaping buffer.
+func writeUint(buf *bytes.Buffer, n uint64) {
+	if n == 0 {
+		buf.WriteByte('0')
+		return
 	}
-	_, err := io.WriteString(h, s)
-	return err
+	var tmp [20]byte
+	i := len(tmp)
+	for n > 0 {
+		i--
+		tmp[i] = byte('0' + n%10)
+		n /= 10
+	}
+	for ; i < len(tmp); i++ {
+		buf.WriteByte(tmp[i])
+	}
 }
 
 // findUpstreamsExhausted locates the ErrUpstreamsExhausted bundle that carries
