@@ -490,6 +490,20 @@ export interface GrpcConnectorConfig {
   headers?: { [key: string]: string};
   getTimeout?: Duration;
   /**
+   * NetworkId pins every server in this connector to one network and skips
+   * the eth_chainId bootstrap probe.
+   * Required for SVM. Solana has no numeric chain id — cluster identity is
+   * the genesis hash — and eth_chainId returns Unimplemented, so the probe
+   * fails and no client is ever registered. Probing GetGenesisHash instead
+   * is not an option either: the BDS reader deliberately does not publish
+   * one until it can verify its own, so identity here has to be asserted by
+   * configuration rather than discovered.
+   * Leave unset for EVM to keep the probe, which also arms the per-request
+   * chain-identity assertion that catches an endpoint cross-wired LATER — a
+   * static binding cannot.
+   */
+  networkId?: string;
+  /**
    * PoolSize is the number of independent gRPC connections opened to each
    * backing server, selected round-robin per request. Larger values raise the
    * concurrent-stream ceiling and shrink the blast radius of a single wedged
@@ -885,6 +899,16 @@ export interface ShadowUpstreamConfig {
   enabled: boolean;
   sampleRate?: number /* float64 */;
   ignoreFields?: { [key: string]: string[]};
+  /**
+   * PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
+   * concrete height before forwarding: the primary's resolved block number when its response
+   * carries one, else the network's tracked head at mirror time. Without it the shadow executes
+   * the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
+   * (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
+   * reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
+   * requests, exactly as before.
+   */
+  pinBlockTag?: boolean;
 }
 /**
  * Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
