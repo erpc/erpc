@@ -899,6 +899,16 @@ export interface ShadowUpstreamConfig {
   enabled: boolean;
   sampleRate?: number /* float64 */;
   ignoreFields?: { [key: string]: string[]};
+  /**
+   * PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
+   * concrete height before forwarding: the primary's resolved block number when its response
+   * carries one, else the network's tracked head at mirror time. Without it the shadow executes
+   * the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
+   * (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
+   * reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
+   * requests, exactly as before.
+   */
+  pinBlockTag?: boolean;
 }
 /**
  * Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
