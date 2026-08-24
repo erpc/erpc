@@ -90,6 +90,23 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 
 	resp.RUnlock()
 
+	// The SERVING upstream's polled head, read once at mirror entry: the
+	// closest observable proxy for the height at which the primary just
+	// evaluated a "latest" tag (used by the PinBlockTag rewrite below when
+	// the response body carries no number of its own). Entry is the right
+	// moment: only a goroutine spawn and the hash above separate it from
+	// the primary's answer — µs-to-ms against a poller that updates ~1/s —
+	// while a read deeper in the per-upstream fan-out would drift further
+	// for no gain.
+	primaryHead := int64(0)
+	if ups := resp.Upstream(); ups != nil {
+		if evmUps, ok := ups.(common.EvmUpstream); ok {
+			if sp := evmUps.EvmStatePoller(); sp != nil {
+				primaryHead = sp.LatestBlock()
+			}
+		}
+	}
+
 	// Fire shadow requests concurrently
 	for _, ups := range shadowUpstreams {
 		allowed, err := ups.ShouldHandleMethod(method)
@@ -192,16 +209,20 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			// it at a different head, so any read of volatile state diverges by
 			// construction and reports a mismatch that says nothing about
 			// correctness. The primary's resolved number is exact when its
-			// response carries one; the network's tracked head at mirror time
-			// is the closest available approximation otherwise. Fail-open on
-			// every gap, like the rest of this path.
+			// response carries one; otherwise the SERVING upstream's own polled
+			// head, captured synchronously at forward time, is the closest
+			// observable proxy. Never a network-wide head: that is the MAX over
+			// all upstreams, so whenever any other vendor leads the primary it
+			// pins a height the primary never evaluated — a manufactured
+			// mismatch on every block boundary. No usable height means no pin
+			// (fail-open, like every other guard on this path).
 			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag {
 				if idx, ok := shadowTagParamIndex[method]; ok {
 					height := int64(0)
 					if bn, ok2 := resp.EvmBlockNumber().(int64); ok2 && bn > 0 {
 						height = bn
-					} else if network != nil {
-						height = network.EvmHighestLatestBlockNumber(shadowCtx)
+					} else if primaryHead > 0 {
+						height = primaryHead
 					}
 					if height > 0 {
 						if pinned, changed := pinBlockTagInBody(shadowReq.Body(), idx, height); changed {
