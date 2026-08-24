@@ -22,9 +22,24 @@ type IntegritySettings struct {
 	Checks map[string]*IntegrityCheckConfig `yaml:"checks,omitempty" json:"checks,omitempty"`
 	// Budget caps the canonical force-fetches the authoritative tier issues.
 	Budget *IntegrityBudgetConfig `yaml:"budget,omitempty" json:"budget,omitempty"`
+	// AutoCorrectWhenPossible controls whether a violation triggers a hunt for a
+	// validated replacement (retry/hedge against other upstreams) BEFORE the
+	// InvalidBehavior verdict applies. Default TRUE (nil = true). The two knobs
+	// are orthogonal on purpose:
+	//
+	//   autoCorrectWhenPossible | invalidBehavior | on violation
+	//   ------------------------+-----------------+---------------------------------
+	//   true                    | recordOnly      | seek replacement; serve it if one
+	//                           |                 | validates; exhausted -> serve the
+	//                           |                 | flagged ORIGINAL (never an error)
+	//   true                    | hardReject      | seek replacement; exhausted -> error
+	//   false                   | recordOnly      | serve original immediately + record
+	//   false                   | hardReject      | fail immediately, no alternates
+	AutoCorrectWhenPossible *bool `yaml:"autoCorrectWhenPossible,omitempty" json:"autoCorrectWhenPossible,omitempty"`
 	// InvalidBehavior is the per-finality verdict for reorg-sensitive checks,
-	// where invalid data is ambiguously a node bug or a reorg. Deterministic
-	// checks ignore it and always reject.
+	// where invalid data is ambiguously a node bug or a reorg: recordOnly |
+	// hardReject | off. Deterministic checks ignore it and always hardReject
+	// (override per check via checks.<id>.onFailure).
 	InvalidBehavior *IntegrityInvalidBehaviorConfig `yaml:"invalidBehavior,omitempty" json:"invalidBehavior,omitempty"`
 	// ReorgWindow is how many blocks back from the tip the integrity ChainView
 	// keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
@@ -144,7 +159,7 @@ type IntegrityCheckConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	// Params are check-specific knobs (e.g. bloom equality-vs-superset).
 	Params map[string]string `yaml:"params,omitempty" json:"params,omitempty"`
-	// OnFailure overrides this check's failure mode: reject | soft-flag.
+	// OnFailure overrides this check's failure mode: recordOnly | hardReject.
 	OnFailure string `yaml:"onFailure,omitempty" json:"onFailure,omitempty"`
 }
 
@@ -155,8 +170,9 @@ type IntegrityBudgetConfig struct {
 }
 
 // IntegrityInvalidBehaviorConfig is the per-finality verdict for reorg-sensitive
-// checks: reject | soft-flag | off, split by whether the response's block is
-// finalized.
+// checks: recordOnly | hardReject | off, split by whether the response's block
+// is finalized. The verdict describes what happens when no valid answer is
+// obtainable; whether a replacement is sought first is AutoCorrectWhenPossible.
 type IntegrityInvalidBehaviorConfig struct {
 	Finalized   string `yaml:"finalized,omitempty" json:"finalized,omitempty"`
 	Unfinalized string `yaml:"unfinalized,omitempty" json:"unfinalized,omitempty"`
@@ -196,6 +212,9 @@ func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
 	if over.ObserveOnly != nil {
 		out.ObserveOnly = over.ObserveOnly
 	}
+	if over.AutoCorrectWhenPossible != nil {
+		out.AutoCorrectWhenPossible = over.AutoCorrectWhenPossible
+	}
 	if over.MisbehaviorsDestination != nil {
 		out.MisbehaviorsDestination = over.MisbehaviorsDestination
 	}
@@ -225,13 +244,14 @@ func (c *IntegritySettings) Copy() *IntegritySettings {
 		return nil
 	}
 	copied := &IntegritySettings{
-		Level:           c.Level,
-		Budget:          c.Budget.Copy(),
-		InvalidBehavior: c.InvalidBehavior.Copy(),
-		ReorgWindow:     c.ReorgWindow,
-		ObserveOnly:     c.ObserveOnly,
-		Follow:          c.Follow.Copy(),
-		StateProbe:      c.StateProbe.Copy(),
+		Level:                   c.Level,
+		Budget:                  c.Budget.Copy(),
+		InvalidBehavior:         c.InvalidBehavior.Copy(),
+		ReorgWindow:             c.ReorgWindow,
+		ObserveOnly:             c.ObserveOnly,
+		AutoCorrectWhenPossible: c.AutoCorrectWhenPossible,
+		Follow:                  c.Follow.Copy(),
+		StateProbe:              c.StateProbe.Copy(),
 		// Shared, not deep-copied: destination configs are read-only after load.
 		MisbehaviorsDestination: c.MisbehaviorsDestination,
 	}

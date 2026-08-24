@@ -90,7 +90,7 @@ non-standard encoding). Reference: https://docs.erpc.cloud/config/failsafe/integ
 	prompt={`I want the strongest data-integrity guarantees on my mainnet network, including
 force-fetching the canonical block to corroborate single receipts. Set integrity level
 to authoritative with a sensible budget, and explain the per-finality invalidBehavior
-(reject on finalized, soft-flag on unfinalized). Reference:
+(hardReject on finalized, recordOnly on unfinalized) and autoCorrectWhenPossible. Reference:
 https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 />
 
@@ -200,16 +200,21 @@ One knob picks a preset over the check catalog. Each level is a superset of the 
 	yaml={`integrity:
   level: authoritative              # off | intrinsic | corroborated | authoritative
 
-  # Per-finality verdict for the reorg-sensitive checks only. At the tip you can't
-  # tell a node bug from a reorg, so unfinalized mismatches are recorded, not rejected.
+  # Whether a violation hunts for a validated replacement (retry other
+  # upstreams) BEFORE the invalidBehavior verdict applies. Default true.
+  autoCorrectWhenPossible: true
+
+  # Per-finality verdict for the reorg-sensitive checks only — what happens
+  # when no valid answer is obtainable. At the tip you can't tell a node bug
+  # from a reorg, so unfinalized mismatches are recorded, not rejected.
   invalidBehavior:
-    finalized: reject               # reject | soft-flag | off
-    unfinalized: soft-flag
+    finalized: hardReject           # recordOnly | hardReject | off
+    unfinalized: recordOnly
 
   # Override individual checks by id (enable / disable / params / onFailure).
   checks:
     receiptVsBlock: { enabled: false }          # drop one authoritative check
-    bloomMatch:     { onFailure: soft-flag }     # record instead of reject
+    bloomMatch:     { onFailure: recordOnly }    # record instead of reject
     txHashUniqueness: { params: { strict: "true" } }  # the one check with a param
 
   # Cost cap on the canonical force-fetches the authoritative tier issues.
@@ -218,10 +223,11 @@ One knob picks a preset over the check catalog. Each level is a superset of the 
     maxConcurrent: 8`}
 	ts={`integrity: {
   level: "authoritative",
-  invalidBehavior: { finalized: "reject", unfinalized: "soft-flag" },
+  autoCorrectWhenPossible: true,
+  invalidBehavior: { finalized: "hardReject", unfinalized: "recordOnly" },
   checks: {
     receiptVsBlock: { enabled: false },
-    bloomMatch: { onFailure: "soft-flag" },
+    bloomMatch: { onFailure: "recordOnly" },
     txHashUniqueness: { params: { strict: "true" } },
   },
   budget: { maxPerSecond: 50, maxConcurrent: 8 },
@@ -280,8 +286,24 @@ they always reject. A handful are **reorg-sensitive** (`parentHashLinkage`,
 tip a disagreement may be a benign reorg rather than a bug. `invalidBehavior` decides
 what to do for those, by the block's finality (read from the upstream state poller):
 
-- `finalized` → default `reject` (a finalized block can't reorg; a mismatch is corruption).
-- `unfinalized` → default `soft-flag` (record a metric/log, still serve — it may be a reorg). `off` skips the check (and any force-fetch) on the hot tip entirely.
+- `finalized` → default `hardReject` (a finalized block can't reorg; a mismatch is corruption).
+- `unfinalized` → default `recordOnly` (record a metric/log, still serve — it may be a reorg). `off` skips the check (and any force-fetch) on the hot tip entirely.
+
+The verdict is only half the policy. **`autoCorrectWhenPossible`** (default `true`)
+decides whether a violation first hunts for a **validated replacement** — the
+rejection routes the request to another upstream, whose response runs the same
+checks. The two knobs compose:
+
+| `autoCorrectWhenPossible` | verdict | on violation |
+|---|---|---|
+| `true` | `recordOnly` | seek a replacement; serve it if one validates; **exhausted → serve the flagged original** (never a client error; counted in `erpc_integrity_fallback_served_total`) |
+| `true` | `hardReject` | seek a replacement; exhausted → error (correct-or-die) |
+| `false` | `recordOnly` | serve the original immediately + record; no correction attempted |
+| `false` | `hardReject` | fail immediately; no alternates tried |
+
+The vocabulary is exactly `recordOnly | hardReject | off` — anything else
+(including the pre-release `reject`/`soft-flag` words) fails config validation
+loudly rather than aliasing silently.
 
 ### Rolling out safely: `observeOnly`
 

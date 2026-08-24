@@ -1698,10 +1698,12 @@ func RegisterIntegrityCheckID(id string) { integrityCheckIDs[id] = struct{}{} }
 
 // isIntegrityBehavior mirrors the runtime behavior vocabulary (evm
 // parseBehavior): unrecognized values are silently ignored at runtime, so the
-// only place a typo can be caught is here.
+// only place a typo can be caught is here. The vocabulary is EXACTLY
+// recordOnly | hardReject | off — the pre-release reject/soft-flag words are
+// deliberately NOT accepted (fail loudly, no silent aliasing).
 func isIntegrityBehavior(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "reject", "error", "hard-fail", "soft-flag", "softflag", "record", "warn", "off", "ignore", "none":
+	case "recordonly", "hardreject", "off":
 		return true
 	}
 	return false
@@ -1755,15 +1757,15 @@ func (s *IntegritySettings) validate() error {
 			}
 		}
 		if oc != nil && oc.OnFailure != "" && !isIntegrityBehavior(oc.OnFailure) {
-			return fmt.Errorf("integrity.checks.%s.onFailure '%s' is invalid (an unknown value silently keeps the default), must be one of: reject | soft-flag | off", id, oc.OnFailure)
+			return fmt.Errorf("integrity.checks.%s.onFailure '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", id, oc.OnFailure)
 		}
 	}
 	if ib := s.InvalidBehavior; ib != nil {
 		if ib.Finalized != "" && !isIntegrityBehavior(ib.Finalized) {
-			return fmt.Errorf("integrity.invalidBehavior.finalized '%s' is invalid (an unknown value silently keeps the default), must be one of: reject | soft-flag | off", ib.Finalized)
+			return fmt.Errorf("integrity.invalidBehavior.finalized '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", ib.Finalized)
 		}
 		if ib.Unfinalized != "" && !isIntegrityBehavior(ib.Unfinalized) {
-			return fmt.Errorf("integrity.invalidBehavior.unfinalized '%s' is invalid (an unknown value silently keeps the default), must be one of: reject | soft-flag | off", ib.Unfinalized)
+			return fmt.Errorf("integrity.invalidBehavior.unfinalized '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", ib.Unfinalized)
 		}
 	}
 	if b := s.Budget; b != nil && (b.MaxPerSecond < 0 || b.MaxConcurrent < 0) {

@@ -72,10 +72,10 @@ func applyCheckOverride(cs integrity.CheckSet, id string, oc *common.IntegrityCh
 // resolveIntegrity computes the effective CheckSet and ReorgPolicy for a request.
 // The network's integrity config is the single source: its level/profiles plus
 // the per-request header selector. With no config, nothing runs (opt-in).
-func resolveIntegrity(n common.Network, dirs *common.RequestDirectives) (integrity.CheckSet, integrity.ReorgPolicy, bool) {
+func resolveIntegrity(n common.Network, dirs *common.RequestDirectives) (integrity.CheckSet, integrity.ReorgPolicy, bool, bool) {
 	// Opt-in: with no integrity config, nothing runs.
 	if n == nil || n.Config() == nil || n.Config().Integrity == nil {
-		return nil, integrity.ReorgPolicy{}, false
+		return nil, integrity.ReorgPolicy{}, false, false
 	}
 	selector := ""
 	if dirs != nil {
@@ -88,7 +88,10 @@ func resolveIntegrity(n common.Network, dirs *common.RequestDirectives) (integri
 	settings := resolveRequestSettings(n.Config().Integrity, selector)
 	cs, policy := compileIntegritySettings(settings, chainId)
 	observeOnly := settings != nil && settings.ObserveOnly != nil && *settings.ObserveOnly
-	return cs, policy, observeOnly
+	// Default TRUE: a violation hunts for a validated replacement unless the
+	// operator explicitly opts out.
+	autoCorrect := settings == nil || settings.AutoCorrectWhenPossible == nil || *settings.AutoCorrectWhenPossible
+	return cs, policy, observeOnly, autoCorrect
 }
 
 // resolveRequestSettings computes the effective settings for one request: the
@@ -135,6 +138,9 @@ func overlaySettings(base, over *common.IntegritySettings) {
 	if over.InvalidBehavior != nil {
 		base.InvalidBehavior = over.InvalidBehavior.Copy()
 	}
+	if over.AutoCorrectWhenPossible != nil {
+		base.AutoCorrectWhenPossible = over.AutoCorrectWhenPossible
+	}
 	for id, c := range over.Checks {
 		if base.Checks == nil {
 			base.Checks = make(map[string]*common.IntegrityCheckConfig, len(over.Checks))
@@ -151,16 +157,16 @@ func isIntegrityLevel(s string) bool {
 	return false
 }
 
-// parseBehavior maps the config/header vocabulary (reject | soft-flag | off) to
-// an engine Behavior. ok=false when the string is empty/unrecognized so callers
-// keep their default.
+// parseBehavior maps the config/header vocabulary (recordOnly | hardReject |
+// off — exactly these, validated loudly at load) to an engine Behavior.
+// ok=false when the string is empty/unrecognized so callers keep their default.
 func parseBehavior(s string) (integrity.Behavior, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "reject", "error", "hard-fail":
+	case "hardreject":
 		return integrity.BehaviorError, true
-	case "soft-flag", "softflag", "record", "warn":
+	case "recordonly":
 		return integrity.BehaviorRecord, true
-	case "off", "ignore", "none":
+	case "off":
 		return integrity.BehaviorIgnore, true
 	default:
 		return integrity.BehaviorError, false
