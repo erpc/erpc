@@ -136,6 +136,26 @@ func NewGrpcConnector(
 					gc.logger.Warn().Err(cerr).Str("server", serverURL).Msg("failed to create gRPC client")
 					return cerr
 				}
+				// This task is retried with backoff by the initializer, and every
+				// attempt builds a fresh client with its own connection pool. A
+				// client abandoned on any path below therefore leaks its
+				// maintainLoop goroutine plus the callback-serializer and HTTP/2
+				// goroutines of each pooled conn — roughly eight per attempt,
+				// forever. A server whose chainId probe keeps failing leaks on
+				// every retry, which is unbounded.
+				//
+				// Retained is set only where the client is handed to
+				// clientByNetwork; every other exit closes it, including the
+				// duplicate-server case that returns nil.
+				retained := false
+				defer func() {
+					if retained {
+						return
+					}
+					if sd, ok := cli.(clients.ShutdownableClient); ok {
+						sd.Shutdown()
+					}
+				}()
 				// Apply headers
 				if len(gc.headers) > 0 {
 					cli.SetHeaders(gc.headers)
@@ -199,6 +219,7 @@ func NewGrpcConnector(
 					return nil
 				}
 				gc.clientByNetwork[networkId] = cli
+				retained = true
 				gc.logger.Info().Str("server", serverURL).Str("networkId", networkId).Msg("gRPC client initialized for network")
 				return nil
 			},
