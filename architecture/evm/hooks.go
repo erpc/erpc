@@ -239,7 +239,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// corroboration force-fetch) are skipped to avoid recursing into the engine.
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
-		if cs, policy, observeOnly := resolveIntegrity(n, dirs); len(cs) > 0 {
+		if cs, policy, observeOnly, autoCorrect := resolveIntegrity(n, dirs); len(cs) > 0 {
 			// Integrity state + corroboration are scoped to the node GROUP the request
 			// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
 			// so a receipt from one group is only checked against same-group
@@ -257,6 +257,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				Resolver:    newIntegrityResolver(ctx, n, u, selector),
 				Reorg:       policy,
 				ObserveOnly: observeOnly,
+				AutoCorrect: autoCorrect,
 			}
 			if view != nil {
 				input.History = view
@@ -280,7 +281,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			res := integrity.Validate(vctx, input)
 			rq.AddIntegrityOverhead(time.Since(vStart))
 			annotateIntegritySpan(span, res)
-			// Record the rejected/soft-flagged ("original") body on the violating
+			// Record the rejected/recorded ("original") body on the violating
 			// attempt's span, for a by-hand sanity check. Only on a violation here:
 			// a recovering pass runs concurrently (hedged) so its IntegrityCaught
 			// flag may not be set yet — the "corrected" served body is recorded once
@@ -298,7 +299,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				}
 			}
 			span.End()
-			// Per-check attempts/outcomes (pass/skip/reject/soft_flag/reconfirmed/
+			// Per-check attempts/outcomes (pass/skip/reject/reject_recoverable/record_only/reconfirmed/
 			// off) — sum = total attempts. "pass" means an actual verification ran;
 			// "skip" means the check couldn't evaluate (cold cache, missing wiring).
 			// Higher volume than the violation counter below.
@@ -310,13 +311,13 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			for _, rec := range res.Recorded {
 				verdict := rec.Verdict
 				if verdict == "" {
-					verdict = "soft_flag"
+					verdict = "record_only"
 				}
-				msg := "integrity: recorded reorg-sensitive mismatch (served, not rejected)"
+				msg := "integrity: recorded mismatch (served, not rejected)"
 				if verdict == "would_reject" {
 					// Observe-only: this WOULD have failed the request under
 					// enforcement. Logged distinctly so the enforcement-readiness
-					// review can find them without untangling routine soft-flags.
+					// review can find them without untangling routine record-only flags.
 					msg = "integrity: observe-only suppressed a rejection (served; enforcement would have failed this request)"
 				}
 				telemetry.MetricIntegrityViolation.WithLabelValues(
@@ -329,8 +330,19 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				exportIntegrityCatch(ctx, n, u, rs, methodLower, verdict, rec.CheckID, rec.Class.String(), rec.Finality, rec.Reason)
 			}
 			if res.Err != nil {
+				rejectVerdict := "reject"
+				if res.FallbackEligible {
+					rejectVerdict = "reject_recoverable"
+					// A recordOnly verdict escalated by autoCorrectWhenPossible:
+					// stash the flagged original so project.Forward can serve it
+					// if every alternative upstream is exhausted — the client
+					// must never pay an error for a mismatch the policy says to
+					// serve. The stash keeps the NEWEST eligible original (any
+					// of them satisfies the policy).
+					rq.SetIntegrityFallbackResponse(rs, res.RejectedCheckID, res.Finality, res.RejectedReason)
+				}
 				telemetry.MetricIntegrityViolation.WithLabelValues(
-					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, "reject", res.Finality,
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, rejectVerdict, res.Finality,
 				).Inc()
 				// Remember we caught a bad response (and which check); project.Forward
 				// then counts it as saved (a retry succeeded) or failed (no good
@@ -436,7 +448,7 @@ func annotateIntegritySpan(span trace.Span, res integrity.Result) {
 	if res.Err != nil {
 		outcome = "reject"
 	} else if len(res.Recorded) > 0 {
-		outcome = "soft_flag"
+		outcome = "record_only"
 	}
 	span.SetAttributes(
 		attribute.Int("integrity.checks", len(res.Outcomes)),
@@ -449,7 +461,7 @@ func annotateIntegritySpan(span trace.Span, res integrity.Result) {
 		return
 	}
 	for _, rec := range res.Recorded {
-		span.AddEvent("integrity.soft_flag", trace.WithAttributes(
+		span.AddEvent("integrity.record_only", trace.WithAttributes(
 			attribute.String("check", rec.CheckID),
 			attribute.String("reason", rec.Reason),
 		))

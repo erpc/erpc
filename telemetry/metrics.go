@@ -484,6 +484,19 @@ var (
 		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check and target-block finality (finalized/unfinalized/unknown).",
 	}, []string{"project", "network", "category", "check", "finality"})
 
+	// MetricIntegrityFallbackServed counts requests where a fallback-eligible
+	// rejection (recordOnly verdict escalated by autoCorrectWhenPossible)
+	// hunted a validated replacement, found none, and served the flagged
+	// original instead of an error. The count is the residual "suspect data
+	// served" volume — zero is the goal; a persistent rate on one check is
+	// the same protocol-invalid signature MetricIntegrityProtocolSuspect
+	// tracks for hard failures.
+	MetricIntegrityFallbackServed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_fallback_served_total",
+		Help:      "Total requests where no validated replacement was found and the flagged original was served (recordOnly policy with autoCorrectWhenPossible), by the rejecting check and target-block finality.",
+	}, []string{"project", "network", "category", "check", "finality"})
+
 	// MetricIntegrityProtocolSuspect counts times a (network, check) pair showed
 	// the ALL-UPSTREAM signature: repeated request failures where that check
 	// rejected and no upstream produced an acceptable response. A check that

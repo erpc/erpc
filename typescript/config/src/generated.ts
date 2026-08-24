@@ -1988,9 +1988,25 @@ export interface IntegritySettings {
    */
   budget?: IntegrityBudgetConfig;
   /**
+   * AutoCorrectWhenPossible controls whether a violation triggers a hunt for a
+   * validated replacement (retry/hedge against other upstreams) BEFORE the
+   * InvalidBehavior verdict applies. Default TRUE (nil = true). The two knobs
+   * are orthogonal on purpose:
+   *   autoCorrectWhenPossible | invalidBehavior | on violation
+   *   ------------------------+-----------------+---------------------------------
+   *   true                    | recordOnly      | seek replacement; serve it if one
+   *                           |                 | validates; exhausted -> serve the
+   *                           |                 | flagged ORIGINAL (never an error)
+   *   true                    | hardReject      | seek replacement; exhausted -> error
+   *   false                   | recordOnly      | serve original immediately + record
+   *   false                   | hardReject      | fail immediately, no alternates
+   */
+  autoCorrectWhenPossible?: boolean;
+  /**
    * InvalidBehavior is the per-finality verdict for reorg-sensitive checks,
-   * where invalid data is ambiguously a node bug or a reorg. Deterministic
-   * checks ignore it and always reject.
+   * where invalid data is ambiguously a node bug or a reorg: recordOnly |
+   * hardReject | off. Deterministic checks ignore it and always hardReject
+   * (override per check via checks.<id>.onFailure).
    */
   invalidBehavior?: IntegrityInvalidBehaviorConfig;
   /**
@@ -2109,7 +2125,7 @@ export interface IntegrityCheckConfig {
    */
   params?: { [key: string]: string};
   /**
-   * OnFailure overrides this check's failure mode: reject | soft-flag.
+   * OnFailure overrides this check's failure mode: recordOnly | hardReject.
    */
   onFailure?: string;
 }
@@ -2122,8 +2138,9 @@ export interface IntegrityBudgetConfig {
 }
 /**
  * IntegrityInvalidBehaviorConfig is the per-finality verdict for reorg-sensitive
- * checks: reject | soft-flag | off, split by whether the response's block is
- * finalized.
+ * checks: recordOnly | hardReject | off, split by whether the response's block
+ * is finalized. The verdict describes what happens when no valid answer is
+ * obtainable; whether a replacement is sought first is AutoCorrectWhenPossible.
  */
 export interface IntegrityInvalidBehaviorConfig {
   finalized?: string;

@@ -16,12 +16,12 @@ budget:
   maxPerSecond: 50
   maxConcurrent: 8
 invalidBehavior:
-  finalized: reject
-  unfinalized: soft-flag
+  finalized: hardReject
+  unfinalized: recordOnly
 checks:
   receiptVsBlock:
     enabled: true
-    onFailure: reject
+    onFailure: hardReject
   bloomMatch:
     params:
       mode: superset
@@ -29,8 +29,8 @@ profiles:
   strict:
     level: authoritative
     invalidBehavior:
-      finalized: reject
-      unfinalized: reject
+      finalized: hardReject
+      unfinalized: hardReject
 `
 	var cfg IntegrityConfig
 	require.NoError(t, yaml.Unmarshal([]byte(src), &cfg))
@@ -44,19 +44,19 @@ profiles:
 	assert.Equal(t, 8, cfg.Budget.MaxConcurrent)
 
 	require.NotNil(t, cfg.InvalidBehavior)
-	assert.Equal(t, "reject", cfg.InvalidBehavior.Finalized)
-	assert.Equal(t, "soft-flag", cfg.InvalidBehavior.Unfinalized)
+	assert.Equal(t, "hardReject", cfg.InvalidBehavior.Finalized)
+	assert.Equal(t, "recordOnly", cfg.InvalidBehavior.Unfinalized)
 
 	require.Contains(t, cfg.Checks, "receiptVsBlock")
 	require.NotNil(t, cfg.Checks["receiptVsBlock"].Enabled)
 	assert.True(t, *cfg.Checks["receiptVsBlock"].Enabled)
-	assert.Equal(t, "reject", cfg.Checks["receiptVsBlock"].OnFailure)
+	assert.Equal(t, "hardReject", cfg.Checks["receiptVsBlock"].OnFailure)
 	assert.Equal(t, "superset", cfg.Checks["bloomMatch"].Params["mode"])
 
 	require.Contains(t, cfg.Profiles, "strict")
 	assert.Equal(t, "authoritative", cfg.Profiles["strict"].Level)
 	require.NotNil(t, cfg.Profiles["strict"].InvalidBehavior)
-	assert.Equal(t, "reject", cfg.Profiles["strict"].InvalidBehavior.Unfinalized)
+	assert.Equal(t, "hardReject", cfg.Profiles["strict"].InvalidBehavior.Unfinalized)
 }
 
 func TestMergeIntegrityConfig(t *testing.T) {
@@ -99,7 +99,7 @@ func TestIntegrityConfig_CopyIsDeep(t *testing.T) {
 			Level:           "authoritative",
 			Checks:          map[string]*IntegrityCheckConfig{"x": {Enabled: &tru, Params: map[string]string{"a": "b"}}},
 			Budget:          &IntegrityBudgetConfig{MaxPerSecond: 10},
-			InvalidBehavior: &IntegrityInvalidBehaviorConfig{Finalized: "reject", Unfinalized: "soft-flag"},
+			InvalidBehavior: &IntegrityInvalidBehaviorConfig{Finalized: "hardReject", Unfinalized: "recordOnly"},
 		},
 		HeaderMode: "full",
 		Profiles:   map[string]*IntegritySettings{"p": {Level: "intrinsic"}},
@@ -119,7 +119,7 @@ func TestIntegrityConfig_CopyIsDeep(t *testing.T) {
 	assert.True(t, *cp.Checks["x"].Enabled)
 	assert.Equal(t, "b", cp.Checks["x"].Params["a"])
 	assert.Equal(t, 10, cp.Budget.MaxPerSecond)
-	assert.Equal(t, "reject", cp.InvalidBehavior.Finalized)
+	assert.Equal(t, "hardReject", cp.InvalidBehavior.Finalized)
 	assert.Equal(t, "intrinsic", cp.Profiles["p"].Level)
 }
 
