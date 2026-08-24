@@ -1153,6 +1153,14 @@ type ShadowUpstreamConfig struct {
 	Enabled      bool                `yaml:"enabled" json:"enabled"`
 	SampleRate   *float64            `yaml:"sampleRate,omitempty" json:"sampleRate,omitempty"`
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
+	// PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
+	// concrete height before forwarding: the primary's resolved block number when its response
+	// carries one, else the network's tracked head at mirror time. Without it the shadow executes
+	// the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
+	// (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
+	// reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
+	// requests, exactly as before.
+	PinBlockTag bool `yaml:"pinBlockTag,omitempty" json:"pinBlockTag,omitempty"`
 }
 
 // Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
@@ -1315,6 +1323,13 @@ type EvmUpstreamConfig struct {
 	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
 	// misleading and causes circuit breaker false positives.
 	SkipSyncingCheck *bool `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
+	// HeadLagToleranceBlocks lets the block-availability gate send requests pinned up to N blocks
+	// ABOVE this upstream's observed head instead of rerouting them as stale. Useful for upstreams
+	// that follow the chain tightly but become able to serve a new block a moment after it is
+	// announced elsewhere (they hold or briefly wait for the block internally): with a hard
+	// head comparison every request pinned at head+1 in that moment is rerouted even though the
+	// upstream would have answered it. 0 (default) keeps the exact head comparison.
+	HeadLagToleranceBlocks int64 `yaml:"headLagToleranceBlocks,omitempty" json:"headLagToleranceBlocks"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`

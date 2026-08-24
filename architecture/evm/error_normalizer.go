@@ -56,11 +56,16 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				msg += " Data: " + s
 			}
 		default:
-			// passthrough error data as is
-			details["data"] = err.Data
+			// Absent "data" unmarshals to a nil interface; appending it would
+			// turn e.g. Monad's bare "rejected" into "rejected Data: <nil>" and
+			// silently break every whole-message (equality/suffix) check below.
+			if err.Data != nil {
+				// passthrough error data as is
+				details["data"] = err.Data
 
-			// Add the data as string to the message for text-based checks below
-			msg += " Data: " + fmt.Sprintf("%v", err.Data)
+				// Add the data as string to the message for text-based checks below
+				msg += " Data: " + fmt.Sprintf("%v", err.Data)
+			}
 		}
 
 		//----------------------------------------------------------------
@@ -377,6 +382,54 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				common.NonceExceptionReasonNonceTooLow,
 			)
+		}
+
+		//----------------------------------------------------------------
+		// "Mempool policy rejection" errors
+		// Observed from Monad, which surfaces every EthTxPoolDropReason as
+		// code -32603 with no data field (monad-bft:
+		// monad-eth-txpool-types/src/lib.rs as_user_string, and
+		// monad-rpc/src/handlers/eth/txn.rs submit_to_txpool):
+		//   - "An existing transaction had higher priority" (ExistingHigherPriority)
+		//   - "A newer transaction had higher priority"      (ReplacedByHigherPriority)
+		//   - "Transaction fee too low"                      (FeeTooLow)
+		//   - bare "rejected"                                (TxStatus::Evicted)
+		// These are deterministic pool verdicts about the transaction; the
+		// node is healthy and answered correctly. Left unclassified they fall
+		// through to ErrEndpointServerSideException, which counts toward the
+		// circuit breaker: a burst of rejections used to open the catch-all
+		// breaker and cordon the upstream for ALL methods, reads included.
+		// The bare-"rejected" equality intentionally checks err.Message (the
+		// pristine wire message), not ml, which may carry a " Data: …" suffix.
+		// geth-family "replacement transaction underpriced" is deliberately
+		// NOT reclassified here (see the nonce/duplicate note above).
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "existing transaction had higher priority") ||
+			strings.Contains(ml, "newer transaction had higher priority") ||
+			strings.Contains(ml, "transaction fee too low") ||
+			strings.EqualFold(strings.TrimSpace(err.Message), "rejected") {
+			execErr := common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+			// Mempool contents and min-fee policies are node-local: another
+			// upstream may accept the same broadcast. Keep eth_sendRawTransaction
+			// failover, consistent with the -32003 "transaction rejected" branch
+			// below; only the breaker/scoring treatment changes.
+			if nr != nil && nr.Request() != nil {
+				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+					if re, ok := execErr.(common.RetryableError); ok {
+						return re.WithRetryableTowardNetwork(true)
+					}
+				}
+			}
+			return execErr
 		}
 
 		//----------------------------------------------------------------

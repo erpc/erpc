@@ -220,7 +220,7 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 		// on capability gaps; the proven-lag metric keeps that visible.
 		//
 		proven := u.stateProvenBlock.Load()
-		if proven > 0 && blockNumber > proven {
+		if proven > 0 && blockNumber > proven+cfg.Evm.HeadLagToleranceBlocks {
 			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
 				u.ProjectId,
 				u.VendorName(),
@@ -253,8 +253,14 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 		// UPPER BOUND: Check if block is before the latest block
 		//
 		latestBlock := statePoller.LatestBlock()
-		// If the requested block is beyond the current latest block, try force-polling once
-		if blockNumber > latestBlock && forceFreshIfStale {
+		// An upstream may declare it can serve a few blocks past its observed
+		// head (headLagToleranceBlocks) — it holds or briefly waits for the
+		// block internally. The gate then only reroutes requests pinned
+		// beyond head+tolerance.
+		tolerance := cfg.Evm.HeadLagToleranceBlocks
+		// If the requested block is beyond the current latest block (plus
+		// tolerance), try force-polling once
+		if blockNumber > latestBlock+tolerance && forceFreshIfStale {
 			var err error
 			latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
 			if err != nil {
@@ -262,7 +268,8 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 			}
 		}
 		// Check if the requested block is still beyond the latest known block
-		if blockNumber > latestBlock {
+		// (plus tolerance)
+		if blockNumber > latestBlock+tolerance {
 			// Upper bound issue - block is beyond latest
 			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
 				u.ProjectId,
@@ -288,8 +295,9 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 			}
 		}
 
-		// If MaxAvailableRecentBlocks is not configured, assume the node can handle the block if it's <= latest
-		return blockNumber <= latestBlock, nil
+		// If MaxAvailableRecentBlocks is not configured, assume the node can handle the block if it's
+		// <= latest (plus the declared head-lag tolerance)
+		return blockNumber <= latestBlock+tolerance, nil
 	default:
 		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
 	}
