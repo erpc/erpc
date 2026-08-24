@@ -172,9 +172,15 @@ func NewHttpServer(
 			}
 			httpHandler.ServeHTTP(w, r)
 		})
-		if cfg.TLS == nil || !cfg.TLS.Enabled {
-			handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
-		}
+	}
+
+	// Without TLS, Go's net/http serves HTTP/1.x only on the cleartext
+	// listener, so wrap the IPv4 handler with h2c to accept HTTP/2
+	// prior-knowledge requests. This is independent of shared gRPC — gRPC only
+	// adds a content-type dispatch on top of this handler. (With TLS, HTTP/2 is
+	// negotiated via ALPN by ListenAndServeTLS, so no h2c wrapper is needed.)
+	if cfg.TLS == nil || !cfg.TLS.Enabled {
+		handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
 	}
 
 	// Create IPv4 server if configured
