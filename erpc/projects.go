@@ -193,21 +193,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 					cloneResp.SetHedges(resp.Hedges())
 					cloneResp.SetEvmBlockRef(resp.EvmBlockRef())
 					cloneResp.SetEvmBlockNumber(resp.EvmBlockNumber())
-					// Capture the SERVING upstream's own polled head now,
-					// synchronously: this is the closest observable proxy for
-					// the height at which that upstream just evaluated a
-					// "latest" tag. The shadow goroutine may run arbitrarily
-					// later (semaphore queueing), so reading any head inside
-					// it would drift past the height the primary answered at.
-					var primaryHead int64
-					if ups := resp.Upstream(); ups != nil {
-						if evmUps, ok := ups.(common.EvmUpstream); ok {
-							if sp := evmUps.EvmStatePoller(); sp != nil {
-								primaryHead = sp.LatestBlock()
-							}
-						}
-					}
-					go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp, primaryHead)
+					go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp)
 				}
 			}
 		}

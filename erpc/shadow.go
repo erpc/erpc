@@ -54,7 +54,7 @@ func pinBlockTagInBody(body []byte, idx int, height int64) ([]byte, bool) {
 	return out, true
 }
 
-func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Network, shadowUpstreams []*upstream.Upstream, resp *common.NormalizedResponse, primaryHead int64) {
+func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Network, shadowUpstreams []*upstream.Upstream, resp *common.NormalizedResponse) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.Logger.Error().Msgf("panic while executing shadow requests: %v", r)
@@ -89,6 +89,23 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 	}
 
 	resp.RUnlock()
+
+	// The SERVING upstream's polled head, read once at mirror entry: the
+	// closest observable proxy for the height at which the primary just
+	// evaluated a "latest" tag (used by the PinBlockTag rewrite below when
+	// the response body carries no number of its own). Entry is the right
+	// moment: only a goroutine spawn and the hash above separate it from
+	// the primary's answer — µs-to-ms against a poller that updates ~1/s —
+	// while a read deeper in the per-upstream fan-out would drift further
+	// for no gain.
+	primaryHead := int64(0)
+	if ups := resp.Upstream(); ups != nil {
+		if evmUps, ok := ups.(common.EvmUpstream); ok {
+			if sp := evmUps.EvmStatePoller(); sp != nil {
+				primaryHead = sp.LatestBlock()
+			}
+		}
+	}
 
 	// Fire shadow requests concurrently
 	for _, ups := range shadowUpstreams {
