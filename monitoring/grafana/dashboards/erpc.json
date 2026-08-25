@@ -1705,7 +1705,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 209
+            "y": 3
           },
           "id": 8,
           "interval": "1m",
@@ -1807,7 +1807,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 209
+            "y": 3
           },
           "id": 44,
           "interval": "1m",
@@ -1908,7 +1908,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 209
+            "y": 3
           },
           "id": 45,
           "interval": "1m",
@@ -2014,7 +2014,7 @@
             "h": 7,
             "w": 8,
             "x": 0,
-            "y": 221
+            "y": 15
           },
           "id": 106,
           "interval": "1m",
@@ -2116,7 +2116,7 @@
             "h": 7,
             "w": 8,
             "x": 8,
-            "y": 221
+            "y": 15
           },
           "id": 107,
           "interval": "1m",
@@ -2217,7 +2217,7 @@
             "h": 7,
             "w": 8,
             "x": 16,
-            "y": 221
+            "y": 15
           },
           "id": 108,
           "interval": "1m",
@@ -2323,7 +2323,7 @@
             "h": 11,
             "w": 24,
             "x": 0,
-            "y": 228
+            "y": 22
           },
           "id": 200,
           "interval": "1m",
@@ -2459,7 +2459,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 1196
+            "y": 4
           },
           "id": 135,
           "interval": "1m",
@@ -2562,7 +2562,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 1196
+            "y": 4
           },
           "id": 68,
           "interval": "1m",
@@ -2673,7 +2673,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 1196
+            "y": 4
           },
           "id": 33,
           "options": {
@@ -2774,7 +2774,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 1208
+            "y": 16
           },
           "id": 9,
           "interval": "1m",
@@ -2880,7 +2880,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 1208
+            "y": 16
           },
           "id": 86,
           "interval": "1m",
@@ -2983,7 +2983,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 1208
+            "y": 16
           },
           "id": 89,
           "interval": "1m",
@@ -3106,7 +3106,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 1220
+            "y": 28
           },
           "id": 130,
           "interval": "1m",
@@ -3239,7 +3239,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 1220
+            "y": 28
           },
           "id": 132,
           "interval": "1m",
@@ -3315,127 +3315,6 @@
                 "insertNulls": false,
                 "lineInterpolation": "smooth",
                 "lineStyle": {
-                  "dash": [
-                    0,
-                    10
-                  ],
-                  "fill": "dot"
-                },
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "linearThreshold": 1,
-                  "log": 10,
-                  "type": "symlog"
-                },
-                "showPoints": "always",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "area"
-                }
-              },
-              "mappings": [],
-              "min": 0,
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "text",
-                    "value": 0
-                  }
-                ]
-              },
-              "unit": "ms"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 24,
-            "x": 0,
-            "y": 1230
-          },
-          "id": 141,
-          "interval": "1m",
-          "maxDataPoints": 500,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "lastNotNull",
-                "min",
-                "max",
-                "median"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Last *",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "max by (network, project) (erpc_network_dynamic_block_time_milliseconds{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network!=\"\",network=~\"${network:regex}\", network!~\"${ignore_network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"})",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{project}}, {{network}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Block Time",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "EMA-estimated block time per network, dynamically computed from local block detection timestamps",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds",
-                "seriesBy": "last"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisGridShow": false,
-                "axisLabel": "",
-                "axisPlacement": "hidden",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "smooth",
-                "lineStyle": {
                   "fill": "solid"
                 },
                 "lineWidth": 1,
@@ -3475,7 +3354,7 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 1240
+            "y": 38
           },
           "id": 142,
           "interval": "1m",
@@ -3616,7 +3495,7 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 1250
+            "y": 48
           },
           "id": 143,
           "interval": "1m",
@@ -3744,7 +3623,7 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 1260
+            "y": 58
           },
           "id": 144,
           "interval": "1m",
@@ -3970,7 +3849,7 @@
             "h": 18,
             "w": 24,
             "x": 0,
-            "y": 1270
+            "y": 68
           },
           "id": 224,
           "options": {
@@ -4114,7 +3993,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 1288
+            "y": 86
           },
           "id": 225,
           "options": {
@@ -4222,7 +4101,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 1288
+            "y": 86
           },
           "id": 226,
           "options": {
@@ -6166,7 +6045,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 1
+            "y": 6
           },
           "id": 906,
           "options": {
@@ -6264,7 +6143,7 @@
             "h": 8,
             "w": 4,
             "x": 8,
-            "y": 1
+            "y": 6
           },
           "id": 907,
           "options": {
@@ -6372,7 +6251,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 1
+            "y": 6
           },
           "id": 908,
           "options": {
@@ -6507,7 +6386,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 9
+            "y": 14
           },
           "id": 909,
           "interval": "1m",
@@ -6612,7 +6491,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 9
+            "y": 14
           },
           "id": 910,
           "interval": "1m",
@@ -6717,7 +6596,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 17
+            "y": 22
           },
           "id": 911,
           "interval": "1m",
@@ -6822,7 +6701,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 17
+            "y": 22
           },
           "id": 912,
           "interval": "1m",
@@ -6927,7 +6806,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 17
+            "y": 22
           },
           "id": 913,
           "interval": "1m",
@@ -6988,7 +6867,7 @@
             "h": 9,
             "w": 24,
             "x": 0,
-            "y": 25
+            "y": 30
           },
           "id": 914,
           "options": {
@@ -7104,7 +6983,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 34
+            "y": 39
           },
           "id": 916,
           "interval": "1m",
@@ -7209,7 +7088,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 34
+            "y": 39
           },
           "id": 917,
           "interval": "1m",
@@ -7316,7 +7195,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 42
+            "y": 47
           },
           "id": 926,
           "interval": "1m",
@@ -7421,7 +7300,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 42
+            "y": 47
           },
           "id": 927,
           "interval": "1m",
@@ -7526,7 +7405,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 50
+            "y": 55
           },
           "id": 918,
           "interval": "1m",
@@ -7631,7 +7510,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 50
+            "y": 55
           },
           "id": 919,
           "interval": "1m",
@@ -7736,7 +7615,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 58
+            "y": 63
           },
           "id": 920,
           "interval": "1m",
@@ -7841,7 +7720,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 58
+            "y": 63
           },
           "id": 921,
           "interval": "1m",
@@ -7946,7 +7825,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 66
+            "y": 71
           },
           "id": 922,
           "interval": "1m",
@@ -8051,7 +7930,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 66
+            "y": 71
           },
           "id": 923,
           "interval": "1m",
@@ -8156,7 +8035,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 74
+            "y": 79
           },
           "id": 924,
           "interval": "1m",
@@ -8285,7 +8164,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 74
+            "y": 79
           },
           "id": 925,
           "interval": "1m",
@@ -8405,7 +8284,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 329
+            "y": 54
           },
           "id": 950,
           "interval": "1m",
@@ -8508,7 +8387,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 329
+            "y": 54
           },
           "id": 951,
           "interval": "1m",
@@ -8571,7 +8450,7 @@
             "h": 9,
             "w": 12,
             "x": 12,
-            "y": 282
+            "y": 7
           },
           "id": 952,
           "options": {
@@ -8675,7 +8554,7 @@
             "h": 9,
             "w": 12,
             "x": 0,
-            "y": 282
+            "y": 7
           },
           "id": 81,
           "options": {
@@ -8820,7 +8699,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 291
+            "y": 16
           },
           "id": 70,
           "interval": "1m",
@@ -8923,7 +8802,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 291
+            "y": 16
           },
           "id": 29,
           "interval": "1m",
@@ -9025,7 +8904,7 @@
             "h": 14,
             "w": 12,
             "x": 0,
-            "y": 303
+            "y": 28
           },
           "id": 24,
           "options": {
@@ -9050,14 +8929,14 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    namespace=~\"${namespace:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    severity=\"critical\",\n    network=~\"${network:regex}\", network!~\"${ignore_network:regex}\",\n    vendor=~\"${vendor:regex}\", vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (region, project, upstream, category, error) > 0",
+              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    namespace=~\"${namespace:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    severity=\"critical\",\n    network=~\"${network:regex}\", network!~\"${ignore_network:regex}\",\n    vendor=~\"${vendor:regex}\", vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, vendor, category, finality, error) > 0",
               "interval": "",
-              "legendFormat": "{{region}} {{project}}, {{upstream}}, {{category}}, {{error}}",
+              "legendFormat": "{{project}}, {{network}}, {{vendor}}, {{category}}, {{finality}}, {{error}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Upstream-level critical errors",
+          "title": "Vendor critical errors",
           "type": "timeseries"
         },
         {
@@ -9126,7 +9005,7 @@
             "h": 14,
             "w": 12,
             "x": 12,
-            "y": 303
+            "y": 28
           },
           "id": 82,
           "options": {
@@ -9228,7 +9107,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 317
+            "y": 42
           },
           "id": 78,
           "interval": "1m",
@@ -9330,7 +9209,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 317
+            "y": 42
           },
           "id": 79,
           "options": {
@@ -9437,7 +9316,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 317
+            "y": 42
           },
           "id": 80,
           "options": {
@@ -9558,7 +9437,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 384
+            "y": 8
           },
           "id": 91,
           "options": {
@@ -9659,7 +9538,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 384
+            "y": 8
           },
           "id": 46,
           "options": {
@@ -9765,7 +9644,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 384
+            "y": 8
           },
           "id": 47,
           "options": {
@@ -9872,7 +9751,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 396
+            "y": 20
           },
           "id": 4,
           "interval": "1m",
@@ -9975,7 +9854,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 396
+            "y": 20
           },
           "id": 71,
           "interval": "1m",
@@ -10077,7 +9956,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 408
+            "y": 32
           },
           "id": 83,
           "options": {
@@ -10178,7 +10057,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 408
+            "y": 32
           },
           "id": 73,
           "options": {
@@ -10279,7 +10158,7 @@
             "h": 9,
             "w": 12,
             "x": 0,
-            "y": 420
+            "y": 44
           },
           "id": 102,
           "options": {
@@ -10381,7 +10260,7 @@
             "h": 9,
             "w": 12,
             "x": 12,
-            "y": 420
+            "y": 44
           },
           "id": 74,
           "options": {
@@ -10487,7 +10366,7 @@
             "h": 14,
             "w": 12,
             "x": 0,
-            "y": 429
+            "y": 53
           },
           "id": 87,
           "options": {
@@ -10588,7 +10467,7 @@
             "h": 14,
             "w": 12,
             "x": 12,
-            "y": 429
+            "y": 53
           },
           "id": 88,
           "options": {
@@ -10704,7 +10583,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 71
+            "y": 9
           },
           "id": 203,
           "options": {
@@ -10810,7 +10689,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 71
+            "y": 9
           },
           "id": 204,
           "options": {
@@ -10942,7 +10821,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 71
+            "y": 9
           },
           "id": 205,
           "options": {
@@ -11048,7 +10927,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 83
+            "y": 21
           },
           "id": 206,
           "options": {
@@ -11154,7 +11033,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 83
+            "y": 21
           },
           "id": 207,
           "options": {
@@ -11233,7 +11112,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 83
+            "y": 21
           },
           "id": 208,
           "options": {
@@ -11370,7 +11249,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 95
+            "y": 33
           },
           "id": 209,
           "options": {
@@ -11440,7 +11319,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 95
+            "y": 33
           },
           "id": 210,
           "options": {
@@ -11553,7 +11432,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 95
+            "y": 33
           },
           "id": 211,
           "options": {
@@ -11659,7 +11538,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 107
+            "y": 45
           },
           "id": 212,
           "options": {
@@ -11765,7 +11644,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 107
+            "y": 45
           },
           "id": 213,
           "options": {
@@ -11830,7 +11709,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 107
+            "y": 45
           },
           "id": 214,
           "options": {
@@ -11959,7 +11838,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 119
+            "y": 57
           },
           "id": 215,
           "options": {
@@ -12065,7 +11944,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 119
+            "y": 57
           },
           "id": 216,
           "options": {
@@ -12217,7 +12096,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 2488
+            "y": 10
           },
           "id": 49,
           "interval": "1m",
@@ -12353,7 +12232,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 2488
+            "y": 10
           },
           "id": 59,
           "interval": "1m",
@@ -12461,7 +12340,7 @@
             "h": 15,
             "w": 12,
             "x": 0,
-            "y": 2500
+            "y": 22
           },
           "id": 51,
           "interval": "1m",
@@ -12563,7 +12442,7 @@
             "h": 15,
             "w": 12,
             "x": 12,
-            "y": 2500
+            "y": 22
           },
           "id": 52,
           "interval": "1m",
@@ -12691,7 +12570,7 @@
             "h": 15,
             "w": 12,
             "x": 0,
-            "y": 2515
+            "y": 37
           },
           "id": 54,
           "interval": "1m",
@@ -12824,7 +12703,7 @@
             "h": 15,
             "w": 12,
             "x": 12,
-            "y": 2515
+            "y": 37
           },
           "id": 57,
           "interval": "1m",
@@ -12936,7 +12815,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 2530
+            "y": 52
           },
           "id": 55,
           "interval": "1m",
@@ -13038,7 +12917,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 2530
+            "y": 52
           },
           "id": 56,
           "interval": "1m",
@@ -13142,7 +13021,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 2543
+            "y": 65
           },
           "id": 60,
           "interval": "1m",
@@ -13246,7 +13125,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 2543
+            "y": 65
           },
           "id": 61,
           "interval": "1m",
@@ -13288,7 +13167,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "These are issues that are most often edge-cases that are not covered within eRPC logic, and must be reported to the team.",
+          "description": "These are issues that are most often edge-cases that are not covered within eRPC logic, and should be reported as a bug.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -13350,7 +13229,7 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 2556
+            "y": 78
           },
           "id": 65,
           "interval": "1m",
@@ -13469,7 +13348,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 8233
+            "y": 11
           },
           "id": 75,
           "interval": "1m",
@@ -13574,7 +13453,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 8233
+            "y": 11
           },
           "id": 76,
           "interval": "1m",
@@ -13678,7 +13557,7 @@
             "h": 12,
             "w": 24,
             "x": 0,
-            "y": 8245
+            "y": 23
           },
           "id": 77,
           "interval": "1m",
@@ -13796,7 +13675,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 7626
+            "y": 12
           },
           "id": 17,
           "options": {
@@ -13901,7 +13780,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 7626
+            "y": 12
           },
           "id": 16,
           "options": {
@@ -14014,7 +13893,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 7636
+            "y": 22
           },
           "id": 36,
           "options": {
@@ -14116,7 +13995,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 7636
+            "y": 22
           },
           "id": 37,
           "options": {
@@ -14228,7 +14107,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 7646
+            "y": 32
           },
           "id": 38,
           "options": {
@@ -14332,7 +14211,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 7646
+            "y": 32
           },
           "id": 39,
           "options": {
@@ -14450,7 +14329,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 7656
+            "y": 42
           },
           "id": 42,
           "options": {
@@ -14554,7 +14433,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 7656
+            "y": 42
           },
           "id": 43,
           "options": {
@@ -14667,7 +14546,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 7666
+            "y": 52
           },
           "id": 40,
           "options": {
@@ -14771,7 +14650,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 7666
+            "y": 52
           },
           "id": 41,
           "options": {
@@ -14884,7 +14763,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 7676
+            "y": 62
           },
           "id": 221,
           "options": {
@@ -15036,7 +14915,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 7676
+            "y": 62
           },
           "id": 222,
           "interval": "1m",
@@ -15163,7 +15042,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 7686
+            "y": 72
           },
           "id": 223,
           "interval": "1m",
@@ -15276,7 +15155,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 7694
+            "y": 80
           },
           "id": 953,
           "interval": "1m",
@@ -15384,7 +15263,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 7694
+            "y": 80
           },
           "id": 954,
           "interval": "1m",
@@ -15492,7 +15371,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 7702
+            "y": 88
           },
           "id": 955,
           "interval": "1m",
@@ -15580,7 +15459,7 @@
             "h": 11,
             "w": 24,
             "x": 0,
-            "y": 2768
+            "y": 13
           },
           "id": 121,
           "interval": "1m",
@@ -15696,7 +15575,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 2779
+            "y": 24
           },
           "id": 92,
           "interval": "1m",
@@ -15799,7 +15678,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 2779
+            "y": 24
           },
           "id": 95,
           "interval": "1m",
@@ -15908,7 +15787,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 2787
+            "y": 32
           },
           "id": 94,
           "interval": "1m",
@@ -16015,7 +15894,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 2787
+            "y": 32
           },
           "id": 93,
           "interval": "1m",
@@ -16118,7 +15997,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 2795
+            "y": 40
           },
           "id": 96,
           "interval": "1m",
@@ -16225,7 +16104,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 2795
+            "y": 40
           },
           "id": 99,
           "interval": "1m",
@@ -16328,7 +16207,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 2803
+            "y": 48
           },
           "id": 98,
           "interval": "1m",
@@ -16431,7 +16310,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 2803
+            "y": 48
           },
           "id": 97,
           "interval": "1m",
@@ -16506,7 +16385,7 @@
             "h": 17,
             "w": 16,
             "x": 0,
-            "y": 8236
+            "y": 14
           },
           "id": 109,
           "interval": "1m",
@@ -16615,7 +16494,7 @@
             "h": 17,
             "w": 8,
             "x": 16,
-            "y": 8236
+            "y": 14
           },
           "id": 110,
           "interval": "1m",
@@ -16688,7 +16567,7 @@
             "h": 17,
             "w": 16,
             "x": 0,
-            "y": 8253
+            "y": 31
           },
           "id": 112,
           "interval": "1m",
@@ -16782,7 +16661,7 @@
             "h": 17,
             "w": 8,
             "x": 16,
-            "y": 8253
+            "y": 31
           },
           "id": 113,
           "interval": "1m",
@@ -16911,7 +16790,7 @@
             "h": 9,
             "w": 24,
             "x": 0,
-            "y": 21954
+            "y": 15
           },
           "id": 30,
           "options": {
@@ -17017,7 +16896,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 21963
+            "y": 24
           },
           "id": 12,
           "interval": "1m",
@@ -17118,7 +16997,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 21963
+            "y": 24
           },
           "id": 124,
           "interval": "1m",
@@ -17219,7 +17098,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 21976
+            "y": 37
           },
           "id": 125,
           "interval": "1m",
@@ -17320,7 +17199,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 21976
+            "y": 37
           },
           "id": 128,
           "interval": "1m",
@@ -17421,7 +17300,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 21989
+            "y": 50
           },
           "id": 126,
           "interval": "1m",
@@ -17522,7 +17401,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 21989
+            "y": 50
           },
           "id": 129,
           "interval": "1m",
@@ -17628,7 +17507,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 22002
+            "y": 63
           },
           "id": 136,
           "interval": "1m",
@@ -17748,7 +17627,7 @@
             "h": 14,
             "w": 12,
             "x": 0,
-            "y": 65729
+            "y": 16
           },
           "id": 114,
           "interval": "1m",
@@ -17849,7 +17728,7 @@
             "h": 14,
             "w": 12,
             "x": 12,
-            "y": 65729
+            "y": 16
           },
           "id": 115,
           "interval": "1m",
@@ -17967,7 +17846,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 153912
+            "y": 17
           },
           "id": 134,
           "options": {
@@ -18047,26 +17926,7 @@
         "type": "interval"
       },
       {
-        "name": "cluster_group",
-        "label": "cluster group",
-        "description": "Quick scope for the cluster list: All, or all / prod / dev edge-rpc clusters. Pick a group, then 'cluster' lists only those (leave cluster on All to select every cluster in the group).",
-        "type": "custom",
-        "multi": false,
-        "includeAll": false,
-        "query": "All : .*, Edge (all) : edge-rpc-.*, Edge (prod) : edge-rpc-.*-prod, Edge (dev) : edge-rpc-.*-dev",
-        "current": {
-          "text": "All",
-          "value": ".*"
-        },
-        "options": [
-          { "text": "All", "value": ".*", "selected": true },
-          { "text": "Edge (all)", "value": "edge-rpc-.*", "selected": false },
-          { "text": "Edge (prod)", "value": "edge-rpc-.*-prod", "selected": false },
-          { "text": "Edge (dev)", "value": "edge-rpc-.*-dev", "selected": false }
-        ]
-      },
-      {
-        "allValue": "",
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -18075,14 +17935,14 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values({cluster=~\"$cluster_group\"}, cluster)",
+        "definition": "label_values(cluster)",
         "includeAll": true,
         "multi": true,
         "name": "cluster",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values({cluster=~\"$cluster_group\"}, cluster)",
+          "query": "label_values(cluster)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -18111,7 +17971,7 @@
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
-        "regex": "/^erpc/",
+        "regex": "",
         "type": "query"
       },
       {
