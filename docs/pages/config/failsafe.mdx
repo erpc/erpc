@@ -251,6 +251,7 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 | `erpc_network_hedged_request_total` | counter | Each hedge attempt fired |
 | `erpc_network_hedge_discards_total` | counter | Losing hedge response cancelled |
 | `erpc_upstream_breaker_state_change_total` | counter | Circuit breaker state transition (Closed/Open/HalfOpen) |
+| `erpc_upstream_circuit_breaker_state` | gauge | Current circuit breaker state (0=closed, 1=open, 2=half-open) |
 | `erpc_consensus_misbehavior_detected_total` | counter | Upstream response differed from consensus group |
 
 ### Source code entry points

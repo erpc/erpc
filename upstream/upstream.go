@@ -164,20 +164,6 @@ func boolStr(b bool) string {
 	return "false"
 }
 
-// makeBreakerTransitionHook returns a closure that emits the
-// `upstream_breaker_state_change_total` metric on every state
-// transition. Used at NewUpstream time to wire each per-method
-// breaker's OnTransition without polluting failsafe/.
-func makeBreakerTransitionHook(projectId, upstreamId string) func(failsafe.State, failsafe.State, string) {
-	return func(from, to failsafe.State, _ string) {
-		telemetry.MetricUpstreamBreakerStateChange.WithLabelValues(
-			projectId,
-			upstreamId,
-			from.String()+"_to_"+to.String(),
-		).Inc()
-	}
-}
-
 // AttemptErrorDetailMaxLen bounds the per-attempt error string that
 // `RecordUpstreamAttempt` stores on the request's `ExecState`. The
 // stored value powers diagnostics surfaces (admin endpoints, traces,
@@ -206,6 +192,7 @@ type Upstream struct {
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
 	failsafeExecutors    []*upstreamExecutor
+	breakerReporters     []*breakerStateReporter
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
@@ -240,11 +227,6 @@ func NewUpstream(
 			if err != nil {
 				return nil, err
 			}
-			// Wire breaker-transition metric. Side-effect-only; failsafe/
-			// package stays telemetry-free.
-			if b := ex.Breaker(); b != nil {
-				b.OnTransition = makeBreakerTransitionHook(projectId, cfg.Id)
-			}
 			failsafeExecutors = append(failsafeExecutors, ex)
 		}
 	}
@@ -270,6 +252,12 @@ func NewUpstream(
 		networkLabel:         atomic.Value{},
 	}
 	pup.networkLabel.Store("n/a")
+
+	// Wire circuit-breaker telemetry. Side-effect-only, so failsafe/ stays
+	// telemetry-free. Wired here (not while building the executors) because
+	// the reporters read vendor/network/id off the live upstream at emission
+	// time — those are only resolved once `pup` exists.
+	pup.wireBreakerTelemetry()
 
 	pup.initRateLimitAutoTuner()
 
@@ -488,6 +476,11 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 			u.networkLabel.Store(nid)
 		}
 	}
+
+	// The upstream's metric identity is complete now that the network is
+	// known, so publish each breaker's current (normally closed) state —
+	// otherwise the gauge would only appear after the first transition.
+	u.publishBreakerStates()
 }
 
 func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamExecutor {

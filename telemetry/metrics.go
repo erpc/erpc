@@ -708,6 +708,24 @@ var (
 		Help:      "Total circuit-breaker state transitions per upstream and direction (closed_to_open/half_open_to_open/half_open_to_closed/open_to_half_open).",
 	}, []string{"project", "upstream", "transition"})
 
+	// MetricUpstreamCircuitBreakerState reports the CURRENT state of each
+	// upstream circuit breaker. It complements (never replaces) the
+	// transition counter above: that one answers "how often did it flip?",
+	// this one answers "what is it right now?" — a question operators
+	// should not have to reconstruct by folding counter deltas.
+	//
+	// One series per CONFIGURED BREAKER, not per upstream: a `failsafe`
+	// list may declare several entries (matchMethod / matchFinality), each
+	// owning an independent breaker, so `category` + `finality` carry the
+	// entry's match scope ("*" = matches anything). Cardinality is bounded
+	// by the config — it does not grow with traffic. Not emitted for cache
+	// connector breakers (they have no upstream identity).
+	MetricUpstreamCircuitBreakerState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_circuit_breaker_state",
+		Help:      "Current circuit-breaker state per upstream failsafe scope (0=closed, 1=open, 2=half_open).",
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+
 	MetricNetworkFailedRequests = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",

@@ -394,6 +394,7 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 | `erpc_consensus_total{outcome="dispute"}` | Rounds with no consensus reached |
 | `erpc_network_retry_attempt_total` | Retry pressure by reason (retryable_error, block_unavailable, etc.). On **EVM**, catch-up on `finality="finalized"` is wasted work — canonical data has no availability race — so it is worth alerting on. On **SVM** it is expected: consensus finality and RPC indexing are separate steps, so a rooted Solana slot can still be waiting on the provider's indexer and answers `-32004`/`-32014`. Split the query by `network` before alerting. |
 | `erpc_upstream_breaker_state_change_total{transition="closed_to_open"}` | Circuit-breaker trips; frequent churn = bad upstream |
+| `erpc_upstream_circuit_breaker_state == 1` | Breaker currently open — alert when it stays open across several scrapes |
 
 **Block tracking and tip**
 
@@ -564,6 +565,7 @@ Top-20 operational metrics:
 | `erpc_upstream_finalization_lag` | gauge | project, vendor, network, upstream | Finalized blocks behind the freshest upstream |
 | `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category, reason | `1` while cordoned; `0` when active |
 | `erpc_upstream_breaker_state_change_total` | counter | project, upstream, transition | Circuit-breaker state transition |
+| `erpc_upstream_circuit_breaker_state` | gauge | project, vendor, network, upstream, category, finality | Current breaker state: `0`=closed, `1`=open, `2`=half-open (one series per configured breaker) |
 | `erpc_selection_position` | gauge | project, network, method, upstream | `0`=primary, `1+`=runner-up, `-1`=excluded |
 | `erpc_selection_excluded_seconds` | gauge | project, network, method, upstream | Seconds continuously excluded; 0 when in rotation |
 | `erpc_cache_get_success_hit_total` | counter | project, network, category, connector, policy, ttl | Cache get hit |

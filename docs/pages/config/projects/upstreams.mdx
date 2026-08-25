@@ -928,6 +928,7 @@ SVM upstream gets its own slot/health poller automatically:
 | `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Once per attempt at classification |
 | `erpc_upstream_selection_total` | counter | project, network, upstream, category, reason, finality | Once per attempt start; reason = primary/retry/hedge |
 | `erpc_upstream_breaker_state_change_total` | counter | project, upstream, transition | Breaker state transition |
+| `erpc_upstream_circuit_breaker_state` | gauge | project, vendor, network, upstream, category, finality | Current breaker state (0=closed, 1=open, 2=half-open), one series per configured breaker |
 | `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category, reason | 1 on cordon, 0 on uncordon |
 | `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Edge transitions (cordon/uncordon) only |
 | `erpc_upstream_cordon_duration_seconds` | histogram (1 s … 86 400 s) | project, network, upstream | Observed on each uncordon |
