@@ -189,8 +189,7 @@ func TestCheck_ReceiptsRootRecompute(t *testing.T) {
 // It is not hypothetical. Every Arbitrum One block carries `l1BlockNumber`, and
 // post-Nitro blocks add `sendCount`/`sendRoot` — none of them geth header
 // fields — so blockHashRecompute can never verify a single block on that chain,
-// on either side of the Nitro fork, while the outcome metric read 100% pass at
-// ~1.7k block responses per second.
+// on either side of the Nitro fork, while the outcome metric read 100% pass.
 func TestRecompute_UnverifiableDataReportsSkipNotPass(t *testing.T) {
 	h := sampleHeader()
 	realHash := h.Hash().Hex()
