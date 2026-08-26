@@ -55,22 +55,22 @@ func init() {
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			h := d.Header()
 			if h == nil || h.Hash == "" {
-				return nil
+				return Skipped
 			}
 
 			var fields map[string]json.RawMessage
 			if err := json.Unmarshal(d.raw, &fields); err != nil {
-				return nil // not an object → leave it to schemaConformance
+				return Skipped // not an object → leave it to schemaConformance
 			}
 			for k := range fields {
 				if _, ok := knownBlockFields[k]; !ok {
-					return nil // custom/unknown field → header not fully understood; skip
+					return Skipped // custom/unknown field → header not fully understood
 				}
 			}
 
 			var gh gethtypes.Header
 			if err := gh.UnmarshalJSON(d.raw); err != nil {
-				return nil // missing a required header field → skip rather than false-flag
+				return Skipped // missing a required header field → do not false-flag
 			}
 			if got := gh.Hash().Hex(); !eqHex(got, h.Hash) {
 				return failf("block hash %s does not match recomputed %s", h.Hash, got)
@@ -92,29 +92,29 @@ func init() {
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			h := d.Header()
 			if h == nil || h.TransactionsRoot == "" {
-				return nil
+				return Skipped
 			}
 			var block struct {
 				Transactions []json.RawMessage `json:"transactions"`
 			}
 			if err := json.Unmarshal(d.raw, &block); err != nil || len(block.Transactions) == 0 {
-				return nil
+				return Skipped
 			}
 
 			txs := make(gethtypes.Transactions, 0, len(block.Transactions))
 			for _, rawTx := range block.Transactions {
 				if len(rawTx) == 0 || rawTx[0] == '"' {
-					return nil // hashes-only response → cannot recompute
+					return Skipped // hashes-only response → cannot recompute
 				}
 				var tx gethtypes.Transaction
 				if tx.UnmarshalJSON(rawTx) != nil {
-					return nil
+					return Skipped
 				}
 				var meta struct {
 					Hash string `json:"hash"`
 				}
 				if json.Unmarshal(rawTx, &meta) != nil || meta.Hash == "" || !eqHex(tx.Hash().Hex(), meta.Hash) {
-					return nil // tx not fully modeled → a correct root can't be computed
+					return Skipped // tx not fully modeled → a correct root can't be computed
 				}
 				txs = append(txs, &tx)
 			}
