@@ -40,10 +40,14 @@ import (
 //     Not all providers expose eth_getProof — support is DISCOVERED per
 //     upstream, never assumed.
 //
-// A success advances the upstream's state-proven head (monotonic); routing for
-// state methods asserts AvailbilityConfidenceStateProven against it. Failure
-// just fails to advance — a mismatch at the tip can be a fork-transient, so it
-// is counted and logged, never scored as misbehavior.
+// A success advances the upstream's state-proven head (monotonic) — telemetry,
+// and the strongest tier of the diversion's sibling check. Failure just fails
+// to advance — a mismatch at the tip can be a fork-transient, so it is counted
+// and logged, never scored as misbehavior. Routing reacts ONLY to a sustained
+// streak of mismatches (disproved → diverted, see the state boundary in
+// hooks.go): the proven head itself is never a routing bound, because it lags
+// the claimed head by the probe cadence on any fast chain, where a proven-head
+// bound would refuse the network's own advertised tip.
 // The context-probe target is per-ARCHITECTURE (integrity.ChainStateContextProbe):
 // standard EVMs use Multicall3 getBlockNumber, but e.g. Nitro's block.number is
 // the L1 height and needs ArbSys arbBlockNumber instead — assuming one probe

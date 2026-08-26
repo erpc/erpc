@@ -55,20 +55,18 @@ type AvailbilityConfidence int
 const (
 	AvailbilityConfidenceBlockHead AvailbilityConfidence = 1
 	AvailbilityConfidenceFinalized AvailbilityConfidence = 2
-	// AvailbilityConfidenceStateProven gates on the state-PROVEN head rather
-	// than the claimed head: the highest block for which the integrity state
-	// probe verified the upstream truly executes in that block's context /
-	// holds its state trie. Nodes sometimes answer state queries (eth_call,
-	// eth_getBalance, ...) from OLDER state while their reported head is
-	// current; this confidence exists so routing for state methods can refuse
-	// to outrun proof. Falls back to blockHead while nothing is proven yet.
-	AvailbilityConfidenceStateProven AvailbilityConfidence = 3
+	// NOTE: there is deliberately no "state-proven" confidence. The proven head
+	// (see the integrity state prober) advances at probe cadence, so on any
+	// chain whose block time is shorter than that cadence it sits structurally
+	// behind every honest upstream's claimed head — a routing bound built on it
+	// would refuse the entire network's tip traffic. Absence
+	// of proof is not evidence; only DISPROOF is, and that is handled by the
+	// state boundary's diversion (architecture/evm/hooks.go), not by an
+	// availability confidence.
 )
 
 func (c AvailbilityConfidence) String() string {
 	switch c {
-	case AvailbilityConfidenceStateProven:
-		return "stateProven"
 	case AvailbilityConfidenceBlockHead:
 		return "blockHead"
 	case AvailbilityConfidenceFinalized:
@@ -204,9 +202,10 @@ type EvmProbeEarliestInfo struct {
 //
 // This list is an enumeration over an open set, so its unmatched path is the
 // one that matters: an unlisted state method is simply NOT gated (fail-open,
-// exactly today's behavior for it). Adding a method here can only ever refuse
-// or divert traffic the proven head does not cover, so extend it whenever parts
-// 1 and 2 both hold. Known state-reading methods still absent:
+// exactly today's behavior for it). Adding a method here can only ever divert
+// traffic away from an upstream the probes have DISPROVED (and only when a
+// sibling can serve), so extend it whenever parts 1 and 2 both hold. Known
+// state-reading methods still absent:
 //
 //   - eth_createAccessList, debug_traceCallMany — no method config at all, so
 //     part 2 fails and gating them would be inert until they get one.

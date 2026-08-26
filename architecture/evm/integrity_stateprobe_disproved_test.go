@@ -71,6 +71,10 @@ type siblingNetwork struct {
 
 func (s *siblingNetwork) EvmAllUpstreams(ctx context.Context) []common.Upstream { return s.ups }
 
+// Metric-label lookups the boundary's diverted/would_divert counter performs.
+func (s *siblingNetwork) ProjectId() string { return "test" }
+func (s *siblingNetwork) Label() string     { return "testnet" }
+
 func provenUp(id string, proven int64) common.Upstream {
 	u := common.NewFakeUpstream(id)
 	if w, ok := u.(common.EvmStateProvenWriter); ok && proven > 0 {

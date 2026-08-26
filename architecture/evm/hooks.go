@@ -126,11 +126,23 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 	}
 }
 
-// upstreamPreForward_stateBoundary refuses to send a state query to an
-// upstream whose STATE-PROVEN head does not cover the requested block. Nodes
-// sometimes answer state methods from older state while reporting a current
-// head; the proven head (advanced only by verified probes — see the state
-// prober) is the boundary that cannot silently outrun reality.
+// upstreamPreForward_stateBoundary diverts state queries away from an upstream
+// the state prober has DISPROVED: one that ANSWERS pinned probes and executes
+// them at the wrong height (see stateProber.disproved). That node has not
+// failed to prove itself — it has proven the opposite, at every depth, and
+// letting it serve is the silent-wrong-data case the prober was built for.
+//
+// Absence of proof, by contrast, never blocks routing. The boundary used to
+// also refuse any request pinned above the upstream's state-PROVEN head, and
+// that comparison misfired structurally: the proven head is advanced by probes
+// of the FOLLOWED head at a bounded cadence (follow interval + probe interval),
+// so on any chain whose block time is shorter than that cadence every honest
+// upstream's proven head sits several blocks behind its claimed head at all
+// times. Meanwhile "latest" interpolation pins requests at the majority CLAIMED
+// head — a height no proven head has reached yet — so every upstream refused
+// every tip request and state call can fail network-wide on a fast chain.
+// "Not yet proven at height H" is the same epistemic state as "never probed"
+// (which has always failed open); only DISPROOF is evidence against a node.
 //
 // Inert unless the state prober is running for this network, so the default
 // behavior is byte-identical with the feature off.
@@ -139,72 +151,62 @@ func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u c
 	if prober == nil {
 		return false, nil, nil
 	}
-	// The probes themselves are internal state calls aimed at upstreams whose
-	// boundary has NOT advanced yet — gating them would deadlock the proving.
+	// The probes themselves are internal state calls aimed at upstreams that
+	// may currently be failing them — gating them would deadlock the proving.
 	if dirs := r.Directives(); dirs != nil && dirs.IsInternal {
+		return false, nil, nil
+	}
+	if !prober.disproved(u.Id()) {
 		return false, nil, nil
 	}
 	_, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, r)
 	if err != nil || blockNumber <= 0 {
 		// Tags (latest/pending), unparseable refs, and requests whose height the
-		// method config cannot locate are not gated here: the proven boundary is
-		// a statement about a CONCRETE height, so with no height there is nothing
-		// to compare and the request goes out as it does today.
+		// method config cannot locate are not diverted: the sibling check below
+		// needs a CONCRETE height to answer, so with no height the request goes
+		// out as it does today. ("latest" on state methods is interpolated to a
+		// concrete height upstream of this hook whenever the tip is known.)
 		return false, nil, nil
 	}
-	eu, ok := u.(common.EvmUpstream)
-	if !ok {
+	// Divert only when someone else can actually answer. A disproved upstream
+	// that is the only one able to serve the height still serves; excluding the
+	// last resort trades wrong data for an outage.
+	if !prober.aSiblingCanServe(ctx, u.Id(), blockNumber) {
 		return false, nil, nil
 	}
-	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceStateProven, false, blockNumber)
-	if err != nil {
+	if integrityObserveOnly(n) {
+		// observeOnly is documented as ABSOLUTE over every integrity effect, and
+		// diversion is a routing effect: record that it would have happened,
+		// change nothing.
+		prober.count(u, "boundary", "would_divert")
 		return false, nil, nil
 	}
-	var proven int64
-	if r, ok := u.(common.EvmStateProvenReader); ok {
-		proven = r.EvmStateProvenBlock()
-	}
-	if available {
-		// The claimed-head fallback (proven == 0) exists so that upstreams which
-		// cannot be probed keep serving. It must not shelter an upstream that
-		// ANSWERS the probe and executes at the wrong height — that node has not
-		// failed to prove itself, it has proven the opposite, and letting it
-		// serve is the silent-wrong-data case this boundary was built for.
-		if proven > 0 || !prober.disproved(u.Id()) {
-			return false, nil, nil
-		}
-		// Divert only when someone else can actually answer. A disproved
-		// upstream that is the only one able to serve the height still serves;
-		// excluding the last resort trades wrong data for an outage.
-		if !prober.aSiblingCanServe(ctx, u.Id(), blockNumber) {
-			return false, nil, nil
-		}
-		prober.count(u, "boundary", "diverted")
-		return true, nil, &common.ErrUpstreamBlockUnavailable{
-			BaseError: common.BaseError{
-				Code: common.ErrCodeUpstreamBlockUnavailable,
-				Message: fmt.Sprintf(
-					"state for block %d is DISPROVEN on this node (it answers pinned calls at the wrong height) for %s",
-					blockNumber, method),
-				Details: map[string]interface{}{
-					"upstreamId":  u.Id(),
-					"blockNumber": blockNumber,
-					"disproven":   true,
-				},
-			},
-		}
-	}
+	prober.count(u, "boundary", "diverted")
 	return true, nil, &common.ErrUpstreamBlockUnavailable{
 		BaseError: common.BaseError{
-			Code:    common.ErrCodeUpstreamBlockUnavailable,
-			Message: fmt.Sprintf("state for block %d is not yet PROVEN on this node (stateProvenBlock: %d) for %s", blockNumber, proven, method),
+			Code: common.ErrCodeUpstreamBlockUnavailable,
+			Message: fmt.Sprintf(
+				"state for block %d is DISPROVEN on this node (it answers pinned calls at the wrong height) for %s",
+				blockNumber, method),
 			Details: map[string]interface{}{
-				"upstreamId":       u.Id(),
-				"blockNumber":      blockNumber,
-				"stateProvenBlock": proven,
+				"upstreamId":  u.Id(),
+				"blockNumber": blockNumber,
+				"disproven":   true,
 			},
 		},
 	}
+}
+
+// integrityObserveOnly reports the network's base integrity observeOnly
+// setting — the operator's blanket "measure, never intervene". Read directly
+// (not via resolveIntegrity) because the boundary is network-scoped like the
+// prober itself: per-request selector profiles adjust CHECKS, not routing.
+func integrityObserveOnly(n common.Network) bool {
+	cfg := n.Config()
+	if cfg == nil || cfg.Integrity == nil || cfg.Integrity.ObserveOnly == nil {
+		return false
+	}
+	return *cfg.Integrity.ObserveOnly
 }
 
 func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error, skipCacheRead bool) (*common.NormalizedResponse, error) {

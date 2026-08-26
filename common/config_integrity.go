@@ -64,8 +64,12 @@ type IntegritySettings struct {
 	// execution-context call (and eth_getProof where supported) verified
 	// against the follower's verified header, and advance that upstream's
 	// state-proven head only on success. Routing for state methods (eth_call,
-	// eth_getBalance, ...) then refuses to outrun proof. Requires follow to be
-	// enabled (the verified header is the trust anchor). Off by default.
+	// eth_getBalance, ...) then DIVERTS an upstream a sustained streak of
+	// probes has DISPROVED (it answers pinned calls at the wrong height),
+	// whenever a sibling can serve the height; absence of proof alone never
+	// blocks routing, and ObserveOnly suppresses the diversion too. Requires
+	// follow to be enabled (the verified header is the trust anchor). Off by
+	// default.
 	StateProbe *IntegrityStateProbeConfig `yaml:"stateProbe,omitempty" json:"stateProbe,omitempty"`
 	// Follow turns the ChainView into an actual chain follower: it walks the
 	// chain forward block by block, requires each block to name its

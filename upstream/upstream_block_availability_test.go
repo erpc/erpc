@@ -1242,15 +1242,4 @@ func TestEvmAssertBlockAvailability_HeadLagTolerance(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, canHandle)
 	})
-
-	t.Run("ToleranceAppliesToStateProvenHead", func(t *testing.T) {
-		upstream := newUpstream(1)
-		upstream.stateProvenBlock.Store(1000)
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceStateProven, false, 1001)
-		assert.NoError(t, err)
-		assert.True(t, canHandle)
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceStateProven, false, 1002)
-		assert.NoError(t, err)
-		assert.False(t, canHandle)
-	})
 }
