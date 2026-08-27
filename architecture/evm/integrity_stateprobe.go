@@ -40,14 +40,19 @@ import (
 //     Not all providers expose eth_getProof — support is DISCOVERED per
 //     upstream, never assumed.
 //
-// A success advances the upstream's state-proven head (monotonic) — telemetry,
-// and the strongest tier of the diversion's sibling check. Failure just fails
-// to advance — a mismatch at the tip can be a fork-transient, so it is counted
-// and logged, never scored as misbehavior. Routing reacts ONLY to a sustained
-// streak of mismatches (disproved → diverted, see the state boundary in
-// hooks.go): the proven head itself is never a routing bound, because it lags
-// the claimed head by the probe cadence on any fast chain, where a proven-head
-// bound would refuse the network's own advertised tip.
+// The prober PUBLISHES evidence; it holds no routing authority of its own.
+// A success advances the upstream's state-proven head (monotonic) — pure
+// telemetry, never a routing bound: the proven head advances at probe cadence,
+// so on any chain whose block time is shorter than that cadence it trails
+// every honest upstream's claimed head, and a bound built on it would refuse
+// the network's own advertised tip. A single failure just fails to advance —
+// a mismatch at the tip can be a fork-transient. Only a SUSTAINED streak of
+// wrong-height answers is evidence against a node, and that evidence goes
+// where every other proven-bad-data signal already goes: upstream misbehavior
+// on the health tracker (the ledger consensus disputes, integrity
+// deterministic rejects and wrong-empty responses feed — see noteDisproved).
+// Whether and when to exclude is the operator's selection policy's call, via
+// the existing misbehaviorRateAbove predicate.
 // The context-probe target is per-ARCHITECTURE (integrity.ChainStateContextProbe):
 // standard EVMs use Multicall3 getBlockNumber, but e.g. Nitro's block.number is
 // the L1 height and needs ArbSys arbBlockNumber instead — assuming one probe
@@ -69,15 +74,14 @@ type stateProber struct {
 	// eth_getProof, so the probe is not re-attempted on every block.
 	proofUnsupported sync.Map // upstream id -> true
 
-	// disprovedStreak counts CONSECUTIVE probe mismatches per upstream.
-	//
-	// The distinction it exists to draw: an upstream that cannot be probed has
-	// merely FAILED TO PROVE itself, and must keep serving (the boundary falls
-	// back to its claimed head). An upstream that answers the probe and executes
-	// at the wrong height has proven the OPPOSITE — measured on shadow hyperevm,
-	// where one upstream returned pin_ignored on 202 of 202 probes while all six
-	// of its siblings matched on all 202. Treating those two as the same thing
-	// is what let a demonstrably wrong node keep serving state calls.
+	// disprovedStreak counts CONSECUTIVE probe mismatches per upstream — the
+	// INTERNAL debounce between one unlucky probe and real evidence. Never
+	// config, never API: it only separates a probe landing across a reorg from
+	// an upstream that answers pinned calls at the wrong height sustainedly
+	// (measured on a live shadow: one upstream returned pin_ignored on 202 of
+	// 202 probes while all six of its siblings matched on all 202). An upstream
+	// that merely CANNOT be probed accrues no streak — absence of proof is not
+	// evidence and has no effect anywhere.
 	disprovedStreak sync.Map // upstream id -> *atomic.Int64
 
 	// work carries the newest followed head; size 1, newest wins — probing is
@@ -113,8 +117,8 @@ func startStateProber(n common.Network, v *chainView, cfg *common.IntegrityState
 	go p.run()
 }
 
-// stateProberFor is the routing gate's cheap activity test: nil means probing
-// is off for this network and the gate must be a no-op.
+// stateProberFor returns the network's running prober (nil = probing off for
+// this network); the chain follower uses it to hand over freshly verified heads.
 func stateProberFor(networkId string) *stateProber {
 	v, ok := stateProbers.Load(networkId)
 	if !ok {
@@ -181,12 +185,11 @@ func (p *stateProber) probeUpstream(ctx context.Context, u common.Upstream, n in
 	ctxMatch := p.probeContext(ctx, u, n)
 	proofMatch := p.probeProof(ctx, u, n, h)
 
-	// Advance on any positive proof, refuse on any negative one. "unknown"
-	// (unsupported/error) neither advances nor blocks — but if BOTH probes are
-	// unknown there is no evidence at all, and the boundary stays put (the
-	// assert falls back to the claimed head for such upstreams, visibly).
+	// Advance on any positive proof, count any negative one. "unknown"
+	// (unsupported/error) neither advances nor counts — if BOTH probes are
+	// unknown there is no evidence at all, and nothing changes anywhere.
 	if ctxMatch == probeMismatch || proofMatch == probeMismatch {
-		p.noteDisproved(u.Id())
+		p.noteDisproved(u)
 		return
 	}
 	if ctxMatch != probeMatch && proofMatch != probeMatch {
@@ -311,8 +314,8 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 
 // forwardTo sends one probe to EXACTLY the given upstream: cache bypassed (the
 // cache would answer instead of the node — the circular-evidence trap), and
-// marked internal so the state-boundary gate itself ignores it (the probe must
-// be able to reach an upstream whose boundary has not advanced yet).
+// marked internal so the integrity engine does not recurse into validating the
+// probe's own response.
 func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body string) (string, error) {
 	req := common.NewNormalizedRequest([]byte(body))
 	req.SetDirectives(&common.RequestDirectives{
@@ -336,15 +339,40 @@ func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body str
 }
 
 // stateProbeDisprovedStreak is how many CONSECUTIVE mismatches make an upstream
-// disproved rather than merely unproven. At the shadow's 2s interval that is
+// disproved rather than merely unproven. At the default 2s interval that is
 // ~20s of unbroken evidence; the observed real case ran 202/202, so the
 // threshold exists only to rule out a transient (a probe landing across a
-// reorg, a momentary lag spike), not to be a tuning knob.
+// reorg, a momentary lag spike), not to be a tuning knob — which is why it is
+// a constant here and not config.
 const stateProbeDisprovedStreak = 10
 
-func (p *stateProber) noteDisproved(id string) {
-	v, _ := p.disprovedStreak.LoadOrStore(id, new(atomic.Int64))
-	v.(*atomic.Int64).Add(1)
+// noteDisproved counts a probe mismatch and, once the streak crosses the
+// debounce, records each further mismatch as upstream misbehavior — the same
+// ledger consensus disputes, integrity deterministic rejects and wrong-empty
+// responses already feed. Disproof is a fourth witness to that ledger, not a
+// new concept: the prober publishes the evidence, and the operator's selection
+// policy decides what to do with it (misbehaviorRateAbove in the policy stdlib
+// reads exactly this counter). Recording per mismatch — not once per crossing —
+// keeps the rolling rate elevated for exactly as long as the node keeps
+// failing probes; one good probe resets the streak and the evidence stops.
+func (p *stateProber) noteDisproved(u common.Upstream) {
+	v, _ := p.disprovedStreak.LoadOrStore(u.Id(), new(atomic.Int64))
+	if v.(*atomic.Int64).Add(1) < stateProbeDisprovedStreak {
+		return
+	}
+	// Under integrity observeOnly no check may influence routing: rejections
+	// are suppressed before they reach misbehavior scoring, so probe disproof
+	// stays consistent and records nothing either.
+	if integrityObserveOnly(p.network) {
+		return
+	}
+	if ht := u.Tracker(); ht != nil {
+		// Recorded under the context probe's own method: the probe IS a pinned
+		// eth_call, and eth_call traffic is what a wrong-height execution
+		// context silently corrupts. The probe pins the followed (not yet
+		// finalized) head, hence the unfinalized stratum.
+		ht.RecordUpstreamMisbehavior(u, "eth_call", common.DataFinalityStateUnfinalized)
+	}
 }
 
 func (p *stateProber) clearDisproved(id string) {
@@ -353,60 +381,16 @@ func (p *stateProber) clearDisproved(id string) {
 	}
 }
 
-// disproved reports whether an upstream has answered probes wrongly for long
-// enough that its silence about the state trie is evidence, not a gap.
-func (p *stateProber) disproved(id string) bool {
-	v, ok := p.disprovedStreak.Load(id)
-	if !ok {
+// integrityObserveOnly reports the network's base integrity observeOnly
+// setting — the operator's blanket "measure, never intervene". Read directly
+// (not via resolveIntegrity) because the prober is network-scoped: per-request
+// selector profiles adjust CHECKS, not evidence recording.
+func integrityObserveOnly(n common.Network) bool {
+	cfg := n.Config()
+	if cfg == nil || cfg.Integrity == nil || cfg.Integrity.ObserveOnly == nil {
 		return false
 	}
-	return v.(*atomic.Int64).Load() >= stateProbeDisprovedStreak
-}
-
-// aSiblingCanServe reports whether some OTHER upstream is a credible
-// alternative for `block`.
-//
-// Diverting away from a disproved upstream is conditioned on this because the
-// alternative is the failure mode that took Base down: a selection rule that
-// EXCLUDES rather than deprioritizes turns "every candidate looks bad" into an
-// outage. If nothing else can serve the height, the disproved upstream still
-// serves — wrong data beats no data, and the operator sees it in the probe
-// metrics either way.
-//
-// Two tiers, because requiring PROOF at the exact height leaves the newest
-// blocks unprotected: the proven head necessarily lags the followed tip (~15
-// blocks on the shadow), while the defect is present at every depth — the
-// upstream this was built for ignored the pin identically at the tip and 5,000
-// blocks back. A sibling carrying no such evidence, whose claimed head covers
-// the height, is still strictly better than one proven to answer at the wrong
-// height.
-func (p *stateProber) aSiblingCanServe(ctx context.Context, exceptId string, block int64) bool {
-	enum, ok := p.network.(interface {
-		EvmAllUpstreams(context.Context) []common.Upstream
-	})
-	if !ok {
-		return false
-	}
-	fallback := false
-	for _, u := range enum.EvmAllUpstreams(ctx) {
-		if u.Id() == exceptId || p.disproved(u.Id()) {
-			continue
-		}
-		// Strongest: a sibling that has PROVEN state at or beyond the height.
-		if r, ok := u.(common.EvmStateProvenReader); ok && r.EvmStateProvenBlock() >= block {
-			return true
-		}
-		if fallback {
-			continue
-		}
-		if eu, ok := u.(common.EvmUpstream); ok {
-			avail, err := eu.EvmAssertBlockAvailability(ctx, "eth_call", common.AvailbilityConfidenceBlockHead, false, block)
-			if err == nil && avail {
-				fallback = true
-			}
-		}
-	}
-	return fallback
+	return *cfg.Integrity.ObserveOnly
 }
 
 func (p *stateProber) count(u common.Upstream, probe, outcome string) {

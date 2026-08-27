@@ -2,7 +2,6 @@ package evm
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -115,98 +114,18 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 	case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
 		return upstreamPreForward_eth_query(ctx, n, u, r)
 	default:
-		// The state-proven boundary protects a CLASS (methods answered from the
-		// state trie at a block), not a list copied to this call site. The class
-		// is defined once, in common.IsEvmStateQueryMethod, so a method joining
-		// it cannot be gated in one place and forgotten in another.
-		if common.IsEvmStateQueryMethod(methodLower) {
-			return upstreamPreForward_stateBoundary(ctx, n, u, r, method)
-		}
+		// Deliberately NO per-request gate on the integrity state prober's
+		// findings here. The prober publishes evidence — proven-head telemetry
+		// and, for a sustained streak of wrong-height answers, upstream
+		// misbehavior on the health tracker (see noteDisproved) — and exclusion
+		// decisions belong to the operator's selection policy, which already
+		// reads that ledger (misbehaviorRateAbove). A hook-level refusal keyed
+		// to the proven head was tried and misfired structurally: the proven
+		// head advances at probe cadence, so on a chain whose block time is
+		// shorter than that cadence it trails every honest upstream's claimed
+		// head and the network's own advertised tip becomes unroutable.
 		return false, nil, nil
 	}
-}
-
-// upstreamPreForward_stateBoundary diverts state queries away from an upstream
-// the state prober has DISPROVED: one that ANSWERS pinned probes and executes
-// them at the wrong height (see stateProber.disproved). That node has not
-// failed to prove itself — it has proven the opposite, at every depth, and
-// letting it serve is the silent-wrong-data case the prober was built for.
-//
-// Absence of proof, by contrast, never blocks routing. The boundary used to
-// also refuse any request pinned above the upstream's state-PROVEN head, and
-// that comparison misfired structurally: the proven head is advanced by probes
-// of the FOLLOWED head at a bounded cadence (follow interval + probe interval),
-// so on any chain whose block time is shorter than that cadence every honest
-// upstream's proven head sits several blocks behind its claimed head at all
-// times. Meanwhile "latest" interpolation pins requests at the majority CLAIMED
-// head — a height no proven head has reached yet — so every upstream refused
-// every tip request and state call can fail network-wide on a fast chain.
-// "Not yet proven at height H" is the same epistemic state as "never probed"
-// (which has always failed open); only DISPROOF is evidence against a node.
-//
-// Inert unless the state prober is running for this network, so the default
-// behavior is byte-identical with the feature off.
-func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, method string) (bool, *common.NormalizedResponse, error) {
-	prober := stateProberFor(n.Id())
-	if prober == nil {
-		return false, nil, nil
-	}
-	// The probes themselves are internal state calls aimed at upstreams that
-	// may currently be failing them — gating them would deadlock the proving.
-	if dirs := r.Directives(); dirs != nil && dirs.IsInternal {
-		return false, nil, nil
-	}
-	if !prober.disproved(u.Id()) {
-		return false, nil, nil
-	}
-	_, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, r)
-	if err != nil || blockNumber <= 0 {
-		// Tags (latest/pending), unparseable refs, and requests whose height the
-		// method config cannot locate are not diverted: the sibling check below
-		// needs a CONCRETE height to answer, so with no height the request goes
-		// out as it does today. ("latest" on state methods is interpolated to a
-		// concrete height upstream of this hook whenever the tip is known.)
-		return false, nil, nil
-	}
-	// Divert only when someone else can actually answer. A disproved upstream
-	// that is the only one able to serve the height still serves; excluding the
-	// last resort trades wrong data for an outage.
-	if !prober.aSiblingCanServe(ctx, u.Id(), blockNumber) {
-		return false, nil, nil
-	}
-	if integrityObserveOnly(n) {
-		// observeOnly is documented as ABSOLUTE over every integrity effect, and
-		// diversion is a routing effect: record that it would have happened,
-		// change nothing.
-		prober.count(u, "boundary", "would_divert")
-		return false, nil, nil
-	}
-	prober.count(u, "boundary", "diverted")
-	return true, nil, &common.ErrUpstreamBlockUnavailable{
-		BaseError: common.BaseError{
-			Code: common.ErrCodeUpstreamBlockUnavailable,
-			Message: fmt.Sprintf(
-				"state for block %d is DISPROVEN on this node (it answers pinned calls at the wrong height) for %s",
-				blockNumber, method),
-			Details: map[string]interface{}{
-				"upstreamId":  u.Id(),
-				"blockNumber": blockNumber,
-				"disproven":   true,
-			},
-		},
-	}
-}
-
-// integrityObserveOnly reports the network's base integrity observeOnly
-// setting — the operator's blanket "measure, never intervene". Read directly
-// (not via resolveIntegrity) because the boundary is network-scoped like the
-// prober itself: per-request selector profiles adjust CHECKS, not routing.
-func integrityObserveOnly(n common.Network) bool {
-	cfg := n.Config()
-	if cfg == nil || cfg.Integrity == nil || cfg.Integrity.ObserveOnly == nil {
-		return false
-	}
-	return *cfg.Integrity.ObserveOnly
 }
 
 func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error, skipCacheRead bool) (*common.NormalizedResponse, error) {

@@ -20,12 +20,11 @@ func stateProvenUpstream(latest int64) *Upstream {
 	}
 }
 
-// The proven head is telemetry plus the strongest tier of the disproved
-// diversion's sibling check — it is deliberately NOT a routing bound (see
+// The proven head is telemetry — deliberately NOT a routing bound (see
 // AvailbilityConfidence in common/architecture_evm.go for why: it lags the
 // claimed head by the probe cadence on any fast chain, so bounding routing on
-// it would refuse all tip traffic). What must still hold is
-// its monotonicity: racing probe results cannot move it backwards.
+// it would refuse all tip traffic). What must still hold is its monotonicity:
+// racing probe results cannot move it backwards.
 func TestEvmStateProvenBlock_Monotonic(t *testing.T) {
 	u := stateProvenUpstream(1000)
 	u.EvmSetStateProvenBlock(950)
