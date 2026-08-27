@@ -178,4 +178,3 @@ type EvmProbeEarliestInfo struct {
 	EarliestBlock    int64                    `json:"earliestBlock"`
 	SchedulerRunning bool                     `json:"schedulerRunning,omitempty"`
 }
-
