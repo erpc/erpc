@@ -65,31 +65,19 @@ export const UpstreamTypeEvm: UpstreamType = "evm";
 export type EvmUpstream = 
     Upstream;
 /**
- * EvmStateProvenReader is the OPTIONAL, separately-asserted surface for the
- * state-proven boundary (see the integrity state prober). Deliberately NOT part
- * of EvmUpstream: that interface is implemented outside this repo, and widening
- * it broke every existing implementor — the chainId suggest-gate silently
- * degraded when its upstream stopped satisfying the assertion. Optional
- * capabilities are asserted narrowly, never added to the core interface.
- */
-export type EvmStateProvenReader = any;
-/**
- * EvmStateProvenWriter is the prober-facing half.
+ * EvmStateProvenWriter is the OPTIONAL, separately-asserted surface the
+ * integrity state prober records proofs through. The proven head is telemetry
+ * (the state-proven block / proven-lag gauges), never a routing input.
+ * Deliberately NOT part of EvmUpstream: that interface is implemented outside
+ * this repo, and widening it broke every existing implementor — the chainId
+ * suggest-gate silently degraded when its upstream stopped satisfying the
+ * assertion. Optional capabilities are asserted narrowly, never added to the
+ * core interface.
  */
 export type EvmStateProvenWriter = any;
 export type AvailbilityConfidence = number /* int */;
 export const AvailbilityConfidenceBlockHead: AvailbilityConfidence = 1;
 export const AvailbilityConfidenceFinalized: AvailbilityConfidence = 2;
-/**
- * AvailbilityConfidenceStateProven gates on the state-PROVEN head rather
- * than the claimed head: the highest block for which the integrity state
- * probe verified the upstream truly executes in that block's context /
- * holds its state trie. Nodes sometimes answer state queries (eth_call,
- * eth_getBalance, ...) from OLDER state while their reported head is
- * current; this confidence exists so routing for state methods can refuse
- * to outrun proof. Falls back to blockHead while nothing is proven yet.
- */
-export const AvailbilityConfidenceStateProven: AvailbilityConfidence = 3;
 export type EvmNodeType = string;
 export const EvmNodeTypeUnknown: EvmNodeType = "unknown";
 export const EvmNodeTypeFull: EvmNodeType = "full";
@@ -2035,9 +2023,15 @@ export interface IntegritySettings {
    * trie it claims: on each new followed block, probe every upstream with an
    * execution-context call (and eth_getProof where supported) verified
    * against the follower's verified header, and advance that upstream's
-   * state-proven head only on success. Routing for state methods (eth_call,
-   * eth_getBalance, ...) then refuses to outrun proof. Requires follow to be
-   * enabled (the verified header is the trust anchor). Off by default.
+   * state-proven head only on success. The probes PUBLISH evidence, they
+   * never route: proofs feed the state-proven telemetry, and a sustained
+   * streak of wrong-height answers is recorded as upstream misbehavior on
+   * the health tracker — the same ledger consensus disputes and integrity
+   * rejects feed — for the selection policy to act on (e.g. the
+   * misbehaviorRateAbove predicate); absence of proof has no effect at all,
+   * and ObserveOnly suppresses the misbehavior recording like every other
+   * integrity effect. Requires follow to be enabled (the verified header is
+   * the trust anchor). Off by default.
    */
   stateProbe?: IntegrityStateProbeConfig;
   /**

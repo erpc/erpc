@@ -2,7 +2,6 @@ package evm
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -115,95 +114,17 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 	case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
 		return upstreamPreForward_eth_query(ctx, n, u, r)
 	default:
-		// The state-proven boundary protects a CLASS (methods answered from the
-		// state trie at a block), not a list copied to this call site. The class
-		// is defined once, in common.IsEvmStateQueryMethod, so a method joining
-		// it cannot be gated in one place and forgotten in another.
-		if common.IsEvmStateQueryMethod(methodLower) {
-			return upstreamPreForward_stateBoundary(ctx, n, u, r, method)
-		}
+		// Deliberately NO per-request gate on the integrity state prober's
+		// findings here. The prober publishes evidence — proven-head telemetry
+		// and, for a sustained streak of wrong-height answers, upstream
+		// misbehavior on the health tracker (see noteDisproved) — and exclusion
+		// decisions belong to the operator's selection policy, which already
+		// reads that ledger (misbehaviorRateAbove). A hook-level refusal keyed
+		// to the proven head was tried and misfired structurally: the proven
+		// head advances at probe cadence, so on a chain whose block time is
+		// shorter than that cadence it trails every honest upstream's claimed
+		// head and the network's own advertised tip becomes unroutable.
 		return false, nil, nil
-	}
-}
-
-// upstreamPreForward_stateBoundary refuses to send a state query to an
-// upstream whose STATE-PROVEN head does not cover the requested block. Nodes
-// sometimes answer state methods from older state while reporting a current
-// head; the proven head (advanced only by verified probes — see the state
-// prober) is the boundary that cannot silently outrun reality.
-//
-// Inert unless the state prober is running for this network, so the default
-// behavior is byte-identical with the feature off.
-func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, method string) (bool, *common.NormalizedResponse, error) {
-	prober := stateProberFor(n.Id())
-	if prober == nil {
-		return false, nil, nil
-	}
-	// The probes themselves are internal state calls aimed at upstreams whose
-	// boundary has NOT advanced yet — gating them would deadlock the proving.
-	if dirs := r.Directives(); dirs != nil && dirs.IsInternal {
-		return false, nil, nil
-	}
-	_, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, r)
-	if err != nil || blockNumber <= 0 {
-		// Tags (latest/pending), unparseable refs, and requests whose height the
-		// method config cannot locate are not gated here: the proven boundary is
-		// a statement about a CONCRETE height, so with no height there is nothing
-		// to compare and the request goes out as it does today.
-		return false, nil, nil
-	}
-	eu, ok := u.(common.EvmUpstream)
-	if !ok {
-		return false, nil, nil
-	}
-	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceStateProven, false, blockNumber)
-	if err != nil {
-		return false, nil, nil
-	}
-	var proven int64
-	if r, ok := u.(common.EvmStateProvenReader); ok {
-		proven = r.EvmStateProvenBlock()
-	}
-	if available {
-		// The claimed-head fallback (proven == 0) exists so that upstreams which
-		// cannot be probed keep serving. It must not shelter an upstream that
-		// ANSWERS the probe and executes at the wrong height — that node has not
-		// failed to prove itself, it has proven the opposite, and letting it
-		// serve is the silent-wrong-data case this boundary was built for.
-		if proven > 0 || !prober.disproved(u.Id()) {
-			return false, nil, nil
-		}
-		// Divert only when someone else can actually answer. A disproved
-		// upstream that is the only one able to serve the height still serves;
-		// excluding the last resort trades wrong data for an outage.
-		if !prober.aSiblingCanServe(ctx, u.Id(), blockNumber) {
-			return false, nil, nil
-		}
-		prober.count(u, "boundary", "diverted")
-		return true, nil, &common.ErrUpstreamBlockUnavailable{
-			BaseError: common.BaseError{
-				Code: common.ErrCodeUpstreamBlockUnavailable,
-				Message: fmt.Sprintf(
-					"state for block %d is DISPROVEN on this node (it answers pinned calls at the wrong height) for %s",
-					blockNumber, method),
-				Details: map[string]interface{}{
-					"upstreamId":  u.Id(),
-					"blockNumber": blockNumber,
-					"disproven":   true,
-				},
-			},
-		}
-	}
-	return true, nil, &common.ErrUpstreamBlockUnavailable{
-		BaseError: common.BaseError{
-			Code:    common.ErrCodeUpstreamBlockUnavailable,
-			Message: fmt.Sprintf("state for block %d is not yet PROVEN on this node (stateProvenBlock: %d) for %s", blockNumber, proven, method),
-			Details: map[string]interface{}{
-				"upstreamId":       u.Id(),
-				"blockNumber":      blockNumber,
-				"stateProvenBlock": proven,
-			},
-		},
 	}
 }
 

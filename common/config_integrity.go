@@ -63,9 +63,15 @@ type IntegritySettings struct {
 	// trie it claims: on each new followed block, probe every upstream with an
 	// execution-context call (and eth_getProof where supported) verified
 	// against the follower's verified header, and advance that upstream's
-	// state-proven head only on success. Routing for state methods (eth_call,
-	// eth_getBalance, ...) then refuses to outrun proof. Requires follow to be
-	// enabled (the verified header is the trust anchor). Off by default.
+	// state-proven head only on success. The probes PUBLISH evidence, they
+	// never route: proofs feed the state-proven telemetry, and a sustained
+	// streak of wrong-height answers is recorded as upstream misbehavior on
+	// the health tracker — the same ledger consensus disputes and integrity
+	// rejects feed — for the selection policy to act on (e.g. the
+	// misbehaviorRateAbove predicate); absence of proof has no effect at all,
+	// and ObserveOnly suppresses the misbehavior recording like every other
+	// integrity effect. Requires follow to be enabled (the verified header is
+	// the trust anchor). Off by default.
 	StateProbe *IntegrityStateProbeConfig `yaml:"stateProbe,omitempty" json:"stateProbe,omitempty"`
 	// Follow turns the ChainView into an actual chain follower: it walks the
 	// chain forward block by block, requires each block to name its
