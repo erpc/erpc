@@ -582,6 +582,27 @@ var (
 		Help:      "Total number of times an upstream returned a wrong empty response even though other upstreams returned data.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
 
+	// MetricUpstreamMisbehaviorTotal exports the health tracker's misbehavior
+	// ledger — the same events RecordUpstreamMisbehavior feeds into scoring:
+	// consensus disputes, integrity deterministic rejects, wrong-empty
+	// responses, head rollbacks, and state-probe disproof.
+	//
+	// Until now that ledger existed only as an in-process RollingCounter, so
+	// the only way to see what routing made of an upstream was to read
+	// erpc_selection_score and infer. That is not enough to alert on, and not
+	// enough to answer "is this upstream misbehaving, and by how much".
+	//
+	// Labels are a strict subset of erpc_upstream_request_total's, so a rate is
+	// a plain division with no relabeling:
+	//
+	//	sum by (upstream) (rate(erpc_upstream_misbehavior_total[5m]))
+	//	  / sum by (upstream) (rate(erpc_upstream_request_total[5m]))
+	MetricUpstreamMisbehaviorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_misbehavior_total",
+		Help:      "Total misbehaviors recorded against an upstream by the health tracker (consensus disputes, integrity rejects, wrong-empty responses, head rollbacks, state-probe disproof). Labels align with erpc_upstream_request_total so a misbehavior rate is a direct division.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+
 	// MetricGrpcBdsHardTimeoutTotal counts how many BDS gRPC calls hit the
 	// hard per-call ceiling (the bounded-wait timeout in SendRequest). A
 	// non-zero rate is the smoking-gun indicator of wedged H2 streams.
@@ -1259,6 +1280,7 @@ func RebuildFilteredCounters() {
 	MetricNetworkEvmTraceFilterSplitFailure = MetricNetworkEvmTraceFilterSplitFailure.Rebuild()
 	MetricNetworkEvmTraceFilterForcedSplits = MetricNetworkEvmTraceFilterForcedSplits.Rebuild()
 	MetricUpstreamWrongEmptyResponseTotal = MetricUpstreamWrongEmptyResponseTotal.Rebuild()
+	MetricUpstreamMisbehaviorTotal = MetricUpstreamMisbehaviorTotal.Rebuild()
 	MetricNetworkRequestsReceived = MetricNetworkRequestsReceived.Rebuild()
 	MetricNetworkMultiplexedRequests = MetricNetworkMultiplexedRequests.Rebuild()
 	MetricNetworkHedgedRequestTotal = MetricNetworkHedgedRequestTotal.Rebuild()
@@ -1298,6 +1320,7 @@ func RebuildFilteredCounters() {
 	MetricNetworkEvmTraceFilterSplitFailure = registerOrReuseCounter(MetricNetworkEvmTraceFilterSplitFailure)
 	MetricNetworkEvmTraceFilterForcedSplits = registerOrReuseCounter(MetricNetworkEvmTraceFilterForcedSplits)
 	MetricUpstreamWrongEmptyResponseTotal = registerOrReuseCounter(MetricUpstreamWrongEmptyResponseTotal)
+	MetricUpstreamMisbehaviorTotal = registerOrReuseCounter(MetricUpstreamMisbehaviorTotal)
 	MetricNetworkRequestsReceived = registerOrReuseCounter(MetricNetworkRequestsReceived)
 	MetricNetworkMultiplexedRequests = registerOrReuseCounter(MetricNetworkMultiplexedRequests)
 	MetricNetworkHedgedRequestTotal = registerOrReuseCounter(MetricNetworkHedgedRequestTotal)
