@@ -1056,6 +1056,19 @@ func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string, f
 		tm.MisbehaviorsTotal.Add(1)
 		tm.touch(nowMs)
 	}
+
+	// Export the same event once, with the caller's own (method, finality).
+	// The loops above fan one event across the in-process rollup buckets that
+	// scoring reads; Prometheus does its own aggregation, so emitting per
+	// bucket key would multiply every misbehavior by the rollup fan-out.
+	telemetry.CounterHandle(telemetry.MetricUpstreamMisbehaviorTotal,
+		t.projectId,
+		up.VendorName(),
+		up.NetworkLabel(),
+		up.Id(),
+		method,
+		finality.String(),
+	).Inc()
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common.Upstream, method string, req *common.NormalizedRequest) {
