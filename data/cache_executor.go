@@ -41,9 +41,11 @@ type cacheExecutor struct {
 	// quantile-driven — static configs pay no tracking cost.
 	latency *health.QuantileTracker
 
-	// slowCall is CircuitBreaker.SlowCallThreshold: completed attempts
-	// slower than this count as breaker failures even when they succeed.
-	slowCall time.Duration
+	// slowCallSpec is CircuitBreaker.SlowCallThreshold: completed attempts
+	// slower than the resolved threshold count as breaker failures even
+	// when they succeed. Same Duration|AdaptiveDuration shape as
+	// timeoutSpec, resolved against the same latency tracker.
+	slowCallSpec *common.AdaptiveDuration
 
 	method     string
 	finalities []common.DataFinalityState
@@ -85,7 +87,7 @@ func NewCacheExecutor(ctx context.Context, cfg *common.CacheFailsafeConfig, logg
 	}
 	if cfg.CircuitBreaker != nil {
 		e.breaker = failsafe.NewBreaker(cfg.CircuitBreaker, logger)
-		e.slowCall = cfg.CircuitBreaker.SlowCallThreshold.Duration()
+		e.slowCallSpec = cfg.CircuitBreaker.SlowCallThreshold
 	}
 	if e.needsLatencyTracker() {
 		e.latency = health.NewQuantileTracker(logger)
@@ -103,7 +105,7 @@ func (e *cacheExecutor) needsLatencyTracker() bool {
 	if e.cfg.Hedge != nil && e.cfg.Hedge.Delay != nil && e.cfg.Hedge.Delay.Quantile > 0 {
 		return true
 	}
-	return false
+	return e.slowCallSpec != nil && e.slowCallSpec.Quantile > 0
 }
 
 // MatchMethod returns the configured method pattern.
@@ -298,7 +300,7 @@ func (e *cacheExecutor) breakerOutcome(err error, dur time.Duration, interrupted
 	if interrupted {
 		return failsafe.OutcomeIgnore
 	}
-	if e.slowCall > 0 && dur >= e.slowCall {
+	if th := e.slowCallSpec.Resolve(e.latency); th > 0 && dur >= th {
 		return failsafe.OutcomeFailure
 	}
 	if err == nil {

@@ -1598,15 +1598,18 @@ type CircuitBreakerPolicyConfig struct {
 	SuccessThresholdCount    uint     `yaml:"successThresholdCount" json:"successThresholdCount"`
 	SuccessThresholdCapacity uint     `yaml:"successThresholdCapacity" json:"successThresholdCapacity"`
 
-	// SlowCallThreshold classifies any COMPLETED call slower than this
-	// duration as a breaker failure, even when it succeeds or is a
-	// semantic cache miss. Sustained slowness then opens the breaker —
-	// excluding the target until half-open probes complete fast again —
-	// which gives latency-based exclusion (selection-policy-like
-	// mechanics) on top of the error-based tripping. Unset (0) disables
-	// slow-call classification. Currently wired only for connector-level
-	// failsafe (cache/auth connectors); validation rejects it elsewhere.
-	SlowCallThreshold Duration `yaml:"slowCallThreshold,omitempty" json:"slowCallThreshold,omitempty" tstype:"Duration"`
+	// SlowCallThreshold classifies any COMPLETED call slower than the
+	// resolved threshold as a breaker failure, even when it succeeds (or,
+	// for cache connectors, is a semantic miss). Sustained slowness then
+	// trips the breaker exactly like sustained errors, and half-open
+	// probes re-admit the target once calls complete fast again.
+	//
+	// Same unified shape as timeout.duration / hedge.delay: a scalar is a
+	// fixed threshold; the object form ({base, quantile, min, max})
+	// resolves against the scope's latency source — per-method network
+	// quantiles for upstreams, the executor's own latency window for
+	// cache connectors. Unset disables slow-call classification.
+	SlowCallThreshold *AdaptiveDuration `yaml:"slowCallThreshold,omitempty" json:"slowCallThreshold,omitempty" tstype:"Duration | AdaptiveDuration"`
 }
 
 func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
@@ -1615,6 +1618,7 @@ func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
 	}
 	copied := &CircuitBreakerPolicyConfig{}
 	*copied = *c
+	copied.SlowCallThreshold = c.SlowCallThreshold.Copy()
 	return copied
 }
 

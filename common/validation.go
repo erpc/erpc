@@ -550,16 +550,6 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	return nil
 }
 
-// validateNonConnectorScope rejects knobs only wired for connector-level
-// failsafe (data/cache_executor.go); accepting them at upstream/network
-// scope would silently no-op and mislead operators.
-func (f *FailsafeConfig) validateNonConnectorScope(scope string) error {
-	if f.CircuitBreaker != nil && f.CircuitBreaker.SlowCallThreshold > 0 {
-		return fmt.Errorf("%s: circuitBreaker.slowCallThreshold is only supported for connector-level failsafe (failsafeForGets/failsafeForSets)", scope)
-	}
-	return nil
-}
-
 func (p *DynamoDBConnectorConfig) Validate() error {
 	if p.Table == "" {
 		return fmt.Errorf("database.*.connector.dynamodb.table is required")
@@ -994,9 +984,6 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			if err := fs.Validate(); err != nil {
 				return err
 			}
-			if err := fs.validateNonConnectorScope("upstream.*.failsafe"); err != nil {
-				return err
-			}
 		}
 	}
 	if u.JsonRpc != nil {
@@ -1232,6 +1219,9 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 	if c.FailureThresholdCount > c.FailureThresholdCapacity {
 		return fmt.Errorf("failsafe.circuitBreaker.failureThresholdCount must be less than or equal to failureThresholdCapacity")
 	}
+	if err := c.SlowCallThreshold.validate("failsafe.circuitBreaker.slowCallThreshold"); err != nil {
+		return err
+	}
 	if c.SuccessThresholdCount <= 0 {
 		return fmt.Errorf("failsafe.circuitBreaker.successThresholdCount must be greater than 0")
 	}
@@ -1451,9 +1441,6 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Failsafe != nil {
 		for _, fs := range n.Failsafe {
 			if err := fs.Validate(); err != nil {
-				return err
-			}
-			if err := fs.validateNonConnectorScope("network.*.failsafe"); err != nil {
 				return err
 			}
 		}

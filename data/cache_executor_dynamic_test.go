@@ -289,7 +289,7 @@ func TestCacheFailsafe_SlowCallBreaker_OpensAndRecovers(t *testing.T) {
 				HalfOpenAfter:            common.Duration(25 * time.Millisecond),
 				SuccessThresholdCount:    1,
 				SuccessThresholdCapacity: 1,
-				SlowCallThreshold:        common.Duration(20 * time.Millisecond),
+				SlowCallThreshold:        common.NewStaticDuration(20 * time.Millisecond),
 			},
 		},
 	}, nil)
