@@ -597,6 +597,16 @@ var (
 	//
 	//	sum by (upstream) (rate(erpc_upstream_misbehavior_total[5m]))
 	//	  / sum by (upstream) (rate(erpc_upstream_request_total[5m]))
+	//
+	// Do NOT add a `finality` matcher to both sides of that division. This
+	// counter is emitted AFTER the response, where NormalizedRequest.Finality
+	// has resolved; erpc_upstream_request_total is emitted BEFORE dispatch,
+	// where the same call often cannot resolve yet and reports "unknown"
+	// (Finality caches only definitive answers). For methods whose finality
+	// depends on the response at all — eth_getBlockByHash and the other
+	// hash-addressed lookups — the two counters therefore label the SAME
+	// request differently, and a per-finality ratio can exceed 100%. Divide on
+	// the unfiltered totals, and use the finality label for attribution only.
 	MetricUpstreamMisbehaviorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_misbehavior_total",
