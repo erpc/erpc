@@ -2873,6 +2873,12 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 			c.SuccessThresholdCapacity = 10
 		}
 	}
+	// SlowCallThreshold has no built-in default — 0 keeps slow-call
+	// classification disabled unless the operator (or scope defaults)
+	// opts in.
+	if c.SlowCallThreshold == 0 && defaults != nil {
+		c.SlowCallThreshold = defaults.SlowCallThreshold
+	}
 
 	return nil
 }

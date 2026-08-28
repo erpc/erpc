@@ -1228,3 +1228,66 @@ func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "rateLimitCountMode")
 }
+
+// slowCallCircuitBreaker builds a breaker config that passes
+// CircuitBreakerPolicyConfig.Validate and carries the connector-only
+// SlowCallThreshold knob.
+func slowCallCircuitBreaker() *CircuitBreakerPolicyConfig {
+	return &CircuitBreakerPolicyConfig{
+		FailureThresholdCount:    2,
+		FailureThresholdCapacity: 2,
+		SuccessThresholdCount:    1,
+		SuccessThresholdCapacity: 1,
+		HalfOpenAfter:            Duration(30 * time.Second),
+		SlowCallThreshold:        Duration(20 * time.Millisecond),
+	}
+}
+
+func TestUpstreamConfig_Validate_RejectsSlowCallThreshold(t *testing.T) {
+	u := &UpstreamConfig{
+		Endpoint: "http://localhost",
+		Failsafe: []*FailsafeConfig{
+			{MatchMethod: "*", CircuitBreaker: slowCallCircuitBreaker()},
+		},
+	}
+	err := u.Validate(&Config{}, false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "only supported for connector-level failsafe")
+}
+
+func TestNetworkConfig_Validate_RejectsSlowCallThreshold(t *testing.T) {
+	n := &NetworkConfig{
+		Architecture: ArchitectureEvm,
+		Evm: &EvmNetworkConfig{
+			ChainId:                     1,
+			FallbackFinalityDepth:       128,
+			FallbackStatePollerDebounce: Duration(5 * time.Second),
+			GetLogsMaxAllowedRange:      1000,
+		},
+		Failsafe: []*FailsafeConfig{
+			{MatchMethod: "*", CircuitBreaker: slowCallCircuitBreaker()},
+		},
+	}
+	err := n.Validate(&Config{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "only supported for connector-level failsafe")
+}
+
+func TestConnectorConfig_Validate_AcceptsSlowCallThresholdAndHedgeQuantile(t *testing.T) {
+	cfg := &ConnectorConfig{
+		Id:     "test",
+		Driver: DriverMemory,
+		Memory: &MemoryConnectorConfig{MaxItems: 100, MaxTotalSize: "1MB"},
+		FailsafeForGets: []*FailsafeConfig{
+			{
+				CircuitBreaker: slowCallCircuitBreaker(),
+				Hedge: &HedgePolicyConfig{
+					Delay:    &AdaptiveDuration{Quantile: 0.95, Max: Duration(300 * time.Millisecond)},
+					MaxCount: 1,
+				},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate(),
+		"connector-level failsafe must accept slowCallThreshold and hedge quantile")
+}

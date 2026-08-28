@@ -1075,8 +1075,10 @@ export type NetworkFailsafeConfig = FailsafeConfig;
 export type UpstreamFailsafeConfig = FailsafeConfig;
 /**
  * CacheFailsafeConfig is the scope-specific alias for cache-connector
- * failsafe policies. Hedge.Quantile is not allowed here (no per-method
- * quantile data on cache reads); validation enforces this.
+ * failsafe policies. Timeout.Duration and Hedge.Delay support quantile
+ * (dynamic) mode at this scope, resolved from a per-executor latency
+ * tracker fed by the connector's own operations (see data/cache_executor.go).
+ * Consensus is not supported here; validation enforces this.
  */
 export type CacheFailsafeConfig = FailsafeConfig;
 export interface RetryPolicyConfig {
@@ -1114,6 +1116,17 @@ export interface CircuitBreakerPolicyConfig {
   halfOpenAfter?: Duration;
   successThresholdCount: number /* uint */;
   successThresholdCapacity: number /* uint */;
+  /**
+   * SlowCallThreshold classifies any COMPLETED call slower than this
+   * duration as a breaker failure, even when it succeeds or is a
+   * semantic cache miss. Sustained slowness then opens the breaker —
+   * excluding the target until half-open probes complete fast again —
+   * which gives latency-based exclusion (selection-policy-like
+   * mechanics) on top of the error-based tripping. Unset (0) disables
+   * slow-call classification. Currently wired only for connector-level
+   * failsafe (cache/auth connectors); validation rejects it elsewhere.
+   */
+  slowCallThreshold?: Duration;
 }
 /**
  * TimeoutPolicyConfig is the timeout policy. Duration is the unified

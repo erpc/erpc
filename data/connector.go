@@ -93,7 +93,7 @@ func NewConnector(
 
 	// Wrap with failsafe if configured
 	if len(cfg.FailsafeForGets) > 0 || len(cfg.FailsafeForSets) > 0 {
-		connector, err = NewFailsafeConnector(logger, connector, cfg.FailsafeForGets, cfg.FailsafeForSets)
+		connector, err = NewFailsafeConnector(ctx, logger, connector, cfg.FailsafeForGets, cfg.FailsafeForSets)
 		if err != nil {
 			return nil, err
 		}

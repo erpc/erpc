@@ -547,8 +547,15 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
 	}
-	if fsCfg.Hedge != nil && fsCfg.Hedge.Delay != nil && fsCfg.Hedge.Delay.Quantile > 0 {
-		return fmt.Errorf("%s: hedge quantile is not supported for connector-level failsafe (no latency metric source)", prefix)
+	return nil
+}
+
+// validateNonConnectorScope rejects knobs only wired for connector-level
+// failsafe (data/cache_executor.go); accepting them at upstream/network
+// scope would silently no-op and mislead operators.
+func (f *FailsafeConfig) validateNonConnectorScope(scope string) error {
+	if f.CircuitBreaker != nil && f.CircuitBreaker.SlowCallThreshold > 0 {
+		return fmt.Errorf("%s: circuitBreaker.slowCallThreshold is only supported for connector-level failsafe (failsafeForGets/failsafeForSets)", scope)
 	}
 	return nil
 }
@@ -985,6 +992,9 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if u.Failsafe != nil {
 		for _, fs := range u.Failsafe {
 			if err := fs.Validate(); err != nil {
+				return err
+			}
+			if err := fs.validateNonConnectorScope("upstream.*.failsafe"); err != nil {
 				return err
 			}
 		}
@@ -1441,6 +1451,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Failsafe != nil {
 		for _, fs := range n.Failsafe {
 			if err := fs.Validate(); err != nil {
+				return err
+			}
+			if err := fs.validateNonConnectorScope("network.*.failsafe"); err != nil {
 				return err
 			}
 		}
