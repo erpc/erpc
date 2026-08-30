@@ -2,122 +2,177 @@ package evm
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// The whole point of the disproved streak is to separate two things that both
-// look like "this upstream has proven nothing":
-//
-//	cannot be probed  -> unproven -> keeps serving on its claimed head
-//	answers wrongly   -> DISPROVEN -> diverted, if someone else can serve
-//
-// Collapsing them is what let a node that returned pin_ignored on 202 of 202
-// shadow probes keep answering state calls.
-func TestDisprovedStreak(t *testing.T) {
-	p := &stateProber{}
+// fleetNetwork is the minimal network shape the prober needs in tests: it can
+// enumerate its upstreams, answer the metric-label lookups, expose a config
+// (for the observeOnly gate), and forward probe requests to a scripted handler.
+type fleetNetwork struct {
+	common.Network
+	ups     []common.Upstream
+	cfg     *common.NetworkConfig
+	forward func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+}
 
-	t.Run("an upstream nobody has probed is not disproved", func(t *testing.T) {
-		assert.False(t, p.disproved("never-probed"))
-	})
+func (s *fleetNetwork) EvmAllUpstreams(ctx context.Context) []common.Upstream { return s.ups }
+func (s *fleetNetwork) ProjectId() string                                     { return "test" }
+func (s *fleetNetwork) Label() string                                         { return "testnet" }
+func (s *fleetNetwork) Config() *common.NetworkConfig                         { return s.cfg }
+func (s *fleetNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	return s.forward(ctx, req)
+}
 
-	t.Run("a short run of mismatches is not yet evidence", func(t *testing.T) {
+func fakeTrackerOf(t *testing.T, u common.Upstream) *common.FakeHealthTracker {
+	t.Helper()
+	ht, ok := u.Tracker().(*common.FakeHealthTracker)
+	require.True(t, ok)
+	return ht
+}
+
+// Probe disproof is the FOURTH witness to the existing misbehavior ledger
+// (consensus disputes, integrity deterministic rejects, wrong-empty responses
+// are the other three). The streak is the INTERNAL debounce between one
+// unlucky probe and real evidence:
+//
+//	cannot be probed  -> unproven  -> no evidence, records nothing, ever
+//	answers wrongly,  -> DISPROVED -> each further mismatch is one recorded
+//	  sustainedly                     misbehavior, for selection policies
+//	                                  (misbehaviorRateAbove) to act on
+//
+// Collapsing those two is what let a node that returned pin_ignored on 202 of
+// 202 shadow probes keep a clean score while answering state calls wrongly.
+func TestDisprovedStreak_RecordsMisbehavior(t *testing.T) {
+	p := &stateProber{network: &fleetNetwork{}}
+
+	t.Run("below the threshold nothing is recorded", func(t *testing.T) {
+		u := common.NewFakeUpstream("flaky")
 		for i := 0; i < stateProbeDisprovedStreak-1; i++ {
-			p.noteDisproved("flaky")
+			p.noteDisproved(u)
 		}
-		assert.False(t, p.disproved("flaky"),
-			"a probe landing across a reorg must not be enough to divert traffic")
+		assert.Equal(t, 0, fakeTrackerOf(t, u).MisbehaviorCount,
+			"a probe landing across a reorg must not incriminate an upstream")
 	})
 
-	t.Run("a sustained run is", func(t *testing.T) {
-		p.noteDisproved("flaky")
-		assert.True(t, p.disproved("flaky"))
+	t.Run("crossing the threshold records, and keeps recording per mismatch", func(t *testing.T) {
+		u := common.NewFakeUpstream("wrong-height")
+		for i := 0; i < stateProbeDisprovedStreak; i++ {
+			p.noteDisproved(u)
+		}
+		ht := fakeTrackerOf(t, u)
+		assert.Equal(t, 1, ht.MisbehaviorCount)
+		p.noteDisproved(u)
+		p.noteDisproved(u)
+		assert.Equal(t, 3, ht.MisbehaviorCount,
+			"evidence must keep accruing while the node keeps failing probes, or the rolling rate decays while the defect persists")
+		assert.Equal(t, "eth_call", ht.LastMisbehaviorMethod,
+			"the context probe IS a pinned eth_call; that is the traffic a wrong-height execution context corrupts")
+		assert.Equal(t, common.DataFinalityStateUnfinalized, ht.LastMisbehaviorFinality,
+			"probes pin the followed (not yet finalized) head")
 	})
 
-	t.Run("one good probe clears it", func(t *testing.T) {
-		p.clearDisproved("flaky")
-		assert.False(t, p.disproved("flaky"),
-			"an upstream that starts answering correctly must recover immediately")
+	t.Run("one good probe resets the debounce", func(t *testing.T) {
+		u := common.NewFakeUpstream("recovers")
+		for i := 0; i < stateProbeDisprovedStreak+2; i++ {
+			p.noteDisproved(u)
+		}
+		ht := fakeTrackerOf(t, u)
+		require.Equal(t, 3, ht.MisbehaviorCount)
+		p.clearDisproved(u.Id())
+		for i := 0; i < stateProbeDisprovedStreak-1; i++ {
+			p.noteDisproved(u)
+		}
+		assert.Equal(t, 3, ht.MisbehaviorCount,
+			"after recovery the full debounce applies again before anything is recorded")
 	})
 
 	t.Run("the streak must be consecutive, not cumulative", func(t *testing.T) {
+		u := common.NewFakeUpstream("intermittent")
 		for i := 0; i < stateProbeDisprovedStreak*3; i++ {
-			p.noteDisproved("intermittent")
-			p.clearDisproved("intermittent")
+			p.noteDisproved(u)
+			p.clearDisproved(u.Id())
 		}
-		assert.False(t, p.disproved("intermittent"),
+		assert.Equal(t, 0, fakeTrackerOf(t, u).MisbehaviorCount,
 			"an upstream that mismatches occasionally but recovers is unreliable, not disproven")
 	})
 }
 
-// aSiblingCanServe is the guard that keeps this from repeating the Base
-// failover outage: it must answer false when there is no one else, so the
-// diversion never removes the last upstream able to serve a height.
-func TestASiblingCanServeRefusesWithoutAnEnumerableNetwork(t *testing.T) {
-	p := &stateProber{}
-	assert.False(t, p.aSiblingCanServe(context.Background(), "u1", 100),
-		"with no way to enumerate siblings the answer must be 'no alternative', which keeps the upstream serving")
-}
-
-// siblingNetwork is the minimal shape aSiblingCanServe needs: a network that
-// can enumerate its upstreams.
-type siblingNetwork struct {
-	common.Network
-	ups []common.Upstream
-}
-
-func (s *siblingNetwork) EvmAllUpstreams(ctx context.Context) []common.Upstream { return s.ups }
-
-func provenUp(id string, proven int64) common.Upstream {
-	u := common.NewFakeUpstream(id)
-	if w, ok := u.(common.EvmStateProvenWriter); ok && proven > 0 {
-		w.EvmSetStateProvenBlock(proven)
+// Under integrity observeOnly, rejections never reach misbehavior scoring (they
+// are suppressed before they happen), so probe disproof must stay consistent
+// and record nothing either — observeOnly is documented ABSOLUTE over every
+// integrity effect.
+func TestDisprovedStreak_ObserveOnlyRecordsNothing(t *testing.T) {
+	p := &stateProber{network: &fleetNetwork{cfg: &common.NetworkConfig{
+		Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{ObserveOnly: util.BoolPtr(true)}},
+	}}}
+	u := common.NewFakeUpstream("observed")
+	for i := 0; i < stateProbeDisprovedStreak*2; i++ {
+		p.noteDisproved(u)
 	}
-	return u
+	assert.Equal(t, 0, fakeTrackerOf(t, u).MisbehaviorCount,
+		"an observeOnly network must never see an integrity-driven scoring effect")
 }
 
-// The guard has two tiers because insisting on PROOF at the exact height would
-// leave the newest blocks permanently unprotected: the proven head lags the
-// followed tip, while the defect this exists for is present at every depth
-// (the real upstream ignored the pin identically at the tip and 5,000 blocks
-// back). A sibling with no adverse evidence is still strictly better than one
-// proven to answer at the wrong height.
-func TestASiblingCanServeTiers(t *testing.T) {
-	ctx := context.Background()
-	const block = int64(1000)
-
-	t.Run("a sibling proven at the height qualifies", func(t *testing.T) {
-		p := &stateProber{network: &siblingNetwork{ups: []common.Upstream{
-			provenUp("bad", 0), provenUp("good", 1200),
-		}}}
-		assert.True(t, p.aSiblingCanServe(ctx, "bad", block))
-	})
-
-	t.Run("an unproven but unincriminated sibling still qualifies", func(t *testing.T) {
-		p := &stateProber{network: &siblingNetwork{ups: []common.Upstream{
-			provenUp("bad", 0), provenUp("warming", 0),
-		}}}
-		assert.True(t, p.aSiblingCanServe(ctx, "bad", block),
-			"otherwise the last ~15 blocks are never protected, which is where most state traffic lives")
-	})
-
-	t.Run("a DISPROVED sibling does not qualify", func(t *testing.T) {
-		p := &stateProber{network: &siblingNetwork{ups: []common.Upstream{
-			provenUp("bad", 0), provenUp("alsoBad", 0),
-		}}}
-		for i := 0; i < stateProbeDisprovedStreak; i++ {
-			p.noteDisproved("alsoBad")
+// A WRONG canary for a chain must degrade symmetrically. The measured
+// precedent: on a Nitro chain block.number is the L1 height, so before the
+// per-architecture override existed the standard Multicall3 probe mismatched
+// on every honest upstream at once — the all-upstream signature that means the
+// probe is wrong, not the nodes. This test pins the safety property that makes
+// that mistake survivable: when every node answers the canary with the same
+// wrong height, every upstream accrues IDENTICAL evidence (and no proven
+// head), so the fleet's RELATIVE ranking is unchanged and a rate-based policy
+// has nothing to reorder.
+func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
+	const head = int64(1000)
+	ups := []common.Upstream{
+		common.NewFakeUpstream("upstream-a"),
+		common.NewFakeUpstream("upstream-b"),
+		common.NewFakeUpstream("upstream-c"),
+	}
+	net := &fleetNetwork{ups: ups, cfg: &common.NetworkConfig{}}
+	net.forward = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		jrq, _ := req.JsonRpcRequest()
+		switch jrq.Method {
+		case "eth_call":
+			// Every node answers the same height that is NOT the pin — the
+			// signature of a canary that is wrong for the chain, not of any
+			// one node being wrong.
+			ret := fmt.Sprintf(`"0x%064x"`, head+12345)
+			return common.NewNormalizedResponse().WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(ret), nil)), nil
 		}
-		assert.False(t, p.aSiblingCanServe(ctx, "bad", block),
-			"diverting onto another liar is not a correction")
-	})
+		return nil, fmt.Errorf("method not found")
+	}
 
-	t.Run("the upstream itself never counts as its own alternative", func(t *testing.T) {
-		p := &stateProber{network: &siblingNetwork{ups: []common.Upstream{provenUp("bad", 5000)}}}
-		assert.False(t, p.aSiblingCanServe(ctx, "bad", block),
-			"a lone upstream must keep serving — excluding the last resort trades wrong data for an outage")
+	v := newChainView(net, 32, "", "", nil)
+	v.adoptFollowed(head, &integrity.Header{
+		Number: fmt.Sprintf("0x%x", head), Hash: "0xhead", ParentHash: "0xpar",
 	})
+	p := &stateProber{
+		network: net, view: v, interval: 0,
+		ctxProbe:  integrity.ChainStateContextProbe(0),
+		lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
+	}
+
+	rounds := stateProbeDisprovedStreak + 2
+	for i := 0; i < rounds; i++ {
+		p.probeAll(head)
+	}
+
+	want := rounds - stateProbeDisprovedStreak + 1 // one record per round past the debounce
+	for _, u := range ups {
+		assert.Equal(t, want, fakeTrackerOf(t, u).MisbehaviorCount,
+			"%s: symmetric failure must produce identical evidence on every upstream", u.Id())
+		assert.EqualValues(t, 0, u.(*common.FakeUpstream).EvmStateProvenBlock(),
+			"%s: nothing proves under a wrong canary", u.Id())
+	}
 }

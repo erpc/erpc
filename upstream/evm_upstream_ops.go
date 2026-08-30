@@ -209,45 +209,6 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 
 		// Block is finalized and within range (or archive node)
 		return true, nil
-	case common.AvailbilityConfidenceStateProven:
-		//
-		// UPPER BOUND: the state-PROVEN head, not the claimed one. A node can
-		// report head N yet still answer state queries from older state; the
-		// probe (execution-context call / getProof vs the follower's verified
-		// header) is what earns the boundary. While nothing is proven yet —
-		// probing off, warming up, or unsupported on this upstream/chain —
-		// fall back to the claimed head so the gate cannot brown out traffic
-		// on capability gaps; the proven-lag metric keeps that visible.
-		//
-		proven := u.stateProvenBlock.Load()
-		if proven > 0 && blockNumber > proven+cfg.Evm.HeadLagToleranceBlocks {
-			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
-				u.ProjectId,
-				u.VendorName(),
-				u.NetworkLabel(),
-				u.Id(),
-				forMethod,
-				confidence.String(),
-			).Inc()
-			return false, nil
-		}
-		//
-		// LOWER BOUND: state on full nodes only reaches back
-		// maxAvailableRecentBlocks — reuse the same bound as blockHead.
-		//
-		if proven > 0 {
-			if cfg.Evm.MaxAvailableRecentBlocks > 0 {
-				available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
-				if err != nil {
-					return false, err
-				}
-				if !available {
-					return false, nil
-				}
-			}
-			return true, nil
-		}
-		fallthrough
 	case common.AvailbilityConfidenceBlockHead:
 		//
 		// UPPER BOUND: Check if block is before the latest block
