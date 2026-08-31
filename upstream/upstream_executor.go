@@ -26,12 +26,6 @@ type upstreamExecutor struct {
 	timeout common.TimeoutFunc
 	breaker *failsafe.Breaker
 
-	// slowCallSpec is CircuitBreaker.SlowCallThreshold: completed calls
-	// slower than the resolved threshold count as breaker failures even
-	// when they succeed. Resolved per request against the network's
-	// per-method latency quantiles (same source as quantile hedge/timeout).
-	slowCallSpec *common.AdaptiveDuration
-
 	// Cached fields from cfg for hot-path access.
 	method     string
 	finalities []common.DataFinalityState
@@ -73,7 +67,6 @@ func NewUpstreamExecutor(cfg *common.UpstreamFailsafeConfig, logger *zerolog.Log
 	}
 	if cfg.CircuitBreaker != nil {
 		e.breaker = failsafe.NewBreaker(cfg.CircuitBreaker, logger)
-		e.slowCallSpec = cfg.CircuitBreaker.SlowCallThreshold
 	}
 	if cfg.Retry != nil && cfg.Retry.EmptyResultAccept != nil {
 		e.emptyResultAccept = cfg.Retry.EmptyResultAccept
@@ -364,19 +357,17 @@ func (e *upstreamExecutor) callBreakerWithTimeout(
 ) (*common.NormalizedResponse, error) {
 	// Breaker eligibility check — internal probes and hedge attempts do NOT
 	// count toward the breaker.
-	eligible := e.breaker != nil && upstreamBreakerEligible(req, isHedge)
-	if eligible {
+	if e.breaker != nil && upstreamBreakerEligible(req, isHedge) {
 		if !e.breaker.TryAcquirePermit() {
 			startTime := time.Now()
 			return nil, common.NewErrFailsafeCircuitBreakerOpen(common.ScopeUpstream, failsafe.ErrCircuitOpen, &startTime)
 		}
 	}
 
-	start := time.Now()
 	resp, err := e.callWithTimeout(ctx, req, inner, isHedge)
 
-	if eligible {
-		e.breaker.Record(upstreamBreakerOutcome(resp, err, time.Since(start), e.slowCallSpec.ResolveForRequest(req)))
+	if e.breaker != nil && upstreamBreakerEligible(req, isHedge) {
+		e.breaker.Record(upstreamBreakerOutcome(resp, err))
 	}
 	return resp, err
 }
@@ -400,14 +391,11 @@ func upstreamBreakerEligible(req *common.NormalizedRequest, isHedge bool) bool {
 	return true
 }
 
-// upstreamBreakerOutcome classifies a completed upstream attempt for the
+// upstreamBreakerOutcome classifies a (resp, err) pair for the upstream
 // breaker. Most ignorable errors return OutcomeIgnore so they don't move
 // the breaker; transport / 5xx / sync-empty open the circuit; success
-// closes it. When slowCall > 0, any completion slower than it — success
-// or error — counts as a failure, so sustained slowness trips the breaker
-// exactly like sustained errors. Canceled/skipped attempts are ignored
-// first: their duration reflects the canceller, not this upstream.
-func upstreamBreakerOutcome(resp *common.NormalizedResponse, err error, dur time.Duration, slowCall time.Duration) failsafe.Outcome {
+// closes it.
+func upstreamBreakerOutcome(resp *common.NormalizedResponse, err error) failsafe.Outcome {
 	if err != nil {
 		// Cancellations / capacity / known-soft errors are ignored.
 		if common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
@@ -415,9 +403,6 @@ func upstreamBreakerOutcome(resp *common.NormalizedResponse, err error, dur time
 		}
 		if common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) {
 			return failsafe.OutcomeIgnore
-		}
-		if slowCall > 0 && dur >= slowCall {
-			return failsafe.OutcomeFailure
 		}
 		// 5xx, transport, unauthorized, billing → breaker failure.
 		if common.HasErrorCode(err,
@@ -429,9 +414,6 @@ func upstreamBreakerOutcome(resp *common.NormalizedResponse, err error, dur time
 			return failsafe.OutcomeFailure
 		}
 		return failsafe.OutcomeIgnore
-	}
-	if slowCall > 0 && dur >= slowCall {
-		return failsafe.OutcomeFailure
 	}
 	// Success path: syncing + emptyish opens, otherwise close.
 	if resp != nil && resp.Request() != nil {

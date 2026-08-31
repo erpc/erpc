@@ -1597,19 +1597,6 @@ type CircuitBreakerPolicyConfig struct {
 	HalfOpenAfter            Duration `yaml:"halfOpenAfter,omitempty" json:"halfOpenAfter" tstype:"Duration"`
 	SuccessThresholdCount    uint     `yaml:"successThresholdCount" json:"successThresholdCount"`
 	SuccessThresholdCapacity uint     `yaml:"successThresholdCapacity" json:"successThresholdCapacity"`
-
-	// SlowCallThreshold classifies any COMPLETED call slower than the
-	// resolved threshold as a breaker failure, even when it succeeds (or,
-	// for cache connectors, is a semantic miss). Sustained slowness then
-	// trips the breaker exactly like sustained errors, and half-open
-	// probes re-admit the target once calls complete fast again.
-	//
-	// Same unified shape as timeout.duration / hedge.delay: a scalar is a
-	// fixed threshold; the object form ({base, quantile, min, max})
-	// resolves against the scope's latency source — per-method network
-	// quantiles for upstreams, the executor's own latency window for
-	// cache connectors. Unset disables slow-call classification.
-	SlowCallThreshold *AdaptiveDuration `yaml:"slowCallThreshold,omitempty" json:"slowCallThreshold,omitempty" tstype:"Duration | AdaptiveDuration"`
 }
 
 func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
@@ -1618,7 +1605,6 @@ func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
 	}
 	copied := &CircuitBreakerPolicyConfig{}
 	*copied = *c
-	copied.SlowCallThreshold = c.SlowCallThreshold.Copy()
 	return copied
 }
 

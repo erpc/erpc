@@ -267,29 +267,42 @@ func TestCacheFailsafe_LatencyRecording_Classification(t *testing.T) {
 	})
 }
 
-func TestCacheFailsafe_SlowCallBreaker_OpensAndRecovers(t *testing.T) {
+// A cache read the executor's own timeout had to kill is pure tax — the
+// caller pays the wait AND falls through anyway — so own-timeouts count
+// as breaker failures with no separate slowness knob: the timeout policy
+// is the sole definition of "too slow". Sustained timeouts open the
+// breaker (fail-fast exclusion); a probe that completes in time re-admits
+// the connector.
+func TestCacheFailsafe_TimeoutBreaker_OpensAndRecovers(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	mc := NewMockConnector("test")
-	// Two slow-but-successful calls (50ms >= 20ms threshold → breaker failures).
+	// Two reads that outlive the 20ms timeout: the mock honors context
+	// cancellation, so each returns when the executor's own deadline
+	// fires and is translated into ErrFailsafeTimeoutExceeded.
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Run(func(args mock.Arguments) { time.Sleep(50 * time.Millisecond) }).
-		Return([]byte("slow"), nil).Times(2)
+		Run(func(args mock.Arguments) {
+			cctx := args.Get(0).(context.Context)
+			<-cctx.Done()
+		}).
+		Return(nil, context.DeadlineExceeded).Times(2)
 	// Everything afterwards completes immediately.
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return([]byte("fast"), nil)
 
 	fc, err := NewFailsafeConnector(ctx, &logger, mc, []*common.FailsafeConfig{
 		{
+			Timeout: &common.TimeoutPolicyConfig{
+				Duration: common.NewStaticDuration(20 * time.Millisecond),
+			},
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
 				FailureThresholdCapacity: 2,
 				HalfOpenAfter:            common.Duration(25 * time.Millisecond),
 				SuccessThresholdCount:    1,
 				SuccessThresholdCapacity: 1,
-				SlowCallThreshold:        common.NewStaticDuration(20 * time.Millisecond),
 			},
 		},
 	}, nil)
@@ -297,14 +310,15 @@ func TestCacheFailsafe_SlowCallBreaker_OpensAndRecovers(t *testing.T) {
 	ex := fc.getExecutors[0]
 	require.NotNil(t, ex.breaker)
 
-	// Two slow successes: served fine, but each counts as a breaker failure.
+	// Two own-timeouts: surfaced as timeout errors, each a breaker failure.
 	for i := range 2 {
-		result, err := fc.Get(context.Background(), "", "pk", "rk", nil)
-		require.NoError(t, err, "slow calls still succeed for the caller (call %d)", i+1)
-		assert.Equal(t, []byte("slow"), result)
+		_, err := fc.Get(context.Background(), "", "pk", "rk", nil)
+		require.Error(t, err, "call %d must surface the timeout", i+1)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
+			"own-timeout must be translated to failsafe-timeout-exceeded, got: %v", err)
 	}
 	assert.Equal(t, failsafe.StateOpen, ex.breaker.State(),
-		"sustained slowness must open the breaker")
+		"sustained own-timeouts must open the breaker")
 
 	// Open breaker rejects without touching the connector.
 	_, err = fc.Get(context.Background(), "", "pk", "rk", nil)
@@ -313,13 +327,14 @@ func TestCacheFailsafe_SlowCallBreaker_OpensAndRecovers(t *testing.T) {
 		"open breaker must reject with circuit-breaker-open, got: %v", err)
 	mc.AssertNumberOfCalls(t, "Get", 2)
 
-	// After HalfOpenAfter elapses, a fast probe closes the breaker again.
+	// After HalfOpenAfter elapses, a probe that completes in time closes
+	// the breaker again.
 	time.Sleep(60 * time.Millisecond)
 	result, err := fc.Get(context.Background(), "", "pk", "rk", nil)
 	require.NoError(t, err, "half-open probe must be permitted and succeed")
 	assert.Equal(t, []byte("fast"), result)
 	assert.Equal(t, failsafe.StateClosed, ex.breaker.State(),
-		"a fast successful probe must close the breaker")
+		"an in-time successful probe must close the breaker")
 
 	// Closed again: traffic flows normally.
 	result, err = fc.Get(context.Background(), "", "pk", "rk", nil)

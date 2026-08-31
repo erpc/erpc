@@ -19,9 +19,9 @@ A misbehaving upstream can drag every request down with it. The circuit breaker
 watches each upstream's recent outcomes and, the moment failures cross your threshold,
 cuts it out of rotation instantly — no wasted dials, no cascading timeouts. Traffic
 flows to healthy upstreams while the broken one sits on a cooldown, then eRPC
-probes it automatically and restores it once it proves it's back. Set
-`slowCallThreshold` and sustained slowness trips the breaker too — even when the
-slow calls technically succeed.
+probes it automatically and restores it once it proves it's back. At cache-connector
+scope the same machinery also covers slowness: a connector whose reads keep hitting
+their own failsafe timeout gets excluded and re-admitted automatically.
 
 **What you get**
 
@@ -197,23 +197,15 @@ still release the permit the attempt consumed — see `Record` below.
   the caller should not have bypassed `TryAcquirePermit`).
 
 **What counts as a failure.** The `upstreamBreakerOutcome` function classifies each
-completed attempt from its (response, error, duration) — in this order:
-<SourceLink file="upstream/upstream_executor.go" lines="403-446" />
+completed attempt from its (response, error) pair:
+<SourceLink file="upstream/upstream_executor.go" lines="391-421" />
 
-- **OutcomeIgnore — canceled/skipped, checked before everything else**: request-canceled and
-  request-skipped attempts never count, not even against `slowCallThreshold` — their duration
-  reflects the canceller, not this upstream.
-- **OutcomeFailure — slow call**: when `slowCallThreshold` is set, any remaining completion
-  slower than the resolved threshold, on both the error and the success path. The threshold
-  is resolved per request via `ResolveForRequest` — quantile mode reads the network's
-  per-method latency quantiles, the same source quantile hedge/timeout use.
-  <SourceLink file="upstream/upstream_executor.go" lines="29-33" />
-- **OutcomeFailure — errors**: `ErrCodeEndpointServerSideException` (5xx), `ErrCodeEndpointTransportFailure`,
+- **OutcomeFailure**: `ErrCodeEndpointServerSideException` (5xx), `ErrCodeEndpointTransportFailure`,
   `ErrCodeEndpointUnauthorized`, `ErrCodeEndpointBillingIssue`, and a syncing upstream that
   returns an empty/null response (`EvmSyncingStateSyncing && resp.IsResultEmptyish()`).
-- **OutcomeIgnore — everything else that errored**: rate-limit errors, timeout errors,
+- **OutcomeIgnore**: request-canceled, request-skipped, rate-limit errors, timeout errors,
   client-side errors, hedge cancellations — these do not affect the window.
-- **OutcomeSuccess**: all remaining non-error, non-syncing-empty responses.
+- **OutcomeSuccess**: all non-error, non-syncing-empty responses.
 
 **What bypasses the breaker entirely.** Hedge attempts (`isHedge == true`), internal
 state-poller probes (`req.IsInternal()`), and composite batch fan-out sub-requests
@@ -239,14 +231,17 @@ upstream out of rotation regardless of metrics or breaker state.
 **Cache connector breaker.** Cache connectors have their own circuit breaker via
 `FailsafeConnector`. The outcome classifier (`breakerOutcome`) is different: attempts
 interrupted by the parent context (hedge sibling won, client disconnect, parent deadline)
-are `OutcomeIgnore` — they carry no signal about the connector. When `slowCallThreshold`
-is set, any completion slower than the resolved threshold — even a success or a cache miss —
-is `OutcomeFailure`; quantile mode resolves against the executor's own latency window
-(`Resolve(e.latency)`), and a quantile-mode `slowCallThreshold` is by itself enough to
-create that latency tracker. Otherwise transport errors are `OutcomeFailure`; cache misses
+are `OutcomeIgnore` — they carry no signal about the connector. The executor's **own
+timeout expiry is `OutcomeFailure`**: on a best-effort layer a read the timeout had to
+kill is pure tax (the caller pays the wait AND falls through to upstreams anyway), so
+sustained timeouts open the breaker and exclude the connector — cache reads fail fast —
+until a half-open probe completes in time again. The timeout policy is the sole
+definition of "too slow"; there is no separate slowness threshold, and with a
+[quantile timeout](/config/failsafe/timeout) the slow-line adapts to the connector's own
+recent latency. Otherwise transport errors are `OutcomeFailure`; cache misses
 (`RecordNotFound`) are `OutcomeIgnore`; success is `OutcomeSuccess`. The error produced
 uses scope `"connector"` rather than `"upstream"`.
-<SourceLink file="data/cache_executor.go" lines="290-316" />, <SourceLink file="data/cache_executor.go" lines="99-109" />
+<SourceLink file="data/cache_executor.go" lines="279-309" />
 
 The `isTransportError` helper (used by the cache breaker outcome classifier) matches:
 `ErrCodeEndpointTransportFailure`; `net.Error` with `Timeout()`; `io.EOF`,
@@ -262,17 +257,16 @@ substrings: `"connection refused"`, `"connection reset"`, `"broken pipe"`, `"no 
 `resetWindowLocked()` — every cycle starts with a fresh ring buffer. <SourceLink file="failsafe/breaker.go" lines="314-322" />
 
 **Scope.** The circuit breaker is valid at upstream `failsafe` scope and at cache-connector
-`failsafeForGets` / `failsafeForSets` scope — every breaker field, including
-`slowCallThreshold`, works in both. Setting `circuitBreaker` inside a **network-level**
-`failsafe` block causes `NewNetworkExecutor` to return `ErrFailsafeConfiguration` and eRPC
-will not start. <SourceLink file="erpc/network_executor.go" lines="71-76" />
+`failsafeForGets` / `failsafeForSets` scope. Setting `circuitBreaker` inside a
+**network-level** `failsafe` block causes `NewNetworkExecutor` to return
+`ErrFailsafeConfiguration` and eRPC will not start. <SourceLink file="erpc/network_executor.go" lines="71-76" />
 
 ### Config schema
 
 All fields live under `upstreams[*].failsafe[*].circuitBreaker` — or, for cache connectors,
 `database.*.connectors[*].failsafeForGets[*].circuitBreaker` / `failsafeForSets[*].circuitBreaker`.
-Config struct: <SourceLink file="common/config.go" lines="1594-1613" />. Defaults:
-<SourceLink file="common/defaults.go" lines="2833-2884" />.
+Config struct: <SourceLink file="common/config.go" lines="1594-1600" />. Defaults:
+<SourceLink file="common/defaults.go" lines="2833-2877" />.
 
 | Field | Type | Default | Footguns |
 |---|---|---|---|
@@ -281,7 +275,6 @@ Config struct: <SourceLink file="common/config.go" lines="1594-1613" />. Default
 | `halfOpenAfter` | `Duration` | `5m` ([`common/defaults.go:L2855-L2861`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2855-L2861)) | Required at validation (`common/validation.go:L1038-L1040`). Time the breaker stays Open before permitting a probe. Resets to `time.Now()` on every HalfOpen failure. |
 | `successThresholdCount` | `uint` | `8` ([`common/defaults.go:L2862-L2868`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2862-L2868)) | Must be `<= successThresholdCapacity`. Successes required in the HalfOpen trial window to re-close. |
 | `successThresholdCapacity` | `uint` | **`200`** ([`common/defaults.go:L2848-L2854`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2848-L2854)) — **known dead-code bug**: a second identical `if c.SuccessThresholdCapacity == 0` guard at L2869-L2875 would set `10` but is unreachable because the first guard already assigned `200`. Effective default is `200`, not `10`. | HalfOpen trial window size; also caps concurrent permits in HalfOpen. |
-| `slowCallThreshold` | `Duration \| AdaptiveDuration` | unset — disabled; no built-in default, inherited only from scope defaults (<SourceLink file="common/defaults.go" lines="2876-2881" />) | Valid wherever a circuit breaker is valid — upstream `failsafe` and connector `failsafeForGets` / `failsafeForSets` (network scope rejects **all** breakers: <SourceLink file="erpc/network_executor.go" lines="71-76" />). Any COMPLETED call slower than the resolved threshold counts as a breaker failure even when it succeeds (or, at connector scope, is a cache miss) — sustained slowness opens the breaker (latency-based exclusion). Same unified shape as `timeout.duration` / `hedge.delay`: a scalar is a fixed threshold; the object form (`{base, quantile, min, max}`) resolves against the scope's latency source — per-method network quantiles at upstream scope (<SourceLink file="upstream/upstream_executor.go" lines="378-380" />), the executor's own latency window at connector scope (<SourceLink file="data/cache_executor.go" lines="303" />). Shape validated at <SourceLink file="common/validation.go" lines="1222-1224" />. Struct field: <SourceLink file="common/config.go" lines="1601-1612" />. |
 
 ### Worked examples
 
@@ -575,18 +568,18 @@ window and require a high success ratio. This pairs well with the fast-trip brea
     `Validate`, so omitting the field from YAML is safe. If you call `Validate` before
     `SetDefaults` in custom tooling, the zero value will be rejected.
     [`common/validation.go:L1038-L1040`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1038-L1040)
-15. **Slow-call classification (`slowCallThreshold`).** On any breaker — upstream or
-    cache-connector — completions slower than the resolved threshold count as failures even
-    when successful (or, at connector scope, a miss). Sustained slowness opens the breaker:
-    at connector scope the connector is excluded — cache reads fail fast and requests fall
-    through to upstreams — until half-open probes complete fast again and re-admit the target.
-    Attempts that did not complete on their own never count: connector-scope interrupted
-    attempts (parent context canceled) are ignored, and upstream-scope canceled/skipped
-    attempts are ignored *before* the slow check — their duration reflects the canceller,
-    not the target. Quantile mode resolves from per-method network quantiles at upstream
-    scope and from the executor's own latency window at connector scope.
-    <SourceLink file="upstream/upstream_executor.go" lines="410-421" />,
-    <SourceLink file="data/cache_executor.go" lines="299-305" />
+15. **Own-timeouts are failures at connector scope only.** A cache read the executor's own
+    failsafe timeout had to kill is classified `OutcomeFailure` — on a best-effort layer it
+    is pure tax (the caller pays the wait and falls through to upstreams anyway). Sustained
+    timeouts open the breaker: the connector is excluded — cache reads fail fast — until a
+    half-open probe completes in time and re-admits it. The timeout policy is the sole
+    definition of "too slow"; there is no separate slowness threshold. At upstream scope
+    timeout errors remain `OutcomeIgnore`: benching capacity is the selection policy's job,
+    and upstream slowness already feeds scoring. Attempts that did not complete on their own
+    never count at either scope: interrupted / canceled / skipped attempts are ignored —
+    their duration reflects the canceller, not the target.
+    <SourceLink file="data/cache_executor.go" lines="292-309" />,
+    <SourceLink file="upstream/upstream_executor.go" lines="399-414" />
 16. **Ignored outcomes release HalfOpen trial permits.** `Record(OutcomeIgnore)` moves no
     thresholds but decrements `halfOpenInflight` when the breaker is HalfOpen. Without the
     release, a run of ignored outcomes (e.g. cache misses during a probe window) would pin
@@ -617,13 +610,13 @@ Reason strings: `"failure_threshold"` (Closed→Open), `"half_open_delay_elapsed
 ### Source code entry points
 
 - [`failsafe/breaker.go`](https://github.com/erpc/erpc/blob/main/failsafe/breaker.go#L107) — self-contained circuit breaker state machine: ring buffer, `TryAcquirePermit`, `Record`, `transitionLocked`, `OnTransition` hook, `State`/`Metrics` accessors
-- [`upstream/upstream_executor.go:L359-L446`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L359-L446) — `callBreakerWithTimeout` wrapper; `upstreamBreakerEligible` and `upstreamBreakerOutcome` classifiers, incl. slow-call classification and per-request `ResolveForRequest` threshold resolution
+- [`upstream/upstream_executor.go:L352-L429`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L352-L429) — `callBreakerWithTimeout` wrapper; `upstreamBreakerEligible` and `upstreamBreakerOutcome` classifiers
 - [`upstream/upstream.go:L87-L99`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L87-L99) — `makeBreakerTransitionHook` wires `OnTransition` to the Prometheus counter; `classifyUpstreamOutcome` maps `ErrCodeFailsafeCircuitBreakerOpen` to `UpstreamOutcomeBreakerOpen`
-- [`data/cache_executor.go:L290-L316`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L290-L316) — `breakerOutcome` classifier for cache connector breakers: interrupted/slow-call/transport/miss classification; quantile slow-call resolves from the executor's own latency window
+- [`data/cache_executor.go:L279-L309`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L279-L309) — `breakerOutcome` classifier for cache connector breakers: interrupted/own-timeout/transport/miss classification
 - [`data/failsafe.go:L21-L160`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L21-L160) — `FailsafeConnector` wrapper for cache connectors; `isTransportError` helper
-- [`common/config.go:L1594-L1623`](https://github.com/erpc/erpc/blob/main/common/config.go#L1594-L1623) — `CircuitBreakerPolicyConfig` struct (incl. `slowCallThreshold`) and `Copy()`
-- [`common/defaults.go:L2833-L2884`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2833-L2884) — `CircuitBreakerPolicyConfig.SetDefaults()` including the double-assignment dead-code bug at L2869-L2875; `slowCallThreshold` inherited from scope defaults only, no built-in default
-- [`common/validation.go:L1209-L1235`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1209-L1235) — `CircuitBreakerPolicyConfig.Validate()` with all field constraints, incl. `slowCallThreshold` `AdaptiveDuration` shape validation
+- [`common/config.go:L1594-L1609`](https://github.com/erpc/erpc/blob/main/common/config.go#L1594-L1609) — `CircuitBreakerPolicyConfig` struct and `Copy()`
+- [`common/defaults.go:L2833-L2877`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2833-L2877) — `CircuitBreakerPolicyConfig.SetDefaults()` including the double-assignment dead-code bug at L2869-L2875
+- [`common/validation.go:L1209-L1232`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1209-L1232) — `CircuitBreakerPolicyConfig.Validate()` with all field constraints
 - [`common/errors.go:L1665-L1703`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1665-L1703) — `ErrFailsafeCircuitBreakerOpen` type, constructor, and `DeepestMessage`
 - [`common/errors.go:L2455-L2459`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2455-L2459) — `IsRetryableTowardsUpstream`: `ErrCodeFailsafeCircuitBreakerOpen` → not upstream-retryable
 - [`telemetry/metrics.go:L482-L489`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L482-L489) — `MetricUpstreamBreakerStateChange` counter definition

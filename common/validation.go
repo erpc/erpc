@@ -1219,9 +1219,6 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 	if c.FailureThresholdCount > c.FailureThresholdCapacity {
 		return fmt.Errorf("failsafe.circuitBreaker.failureThresholdCount must be less than or equal to failureThresholdCapacity")
 	}
-	if err := c.SlowCallThreshold.validate("failsafe.circuitBreaker.slowCallThreshold"); err != nil {
-		return err
-	}
 	if c.SuccessThresholdCount <= 0 {
 		return fmt.Errorf("failsafe.circuitBreaker.successThresholdCount must be greater than 0")
 	}

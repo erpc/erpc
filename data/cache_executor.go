@@ -41,12 +41,6 @@ type cacheExecutor struct {
 	// quantile-driven — static configs pay no tracking cost.
 	latency *health.QuantileTracker
 
-	// slowCallSpec is CircuitBreaker.SlowCallThreshold: completed attempts
-	// slower than the resolved threshold count as breaker failures even
-	// when they succeed. Same Duration|AdaptiveDuration shape as
-	// timeoutSpec, resolved against the same latency tracker.
-	slowCallSpec *common.AdaptiveDuration
-
 	method     string
 	finalities []common.DataFinalityState
 }
@@ -87,7 +81,6 @@ func NewCacheExecutor(ctx context.Context, cfg *common.CacheFailsafeConfig, logg
 	}
 	if cfg.CircuitBreaker != nil {
 		e.breaker = failsafe.NewBreaker(cfg.CircuitBreaker, logger)
-		e.slowCallSpec = cfg.CircuitBreaker.SlowCallThreshold
 	}
 	if e.needsLatencyTracker() {
 		e.latency = health.NewQuantileTracker(logger)
@@ -102,10 +95,7 @@ func (e *cacheExecutor) needsLatencyTracker() bool {
 	if e.timeoutSpec != nil && e.timeoutSpec.Quantile > 0 {
 		return true
 	}
-	if e.cfg.Hedge != nil && e.cfg.Hedge.Delay != nil && e.cfg.Hedge.Delay.Quantile > 0 {
-		return true
-	}
-	return e.slowCallSpec != nil && e.slowCallSpec.Quantile > 0
+	return e.cfg.Hedge != nil && e.cfg.Hedge.Delay != nil && e.cfg.Hedge.Delay.Quantile > 0
 }
 
 // MatchMethod returns the configured method pattern.
@@ -271,36 +261,43 @@ func (e *cacheExecutor) callBreaker(
 	// this connector's — neither a latency sample nor a breaker signal.
 	interrupted := !ourTimeout && ctx.Err() != nil
 	if e.latency != nil && !interrupted {
-		// Mirror the upstream tracker's rule (health.Tracker
-		// RecordUpstreamDuration): completions are latency signals —
-		// success, semantic misses (the connector did real work), and our
-		// own timeout expiry (lower bound, keeps a degraded connector's
-		// quantile honest). Hard transport failures stay out so a
-		// connector failing fast isn't crowned "fast".
+		// Same spirit as health.Tracker RecordUpstreamDuration:
+		// completions are latency signals — success, semantic misses
+		// (the connector did real work), and our own timeout expiry
+		// (lower bound, keeps a degraded connector's quantile honest).
+		// Hard transport failures stay out so a connector failing fast
+		// isn't crowned "fast". One deliberate deviation: the upstream
+		// tracker records canceled attempts as lower bounds (it scores
+		// upstreams that lose hedge races against each other); here a
+		// hedge races the SAME connector, so an interrupted attempt's
+		// duration measures the winner, not the target — excluded above.
 		if err == nil || ourTimeout || !isTransportError(err) {
 			e.latency.Add(dur.Seconds())
 		}
 	}
 	if e.breaker != nil {
-		e.breaker.Record(e.breakerOutcome(err, dur, interrupted))
+		e.breaker.Record(breakerOutcome(err, ourTimeout, interrupted))
 	}
 	return data, err
 }
 
 // breakerOutcome classifies a completed cache attempt for the breaker.
 // Interrupted attempts (parent context canceled mid-flight) carry no
-// signal about THIS connector and are ignored. When slowCallThreshold is
-// configured, any completion slower than it — success, miss, or our own
-// dynamic-timeout expiry — counts as a failure: sustained slowness then
-// opens the breaker and excludes the connector from serving (selection-
-// policy-like exclusion), and half-open probes re-admit it once calls
-// complete fast again. Otherwise: transport errors are failures; semantic
-// misses (not found / expired) are ignored; success closes.
-func (e *cacheExecutor) breakerOutcome(err error, dur time.Duration, interrupted bool) failsafe.Outcome {
+// signal about THIS connector and are ignored. The executor's own
+// timeout expiry counts as a failure: on a best-effort layer a read the
+// timeout had to kill is pure tax (the caller pays the wait AND falls
+// through anyway), so sustained timeouts open the breaker and exclude
+// the connector (selection-policy-like exclusion, fail-fast to upstream
+// fallthrough) until half-open probes complete in time again. The
+// timeout policy is the sole definition of "too slow" — there is no
+// separate slowness threshold. Otherwise: transport errors are
+// failures; semantic misses (not found / expired) are ignored; success
+// closes.
+func breakerOutcome(err error, ourTimeout, interrupted bool) failsafe.Outcome {
 	if interrupted {
 		return failsafe.OutcomeIgnore
 	}
-	if th := e.slowCallSpec.Resolve(e.latency); th > 0 && dur >= th {
+	if ourTimeout {
 		return failsafe.OutcomeFailure
 	}
 	if err == nil {

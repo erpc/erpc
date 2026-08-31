@@ -1229,56 +1229,23 @@ func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "rateLimitCountMode")
 }
 
-// slowCallCircuitBreaker builds a breaker config that passes
-// CircuitBreakerPolicyConfig.Validate and carries the SlowCallThreshold
-// knob (scalar shorthand of the AdaptiveDuration form).
-func slowCallCircuitBreaker() *CircuitBreakerPolicyConfig {
-	return &CircuitBreakerPolicyConfig{
-		FailureThresholdCount:    2,
-		FailureThresholdCapacity: 2,
-		SuccessThresholdCount:    1,
-		SuccessThresholdCapacity: 1,
-		HalfOpenAfter:            Duration(30 * time.Second),
-		SlowCallThreshold:        NewStaticDuration(20 * time.Millisecond),
-	}
-}
-
-// slowCallThreshold is scope-generic: any scope that takes a circuit
-// breaker (upstream, connector) accepts it with the same
-// Duration|AdaptiveDuration shape as timeout.duration / hedge.delay.
-func TestUpstreamConfig_Validate_AcceptsSlowCallThreshold(t *testing.T) {
-	u := &UpstreamConfig{
-		Endpoint: "http://localhost",
-		Failsafe: []*FailsafeConfig{
-			{MatchMethod: "*", CircuitBreaker: slowCallCircuitBreaker()},
-		},
-	}
-	assert.NoError(t, u.Validate(&Config{}, false))
-
-	// Adaptive form validates like the other adaptive policies do
-	// (quantile requires a base or max bound — shared rule).
-	adaptive := slowCallCircuitBreaker()
-	adaptive.SlowCallThreshold = &AdaptiveDuration{Quantile: 0.95, Min: Duration(100 * time.Millisecond), Max: Duration(2 * time.Second)}
-	u.Failsafe[0].CircuitBreaker = adaptive
-	assert.NoError(t, u.Validate(&Config{}, false))
-
-	// Invalid quantile is rejected by the shared AdaptiveDuration validation.
-	bad := slowCallCircuitBreaker()
-	bad.SlowCallThreshold = &AdaptiveDuration{Quantile: 1.5}
-	u.Failsafe[0].CircuitBreaker = bad
-	err := u.Validate(&Config{}, false)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "slowCallThreshold")
-}
-
-func TestConnectorConfig_Validate_AcceptsSlowCallThresholdAndHedgeQuantile(t *testing.T) {
+// Hedge quantile is scope-generic: connector-level failsafe accepts the
+// same Duration|AdaptiveDuration shape as timeout.duration, resolved at
+// runtime against the connector's own latency window.
+func TestConnectorConfig_Validate_AcceptsHedgeQuantile(t *testing.T) {
 	cfg := &ConnectorConfig{
 		Id:     "test",
 		Driver: DriverMemory,
 		Memory: &MemoryConnectorConfig{MaxItems: 100, MaxTotalSize: "1MB"},
 		FailsafeForGets: []*FailsafeConfig{
 			{
-				CircuitBreaker: slowCallCircuitBreaker(),
+				CircuitBreaker: &CircuitBreakerPolicyConfig{
+					FailureThresholdCount:    2,
+					FailureThresholdCapacity: 2,
+					SuccessThresholdCount:    1,
+					SuccessThresholdCapacity: 1,
+					HalfOpenAfter:            Duration(30 * time.Second),
+				},
 				Hedge: &HedgePolicyConfig{
 					Delay:    &AdaptiveDuration{Quantile: 0.95, Max: Duration(300 * time.Millisecond)},
 					MaxCount: 1,
@@ -1287,26 +1254,5 @@ func TestConnectorConfig_Validate_AcceptsSlowCallThresholdAndHedgeQuantile(t *te
 		},
 	}
 	assert.NoError(t, cfg.Validate(),
-		"connector-level failsafe must accept slowCallThreshold and hedge quantile")
-}
-
-// CircuitBreakerPolicyConfig.Copy must deep-copy the SlowCallThreshold
-// pointer: SetDefaults inherits scope defaults via Copy, so a shallow copy
-// would let one upstream's mutation leak into the shared default spec.
-func TestCircuitBreakerPolicyConfig_Copy_DeepCopiesSlowCallThreshold(t *testing.T) {
-	orig := slowCallCircuitBreaker()
-	copied := orig.Copy()
-
-	assert.NotSame(t, orig.SlowCallThreshold, copied.SlowCallThreshold)
-	assert.Equal(t, orig.SlowCallThreshold, copied.SlowCallThreshold)
-
-	copied.SlowCallThreshold.Base = Duration(time.Hour)
-	copied.SlowCallThreshold.Quantile = 0.99
-	assert.Equal(t, NewStaticDuration(20*time.Millisecond), orig.SlowCallThreshold,
-		"mutating the copy's spec must not affect the original")
-
-	// Nil threshold stays nil — Copy is nil-safe end to end.
-	orig.SlowCallThreshold = nil
-	assert.Nil(t, orig.Copy().SlowCallThreshold)
-	assert.Nil(t, (*CircuitBreakerPolicyConfig)(nil).Copy())
+		"connector-level failsafe must accept a circuit breaker and hedge quantile")
 }
