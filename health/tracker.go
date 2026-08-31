@@ -684,6 +684,13 @@ func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
 	// own, more conservative threshold (metrics.counterIdleEvictionAfter,
 	// default 24h) — only the cadence is shared with this observer sweep.
 	telemetry.SweepIdleCounterHandles()
+	// Histogram/observer emissions route through telemetry.ObserverHandle;
+	// sweep those too (metrics.histogramIdleEvictionAfter, default 24h).
+	// Histograms are the dominant cardinality term: each idle label
+	// combination pins buckets+2 series, so without this sweep a long-lived
+	// process's /metrics grows monotonically until something downstream
+	// (scrape size, scrape timeout, an ingest message cap) breaks.
+	telemetry.SweepIdleObserverHandles()
 }
 
 // getUpsKeys expands a (upstream, method, finality) record into the

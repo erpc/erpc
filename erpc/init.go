@@ -55,6 +55,9 @@ func Init(
 		if cfg.Metrics.CounterIdleEvictionAfter != nil {
 			telemetry.SetCounterIdleEvictionAfter(cfg.Metrics.CounterIdleEvictionAfter.Duration())
 		}
+		if cfg.Metrics.HistogramIdleEvictionAfter != nil {
+			telemetry.SetHistogramIdleEvictionAfter(cfg.Metrics.HistogramIdleEvictionAfter.Duration())
+		}
 		// Counters are built unregistered at package init (Prometheus freezes
 		// a metric's label-set hash for the life of the registry, so we cannot
 		// register first and filter later). Install any filter, then register

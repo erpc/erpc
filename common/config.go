@@ -2965,6 +2965,15 @@ type MetricsConfig struct {
 	// only clearly-dead label combinations are released). Set to 0 to
 	// disable eviction entirely.
 	CounterIdleEvictionAfter *Duration `yaml:"counterIdleEvictionAfter,omitempty" json:"counterIdleEvictionAfter,omitempty"`
+
+	// HistogramIdleEvictionAfter is CounterIdleEvictionAfter's histogram
+	// twin, and matters roughly an order of magnitude more: each idle label
+	// combination pins buckets+2 series (every bucket, _sum, _count), so
+	// histogram label growth is the dominant term in a long-lived process's
+	// /metrics payload. Observer series idle for at least this duration are
+	// evicted by the same health-tracker sweep. Defaults to 24h; set to 0 to
+	// disable eviction entirely.
+	HistogramIdleEvictionAfter *Duration `yaml:"histogramIdleEvictionAfter,omitempty" json:"histogramIdleEvictionAfter,omitempty"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.
