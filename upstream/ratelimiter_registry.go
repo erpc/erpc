@@ -33,6 +33,13 @@ type RateLimitersRegistry struct {
 	statsManager    stats.Manager
 	cacheMu         sync.RWMutex
 	initializer     *util.Initializer
+	// autoTuneOwners records which project owns rate-limit auto-tuning for each
+	// budget id (budgetId -> projectId). Budgets are shared across co-resident
+	// projects; without a single owner, each project would run its own auto-tuner
+	// against the same budget's MaxCount and tug it in opposite directions
+	// (last-writer-wins oscillation). The first project to claim a budget owns
+	// tuning for it; other projects skip.
+	autoTuneOwners sync.Map
 }
 
 func NewRateLimitersRegistry(appCtx context.Context, cfg *common.RateLimiterConfig, logger *zerolog.Logger) (*RateLimitersRegistry, error) {
@@ -231,6 +238,21 @@ func (r *RateLimitersRegistry) GetBudget(budgetId string) (*RateLimiterBudget, e
 	}
 
 	return nil, common.NewErrRateLimitBudgetNotFound(budgetId)
+}
+
+// ClaimAutoTuner reports whether projectId owns rate-limit auto-tuning for
+// budgetId. The first project to call for a given budget becomes the sole owner;
+// subsequent calls from the SAME project also return true (so every upstream of
+// that project on the budget keeps its tuner, preserving single-project behavior
+// exactly), while calls from OTHER projects return false. This prevents
+// co-resident projects that share a budget from running competing auto-tuners
+// against the same rule.Config.MaxCount. An empty budgetId never claims.
+func (r *RateLimitersRegistry) ClaimAutoTuner(budgetId, projectId string) bool {
+	if budgetId == "" {
+		return false
+	}
+	owner, _ := r.autoTuneOwners.LoadOrStore(budgetId, projectId)
+	return owner.(string) == projectId
 }
 
 func (r *RateLimitersRegistry) GetBudgets() []*common.RateLimitBudgetConfig {

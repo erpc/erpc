@@ -1221,7 +1221,11 @@ func (u *Upstream) initRateLimitAutoTuner() {
 		cfg := u.config.RateLimitAutoTune
 		if cfg.Enabled != nil && *cfg.Enabled {
 			budget, err := u.rateLimitersRegistry.GetBudget(u.config.RateLimitBudget)
-			if err == nil {
+			// Only the project that owns auto-tuning for this (potentially shared)
+			// budget builds a tuner. Co-resident projects sharing a budget must not
+			// run competing tuners against the same rule.Config.MaxCount; non-owners
+			// leave rateLimiterAutoTuner nil (record* calls are nil-guarded).
+			if err == nil && u.rateLimitersRegistry.ClaimAutoTuner(u.config.RateLimitBudget, u.ProjectId) {
 				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(
 					u.logger,
 					budget,
