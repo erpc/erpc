@@ -1063,8 +1063,10 @@ export type NetworkFailsafeConfig = FailsafeConfig;
 export type UpstreamFailsafeConfig = FailsafeConfig;
 /**
  * CacheFailsafeConfig is the scope-specific alias for cache-connector
- * failsafe policies. Hedge.Quantile is not allowed here (no per-method
- * quantile data on cache reads); validation enforces this.
+ * failsafe policies. Timeout.Duration and Hedge.Delay support quantile
+ * (dynamic) mode at this scope, resolved from a per-executor latency
+ * tracker fed by the connector's own operations (see data/cache_executor.go).
+ * Consensus is not supported here; validation enforces this.
  */
 export type CacheFailsafeConfig = FailsafeConfig;
 export interface RetryPolicyConfig {

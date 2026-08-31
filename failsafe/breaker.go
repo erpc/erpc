@@ -176,9 +176,21 @@ func (b *Breaker) TryAcquirePermit() bool {
 }
 
 // Record applies the given outcome to the breaker's state machine.
-// OutcomeIgnore is a no-op.
+// OutcomeIgnore moves no thresholds but still releases a HalfOpen trial
+// permit: the attempt consumed one in TryAcquirePermit, and without the
+// release a run of ignored outcomes (cache misses, canceled attempts)
+// would pin halfOpenInflight at capacity — wedging the breaker in
+// HalfOpen forever, rejecting all traffic with no path back to Closed.
 func (b *Breaker) Record(o Outcome) {
-	if b == nil || o == OutcomeIgnore {
+	if b == nil {
+		return
+	}
+	if o == OutcomeIgnore {
+		b.mu.Lock()
+		if State(b.state.Load()) == StateHalfOpen && b.halfOpenInflight > 0 {
+			b.halfOpenInflight--
+		}
+		b.mu.Unlock()
 		return
 	}
 	b.mu.Lock()

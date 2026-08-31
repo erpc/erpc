@@ -1228,3 +1228,31 @@ func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "rateLimitCountMode")
 }
+
+// Hedge quantile is scope-generic: connector-level failsafe accepts the
+// same Duration|AdaptiveDuration shape as timeout.duration, resolved at
+// runtime against the connector's own latency window.
+func TestConnectorConfig_Validate_AcceptsHedgeQuantile(t *testing.T) {
+	cfg := &ConnectorConfig{
+		Id:     "test",
+		Driver: DriverMemory,
+		Memory: &MemoryConnectorConfig{MaxItems: 100, MaxTotalSize: "1MB"},
+		FailsafeForGets: []*FailsafeConfig{
+			{
+				CircuitBreaker: &CircuitBreakerPolicyConfig{
+					FailureThresholdCount:    2,
+					FailureThresholdCapacity: 2,
+					SuccessThresholdCount:    1,
+					SuccessThresholdCapacity: 1,
+					HalfOpenAfter:            Duration(30 * time.Second),
+				},
+				Hedge: &HedgePolicyConfig{
+					Delay:    &AdaptiveDuration{Quantile: 0.95, Max: Duration(300 * time.Millisecond)},
+					MaxCount: 1,
+				},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate(),
+		"connector-level failsafe must accept a circuit breaker and hedge quantile")
+}
