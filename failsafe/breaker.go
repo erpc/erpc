@@ -90,6 +90,13 @@ type Breaker struct {
 	halfOpenSuccess  int
 	halfOpenFailure  int
 
+	// When the current HalfOpen trial started. HalfOpen has no delay of its
+	// own to fall back on the way Open does, so without a time bound any
+	// permit that is acquired and never recorded (a panic between
+	// TryAcquirePermit and Record, a caller that returns early) pins
+	// halfOpenInflight at capacity and wedges the breaker with no path out.
+	halfOpenAt time.Time
+
 	// When the breaker opened, used to gate transition Open → HalfOpen.
 	openedAt time.Time
 
@@ -151,7 +158,16 @@ func (b *Breaker) TryAcquirePermit() bool {
 			cap = 1
 		}
 		if b.halfOpenInflight >= cap {
-			return false
+			// Permits exhausted. If the trial has outlived HalfOpenAfter it is
+			// not going to conclude — the outstanding permits belong to
+			// attempts that never recorded an outcome — so re-arm it rather
+			// than reject forever. Bounding by the same delay that gated
+			// Open → HalfOpen keeps this config-driven.
+			if !b.staleHalfOpenTrialLocked() {
+				return false
+			}
+			b.startHalfOpenTrialLocked()
+			return true
 		}
 		b.halfOpenInflight++
 		return true
@@ -167,7 +183,7 @@ func (b *Breaker) TryAcquirePermit() bool {
 		delay := b.cfg.HalfOpenAfter.Duration()
 		if delay <= 0 || time.Since(b.openedAt) >= delay {
 			b.transitionLocked(StateHalfOpen, "half_open_delay_elapsed")
-			b.halfOpenInflight = 1
+			b.startHalfOpenTrialLocked()
 			return true
 		}
 		return false
@@ -230,19 +246,24 @@ func (b *Breaker) Record(o Outcome) {
 		if successCount <= 0 {
 			successCount = 1
 		}
-		// Threshold check: if we've accumulated enough trials and successes hit count, close.
-		if b.halfOpenSuccess+b.halfOpenFailure >= successCap {
-			if b.halfOpenSuccess >= successCount {
-				b.resetWindowLocked()
-				b.transitionLocked(StateClosed, "half_open_success_threshold")
-			} else {
-				b.openedAt = time.Now()
-				b.transitionLocked(StateOpen, "half_open_failure")
-			}
+		// Decide as soon as the trial's outcome is determined, and honour BOTH
+		// fields. The previous form re-opened on the FIRST failure whenever the
+		// trial had not yet reached successCap, which meant a failure could
+		// never contribute toward the capacity check above it — so the only
+		// path back to Closed was successCap consecutive clean successes and
+		// SuccessThresholdCount was dead config. A configured "3 of 5" now
+		// tolerates the 2 failures it says it tolerates.
+		maxFailures := successCap - successCount
+		if maxFailures < 0 {
+			maxFailures = 0
+		}
+		switch {
+		case b.halfOpenSuccess >= successCount:
+			b.resetWindowLocked()
+			b.transitionLocked(StateClosed, "half_open_success_threshold")
 			b.halfOpenSuccess = 0
 			b.halfOpenFailure = 0
-		} else if o == OutcomeFailure && b.halfOpenFailure > 0 {
-			// Single failure in HalfOpen immediately re-opens.
+		case b.halfOpenFailure > maxFailures:
 			b.openedAt = time.Now()
 			b.transitionLocked(StateOpen, "half_open_failure")
 			b.halfOpenSuccess = 0
@@ -257,6 +278,28 @@ func (b *Breaker) Record(o Outcome) {
 			b.totalFailures.Add(1)
 		}
 	}
+}
+
+// startHalfOpenTrialLocked (re)arms a HalfOpen trial: one permit granted to
+// the caller, counters cleared, and the clock started so the trial can be
+// bounded by staleHalfOpenTrialLocked.
+func (b *Breaker) startHalfOpenTrialLocked() {
+	b.halfOpenInflight = 1
+	b.halfOpenSuccess = 0
+	b.halfOpenFailure = 0
+	b.halfOpenAt = time.Now()
+}
+
+// staleHalfOpenTrialLocked reports whether the current HalfOpen trial has run
+// longer than HalfOpenAfter without concluding. Used only when permits are
+// exhausted: a trial in that state is waiting on attempts that will never
+// record an outcome, and HalfOpen has no delay of its own to recover with.
+func (b *Breaker) staleHalfOpenTrialLocked() bool {
+	delay := b.cfg.HalfOpenAfter.Duration()
+	if delay <= 0 || b.halfOpenAt.IsZero() {
+		return false
+	}
+	return time.Since(b.halfOpenAt) >= delay
 }
 
 // pushLocked appends a result to the ring buffer, evicting the oldest
