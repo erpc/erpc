@@ -319,7 +319,8 @@ func breakerOutcome(err error, ourTimeout, interrupted bool) failsafe.Outcome {
 	if err == nil {
 		return failsafe.OutcomeSuccess
 	}
-	if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+	if common.HasErrorCode(err, common.ErrCodeRecordNotFound) ||
+		common.HasErrorCode(err, common.ErrCodeRecordExpired) {
 		return failsafe.OutcomeSuccess
 	}
 	if isTransportError(err) {
