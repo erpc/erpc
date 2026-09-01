@@ -290,9 +290,25 @@ func (e *cacheExecutor) callBreaker(
 // the connector (selection-policy-like exclusion, fail-fast to upstream
 // fallthrough) until half-open probes complete in time again. The
 // timeout policy is the sole definition of "too slow" — there is no
-// separate slowness threshold. Otherwise: transport errors are
-// failures; semantic misses (not found / expired) are ignored; success
-// closes.
+// separate slowness threshold. Transport errors are failures.
+//
+// A semantic miss (not found / expired) is a SUCCESS, not an ignore. The
+// breaker's question is "is this connector answering in time", and a miss
+// returned inside the budget answers yes — it is a correct, timely reply
+// that happens to be empty. Treating it as ignore was wrong twice over:
+//
+//   - in Closed state an ignored outcome is never pushed to the ring, so
+//     the window held only hits and failures. The configured ratio then
+//     measured failures against hits+failures rather than against all
+//     traffic, making the breaker roughly 1/hit-ratio more sensitive than
+//     its config says — ~5x on a connector serving 80% misses.
+//   - in HalfOpen an ignored outcome makes no progress, so a trial needed
+//     SuccessThresholdCount *hits*, spanning ~1/hit-ratio more requests
+//     and giving a stray failure that much more room to re-open it. On a
+//     miss-heavy connector the trial could not reliably conclude at all.
+//
+// Cancellations and non-transport oddities stay ignored: those carry no
+// information about the connector either way.
 func breakerOutcome(err error, ourTimeout, interrupted bool) failsafe.Outcome {
 	if interrupted {
 		return failsafe.OutcomeIgnore
@@ -304,7 +320,7 @@ func breakerOutcome(err error, ourTimeout, interrupted bool) failsafe.Outcome {
 		return failsafe.OutcomeSuccess
 	}
 	if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-		return failsafe.OutcomeIgnore
+		return failsafe.OutcomeSuccess
 	}
 	if isTransportError(err) {
 		return failsafe.OutcomeFailure
