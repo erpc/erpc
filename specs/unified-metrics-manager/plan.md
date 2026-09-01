@@ -1,9 +1,9 @@
 # Unified Metrics Manager — Implementation Plan
 
 **Status**: Draft — for review
-**Last revised**: 2026-08-19
+**Last revised**: 2026-09-01
 
-Companion to [feature.md](./feature.md). The manager skeleton and its first policy (exposure control) ship together in Phase 1; handle unification and allocation work follow. Nothing in any phase is throwaway — each phase is a layer the next one builds on.
+Companion to [feature.md](./feature.md). Phase 1 ships the manager skeleton and `metrics.customizations` together; handle unification and allocation work follow. Nothing in any phase is throwaway — each phase is a layer the next one builds on.
 
 ---
 
@@ -11,136 +11,125 @@ Companion to [feature.md](./feature.md). The manager skeleton and its first poli
 
 | Decision | Choice |
 |----------|--------|
-| Headline design | **Unified metrics manager** — one owner for define → register → record |
-| First policy | **Exposure control** (`metrics.exposeMetrics` / `metrics.dropMetrics`), shipped in Phase 1 |
-| Gating mechanism | **Never register** unexposed families — no unregister path, because nothing registers before Init |
-| Name convention | eRPC metrics without `erpc_` prefix; stock collectors by full name |
-| Patterns | Exact family names + trailing-prefix subsystem patterns (`consensus_*`); `*` legal only as final character |
-| Precedence | Allowlist first, denylist second; both empty = expose all (backward compatible) |
-| Stock collectors | `FilteredGatherer` safety net at the HTTP handler — not the CPU-saving mechanism |
-| Call sites | Unchanged in Phase 1 (package vars keep types); unified handles in Phase 2 |
+| Headline design | Unified metrics manager — `Define*` at init, `Configure` after config |
+| Operator surface | **`metrics.customizations`** — one list for exposure, labels, buckets |
+| Family / label actions | **`keep` \| `drop`** only (no `expose` / `include` / `exclude`) |
+| Allowlist shape | Explicit: `subject: "*"`, `action: drop`, then `action: keep` carve-outs |
+| Precedence | **Specificity**, not list order: exact > longer prefix > shorter > `*`; ties → later entry; legacy below equal-spec customization |
+| Gating | **Never register** dropped eRPC families; `FilteredGatherer` only for stock collectors |
+| Buckets field | `customizations[].buckets: []float64` (strictly increasing); global `histogramBuckets` string retained |
+| Histograms | **`DefineLabeledHistogram` only** — no plain `DefineHistogram` / `promauto` histograms |
+| Gauges | **No label projection** |
+| Legacy label knobs | Deprecated, desugared with **kind masks** (counter drops stay counter-only) |
+| `exposeMetrics` / `dropMetrics` | Do not add — superseded by `customizations` before any release |
+| Call sites (Phase 1) | Unchanged package-var types; `rebuildInPlace` keeps pointers stable |
 
 ## Glossary
 
-- **Manager** — the `telemetry/` singleton owning metric definitions, registration, policies, and handle issue.
-- **Definition index** — the manager's name → definition table, populated at package init by the factory. Seeds registration gating and exact unknown-name validation.
-- **Deferred metrics** — today's ~36 `LabeledCounter` + ~17 `LabeledHistogram` built unregistered at package init; the half-done unification this plan completes.
-- **`promauto` metrics** — the ~86 metrics (28 gauges, 54 counters, 4 histograms) currently self-registering at package init; converted to the factory in Phase 1.
-- **Family** — a Prometheus `MetricFamily` name, e.g. `erpc_upstream_request_total`.
-- **Prefix pattern** — a config entry ending in `*`, matching every family whose resolved name starts with the stem (`consensus_*` → all `erpc_consensus_*`). Trailing-prefix only; no general globs.
+- **Manager** — `telemetry/manager.go`: definition index, `Configure`, `Gatherer`, diagnostics.
+- **MetricPolicy** — `telemetry/policy.go`: compiled rules; `Exposed` / `labelIndices` / `BucketsFor`.
+- **Customization** — one `metrics.customizations[]` entry (`subject`, optional `action`/`labels`/`buckets`).
+- **Family** — Prometheus metric family name, e.g. `erpc_upstream_request_total`.
+- **Stock collectors** — `go_*` / `process_*` / `promhttp_*` on the default registry; scrape-filtered only.
 
 ---
 
-## Phase 0 — Exposure filter core (pure, no behavior change)
+## Phase 1 — Manager + `customizations`
 
-The policy primitive the manager consults. Already prototyped in `telemetry/gather_filter.go` / `gather_filter_test.go` — polish and keep.
+One registration path for all families, with `metrics.customizations` enforced at registration. **No call-site changes.** New families added on main after this work starts (e.g. `upstream_misbehavior_total`) go through `Define*` like everything else — open-ended set, no catalog hard-coding.
 
-### 0.1 `telemetry/` — filter type
-- `NormalizeMetricName(name string) string` — trims, accepts `erpc_`-prefixed as-is, passes `go_*`/`process_*`/`promhttp_*` through, prefixes everything else with `erpc_`.
-- `MetricExposureFilter` holding exact-match sets + trailing-prefix lists for allow and drop, with `Exposed(name) bool` (exact hit or prefix hit).
-- `NewMetricExposureFilter(expose, drop []string) (*MetricExposureFilter, error)` — validates empty strings, non-trailing `*`, and duplicates; splits entries into exact vs prefix at build.
-- `UnmatchedEntries(filter, knownFamilies)` helper returning configured entries that matched nothing — drives the Init-time WARN (Phase 1.4).
-- `FilteredGatherer` — `prometheus.Gatherer` wrapper filtering `[]*dto.MetricFamily` post-gather (stock-collector safety net, wired in Phase 2).
+### 1.1 Core packages
 
-### Acceptance
-- Unit tests: normalize (prefixed/unprefixed/stock/empty), exact-only, prefix-only, mixed exact+prefix, allow-only, drop-only, allow+drop precedence, passthrough when both empty, duplicate/empty/mid-string-`*` validation errors, zero-match detection.
-- No registration-path changes yet; existing tests green.
+| Path | Role |
+|---|---|
+| `telemetry/manager.go` | `DefineCounter` / `DefineGauge` / `DefineLabeledCounter` / `DefineLabeledHistogram`, `Configure`, `SetHistogramBuckets`, `Gatherer`, `KnownFamilies`, `ExposedFamilyCount`, `UnmatchedSubjects`, `IgnoredCustomizations`, `ErrNothingRegistered` |
+| `telemetry/policy.go` | `NewMetricPolicy`, specificity sort, legacy desugar, validation helpers |
+| `telemetry/gather_filter.go` | `FilteredGatherer` for stock (and any other) families still on the registry |
+| `telemetry/labeled_counter.go` / `labeled_histogram.go` | `rebuildInPlace`; projection via current policy |
+| `telemetry/metrics.go` | All families via `Define*`; `promauto` gone |
+| `common/config.go` | `Customizations`, `MetricsCustomizationConfig`, `MetricLabelCustomizationConfig`, `TelemetryOptions()`; legacy fields marked `Deprecated` |
+| `common/validation.go` | `MetricsConfig.Validate` compiles policy |
+| `erpc/init.go` | `Configure` + severity split; startup INFO/WARN; metrics server uses `telemetry.Gatherer(...)` |
 
----
+### 1.2 Acceptance
 
-## Phase 1 — Manager skeleton + exposure control (the headline)
-
-One registration path for all ~139 families, with the exposure policy enforced at registration. Ships the operator-facing knob. **No call-site changes.**
-
-### 1.1 `telemetry/` — manager + factory
-- `Manager` struct: definition index (`map[string]definition` — name, kind, opts, schema, built vec), exposure filter, label filters.
-- Factory: `DefineCounter(opts, schema)` / `DefineGauge(opts, schema)` / `DefineHistogram(opts, schema, buckets)` — build the vec, index it, return the wrapper; **never register**.
-- `Manager.Configure(exposure *MetricExposureFilter, ...)`: per definition — skip if unexposed, else apply label projection and register on `prometheus.DefaultRegisterer`.
-- Absorbs `RebuildFilteredCounters()` and `SetHistogramBuckets()` (including bucket parsing and the handle-cache reset).
-
-### 1.2 `telemetry/metrics.go` — convert all definitions
-- Deferred counters/histograms: mechanical swap to the factory (they're already unregistered-at-init).
-- The ~86 `promauto` metrics: `promauto.New*(...)` → `manager.Define*(...)`. Package vars keep their existing types (`*prometheus.GaugeVec`, `LabeledCounter`, `LabeledHistogram`, …) so **every call site compiles unchanged**; observations on a not-yet-registered vec are legal and invisible until registration.
-- End state: `grep -c promauto telemetry/metrics.go` → 0.
-
-### 1.3 `common/config.go` — config fields
-- Add to `MetricsConfig`:
-  - `ExposeMetrics []string \`yaml:"exposeMetrics,omitempty" json:"exposeMetrics,omitempty"\``
-  - `DropMetrics []string \`yaml:"dropMetrics,omitempty" json:"dropMetrics,omitempty"\``
-- `common/validation.go`: validate via `NewMetricExposureFilter` from `MetricsConfig.Validate()`; reject duplicates/empties.
-- No defaults in `common/defaults.go` (nil = expose all).
-
-### 1.4 `erpc/init.go` — wiring
-- In the `cfg.Metrics != nil` block (~L49-68): build the exposure filter, pass it with the existing label filters into `manager.Configure(...)` — replacing the `SetHistogramLabelFilter` / `SetCounterLabelFilter` / `RebuildFilteredCounters` / `SetHistogramBuckets` call sequence with the single manager entry point.
-- INFO log when exposure is active: allowlist/denylist sizes.
-- WARN per configured entry (exact name or prefix) matching nothing in the definition index — exact at Init, no first-scrape wait.
-
-### Acceptance
-- `dropMetrics: [network_evm_block_range_requested_total]` → family absent from `/metrics`; process boots; recording on it doesn't panic.
-- `dropMetrics: [consensus_*]` → all consensus families absent; typo'd prefix (`consenus_*`) → WARN, boot succeeds.
-- `dropMetrics` covering a former-`promauto` gauge (e.g. `upstream_block_head_lag`) → absent from scrape (no unregister needed — it was never registered).
-- `exposeMetrics: [upstream_request_total]` → only that eRPC family registered (stock collectors still present until Phase 2's gatherer).
-- Default config → scrape byte-comparable to baseline (all families, same names/labels).
-- Typo'd name → WARN at Init, boot succeeds.
+- `customizations: [{subject: consensus_*, action: drop}]` → consensus families absent; process boots; recording does not panic.
+- Drop-all + keep carve-out → scrape contains only kept eRPC families (+ kept stock if named); order of entries does not change the result.
+- `subject: "*"`, label `user`/`agent_name` drop → projected counters/histograms lose those labels; gauges unchanged.
+- Per-family `buckets: [...]` overrides global and code defaults; non-increasing buckets fail Validate.
+- Legacy `counterDropLabels` still counter-only; equal-spec customization wins over legacy.
+- Malformed customizations → `ErrNothingRegistered` → Init **Error**; bad `histogramBuckets` → Init **Warn**, families still registered.
+- Default config → behaviour comparable to pre-change scrape (all families, prior labels/buckets).
 - `make test-fast` green; update tests that scrape without Init (formerly-`promauto` families now require manager registration — same semantics deferred counters already have).
+
+### 1.3 Docs & generated types (ride along with Phase 1)
+
+- `docs/pages/reference/metrics.mdx` — `customizations` schema, precedence, worked examples (drop subsystem, allowlist via drop-all + keep, label carve-out, per-family buckets), edge cases, observability.
+- `docs/pages/operation/monitoring.mdx` — operator guidance; deprecate the four legacy label fields in the tables; interaction with `ERPC_NOMETRICS`.
+- Related ops pages (`production.mdx`, `cli.mdx`, `config/example.mdx`) as needed for stale anchors.
+- `typescript/config/src/generated.ts` — regenerate via `tygo generate` (or hand-mirror if tygo is release-only in the workflow).
+- Verify every `SourceLink` / default cite against the landing tree; refresh family counts (~141 at design time; expect drift).
 
 ---
 
 ## Phase 2 — Unified handles + no-op path
 
-Every call site records through manager-issued handles; disabled families become hot-path no-ops.
+Every call site records through manager-issued handles; dropped families become hot-path no-ops (near-zero ns/op, zero allocs).
 
-### 2.1 Handle API
-- Generalize `CounterHandle` / `ObserverHandle` (`telemetry/handles.go`) into the manager's per-kind handle issue; add the gauge equivalent.
-- Handles are issued per (family, full-schema label tuple); for an unexposed family the manager returns a shared no-op handle — no map lookup, no allocation, no Prometheus call.
-- Migrate call sites across `erpc/`, `upstream/`, `data/`, `internal/policy/`, `health/`, `architecture/` — mechanical, one pattern per kind.
+Phase 1 leaves call sites on package vars. Dropped families are already absent from scrape/collection; they still pay whatever cost the unregistered Vec path has.
 
-### 2.2 FilteredGatherer wiring (stock-collector safety net)
-- Metrics server block (~L159-172): wrap `prometheus.DefaultGatherer` with the Phase 0 `FilteredGatherer`, `promhttp.Handler()` → `promhttp.HandlerFor(gatherer, ...)`.
-- `go_*` / `process_*` / `promhttp_*` now respect `exposeMetrics` allowlists.
+### Scope
+
+- Generalize handle caches; issue no-op handles when `!Exposed(family)`.
+- Migrate call sites mechanically across `erpc/`, `upstream/`, `data/`, `health/`, `architecture/`, …
+- Keep default-config names/labels identical.
 
 ### Acceptance
-- Disabled family: benchmark shows near-zero ns/op, zero allocs on the record path.
-- `exposeMetrics: [upstream_request_total]` → scrape contains exactly the allowlist (stock collectors filtered).
-- All existing metric names/labels unchanged under default config; `make test-fast` green.
+
+- Benchmark: record on a dropped family ≈ no-op.
+- `make test-fast` green; no default-config series shape change.
 
 ---
 
 ## Phase 3 — Allocation optimization
 
-Only where profiling justifies.
-
-- Pooled label sets / precomputed projections in handle issue.
-- Consolidate the remaining handle caches into the manager.
-- Benchmarks: record-path ns/op + allocs for exposed, label-shaved, and disabled families; scrape latency before/after a representative `dropMetrics` set.
-
-### Acceptance
-- Benchmark report in the PR; no regressions on the exposed-family hot path.
+Only where profiling justifies: pooled label sets, consolidate remaining handle caches into the manager, scrape-latency benchmarks before/after a representative drop set.
 
 ---
-
-## Docs & generated artifacts (ride along with Phase 1)
-
-- `docs/pages/reference/metrics.mdx` — config schema table: `exposeMetrics` / `dropMetrics` rows (type, default, semantics, name-resolution); worked example (slim allowlist); edge cases (precedence, stock-collector naming, unknown-name WARN); note the unified manager in "How it works" (initialization order section changes).
-- `docs/pages/operation/monitoring.mdx` — operator guidance: recommended minimal set, footgun warning (over-restrictive allowlist silently breaks dashboards), interaction with `counterDropLabels` / `ERPC_NOMETRICS`.
-- `typescript/config/src/generated.ts` — regenerate via `tygo generate` after `MetricsConfig` changes.
-- Verify docs claims against code before writing (per CONTRIBUTING.md); cite `common/defaults.go` / `common/validation.go` line refs.
 
 ## Test plan summary
 
 | Layer | Tests |
 |---|---|
-| Filter core | normalize, allow/deny/precedence, validation errors (Phase 0) |
-| Manager | definition indexing; exposure gating per kind (counter/gauge/histogram); label projection under exposure; Init-twice safety (Phase 1) |
-| Regression | default-config scrape byte-comparable to baseline; call-site safety on unregistered families (Phase 1) |
-| Handles | no-op correctness; zero-alloc benchmark; call-site migration compile + behavior (Phase 2) |
-| End-to-end | `Init` with allowlist → HTTP GET `:port/metrics` → assert families present/absent (Phase 2) |
+| Policy compile / specificity / legacy / buckets / validation | `telemetry/policy_test.go` |
+| Manager register / skip / rebuild / gatherer / error sentinel | `telemetry/manager_test.go`, `gather_filter_test.go` |
+| Labeled counter/histogram projection | labeled_* tests updated for policy |
+| Config Validate | `common` validation tests |
+| Init severity split | Configure error sentinel + Init logging contract |
+| End-to-end HTTP scrape allow/deny | `Init` + GET `:port/metrics` assert families present/absent |
+| No-op handle benchmarks | Phase 2 |
 | Suite | `make test-fast` green; `make test` (race) before merge |
+
+---
 
 ## Risks / watch-items
 
-- **Phase 1 diff size.** ~139 definition conversions is mechanical but large; mitigate with a pure-rename first commit (factory swap, no behavior change) and the exposure gate as a second commit in the same PR.
-- **Tests scraping without Init.** Formerly-`promauto` families become Init-gated; audit tests that read `prometheus.DefaultGatherer` directly (`erpc/networks_timeout_test.go`, `erpc/networks_method_eligibility_test.go`, `test/fake_erpc.go`) and register through the manager in test setup.
-- **Over-restrictive allowlists** silently break dashboards/alerts — docs must include a recommended minimal set; the Init-time unknown-name WARN is the typo backstop.
-- **Init ordering**: manager configuration must complete before any registration-dependent code; the single `Configure` entry point replaces today's four-call sequence, which removes the ordering class of bugs rather than adding to it.
-- **Scope discipline**: Phase 1 is definition + registration only. Handle migration (Phase 2) must not sneak into the Phase 1 PR.
+- **Phase 1 diff size.** ~140 definition conversions is mechanical but large; mitigate with a pure-rename first commit (factory swap, no behaviour change) and customizations as a second commit in the same PR.
+- **Prometheus freeze.** Label/bucket/exposure changes are startup-only; a second `Configure` on the same registry does not reshape already-registered families — document and do not pretend otherwise.
+- **Tests scraping without Init.** Formerly-`promauto` families become Init-gated; audit tests that read `prometheus.DefaultGatherer` directly and register through the manager in test setup.
+- **Over-restrictive allowlists** silently break dashboards — docs must include a recommended minimal set; the Init-time unmatched-subject WARN is the typo backstop.
+- **Gauge label temptation.** Do not extend projection to gauges without a new aggregation story.
+- **Third-party collectors** outside `go_`/`process_`/`promhttp_`: unreachable by exact `keep` name; `*: drop` still filters them at scrape.
+- **Scope discipline.** Phase 1 is definition + registration + customizations only. Handle migration (Phase 2) must not sneak into the Phase 1 PR.
+- **Deprecation removal.** Delete the four legacy label fields only after a migration window; until then kind-masked desugar is the compatibility contract.
+
+## Appendix — mapping from earlier draft
+
+| Earlier draft | This plan |
+|---|---|
+| `exposeMetrics` / `dropMetrics` | Replaced by `customizations` `keep`/`drop` |
+| Allowlist = non-empty expose list | Allowlist = `*: drop` + `keep` carve-outs |
+| `buckets` as string on customization | `[]float64` |
+| "Any expose flips mode" | Rejected — too order-/presence-dependent |
+| Kind-agnostic label drop including gauges | Labels on labeled counters/histograms only; gauges fixed |
+| Separate exposure filter then manager | One `MetricPolicy` owns exposure, labels, and buckets |

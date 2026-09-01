@@ -1,223 +1,237 @@
 # Unified Metrics Manager — Specification
 
 **Status**: Draft — for review
-**Last revised**: 2026-08-19
+**Last revised**: 2026-09-01
 
 ---
 
 ## 1. Purpose
 
-eRPC's telemetry has grown organically into **three registration mechanisms** and several call-site styles (§2). This spec defines a **unified metrics manager** — a single owner in `telemetry/` for how every metric is defined, registered, and recorded — and ships its first policy: **exposure control**, operator config choosing which metric families appear on `/metrics`.
-
-The manager is the feature; exposure control is the first thing it makes easy. Once all definitions and recordings flow through one point, policies that are currently bolted on per metric kind — label shaving (`counterDropLabels` / `histogramDropLabels`), idle eviction, exposure — become manager decisions applied uniformly, and disabled families can be made allocation-free on the hot path.
+eRPC's telemetry had grown into **three registration mechanisms** and several call-site styles (§2). The **unified metrics manager** is a single owner in `telemetry/` for how every metric is defined, registered, and (for labeled kinds) projected — with one operator surface, `metrics.customizations`, covering family exposure, label projection, and per-family histogram buckets.
 
 ### Goals
 
-- **One registration path.** No bare `promauto` in `metrics.go`; every family is defined through the manager and registered by the manager, once, after config is read.
-- **One recording path.** Call sites record through manager-issued handles that look identical for every metric kind.
-- **Centralized policies.** Exposure, label projection, and idle eviction are manager configuration, not per-call-site or per-kind machinery.
-- **Allocation avoidance.** A disabled or label-shaved family costs (near-)zero on the hot path — the manager hands out no-op handles.
-
-### First policy: exposure control
-
-eRPC exposes ~122 `erpc_*` metric families on `/metrics` (port 4001). Today there is **no config to choose which families appear on scrape** — `promhttp.Handler()` serves the full default registry. Operators can only disable the metrics server entirely (`metrics.enabled: false`), drop **labels** (`histogramDropLabels`, `counterDropLabels`), or filter at scrape time via Prometheus `metric_relabel_configs`.
-
-Exposure control adds first-class config to limit **which families are exposed**, primarily to reduce scrape response size and scrape-side CPU, secondarily to avoid in-process collection cost for metrics nobody will ever read.
-
-What it solves that label-dropping cannot:
-
-- `histogramDropLabels` / `counterDropLabels` reduce **cardinality within a family**; they cannot remove a family from the scrape.
-- Prometheus-side relabeling lives outside eRPC config, drifts per deployment, and still pays full in-process gather cost.
-- High-cardinality or simply uninteresting families (e.g. `network_evm_block_range_requested_total` with its unbounded `bucket` label, or the `selection_*` probe family for operators who don't run selection-policy dashboards) can be excluded at the source.
+- **One registration path.** No `promauto` in `metrics.go`; every family is `Define*` at package init and registered by `telemetry.Configure` after config is read.
+- **One policy engine.** Exposure, label projection, and bucket overrides compile into one `MetricPolicy` (`telemetry/policy.go`) with one specificity ordering.
+- **One customization config.** `metrics.customizations` replaces parallel exposure/label knobs; the four legacy label fields remain as deprecated aliases.
+- **Scrape-size reduction that actually saves cost.** A dropped eRPC family is **never registered**, so it costs no series and no collection — not merely filtered after gather.
 
 ### Non-goals
 
-- **Not** a per-metric collection disable at compile time — metrics are still defined in code; exposure is a runtime/config decision.
-- **Not** a general glob/regex matcher — exact family names and trailing-prefix subsystem patterns (`consensus_*`) only. The prefix commits to eRPC's existing first-segment = subsystem naming convention, nothing more.
-- **Not** a change to any metric name or label under default config — `/metrics` is byte-identical when unconfigured.
-- **Not** a fix for the dead `metrics.hostV4`/`hostV6` bind fields (separate cleanup).
+- **Not** compile-time collection disable — metrics stay defined in code; exposure is a startup/config decision (restart to change).
+- **Not** a general glob/regex matcher — exact names and trailing-prefix patterns only (`*` only as final character).
+- **Not** label projection on gauges — collapsing gauge series would report whichever writer wrote last, not a coarser aggregate.
+- **Not** hot-path no-op handles for dropped families in Phase 1 (call sites still hold the wrapper; an unregistered Vec is simply invisible on scrape). Allocation avoidance is Phase 2+ — see `plan.md`.
+- **Not** a fix for the dead `metrics.hostV4`/`hostV6` bind fields.
 
-## 2. Current state — three registration paths
+## 2. Problem / prior state
 
-eRPC registers metrics through **three different mechanisms** in `telemetry/metrics.go`:
+Three registration paths in `telemetry/metrics.go`:
 
-| Path | Count | When it registers | Call-site style |
+| Path | Approx. count | When it registered | Could see label filters? |
 |---|---|---|---|
-| **Deferred counters** (`LabeledCounter`) | ~36 | `RebuildFilteredCounters()` during `erpc.Init` | `WithLabelValues(...)` / `CounterHandle` cache |
-| **Deferred histograms** (`LabeledHistogram`) | ~17 | `SetHistogramBuckets()` during `erpc.Init` | `WithLabelValues(...)` / `ObserverHandle` cache |
-| **`promauto` metrics** (gauges, counters, histograms) | ~86 | Package init, before config is read | Direct `*prometheus.*Vec` — `WithLabelValues(...).Set()/Inc()/Observe()` |
+| Deferred counters (`LabeledCounter`) | ~37 | `RebuildFilteredCounters` in `erpc.Init` | yes |
+| Deferred histograms (`LabeledHistogram`) | ~17–19 | `SetHistogramBuckets` in `erpc.Init` | yes |
+| `promauto` (gauges, counters, histograms) | ~86–87 | package init, before config | **no** |
 
-The deferred paths exist to support `counterDropLabels` / `histogramDropLabels`: those metrics are built unregistered at package init so config can be applied before they hit the registry. This is the half-done unification the maintainers pointed at — counters already have `LabeledCounter` + `CounterHandle` + a single rebuild function; gauges and the `promauto` counter/histogram long tail never got the same treatment.
+Only the deferred paths could honour `counterDropLabels` / `histogramDropLabels`, because Prometheus freezes a family's label-set hash on first registration (`dimHashesByName` survives `Unregister`). Anything that changes a label set — or that wants a family off `/metrics` entirely — must run **before** the first registration. `promauto` registers too early.
 
-Consequences of the split:
+Operators also had no family-level exposure knob: production scrapes ~160MB with all ~141 families always present. Bucket tuning was a single global `histogramBuckets` string for the `DefaultHistogramBuckets` set.
 
-- **No single gate.** "Don't expose family X" today requires three different mechanisms (skip a register call, skip another register call, unregister after the fact) — and the third requires a name → collector mapping that doesn't exist.
-- **Policy logic is per-kind.** Label projection is implemented twice (`HistogramLabelFilter`, `CounterLabelFilter`) and is unavailable for gauges.
-- **No no-op path.** Every call site pays full Prometheus cost even for families an operator will never scrape.
-
-### Why scrape-time filtering alone is insufficient
-
-A `FilteredGatherer` wrapping `prometheus.DefaultGatherer` (filtering `[]*dto.MetricFamily` after `Gather()`) is cheap to build and does shrink the HTTP response, but it still:
-
-- Runs `Collect()` on every registered collector on every scrape
-- Allocates the full `MetricFamily` set before dropping
-
-For deployments where scrape CPU and response size both matter, filtering after gather is the wrong layer. The manager gates at **registration**: an unexposed family is never registered, so gather never sees it.
-
-## 3. The manager
-
-A single `Manager` in `telemetry/` owns the metric lifecycle:
+## 3. The manager (`telemetry/manager.go`)
 
 ```
-  definition (package init)          erpc.Init (config available)         request hot path
-  ─────────────────────────          ─────────────────────────────        ─────────────────
-  manager.DefineCounter(...)  ──┐
-  manager.DefineGauge(...)      │    manager.Configure(policies)
-  manager.DefineHistogram(...)  │          │
-                                │          ▼
-                                │    for each definition:
-                                │      exposed?  ── no ──► never registered;
-                                │      │                    handles are no-op
-                                │      yes
+  definition (package init)          erpc.Init                          request hot path
+  ─────────────────────────          ────────                           ─────────────────
+  DefineCounter(...)          ──┐
+  DefineGauge(...)              │    Configure(Options)
+  DefineLabeledCounter(...)     │      │
+  DefineLabeledHistogram(...)   │      ▼
+                                │    NewMetricPolicy(customizations, legacy)
+                                │      │
                                 │      ▼
-                                │    apply label projection
-                                │    register on DefaultRegisterer
-                                │          │
-                                ▼          ▼
-                          call sites record through
-                          manager-issued handles
+                                │    for each definition:
+                                │      Exposed? ── no ──► skip (never register)
+                                │      │
+                                │      yes → rebuildInPlace (labels/buckets)
+                                │           → Register on DefaultRegisterer
+                                │           → ResetHandleCache
+                                ▼
+                          call sites use package vars (unchanged types)
 ```
 
-### Definition
+### Factories
 
-All ~139 metric definitions route through the manager's factory (`DefineCounter` / `DefineGauge` / `DefineHistogram`). Definitions happen at package init as today, but **nothing registers at definition time** — the factory builds the vec, indexes it by resolved family name, and holds it unregistered. Package-level vars (`MetricUpstreamRequestTotal`, …) keep their existing wrapper types in Phase 1 so call sites don't change.
+| Factory | Kind | Label projection | Bucket override |
+|---|---|---|---|
+| `DefineCounter` | counter, fixed labels | no | n/a |
+| `DefineLabeledCounter` | counter, caller-controlled labels | yes | n/a |
+| `DefineGauge` | gauge | **never** | n/a |
+| `DefineLabeledHistogram` | histogram | yes | yes |
 
-This deletes the three-path split: `promauto` disappears from `metrics.go`, and `RebuildFilteredCounters()` / `SetHistogramBuckets()` collapse into the manager's single `RegisterAll`.
+There is no `DefineHistogram`. Plain histograms became `DefineLabeledHistogram` so every histogram honours label and bucket customizations. Leaving `opts.Buckets` empty takes boundaries from `metrics.histogramBuckets`; a non-empty code default is kept unless a customization overrides it. A bucketless plain histogram can no longer silently inherit Prometheus `DefBuckets`.
 
-### Registration
+`rebuildInPlace` keeps package-level pointers stable across configure/rebuild so call sites do not reassign.
 
-`manager.Configure(...)` is called once from `erpc.Init`, after config is read, alongside the existing label-filter installation. It applies, per family:
+### `Configure` / errors
 
-1. **Exposure** (§4) — unexposed families are never registered.
-2. **Label projection** — today's `HistogramLabelFilter` / `CounterLabelFilter`, generalized to all kinds.
-3. Registration on `prometheus.DefaultRegisterer`.
+`erpc.Init` calls `telemetry.Configure(cfg.Metrics.TelemetryOptions())`.
 
-Because nothing registers before Init, there is **no unregister path** — gating is purely "never register." (The Prometheus label-set-hash-freeze constraint documented on `RebuildFilteredCounters` is sidestepped, not worked around.)
+| Failure | Sentinel / shape | Init log severity | Outcome |
+|---|---|---|---|
+| Malformed customizations / policy compile | wrapped in `ErrNothingRegistered` | **Error** — `"no metric families are registered"` | nothing registered |
+| Unparseable `histogramBuckets` | plain error (defaults substituted) | **Warn** — `"falling back to default histogram buckets"` | all exposed families still register |
 
-### Recording
+`MetricsConfig.Validate` also compiles the policy up front so the CLI rejects bad config before start. Init still handles both paths because callers can assemble `*common.Config` by hand.
 
-Call sites record through manager-issued handles. Phase 1 keeps today's call sites byte-identical (package vars keep their types); the handle unification (Phase 2) gives every kind the same shape and lets the manager return a **no-op handle** for disabled families — the mechanism that removes hot-path cost (§5).
+`SetHistogramBuckets` remains as a **histogram-only** entry point for config validation and tests that need histograms scrapeable without freezing counter label sets. Production goes through `Configure`.
 
-### Policies the manager owns
+### Startup diagnostics
 
-| Policy | Today | Under the manager |
-|---|---|---|
-| Exposure (`exposeMetrics` / `dropMetrics`) | doesn't exist | registration gate (§4) |
-| Label projection (`histogramDropLabels`, `counterDropLabels`) | two per-kind filters | one projection applied to all kinds |
-| Idle eviction (`counterIdleEvictionAfter`) | counter-only sweep | unchanged mechanically, owned by the manager |
-| No-op / allocation avoidance | impossible | no-op handles for disabled families |
+When `metrics.customizations` is non-empty:
 
-## 4. Policy: exposure control
+- INFO `metric customizations applied` with `customizations` / `exposed` / `total` counts.
+- WARN for subjects matching no known eRPC family (typos); stock-collector subjects are skipped in this check (they are not in the definition index).
+- WARN for exact-subject rules a named family cannot honour (buckets on a non-histogram; labels on a family with no `rebuild` / fixed label set). Broad prefixes do not warn per swept-up family.
 
-Two optional list fields on the root `metrics` block, following the existing naming convention (eRPC metrics omit the `erpc_` prefix, same as `histogramLabelOverrides` / `counterLabelOverrides`):
+## 4. Policy: `metrics.customizations`
+
+One ordered list on the root `metrics` block. Each entry has a `subject` and zero or more of: `action`, `labels`, `buckets`. An entry that sets none of those three is rejected (no-op).
 
 ```yaml
 metrics:
   enabled: true
   port: 4001
+  histogramBuckets: "0.05,0.5,5,30"   # global default for histograms with empty code buckets
 
-  # Allowlist — when non-empty, ONLY these families are exposed
-  exposeMetrics:
-    - upstream_*                       # whole subsystem (trailing prefix)
-    - network_request_duration_seconds # single family
+  customizations:
+    # Denylist a subsystem
+    - subject: "consensus_*"
+      action: drop
 
-  # Denylist — remove families from exposure (applied after exposeMetrics)
-  dropMetrics:
-    - consensus_*                      # whole subsystem
-    - network_evm_block_range_requested_total
+    # Allowlist pattern: drop everything, then keep what you need
+    # (specificity — not list order — makes this order-independent)
+    - subject: "*"
+      action: drop
+    - subject: "upstream_*"
+      action: keep
+    - subject: "network_request_duration_seconds"
+      action: keep
+    - subject: "go_goroutines"
+      action: keep
+
+    # Fleet-wide label trim + carve-out
+    - subject: "*"
+      labels:
+        - subject: "user"
+          action: drop
+        - subject: "agent_name"
+          action: drop
+    - subject: "upstream_request_total"
+      labels:
+        - subject: "user"
+          action: keep
+
+    # Per-family histogram buckets ([]float64, strictly increasing)
+    - subject: "upstream_request_duration_seconds"
+      buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3]
 ```
 
-Entries are either **exact family names** or **trailing-prefix patterns** ending in `*`. A prefix matches every family whose resolved name starts with the stem — this is how operators think (`upstream_*`, `consensus_*`, `cache_*`) and matches the first-segment = subsystem convention the metrics catalog already follows. No general globs: `*` is only legal as the final character.
+### Subject matching
 
-### Name resolution
-
-| Config entry | Resolved match |
+| Config subject | Matches |
 |---|---|
-| `upstream_request_total` | family `erpc_upstream_request_total` |
-| `erpc_upstream_request_total` | same (prefix accepted as-is) |
+| `upstream_request_total` | `erpc_upstream_request_total` |
+| `erpc_upstream_request_total` | same (`erpc_` accepted as-is) |
 | `consensus_*` | every family whose name starts `erpc_consensus_` |
-| `erpc_consensus_*` | same (prefix accepted as-is) |
-| `go_goroutines` | `go_goroutines` (stock collector — full name) |
-| `process_*` | all `process_*` stock collectors |
-| `promhttp_metric_handler_requests_total` | full name (no auto-prefix) |
+| `*` | every family (eRPC +, via gatherer filter, stock collectors) |
+| `go_goroutines` / `process_*` / `promhttp_*` | stock collectors by full name (no `erpc_` auto-prefix) |
 
-### Semantics
+`NormalizeMetricName` prefixes non-stock names with `erpc_`. Duplicate subjects across customization entries are rejected (merge them).
 
-1. Both unset/empty → expose everything (today's behavior, backward compatible).
-2. `exposeMetrics` only → allowlist: only listed families are registered/exposed.
-3. `dropMetrics` only → denylist: listed families are not registered.
-4. Both set → allowlist first, then denylist (denylist wins on overlap).
-5. Unexposed families are **never registered** — they cost nothing at scrape time; with Phase 2 no-op handles they cost (near-)nothing on the hot path.
+### Actions
 
-### Granularity
+Family and label actions are only `keep` | `drop` (not `expose`).
 
-Entries match whole metric **families** (all series sharing a name) or whole **subsystems** via trailing prefix. Per-series control (dropping individual label-value combinations) is intentionally not offered: series are dynamic and caller-controlled, and registration gating acts on whole collectors. Use `counterDropLabels` / `histogramDropLabels` for series shaping within exposed families, or Prometheus `metric_relabel_configs` for label-value filtering at scrape.
+- **`drop`** — family off `/metrics` (never registered for eRPC families; scrape-filtered for stock).
+- **`keep`** — spare matched families from a broader `drop`. Omit `action` to touch only labels/buckets.
+- Default with no exposure actions: every family exposed (byte-compatible with pre-feature behaviour).
 
-Prefix semantics on future metrics: a `dropMetrics` prefix auto-drops families added to that subsystem later (fail-closed — what the operator meant); an `exposeMetrics` prefix auto-exposes them (the operator opted into the subsystem).
+Allowlisting is **explicit**: `subject: "*", action: drop` then `action: keep` carve-outs. There is no implicit "any keep flips allowlist mode" — that would make meaning depend on which other keys are present.
 
-### Validation at config load
+### Precedence (specificity, not list order)
 
-- Reject empty strings in either list.
-- Reject `*` anywhere except as the final character (trailing-prefix only).
-- Reject duplicates within each list (after normalization).
-- Warn (log once, non-blocking) for any entry — exact name or prefix — that matches zero known families at Init. The manager's definition index makes this check exact (catches `consenus_*` typos) without enforcing a closed catalog (the metric set is open-ended across eRPC versions).
+Rules sort **broadest first**; lookups walk and take the last match:
+
+1. Exact family name beats any prefix.
+2. Longer prefix beats shorter prefix; `*` is weakest.
+3. Equal specificity → later list entry wins.
+4. Desugared **legacy** knobs sit **below** an equally specific customization so migrating a field takes effect.
+
+Same rules apply inside a `labels` list (`agent_*: drop` then `agent_name: keep`).
+
+### Label projection
+
+Applied only to families with a `rebuild` path (`LabeledCounter`, `LabeledHistogram`). Call sites always pass the full canonical schema; the wrapper forwards retained positions only. Gauges and fixed-label `DefineCounter` families ignore label rules (exact-subject attempts WARN via `IgnoredCustomizations`).
+
+Legacy kind masks preserve today's scope when desugaring: `counterDropLabels` → counters-only `*` rule; `histogramDropLabels` → histograms-only.
+
+### Buckets
+
+`customizations[].buckets` is `[]float64`, strictly increasing (validated; NaN rejected). An explicit override wins over both `metrics.histogramBuckets` and the definition's code buckets. Global `histogramBuckets` remains a comma-separated string for histograms that leave code buckets empty.
 
 ### Stock collectors
 
-`go_*` / `process_*` / `promhttp_*` live on the default registry outside the manager. A thin `FilteredGatherer` around `prometheus.DefaultGatherer` at the HTTP handler applies the same exposure filter to them — this is a safety net for stock collectors only, not the CPU-saving mechanism for eRPC families. (`ERPC_NOMETRICS=1` already replaces the whole registry for the all-off case.)
+`go_*` / `process_*` / `promhttp_*` live on the default registry outside the manager. `telemetry.Gatherer` wraps `DefaultGatherer` with `FilteredGatherer` when the policy is active and has exposure actions — shrinks the scrape for stock families a `drop` matched. Passthrough when nothing is customized. Third-party collectors under other prefixes cannot be `keep`'d by name (normalization would prepend `erpc_`); `subject: "*", action: drop` still removes them via the filter.
 
-## 5. What the manager buys beyond exposure
+### Validation (hard fail at config load)
 
-Registration gating removes **scrape-side** cost (`Collect()` + encoding) for unexposed families. With unified handles it also removes **hot-path** cost:
+- Empty subject; `*` not final; unknown action; duplicate family/label subjects; entry with no action/labels/buckets; non-increasing / NaN buckets.
 
-- **No-op handles.** Recording on a disabled family short-circuits before touching Prometheus internals — no map lookup, no label projection, no allocation. Call sites don't change; the handle the manager issued is already a no-op.
-- **One label-projection implementation.** Label shaving stops being counter/histogram-only and gains gauge coverage; projection happens once at handle-issue time, not per observation.
-- **Bounded allocations.** Precomputed handles and pooled label sets where profiling justifies — a manager concern, invisible to call sites.
+## 5. Leftovers / deprecations
 
-These are Phase 2–3 deliverables; Phase 1 ships exposure control with call sites unchanged.
-
-## 6. Interaction with existing knobs
-
-| Knob | Relationship |
+| Knob | Status |
 |---|---|
-| `metrics.enabled` | Orthogonal — controls whether the HTTP server starts at all. |
-| `ERPC_NOMETRICS=1` | Orthogonal — replaces the whole registry with a no-op; exposure config is meaningless under it. |
-| `histogramDropLabels` / `counterDropLabels` | Become manager policies — same config fields, one implementation. |
-| `counterIdleEvictionAfter` | Unchanged semantics; eviction sweep becomes manager-owned. |
-| `memory.emitMetrics` | Unchanged — still gates the Ristretto collection goroutine; the gauge family itself can also be dropped via `dropMetrics`. |
+| `metrics.customizations` | **Canonical** surface |
+| `histogramBuckets` | Retained — global default for empty-code-bucket histograms |
+| `counterIdleEvictionAfter` | Unchanged; applied via `Configure` |
+| `histogramDropLabels` / `histogramLabelOverrides` | **Deprecated** — desugared into kind-masked rules |
+| `counterDropLabels` / `counterLabelOverrides` | **Deprecated** — same |
+| `exposeMetrics` / `dropMetrics` | **Do not add** — superseded by `customizations` |
+| `metrics.enabled` / `ERPC_NOMETRICS=1` | Orthogonal (HTTP server / empty registry) |
 
-## 7. Observability of the manager itself
+## 6. Observability of the manager
 
-- One INFO log at startup when exposure filtering is active: resolved allowlist/denylist sizes, e.g. `metrics exposure: allowlist=12 denylist=3`.
-- One WARN per configured name that doesn't resolve to a known family, at Init (the definition index makes this exact).
-- No new metric for "metrics dropped" — the absence of the family on `/metrics` is the signal; adding a metric about metrics would be self-defeating for a feature whose purpose is fewer metrics.
+- INFO when customizations applied (`customizations`, `exposed`, `total`).
+- WARN unmatched subjects; WARN ignored exact-subject rules.
+- Error vs Warn on Configure failure (§3) — do not page on bucket typos.
+- No meta-metric for "families dropped" — absence on `/metrics` is the signal.
 
-## 8. Backward compatibility
+## 7. Backward compatibility
 
-- Default (both fields unset) is byte-identical to today: all families registered and exposed, same names, same labels.
-- No schema breakage — new optional fields only.
-- Phase 1 changes no call sites; package-level metric vars keep their types.
-- **Test-visible change:** `promauto` families no longer appear on `/metrics` in processes that never run manager registration (e.g. tests that scrape without `Init`). This extends the existing deferred-counter semantics ("counters stay unregistered until an Init with metrics config runs") to all families.
+- Empty customizations + unused legacy fields → scrape behaviour matches pre-manager defaults (all families, full labels, prior bucket rules).
+- Legacy label fields keep working with identical kind scope.
+- Package-level metric vars keep types; call sites unchanged.
+- **Test-visible:** formerly-`promauto` families require `Configure` (or test `SetHistogramBuckets` for histograms-only) before they appear on gather — same class of Init-gating deferred counters already had.
+- Repeat `Configure` on the same registry leaves already-registered families untouched (frozen label-set hash); changing customizations needs a process restart.
 
-## 9. Open questions
+## 8. Locked vs follow-on
 
-1. **Should `exposeMetrics` implicitly include stock collectors?** An operator writing a 5-family allowlist probably doesn't mean to drop `go_*`/`process_*` — but silently keeping them violates allowlist semantics. *Leaning: explicit — document that stock collectors need full names in the allowlist if wanted.*
-2. **Handle API shape.** Reuse the existing `CounterHandle` / `ObserverHandle` generics as the unified handle, or a new per-kind interface the manager issues? *Leaning: generalize the existing handle caches — they're already the hot-path optimization.*
-3. **Definition syntax.** Keep package-level `var MetricX = manager.DefineCounter(...)` (minimal diff, vars keep types) vs a declarative table. *Leaning: package-level vars — call sites and docs references stay stable.*
-4. **Per-family no-op threshold.** No-op handles for unexposed families only, or also for exposed-but-label-shaved projections? *Leaning: unexposed only; shaved projections still record.*
+Locked in this design:
+
+- Stock collectors: explicit — name them under `keep` if an allowlist should retain them.
+- Definition syntax: package-level `Define*` vars.
+- Family exposure actions: `keep`/`drop` with drop-all + keep carve-out for allowlists.
+- Legacy counter-drop scope: kind mask preserves counter-only behaviour.
+
+Follow-on (see `plan.md`):
+
+1. **No-op / allocation-free record path** for dropped families.
+2. **Unified handle API** across kinds (Phase 2).
+3. **When to remove** the four deprecated label fields (config-level compat until operators migrate).
 
 ## Appendix — related documents
 
 - `plan.md` — phased implementation plan.
-- Jira: [TECHOPS-28974](https://circlepay.atlassian.net/browse/TECHOPS-28974) (under BRP H2 2026 epic [TECHOPS-27051](https://circlepay.atlassian.net/browse/TECHOPS-27051)).
 - Metrics catalog: `docs/pages/reference/metrics.mdx` / <https://docs.erpc.cloud/reference/metrics>.
+- Operator monitoring: `docs/pages/operation/monitoring.mdx`.
