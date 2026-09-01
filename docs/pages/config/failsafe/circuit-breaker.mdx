@@ -554,7 +554,6 @@ window and require a high success ratio. This pairs well with the fast-trip brea
     breaker checked (if configured). An uncordon does not reset the breaker.
 11. **`OnTransition` fires in a goroutine.** The metric emission is async. Under extremely
     high test parallelism this can appear as a missing metric increment immediately after a
-<<<<<<< HEAD
     transition. <SourceLink file="failsafe/breaker.go" lines="312-334" /> Because callbacks
     can therefore land out of order, the state gauge publishes the breaker's live
     `State()` under a per-breaker lock rather than the transition's `to` value, so it
@@ -562,12 +561,6 @@ window and require a high success ratio. This pairs well with the fast-trip brea
 12. **Cache connector breakers emit no breaker metrics.** The `OnTransition` hook is not wired
     for cache executors — neither `erpc_upstream_breaker_state_change_total` nor
     `erpc_upstream_circuit_breaker_state` fires for them; both are upstream-scoped.
-=======
-    transition. <SourceLink file="failsafe/breaker.go" lines="324-346" />
-12. **Cache connector breakers do not emit the state-change metric.** The `OnTransition` hook
-    is not wired for cache executors — `erpc_upstream_breaker_state_change_total` only fires
-    for upstream breakers.
->>>>>>> upstream/main
 13. **Race safety in Open→HalfOpen.** When two goroutines race to call `TryAcquirePermit`
     while the breaker is Open and `halfOpenAfter` has just elapsed, the second goroutine
     re-checks state after acquiring `mu` and, seeing HalfOpen, recursively re-evaluates —
