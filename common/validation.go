@@ -547,9 +547,6 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
 	}
-	if fsCfg.Hedge != nil && fsCfg.Hedge.Delay != nil && fsCfg.Hedge.Delay.Quantile > 0 {
-		return fmt.Errorf("%s: hedge quantile is not supported for connector-level failsafe (no latency metric source)", prefix)
-	}
 	return nil
 }
 
