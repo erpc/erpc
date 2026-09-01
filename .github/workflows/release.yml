@@ -132,6 +132,7 @@ jobs:
       github.event_name == 'push' && 
       github.ref == 'refs/heads/main' && 
       contains(github.event.head_commit.message, 'chore: release')
+    environment: release
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     steps:
       - name: Harden the runner (Audit all outbound calls)
