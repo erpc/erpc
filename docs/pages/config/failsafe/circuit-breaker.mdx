@@ -543,7 +543,8 @@ window and require a high success ratio. This pairs well with the fast-trip brea
    start. <SourceLink file="erpc/network_executor.go" lines="68-73" />
 7. **Per-method breakers are independent.** `CircuitBreakerState()` on `Upstream` only exposes
    the `matchMethod: "*"` catch-all breaker. An `eth_getLogs` breaker tripping does not affect
-   the `*` catch-all breaker.
+   the `*` catch-all breaker. For the full picture use `erpc_upstream_circuit_breaker_state`,
+   which carries one series per configured breaker (`category`/`finality` labels).
 8. **EVM syncing state triggers a failure.** A syncing upstream that returns an empty/null
    response is classified as `OutcomeFailure` — a syncing node can trip the breaker even without
    an error code. <SourceLink file="upstream/upstream_executor.go" lines="436-444" />
@@ -551,12 +552,15 @@ window and require a high success ratio. This pairs well with the fast-trip brea
    call `resetWindowLocked()` — a flapping upstream starts each cycle with a clean slate.
 10. **Cordon and circuit breaker are orthogonal.** A cordoned upstream also has its circuit
     breaker checked (if configured). An uncordon does not reset the breaker.
-11. **`OnTransition` fires in a goroutine.** The metric increment is async. Under extremely
+11. **`OnTransition` fires in a goroutine.** The metric emission is async. Under extremely
     high test parallelism this can appear as a missing metric increment immediately after a
-    transition. <SourceLink file="failsafe/breaker.go" lines="324-346" />
-12. **Cache connector breakers do not emit the state-change metric.** The `OnTransition` hook
-    is not wired for cache executors — `erpc_upstream_breaker_state_change_total` only fires
-    for upstream breakers.
+    transition. <SourceLink file="failsafe/breaker.go" lines="312-334" /> Because callbacks
+    can therefore land out of order, the state gauge publishes the breaker's live
+    `State()` under a per-breaker lock rather than the transition's `to` value, so it
+    converges on the true state instead of latching a stale one.
+12. **Cache connector breakers emit no breaker metrics.** The `OnTransition` hook is not wired
+    for cache executors — neither `erpc_upstream_breaker_state_change_total` nor
+    `erpc_upstream_circuit_breaker_state` fires for them; both are upstream-scoped.
 13. **Race safety in Open→HalfOpen.** When two goroutines race to call `TryAcquirePermit`
     while the breaker is Open and `halfOpenAfter` has just elapsed, the second goroutine
     re-checks state after acquiring `mu` and, seeing HalfOpen, recursively re-evaluates —
@@ -590,8 +594,16 @@ window and require a high success ratio. This pairs well with the fast-trip brea
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_upstream_breaker_state_change_total` | Counter | `project`, `upstream`, `transition` | Every upstream breaker state transition. `transition` values: `closed_to_open`, `open_to_half_open`, `half_open_to_closed`, `half_open_to_open`. Not emitted for cache connector breakers. Defined at [`telemetry/metrics.go:L485-L489`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L485-L489); wired at [`upstream/upstream.go:L91-L99`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L91-L99). |
+| `erpc_upstream_breaker_state_change_total` | Counter | `project`, `upstream`, `transition` | Every upstream breaker state transition. `transition` values: `closed_to_open`, `open_to_half_open`, `half_open_to_closed`, `half_open_to_open`. Not emitted for cache connector breakers. Defined in [`telemetry/metrics.go`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go); emitted by the reporter in [`upstream/breaker_telemetry.go`](https://github.com/erpc/erpc/blob/main/upstream/breaker_telemetry.go). |
+| `erpc_upstream_circuit_breaker_state` | Gauge | `project`, `vendor`, `network`, `upstream`, `category`, `finality` | The breaker's **current** state: `0` = closed, `1` = open, `2` = half-open. One series per configured breaker — `category`/`finality` carry the `matchMethod`/`matchFinality` of the owning `failsafe` entry (`*` = matches anything), so per-method breakers never overwrite each other. Seeded to `0` when the upstream is attached to its network, so a breaker that has never tripped is still visible. Not emitted for cache connector breakers. |
 | `erpc_upstream_attempt_outcome_total` | Counter | `project`, `network`, `upstream`, `category`, `outcome`, `is_hedge`, `is_retry`, `finality` | Every attempt terminal. `outcome="breaker_open"` when the breaker refused a permit. Defined at [`telemetry/metrics.go:L457-L462`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L457-L462); incremented at [`upstream/upstream.go:L551-L560`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L551-L560). |
+
+**Counter vs gauge.** `erpc_upstream_breaker_state_change_total` answers *how often did
+this breaker flip?* (churn, flapping); `erpc_upstream_circuit_breaker_state` answers *what
+state is it in right now?*. Alert on the gauge (`erpc_upstream_circuit_breaker_state == 1`
+for N minutes) and use the counter's rate to spot flapping. Do not reconstruct the current
+state from counter deltas — the gauge is the source of truth, published from the breaker's
+live state on every transition.
 
 **Programmatic access.** The breaker exposes a `Metrics()` method that returns
 `(failures, successes, executions uint64)` as lifetime atomic counters.
