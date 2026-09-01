@@ -109,10 +109,14 @@ metrics:
     - subject: "consensus_*"
       action: drop
 
-    # Allowlist pattern: drop everything, then keep what you need
-    # (specificity — not list order — makes this order-independent)
+    # Allowlist + fleet-wide label trim (one "*" entry — duplicates rejected)
     - subject: "*"
       action: drop
+      labels:
+        - subject: "user"
+          action: drop
+        - subject: "agent_name"
+          action: drop
     - subject: "upstream_*"
       action: keep
     - subject: "network_request_duration_seconds"
@@ -120,13 +124,7 @@ metrics:
     - subject: "go_goroutines"
       action: keep
 
-    # Fleet-wide label trim + carve-out
-    - subject: "*"
-      labels:
-        - subject: "user"
-          action: drop
-        - subject: "agent_name"
-          action: drop
+    # Per-metric label carve-out after the fleet-wide drop
     - subject: "upstream_request_total"
       labels:
         - subject: "user"
