@@ -140,10 +140,18 @@ self-adjusts. Cold-start (no data yet) falls back to `min` — which `SetDefault
 auto-populates to `100ms` unless you override it.
 
 **Write-method exclusion.** `runHedge` short-circuits to a plain inner call (no hedging) for
-methods identified by `evm.IsNonRetryableWriteMethod`: `eth_sendTransaction`,
+write methods, checking both architectures' guards. `evm.IsNonRetryableWriteMethod`:
+`eth_sendTransaction`,
 `eth_createAccessList`, `eth_submitTransaction`, `eth_submitWork`, `eth_newFilter`,
 `eth_newBlockFilter`, `eth_newPendingTransactionFilter`. `eth_sendRawTransaction` is
-intentionally NOT excluded — it supports idempotent broadcast under hedge. Composite batch
+intentionally NOT excluded — it supports idempotent broadcast under hedge.
+`svm.IsNonRetryableWriteMethod`: `sendTransaction`, `sendRawTransaction`, `requestAirdrop`.
+**Note the asymmetry** — the SVM raw-transaction path *is* excluded, so the hedged-broadcast
+pattern below is EVM-only. Solana broadcasts are same-signature idempotent on-chain, but
+hedging them burns vendor quota on duplicate submissions and breaks the documented
+single-broadcast guarantee; `requestAirdrop` mints per call and is genuinely
+non-idempotent. `simulateTransaction` is read-only and stays hedgeable. Method names cannot
+collide across the two sets (EVM is `eth_*`-prefixed, SVM is bare). Composite batch
 requests also skip hedging entirely.
 
 **Interaction with retry.** Retry wraps hedge: each retry attempt fires a fresh hedge race.
@@ -159,7 +167,7 @@ All fields are under `networks[].failsafe[].hedge` (or `upstreams[].failsafe[].h
 |---|---|---|---|
 | `hedge.delay` | `Duration \| AdaptiveDuration` | — (no hedge if absent) | Scalar sets `base` only (static mode). Object `{base, quantile, min, max}` enables adaptive mode. After `SetDefaults`, if `min==0` it becomes `100ms`; if `max==0` it becomes `999s`. Source: <SourceLink file="common/config.go" lines="1490" /> |
 | `hedge.delay.base` | `Duration` | `0` | Static addend. When `quantile==0`, this is the entire delay. When `quantile>0`, added to the quantile value before clamping. A scalar shorthand sets this field exclusively. |
-| `hedge.delay.quantile` | `float64` | `0` (static mode) | Percentile queried from the per-method `QuantileTracker`. Valid range `[0, 1]`. When `> 0`, `base` or `max` must also be set (enforced by `AdaptiveDuration.validate` at <SourceLink file="common/adaptive_duration.go" lines="129" />). Not allowed for cache-scope failsafe. System template default: `0.7`. Source: <SourceLink file="common/adaptive_duration.go" lines="83-109" /> |
+| `hedge.delay.quantile` | `float64` | `0` (static mode) | Percentile queried from the per-method `QuantileTracker`. Valid range `[0, 1]`. When `> 0`, `base` or `max` must also be set (enforced by `AdaptiveDuration.validate` at <SourceLink file="common/adaptive_duration.go" lines="129" />). At cache-connector scope (`failsafeForGets` / `failsafeForSets`) the quantile resolves against the connector's own per-(method, finality) latency window instead of network metrics — <SourceLink file="data/cache_executor.go" lines="204-207" />. System template default: `0.7`. Source: <SourceLink file="common/adaptive_duration.go" lines="83-109" /> |
 | `hedge.delay.min` | `Duration` | `100ms` (auto-set by `SetDefaults` when `0`) | Floor applied when `quantile>0`. Cold-start fallback when no latency data exists. **Footgun:** manually setting `min: 0` on a quantile-mode spec causes hedges to fire immediately on cold start. Source: <SourceLink file="common/defaults.go" lines="2324-2326" /> |
 | `hedge.delay.max` | `Duration` | `999s` (auto-set by `SetDefaults` when `0`) | Ceiling applied when `quantile>0`. Prevents a runaway quantile from deferring the hedge indefinitely. Source: <SourceLink file="common/defaults.go" lines="2327-2329" /> |
 | `hedge.maxCount` | `int` | `1` (from `SetDefaults`); system auto-template uses `2` | Max *additional* attempts beyond the primary. `maxCount=1` means 2 total concurrent requests. `maxCount=0` disables hedging silently (`HasHedge()` returns false). Negative values are treated as `0` inside `RunHedged`. **Footgun:** the system template (applied when no `projects` block exists) defaults to `2`; manual configs get `1`. Source: <SourceLink file="common/defaults.go" lines="2331-2337" /> |
@@ -306,9 +314,12 @@ up mempool propagation:
 }]`}
 />
 
-**6. Static hedge on cache-connector reads.** Cache connectors take their own failsafe via
-`failsafeForGets` / `failsafeForSets`; hedge `quantile` is rejected at this scope — use a
-static delay to race a slow shared-cache read (e.g. a remote gRPC cache connector):
+**6. Quantile hedge on cache-connector reads.** Cache connectors take their own failsafe via
+`failsafeForGets` / `failsafeForSets`. A quantile delay resolves against the connector's own
+latency — a 1-minute sliding window tracked per (method, finality) executor, fed only by
+completed operations (<SourceLink file="data/cache_executor.go" lines="14-20" />) — so the
+hedge tracks the shared cache's real speed (e.g. a remote gRPC cache connector). Before any
+samples exist the delay falls back to `base + min` (<SourceLink file="common/adaptive_duration.go" lines="96-101" />):
 
 <ConfigTabs
   path="database.evmJsonRpcCache.connectors[].failsafeForGets[]"
@@ -321,8 +332,10 @@ static delay to race a slow shared-cache read (e.g. a remote gRPC cache connecto
           duration: 400ms  # a cache read must be fast or not worth it —
                            # past this, going straight to upstreams is cheaper
         hedge:
-          delay: 100ms     # static: quantile is rejected at cache scope, and
-                           # connector latency is stable enough to hardcode
+          delay:
+            quantile: 0.95  # p95 of this connector's own completed reads (1m window)
+            min: 20ms       # floor; also cold-start fallback (no samples → base+min)
+            max: 200ms      # a hedge later than this is pointless — timeout is 400ms
           maxCount: 1
         retry:
           maxAttempts: 2
@@ -333,7 +346,9 @@ static delay to race a slow shared-cache read (e.g. a remote gRPC cache connecto
   failsafeForGets: [{
     matchMethod: "*",
     timeout: { duration: "400ms" },
-    hedge: { delay: "100ms", maxCount: 1 },
+    // p95 of this connector's own completed reads (1m window);
+    // cold start (no samples) falls back to base+min
+    hedge: { delay: { quantile: 0.95, min: "20ms", max: "200ms" }, maxCount: 1 },
     retry: { maxAttempts: 2, delay: "0" },
   }],
 }]`}

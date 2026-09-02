@@ -3,9 +3,20 @@ package evm
 import (
 	"context"
 	"strings"
+	"time"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// maxTraceResponseBytes caps the validated-response body recorded on integrity
+// spans in detailed tracing mode (for by-hand sanity checks). Larger bodies are
+// truncated — re-fetch by block number for the full payload.
+const maxTraceResponseBytes = 128 * 1024
 
 // HandleProjectPreForward is the early pre-forward hook executed at project layer
 // before cache and before upstream selection. Use this for transformations that
@@ -92,7 +103,8 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 		return false, nil, err
 	}
 
-	switch strings.ToLower(method) {
+	methodLower := strings.ToLower(method)
+	switch methodLower {
 	case "eth_getlogs":
 		return upstreamPreForward_eth_getLogs(ctx, n, u, r)
 	case "eth_chainid":
@@ -102,6 +114,16 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 	case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
 		return upstreamPreForward_eth_query(ctx, n, u, r)
 	default:
+		// Deliberately NO per-request gate on the integrity state prober's
+		// findings here. The prober publishes evidence — proven-head telemetry
+		// and, for a sustained streak of wrong-height answers, upstream
+		// misbehavior on the health tracker (see noteDisproved) — and exclusion
+		// decisions belong to the operator's selection policy, which already
+		// reads that ledger (misbehaviorRateAbove). A hook-level refusal keyed
+		// to the proven head was tried and misfired structurally: the proven
+		// head advances at probe cadence, so on a chain whose block time is
+		// shorter than that cadence it trails every honest upstream's claimed
+		// head and the network's own advertised tip becomes unroutable.
 		return false, nil, nil
 	}
 }
@@ -129,16 +151,157 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 
 	var validationErr error
 
-	// Always-on integrity check (independent of directives): reject responses
-	// carrying a provably-impossible logIndex/transactionIndex by converting
-	// them into a content-validation error. The existing retry/consensus
-	// machinery then routes around the corrupt upstream — in particular,
-	// consensus already excludes error responses from preferLargerResponses, so
-	// a corrupt-but-larger response can no longer dispute an honest majority.
-	if indexIntegrityMethods[methodLower] {
-		if validationErr = validateIndexIntegrity(ctx, u, rs); validationErr != nil {
-			rq.ClearLastValidResponse()
-			return rs, validationErr
+	// Data-integrity checks. Opt-in: the network's integrity config selects the
+	// checks (empty config → nothing runs). The engine runs them over a single
+	// decode and converts a violation into a content-validation error so
+	// retry/consensus route around the upstream (consensus already excludes
+	// errors from preferLargerResponses, so a corrupt-but-larger response can no
+	// longer dispute an honest majority). Internal requests (e.g. the
+	// corroboration force-fetch) are skipped to avoid recursing into the engine.
+	dirs := rq.Directives()
+	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
+		if cs, policy, observeOnly, autoCorrect := resolveIntegrity(n, dirs); len(cs) > 0 {
+			// Integrity state + corroboration are scoped to the node GROUP the request
+			// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
+			// so a receipt from one group is only checked against same-group
+			// nodes. No selector → network-wide.
+			selector := ""
+			if dirs != nil {
+				selector = dirs.UseUpstream
+			}
+			view := groupChainView(ctx, n, selector)
+			input := integrity.Input{
+				Method:      methodLower,
+				Upstream:    u,
+				Response:    rs,
+				Checks:      cs,
+				Resolver:    newIntegrityResolver(ctx, n, u, selector),
+				Reorg:       policy,
+				ObserveOnly: observeOnly,
+				AutoCorrect: autoCorrect,
+			}
+			if view != nil {
+				input.History = view
+			}
+			// Request-aware checks (eth_getLogs filter reproduction) need the
+			// original params; read-only access under the request's RLock.
+			if jrq, jerr := rq.JsonRpcRequest(ctx); jerr == nil && jrq != nil {
+				jrq.RLockWithTrace(ctx)
+				input.Params = jrq.Params
+				jrq.RUnlock()
+			}
+			// The span wraps Validate so its duration is the integrity overhead and
+			// the aux force-fetches (network.Forward) nest under it. Detailed tracing
+			// adds the actual mismatch values (verbatim) to pinpoint the bad field.
+			vctx, span := common.StartSpan(ctx, "Integrity.Validate",
+				trace.WithAttributes(
+					attribute.String("integrity.method", methodLower),
+					attribute.String("integrity.upstream", u.Id()),
+				))
+			vStart := time.Now()
+			res := integrity.Validate(vctx, input)
+			rq.AddIntegrityOverhead(time.Since(vStart))
+			annotateIntegritySpan(span, res)
+			// Record the rejected/recorded ("original") body on the violating
+			// attempt's span, for a by-hand sanity check. Only on a violation here:
+			// a recovering pass runs concurrently (hedged) so its IntegrityCaught
+			// flag may not be set yet — the "corrected" served body is recorded once
+			// at the request level (project.Forward) instead. The IsTracingDetailed
+			// gate short-circuits before any body copy, so it's zero-cost when
+			// tracing is off.
+			if common.IsTracingDetailed && (res.Err != nil || len(res.Recorded) > 0) {
+				if jrr, jerr := rs.JsonRpcResponse(vctx); jerr == nil && jrr != nil {
+					body := jrr.GetResultBytes()
+					if len(body) > maxTraceResponseBytes {
+						body = body[:maxTraceResponseBytes]
+						span.SetAttributes(attribute.Bool("integrity.response_truncated", true))
+					}
+					span.SetAttributes(attribute.String("integrity.response", string(body)))
+				}
+			}
+			span.End()
+			// Per-check attempts/outcomes (pass/skip/reject/reject_recoverable/record_only/reconfirmed/
+			// off) — sum = total attempts. "pass" means an actual verification ran;
+			// "skip" means the check couldn't evaluate (cold cache, missing wiring).
+			// Higher volume than the violation counter below.
+			for _, oc := range res.Outcomes {
+				telemetry.MetricIntegrityCheck.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, oc.CheckID, oc.Outcome,
+				).Inc()
+			}
+			for _, rec := range res.Recorded {
+				verdict := rec.Verdict
+				if verdict == "" {
+					verdict = "record_only"
+				}
+				msg := "integrity: recorded mismatch (served, not rejected)"
+				if verdict == "would_reject" {
+					// Observe-only: this WOULD have failed the request under
+					// enforcement. Logged distinctly so the enforcement-readiness
+					// review can find them without untangling routine record-only flags.
+					msg = "integrity: observe-only suppressed a rejection (served; enforcement would have failed this request)"
+				}
+				telemetry.MetricIntegrityViolation.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, verdict, rec.Finality,
+				).Inc()
+				log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
+					Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
+					Str("check", rec.CheckID).Str("finality", rec.Finality).Str("reason", rec.Reason).
+					Msg(msg)
+				exportIntegrityCatch(ctx, n, u, rs, methodLower, verdict, rec.CheckID, rec.Class.String(), rec.Finality, rec.Reason)
+			}
+			if res.Err != nil {
+				rejectVerdict := "reject"
+				if res.FallbackEligible {
+					rejectVerdict = "reject_recoverable"
+					// A recordOnly verdict escalated by autoCorrectWhenPossible:
+					// stash the flagged original so project.Forward can serve it
+					// if every alternative upstream is exhausted — the client
+					// must never pay an error for a mismatch the policy says to
+					// serve. The stash keeps the NEWEST eligible original (any
+					// of them satisfies the policy).
+					rq.SetIntegrityFallbackResponse(rs, res.RejectedCheckID, res.Finality, res.RejectedReason)
+				}
+				telemetry.MetricIntegrityViolation.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, rejectVerdict, res.Finality,
+				).Inc()
+				// Remember we caught a bad response (and which check); project.Forward
+				// then counts it as saved (a retry succeeded) or failed (no good
+				// response found) — see integrity_saved_total / integrity_failed_total.
+				log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
+					Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
+					Str("check", res.RejectedCheckID).Str("finality", res.Finality).
+					Str("reason", res.Err.Error()).Msg("integrity: rejected response (caught bad data)")
+				rq.MarkIntegrityCaught(res.RejectedCheckID, res.Finality)
+				exportIntegrityCatch(ctx, n, u, rs, methodLower, "reject", res.RejectedCheckID, res.RejectedClass.String(), res.Finality, res.Err.Error())
+				// A Deterministic reject is PROVABLE corruption from this upstream —
+				// feed it into misbehavior scoring so routing learns to avoid a
+				// chronically-corrupt node (an upstream once served 158k corrupt
+				// blocks while keeping a clean score, because content validation
+				// happens after the per-attempt outcome is classified).
+				// Reorg-sensitive rejects may be transient races; they don't score.
+				if res.RejectedClass == integrity.Deterministic {
+					if ht := u.Tracker(); ht != nil {
+						ht.RecordUpstreamMisbehavior(u, methodLower, rs.Finality(ctx))
+					}
+				}
+				validationErr = res.Err
+				// Mark first (SetLastValidResponse refuses marked responses — an
+				// in-flight hedge could otherwise re-store this body), then drop
+				// the LVR only if it IS this response (an unconditional clear
+				// could lose a concurrent VALID response from another attempt).
+				rs.MarkIntegrityRejected()
+				rq.ClearLastValidResponseIf(rs)
+				return rs, validationErr
+			}
+			// Feed the ChainView with this validated response: block responses
+			// populate pin+header; narrow responses (receipts/tx) pin the number→hash
+			// for FINALIZED blocks only (tip-thrash safety).
+			if isBlockMethod(methodLower) {
+				observeBlockView(ctx, view, rs, methodLower)
+			} else if isAnchoredNarrowMethod(methodLower) {
+				observeNarrowView(ctx, view, u, rs)
+			}
 		}
 	}
 
@@ -149,28 +312,6 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	switch methodLower {
 	case "eth_getlogs":
 		rs, validationErr = upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
-
-	case "eth_getblockreceipts":
-		// First check for unexpected empty (if enabled for this method)
-		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-			if validationErr != nil {
-				break
-			}
-		}
-		// Then apply directive-based validation
-		rs, validationErr = upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
-
-	case "eth_getblockbynumber", "eth_getblockbyhash":
-		// First check for unexpected empty (if enabled for this method)
-		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-			if validationErr != nil {
-				break
-			}
-		}
-		// Then apply directive-based validation
-		rs, validationErr = upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
 
 	case "trace_filter", "arbtrace_filter":
 		rs, validationErr = upstreamPostForward_trace_filter(ctx, n, u, rq, rs, re)
@@ -183,9 +324,12 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	}
 
 	// If validation failed due to content validation error (e.g. bloom inconsistency),
-	// clear the lastValidResponse so retry/consensus doesn't mistakenly use an invalid response.
+	// mark the offending response and drop it from lastValidResponse so
+	// retry/consensus doesn't mistakenly use (or a hedge re-store) an invalid
+	// response — identity-checked so a concurrent valid response isn't lost.
 	if validationErr != nil && common.HasErrorCode(validationErr, common.ErrCodeEndpointContentValidation) {
-		rq.ClearLastValidResponse()
+		rs.MarkIntegrityRejected()
+		rq.ClearLastValidResponseIf(rs)
 	}
 
 	if validationErr != nil {
@@ -213,4 +357,43 @@ func isMethodInMarkEmptyList(n common.Network, methodLower string) bool {
 		}
 	}
 	return false
+}
+
+// annotateIntegritySpan records the integrity validation outcome on the span.
+// Simple mode: the outcome, how many checks were evaluated, and the rejecting
+// check. Detailed mode additionally records, verbatim and WITHOUT redaction, the
+// reason of every violation (the actual vs expected values) plus each check's
+// outcome — enough to pinpoint exactly which field was wrong/corrupt/missing.
+func annotateIntegritySpan(span trace.Span, res integrity.Result) {
+	outcome := "pass"
+	if res.Err != nil {
+		outcome = "reject"
+	} else if len(res.Recorded) > 0 {
+		outcome = "record_only"
+	}
+	span.SetAttributes(
+		attribute.Int("integrity.checks", len(res.Outcomes)),
+		attribute.String("integrity.outcome", outcome),
+	)
+	if res.RejectedCheckID != "" {
+		span.SetAttributes(attribute.String("integrity.rejected_check", res.RejectedCheckID))
+	}
+	if !common.IsTracingDetailed {
+		return
+	}
+	for _, rec := range res.Recorded {
+		span.AddEvent("integrity.record_only", trace.WithAttributes(
+			attribute.String("check", rec.CheckID),
+			attribute.String("reason", rec.Reason),
+		))
+	}
+	if res.Err != nil {
+		span.AddEvent("integrity.reject", trace.WithAttributes(
+			attribute.String("check", res.RejectedCheckID),
+			attribute.String("reason", res.Err.Error()),
+		))
+	}
+	for _, oc := range res.Outcomes {
+		span.SetAttributes(attribute.String("integrity.check."+oc.CheckID, oc.Outcome))
+	}
 }

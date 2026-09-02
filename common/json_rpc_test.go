@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -737,4 +738,403 @@ func TestJsonRpcRequest_CloneDeepCopy(t *testing.T) {
 		assert.Equal(t, "0x1", originalMap["fromBlock"])
 		assert.Equal(t, "0x2", originalMap["toBlock"])
 	})
+}
+
+// missingDataCause mirrors the three missing-data variants
+// architecture/svm/error_normalizer.go produces, without importing that package
+// (it imports common). All three land in the same outer
+// ErrCodeEndpointMissingData bucket and differ only in the raw Solana code they
+// preserve on the wire plus their retry flags — which is exactly the situation
+// that used to make the client-visible code depend on map iteration order.
+func missingDataCause(t *testing.T, code int, retryableTowardNetwork, permanent bool) error {
+	t.Helper()
+	err := NewErrEndpointMissingData(
+		NewErrJsonRpcExceptionInternal(code, JsonRpcErrorNumber(code), fmt.Sprintf("slot unavailable (%d)", code), nil, nil),
+		nil,
+	)
+	me, ok := err.(*ErrEndpointMissingData)
+	require.True(t, ok)
+	if !retryableTowardNetwork {
+		me.WithRetryableTowardNetwork(false)
+	}
+	if permanent {
+		me.WithPermanentMissingData(true)
+	}
+	return err
+}
+
+// clientWireCode extracts the json-rpc code a client actually receives, the same
+// way erpc/http_server.go buildErrorResponseBody does.
+func clientWireCode(t *testing.T, err error) JsonRpcErrorNumber {
+	t.Helper()
+	jre := &ErrJsonRpcExceptionInternal{}
+	require.True(t, errors.As(err, &jre), "no json-rpc exception in chain: %v", err)
+	return jre.NormalizedCode()
+}
+
+func newExhausted(t *testing.T, order []string, causes map[string]error) error {
+	t.Helper()
+	m := &sync.Map{}
+	for _, id := range order {
+		m.Store(id, causes[id])
+	}
+	return NewErrUpstreamsExhausted(
+		nil, m, "prj", "svm:mainnet-beta", "getBlock",
+		time.Second, 1, 0, 0, len(order),
+	)
+}
+
+// When upstreams disagree about the same slot, the code the client sees must be
+// a pure function of the multiset of causes — never of sync.Map iteration order
+// — and it must be the RETRYABLE verdict. Answering "permanently skipped" when
+// another node merely said "not yet available" can make a consumer skip a real
+// block for good; answering "not yet" only costs a retry.
+func TestTranslateToJsonRpcException_MixedMissingDataIsDeterministic(t *testing.T) {
+	causes := map[string]error{
+		"up-a": missingDataCause(t, -32004, true, false), // tip lag, transient
+		"up-b": missingDataCause(t, -32007, true, true),  // skipped slot, swept
+		"up-c": missingDataCause(t, -32009, false, true), // long-term-storage skip, TERMINAL
+	}
+	orders := [][]string{
+		{"up-a", "up-b", "up-c"}, {"up-a", "up-c", "up-b"},
+		{"up-b", "up-a", "up-c"}, {"up-b", "up-c", "up-a"},
+		{"up-c", "up-a", "up-b"}, {"up-c", "up-b", "up-a"},
+	}
+
+	// Insertion order is permuted AND each permutation is replayed, because
+	// sync.Map.Range randomizes independently of insertion order.
+	raw := map[JsonRpcErrorNumber]int{}
+	wrapped := map[JsonRpcErrorNumber]int{}
+	for _, order := range orders {
+		for range 50 {
+			exhausted := newExhausted(t, order, causes)
+			raw[clientWireCode(t, TranslateToJsonRpcException(exhausted))]++
+			// The network retry loop hands translation an ErrFailsafeRetryExceeded
+			// wrapping the bundle; dominance must see through it.
+			retryExceeded := NewErrFailsafeRetryExceeded(ScopeNetwork, exhausted, nil)
+			wrapped[clientWireCode(t, TranslateToJsonRpcException(retryExceeded))]++
+		}
+	}
+
+	require.Len(t, raw, 1, "raw exhausted path returned varying wire codes: %v", raw)
+	require.Len(t, wrapped, 1, "retry-exceeded path returned varying wire codes: %v", wrapped)
+	for code := range raw {
+		assert.EqualValues(t, -32004, code, "retryable tip-lag must outrank the terminal -32009")
+	}
+	for code := range wrapped {
+		assert.EqualValues(t, -32004, code, "wrapper must not change the chosen representative")
+	}
+}
+
+// Retryability outranks the id tiebreaker: the terminal cause loses even when
+// its upstream sorts first alphabetically.
+func TestTranslateToJsonRpcException_RetryableBeatsTerminalRegardlessOfId(t *testing.T) {
+	causes := map[string]error{
+		"up-a": missingDataCause(t, -32009, false, true), // terminal, sorts first by id
+		"up-b": missingDataCause(t, -32004, true, false), // retryable, sorts last by id
+	}
+	for range 100 {
+		exhausted := newExhausted(t, []string{"up-a", "up-b"}, causes)
+		require.EqualValues(t, -32004, clientWireCode(t, TranslateToJsonRpcException(exhausted)))
+	}
+}
+
+// A bundle where every upstream agrees the slot is authoritatively gone must
+// still report the terminal code — the retryable preference only applies when
+// upstreams actually disagree.
+func TestTranslateToJsonRpcException_AllTerminalKeepsTerminalCode(t *testing.T) {
+	causes := map[string]error{
+		"up-a": missingDataCause(t, -32009, false, true),
+		"up-b": missingDataCause(t, -32009, false, true),
+	}
+	for range 50 {
+		exhausted := newExhausted(t, []string{"up-a", "up-b"}, causes)
+		require.EqualValues(t, -32009, clientWireCode(t, TranslateToJsonRpcException(exhausted)))
+	}
+}
+
+// serverSideCause is a retryable upstream failure that is NOT missing-data, so
+// a bundle containing it carries TWO distinct outer error codes. That is what
+// makes the dominance tally observable: with one code in play, "the dominant
+// bucket's representative" and "the first ordered cause" are the same error and
+// no assertion can tell a running scan from a skipped one.
+func serverSideCause(t *testing.T, code int) error {
+	t.Helper()
+	return NewErrEndpointServerSideException(
+		NewErrJsonRpcExceptionInternal(code, JsonRpcErrorNumber(code),
+			fmt.Sprintf("upstream internal error (%d)", code), nil, nil),
+		nil, 500,
+	)
+}
+
+// TestTranslateToJsonRpcException_RetryExceededWrapper_RunsDominanceScan is the
+// assertion that actually pins findUpstreamsExhausted, and it exists because
+// TestTranslateToJsonRpcException_MixedMissingDataIsDeterministic does not.
+//
+// The network retry loop hands translation an ErrFailsafeRetryExceeded wrapping
+// the exhausted bundle. The old `err.(*ErrUpstreamsExhausted)` type assertion
+// failed on that wrapper, so the dominance scan never ran and the wrapper fell
+// through to the generic tail. In the mixed-missing-data bundle that is
+// undetectable: every cause shares one outer code, and the wire code a client
+// reads comes from errors.As walking the joined causes in orderCauses order —
+// which lands on the same retryable representative the scan would have picked.
+// So that test stays green with the scan disabled.
+//
+// This bundle breaks the tie deliberately: the SINGLETON code sorts first by
+// upstream id, the dominant (2-of-3) code sorts after it, and all three causes
+// are retryable so ordering is decided by id alone. errors.As therefore reaches
+// the singleton -32603 first, while the dominance scan must report the -32004
+// that two of three upstreams actually agreed on. Skipping the scan changes the
+// number on the wire.
+func TestTranslateToJsonRpcException_RetryExceededWrapper_RunsDominanceScan(t *testing.T) {
+	causes := map[string]error{
+		"up-a": serverSideCause(t, -32603),               // singleton code, sorts FIRST by id
+		"up-b": missingDataCause(t, -32004, true, false), // dominant code, 2 of 3
+		"up-c": missingDataCause(t, -32004, true, false),
+	}
+	orders := [][]string{
+		{"up-a", "up-b", "up-c"}, {"up-a", "up-c", "up-b"},
+		{"up-b", "up-a", "up-c"}, {"up-b", "up-c", "up-a"},
+		{"up-c", "up-a", "up-b"}, {"up-c", "up-b", "up-a"},
+	}
+
+	raw := map[JsonRpcErrorNumber]int{}
+	wrapped := map[JsonRpcErrorNumber]int{}
+	for _, order := range orders {
+		// Replayed because sync.Map.Range randomizes independently of the
+		// insertion order being permuted here.
+		for range 50 {
+			exhausted := newExhausted(t, order, causes)
+			raw[clientWireCode(t, TranslateToJsonRpcException(exhausted))]++
+			retryExceeded := NewErrFailsafeRetryExceeded(ScopeNetwork, exhausted, nil)
+			wrapped[clientWireCode(t, TranslateToJsonRpcException(retryExceeded))]++
+		}
+	}
+
+	require.Len(t, raw, 1, "raw exhausted path returned varying wire codes: %v", raw)
+	require.Len(t, wrapped, 1, "retry-exceeded path returned varying wire codes: %v", wrapped)
+	for code := range raw {
+		require.EqualValues(t, -32004, code,
+			"the code two of three upstreams agreed on must win the dominance tally")
+	}
+	for code := range wrapped {
+		require.EqualValues(t, -32004, code,
+			"ErrFailsafeRetryExceeded defeated the dominance scan; the client got the "+
+				"first-ordered singleton cause instead of the dominant verdict")
+	}
+}
+
+// The other half of findUpstreamsExhausted's contract: it walks only the linear
+// Cause chain. An exhausted bundle reached through a MULTI-error fan-out is a
+// sibling of some unrelated failure, not the subject of the error being
+// translated, so it must not hijack the wire code — otherwise a consensus
+// dispute that happens to contain an exhausted branch would report that
+// branch's dominant cause as the client's answer.
+func TestTranslateToJsonRpcException_ExhaustedInsideFanOut_DoesNotHijack(t *testing.T) {
+	causes := map[string]error{
+		"up-b": missingDataCause(t, -32004, true, false),
+		"up-c": missingDataCause(t, -32004, true, false),
+	}
+	for range 50 {
+		exhausted := newExhausted(t, []string{"up-b", "up-c"}, causes)
+		// A StandardError whose cause is a fan-out containing the bundle. The
+		// sibling is listed FIRST so errors.As reaches its -32011 before the
+		// bundle's causes: that is what makes a wrongly-descending
+		// findUpstreamsExhausted observable, because only the dominance scan
+		// could promote the bundle's -32004 over it.
+		fanOut := NewErrEndpointServerSideException(
+			errors.Join(serverSideCause(t, -32011), exhausted),
+			nil, 500,
+		)
+		require.EqualValues(t, -32011, clientWireCode(t, TranslateToJsonRpcException(fanOut)),
+			"an exhausted bundle behind a fan-out must not supply the client-visible code")
+	}
+}
+
+// TestJsonRpcRequest_UnmarshalID_NumericPrecision pins the contract that a
+// numeric request id is either preserved exactly as an int64 or rejected — it
+// must never be silently truncated/clamped into a different internal id (see
+// issue #869). Sonic decodes JSON numbers as float64, so a naive int64(v) cast
+// silently corrupts fractional and out-of-int64-range ids.
+func TestJsonRpcRequest_UnmarshalID_NumericPrecision(t *testing.T) {
+	t.Parallel()
+
+	type tc struct {
+		name    string
+		idJSON  string      // raw JSON for the "id" field
+		wantErr bool        // true => UnmarshalJSON must reject it
+		wantID  interface{} // expected typed r.ID when wantErr is false
+	}
+
+	cases := []tc{
+		// Lossy numeric ids that previously collapsed onto a wrong int64.
+		{"fractional", "1.5", true, nil},
+		{"exp_1e20", "1e20", true, nil},
+		{"exp_1e308", "1e308", true, nil},
+		{"exp_9.3e18", "9.3e18", true, nil},
+		{"neg_exp", "-1e20", true, nil},
+		{"int64_overflow_by_one", "9223372036854775808", true, nil}, // MaxInt64 + 1
+		{"uint64_max", "18446744073709551615", true, nil},           // > MaxInt64
+		{"huge_integer", "99999999999999999999999999", true, nil},
+
+		// Valid ids that must round-trip unchanged.
+		{"small_positive", "42", false, int64(42)},
+		{"negative", "-42", false, int64(-42)},
+		{"zero", "0", false, int64(0)},
+		{"string_id", `"request-42"`, false, "request-42"},
+
+		// int64 boundaries must be representable exactly.
+		{"max_int64", "9223372036854775807", false, int64(9223372036854775807)},
+		{"min_int64", "-9223372036854775808", false, int64(-9223372036854775808)},
+
+		// Large plain integers within int64 range (e.g. nanosecond timestamps)
+		// exceed float64's 53-bit mantissa; they must survive exactly rather
+		// than being rounded via a float64 round-trip.
+		{"nanosecond_timestamp", "1755648000000000123", false, int64(1755648000000000123)},
+		{"two_pow_53_plus_one", "9007199254740993", false, int64(9007199254740993)},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":%s}`, c.idJSON)
+			var r JsonRpcRequest
+			err := r.UnmarshalJSON([]byte(body))
+
+			if c.wantErr {
+				require.Error(t, err, "lossy id %s must be rejected, not silently converted", c.idJSON)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, c.wantID, r.ID, "typed id for %s", c.idJSON)
+			// The verbatim bytes must always be preserved for the client echo.
+			require.Equal(t, c.idJSON, string(r.IDRawBytes()), "idRaw for %s", c.idJSON)
+		})
+	}
+}
+
+// cacheHashOfRequest decodes a full JSON-RPC request through the same Sonic
+// path the server uses (JsonRpcRequest.UnmarshalJSON) and returns its CacheHash.
+// Going through the real decode path is what makes these regression tests
+// meaningful: they exercise the exact Go value shapes (float64 numbers, nested
+// []interface{}, map[string]interface{}) the request pipeline produces.
+func cacheHashOfRequest(t *testing.T, rawReq string) string {
+	t.Helper()
+	var req JsonRpcRequest
+	require.NoError(t, SonicCfg.UnmarshalFromString(rawReq, &req))
+	h, err := req.CacheHash()
+	require.NoError(t, err)
+	return h
+}
+
+// cacheHashOfParams builds a request from a method and a raw JSON params array
+// and returns its CacheHash. Used for the focused structural collision cases.
+func cacheHashOfParams(t *testing.T, method, rawParams string) string {
+	t.Helper()
+	return cacheHashOfRequest(t, fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, rawParams))
+}
+
+// TestJsonRpcRequest_CacheHash_NestedTopicsCollision reproduces the first
+// collision reported in #1034: for eth_getLogs, `topics: [[A, B]]` (topic[0] is
+// "A OR B") and `topics: [A, B]` (topic[0]=A, topic[1]=B) are semantically
+// different filters, but the old flattening hasher dropped the nested-array
+// boundary and produced the same CacheHash — so the second request could be
+// multiplexed onto / served the first request's response.
+func TestJsonRpcRequest_CacheHash_NestedTopicsCollision(t *testing.T) {
+	reqA := `{
+		"jsonrpc": "2.0", "id": 1, "method": "eth_getLogs",
+		"params": [{
+			"fromBlock": "0x64", "toBlock": "0x64",
+			"address": "0x0000000000000000000000000000000000000001",
+			"topics": [[
+				"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			]]
+		}]
+	}`
+	reqB := `{
+		"jsonrpc": "2.0", "id": 1, "method": "eth_getLogs",
+		"params": [{
+			"fromBlock": "0x64", "toBlock": "0x64",
+			"address": "0x0000000000000000000000000000000000000001",
+			"topics": [
+				"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			]
+		}]
+	}`
+
+	hashA := cacheHashOfRequest(t, reqA)
+	hashB := cacheHashOfRequest(t, reqB)
+	require.NotEqual(t, hashA, hashB,
+		"nested topics [[A,B]] must not share a CacheHash with flat topics [A,B]")
+}
+
+// TestJsonRpcRequest_CacheHash_FloatPrecisionCollision reproduces the second
+// collision reported in #1034: the old hasher formatted float64 params with
+// "%f" (six decimal places), so eth_feeHistory reward percentiles [25] and
+// [25.0000001] collapsed to the byte string "25.000000" and hashed identically.
+func TestJsonRpcRequest_CacheHash_FloatPrecisionCollision(t *testing.T) {
+	hashA := cacheHashOfParams(t, "eth_feeHistory", `["0x10", "0x64", [25]]`)
+	hashB := cacheHashOfParams(t, "eth_feeHistory", `["0x10", "0x64", [25.0000001]]`)
+	require.NotEqual(t, hashA, hashB,
+		"float params 25 and 25.0000001 must not collapse to the same CacheHash")
+}
+
+// TestJsonRpcRequest_CacheHash_StructuralCollisions covers the remaining ways
+// the old ambiguous flattening could alias structurally distinct params:
+// missing element boundaries, missing type tags, and missing container
+// boundaries. Each pair is semantically different and must hash differently.
+func TestJsonRpcRequest_CacheHash_StructuralCollisions(t *testing.T) {
+	cases := []struct {
+		name    string
+		paramsA string
+		paramsB string
+	}{
+		// Array element boundaries: "ab"+"c" vs "a"+"bc" flatten to the same
+		// "abc" byte run without length/element delimiters.
+		{"array element boundaries", `["ab", "c"]`, `["a", "bc"]`},
+		// Type tags: a string that looks like another JSON scalar must not
+		// alias that scalar.
+		{"string vs number", `["1"]`, `[1]`},
+		{"string vs bool", `["true"]`, `[true]`},
+		{"string vs null", `["null"]`, `[null]`},
+		// Container boundaries: a nested array must not flatten into its parent.
+		{"nested vs flat array", `[["a", "b"]]`, `["a", "b"]`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			hashA := cacheHashOfParams(t, "eth_call", c.paramsA)
+			hashB := cacheHashOfParams(t, "eth_call", c.paramsB)
+			require.NotEqual(t, hashA, hashB,
+				"%s: %s must not share a CacheHash with %s", c.name, c.paramsA, c.paramsB)
+		})
+	}
+}
+
+// TestJsonRpcRequest_CacheHash_ObjectKeyOrderStable asserts the encoding stays
+// deterministic across JSON object key order (and Go map iteration order):
+// {"a":1,"b":2} and {"b":2,"a":1} are the same request and must hash equally.
+func TestJsonRpcRequest_CacheHash_ObjectKeyOrderStable(t *testing.T) {
+	hashA := cacheHashOfParams(t, "eth_call", `[{"a":1,"b":2}]`)
+	hashB := cacheHashOfParams(t, "eth_call", `[{"b":2,"a":1}]`)
+	require.Equal(t, hashA, hashB,
+		"object key order is not semantically meaningful and must not change the CacheHash")
+}
+
+// TestJsonRpcRequest_CacheHash_EvmHexCaseInsensitive documents the deliberate
+// decision to keep lowercasing string params: EVM hex is case-insensitive, so a
+// checksummed address and its lowercase form are the same request and should
+// share a cache entry / multiplex group. This is the EVM counterpart to SVM's
+// case-preserving key (see svmRequestKey).
+func TestJsonRpcRequest_CacheHash_EvmHexCaseInsensitive(t *testing.T) {
+	hashUpper := cacheHashOfParams(t, "eth_getBalance",
+		`["0xAbC0000000000000000000000000000000000001", "latest"]`)
+	hashLower := cacheHashOfParams(t, "eth_getBalance",
+		`["0xabc0000000000000000000000000000000000001", "latest"]`)
+	require.Equal(t, hashUpper, hashLower,
+		"EVM hex params are case-insensitive and must share a CacheHash")
 }

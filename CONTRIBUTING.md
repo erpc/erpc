@@ -15,6 +15,22 @@ Please be aware that by contributing to this project, you acknowledge that your 
 5. Push to the branch (`git push origin feature/YourFeature`).
 6. Open a Pull Request.
 
+## AI-assisted contributions
+
+Agent-written PRs are welcome — the docs here are authored agent-first, so it
+would be strange to bar agents from the code. We do ask that you say so.
+
+`.github/PULL_REQUEST_TEMPLATE.md` has an **AI assistance** section: the model,
+the harness and any skills, and whether a human read every changed line before
+you pushed. Delete the section if you wrote the change by hand.
+
+This is triage information, not a scarlet letter. Agent diffs fail differently
+from human ones — they are longer, they read as confident regardless of whether
+they are right, and the plausible-but-wrong parts look exactly like the correct
+parts. A reviewer who knows what produced a change knows where to spend the
+skepticism, and the answer to "did anyone actually read this?" is worth more
+than any other line in the PR body.
+
 ## Documentation
 
 The docs (`docs/pages/`, published at <https://docs.erpc.cloud>) are written

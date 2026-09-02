@@ -57,8 +57,8 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 							},
 						},
 						SelectionPolicy: &common.SelectionPolicyConfig{
-							EvalInterval:    common.Duration(100 * time.Millisecond),
-							EvalTimeout:     common.Duration(50 * time.Millisecond),
+							EvalInterval: common.Duration(100 * time.Millisecond),
+							EvalTimeout:  common.Duration(50 * time.Millisecond),
 							EvalFunc: `(upstreams, ctx) =>
 								upstreams.sortByScore({ errorRate: 5 })`,
 						},
@@ -130,7 +130,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
-	erpcInstance, err := NewERPC(ctx1, &lg, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx1, &lg, ssr, nil, nil, cfg)
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}

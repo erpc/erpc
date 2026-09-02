@@ -4,7 +4,7 @@
         "build": "pnpm -r build"
     },
     "devDependencies": {
-        "@biomejs/biome": "^2.5.1",
+        "@biomejs/biome": "^2.5.7",
         "typescript": "5.9.3"
     },
     "dependencies": {
@@ -15,5 +15,5 @@
     "engines": {
         "node": ">=18.14"
     },
-    "version": "0.1.1"
+    "version": "0.2.0"
 }

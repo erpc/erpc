@@ -357,7 +357,7 @@ all waiting followers with a response ID patch per follower:
   | `X-ERPC-Upstream` | if upstream response | upstream ID that served it |
   | `X-ERPC-Duration` | if response | total request duration in milliseconds |
   | `X-ERPC-Upstreams` | `executionHeaders=all` | per-attempt trace: `id=role:outcome:durationMs:won\|lost` |
-- **Request directives** — settable via HTTP header or query param (query overrides header for the non-validation directives). Header-only validation directives (`X-ERPC-Validate-*`, `X-ERPC-Enforce-*`) are not settable via query params. <SourceLink file="common/request.go" lines="38-114" />
+- **Request directives** — settable via HTTP header or query param (query overrides header). The `X-ERPC-Enforce-*` and `X-ERPC-Integrity` directives are settable via both header and query param. <SourceLink file="common/request.go" lines="38-114" />
 
   | Header | Query param | Behavior |
   |---|---|---|
@@ -370,20 +370,7 @@ all waiting followers with a response ID patch per follower:
   | `X-ERPC-Enforce-Highest-Block` | `enforce-highest-block` | Block integrity validation |
   | `X-ERPC-Enforce-GetLogs-Range` | `enforce-getlogs-range` | Enforce `eth_getLogs` block range limit |
   | `X-ERPC-Enforce-Non-Null-Tagged-Blocks` | `enforce-non-null-tagged-blocks` | Reject null on tagged block lookups |
-  | `X-ERPC-Enforce-Log-Index-Strict-Increments` | `enforce-log-index-strict-increments` | Validate log index ordering |
-  | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` | Bloom↔logs consistency check |
-  | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` | Recalculate bloom from logs |
-  | `X-ERPC-Validate-Tx-Hash-Uniqueness` | `validate-tx-hash-uniqueness` | No duplicate tx hashes in block |
-  | `X-ERPC-Validate-Transaction-Index` | `validate-transaction-index` | Validate tx positions |
-  | `X-ERPC-Receipts-Count-Exact` | `receipts-count-exact` | Expected exact receipt count |
-  | `X-ERPC-Receipts-Count-At-Least` | `receipts-count-at-least` | Minimum receipt count |
-  | `X-ERPC-Validation-Expected-Block-Hash` | `validation-expected-block-hash` | Expected block hash ground truth |
-  | `X-ERPC-Validation-Expected-Block-Number` | `validation-expected-block-number` | Expected block number ground truth |
-  | `X-ERPC-Validate-Transactions-Root` | `validate-transactions-root` | Check `transactionsRoot` consistency |
-  | `X-ERPC-Validate-Header-Field-Lengths` | `validate-header-field-lengths` | Validate EVM header field byte lengths |
-  | `X-ERPC-Validate-Transaction-Fields` | `validate-transaction-fields` | Validate transaction fields |
-  | `X-ERPC-Validate-Transaction-Block-Info` | `validate-transaction-block-info` | Validate tx block info |
-  | `X-ERPC-Validate-Log-Fields` | `validate-log-fields` | Validate log fields |
+  | `X-ERPC-Integrity` | `integrity` | Per-request data-integrity level (`off`/`intrinsic`/`corroborated`/`authoritative`) or profile name; see [Integrity checks](/config/failsafe/integrity) |
 
 - **Retry reasons** — `shouldRetryWithReason` returns one of: `execution_exception_retryable` (EVM execution exception with `retryableTowardNetwork=true`), `block_unavailable` (`ErrCodeUpstreamBlockUnavailable`, subject to `emptyResultMaxAttempts` cap), `missing_data` (`ErrCodeEndpointMissingData` unless `RetryEmpty=false`), `retryable_error` (generic `IsRetryableTowardNetwork`), `empty_result` (emptyish response with `RetryEmpty=true`), `pending_tx` (tx-lookup methods with `RetryPending=true`). Composite requests are never retried at network scope. <SourceLink file="erpc/network_executor.go" lines="374-463" />
 

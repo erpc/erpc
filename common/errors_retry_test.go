@@ -2,6 +2,7 @@ package common
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -318,6 +319,31 @@ func TestClassifySeverity_UpstreamBlockUnavailable(t *testing.T) {
 	t.Run("StaysRetryableTowardNetwork", func(t *testing.T) {
 		assert.True(t, IsRetryableTowardNetwork(err),
 			"REGRESSION GUARD: block-unavailable must still fail over across upstreams")
+	})
+}
+
+func TestClassifySeverity_EndpointMissingData(t *testing.T) {
+	// "Block not yet indexed" is an expected transient condition — same rationale as
+	// ErrUpstreamBlockUnavailable. Should be warning, not critical.
+	err := NewErrEndpointMissingData(
+		fmt.Errorf("slot 12345 not yet indexed by provider"),
+		nil,
+	)
+
+	t.Run("IsWarningSeverity", func(t *testing.T) {
+		assert.Equal(t, SeverityWarning, ClassifySeverity(err),
+			"missing-data is a self-healing indexing lag condition, not critical")
+	})
+	t.Run("StaysRetryableTowardsUpstream", func(t *testing.T) {
+		assert.True(t, IsRetryableTowardsUpstream(err),
+			"REGRESSION GUARD: 500ms indexing-lag retry depends on missing-data staying retryable")
+	})
+	t.Run("ExhaustedWrappingMissingData_IsWarningSeverity", func(t *testing.T) {
+		// ErrUpstreamsExhausted wrapping all-missing causes should also be warning
+		// (HasErrorCode recurses through errors.Join).
+		exhausted := NewErrUpstreamsExhaustedWithCause(err)
+		assert.Equal(t, SeverityWarning, ClassifySeverity(exhausted),
+			"exhausted(all-missing-data) is still a transient indexing lag, not critical")
 	})
 }
 

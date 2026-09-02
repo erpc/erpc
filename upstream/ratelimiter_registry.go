@@ -194,7 +194,7 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			r.logger.Debug().Msgf("preparing rate limiter rule: %v", rule)
 
 			budget.rulesMu.Lock()
-			budget.Rules = append(budget.Rules, &RateLimitRule{Config: rule})
+			budget.Rules = append(budget.Rules, &RateLimitRule{Config: rule, key: ruleKeyFor(rule)})
 			budget.rulesMu.Unlock()
 
 			scope := []string{}

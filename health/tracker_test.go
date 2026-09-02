@@ -445,6 +445,43 @@ func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
 	assert.Equal(t, int64(0), metrics2Updated.FinalizationLag.Load(), "upstream2 should now be caught up in finalization")
 }
 
+// TestWildcardLagMirroredForPeerUpstreams is the regression test for the
+// incident where blockNumberLagAbove silently never fired for CB-open upstreams.
+//
+// The scenario: ups2 is lagging far behind ups1. ups2's own poller never fires
+// (simulating a CB-open upstream). Only ups1 calls SetLatestBlockNumber. The fix
+// ensures updateNetworkLagMetrics mirrors the computed lag onto {ups2,"*",All} so
+// evalScope:network policies read the correct non-zero value.
+func TestWildcardLagMirroredForPeerUpstreams(t *testing.T) {
+	tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+	tracker.Bootstrap(context.Background())
+
+	ups1 := common.NewFakeUpstream("upstream1")
+	ups2 := common.NewFakeUpstream("upstream2")
+
+	// Register both upstreams with traffic so their per-method buckets exist.
+	tracker.RecordUpstreamRequest(ups1, "eth_blockNumber", common.DataFinalityStateUnknown)
+	tracker.RecordUpstreamRequest(ups2, "eth_blockNumber", common.DataFinalityStateUnknown)
+
+	// ups2 reports a stale block (simulating its last report before going CB-open).
+	// After this, ups2's own poller never fires again.
+	tracker.SetLatestBlockNumber(ups2, 900, 0)
+
+	// ups1 advances the tip to 1000. updateNetworkLagMetrics now computes
+	// ups2's lag as 100 and must mirror it onto {ups2,"*",All} — the peer-write
+	// path that was previously missing.
+	tracker.SetLatestBlockNumber(ups1, 1000, 0)
+
+	// evalScope:network reads {ups, "*", All}.BlockHeadLag
+	ups2WildcardLag := tracker.GetUpstreamMethodMetrics(ups2, "*", common.DataFinalityStateAll).BlockHeadLag.Load()
+	require.EqualValues(t, 100, ups2WildcardLag,
+		"peer upstream lag must reach {ups,\"*\",All} via updateNetworkLagMetrics even without its own poller firing")
+
+	// ups1 is at the tip — its wildcard lag must be 0.
+	ups1WildcardLag := tracker.GetUpstreamMethodMetrics(ups1, "*", common.DataFinalityStateAll).BlockHeadLag.Load()
+	require.EqualValues(t, 0, ups1WildcardLag)
+}
+
 func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 	t.Run("SetsTimestampAndRecordsDistance", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
@@ -882,6 +919,45 @@ func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
 		q := mt.ResponseQuantiles.GetQuantile(0.70)
 		assert.Greater(t, q.Seconds(), 0.0, "execution exception latency should be in quantile")
 	})
+}
+
+// The ledger fans one misbehavior across several in-process rollup buckets so
+// scoring can read it per-method, per-finality and in aggregate. Prometheus does
+// its OWN aggregation, so the exported counter must be incremented exactly once
+// per event — emitting inside the rollup loops would silently multiply every
+// misbehavior by the fan-out (2x with finality tracking off, 4x with it on) and
+// every rate built on it would be wrong by that factor.
+func TestRecordUpstreamMisbehavior_ExportsExactlyOnePerEvent(t *testing.T) {
+	tracker := NewTracker(&log.Logger, "test-misbehavior-export", 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups := common.NewFakeUpstream("upstream-a")
+	labels := []string{
+		"test-misbehavior-export",
+		ups.VendorName(),
+		ups.NetworkLabel(),
+		ups.Id(),
+		"eth_getBlockByHash",
+		common.DataFinalityStateFinalized.String(),
+	}
+	ctr := telemetry.CounterHandle(telemetry.MetricUpstreamMisbehaviorTotal, labels...)
+	before := promUtil.ToFloat64(ctr)
+
+	const events = 7
+	for i := 0; i < events; i++ {
+		tracker.RecordUpstreamMisbehavior(ups, "eth_getBlockByHash", common.DataFinalityStateFinalized)
+	}
+
+	assert.Equal(t, float64(events), promUtil.ToFloat64(ctr)-before,
+		"one recorded misbehavior must export exactly one increment, regardless of rollup fan-out")
+
+	// And the in-process ledger scoring reads still sees the same events, so the
+	// export is additive rather than a replacement.
+	mt := tracker.GetUpstreamMethodMetrics(ups, "eth_getBlockByHash", common.DataFinalityStateAll)
+	require.NotNil(t, mt)
+	assert.Equal(t, int64(events), mt.MisbehaviorsTotal.Load())
 }
 
 func TestRecordUpstreamMisbehavior_WrongEmpty(t *testing.T) {

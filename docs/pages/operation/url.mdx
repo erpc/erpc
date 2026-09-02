@@ -90,9 +90,11 @@ https://docs.erpc.cloud/operation/url.llms.txt`}
 
 Routing happens in two phases. First, the server evaluates `server.aliasing.rules` against the stripped `Host` header (port removed). The first matching rule wins and pre-populates up to all three of `(projectId, architecture, chainId)`. Then `parseUrlPath` reads the remaining URL path segments and fills in any fields not yet set by domain aliasing.
 
-After path parsing, `common.IsValidArchitecture` validates the architecture string. Currently only `"evm"` is valid; any other value — including an empty string when chainId is present — returns HTTP 400. If `projectId` is still empty after all resolution, the request is also rejected with 400.
+After path parsing, `common.IsValidArchitecture` validates the architecture string. `"evm"` and `"svm"` are both valid; any other value — including an empty string when chainId is present — returns HTTP 400. If `projectId` is still empty after all resolution, the request is also rejected with 400.
 
-For POST requests where `architecture` and `chainId` are still unknown after the path, the server inspects the JSON-RPC body for a top-level `"networkId"` field of the form `"evm:42161"`. This allows project-level requests (`POST /main`) to self-describe their network inline without a URL change.
+**The third segment is not always a numeric chain id.** It is a generic identifier slot whose meaning depends on the architecture: for EVM it is the numeric chain id (`/main/evm/42161`), and for SVM it is the cluster — `/main/svm/mainnet-beta` for Solana, or `<chain>:<cluster>` for a fork, e.g. `/main/svm/fogo:mainnet`. The colon inside a fork's identifier is carried intact in that one segment and reassembled as `svm:fogo:mainnet`.
+
+For POST requests where `architecture` and `chainId` are still unknown after the path, the server inspects the JSON-RPC body for a top-level `"networkId"` field — `"evm:42161"`, `"svm:mainnet-beta"`, or `"svm:fogo:mainnet"`. The split is `SplitN(networkId, ":", 2)`, so a fork's `chain:cluster` tail stays intact as the chainId component. This allows project-level requests (`POST /main`) to self-describe their network inline without a URL change.
 
 Any request whose HTTP method is neither POST nor OPTIONS has `isHealthCheck` forced to `true` after path parsing — meaning `GET /main/evm/1` silently becomes a network-scoped healthcheck rather than an error. Architecture validation still runs first; a GET to an invalid architecture path returns 400, not 200.
 
@@ -268,7 +270,8 @@ Content-Type: application/json
 - Batch detection fires on `body[0] == '['` — no Content-Type gate, no pre-parse. A body like `[invalid json` is detected as batch then fails unmarshalling with a 400. [<SourceLink file="erpc/http_server.go" lines="405-409" />]
 - Request gzip decompression is unconditional: `Content-Encoding: gzip` always triggers decompression regardless of the `server.enableGzip` setting (which controls response compression only). Corrupt gzip → 400 `ErrInvalidRequest` immediately. [<SourceLink file="erpc/http_server.go" lines="349-370" />]
 - `MaxHeaderBytes` is `1 MiB` on both IPv4 and IPv6 servers; requests with oversized headers are rejected at the Go net/http layer with HTTP 431 before any eRPC handler runs. Body size has no configured cap. [<SourceLink file="erpc/http_server.go" lines="186" />]
-- gRPC dispatch (`Content-Type: application/grpc` + HTTP/2) happens before URL parsing — only when `grpcSharesHttpV4` is enabled; IPv6 never gets gRPC sharing. [<SourceLink file="erpc/http_server.go" lines="161-177" />]
+- gRPC dispatch (`Content-Type: application/grpc` + HTTP/2) happens before URL parsing — only when `grpcSharesHttpV4` is enabled; IPv6 never gets gRPC sharing. [<SourceLink file="erpc/http_server.go" lines="162-175" />]
+- Cleartext HTTP/2 (h2c) is served on the non-TLS IPv4 listener regardless of whether gRPC sharing is enabled: the handler is wrapped with `h2c.NewHandler` whenever TLS is disabled, so HTTP/2 prior-knowledge clients work out of the box. With TLS, HTTP/2 is negotiated via ALPN instead. [<SourceLink file="erpc/http_server.go" lines="177-184" />]
 - The admin endpoint is exactly `POST /admin` or `OPTIONS /admin`; `GET /admin` is a healthcheck; `/admin/foo` fails with a URL parse error. [<SourceLink file="erpc/http_server.go" lines="836-838" />]
 
 ### Best practices
@@ -297,7 +300,8 @@ Content-Type: application/json
 13. **Body size has no configured cap.** The 1 MiB limit is headers only. Arbitrarily large bodies are read into memory. Apply body-size limits at the reverse-proxy layer. Source: <SourceLink file="erpc/http_server.go" lines="186" />, <SourceLink file="erpc/http_server.go" lines="374" />
 14. **Unknown network may succeed on first call for provider-based projects.** Networks are lazily initialized. `ErrNetworkNotFound` (HTTP 404) is returned only when resolution definitively fails. Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />
 15. **`serveArchitecture: "evm"` with no `serveChain` lets callers omit `evm` from the path.** With a domain alias pre-selecting architecture, the URL becomes `POST /<project>/<chainId>` — no need to include `evm` in every call. Source: <SourceLink file="erpc/http_server.go" lines="963-983" />
-16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="161-177" />
+16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="162-175" />
+17. **Cleartext HTTP/2 (h2c) is IPv4-only.** The non-TLS IPv4 handler is wrapped with `h2c.NewHandler` whenever TLS is disabled, independent of gRPC. The IPv6 listener is not wrapped, so h2c prior-knowledge requests on a non-TLS IPv6 listener are not supported. Source: <SourceLink file="erpc/http_server.go" lines="177-184" />
 
 ### Observability
 

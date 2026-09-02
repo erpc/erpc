@@ -8,7 +8,7 @@
 [![Contributors](https://img.shields.io/github/contributors/erpc/erpc?style=flat&colorA=000000&colorB=000000)](https://github.com/erpc/erpc/graphs/contributors)
 [![Telegram](https://img.shields.io/endpoint?logo=telegram&url=https%3A%2F%2Ftg.sumanjay.workers.dev%2Ferpc_cloud&style=flat&colorA=000000&colorB=000000&label=telegram)](https://t.me/erpc_cloud)
 
-eRPC is a fault-tolerant EVM RPC proxy with **re-org-aware permanent caching**. It sits in front of all your upstreams — managed providers and your own nodes — behind a single endpoint, and handles failover, retries, caching, and multi-chain routing automatically. Built for read-heavy workloads such as data indexing and high-load frontends.
+eRPC is a fault-tolerant RPC proxy with **re-org-aware permanent caching**, serving both EVM chains and SVM (Solana) clusters. It sits in front of all your upstreams — managed providers and your own nodes — behind a single endpoint, and handles failover, retries, caching, and multi-chain routing automatically. Built for read-heavy workloads such as data indexing and high-load frontends.
 
 <img src="./assets/hla-diagram.svg" alt="Architecture Diagram" width="100%" />
 
@@ -16,7 +16,7 @@ eRPC is a fault-tolerant EVM RPC proxy with **re-org-aware permanent caching**. 
 
 ### Quick Start
 
-With the below setup, you get immediate access to 2,000+ chains and 4,000+ public free EVM RPC endpoints.
+With the below setup, you get immediate access to 2,000+ EVM chains and 4,000+ public free EVM RPC endpoints. SVM (Solana) networks are configured explicitly — see below.
 
 #### Run an eRPC instance:
 
@@ -49,6 +49,31 @@ curl 'http://localhost:4000/main/evm/42161' \
 }'
 ```
 
+#### Send a request against a Solana cluster (SVM):
+
+```bash
+curl 'http://localhost:4000/main/svm/mainnet-beta' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "getSlot",
+    "params": [{"commitment":"confirmed"}],
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+```
+
+SVM networks identify themselves as `svm:<cluster>` (e.g. `svm:mainnet-beta`, `svm:devnet`, `svm:testnet`), or `svm:<chain>:<cluster>` for Solana forks and variants such as Fogo and Eclipse (e.g. `svm:fogo:mainnet`) — so several SVM chains can be hosted side by side without network-id or cache-key collisions.
+
+The same failsafe, routing, and consensus machinery EVM uses applies to SVM, with Solana-specific behavior wired in automatically:
+
+- **Commitment-aware finality.** A network-level `svm.commitment` is injected per method at the param position Solana expects, so every upstream answers at the same level. Cache finality follows Solana's rules rather than EVM's: `commitment: finalized` is the latest *rooted* slot — a head that advances every ~400ms — so only slot-pinned reads (`getBlock`, `getTransaction`) at a finalized commitment are cached as immutable; moving-head state reads (`getBalance`, `getAccountInfo`, …) are realtime.
+- **A dedicated cache block.** SVM caching is configured under `database.svmJsonRpcCache` (same schema as `evmJsonRpcCache`, and both may share one backend). SVM cache keys are case-preserving, because base58 pubkeys and signatures are case-sensitive.
+- **Write guards.** `sendTransaction`, `sendRawTransaction`, and `requestAirdrop` are never auto-dispatched to a second upstream by retry, hedge, or probe mirroring. Note the asymmetry with EVM, where `eth_sendRawTransaction` *is* hedgeable.
+- **A per-upstream slot poller.** Tracks processed and finalized slots plus the blockstore-ingestion watermark; an upstream that fails `getHealth` or ingests shreds without replaying them is cordoned out of routing until it recovers.
+- **Native error passthrough.** Solana JSON-RPC codes and `error.data` reach the client unchanged — notably `-32002 SendTransactionPreflightFailure` with its `RpcSimulateTransactionResult` — so `@solana/web3.js` and `@solana/kit` keep working.
+
+See `erpc.svm.example.yaml` for a full configuration, and the [SVM docs](https://docs.erpc.cloud/reference/svm/commitment) for details.
+
 #### Next Steps:
 This setup is ideal for development and testing purposes. For production environments, we recommend extending your configuration with dedicated premium providers and advanced failover settings. See our [Configuration Guide](https://docs.erpc.cloud/config/example) for more details.
 
@@ -58,7 +83,7 @@ This setup is ideal for development and testing purposes. For production environ
 
 - **Retries, failover, circuit breakers & hedged requests**: every call is routed to the fastest healthy upstream, automatically.
 - **Re-org-aware permanent cache**: serve reads from [cache](https://docs.erpc.cloud/operation/cache), stay consistent across chain reorgs, and eliminate redundant upstream calls.
-- **Automatic method routing**: no need to track which provider supports which `eth_*` method.
+- **Automatic method routing**: no need to track which provider supports which `eth_*` (EVM) or Solana method.
 - **Configurable rate limits**: set hourly or daily [rate limits](https://docs.erpc.cloud/config/rate-limiters) and compute-unit budgets per upstream to control usage and cost.
 - **Selection policies**: [influence which upstreams serve traffic](https://docs.erpc.cloud/config/projects/selection-policies) — e.g. cheap-first until error-rate or block-lag thresholds are crossed.
 - **Consensus & data integrity**: [compare results across upstreams](https://docs.erpc.cloud/config/failsafe/integrity), enforce consensus, and penalize nodes that disagree or return stale data.

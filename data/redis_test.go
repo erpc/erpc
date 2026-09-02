@@ -932,8 +932,6 @@ func TestRedisIAMAuthValidation(t *testing.T) {
 		require.ErrorContains(t, cfg.Validate(), "cacheName")
 	})
 
-
-
 	t.Run("missing userID", func(t *testing.T) {
 		cfg := base()
 		cfg.IAMAuth.UserID = ""
@@ -958,4 +956,3 @@ func TestRedisIAMAuthValidation(t *testing.T) {
 		require.ErrorContains(t, cfg.Validate(), "auth.mode")
 	})
 }
-

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -168,15 +170,18 @@ type alchemyNetworkConfigResponse struct {
 }
 
 // AlchemyVendor uses RemoteDataCache for lock-free, async-refresh access to
-// the network list. See remote_cache.go for the request-path safety rule.
+// the network list AND the per-method credit-unit table. See remote_cache.go
+// for the request-path safety rule.
 type AlchemyVendor struct {
 	common.Vendor
-	cache *RemoteDataCache[map[int64]string]
+	cache   *RemoteDataCache[map[int64]string]
+	cuCache *RemoteDataCache[map[string]int64]
 }
 
 func CreateAlchemyVendor() common.Vendor {
 	return &AlchemyVendor{
-		cache: NewRemoteDataCache[map[int64]string]("alchemy"),
+		cache:   NewRemoteDataCache[map[int64]string]("alchemy"),
+		cuCache: NewRemoteDataCache[map[string]int64]("alchemy-cu"),
 	}
 }
 
@@ -184,11 +189,13 @@ func (v *AlchemyVendor) Name() string {
 	return "alchemy"
 }
 
-// alchemyCreditUnits is Alchemy's publicly documented per-method
-// compute-unit (CU) cost table
-// (https://www.alchemy.com/docs/reference/compute-unit-costs, 2026-07-10).
-// Only commonly relayed EVM methods are listed; "*" approximates the modal
-// standard cost for anything unlisted. Values are Alchemy CUs, not money.
+// alchemyCreditUnits is the built-in FALLBACK per-method compute-unit (CU)
+// cost table (https://www.alchemy.com/docs/reference/compute-unit-costs,
+// 2026-07-10). At runtime the vendor prefers the live table fetched from
+// Alchemy's docs (see creditUnitsTable); this map is used on cold start and
+// whenever that fetch fails. Only commonly relayed EVM methods are listed;
+// "*" approximates the modal standard cost for anything unlisted. Values
+// are Alchemy CUs, not money.
 var alchemyCreditUnits = map[string]int64{
 	"*":                         20,
 	"eth_blockNumber":           10,
@@ -214,21 +221,166 @@ var alchemyCreditUnits = map[string]int64{
 	"trace_block":               20,
 }
 
-// CreditUnits implements common.CreditUnitsProvider: Alchemy's documented
-// CU table, overridable per method via `providers[].settings.creditUnits`.
+// DefaultAlchemyCreditUnitsRecheckInterval is how long a fetched CU table is
+// treated as fresh before an async refresh is triggered. Alchemy's published
+// costs change rarely, so a long interval keeps the docs endpoint essentially
+// untouched while still tracking pricing changes without a redeploy.
+const DefaultAlchemyCreditUnitsRecheckInterval = 7 * 24 * time.Hour
+
+// alchemyCreditUnitsURL is Alchemy's compute-unit-costs docs page served as
+// Markdown (the docs platform returns text/markdown for the `.md` suffix): a
+// stable, unauthenticated artifact of the per-method CU table. It is the
+// closest thing Alchemy offers to a machine-readable CU API — there is no
+// JSON endpoint. Declared as a var so tests can point it at a mock server.
+var alchemyCreditUnitsURL = "https://www.alchemy.com/docs/reference/compute-unit-costs.md" // #nosec G101 -- public docs URL, not a credential (gosec matches "Credit" in the name)
+
+// alchemyCreditUnitsSections is the allowlist of Markdown H1 sections in
+// compute-unit-costs.md whose pipe tables carry the generic EVM JSON-RPC
+// method costs eRPC relays. Chain- and product-specific sections (Solana,
+// NFT/Token/Prices APIs, per-chain overrides) are ignored so their method
+// names can't shadow the standard EVM costs.
+var alchemyCreditUnitsSections = map[string]bool{
+	"EVM: Standard JSON-RPC Methods": true,
+	"Debug API":                      true,
+	"Trace API":                      true,
+}
+
+// alchemyMethodRe matches a JSON-RPC method name (the first cell of a CU
+// table row), rejecting the "Method" header and "---" separator rows.
+var alchemyMethodRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]+$`)
+
+// CreditUnits implements common.CreditUnitsProvider: Alchemy's CU table
+// (live-fetched from the docs, built-in fallback), overridable per method
+// via `providers[].settings.creditUnits`.
 func (v *AlchemyVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
 	method, _ := req.Method()
 	var override map[string]int64
 	if upstream != nil {
 		override = upstream.CreditUnits
 	}
-	return common.ResolveCreditUnits(alchemyCreditUnits, override, method)
+	return common.ResolveCreditUnits(v.creditUnitsTable(), override, method)
+}
+
+// creditUnitsTable returns Alchemy's effective per-method CU table: the table
+// fetched from compute-unit-costs.md (refreshed roughly weekly) when
+// available, otherwise the built-in alchemyCreditUnits fallback. Hot-path
+// safe — a lock-free Lookup plus a non-blocking, single-flight async refresh
+// on staleness (see remote_cache.go). Cold start and every fetch failure
+// transparently use the built-in map.
+func (v *AlchemyVendor) creditUnitsTable() map[string]int64 {
+	if v == nil || v.cuCache == nil {
+		return alchemyCreditUnits
+	}
+	// Pure, lock-free read — the request hot path never triggers I/O. Any
+	// snapshot (fresh or stale) is preferred; the refresh is kicked off from
+	// the vendor lifecycle (refreshCreditUnitsAsync). Cold cache → built-in.
+	table, _ := v.cuCache.Lookup(alchemyCreditUnitsURL, DefaultAlchemyCreditUnitsRecheckInterval)
+	if table == nil {
+		return alchemyCreditUnits
+	}
+	return table
+}
+
+// refreshCreditUnitsAsync kicks off a non-blocking, single-flight refresh of
+// the CU table when the cached snapshot is missing or older than the recheck
+// interval. Called from SupportsNetwork / GenerateConfigs — the same
+// hot-path-safe lifecycle points that refresh the chain list — so the table
+// tracks Alchemy's pricing without a redeploy and without ever fetching from
+// the request hot path (see remote_cache.go for the safety rule).
+func (v *AlchemyVendor) refreshCreditUnitsAsync(logger *zerolog.Logger) {
+	if v == nil || v.cuCache == nil {
+		return
+	}
+	if _, fresh := v.cuCache.Lookup(alchemyCreditUnitsURL, DefaultAlchemyCreditUnitsRecheckInterval); fresh {
+		return
+	}
+	v.cuCache.TriggerAsyncRefresh(logger, alchemyCreditUnitsURL, fetchAlchemyCreditUnits)
+}
+
+// fetchAlchemyCreditUnits fetches and parses the CU table from
+// alchemyCreditUnitsURL, merged over the built-in table so a partial parse
+// (or a docs format change) never loses coverage or the "*" fallback. Run in
+// the RemoteDataCache refresh goroutine with a self-contained timeout ctx.
+func fetchAlchemyCreditUnits(ctx context.Context) (map[string]int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, alchemyCreditUnitsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/markdown, text/plain")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("alchemy compute-unit-costs returned status %d", resp.StatusCode)
+	}
+
+	// The doc is ~70 KB; cap the read so a misbehaving endpoint can't stream
+	// unbounded data into memory.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	parsed := parseAlchemyCreditUnits(string(body))
+	if len(parsed) == 0 {
+		return nil, fmt.Errorf("alchemy compute-unit-costs: no methods parsed (docs format may have changed)")
+	}
+
+	// Built-in as base (keeps "*" and any method the parse missed); the
+	// fetched values win on conflict.
+	merged := make(map[string]int64, len(alchemyCreditUnits)+len(parsed))
+	for k, cu := range alchemyCreditUnits {
+		merged[k] = cu
+	}
+	for k, cu := range parsed {
+		merged[k] = cu
+	}
+	return merged, nil
+}
+
+// parseAlchemyCreditUnits extracts method→CU from the allowlisted EVM
+// sections of the compute-unit-costs Markdown. Each section is a
+// GitHub-flavored pipe table `| Method | CU | Throughput CU |`; rows whose CU
+// cell is blank or non-numeric (e.g. throughput-only rows) are skipped.
+func parseAlchemyCreditUnits(md string) map[string]int64 {
+	out := map[string]int64{}
+	section := ""
+	for _, line := range strings.Split(md, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			section = strings.TrimSpace(strings.TrimLeft(line, "# "))
+			continue
+		}
+		if !alchemyCreditUnitsSections[section] || !strings.HasPrefix(line, "|") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		if len(cells) < 2 {
+			continue
+		}
+		method := strings.Trim(strings.TrimSpace(cells[0]), "`*")
+		if !alchemyMethodRe.MatchString(method) {
+			continue // header ("Method") / separator ("---") / junk
+		}
+		cu, err := strconv.ParseInt(strings.TrimSpace(cells[1]), 10, 64)
+		if err != nil {
+			continue // blank / non-numeric CU cell
+		}
+		out[method] = cu
+	}
+	return out
 }
 
 func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
+	// Refresh the CU table off the hot path, alongside chain-list discovery.
+	v.refreshCreditUnitsAsync(logger)
 
 	chainID, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
@@ -258,6 +410,9 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
+	// Fetch the live CU table once per upstream at bootstrap (off the hot
+	// path); CreditUnits then reads it lock-free with a built-in fallback.
+	v.refreshCreditUnitsAsync(logger)
 
 	if upstream.Endpoint == "" {
 		apiKey, ok := settings["apiKey"].(string)
@@ -307,7 +462,16 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 
 	upstream.VendorName = v.Name()
 
-	logger.Debug().Int64("chainId", upstream.Evm.ChainId).Interface("upstream", upstream).Interface("settings", map[string]interface{}{
+	// upstream.Evm is nil for a non-EVM upstream. Alchemy sells Solana endpoints,
+	// so a user-supplied `https://solana-mainnet.g.alchemy.com/v2/KEY` with
+	// `type: svm` reaches here having skipped the endpoint-derivation branch
+	// above (which is the only thing that requires Evm). zerolog evaluates its
+	// arguments eagerly, so an unguarded deref panicked at ANY log level.
+	logEvt := logger.Debug()
+	if upstream.Evm != nil {
+		logEvt = logEvt.Int64("chainId", upstream.Evm.ChainId)
+	}
+	logEvt.Interface("upstream", upstream).Interface("settings", map[string]interface{}{
 		"recheckInterval": settings["recheckInterval"],
 	}).Msg("generated upstream from alchemy provider")
 

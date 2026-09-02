@@ -54,16 +54,15 @@ func buildBenchBudget(numRules int, perUser, perIP, perNetwork bool) *RateLimite
 
 	rules := make([]*RateLimitRule, numRules)
 	for i := 0; i < numRules; i++ {
-		rules[i] = &RateLimitRule{
-			Config: &common.RateLimitRuleConfig{
-				Method:     "eth_*", // Wildcard to match
-				MaxCount:   1_000_000_000,
-				Period:     common.RateLimitPeriodSecond,
-				PerUser:    perUser,
-				PerIP:      perIP,
-				PerNetwork: perNetwork,
-			},
+		cfg := &common.RateLimitRuleConfig{
+			Method:     "eth_*", // Wildcard to match
+			MaxCount:   1_000_000_000,
+			Period:     common.RateLimitPeriodSecond,
+			PerUser:    perUser,
+			PerIP:      perIP,
+			PerNetwork: perNetwork,
 		}
+		rules[i] = &RateLimitRule{Config: cfg, key: ruleKeyFor(cfg)}
 	}
 
 	logger := zerolog.Nop()
@@ -201,13 +200,12 @@ func buildBenchBudgetWithDelay(numRules int, delay time.Duration) *RateLimiterBu
 
 	rules := make([]*RateLimitRule, numRules)
 	for i := 0; i < numRules; i++ {
-		rules[i] = &RateLimitRule{
-			Config: &common.RateLimitRuleConfig{
-				Method:   "eth_*",
-				MaxCount: 1_000_000_000,
-				Period:   common.RateLimitPeriodSecond,
-			},
+		cfg := &common.RateLimitRuleConfig{
+			Method:   "eth_*",
+			MaxCount: 1_000_000_000,
+			Period:   common.RateLimitPeriodSecond,
 		}
+		rules[i] = &RateLimitRule{Config: cfg, key: ruleKeyFor(cfg)}
 	}
 
 	logger := zerolog.Nop()

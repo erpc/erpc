@@ -183,6 +183,49 @@ func TestEvmJsonRpcCache_Set_UseUpstreamGating(t *testing.T) {
 	mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
 }
 
+// Non-canonical method casings must get the same cache treatment as canonical
+// casing: hook dispatch treats method names case-insensitively, so the
+// per-method config lookup (block-ref extraction + finality resolution) does
+// too (common.FindCacheMethodConfig). Before that fix, ETH_GETTRANSACTIONRECEIPT
+// resolved no method config, extracted no block ref, and was never cached.
+// The policy uses method "*" on purpose: operator-facing glob matching
+// (cache policies, ignoreMethods, auth) stays case-sensitive by design —
+// this test pins the config-lookup path only. Cache keys still embed the
+// verbatim method string, so different casings cache under different keys.
+func TestEvmJsonRpcCache_Set_MethodCasingEquivalence(t *testing.T) {
+	for _, method := range []string{"eth_getTransactionReceipt", "ETH_GETTRANSACTIONRECEIPT", "eth_GetTransactionReceipt"} {
+		t.Run(method, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"` + method + `","params":["0xabc"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			req.SetCacheDal(cache)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(ctx, resp)
+
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "evm:123",
+				Method:   "*",
+				Finality: common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+			require.NoError(t, err)
+			cache.SetPolicies([]*data.CachePolicy{policy})
+
+			mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			err = cache.Set(context.Background(), req, resp)
+			assert.NoError(t, err)
+			// Identical cache decision for every casing: the block ref comes from
+			// the response blockNumber (0x2, finalized), so the same partition key
+			// is derived and the finalized-only policy matches.
+			mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
 func TestEvmJsonRpcCache_Set(t *testing.T) {
 	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

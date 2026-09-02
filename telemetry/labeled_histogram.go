@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -26,48 +25,15 @@ var (
 // SetHistogramLabelFilter installs a filter used by subsequent NewLabeledHistogram
 // calls. Typically invoked once at startup from config, before SetHistogramBuckets.
 func SetHistogramLabelFilter(dropLabels []string, keepOverrides map[string][]string) {
-	f := &HistogramLabelFilter{
-		drop:          make(map[string]struct{}, len(dropLabels)),
-		keepOverrides: make(map[string]map[string]struct{}, len(keepOverrides)),
-	}
-	for _, l := range dropLabels {
-		l = strings.TrimSpace(l)
-		if l != "" {
-			f.drop[l] = struct{}{}
-		}
-	}
-	for metricName, keep := range keepOverrides {
-		metricName = strings.TrimSpace(metricName)
-		if metricName == "" {
-			continue
-		}
-		set := make(map[string]struct{}, len(keep))
-		for _, l := range keep {
-			l = strings.TrimSpace(l)
-			if l != "" {
-				set[l] = struct{}{}
-			}
-		}
-		f.keepOverrides[metricName] = set
-	}
+	drop, overrides := buildLabelSets(dropLabels, keepOverrides)
 	filterMu.Lock()
-	currentFilter = f
+	currentFilter = &HistogramLabelFilter{drop: drop, keepOverrides: overrides}
 	filterMu.Unlock()
 }
 
 // activeIndices returns the positions from `schema` retained under the filter.
 func (f *HistogramLabelFilter) activeIndices(metricName string, schema []string) []int {
-	overrides := f.keepOverrides[metricName]
-	out := make([]int, 0, len(schema))
-	for i, l := range schema {
-		if _, dropped := f.drop[l]; dropped {
-			if _, kept := overrides[l]; !kept {
-				continue
-			}
-		}
-		out = append(out, i)
-	}
-	return out
+	return activeIndicesFor(f.drop, f.keepOverrides, metricName, schema)
 }
 
 // LabeledHistogram wraps a prometheus.HistogramVec whose label set is the

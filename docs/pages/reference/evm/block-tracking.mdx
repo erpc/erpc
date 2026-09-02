@@ -93,6 +93,25 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 
 Each upstream gets its own `EvmStatePoller` background goroutine. On each tick of `statePollerInterval` (default 30 s), three concurrent goroutines fetch the latest block, finalized block, and syncing state. A synchronous `Poll()` runs once at bootstrap time to seed the upstream before any request traffic arrives.
 
+**Routing the `safe` tag.** On op-stack chains, `safe` is node-relative because each verifier chooses its own L1 confirmation depth. If providers in one pool use different depths, they can honestly return different blocks for the same tag. Set `evm.safeBlockSource` to an upstream id/tag selector when one pool should define that answer:
+
+```yaml
+networks:
+  - architecture: evm
+    evm:
+      chainId: 8453
+      safeBlockSource: "tier:trusted"
+
+upstreams:
+  - id: node-a
+    tags: ["tier:trusted"]
+  - id: node-b
+    tags: ["tier:trusted"]
+  - id: provider-a
+```
+
+eRPC keeps the `safe` tag verbatim and routes standard block-tagged JSON-RPC requests only to matching upstreams, so the selected pool defines both block height and hash. Cache reads are skipped because an older entry may have been produced by a different source. Operator routing overrides client `use-upstream`; retry and consensus still run inside the selected JSON-RPC pool, so configure participant thresholds accordingly. `eth_query*` and direct gRPC Query APIs retain their existing behavior and are outside this option's scope. If no source is configured or inherited, routing is unchanged. If trusted sources are unavailable, prefer `finalized` for a provider-independent answer.
+
 **Debounce resolution.** To avoid redundant RPC calls, each fetch is gated by `resolveDebounce()`, which picks the first applicable value from:
 1. `upstream.evm.statePollerDebounce` — hard per-upstream override; short-circuits all other steps.
 2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — EMA-derived; active after ≥3 samples.
@@ -121,7 +140,7 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 
 **Selector-scoped served tip.** When a `use-upstream` selector is present, `tipCandidateUpstreams` narrows to the matching upstreams. A "simple group selector" is a single glob pattern (optionally negated with `!` at position 0), containing no whitespace or `()|&,` characters, of length ≤128, that matches 2–(N−1) upstreams. For such selectors, a per-group `servedTipPartition` is lazily materialized: `partitionKeyFor` resolves the matched upstream ID set, sorts it, SHA-256 hashes the sorted `\0`-joined IDs, truncates to 8 bytes, and encodes as hex (key = `"grp:" + hex`). Equivalent selectors (same matched set) share one partition. Up to 16 partitions are allowed per network; beyond this, extra selectors fall back to stateless cluster-min. Boolean-expression selectors (containing `|`, `&`, `(`, `)`) always use the stateless path. Source: [`erpc/networks.go:L466-L506`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L466-L506)
 
-**Syncing state machine.** `eth_syncing` is called with a 5 s sub-context on each tick. The upstream is declared fully synced only after 4 consecutive "not syncing" responses (`synced counter ≥ 4`); any syncing response resets the counter to 1. The non-standard `{Ok: bool}` response shape is supported: `Ok=false` is treated as still-syncing. After 10 consecutive failures with no prior success, `skipSyncingCheck` is set permanently and the state is fixed at `Unknown` for the process lifetime.
+**Syncing state machine.** `eth_syncing` is called with a 5 s sub-context on each tick. The upstream is declared fully synced only after 4 consecutive "not syncing" responses (`synced counter ≥ 4`); any syncing response resets the counter to 1. The non-standard `{Ok: bool}` response shape is supported: `Ok=false` is treated as still-syncing. After 10 consecutive failures with no prior success, `skipSyncingCheck` is set permanently and the state is fixed at `Unknown` for the process lifetime. If `upstreams[*].evm.skipSyncingCheck: true` is set in config, `eth_syncing` is never called at all and the state is immediately fixed at `NotSyncing` — use this for nodes that always return a syncing object regardless of actual sync status.
 
 **Skip-on-failure semantics.** Both `skipLatestBlockCheck` and `skipFinalizedCheck` follow the same pattern: 10 consecutive failures with no prior successful poll sets the skip flag permanently and the poller stops calling that method. Once the upstream has had at least one success (`*SuccessfulOnce = true`), failures are only logged and never trigger the skip. This prevents false-positive disablement during transient degradations. Source: [`architecture/evm/evm_state_poller.go:L420-L445`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L420-L445)
 
@@ -284,7 +303,7 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 | `erpc_upstream_finalization_lag` | gauge | project, vendor, network, upstream | Recomputed on each `SetFinalizedBlockNumber`; value = `max_network_finalized − upstream_finalized` |
 | `erpc_upstream_latest_block_polled_total` | counter | project, vendor, network, upstream | Incremented before each actual `eth_getBlockByNumber("latest")` call (debounce elapsed). Two paths increment this counter: (1) proactive timer-driven `Poll()` on the background goroutine, and (2) forced-fresh polls triggered by block-availability checks (`EvmAssertBlockAvailability` / `EvmIsBlockFinalized`) when a request arrives for a block above the current known latest. Both paths still respect the debounce window — if a pod already fetched within the window, `TryUpdateIfStale` returns the cached value without incrementing. |
 | `erpc_upstream_finalized_block_polled_total` | counter | project, vendor, network, upstream | Same dual-path semantics as `latest_block_polled_total` for the finalized axis |
-| `erpc_upstream_block_head_large_rollback` | gauge | project, vendor, network, upstream | Fired when a new value would regress &gt;1024 blocks |
+| `erpc_upstream_block_head_large_rollback` | gauge | project, vendor, network, upstream, finality | Fired when a new value would regress &gt;1024 blocks. `finality` is the head axis (`latest` or `finalized`) — the two pollers would otherwise share one series |
 | `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | Current EMA block-time estimate in ms; absent until ≥3 samples |
 | `erpc_network_latest_block_timestamp_distance_seconds` | gauge | project, network, origin | `(now_ms − block.timestamp × 1000) / 1000`; `origin="evm_state_poller"` |
 | `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Post-clamp served tip; **cluster mode only** (`lane="all"` or named group) |

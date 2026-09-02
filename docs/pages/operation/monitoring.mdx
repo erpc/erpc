@@ -116,8 +116,15 @@ changing a registered metric's label set.
 
 An idle-eviction sweep runs every ~5 minutes and calls `DeleteLabelValues` on stale
 `erpc_upstream_request_duration_seconds` and `erpc_rate_limits_total` series to prevent
-cardinality runaway under method-flood attacks. Other high-cardinality metrics are bounded
-only by distinct (project, network, upstream, method) tuples.
+cardinality runaway under method-flood attacks. Counters emitted through
+`telemetry.CounterHandle` (upstream request/error totals, network success/hedge counters,
+etc.) are swept on the same cadence with their own, more conservative threshold —
+`metrics.counterIdleEvictionAfter`, default `24h` — so counter series whose label
+combinations go quiet (stale `method` × `user` × `agent_name` tuples) are eventually
+released instead of being re-emitted on every scrape for the process lifetime. A swept
+series that becomes active again restarts at zero, the same semantics as a process
+restart. Remaining high-cardinality metrics are bounded only by distinct
+(project, network, upstream, method) tuples.
 
 **`LabeledHistogram` label filtering.** `WithLabelValues` always receives the full canonical
 label set in schema order; the wrapper projects down to the active (post-filter) subset before
@@ -165,6 +172,9 @@ All fields under `metrics.` in the YAML root config. Struct: <SourceLink file="c
 | `metrics.histogramBuckets` | `string` | `""` → `[0.05, 0.5, 5, 30]` | Comma-separated float64 bucket boundaries for the 8 configurable `LabeledHistogram` instances: `upstream_request_duration_seconds`, `network_request_duration_seconds`, `consensus_duration_seconds`, `cache_set_success/error_duration_seconds`, `cache_get_success_hit/miss/error_duration_seconds`. Invalid float → warning + fallback to defaults. Source: <SourceLink file="telemetry/metrics.go" lines="731-736" /> |
 | `metrics.histogramDropLabels` | `[]string` | `nil` | Label names to drop from EVERY `LabeledHistogram`. Counters and gauges unaffected. Drop is permanent for the process lifetime — reconfiguring after first `SetHistogramBuckets` call panics. Common candidates: `user`, `agent_name`. Source: <SourceLink file="erpc/init.go" lines="53" /> |
 | `metrics.histogramLabelOverrides` | `map[string][]string` | `nil` | Per-metric overrides that re-add labels even if listed in `histogramDropLabels`. Key = metric name **without** `erpc_` prefix (e.g. `"network_request_duration_seconds"`). Value = labels to preserve for that metric. Source: <SourceLink file="erpc/init.go" lines="53" /> |
+| `metrics.counterDropLabels` | `[]string` | `nil` | Label names to drop from every counter carrying caller-controlled dimensions (`user`, `agent_name`, `attempt`, `composite`, `hedge`, `error`). Histograms and gauges unaffected. Sums are preserved — the series that differed only in the dropped label collapse into one — but the dimension stops being queryable, so verify nothing downstream groups by it first. Applied at `erpc.Init` via `SetCounterLabelFilter` + `RebuildFilteredCounters`. Source: <SourceLink file="erpc/init.go" lines="57-62" /> |
+| `metrics.counterLabelOverrides` | `map[string][]string` | `nil` | Per-metric overrides that re-add labels even if listed in `counterDropLabels`. Key = metric name **without** `erpc_` prefix (e.g. `"upstream_request_total"`). Lets you drop a label fleet-wide while keeping it on the one or two counters a billing/attribution pipeline actually reads. Source: <SourceLink file="erpc/init.go" lines="57-62" /> |
+| `metrics.counterIdleEvictionAfter` | `Duration` | `24h` | Idle threshold after which counter series emitted via `telemetry.CounterHandle` are evicted from the registry (`DeleteLabelValues`), bounding `/metrics` growth from caller-controlled label values (`method`, `user`, `agent_name`). `0` disables. Swept on the health tracker's sweep cadence. Source: <SourceLink file="erpc/init.go" lines="54-56" /> |
 
 **Hardcoded server constants (not configurable):**
 - Bind address: `":<port>"` (all interfaces) — <SourceLink file="erpc/init.go" lines="149" />
@@ -313,8 +323,17 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
   or clients — these two labels multiply every `LabeledHistogram`'s bucket count by the
   number of distinct values.
 - Managed Prometheus scrapers (Grafana Cloud, hosted Prometheus) typically cap the `/metrics`
-  response body at 10–64 MB. If scrape errors mention body size, add `category` to
-  `histogramDropLabels` too.
+  response body at 10–64 MB, and the cap is usually enforced on the response **whole**: past
+  it the scrape is rejected outright, so every series for that instance goes dark rather than
+  degrading. Counters — not histograms — are normally the bulk of a large payload, because an
+  unbounded label like a client-supplied user-agent is re-emitted on every scrape for the life
+  of the process. Reach for `counterDropLabels` (and `counterIdleEvictionAfter`) before
+  raising the scraper's limit; the label set is unbounded and will re-cross any new ceiling.
+- `counterDropLabels` is the counter-side twin of `histogramDropLabels`, with one important
+  difference: counter labels are more likely to be load-bearing downstream. `agent_name` or
+  `user` on a request counter often feeds billing or per-tenant attribution, so check
+  consumers before dropping and use `counterLabelOverrides` to spare the specific counters
+  that need it.
 - Never set `histogramDropLabels` after startup — the Prometheus registry rejects label-set
   changes and the process panics. Plan your drop list before first deploy.
 - Use `histogramLabelOverrides` to surgically restore a dropped label on exactly one
@@ -373,7 +392,7 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 |---|---|
 | `erpc_consensus_misbehavior_detected_total` | Non-zero rate = upstream diverging from consensus |
 | `erpc_consensus_total{outcome="dispute"}` | Rounds with no consensus reached |
-| `erpc_network_retry_attempt_total` | Retry pressure by reason (retryable_error, block_unavailable, etc.) |
+| `erpc_network_retry_attempt_total` | Retry pressure by reason (retryable_error, block_unavailable, etc.). On **EVM**, catch-up on `finality="finalized"` is wasted work — canonical data has no availability race — so it is worth alerting on. On **SVM** it is expected: consensus finality and RPC indexing are separate steps, so a rooted Solana slot can still be waiting on the provider's indexer and answers `-32004`/`-32014`. Split the query by `network` before alerting. |
 | `erpc_upstream_breaker_state_change_total{transition="closed_to_open"}` | Circuit-breaker trips; frequent churn = bad upstream |
 
 **Block tracking and tip**
@@ -384,7 +403,22 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 | `erpc_network_served_tip_block_number` | Served-tip pick per axis (latest/finalized) and lane; `lane="all"` = network-wide |
 | `erpc_network_served_tip_lag_blocks` | Lag of served tip behind freshest velocity-eligible upstream; absent in MAX mode |
 | `erpc_upstream_stale_latest_block_total` | Upstream returned a block number behind the network leader |
-| `erpc_upstream_block_head_large_rollback` | Non-zero = rollback &gt; 1024 blocks; warrants investigation |
+| `erpc_upstream_block_head_large_rollback` | Size of the last rollback &gt; 1024 blocks, per `finality` axis (`latest`/`finalized`). Sticky — alert on `changes()`, not on `&gt; 0` |
+
+**Solana (SVM) upstreams**
+
+SVM upstreams feed the same tracker as EVM, so the gauges below populate — but **the metric names say "block" while the values are slots**. There is no separate `erpc_svm_*` family.
+
+| Metric | What to check |
+|---|---|
+| `erpc_upstream_latest_block_number` | The upstream's **processed slot** |
+| `erpc_upstream_finalized_block_number` | The upstream's **finalized (rooted) slot** |
+| `erpc_upstream_block_head_lag` | Processed **slots** behind the freshest upstream |
+| `erpc_upstream_finalization_lag` | Finalized **slots** behind the freshest upstream |
+| `erpc_upstream_cordoned` | An SVM upstream is cordoned by its own state poller when `getHealth` fails **or** shred-insert lag exceeds 100 slots; the `reason` label distinguishes them |
+| `erpc_upstream_stale_latest_block_total` | A `getSlot` answer was corrected to the highest known slot for its commitment |
+
+Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it is logged and drives cordoning only. See [SVM slot tracking & health](/reference/svm/slot-tracking).
 
 **Request multiplexing and static responses**
 
@@ -451,7 +485,7 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 
 12. **Two bundled alerting rules reference stale metric names.** `erpc_upstream_request_self_rate_limited_total` and `erpc_network_request_self_rate_limited_total` no longer exist. Use `erpc_rate_limits_total` as the replacement. (<SourceLink file="monitoring/prometheus/alert.rules" lines="1" />)
 
-13. **`erpc_upstream_block_head_large_rollback` is silent for rollbacks ≤ 1024 blocks.** `DefaultToleratedBlockHeadRollback = 1024` is the threshold. A gauge value of 0 is normal; non-zero (rollback &gt; 1024 blocks) warrants investigation. (<SourceLink file="architecture/evm/evm_state_poller.go" lines="27" />)
+13. **`erpc_upstream_block_head_large_rollback` is silent for rollbacks ≤ 1024 blocks, and sticky above them.** `DefaultToleratedBlockHeadRollback = 1024` is the threshold. The gauge is `Set` to the rollback *size* and is never reset, so it holds that value for the life of the process: `> 0` means "this process saw a rollback at some point", not "a rollback is happening now", and `rate()`/`increase()` are meaningless on it. Alert on `changes(...[window])` instead. Split by the `finality` label — the `finalized` axis is dominated by upstreams whose write granularity exceeds 1024 blocks, which registers as a large rollback by construction. (<SourceLink file="architecture/evm/evm_state_poller.go" lines="27" />)
 
 14. **`erpc_selection_*` metrics carry a `method` label.** If the ingress exposes many distinct RPC methods to untrusted callers, a flood of unique method names creates unbounded series. Add `method` to a Prometheus relabeling drop rule for untrusted deployments.
 
@@ -478,6 +512,12 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 25. **The bundled Prometheus scrape config contains a Railway placeholder.** `monitoring/prometheus/prometheus.yml` includes a `REPLACE_SERVICE_ENDPOINT_HERE:REPLACE_SERVICE_PORT_HERE` target that causes parse errors in strict Prometheus configs. Remove or replace it before using the bundled config in production.
 
 26. **`erpc_grpc_bds_hard_timeout_total` threshold is hard-coded at 20 seconds.** The `bdsHardCallTimeout` constant at <SourceLink file="clients/grpc_bds_resilience.go" lines="34" /> is not configurable without recompile. A non-zero rate indicates H2 stream wedging; the watchdog then force-replaces the connection (`erpc_grpc_bds_conn_replacements_total`).
+
+27. **On SVM networks, `finality="finalized"` catch-up retries are normal, not waste.** The EVM guidance — that catch-up on canonical data indicates a misconfiguration — does not transfer. Solana consensus finality (a rooted slot) and RPC indexing are independent, so `getBlock` on a just-rooted slot legitimately returns `-32004 BlockNotAvailable` or `-32014 BlockStatusNotAvailableYet` until the provider's indexer catches up. Alert on the trend, not on non-zero. See [SVM slot tracking & health](/reference/svm/slot-tracking).
+
+28. **`erpc_upstream_*_block_number` and `*_lag` gauges carry slots on SVM networks.** The names are architecture-neutral and were coined for EVM. A dashboard that labels them "blocks" will mislead on Solana, where a skipped slot advances the slot counter but not the block height.
+
+29. **There is no metric for SVM shred-insert (ingestion) lag.** It gates cordoning and appears in the cordon WARN log (`shredInsertSlotLag`), but no gauge exposes it. Monitor `erpc_upstream_cordoned` and read the `reason` label instead.
 
 **Metrics server log lines** (useful when diagnosing startup failures):
 - `"starting metrics server on port: %d"` — Info, <SourceLink file="erpc/init.go" lines="144" />

@@ -30,11 +30,33 @@ type EvmUpstream interface {
 	EvmBlockAvailabilityBounds() (int64, int64)
 }
 
+// EvmStateProvenWriter is the OPTIONAL, separately-asserted surface the
+// integrity state prober records proofs through. The proven head is telemetry
+// (the state-proven block / proven-lag gauges), never a routing input.
+// Deliberately NOT part of EvmUpstream: that interface is implemented outside
+// this repo, and widening it broke every existing implementor — the chainId
+// suggest-gate silently degraded when its upstream stopped satisfying the
+// assertion. Optional capabilities are asserted narrowly, never added to the
+// core interface.
+type EvmStateProvenWriter interface {
+	// EvmSetStateProvenBlock records a successful state proof at a height.
+	// Monotonic: a lower value than the current one is ignored.
+	EvmSetStateProvenBlock(int64)
+}
+
 type AvailbilityConfidence int
 
 const (
 	AvailbilityConfidenceBlockHead AvailbilityConfidence = 1
 	AvailbilityConfidenceFinalized AvailbilityConfidence = 2
+	// NOTE: there is deliberately no "state-proven" confidence. The proven head
+	// (see the integrity state prober) advances at probe cadence, so on any
+	// chain whose block time is shorter than that cadence it sits structurally
+	// behind every honest upstream's claimed head — a routing bound built on it
+	// would refuse the entire network's tip traffic. Absence of proof is not
+	// evidence; only DISPROOF is, and the prober publishes that as upstream
+	// misbehavior on the health tracker for selection policies to act on
+	// (misbehaviorRateAbove), not as an availability confidence.
 )
 
 func (c AvailbilityConfidence) String() string {

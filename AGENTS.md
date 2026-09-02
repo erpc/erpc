@@ -7,6 +7,17 @@ it applies to all agents, not just Cursor.
 
 This file only repeats the bare minimum needed to bootstrap.
 
+## Design razor
+
+Among designs that exactly fit the observed cases, choose the WEAKEST — the
+one committing to the least beyond the data (Bennett,
+[arXiv:2301.12987](https://arxiv.org/abs/2301.12987): weakness, not
+shortness, predicts generalisation). Chains, vendors, methods, and error
+shapes are open-ended sets in this codebase: no unforced enums, method
+lists, or chain/vendor special-cases; the unknown-input fallthrough is the
+primary path — design and test it first. Full version with the review test:
+[`.cursor/rules/erpc.md`](.cursor/rules/erpc.md).
+
 ## Project
 
 - **eRPC** — fault-tolerant EVM RPC proxy with re-org-aware permanent caching.

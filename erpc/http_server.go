@@ -172,9 +172,15 @@ func NewHttpServer(
 			}
 			httpHandler.ServeHTTP(w, r)
 		})
-		if cfg.TLS == nil || !cfg.TLS.Enabled {
-			handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
-		}
+	}
+
+	// Without TLS, Go's net/http serves HTTP/1.x only on the cleartext
+	// listener, so wrap the IPv4 handler with h2c to accept HTTP/2
+	// prior-knowledge requests. This is independent of shared gRPC — gRPC only
+	// adds a content-type dispatch on top of this handler. (With TLS, HTTP/2 is
+	// negotiated via ALPN by ListenAndServeTLS, so no h2c wrapper is needed.)
+	if cfg.TLS == nil || !cfg.TLS.Enabled {
+		handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
 	}
 
 	// Create IPv4 server if configured
@@ -590,7 +596,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				} else {
 					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 					if err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails, common.NetworkArchitecture(architecture))
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -613,6 +619,30 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				if isAdmin {
 					if s.adminCfg != nil {
+						if blocked, berr := isAdminMethodBlocked(s.adminCfg, method); berr != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, berr, &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, berr)
+							return
+						} else if blocked {
+							jrr, _ := nq.JsonRpcRequest()
+							var reqId interface{}
+							jsonrpcVersion := "2.0"
+							if jrr != nil {
+								jsonrpcVersion = jrr.JSONRPC
+								reqId = jrr.ID
+							}
+							responses[index] = &HttpJsonRpcErrorResponse{
+								Jsonrpc: jsonrpcVersion,
+								Id:      reqId,
+								Error: map[string]interface{}{
+									"code":    int(common.JsonRpcErrorUnsupportedException),
+									"message": fmt.Sprintf("method not supported: %s", method),
+								},
+								Request: nq,
+							}
+							common.EndRequestSpan(requestCtx, nil, nil)
+							return
+						}
 						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
@@ -650,7 +680,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						}
 						if networkIdFromBody, ok := req["networkId"].(string); ok {
 							networkId = networkIdFromBody
-							parts := strings.Split(networkId, ":")
+							// SplitN limit 2 so three-part SVM IDs (svm:<chain>:<cluster>)
+							// keep the chain:cluster tail intact as chainId; it is
+							// reassembled as architecture+":"+chainId below.
+							parts := strings.SplitN(networkId, ":", 2)
 							if len(parts) == 2 {
 								architecture = parts[0]
 								chainId = parts[1]
@@ -684,7 +717,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					if project.Config.UserAgentMode != "" {
 						uaMode = project.Config.UserAgentMode
 					}
-					nq.SetAllowClientDirectiveMatcher(project.allowClientDirectiveMatcher)
+					nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
 				}
 				nq.EnrichFromHttp(headers, queryArgs, uaMode)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
@@ -1029,7 +1062,7 @@ func (s *HttpServer) parseUrlPath(
 	}
 
 	if (chainId != "" || architecture != "") && !common.IsValidArchitecture(architecture) {
-		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm')", ps)
+		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm' or 'svm')", ps)
 	}
 
 	if !isPost && !isOptions {
@@ -1343,10 +1376,26 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 //	X-ERPC-Credits:         `vendor:method=<units>` segments, sorted and
 //	                        ';'-joined — the credit units accrued by every
 //	                        physical upstream attempt (retries, hedges,
-//	                        consensus slots; see UpstreamAttempt.CreditUnits).
+//	                        consensus slots; see UpstreamAttempt.CreditUnits),
+//	                        read from the request-object aggregate
+//	                        (NormalizedRequest.CreditUnitsByVendor).
 //	                        Omitted when nothing accrued (e.g. pure cache hits).
+//	X-ERPC-Credits-Total:   the grand total credit units across all vendors
+//	                        and sub-calls in this response; alongside X-ERPC-Credits.
 //	X-ERPC-Credits-Version: the eRPC version the built-in vendor tables
 //	                        shipped with; only alongside X-ERPC-Credits.
+//	X-ERPC-Network-Id:      canonical network id of the routed call
+//	                        (e.g. `evm:42161`).
+//	X-ERPC-Network-Alias:   its configured alias — the SAME value eRPC's own
+//	                        `network` metric label carries (NetworkLabel:
+//	                        alias when set, else the id), so a proxy in front
+//	                        can attribute usage per network without parsing
+//	                        bodies or re-deriving the network from the URL.
+//	                        Both are emitted only when every routed sub-call
+//	                        resolved to ONE network: a batch is addressed to a
+//	                        single network, so a disagreement means the value
+//	                        is not a fact about the response and is omitted
+//	                        rather than guessed.
 //
 // Early errors that never routed a request get no cost headers — there is
 // no routed call to account for.
@@ -1357,6 +1406,9 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 	billable := 0
 	methods := map[string]struct{}{}
 	credits := map[string]int64{} // "vendor:method" → units
+	var creditsTotal int64
+	networkId, networkAlias := "", ""
+	networkAmbiguous := false
 	for _, item := range items {
 		if isBillableItem(ctx, item) {
 			billable++
@@ -1365,20 +1417,41 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 		if req == nil {
 			continue
 		}
+		// Network of the routed call. "n/a" is what NetworkId/NetworkLabel
+		// return when the network was never resolved (e.g. internal
+		// eth_chainId probes), so it is not a network and is skipped.
+		if id := req.NetworkId(); id != "" && id != "n/a" {
+			switch {
+			case networkId == "":
+				networkId, networkAlias = id, req.NetworkLabel()
+			case networkId != id:
+				networkAmbiguous = true
+			}
+		}
 		method, _ := req.Method()
 		if method != "" {
 			methods[method] = struct{}{}
 		}
-		if st := req.ExecState(); st != nil {
-			for _, attempt := range st.UpstreamAttemptLog() {
-				if attempt.CreditUnits > 0 && attempt.VendorName != "" {
-					credits[attempt.VendorName+":"+method] += attempt.CreditUnits
-				}
+		// Per-vendor credit totals come from the request-object aggregate
+		// (thread-safe; sums every physical attempt against each vendor,
+		// retries/hedges/consensus included). A request carries a single
+		// method, so keying the header segment by this request's method
+		// preserves the vendor:method=units contract.
+		for vendor, units := range req.CreditUnitsByVendor() {
+			if units > 0 {
+				credits[vendor+":"+method] += units
+				creditsTotal += units
 			}
 		}
 	}
 	setInt(w, "X-ERPC-Calls", len(items))
 	setInt(w, "X-ERPC-Billable", billable)
+	if networkId != "" && !networkAmbiguous {
+		w.Header().Set("X-ERPC-Network-Id", networkId)
+		if networkAlias != "" && networkAlias != "n/a" {
+			w.Header().Set("X-ERPC-Network-Alias", networkAlias)
+		}
+	}
 	if len(methods) > 0 {
 		names := make([]string, 0, len(methods))
 		for m := range methods {
@@ -1398,6 +1471,7 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 			segments[i] = k + "=" + strconv.FormatInt(credits[k], 10)
 		}
 		w.Header().Set("X-ERPC-Credits", strings.Join(segments, ";"))
+		w.Header().Set("X-ERPC-Credits-Total", strconv.FormatInt(creditsTotal, 10))
 		w.Header().Set("X-ERPC-Credits-Version", common.ErpcVersion)
 	}
 }
@@ -1547,6 +1621,12 @@ func determineResponseStatusCode(res interface{}) int {
 		common.ErrCodeNetworkRateLimitRuleExceeded,
 		common.ErrCodeEndpointCapacityExceeded):
 		return http.StatusTooManyRequests
+	// 404 Not Found - no upstream could be initialized for this network at all.
+	// Terminal, not transient, so it is a coverage gap rather than a server fault
+	// (see ErrNetworkNoUpstreamsAvailable). Deliberately last: a more specific
+	// verdict already on the cause chain (429 quota) describes the failure better.
+	case common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable):
+		return http.StatusNotFound
 	}
 
 	// All other errors (JSON-RPC application errors) return 200
@@ -1580,11 +1660,13 @@ func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
 	}
 }
 
-func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool) interface{} {
+func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	err := origErr
 
-	// Build the response first, then log with it
-	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails)
+	// Build the response first, then log with it. Authentication runs before
+	// network resolution, so its caller passes the URL-parsed architecture as a
+	// hint; later errors can derive it from nq.Network().
+	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails, architectureHint...)
 
 	// Log the error with the response
 	if !common.IsNull(err) {
@@ -1623,8 +1705,8 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	return resp
 }
 
-// buildErrorResponseBody constructs the error response without logging
-func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, includeErrorDetails *bool) interface{} {
+// buildErrorResponseBody constructs the error response without logging.
+func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
 	exe := &common.ErrEndpointExecutionException{}
 	if errors.As(err, &exe) {
@@ -1639,10 +1721,45 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 		}
 	}
 
+	// determineResponseStatusCode keys 429/401 off Cause via HasErrorCode, which
+	// walks the whole tree — so Cause must hold the UNPRUNED error.
+	//
+	// TranslateToJsonRpcException below collapses an exhausted bundle to its
+	// most-frequent cause for a readable message. That prune is deliberate and
+	// stays, but it keeps exactly ONE cause, so a status-bearing sibling (429
+	// capacity, 401 unauthorized) sitting alongside plain 5xx is usually dropped
+	// and the response degrades to 200. Reordering cannot fix it: with two
+	// competing statuses, a keep-one prune can preserve at most one. Survival is
+	// the property that matters, so status reads pre-prune and the body reads post.
+	//
+	// Reachable because findUpstreamsExhausted now sees through the
+	// ErrFailsafeRetryExceeded the network retry loop always adds; the previous
+	// direct type assertion missed that wrapper, so the prune never ran here.
+	//
+	// Live instance: OP-Stack "sender is over rate limit" on eth_sendRawTransaction
+	// is marked WithRetryableTowardNetwork(false) to stop futile sequencer failover
+	// — orderCauses then sorts it last and the strict-greater scan drops it. Losing
+	// that 429 makes clients resubmit the transaction instead of backing off.
+	causeForStatus := err
 	err = common.TranslateToJsonRpcException(err)
 	var jsonrpcVersion string = "2.0"
 	var reqId interface{} = nil
 	var method string = ""
+	isSvmRequest := len(architectureHint) > 0 && architectureHint[0] == common.ArchitectureSvm
+	if !isSvmRequest && nq != nil {
+		isSvmRequest = strings.HasPrefix(nq.NetworkId(), "svm:")
+		// Body-routed requests have no URL architecture hint and auth still runs
+		// before network resolution. Capture networkId before JsonRpcRequest()
+		// consumes nq.Body(), without moving network lookup ahead of authentication.
+		if !isSvmRequest && nq.Network() == nil && (len(architectureHint) == 0 || architectureHint[0] == "") {
+			var envelope struct {
+				NetworkID string `json:"networkId"`
+			}
+			if common.SonicCfg.Unmarshal(nq.Body(), &envelope) == nil {
+				isSvmRequest = strings.HasPrefix(envelope.NetworkID, "svm:")
+			}
+		}
+	}
 	if nq != nil {
 		jrr, _ := nq.JsonRpcRequest()
 		if jrr != nil {
@@ -1654,8 +1771,24 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		message := jre.Message
+		wireCode := jre.NormalizedCode()
+		// eRPC's generic capacity code is -32005, but Solana assigns -32005 to
+		// NodeUnhealthy. Local admission limits (auth/project/network/upstream
+		// budgets) never came from a Solana node, so expose them in Solana's
+		// collision-free generic server bucket instead. Keep native upstream
+		// -32005 untouched: it really does mean NodeUnhealthy and its outer error
+		// chain contains none of these local limiter codes.
+		if wireCode == common.JsonRpcErrorCapacityExceeded && isSvmRequest &&
+			common.HasErrorCode(err,
+				common.ErrCodeAuthRateLimitRuleExceeded,
+				common.ErrCodeProjectRateLimitRuleExceeded,
+				common.ErrCodeNetworkRateLimitRuleExceeded,
+				common.ErrCodeUpstreamRateLimitRuleExceeded,
+			) {
+			wireCode = common.JsonRpcErrorNumber(-32000)
+		}
 		errObj := map[string]interface{}{
-			"code":    jre.NormalizedCode(),
+			"code":    wireCode,
 			"message": message,
 		}
 		// Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
@@ -1673,7 +1806,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 			Jsonrpc: jsonrpcVersion,
 			Id:      reqId,
 			Error:   errObj,
-			Cause:   err,
+			Cause:   causeForStatus,
 			Request: nq,
 		}
 	}
@@ -1687,7 +1820,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	return common.BaseError{
 		Code:    "ErrUnknown",
 		Message: "unexpected server error",
-		Cause:   err,
+		Cause:   causeForStatus,
 	}
 }
 
@@ -1725,6 +1858,12 @@ func handleErrorResponse(
 		common.ErrCodeNetworkRateLimitRuleExceeded,
 		common.ErrCodeEndpointCapacityExceeded):
 		statusCode = http.StatusTooManyRequests
+	// 404 Not Found - no upstream could be initialized for this network at all.
+	// Terminal, not transient, so it is a coverage gap rather than a server fault
+	// (see ErrNetworkNoUpstreamsAvailable). Deliberately last: a more specific
+	// verdict already on the cause chain (429 quota) describes the failure better.
+	case common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable):
+		statusCode = http.StatusNotFound
 	}
 	// Emit X-ERPC-* headers BEFORE WriteHeader — once WriteHeader fires
 	// the header map is sealed. processErrorBody attaches `nq` to the
@@ -2196,4 +2335,46 @@ func stripAddrDecorations(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// isAdminMethodBlocked returns true when the admin config's DenyMethods/AllowMethods
+// rules prevent the given method from being handled.
+// DenyMethods is evaluated first; AllowMethods can re-admit a method that was denied.
+func isAdminMethodBlocked(cfg *common.AdminConfig, method string) (bool, error) {
+	blocked := false
+	for _, pattern := range cfg.DenyMethods {
+		match, err := common.WildcardMatch(pattern, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			blocked = true
+			break
+		}
+	}
+	if blocked {
+		for _, pattern := range cfg.AllowMethods {
+			match, err := common.WildcardMatch(pattern, method)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	if len(cfg.AllowMethods) > 0 {
+		for _, pattern := range cfg.AllowMethods {
+			match, err := common.WildcardMatch(pattern, method)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }

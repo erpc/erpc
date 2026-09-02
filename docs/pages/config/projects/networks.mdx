@@ -18,7 +18,7 @@ import {
 A **network** is one chain inside a project. Declare it once and eRPC owns the whole pipeline: smarter caching, automatic failover, and in-flight deduplication — on every chain you touch. Three things make it ergonomic: **zero-config chains** bootstrap automatically from your providers on first request, **`networkDefaults`** lets one block set shared policy for every chain, and a human-readable **`alias`** replaces `evm/42161` in every URL.
 
 **What you get:**
-- Any EVM chain, any provider — routes automatically on first request.
+- Any EVM chain or SVM (Solana) cluster, any provider — routes automatically on first request.
 - One `networkDefaults` block replaces repetitive per-chain config.
 - `alias: arbitrum` turns every URL into `/main/arbitrum` instead of `/main/evm/42161`.
 - Static canned replies for chains with non-standard genesis blocks.
@@ -90,11 +90,11 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 <PromptExample
 	n={4}
 	title="disable validation for a non-standard chain"
-	prompt={`I'm adding zkSync Era to eRPC and eth_getBlockByNumber responses from zkSync don't
-have a valid transactionsRoot field — eRPC is rejecting them. Override directiveDefaults
-for the zkSync network only to disable validateTransactionsRoot without touching the
-global policy. Work with my existing eRPC config. Reference:
-https://docs.erpc.cloud/config/projects/networks.llms.txt`}
+	prompt={`I'm adding zkSync Era to eRPC and eth_getBlockByNumber responses from zkSync use a
+non-standard transactionsRoot — the data-integrity module is rejecting them. For the
+zkSync network only, make sure data-integrity is off (or disable the transactionsRoot
+checks via the integrity block) without touching the global policy. Work with my existing
+eRPC config. Reference: https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 />
 
 <PromptExample
@@ -111,7 +111,9 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 
 ### How it works
 
-**Architecture concept.** `NetworkArchitecture` is a string enum; only `"evm"` is valid today (`common/network.go:L35-37`). The canonical id is `evm:<chainId>` from `util.EvmNetworkId` (`util/ids.go:L11-13`). The `network` Prometheus label equals the alias when set, otherwise the raw id.
+**Architecture concept.** `NetworkArchitecture` is a string enum with two valid values: `"evm"` and `"svm"` (<SourceLink file="common/network.go" lines="14-17" />). The canonical id is `evm:<chainId>` from `util.EvmNetworkId`, or `svm:<cluster>` / `svm:<chain>:<cluster>` from `util.SvmNetworkId` (<SourceLink file="util/ids.go" lines="1-30" />). The `network` Prometheus label equals the alias when set, otherwise the raw id.
+
+`architecture` is inferred when omitted: a network carrying an `svm` block derives `architecture: svm`, one carrying `evm` (or neither) derives `evm` (<SourceLink file="common/defaults.go" lines="2010-2028" />). Declaring `architecture: svm` auto-creates an empty `svm` block, and `networkDefaults.evm` is never injected into an SVM network. See [SvmNetworkConfig](#projectsnetworkssvm--svmnetworkconfig) below and the [SVM reference pages](/reference/svm/commitment).
 
 **Lazy creation.** `NetworksRegistry.GetNetwork` fast-paths a `sync.Map` lookup; on miss it validates the id format and schedules a bootstrap task. The task: (1) resolves or synthesizes a `NetworkConfig` and runs `SetDefaults` so it inherits `networkDefaults` exactly like static networks; (2) calls `PrepareUpstreamsForNetwork` — fans out to every configured provider, polls 200 ms for up to 30 s until ≥1 upstream is ready; (3) wires the cache DAL; (4) registers with the selection-policy engine. Statically-declared networks bootstrap in background at startup through the same machinery; a failed eager bootstrap is retried when the first request arrives.
 
@@ -139,8 +141,9 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `architecture` | `string` (`evm`) | Inferred `"evm"` when `evm` block present (<SourceLink file="common/defaults.go" lines="1908-1912" />); forced `evm` in constructor when empty (<SourceLink file="erpc/networks_registry.go" lines="169-171" />) | Only `evm` is valid. Required by validation. |
-| `evm` | `EvmNetworkConfig` | Auto-created empty struct (<SourceLink file="common/defaults.go" lines="1914-1916" />) | See EvmNetworkConfig table below. |
+| `architecture` | `string` (`evm` \| `svm`) | Inferred from the sub-block: `svm` present → `"svm"`, otherwise `"evm"` (<SourceLink file="common/defaults.go" lines="2010-2028" />) | Both `evm` and `svm` are valid (<SourceLink file="common/network.go" lines="82-88" />). Required by validation. |
+| `evm` | `EvmNetworkConfig` | Auto-created empty struct for EVM networks (<SourceLink file="common/defaults.go" lines="1914-1916" />); never injected into an SVM network | See EvmNetworkConfig table below. |
+| `svm` | `SvmNetworkConfig` | Auto-created empty struct when `architecture: svm` (<SourceLink file="common/defaults.go" lines="2026-2028" />) | Required for SVM networks — `network.*.svm is required for svm networks` otherwise. See SvmNetworkConfig table below. |
 | `alias` | `string` | `""` | Charset `[a-zA-Z0-9_-]+` (<SourceLink file="common/validation.go" lines="1264-1269" />); unique per project (<SourceLink file="common/validation.go" lines="622-627" />). Used as the `network` metric label via `Network.Label()` (<SourceLink file="erpc/networks.go" lines="278-286" />). Aliases work in URL path only — not in body `networkId`. |
 | `rateLimitBudget` | `string` | `""` (none); inherits `networkDefaults.rateLimitBudget` when empty (<SourceLink file="common/defaults.go" lines="1783-1785" />) | Must reference an existing budget. Enforced per-request before upstream contact → `ErrNetworkRateLimitRuleExceeded`. |
 | `failsafe[]` | `[]FailsafeConfig` | `nil`; inherited/merged from `networkDefaults.failsafe` | One `networkExecutor` per entry + a no-op catch-all (<SourceLink file="erpc/networks_registry.go" lines="115-138" />). Selection: first config-order match on `matchMethod` wildcard + `matchFinality` (<SourceLink file="erpc/networks.go" lines="907-929" />). Old single-object YAML auto-converted to a one-element list with `matchMethod: "*"`. |
@@ -184,6 +187,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `idempotentTransactionBroadcast` | `*bool` | `nil` = **enabled** (<SourceLink file="architecture/evm/eth_sendRawTransaction.go" lines="27-36" />) | "Already known"/"nonce too low"-verified errors become success-with-tx-hash, making retry/hedge safe for `eth_sendRawTransaction`. |
 | `markEmptyAsErrorMethods` | `[]string` | `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionByHash`, and 8 others (<SourceLink file="common/defaults.go" lines="2044-2057" />) | Methods where empty response = error (retried, upstream scored down). `eth_getTransactionReceipt` deliberately excluded. |
 | `emptyResultConfidence` | `blockHead` \| `finalizedBlock` | `blockHead` (<SourceLink file="common/defaults.go" lines="2075-2079" />) | How confirmed a block must be for empty point-lookups to be retried as missing data. |
+| `safeBlockSource` | `string` (upstream selector) | `""` = inherit or provider-defined routing | Routes standard block-tagged JSON-RPC requests carrying `safe` to matching upstreams and skips cache reads. The tag stays verbatim so those upstreams define both height and hash. Operator routing overrides client `use-upstream`; retry/consensus still applies inside the matching pool. An empty network value inherits `networkDefaults.evm.safeBlockSource` when present. Does not affect `eth_query*` or direct gRPC Query APIs. |
 | `evm.integrity.enforceHighestBlock` | `*bool` | `true` (<SourceLink file="common/defaults.go" lines="2117-2120" />) | **Deprecated** — migrated into `directiveDefaults.enforceHighestBlock` at `SetDefaults` time when the directive is unset (<SourceLink file="common/defaults.go" lines="1952-1966" />). Prefer `directiveDefaults.enforceHighestBlock`. |
 | `evm.integrity.enforceGetLogsBlockRange` | `*bool` | `true` (<SourceLink file="common/defaults.go" lines="2121-2123" />) | **Deprecated** — same migration path as `enforceHighestBlock`. |
 | `evm.integrity.enforceNonNullTaggedBlocks` | `*bool` | `true` (<SourceLink file="common/defaults.go" lines="2124-2126" />) | **Deprecated** — same migration path. |
@@ -192,6 +196,21 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `servedTip.enabledFor` | `[]string` | `[]` (max mode) | Valid: `latest`, `finalized`, `safe`. Listing a tag switches that axis from max-across-upstreams to cluster-min + monotonic clamp via shared state. |
 | `servedTip.clusterDelta` | `int64` | `0` = auto-derive from EMA block time, clamped `[2, 10]` | Must be ≥ 0. |
 | `servedTip.guaranteedMethods` | `[]string` (glob) | `[]` | Global tip clamped to per-method supporting-set floor (<SourceLink file="erpc/networks.go" lines="643-649" />). |
+
+#### `projects[].networks[].svm` — SvmNetworkConfig
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `cluster` | `string` | `""` (required) | The cluster these upstreams serve — `mainnet-beta`, `devnet`, `testnet`, or a fork's own cluster name. Together with `chain` it forms the network id. **This is network identity** (the SVM analogue of `evm.chainId`) and is therefore **not** inherited from `networkDefaults.svm`. |
+| `chain` | `string` | `""` → treated as `"solana"` | Which SVM chain this network runs on. Set it explicitly for forks and variants (`fogo`, `eclipse`) so several SVM chains can be hosted side by side without network-id or cache-key collisions. Inherited from `networkDefaults.svm.chain`. |
+| `commitment` | `string` | `""` — **no default** | One of `finalized`, `confirmed`, `processed`. When unset nothing is injected and each upstream's own server-side default governs (Solana's is `finalized`), so upstreams can disagree on identical requests. Setting it pins one level across the pool so the cache and consensus compare like-for-like; note that it also makes finality classification track the configured level. Details: [Commitment & finality](/reference/svm/commitment). |
+| `statePollerDebounce` | Duration | `400ms` (one slot) (<SourceLink file="common/defaults.go" lines="2237-2243" />) | Minimum interval between poll fan-outs of an upstream's slot/health view. A **gate**, not the ticker period — the ticker stays pinned at 400 ms, so values below it have no effect. Raising it widens the `getBlock` availability guard's staleness margin proportionally. |
+| `maxFinalizedSlotLag` | `*int64` | `100` slots ≈ 40 s (<SourceLink file="common/defaults.go" lines="2244-2251" />) | Bounds how far an upstream's finalized slot may trail the pool reference before it is excluded from **consensus voting on finalized data**. Applied only when a consensus policy is active AND the request's resolved finality is `Finalized`. **Tri-state**: omitted → `100`; explicit `0` → filter **disabled**; `>0` → that value. The field is a pointer precisely so an explicit `0` is distinguishable from "unset" — a plain integer would collapse the two and make the documented disable switch unreachable. |
+| `enforceBlockAvailability` | `*bool` | `nil` → `true` (materialized at read time by `SvmEnforceBlockAvailability()`, <SourceLink file="erpc/networks.go" lines="704-708" />) | Gates the `getBlock`/`getConfirmedBlock` guard that short-circuits requests for slots above the pool's highest indexed slot, saving quota and firing the indexing-lag retry immediately. Set `false` when shred-insert tracking is unavailable or unreliable on a deployment. An explicit `false` in `networkDefaults.svm` **is** honored. |
+
+Not present on `SvmNetworkConfig`: there is no `maxSlotsPerSignaturesQuery`. An early design proposed one as an analogue of EVM's `getLogs` range cap, but `getSignaturesForAddress` is bounded by signature cursors (`before`/`until`), not by a slot range, so the key described semantics Solana does not have and was removed. `minContextSlot` is a node-freshness floor — the minimum bank slot at which a request may be *evaluated* — not a lower bound on returned history, so it cannot serve as a range cap either.
+
+**Cluster and genesis-hash validation.** Known `(chain, cluster)` pairs — currently Solana `mainnet-beta`, `devnet`, and `testnet` — have their genesis hash validated at bootstrap by a single `getGenesisHash` call compared against a hardcoded table. Both a mismatch and a *fetch failure* fail the upstream, so a node mis-pointed at the wrong cluster never joins the pool. For unknown clusters (forks, private clusters) the same check runs only when the upstream sets `svm.checkGenesisHash: true`. `getGenesisHash` itself is then answered from the table with no upstream round-trip, mirroring EVM's `eth_chainId` short-circuit.
 
 #### `projects[].networks[].directiveDefaults` — DirectiveDefaultsConfig
 
@@ -206,22 +225,8 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `enforceHighestBlock` | `*bool` | **`true`** (<SourceLink file="common/defaults.go" lines="1458-1460" />) |
 | `enforceGetLogsBlockRange` | `*bool` | **`true`** (<SourceLink file="common/defaults.go" lines="1461-1463" />) |
 | `enforceNonNullTaggedBlocks` | `*bool` | **`true`** (<SourceLink file="common/defaults.go" lines="1464-1466" />) |
-| `validateTransactionsRoot` | `*bool` | **`true`** (<SourceLink file="common/defaults.go" lines="1467-1469" />) |
-| `validateHeaderFieldLengths` | `*bool` | `nil` |
-| `validateTransactionFields` | `*bool` | `nil` |
-| `validateTransactionBlockInfo` | `*bool` | `nil` |
-| `enforceLogIndexStrictIncrements` | `*bool` | `nil` |
-| `validateTxHashUniqueness` | `*bool` | `nil` |
-| `validateTransactionIndex` | `*bool` | `nil` |
-| `validateLogFields` | `*bool` | `nil` |
-| `validateLogsBloomEmptiness` | `*bool` | `nil` |
-| `validateLogsBloomMatch` | `*bool` | `nil` |
-| `validateReceiptTransactionMatch` | `*bool` | `nil` |
-| `validateContractCreation` | `*bool` | `nil` |
-| `receiptsCountExact` | `*int64` | `nil` |
-| `receiptsCountAtLeast` | `*int64` | `nil` |
-| `validationExpectedBlockHash` | `*string` | `nil` |
-| `validationExpectedBlockNumber` | `*int64` | `nil` |
+
+> **Data-integrity validation** is configured under `networks[].integrity` (not `directiveDefaults`) — an opt-in `level`/`checks`/`profiles` block. The deprecated per-check flags (`validateLogsBloomMatch`, `enforceLogIndexStrictIncrements`, `validateTransactionsRoot`, …) are translated into it at startup. See [Integrity checks](/config/failsafe/integrity).
 
 #### `projects[].networkDefaults` — NetworkDefaults
 
@@ -231,7 +236,8 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `failsafe[]` | `[]FailsafeConfig` | `nil` | Network has none → deep-copied wholesale. Network has some → per-entry merge from the FIRST compatible default (wildcard method + finality match); break on first match (<SourceLink file="common/defaults.go" lines="1793-1832" />). |
 | `selectionPolicy` | `SelectionPolicyConfig` | `nil` | Shallow-copied when network's is nil (<SourceLink file="common/defaults.go" lines="1833-1836" />). |
 | `directiveDefaults` | `DirectiveDefaultsConfig` | `nil` | Shallow-copied when network's is nil — **no per-field merge** (<SourceLink file="common/defaults.go" lines="1837-1840" />). |
-| `evm` | `EvmNetworkConfig` | `nil` | Struct-copied wholesale when network has no `evm` block. Otherwise per-field fill for: `integrity`, `fallbackStatePollerDebounce`, `dynamicBlockTimeDebounceMultiplier`, `blockUnavailableDelayMultiplier`, `fallbackFinalityDepth`, `getLogsMaxAllowed*`, `getLogs*`, `traceFilter*`, `servedTip`, `emptyResultConfidence`. NOT inherited individually: `chainId`, `enforceBlockAvailability`, `maxRetryableBlockDistance`, `markEmptyAsErrorMethods`, `idempotentTransactionBroadcast` (<SourceLink file="common/defaults.go" lines="1845-1889" />). |
+| `evm` | `EvmNetworkConfig` | `nil` | Struct-copied wholesale when network has no `evm` block — **except onto SVM networks, which never receive it**. Otherwise per-field fill for: `integrity`, `fallbackStatePollerDebounce`, `dynamicBlockTimeDebounceMultiplier`, `blockUnavailableDelayMultiplier`, `fallbackFinalityDepth`, `getLogsMaxAllowed*`, `getLogs*`, `traceFilter*`, `servedTip`, `emptyResultConfidence`. NOT inherited individually: `chainId`, `enforceBlockAvailability`, `maxRetryableBlockDistance`, `markEmptyAsErrorMethods`, `idempotentTransactionBroadcast` (<SourceLink file="common/defaults.go" lines="1845-1889" />). |
+| `svm` | `SvmNetworkConfig` | `nil` | Per-field fill: `chain`, `commitment`, `statePollerDebounce`, `maxFinalizedSlotLag`, `enforceBlockAvailability` (<SourceLink file="common/defaults.go" lines="2197-2221" />). **`cluster` is deliberately NOT inherited** — it is network identity, and inheriting it would let two networks alias one another. The two pointer fields are tested for `nil`, not for their zero value, so an explicit `maxFinalizedSlotLag: 0` or `enforceBlockAvailability: false` set here survives the merge. |
 | `multiplexing` | `*bool` | `nil` | Value-copied when network's `multiplexing` is nil (<SourceLink file="common/defaults.go" lines="1841-1844" />). No deep merge — a network must set its own `multiplexing` to deviate from the project-wide default. |
 
 Note: `networkDefaults` has **no** `alias`, `methods`, `staticResponses`, or `architecture` fields — those are per-network only.
@@ -452,29 +458,21 @@ non-obvious choices.
 }]`}
 />
 
-**4. Disable `validateTransactionsRoot` for non-standard chains.** ZkSync Era and other ZK-rollups omit or zero-fill `transactionsRoot` — eRPC's default validation rejects the response. Set `directiveDefaults` at the network level (not project-wide) so only that chain skips the check:
+**4. Skip data-integrity validation for non-standard chains.** ZkSync Era and other ZK-rollups use a non-standard `transactionsRoot` (and other encodings) the [data-integrity module](/config/failsafe/integrity)'s recompute checks can't model. The module is opt-in, but if you enabled it project-wide, turn it off for that chain — a network `integrity` block overrides the project one:
 
 <ConfigTabs
-  path="projects[].networks[].directiveDefaults"
+  path="projects[].networks[].integrity"
   yaml={`networks:
   - evm: { chainId: 324 }
     alias: zksync-mainnet
-    # directiveDefaults is ALL-OR-NOTHING: setting any field here means
-    # networkDefaults.directiveDefaults is completely ignored for this network
-    directiveDefaults:
-      validateTransactionsRoot: false
-      # Re-state any networkDefaults.directiveDefaults fields you still want
-      retryEmpty: true
-      retryPending: false`}
+    # Override the project-wide integrity level to off for this chain
+    # (or disable just the transactionsRoot checks via integrity.checks).
+    integrity:
+      level: off`}
   ts={`networks: [{
   evm: { chainId: 324 },
   alias: "zksync-mainnet",
-  // directiveDefaults is ALL-OR-NOTHING — re-state shared fields you want kept
-  directiveDefaults: {
-    validateTransactionsRoot: false,
-    retryEmpty: true,
-    retryPending: false,
-  },
+  integrity: { level: "off" },
 }]`}
 />
 
@@ -497,9 +495,58 @@ server:
 POST https://eth.rpc.example.com/   →  main/evm:1
 ```
 
+**6. Multiple SVM chains side by side.** `chain` defaults to `solana`, so a plain Solana cluster keeps the short two-segment id. Naming a fork's chain switches the id to three segments, which is what keeps cache partitions and alias registration from colliding between `svm:mainnet-beta` and `svm:fogo:mainnet`. Note that `cluster` stays per-network — it is identity, so `networkDefaults.svm` carries only the shared policy:
+
+<ConfigTabs
+  path="projects[].networks[]"
+  focusYaml="4-6,9-11,13-16"
+  focusTs="3-5,8-9,11-13"
+  yaml={`projects:
+  - id: main
+    networkDefaults:
+      svm:
+        # shared policy only — cluster is network identity and must not be here
+        commitment: confirmed
+        statePollerDebounce: 500ms
+    networks:
+      # chain omitted → "solana" → networkId "svm:mainnet-beta"
+      - architecture: svm
+        svm:
+          cluster: mainnet-beta
+      # explicit chain → networkId "svm:fogo:mainnet"
+      - architecture: svm
+        svm:
+          chain: fogo
+          cluster: mainnet`}
+  ts={`projects: [{
+  id: "main",
+  networkDefaults: {
+    svm: {
+      // shared policy only — cluster is network identity and must not be here
+      commitment: "confirmed",
+      statePollerDebounce: "500ms",
+    },
+  },
+  networks: [
+    // chain omitted → "solana" → networkId "svm:mainnet-beta"
+    { architecture: "svm", svm: { cluster: "mainnet-beta" } },
+    // explicit chain → networkId "svm:fogo:mainnet"
+    { architecture: "svm", svm: { chain: "fogo", cluster: "mainnet" } },
+  ],
+}]`}
+/>
+
+Both id shapes are addressable the same three ways — URL path, request-body `networkId`, or an `alias`. The fork's colon is carried inside the third path segment:
+
+```
+POST /main/svm/mainnet-beta   →  svm:mainnet-beta
+POST /main/svm/fogo:mainnet   →  svm:fogo:mainnet
+POST /main                    →  body {"networkId": "svm:fogo:mainnet", ...}
+```
+
 ### Request/response behavior
 
-- The `network` label on every Prometheus metric equals the alias when set, otherwise the raw `evm:N` id. This affects all `erpc_network_*` metrics. [`erpc/networks.go:L278-286`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L278-L286)
+- The `network` label on every Prometheus metric equals the alias when set, otherwise the raw network id (`evm:1`, `svm:mainnet-beta`, `svm:fogo:mainnet`). This affects all `erpc_network_*` metrics. [`erpc/networks.go:L278-286`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L278-L286)
 - Static-response hits short-circuit before the multiplexer; `static_response.hit=true` is set on the `Network.Forward` OTel span. They never read or write the cache.
 - Multiplexer followers receive a copy of the leader's response; if the follower's context deadline fires before the leader completes, the error is `ErrNetworkRequestTimeout` (HTTP 504 status code, JSON-RPC error code −32603). This is distinct from `ErrFailsafeTimeoutExceeded` (failsafe policy timeout) and `ErrEndpointRequestTimeout` (individual upstream HTTP timeout).
 - `ErrNetworkInitializing` (HTTP 503) is returned while the bootstrap task is still running. The client should retry. Failed (non-fatal) bootstrap tasks are auto-retried by the background loop with factor-1.5 backoff (3 s to 130 s, task timeout 120 s).
@@ -599,6 +646,9 @@ POST https://eth.rpc.example.com/   →  main/evm:1
 
 ### Related pages
 
+- [SVM commitment & finality](/reference/svm/commitment) — how `svm.commitment` is injected and how SVM finality is classified.
+- [SVM slot tracking & health](/reference/svm/slot-tracking) — the state poller behind `statePollerDebounce`, plus `maxFinalizedSlotLag` and `enforceBlockAvailability` in depth.
+- [SVM JSON-RPC cache](/config/database/svm-json-rpc-cache) — caching for SVM networks.
 - [Static responses](/config/projects/static-responses) — full matching semantics and edge cases for canned replies.
 - [Selection & scoring](/config/projects/selection-policies) — upstream ordering within a network.
 - [Retry](/config/failsafe/retry) — per-network failsafe retry policy.

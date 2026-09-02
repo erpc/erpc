@@ -487,3 +487,188 @@ func TestEvmJsonRpcCache_FanOut_SlowPeerDoesNotBlockFastWinner(t *testing.T) {
 		"fast hit should not wait for unresponsive peer (took %v); slow peer would have taken %v",
 		elapsed, slowDelay)
 }
+
+// missReasonValues enumerates every value the fan-out classifier can put on
+// the `reason` label of erpc_cache_get_success_miss_total.
+var missReasonValues = []string{"connector_error", "connector_miss", "ttl_rejected", "empty_result"}
+
+// missCountsByReason reads erpc_cache_get_success_miss_total per reason value,
+// summed over the label sets of the policies in play. Which connector lands on
+// the connector/policy/ttl labels depends on which racing goroutine reports
+// last, so summing over the candidates absorbs that nondeterminism without
+// loosening the assertion on the label actually under test. Callers diff two
+// snapshots rather than reading absolutes, which keeps the test
+// order-independent against a process-wide CounterVec earlier tests have
+// already incremented.
+func missCountsByReason(t *testing.T, policies []*data.CachePolicy) map[string]float64 {
+	t.Helper()
+	counts := make(map[string]float64, len(missReasonValues))
+	for _, reason := range missReasonValues {
+		var total float64
+		for _, p := range policies {
+			total += promUtil.ToFloat64(telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
+				"", // project: the shared fixtures build the cache without WithProjectId
+				"evm:123",
+				"eth_getBlockByNumber",
+				p.GetConnector().Id(),
+				p.String(),
+				p.GetTTL().String(),
+				reason,
+			))
+		}
+		counts[reason] = total
+	}
+	return counts
+}
+
+// realtimeFanOutPolicies is fanOutPolicies with a short realtime TTL, so a
+// cached block older than that TTL trips the freshness guard instead of
+// serving.
+func realtimeFanOutPolicies(t *testing.T, conns []*data.MockConnector) []*data.CachePolicy {
+	t.Helper()
+	policies := make([]*data.CachePolicy, 0, len(conns))
+	for _, c := range conns {
+		p, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Params:    []interface{}{"latest", "*"},
+			Finality:  common.DataFinalityStateRealtime,
+			TTL:       common.FixedDuration(1 * time.Second),
+			Connector: c.Id(),
+		}, c)
+		require.NoError(t, err)
+		policies = append(policies, p)
+	}
+	return policies
+}
+
+// MissReasonLabel pins the VALUE of the `reason` label on
+// erpc_cache_get_success_miss_total. That label is the only thing separating a
+// cold cache from a broken one: without it a connector that errors or times
+// out is indistinguishable from a connector that genuinely holds no entry, so
+// a cache-backend outage reads as a hit-rate regression instead of the
+// latency/error problem it actually is.
+//
+// Each case drives the fan-out down one classification path and asserts the
+// WHOLE reason vector — the expected value rises by exactly one and every
+// sibling stays flat. Collapsing the classifier to a constant therefore fails
+// here even though it would still satisfy a bare "the miss counter went up"
+// assertion. The mixed cases additionally pin the documented precedence:
+// ttl_rejected > connector_miss > connector_error.
+func TestEvmJsonRpcCache_FanOut_MissReasonLabel(t *testing.T) {
+	// A block mined in Jan 2019: any wall clock this test runs under puts it
+	// far outside realtimeFanOutPolicies' one-second TTL.
+	const staleBlock = `{"number":"0xf","hash":"0xstale","timestamp":"0x5c4b1e00"}`
+
+	cases := []struct {
+		name       string
+		policies   func(t *testing.T, conns []*data.MockConnector) []*data.CachePolicy
+		request    func(t *testing.T, network *Network, cache common.CacheDAL) *common.NormalizedRequest
+		arrange    func(t *testing.T, conns []*data.MockConnector, req *common.NormalizedRequest)
+		wantReason string
+	}{
+		{
+			name: "AllConnectorsFail",
+			arrange: func(t *testing.T, conns []*data.MockConnector, _ *common.NormalizedRequest) {
+				conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+					Return(nil, errors.New("connection refused"))
+				conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+					Return(nil, errors.New("i/o timeout"))
+			},
+			wantReason: "connector_error",
+		},
+		{
+			name: "AllConnectorsHoldNoEntry",
+			arrange: func(t *testing.T, conns []*data.MockConnector, _ *common.NormalizedRequest) {
+				for _, c := range conns {
+					c.On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+						Return(nil, common.NewErrRecordNotFound("evm:123:1", "k", c.Id()))
+				}
+			},
+			wantReason: "connector_miss",
+		},
+		{
+			// A confirmed "I don't have it" is more informative than a peer
+			// that failed to answer, so the miss must not be attributed to the
+			// error — otherwise one flaky connector rewrites the reason for
+			// every cold read fanned out beside it.
+			name: "ConfirmedMissOutranksConnectorFailure",
+			arrange: func(t *testing.T, conns []*data.MockConnector, _ *common.NormalizedRequest) {
+				conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+					Return(nil, errors.New("connection refused"))
+				conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+					Return(nil, common.NewErrRecordNotFound("evm:123:1", "k", conns[1].Id()))
+			},
+			wantReason: "connector_miss",
+		},
+		{
+			// Both connectors DO hold the key; the entry is just too old to
+			// serve. Reporting this as a plain miss would hide a lagging cache
+			// behind what looks like an ordinary cold read.
+			name:     "StaleEntryTripsFreshnessGuard",
+			policies: realtimeFanOutPolicies,
+			request: func(t *testing.T, network *Network, cache common.CacheDAL) *common.NormalizedRequest {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
+				req.SetNetwork(network)
+				req.SetCacheDal(cache)
+				return req
+			},
+			arrange: func(t *testing.T, conns []*data.MockConnector, _ *common.NormalizedRequest) {
+				for _, c := range conns {
+					c.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+						Return([]byte(staleBlock), nil)
+				}
+			},
+			wantReason: "ttl_rejected",
+		},
+		{
+			// The directive skips every connector, so the fan-out spawns
+			// nothing and no goroutine reports an outcome to classify.
+			name: "NoConnectorConsulted",
+			arrange: func(t *testing.T, _ []*data.MockConnector, req *common.NormalizedRequest) {
+				req.SetDirectives(&common.RequestDirectives{SkipCacheRead: "true"})
+			},
+			wantReason: "empty_result",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+				{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+			})
+
+			buildPolicies := fanOutPolicies
+			if tc.policies != nil {
+				buildPolicies = tc.policies
+			}
+			policies := buildPolicies(t, conns)
+			cache.SetPolicies(policies)
+
+			buildRequest := newGetBlockByNumberRequest
+			if tc.request != nil {
+				buildRequest = tc.request
+			}
+			req := buildRequest(t, network, cache)
+			tc.arrange(t, conns, req)
+
+			before := missCountsByReason(t, policies)
+			resp, err := cache.Get(context.Background(), req)
+			after := missCountsByReason(t, policies)
+
+			require.NoError(t, err)
+			require.Nil(t, resp, "every case here is a miss that falls through to the upstream layer")
+
+			for _, reason := range missReasonValues {
+				want := 0.0
+				if reason == tc.wantReason {
+					want = 1.0
+				}
+				assert.Equalf(t, want, after[reason]-before[reason],
+					"erpc_cache_get_success_miss_total{reason=%q} delta", reason)
+			}
+		})
+	}
+}

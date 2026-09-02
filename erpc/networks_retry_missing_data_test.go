@@ -172,6 +172,65 @@ func TestNetworkRetry_MissingDataError(t *testing.T) {
 	})
 }
 
+// Production scenario: directiveDefaults = nil (no RetryEmpty configured).
+// ErrUpstreamsExhausted wrapping all-missing-data causes must retry even without
+// an explicit RetryEmpty=true directive.
+func TestNetworkRetry_AllUpstreamsMissingData_NilDirectives(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	rpc1CallCount := 0
+	rpc2CallCount := 0
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_call")
+		}).
+		Persist().
+		Reply(200).
+		Map(func(r *http.Response) *http.Response { rpc1CallCount++; return r }).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0", "id": 1,
+			"error": map[string]interface{}{"code": -32000, "message": "missing trie node"},
+		})
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_call")
+		}).
+		Persist().
+		Reply(200).
+		Map(func(r *http.Response) *http.Response { rpc2CallCount++; return r }).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0", "id": 1,
+			"error": map[string]interface{}{"code": -32000, "message": "missing trie node"},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// nil directiveDefaults = production scenario (no retryEmpty configured)
+	network := setupTestNetworkForMissingDataRetry(t, ctx, nil,
+		&common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(10 * time.Millisecond)},
+	)
+
+	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"0xa6d381"]}`)
+	req := common.NewNormalizedRequest(requestBytes)
+	req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults) // nil → no-op
+
+	_, err := network.Forward(ctx, req)
+	require.Error(t, err)
+
+	totalCalls := rpc1CallCount + rpc2CallCount
+	t.Logf("Total upstream calls: %d (rpc1: %d, rpc2: %d)", totalCalls, rpc1CallCount, rpc2CallCount)
+
+	// With nil directiveDefaults and MaxAttempts=3, all-missing ErrUpstreamsExhausted
+	// must retry at network scope: 3 attempts × 2 upstreams = 6 total calls.
+	assert.Equal(t, 6, totalCalls, "nil directiveDefaults must not block all-missing retry")
+}
+
 func TestNetworkRetry_ServerSideException(t *testing.T) {
 	t.Run("HTTP500_ShouldRetryWithOtherUpstreams", func(t *testing.T) {
 		util.ResetGock()
