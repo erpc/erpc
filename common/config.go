@@ -2490,6 +2490,21 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics    int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError        *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency    int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	// GetLogsMaxResponseBytes caps the total size of a MERGED eth_getLogs response —
+	// the sum of every sub-response a split assembles, not the size of any one piece.
+	// Splitting exists to get past an upstream's per-request limits, so once a request
+	// is split there is no remaining bound on what the client can make the proxy hold
+	// in memory: a range the upstream refuses is halved, fetched concurrently, and
+	// merged whole. This is the only bound on that total.
+	//
+	// Sub-requests are cancelled as soon as the running total crosses the cap, so the
+	// in-flight ones do not materialise either, and the client gets
+	// ErrGetLogsExceededMaxAllowedResponseSize (HTTP 413) — a distinct code from
+	// ErrEndpointRequestTooLarge precisely so it does NOT feed the splitting path that
+	// produced the response.
+	//
+	// Zero (the default) disables the cap and preserves the historical behaviour.
+	GetLogsMaxResponseBytes int64 `yaml:"getLogsMaxResponseBytes,omitempty" json:"getLogsMaxResponseBytes"`
 	// TraceFilterSplitOnError controls reactive splitting for trace_filter and
 	// arbtrace_filter requests when the upstream returns a range-too-large error.
 	// Nil disables the feature.
