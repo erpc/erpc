@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
@@ -105,6 +107,13 @@ func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	args := m.Called(ctx)
 	return args.Get(0).(int64)
+}
+
+// EvmLeaderUpstream is required by common.EvmNetwork. Tests that don't
+// exercise leader selection leave this unstubbed — returning nil is safe
+// because the helpers only use the leader where it's explicitly configured.
+func (m *mockNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
+	return nil
 }
 
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
@@ -1591,3 +1600,70 @@ func (p *fixedPoller) LatestBlock() int64 { return p.latest }
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 
 func (p *fixedPoller) IsObjectNull() bool { return false }
+
+// TestExecuteGetLogsSubRequests_MergedResponseSizeBudget covers the bound on the MERGED
+// eth_getLogs response. Splitting exists to get past an upstream's per-request limits, so
+// without this budget nothing caps what a single client request can make the proxy hold:
+// the halves are fetched concurrently and merged whole. Zero must keep that historical
+// behaviour, so both directions are asserted here.
+func TestExecuteGetLogsSubRequests_MergedResponseSizeBudget(t *testing.T) {
+	// ~120 bytes of result per sub-response.
+	bigLog := `["` + strings.Repeat("a", 116) + `"]`
+
+	newReq := func() *common.NormalizedRequest {
+		return common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x8"}],"id":1}`))
+	}
+	subs := []ethGetLogsSubRequest{
+		{fromBlock: 1, toBlock: 2}, {fromBlock: 3, toBlock: 4},
+		{fromBlock: 5, toBlock: 6}, {fromBlock: 7, toBlock: 8},
+	}
+	setup := func(n *mockNetwork, maxBytes int64) {
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{
+			GetLogsSplitConcurrency: 1, // deterministic: one piece at a time
+			GetLogsMaxResponseBytes: maxBytes,
+		}}).Maybe()
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		// A fresh response per call: the executor releases each one, so a single
+		// shared object would come back bodyless on the second sub-request.
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				return common.NewNormalizedResponse().WithJsonRpcResponse(
+					common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(bigLog), nil),
+				), nil
+			},
+			nil,
+		).Maybe()
+	}
+
+	t.Run("merged response over budget is refused, not assembled", func(t *testing.T) {
+		n := new(mockNetwork)
+		setup(n, 200) // two pieces fit, the third crosses
+
+		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "")
+
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.True(t,
+			common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedResponseSize),
+			"want ErrGetLogsExceededMaxAllowedResponseSize, got %v", err)
+		// Must NOT surface as the code that drives splitting, or the refusal would feed
+		// the very path it exists to bound.
+		assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge),
+			"budget refusal must not be reported as ErrEndpointRequestTooLarge")
+		assert.True(t, common.IsClientError(err), "the client asked for too much; this is a 4xx")
+	})
+
+	t.Run("zero budget keeps the historical unbounded behaviour", func(t *testing.T) {
+		n := new(mockNetwork)
+		setup(n, 0)
+
+		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "")
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		size, err := result.Size(context.Background())
+		require.NoError(t, err)
+		assert.Greater(t, size, 200, "all four pieces should have been merged")
+	})
+}

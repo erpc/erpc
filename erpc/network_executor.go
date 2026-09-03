@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
 	"github.com/erpc/erpc/telemetry"
@@ -30,8 +31,9 @@ type networkExecutor struct {
 	// consensus(retry(hedge(slotInner))) per spec §11.2.
 	consensus consensusRunner
 
-	method     string
-	finalities []common.DataFinalityState
+	method      string
+	finalities  []common.DataFinalityState
+	requestKind string // "*" (any) | "user" | "internal"
 
 	emptyResultAccept []string
 
@@ -59,6 +61,7 @@ func NewNetworkExecutor(
 	if cfg == nil {
 		return &networkExecutor{
 			method:                       "*",
+			requestKind:                  "*",
 			logger:                       logger,
 			emptyResultAccept:            common.DefaultEmptyResultAccept(),
 			dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
@@ -77,11 +80,15 @@ func NewNetworkExecutor(
 		logger:                       logger,
 		method:                       cfg.MatchMethod,
 		finalities:                   cfg.MatchFinality,
+		requestKind:                  cfg.MatchRequestKind,
 		consensus:                    consensus,
 		dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
 	}
 	if e.method == "" {
 		e.method = "*"
+	}
+	if e.requestKind == "" {
+		e.requestKind = "*"
 	}
 	if cfg.Timeout != nil {
 		e.timeout = common.NewTimeoutFunc(logger, cfg.Timeout)
@@ -99,6 +106,9 @@ func (e *networkExecutor) MatchMethod() string { return e.method }
 
 // MatchFinality returns the configured finality filter.
 func (e *networkExecutor) MatchFinality() []common.DataFinalityState { return e.finalities }
+
+// MatchRequestKind returns the configured request-kind filter ("*"/"user"/"internal").
+func (e *networkExecutor) MatchRequestKind() string { return e.requestKind }
 
 // Timeout exposes the configured TimeoutFunc (nil when no timeout).
 func (e *networkExecutor) Timeout() common.TimeoutFunc { return e.timeout }
@@ -180,7 +190,19 @@ func (e *networkExecutor) Run(
 	if rds := req.Directives(); rds != nil {
 		skipConsensus = rds.SkipConsensus
 	}
-	if e.HasConsensus() && e.consensus != nil && !skipConsensus {
+	// A single-dispatch write (requestAirdrop) must never enter consensus: the
+	// executor spawns maxParticipants slots in parallel, each drawing a
+	// DISTINCT upstream, so one client call would mint once per participant and
+	// then report a dispute over the signatures it just created. Falling
+	// through to retry(hedge(sweep)) keeps the single-dispatch guard that the
+	// hedge gate below and the SVM post-forward write guard already enforce.
+	// Tx broadcasts stay consensus-eligible on purpose — consensus
+	// short-circuits them to the first valid signature.
+	singleDispatchWrite := false
+	if m, merr := req.Method(); merr == nil {
+		singleDispatchWrite = svm.IsSingleDispatchWriteMethod(m)
+	}
+	if e.HasConsensus() && e.consensus != nil && !skipConsensus && !singleDispatchWrite {
 		slotInner := func(slotCtx context.Context, slotReq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream)
 		}
@@ -393,6 +415,52 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			}
 			return "block_unavailable"
 		}
+		if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			// ErrUpstreamsExhausted must be checked before ErrCodeEndpointMissingData:
+			// HasErrorCode walks the cause chain and returns true for exhausted errors
+			// where all upstreams returned missing-data, so it would match the block
+			// below and hit the RetryEmpty gate — which should not apply here.
+			// When ALL causes are missing-data (every provider returns -32004 because
+			// the block isn't indexed yet), retry with delay so the block has time to
+			// be indexed.
+			if ue, ok := err.(*common.ErrUpstreamsExhausted); ok {
+				causes := ue.Errors()
+				allMissing := len(causes) > 0
+				for _, c := range causes {
+					if !common.HasErrorCode(c, common.ErrCodeEndpointMissingData) {
+						allMissing = false
+						break
+					}
+				}
+				if allMissing {
+					if req != nil {
+						if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+							return ""
+						}
+					}
+					// A time-delayed re-sweep only helps data that will *appear*
+					// later (a not-yet-indexed block as the tip advances). When
+					// every provider reports the slot permanently skipped/absent
+					// (SVM -32007/-32009), the cross-provider sweep already ran and
+					// waiting cannot change the verdict — surface it now instead of
+					// burning another retry round.
+					permanent := true
+					for _, c := range causes {
+						if !common.IsPermanentlyMissingData(c) {
+							permanent = false
+							break
+						}
+					}
+					if permanent {
+						return ""
+					}
+					if e.dataUnavailableCapReached(attempt) {
+						return ""
+					}
+					return "missing_data"
+				}
+			}
+		}
 		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			// MissingData = "the upstream doesn't have this data".
 			// Respect the EXPLICIT RetryEmpty=false directive (caller
@@ -402,6 +470,11 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
 					return ""
 				}
+			}
+			// A permanently-absent slot (skipped/authoritative) will not appear
+			// on a wait-and-retry — surface it now.
+			if common.IsPermanentlyMissingData(err) {
+				return ""
 			}
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
@@ -526,9 +599,10 @@ func (e *networkExecutor) runHedge(
 	}
 	// Write methods are not safe to hedge (non-idempotent broadcasts cause
 	// duplicate side-effects). eth_sendRawTransaction has its own consensus
-	// fan-out elsewhere.
+	// fan-out elsewhere. SVM names are bare (sendTransaction, requestAirdrop),
+	// so both architecture sets are checked.
 	if req != nil {
-		if m, _ := req.Method(); m != "" && evm.IsNonRetryableWriteMethod(m) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return inner(ctx, req)
 		}
 	}
@@ -581,6 +655,21 @@ func (e *networkExecutor) runHedge(
 			if uxe, ok := err.(*common.ErrUpstreamsExhausted); ok {
 				if uxe.Upstreams() == nil || len(uxe.Upstreams()) == 0 {
 					return false
+				}
+				// When every upstream returned -32004/missing-data, no sibling
+				// hedge leg can do better — they will all find the same upstreams
+				// consumed. Keep this result so the retry layer (shouldRetryWithReason)
+				// sees ErrUpstreamsExhausted directly and applies the 500ms delay.
+				causes := uxe.Errors()
+				allMissing := len(causes) > 0
+				for _, c := range causes {
+					if !common.HasErrorCode(c, common.ErrCodeEndpointMissingData) {
+						allMissing = false
+						break
+					}
+				}
+				if allMissing {
+					return true
 				}
 			}
 			// Underlying-retryable wrapped errors (e.g. ErrUpstreamsExhausted

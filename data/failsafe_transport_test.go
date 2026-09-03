@@ -97,7 +97,7 @@ func TestCacheFailsafe_RetryPolicy_RetriesTypedTransportFailure(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return([]byte("data"), nil).Once()
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 5,
@@ -122,7 +122,7 @@ func TestCacheFailsafe_RetryPolicy_RetriesGrpcUnavailable(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return([]byte("data"), nil).Once()
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 5,
@@ -148,7 +148,7 @@ func TestCacheFailsafe_RetryPolicy_RetriesNetTimeout(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return([]byte("data"), nil).Once()
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 5,
@@ -172,7 +172,7 @@ func TestCacheFailsafe_RetryPolicy_DoesNotRetryApplicationError(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, appErr)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 5,
@@ -194,7 +194,7 @@ func TestCacheFailsafe_RetryPolicy_DoesNotRetryGrpcInvalidArgument(t *testing.T)
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, status.Error(codes.InvalidArgument, "bad params"))
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 5,
@@ -230,7 +230,7 @@ func TestCacheFailsafe_RetryPolicy_StillExcludesKnownNonRetriable(t *testing.T) 
 			mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 				Return(nil, tc.err)
 
-			fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+			fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 				{
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 3,

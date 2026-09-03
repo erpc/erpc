@@ -238,7 +238,7 @@ Explicitly excluded: `eth_getBlockByHash` (subgraph upstreams commonly return nu
 | `erpc_cache_set_original_bytes_total` | project, network, category, connector, policy, ttl | Uncompressed bytes on cache SET. |
 | `erpc_cache_set_compressed_bytes_total` | project, network, category, connector, policy, ttl | Compressed bytes on cache SET. |
 | `erpc_upstream_attempt_outcome_total` | project, network, upstream, category, outcome, is_hedge, is_retry, finality | One increment per upstream attempt with its terminal outcome. |
-| `erpc_upstream_block_head_large_rollback` | — | Block-head rollback exceeded `DefaultToleratedBlockHeadRollback` (1024 blocks). |
+| `erpc_upstream_block_head_large_rollback` | project, vendor, network, upstream, finality | Block-head rollback exceeded `DefaultToleratedBlockHeadRollback` (1024 blocks). `finality` is the head axis (`latest`/`finalized`). |
 
 ### Trace spans
 

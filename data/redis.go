@@ -150,6 +150,15 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		r.setTimeout = options.WriteTimeout
 	}
 
+	// Honor context deadlines on in-flight commands. go-redis v9 defaults
+	// ContextTimeoutEnabled to false, where a ctx deadline only gates pool
+	// acquisition and an in-flight read waits for the socket ReadTimeout —
+	// so every WithTimeout wrapper in this file (getTimeout/setTimeout) and
+	// the connector-failsafe timeout silently failed to bound a slow
+	// command. ReadTimeout/WriteTimeout remain the safety net for
+	// deadline-less contexts.
+	options.ContextTimeoutEnabled = true
+
 	/**
 	* if tls.enabled: true in config → build a tls.Config and
 	* apply or merge it.

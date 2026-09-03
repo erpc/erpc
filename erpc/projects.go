@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/internal/policy"
@@ -15,7 +16,12 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+// maxIntegrityTraceResponseBytes caps the served-response body recorded on the
+// Project.Forward span for a saved (integrity-caught) request in detailed tracing.
+const maxIntegrityTraceResponseBytes = 128 * 1024
 
 type PreparedProject struct {
 	Config                      *common.ProjectConfig
@@ -157,6 +163,13 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	resp, err := p.doForward(ctx, network, nq)
 
+	// Per-request integrity latency overhead (data-checks + aux force-fetches the
+	// request waited on, summed across attempts). Recorded for both success and
+	// failure outcomes; excludes failover latency from rejections.
+	if oh := nq.IntegrityOverhead(); oh > 0 {
+		telemetry.ObserverHandle(telemetry.MetricIntegrityOverhead, p.Config.Id, network.Label(), method).Observe(oh.Seconds())
+	}
+
 	shadowUpstreams := network.ShadowUpstreams()
 	if len(shadowUpstreams) > 0 {
 		if resp != nil {
@@ -197,6 +210,26 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 
 	if err == nil && resp != nil {
+		// Saved: an integrity check rejected a bad response earlier in this request
+		// and the failover ultimately returned a good one — without the module the
+		// client would have gotten the wrong/invalid response.
+		if nq.IntegrityCaught() {
+			telemetry.MetricIntegritySaved.WithLabelValues(p.Config.Id, network.Label(), method, nq.IntegrityRejectedFinality()).Inc()
+			// Record the corrected (served) body once, so a by-hand sanity check can
+			// compare it against the rejected "original" body on the integrity span.
+			// Reliable here (IntegrityCaught is set, the outcome is known) unlike the
+			// racy hedged pass. The IsTracingDetailed gate short-circuits before any
+			// body copy, so it's zero-cost when tracing is off.
+			if common.IsTracingDetailed {
+				if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
+					body := jrr.GetResultBytes()
+					if len(body) > maxIntegrityTraceResponseBytes {
+						body = body[:maxIntegrityTraceResponseBytes]
+					}
+					span.SetAttributes(attribute.String("integrity.served_response", string(body)))
+				}
+			}
+		}
 		upstream := resp.Upstream()
 		vendor := "n/a"
 		upstreamId := "n/a"
@@ -208,9 +241,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			upstreamId = upstream.Id()
 		}
 
-		if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
-			// Record block-range heatmap using dynamic buckets and human-readable labels
-			recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+		if network.cfg.Architecture == common.ArchitectureEvm {
+			if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
+				// Record block-range heatmap using dynamic buckets and human-readable labels
+				recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+			}
 		}
 		telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
 			p.Config.Id,
@@ -242,6 +277,49 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		).Observe(dur.Seconds())
 		return resp, err
 	} else {
+		// FALLBACK SERVE: a fallback-eligible rejection (recordOnly verdict
+		// escalated by autoCorrectWhenPossible) hunted a validated replacement
+		// and found none. The policy's promise is that the client never pays
+		// an error for such a mismatch — serve the flagged original, recorded
+		// loudly. Deliberately checked before any error classification: ANY
+		// terminal failure while a stash exists is strictly worse for the
+		// client than the stashed answer the policy already deemed serveable.
+		if fb := nq.TakeIntegrityFallbackResponse(); fb != nil && fb.Response != nil {
+			telemetry.MetricIntegrityFallbackServed.WithLabelValues(
+				p.Config.Id, network.Label(), method, fb.CheckID, fb.Finality,
+			).Inc()
+			lg.Warn().
+				Str("check", fb.CheckID).
+				Str("finality", fb.Finality).
+				Str("reason", fb.Reason).
+				Err(err).
+				Msg("integrity: no validated replacement found — serving the flagged original (recordOnly policy)")
+			fb.Response.SetDuration(time.Since(start))
+			return fb.Response, nil
+		}
+		// Failed due to integrity: a check rejected a response and no good one was
+		// found (every candidate failed), so the request errored rather than serving
+		// bad data. The rejecting check is the "why".
+		if nq.IntegrityCaught() {
+			rejectedCheck := nq.IntegrityRejectedCheck()
+			telemetry.MetricIntegrityFailed.WithLabelValues(p.Config.Id, network.Label(), method, rejectedCheck, nq.IntegrityRejectedFinality()).Inc()
+			// This rejection corrected nothing — no upstream produced an acceptable
+			// response. Repeated on the same (network, check) that is the all-upstream
+			// signature of a check which is protocol-invalid for the chain rather than
+			// catching corruption, and it converts straight into client errors because
+			// it defeats failover. Report it so the chain profile is reviewed in
+			// minutes rather than hours. The verdict is deliberately NOT changed here:
+			// when every vendor really is wrong, erroring beats serving known-bad data.
+			if report, count := integrity.RecordExhaustion(network.Label(), rejectedCheck); report {
+				telemetry.MetricIntegrityProtocolSuspect.WithLabelValues(p.Config.Id, network.Label(), rejectedCheck).Inc()
+				lg.Warn().
+					Str("check", rejectedCheck).
+					Str("networkLabel", network.Label()).
+					Int("exhaustionsInWindow", count).
+					Dur("window", integrity.ExhaustionWindow()).
+					Msg("integrity: check is failing across all upstreams (protocol-invalid signature) — review the chain profile for this network")
+			}
+		}
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
@@ -277,17 +355,20 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	switch network.cfg.Architecture {
-	case common.ArchitectureEvm:
+	h := network.architectureHandler
+	if h != nil {
 		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)
-		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
-			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+		if handled, resp, err := h.HandleProjectPreForward(ctx, network, nq); handled {
+			return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
 		}
 	}
 
 	// If not handled, then fallback to the normal forward
 	resp, err := network.Forward(ctx, nq)
-	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	if h != nil {
+		return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	}
+	return resp, err
 }
 
 func (p *PreparedProject) AcquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {

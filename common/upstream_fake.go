@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -24,6 +25,7 @@ type FakeUpstream struct {
 	lastCordonedReason string
 	cordonMu           sync.RWMutex
 	tracker            HealthTracker
+	stateProvenBlock   atomic.Int64
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -188,6 +190,16 @@ func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod
 	return true, nil
 }
 
+func (u *FakeUpstream) EvmStateProvenBlock() int64 { return u.stateProvenBlock.Load() }
+func (u *FakeUpstream) EvmSetStateProvenBlock(n int64) {
+	for {
+		cur := u.stateProvenBlock.Load()
+		if n <= cur || u.stateProvenBlock.CompareAndSwap(cur, n) {
+			return
+		}
+	}
+}
+
 func (u *FakeUpstream) EvmEffectiveLatestBlock() int64 {
 	if u.evmStatePoller == nil {
 		return 0
@@ -304,9 +316,11 @@ func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
 
 // FakeHealthTracker is a no-op implementation of HealthTracker for testing
 type FakeHealthTracker struct {
-	MisbehaviorRecorded bool
-	MisbehaviorCount    int
-	mu                  sync.Mutex
+	MisbehaviorRecorded     bool
+	MisbehaviorCount        int
+	LastMisbehaviorMethod   string
+	LastMisbehaviorFinality DataFinalityState
+	mu                      sync.Mutex
 }
 
 func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState) {
@@ -314,6 +328,8 @@ func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string
 	defer t.mu.Unlock()
 	t.MisbehaviorRecorded = true
 	t.MisbehaviorCount++
+	t.LastMisbehaviorMethod = method
+	t.LastMisbehaviorFinality = finality
 }
 
 func (t *FakeHealthTracker) RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState) {

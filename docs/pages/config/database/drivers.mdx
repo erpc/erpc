@@ -11,6 +11,8 @@ import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from ".
 
 Pick the back-end that fits your deployment — in-process LRU for a single node, Redis for multi-instance scale, PostgreSQL or DynamoDB for managed persistence, or a read-only gRPC BDS layer for historical chain data. Swap drivers by changing one line. Wrap any connector with retry, circuit-breaker, hedge, or timeout policies so a slow cache never slows down your upstream calls.
 
+Connectors are architecture-neutral. The examples on this page use `database.evmJsonRpcCache.connectors[]`; the identical connector schema lives under `database.svmJsonRpcCache.connectors[]` for SVM networks, and both caches can reference the same physical backend — partition keys are prefixed with the network id (`evm:1`, `svm:mainnet-beta`), so the keyspaces are disjoint. See [SVM JSON-RPC cache](/config/database/svm-json-rpc-cache).
+
 ## Quick taste
 
 Illustrative, not a tuned production config — add a Redis connector:
@@ -130,7 +132,7 @@ Two index constants control lookup paths: `ConnectorMainIndex` (`"idx_main"`) fo
 
 **gRPC connector (read-only).** The gRPC connector is a read-through layer backed by BDS (Blockchain Data Standards) gRPC servers that hold historical EVM chain data. It supports no writes. Configure it alongside a write-capable connector in a multi-connector cache policy. Server discovery supports both a static `servers` list and a `bootstrap` HTTP URL. Only a specific allowlist of methods is forwarded to BDS: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getLogs`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_chainId`, and `eth_blockNumber`; unsupported methods return a fast miss (`(nil, nil)`) without an RPC call. Fast-miss rejection: if the request block number is below `earliestByNetwork[networkId]` (and that value is &gt; 0), `ErrRecordNotFound` is returned immediately without an RPC. A background goroutine polls chain head every 60 seconds, implementing the `CacheHeadReporter` interface used by the real-time cache freshness gate. `eth_blockNumber` has no native BDS method; the connector intercepts it, calls `eth_getBlockByNumber("latest", false)` internally, and returns only the `number` field as a canonical hex string with leading zeros normalized via uint64 round-trip (zero block → `"0x0"`). On failure it returns `ErrRecordNotFound` so the request falls through to live upstreams.
 
-**FailsafeConnector.** Any connector can be wrapped by setting `failsafeForGets` and/or `failsafeForSets`. Each entry specifies a `matchMethod` pattern and optional `matchFinality` list, plus one or more of retry, circuit-breaker, hedge, and timeout policies. Executor selection (`pickCacheExecutor`) reads the method and finality from `ctx.Value(common.RequestContextKey)`; if no request is attached (background prefetch, tests), `method = ""` and `finality = 0`. The most-specific match wins: (method + finality) &gt; (method only) &gt; (finality only) &gt; wildcard. A no-op executor is always appended so unmatched operations proceed unconditionally. `List`, `Lock`, `WatchCounterInt64`, and `PublishCounterInt64` bypass all failsafe policies. Retry fires only on transport errors — cache misses, expired records, and context cancellation are never retried. Transport errors recognized by `isTransportError` include net.Error timeouts, io.EOF/ErrUnexpectedEOF, syscall connection errors, gRPC status codes `Unavailable`/`DeadlineExceeded`/`Aborted`, Redis cluster transients (`CLUSTERDOWN`, `MASTERDOWN`, `TRYAGAIN`, `LOADING`), HTTP/2 GOAWAY, and `"use of closed network connection"`. Hedge supports only static delays at the connector layer; quantile-based delays are rejected at construction time.
+**FailsafeConnector.** Any connector can be wrapped by setting `failsafeForGets` and/or `failsafeForSets`. Each entry specifies a `matchMethod` pattern and optional `matchFinality` list, plus one or more of retry, circuit-breaker, hedge, and timeout policies. Executor selection (`pickCacheExecutor`) reads the method and finality from `ctx.Value(common.RequestContextKey)`; if no request is attached (background prefetch, tests), `method = ""` and `finality = 0`. The most-specific match wins: (method + finality) &gt; (method only) &gt; (finality only) &gt; wildcard. A no-op executor is always appended so unmatched operations proceed unconditionally. `List`, `Lock`, `WatchCounterInt64`, and `PublishCounterInt64` bypass all failsafe policies. Retry fires only on transport errors — cache misses, expired records, and context cancellation are never retried. Transport errors recognized by `isTransportError` include net.Error timeouts, io.EOF/ErrUnexpectedEOF, syscall connection errors, gRPC status codes `Unavailable`/`DeadlineExceeded`/`Aborted`, Redis cluster transients (`CLUSTERDOWN`, `MASTERDOWN`, `TRYAGAIN`, `LOADING`), HTTP/2 GOAWAY, and `"use of closed network connection"`. Timeout and hedge accept both static durations and quantile-driven (`AdaptiveDuration`) values: a quantile resolves against the executor's own latency — a 1-minute sliding window (10 sub-buckets, rotated every ~6s) tracked per (connector × direction × method-pattern × finality), fed only by completed operations. Cold start (no samples yet) falls back to `base + min`; a timeout spec with unset `min` additionally gets the `min = base/2` (or `500ms` when `base == 0`) auto-floor at executor construction.
 
 **AWS IAM authentication (Redis & PostgreSQL).** Both the Redis (ElastiCache) and PostgreSQL (RDS) connectors can authenticate with short-lived AWS IAM tokens instead of static passwords. A shared `createAWSSession` helper resolves credentials from `iamAuth.auth` (same modes as `dynamodb.auth`) or, when omitted, the AWS SDK default chain (instance role → IRSA → env → shared file). For **ElastiCache**, eRPC presigns a SigV4 token (via `aws/signer/v4`, scheme stripped) and feeds it through go-redis's `CredentialsProviderContext`, which fires on every new physical connection; `ConnMaxLifetime` is pinned to 11h (±30m jitter) so each connection refreshes its token well before AWS's 12-hour forced disconnect — no background goroutines. For **RDS**, eRPC calls `rdsutils.BuildAuthToken` inside pgxpool's `BeforeConnect` hook, minting a fresh token per new pool connection; tokens are valid 15 minutes but only checked at connect time, and RDS has no 12-hour cap so the 5h `MaxConnLifetime` is unchanged. IAM auth is also available for `rateLimiters.store.redis`: set `iamAuth.enabled: true` on the `store.redis` block and eRPC builds a `radix/v3` pool whose `PoolConnFunc` mints a fresh SigV4 token on every new physical connection; `PoolMaxLifetime` is pinned to 11h so connections rotate before AWS's 12-hour forced disconnect (radix lacks a jitter knob — connections spread naturally across the pool's dial history).
 
@@ -155,11 +157,11 @@ Each `FailsafeConfig` entry under `failsafeForGets` / `failsafeForSets`:
 | `retry.delay` | Duration | — | Base delay between attempts. |
 | `retry.backoffMaxDelay` | Duration | — | Max delay with exponential backoff. |
 | `retry.backoffFactor` | float64 | — | Backoff multiplier per attempt. |
-| `circuitBreaker.*` | — | — | Standard breaker fields. `ErrRecordNotFound` and `ErrRecordExpired` count as `OutcomeIgnore`, not failures. |
-| `timeout.duration` | Duration | — | Per-operation timeout via `context.WithTimeoutCause`. |
-| `hedge.delay` | Duration | — | **Static delay only.** Quantile-based hedge is rejected at construction: `"hedge quantile is not supported for connector-level failsafe"` — <SourceLink file="data/cache_executor.go" lines="37-41" /> |
+| `circuitBreaker.*` | — | — | Standard breaker fields — see [Circuit breaker](/config/failsafe/circuit-breaker). The executor’s own timeout expiry counts as a breaker failure (the timeout policy is the sole definition of "too slow"), so sustained timeouts open the breaker and cache reads fail fast until a half-open probe completes in time — <SourceLink file="data/cache_executor.go" lines="279-309" />. `ErrRecordNotFound` and `ErrRecordExpired` count as `OutcomeIgnore`, not failures; ignored outcomes still release half-open trial permits. |
+| `timeout.duration` | `Duration \| AdaptiveDuration` | — | Per-operation timeout via `context.WithTimeoutCause`. Quantile mode resolves against the connector's own latency window; unset `min` gets the `base/2` (or `500ms`) auto-floor — <SourceLink file="data/cache_executor.go" lines="75-85" /> |
+| `hedge.delay` | `Duration \| AdaptiveDuration` | — | Static delay, or quantile-driven: resolves against the connector's own 1-minute latency window; cold start (no samples) falls back to `base + min` — <SourceLink file="data/cache_executor.go" lines="204-207" /> |
 | `hedge.maxCount` | int | — | Max additional hedged copies. |
-| `consensus` | — | nil | **Rejected at construction** with `"consensus is not supported for connector-level failsafe"` — <SourceLink file="data/cache_executor.go" lines="31-35" /> |
+| `consensus` | — | nil | **Rejected at construction** with `"consensus is not supported for connector-level failsafe"` — <SourceLink file="data/cache_executor.go" lines="59-63" /> |
 
 #### Memory connector — <SourceLink file="common/config.go" lines="361-365" />, defaults <SourceLink file="common/defaults.go" lines="935-943" />
 
@@ -311,8 +313,10 @@ budget independently for each access pattern:
 
 **2. gRPC BDS connector with hedge + timeout failsafe.** The canonical production
 pattern: a gRPC historical-data reader as the first connector, wrapped with a 400ms
-timeout and a 100ms static hedge so a slow BDS server fires a backup rather than
-stalling the request. Quantile hedge is rejected at this layer — static delay only:
+timeout and a p95 quantile hedge so a slow BDS server fires a backup rather than
+stalling the request. The hedge delay tracks this connector's own recent latency
+(1-minute window per method/finality executor); before any samples exist it falls
+back to `base + min`:
 
 <ConfigTabs
   path="database.evmJsonRpcCache.connectors[]"
@@ -338,8 +342,12 @@ stalling the request. Quantile hedge is rejected at this layer — static delay 
               # failsafe layer in case gRPC context propagation is delayed
               duration: 400ms
             hedge:
-              # static delay only — quantile hedge is rejected for connectors
-              delay: 100ms
+              delay:
+                # p95 of this connector's own completed reads (1-minute window)
+                quantile: 0.95
+                # floor; also cold-start fallback (no samples yet → base+min)
+                min: 50ms
+                max: 200ms
               maxCount: 1`}
   ts={`database: {
   evmJsonRpcCache: {
@@ -357,8 +365,8 @@ stalling the request. Quantile hedge is rejected at this layer — static delay 
         retry: { maxAttempts: 2, delay: "0" },
         // 400ms = same as getTimeout; belt-and-suspenders at failsafe layer
         timeout: { duration: "400ms" },
-        // static delay only — quantile hedge is rejected for connectors
-        hedge: { maxCount: 1, delay: "100ms" },
+        // p95 of this connector's own reads (1m window); cold start → base+min
+        hedge: { maxCount: 1, delay: { quantile: 0.95, min: "50ms", max: "200ms" } },
       }],
     }],
   },
@@ -652,9 +660,9 @@ The RDS `db-XXXXXXXXXXXXXXXX` resource ID is the instance's resource ID (RDS con
 
 13. **gRPC block-head poller: zero `latestTs` means "unknown", not genesis block.** When `eth_getBlockByNumber("latest")` returns a block with a zero or absent `timestamp` field, `CacheLatestBlockTimestamp` returns `ok=false` and the freshness gate fails open. [`data/grpc.go:L349-L357`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L349-L357)
 
-14. **Hedge quantile rejected for connector-level failsafe.** Only static `delay.base` / `delay.min` work. `hedge.delay.quantile > 0` fails validation with `"hedge quantile is not supported for connector-level failsafe"`. [`data/cache_executor.go:L37-L41`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L37-L41)
+14. **Quantile timeout/hedge at connector scope resolve from the connector's own latency window.** Each (method, finality) executor owns a `QuantileTracker` — 1-minute sliding window, 10 sub-buckets rotated every ~6s — created only when a configured policy sets `quantile > 0` (static configs pay no tracking cost). Only completed operations feed it: successes, semantic misses, and the executor's own timeout expiry; transport errors and attempts canceled by the parent context stay out. Cold start falls back to `base + min`. [`data/cache_executor.go:L14-L20`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L14-L20), [`data/cache_executor.go:L266-L281`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L266-L281)
 
-15. **Consensus rejected for connector-level failsafe.** `consensus` non-nil at construction → `ErrFailsafeConfiguration` at startup. [`data/cache_executor.go:L31-L35`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L31-L35)
+15. **Consensus rejected for connector-level failsafe.** `consensus` non-nil at construction → `ErrFailsafeConfiguration` at startup. [`data/cache_executor.go:L59-L63`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L59-L63)
 
 16. **`dynamodb.auth.accessKeyID` is case-sensitive.** The struct tag is `yaml:"accessKeyID"` (capital `I` and `D`). Using `accessKeyId` (lowercase `d`) silently skips the field; AWS falls through to the default credential chain. [`common/config.go:L483`](https://github.com/erpc/erpc/blob/main/common/config.go#L483)
 
@@ -754,7 +762,7 @@ The RDS `db-XXXXXXXXXXXXXXXX` resource ID is the instance's resource ID (RDS con
 - [`data/dynamodb.go:L1-L983`](https://github.com/erpc/erpc/blob/main/data/dynamodb.go#L1-L983) — DynamoDB connector; split read/write clients; GSI; native TTL + client-side expiry check; conditional-PutItem locking; polling `WatchCounterInt64`
 - [`data/grpc.go:L1-L478`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L1-L478) — Read-only gRPC BDS connector; bootstrap; chain probing; `eth_blockNumber` translation; fast-miss rejection; 60s head poller; `CacheLatestBlockTimestamp`
 - [`data/failsafe.go:L25-L216`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L25-L216) — `FailsafeConnector`; `pickCacheExecutor` four-tier selection; `isTransportError`; `CacheHeadReporter` forwarding
-- [`data/cache_executor.go:L1-L160`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L1-L160) — `cacheExecutor` retry/hedge/breaker/timeout pipeline; transport-error-only retry; consensus/hedge-quantile rejection
+- [`data/cache_executor.go:L1-L310`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L1-L310) — `cacheExecutor` retry/hedge/breaker/timeout pipeline; per-executor latency window feeding quantile timeout/hedge; transport-error-only retry; own-timeouts-as-breaker-failures classification; consensus rejection
 - [`architecture/evm/json_rpc_cache.go:L834-L924`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L834-L924) — `shouldAcceptCachedResult`: freshness gate; response-timestamp path; `CacheHeadReporter` fallback; fail-open logic
 - [`common/defaults.go:L846-L1099`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L846-L1099) — `SetDefaults` for all connector configs; driver inference; default table names by scope; IAM auto-TLS (Redis) and `sslmode=require` + endpoint/dbUser derivation (PostgreSQL)
 - [`data/aws_auth.go:L1-L42`](https://github.com/erpc/erpc/blob/main/data/aws_auth.go#L1-L42) — shared `createAWSSession` helper; resolves `iamAuth.auth` modes or the AWS SDK default credential chain
@@ -766,7 +774,7 @@ The RDS `db-XXXXXXXXXXXXXXXX` resource ID is the instance's resource ID (RDS con
 - [Cache policies](/config/database/cache-policies) — configure which methods get cached and with what TTL; connectors are selected here.
 - [Real-time cache](/config/database/realtime) — the freshness gate that uses gRPC connector's `CacheHeadReporter`.
 - [Retry](/config/failsafe/retry) — the same retry semantics available in `failsafeForGets` / `failsafeForSets`.
-- [Circuit breaker](/config/failsafe/circuit-breaker) — breaker semantics for connector-level failsafe; cache misses count as ignored, not failures.
-- [Hedge](/config/failsafe/hedge) — static-only hedge available at connector layer (quantile hedge is upstream-only).
+- [Circuit breaker](/config/failsafe/circuit-breaker) — breaker semantics for connector-level failsafe; cache misses count as ignored, not failures; the executor’s own timeout expiry counts as a failure, so sustained timeouts exclude the connector until a probe completes in time.
+- [Hedge](/config/failsafe/hedge) — static or quantile hedge at connector layer; quantile resolves from the connector's own latency window.
 
 </AISection>

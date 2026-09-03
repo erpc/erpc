@@ -88,16 +88,28 @@ func (p *Provider) expandEnvVars(upsCfgs []*common.UpstreamConfig) {
 func (p *Provider) buildBaseUpstreamConfig(networkId string) (*common.UpstreamConfig, error) {
 	var baseCfg *common.UpstreamConfig
 
-	// Look for a matching override in the ProviderConfig.Overrides using wildcard match.
+	// Look for a matching override in the ProviderConfig.Overrides using wildcard
+	// match, and when SEVERAL patterns match, take the most specific one.
+	//
+	// Overrides do not merge — the winner is copied whole — so which pattern wins
+	// decides the entire upstream config. Picking the first match out of a Go map
+	// therefore made that config depend on randomized iteration order: a provider
+	// declaring both "evm:*" and "evm:42161" produced a DIFFERENT upstream on
+	// different process starts, silently. Observed in a live deployment where one
+	// provider's "evm:*" carries tags: ["tier:expensive"] and a rateLimitBudget
+	// while its "evm:42161" carries neither — so that chain's cost tier and rate
+	// limit were a coin flip per pod, and the selection policy's tier reasoning
+	// with it.
+	var bestPattern string
 	for pattern, override := range p.config.Overrides {
 		matches, err := common.WildcardMatch(pattern, networkId)
 		if err != nil {
 			// If there's an error in matching logic, log or handle as you see fit; skip in this example.
 			continue
 		}
-		if matches {
+		if matches && (baseCfg == nil || moreSpecificOverride(pattern, bestPattern)) {
 			baseCfg = override.Copy()
-			break
+			bestPattern = pattern
 		}
 	}
 
@@ -170,4 +182,19 @@ func applyUpstreamIDTemplate(
 	}
 
 	return result
+}
+
+// moreSpecificOverride reports whether pattern a should beat pattern b when both
+// match the same networkId. Fewer wildcards wins first, so an exact "evm:42161"
+// always beats "evm:*"; then the longer literal, so "evm:1*" beats "evm:*"; then
+// lexicographic order, purely so the result can never depend on map iteration.
+func moreSpecificOverride(a, b string) bool {
+	aw, bw := strings.Count(a, "*"), strings.Count(b, "*")
+	if aw != bw {
+		return aw < bw
+	}
+	if len(a) != len(b) {
+		return len(a) > len(b)
+	}
+	return a < b
 }

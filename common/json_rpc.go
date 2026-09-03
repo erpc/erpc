@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1349,7 +1350,19 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 		}
 		switch v := id.(type) {
 		case float64:
-			r.ID = int64(v)
+			// Sonic decodes every JSON number as float64, which cannot hold
+			// large or fractional ids losslessly. Recover the exact integer
+			// from the verbatim id bytes instead of casting the float: the cast
+			// silently truncates fractional ids (1.5 -> 1) and clamps
+			// out-of-range ids to MaxInt64/MinInt64, collapsing distinct ids
+			// onto the same internal id. idRaw still preserves the original
+			// bytes for the client echo, but this typed ID feeds the upstream
+			// request body and internal identity, so it must not be corrupted.
+			idInt, err := strconv.ParseInt(string(bytes.TrimSpace(aux.ID)), 10, 64)
+			if err != nil {
+				return fmt.Errorf("json-rpc request id %s cannot be represented as a 64-bit integer", aux.ID)
+			}
+			r.ID = idInt
 		case string:
 			r.ID = v
 		}
@@ -1392,20 +1405,40 @@ func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
 	}
 
 	if ch := r.cacheHash.Load(); ch != nil {
-		return ch.(string), nil
+		// Empty string is the "invalidated" sentinel written by
+		// InvalidateCacheHash — fall through to recompute in that case.
+		if s := ch.(string); s != "" {
+			return s, nil
+		}
 	}
 
-	hasher := sha256.New()
+	// Encode into a single pooled buffer, then hash once. Streaming each token
+	// straight into an io.Writer forces the small length/tag scratch to escape
+	// to the heap on every token; a concrete *bytes.Buffer lets the digits be
+	// written byte-by-byte with no per-token allocation. This mirrors the
+	// pooled-buffer pattern canonicalizeTo already uses for responses.
+	buf := util.BorrowBuf()
+	defer util.ReturnBuf(buf)
 	for _, p := range r.Params {
-		err := hashValue(hasher, p)
-		if err != nil {
+		if err := hashValue(buf, p); err != nil {
 			return "", err
 		}
 	}
-	b := sha256.Sum256(hasher.Sum(nil))
+	b := sha256.Sum256(buf.Bytes())
 	ch := fmt.Sprintf("%s:%x", r.Method, b)
 	r.cacheHash.Store(ch)
 	return ch, nil
+}
+
+// InvalidateCacheHash discards any memoized CacheHash value so the next
+// CacheHash call recomputes against the current Params. Call this after any
+// in-place mutation of Params (e.g. pre-forward hooks that inject defaults).
+// Safe to call with no prior CacheHash invocation.
+func (r *JsonRpcRequest) InvalidateCacheHash() {
+	if r == nil {
+		return
+	}
+	r.cacheHash.Store("")
 }
 
 func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
@@ -1450,24 +1483,64 @@ func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
 	return current, nil
 }
 
-func hashValue(h io.Writer, v interface{}) error {
+// hashValue writes a deterministic, structure-preserving encoding of v into h,
+// used to derive request-identity keys (CacheHash / in-flight multiplexing).
+//
+// The old encoding recursively flattened params into the hash stream with no
+// type tags, lengths, or container markers, so structurally distinct requests
+// collapsed to the same byte stream and therefore the same key (#1034):
+// topics [[A,B]] and [A,B] were indistinguishable, "ab"+"c" aliased "a"+"bc",
+// and %f rounded 25.0000001 to "25.000000". Because that key drives both the
+// persistent cache and in-flight multiplexing, a follower request could be
+// handed the leader's response.
+//
+// This encoding is injective across JSON value shapes: every value carries a
+// one-byte type tag, every string/number/container is length- or count-
+// delimited, and object keys are emitted in sorted order. Two self-delimiting
+// tokens cannot concatenate into a third, so different params can never produce
+// the same bytes.
+//
+//	null    -> "N"
+//	bool    -> "B0" | "B1"
+//	number  -> "F" <len> ":" <shortest-round-tripping decimal>
+//	string  -> "S" <len> ":" <lowercased bytes>
+//	array   -> "A" <count> ":" <encoded element>...
+//	object  -> "O" <count> ":" ("K" <len> ":" <key>) <encoded value> ...
+//
+// String params are lowercased, preserving the long-standing EVM hex
+// normalization: a checksummed address and its lowercase form are the same
+// request and share a cache entry / multiplex group. The type tags make that
+// safe against cross-type aliasing that lowercasing alone would create — the
+// string "true" (S4:true) and the boolean true (B1) no longer collide. (SVM
+// needs the opposite, case-preserving key; see svmRequestKey, which is why it
+// does not route through this function.)
+func hashValue(buf *bytes.Buffer, v interface{}) error {
 	switch t := v.(type) {
+	case nil:
+		buf.WriteByte('N')
+		return nil
 	case bool:
-		_, err := io.WriteString(h, fmt.Sprintf("%t", t))
-		return err
+		if t {
+			buf.WriteString("B1")
+		} else {
+			buf.WriteString("B0")
+		}
+		return nil
 	case int:
-		_, err := io.WriteString(h, fmt.Sprintf("%d", t))
-		return err
+		writeHashToken(buf, 'F', strconv.FormatInt(int64(t), 10))
+		return nil
 	case float64:
-		_, err := io.WriteString(h, fmt.Sprintf("%f", t))
-		return err
+		// 'g'/-1 emits the shortest decimal that round-trips to the same
+		// float64, preserving full precision (25 vs 25.0000001) unlike %f.
+		writeHashToken(buf, 'F', strconv.FormatFloat(t, 'g', -1, 64))
+		return nil
 	case string:
-		_, err := io.WriteString(h, strings.ToLower(t))
-		return err
+		writeHashToken(buf, 'S', strings.ToLower(t))
+		return nil
 	case []interface{}:
+		writeHashHeader(buf, 'A', len(t))
 		for _, i := range t {
-			err := hashValue(h, i)
-			if err != nil {
+			if err := hashValue(buf, i); err != nil {
 				return err
 			}
 		}
@@ -1478,34 +1551,179 @@ func hashValue(h io.Writer, v interface{}) error {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+		writeHashHeader(buf, 'O', len(keys))
 		for _, k := range keys {
-			if _, err := h.Write([]byte(k)); err != nil {
-				return err
-			}
-			err := hashValue(h, t[k])
-			if err != nil {
+			// Keys are emitted verbatim (not lowercased): they are JSON-RPC
+			// field names, not EVM hex values. Length-prefixing keeps a key
+			// from bleeding into the following value.
+			writeHashToken(buf, 'K', k)
+			if err := hashValue(buf, t[k]); err != nil {
 				return err
 			}
 		}
 		return nil
-	case nil:
-		_, err := h.Write([]byte("null"))
-		return err
 	default:
 		return fmt.Errorf("unsupported type for value during hash: %+v", v)
 	}
 }
 
+// writeHashHeader writes a container header — the type tag, the element count,
+// and a ':' terminator (e.g. "A3:" or "O2:").
+func writeHashHeader(buf *bytes.Buffer, tag byte, n int) {
+	buf.WriteByte(tag)
+	writeUint(buf, uint64(n))
+	buf.WriteByte(':')
+}
+
+// writeHashToken writes a length-delimited leaf token — the type tag, the byte
+// length of s, a ':' terminator, and then s itself. The length prefix is what
+// makes adjacent tokens unambiguous: "ab"+"c" (S2:abS1:c) can never match
+// "a"+"bc" (S1:aS2:bc).
+func writeHashToken(buf *bytes.Buffer, tag byte, s string) {
+	buf.WriteByte(tag)
+	writeUint(buf, uint64(len(s)))
+	buf.WriteByte(':')
+	buf.WriteString(s)
+}
+
+// writeUint appends the decimal digits of n to buf one byte at a time. The
+// scratch array is indexed only (never passed as a slice to an escaping call),
+// so it stays on the stack — this is what keeps the encoder allocation-free per
+// token, unlike strconv.AppendInt into a heap-escaping buffer.
+func writeUint(buf *bytes.Buffer, n uint64) {
+	if n == 0 {
+		buf.WriteByte('0')
+		return
+	}
+	var tmp [20]byte
+	i := len(tmp)
+	for n > 0 {
+		i--
+		tmp[i] = byte('0' + n%10)
+		n /= 10
+	}
+	for ; i < len(tmp); i++ {
+		buf.WriteByte(tmp[i])
+	}
+}
+
+// findUpstreamsExhausted locates the ErrUpstreamsExhausted bundle that carries
+// the per-upstream causes, seeing through single-cause wrappers placed on top
+// of it. The network retry loop wraps the exhausted error in an
+// ErrFailsafeRetryExceeded before it reaches translation; a direct type
+// assertion missed that entirely, so the retry-exceeded path skipped the
+// dominance scan and surfaced whichever code the generic fallback happened to
+// reach.
+//
+// Only the linear Cause chain is walked — the same discipline as
+// IsRetryableTowardNetwork. Descending into a multi-error fan-out would let an
+// exhausted bundle nested inside e.g. a consensus dispute hijack the
+// translation of an error that is not about upstream exhaustion at all.
+func findUpstreamsExhausted(err error) *ErrUpstreamsExhausted {
+	for cur := err; cur != nil; {
+		if erx, ok := cur.(*ErrUpstreamsExhausted); ok {
+			return erx
+		}
+		cse, ok := cur.(StandardError)
+		if !ok {
+			return nil
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			return nil
+		}
+		cur = next
+	}
+	return nil
+}
+
+// hasLinearErrorCode reports whether err, or any error on its SINGLE-cause chain,
+// carries one of codes. It stops at multi-error wrappers (ErrUpstreamsExhausted,
+// consensus bundles, errors.Join) rather than descending into them, because
+// membership in a bundle only says one upstream hit the condition — not that the
+// condition is the verdict for the request. Mirrors the traversal rule
+// IsRetryableTowardNetwork uses for the same reason.
+func hasLinearErrorCode(err error, codes ...ErrorCode) bool {
+	for cur := err; cur != nil; {
+		se, ok := cur.(StandardError)
+		if !ok {
+			return false
+		}
+		base := se.Base()
+		if base == nil {
+			return false
+		}
+		for _, c := range codes {
+			if base.Code == c {
+				return true
+			}
+		}
+		next := se.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			return false
+		}
+		cur = next
+	}
+	return false
+}
+
+// isBlockUnavailableVerdict reports whether "this block is outside the served
+// window" is the answer for the WHOLE request, rather than something one upstream
+// happened to say.
+//
+// For a multi-upstream bundle that requires every non-skipped cause to agree. A
+// plurality is not enough: -32014 tells a client the data is definitively absent,
+// and a consumer may act on that by permanently skipping the block, so a single
+// dissenting timeout or server error — an upstream that never actually answered —
+// must fall back to a generic failure the client will retry. Skips carry no
+// verdict (the upstream was never asked) and are ignored.
+//
+// Must be evaluated BEFORE the dominance scan in TranslateToJsonRpcException,
+// which collapses the bundle to one representative cause and thereby makes a
+// plurality indistinguishable from unanimity.
+func isBlockUnavailableVerdict(err error) bool {
+	erx := findUpstreamsExhausted(err)
+	if erx == nil {
+		return hasLinearErrorCode(err, ErrCodeUpstreamBlockUnavailable)
+	}
+	agreed := 0
+	for _, cause := range erx.Errors() {
+		if HasErrorCode(cause, ErrCodeUpstreamRequestSkipped) {
+			continue
+		}
+		if !hasLinearErrorCode(cause, ErrCodeUpstreamBlockUnavailable) {
+			return false
+		}
+		agreed++
+	}
+	return agreed > 0
+}
+
 // TranslateToJsonRpcException is mainly responsible to translate internal eRPC errors (not those coming from upstreams) to
 // a proper json-rpc error with correct numeric code.
 func TranslateToJsonRpcException(err error) error {
-	if erx, ok := err.(*ErrUpstreamsExhausted); ok {
+	// Decided against the intact bundle: the dominance scan below replaces err
+	// with a single representative cause, after which unanimity is unrecoverable.
+	blockUnavailableIsVerdict := isBlockUnavailableVerdict(err)
+
+	if erx := findUpstreamsExhausted(err); erx != nil {
 		// Scan an UpstreamsExhausted error to detect the most frequent error among upstreams
 		// This selection helps provide somewhat user-friendly error message vs just saying that "all upstreams failed"
+		//
+		// erx.Errors() is ordered by orderCauses (retryable-toward-network
+		// first, then upstream id), so both the dominant-code tally and the
+		// representative picked out of that bucket are deterministic for a
+		// given multiset of causes. When several upstreams disagree under one
+		// error code — e.g. the same slot reported "not yet available" by one
+		// and "permanently skipped" by another — taking the FIRST of the
+		// bucket therefore surfaces the retryable verdict, which is the
+		// data-safe answer to hand a client.
 		var (
-			counts   = make(map[ErrorCode]int) // code -> occurrences
-			maxCount int
-			domErr   error
+			counts      = make(map[ErrorCode]int)   // code -> occurrences
+			firstByCode = make(map[ErrorCode]error) // code -> earliest cause with that code
+			firstAny    error
+			maxCount    int
+			domCode     ErrorCode
 		)
 		for _, cause := range erx.Errors() {
 			se, ok := cause.(StandardError)
@@ -1513,22 +1731,26 @@ func TranslateToJsonRpcException(err error) error {
 				continue
 			}
 			c := se.Base().Code
-			if counts[c] == 0 {
-				// keep the first error for each code so we don't have to iterate again later
-				// we store it only the first time we see the code which guarantees we return the earliest error
-				if domErr == nil { // fast path when first iteration becomes dominant by default
-					domErr = cause
-				}
+			if firstAny == nil {
+				// Fallback when every cause turns out to be uninteresting.
+				firstAny = cause
 			}
 			if c == ErrCodeUpstreamRequestSkipped || HasErrorCode(cause, ErrCodeEndpointUnsupported) {
 				// most often these errors are not interesting nor significant vs other errors
 				continue
 			}
+			if _, seen := firstByCode[c]; !seen {
+				firstByCode[c] = cause
+			}
 			counts[c]++
 			if counts[c] > maxCount {
 				maxCount = counts[c]
-				domErr = cause // we want the first error with the dominant code; since we update only when count is strictly greater, the earliest error for that code is kept in domErr.
+				domCode = c
 			}
+		}
+		domErr := firstAny
+		if maxCount > 0 {
+			domErr = firstByCode[domCode]
 		}
 		if domErr != nil {
 			err = domErr
@@ -1582,6 +1804,32 @@ func TranslateToJsonRpcException(err error) error {
 			0,
 			JsonRpcErrorUnsupportedException,
 			"method ignored by upstream: "+reason,
+			err,
+			nil,
+		)
+	}
+	// A block outside every upstream's availability window (pruned history, or an
+	// explicit blockAvailability bound) is missing data, not an internal failure.
+	// Without this it falls through to the generic -32603 server-side exception,
+	// which reads as "eRPC broke" and is indistinguishable from a real outage.
+	// -32014 is the code eRPC already uses for this condition elsewhere (see
+	// architecture/evm/block_range.go), so it round-trips correctly back to
+	// ErrEndpointMissingData when one eRPC sits behind another.
+	//
+	// Gated on the pre-collapse verdict rather than a code match on err: only an
+	// unanimous bundle (or a plain block-unavailable error) may claim the data is
+	// definitively absent. See isBlockUnavailableVerdict.
+	if blockUnavailableIsVerdict {
+		var reason string
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		} else {
+			reason = err.Error()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorMissingData,
+			"block not available: "+reason,
 			err,
 			nil,
 		)

@@ -79,7 +79,7 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 		}
 		if net := req.Network(); net != nil && net.Architecture() == common.ArchitectureEvm {
 			// Use the executor context; leader selection is read-only and fast
-			analysis.leaderUpstream = net.EvmLeaderUpstream(ctx)
+			analysis.leaderUpstream = common.EvmLeaderUpstream(net, ctx)
 		}
 	}
 
@@ -539,7 +539,7 @@ func resultOrErrorToHash(r *execResult, ctx context.Context, config *config) (st
 	if config.ignoreFields != nil {
 		if originalReq, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok {
 			if method, err := originalReq.Method(); err == nil {
-				if fields, ok := config.ignoreFields[method]; ok {
+				if fields, ok := methodFields(config.ignoreFields, method); ok {
 					return jr.CanonicalHashWithIgnoredFields(fields, ctx)
 				}
 			}

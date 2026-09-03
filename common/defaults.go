@@ -463,6 +463,209 @@ var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
 	},
 }
 
+// FindCacheMethodConfig resolves a method name against a method-config map
+// (the default tables above, or an operator's methods.definitions). An exact
+// key match wins; otherwise the match is case-insensitive. Hook dispatch
+// (architecture/evm/hooks.go) routes methods case-insensitively, so per-method
+// config MUST resolve the same way — otherwise a non-canonical casing like
+// "ETH_CALL" dispatches into method-specific logic (e.g. the state-boundary
+// gate) but resolves no config, silently disabling gating, caching, and
+// block-ref extraction for that request.
+//
+// Canonicalization is lookup-only: per JSON-RPC 2.0 the method member is
+// case-sensitive, so the wire string is forwarded to upstreams verbatim and
+// the upstream stays the authority on whether a given casing exists.
+//
+// Nil-valued entries are treated as absent (callers fall through to defaults,
+// as they do today). If a map pathologically holds two casings of the same
+// name, exact match wins and otherwise the lexicographically smallest key is
+// picked, so resolution never depends on map iteration order.
+func FindCacheMethodConfig(defs map[string]*CacheMethodConfig, method string) *CacheMethodConfig {
+	if len(defs) == 0 {
+		return nil
+	}
+	if cfg, ok := defs[method]; ok && cfg != nil {
+		return cfg
+	}
+	var bestKey string
+	var best *CacheMethodConfig
+	for k, v := range defs {
+		if v == nil || !strings.EqualFold(k, method) {
+			continue
+		}
+		if best == nil || k < bestKey {
+			bestKey, best = k, v
+		}
+	}
+	return best
+}
+
+// findCacheMethodKey resolves the KEY that FindCacheMethodConfig would match,
+// with the same exact-then-fold precedence. Unlike FindCacheMethodConfig it also
+// reports keys whose value is nil, so config-load code can normalize the entry
+// in place instead of adding a second key that differs only in letter case.
+func findCacheMethodKey(defs map[string]*CacheMethodConfig, method string) (string, bool) {
+	if _, ok := defs[method]; ok {
+		return method, true
+	}
+	var bestKey string
+	var found bool
+	for k := range defs {
+		if !strings.EqualFold(k, method) {
+			continue
+		}
+		if !found || k < bestKey {
+			bestKey, found = k, true
+		}
+	}
+	return bestKey, found
+}
+
+// lowerCacheMethodIndex builds a lowercase-keyed view of a method-config map so
+// a non-canonical casing resolves with one map lookup instead of a scan of every
+// entry on the request path. Duplicate casings collapse the same way
+// FindCacheMethodConfig resolves them (smallest key wins), and nil-valued
+// entries are omitted, so the index and the scan always agree.
+//
+// The index is a snapshot: build it only for maps that are immutable afterwards
+// (the built-in tables, and Definitions once SetDefaults has run).
+func lowerCacheMethodIndex(defs map[string]*CacheMethodConfig) map[string]*CacheMethodConfig {
+	if len(defs) == 0 {
+		return nil
+	}
+	idx := make(map[string]*CacheMethodConfig, len(defs))
+	src := make(map[string]string, len(defs))
+	for k, v := range defs {
+		if v == nil {
+			continue
+		}
+		lk := strings.ToLower(k)
+		if prev, ok := src[lk]; ok && prev < k {
+			continue
+		}
+		src[lk], idx[lk] = k, v
+	}
+	return idx
+}
+
+// defaultCacheMethodLookupOrder is the precedence used when resolving a method
+// against the built-in tables (with-block first, static last).
+var defaultCacheMethodLookupOrder = []map[string]*CacheMethodConfig{
+	DefaultWithBlockCacheMethods,
+	DefaultSpecialCacheMethods,
+	DefaultRealtimeCacheMethods,
+	DefaultStaticCacheMethods,
+}
+
+// The tables are flattened once into a by-name and a by-lowercase map, in
+// precedence order (first table to define a name wins), so resolving a method —
+// including the unknown-method case that hits neither — costs at most two map
+// lookups instead of walking four tables.
+var (
+	defaultCacheMethodsByName = func() map[string]*CacheMethodConfig {
+		flat := map[string]*CacheMethodConfig{}
+		for _, table := range defaultCacheMethodLookupOrder {
+			for name, cfg := range table {
+				if cfg == nil {
+					continue
+				}
+				if _, taken := flat[name]; !taken {
+					flat[name] = cfg
+				}
+			}
+		}
+		return flat
+	}()
+	defaultCacheMethodsByLower = lowerCacheMethodIndex(defaultCacheMethodsByName)
+	defaultWithBlockLowerIndex = lowerCacheMethodIndex(DefaultWithBlockCacheMethods)
+)
+
+// FindDefaultCacheMethodConfig resolves a method against the built-in tables in
+// their usual precedence order, case-insensitively (see FindCacheMethodConfig
+// for why the lookup must be case-insensitive).
+func FindDefaultCacheMethodConfig(method string) *CacheMethodConfig {
+	if cfg, ok := defaultCacheMethodsByName[method]; ok {
+		return cfg
+	}
+	// Only non-canonical casings pay for the fold; strings.ToLower does not
+	// allocate for an already-lowercase name.
+	return defaultCacheMethodsByLower[strings.ToLower(method)]
+}
+
+// DefaultWithBlockMethodConfig resolves a method against DefaultWithBlockCacheMethods
+// only — the table that carries the system defaults for block-availability
+// enforcement.
+func DefaultWithBlockMethodConfig(method string) *CacheMethodConfig {
+	if cfg, ok := DefaultWithBlockCacheMethods[method]; ok && cfg != nil {
+		return cfg
+	}
+	return defaultWithBlockLowerIndex[strings.ToLower(method)]
+}
+
+// FindMethodConfig resolves a method against the operator's methods.definitions,
+// case-insensitively. Prefer it over indexing Definitions directly: an exact-case
+// index silently misses non-canonical casings, which is how gating and caching
+// came to be skipped for requests like "ETH_CALL".
+//
+// Definitions must not be mutated after SetDefaults — the lowercase index built
+// there is a snapshot. Configs built programmatically (tests) have no index and
+// fall back to a scan, so resolution never depends on the index existing.
+func (m *MethodsConfig) FindMethodConfig(method string) *CacheMethodConfig {
+	if m == nil || len(m.Definitions) == 0 {
+		return nil
+	}
+	if cfg, ok := m.Definitions[method]; ok && cfg != nil {
+		return cfg
+	}
+	if m.lowerIndex != nil {
+		return m.lowerIndex[strings.ToLower(method)]
+	}
+	return FindCacheMethodConfig(m.Definitions, method)
+}
+
+// applyMethodOverrides copies operator definitions over the merged defaults. An
+// override REPLACES the entry it shadows even when the two keys differ only in
+// letter case: leaving both would make one logical method resolve to different
+// config depending on the casing the client happens to send. Keys are applied in
+// sorted order so the outcome never depends on map iteration order.
+func applyMethodOverrides(merged, overrides map[string]*CacheMethodConfig) {
+	if len(overrides) == 0 {
+		return
+	}
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if shadowed, ok := findCacheMethodKey(merged, name); ok && shadowed != name {
+			log.Warn().
+				Str("method", name).
+				Str("replaces", shadowed).
+				Msg("methods.definitions entry replaces an entry that differs only in letter case")
+			delete(merged, shadowed)
+		}
+		merged[name] = overrides[name]
+	}
+}
+
+// markStatefulMethod enforces the stateful flag on whichever entry resolves the
+// method, keeping the operator's own key so no second, differently-cased entry
+// appears. A nil-valued entry (YAML `eth_newFilter: ~`) is replaced rather than
+// dereferenced — nil means "no cache config", not "not stateful".
+func markStatefulMethod(defs map[string]*CacheMethodConfig, method string) {
+	key, ok := findCacheMethodKey(defs, method)
+	if !ok {
+		defs[method] = &CacheMethodConfig{Stateful: true}
+		return
+	}
+	if cfg := defs[key]; cfg != nil {
+		cfg.Stateful = true
+		return
+	}
+	defs[key] = &CacheMethodConfig{Stateful: true}
+}
+
 func (c *CacheConfig) SetDefaults() error {
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {
@@ -491,44 +694,10 @@ func (c *CacheConfig) SetDefaults() error {
 }
 
 func (m *MethodsConfig) SetDefaults() error {
-	if m.Definitions == nil || (len(m.Definitions) == 0 && !m.PreserveDefaultMethods) {
-		// If no definitions provided or PreserveDefaultMethods is false, use all defaults
-		mergedMethods := map[string]*CacheMethodConfig{}
+	defs := m.Definitions
 
-		// Merge all default methods into a single map
-		for name, method := range DefaultStaticCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultRealtimeCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultWithBlockCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultSpecialCacheMethods {
-			mergedMethods[name] = method
-		}
-
-		// Mark default stateful methods
-		for _, mn := range DefaultStatefulMethodNames {
-			if cm, ok := mergedMethods[mn]; ok {
-				cm.Stateful = true
-			} else {
-				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
-			}
-		}
-
-		if m.PreserveDefaultMethods && m.Definitions != nil {
-			// Merge user definitions on top of defaults
-			for name, method := range m.Definitions {
-				mergedMethods[name] = method
-			}
-		}
-
-		m.Definitions = mergedMethods
-	} else if m.PreserveDefaultMethods {
-		// User provided some definitions and wants to preserve defaults
-		// First copy all defaults
+	// Defaults apply unless the user supplied definitions and opted out of them.
+	if len(defs) == 0 || m.PreserveDefaultMethods {
 		mergedMethods := map[string]*CacheMethodConfig{}
 		for name, method := range DefaultStaticCacheMethods {
 			mergedMethods[name] = method
@@ -542,35 +711,19 @@ func (m *MethodsConfig) SetDefaults() error {
 		for name, method := range DefaultSpecialCacheMethods {
 			mergedMethods[name] = method
 		}
-
-		// Mark default stateful methods
-		for _, mn := range DefaultStatefulMethodNames {
-			if cm, ok := mergedMethods[mn]; ok {
-				cm.Stateful = true
-			} else {
-				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
-			}
-		}
-
-		// Then override with user definitions
-		for name, method := range m.Definitions {
-			mergedMethods[name] = method
-		}
-
-		m.Definitions = mergedMethods
-	} else {
-		// User provided definitions and doesn't want defaults
-		// Still need to ensure stateful methods are marked correctly
-		for _, mn := range DefaultStatefulMethodNames {
-			if cm, ok := m.Definitions[mn]; ok {
-				// Method exists in user definitions, ensure it's marked as stateful
-				cm.Stateful = true
-			} else {
-				// Method not in user definitions, add it as stateful
-				m.Definitions[mn] = &CacheMethodConfig{Stateful: true}
-			}
-		}
+		applyMethodOverrides(mergedMethods, defs)
+		defs = mergedMethods
 	}
+
+	// Stateful markers are enforced LAST, so refining a stateful method's caching
+	// never silently drops the single-upstream guard, whatever key casing the
+	// operator used.
+	for _, mn := range DefaultStatefulMethodNames {
+		markStatefulMethod(defs, mn)
+	}
+
+	m.Definitions = defs
+	m.lowerIndex = lowerCacheMethodIndex(defs)
 
 	return nil
 }
@@ -842,6 +995,11 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 func (d *DatabaseConfig) SetDefaults(defClusterKey string) error {
 	if d.EvmJsonRpcCache != nil {
 		if err := d.EvmJsonRpcCache.SetDefaults(); err != nil {
+			return err
+		}
+	}
+	if d.SvmJsonRpcCache != nil {
+		if err := d.SvmJsonRpcCache.SetDefaults(); err != nil {
 			return err
 		}
 	}
@@ -1513,6 +1671,11 @@ func (n *NetworkDefaults) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for evm: %w", err)
 		}
 	}
+	if n.Svm != nil {
+		if err := n.Svm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for svm: %w", err)
+		}
+	}
 	if n.DirectiveDefaults != nil {
 		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for directive defaults: %w", err)
@@ -1535,9 +1698,9 @@ func (d *DirectiveDefaultsConfig) SetDefaults() error {
 	if d.EnforceNonNullTaggedBlocks == nil {
 		d.EnforceNonNullTaggedBlocks = util.BoolPtr(true)
 	}
-	if d.ValidateTransactionsRoot == nil {
-		d.ValidateTransactionsRoot = util.BoolPtr(true)
-	}
+	// Note: the deprecated data-integrity validation flags are intentionally NOT
+	// defaulted on — data integrity is opt-in via the `integrity` config. An
+	// explicitly-set deprecated flag is translated by migrateLegacyIntegrityChecks.
 	return nil
 }
 
@@ -1592,11 +1755,20 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	// TODO Should we refactor so this won't happen?
 	if u.Evm == nil && defaults.Evm != nil {
 		u.Evm = &EvmUpstreamConfig{
-			ChainId:                  defaults.Evm.ChainId,
-			NodeType:                 defaults.Evm.NodeType,
-			StatePollerInterval:      defaults.Evm.StatePollerInterval,
-			StatePollerDebounce:      defaults.Evm.StatePollerDebounce,
-			MaxAvailableRecentBlocks: defaults.Evm.MaxAvailableRecentBlocks,
+			ChainId:             defaults.Evm.ChainId,
+			NodeType:            defaults.Evm.NodeType,
+			StatePollerInterval: defaults.Evm.StatePollerInterval,
+			StatePollerDebounce: defaults.Evm.StatePollerDebounce,
+			// Carried here rather than left to SetDefaults: by the time SetDefaults
+			// runs, MaxAvailableRecentBlocks has already been copied onto this
+			// upstream, and the legacy back-compat mapping would otherwise
+			// synthesise a window from it and shadow the configured one.
+			BlockAvailability: defaults.Evm.BlockAvailability.Copy(),
+			// Only when no explicit window came with it. MaxAvailableRecentBlocks is
+			// enforced as an independent second lower bound by
+			// EvmAssertBlockAvailability, so carrying both would narrow the
+			// configured window to whichever is smaller.
+			MaxAvailableRecentBlocks: maxRecentBlocksFor(defaults.Evm),
 		}
 		if err := u.Evm.SetDefaults(defaults.Evm); err != nil {
 			return fmt.Errorf("failed to set defaults for evm upstream: %w", err)
@@ -1608,7 +1780,16 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.StatePollerDebounce == 0 && defaults.Evm.StatePollerDebounce != 0 {
 			u.Evm.StatePollerDebounce = defaults.Evm.StatePollerDebounce
 		}
-		if u.Evm.MaxAvailableRecentBlocks == 0 && defaults.Evm.MaxAvailableRecentBlocks != 0 {
+		// Must precede the MaxAvailableRecentBlocks copy below: once that value is
+		// inherited, this upstream is indistinguishable from one that set it itself,
+		// and SetDefaults' legacy back-compat mapping would synthesise a window from
+		// it that shadows the configured one.
+		if u.Evm.BlockAvailability == nil && u.Evm.MaxAvailableRecentBlocks == 0 &&
+			defaults.Evm.BlockAvailability != nil {
+			u.Evm.BlockAvailability = defaults.Evm.BlockAvailability.Copy()
+		}
+		if u.Evm.MaxAvailableRecentBlocks == 0 && u.Evm.BlockAvailability == nil &&
+			defaults.Evm.MaxAvailableRecentBlocks != 0 {
 			u.Evm.MaxAvailableRecentBlocks = defaults.Evm.MaxAvailableRecentBlocks
 		}
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
@@ -1616,6 +1797,33 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		}
 		if u.Evm.TraceFilterAutoSplittingRangeThreshold == 0 && defaults.Evm.TraceFilterAutoSplittingRangeThreshold != 0 {
 			u.Evm.TraceFilterAutoSplittingRangeThreshold = defaults.Evm.TraceFilterAutoSplittingRangeThreshold
+		}
+	}
+	// Mirrors the evm branch above: upstreamDefaults.svm is a template, so an
+	// upstream that omits its own `svm` block inherits the whole thing (copied,
+	// not pointer-shared, per the IMPORTANT note above), and one with a partial
+	// block fills only its empty fields. Without this, upstreamDefaults.svm was
+	// silently dropped and every upstream had to repeat chain/cluster.
+	//
+	// Cluster IS inherited here, unlike mergeSvmNetworkDefaults where it is
+	// network identity: on an upstream it only says "which cluster do I serve",
+	// and a pool homogeneous across one cluster is the common case.
+	if u.Svm == nil && defaults.Svm != nil {
+		cp := *defaults.Svm
+		u.Svm = &cp
+	} else if u.Svm != nil && defaults.Svm != nil {
+		if u.Svm.Chain == "" && defaults.Svm.Chain != "" {
+			u.Svm.Chain = defaults.Svm.Chain
+		}
+		if u.Svm.Cluster == "" && defaults.Svm.Cluster != "" {
+			u.Svm.Cluster = defaults.Svm.Cluster
+		}
+		// ponytail: CheckGenesisHash stays a plain bool — false is the zero
+		// value and also the "skip the check" behavior, so only an opt-in true
+		// is worth propagating. Make it *bool if a per-upstream opt-OUT of an
+		// inherited true is ever needed.
+		if defaults.Svm.CheckGenesisHash {
+			u.Svm.CheckGenesisHash = true
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
@@ -1631,10 +1839,11 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	if u.Grpc == nil && defaults.Grpc != nil {
 		u.Grpc = defaults.Grpc.Copy()
 	}
-	// Integrity moved under Evm.Integrity
+	// Deprecated upstream integrity stub (never read at runtime) — copy from
+	// defaults only so existing YAML keeps parsing.
 	if u.Evm != nil && defaults.Evm != nil {
-		if u.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
-			u.Evm.Integrity = defaults.Evm.Integrity.Copy()
+		if u.Evm.DeprecatedIntegrity == nil && defaults.Evm.DeprecatedIntegrity != nil {
+			u.Evm.DeprecatedIntegrity = defaults.Evm.DeprecatedIntegrity.Copy()
 		}
 	}
 	if u.AllowMethods == nil && defaults.AllowMethods != nil {
@@ -1785,6 +1994,19 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 	return nil
 }
 
+// maxRecentBlocksFor returns the legacy MaxAvailableRecentBlocks to carry from a
+// defaults template, which is none when that template also carries an explicit
+// blockAvailability window. The two express the same lower bound but are enforced
+// separately — EvmAssertBlockAvailability applies MaxAvailableRecentBlocks on top
+// of the resolved bounds — so propagating both would clamp the configured window
+// to whichever is smaller.
+func maxRecentBlocksFor(defaults *EvmUpstreamConfig) int64 {
+	if defaults == nil || defaults.BlockAvailability != nil {
+		return 0
+	}
+	return defaults.MaxAvailableRecentBlocks
+}
+
 func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.StatePollerInterval == 0 {
 		if defaults != nil && defaults.StatePollerInterval != 0 {
@@ -1804,7 +2026,27 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	if e.MaxAvailableRecentBlocks == 0 {
+	// Inherit blockAvailability from upstreamDefaults when this upstream declares no
+	// availability config of its own — neither the modern blockAvailability nor the
+	// deprecated maxAvailableRecentBlocks. This is what makes the bound configurable
+	// once per project (`projects[].upstreamDefaults.evm.blockAvailability`) instead
+	// of repeated on every upstream. Copied, not shared: bounds are recomputed per
+	// upstream at runtime against that upstream's own state poller.
+	//
+	// Runs before the MaxAvailableRecentBlocks defaulting below so the inherited
+	// value wins over the NodeType-derived 128-block window, while an upstream that
+	// sets either field explicitly keeps its own.
+	if e.BlockAvailability == nil && e.MaxAvailableRecentBlocks == 0 &&
+		defaults != nil && defaults.BlockAvailability != nil {
+		e.BlockAvailability = defaults.BlockAvailability.Copy()
+	}
+
+	// Guarded on BlockAvailability being unset: EvmAssertBlockAvailability enforces
+	// MaxAvailableRecentBlocks as a SECOND, independent lower bound on top of the
+	// resolved bounds, so deriving it here next to an explicit window would silently
+	// narrow that window to whichever is smaller — e.g. a configured 604800 reduced
+	// to the 128 implied by `nodeType: full`.
+	if e.MaxAvailableRecentBlocks == 0 && e.BlockAvailability == nil {
 		if defaults != nil && defaults.MaxAvailableRecentBlocks != 0 {
 			e.MaxAvailableRecentBlocks = defaults.MaxAvailableRecentBlocks
 		} else {
@@ -1953,6 +2195,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
+			if n.Evm.GetLogsMaxResponseBytes == 0 && defaults.Evm.GetLogsMaxResponseBytes != 0 {
+				n.Evm.GetLogsMaxResponseBytes = defaults.Evm.GetLogsMaxResponseBytes
+			}
 			if n.Evm.TraceFilterSplitOnError == nil && defaults.Evm.TraceFilterSplitOnError != nil {
 				n.Evm.TraceFilterSplitOnError = defaults.Evm.TraceFilterSplitOnError
 			}
@@ -1969,9 +2214,17 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
 			}
-		} else if n.Evm == nil && defaults.Evm != nil {
+		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm {
+			// Copy EVM defaults only onto networks that are (or can become) EVM.
+			// Without the SVM guard, a mixed project with networkDefaults.evm
+			// would inject an evm block into every svm network — and the
+			// architecture derivation below checks n.Evm BEFORE n.Svm, silently
+			// flipping an `svm:`-authored network to architecture=evm.
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
+		}
+		if n.Svm != nil && defaults.Svm != nil {
+			mergeSvmNetworkDefaults(n.Svm, defaults.Svm)
 		}
 		if n.Evm != nil {
 			if err := n.Evm.SetDefaults(); err != nil {
@@ -1990,11 +2243,16 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.Architecture == "" {
 		if n.Evm != nil {
 			n.Architecture = "evm"
+		} else if n.Svm != nil {
+			n.Architecture = ArchitectureSvm
 		}
 	}
 
 	if n.Architecture == "evm" && n.Evm == nil {
 		n.Evm = &EvmNetworkConfig{}
+	}
+	if n.Architecture == ArchitectureSvm && n.Svm == nil {
+		n.Svm = &SvmNetworkConfig{}
 	}
 
 	// Apply methods defaults
@@ -2008,6 +2266,11 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.Evm != nil {
 		if err := n.Evm.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for network evm config: %w", err)
+		}
+	}
+	if n.Svm != nil {
+		if err := n.Svm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for network svm config: %w", err)
 		}
 	}
 
@@ -2051,7 +2314,50 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		return err
 	}
 
+	// Backward compatibility: translate the deprecated per-check data-integrity
+	// validation flags (DirectiveDefaults.Validate*/Enforce*) into the integrity
+	// config. They used to enable specific checks; the module now selects checks
+	// via the integrity block. The user's explicit integrity config wins per id.
+	migrateLegacyIntegrityChecks(n)
+
 	return nil
+}
+
+// migrateLegacyIntegrityChecks maps the deprecated DirectiveDefaults validation
+// flags onto the network's integrity check set. This is the only place that
+// knows the old flag→check mapping; the runtime sees only the integrity config.
+func migrateLegacyIntegrityChecks(n *NetworkConfig) {
+	dd := n.DirectiveDefaults
+	if dd == nil {
+		return
+	}
+	legacy := map[string]*bool{
+		"bloomMatch":                  dd.DeprecatedValidateLogsBloomMatch,
+		"bloomEmptiness":              dd.DeprecatedValidateLogsBloomEmptiness,
+		"logIndexContiguity":          dd.DeprecatedEnforceLogIndexStrictIncrements,
+		"transactionsRootConsistency": dd.DeprecatedValidateTransactionsRoot,
+		"headerFieldShapes":           dd.DeprecatedValidateHeaderFieldLengths,
+		"txFieldUniqueness":           dd.DeprecatedValidateTransactionFields,
+		"txBlockInfo":                 dd.DeprecatedValidateTransactionBlockInfo,
+		"txHashUniqueness":            dd.DeprecatedValidateTxHashUniqueness,
+		"transactionIndexConsistency": dd.DeprecatedValidateTransactionIndex,
+		"logFieldShapes":              dd.DeprecatedValidateLogFields,
+	}
+	for id, flag := range legacy {
+		if flag == nil || !*flag {
+			continue
+		}
+		if n.Integrity == nil {
+			n.Integrity = &IntegrityConfig{}
+		}
+		if n.Integrity.Checks == nil {
+			n.Integrity.Checks = map[string]*IntegrityCheckConfig{}
+		}
+		if _, exists := n.Integrity.Checks[id]; !exists { // explicit config wins
+			enabled := true
+			n.Integrity.Checks[id] = &IntegrityCheckConfig{Enabled: &enabled}
+		}
+	}
 }
 
 const DefaultEvmFinalityDepth = 1024
@@ -2066,6 +2372,38 @@ const DefaultBlockUnavailableDelayMultiplier = 1.0
 // bogus sample) and are accepted. Shared by the state-poller shared counters
 // and the health tracker so both layers converge on the same head.
 const DefaultToleratedBlockHeadRollback = 1024
+
+// DefaultServedTipTrajectoryWindow is how much head history the served-tip
+// trajectory referee needs before it may participate in a pick
+// (EvmServedTipConfig.TrajectoryWindow). Ten minutes is long enough that a
+// majority stall cannot masquerade as the trajectory (the referee's evidence is
+// the median of live heads, so a stall of half the window already flattens the
+// fit and stands the referee down), and short enough to be warm well within a
+// pod's lifetime.
+const DefaultServedTipTrajectoryWindow = 10 * time.Minute
+
+// ServedTipTrajectorySampleInterval and ServedTipTrajectoryMaxSamples are the
+// referee's recording cadence and its hard ring cap (architecture/evm's
+// tipSampleInterval / tipMaxBufferCapacity, which read them from here so the
+// config bounds below cannot drift from the mechanism they describe).
+const (
+	ServedTipTrajectorySampleInterval = 5 * time.Second
+	ServedTipTrajectoryMaxSamples     = 1024
+)
+
+// MinServedTipTrajectoryWindow / MaxServedTipTrajectoryWindow bound a configured
+// EvmServedTipConfig.TrajectoryWindow to the values that can actually work.
+//
+// Below a minute the window is self-defeating: it must be long enough that a
+// stall cannot look like a trajectory, and a fit over seconds of history is
+// noise. Above 80% of what the ring can span (cadence × capacity) the required
+// span is never reached, so the referee would stand down forever while looking
+// configured — the failure mode a range check exists to prevent, since nothing
+// in the metrics distinguishes "never warm" from "never needed".
+const (
+	MinServedTipTrajectoryWindow = time.Minute
+	MaxServedTipTrajectoryWindow = ServedTipTrajectorySampleInterval * ServedTipTrajectoryMaxSamples * 4 / 5
+)
 
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
@@ -2145,6 +2483,72 @@ func DefaultMarkEmptyAsErrorMethods() []string {
 		"trace_block",
 		"trace_get",
 	}
+}
+
+// mergeSvmNetworkDefaults copies project-level SVM defaults into a network config.
+// Cluster is never copied — it is network identity (like chainId for EVM), so one
+// networkDefaults.svm block can front many clusters. Everything else is policy and
+// inherits. (Still true after the pointer fields below were added: neither of them
+// is identity.)
+//
+// Pointer fields are copied on nil, not on zero. An operator writing
+// `enforceBlockAvailability: false` or `maxFinalizedSlotLag: 0` under
+// networkDefaults.svm means it; a zero-test would silently drop exactly the
+// disable switch they asked for. Values are copied, not pointer-shared, so two
+// networks inheriting the same default cannot alias one another (matches the
+// evm.servedTip clone above).
+func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
+	if dst == nil || defaults == nil {
+		return
+	}
+	if dst.Chain == "" && defaults.Chain != "" {
+		dst.Chain = defaults.Chain
+	}
+	if dst.Commitment == "" && defaults.Commitment != "" {
+		dst.Commitment = defaults.Commitment
+	}
+	if dst.StatePollerDebounce.Duration() == 0 && defaults.StatePollerDebounce.Duration() != 0 {
+		dst.StatePollerDebounce = defaults.StatePollerDebounce
+	}
+	if dst.MaxFinalizedSlotLag == nil && defaults.MaxFinalizedSlotLag != nil {
+		v := *defaults.MaxFinalizedSlotLag
+		dst.MaxFinalizedSlotLag = &v
+	}
+	if dst.EnforceBlockAvailability == nil && defaults.EnforceBlockAvailability != nil {
+		v := *defaults.EnforceBlockAvailability
+		dst.EnforceBlockAvailability = &v
+	}
+}
+
+// SetDefaults populates SVM-network config fields that were left empty.
+// Called from NetworkConfig.SetDefaults so every production-loaded config
+// ends up with the same values operators would get by opting in.
+//
+// Commitment is intentionally NOT defaulted here: the commitment-injection
+// hook is a no-op when SvmNetworkConfig.Commitment is empty (the caller's
+// commitment or the upstream's server-side default wins), which is the
+// correct behavior when an operator hasn't opted in.
+func (s *SvmNetworkConfig) SetDefaults() error {
+	if s == nil {
+		return nil
+	}
+	// 400ms matches one Solana slot. Polling more often buys no fresher data
+	// and burns upstream quota; polling less often means our state lags the
+	// cluster by more than a slot.
+	if s.StatePollerDebounce.Duration() == 0 {
+		s.StatePollerDebounce = Duration(400 * time.Millisecond)
+	}
+	// 100 slots (~40s) matches MaxShredInsertSlotLagThreshold so the consensus
+	// slot-lag filter and the per-upstream health check use the same staleness
+	// bar. Operators can widen, tighten, or set 0 to disable the filter — hence
+	// the nil test: only an omitted value takes the default. This is the ONLY
+	// place the default is materialized, so readers downstream of SetDefaults
+	// can just test `lag != nil && *lag > 0`.
+	if s.MaxFinalizedSlotLag == nil {
+		v := MaxShredInsertSlotLagThreshold
+		s.MaxFinalizedSlotLag = &v
+	}
+	return nil
 }
 
 func (e *EvmNetworkConfig) SetDefaults() error {
@@ -2505,6 +2909,37 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 				"*.blockTimestamp",
 				"*.logs.*.blockTimestamp",
 			},
+		}
+		// SVM: RpcResponse-enveloped methods carry {context:{slot,apiVersion},value:…}.
+		// context.slot is the slot the node answered at — it differs across healthy
+		// upstreams on virtually every call, and context.apiVersion differs across
+		// mixed validator versions. Without ignoring them, consensus registers
+		// dissent on identical values and SVM consensus is unusable out of the box.
+		// The value payload itself is still fully compared. Method names are
+		// Solana-only, so these entries are inert for EVM networks.
+		for _, m := range []string{
+			"getAccountInfo",
+			"getBalance",
+			"getBlockProduction",
+			"getFeeForMessage",
+			"getLargestAccounts",
+			"getLatestBlockhash",
+			"getMultipleAccounts",
+			"getProgramAccounts", // enveloped only with withContext:true; ignore paths are no-ops otherwise
+			"getRecentBlockhash", // deprecated but still served by older validators
+			"getSignatureStatuses",
+			"getStakeActivation", // removed in agave v2; harmless for older nodes
+			"getStakeMinimumDelegation",
+			"getSupply",
+			"getTokenAccountBalance",
+			"getTokenAccountsByDelegate",
+			"getTokenAccountsByOwner",
+			"getTokenLargestAccounts",
+			"getTokenSupply",
+			"isBlockhashValid",
+			"simulateTransaction",
+		} {
+			c.IgnoreFields[m] = []string{"context.slot", "context.apiVersion"}
 		}
 	}
 	if c.PreferNonEmpty == nil {

@@ -253,6 +253,17 @@ func (d *DatabaseConfig) Validate() error {
 			return err
 		}
 	}
+	// SVM reuses the same CacheConfig/CachePolicyConfig types as EVM, so it gets
+	// the identical connector-uniqueness, connector-reference, item-size, TTL and
+	// appliesTo checks simply by being wired in here. Before this, a malformed
+	// svmJsonRpcCache block sailed through startup and only failed later inside
+	// svm.NewSvmJsonRpcCache — which erpc/init.go downgrades to a warning, so the
+	// cache silently did not exist.
+	if d.SvmJsonRpcCache != nil {
+		if err := d.SvmJsonRpcCache.Validate(); err != nil {
+			return err
+		}
+	}
 	if d.SharedState != nil {
 		if err := d.SharedState.Validate(); err != nil {
 			return err
@@ -536,9 +547,6 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
 	}
-	if fsCfg.Hedge != nil && fsCfg.Hedge.Delay != nil && fsCfg.Hedge.Delay.Quantile > 0 {
-		return fmt.Errorf("%s: hedge quantile is not supported for connector-level failsafe (no latency metric source)", prefix)
-	}
 	return nil
 }
 
@@ -734,6 +742,11 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			}
 		}
 	}
+	// Cross-object: both lists are validated individually above; this catches the
+	// pair that is individually legal but jointly useless.
+	if err := validateSvmUpstreamNetworkPairing(p.Upstreams, p.Networks); err != nil {
+		return err
+	}
 	if p.Auth != nil {
 		if err := p.Auth.Validate(); err != nil {
 			return err
@@ -753,6 +766,9 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		if !c.HasRateLimiterBudget(p.RateLimitBudget) {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)
 		}
+	}
+	if err := p.Integrity.Validate(); err != nil {
+		return fmt.Errorf("project.*: %w", err)
 	}
 	return nil
 }
@@ -958,6 +974,11 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return err
 		}
 	}
+	if u.Svm != nil {
+		if err := u.Svm.Validate(u); err != nil {
+			return err
+		}
+	}
 	if u.Failsafe != nil {
 		for _, fs := range u.Failsafe {
 			if err := fs.Validate(); err != nil {
@@ -1132,6 +1153,12 @@ func (f *FailsafeConfig) Validate() error {
 		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
 	}
 
+	switch f.MatchRequestKind {
+	case "", "*", "user", "internal":
+	default:
+		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+	}
+
 	if f.Timeout != nil {
 		if err := f.Timeout.Validate(); err != nil {
 			return err
@@ -1294,6 +1321,11 @@ func (c *S3FlushConfig) Validate() error {
 	if c.FlushInterval < 0 {
 		return fmt.Errorf("s3.flushInterval must be >= 0")
 	}
+	if c.Endpoint != "" {
+		if u, err := url.Parse(c.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("s3.endpoint must be a valid http(s) URL, got %q", c.Endpoint)
+		}
+	}
 	if c.Credentials != nil {
 		mode := strings.ToLower(strings.TrimSpace(c.Credentials.Mode))
 		switch mode {
@@ -1390,8 +1422,16 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Architecture == "evm" && n.Evm == nil {
 		return fmt.Errorf("network.*.evm is required for evm networks")
 	}
+	if n.Architecture == ArchitectureSvm && n.Svm == nil {
+		return fmt.Errorf("network.*.svm is required for svm networks")
+	}
 	if n.Evm != nil {
 		if err := n.Evm.Validate(); err != nil {
+			return err
+		}
+	}
+	if n.Svm != nil {
+		if err := n.Svm.Validate(); err != nil {
 			return err
 		}
 	}
@@ -1422,6 +1462,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 		if err := sr.Validate(); err != nil {
 			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
 		}
+	}
+	if err := n.Integrity.Validate(); err != nil {
+		return fmt.Errorf("network.*: %w", err)
 	}
 	return nil
 }
@@ -1471,6 +1514,18 @@ func (e *EvmNetworkConfig) Validate() error {
 		if e.ServedTip.ClusterDelta < 0 {
 			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
 		}
+		if e.ServedTip.MaxRegressionBlocks < -1 {
+			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0, or -1 to disable the regression guard (0 uses the default rollback tolerance)")
+		}
+		if w := e.ServedTip.TrajectoryWindow; w != nil && w.Duration() != 0 {
+			if d := w.Duration(); d < MinServedTipTrajectoryWindow || d > MaxServedTipTrajectoryWindow {
+				return fmt.Errorf(
+					"network.*.evm.servedTip.trajectoryWindow must be 0 (disables the trajectory referee) "+
+						"or between %s and %s, got %s — NOTE a bare number in YAML is parsed as MILLISECONDS, "+
+						"so write trajectoryWindow: \"10m\", not trajectoryWindow: 10",
+					MinServedTipTrajectoryWindow, MaxServedTipTrajectoryWindow, d)
+			}
+		}
 		for _, m := range e.ServedTip.GuaranteedMethods {
 			if err := ValidatePattern(m); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)
@@ -1480,6 +1535,113 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.SafeBlockSource != "" {
 		if err := ValidatePattern(e.SafeBlockSource); err != nil {
 			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
+		}
+	}
+	return nil
+}
+
+// isValidSvmSegment reports whether a chain or cluster name is usable as one
+// segment of an "svm:..." network id. It delegates to IsValidNetwork so config
+// validation and network-id parsing can never drift apart on what is legal
+// (notably: dots are allowed here but not by util.IsValidIdentifier).
+func isValidSvmSegment(seg string) bool {
+	// The colon test must come first: "svm:a:b" is a legal *two*-segment network
+	// id, so a colon-bearing chain or cluster would otherwise validate here and
+	// only be caught by the composite check, with a much vaguer message.
+	return seg != "" && !strings.Contains(seg, ":") && IsValidNetwork("svm:"+seg)
+}
+
+// Validate checks the SVM network block, mirroring EvmNetworkConfig.Validate.
+// Everything rejected here would otherwise surface asynchronously at request
+// time or, worse, silently disable behavior: an unrecognized commitment makes
+// the injection hook a no-op (architecture/svm/hooks.go) rather than an error,
+// so a typo like "finalised" quietly reverts every request to whatever each
+// vendor's server-side default happens to be.
+func (s *SvmNetworkConfig) Validate() error {
+	if s.Cluster == "" {
+		return fmt.Errorf("network.*.svm.cluster is required (e.g. mainnet-beta, devnet)")
+	}
+	// Chain is optional — empty legally means solana, which keeps the network id
+	// at the pre-multi-chain "svm:<cluster>" shape. Validate it, don't reject it.
+	if s.Chain != "" && !isValidSvmSegment(s.Chain) {
+		return fmt.Errorf("network.*.svm.chain '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Chain)
+	}
+	if !isValidSvmSegment(s.Cluster) {
+		return fmt.Errorf("network.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	// Belt-and-braces on the derived id: the pieces are legal individually, so
+	// this only fires if SvmNetworkId's composition rules ever change.
+	if ntwId := util.SvmNetworkId(s.Chain, s.Cluster); !IsValidNetwork(ntwId) {
+		return fmt.Errorf("network.*.svm derives an invalid network id '%s' from chain '%s' and cluster '%s'", ntwId, s.Chain, s.Cluster)
+	}
+	// Matched case-insensitively because the injection hooks lowercase before
+	// comparing; empty means "inject nothing" and is a legal opt-out.
+	switch strings.ToLower(s.Commitment) {
+	case "", "processed", "confirmed", "finalized":
+	default:
+		return fmt.Errorf("network.*.svm.commitment '%s' is invalid, must be one of: processed, confirmed, finalized", s.Commitment)
+	}
+	if s.StatePollerDebounce.Duration() < 0 {
+		return fmt.Errorf("network.*.svm.statePollerDebounce must be greater than or equal to 0")
+	}
+	// nil is "unset" (SetDefaults fills 100) and 0 is the documented disable
+	// switch; only a negative value is meaningless.
+	if s.MaxFinalizedSlotLag != nil && *s.MaxFinalizedSlotLag < 0 {
+		return fmt.Errorf("network.*.svm.maxFinalizedSlotLag must be greater than or equal to 0 (0 disables the lag filter)")
+	}
+	return nil
+}
+
+// Validate checks the per-upstream SVM block. Cluster is what upstream.go turns
+// into the upstream's networkId, so a missing one currently fails at bootstrap
+// ("svm upstream %q is missing svm.cluster") long after startup reported success.
+func (s *SvmUpstreamConfig) Validate(u *UpstreamConfig) error {
+	if s.Cluster == "" {
+		// Only fatal once the upstream is actually typed svm. UpstreamConfig
+		// .SetDefaults defaults an unset Type to evm, so by validation time this
+		// is decided — and an svm block inherited from upstreamDefaults onto an
+		// evm upstream in a mixed project is inert, not a config error.
+		if u.Type == UpstreamTypeSvm {
+			return fmt.Errorf("upstream.*.svm.cluster is required for svm upstreams (e.g. mainnet-beta, devnet)")
+		}
+		return nil
+	}
+	if s.Chain != "" && !isValidSvmSegment(s.Chain) {
+		return fmt.Errorf("upstream.*.svm.chain '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Chain)
+	}
+	if !isValidSvmSegment(s.Cluster) {
+		return fmt.Errorf("upstream.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	return nil
+}
+
+// validateSvmUpstreamNetworkPairing catches an SVM upstream whose cluster matches
+// a declared network but whose chain does not. Selection pairs on resolved chain
+// AND cluster (see erpc/healthcheck.go), so such an upstream serves nothing while
+// reporting itself perfectly healthy — the exact silent-misconfiguration this
+// validator exists to prevent.
+//
+// It only fires when some network already declares that cluster, so projects that
+// rely on lazy network creation (upstreams configured, networks not) are untouched.
+func validateSvmUpstreamNetworkPairing(upstreams []*UpstreamConfig, networks []*NetworkConfig) error {
+	for _, u := range upstreams {
+		if u == nil || u.Type != UpstreamTypeSvm || u.Svm == nil || u.Svm.Cluster == "" {
+			continue
+		}
+		upChain := ResolveSvmChain(u.Svm.Chain)
+		matched, clusterDeclared := false, false
+		for _, n := range networks {
+			if n == nil || n.Svm == nil || n.Svm.Cluster != u.Svm.Cluster {
+				continue
+			}
+			clusterDeclared = true
+			if ResolveSvmChain(n.Svm.Chain) == upChain {
+				matched = true
+				break
+			}
+		}
+		if clusterDeclared && !matched {
+			return fmt.Errorf("upstream.*.svm.chain '%s' (upstream '%s') matches no network.*.svm.chain for cluster '%s'; the upstream would never be selected", upChain, u.Id, u.Svm.Cluster)
 		}
 	}
 	return nil
@@ -1515,6 +1677,104 @@ func (c *SelectionPolicyConfig) Validate() error {
 	}
 	if c.CompiledProgram == nil {
 		return fmt.Errorf("selectionPolicy.evalFunc failed to compile (CompiledProgram is nil)")
+	}
+	return nil
+}
+
+// --- integrity ---
+
+// integrityCheckIDs is the catalog of known integrity check ids, registered by
+// the integrity package at init time (common cannot import it — that would be
+// a cycle). When empty (a build that doesn't link the integrity package), the
+// unknown-id validation is skipped rather than false-failing every config.
+var integrityCheckIDs = map[string]struct{}{}
+
+// RegisterIntegrityCheckID adds a check id to the validation catalog. Called
+// from the integrity package's check registrations.
+func RegisterIntegrityCheckID(id string) { integrityCheckIDs[id] = struct{}{} }
+
+// isIntegrityBehavior mirrors the runtime behavior vocabulary (evm
+// parseBehavior): unrecognized values are silently ignored at runtime, so the
+// only place a typo can be caught is here. The vocabulary is EXACTLY
+// recordOnly | hardReject | off — the pre-release reject/soft-flag words are
+// deliberately NOT accepted (fail loudly, no silent aliasing).
+func isIntegrityBehavior(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "recordonly", "hardreject", "off":
+		return true
+	}
+	return false
+}
+
+func (i *IntegrityConfig) Validate() error {
+	if i == nil {
+		return nil
+	}
+	if err := i.IntegritySettings.validate(); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(i.HeaderMode)) {
+	case "", IntegrityHeaderModeOff, IntegrityHeaderModeProfiles, IntegrityHeaderModeFull:
+	default:
+		return fmt.Errorf("integrity.headerMode '%s' is invalid, must be one of: off | profiles | full", i.HeaderMode)
+	}
+	for name, p := range i.Profiles {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("integrity.profiles contains an empty profile name")
+		}
+		if p == nil {
+			continue
+		}
+		if err := p.validate(); err != nil {
+			return fmt.Errorf("integrity.profiles.%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// validate checks an IntegritySettings body. Every rule here guards a silent
+// runtime failure: an unknown level enables ZERO checks, an unknown check id
+// does nothing, and an unknown behavior string keeps the default — none of
+// which are visible without this validation.
+func (s *IntegritySettings) validate() error {
+	switch strings.ToLower(strings.TrimSpace(s.Level)) {
+	case "", "off", "intrinsic", "corroborated", "authoritative":
+	default:
+		return fmt.Errorf("integrity.level '%s' is invalid (an unknown level silently enables zero checks), must be one of: off | intrinsic | corroborated | authoritative", s.Level)
+	}
+	for id, oc := range s.Checks {
+		if len(integrityCheckIDs) > 0 {
+			if _, ok := integrityCheckIDs[id]; !ok {
+				known := make([]string, 0, len(integrityCheckIDs))
+				for k := range integrityCheckIDs {
+					known = append(known, k)
+				}
+				slices.Sort(known)
+				return fmt.Errorf("integrity.checks.%s is not a known check id (a typo'd id silently does nothing); known ids: %s", id, strings.Join(known, ", "))
+			}
+		}
+		if oc != nil && oc.OnFailure != "" && !isIntegrityBehavior(oc.OnFailure) {
+			return fmt.Errorf("integrity.checks.%s.onFailure '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", id, oc.OnFailure)
+		}
+	}
+	if ib := s.InvalidBehavior; ib != nil {
+		if ib.Finalized != "" && !isIntegrityBehavior(ib.Finalized) {
+			return fmt.Errorf("integrity.invalidBehavior.finalized '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", ib.Finalized)
+		}
+		if ib.Unfinalized != "" && !isIntegrityBehavior(ib.Unfinalized) {
+			return fmt.Errorf("integrity.invalidBehavior.unfinalized '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", ib.Unfinalized)
+		}
+	}
+	if b := s.Budget; b != nil && (b.MaxPerSecond < 0 || b.MaxConcurrent < 0) {
+		return fmt.Errorf("integrity.budget.maxPerSecond/maxConcurrent must be >= 0")
+	}
+	if s.ReorgWindow < 0 {
+		return fmt.Errorf("integrity.reorgWindow must be >= 0")
+	}
+	if s.MisbehaviorsDestination != nil {
+		if err := s.MisbehaviorsDestination.Validate(); err != nil {
+			return fmt.Errorf("integrity.misbehaviorsDestination: %w", err)
+		}
 	}
 	return nil
 }
