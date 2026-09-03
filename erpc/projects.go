@@ -277,6 +277,26 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		).Observe(dur.Seconds())
 		return resp, err
 	} else {
+		// FALLBACK SERVE: a fallback-eligible rejection (recordOnly verdict
+		// escalated by autoCorrectWhenPossible) hunted a validated replacement
+		// and found none. The policy's promise is that the client never pays
+		// an error for such a mismatch — serve the flagged original, recorded
+		// loudly. Deliberately checked before any error classification: ANY
+		// terminal failure while a stash exists is strictly worse for the
+		// client than the stashed answer the policy already deemed serveable.
+		if fb := nq.TakeIntegrityFallbackResponse(); fb != nil && fb.Response != nil {
+			telemetry.MetricIntegrityFallbackServed.WithLabelValues(
+				p.Config.Id, network.Label(), method, fb.CheckID, fb.Finality,
+			).Inc()
+			lg.Warn().
+				Str("check", fb.CheckID).
+				Str("finality", fb.Finality).
+				Str("reason", fb.Reason).
+				Err(err).
+				Msg("integrity: no validated replacement found — serving the flagged original (recordOnly policy)")
+			fb.Response.SetDuration(time.Since(start))
+			return fb.Response, nil
+		}
 		// Failed due to integrity: a check rejected a response and no good one was
 		// found (every candidate failed), so the request errored rather than serving
 		// bad data. The rejecting check is the "why".

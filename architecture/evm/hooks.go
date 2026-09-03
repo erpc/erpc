@@ -2,7 +2,6 @@ package evm
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -115,95 +114,17 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 	case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
 		return upstreamPreForward_eth_query(ctx, n, u, r)
 	default:
-		// The state-proven boundary protects a CLASS (methods answered from the
-		// state trie at a block), not a list copied to this call site. The class
-		// is defined once, in common.IsEvmStateQueryMethod, so a method joining
-		// it cannot be gated in one place and forgotten in another.
-		if common.IsEvmStateQueryMethod(methodLower) {
-			return upstreamPreForward_stateBoundary(ctx, n, u, r, method)
-		}
+		// Deliberately NO per-request gate on the integrity state prober's
+		// findings here. The prober publishes evidence — proven-head telemetry
+		// and, for a sustained streak of wrong-height answers, upstream
+		// misbehavior on the health tracker (see noteDisproved) — and exclusion
+		// decisions belong to the operator's selection policy, which already
+		// reads that ledger (misbehaviorRateAbove). A hook-level refusal keyed
+		// to the proven head was tried and misfired structurally: the proven
+		// head advances at probe cadence, so on a chain whose block time is
+		// shorter than that cadence it trails every honest upstream's claimed
+		// head and the network's own advertised tip becomes unroutable.
 		return false, nil, nil
-	}
-}
-
-// upstreamPreForward_stateBoundary refuses to send a state query to an
-// upstream whose STATE-PROVEN head does not cover the requested block. Nodes
-// sometimes answer state methods from older state while reporting a current
-// head; the proven head (advanced only by verified probes — see the state
-// prober) is the boundary that cannot silently outrun reality.
-//
-// Inert unless the state prober is running for this network, so the default
-// behavior is byte-identical with the feature off.
-func upstreamPreForward_stateBoundary(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, method string) (bool, *common.NormalizedResponse, error) {
-	prober := stateProberFor(n.Id())
-	if prober == nil {
-		return false, nil, nil
-	}
-	// The probes themselves are internal state calls aimed at upstreams whose
-	// boundary has NOT advanced yet — gating them would deadlock the proving.
-	if dirs := r.Directives(); dirs != nil && dirs.IsInternal {
-		return false, nil, nil
-	}
-	_, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, r)
-	if err != nil || blockNumber <= 0 {
-		// Tags (latest/pending), unparseable refs, and requests whose height the
-		// method config cannot locate are not gated here: the proven boundary is
-		// a statement about a CONCRETE height, so with no height there is nothing
-		// to compare and the request goes out as it does today.
-		return false, nil, nil
-	}
-	eu, ok := u.(common.EvmUpstream)
-	if !ok {
-		return false, nil, nil
-	}
-	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceStateProven, false, blockNumber)
-	if err != nil {
-		return false, nil, nil
-	}
-	var proven int64
-	if r, ok := u.(common.EvmStateProvenReader); ok {
-		proven = r.EvmStateProvenBlock()
-	}
-	if available {
-		// The claimed-head fallback (proven == 0) exists so that upstreams which
-		// cannot be probed keep serving. It must not shelter an upstream that
-		// ANSWERS the probe and executes at the wrong height — that node has not
-		// failed to prove itself, it has proven the opposite, and letting it
-		// serve is the silent-wrong-data case this boundary was built for.
-		if proven > 0 || !prober.disproved(u.Id()) {
-			return false, nil, nil
-		}
-		// Divert only when someone else can actually answer. A disproved
-		// upstream that is the only one able to serve the height still serves;
-		// excluding the last resort trades wrong data for an outage.
-		if !prober.aSiblingCanServe(ctx, u.Id(), blockNumber) {
-			return false, nil, nil
-		}
-		prober.count(u, "boundary", "diverted")
-		return true, nil, &common.ErrUpstreamBlockUnavailable{
-			BaseError: common.BaseError{
-				Code: common.ErrCodeUpstreamBlockUnavailable,
-				Message: fmt.Sprintf(
-					"state for block %d is DISPROVEN on this node (it answers pinned calls at the wrong height) for %s",
-					blockNumber, method),
-				Details: map[string]interface{}{
-					"upstreamId":  u.Id(),
-					"blockNumber": blockNumber,
-					"disproven":   true,
-				},
-			},
-		}
-	}
-	return true, nil, &common.ErrUpstreamBlockUnavailable{
-		BaseError: common.BaseError{
-			Code:    common.ErrCodeUpstreamBlockUnavailable,
-			Message: fmt.Sprintf("state for block %d is not yet PROVEN on this node (stateProvenBlock: %d) for %s", blockNumber, proven, method),
-			Details: map[string]interface{}{
-				"upstreamId":       u.Id(),
-				"blockNumber":      blockNumber,
-				"stateProvenBlock": proven,
-			},
-		},
 	}
 }
 
@@ -239,7 +160,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// corroboration force-fetch) are skipped to avoid recursing into the engine.
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
-		if cs, policy, observeOnly := resolveIntegrity(n, dirs); len(cs) > 0 {
+		if cs, policy, observeOnly, autoCorrect := resolveIntegrity(n, dirs); len(cs) > 0 {
 			// Integrity state + corroboration are scoped to the node GROUP the request
 			// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
 			// so a receipt from one group is only checked against same-group
@@ -257,6 +178,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				Resolver:    newIntegrityResolver(ctx, n, u, selector),
 				Reorg:       policy,
 				ObserveOnly: observeOnly,
+				AutoCorrect: autoCorrect,
 			}
 			if view != nil {
 				input.History = view
@@ -280,7 +202,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			res := integrity.Validate(vctx, input)
 			rq.AddIntegrityOverhead(time.Since(vStart))
 			annotateIntegritySpan(span, res)
-			// Record the rejected/soft-flagged ("original") body on the violating
+			// Record the rejected/recorded ("original") body on the violating
 			// attempt's span, for a by-hand sanity check. Only on a violation here:
 			// a recovering pass runs concurrently (hedged) so its IntegrityCaught
 			// flag may not be set yet — the "corrected" served body is recorded once
@@ -298,7 +220,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				}
 			}
 			span.End()
-			// Per-check attempts/outcomes (pass/skip/reject/soft_flag/reconfirmed/
+			// Per-check attempts/outcomes (pass/skip/reject/reject_recoverable/record_only/reconfirmed/
 			// off) — sum = total attempts. "pass" means an actual verification ran;
 			// "skip" means the check couldn't evaluate (cold cache, missing wiring).
 			// Higher volume than the violation counter below.
@@ -310,13 +232,13 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			for _, rec := range res.Recorded {
 				verdict := rec.Verdict
 				if verdict == "" {
-					verdict = "soft_flag"
+					verdict = "record_only"
 				}
-				msg := "integrity: recorded reorg-sensitive mismatch (served, not rejected)"
+				msg := "integrity: recorded mismatch (served, not rejected)"
 				if verdict == "would_reject" {
 					// Observe-only: this WOULD have failed the request under
 					// enforcement. Logged distinctly so the enforcement-readiness
-					// review can find them without untangling routine soft-flags.
+					// review can find them without untangling routine record-only flags.
 					msg = "integrity: observe-only suppressed a rejection (served; enforcement would have failed this request)"
 				}
 				telemetry.MetricIntegrityViolation.WithLabelValues(
@@ -329,8 +251,19 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				exportIntegrityCatch(ctx, n, u, rs, methodLower, verdict, rec.CheckID, rec.Class.String(), rec.Finality, rec.Reason)
 			}
 			if res.Err != nil {
+				rejectVerdict := "reject"
+				if res.FallbackEligible {
+					rejectVerdict = "reject_recoverable"
+					// A recordOnly verdict escalated by autoCorrectWhenPossible:
+					// stash the flagged original so project.Forward can serve it
+					// if every alternative upstream is exhausted — the client
+					// must never pay an error for a mismatch the policy says to
+					// serve. The stash keeps the NEWEST eligible original (any
+					// of them satisfies the policy).
+					rq.SetIntegrityFallbackResponse(rs, res.RejectedCheckID, res.Finality, res.RejectedReason)
+				}
 				telemetry.MetricIntegrityViolation.WithLabelValues(
-					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, "reject", res.Finality,
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, rejectVerdict, res.Finality,
 				).Inc()
 				// Remember we caught a bad response (and which check); project.Forward
 				// then counts it as saved (a retry succeeded) or failed (no good
@@ -436,7 +369,7 @@ func annotateIntegritySpan(span trace.Span, res integrity.Result) {
 	if res.Err != nil {
 		outcome = "reject"
 	} else if len(res.Recorded) > 0 {
-		outcome = "soft_flag"
+		outcome = "record_only"
 	}
 	span.SetAttributes(
 		attribute.Int("integrity.checks", len(res.Outcomes)),
@@ -449,7 +382,7 @@ func annotateIntegritySpan(span trace.Span, res integrity.Result) {
 		return
 	}
 	for _, rec := range res.Recorded {
-		span.AddEvent("integrity.soft_flag", trace.WithAttributes(
+		span.AddEvent("integrity.record_only", trace.WithAttributes(
 			attribute.String("check", rec.CheckID),
 			attribute.String("reason", rec.Reason),
 		))

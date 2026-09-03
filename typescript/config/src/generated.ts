@@ -65,31 +65,19 @@ export const UpstreamTypeEvm: UpstreamType = "evm";
 export type EvmUpstream = 
     Upstream;
 /**
- * EvmStateProvenReader is the OPTIONAL, separately-asserted surface for the
- * state-proven boundary (see the integrity state prober). Deliberately NOT part
- * of EvmUpstream: that interface is implemented outside this repo, and widening
- * it broke every existing implementor — the chainId suggest-gate silently
- * degraded when its upstream stopped satisfying the assertion. Optional
- * capabilities are asserted narrowly, never added to the core interface.
- */
-export type EvmStateProvenReader = any;
-/**
- * EvmStateProvenWriter is the prober-facing half.
+ * EvmStateProvenWriter is the OPTIONAL, separately-asserted surface the
+ * integrity state prober records proofs through. The proven head is telemetry
+ * (the state-proven block / proven-lag gauges), never a routing input.
+ * Deliberately NOT part of EvmUpstream: that interface is implemented outside
+ * this repo, and widening it broke every existing implementor — the chainId
+ * suggest-gate silently degraded when its upstream stopped satisfying the
+ * assertion. Optional capabilities are asserted narrowly, never added to the
+ * core interface.
  */
 export type EvmStateProvenWriter = any;
 export type AvailbilityConfidence = number /* int */;
 export const AvailbilityConfidenceBlockHead: AvailbilityConfidence = 1;
 export const AvailbilityConfidenceFinalized: AvailbilityConfidence = 2;
-/**
- * AvailbilityConfidenceStateProven gates on the state-PROVEN head rather
- * than the claimed head: the highest block for which the integrity state
- * probe verified the upstream truly executes in that block's context /
- * holds its state trie. Nodes sometimes answer state queries (eth_call,
- * eth_getBalance, ...) from OLDER state while their reported head is
- * current; this confidence exists so routing for state methods can refuse
- * to outrun proof. Falls back to blockHead while nothing is proven yet.
- */
-export const AvailbilityConfidenceStateProven: AvailbilityConfidence = 3;
 export type EvmNodeType = string;
 export const EvmNodeTypeUnknown: EvmNodeType = "unknown";
 export const EvmNodeTypeFull: EvmNodeType = "full";
@@ -490,6 +478,20 @@ export interface GrpcConnectorConfig {
   headers?: { [key: string]: string};
   getTimeout?: Duration;
   /**
+   * NetworkId pins every server in this connector to one network and skips
+   * the eth_chainId bootstrap probe.
+   * Required for SVM. Solana has no numeric chain id — cluster identity is
+   * the genesis hash — and eth_chainId returns Unimplemented, so the probe
+   * fails and no client is ever registered. Probing GetGenesisHash instead
+   * is not an option either: the BDS reader deliberately does not publish
+   * one until it can verify its own, so identity here has to be asserted by
+   * configuration rather than discovered.
+   * Leave unset for EVM to keep the probe, which also arms the per-request
+   * chain-identity assertion that catches an endpoint cross-wired LATER — a
+   * static binding cannot.
+   */
+  networkId?: string;
+  /**
    * PoolSize is the number of independent gRPC connections opened to each
    * backing server, selected round-robin per request. Larger values raise the
    * concurrent-stream ceiling and shrink the blast radius of a single wedged
@@ -885,6 +887,16 @@ export interface ShadowUpstreamConfig {
   enabled: boolean;
   sampleRate?: number /* float64 */;
   ignoreFields?: { [key: string]: string[]};
+  /**
+   * PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
+   * concrete height before forwarding: the primary's resolved block number when its response
+   * carries one, else the network's tracked head at mirror time. Without it the shadow executes
+   * the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
+   * (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
+   * reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
+   * requests, exactly as before.
+   */
+  pinBlockTag?: boolean;
 }
 /**
  * Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
@@ -959,6 +971,15 @@ export interface EvmUpstreamConfig {
    * misleading and causes circuit breaker false positives.
    */
   skipSyncingCheck?: boolean;
+  /**
+   * HeadLagToleranceBlocks lets the block-availability gate send requests pinned up to N blocks
+   * ABOVE this upstream's observed head instead of rerouting them as stale. Useful for upstreams
+   * that follow the chain tightly but become able to serve a new block a moment after it is
+   * announced elsewhere (they hold or briefly wait for the block internally): with a hard
+   * head comparison every request pinned at head+1 in that moment is rerouted even though the
+   * upstream would have answered it. 0 (default) keeps the exact head comparison.
+   */
+  headLagToleranceBlocks?: number /* int64 */;
   /**
    * Deprecated: never read at runtime. Configure data integrity via the network
    * `integrity` block instead. Retained only so existing YAML still parses.
@@ -1042,8 +1063,10 @@ export type NetworkFailsafeConfig = FailsafeConfig;
 export type UpstreamFailsafeConfig = FailsafeConfig;
 /**
  * CacheFailsafeConfig is the scope-specific alias for cache-connector
- * failsafe policies. Hedge.Quantile is not allowed here (no per-method
- * quantile data on cache reads); validation enforces this.
+ * failsafe policies. Timeout.Duration and Hedge.Delay support quantile
+ * (dynamic) mode at this scope, resolved from a per-executor latency
+ * tracker fed by the connector's own operations (see data/cache_executor.go).
+ * Consensus is not supported here; validation enforces this.
  */
 export type CacheFailsafeConfig = FailsafeConfig;
 export interface RetryPolicyConfig {
@@ -1492,6 +1515,21 @@ export interface EvmNetworkConfig {
   getLogsMaxAllowedTopics?: number /* int64 */;
   getLogsSplitOnError?: boolean;
   getLogsSplitConcurrency?: number /* int */;
+  /**
+   * GetLogsMaxResponseBytes caps the total size of a MERGED eth_getLogs response —
+   * the sum of every sub-response a split assembles, not the size of any one piece.
+   * Splitting exists to get past an upstream's per-request limits, so once a request
+   * is split there is no remaining bound on what the client can make the proxy hold
+   * in memory: a range the upstream refuses is halved, fetched concurrently, and
+   * merged whole. This is the only bound on that total.
+   * Sub-requests are cancelled as soon as the running total crosses the cap, so the
+   * in-flight ones do not materialise either, and the client gets
+   * ErrGetLogsExceededMaxAllowedResponseSize (HTTP 413) — a distinct code from
+   * ErrEndpointRequestTooLarge precisely so it does NOT feed the splitting path that
+   * produced the response.
+   * Zero (the default) disables the cap and preserves the historical behaviour.
+   */
+  getLogsMaxResponseBytes?: number /* int64 */;
   /**
    * TraceFilterSplitOnError controls reactive splitting for trace_filter and
    * arbtrace_filter requests when the upstream returns a range-too-large error.
@@ -1955,9 +1993,25 @@ export interface IntegritySettings {
    */
   budget?: IntegrityBudgetConfig;
   /**
+   * AutoCorrectWhenPossible controls whether a violation triggers a hunt for a
+   * validated replacement (retry/hedge against other upstreams) BEFORE the
+   * InvalidBehavior verdict applies. Default TRUE (nil = true). The two knobs
+   * are orthogonal on purpose:
+   *   autoCorrectWhenPossible | invalidBehavior | on violation
+   *   ------------------------+-----------------+---------------------------------
+   *   true                    | recordOnly      | seek replacement; serve it if one
+   *                           |                 | validates; exhausted -> serve the
+   *                           |                 | flagged ORIGINAL (never an error)
+   *   true                    | hardReject      | seek replacement; exhausted -> error
+   *   false                   | recordOnly      | serve original immediately + record
+   *   false                   | hardReject      | fail immediately, no alternates
+   */
+  autoCorrectWhenPossible?: boolean;
+  /**
    * InvalidBehavior is the per-finality verdict for reorg-sensitive checks,
-   * where invalid data is ambiguously a node bug or a reorg. Deterministic
-   * checks ignore it and always reject.
+   * where invalid data is ambiguously a node bug or a reorg: recordOnly |
+   * hardReject | off. Deterministic checks ignore it and always hardReject
+   * (override per check via checks.<id>.onFailure).
    */
   invalidBehavior?: IntegrityInvalidBehaviorConfig;
   /**
@@ -1986,9 +2040,15 @@ export interface IntegritySettings {
    * trie it claims: on each new followed block, probe every upstream with an
    * execution-context call (and eth_getProof where supported) verified
    * against the follower's verified header, and advance that upstream's
-   * state-proven head only on success. Routing for state methods (eth_call,
-   * eth_getBalance, ...) then refuses to outrun proof. Requires follow to be
-   * enabled (the verified header is the trust anchor). Off by default.
+   * state-proven head only on success. The probes PUBLISH evidence, they
+   * never route: proofs feed the state-proven telemetry, and a sustained
+   * streak of wrong-height answers is recorded as upstream misbehavior on
+   * the health tracker — the same ledger consensus disputes and integrity
+   * rejects feed — for the selection policy to act on (e.g. the
+   * misbehaviorRateAbove predicate); absence of proof has no effect at all,
+   * and ObserveOnly suppresses the misbehavior recording like every other
+   * integrity effect. Requires follow to be enabled (the verified header is
+   * the trust anchor). Off by default.
    */
   stateProbe?: IntegrityStateProbeConfig;
   /**
@@ -2076,7 +2136,7 @@ export interface IntegrityCheckConfig {
    */
   params?: { [key: string]: string};
   /**
-   * OnFailure overrides this check's failure mode: reject | soft-flag.
+   * OnFailure overrides this check's failure mode: recordOnly | hardReject.
    */
   onFailure?: string;
 }
@@ -2089,8 +2149,9 @@ export interface IntegrityBudgetConfig {
 }
 /**
  * IntegrityInvalidBehaviorConfig is the per-finality verdict for reorg-sensitive
- * checks: reject | soft-flag | off, split by whether the response's block is
- * finalized.
+ * checks: recordOnly | hardReject | off, split by whether the response's block
+ * is finalized. The verdict describes what happens when no valid answer is
+ * obtainable; whether a replacement is sought first is AutoCorrectWhenPossible.
  */
 export interface IntegrityInvalidBehaviorConfig {
   finalized?: string;

@@ -921,6 +921,45 @@ func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
 	})
 }
 
+// The ledger fans one misbehavior across several in-process rollup buckets so
+// scoring can read it per-method, per-finality and in aggregate. Prometheus does
+// its OWN aggregation, so the exported counter must be incremented exactly once
+// per event — emitting inside the rollup loops would silently multiply every
+// misbehavior by the fan-out (2x with finality tracking off, 4x with it on) and
+// every rate built on it would be wrong by that factor.
+func TestRecordUpstreamMisbehavior_ExportsExactlyOnePerEvent(t *testing.T) {
+	tracker := NewTracker(&log.Logger, "test-misbehavior-export", 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups := common.NewFakeUpstream("upstream-a")
+	labels := []string{
+		"test-misbehavior-export",
+		ups.VendorName(),
+		ups.NetworkLabel(),
+		ups.Id(),
+		"eth_getBlockByHash",
+		common.DataFinalityStateFinalized.String(),
+	}
+	ctr := telemetry.CounterHandle(telemetry.MetricUpstreamMisbehaviorTotal, labels...)
+	before := promUtil.ToFloat64(ctr)
+
+	const events = 7
+	for i := 0; i < events; i++ {
+		tracker.RecordUpstreamMisbehavior(ups, "eth_getBlockByHash", common.DataFinalityStateFinalized)
+	}
+
+	assert.Equal(t, float64(events), promUtil.ToFloat64(ctr)-before,
+		"one recorded misbehavior must export exactly one increment, regardless of rollup fan-out")
+
+	// And the in-process ledger scoring reads still sees the same events, so the
+	// export is additive rather than a replacement.
+	mt := tracker.GetUpstreamMethodMetrics(ups, "eth_getBlockByHash", common.DataFinalityStateAll)
+	require.NotNil(t, mt)
+	assert.Equal(t, int64(events), mt.MisbehaviorsTotal.Load())
+}
+
 func TestRecordUpstreamMisbehavior_WrongEmpty(t *testing.T) {
 	projectID := "test-misbehavior"
 	tracker := NewTracker(&log.Logger, projectID, 10*time.Second)

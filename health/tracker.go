@@ -708,6 +708,9 @@ func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
 // used to be implicit).
 func (t *Tracker) getUpsKeys(upstream common.Upstream, method string, finality common.DataFinalityState) []upstreamKey {
 	if !t.trackByFinality.Load() {
+		if method == "*" {
+			return []upstreamKey{{upstream, "*", common.DataFinalityStateAll}}
+		}
 		return []upstreamKey{
 			{upstream, method, common.DataFinalityStateAll},
 			{upstream, "*", common.DataFinalityStateAll},
@@ -719,6 +722,18 @@ func (t *Tracker) getUpsKeys(upstream common.Upstream, method string, finality c
 	if finality == common.DataFinalityStateAll {
 		return []upstreamKey{
 			{upstream, method, common.DataFinalityStateAll},
+			{upstream, "*", common.DataFinalityStateAll},
+		}
+	}
+	// Same reason, other axis: when the caller has no specific method the
+	// per-method and any-method entries ARE the same key, so the 4-key set
+	// degenerates to two keys written twice each and every Add lands twice.
+	// Callers that record something not attributable to one method (a head
+	// rollback belongs to the upstream, not to eth_call) pass "*" and would
+	// otherwise be counted double against every other misbehaviour.
+	if method == "*" {
+		return []upstreamKey{
+			{upstream, "*", finality},
 			{upstream, "*", common.DataFinalityStateAll},
 		}
 	}
@@ -753,6 +768,10 @@ func (t *Tracker) IsFinalityTracked() bool {
 
 func (t *Tracker) getNtwKeys(up common.Upstream, method string) []networkKey {
 	net := up.NetworkId()
+	if method == "*" {
+		// Same degeneracy as getUpsKeys: both entries are the same key.
+		return []networkKey{{net, "*"}}
+	}
 	return []networkKey{
 		{net, method},
 		{net, "*"}, // all methods on this network
@@ -1037,6 +1056,19 @@ func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string, f
 		tm.MisbehaviorsTotal.Add(1)
 		tm.touch(nowMs)
 	}
+
+	// Export the same event once, with the caller's own (method, finality).
+	// The loops above fan one event across the in-process rollup buckets that
+	// scoring reads; Prometheus does its own aggregation, so emitting per
+	// bucket key would multiply every misbehavior by the rollup fan-out.
+	telemetry.CounterHandle(telemetry.MetricUpstreamMisbehaviorTotal,
+		t.projectId,
+		up.VendorName(),
+		up.NetworkLabel(),
+		up.Id(),
+		method,
+		finality.String(),
+	).Inc()
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common.Upstream, method string, req *common.NormalizedRequest) {
@@ -1711,4 +1743,26 @@ func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finalit
 		Msgf("recording block rollback in tracker")
 
 	t.getRollbackGauge(upstream, finality).Set(float64(rollback))
+
+	// A large head rollback is also a misbehaviour, and recording it as one is
+	// what lets the EXISTING machinery act on it. Until now this method only set
+	// a gauge, so an upstream could roll its head back every few seconds and stay
+	// fully weighted: its head kept voting in the served-tip ballot and it kept
+	// being picked to answer "latest" from whichever node pool it landed on.
+	//
+	// MisbehaviorsTotal is already a rolling counter on TrackedMetrics, already
+	// carried by routing.scoreMultipliers (`misbehaviors`), and already visible
+	// to selectionPolicy evalFunc. So one rollback -- a real, rare, legitimate
+	// deep reorg -- barely moves the score, while an endpoint flapping between
+	// two node pools accumulates until the operator's own policy deprioritises or
+	// drops it. The threshold stays where it belongs, in configuration, instead
+	// of being a constant compiled in here.
+	//
+	// Stratified by head axis so a finalized-head rollback does not penalise the
+	// upstream for realtime traffic and vice versa.
+	state := common.DataFinalityStateRealtime
+	if finality == "finalized" {
+		state = common.DataFinalityStateFinalized
+	}
+	t.RecordUpstreamMisbehavior(upstream, "*", state)
 }

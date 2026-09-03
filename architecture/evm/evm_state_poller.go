@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
@@ -1586,12 +1587,65 @@ func (e *EvmStatePoller) checkEventLogsProbe(ctx context.Context, block int64) (
 	return false, false, nil
 }
 
-// checkCallStateProbe verifies whether historical state (e.g., balance) is available at the given block.
-// Any non-null result (including "0x0") is considered available.
+// checkCallStateProbe verifies whether historical STATE is available at the
+// given block.
+//
+// Strong form first: the per-architecture execution canary (the same
+// integrity.ChainStateContextProbe the state prober uses — Multicall3
+// getBlockNumber() on standard EVMs, ArbSys arbBlockNumber() on Nitro, where
+// block.number is the L1 height) is eth_call'ed pinned at the block, and
+// availability means the node EXECUTED at exactly that height. A node serving
+// stale state answers eth_getBalance with a well-formed 0x0, but it cannot
+// answer the canary with the pinned height — the returned number comes from
+// the execution context the node actually used. A wrong canary for a chain
+// (the Multicall3-on-Nitro precedent) mismatches on every upstream alike, so
+// it degrades bounds symmetrically and leaves relative ranking unchanged.
+//
+// Where the canary yields no evidence — not deployed at that height ("0x"),
+// erroring/reverting, or answering something unparseable — this DISCOVERS the
+// gap and falls back to the balance heuristic, so chains and heights without
+// the canary keep exactly the previous behavior.
 func (e *EvmStatePoller) checkCallStateProbe(ctx context.Context, block int64) (bool, bool, error) {
 	if block < 0 {
 		return false, false, nil
 	}
+	hex := fmt.Sprintf("0x%x", uint64(block))
+	var chainId int64
+	if upCfg := e.upstream.Config(); upCfg != nil && upCfg.Evm != nil {
+		chainId = upCfg.Evm.ChainId
+	}
+	canary := integrity.ChainStateContextProbe(chainId)
+	pr := common.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_call","params":[{"to":"%s","data":"%s"},"%s"]}`,
+			util.RandomID(), canary.To, canary.Data, hex,
+		),
+	))
+	resp, err := e.upstream.Forward(ctx, pr, true, false)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		if common.HasErrorCode(err,
+			common.ErrCodeUpstreamRequestSkipped,
+			common.ErrCodeUpstreamMethodIgnored,
+			common.ErrCodeEndpointUnsupported,
+		) {
+			return false, true, nil
+		}
+	} else if jrr, jerr := resp.JsonRpcResponse(); jerr == nil && jrr != nil && jrr.Error == nil {
+		if got, ok := parseHexQuantity(string(jrr.GetResultBytes())); ok {
+			return got == block, false, nil
+		}
+	}
+	return e.checkBalanceStateProbe(ctx, block)
+}
+
+// checkBalanceStateProbe is the weak fallback behind checkCallStateProbe:
+// eth_getBalance(0x0, block) accepting any non-null result. It cannot tell
+// state AT the block from state anywhere (a stale node happily answers 0x0),
+// which is why it is only consulted where the execution canary yields no
+// evidence.
+func (e *EvmStatePoller) checkBalanceStateProbe(ctx context.Context, block int64) (bool, bool, error) {
 	hex := fmt.Sprintf("0x%x", uint64(block))
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","%s"]}`,

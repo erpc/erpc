@@ -241,6 +241,11 @@ type NormalizedRequest struct {
 	integrityCaught        atomic.Bool  // an integrity check rejected a response during this request
 	integrityRejectedCheck    atomic.Value // id of the last check that rejected (the "why")
 	integrityRejectedFinality atomic.Value // finality of the last rejected block (for saved/failed metric)
+	// integrityFallback holds the newest FALLBACK-ELIGIBLE original: a response
+	// a recordOnly verdict flagged, escalated to a rejection only so the
+	// failsafe could hunt a validated replacement. If the hunt exhausts,
+	// project.Forward serves this instead of an error.
+	integrityFallback atomic.Pointer[IntegrityFallback]
 	integrityOverheadNs       atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
 	lastUpstream           atomic.Value
 	evmBlockRef            atomic.Value
@@ -456,6 +461,37 @@ func (r *NormalizedRequest) MarkIntegrityCaught(checkID, finality string) {
 // response during this request.
 func (r *NormalizedRequest) IntegrityCaught() bool {
 	return r != nil && r.integrityCaught.Load()
+}
+
+// IntegrityFallback is a flagged-but-serveable original response stashed by a
+// fallback-eligible integrity rejection (recordOnly verdict escalated by
+// autoCorrectWhenPossible), plus the violation metadata a fallback serve is
+// recorded with.
+type IntegrityFallback struct {
+	Response *NormalizedResponse
+	CheckID  string
+	Finality string
+	Reason   string
+}
+
+// SetIntegrityFallbackResponse stashes resp as the fallback to serve if no
+// upstream produces a validated replacement. The newest stash wins: every
+// eligible original satisfies the recordOnly policy equally, and the newest
+// is the most likely to be post-reorg.
+func (r *NormalizedRequest) SetIntegrityFallbackResponse(resp *NormalizedResponse, checkID, finality, reason string) {
+	if r == nil || resp == nil {
+		return
+	}
+	r.integrityFallback.Store(&IntegrityFallback{Response: resp, CheckID: checkID, Finality: finality, Reason: reason})
+}
+
+// TakeIntegrityFallbackResponse returns the stashed fallback (nil if none) and
+// clears the slot so a fallback is served at most once.
+func (r *NormalizedRequest) TakeIntegrityFallbackResponse() *IntegrityFallback {
+	if r == nil {
+		return nil
+	}
+	return r.integrityFallback.Swap(nil)
 }
 
 // IntegrityRejectedCheck returns the id of the last integrity check that

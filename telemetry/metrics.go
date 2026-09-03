@@ -484,6 +484,19 @@ var (
 		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check and target-block finality (finalized/unfinalized/unknown).",
 	}, []string{"project", "network", "category", "check", "finality"})
 
+	// MetricIntegrityFallbackServed counts requests where a fallback-eligible
+	// rejection (recordOnly verdict escalated by autoCorrectWhenPossible)
+	// hunted a validated replacement, found none, and served the flagged
+	// original instead of an error. The count is the residual "suspect data
+	// served" volume — zero is the goal; a persistent rate on one check is
+	// the same protocol-invalid signature MetricIntegrityProtocolSuspect
+	// tracks for hard failures.
+	MetricIntegrityFallbackServed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_fallback_served_total",
+		Help:      "Total requests where no validated replacement was found and the flagged original was served (recordOnly policy with autoCorrectWhenPossible), by the rejecting check and target-block finality.",
+	}, []string{"project", "network", "category", "check", "finality"})
+
 	// MetricIntegrityProtocolSuspect counts times a (network, check) pair showed
 	// the ALL-UPSTREAM signature: repeated request failures where that check
 	// rejected and no upstream produced an acceptable response. A check that
@@ -568,6 +581,37 @@ var (
 		Name:      "upstream_wrong_empty_response_total",
 		Help:      "Total number of times an upstream returned a wrong empty response even though other upstreams returned data.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
+
+	// MetricUpstreamMisbehaviorTotal exports the health tracker's misbehavior
+	// ledger — the same events RecordUpstreamMisbehavior feeds into scoring:
+	// consensus disputes, integrity deterministic rejects, wrong-empty
+	// responses, head rollbacks, and state-probe disproof.
+	//
+	// Until now that ledger existed only as an in-process RollingCounter, so
+	// the only way to see what routing made of an upstream was to read
+	// erpc_selection_score and infer. That is not enough to alert on, and not
+	// enough to answer "is this upstream misbehaving, and by how much".
+	//
+	// Labels are a strict subset of erpc_upstream_request_total's, so a rate is
+	// a plain division with no relabeling:
+	//
+	//	sum by (upstream) (rate(erpc_upstream_misbehavior_total[5m]))
+	//	  / sum by (upstream) (rate(erpc_upstream_request_total[5m]))
+	//
+	// Do NOT add a `finality` matcher to both sides of that division. This
+	// counter is emitted AFTER the response, where NormalizedRequest.Finality
+	// has resolved; erpc_upstream_request_total is emitted BEFORE dispatch,
+	// where the same call often cannot resolve yet and reports "unknown"
+	// (Finality caches only definitive answers). For methods whose finality
+	// depends on the response at all — eth_getBlockByHash and the other
+	// hash-addressed lookups — the two counters therefore label the SAME
+	// request differently, and a per-finality ratio can exceed 100%. Divide on
+	// the unfiltered totals, and use the finality label for attribution only.
+	MetricUpstreamMisbehaviorTotal = newLabeledCounterUnregistered(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_misbehavior_total",
+		Help:      "Total misbehaviors recorded against an upstream by the health tracker (consensus disputes, integrity rejects, wrong-empty responses, head rollbacks, state-probe disproof). Labels align with erpc_upstream_request_total so a misbehavior rate is a direct division.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
 
 	// MetricGrpcBdsHardTimeoutTotal counts how many BDS gRPC calls hit the
 	// hard per-call ceiling (the bounded-wait timeout in SendRequest). A
@@ -1246,6 +1290,7 @@ func RebuildFilteredCounters() {
 	MetricNetworkEvmTraceFilterSplitFailure = MetricNetworkEvmTraceFilterSplitFailure.Rebuild()
 	MetricNetworkEvmTraceFilterForcedSplits = MetricNetworkEvmTraceFilterForcedSplits.Rebuild()
 	MetricUpstreamWrongEmptyResponseTotal = MetricUpstreamWrongEmptyResponseTotal.Rebuild()
+	MetricUpstreamMisbehaviorTotal = MetricUpstreamMisbehaviorTotal.Rebuild()
 	MetricNetworkRequestsReceived = MetricNetworkRequestsReceived.Rebuild()
 	MetricNetworkMultiplexedRequests = MetricNetworkMultiplexedRequests.Rebuild()
 	MetricNetworkHedgedRequestTotal = MetricNetworkHedgedRequestTotal.Rebuild()
@@ -1285,6 +1330,7 @@ func RebuildFilteredCounters() {
 	MetricNetworkEvmTraceFilterSplitFailure = registerOrReuseCounter(MetricNetworkEvmTraceFilterSplitFailure)
 	MetricNetworkEvmTraceFilterForcedSplits = registerOrReuseCounter(MetricNetworkEvmTraceFilterForcedSplits)
 	MetricUpstreamWrongEmptyResponseTotal = registerOrReuseCounter(MetricUpstreamWrongEmptyResponseTotal)
+	MetricUpstreamMisbehaviorTotal = registerOrReuseCounter(MetricUpstreamMisbehaviorTotal)
 	MetricNetworkRequestsReceived = registerOrReuseCounter(MetricNetworkRequestsReceived)
 	MetricNetworkMultiplexedRequests = registerOrReuseCounter(MetricNetworkMultiplexedRequests)
 	MetricNetworkHedgedRequestTotal = registerOrReuseCounter(MetricNetworkHedgedRequestTotal)

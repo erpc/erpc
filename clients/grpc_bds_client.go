@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"net/url"
+	"sync"
 	"sync/atomic"
 
 	_ "github.com/blockchain-data-standards/manifesto/common"
@@ -42,6 +43,15 @@ type GrpcBdsClient interface {
 	QueryClient() evm.QueryServiceClient
 }
 
+// Shutdown is deliberately NOT on GrpcBdsClient, for the same reason
+// SetExpectedChainId isn't: query_pipe_through.go type-asserts against that
+// interface as a capability probe, so widening it silently drops clients out
+// of the BDS path instead of failing to compile. Callers assert for
+// ShutdownableClient; this pins the real implementation at compile time.
+type ShutdownableClient interface{ Shutdown() }
+
+var _ ShutdownableClient = (*GenericGrpcBdsClient)(nil)
+
 type GenericGrpcBdsClient struct {
 	Url     *url.URL
 	headers map[string]string
@@ -67,6 +77,13 @@ type GenericGrpcBdsClient struct {
 	// the ChainId RPC (see grpc_bds_resilience.go). Atomic: the cache
 	// connector arms it via SetExpectedChainId after probing.
 	expectedChainId atomic.Uint64
+
+	// closed is shut by Shutdown and releases the appCtx watcher goroutine
+	// below. Without it that watcher blocks on appCtx.Done() for the life of
+	// the process, so an explicitly-closed client would still leak one
+	// goroutine even though its pool was gone.
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 // SetExpectedChainId arms chain-identity enforcement after construction —
@@ -107,6 +124,7 @@ func NewGrpcBdsClient(
 		upstreamId:      upsId,
 		isLogLevelTrace: logger.GetLevel() == zerolog.TraceLevel,
 		headers:         make(map[string]string),
+		closed:          make(chan struct{}),
 	}
 	if upstream != nil {
 		if cfg := upstream.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.ChainId > 0 {
@@ -168,10 +186,15 @@ func NewGrpcBdsClient(
 	}
 	client.pool = pool
 
-	// Setup graceful shutdown
+	// Releases on either the app going down or an explicit Shutdown; watching
+	// appCtx alone would pin this goroutine for the life of the process on
+	// every client the caller abandons.
 	go func() {
-		<-appCtx.Done()
-		client.shutdown()
+		select {
+		case <-appCtx.Done():
+		case <-client.closed:
+		}
+		client.Shutdown()
 	}()
 
 	logger.Debug().
@@ -1015,10 +1038,27 @@ func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 	return common.NewErrEndpointTransportFailure(c.Url, err)
 }
 
-func (c *GenericGrpcBdsClient) shutdown() {
-	if c.pool != nil {
-		c.pool.Shutdown()
+// Shutdown closes the underlying connection pool. Callers that construct a
+// client and then abandon it — a failed bootstrap probe, a duplicate server,
+// a lost create race — MUST call this: the pool runs a maintainLoop goroutine
+// and each pooled grpc.ClientConn holds several of its own (callback
+// serializers, HTTP/2 transport loops) that only exit on Close.
+//
+// Exported deliberately. It was unexported with zero callers, so nothing ever
+// closed a BDS client, and every abandoned one leaked its goroutines for the
+// process lifetime.
+//
+// Safe to call more than once and on a nil receiver.
+func (c *GenericGrpcBdsClient) Shutdown() {
+	if c == nil {
+		return
 	}
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		if c.pool != nil {
+			c.pool.Shutdown()
+		}
+	})
 }
 
 func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {

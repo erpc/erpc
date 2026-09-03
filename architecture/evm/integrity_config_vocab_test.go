@@ -12,7 +12,7 @@ import (
 // vocabulary the runtime (parseBehavior) understands — otherwise validation
 // either rejects working configs or lets a silently-ignored value through.
 func TestIntegrityBehaviorVocabMatchesValidation(t *testing.T) {
-	accepted := []string{"reject", "error", "hard-fail", "soft-flag", "softflag", "record", "warn", "off", "ignore", "none", " Reject "}
+	accepted := []string{"recordOnly", "hardReject", "off", " RecordOnly ", "HARDREJECT"}
 	for _, v := range accepted {
 		_, ok := parseBehavior(v)
 		require.True(t, ok, "runtime must parse %q", v)
@@ -21,7 +21,9 @@ func TestIntegrityBehaviorVocabMatchesValidation(t *testing.T) {
 		}}
 		assert.NoError(t, cfg.Validate(), "validation must accept %q (runtime parses it)", v)
 	}
-	for _, v := range []string{"rejct", "soft flag", "flag", "true"} {
+	// The pre-release vocabulary is deliberately DEAD — it must fail loudly,
+	// never alias silently.
+	for _, v := range []string{"reject", "error", "hard-fail", "soft-flag", "softflag", "record", "warn", "ignore", "none", "rejct", "soft flag", "flag", "true"} {
 		_, ok := parseBehavior(v)
 		require.False(t, ok, "runtime must NOT parse %q", v)
 		cfg := &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{

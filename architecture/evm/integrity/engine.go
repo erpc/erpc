@@ -29,6 +29,13 @@ type Input struct {
 	// recorded as "would_reject", but the response is always served. Absolute —
 	// it outranks a per-check onFailure and covers Deterministic checks too.
 	ObserveOnly bool
+	// AutoCorrect escalates a recordOnly verdict into a FALLBACK-ELIGIBLE
+	// rejection: the caller's failsafe machinery hunts a validated replacement,
+	// and only if every alternative is exhausted does the caller serve the
+	// flagged original (see Result.FallbackEligible). Without it a recordOnly
+	// violation serves the original immediately, corrected by nothing.
+	// ObserveOnly outranks this like it outranks everything else.
+	AutoCorrect bool
 }
 
 // Recorded is a reorg-sensitive mismatch that was observed but not rejected
@@ -40,10 +47,10 @@ type Recorded struct {
 	Class    FailureClass
 	Finality string // "finalized"/"unfinalized"/"unknown" — for the violation metric
 	// Verdict is the label this record carries in the violation metric/log:
-	// "soft_flag" (a reorg-sensitive mismatch served by policy) or
-	// "would_reject" (observe-only suppressed a real rejection). Distinguishing
-	// them is the point of observe mode — one is routine, the other is the
-	// enforcement cost estimate.
+	// "record_only" (a mismatch served by policy) or "would_reject"
+	// (observe-only suppressed a real rejection). Distinguishing them is the
+	// point of observe mode — one is routine, the other is the enforcement
+	// cost estimate.
 	Verdict string
 }
 
@@ -61,20 +68,31 @@ type Result struct {
 	// transient race, so it should not damage a score.
 	RejectedClass FailureClass
 	Finality      string // finality of the rejected block ("finalized"/"unfinalized"/"unknown"); "" if no reject
-	Recorded      []Recorded
-	Outcomes      []CheckOutcome
+	// FallbackEligible marks a rejection that AutoCorrect escalated from a
+	// recordOnly verdict: hunt a replacement, but if every alternative is
+	// exhausted the caller must serve the flagged original instead of an
+	// error. Never set for a hardReject verdict.
+	FallbackEligible bool
+	// RejectedReason is the violation text (meaningful only when Err != nil),
+	// so a fallback serve can be recorded with the original reason.
+	RejectedReason string
+	Recorded       []Recorded
+	Outcomes       []CheckOutcome
 }
 
 // CheckOutcome records what one check evaluation did. Outcome is one of:
 // "pass" (an actual verification ran and found no violation), "skip" (the
 // check could not evaluate this response — missing wiring, cold cache, data
 // not fully modeled; see Skipped), "reject" (failed, response rejected),
-// "soft_flag" (reorg-sensitive mismatch recorded but served), "reconfirmed"
-// (a pin-anchored mismatch cleared once the stale pin was re-confirmed
-// against a fresh canonical fetch — a reorg, not corruption; served),
-// "would_reject" (observe-only mode suppressed a rejection and served the
-// response anyway — the count is the client-facing cost enforcement would
-// incur), "off" (disabled for this finality or check).
+// "reject_recoverable" (a recordOnly verdict escalated by AutoCorrect: the
+// response is rejected so the failsafe hunts a replacement, but exhaustion
+// serves the flagged original instead of an error), "record_only" (mismatch
+// recorded but served, no correction sought), "reconfirmed" (a pin-anchored
+// mismatch cleared once the stale pin was re-confirmed against a fresh
+// canonical fetch — a reorg, not corruption; served), "would_reject"
+// (observe-only mode suppressed a rejection and served the response anyway —
+// the count is the client-facing cost enforcement would incur), "off"
+// (disabled for this finality or check).
 type CheckOutcome struct {
 	CheckID string
 	Outcome string
@@ -212,12 +230,29 @@ func Validate(ctx context.Context, in Input) Result {
 			res.Err = contentValidation(c, v, in.Upstream)
 			res.RejectedCheckID = c.ID
 			res.RejectedClass = c.Class
+			res.RejectedReason = v.Reason
 			res.Finality = fin.label(ctx, in, d)
 			return res
 		}
-		// soft-flag: surface the violation but still serve the response.
-		res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "soft_flag"})
-		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: fin.label(ctx, in, d), Verdict: "soft_flag"})
+		// recordOnly verdict. With AutoCorrect the violation still rejects —
+		// the failsafe machinery hunts a validated replacement — but the
+		// rejection is FALLBACK-ELIGIBLE: exhausting every alternative serves
+		// the flagged original instead of an error, so the client never pays
+		// for a mismatch that might be a benign reorg. ObserveOnly was handled
+		// above (a recordOnly verdict under observe is just a record).
+		if in.AutoCorrect && !in.ObserveOnly {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reject_recoverable"})
+			res.Err = contentValidation(c, v, in.Upstream)
+			res.RejectedCheckID = c.ID
+			res.RejectedClass = c.Class
+			res.RejectedReason = v.Reason
+			res.Finality = fin.label(ctx, in, d)
+			res.FallbackEligible = true
+			return res
+		}
+		// No correction wanted: surface the violation but serve the response.
+		res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "record_only"})
+		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: fin.label(ctx, in, d), Verdict: "record_only"})
 	}
 	return res
 }

@@ -150,7 +150,7 @@ A result is "emptyish" if the raw JSON bytes are `null`, `""`, `"0x"`, `"0x0"`, 
 
 **Compression.** When `evmJsonRpcCache.compression.enabled = true` (the default — auto-created even when the `compression:` block is omitted), values are compressed with zstd before storage. Only values whose pre-compression size meets or exceeds `threshold` (default 1024 bytes) are compressed; smaller values are stored raw. If the compressed output is larger than the original it is also stored raw. Detection on read is by the zstd magic bytes `0x28 0xB5 0x2F 0xFD` — no explicit flag needed.
 
-**Connector failsafe wrapping.** When a connector config lists `failsafeForGets` or `failsafeForSets`, the raw connector is wrapped in a `FailsafeConnector`. Retry, static-delay hedge, and circuit-breaker are supported. Consensus and hedge quantile mode are not supported at this scope.
+**Connector failsafe wrapping.** When a connector config lists `failsafeForGets` or `failsafeForSets`, the raw connector is wrapped in a `FailsafeConnector`. Retry, hedge, timeout, and circuit-breaker are supported; hedge and timeout accept quantile-driven (adaptive) values, which resolve against the connector’s own 1-minute sliding latency window tracked per (method, finality) executor — configuring either in quantile mode creates that tracker, and cold start (no samples yet) falls back to `base + min`. The circuit breaker counts the executor’s own timeout expiry as a failure, so sustained timeouts exclude the connector (fail-fast to upstream fallthrough) until a half-open probe completes in time. Consensus is not supported at this scope.
 
 **gRPC connector (BDS read-through).** `GrpcConnector` is a read-only connector backed by BDS gRPC servers. It does not support `Set`. Supported methods: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getLogs`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_chainId`, `eth_blockNumber`. `eth_blockNumber` is derived by fetching the latest block internally — there is no native BDS gRPC call for it. The gRPC connector performs a fast-miss check: if the request block number is below the connector's earliest known block, it returns `ErrRecordNotFound` immediately without a network call.
 
@@ -244,8 +244,8 @@ Connector `SetDefaults` is called with `scope = connectorScopeCache`, which sets
 | `connectors[*].grpc.servers` | `[]string` | nil | Explicit gRPC server URLs. When both `bootstrap` and `servers` are provided, explicit list takes precedence and bootstrap is also resolved and appended. Source: <SourceLink file="data/grpc.go" lines="85-95" /> |
 | `connectors[*].grpc.headers` | `map[string]string` | nil | Headers sent with every gRPC request. |
 | `connectors[*].grpc.getTimeout` | Duration | `100ms` | Per-call timeout. Applied when the existing context deadline is absent or farther in the future than `getTimeout`. Footgun: older docs incorrectly stated `0 (no override)`; the correct runtime default is 100ms. Source: <SourceLink file="common/defaults.go" lines="927-929" /> |
-| `connectors[*].failsafeForGets` | `[]*FailsafeConfig` | nil | Per-connector failsafe for Get operations. Consensus and hedge-quantile are not supported at this scope. Source: <SourceLink file="data/cache_executor.go" lines="31-38" /> |
-| `connectors[*].failsafeForSets` | `[]*FailsafeConfig` | nil | Per-connector failsafe for Set operations. Same restrictions as Gets. |
+| `connectors[*].failsafeForGets` | `[]*FailsafeConfig` | nil | Per-connector failsafe for Get operations. Hedge and timeout accept quantile-driven values resolved from the connector's own latency window (<SourceLink file="data/cache_executor.go" lines="204-207" />, <SourceLink file="data/cache_executor.go" lines="244-249" />). Consensus is not supported at this scope. Source: <SourceLink file="data/cache_executor.go" lines="59-63" /> |
+| `connectors[*].failsafeForSets` | `[]*FailsafeConfig` | nil | Per-connector failsafe for Set operations. Same semantics as Gets. |
 
 #### `evmJsonRpcCache.policies[*]`
 
@@ -367,12 +367,12 @@ far more and rarely evicted:
 }`}
 />
 
-**2. gRPC read-through connector with static-delay hedge and per-call timeout.** When the
-primary cache backend is a remote gRPC server (BDS read-through), add a short static hedge
-so a slow node doesn't hold up the request — note that `quantile` mode is rejected at
-connector scope, so the delay must be static. The `400ms` timeout keeps the cache miss path
-fast enough that going straight to upstreams is always cheaper than waiting on a struggling
-connector:
+**2. gRPC read-through connector with quantile hedge and per-call timeout.** When the
+primary cache backend is a remote gRPC server (BDS read-through), add a quantile hedge
+so a slow node doesn't hold up the request — the delay resolves against this connector's
+own 1-minute latency window (per method/finality executor), and falls back to `base + min`
+before any samples exist. The `400ms` timeout keeps the cache miss path fast enough that
+going straight to upstreams is always cheaper than waiting on a struggling connector:
 
 <ConfigTabs
   path="database.evmJsonRpcCache"
@@ -395,8 +395,12 @@ connector:
               # Hard ceiling on a single get call; hedge fires before this
               duration: 400ms
             hedge:
-              # Static: quantile mode is not supported at connector scope
-              delay: 100ms
+              delay:
+                # p95 of this connector's own completed reads (1-minute window)
+                quantile: 0.95
+                # floor; also cold-start fallback (no samples yet → base+min)
+                min: 50ms
+                max: 200ms
               maxCount: 1
             retry:
               maxAttempts: 2
@@ -441,8 +445,8 @@ connector:
         matchMethod: "*",
         timeout: { duration: "400ms" },
         hedge: {
-          // Static: quantile mode is not supported at connector scope
-          delay: "100ms", maxCount: 1,
+          // p95 of this connector's own reads (1m window); cold start → base+min
+          delay: { quantile: 0.95, min: "50ms", max: "200ms" }, maxCount: 1,
         },
         retry: { maxAttempts: 2, delay: "0" },
       }],

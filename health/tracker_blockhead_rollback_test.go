@@ -264,3 +264,72 @@ func TestTrackerBlockTimeReanchorsAfterHeadRollback(t *testing.T) {
 		"EMA must move toward the new 3s/block cadence instead of staying frozen")
 	assert.Less(t, int64(bt), int64(2*time.Second))
 }
+
+// A large head rollback is not just something to chart. Until it was recorded as
+// a misbehaviour, RecordBlockHeadLargeRollback only set a gauge, so an upstream
+// could roll its head back every few seconds and stay fully weighted -- its head
+// kept voting in the served-tip ballot and it kept being picked to answer
+// "latest" from whichever node pool it landed on.
+//
+// MisbehaviorsTotal is the signal the rest of eRPC already acts on: it is
+// carried by routing.scoreMultipliers (`misbehaviors`) and visible to
+// selectionPolicy evalFunc. Feeding rollbacks into it means one rare deep reorg
+// barely moves the score while a flapping endpoint accumulates until the
+// operator's own policy deprioritises or drops it -- the threshold stays in
+// configuration rather than being compiled in here.
+//
+// Production shape, goldsky ECS edge 2026-08-18: one Dwellir endpoint on
+// darwinia logged 610 large latest-head rollbacks in three hours (~3,341-block
+// sawtooth every ~18s, seen identically from four deployments) while every other
+// upstream in the fleet that hour recorded exactly one.
+func TestTrackerBlockHeadLargeRollbackIsAMisbehavior(t *testing.T) {
+	misbehaviors := func(tr *Tracker, ups common.Upstream, finality common.DataFinalityState) int64 {
+		return tr.GetUpstreamMethodMetrics(ups, "*", finality).MisbehaviorsTotal.Load()
+	}
+
+	t.Run("a latest-head rollback counts against realtime", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-rollback-misbehavior-latest")
+		ups := common.NewFakeUpstream("a")
+
+		assert.Zero(t, misbehaviors(tracker, ups, common.DataFinalityStateRealtime))
+
+		tracker.RecordBlockHeadLargeRollback(ups, "latest", 12_760_481, 12_757_135)
+
+		assert.Equal(t, int64(1), misbehaviors(tracker, ups, common.DataFinalityStateRealtime),
+			"a large head rollback must reach the signal routing and selectionPolicy already read")
+	})
+
+	t.Run("repeated rollbacks accumulate", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-rollback-misbehavior-repeat")
+		ups := common.NewFakeUpstream("a")
+
+		// A flapping endpoint separates itself from a one-off reorg by volume,
+		// which is exactly what a rolling counter is for.
+		for i := 0; i < 25; i++ {
+			tracker.RecordBlockHeadLargeRollback(ups, "latest", 12_760_481, 12_757_135)
+		}
+
+		assert.Equal(t, int64(25), misbehaviors(tracker, ups, common.DataFinalityStateRealtime))
+	})
+
+	t.Run("the two head axes are stratified", func(t *testing.T) {
+		tracker := newRollbackTestTracker(t, "test-rollback-misbehavior-axes")
+		tracker.EnableFinalityTracking() // per-finality buckets only exist in 4-key mode
+		ups := common.NewFakeUpstream("a")
+
+		// prism-style upstreams correct their finalized boundary routinely while
+		// their latest head is perfectly sound, so the two axes must land in their
+		// own buckets and a policy can weigh them differently.
+		tracker.RecordBlockHeadLargeRollback(ups, "finalized", 12_760_481, 12_757_135)
+		for i := 0; i < 3; i++ {
+			tracker.RecordBlockHeadLargeRollback(ups, "latest", 12_760_481, 12_757_135)
+		}
+
+		assert.Equal(t, int64(1), misbehaviors(tracker, ups, common.DataFinalityStateFinalized),
+			"the finalized axis carries only its own rollback")
+		assert.Equal(t, int64(3), misbehaviors(tracker, ups, common.DataFinalityStateRealtime),
+			"the latest axis carries only its own rollbacks")
+		assert.Equal(t, int64(4), misbehaviors(tracker, ups, common.DataFinalityStateAll),
+			"the all-finalities rollup carries both")
+	})
+}
