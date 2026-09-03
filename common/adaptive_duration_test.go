@@ -193,6 +193,15 @@ func TestAdaptiveDuration_Resolve(t *testing.T) {
 			want: 1 * time.Second,
 		},
 		{
+			// A quantile sitting exactly at Max (e.g. a window of censored
+			// samples recorded at Max) plus Base overshoots Max before the
+			// clamp; the result must still be exactly Max.
+			name: "base + quantile at max clamps to max",
+			spec: &AdaptiveDuration{Base: Duration(100 * time.Millisecond), Quantile: 0.99, Max: Duration(1 * time.Second)},
+			qt:   &fakeQuantile{val: 1 * time.Second},
+			want: 1 * time.Second,
+		},
+		{
 			// Static specs (Quantile == 0) return Base unchanged — Min/Max
 			// don't apply. This preserves legacy hedge/timeout semantics:
 			// `delay: 10ms` means exactly 10ms even if a Min default exists.

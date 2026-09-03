@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -265,6 +266,193 @@ func TestCacheFailsafe_LatencyRecording_Classification(t *testing.T) {
 		assert.Equal(t, time.Duration(0), fc.getExecutors[0].latency.GetQuantile(0.5),
 			"an interrupted attempt measures the canceller, not the connector")
 	})
+}
+
+// funcConnector routes Get through a plain function so a test can vary
+// per-call behavior (fast vs slow) without a testify expectation per
+// call. Everything else falls through to the embedded mock.
+type funcConnector struct {
+	*MockConnector
+	get func(ctx context.Context) ([]byte, error)
+}
+
+func (c *funcConnector) Get(ctx context.Context, _, _, _ string, _ interface{}) ([]byte, error) {
+	return c.get(ctx)
+}
+
+// sleepOrCancel blocks for d unless ctx ends first, returning a timely
+// reply or the context error — a connector that honors cancellation.
+func sleepOrCancel(ctx context.Context, d time.Duration) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(d):
+		return []byte("slow"), nil
+	}
+}
+
+func newQuantileTimeoutConnector(t *testing.T, spec *common.AdaptiveDuration, get func(ctx context.Context) ([]byte, error)) (*FailsafeConnector, *cacheExecutor) {
+	t.Helper()
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	fc, err := NewFailsafeConnector(ctx, &logger, &funcConnector{MockConnector: NewMockConnector("test"), get: get}, []*common.FailsafeConfig{
+		{Timeout: &common.TimeoutPolicyConfig{Duration: spec}},
+	}, nil)
+	require.NoError(t, err)
+	ex := fc.getExecutors[0]
+	require.NotNil(t, ex.latency)
+	return fc, ex
+}
+
+// An attempt the executor's own timeout kills is a right-censored
+// observation: the connector's latency is "at least the budget", not the
+// budget. Recording it at the budget would cap the tracked quantile at
+// the current timeout and the adaptive loop could only ever tighten.
+func TestCacheFailsafe_DynamicTimeout_OwnTimeoutRecordedCensored(t *testing.T) {
+	hang := func(ctx context.Context) ([]byte, error) { return sleepOrCancel(ctx, 5*time.Second) }
+
+	t.Run("AtMaxWhenSet", func(t *testing.T) {
+		const maxD = 300 * time.Millisecond
+		fc, ex := newQuantileTimeoutConnector(t, &common.AdaptiveDuration{
+			Quantile: 0.9,
+			Min:      common.Duration(20 * time.Millisecond),
+			Max:      common.Duration(maxD),
+		}, hang)
+		require.Equal(t, 20*time.Millisecond, ex.timeoutSpec.Resolve(ex.latency), "cold budget is Min")
+
+		_, err := fc.Get(context.Background(), "", "pk", "rk", nil)
+		require.Error(t, err)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded), "got: %v", err)
+
+		// The single sample is the window's every quantile: it must sit at
+		// Max (within DDSketch's 1% relative accuracy), not at the 20ms
+		// budget the attempt actually consumed.
+		sample := ex.latency.GetQuantile(0.5)
+		assert.InDelta(t, float64(maxD), float64(sample), float64(maxD)*0.05,
+			"own-timeout must be recorded at Max, got %v", sample)
+		resolved := ex.timeoutSpec.Resolve(ex.latency)
+		assert.LessOrEqual(t, resolved, maxD, "a censored window must never resolve past Max")
+		assert.Greater(t, resolved, 20*time.Millisecond, "a censored window must lift the budget off Min")
+	})
+
+	t.Run("AtTwiceBudgetWithoutMax", func(t *testing.T) {
+		// Base=20ms, Min auto-floors to 10ms → cold budget 30ms. No Max:
+		// the censored sample lands at 2× the budget it was killed at.
+		fc, ex := newQuantileTimeoutConnector(t, &common.AdaptiveDuration{
+			Base:     common.Duration(20 * time.Millisecond),
+			Quantile: 0.9,
+		}, hang)
+		budget := ex.timeoutSpec.Resolve(ex.latency)
+		require.Equal(t, 30*time.Millisecond, budget)
+
+		_, err := fc.Get(context.Background(), "", "pk", "rk", nil)
+		require.Error(t, err)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded), "got: %v", err)
+
+		sample := ex.latency.GetQuantile(0.5)
+		assert.InDelta(t, float64(2*budget), float64(sample), float64(budget)*0.1,
+			"own-timeout without Max must be recorded at 2× the budget, got %v", sample)
+		assert.Greater(t, ex.timeoutSpec.Resolve(ex.latency), budget,
+			"the next budget must be able to rise above the one that timed out")
+	})
+}
+
+// {quantile:0.99, min:X, max:Y} against a connector whose tail exceeds X:
+// the budget starts at X (cold), the first slow read times out, and the
+// censored sample lets the resolved budget rise above X — so later slow
+// reads complete instead of every one of them dying at X forever.
+func TestCacheFailsafe_DynamicTimeout_BudgetRisesAboveMin(t *testing.T) {
+	const (
+		minD  = 20 * time.Millisecond
+		maxD  = 200 * time.Millisecond
+		slowD = 40 * time.Millisecond // above Min, well below Max
+		calls = 100
+	)
+	var n atomic.Int64
+	fc, ex := newQuantileTimeoutConnector(t, &common.AdaptiveDuration{
+		Quantile: 0.99,
+		Min:      common.Duration(minD),
+		Max:      common.Duration(maxD),
+	}, func(ctx context.Context) ([]byte, error) {
+		if n.Add(1)%10 == 0 { // 10% of reads are slow — well past the 1% tail
+			return sleepOrCancel(ctx, slowD)
+		}
+		return []byte("fast"), nil
+	})
+	require.Equal(t, minD, ex.timeoutSpec.Resolve(ex.latency), "cold budget is Min")
+
+	var slowTimedOut, slowCompleted int
+	for i := 1; i <= calls; i++ {
+		budget := ex.timeoutSpec.Resolve(ex.latency)
+		assert.GreaterOrEqual(t, budget, minD, "call %d: budget below Min", i)
+		assert.LessOrEqual(t, budget, maxD, "call %d: budget above Max", i)
+		_, err := fc.Get(context.Background(), "", "pk", "rk", nil)
+		if i%10 != 0 {
+			require.NoError(t, err, "call %d (fast) must succeed", i)
+			continue
+		}
+		switch {
+		case err == nil:
+			slowCompleted++
+		case common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded):
+			slowTimedOut++
+		default:
+			t.Fatalf("call %d (slow): unexpected error %v", i, err)
+		}
+	}
+	assert.GreaterOrEqual(t, slowTimedOut, 1, "the first slow read must die at the cold Min budget")
+	assert.GreaterOrEqual(t, slowCompleted, 1,
+		"the budget must loosen so slow reads complete; recording own-timeouts at face value keeps every one at Min")
+
+	resolved := ex.timeoutSpec.Resolve(ex.latency)
+	assert.Greater(t, resolved, minD, "a >1%% tail above Min must lift the p99 budget above Min")
+	assert.LessOrEqual(t, resolved, maxD, "the budget must never exceed Max")
+}
+
+// A connector that always answers inside Min leaves the budget at Min:
+// censoring only touches attempts the timeout killed.
+func TestCacheFailsafe_DynamicTimeout_BudgetStaysAtMinWhenFast(t *testing.T) {
+	const minD = 20 * time.Millisecond
+	fc, ex := newQuantileTimeoutConnector(t, &common.AdaptiveDuration{
+		Quantile: 0.99,
+		Min:      common.Duration(minD),
+		Max:      common.Duration(200 * time.Millisecond),
+	}, func(context.Context) ([]byte, error) { return []byte("fast"), nil })
+
+	for i := range 100 {
+		_, err := fc.Get(context.Background(), "", "pk", "rk", nil)
+		require.NoError(t, err, "call %d", i+1)
+	}
+	assert.Greater(t, ex.latency.GetQuantile(0.99), time.Duration(0), "fast completions are still recorded")
+	assert.Equal(t, minD, ex.timeoutSpec.Resolve(ex.latency), "a fast connector's budget stays at Min")
+}
+
+// Sustained own-timeouts with Base set: Base + censored(Max) exceeds Max
+// before clamping, and the resolved budget must still land exactly on
+// Max — attempts are never given more than the configured ceiling.
+func TestCacheFailsafe_DynamicTimeout_CensoredSamplesNeverExceedMax(t *testing.T) {
+	const maxD = 80 * time.Millisecond
+	fc, ex := newQuantileTimeoutConnector(t, &common.AdaptiveDuration{
+		Base:     common.Duration(30 * time.Millisecond),
+		Quantile: 0.99,
+		Max:      common.Duration(maxD),
+	}, func(ctx context.Context) ([]byte, error) { return sleepOrCancel(ctx, 5*time.Second) })
+	minD := ex.timeoutSpec.Min.Duration()
+	require.Equal(t, 15*time.Millisecond, minD, "Min auto-floors to Base/2")
+
+	for i := 1; i <= 5; i++ {
+		start := time.Now()
+		_, err := fc.Get(context.Background(), "", "pk", "rk", nil)
+		elapsed := time.Since(start)
+		require.Error(t, err, "call %d", i)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded), "call %d: %v", i, err)
+		assert.Less(t, elapsed, maxD+50*time.Millisecond, "call %d: attempt outlived Max", i)
+
+		resolved := ex.timeoutSpec.Resolve(ex.latency)
+		assert.Equal(t, maxD, resolved, "call %d: censored window must resolve to exactly Max", i)
+		assert.GreaterOrEqual(t, resolved, minD, "call %d: budget below Min", i)
+	}
 }
 
 // A cache read the executor's own timeout had to kill is pure tax — the

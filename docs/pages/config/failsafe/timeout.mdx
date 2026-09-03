@@ -451,7 +451,12 @@ connector's own 1-minute sliding latency window, tracked per (method, finality) 
 (<SourceLink file="data/cache_executor.go" lines="14-20" />, <SourceLink file="data/cache_executor.go" lines="244-249" />)
 — not against network metrics. `max` keeps the hard ceiling: a slow remote cache read is
 abandoned quickly so eRPC falls through to upstream — a cache read that takes longer than an
-upstream call is never worth it. When `min` is unset, the same auto-floor as
+upstream call is never worth it. `max` also anchors the feedback loop: a read the executor's
+own timeout kills only reveals that its latency was *at least* the budget, so that attempt is
+recorded at `max` (twice the budget when `max` is unset) rather than at the budget it consumed
+— otherwise the tracked quantile could never exceed the current timeout and a slow connector
+would stay pinned at `min` (<SourceLink file="data/cache_executor.go" lines="285-314" />).
+When `min` is unset, the same auto-floor as
 `NewTimeoutFunc` applies at executor construction: `min = base/2` (or `500ms` when
 `base == 0`) — <SourceLink file="data/cache_executor.go" lines="75-85" />:
 

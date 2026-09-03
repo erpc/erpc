@@ -232,21 +232,20 @@ func (e *cacheExecutor) callBreaker(
 			return nil, common.NewErrFailsafeCircuitBreakerOpen(scopeConnector, failsafe.ErrCircuitOpen, &startTime)
 		}
 	}
-	hasTimeout := false
+	var budget time.Duration
 	if e.timeoutSpec != nil {
-		td := e.timeoutSpec.Resolve(e.latency)
-		if td > 0 {
+		if td := e.timeoutSpec.Resolve(e.latency); td > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeoutCause(ctx, td, common.ErrDynamicTimeoutExceeded)
 			defer cancel()
-			hasTimeout = true
+			budget = td
 		}
 	}
 	start := time.Now()
 	data, err := inner(ctx)
 	dur := time.Since(start)
 	ourTimeout := false
-	if hasTimeout && err != nil {
+	if budget > 0 && err != nil {
 		// Translate context.DeadlineExceeded into ErrFailsafeTimeoutExceeded
 		// when our own WithTimeoutCause fired (cause==ErrDynamicTimeoutExceeded).
 		if cause := context.Cause(ctx); errors.Is(cause, common.ErrDynamicTimeoutExceeded) {
@@ -264,14 +263,16 @@ func (e *cacheExecutor) callBreaker(
 		// Same spirit as health.Tracker RecordUpstreamDuration:
 		// completions are latency signals — success, semantic misses
 		// (the connector did real work), and our own timeout expiry
-		// (lower bound, keeps a degraded connector's quantile honest).
-		// Hard transport failures stay out so a connector failing fast
-		// isn't crowned "fast". One deliberate deviation: the upstream
-		// tracker records canceled attempts as lower bounds (it scores
-		// upstreams that lose hedge races against each other); here a
-		// hedge races the SAME connector, so an interrupted attempt's
-		// duration measures the winner, not the target — excluded above.
-		if err == nil || ourTimeout || !isTransportError(err) {
+		// (recorded censored, see censoredLatency). Hard transport
+		// failures stay out so a connector failing fast isn't crowned
+		// "fast". One deliberate deviation: the upstream tracker records
+		// canceled attempts as lower bounds (it scores upstreams that
+		// lose hedge races against each other); here a hedge races the
+		// SAME connector, so an interrupted attempt's duration measures
+		// the winner, not the target — excluded above.
+		if ourTimeout {
+			e.latency.Add(e.censoredLatency(budget).Seconds())
+		} else if err == nil || !isTransportError(err) {
 			e.latency.Add(dur.Seconds())
 		}
 	}
@@ -279,6 +280,37 @@ func (e *cacheExecutor) callBreaker(
 		e.breaker.Record(breakerOutcome(err, ourTimeout, interrupted))
 	}
 	return data, err
+}
+
+// censoredLatency is the sample recorded for an attempt the executor's
+// own timeout killed at `budget`. The elapsed time of such an attempt is
+// exactly the budget, but it is not the connector's latency: the read was
+// still running, so all that is known is "at least budget" — a
+// right-censored observation. Recording it at face value treats the
+// censored value as exact, which caps the tracked quantile at the current
+// budget: a quantile-driven timeout could then never resolve above what
+// it already was, so the feedback loop only ever tightened and a
+// `{quantile, min, max}` policy sat at `min` forever, no matter how slow
+// the connector really was.
+//
+// The sample is placed at the policy's Max instead. Resolve clamps to Max,
+// so every value >= Max is indistinguishable to the policy — Max is the
+// faithful encoding of "unbounded above" within the range the policy can
+// express, and it asserts nothing about the connector beyond what the
+// configuration already allows. A censored attempt therefore pushes the
+// resolved timeout toward Max (never past it) exactly as fast as its
+// share of the window exceeds the configured tail; once the budget is
+// wide enough for slow reads to complete, they are recorded at their true
+// latency and the quantile settles there. Without a Max there is no
+// bound to encode, so the sample is placed at twice the budget: strictly
+// larger (the loop can loosen), scale-free (no absolute constant),
+// and geometric under sustained timeouts (the budget doubles until reads
+// complete or Min/Base make it obviously misconfigured).
+func (e *cacheExecutor) censoredLatency(budget time.Duration) time.Duration {
+	if max := e.timeoutSpec.Max.Duration(); max > 0 {
+		return max
+	}
+	return 2 * budget
 }
 
 // breakerOutcome classifies a completed cache attempt for the breaker.
