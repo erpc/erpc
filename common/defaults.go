@@ -2195,6 +2195,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
+			if n.Evm.GetLogsMaxResponseBytes == 0 && defaults.Evm.GetLogsMaxResponseBytes != 0 {
+				n.Evm.GetLogsMaxResponseBytes = defaults.Evm.GetLogsMaxResponseBytes
+			}
 			if n.Evm.TraceFilterSplitOnError == nil && defaults.Evm.TraceFilterSplitOnError != nil {
 				n.Evm.TraceFilterSplitOnError = defaults.Evm.TraceFilterSplitOnError
 			}
