@@ -1859,6 +1859,37 @@ type ConsensusPolicyConfig struct {
 	// handled by `lowParticipantsBehavior` / `agreementThreshold` exactly
 	// like any other low-participation tick. Empty (default) = disabled.
 	RequiredParticipants []*ConsensusRequiredParticipant `yaml:"requiredParticipants,omitempty" json:"requiredParticipants,omitempty"`
+
+	// AcceptancePolicies is an ORDERED list of named acceptance grades.
+	// Each entry states what the winning response group must look like for
+	// the round to be served under that grade. Evaluation walks the list
+	// top-down and stops at the first policy the round satisfies; the name
+	// of that policy is reported to the caller (`X-ERPC-Consensus-Policy`)
+	// and to metrics, so a relaxed answer is never silently indistinguishable
+	// from a strict one. When no policy is satisfied the round is a
+	// composition dispute.
+	//
+	// This lets an operator express "prefer a mixed internal+external
+	// agreement, but rather than hard-failing when the internal nodes are
+	// down or dissenting, serve an answer that several independent external
+	// providers agree on — and label it":
+	//
+	//	acceptancePolicies:
+	//	  - name: standard
+	//	    requiredAgreement:
+	//	      - { tag: "type:internal", minAgreement: 1 }
+	//	      - { tag: "type:external", minAgreement: 1 }
+	//	  - name: degraded
+	//	    requiredAgreement:
+	//	      - { tag: "type:external", minAgreement: 2 }
+	//
+	// Which callers may be served which grade is an authorization concern,
+	// configured per auth strategy (`consensusPolicies`), not here.
+	//
+	// Mutually exclusive with `requiredParticipants[].minAgreement`, which
+	// is the single-grade shorthand for the same mechanism. Empty (default)
+	// = disabled.
+	AcceptancePolicies []*ConsensusAcceptancePolicy `yaml:"acceptancePolicies,omitempty" json:"acceptancePolicies,omitempty"`
 }
 
 // ConsensusRequiredParticipant is one tag-quota entry for
@@ -1874,6 +1905,82 @@ type ConsensusRequiredParticipant struct {
 	Tag             string `yaml:"tag" json:"tag"`
 	MinParticipants int    `yaml:"minParticipants" json:"minParticipants"`
 	MinAgreement    int    `yaml:"minAgreement,omitempty" json:"minAgreement,omitempty"`
+}
+
+// ConsensusAcceptancePolicy is one named acceptance grade in
+// `consensus.acceptancePolicies`. A round is served under this policy when
+// the agreeing upstreams both reach `AgreementThreshold` and satisfy every
+// `RequiredAgreement` quota.
+type ConsensusAcceptancePolicy struct {
+	// Name identifies the grade. It is reported on the response
+	// (`X-ERPC-Consensus-Policy`) and in metrics, and is what auth
+	// strategies reference in their `consensusPolicies` allowlist, so it is
+	// an operator-facing contract — keep it stable.
+	Name string `yaml:"name" json:"name"`
+
+	// AgreementThreshold is the number of DISTINCT agreeing upstreams this
+	// grade requires. Defaults to the sum of its `RequiredAgreement`
+	// quotas, falling back to the policy-level `agreementThreshold` when
+	// the grade declares no quotas. A relaxed grade will usually want a
+	// lower threshold than the strict one — that is what lets it resolve a
+	// round too thin for the strict grade to ever win.
+	AgreementThreshold int `yaml:"agreementThreshold,omitempty" json:"agreementThreshold,omitempty"`
+
+	// RequiredAgreement constrains WHO must be among the agreeing
+	// upstreams. Empty means "any upstreams" — a pure count grade.
+	RequiredAgreement []*ConsensusAgreementQuota `yaml:"requiredAgreement,omitempty" json:"requiredAgreement,omitempty"`
+}
+
+// ConsensusAgreementQuota requires at least `MinAgreement` DISTINCT
+// upstreams matching `Tag` (a glob pattern, `*` / `?`, matched against each
+// upstream's `tags`) among the agreeing set. One upstream can satisfy every
+// quota it matches.
+type ConsensusAgreementQuota struct {
+	Tag          string `yaml:"tag" json:"tag"`
+	MinAgreement int    `yaml:"minAgreement" json:"minAgreement"`
+}
+
+func (p *ConsensusAcceptancePolicy) Copy() *ConsensusAcceptancePolicy {
+	if p == nil {
+		return nil
+	}
+	copied := *p
+	if p.RequiredAgreement != nil {
+		copied.RequiredAgreement = make([]*ConsensusAgreementQuota, len(p.RequiredAgreement))
+		for i, q := range p.RequiredAgreement {
+			if q == nil {
+				continue
+			}
+			qCopy := *q
+			copied.RequiredAgreement[i] = &qCopy
+		}
+	}
+	return &copied
+}
+
+// EffectiveAgreementThreshold is the number of distinct agreeing upstreams
+// this grade requires: its own explicit threshold, else the sum of its
+// quotas, else the policy-level fallback. Deriving from the quotas means the
+// common case needs no threshold at all — "1 internal + 1 external" already
+// says two upstreams must agree, and restating it as a separate number is
+// just a second place for the config to be wrong.
+func (p *ConsensusAcceptancePolicy) EffectiveAgreementThreshold(fallback int) int {
+	if p == nil {
+		return fallback
+	}
+	if p.AgreementThreshold > 0 {
+		return p.AgreementThreshold
+	}
+	sum := 0
+	for _, q := range p.RequiredAgreement {
+		if q != nil {
+			sum += q.MinAgreement
+		}
+	}
+	if sum > 0 {
+		return sum
+	}
+	return fallback
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -1918,6 +2025,13 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 			}
 			rpCopy := *rp
 			copied.RequiredParticipants[i] = &rpCopy
+		}
+	}
+
+	if c.AcceptancePolicies != nil {
+		copied.AcceptancePolicies = make([]*ConsensusAcceptancePolicy, len(c.AcceptancePolicies))
+		for i, p := range c.AcceptancePolicies {
+			copied.AcceptancePolicies[i] = p.Copy()
 		}
 	}
 
@@ -2814,6 +2928,31 @@ type AuthStrategyConfig struct {
 	// NormalizedRequest.SetUserFromTrustedHeader).
 	AllowClientDirectives *string `yaml:"allowClientDirectives,omitempty" json:"allowClientDirectives,omitempty"`
 
+	// ConsensusPolicies, if set, restricts which consensus acceptance grades
+	// (`consensus.acceptancePolicies[].name`) may be served to callers
+	// authenticated by THIS strategy. A round resolved under a policy the
+	// caller is not allowed to receive is withheld and returned as a
+	// consensus composition dispute instead.
+	//
+	// This is how "who may accept a relaxed answer" is expressed — it is an
+	// authorization decision, so it lives beside allowMethods/rateLimitBudget
+	// rather than in the consensus config, and one deployment can serve
+	// strict and relaxed callers from a single endpoint:
+	//
+	//	- type: jwt          # settlement: strict grade only
+	//	  consensusPolicies: ["standard"]
+	//	- type: jwt          # indexers: may be served the relaxed grade
+	//	  consensusPolicies: ["standard", "degraded"]
+	//
+	// Left unset (nil) the caller may be served any configured grade, so
+	// existing configs are unaffected. An empty list is meaningful and
+	// distinct from unset: it permits nothing, which disables consensus
+	// grading for that caller entirely (every round becomes a dispute).
+	//
+	// Like AllowClientDirectives this travels on the User produced by the
+	// authenticating strategy, so `trustUserIdHeader` can never widen it.
+	ConsensusPolicies *[]string `yaml:"consensusPolicies,omitempty" json:"consensusPolicies,omitempty"`
+
 	Type     AuthType                `yaml:"type" json:"type" tstype:"TsAuthType"`
 	Network  *NetworkStrategyConfig  `yaml:"network,omitempty" json:"network,omitempty"`
 	Secret   *SecretStrategyConfig   `yaml:"secret,omitempty" json:"secret,omitempty"`
@@ -2887,6 +3026,34 @@ type JwtStrategyConfig struct {
 	// will be used to set the per-user RateLimitBudget override.
 	// Defaults to "rlm".
 	RateLimitBudgetClaimName string `yaml:"rateLimitBudgetClaimName,omitempty" json:"rateLimitBudgetClaimName,omitempty"`
+
+	// ConsensusPoliciesByClaim grants consensus acceptance grades based on the
+	// caller's own claims, so one strategy can serve every role of an identity
+	// provider instead of being cloned per role (which would duplicate the
+	// JWKS/issuer config, run one refresher per copy, and — because strategies
+	// resolve first-match-wins — make the grade of a multi-role token depend on
+	// config order rather than on its roles).
+	//
+	// Shape is claim name -> claim value -> granted grades:
+	//
+	//	consensusPolicies: ["standard"]        # baseline, on the strategy
+	//	jwt:
+	//	  claimMatchers:
+	//	    roles: ["erpc:all"]                # who may authenticate at all
+	//	  consensusPoliciesByClaim:
+	//	    roles:
+	//	      "erpc:consensus-fallback": ["degraded"]
+	//
+	// Grants are ADDITIVE and unioned across every matching claim value, on
+	// top of the strategy-level `consensusPolicies` baseline: a caller holding
+	// several roles is served the union of their grades, independent of
+	// ordering. There are no negative grants — a role cannot revoke a grade
+	// the baseline already allows, so the baseline should hold only what every
+	// caller of this strategy may receive.
+	//
+	// Claim values are matched against the same normalized string list as
+	// `claimMatchers` (bare string, string array, or SCIM-style objects).
+	ConsensusPoliciesByClaim map[string]map[string][]string `yaml:"consensusPoliciesByClaim,omitempty" json:"consensusPoliciesByClaim,omitempty"`
 }
 
 type SiweStrategyConfig struct {

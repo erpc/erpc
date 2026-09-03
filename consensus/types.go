@@ -13,4 +13,9 @@ import (
 type slotResult struct {
 	Result *common.NormalizedResponse
 	Error  error
+	// Policy is the name of the acceptance grade the round resolved under,
+	// empty when no acceptance policy is configured. Carried on the result
+	// so the short-circuit guard can prefer a stricter grade that is still
+	// achievable, and so the served grade can be reported to the caller.
+	Policy string
 }
