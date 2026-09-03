@@ -106,8 +106,10 @@ var _ Connector = (*FailsafeConnector)(nil)
 var _ CacheHeadReporter = (*FailsafeConnector)(nil)
 
 // NewFailsafeConnector constructs a FailsafeConnector backed by per-direction
-// cacheExecutor instances for Get vs Set/Delete operations.
+// cacheExecutor instances for Get vs Set/Delete operations. ctx bounds the
+// lifetime of the executors' background latency-window rotation.
 func NewFailsafeConnector(
+	ctx context.Context,
 	logger *zerolog.Logger,
 	wrapped Connector,
 	getCfgs []*common.FailsafeConfig,
@@ -115,11 +117,11 @@ func NewFailsafeConnector(
 ) (*FailsafeConnector, error) {
 	lg := logger.With().Str("component", "failsafeConnector").Str("connectorId", wrapped.Id()).Logger()
 
-	getExecutors, err := buildCacheExecutors(&lg, wrapped.Id(), getCfgs)
+	getExecutors, err := buildCacheExecutors(ctx, &lg, wrapped.Id(), getCfgs)
 	if err != nil {
 		return nil, err
 	}
-	setExecutors, err := buildCacheExecutors(&lg, wrapped.Id(), setCfgs)
+	setExecutors, err := buildCacheExecutors(ctx, &lg, wrapped.Id(), setCfgs)
 	if err != nil {
 		return nil, err
 	}
@@ -132,14 +134,14 @@ func NewFailsafeConnector(
 	}, nil
 }
 
-func buildCacheExecutors(logger *zerolog.Logger, connectorId string, cfgs []*common.FailsafeConfig) ([]*cacheExecutor, error) {
+func buildCacheExecutors(ctx context.Context, logger *zerolog.Logger, connectorId string, cfgs []*common.FailsafeConfig) ([]*cacheExecutor, error) {
 	var executors []*cacheExecutor
 
 	for _, fsCfg := range cfgs {
 		if fsCfg == nil {
 			continue
 		}
-		ex, err := NewCacheExecutor(fsCfg, logger)
+		ex, err := NewCacheExecutor(ctx, fsCfg, logger)
 		if err != nil {
 			return nil, common.NewErrFailsafeConfiguration(
 				err,
@@ -150,7 +152,7 @@ func buildCacheExecutors(logger *zerolog.Logger, connectorId string, cfgs []*com
 	}
 
 	// Append a no-op fallback executor so unmatched operations always have one.
-	noop, _ := NewCacheExecutor(nil, logger)
+	noop, _ := NewCacheExecutor(ctx, nil, logger)
 	executors = append(executors, noop)
 
 	return executors, nil

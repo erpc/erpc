@@ -463,6 +463,209 @@ var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
 	},
 }
 
+// FindCacheMethodConfig resolves a method name against a method-config map
+// (the default tables above, or an operator's methods.definitions). An exact
+// key match wins; otherwise the match is case-insensitive. Hook dispatch
+// (architecture/evm/hooks.go) routes methods case-insensitively, so per-method
+// config MUST resolve the same way — otherwise a non-canonical casing like
+// "ETH_CALL" dispatches into method-specific logic (e.g. the state-boundary
+// gate) but resolves no config, silently disabling gating, caching, and
+// block-ref extraction for that request.
+//
+// Canonicalization is lookup-only: per JSON-RPC 2.0 the method member is
+// case-sensitive, so the wire string is forwarded to upstreams verbatim and
+// the upstream stays the authority on whether a given casing exists.
+//
+// Nil-valued entries are treated as absent (callers fall through to defaults,
+// as they do today). If a map pathologically holds two casings of the same
+// name, exact match wins and otherwise the lexicographically smallest key is
+// picked, so resolution never depends on map iteration order.
+func FindCacheMethodConfig(defs map[string]*CacheMethodConfig, method string) *CacheMethodConfig {
+	if len(defs) == 0 {
+		return nil
+	}
+	if cfg, ok := defs[method]; ok && cfg != nil {
+		return cfg
+	}
+	var bestKey string
+	var best *CacheMethodConfig
+	for k, v := range defs {
+		if v == nil || !strings.EqualFold(k, method) {
+			continue
+		}
+		if best == nil || k < bestKey {
+			bestKey, best = k, v
+		}
+	}
+	return best
+}
+
+// findCacheMethodKey resolves the KEY that FindCacheMethodConfig would match,
+// with the same exact-then-fold precedence. Unlike FindCacheMethodConfig it also
+// reports keys whose value is nil, so config-load code can normalize the entry
+// in place instead of adding a second key that differs only in letter case.
+func findCacheMethodKey(defs map[string]*CacheMethodConfig, method string) (string, bool) {
+	if _, ok := defs[method]; ok {
+		return method, true
+	}
+	var bestKey string
+	var found bool
+	for k := range defs {
+		if !strings.EqualFold(k, method) {
+			continue
+		}
+		if !found || k < bestKey {
+			bestKey, found = k, true
+		}
+	}
+	return bestKey, found
+}
+
+// lowerCacheMethodIndex builds a lowercase-keyed view of a method-config map so
+// a non-canonical casing resolves with one map lookup instead of a scan of every
+// entry on the request path. Duplicate casings collapse the same way
+// FindCacheMethodConfig resolves them (smallest key wins), and nil-valued
+// entries are omitted, so the index and the scan always agree.
+//
+// The index is a snapshot: build it only for maps that are immutable afterwards
+// (the built-in tables, and Definitions once SetDefaults has run).
+func lowerCacheMethodIndex(defs map[string]*CacheMethodConfig) map[string]*CacheMethodConfig {
+	if len(defs) == 0 {
+		return nil
+	}
+	idx := make(map[string]*CacheMethodConfig, len(defs))
+	src := make(map[string]string, len(defs))
+	for k, v := range defs {
+		if v == nil {
+			continue
+		}
+		lk := strings.ToLower(k)
+		if prev, ok := src[lk]; ok && prev < k {
+			continue
+		}
+		src[lk], idx[lk] = k, v
+	}
+	return idx
+}
+
+// defaultCacheMethodLookupOrder is the precedence used when resolving a method
+// against the built-in tables (with-block first, static last).
+var defaultCacheMethodLookupOrder = []map[string]*CacheMethodConfig{
+	DefaultWithBlockCacheMethods,
+	DefaultSpecialCacheMethods,
+	DefaultRealtimeCacheMethods,
+	DefaultStaticCacheMethods,
+}
+
+// The tables are flattened once into a by-name and a by-lowercase map, in
+// precedence order (first table to define a name wins), so resolving a method —
+// including the unknown-method case that hits neither — costs at most two map
+// lookups instead of walking four tables.
+var (
+	defaultCacheMethodsByName = func() map[string]*CacheMethodConfig {
+		flat := map[string]*CacheMethodConfig{}
+		for _, table := range defaultCacheMethodLookupOrder {
+			for name, cfg := range table {
+				if cfg == nil {
+					continue
+				}
+				if _, taken := flat[name]; !taken {
+					flat[name] = cfg
+				}
+			}
+		}
+		return flat
+	}()
+	defaultCacheMethodsByLower = lowerCacheMethodIndex(defaultCacheMethodsByName)
+	defaultWithBlockLowerIndex = lowerCacheMethodIndex(DefaultWithBlockCacheMethods)
+)
+
+// FindDefaultCacheMethodConfig resolves a method against the built-in tables in
+// their usual precedence order, case-insensitively (see FindCacheMethodConfig
+// for why the lookup must be case-insensitive).
+func FindDefaultCacheMethodConfig(method string) *CacheMethodConfig {
+	if cfg, ok := defaultCacheMethodsByName[method]; ok {
+		return cfg
+	}
+	// Only non-canonical casings pay for the fold; strings.ToLower does not
+	// allocate for an already-lowercase name.
+	return defaultCacheMethodsByLower[strings.ToLower(method)]
+}
+
+// DefaultWithBlockMethodConfig resolves a method against DefaultWithBlockCacheMethods
+// only — the table that carries the system defaults for block-availability
+// enforcement.
+func DefaultWithBlockMethodConfig(method string) *CacheMethodConfig {
+	if cfg, ok := DefaultWithBlockCacheMethods[method]; ok && cfg != nil {
+		return cfg
+	}
+	return defaultWithBlockLowerIndex[strings.ToLower(method)]
+}
+
+// FindMethodConfig resolves a method against the operator's methods.definitions,
+// case-insensitively. Prefer it over indexing Definitions directly: an exact-case
+// index silently misses non-canonical casings, which is how gating and caching
+// came to be skipped for requests like "ETH_CALL".
+//
+// Definitions must not be mutated after SetDefaults — the lowercase index built
+// there is a snapshot. Configs built programmatically (tests) have no index and
+// fall back to a scan, so resolution never depends on the index existing.
+func (m *MethodsConfig) FindMethodConfig(method string) *CacheMethodConfig {
+	if m == nil || len(m.Definitions) == 0 {
+		return nil
+	}
+	if cfg, ok := m.Definitions[method]; ok && cfg != nil {
+		return cfg
+	}
+	if m.lowerIndex != nil {
+		return m.lowerIndex[strings.ToLower(method)]
+	}
+	return FindCacheMethodConfig(m.Definitions, method)
+}
+
+// applyMethodOverrides copies operator definitions over the merged defaults. An
+// override REPLACES the entry it shadows even when the two keys differ only in
+// letter case: leaving both would make one logical method resolve to different
+// config depending on the casing the client happens to send. Keys are applied in
+// sorted order so the outcome never depends on map iteration order.
+func applyMethodOverrides(merged, overrides map[string]*CacheMethodConfig) {
+	if len(overrides) == 0 {
+		return
+	}
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if shadowed, ok := findCacheMethodKey(merged, name); ok && shadowed != name {
+			log.Warn().
+				Str("method", name).
+				Str("replaces", shadowed).
+				Msg("methods.definitions entry replaces an entry that differs only in letter case")
+			delete(merged, shadowed)
+		}
+		merged[name] = overrides[name]
+	}
+}
+
+// markStatefulMethod enforces the stateful flag on whichever entry resolves the
+// method, keeping the operator's own key so no second, differently-cased entry
+// appears. A nil-valued entry (YAML `eth_newFilter: ~`) is replaced rather than
+// dereferenced — nil means "no cache config", not "not stateful".
+func markStatefulMethod(defs map[string]*CacheMethodConfig, method string) {
+	key, ok := findCacheMethodKey(defs, method)
+	if !ok {
+		defs[method] = &CacheMethodConfig{Stateful: true}
+		return
+	}
+	if cfg := defs[key]; cfg != nil {
+		cfg.Stateful = true
+		return
+	}
+	defs[key] = &CacheMethodConfig{Stateful: true}
+}
+
 func (c *CacheConfig) SetDefaults() error {
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {
@@ -491,44 +694,10 @@ func (c *CacheConfig) SetDefaults() error {
 }
 
 func (m *MethodsConfig) SetDefaults() error {
-	if m.Definitions == nil || (len(m.Definitions) == 0 && !m.PreserveDefaultMethods) {
-		// If no definitions provided or PreserveDefaultMethods is false, use all defaults
-		mergedMethods := map[string]*CacheMethodConfig{}
+	defs := m.Definitions
 
-		// Merge all default methods into a single map
-		for name, method := range DefaultStaticCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultRealtimeCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultWithBlockCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultSpecialCacheMethods {
-			mergedMethods[name] = method
-		}
-
-		// Mark default stateful methods
-		for _, mn := range DefaultStatefulMethodNames {
-			if cm, ok := mergedMethods[mn]; ok {
-				cm.Stateful = true
-			} else {
-				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
-			}
-		}
-
-		if m.PreserveDefaultMethods && m.Definitions != nil {
-			// Merge user definitions on top of defaults
-			for name, method := range m.Definitions {
-				mergedMethods[name] = method
-			}
-		}
-
-		m.Definitions = mergedMethods
-	} else if m.PreserveDefaultMethods {
-		// User provided some definitions and wants to preserve defaults
-		// First copy all defaults
+	// Defaults apply unless the user supplied definitions and opted out of them.
+	if len(defs) == 0 || m.PreserveDefaultMethods {
 		mergedMethods := map[string]*CacheMethodConfig{}
 		for name, method := range DefaultStaticCacheMethods {
 			mergedMethods[name] = method
@@ -542,35 +711,19 @@ func (m *MethodsConfig) SetDefaults() error {
 		for name, method := range DefaultSpecialCacheMethods {
 			mergedMethods[name] = method
 		}
-
-		// Mark default stateful methods
-		for _, mn := range DefaultStatefulMethodNames {
-			if cm, ok := mergedMethods[mn]; ok {
-				cm.Stateful = true
-			} else {
-				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
-			}
-		}
-
-		// Then override with user definitions
-		for name, method := range m.Definitions {
-			mergedMethods[name] = method
-		}
-
-		m.Definitions = mergedMethods
-	} else {
-		// User provided definitions and doesn't want defaults
-		// Still need to ensure stateful methods are marked correctly
-		for _, mn := range DefaultStatefulMethodNames {
-			if cm, ok := m.Definitions[mn]; ok {
-				// Method exists in user definitions, ensure it's marked as stateful
-				cm.Stateful = true
-			} else {
-				// Method not in user definitions, add it as stateful
-				m.Definitions[mn] = &CacheMethodConfig{Stateful: true}
-			}
-		}
+		applyMethodOverrides(mergedMethods, defs)
+		defs = mergedMethods
 	}
+
+	// Stateful markers are enforced LAST, so refining a stateful method's caching
+	// never silently drops the single-upstream guard, whatever key casing the
+	// operator used.
+	for _, mn := range DefaultStatefulMethodNames {
+		markStatefulMethod(defs, mn)
+	}
+
+	m.Definitions = defs
+	m.lowerIndex = lowerCacheMethodIndex(defs)
 
 	return nil
 }
@@ -1602,11 +1755,20 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	// TODO Should we refactor so this won't happen?
 	if u.Evm == nil && defaults.Evm != nil {
 		u.Evm = &EvmUpstreamConfig{
-			ChainId:                  defaults.Evm.ChainId,
-			NodeType:                 defaults.Evm.NodeType,
-			StatePollerInterval:      defaults.Evm.StatePollerInterval,
-			StatePollerDebounce:      defaults.Evm.StatePollerDebounce,
-			MaxAvailableRecentBlocks: defaults.Evm.MaxAvailableRecentBlocks,
+			ChainId:             defaults.Evm.ChainId,
+			NodeType:            defaults.Evm.NodeType,
+			StatePollerInterval: defaults.Evm.StatePollerInterval,
+			StatePollerDebounce: defaults.Evm.StatePollerDebounce,
+			// Carried here rather than left to SetDefaults: by the time SetDefaults
+			// runs, MaxAvailableRecentBlocks has already been copied onto this
+			// upstream, and the legacy back-compat mapping would otherwise
+			// synthesise a window from it and shadow the configured one.
+			BlockAvailability: defaults.Evm.BlockAvailability.Copy(),
+			// Only when no explicit window came with it. MaxAvailableRecentBlocks is
+			// enforced as an independent second lower bound by
+			// EvmAssertBlockAvailability, so carrying both would narrow the
+			// configured window to whichever is smaller.
+			MaxAvailableRecentBlocks: maxRecentBlocksFor(defaults.Evm),
 		}
 		if err := u.Evm.SetDefaults(defaults.Evm); err != nil {
 			return fmt.Errorf("failed to set defaults for evm upstream: %w", err)
@@ -1618,7 +1780,16 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.StatePollerDebounce == 0 && defaults.Evm.StatePollerDebounce != 0 {
 			u.Evm.StatePollerDebounce = defaults.Evm.StatePollerDebounce
 		}
-		if u.Evm.MaxAvailableRecentBlocks == 0 && defaults.Evm.MaxAvailableRecentBlocks != 0 {
+		// Must precede the MaxAvailableRecentBlocks copy below: once that value is
+		// inherited, this upstream is indistinguishable from one that set it itself,
+		// and SetDefaults' legacy back-compat mapping would synthesise a window from
+		// it that shadows the configured one.
+		if u.Evm.BlockAvailability == nil && u.Evm.MaxAvailableRecentBlocks == 0 &&
+			defaults.Evm.BlockAvailability != nil {
+			u.Evm.BlockAvailability = defaults.Evm.BlockAvailability.Copy()
+		}
+		if u.Evm.MaxAvailableRecentBlocks == 0 && u.Evm.BlockAvailability == nil &&
+			defaults.Evm.MaxAvailableRecentBlocks != 0 {
 			u.Evm.MaxAvailableRecentBlocks = defaults.Evm.MaxAvailableRecentBlocks
 		}
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
@@ -1823,6 +1994,19 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 	return nil
 }
 
+// maxRecentBlocksFor returns the legacy MaxAvailableRecentBlocks to carry from a
+// defaults template, which is none when that template also carries an explicit
+// blockAvailability window. The two express the same lower bound but are enforced
+// separately — EvmAssertBlockAvailability applies MaxAvailableRecentBlocks on top
+// of the resolved bounds — so propagating both would clamp the configured window
+// to whichever is smaller.
+func maxRecentBlocksFor(defaults *EvmUpstreamConfig) int64 {
+	if defaults == nil || defaults.BlockAvailability != nil {
+		return 0
+	}
+	return defaults.MaxAvailableRecentBlocks
+}
+
 func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.StatePollerInterval == 0 {
 		if defaults != nil && defaults.StatePollerInterval != 0 {
@@ -1842,7 +2026,27 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	if e.MaxAvailableRecentBlocks == 0 {
+	// Inherit blockAvailability from upstreamDefaults when this upstream declares no
+	// availability config of its own — neither the modern blockAvailability nor the
+	// deprecated maxAvailableRecentBlocks. This is what makes the bound configurable
+	// once per project (`projects[].upstreamDefaults.evm.blockAvailability`) instead
+	// of repeated on every upstream. Copied, not shared: bounds are recomputed per
+	// upstream at runtime against that upstream's own state poller.
+	//
+	// Runs before the MaxAvailableRecentBlocks defaulting below so the inherited
+	// value wins over the NodeType-derived 128-block window, while an upstream that
+	// sets either field explicitly keeps its own.
+	if e.BlockAvailability == nil && e.MaxAvailableRecentBlocks == 0 &&
+		defaults != nil && defaults.BlockAvailability != nil {
+		e.BlockAvailability = defaults.BlockAvailability.Copy()
+	}
+
+	// Guarded on BlockAvailability being unset: EvmAssertBlockAvailability enforces
+	// MaxAvailableRecentBlocks as a SECOND, independent lower bound on top of the
+	// resolved bounds, so deriving it here next to an explicit window would silently
+	// narrow that window to whichever is smaller — e.g. a configured 604800 reduced
+	// to the 128 implied by `nodeType: full`.
+	if e.MaxAvailableRecentBlocks == 0 && e.BlockAvailability == nil {
 		if defaults != nil && defaults.MaxAvailableRecentBlocks != 0 {
 			e.MaxAvailableRecentBlocks = defaults.MaxAvailableRecentBlocks
 		} else {
@@ -1990,6 +2194,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
+			}
+			if n.Evm.GetLogsMaxResponseBytes == 0 && defaults.Evm.GetLogsMaxResponseBytes != 0 {
+				n.Evm.GetLogsMaxResponseBytes = defaults.Evm.GetLogsMaxResponseBytes
 			}
 			if n.Evm.TraceFilterSplitOnError == nil && defaults.Evm.TraceFilterSplitOnError != nil {
 				n.Evm.TraceFilterSplitOnError = defaults.Evm.TraceFilterSplitOnError

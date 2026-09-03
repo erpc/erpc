@@ -172,9 +172,15 @@ func NewHttpServer(
 			}
 			httpHandler.ServeHTTP(w, r)
 		})
-		if cfg.TLS == nil || !cfg.TLS.Enabled {
-			handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
-		}
+	}
+
+	// Without TLS, Go's net/http serves HTTP/1.x only on the cleartext
+	// listener, so wrap the IPv4 handler with h2c to accept HTTP/2
+	// prior-knowledge requests. This is independent of shared gRPC — gRPC only
+	// adds a content-type dispatch on top of this handler. (With TLS, HTTP/2 is
+	// negotiated via ALPN by ListenAndServeTLS, so no h2c wrapper is needed.)
+	if cfg.TLS == nil || !cfg.TLS.Enabled {
+		handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
 	}
 
 	// Create IPv4 server if configured
@@ -1615,11 +1621,12 @@ func determineResponseStatusCode(res interface{}) int {
 		common.ErrCodeNetworkRateLimitRuleExceeded,
 		common.ErrCodeEndpointCapacityExceeded):
 		return http.StatusTooManyRequests
-	// 503 Service Unavailable - no upstream could be initialized for this
-	// network at all. Deliberately last: a more specific verdict already on the
-	// cause chain (404 unsupported, 429 quota) describes the failure better.
+	// 404 Not Found - no upstream could be initialized for this network at all.
+	// Terminal, not transient, so it is a coverage gap rather than a server fault
+	// (see ErrNetworkNoUpstreamsAvailable). Deliberately last: a more specific
+	// verdict already on the cause chain (429 quota) describes the failure better.
 	case common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable):
-		return http.StatusServiceUnavailable
+		return http.StatusNotFound
 	}
 
 	// All other errors (JSON-RPC application errors) return 200
@@ -1851,11 +1858,12 @@ func handleErrorResponse(
 		common.ErrCodeNetworkRateLimitRuleExceeded,
 		common.ErrCodeEndpointCapacityExceeded):
 		statusCode = http.StatusTooManyRequests
-	// 503 Service Unavailable - no upstream could be initialized for this
-	// network at all. Deliberately last: a more specific verdict already on the
-	// cause chain (404 unsupported, 429 quota) describes the failure better.
+	// 404 Not Found - no upstream could be initialized for this network at all.
+	// Terminal, not transient, so it is a coverage gap rather than a server fault
+	// (see ErrNetworkNoUpstreamsAvailable). Deliberately last: a more specific
+	// verdict already on the cause chain (429 quota) describes the failure better.
 	case common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable):
-		statusCode = http.StatusServiceUnavailable
+		statusCode = http.StatusNotFound
 	}
 	// Emit X-ERPC-* headers BEFORE WriteHeader — once WriteHeader fires
 	// the header map is sealed. processErrorBody attaches `nq` to the

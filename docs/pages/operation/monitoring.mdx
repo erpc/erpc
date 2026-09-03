@@ -403,7 +403,7 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 | `erpc_network_served_tip_block_number` | Served-tip pick per axis (latest/finalized) and lane; `lane="all"` = network-wide |
 | `erpc_network_served_tip_lag_blocks` | Lag of served tip behind freshest velocity-eligible upstream; absent in MAX mode |
 | `erpc_upstream_stale_latest_block_total` | Upstream returned a block number behind the network leader |
-| `erpc_upstream_block_head_large_rollback` | Non-zero = rollback &gt; 1024 blocks; warrants investigation |
+| `erpc_upstream_block_head_large_rollback` | Size of the last rollback &gt; 1024 blocks, per `finality` axis (`latest`/`finalized`). Sticky — alert on `changes()`, not on `&gt; 0` |
 
 **Solana (SVM) upstreams**
 
@@ -485,7 +485,7 @@ Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it i
 
 12. **Two bundled alerting rules reference stale metric names.** `erpc_upstream_request_self_rate_limited_total` and `erpc_network_request_self_rate_limited_total` no longer exist. Use `erpc_rate_limits_total` as the replacement. (<SourceLink file="monitoring/prometheus/alert.rules" lines="1" />)
 
-13. **`erpc_upstream_block_head_large_rollback` is silent for rollbacks ≤ 1024 blocks.** `DefaultToleratedBlockHeadRollback = 1024` is the threshold. A gauge value of 0 is normal; non-zero (rollback &gt; 1024 blocks) warrants investigation. (<SourceLink file="architecture/evm/evm_state_poller.go" lines="27" />)
+13. **`erpc_upstream_block_head_large_rollback` is silent for rollbacks ≤ 1024 blocks, and sticky above them.** `DefaultToleratedBlockHeadRollback = 1024` is the threshold. The gauge is `Set` to the rollback *size* and is never reset, so it holds that value for the life of the process: `> 0` means "this process saw a rollback at some point", not "a rollback is happening now", and `rate()`/`increase()` are meaningless on it. Alert on `changes(...[window])` instead. Split by the `finality` label — the `finalized` axis is dominated by upstreams whose write granularity exceeds 1024 blocks, which registers as a large rollback by construction. (<SourceLink file="architecture/evm/evm_state_poller.go" lines="27" />)
 
 14. **`erpc_selection_*` metrics carry a `method` label.** If the ingress exposes many distinct RPC methods to untrusted callers, a flood of unique method names creates unbounded series. Add `method` to a Prometheus relabeling drop rule for untrusted deployments.
 

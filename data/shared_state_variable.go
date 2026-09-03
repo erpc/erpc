@@ -203,6 +203,34 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		}
 	}
 
+	// A head counter never legitimately moves to zero or below. Zero is the zero
+	// VALUE of an unset CounterInt64State, not an observation of a chain, and it
+	// arrives here from ordinary sources: an instance that pushes its counter
+	// before its first poll, or a connector handing back an empty record with a
+	// live timestamp. Left alone it reads as a rollback the size of the whole
+	// chain, which is necessarily larger than ignoreRollbackOf, so the branch
+	// below -- whose entire job is to admit only real reorgs -- waves it through,
+	// and every instance that receives it drops its head to 0.
+	//
+	// The floor is scoped to counters that ignore small rollbacks. The
+	// earliest-block counter is created with ignoreRollbackOf=0 and legitimately
+	// sits at 0 on an archive node, so it keeps the old behaviour.
+	if newVal <= 0 && c.ignoreRollbackOf > 0 {
+		// Same bookkeeping as a rejected small rollback: our higher local value
+		// must out-rank the remote state, or reconciliation hands the zero back
+		// to us on the next tick and the counter flaps.
+		if isRemoteUpdate {
+			c.advanceTimestampPast(st.UpdatedAt)
+		}
+		c.registry.logger.Warn().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Msg("rejected non-positive value for a head counter (remote)")
+		return false
+	}
+
 	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
 	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
 	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
@@ -296,6 +324,18 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 				return false
 			}
 		}
+	}
+
+	// See processNewState: zero is an unset state, not a head. Same floor, same
+	// scoping to counters that ignore small rollbacks.
+	if newVal <= 0 && c.ignoreRollbackOf > 0 {
+		c.registry.logger.Warn().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Msg("rejected non-positive value for a head counter (local)")
+		return false
 	}
 
 	// Rollback handling: only accept rollbacks where gap exceeds the threshold.

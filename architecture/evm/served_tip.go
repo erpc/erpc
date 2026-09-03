@@ -206,6 +206,30 @@ const (
 	// genuine majority stall is corrected inside one block-explorer refresh.
 	tipDwellDuration = 30 * time.Second
 
+	// tipMajorityStallSeconds is how far behind the trajectory the MAJORITY pick
+	// must have fallen — expressed as chain progress in SECONDS, converted to
+	// blocks through the fitted velocity — before the referee may outvote it.
+	//
+	// It exists because nothing else in the decision path tests the referee's
+	// own premise. The tolerance gate asks whether the ELECTED GROUP is on the
+	// trajectory; the upward-only rule asks whether that group is above the
+	// majority. Neither asks the question the override is named for: has the
+	// majority actually stalled? Without this gate the answer is assumed, and
+	// the assumption is wrong on any healthy fleet with a persistent upper
+	// group — see the note on TipTrajectoryDecision.Declined.
+	//
+	// The gate is a duration, not a block count, because block counts are not
+	// comparable across chains: ToleranceFloor's 1024-block default is ~3 hours
+	// of a 12s chain but only ~10 minutes of a 1.7 blocks/s one, so as an
+	// absolute floor it binds on slow chains and never binds on fast ones.
+	// Seconds of missing chain progress mean the same thing everywhere.
+	//
+	// 30s matches tipDwellDuration: the elected group must hold its place for
+	// that long anyway, so requiring the majority to be at least that far
+	// behind adds no latency to correcting a genuine stall — a frozen majority
+	// crosses this gate and earns the dwell over the same interval.
+	tipMajorityStallSeconds = 30.0
+
 	// tipDwellMinVelocityFraction is the share of the fitted velocity the
 	// elected group must have delivered FROM ITS OWN HEAD over the dwell. It is
 	// a lower bound only — closeness to expected already bounds the group from
@@ -278,12 +302,24 @@ type TipTrajectoryDecision struct {
 
 	// Declined reports the near miss: the group the trajectory elected sat
 	// ABOVE the majority pick — an override was on the table — and the referee
-	// refused it because the group was not close enough to where the head
-	// should be. It is the only other outcome worth counting, and like Overrode
-	// it is silent in steady state: a fleet in one cluster elects that cluster,
-	// and a fleet permanently split around its own median elects the median's
-	// group (the trajectory is fitted to the median, so no permanently-offset
-	// group is ever closer to it), so neither flag is set.
+	// refused it, because the group was not close enough to where the head
+	// should be, because it had not held its place long enough, or because the
+	// majority it would have outvoted had not actually stalled.
+	//
+	// A fleet in one cluster elects that cluster and sets neither flag. A fleet
+	// permanently split around its own median sets Declined, NOT Overrode.
+	//
+	// It was once claimed here that such a fleet could not even elect its upper
+	// group, reasoning that the fit is made from the median so no
+	// permanently-offset group can sit nearer to it. That is wrong. Once the
+	// split exceeds one cluster width the lower upstreams are singletons, which
+	// tipMinGroupSize rejects, so the upper group is often the ONLY candidate
+	// and wins by default however far from the median it sits — it is elected
+	// against the tolerance, never against the median's distance. What keeps
+	// election from becoming an override on a healthy fleet is the
+	// majority-stall gate (tipMajorityStallSeconds), not the geometry of the
+	// fit. Observed on a four-upstream fleet at a persistent ladder, which
+	// before that gate took a ~24-block override every ~28 minutes.
 	Declined bool
 
 	// Expected / Tolerance / VelocityPerSec describe the fit that produced the
@@ -493,6 +529,32 @@ func (t *TipTrajectory) Observe(now time.Time, sorted []ServedTipInput, median i
 		// corroborated fresh minority outvote a stalled majority. Lowering or
 		// holding the tip is the majority picker's and the regression guard's
 		// job, and is the only direction from which a frozen tip is reachable.
+		return d
+	}
+	if expected-float64(median) <= fit.vPerSec*tipMajorityStallSeconds {
+		// THE MAJORITY HAS NOT STALLED, so there is nothing here to correct.
+		// Everything above establishes that some group is on the trajectory and
+		// sits above the majority; none of it establishes that the majority is
+		// OFF the trajectory, which is the only thing that justifies trading the
+		// order statistic's servability guarantee for a fresher tip.
+		//
+		// That gap was load-bearing. Once a fleet splits wider than one cluster
+		// width, the upper group is frequently the ONLY electable group — the
+		// lower upstreams are singletons, and tipMinGroupSize rejects them — so
+		// the tolerance gate is the sole remaining check, and at ToleranceFloor's
+		// 1024-block default it admits essentially any split a real fleet
+		// produces. Election then implies override, and the referee fires on
+		// ordinary poller skew.
+		//
+		// Production, on a ~1.66 blocks/s chain with four upstreams: majority
+		// pick 30,699,698, elected group 30,699,722, expected 30,699,716,
+		// tolerance 1024. The majority was 18 blocks — eleven seconds — off the
+		// trajectory, and the referee raised the tip by 24 blocks every ~28
+		// minutes. Nothing had stalled.
+		//
+		// Declined, not silent: an override was genuinely on the table, and the
+		// near miss belongs in the same counter as the other refusals.
+		d.Declined = true
 		return d
 	}
 	if !corroborated {

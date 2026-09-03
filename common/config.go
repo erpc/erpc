@@ -1153,6 +1153,14 @@ type ShadowUpstreamConfig struct {
 	Enabled      bool                `yaml:"enabled" json:"enabled"`
 	SampleRate   *float64            `yaml:"sampleRate,omitempty" json:"sampleRate,omitempty"`
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
+	// PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
+	// concrete height before forwarding: the primary's resolved block number when its response
+	// carries one, else the network's tracked head at mirror time. Without it the shadow executes
+	// the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
+	// (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
+	// reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
+	// requests, exactly as before.
+	PinBlockTag bool `yaml:"pinBlockTag,omitempty" json:"pinBlockTag,omitempty"`
 }
 
 // Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
@@ -1315,6 +1323,13 @@ type EvmUpstreamConfig struct {
 	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
 	// misleading and causes circuit breaker false positives.
 	SkipSyncingCheck *bool `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
+	// HeadLagToleranceBlocks lets the block-availability gate send requests pinned up to N blocks
+	// ABOVE this upstream's observed head instead of rerouting them as stale. Useful for upstreams
+	// that follow the chain tightly but become able to serve a new block a moment after it is
+	// announced elsewhere (they hold or briefly wait for the block internally): with a hard
+	// head comparison every request pinned at head+1 in that moment is rerouted even though the
+	// upstream would have answered it. 0 (default) keeps the exact head comparison.
+	HeadLagToleranceBlocks int64 `yaml:"headLagToleranceBlocks,omitempty" json:"headLagToleranceBlocks"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
@@ -1494,8 +1509,10 @@ type NetworkFailsafeConfig = FailsafeConfig
 type UpstreamFailsafeConfig = FailsafeConfig
 
 // CacheFailsafeConfig is the scope-specific alias for cache-connector
-// failsafe policies. Hedge.Quantile is not allowed here (no per-method
-// quantile data on cache reads); validation enforces this.
+// failsafe policies. Timeout.Duration and Hedge.Delay support quantile
+// (dynamic) mode at this scope, resolved from a per-executor latency
+// tracker fed by the connector's own operations (see data/cache_executor.go).
+// Consensus is not supported here; validation enforces this.
 type CacheFailsafeConfig = FailsafeConfig
 
 func (c *FailsafeConfig) Copy() *FailsafeConfig {
@@ -2196,6 +2213,11 @@ type ProxyPoolConfig struct {
 type MethodsConfig struct {
 	PreserveDefaultMethods bool                          `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
 	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
+
+	// lowerIndex is a lowercase-keyed snapshot of Definitions built by
+	// SetDefaults so FindMethodConfig resolves a non-canonical casing with one
+	// map lookup instead of scanning every entry per request.
+	lowerIndex map[string]*CacheMethodConfig
 }
 
 type NetworkConfig struct {
@@ -2468,6 +2490,21 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics    int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError        *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency    int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	// GetLogsMaxResponseBytes caps the total size of a MERGED eth_getLogs response —
+	// the sum of every sub-response a split assembles, not the size of any one piece.
+	// Splitting exists to get past an upstream's per-request limits, so once a request
+	// is split there is no remaining bound on what the client can make the proxy hold
+	// in memory: a range the upstream refuses is halved, fetched concurrently, and
+	// merged whole. This is the only bound on that total.
+	//
+	// Sub-requests are cancelled as soon as the running total crosses the cap, so the
+	// in-flight ones do not materialise either, and the client gets
+	// ErrGetLogsExceededMaxAllowedResponseSize (HTTP 413) — a distinct code from
+	// ErrEndpointRequestTooLarge precisely so it does NOT feed the splitting path that
+	// produced the response.
+	//
+	// Zero (the default) disables the cap and preserves the historical behaviour.
+	GetLogsMaxResponseBytes int64 `yaml:"getLogsMaxResponseBytes,omitempty" json:"getLogsMaxResponseBytes"`
 	// TraceFilterSplitOnError controls reactive splitting for trace_filter and
 	// arbtrace_filter requests when the upstream returns a range-too-large error.
 	// Nil disables the feature.

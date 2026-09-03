@@ -1353,6 +1353,116 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
 	})
 
+	// Mempool policy rejections (Monad-style, -32603 with no data field) are
+	// ExecutionException — breaker-neutral — but stay retryable toward other
+	// upstreams: pool contents/policies are node-local.
+	t.Run("MempoolPriorityRejectionFailsOverToNextUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		// First upstream rejects: an existing pool tx with same nonce wins.
+		// NOTE: no "data" field — the real wire shape (unmarshals to nil).
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32603,
+					"message": "An existing transaction had higher priority",
+				},
+			})
+
+		// Second upstream's pool does not hold the conflicting tx and accepts.
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  expectedTxHash,
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+			MaxAttempts: 3,
+			Delay:       common.Duration(10 * time.Millisecond),
+		})
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		require.NoError(t, err, "priority rejection should fail over to the next upstream")
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+	})
+
+	// When every upstream rejects, the client gets the original rejection as an
+	// ExecutionException — not a retry-exceeded wrapper and not a
+	// ServerSideException (which would count toward the circuit breaker).
+	t.Run("MempoolPolicyRejectionTerminalWhenAllUpstreamsReject", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+			gock.New(host).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32603,
+						"message": "rejected",
+					},
+				})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+			MaxAttempts: 3,
+			Delay:       common.Duration(10 * time.Millisecond),
+		})
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+			"expected ErrCodeEndpointExecutionException, got: %v", err)
+		assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+			"rejections must not surface as server-side (breaker-visible) errors, got: %v", err)
+		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+			"both upstreams should have been tried before surfacing the rejection")
+		_ = resp
+	})
+
 	// "transaction type not supported" - should return error (not idempotent)
 	t.Run("TransactionTypeNotSupportedRemainsError", func(t *testing.T) {
 		util.ResetGock()

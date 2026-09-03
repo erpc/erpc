@@ -1382,6 +1382,14 @@ func (e *ErrNetworkInitializing) ErrorStatusCode() int { return http.StatusServi
 // or provider serves — removed from config, deprecated, never supported — sits
 // in that state permanently, so callers keep retrying and operators read the
 // message as a temporary blip. This one names the actual condition.
+//
+// It maps to 404, not 503. The state is terminal rather than transient: once a
+// network has sat past NoUpstreamsAvailableAfter with zero upstreams registered,
+// no amount of caller retrying changes the outcome — the project does not serve
+// that network. A 5xx invites a retry that cannot succeed and reports what is
+// really a coverage gap as a server fault. Operators should alert on the
+// erpc_network_no_upstreams_available_total counter, which is emitted regardless
+// of the wire status.
 type ErrNetworkNoUpstreamsAvailable struct{ BaseError }
 
 const ErrCodeNetworkNoUpstreamsAvailable ErrorCode = "ErrNetworkNoUpstreamsAvailable"
@@ -1403,7 +1411,7 @@ var NewErrNetworkNoUpstreamsAvailable = func(project string, network string) err
 }
 
 func (e *ErrNetworkNoUpstreamsAvailable) ErrorStatusCode() int {
-	return http.StatusServiceUnavailable
+	return http.StatusNotFound
 }
 
 // ErrNetworkNotSupported indicates that providers do not support the requested network
@@ -2712,6 +2720,7 @@ func IsClientError(err error) bool {
 		ErrCodeGetLogsExceededMaxAllowedRange,
 		ErrCodeGetLogsExceededMaxAllowedAddresses,
 		ErrCodeGetLogsExceededMaxAllowedTopics,
+		ErrCodeGetLogsExceededMaxAllowedResponseSize,
 	))
 }
 
@@ -2905,6 +2914,32 @@ func (e *ErrConsensusLowParticipants) SummarizeParticipants() string {
 		}
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+type ErrGetLogsExceededMaxAllowedResponseSize struct{ BaseError }
+
+const ErrCodeGetLogsExceededMaxAllowedResponseSize ErrorCode = "ErrGetLogsExceededMaxAllowedResponseSize"
+
+// NewErrGetLogsExceededMaxAllowedResponseSize reports that a MERGED eth_getLogs response
+// crossed the network's GetLogsMaxResponseBytes budget. Deliberately its own code rather
+// than ErrEndpointRequestTooLarge: the too-large code is what networkPostForward_eth_getLogs
+// treats as a cue to split and merge, so raising it here would feed the very path this
+// budget exists to bound.
+var NewErrGetLogsExceededMaxAllowedResponseSize = func(responseBytes int64, maxAllowedBytes int64) error {
+	return &ErrGetLogsExceededMaxAllowedResponseSize{
+		BaseError{
+			Code:    ErrCodeGetLogsExceededMaxAllowedResponseSize,
+			Message: "getLogs response exceeded max allowed size; narrow the block range, addresses or topics",
+			Details: map[string]interface{}{
+				"responseBytes":   responseBytes,
+				"maxAllowedBytes": maxAllowedBytes,
+			},
+		},
+	}
+}
+
+func (e *ErrGetLogsExceededMaxAllowedResponseSize) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
 }
 
 type ErrGetLogsExceededMaxAllowedRange struct{ BaseError }

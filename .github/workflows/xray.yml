@@ -1,58 +1,100 @@
 name: xray
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, ready_for_review]
   issue_comment:
     types: [created]
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
 
 jobs:
-  xray-on-pr:
-    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v4
-        with:
-          fetch-depth: 0
-      - uses: xray-pr/xray-pr@489e56199b92f696dbc3757964dffd2503ec68e2 # v0.2.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-          languages: go
-
-  xray-on-command:
+  xray:
     if: |
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request &&
-      contains(fromJSON('["OWNER", "MEMBER"]'), github.event.comment.author_association) &&
-      contains(github.event.comment.body, '/xray')
+      (github.event_name == 'pull_request_target' &&
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(fromJSON('["OWNER", "MEMBER"]'), github.event.comment.author_association) &&
+        contains(github.event.comment.body, '/xray'))
     runs-on: ubuntu-latest
+    environment: xray
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
         with:
           egress-policy: audit
-      - name: Get PR head SHA
-        id: pr-info
+
+      - name: Resolve and validate PR via GitHub API
+        id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          SHA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.sha')
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v4
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "invalid PR number" >&2; exit 1 ;;
+          esac
+          PR_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")
+          HEAD_SHA=$(printf '%s' "$PR_JSON" | jq -r .head.sha)
+          BASE_SHA=$(printf '%s' "$PR_JSON" | jq -r .base.sha)
+          STATE=$(printf '%s' "$PR_JSON" | jq -r .state)
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [ "$STATE" = "open" ]
+          if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$HEAD_SHA" != "$EVENT_HEAD_SHA" ]; then
+            echo "head SHA does not match event" >&2
+            exit 1
+          fi
+          echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR base only
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ steps.pr-info.outputs.sha }}
-          fetch-depth: 0
+          ref: ${{ steps.pr.outputs.base_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Apply PR diff from GitHub API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*) echo "invalid PR number" >&2; exit 1 ;;
+          esac
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          PR_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")
+          CURRENT_HEAD=$(printf '%s' "$PR_JSON" | jq -r .head.sha)
+          if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
+            echo "head SHA changed since validation" >&2
+            exit 1
+          fi
+          gh api "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" \
+            -H "Accept: application/vnd.github.diff" \
+            > "${RUNNER_TEMP}/pr.diff"
+          git config user.email "xray@erpc.invalid"
+          git config user.name "xray"
+          git apply --index "${RUNNER_TEMP}/pr.diff"
+          git commit --allow-empty -m "xray analysis tree ${HEAD_SHA}"
+
       - uses: xray-pr/xray-pr@489e56199b92f696dbc3757964dffd2503ec68e2 # v0.2.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           languages: go
+          base_ref: ${{ steps.pr.outputs.base_sha }}

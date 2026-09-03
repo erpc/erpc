@@ -138,7 +138,7 @@ func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
 		res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, rejectAll)
 
 		assert.NoError(t, res.Err, "an unverified pin must not reject an honest response")
-		assert.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+		assert.Equal(t, "record_only", outcomeOf(res, "hashStability"))
 		require.Len(t, res.Recorded, 1, "the mismatch must still be recorded, not swallowed")
 		assert.Equal(t, "hashStability", res.Recorded[0].CheckID)
 		assert.Equal(t, 1, hist.calls)
@@ -152,7 +152,7 @@ func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
 		for i := 0; i < 24; i++ {
 			res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, rejectAll)
 			require.NoErrorf(t, res.Err, "request %d was rejected on an unverified pin", i)
-			require.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+			require.Equal(t, "record_only", outcomeOf(res, "hashStability"))
 		}
 		assert.Equal(t, 24, hist.calls)
 	})
@@ -162,7 +162,7 @@ func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
 		policy := ReorgPolicy{Finalized: BehaviorRecord, Unfinalized: BehaviorRecord}
 		res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, policy)
 		assert.NoError(t, res.Err)
-		assert.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+		assert.Equal(t, "record_only", outcomeOf(res, "hashStability"))
 	})
 
 	t.Run("a fresh reconfirm still rejects a genuine mismatch", func(t *testing.T) {
@@ -184,7 +184,7 @@ func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
 		}
 		res := validateBlockPolicy(t, blockResult("0x11", "0xchild", "0xrealparent"), only("parentHashLinkage", nil), hist, rejectAll)
 		assert.NoError(t, res.Err)
-		assert.Equal(t, "soft_flag", outcomeOf(res, "parentHashLinkage"))
+		assert.Equal(t, "record_only", outcomeOf(res, "parentHashLinkage"))
 	})
 }
 

@@ -270,7 +270,8 @@ Content-Type: application/json
 - Batch detection fires on `body[0] == '['` — no Content-Type gate, no pre-parse. A body like `[invalid json` is detected as batch then fails unmarshalling with a 400. [<SourceLink file="erpc/http_server.go" lines="405-409" />]
 - Request gzip decompression is unconditional: `Content-Encoding: gzip` always triggers decompression regardless of the `server.enableGzip` setting (which controls response compression only). Corrupt gzip → 400 `ErrInvalidRequest` immediately. [<SourceLink file="erpc/http_server.go" lines="349-370" />]
 - `MaxHeaderBytes` is `1 MiB` on both IPv4 and IPv6 servers; requests with oversized headers are rejected at the Go net/http layer with HTTP 431 before any eRPC handler runs. Body size has no configured cap. [<SourceLink file="erpc/http_server.go" lines="186" />]
-- gRPC dispatch (`Content-Type: application/grpc` + HTTP/2) happens before URL parsing — only when `grpcSharesHttpV4` is enabled; IPv6 never gets gRPC sharing. [<SourceLink file="erpc/http_server.go" lines="161-177" />]
+- gRPC dispatch (`Content-Type: application/grpc` + HTTP/2) happens before URL parsing — only when `grpcSharesHttpV4` is enabled; IPv6 never gets gRPC sharing. [<SourceLink file="erpc/http_server.go" lines="162-175" />]
+- Cleartext HTTP/2 (h2c) is served on the non-TLS IPv4 listener regardless of whether gRPC sharing is enabled: the handler is wrapped with `h2c.NewHandler` whenever TLS is disabled, so HTTP/2 prior-knowledge clients work out of the box. With TLS, HTTP/2 is negotiated via ALPN instead. [<SourceLink file="erpc/http_server.go" lines="177-184" />]
 - The admin endpoint is exactly `POST /admin` or `OPTIONS /admin`; `GET /admin` is a healthcheck; `/admin/foo` fails with a URL parse error. [<SourceLink file="erpc/http_server.go" lines="836-838" />]
 
 ### Best practices
@@ -299,7 +300,8 @@ Content-Type: application/json
 13. **Body size has no configured cap.** The 1 MiB limit is headers only. Arbitrarily large bodies are read into memory. Apply body-size limits at the reverse-proxy layer. Source: <SourceLink file="erpc/http_server.go" lines="186" />, <SourceLink file="erpc/http_server.go" lines="374" />
 14. **Unknown network may succeed on first call for provider-based projects.** Networks are lazily initialized. `ErrNetworkNotFound` (HTTP 404) is returned only when resolution definitively fails. Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />
 15. **`serveArchitecture: "evm"` with no `serveChain` lets callers omit `evm` from the path.** With a domain alias pre-selecting architecture, the URL becomes `POST /<project>/<chainId>` — no need to include `evm` in every call. Source: <SourceLink file="erpc/http_server.go" lines="963-983" />
-16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="161-177" />
+16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="162-175" />
+17. **Cleartext HTTP/2 (h2c) is IPv4-only.** The non-TLS IPv4 handler is wrapped with `h2c.NewHandler` whenever TLS is disabled, independent of gRPC. The IPv6 listener is not wrapped, so h2c prior-knowledge requests on a non-TLS IPv6 listener are not supported. Source: <SourceLink file="erpc/http_server.go" lines="177-184" />
 
 ### Observability
 

@@ -240,3 +240,63 @@ func TestSuggestFinalizedBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *tes
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, int64(1000), p.FinalizedBlock(), "bogus major finalized jump must not enter the shared counter")
 }
+
+// --- majorHeadMoveThreshold ---
+
+// feedBlockTime drives the tracker's block-time EMA to (tsDelta/numDelta)
+// seconds per block by replaying observations through the same entry point the
+// poller uses. blockTimeMinSamples is 3, so a handful of rounds is plenty.
+func feedBlockTime(t *testing.T, p *EvmStatePoller, up common.Upstream, numDelta, tsDelta int64) {
+	t.Helper()
+	var num int64 = 1_000_000
+	var ts int64 = 1_700_000_000
+	for i := 0; i < 8; i++ {
+		num += numDelta
+		ts += tsDelta
+		p.tracker.SetLatestBlockNumber(up, num, ts)
+	}
+	require.NotZero(t, p.tracker.GetNetworkBlockTime(up.NetworkId()),
+		"precondition: the block-time EMA must have settled")
+}
+
+func TestMajorHeadMoveThreshold(t *testing.T) {
+	t.Run("UnknownBlockTimeKeepsTheBlockCountDefault", func(t *testing.T) {
+		up := newSuggestGateUpstream(123, "0x7b", nil)
+		p := newGateTestPoller(t, up)
+
+		// Cold start: nothing has been measured, so the old constant stands and
+		// behaviour is byte-for-byte what it was before.
+		require.Zero(t, p.tracker.GetNetworkBlockTime(up.NetworkId()))
+		assert.Equal(t, gateTolerance, p.majorHeadMoveThreshold())
+	})
+
+	t.Run("SlowChainDerivesATighterThreshold", func(t *testing.T) {
+		up := newSuggestGateUpstream(123, "0x7b", nil)
+		p := newGateTestPoller(t, up)
+		feedBlockTime(t, p, up, 1, 12) // 12s blocks, i.e. Ethereum
+
+		// 60s of chain progress is 5 blocks here, against the 1024 the fixed
+		// constant would have allowed — 3.4 hours of this chain.
+		assert.Equal(t, int64(5), p.majorHeadMoveThreshold())
+	})
+
+	t.Run("FastChainIsClampedToTheOldDefault", func(t *testing.T) {
+		up := newSuggestGateUpstream(123, "0x7b", nil)
+		p := newGateTestPoller(t, up)
+		feedBlockTime(t, p, up, 100, 1) // 10ms blocks — the tracker's fastest
+
+		// 60s would derive 6000 blocks, looser than before. The clamp holds it at
+		// the old constant so this change can only ever ADD verification.
+		assert.Equal(t, gateTolerance, p.majorHeadMoveThreshold())
+	})
+
+	t.Run("VerySlowChainKeepsANonZeroFloor", func(t *testing.T) {
+		up := newSuggestGateUpstream(123, "0x7b", nil)
+		p := newGateTestPoller(t, up)
+		feedBlockTime(t, p, up, 1, 100) // 100s blocks
+
+		// 60s of chain progress rounds to 0 blocks; the floor keeps the gate from
+		// firing on every single advance.
+		assert.Equal(t, int64(chainIdVerifyMinBlocks), p.majorHeadMoveThreshold())
+	})
+}
