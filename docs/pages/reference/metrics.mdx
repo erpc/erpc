@@ -80,13 +80,13 @@ The define/register split is forced by Prometheus: a registry freezes a family's
 
 **Idle-series eviction.** The health tracker's `rotateMetricsLoop` fires a sweep every 10 rotation ticks (default 30 s/tick = every 5 minutes). The sweep deletes `upsMetrics` and `ntwMetrics` entries not accessed in the last 30 minutes (`DefaultIdleEvictionAfter`), then calls `DeleteLabelValues` on `erpc_upstream_request_duration_seconds` and `erpc_rate_limits_total`. Cordoned entries and wildcard (`"*"`) rollups are never evicted. All other high-cardinality series are NOT covered — cardinality is bounded only by distinct label tuples seen over the process lifetime. [<SourceLink file="health/tracker.go" lines="557-667" />]
 
-**Metrics HTTP server.** `erpc.Init` starts a minimal `http.Server` bound to `:%d` (port only, all interfaces) serving the Prometheus handler at the root path. This means every URL path on the metrics port returns identical Prometheus text output — `GET /`, `GET /metrics`, `GET /health` all work. No TLS, no auth, no gzip. Shutdown is graceful with a 5-second budget. The gatherer is wrapped by `telemetry.Gatherer`, which applies the exposure filter to families the manager does not register itself; with no exposure list configured it hands the default gatherer straight through. [<SourceLink file="erpc/init.go" lines="190-205" />]
+**Metrics HTTP server.** `erpc.Init` starts a minimal `http.Server` bound to `:%d` (port only, all interfaces) serving the Prometheus handler at the root path. This means every URL path on the metrics port returns identical Prometheus text output — `GET /`, `GET /metrics`, `GET /health` all work. No TLS, no auth, no gzip. Shutdown is graceful with a 5-second budget. The gatherer is wrapped by `telemetry.Gatherer`, which applies the exposure filter to families the manager does not register itself; with no exposure list configured it hands the default gatherer straight through. [<SourceLink file="erpc/init.go" lines="197-227" />]
 
 **`ERPC_NOMETRICS=1` env var.** When set before process start, `initflags.go:init()` replaces `prometheus.DefaultRegisterer` and `DefaultGatherer` with a fresh empty registry. All subsequent registrations succeed but produce no-ops. The default `go_*`/`process_*` collectors are also dropped. [<SourceLink file="cmd/erpc/initflags.go" lines="22-28" />]
 
 **`errorLabelMode` global.** `common.ErrorSummary` produces the `error` label value on every error-labeled metric. The in-code default before `erpc.Init` runs is `verbose`; `erpc.Init` flips it to `compact` (the config default). In `compact` mode it emits short stable codes: a plain `StandardError` → its `Base().Code` string (e.g. `"ErrEndpointCapacityExceeded"`); for `ErrFailsafeRetryExceeded`, `ErrUpstreamRequest`, or `ErrUpstreamRequestSkipped` it appends the cause code (e.g. `"ErrUpstreamRequest/ErrEndpointTransportFailure"`); for an `ErrJsonRpcExceptionInternal` cause it further appends the numeric code (e.g. `"ErrUpstreamRequest/ErrJsonRpcExceptionInternal/-32000"`). In `verbose` mode it passes the full message chain through `cleanUpMessage` (strips newlines and long hex strings), potentially including block numbers or IP addresses — each unique value creates a new Prometheus series. [<SourceLink file="common/errors.go" lines="17-114" />]
 
-**`networkAlias` resolver.** At startup, `erpc.Init` installs a `NetworkAliasResolver` callback mapping raw EVM chain IDs to human-readable aliases so components using numeric chain IDs (e.g. gRPC cache connector) emit matching `network` label values. [<SourceLink file="erpc/init.go" lines="100-115" />]
+**`networkAlias` resolver.** At startup, `erpc.Init` installs a `NetworkAliasResolver` callback mapping raw EVM chain IDs to human-readable aliases so components using numeric chain IDs (e.g. gRPC cache connector) emit matching `network` label values. [<SourceLink file="erpc/init.go" lines="105-121" />]
 
 ---
 
@@ -98,21 +98,21 @@ All fields are under `metrics.` in the root YAML config. Source: <SourceLink fil
 |---|---|---|---|
 | `metrics.enabled` | `*bool` | `true` in production; `nil` (disabled) under `go test` | Whether to start the `/metrics` HTTP server. Metrics are still registered and counted when false — they just are not scraped. Source: <SourceLink file="common/defaults.go" lines="909-911" /> |
 | `metrics.port` | `*int` | `4001` | TCP port for the metrics server. Required when `enabled=true`; `erpc.Init` aborts if nil. Source: <SourceLink file="common/defaults.go" lines="918-920" /> |
-| `metrics.hostV4` | `*string` | `"0.0.0.0"` | Defined and defaulted but **not used** — the server binds `":%d"` (all interfaces). Setting this to `127.0.0.1` does NOT restrict to loopback. Use firewall rules instead. Source: <SourceLink file="erpc/init.go" lines="195" /> |
+| `metrics.hostV4` | `*string` | `"0.0.0.0"` | Defined and defaulted but **not used** — the server binds `":%d"` (all interfaces). Setting this to `127.0.0.1` does NOT restrict to loopback. Use firewall rules instead. Source: <SourceLink file="erpc/init.go" lines="202" /> |
 | `metrics.hostV6` | `*string` | `"[::]"` | Same caveat as `hostV4` — defined but not used in the bind address. Source: <SourceLink file="common/defaults.go" lines="915-917" /> |
 | `metrics.listenV4` | `*bool` | `nil` | Defined in struct but never read in production code. Dead config field. |
 | `metrics.listenV6` | `*bool` | `nil` | Defined in struct but never read. Dead config field. |
 | `metrics.errorLabelMode` | `string` | `"compact"` | Controls the `error` label on all error-labeled metrics. `"compact"` → short stable codes (bounded cardinality, recommended). `"verbose"` → full human messages including block numbers and IP addresses (unbounded cardinality risk). Must be `""`, `"compact"`, or `"verbose"`. Source: <SourceLink file="common/defaults.go" lines="921-923" /> |
 | `metrics.histogramBuckets` | `string` | `""` → `[0.05, 0.5, 5, 30]` | Comma-separated float64 bucket boundaries for every histogram that does not declare its own buckets. Empty → use defaults. Parsed and sorted by `ParseHistogramBuckets`. Invalid float → warning + fallback to defaults. Source: <SourceLink file="telemetry/metrics.go" lines="943-948" /> |
-| `metrics.histogramDropLabels` | `[]string` | `nil` (no labels dropped) | Label names to drop from every `LabeledHistogram`. Counters and gauges are unaffected. Applied before registration — the drop is permanent for the process lifetime. Example: `["user", "agent_name"]`. Source: <SourceLink file="erpc/init.go" lines="24-42" /> |
-| `metrics.histogramLabelOverrides` | `map[string][]string` | `nil` | Per-metric overrides that re-add labels even if they appear in `histogramDropLabels`. Key = metric name without the `erpc_` prefix (e.g. `"network_request_duration_seconds"`). Value = label names to preserve for that metric. Source: <SourceLink file="erpc/init.go" lines="24-42" /> |
+| `metrics.histogramDropLabels` | `[]string` | `nil` (no labels dropped) | Label names to drop from every `LabeledHistogram`. Counters and gauges are unaffected. Applied before registration — the drop is permanent for the process lifetime. Example: `["user", "agent_name"]`. Source: <SourceLink file="erpc/init.go" lines="25-43" /> |
+| `metrics.histogramLabelOverrides` | `map[string][]string` | `nil` | Per-metric overrides that re-add labels even if they appear in `histogramDropLabels`. Key = metric name without the `erpc_` prefix (e.g. `"network_request_duration_seconds"`). Value = label names to preserve for that metric. Source: <SourceLink file="erpc/init.go" lines="25-43" /> |
 | `metrics.exposeMetrics` | `[]string` | `nil` (expose all) | Allowlist of metric families. Entries are family names without the `erpc_` prefix (`"upstream_request_total"`) or a subsystem prefix ending in `*` (`"consensus_*"`). Stock collectors are named in full (`"go_goroutines"`, `"process_cpu_seconds_total"`, `"promhttp_metric_handler_requests_total"`) and are subject to the same list — an allowlist that omits them drops them. Applied before `dropMetrics`. Source: <SourceLink file="telemetry/gather_filter.go" /> |
 | `metrics.dropMetrics` | `[]string` | `nil` (drop none) | Denylist of metric families, same entry syntax as `exposeMetrics`. Applied after the allowlist, so it can carve one family out of an allowlisted subsystem. Source: <SourceLink file="telemetry/gather_filter.go" /> |
 
 **Hardcoded server constants (not configurable):**
 
-- Bind address: `":%d"` — all interfaces, port only (<SourceLink file="erpc/init.go" lines="195" />)
-- Handler: `promhttp.Handler()` registered as root `/` — every path returns full metrics output
+- Bind address: `":%d"` — all interfaces, port only (<SourceLink file="erpc/init.go" lines="202" />)
+- Handler: the Prometheus handler registered as root `/`, over a gatherer wrapped by `telemetry.Gatherer` — every path returns full metrics output
 - Protocol: plain HTTP only (no TLS, no auth, no gzip)
 - `ReadHeaderTimeout`: 10 seconds
 - Graceful shutdown budget: 5 seconds
@@ -211,8 +211,8 @@ metrics:
 
 ### Edge cases & gotchas
 
-1. **`hostV4`/`hostV6` are defined but unused.** The bind address is always `":%d"` (all interfaces). Firewall rules are the only way to restrict access to the metrics port. (<SourceLink file="erpc/init.go" lines="149" />)
-2. **`metrics.enabled` is `nil` (disabled) under `go test`.** Integration tests that call `erpc.Init` will not spin up a metrics server unless `Enabled: true` is set explicitly. (<SourceLink file="common/defaults.go" lines="750-752" />)
+1. **`hostV4`/`hostV6` are defined but unused.** The bind address is always `":%d"` (all interfaces). Firewall rules are the only way to restrict access to the metrics port. (<SourceLink file="erpc/init.go" lines="202" />)
+2. **`metrics.enabled` is `nil` (disabled) under `go test`.** Integration tests that call `erpc.Init` will not spin up a metrics server unless `Enabled: true` is set explicitly. (<SourceLink file="common/defaults.go" lines="909-911" />)
 3. **Changing `errorLabelMode` does not retroactively relabel existing series.** Counter Vec children are created lazily on first `WithLabelValues`. Any series created before `erpc.Init` sets the mode carry verbose labels; subsequent series carry compact labels. Both sets coexist in Prometheus until the verbose series naturally expire.
 4. **Label-set and exposure changes need a restart.** Prometheus keeps a family's label-set hash for the registry's lifetime, so a second `Configure` leaves already-registered families exactly as they are — a changed `histogramDropLabels`, `counterDropLabels`, `histogramBuckets`, or exposure list is silently not applied to them. (<SourceLink file="telemetry/manager.go" />)
 5. **`exposeMetrics`/`dropMetrics` entries that match nothing are only a warning.** A typo'd family name is not a validation error — `Init` logs the unmatched entries and starts anyway. Check the startup log for `entries match no known metric family` after changing either list.
@@ -471,7 +471,7 @@ Only `DefaultHistogramBuckets` are configurable at runtime. All other bucket set
 
 ### Observability
 
-**The metrics endpoint:** `http://<host>:<metrics.port>/` (any path) — `promhttp.Handler()` is the root handler so every HTTP path on port 4001 returns the full Prometheus text exposition. Plain HTTP only, no auth, no path routing. Reference scrape config at [`monitoring/prometheus/prometheus.yml`](https://github.com/erpc/erpc/blob/main/monitoring/prometheus/prometheus.yml) (scrape interval 10 s, default target `host.docker.internal:4001`).
+**The metrics endpoint:** `http://<host>:<metrics.port>/` (any path) — the Prometheus handler is mounted at the root, so every HTTP path on port 4001 returns the full Prometheus text exposition. Plain HTTP only, no auth, no path routing. Reference scrape config at [`monitoring/prometheus/prometheus.yml`](https://github.com/erpc/erpc/blob/main/monitoring/prometheus/prometheus.yml) (scrape interval 10 s, default target `host.docker.internal:4001`).
 
 **Stock collectors** (present unless `ERPC_NOMETRICS=1`): `go_*` — Go runtime stats; `process_*` — OS process stats; `promhttp_metric_handler_*` — handler self-scrape stats.
 
@@ -495,7 +495,7 @@ Only `DefaultHistogramBuckets` are configurable at runtime. All other bucket set
 | Info | `"shutting down metrics server..."` |
 | Error | `"metrics server forced to shutdown: %s"` |
 | Info | `"metrics server stopped"` |
-| Warn | `"failed to apply metrics configuration, using defaults where possible"` (emitted when `metrics.histogramBuckets` contains an invalid float, or an exposure entry is malformed) |
+| Error | `"failed to apply metrics configuration; some or all metric families are not registered"` — an invalid `metrics.histogramBuckets` float means the default buckets are used and everything is still registered; a malformed `exposeMetrics`/`dropMetrics` entry means **nothing** is registered. The error names the field. Only reachable when `erpc.Init` is called as a library, since the CLI rejects both in config validation. |
 | Info | `"metric exposure filter applied"` (with `exposed`/`total` family counts; only when `exposeMetrics`/`dropMetrics` is set) |
 | Warn | `"metrics.exposeMetrics/dropMetrics entries match no known metric family; check for typos"` |
 

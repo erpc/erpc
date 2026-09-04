@@ -424,7 +424,7 @@ metrics: {
 - [`erpc/http_server.go:L209-L221`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L209-L221) — `waitBeforeShutdown` sleep + `Shutdown` call with 30 s budget
 - [`erpc/init.go:L172-L177`](https://github.com/erpc/erpc/blob/main/erpc/init.go#L172-L177) — `waitAfterShutdown` sleep before process exit
 - [`erpc/http_timeout.go:L36-L143`](https://github.com/erpc/erpc/blob/main/erpc/http_timeout.go#L36-L143) — custom `TimeoutHandler` (timeout/cancel bodies, buffered response, panic propagation)
-- [`erpc/init.go:L137-L170`](https://github.com/erpc/erpc/blob/main/erpc/init.go#L137-L170) — metrics HTTP server construction; `promhttp.Handler()` on `:%d`; 5 s shutdown
+- [`erpc/init.go`](https://github.com/erpc/erpc/blob/main/erpc/init.go) — metrics HTTP server construction; the Prometheus handler over `telemetry.Gatherer` on `:%d`; 5 s shutdown
 - [`common/defaults.go:L694-L733`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L694-L733) — `ServerConfig.SetDefaults`: maxTimeout, readTimeout, writeTimeout, waitBeforeShutdown, waitAfterShutdown, includeErrorDetails, executionHeaders, trustedIPForwarders, trustedIPHeaders
 - [`common/defaults.go:L749-L767`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L749-L767) — `MetricsConfig.SetDefaults`: enabled, port, errorLabelMode
 - [`kube/erpc.yml:L33-L36`](https://github.com/erpc/erpc/blob/main/kube/erpc.yml#L33-L36) — reference kube resource spec (3 Gi / 2 CPU; no GOMEMLIMIT)

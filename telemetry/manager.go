@@ -187,6 +187,9 @@ func Configure(o *Options) error {
 	buckets, bucketErr := ParseHistogramBuckets(o.HistogramBuckets)
 	if bucketErr != nil {
 		buckets = DefaultHistogramBuckets
+		// The exposure errors name their field; this one is a bare strconv
+		// message, and the caller logs both through the same line.
+		bucketErr = fmt.Errorf("metrics.histogramBuckets: %w", bucketErr)
 	}
 
 	// The label filters must be installed before anything is rebuilt, since the
