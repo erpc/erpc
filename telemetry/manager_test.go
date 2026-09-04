@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -210,6 +211,11 @@ func TestConfigure_InvalidExposureRegistersNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a mid-string '*'")
 	}
+	// erpc.Init picks the log severity off this sentinel: this failure is a
+	// metrics outage, the bucket-parse failure below is not.
+	if !errors.Is(err, ErrNothingRegistered) {
+		t.Errorf("error must wrap ErrNothingRegistered, got %v", err)
+	}
 	if got := registeredFamilies(reg); len(got) != 0 {
 		t.Errorf("expected nothing registered after a config error, got %d families", len(got))
 	}
@@ -222,6 +228,9 @@ func TestConfigure_InvalidBucketsFallsBackToDefaults(t *testing.T) {
 	err := Configure(&Options{HistogramBuckets: "0.1,not-a-number"})
 	if err == nil {
 		t.Fatal("expected an error for an unparseable histogramBuckets value")
+	}
+	if errors.Is(err, ErrNothingRegistered) {
+		t.Error("a bucket parse error must not wrap ErrNothingRegistered; registration proceeded")
 	}
 	if _, ok := registeredFamilies(reg)["erpc_upstream_request_duration_seconds"]; !ok {
 		t.Error("registration must proceed with the default buckets despite the parse error")

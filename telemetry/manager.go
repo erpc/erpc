@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -8,6 +9,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// ErrNothingRegistered marks a Configure failure that stopped registration
+// before it began, separating the two very different outcomes Configure reports
+// through one error: an unusable exposeMetrics/dropMetrics list leaves the
+// process serving no eRPC metrics at all, while a malformed histogramBuckets
+// value only substitutes the default buckets and registers everything. Callers
+// that log the error use this to pick a severity.
+var ErrNothingRegistered = errors.New("no metric families were registered")
 
 // This file is the single place metric families are declared and registered.
 //
@@ -171,10 +180,11 @@ func familyName(namespace, subsystem, name string) string {
 // apply them — processes that never scrape do not need those collectors on the
 // default registry.
 //
-// Returns an error for an invalid exposeMetrics/dropMetrics entry (nothing is
-// registered in that case) and for an unparseable histogramBuckets value (the
-// defaults are applied and registration proceeds), so the caller can surface a
-// bad config without failing startup over bucket syntax.
+// Returns an error for an invalid exposeMetrics/dropMetrics entry, wrapped in
+// ErrNothingRegistered because nothing is registered in that case, and for an
+// unparseable histogramBuckets value, unwrapped because the defaults are applied
+// and registration proceeds. The caller can surface either without failing
+// startup over bucket syntax, and tell the outage apart from the typo.
 func Configure(o *Options) error {
 	if o == nil {
 		return SetHistogramBuckets("")
@@ -182,7 +192,7 @@ func Configure(o *Options) error {
 
 	filter, err := NewMetricExposureFilter(o.ExposeMetrics, o.DropMetrics)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrNothingRegistered, err)
 	}
 	buckets, bucketErr := ParseHistogramBuckets(o.HistogramBuckets)
 	if bucketErr != nil {
