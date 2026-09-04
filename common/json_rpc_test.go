@@ -951,6 +951,15 @@ func TestTranslateToJsonRpcException_ExhaustedInsideFanOut_DoesNotHijack(t *test
 	}
 }
 
+// The getLogs response-size budget is deliberately its own error code so it
+// cannot re-enter the splitting path. It must still translate to the same
+// client-visible JSON-RPC code as the other getLogs hard limits — otherwise it
+// falls through to -32603 and looks like an internal failure.
+func TestTranslateToJsonRpcException_GetLogsExceededMaxAllowedResponseSize(t *testing.T) {
+	err := NewErrGetLogsExceededMaxAllowedResponseSize(4096, 2048)
+	require.EqualValues(t, JsonRpcErrorEvmLargeRange, clientWireCode(t, TranslateToJsonRpcException(err)))
+}
+
 // TestJsonRpcRequest_UnmarshalID_NumericPrecision pins the contract that a
 // numeric request id is either preserved exactly as an int64 or rejected — it
 // must never be silently truncated/clamped into a different internal id (see
