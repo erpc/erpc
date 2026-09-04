@@ -74,11 +74,10 @@ var (
 	currentCounterFilter = &CounterLabelFilter{drop: map[string]struct{}{}}
 )
 
-// SetCounterLabelFilter installs the filter used by subsequent
-// NewLabeledCounter calls. Because the package-level counters are constructed
-// at init (before config is read), callers must follow this with
-// RebuildFilteredCounters to re-create them under the new filter — exactly the
-// SetHistogramLabelFilter + SetHistogramBuckets sequence.
+// SetCounterLabelFilter installs the filter used by subsequent counter
+// construction. Because the package-level counters are constructed at init
+// (before config is read), callers must follow this with Configure, which
+// re-creates every definition under the new filter and registers it.
 func SetCounterLabelFilter(dropLabels []string, keepOverrides map[string][]string) {
 	drop, overrides := buildLabelSets(dropLabels, keepOverrides)
 	counterFilterMu.Lock()
@@ -108,18 +107,12 @@ type LabeledCounter struct {
 	vec        *prometheus.CounterVec
 }
 
-// NewLabeledCounter creates a CounterVec honoring the current filter and
-// registers it with prometheus.DefaultRegisterer. Prefer the package-level
-// counters (built unregistered at init, registered once via
-// RebuildFilteredCounters) for production metrics — Prometheus freezes a
-// metric's label-set hash for the life of the registry, so registering at
-// package init would make counterDropLabels impossible to apply later.
-func NewLabeledCounter(opts prometheus.CounterOpts, schema []string) *LabeledCounter {
-	return registerOrReuseCounter(newLabeledCounterUnregistered(opts, schema))
-}
-
-// newLabeledCounterUnregistered builds the counter without registering it, so
-// tests can use a private registry.
+// newLabeledCounterUnregistered builds the counter without registering it. This
+// is the only way production counters are built: Prometheus freezes a metric's
+// label-set hash for the life of the registry, so registering at package init
+// would make counterDropLabels impossible to apply later. DefineLabeledCounter
+// hands the result to the manager, which registers it once Configure has
+// installed the filter.
 func newLabeledCounterUnregistered(opts prometheus.CounterOpts, schema []string) *LabeledCounter {
 	counterFilterMu.RLock()
 	idx := currentCounterFilter.activeIndices(opts.Name, schema)
@@ -137,30 +130,19 @@ func newLabeledCounterUnregistered(opts prometheus.CounterOpts, schema []string)
 	}
 }
 
-// registerOrReuseCounter mirrors registerOrReuse for histograms: on a repeat
-// registration with an identical label set, return the already-registered
-// collector instead of panicking, which keeps the rebuild idempotent.
-func registerOrReuseCounter(lc *LabeledCounter) *LabeledCounter {
-	err := prometheus.Register(lc)
-	if err == nil {
-		return lc
-	}
-	if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-		if existing, ok := are.ExistingCollector.(*LabeledCounter); ok {
-			return existing
-		}
-	}
-	panic(err)
-}
-
-// Rebuild re-creates this counter under the CURRENT filter without registering
-// it. Prometheus freezes dimHashesByName for a metric's fqName even after
-// Unregister, so a label-set change cannot be applied by unregister+re-register
-// — the only safe path is the histogram one: build unregistered under the
-// filter, then register once. Returns the replacement; callers reassign their
-// package-level var, then registerOrReuseCounter.
-func (lc *LabeledCounter) Rebuild() *LabeledCounter {
-	return newLabeledCounterUnregistered(lc.opts, lc.schema)
+// rebuildInPlace re-creates the underlying CounterVec under the CURRENT filter,
+// keeping this pointer's identity so the package-level var and every call site
+// that captured it stay valid.
+//
+// Prometheus freezes dimHashesByName for a metric's fqName even after
+// Unregister, so a label-set change cannot be applied by unregister+re-register:
+// the rebuild has to happen while the counter is still unregistered. The manager
+// is what guarantees that ordering — it rebuilds only definitions it has not yet
+// registered.
+func (lc *LabeledCounter) rebuildInPlace() {
+	replacement := newLabeledCounterUnregistered(lc.opts, lc.schema)
+	lc.activeIdx = replacement.activeIdx
+	lc.vec = replacement.vec
 }
 
 func (lc *LabeledCounter) Describe(ch chan<- *prometheus.Desc) { lc.vec.Describe(ch) }

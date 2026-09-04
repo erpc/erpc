@@ -23,7 +23,8 @@ var (
 )
 
 // SetHistogramLabelFilter installs a filter used by subsequent NewLabeledHistogram
-// calls. Typically invoked once at startup from config, before SetHistogramBuckets.
+// calls. Typically invoked once at startup from config by Configure, which then
+// rebuilds every histogram definition under it.
 func SetHistogramLabelFilter(dropLabels []string, keepOverrides map[string][]string) {
 	drop, overrides := buildLabelSets(dropLabels, keepOverrides)
 	filterMu.Lock()
@@ -41,29 +42,22 @@ func (f *HistogramLabelFilter) activeIndices(metricName string, schema []string)
 // Call sites always pass values for the full schema (in schema order); the
 // wrapper forwards only the retained positions to the underlying Vec.
 type LabeledHistogram struct {
+	opts       prometheus.HistogramOpts
 	metricName string
 	schema     []string
 	activeIdx  []int
 	vec        *prometheus.HistogramVec
-}
 
-// RegisterOrReplaceHistogram is the canonical way to declare an erpc histogram:
-// it unregisters the previous instance (if any), creates a LabeledHistogram
-// honoring the current filter, registers it with prometheus.DefaultRegisterer,
-// and returns it. Use this for every histogram so the filter applies
-// uniformly. Safe to call multiple times — makes SetHistogramBuckets
-// idempotent for tests and hot-reloads.
-func RegisterOrReplaceHistogram(old *LabeledHistogram, opts prometheus.HistogramOpts, schema []string) *LabeledHistogram {
-	if old != nil {
-		prometheus.DefaultRegisterer.Unregister(old)
-	}
-	lh := NewLabeledHistogram(opts, schema)
-	prometheus.MustRegister(lh)
-	return lh
+	// configBuckets records that the declaration left Buckets empty, meaning
+	// this histogram takes whatever metrics.histogramBuckets resolves to. The
+	// histograms that declare their own buckets do so because the global
+	// latency buckets resolve their range poorly, and must keep them.
+	configBuckets bool
 }
 
 // NewLabeledHistogram creates a HistogramVec using the current filter without
-// registering it. Prefer RegisterOrReplaceHistogram unless you need custom
+// registering it. Production histograms go through DefineLabeledHistogram, which
+// hands the result to the manager; call this directly only when you need custom
 // registration (e.g. a private registry in tests).
 func NewLabeledHistogram(opts prometheus.HistogramOpts, schema []string) *LabeledHistogram {
 	filterMu.RLock()
@@ -74,11 +68,28 @@ func NewLabeledHistogram(opts prometheus.HistogramOpts, schema []string) *Labele
 		active[i] = schema[j]
 	}
 	return &LabeledHistogram{
-		metricName: opts.Name,
-		schema:     schema,
-		activeIdx:  idx,
-		vec:        prometheus.NewHistogramVec(opts, active),
+		opts:          opts,
+		metricName:    opts.Name,
+		schema:        schema,
+		activeIdx:     idx,
+		vec:           prometheus.NewHistogramVec(opts, active),
+		configBuckets: len(opts.Buckets) == 0,
 	}
+}
+
+// rebuildInPlace re-creates the underlying HistogramVec under the CURRENT filter
+// and, for histograms that did not declare their own buckets, the resolved
+// config buckets. Keeps this pointer's identity so the package-level var and
+// every call site that captured it stay valid. Must run before registration, for
+// the same dimHashesByName reason as LabeledCounter.rebuildInPlace.
+func (lh *LabeledHistogram) rebuildInPlace(buckets []float64) {
+	opts := lh.opts
+	if lh.configBuckets {
+		opts.Buckets = buckets
+	}
+	replacement := NewLabeledHistogram(opts, lh.schema)
+	lh.activeIdx = replacement.activeIdx
+	lh.vec = replacement.vec
 }
 
 func (lh *LabeledHistogram) Describe(ch chan<- *prometheus.Desc) { lh.vec.Describe(ch) }
