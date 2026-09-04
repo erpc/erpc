@@ -874,9 +874,11 @@ pipeline, env-var semantics, validate/dump tooling — applies to whichever form
 | `metrics.port` | int | `4001` | Prometheus scrape port. |
 | `metrics.errorLabelMode` | string | `"compact"` | Controls the `error` label on error-count metrics. `"compact"` condenses error codes; `"verbose"` emits full class names. |
 | `metrics.histogramBuckets` | string | `""` (built-in defaults) | Comma-separated float64 bucket boundaries for request-duration histograms. Validation rejects non-float values. |
-| `metrics.customizations` | []object | nil | Ordered list of `{subject, action, labels, buckets}` entries controlling which metric families are exposed, which labels they carry, and their histogram buckets. `subject` is a metric name without the `erpc_` prefix, optionally ending in `*`. |
+| `metrics.customizations` | []object | nil | List of `{subject, action, labels, buckets}` entries controlling which metric families are exposed, which labels they carry, and their histogram buckets. `subject` is a metric name without the `erpc_` prefix, optionally ending in `*`. Rules apply by specificity (exact > longer prefix > shorter prefix > `*`), not list order. |
 | `metrics.histogramDropLabels` | []string | nil | **Deprecated** — use `metrics.customizations` with `labels: [{subject, action: drop}]`. Label names removed from every histogram to reduce cardinality; counters/gauges unaffected. |
 | `metrics.histogramLabelOverrides` | map | nil | **Deprecated** — use `metrics.customizations`. Per-metric label keep-list; key is metric name without `erpc_` prefix (e.g. `"network_request_duration_seconds"`). |
+| `metrics.counterDropLabels` | []string | nil | **Deprecated** — use `metrics.customizations` with `labels: [{subject, action: drop}]`. Label names removed from every counter carrying caller-controlled dimensions; sums are preserved, the dimension is not. |
+| `metrics.counterLabelOverrides` | map | nil | **Deprecated** — use `metrics.customizations`. Per-metric label keep-list for counters; key is metric name without `erpc_` prefix. |
 
 **Default project synthesis.** When `projects` is empty, `SetDefaults` injects a synthetic `main` project (<SourceLink file="common/defaults.go" lines="100-167" />) with:
 - `repository` and `envio` providers
