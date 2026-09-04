@@ -2980,6 +2980,25 @@ type MetricsConfig struct {
 	// only clearly-dead label combinations are released). Set to 0 to
 	// disable eviction entirely.
 	CounterIdleEvictionAfter *Duration `yaml:"counterIdleEvictionAfter,omitempty" json:"counterIdleEvictionAfter,omitempty"`
+
+	// ExposeMetrics restricts /metrics to the listed metric families. Empty
+	// (the default) exposes everything. Entries are metric names without the
+	// "erpc_" namespace prefix, e.g. "upstream_request_total", or a subsystem
+	// prefix ending in "*", e.g. "consensus_*". The Go runtime, process and
+	// promhttp collectors are named in full ("go_goroutines") and are subject
+	// to the same list, so an allowlist that omits them drops them too.
+	//
+	// Unlike the label knobs, this drops whole families: an unexposed family is
+	// never registered, so it costs no series and no collection time. The
+	// trade-off is that it is a startup decision — a family left out cannot be
+	// turned back on without a restart.
+	ExposeMetrics []string `yaml:"exposeMetrics,omitempty" json:"exposeMetrics,omitempty"`
+
+	// DropMetrics removes the listed metric families from /metrics. Same entry
+	// syntax as ExposeMetrics. Applied after ExposeMetrics, so it can carve a
+	// noisy family out of an allowlisted subsystem
+	// (exposeMetrics: ["consensus_*"], dropMetrics: ["consensus_duration_seconds"]).
+	DropMetrics []string `yaml:"dropMetrics,omitempty" json:"dropMetrics,omitempty"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.
