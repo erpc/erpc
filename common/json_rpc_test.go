@@ -772,6 +772,22 @@ func clientWireCode(t *testing.T, err error) JsonRpcErrorNumber {
 	return jre.NormalizedCode()
 }
 
+// A method eRPC declines to serve — stateful filter methods under a
+// multi-upstream pool, or eth_accounts/eth_sign —
+// must reach the client as -32601 "method not supported", not the generic
+// -32603. ethers only downgrades eth_getFilterChanges to polling when the error
+// classifies as UNSUPPORTED_OPERATION (code -32601 / a "not found|supported"
+// message); a -32603 leaves it re-arming the same call on every block forever.
+func TestTranslateToJsonRpcException_NotImplementedIsMethodNotFound(t *testing.T) {
+	err := NewErrNotImplemented("method eth_newFilter is not supported by any configured upstream")
+	translated := TranslateToJsonRpcException(err)
+
+	assert.EqualValues(t, JsonRpcErrorUnsupportedException, clientWireCode(t, translated),
+		"ErrNotImplemented must map to -32601 so clients detect an unsupported method")
+	assert.Contains(t, translated.Error(), "not supported",
+		"the descriptive reason must survive translation for message-matching clients")
+}
+
 func newExhausted(t *testing.T, order []string, causes map[string]error) error {
 	t.Helper()
 	m := &sync.Map{}

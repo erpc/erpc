@@ -1983,6 +1983,26 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	// A method eRPC declines to serve (filter lifecycle methods under a
+	// multi-upstream pool, eth_accounts/eth_sign) is
+	// "method not supported", not an internal fault. Without this it falls
+	// through to -32603, which clients read as a transient server error: ethers
+	// only downgrades filters to polling when the error classifies as
+	// UNSUPPORTED_OPERATION (code -32601 / a "not found|supported" message), so a
+	// -32603 leaves it re-arming the same call on every block forever.
+	if HasErrorCode(err, ErrCodeNotImplemented) {
+		reason := "method not supported"
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorUnsupportedException,
+			reason,
+			err,
+			nil,
+		)
+	}
 	var msg = "internal server error"
 	if se, ok := err.(StandardError); ok {
 		msg = se.DeepestMessage()
