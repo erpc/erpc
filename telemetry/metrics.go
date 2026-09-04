@@ -224,7 +224,7 @@ var (
 		Help:      "Primary-upstream changes per (project, network, method, from, to).",
 	}, []string{"project", "network", "method", "from", "to"})
 
-	MetricSelectionEvalDurationSeconds = DefineHistogram(prometheus.HistogramOpts{
+	MetricSelectionEvalDurationSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "selection_eval_duration_seconds",
 		Help:      "Per-tick eval latency for the selection policy.",
@@ -283,7 +283,7 @@ var (
 		Help:      "Times an upstream was readmitted into rotation after a period of exclusion (transition from excluded → in-list).",
 	}, []string{"project", "network", "method", "upstream"})
 
-	MetricSelectionReadmitAgeSeconds = DefineHistogram(prometheus.HistogramOpts{
+	MetricSelectionReadmitAgeSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "selection_readmit_age_seconds",
 		Help:      "Distribution of `now - excludedSince` at readmit time. Tall left tail = readmitting too eagerly (probable flap); tall right tail = readmit cooldown too generous.",
@@ -331,7 +331,7 @@ var (
 		Help:      "Admin-driven cordon transitions. `action` ∈ {`cordon`,`uncordon`}.",
 	}, []string{"project", "network", "upstream", "action"})
 
-	MetricUpstreamCordonDurationSeconds = DefineHistogram(prometheus.HistogramOpts{
+	MetricUpstreamCordonDurationSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordon_duration_seconds",
 		Help:      "Time an upstream stayed cordoned, observed on each uncordon. Long tails are typically real outages; very short cordons are usually manual mis-fires.",
@@ -435,7 +435,7 @@ var (
 	// MetricIntegrityReorgDepth observes how many blocks each reconciled reorg
 	// replaced. A depth of 1-2 is routine chain churn; a deep tail means the
 	// reorgWindow needs to cover it or reconciliation will start failing.
-	MetricIntegrityReorgDepth = DefineHistogram(prometheus.HistogramOpts{
+	MetricIntegrityReorgDepth = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "integrity_reorg_depth",
 		Help:      "Depth (blocks replaced) of each reorg reconciled by the integrity chain follower.",

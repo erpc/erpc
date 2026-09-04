@@ -101,7 +101,7 @@ points the agent at this page's machine-readable reference so it can do the work
 <PromptExample
 	n={4}
 	title="reduce Prometheus cardinality explosion"
-	prompt={`My eRPC metrics are generating too many Prometheus series and threatening our TSDB. Configure histogramDropLabels to drop user and agent_name globally, but use histogramLabelOverrides to keep per-user latency on the network histogram only. Also confirm errorLabelMode is compact. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/operation/production.llms.txt`}
+	prompt={`My eRPC metrics are generating too many Prometheus series and threatening our TSDB. Configure metrics.customizations to drop user and agent_name fleet-wide, keep per-user latency on the network histogram only, and drop any metric families no dashboard reads. Also confirm errorLabelMode is compact. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/operation/production.llms.txt`}
 />
 
 <PromptExample
@@ -118,7 +118,7 @@ points the agent at this page's machine-readable reference so it can do the work
 
 **Server timeouts.** Three fields govern the full request lifecycle: `server.maxTimeout` (default `150s`) is a custom `TimeoutHandler` wrapping the entire HTTP handler chain — it is mandatory and validation rejects `0`. `server.readTimeout` (default `30s`) covers header and body read; `server.writeTimeout` (default `120s`) covers response write. These are Go `http.Server` fields. A `maxTimeout` hit returns JSON-RPC `-32603` with HTTP 200 for POST requests. Integer YAML values are interpreted as **milliseconds** — `maxTimeout: 150` means 150 ms, not 150 s; always use the string form.
 
-**Graceful drain (healthcheck probes).** On SIGTERM the shutdown sequence is: (1) `draining` flag flips immediately — healthcheck returns HTTP 503; (2) process sleeps `server.waitBeforeShutdown` (default `10s`) to let load-balancer drain the endpoint; (3) `http.Server.Shutdown` starts with a hardcoded 30 s budget; (4) after `appCtx` is done, `Init` sleeps `server.waitAfterShutdown` (default `10s`) before process exit. For Kubernetes with Cilium/Envoy, set both waits to `30s`. `terminationGracePeriodSeconds` must exceed `waitBeforeShutdown + waitAfterShutdown + expected drain time` or the process receives SIGKILL mid-drain. Sources: <SourceLink file="erpc/http_server.go" lines="78-83" />, <SourceLink file="erpc/http_server.go" lines="209-221" />, <SourceLink file="erpc/init.go" lines="242-244" />
+**Graceful drain (healthcheck probes).** On SIGTERM the shutdown sequence is: (1) `draining` flag flips immediately — healthcheck returns HTTP 503; (2) process sleeps `server.waitBeforeShutdown` (default `10s`) to let load-balancer drain the endpoint; (3) `http.Server.Shutdown` starts with a hardcoded 30 s budget; (4) after `appCtx` is done, `Init` sleeps `server.waitAfterShutdown` (default `10s`) before process exit. For Kubernetes with Cilium/Envoy, set both waits to `30s`. `terminationGracePeriodSeconds` must exceed `waitBeforeShutdown + waitAfterShutdown + expected drain time` or the process receives SIGKILL mid-drain. Sources: <SourceLink file="erpc/http_server.go" lines="78-83" />, <SourceLink file="erpc/http_server.go" lines="209-221" />, <SourceLink file="erpc/init.go" lines="223-225" />
 
 **Trusted-IP forwarding.** When eRPC runs behind a load-balancer, `server.trustedIPForwarders` defaults to loopback only (`["127.0.0.1/8", "::1/128"]`). IP-based rate limits and `network` auth strategies apply to the proxy IP unless you add the LB CIDR to the forwarders list and name the forwarding header in `server.trustedIPHeaders`. The resolver walks headers in preference order, strips trailing trusted proxies from the XFF list right-to-left, and picks the nearest untrusted hop.
 
@@ -153,7 +153,7 @@ Fields relevant to production hardening. All under `server.` or `metrics.` unles
 | `metrics.enabled` | `*bool` | `true` (production); `nil` under `go test` — <SourceLink file="common/defaults.go" lines="909-911" /> | Whether the `/metrics` HTTP server starts. |
 | `metrics.port` | `*int` | `4001` — <SourceLink file="common/defaults.go" lines="918-920" /> | Metrics server port. Always binds `0.0.0.0:<port>` regardless of `metrics.hostV4`. |
 | `metrics.errorLabelMode` | `string` | `"compact"` — <SourceLink file="common/defaults.go" lines="921-923" /> | `"compact"` = short stable error codes (bounded cardinality). `"verbose"` = full messages including block numbers / IPs (unbounded cardinality risk). |
-| `metrics.histogramDropLabels` | `[]string` | `nil` | Labels dropped from all `LabeledHistogram` instances. Counters unaffected. |
+| `metrics.customizations` | `[]object` | `nil` | Shapes `/metrics`: `{subject, action?, labels?, buckets?}` entries dropping whole families, projecting label sets, or overriding histogram buckets. Resolved before the first registration — startup-only. Supersedes `histogramDropLabels`/`histogramLabelOverrides`/`counterDropLabels`/`counterLabelOverrides`, which are deprecated but still honored. |
 | `GOMEMLIMIT` (env) | string | not set in any manifest — <SourceLink file="kube/erpc.yml" lines="33-36" /> | Set to ~90% of container memory limit. Without it, Go GC may allow heap to approach the hard limit before triggering, causing OOM kill. |
 | `LOG_LEVEL` (env) | string | value of `cfg.LogLevel` | Overrides the config file's `logLevel`. Parsed as a zerolog level: `trace`, `debug`, `info`, `warn`, `error`. Useful for elevating verbosity on a running pod without a config change. Source: [`cmd/erpc/main.go:L354-L363`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L354-L363) |
 | `LOG_WRITER` (env) | string | `""` (JSON lines) | Set to `"console"` for human-readable output with `04:05.000ms` time format. Default is structured JSON. Source: [`cmd/erpc/main.go:L53-L57`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L53-L57) |
@@ -162,8 +162,8 @@ Fields relevant to production hardening. All under `server.` or `metrics.` unles
 - `http.Server.IdleTimeout` = 300 s — <SourceLink file="erpc/http_server.go" lines="185" />
 - `MaxHeaderBytes` = 1 MiB — <SourceLink file="erpc/http_server.go" lines="186" />
 - Graceful shutdown budget = 30 s — <SourceLink file="erpc/http_server.go" lines="1642" />
-- Metrics shutdown budget = 5 s — <SourceLink file="erpc/init.go" lines="226" />
-- Metrics server binds `0.0.0.0:<port>` — `hostV4`/`hostV6` config fields are defined but unused — <SourceLink file="erpc/init.go" lines="208" />
+- Metrics shutdown budget = 5 s — <SourceLink file="erpc/init.go" lines="207" />
+- Metrics server binds `0.0.0.0:<port>` — `hostV4`/`hostV6` config fields are defined but unused — <SourceLink file="erpc/init.go" lines="189" />
 
 ### Worked examples
 
@@ -221,16 +221,21 @@ metrics:
   port: 4001
   # compact is the default; confirm it explicitly so a future config merge can't flip it.
   errorLabelMode: compact
-  # Drop user + agent_name from all histograms to keep Prometheus series bounded.
-  # erpc_upstream_request_duration_seconds × user × agent_name = O(users × upstreams)
-  # which blows up TSDB at multi-tenant scale. Re-add selectively below.
-  histogramDropLabels:
-    - user
-    - composite
-  # Re-add user only on the network histogram where per-user latency analysis matters.
-  histogramLabelOverrides:
-    network_request_duration_seconds:
-      - user`}
+  customizations:
+    # Drop user + composite fleet-wide to keep Prometheus series bounded.
+    # erpc_upstream_request_duration_seconds × user × composite = O(users × upstreams)
+    # which blows up TSDB at multi-tenant scale. Re-add selectively below.
+    - subject: "*"
+      labels:
+        - subject: user
+          action: drop
+        - subject: composite
+          action: drop
+    # Re-add user only on the network histogram where per-user latency analysis matters.
+    - subject: network_request_duration_seconds
+      labels:
+        - subject: user
+          action: keep`}
   ts={`server: {
   maxTimeout: "150s",
   // LB drain window — most load balancers and k8s ingresses need 20-30s to drain an endpoint.
@@ -257,12 +262,21 @@ metrics: {
   port: 4001,
   // compact is the default; confirm it explicitly so a future config merge can't flip it.
   errorLabelMode: "compact",
-  // Drop user + agent_name from all histograms to keep Prometheus series bounded.
-  histogramDropLabels: ["user", "composite"],
-  // Re-add user only on the network histogram where per-user latency analysis matters.
-  histogramLabelOverrides: {
-    "network_request_duration_seconds": ["user"],
-  },
+  customizations: [
+    {
+      // Drop user + composite fleet-wide to keep Prometheus series bounded.
+      subject: "*",
+      labels: [
+        { subject: "user", action: "drop" },
+        { subject: "composite", action: "drop" },
+      ],
+    },
+    {
+      // Re-add user only on the network histogram where per-user latency analysis matters.
+      subject: "network_request_duration_seconds",
+      labels: [{ subject: "user", action: "keep" }],
+    },
+  ],
 }`}
 />
 
@@ -329,40 +343,55 @@ metrics: {
 }`}
 />
 
-**4. Multi-tenant high-cardinality deployment with selective label overrides.** When serving many users across many upstreams, `erpc_upstream_request_duration_seconds` with `user` and `agent_name` labels creates O(users × upstreams) Prometheus series. The production pattern drops both globally and re-adds `user` only on the network-level histogram where per-user latency SLO reporting is needed:
+**4. Multi-tenant high-cardinality deployment with selective label carve-outs.** When serving many users across many upstreams, `erpc_upstream_request_duration_seconds` with `user` and `agent_name` labels creates O(users × upstreams) Prometheus series. The production pattern drops both fleet-wide and re-adds `user` only on the network-level histogram where per-user latency SLO reporting is needed:
 
 <ConfigTabs
   path="metrics"
   yaml={`metrics:
   errorLabelMode: compact
-  # Drop high-cardinality labels from ALL histograms first.
-  # erpc_upstream_request_duration_seconds × 50 users × 20 upstreams = 1000 series minimum.
-  histogramDropLabels:
-    - user
-    - agent_name
-  # Then selectively restore user on the one histogram that feeds per-user latency dashboards.
-  histogramLabelOverrides:
-    network_request_duration_seconds:
-      - user`}
+  customizations:
+    # Drop high-cardinality labels fleet-wide first.
+    # erpc_upstream_request_duration_seconds × 50 users × 20 upstreams = 1000 series minimum.
+    - subject: "*"
+      labels:
+        - subject: user
+          action: drop
+        - subject: agent_name
+          action: drop
+    # Then selectively restore user on the one histogram that feeds per-user latency dashboards.
+    # Precedence is by specificity, so this carve-out wins over the "*" entry above.
+    - subject: network_request_duration_seconds
+      labels:
+        - subject: user
+          action: keep`}
   ts={`metrics: {
   errorLabelMode: "compact",
-  // Drop high-cardinality labels from ALL histograms first.
-  histogramDropLabels: ["user", "agent_name"],
-  // Then selectively restore user on the one histogram that feeds per-user latency dashboards.
-  histogramLabelOverrides: {
-    "network_request_duration_seconds": ["user"],
-  },
+  customizations: [
+    {
+      // Drop high-cardinality labels fleet-wide first.
+      subject: "*",
+      labels: [
+        { subject: "user", action: "drop" },
+        { subject: "agent_name", action: "drop" },
+      ],
+    },
+    {
+      // Then selectively restore user on the one histogram that feeds per-user latency dashboards.
+      subject: "network_request_duration_seconds",
+      labels: [{ subject: "user", action: "keep" }],
+    },
+  ],
 }`}
 />
 
 ### Request/response behavior
 
 - On `SIGTERM`, healthcheck returns HTTP 503 plain-text `"shutting down"` immediately, before any drain wait. [<SourceLink file="erpc/http_server.go" lines="78-83" />]
-- `waitBeforeShutdown` elapses before `http.Server.Shutdown` starts; `waitAfterShutdown` elapses after `appCtx` is done, before `os.Exit`. [<SourceLink file="erpc/http_server.go" lines="209-221" />, <SourceLink file="erpc/init.go" lines="242-244" />]
+- `waitBeforeShutdown` elapses before `http.Server.Shutdown` starts; `waitAfterShutdown` elapses after `appCtx` is done, before `os.Exit`. [<SourceLink file="erpc/http_server.go" lines="209-221" />, <SourceLink file="erpc/init.go" lines="223-225" />]
 - A `maxTimeout` hit returns JSON-RPC `-32603` `"http request handling timeout"` with HTTP 200 for POST, 504 for non-POST — not a Go deadline cancellation. [<SourceLink file="erpc/http_timeout.go" lines="107-122" />]
 - `server.responseHeaders` env expansion runs once at `NewHttpServer` construction time, not per-request. Empty-after-expansion values are silently dropped. [<SourceLink file="erpc/http_server.go" lines="135-148" />]
-- The metrics server binds `0.0.0.0:<port>` — `metrics.hostV4` / `hostV6` are defined but unused. Restrict scrape access via firewall or network policy. [<SourceLink file="erpc/init.go" lines="208" />]
-- `metrics.errorLabelMode: compact` is applied at `erpc.Init`; any series created before `Init` carry `verbose` labels until they expire. [<SourceLink file="erpc/init.go" lines="197-199" />]
+- The metrics server binds `0.0.0.0:<port>` — `metrics.hostV4` / `hostV6` are defined but unused. Restrict scrape access via firewall or network policy. [<SourceLink file="erpc/init.go" lines="189" />]
+- `metrics.errorLabelMode: compact` is applied at `erpc.Init`; any series created before `Init` carry `verbose` labels until they expire. [<SourceLink file="erpc/init.go" lines="178-180" />]
 - Idle-series sweep evicts stale `upstream_request_duration_seconds` and `rate_limits_total` Prometheus series every ~5 minutes with a 30-minute idle window. [<SourceLink file="health/tracker.go" lines="557-563" />, <SourceLink file="health/tracker.go" lines="598-631" />]
 
 ### Best practices
@@ -372,7 +401,7 @@ metrics: {
 - `terminationGracePeriodSeconds` must exceed `waitBeforeShutdown + waitAfterShutdown + expected drain time`. With both waits at 30 s, use `terminationGracePeriodSeconds: 90` minimum.
 - Always set `includeErrorDetails: false` before exposing eRPC externally — the default is `true` and upstream error messages routinely contain embedded API keys.
 - Set `evm.chainId` explicitly on every network and upstream to avoid an `eth_chainId` call burst on every pod restart or scale-out event.
-- For high-traffic multi-tenant deployments, add `user` and `agent_name` to `metrics.histogramDropLabels` — `erpc_upstream_request_duration_seconds` with those labels can produce thousands of Prometheus series; use `histogramLabelOverrides` to selectively re-add them on specific histograms where per-user analysis is needed.
+- For high-traffic multi-tenant deployments, drop `user` and `agent_name` with a `subject: "*"` entry in `metrics.customizations` — `erpc_upstream_request_duration_seconds` with those labels can produce thousands of Prometheus series; add an exact-subject `keep` to selectively re-add them on the specific families where per-user analysis is needed.
 - Alert on `erpc_unexpected_panic_total` at any non-zero rate — recovered panics mean a request goroutine crashed; they are surfaced as `-32603` errors to the caller rather than crashing the process, so they can go undetected without an alert.
 
 ### Edge cases & gotchas
@@ -380,7 +409,7 @@ metrics: {
 1. **`maxTimeout: 0` (or bare `0`) fails validation** — `"server.maxTimeout is required"`. Integer YAML values are milliseconds: `maxTimeout: 150` = 150 ms. Always use string form `"150s"`. Source: <SourceLink file="common/validation.go" lines="90-92" />, <SourceLink file="common/duration.go" lines="8-32" />
 2. **`GOMEMLIMIT` is absent from all bundled manifests.** With a 3 Gi kube limit and default GC, heap can approach the limit before GC fires. Set `GOMEMLIMIT=2700MiB` as a container env var. Source: <SourceLink file="kube/erpc.yml" lines="33-36" />
 3. **`terminationGracePeriodSeconds` must exceed `waitBeforeShutdown + waitAfterShutdown + drain time`.** With both set to 30 s, use `terminationGracePeriodSeconds: 90` minimum. Kubernetes SIGKILL fires when this expires, cutting in-flight requests.
-4. **`metrics.hostV4: 127.0.0.1` does not restrict the metrics port.** The bind address is always `0.0.0.0:<port>`. Restrict via firewall, network policy, or run the metrics server inside a VPC. Source: <SourceLink file="erpc/init.go" lines="208" />
+4. **`metrics.hostV4: 127.0.0.1` does not restrict the metrics port.** The bind address is always `0.0.0.0:<port>`. Restrict via firewall, network policy, or run the metrics server inside a VPC. Source: <SourceLink file="erpc/init.go" lines="189" />
 5. **`server.responseHeaders` with an env var that is unset at startup silently omits the header.** No warning is emitted. If `X-ERPC-Region: ${REGION}` is configured and that env var is absent in a new region, the header disappears with no observable error. Source: <SourceLink file="erpc/http_server.go" lines="135-148" />
 6. **`metrics.errorLabelMode: verbose` can create unbounded Prometheus cardinality.** Full error messages include block numbers and IP addresses. Existing `compact` series and new `verbose` series co-exist until the verbose ones expire. Source: <SourceLink file="common/errors.go" lines="17-66" />
 7. **The monitoring container (Prometheus + Grafana combined) is not production-suitable.** It runs both processes under `tail -f /dev/null`; if either crashes neither restarts. Use separate Prometheus and Grafana deployments in production. Source: `monitoring/Dockerfile`

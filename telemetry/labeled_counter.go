@@ -2,98 +2,21 @@ package telemetry
 
 import (
 	"fmt"
-	"strings"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// buildLabelSets normalizes the (dropLabels, keepOverrides) config pair into
-// the lookup shape both the histogram and counter filters use. Shared so the
-// two filters cannot drift in how they parse config.
-func buildLabelSets(dropLabels []string, keepOverrides map[string][]string) (map[string]struct{}, map[string]map[string]struct{}) {
-	drop := make(map[string]struct{}, len(dropLabels))
-	for _, l := range dropLabels {
-		if l = strings.TrimSpace(l); l != "" {
-			drop[l] = struct{}{}
-		}
-	}
-	overrides := make(map[string]map[string]struct{}, len(keepOverrides))
-	for metricName, keep := range keepOverrides {
-		metricName = strings.TrimSpace(metricName)
-		if metricName == "" {
-			continue
-		}
-		set := make(map[string]struct{}, len(keep))
-		for _, l := range keep {
-			if l = strings.TrimSpace(l); l != "" {
-				set[l] = struct{}{}
-			}
-		}
-		overrides[metricName] = set
-	}
-	return drop, overrides
-}
-
-// activeIndicesFor returns the positions of `schema` retained given a drop set
-// and the per-metric keep overrides.
-func activeIndicesFor(drop map[string]struct{}, keepOverrides map[string]map[string]struct{}, metricName string, schema []string) []int {
-	overrides := keepOverrides[metricName]
-	out := make([]int, 0, len(schema))
-	for i, l := range schema {
-		if _, dropped := drop[l]; dropped {
-			if _, kept := overrides[l]; !kept {
-				continue
-			}
-		}
-		out = append(out, i)
-	}
-	return out
-}
-
-// CounterLabelFilter decides which labels a CounterVec exposes.
-//
-// Global `drop` removes labels from every counter built through
-// NewLabeledCounter; per-metric `keepOverrides` re-add labels for specific
-// metric names (the Prometheus Name without the namespace prefix, e.g.
-// "upstream_request_total").
-//
-// This is the counter-side twin of HistogramLabelFilter. Counters need their
-// own knob because dropping a label from a histogram only removes buckets,
-// while a counter label like a caller-supplied user-agent is frequently the
-// single largest contributor to /metrics size — and unlike histograms, some
-// counter labels are load-bearing for billing/attribution pipelines, so the
-// choice has to be made per deployment rather than baked in.
-type CounterLabelFilter struct {
-	drop          map[string]struct{}
-	keepOverrides map[string]map[string]struct{}
-}
-
-var (
-	counterFilterMu      sync.RWMutex
-	currentCounterFilter = &CounterLabelFilter{drop: map[string]struct{}{}}
-)
-
-// SetCounterLabelFilter installs the filter used by subsequent counter
-// construction. Because the package-level counters are constructed at init
-// (before config is read), callers must follow this with Configure, which
-// re-creates every definition under the new filter and registers it.
-func SetCounterLabelFilter(dropLabels []string, keepOverrides map[string][]string) {
-	drop, overrides := buildLabelSets(dropLabels, keepOverrides)
-	counterFilterMu.Lock()
-	currentCounterFilter = &CounterLabelFilter{drop: drop, keepOverrides: overrides}
-	counterFilterMu.Unlock()
-}
-
-// activeIndices returns the positions from `schema` retained under the filter.
-func (f *CounterLabelFilter) activeIndices(metricName string, schema []string) []int {
-	return activeIndicesFor(f.drop, f.keepOverrides, metricName, schema)
-}
-
 // LabeledCounter wraps a prometheus.CounterVec whose label set is the
-// intersection of a canonical schema and the current CounterLabelFilter.
+// intersection of a canonical schema and what the metrics customizations retain.
 // Call sites always pass values for the full schema (in schema order); the
 // wrapper forwards only the retained positions to the underlying Vec.
+//
+// Counters need label customization more than histograms do: dropping a label
+// from a histogram only removes buckets, while a counter label like a
+// caller-supplied user-agent is frequently the single largest contributor to
+// /metrics size. And some counter labels are load-bearing for billing or
+// attribution pipelines, so the choice has to be made per deployment rather than
+// baked in.
 //
 // Dropping a label collapses every series that differed only in that label
 // into one. The counters remain correct — their sums are preserved — but the
@@ -110,13 +33,12 @@ type LabeledCounter struct {
 // newLabeledCounterUnregistered builds the counter without registering it. This
 // is the only way production counters are built: Prometheus freezes a metric's
 // label-set hash for the life of the registry, so registering at package init
-// would make counterDropLabels impossible to apply later. DefineLabeledCounter
-// hands the result to the manager, which registers it once Configure has
-// installed the filter.
+// would make label customizations impossible to apply later.
+// DefineLabeledCounter hands the result to the manager, which registers it once
+// Configure has installed the policy.
 func newLabeledCounterUnregistered(opts prometheus.CounterOpts, schema []string) *LabeledCounter {
-	counterFilterMu.RLock()
-	idx := currentCounterFilter.activeIndices(opts.Name, schema)
-	counterFilterMu.RUnlock()
+	family := familyName(opts.Namespace, opts.Subsystem, opts.Name)
+	idx := currentPolicy().labelIndices(family, kindCounter, schema)
 	active := make([]string, len(idx))
 	for i, j := range idx {
 		active[i] = schema[j]
@@ -130,7 +52,7 @@ func newLabeledCounterUnregistered(opts prometheus.CounterOpts, schema []string)
 	}
 }
 
-// rebuildInPlace re-creates the underlying CounterVec under the CURRENT filter,
+// rebuildInPlace re-creates the underlying CounterVec under the CURRENT policy,
 // keeping this pointer's identity so the package-level var and every call site
 // that captured it stay valid.
 //
@@ -157,7 +79,7 @@ func (lc *LabeledCounter) assertArity(vals []string) {
 }
 
 // WithLabelValues accepts values for the FULL schema and filters internally to
-// the labels retained by the current filter. Panics on length mismatch to
+// the labels the current policy retains. Panics on length mismatch to
 // surface miswired call sites immediately.
 func (lc *LabeledCounter) WithLabelValues(vals ...string) prometheus.Counter {
 	lc.assertArity(vals)

@@ -159,10 +159,11 @@ func (m *MetricsConfig) Validate() error {
 		}
 	}
 
-	// A malformed exposeMetrics/dropMetrics entry silently keeps or drops the
-	// wrong families, so reject it here rather than at Init, where the process is
-	// already committed to starting.
-	if _, err := telemetry.NewMetricExposureFilter(m.ExposeMetrics, m.DropMetrics); err != nil {
+	// A malformed customization silently keeps or drops the wrong families, so
+	// reject it here rather than at Init, where the process is already committed
+	// to starting.
+	o := m.TelemetryOptions()
+	if _, err := telemetry.NewMetricPolicy(o.Customizations, o.LegacyLabels); err != nil {
 		return err
 	}
 

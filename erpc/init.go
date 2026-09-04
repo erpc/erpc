@@ -19,30 +19,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// metricsOptions maps the metrics config onto the telemetry manager's options.
-// telemetry cannot import common (common imports telemetry), so the translation
-// lives here. A nil config yields nil, which Configure reads as "no metrics
-// section".
-func metricsOptions(cfg *common.MetricsConfig) *telemetry.Options {
-	if cfg == nil {
-		return nil
-	}
-	o := &telemetry.Options{
-		HistogramBuckets:        cfg.HistogramBuckets,
-		HistogramDropLabels:     cfg.HistogramDropLabels,
-		HistogramLabelOverrides: cfg.HistogramLabelOverrides,
-		CounterDropLabels:       cfg.CounterDropLabels,
-		CounterLabelOverrides:   cfg.CounterLabelOverrides,
-		ExposeMetrics:           cfg.ExposeMetrics,
-		DropMetrics:             cfg.DropMetrics,
-	}
-	if cfg.CounterIdleEvictionAfter != nil {
-		d := cfg.CounterIdleEvictionAfter.Duration()
-		o.CounterIdleEvictionAfter = &d
-	}
-	return o
-}
-
 func Init(
 	appCtx context.Context,
 	cfg *common.Config,
@@ -73,38 +49,43 @@ func Init(
 	//
 	// Metrics are defined unregistered at package init and registered here:
 	// Prometheus freezes a family's label-set hash for the life of the registry,
-	// so the label filters have to be installed before the first registration,
-	// and a family excluded by exposeMetrics/dropMetrics is simply never
+	// so label and bucket customizations have to be resolved before the first
+	// registration, and a family dropped by a customization is simply never
 	// registered.
 	// Two very different failures come back through this one error and they do
-	// not deserve the same severity. A malformed exposeMetrics/dropMetrics entry
+	// not deserve the same severity. A malformed customization entry
 	// stops registration before it starts, so no eRPC family reaches /metrics —
 	// an outage worth paging on. A bad histogramBuckets value only substitutes
 	// the default buckets, leaving every family registered — a config mistake,
 	// not an outage. The CLI rejects both in MetricsConfig.Validate, but Init is
 	// public and a caller assembling a *common.Config by hand reaches here. The
 	// error names the offending field either way.
-	if err := telemetry.Configure(metricsOptions(cfg.Metrics)); err != nil {
+	if err := telemetry.Configure(cfg.Metrics.TelemetryOptions()); err != nil {
 		if errors.Is(err, telemetry.ErrNothingRegistered) {
 			logger.Error().Err(err).Msg("failed to apply metrics configuration; no metric families are registered")
 		} else {
 			logger.Warn().Err(err).Msg("failed to apply metrics configuration; falling back to default histogram buckets")
 		}
 	}
-	if cfg.Metrics != nil && (len(cfg.Metrics.ExposeMetrics) > 0 || len(cfg.Metrics.DropMetrics) > 0) {
+	if cfg.Metrics != nil && len(cfg.Metrics.Customizations) > 0 {
 		exposed, total := telemetry.ExposedFamilyCount()
 		logger.Info().
+			Int("customizations", len(cfg.Metrics.Customizations)).
 			Int("exposed", exposed).
 			Int("total", total).
-			Strs("exposeMetrics", cfg.Metrics.ExposeMetrics).
-			Strs("dropMetrics", cfg.Metrics.DropMetrics).
-			Msg("metric exposure filter applied")
-		// An entry that matches nothing does nothing, so a typo'd metric name is
+			Msg("metric customizations applied")
+		// A subject that matches nothing does nothing, so a typo'd metric name is
 		// otherwise invisible until someone notices the series never appeared.
-		if unmatched := telemetry.UnmatchedExposureEntries(); len(unmatched) > 0 {
+		if unmatched := telemetry.UnmatchedSubjects(); len(unmatched) > 0 {
 			logger.Warn().
-				Strs("entries", unmatched).
-				Msg("metrics.exposeMetrics/dropMetrics entries match no known metric family; check for typos")
+				Strs("subjects", unmatched).
+				Msg("metrics.customizations subjects match no known metric family; check for typos")
+		}
+		// A rule aimed at a family that cannot honor it is likewise silent.
+		if ignored := telemetry.IgnoredCustomizations(); len(ignored) > 0 {
+			logger.Warn().
+				Strs("rules", ignored).
+				Msg("some metrics.customizations rules do not apply to the family they name")
 		}
 	}
 
@@ -206,8 +187,8 @@ func Init(
 				return appCtx
 			},
 			Addr: fmt.Sprintf(":%d", *cfg.Metrics.Port),
-			// promhttp.Handler() with the gatherer wrapped, so exposeMetrics /
-			// dropMetrics also govern the collectors the manager does not own.
+			// promhttp.Handler() with the gatherer wrapped, so drop customizations
+			// also govern the stock collectors the manager does not own.
 			Handler: promhttp.InstrumentMetricHandler(
 				prometheus.DefaultRegisterer,
 				promhttp.HandlerFor(telemetry.Gatherer(prometheus.DefaultGatherer), promhttp.HandlerOpts{}),
