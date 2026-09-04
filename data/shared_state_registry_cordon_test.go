@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
+
+func init() { util.ConfigureTestLogger() }
 
 func TestSetCordonState_PersistsEntry(t *testing.T) {
 	registry, connector, ctx := setupTest("cluster1")
@@ -195,4 +198,27 @@ func TestSetCordonState_MergesWithExisting(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(captured, &m))
 	assert.Contains(t, m, "eth_getLogs")
 	assert.Contains(t, m, "eth_call")
+}
+
+func TestCordonStateKeysEncodeIdentitySegments(t *testing.T) {
+	registry, _, _ := setupTest("cluster1")
+
+	assert.NotEqual(t,
+		registry.cordonMapKey("a/b", "c"),
+		registry.cordonMapKey("a", "b/c"),
+		"project and upstream path separators must not collide",
+	)
+	assert.Equal(t, "cluster1/cordon-map/a%2Fb/c", registry.cordonMapKey("a/b", "c"))
+	assert.Equal(t, "cordon-notify/a/b%2Fc", registry.cordonNotifyKey("a", "b/c"))
+	assert.Equal(t, "cluster1/cordon-lock/a%2Fb/c", registry.cordonLockKey("a/b", "c"))
+}
+
+func TestLoadCordonStates_NullPayloadReturnsEmpty(t *testing.T) {
+	registry, connector, ctx := setupTest("cluster1")
+	connector.On("Get", mock.Anything, ConnectorMainIndex, mock.Anything, "methods", mock.Anything).
+		Return([]byte("null"), nil)
+
+	entries, err := registry.LoadCordonStates(ctx, "proj1", "ups1")
+	assert.NoError(t, err)
+	assert.Empty(t, entries)
 }

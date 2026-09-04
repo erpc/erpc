@@ -9,10 +9,14 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
+
+func init() { util.ConfigureTestLogger() }
 
 // mockSharedStateRegistry is a minimal mock for data.SharedStateRegistry.
 type mockSharedStateRegistry struct {
@@ -50,12 +54,14 @@ func newTestUpstream(t *testing.T, ssr data.SharedStateRegistry) *Upstream {
 	tracker := health.NewTracker(&logger, "proj1", time.Minute)
 	cfg := &common.UpstreamConfig{Id: "ups1", Endpoint: "http://localhost"}
 	u := &Upstream{
-		ProjectId:           "proj1",
-		config:              cfg,
-		logger:              &logger,
-		metricsTracker:      tracker,
-		sharedStateRegistry: ssr,
-		appCtx:              context.Background(),
+		ProjectId:              "proj1",
+		config:                 cfg,
+		logger:                 &logger,
+		metricsTracker:         tracker,
+		sharedStateRegistry:    ssr,
+		appCtx:                 context.Background(),
+		pendingCordonMutations: make(map[string]*data.CordonStateEntry),
+		cordonReconcileCh:      make(chan struct{}, 1),
 	}
 	return u
 }
@@ -149,4 +155,109 @@ func TestReconcileCordonState_LoadError_IsNoop(t *testing.T) {
 	u := newTestUpstream(t, ssr)
 	// Should not panic and should leave state unchanged.
 	u.reconcileCordonState(context.Background())
+}
+
+func TestCordonAdmin_SerializesWithOlderReconcile(t *testing.T) {
+	ssr := &mockSharedStateRegistry{}
+	loadStarted := make(chan struct{})
+	releaseLoad := make(chan struct{})
+	ssr.On("LoadCordonStates", mock.Anything, "proj1", "ups1").
+		Run(func(mock.Arguments) {
+			close(loadStarted)
+			<-releaseLoad
+		}).
+		Return([]data.CordonStateEntry{}, nil).
+		Once()
+	ssr.On("SetCordonState", mock.Anything, "proj1", "ups1", mock.Anything).Return(nil).Once()
+
+	u := newTestUpstream(t, ssr)
+	reconcileDone := make(chan struct{})
+	go func() {
+		u.reconcileCordonState(context.Background())
+		close(reconcileDone)
+	}()
+	<-loadStarted
+
+	cordonDone := make(chan error, 1)
+	go func() { cordonDone <- u.CordonAdmin("eth_call", "incident") }()
+	select {
+	case err := <-cordonDone:
+		t.Fatalf("cordon mutation bypassed in-flight reconciliation: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseLoad)
+	<-reconcileDone
+	require.NoError(t, <-cordonDone)
+	assert.True(t, u.metricsTracker.IsCordoned(u, "eth_call"))
+}
+
+func TestCordonAdmin_PersistenceFailureRemainsPendingUntilRetry(t *testing.T) {
+	ssr := &mockSharedStateRegistry{}
+	ssr.On("SetCordonState", mock.Anything, "proj1", "ups1", mock.Anything).
+		Return(errors.New("shared state unavailable")).Once()
+	ssr.On("SetCordonState", mock.Anything, "proj1", "ups1", mock.Anything).
+		Return(nil).Once()
+	ssr.On("LoadCordonStates", mock.Anything, "proj1", "ups1").
+		Return([]data.CordonStateEntry{{Method: "eth_call", Reason: "incident", CordonedAtMs: 1}}, nil).Once()
+
+	u := newTestUpstream(t, ssr)
+	require.Error(t, u.CordonAdmin("eth_call", "incident"))
+	_, pending := u.pendingCordonMutations["eth_call"]
+	require.True(t, pending)
+
+	u.reconcileCordonState(context.Background())
+
+	assert.True(t, u.metricsTracker.IsCordoned(u, "eth_call"))
+	assert.Empty(t, u.pendingCordonMutations)
+	ssr.AssertExpectations(t)
+}
+
+func TestUncordonAdmin_PersistenceFailureRemainsPendingUntilRetry(t *testing.T) {
+	ssr := &mockSharedStateRegistry{}
+	ssr.On("SetCordonState", mock.Anything, "proj1", "ups1", mock.Anything).Return(nil).Once()
+	ssr.On("DeleteCordonState", mock.Anything, "proj1", "ups1", "eth_call").
+		Return(errors.New("shared state unavailable")).Once()
+	ssr.On("DeleteCordonState", mock.Anything, "proj1", "ups1", "eth_call").Return(nil).Once()
+	ssr.On("LoadCordonStates", mock.Anything, "proj1", "ups1").
+		Return([]data.CordonStateEntry{}, nil).Once()
+
+	u := newTestUpstream(t, ssr)
+	require.NoError(t, u.CordonAdmin("eth_call", "incident"))
+	require.Error(t, u.UncordonAdmin("eth_call", "resolved"))
+	entry, pending := u.pendingCordonMutations["eth_call"]
+	require.True(t, pending)
+	assert.Nil(t, entry)
+
+	u.reconcileCordonState(context.Background())
+
+	assert.False(t, u.metricsTracker.IsCordoned(u, "eth_call"))
+	assert.Empty(t, u.pendingCordonMutations)
+	ssr.AssertExpectations(t)
+}
+
+func TestCordonAdmin_RepeatedCallPersistsOriginalTimestamp(t *testing.T) {
+	ssr := &mockSharedStateRegistry{}
+	timestamps := make([]int64, 0, 2)
+	ssr.On("SetCordonState", mock.Anything, "proj1", "ups1", mock.Anything).
+		Run(func(args mock.Arguments) {
+			timestamps = append(timestamps, args.Get(3).(data.CordonStateEntry).CordonedAtMs)
+		}).
+		Return(nil).
+		Twice()
+
+	u := newTestUpstream(t, ssr)
+	require.NoError(t, u.CordonAdmin("eth_call", "first"))
+	time.Sleep(2 * time.Millisecond)
+	require.NoError(t, u.CordonAdmin("eth_call", "updated"))
+
+	require.Len(t, timestamps, 2)
+	assert.Equal(t, timestamps[0], timestamps[1])
+}
+
+func TestCordonReconcileInitialDelayWithinFallbackBound(t *testing.T) {
+	u := newTestUpstream(t, nil)
+	delay := u.cordonReconcileInitialDelay()
+	assert.GreaterOrEqual(t, delay, time.Second)
+	assert.Less(t, delay, cordonReconcileInterval)
 }

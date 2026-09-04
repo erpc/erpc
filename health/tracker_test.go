@@ -11,11 +11,14 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func init() { util.ConfigureTestLogger() }
 
 func TestTracker(t *testing.T) {
 	projectID := "test-project"
@@ -1455,6 +1458,53 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 			"uncordon event counter increments on ON→OFF edge")
 		assert.GreaterOrEqual(t, histAfter, histBefore,
 			"cordon-duration histogram must have observed the duration on uncordon")
+	})
+
+	t.Run("overlapping_sources_emit_only_effective_transitions", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "overlap-project", 2*time.Second)
+		ups := common.NewFakeUpstream("overlap-upstream")
+		method := "eth_call"
+		cordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			"overlap-project", ups.NetworkId(), ups.Id(), "cordon")
+		uncordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			"overlap-project", ups.NetworkId(), ups.Id(), "uncordon")
+		beforeCordon := promUtil.ToFloat64(cordonCounter)
+		beforeUncordon := promUtil.ToFloat64(uncordonCounter)
+
+		tracker.Cordon(ups, method, "automatic")
+		tracker.CordonAdmin(ups, method, "operator")
+		assert.Equal(t, beforeCordon+1, promUtil.ToFloat64(cordonCounter),
+			"adding a second owner must not emit another effective cordon")
+		assert.Equal(t, float64(1), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "automatic")))
+		assert.Equal(t, float64(1), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "operator")))
+
+		tracker.UncordonAdmin(ups, method)
+		assert.Equal(t, beforeUncordon, promUtil.ToFloat64(uncordonCounter),
+			"removing one owner must not emit an effective uncordon")
+		assert.Equal(t, float64(1), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "automatic")))
+		assert.Equal(t, float64(0), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "operator")))
+
+		tracker.Uncordon(ups, method, "automatic recovered")
+		assert.Equal(t, beforeUncordon+1, promUtil.ToFloat64(uncordonCounter),
+			"the final owner removal emits the effective uncordon")
+		assert.Equal(t, float64(0), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "automatic")))
+	})
+
+	t.Run("admin_cordon_is_visible_in_metrics_json", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "json-project", 2*time.Second)
+		ups := common.NewFakeUpstream("json-upstream")
+		tracker.CordonAdmin(ups, "*", "operator incident")
+		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
+
+		raw, err := tm.MarshalJSON()
+		require.NoError(t, err)
+		var payload struct {
+			Cordoned           bool   `json:"cordoned"`
+			LastCordonedReason string `json:"lastCordonedReason"`
+		}
+		require.NoError(t, common.SonicCfg.Unmarshal(raw, &payload))
+		assert.True(t, payload.Cordoned)
+		assert.Equal(t, "operator incident", payload.LastCordonedReason)
 	})
 
 	t.Run("idle_sweep_evicts_silent_methods", func(t *testing.T) {

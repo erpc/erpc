@@ -329,13 +329,13 @@ var (
 	MetricUpstreamCordonEventTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordon_event_total",
-		Help:      "Admin-driven cordon transitions. `action` ∈ {`cordon`,`uncordon`}.",
+		Help:      "Effective cordon transitions across automatic and admin sources. `action` ∈ {`cordon`,`uncordon`}.",
 	}, []string{"project", "network", "upstream", "action"})
 
 	MetricUpstreamCordonDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordon_duration_seconds",
-		Help:      "Time an upstream stayed cordoned, observed on each uncordon. Long tails are typically real outages; very short cordons are usually manual mis-fires.",
+		Help:      "Time an upstream stayed effectively cordoned across automatic and admin sources, observed on the final uncordon transition.",
 		Buckets:   []float64{1, 10, 60, 300, 900, 1800, 3600, 7200, 21600, 86400},
 	}, []string{"project", "network", "upstream"})
 

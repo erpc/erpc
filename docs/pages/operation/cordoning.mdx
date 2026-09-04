@@ -69,10 +69,10 @@ specific `(up, method, All)` scope — a wildcard cordon shadows any method-scop
 Uncordoning only flips the cell addressed by the call; it never automatically lifts a
 wildcard cordon when a method-scoped cordon is removed.
 
-Uncordoning records the duration (`erpc_upstream_cordon_duration_seconds`) and emits the
-`action="uncordon"` event counter. Repeated cordon calls on an already-cordoned upstream
-overwrite the reason but do not reset the start timestamp, so duration accounting is
-continuous even if the reason is updated mid-incident.
+The tracker keeps automatic and admin cordons as independent owners. The duration
+(`erpc_upstream_cordon_duration_seconds`) and event counter follow the effective state: they
+emit only when the first owner cordons or the final owner uncordons. Repeated cordon calls
+overwrite the reason but do not reset the start timestamp.
 
 When a `sharedState` connector is configured, admin cordon state is persisted to the shared-state backend and
 propagated to all replicas automatically. A new replica reads the full cordon map on startup
@@ -215,10 +215,9 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
 - **Do not use cordon for permanent exclusions.** Even with shared-state persistence, cordon
   is designed for temporary outage management. For a vendor you want permanently removed,
   update the config.
-- **Watch for stale gauge series after reason updates.** `erpc_upstream_cordoned` is
-  labeled by `reason`; calling `erpc_cordonUpstream` with a new reason on an already-cordoned
-  upstream leaves the old gauge series at `1`. Alert on label value, not just the metric
-  name, or always uncordon before re-cordoning with a new reason.
+- **Alert on active gauge values.** `erpc_upstream_cordoned` is labeled by `reason`; updating
+  a reason sets the old label series to `0` and the new one to `1`. Filter for value `1`
+  rather than treating the existence of a series as an active cordon.
 - **Custom evalFunc operators: `.removeCordoned()` must be explicit.** The default policy
   includes it; a custom `evalFunc` that omits it will silently ignore all admin cordons.
 
@@ -230,12 +229,10 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
 2. **Uncordoning a method does not lift a wildcard cordon.** `Uncordon("eth_getLogs")`
    flips only that cell. `IsCordoned` checks `"*"` first, so the upstream stays out of
    rotation for all methods as long as the wildcard cordon is active.
-   Source: <SourceLink file="health/tracker.go" lines="853-863" />.
-3. **Reason change creates a new gauge series.** `erpc_upstream_cordoned` is labeled by
-   `reason`; calling `erpc_cordonUpstream` with a different reason on an already-cordoned
-   upstream leaves the old gauge series at `1`. The old series is not cleared until an
-   `erpc_uncordonUpstream` call with the exact matching reason label or a process restart.
-   Source: <SourceLink file="health/tracker.go" lines="805-817" />.
+   Source: <SourceLink file="health/tracker.go" lines="919-956" />.
+3. **Reason changes retain an inactive gauge series.** `erpc_upstream_cordoned` is labeled by
+   `reason`; changing the reason sets the previous series to `0` and the new series to `1`.
+   Prometheus retains both label sets until process restart, so query for value `1`.
 4. **Cordon survives `Rotate()` and, with shared-state configured, pod restarts.** Without
    a shared-state connector, state is in-process only. For permanent exclusion use config
    changes.
@@ -254,7 +251,7 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
    traffic regardless of cordon state; cordon only affects routing of real requests.
 9. **`erpc_cordonUpstream` is idempotent on the same `(upstream, method)` pair.** Repeated
    calls update `reason` but do not reset `CordonedAtMs` or fire multiple `cordon` event
-   counter increments. Source: <SourceLink file="health/tracker.go" lines="805-817" />.
+   counter increments. Source: <SourceLink file="health/tracker.go" lines="1011-1025" />.
 10. **`erpc_listCordoned` requires `admin.auth` configured.** If the `admin:` section is
     present but `admin.auth:` is absent, the request returns `"admin auth not configured"`.
     If the `admin:` section is entirely missing, it returns `"admin is not enabled for this
@@ -275,30 +272,35 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
     If they cordon the **same** method with different reasons concurrently, the lock ensures
     one write completes before the other, and the surviving reason is whichever acquired the
     lock last — this is expected last-write-wins behaviour.
+13. **Failed persistence remains a local pending override.** If a cordon or uncordon reaches
+    the local tracker but the shared-state write fails, the admin RPC returns the backend
+    error and the local decision remains active. Reconciliation retries the write before
+    accepting remote state for that method, so backend recovery cannot silently reverse the
+    operator's safety decision. Other replicas do not receive the change until a retry succeeds.
 
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category (=method), reason | Set to 1 on cordon, 0 on uncordon; persists until uncordon (survives restarts when shared-state is configured) |
-| `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Edge transitions only: OFF→ON (`action="cordon"`) and ON→OFF (`action="uncordon"`); repeated cordons do not increment |
-| `erpc_upstream_cordon_duration_seconds` | histogram | project, network, upstream | Observed once per uncordon; value = `now − CordonedAtMs`; buckets 1 s … 86400 s |
+| `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Effective edges only: first-owner OFF→ON (`action="cordon"`) and final-owner ON→OFF (`action="uncordon"`) |
+| `erpc_upstream_cordon_duration_seconds` | histogram | project, network, upstream | Observed on the final-owner uncordon; value = effective cordon duration; buckets 1 s … 86400 s |
 | `erpc_selection_position{upstream=…}` | gauge | project, network, method, upstream | Set to `-1` for every excluded (including cordoned) upstream after each eval tick |
 | `erpc_selection_rejection_total{step="removeCordoned"}` | counter | project, network, method, upstream, step | Per tick × upstream dropped by the `.removeCordoned()` step |
 
-Log messages emitted on cordon state changes (DEBUG level, `health/tracker.go:L795-798` and `L822-824`):
+Log messages emitted on cordon state changes (DEBUG level, `health/tracker.go:L919-923` and `L990-992`):
 - `"cordoning upstream to disable routing"` — emitted on every `Cordon` call (including repeated calls that only update the reason).
 - `"uncordoning upstream to enable routing"` — emitted on every `Uncordon` call.
 
 ### Source code entry points
 
-- [`health/tracker.go:L793-849`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L793-L849) — `Cordon` and `Uncordon` methods: state storage, timestamp, gauge, event counter, duration histogram
-- [`health/tracker.go:L853-890`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L853-L890) — `IsCordoned` and `CordonedReason`: wildcard-first lookup logic
+- [`health/tracker.go:L847-1075`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L847-L1075) — automatic/admin ownership, effective transitions, timestamps, gauges, event counters, and duration histogram
+- [`health/tracker.go:L944-985`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L944-L985) — `IsCordoned` and `CordonedReason`: wildcard-first lookup logic
 - [`erpc/admin.go:L590-729`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L590-L729) — `erpc_cordonUpstream`, `erpc_uncordonUpstream`, `erpc_listCordoned` handlers and param parsing
 - [`erpc/admin.go:L641-654`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L641-L654) — upstream lookup by ID across the project's upstream registry (the step before calling `upstream.Cordon`)
-- [`upstream/upstream.go:L1568-1580`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1568-L1580) — `Cordon`, `Uncordon`, `CordonedReason` pass-throughs from `Upstream` to the health tracker
-- [`health/tracker.go:L207-224`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L207-L224) — `Rotate()` skipping cordoned cells (window rotation cannot clear a cordon)
-- [`health/tracker.go:L598-615`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L598-L615) — idle-sweep exclusion for cordoned cells
+- [`upstream/upstream.go:L1579-1719`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1579-L1719) — automatic/admin operations, pending-write retry, and shared-state reconciliation
+- [`health/tracker.go:L238-244`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L238-L244) — `Rotate()` preserving cordoned cells (window rotation cannot clear a cordon)
+- [`health/tracker.go:L637-657`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L637-L657) — idle-sweep exclusion for cordoned cells
 - [`internal/policy/eval.go:L98-100`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L98-L100) — `cordonedReason` exposed to JS eval context
 - [`internal/policy/default_policy.js:L1`](https://github.com/erpc/erpc/blob/main/internal/policy/default_policy.js#L1) — `.removeCordoned()` as first default policy step
 - [`internal/policy/slot.go:L477`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go#L477) — position `-1` assigned for excluded (cordoned) upstreams after each tick

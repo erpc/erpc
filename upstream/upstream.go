@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"math"
 	"net"
 	"net/url"
@@ -216,9 +217,12 @@ type Upstream struct {
 	svmStatePoller       common.SvmStatePoller
 	statePollerOnce      sync.Once
 	cordonSyncOnce       sync.Once
-	// reconcileMu serializes concurrent reconcileCordonState calls so an older
-	// Redis read completing after a newer one cannot clobber in-memory state.
-	reconcileMu sync.Mutex
+	// cordonStateMu serializes local admin mutations with remote reconciliation.
+	// pendingCordonMutations retains failed writes so a later remote snapshot
+	// cannot silently undo the local safety decision.
+	cordonStateMu          sync.Mutex
+	pendingCordonMutations map[string]*data.CordonStateEntry // nil entry means delete
+	cordonReconcileCh      chan struct{}
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 	// Highest block at which the integrity state probe PROVED this upstream
@@ -266,16 +270,18 @@ func NewUpstream(
 	pup := &Upstream{
 		ProjectId: projectId,
 
-		logger:               &lg,
-		appCtx:               appCtx,
-		config:               cfg,
-		vendor:               vn,
-		metricsTracker:       mt,
-		sharedStateRegistry:  ssr,
-		failsafeExecutors:    failsafeExecutors,
-		rateLimitersRegistry: rlr,
-		supportedMethods:     sync.Map{},
-		networkLabel:         atomic.Value{},
+		logger:                 &lg,
+		appCtx:                 appCtx,
+		config:                 cfg,
+		vendor:                 vn,
+		metricsTracker:         mt,
+		sharedStateRegistry:    ssr,
+		pendingCordonMutations: make(map[string]*data.CordonStateEntry),
+		cordonReconcileCh:      make(chan struct{}, 1),
+		failsafeExecutors:      failsafeExecutors,
+		rateLimitersRegistry:   rlr,
+		supportedMethods:       sync.Map{},
+		networkLabel:           atomic.Value{},
 	}
 	pup.networkLabel.Store("n/a")
 
@@ -364,51 +370,81 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		}
 	}
 
-	if u.sharedStateRegistry != nil {
+	if cordonRegistry, ok := u.cordonStateRegistry(); ok {
 		// Restore any cordon state persisted from a previous run or another replica.
 		// Runs on every Bootstrap retry so state is re-applied even after a partial failure.
 		restoreCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		u.reconcileCordonState(restoreCtx)
 		cancel()
-		// Register the notification watch and periodic ticker exactly once — Bootstrap
-		// can be retried, and spawning a second goroutine would leak on re-execution.
-		u.cordonSyncOnce.Do(func() {
-			// Watch for cross-replica cordon/uncordon events via pub/sub notification.
-			notifyVar := u.sharedStateRegistry.WatchCordonNotifications(u.ProjectId, u.Id())
-			notifyVar.OnValue(func(_ int64) {
-				reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
-				defer cancel()
-				u.reconcileCordonState(reconcileCtx)
+		isRemote := true
+		if locality, ok := u.sharedStateRegistry.(data.SharedStateLocality); ok {
+			isRemote = locality.IsRemote()
+		}
+		if isRemote {
+			// Register cross-replica synchronization exactly once. Notification
+			// callbacks only enqueue; the worker owns reconciliation and creates a
+			// fresh timeout after dequeuing.
+			u.cordonSyncOnce.Do(func() {
+				notifyVar := cordonRegistry.WatchCordonNotifications(u.ProjectId, u.Id())
+				notifyVar.OnValue(func(_ int64) { u.requestCordonReconcile() })
+				go u.runCordonReconciler()
 			})
-			// Periodic fallback: reconcile every 30 s in case pub/sub delivery fails.
-			// Skipped for in-memory registry (process-local, no cross-replica sync needed).
-			if u.sharedStateRegistry.IsRemote() {
-				go func() {
-					// Jitter so all upstreams don't fire at the same wall-clock instant.
-					jitter := time.Duration(time.Now().UnixNano() % int64(10*time.Second))
-					select {
-					case <-u.appCtx.Done():
-						return
-					case <-time.After(jitter):
-					}
-					ticker := time.NewTicker(30 * time.Second)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-u.appCtx.Done():
-							return
-						case <-ticker.C:
-							reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
-							u.reconcileCordonState(reconcileCtx)
-							cancel()
-						}
-					}
-				}()
-			}
-		}) // cordonSyncOnce.Do
+		}
 	}
 
 	return nil
+}
+
+const cordonReconcileInterval = 30 * time.Second
+
+var cordonReconcileSeed = maphash.MakeSeed()
+
+func (u *Upstream) cordonStateRegistry() (data.CordonStateRegistry, bool) {
+	registry, ok := u.sharedStateRegistry.(data.CordonStateRegistry)
+	return registry, ok
+}
+
+func (u *Upstream) requestCordonReconcile() {
+	if u.cordonReconcileCh == nil {
+		return
+	}
+	select {
+	case u.cordonReconcileCh <- struct{}{}:
+	default:
+	}
+}
+
+func (u *Upstream) cordonReconcileInitialDelay() time.Duration {
+	var h maphash.Hash
+	h.SetSeed(cordonReconcileSeed)
+	_, _ = h.WriteString(u.ProjectId)
+	_, _ = h.WriteString("\x00")
+	_, _ = h.WriteString(u.Id())
+	// Keep the first fallback within the documented 30-second bound while
+	// spreading upstreams and replicas across the whole interval.
+	return time.Second + time.Duration(h.Sum64()%uint64(cordonReconcileInterval-time.Second))
+}
+
+func (u *Upstream) runCordonReconciler() {
+	timer := time.NewTimer(u.cordonReconcileInitialDelay())
+	defer timer.Stop()
+	for {
+		select {
+		case <-u.appCtx.Done():
+			return
+		case <-u.cordonReconcileCh:
+			u.reconcileCordonStateWithTimeout()
+		case <-timer.C:
+			u.reconcileCordonStateWithTimeout()
+			timer.Reset(cordonReconcileInterval)
+		}
+	}
+}
+
+func (u *Upstream) reconcileCordonStateWithTimeout() {
+	reconcileCtx, cancel := context.WithTimeout(u.appCtx, 10*time.Second)
+	defer cancel()
+	u.reconcileCordonState(reconcileCtx)
 }
 
 func (u *Upstream) Id() string {
@@ -1560,16 +1596,25 @@ func (u *Upstream) Uncordon(method string, reason string) {
 // applied regardless; callers should surface the error so the operator knows
 // other replicas may not have received the update.
 func (u *Upstream) CordonAdmin(method string, reason string) error {
+	u.cordonStateMu.Lock()
+	defer u.cordonStateMu.Unlock()
+	if u.pendingCordonMutations == nil {
+		u.pendingCordonMutations = make(map[string]*data.CordonStateEntry)
+	}
+
 	ts := u.metricsTracker.CordonAdmin(u, method, reason)
 	u.adminCordonedMethods.Store(method, struct{}{})
-	if u.sharedStateRegistry != nil {
+	if registry, ok := u.cordonStateRegistry(); ok {
 		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)
 		defer cancel()
 		entry := data.CordonStateEntry{Method: method, Reason: reason, CordonedAtMs: ts}
-		if err := u.sharedStateRegistry.SetCordonState(ctx, u.ProjectId, u.Id(), entry); err != nil {
+		if err := registry.SetCordonState(ctx, u.ProjectId, u.Id(), entry); err != nil {
+			u.pendingCordonMutations[method] = &entry
+			u.requestCordonReconcile()
 			u.logger.Warn().Err(err).Str("method", method).Msg("failed to persist cordon state to shared state")
 			return err
 		}
+		delete(u.pendingCordonMutations, method)
 	}
 	return nil
 }
@@ -1582,15 +1627,24 @@ func (u *Upstream) CordonAdmin(method string, reason string) error {
 // applied regardless; callers should surface the error so the operator knows
 // other replicas may still have the upstream cordoned.
 func (u *Upstream) UncordonAdmin(method string, reason string) error {
+	u.cordonStateMu.Lock()
+	defer u.cordonStateMu.Unlock()
+	if u.pendingCordonMutations == nil {
+		u.pendingCordonMutations = make(map[string]*data.CordonStateEntry)
+	}
+
 	u.metricsTracker.UncordonAdmin(u, method)
 	u.adminCordonedMethods.Delete(method)
-	if u.sharedStateRegistry != nil {
+	if registry, ok := u.cordonStateRegistry(); ok {
 		ctx, cancel := context.WithTimeout(u.appCtx, 5*time.Second)
 		defer cancel()
-		if err := u.sharedStateRegistry.DeleteCordonState(ctx, u.ProjectId, u.Id(), method); err != nil {
+		if err := registry.DeleteCordonState(ctx, u.ProjectId, u.Id(), method); err != nil {
+			u.pendingCordonMutations[method] = nil
+			u.requestCordonReconcile()
 			u.logger.Warn().Err(err).Str("method", method).Msg("failed to delete cordon state from shared state")
 			return err
 		}
+		delete(u.pendingCordonMutations, method)
 	}
 	return nil
 }
@@ -1598,18 +1652,38 @@ func (u *Upstream) UncordonAdmin(method string, reason string) error {
 // reconcileCordonState reads cordon state from shared state and reconciles
 // it with the in-memory tracker.
 //
-// Apply phase: any entry from Redis that isn't already cordoned at the exact
-// method cell is applied via CordonAt (preserving the original timestamp).
+// Apply phase: every shared-state entry is applied to its exact method cell,
+// preserving the original timestamp and refreshing changed reasons.
 // The method is also added to adminCordonedMethods so subsequent uncordon
 // diffs are scoped correctly.
 //
-// Uncordon phase: only methods in adminCordonedMethods that are absent from
-// Redis are uncordoned. Automatic cordons (consensus, health) are never
-// touched by this diff.
+// Uncordon phase: only methods in adminCordonedMethods that are absent from the
+// shared-state snapshot are uncordoned. Automatic cordons are never touched.
 func (u *Upstream) reconcileCordonState(ctx context.Context) {
-	u.reconcileMu.Lock()
-	defer u.reconcileMu.Unlock()
-	entries, err := u.sharedStateRegistry.LoadCordonStates(ctx, u.ProjectId, u.Id())
+	registry, ok := u.cordonStateRegistry()
+	if !ok {
+		return
+	}
+	u.cordonStateMu.Lock()
+	defer u.cordonStateMu.Unlock()
+
+	// Retry failed local mutations before loading the authoritative snapshot.
+	// Pending methods remain locally authoritative until their write succeeds.
+	for method, entry := range u.pendingCordonMutations {
+		var err error
+		if entry == nil {
+			err = registry.DeleteCordonState(ctx, u.ProjectId, u.Id(), method)
+		} else {
+			err = registry.SetCordonState(ctx, u.ProjectId, u.Id(), *entry)
+		}
+		if err != nil {
+			u.logger.Warn().Err(err).Str("method", method).Msg("failed to retry pending cordon state mutation")
+			continue
+		}
+		delete(u.pendingCordonMutations, method)
+	}
+
+	entries, err := registry.LoadCordonStates(ctx, u.ProjectId, u.Id())
 	if err != nil {
 		u.logger.Warn().Err(err).Msg("failed to load cordon state from shared state for reconciliation")
 		return
@@ -1619,6 +1693,9 @@ func (u *Upstream) reconcileCordonState(ctx context.Context) {
 		remote[e.Method] = e
 	}
 	for method, e := range remote {
+		if _, pending := u.pendingCordonMutations[method]; pending {
+			continue
+		}
 		u.adminCordonedMethods.Store(method, struct{}{})
 		u.metricsTracker.ApplyAdminCordon(u, method, e.Reason, e.CordonedAtMs)
 	}
@@ -1626,6 +1703,9 @@ func (u *Upstream) reconcileCordonState(ctx context.Context) {
 	// absent from the remote map (another replica called UncordonAdmin).
 	u.adminCordonedMethods.Range(func(k, _ any) bool {
 		method := k.(string)
+		if _, pending := u.pendingCordonMutations[method]; pending {
+			return true
+		}
 		if _, ok := remote[method]; !ok {
 			u.adminCordonedMethods.Delete(method)
 			u.metricsTracker.ClearAdminCordon(u, method)
