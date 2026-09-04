@@ -5,10 +5,12 @@ import (
 	"io"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // scrapeMetricsOutput returns the full /metrics body and a per-metric line count.
@@ -218,4 +220,43 @@ func TestHistogramLabelCustomizations_AllHistogramsObey(t *testing.T) {
 				m, baseline[m], dropped[m])
 		}
 	}
+}
+
+// Histogram mirror of TestLabeledCounter_RebuildRaceFreeUnderConcurrentReads:
+// the bucket/label rebuild swaps the Vec through the same atomic store, so a
+// concurrent Observe/Collect never sees a half-updated wrapper. Under -race.
+func TestLabeledHistogram_RebuildRaceFreeUnderConcurrentReads(t *testing.T) {
+	origPolicy := currentPolicy()
+	t.Cleanup(func() { setPolicy(origPolicy) })
+	setPolicy(mustPolicy(t, Customization{
+		Subject: "*",
+		Labels:  []LabelCustomization{{Subject: "agent_name", Action: ActionDrop}},
+	}))
+	lh := NewLabeledHistogram(
+		prometheus.HistogramOpts{Namespace: "erpc", Name: "test_lh_race_seconds"},
+		[]string{"network", "agent_name"},
+	)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					lh.WithLabelValues("evm:1", "agent-a").Observe(0.1)
+					testutil.CollectAndCount(lh)
+				}
+			}
+		}()
+	}
+	for i := 0; i < 500; i++ {
+		lh.rebuildInPlace(DefaultHistogramBuckets, false)
+	}
+	close(stop)
+	wg.Wait()
 }

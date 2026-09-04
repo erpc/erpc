@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func TestLabeledCounter_DropCollapsesSeriesAndPreservesSum(t *testing.T) {
 	if got := testutil.CollectAndCount(lc); got != 1 {
 		t.Fatalf("expected 3 agents to collapse to 1 series, got %d", got)
 	}
-	if got := testutil.ToFloat64(lc.vec.WithLabelValues("evm:1")); got != 3 {
+	if got := testutil.ToFloat64(lc.state.Load().vec.WithLabelValues("evm:1")); got != 3 {
 		t.Fatalf("expected collapsed counter to total 3, got %v", got)
 	}
 }
@@ -127,7 +128,7 @@ func TestCounterHandle_SweepKeepsSeriesLiveViaSiblingTuple(t *testing.T) {
 	if got := testutil.CollectAndCount(lc); got != 1 {
 		t.Fatalf("live series must survive the sweep, got %d series", got)
 	}
-	if got := testutil.ToFloat64(lc.vec.WithLabelValues("evm:1")); got != 2 {
+	if got := testutil.ToFloat64(lc.state.Load().vec.WithLabelValues("evm:1")); got != 2 {
 		t.Fatalf("expected both increments retained, got %v", got)
 	}
 }
@@ -163,4 +164,35 @@ func TestLabeledCounter_NoPolicyRetainsFullSchema(t *testing.T) {
 	if got := lc.ActiveLabelValues([]string{"evm:1", "agent-a"}); len(got) != 2 {
 		t.Fatalf("expected full projection, got %v", got)
 	}
+}
+
+// rebuildInPlace publishes a fresh Vec while readers may be mid-call. The swap
+// goes through a single atomic store, so a concurrent WithLabelValues/Collect
+// sees either the old state or the new one — never the torn vec/activeIdx pair
+// the un-synchronized field writes used to produce. Meaningful only under -race.
+func TestLabeledCounter_RebuildRaceFreeUnderConcurrentReads(t *testing.T) {
+	lc := newTestLabeledCounter(t, "test_lc_race_total", []string{"network", "agent_name"}, dropLabel("agent_name"))
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					lc.WithLabelValues("evm:1", "agent-a").Inc()
+					testutil.CollectAndCount(lc)
+				}
+			}
+		}()
+	}
+	for i := 0; i < 500; i++ {
+		lc.rebuildInPlace()
+	}
+	close(stop)
+	wg.Wait()
 }
