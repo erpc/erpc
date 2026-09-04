@@ -773,7 +773,7 @@ func clientWireCode(t *testing.T, err error) JsonRpcErrorNumber {
 }
 
 // A method eRPC declines to serve — stateful filter methods under a
-// multi-upstream pool, or eth_accounts/eth_sign —
+// multi-upstream pool, eth_accounts/eth_sign, or a subscription over HTTP —
 // must reach the client as -32601 "method not supported", not the generic
 // -32603. ethers only downgrades eth_getFilterChanges to polling when the error
 // classifies as UNSUPPORTED_OPERATION (code -32601 / a "not found|supported"

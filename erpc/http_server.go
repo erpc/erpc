@@ -608,6 +608,18 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
 
+				// Subscription methods need a client WebSocket connection to
+				// deliver notifications to, so they are served only on the
+				// WebSocket path (handleWebSocket, which returns before this
+				// loop). Over HTTP they would sweep the upstreams and fail with
+				// an opaque error; reject them as unsupported (-32601) up front.
+				if IsSubscriptionMethod(method) {
+					err := common.NewErrNotImplemented(method + " is only supported over a WebSocket connection")
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
+				}
+
 				shouldHandleMethod, err := isMethodAllowed(project, method)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)

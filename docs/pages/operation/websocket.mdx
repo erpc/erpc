@@ -242,7 +242,7 @@ The WebSocket upstream client features:
 - **Lazy connection** — if the upstream is unavailable at startup, eRPC retries in the background without blocking
 - **Fail-fast while reconnecting** — requests sent while the connection is down fail immediately with a retryable error so they fail over to other upstreams
 
-`eth_subscribe` and `eth_unsubscribe` are only sent to upstreams by eRPC's own subscription handling. A plain HTTP `eth_subscribe` is never forwarded to a WebSocket upstream, since the resulting subscription would have no owner.
+`eth_subscribe` and `eth_unsubscribe` are only sent to upstreams by eRPC's own subscription handling. Over HTTP both are rejected with `-32601` without reaching any upstream, since a subscription needs a client WebSocket connection to deliver to.
 
 ## Server configuration
 

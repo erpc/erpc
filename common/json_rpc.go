@@ -1984,7 +1984,7 @@ func TranslateToJsonRpcException(err error) error {
 		)
 	}
 	// A method eRPC declines to serve (filter lifecycle methods under a
-	// multi-upstream pool, eth_accounts/eth_sign) is
+	// multi-upstream pool, eth_accounts/eth_sign, subscriptions over HTTP) is
 	// "method not supported", not an internal fault. Without this it falls
 	// through to -32603, which clients read as a transient server error: ethers
 	// only downgrades filters to polling when the error classifies as
