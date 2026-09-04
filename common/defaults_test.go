@@ -272,6 +272,26 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		assert.Nil(t, err, "Validate should pass when only a provider is present")
 	})
 
+	t.Run("SolidrpcShorthandConversion", func(t *testing.T) {
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test-solidrpc",
+					Upstreams: []*UpstreamConfig{
+						{Endpoint: "solidrpc://ak_test_key"},
+					},
+				},
+			},
+		}
+
+		err := cfg.SetDefaults(&DefaultOptions{})
+		assert.NoError(t, err)
+		assert.Empty(t, cfg.Projects[0].Upstreams)
+		assert.Len(t, cfg.Projects[0].Providers, 1)
+		assert.Equal(t, "solidrpc", cfg.Projects[0].Providers[0].Vendor)
+		assert.Equal(t, VendorSettings{"apiKey": "ak_test_key"}, cfg.Projects[0].Providers[0].Settings)
+	})
+
 	t.Run("UpstreamFailsafeMatchMethodPreservedWhenNoMatchingDefault", func(t *testing.T) {
 		// User defines failsafe for specific method, defaults define different method
 		// User's matchMethod should NOT be overwritten
