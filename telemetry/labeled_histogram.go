@@ -2,43 +2,12 @@ package telemetry
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// HistogramLabelFilter decides which labels a HistogramVec exposes.
-//
-// Global `drop` removes labels from every histogram; per-metric `keepOverrides`
-// re-add labels for specific metric names (identified by the Prometheus metric
-// Name, e.g. "network_request_duration_seconds", without the namespace prefix).
-type HistogramLabelFilter struct {
-	drop          map[string]struct{}
-	keepOverrides map[string]map[string]struct{}
-}
-
-var (
-	filterMu      sync.RWMutex
-	currentFilter = &HistogramLabelFilter{drop: map[string]struct{}{}}
-)
-
-// SetHistogramLabelFilter installs a filter used by subsequent NewLabeledHistogram
-// calls. Typically invoked once at startup from config by Configure, which then
-// rebuilds every histogram definition under it.
-func SetHistogramLabelFilter(dropLabels []string, keepOverrides map[string][]string) {
-	drop, overrides := buildLabelSets(dropLabels, keepOverrides)
-	filterMu.Lock()
-	currentFilter = &HistogramLabelFilter{drop: drop, keepOverrides: overrides}
-	filterMu.Unlock()
-}
-
-// activeIndices returns the positions from `schema` retained under the filter.
-func (f *HistogramLabelFilter) activeIndices(metricName string, schema []string) []int {
-	return activeIndicesFor(f.drop, f.keepOverrides, metricName, schema)
-}
-
 // LabeledHistogram wraps a prometheus.HistogramVec whose label set is the
-// intersection of a canonical schema and the current HistogramLabelFilter.
+// intersection of a canonical schema and what the metrics customizations retain.
 // Call sites always pass values for the full schema (in schema order); the
 // wrapper forwards only the retained positions to the underlying Vec.
 type LabeledHistogram struct {
@@ -55,14 +24,13 @@ type LabeledHistogram struct {
 	configBuckets bool
 }
 
-// NewLabeledHistogram creates a HistogramVec using the current filter without
+// NewLabeledHistogram creates a HistogramVec under the current policy without
 // registering it. Production histograms go through DefineLabeledHistogram, which
 // hands the result to the manager; call this directly only when you need custom
 // registration (e.g. a private registry in tests).
 func NewLabeledHistogram(opts prometheus.HistogramOpts, schema []string) *LabeledHistogram {
-	filterMu.RLock()
-	idx := currentFilter.activeIndices(opts.Name, schema)
-	filterMu.RUnlock()
+	family := familyName(opts.Namespace, opts.Subsystem, opts.Name)
+	idx := currentPolicy().labelIndices(family, kindHistogram, schema)
 	active := make([]string, len(idx))
 	for i, j := range idx {
 		active[i] = schema[j]
@@ -77,14 +45,16 @@ func NewLabeledHistogram(opts prometheus.HistogramOpts, schema []string) *Labele
 	}
 }
 
-// rebuildInPlace re-creates the underlying HistogramVec under the CURRENT filter
-// and, for histograms that did not declare their own buckets, the resolved
-// config buckets. Keeps this pointer's identity so the package-level var and
-// every call site that captured it stay valid. Must run before registration, for
-// the same dimHashesByName reason as LabeledCounter.rebuildInPlace.
-func (lh *LabeledHistogram) rebuildInPlace(buckets []float64) {
+// rebuildInPlace re-creates the underlying HistogramVec under the CURRENT policy.
+// `buckets` replaces the declared boundaries when `explicit` — a customization
+// named this family's buckets — or when the declaration left them empty and takes
+// whatever metrics.histogramBuckets resolves to. Keeps this pointer's identity so
+// the package-level var and every call site that captured it stay valid. Must run
+// before registration, for the same dimHashesByName reason as
+// LabeledCounter.rebuildInPlace.
+func (lh *LabeledHistogram) rebuildInPlace(buckets []float64, explicit bool) {
 	opts := lh.opts
-	if lh.configBuckets {
+	if explicit || lh.configBuckets {
 		opts.Buckets = buckets
 	}
 	replacement := NewLabeledHistogram(opts, lh.schema)
@@ -96,7 +66,7 @@ func (lh *LabeledHistogram) Describe(ch chan<- *prometheus.Desc) { lh.vec.Descri
 func (lh *LabeledHistogram) Collect(ch chan<- prometheus.Metric) { lh.vec.Collect(ch) }
 
 // WithLabelValues accepts values for the FULL schema and filters internally to
-// the labels retained by the current filter. Panics on length mismatch to
+// the labels the current policy retains. Panics on length mismatch to
 // surface miswired call sites immediately.
 func (lh *LabeledHistogram) WithLabelValues(vals ...string) prometheus.Observer {
 	if len(vals) != len(lh.schema) {

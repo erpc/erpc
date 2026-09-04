@@ -208,10 +208,11 @@ pprof — build with `-tags pprof` to activate.
 | `metrics.hostV6` | \*string | `"[::]"` | IPv6 bind address. |
 | `metrics.errorLabelMode` | LabelMode | `"compact"` | Controls the `error` label on request-error counters. `"compact"` condenses codes; `"verbose"` emits full class names. |
 | `metrics.histogramBuckets` | string | `""` (built-in defaults) | Comma-separated float64 bucket boundaries. Non-float values are rejected by validation. |
-| `metrics.histogramDropLabels` | []string | nil | Label names removed from every histogram to reduce cardinality. |
-| `metrics.histogramLabelOverrides` | map[string][]string | nil | Per-metric label keep-list; key is metric name without `erpc_` prefix. |
-| `metrics.counterDropLabels` | []string | nil | Label names removed from every counter carrying caller-controlled dimensions. Sums are preserved; the dimension is not. |
-| `metrics.counterLabelOverrides` | map[string][]string | nil | Per-metric label keep-list for counters; key is metric name without `erpc_` prefix. |
+| `metrics.customizations` | []\*MetricsCustomizationConfig | nil | Ordered `{subject, action, labels, buckets}` entries controlling family exposure, per-family label sets, and per-family histogram buckets. `subject` is a metric name without the `erpc_` prefix, optionally ending in `*`; rules are applied by specificity, not order. |
+| `metrics.histogramDropLabels` | []string | nil | **Deprecated** — use `metrics.customizations`. Label names removed from every histogram to reduce cardinality. |
+| `metrics.histogramLabelOverrides` | map[string][]string | nil | **Deprecated** — use `metrics.customizations`. Per-metric label keep-list; key is metric name without `erpc_` prefix. |
+| `metrics.counterDropLabels` | []string | nil | **Deprecated** — use `metrics.customizations`. Label names removed from every counter carrying caller-controlled dimensions. Sums are preserved; the dimension is not. |
+| `metrics.counterLabelOverrides` | map[string][]string | nil | **Deprecated** — use `metrics.customizations`. Per-metric label keep-list for counters; key is metric name without `erpc_` prefix. |
 
 **Environment variables**
 
@@ -317,10 +318,14 @@ cardinality bounded:
   # compact keeps error labels bounded; verbose creates a label value per
   # error class — too many on multi-upstream deployments.
   errorLabelMode: compact
-  # Drop high-cardinality labels from histograms only; counters keep them.
-  histogramDropLabels:
-    - user
-    - composite`}
+  # Drop high-cardinality labels from every family that carries them.
+  customizations:
+    - subject: "*"
+      labels:
+        - subject: user
+          action: drop
+        - subject: composite
+          action: drop`}
   ts={`metrics: {
   enabled: true,
   port: 4001,
@@ -328,7 +333,15 @@ cardinality bounded:
   // Bucket edges aligned to observed p50 (~100ms) and p99 (~3s) latencies.
   histogramBuckets: '0.020,0.100,0.300,0.500,1,3,6,10',
   errorLabelMode: 'compact',
-  histogramDropLabels: ['user', 'composite'],
+  customizations: [
+    {
+      subject: '*',
+      labels: [
+        { subject: 'user', action: 'drop' },
+        { subject: 'composite', action: 'drop' },
+      ],
+    },
+  ],
 },`}
 />
 

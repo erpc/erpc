@@ -3,6 +3,7 @@ package telemetry
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,26 +21,25 @@ func withFreshRegistry(t *testing.T) *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 	prometheus.DefaultRegisterer = reg
 
+	origPolicy := currentPolicy()
+	setPolicy(nil)
+
 	registryMu.Lock()
-	origExposure := exposure
 	origRegistered := make([]prometheus.Registerer, len(definitions))
 	for i, d := range definitions {
 		origRegistered[i] = d.registeredWith
 		d.registeredWith = nil
 	}
-	exposure = nil
 	registryMu.Unlock()
 
 	t.Cleanup(func() {
 		prometheus.DefaultRegisterer = origRegisterer
 		registryMu.Lock()
-		exposure = origExposure
 		for i, d := range definitions {
 			d.registeredWith = origRegistered[i]
 		}
 		registryMu.Unlock()
-		SetCounterLabelFilter(nil, nil)
-		SetHistogramLabelFilter(nil, nil)
+		setPolicy(origPolicy)
 		ResetHandleCache()
 	})
 	return reg
@@ -56,6 +56,26 @@ func gatheredFamilies(t *testing.T, reg *prometheus.Registry) map[string]struct{
 		out[mf.GetName()] = struct{}{}
 	}
 	return out
+}
+
+// scrapedBuckets maps each gathered histogram family to its bucket boundaries.
+func scrapedBuckets(t *testing.T, reg *prometheus.Registry) map[string][]float64 {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather() failed: %v", err)
+	}
+	bounds := map[string][]float64{}
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			if h := m.GetHistogram(); h != nil {
+				for _, b := range h.GetBucket() {
+					bounds[mf.GetName()] = append(bounds[mf.GetName()], b.GetUpperBound())
+				}
+			}
+		}
+	}
+	return bounds
 }
 
 // registeredFamilies reports which families the manager put on the registry.
@@ -109,8 +129,8 @@ func TestKnownFamilies(t *testing.T) {
 	}
 }
 
-// The baseline: no exposure config registers every family the package defines.
-func TestConfigure_NoExposureConfigRegistersEverything(t *testing.T) {
+// The baseline: no customizations registers every family the package defines.
+func TestConfigure_NoCustomizationsRegistersEverything(t *testing.T) {
 	reg := withFreshRegistry(t)
 	if err := Configure(&Options{}); err != nil {
 		t.Fatalf("Configure failed: %v", err)
@@ -128,11 +148,13 @@ func TestConfigure_NoExposureConfigRegistersEverything(t *testing.T) {
 
 // An allowlist is the headline: exactly the named families reach the registry,
 // and nothing else costs a series.
-func TestConfigure_ExposeMetricsRegistersOnlyListed(t *testing.T) {
+func TestConfigure_DropAllThenKeepRegistersOnlyKept(t *testing.T) {
 	reg := withFreshRegistry(t)
-	err := Configure(&Options{
-		ExposeMetrics: []string{"upstream_request_total", "network_request_duration_seconds"},
-	})
+	err := Configure(&Options{Customizations: []Customization{
+		{Subject: "*", Action: ActionDrop},
+		{Subject: "upstream_request_total", Action: ActionKeep},
+		{Subject: "network_request_duration_seconds", Action: ActionKeep},
+	}})
 	if err != nil {
 		t.Fatalf("Configure failed: %v", err)
 	}
@@ -159,9 +181,13 @@ func TestConfigure_ExposeMetricsRegistersOnlyListed(t *testing.T) {
 	}
 }
 
-func TestConfigure_DropMetricsRemovesListed(t *testing.T) {
+func TestConfigure_DropRemovesMatched(t *testing.T) {
 	reg := withFreshRegistry(t)
-	if err := Configure(&Options{DropMetrics: []string{"consensus_*", "upstream_request_total"}}); err != nil {
+	err := Configure(&Options{Customizations: []Customization{
+		{Subject: "consensus_*", Action: ActionDrop},
+		{Subject: "upstream_request_total", Action: ActionDrop},
+	}})
+	if err != nil {
 		t.Fatalf("Configure failed: %v", err)
 	}
 
@@ -171,43 +197,43 @@ func TestConfigure_DropMetricsRemovesListed(t *testing.T) {
 	}
 	for name := range registered {
 		if strings.HasPrefix(name, "erpc_consensus_") {
-			t.Errorf("%q matches the denylisted consensus_* prefix and must not be registered", name)
+			t.Errorf("%q matches the dropped consensus_* prefix and must not be registered", name)
 		}
 	}
 	if _, ok := registered["erpc_network_request_duration_seconds"]; !ok {
-		t.Error("an unlisted family must stay registered under a denylist-only config")
+		t.Error("an unmatched family must stay registered when nothing keeps it explicitly")
 	}
 }
 
-// dropMetrics is applied after exposeMetrics, so an operator can keep a
-// subsystem and carve one family out of it.
-func TestConfigure_DropWinsOverExpose(t *testing.T) {
+// The exact subject outranks the prefix, so an operator can drop a subsystem and
+// carve one family back out of it.
+func TestConfigure_ExactKeepSurvivesPrefixDrop(t *testing.T) {
 	reg := withFreshRegistry(t)
-	err := Configure(&Options{
-		ExposeMetrics: []string{"consensus_*"},
-		DropMetrics:   []string{"consensus_duration_seconds"},
-	})
+	err := Configure(&Options{Customizations: []Customization{
+		{Subject: "consensus_*", Action: ActionDrop},
+		{Subject: "consensus_duration_seconds", Action: ActionKeep},
+	}})
 	if err != nil {
 		t.Fatalf("Configure failed: %v", err)
 	}
 
 	registered := registeredFamilies(reg)
-	if len(registered) == 0 {
-		t.Fatal("expected the consensus_* families registered")
+	if _, ok := registered["erpc_consensus_duration_seconds"]; !ok {
+		t.Error("expected the exact keep subject to survive the consensus_* drop")
 	}
-	if _, ok := registered["erpc_consensus_duration_seconds"]; ok {
-		t.Error("erpc_consensus_duration_seconds is denylisted and must not be registered")
+	if _, ok := registered["erpc_consensus_total"]; ok {
+		t.Error("erpc_consensus_total is covered only by consensus_* and must not be registered")
 	}
-	if _, ok := registered["erpc_consensus_total"]; !ok {
-		t.Error("expected erpc_consensus_total registered via consensus_*")
+	if _, ok := registered["erpc_network_request_duration_seconds"]; !ok {
+		t.Error("families outside consensus_* must stay registered")
 	}
 }
 
-// A bad exposure entry is a config error: nothing is registered, so the caller
-// cannot end up serving a half-applied filter.
-func TestConfigure_InvalidExposureRegistersNothing(t *testing.T) {
+// A bad customization is a config error: nothing is registered, so the caller
+// cannot end up serving a half-applied policy.
+func TestConfigure_InvalidCustomizationRegistersNothing(t *testing.T) {
 	reg := withFreshRegistry(t)
-	err := Configure(&Options{ExposeMetrics: []string{"upstream_*_total"}})
+	err := Configure(&Options{Customizations: []Customization{{Subject: "upstream_*_total", Action: ActionDrop}}})
 	if err == nil {
 		t.Fatal("expected an error for a mid-string '*'")
 	}
@@ -248,21 +274,7 @@ func TestConfigure_HistogramBucketsApplyOnlyWhereUndeclared(t *testing.T) {
 	MetricNetworkRequestDuration.WithLabelValues("p", "n", "v", "u", "eth_call", "finalized", "usr").Observe(1)
 	MetricNetworkHedgeDelaySeconds.WithLabelValues("p", "n", "eth_call", "finalized").Observe(1)
 
-	mfs, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("Gather() failed: %v", err)
-	}
-	bounds := map[string][]float64{}
-	for _, mf := range mfs {
-		for _, m := range mf.GetMetric() {
-			if h := m.GetHistogram(); h != nil {
-				for _, b := range h.GetBucket() {
-					bounds[mf.GetName()] = append(bounds[mf.GetName()], b.GetUpperBound())
-				}
-			}
-		}
-	}
-
+	bounds := scrapedBuckets(t, reg)
 	if got := bounds["erpc_network_request_duration_seconds"]; len(got) != 2 || got[0] != 0.25 || got[1] != 2.5 {
 		t.Errorf("expected the configured buckets [0.25 2.5] on network_request_duration_seconds, got %v", got)
 	}
@@ -319,21 +331,9 @@ func TestSetHistogramBuckets_ReportsParseError(t *testing.T) {
 	}
 }
 
-// counterDropLabels reaches the labeled counters through Configure, which is the
-// step that both applies the filter and registers under it.
-func TestConfigure_CounterDropLabelsApplyBeforeRegistration(t *testing.T) {
-	reg := withFreshRegistry(t)
-	err := Configure(&Options{
-		CounterDropLabels:     []string{"user", "agent_name"},
-		CounterLabelOverrides: map[string][]string{"upstream_request_total": {"user"}},
-	})
-	if err != nil {
-		t.Fatalf("Configure failed: %v", err)
-	}
-
-	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent").Inc()
-	MetricUpstreamSkippedTotal.WithLabelValues("p", "v", "n", "u", "c", "f", "usr", "agent").Inc()
-
+// scrapedLabels maps each gathered family to the label names of its last series.
+func scrapedLabels(t *testing.T, reg *prometheus.Registry) map[string]map[string]struct{} {
+	t.Helper()
 	mfs, err := reg.Gather()
 	if err != nil {
 		t.Fatalf("Gather() failed: %v", err)
@@ -348,16 +348,39 @@ func TestConfigure_CounterDropLabelsApplyBeforeRegistration(t *testing.T) {
 			labelsOf[mf.GetName()] = set
 		}
 	}
+	return labelsOf
+}
 
+// Label rules reach the labeled counters through Configure, which is the step that
+// both installs the policy and registers under it.
+func TestConfigure_LabelRulesApplyBeforeRegistration(t *testing.T) {
+	reg := withFreshRegistry(t)
+	err := Configure(&Options{Customizations: []Customization{
+		{Subject: "*", Labels: []LabelCustomization{
+			{Subject: "user", Action: ActionDrop},
+			{Subject: "agent_name", Action: ActionDrop},
+		}},
+		{Subject: "upstream_request_total", Labels: []LabelCustomization{
+			{Subject: "user", Action: ActionKeep},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("Configure failed: %v", err)
+	}
+
+	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent").Inc()
+	MetricUpstreamSkippedTotal.WithLabelValues("p", "v", "n", "u", "c", "f", "usr", "agent").Inc()
+
+	labelsOf := scrapedLabels(t, reg)
 	req := labelsOf["erpc_upstream_request_total"]
 	if req == nil {
 		t.Fatal("erpc_upstream_request_total did not appear in the scrape")
 	}
 	if _, ok := req["user"]; !ok {
-		t.Error("upstream_request_total has a keep override for user, so user must survive")
+		t.Error("upstream_request_total keeps user explicitly, so it must survive the fleet-wide drop")
 	}
 	if _, ok := req["agent_name"]; ok {
-		t.Error("agent_name is dropped globally and has no override on upstream_request_total")
+		t.Error("agent_name is dropped fleet-wide and is not kept back on upstream_request_total")
 	}
 
 	skipped := labelsOf["erpc_upstream_request_skipped_total"]
@@ -371,6 +394,116 @@ func TestConfigure_CounterDropLabelsApplyBeforeRegistration(t *testing.T) {
 	}
 }
 
+// The deprecated per-kind knobs must keep working: they desugar onto the same
+// rules, and they are kind-scoped where a customization is subject-scoped.
+func TestConfigure_LegacyLabelKnobsStillApply(t *testing.T) {
+	reg := withFreshRegistry(t)
+	err := Configure(&Options{LegacyLabels: LegacyLabelConfig{
+		CounterDropLabels:     []string{"user", "agent_name"},
+		CounterLabelOverrides: map[string][]string{"upstream_request_total": {"user"}},
+	}})
+	if err != nil {
+		t.Fatalf("Configure failed: %v", err)
+	}
+
+	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent").Inc()
+	MetricUpstreamSkippedTotal.WithLabelValues("p", "v", "n", "u", "c", "f", "usr", "agent").Inc()
+	MetricNetworkRequestDuration.WithLabelValues("p", "n", "v", "u", "eth_call", "finalized", "usr").Observe(1)
+
+	labelsOf := scrapedLabels(t, reg)
+	req := labelsOf["erpc_upstream_request_total"]
+	if req == nil {
+		t.Fatal("erpc_upstream_request_total did not appear in the scrape")
+	}
+	if _, ok := req["user"]; !ok {
+		t.Error("counterLabelOverrides re-adds user on upstream_request_total")
+	}
+	if _, ok := req["agent_name"]; ok {
+		t.Error("agent_name is in counterDropLabels with no override")
+	}
+	if skipped := labelsOf["erpc_upstream_request_skipped_total"]; skipped != nil {
+		if _, ok := skipped["user"]; ok {
+			t.Error("user must be dropped from counters without an override")
+		}
+	}
+	// counterDropLabels is counters only — the histogram carrying "user" keeps it.
+	hist := labelsOf["erpc_network_request_duration_seconds"]
+	if hist == nil {
+		t.Fatal("erpc_network_request_duration_seconds did not appear in the scrape")
+	}
+	if _, ok := hist["user"]; !ok {
+		t.Error("counterDropLabels must not reach histograms")
+	}
+}
+
+// A customization naming a histogram's buckets overrides both the global list and
+// what the metric declares in code — which is the whole point of having it be
+// per-metric.
+func TestConfigure_PerMetricBucketsOverride(t *testing.T) {
+	reg := withFreshRegistry(t)
+	err := Configure(&Options{
+		HistogramBuckets: "0.25,2.5",
+		Customizations: []Customization{
+			// network_request_duration_seconds declares no buckets, so this
+			// overrides the global list.
+			{Subject: "network_request_duration_seconds", Buckets: []float64{7, 8}},
+			// network_hedge_delay_seconds declares its own, so this overrides code.
+			{Subject: "network_hedge_delay_seconds", Buckets: []float64{9, 10, 11}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Configure failed: %v", err)
+	}
+
+	MetricNetworkRequestDuration.WithLabelValues("p", "n", "v", "u", "eth_call", "finalized", "usr").Observe(1)
+	MetricNetworkHedgeDelaySeconds.WithLabelValues("p", "n", "eth_call", "finalized").Observe(1)
+	MetricUpstreamRequestDuration.WithLabelValues("p", "v", "n", "u", "eth_call", "c", "finalized", "usr").Observe(1)
+
+	bounds := scrapedBuckets(t, reg)
+	if got := bounds["erpc_network_request_duration_seconds"]; !reflect.DeepEqual(got, []float64{7, 8}) {
+		t.Errorf("expected the per-metric buckets [7 8], got %v", got)
+	}
+	if got := bounds["erpc_network_hedge_delay_seconds"]; !reflect.DeepEqual(got, []float64{9, 10, 11}) {
+		t.Errorf("expected the per-metric buckets to override the declared ones, got %v", got)
+	}
+	// An uncustomized histogram that declares no buckets still takes the global
+	// list.
+	if got := bounds["erpc_upstream_request_duration_seconds"]; !reflect.DeepEqual(got, []float64{0.25, 2.5}) {
+		t.Errorf("expected the global buckets [0.25 2.5] on an uncustomized histogram, got %v", got)
+	}
+}
+
+// A label or bucket rule aimed at a family that cannot honor it does nothing, so
+// startup has to be able to name it. Only exact subjects are reported — a
+// sweeping one is expected to cover families with different shapes.
+func TestIgnoredCustomizations(t *testing.T) {
+	withFreshRegistry(t)
+	err := Configure(&Options{Customizations: []Customization{
+		// A gauge: no label projection, and not a histogram.
+		{Subject: "upstream_block_head_lag", Labels: []LabelCustomization{{Subject: "network", Action: ActionDrop}}, Buckets: []float64{1, 2}},
+		// A counter with a label set fixed in code.
+		{Subject: "selection_primary_switch_total", Labels: []LabelCustomization{{Subject: "method", Action: ActionDrop}}},
+		// Honored: a labeled counter and a labeled histogram.
+		{Subject: "upstream_request_total", Labels: []LabelCustomization{{Subject: "user", Action: ActionDrop}}},
+		{Subject: "network_request_duration_seconds", Buckets: []float64{1, 2}},
+		// A sweeping subject covers every shape and must stay silent.
+		{Subject: "*", Labels: []LabelCustomization{{Subject: "user", Action: ActionDrop}}},
+	}})
+	if err != nil {
+		t.Fatalf("Configure failed: %v", err)
+	}
+
+	got := IgnoredCustomizations()
+	want := []string{
+		"erpc_selection_primary_switch_total: labels ignored, this family's label set is fixed in code",
+		"erpc_upstream_block_head_lag: buckets ignored, not a histogram",
+		"erpc_upstream_block_head_lag: labels ignored, this family's label set is fixed in code",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("IgnoredCustomizations() =\n%v\nwant\n%v", got, want)
+	}
+}
+
 // A second Configure on the same registry must not disturb what is already
 // registered: Prometheus has frozen those label sets, and rebuilding under them
 // would leave the registry describing a shape it no longer collects.
@@ -381,8 +514,11 @@ func TestConfigure_SecondCallLeavesRegisteredFamiliesAlone(t *testing.T) {
 	}
 	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent").Inc()
 
-	// A changed counter filter cannot be applied retroactively.
-	if err := Configure(&Options{CounterDropLabels: []string{"user"}}); err != nil {
+	// A changed label projection cannot be applied retroactively.
+	err := Configure(&Options{Customizations: []Customization{
+		{Subject: "*", Labels: []LabelCustomization{{Subject: "user", Action: ActionDrop}}},
+	}})
+	if err != nil {
 		t.Fatalf("second Configure failed: %v", err)
 	}
 
@@ -416,31 +552,33 @@ func TestConfigure_SecondCallLeavesRegisteredFamiliesAlone(t *testing.T) {
 	}
 }
 
-func TestUnmatchedExposureEntries(t *testing.T) {
+func TestUnmatchedSubjects(t *testing.T) {
 	withFreshRegistry(t)
-	err := Configure(&Options{
-		ExposeMetrics: []string{"upstream_request_total", "no_such_metric_total"},
-		DropMetrics:   []string{"consensus_*", "nosuch_*", "go_goroutines"},
-	})
+	err := Configure(&Options{Customizations: []Customization{
+		{Subject: "upstream_request_total", Action: ActionKeep},
+		{Subject: "no_such_metric_total", Action: ActionKeep},
+		{Subject: "consensus_*", Action: ActionDrop},
+		{Subject: "nosuch_*", Action: ActionDrop},
+		{Subject: "go_goroutines", Action: ActionDrop},
+	}})
 	if err != nil {
 		t.Fatalf("Configure failed: %v", err)
 	}
 
-	got := UnmatchedExposureEntries()
-	want := []string{"no_such_metric_total", "nosuch_*"}
-	if len(got) != len(want) {
-		t.Fatalf("UnmatchedExposureEntries() = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("UnmatchedExposureEntries()[%d] = %q, want %q", i, got[i], want[i])
-		}
+	got := UnmatchedSubjects()
+	want := []string{"nosuch_*", "no_such_metric_total"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("UnmatchedSubjects() = %v, want %v", got, want)
 	}
 }
 
 func TestExposedFamilyCount(t *testing.T) {
 	withFreshRegistry(t)
-	if err := Configure(&Options{ExposeMetrics: []string{"upstream_request_total"}}); err != nil {
+	err := Configure(&Options{Customizations: []Customization{
+		{Subject: "*", Action: ActionDrop},
+		{Subject: "upstream_request_total", Action: ActionKeep},
+	}})
+	if err != nil {
 		t.Fatalf("Configure failed: %v", err)
 	}
 	exposed, total := ExposedFamilyCount()
@@ -464,10 +602,14 @@ func TestGatherer(t *testing.T) {
 		t.Fatalf("Configure failed: %v", err)
 	}
 	if got := Gatherer(stock); got != prometheus.Gatherer(stock) {
-		t.Error("with no exposure list configured, Gatherer must hand back the gatherer unchanged")
+		t.Error("with nothing customized, Gatherer must hand back the gatherer unchanged")
 	}
 
-	if err := Configure(&Options{ExposeMetrics: []string{"upstream_request_total"}}); err != nil {
+	err := Configure(&Options{Customizations: []Customization{
+		{Subject: "*", Action: ActionDrop},
+		{Subject: "upstream_request_total", Action: ActionKeep},
+	}})
+	if err != nil {
 		t.Fatalf("Configure failed: %v", err)
 	}
 	got, err := Gatherer(stock).Gather()
@@ -494,23 +636,5 @@ func TestDefine_DuplicateFamilyPanics(t *testing.T) {
 	DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
-	}, []string{"project"})
-}
-
-// A histogram with no buckets would silently take Prometheus's defaults instead
-// of the configured ones, which looks like config being ignored.
-func TestDefineHistogram_RequiresExplicitBuckets(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected a panic for a plain histogram with no buckets")
-		}
-		if !strings.Contains(fmt.Sprint(r), "declares no buckets") {
-			t.Errorf("unexpected panic: %v", r)
-		}
-	}()
-	DefineHistogram(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "test_manager_bucketless_seconds",
 	}, []string{"project"})
 }

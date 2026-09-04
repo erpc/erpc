@@ -40,7 +40,7 @@ func scrapeMetricsOutput(t *testing.T, reg *prometheus.Registry) (body string, l
 	return
 }
 
-// emitSynthetic drives the three filter-aware histograms with a fixed cross
+// emitSynthetic drives the three user-carrying histograms with a fixed cross
 // product so label-vs-bytes math is deterministic.
 func emitSynthetic(users, networks, upstreams int) {
 	for u := 0; u < users; u++ {
@@ -64,12 +64,12 @@ func emitSynthetic(users, networks, upstreams int) {
 	}
 }
 
-func runScenario(t *testing.T, name string, drop []string, overrides map[string][]string) (bytes int, lines int, perMetric map[string]int) {
+func runScenario(t *testing.T, name string, customizations ...Customization) (bytes int, lines int, perMetric map[string]int) {
 	t.Helper()
 	// Fresh registry so counts reflect only this run's emissions.
 	reg := prometheus.NewRegistry()
 	prometheus.DefaultRegisterer = reg
-	SetHistogramLabelFilter(drop, overrides)
+	setPolicy(mustPolicy(t, customizations...))
 	if err := SetHistogramBuckets(""); err != nil {
 		t.Fatalf("%s: SetHistogramBuckets: %v", name, err)
 	}
@@ -78,17 +78,27 @@ func runScenario(t *testing.T, name string, drop []string, overrides map[string]
 	return len(body), lines, perMetric
 }
 
-func TestHistogramLabelFilter_SizeAndCardinality(t *testing.T) {
+func TestHistogramLabelCustomizations_SizeAndCardinality(t *testing.T) {
 	// Scenario: 50 users × 10 networks × 5 upstreams
 	// Expected: dropping "user" should reduce upstream_request_duration and
 	// network_request_duration series by ~50x (one row per user collapses to
 	// one row total per (network, upstream, method, ...) tuple).
+	origPolicy := currentPolicy()
+	t.Cleanup(func() { setPolicy(origPolicy) })
 
-	baseBytes, baseLines, basePer := runScenario(t, "baseline", nil, nil)
-	dropBytes, dropLines, dropPer := runScenario(t, "drop-user", []string{"user"}, nil)
-	overrideBytes, overrideLines, overridePer := runScenario(t, "drop-user-keep-on-network", []string{"user"},
-		map[string][]string{"network_request_duration_seconds": {"user"}})
-	dropBothBytes, dropBothLines, dropBothPer := runScenario(t, "drop-user-and-composite", []string{"user", "composite"}, nil)
+	baseBytes, baseLines, basePer := runScenario(t, "baseline")
+	dropBytes, dropLines, dropPer := runScenario(t, "drop-user", dropLabel("user"))
+	overrideBytes, overrideLines, overridePer := runScenario(t, "drop-user-keep-on-network",
+		dropLabel("user"),
+		Customization{Subject: "network_request_duration_seconds", Labels: []LabelCustomization{{Subject: "user", Action: ActionKeep}}},
+	)
+	dropBothBytes, dropBothLines, dropBothPer := runScenario(t, "drop-user-and-composite", Customization{
+		Subject: "*",
+		Labels: []LabelCustomization{
+			{Subject: "user", Action: ActionDrop},
+			{Subject: "composite", Action: ActionDrop},
+		},
+	})
 
 	reportMetrics := []string{
 		"erpc_upstream_request_duration_seconds_bucket",
@@ -135,9 +145,9 @@ func TestHistogramLabelFilter_SizeAndCardinality(t *testing.T) {
 	}
 }
 
-// emitAllHistograms hits every filter-aware histogram (all 13) so a filter
-// change is observable across the full set, not just the three that carry
-// a "user" label.
+// emitAllHistograms hits every label-projected histogram (all 13) so a
+// customization is observable across the full set, not just the three that
+// carry a "user" label.
 func emitAllHistograms(methods, networks int) {
 	for m := 0; m < methods; m++ {
 		method := fmt.Sprintf("m-%d", m)
@@ -147,7 +157,7 @@ func emitAllHistograms(methods, networks int) {
 			MetricUpstreamRequestDuration.WithLabelValues("standard", "vendorA", network, "up-1", method, "none", "finalized", "user-1").Observe(0.1)
 			MetricNetworkRequestDuration.WithLabelValues("standard", network, "vendorA", "up-1", method, "finalized", "user-1").Observe(0.1)
 			MetricNetworkEvmGetLogsRangeRequested.WithLabelValues("standard", network, method, "user-1", "finalized").Observe(100)
-			// 10 historically-unfiltered histograms (now filter-aware after refactor)
+			// 10 historically-unprojected histograms (now customizable after the refactor)
 			MetricNetworkHedgeDelaySeconds.WithLabelValues("standard", network, method, "finalized").Observe(0.05)
 			MetricConsensusResponsesCollected.WithLabelValues("standard", network, method, "vA", "false", "finalized", "user-1", "agent-1").Observe(3)
 			MetricConsensusAgreementCount.WithLabelValues("standard", network, method, "finalized", "user-1", "agent-1").Observe(2)
@@ -161,14 +171,17 @@ func emitAllHistograms(methods, networks int) {
 	}
 }
 
-// TestHistogramLabelFilter_AllHistogramsObeyFilter verifies the refactor: a
-// global drop on a shared label now affects every histogram, not only the
+// TestHistogramLabelCustomizations_AllHistogramsObey verifies the refactor: a
+// fleet-wide drop on a shared label now affects every histogram, not only the
 // three that previously used LabeledHistogram.
-func TestHistogramLabelFilter_AllHistogramsObeyFilter(t *testing.T) {
-	run := func(drop []string) map[string]int {
+func TestHistogramLabelCustomizations_AllHistogramsObey(t *testing.T) {
+	origPolicy := currentPolicy()
+	t.Cleanup(func() { setPolicy(origPolicy) })
+
+	run := func(customizations ...Customization) map[string]int {
 		reg := prometheus.NewRegistry()
 		prometheus.DefaultRegisterer = reg
-		SetHistogramLabelFilter(drop, nil)
+		setPolicy(mustPolicy(t, customizations...))
 		if err := SetHistogramBuckets(""); err != nil {
 			t.Fatalf("SetHistogramBuckets: %v", err)
 		}
@@ -177,8 +190,8 @@ func TestHistogramLabelFilter_AllHistogramsObeyFilter(t *testing.T) {
 		return perMetric
 	}
 
-	baseline := run(nil)
-	dropped := run([]string{"category"}) // "category" (= method) is present on most histograms
+	baseline := run()
+	dropped := run(dropLabel("category")) // "category" (= method) is on most histograms
 
 	// Every histogram that has the "category" label should shrink.
 	withCategory := []string{

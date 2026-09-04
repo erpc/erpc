@@ -12,10 +12,10 @@ import (
 
 // ErrNothingRegistered marks a Configure failure that stopped registration
 // before it began, separating the two very different outcomes Configure reports
-// through one error: an unusable exposeMetrics/dropMetrics list leaves the
-// process serving no eRPC metrics at all, while a malformed histogramBuckets
-// value only substitutes the default buckets and registers everything. Callers
-// that log the error use this to pick a severity.
+// through one error: an unusable customizations list leaves the process serving
+// no eRPC metrics at all, while a malformed histogramBuckets value only
+// substitutes the default buckets and registers everything. Callers that log the
+// error use this to pick a severity.
 var ErrNothingRegistered = errors.New("no metric families were registered")
 
 // This file is the single place metric families are declared and registered.
@@ -24,10 +24,10 @@ var ErrNothingRegistered = errors.New("no metric families were registered")
 // later, when Configure runs with the resolved metrics config. The split is
 // forced by Prometheus: a registry freezes a family's label-set hash the first
 // time it is registered and keeps it for the registry's lifetime (dimHashesByName
-// survives Unregister), so anything that changes a label set — histogramDropLabels,
-// counterDropLabels — has to be applied before the first registration. Exposure
-// control needs the same window for a different reason: the only way to keep a
-// family off /metrics entirely is to never register it.
+// survives Unregister), so anything that changes a label set — a customization
+// dropping labels — has to be applied before the first registration. Dropping a
+// whole family needs the same window for a different reason: the only way to keep
+// it off /metrics entirely is to never register it.
 //
 // Practically that means: define with Define*, use the returned pointer freely
 // from any call site, and let Configure decide what actually reaches the registry.
@@ -38,37 +38,35 @@ var ErrNothingRegistered = errors.New("no metric families were registered")
 type Options struct {
 	// HistogramBuckets is the comma-separated bucket list applied to every
 	// histogram that does not declare its own. An unparseable value is reported
-	// as an error and the defaults are used.
+	// as an error and the defaults are used. A Customization naming a histogram
+	// overrides it.
 	HistogramBuckets string
 
-	HistogramDropLabels     []string
-	HistogramLabelOverrides map[string][]string
-	CounterDropLabels       []string
-	CounterLabelOverrides   map[string][]string
+	// Customizations selects which families are registered at all, which of
+	// their labels survive, and which buckets histograms use. See MetricPolicy.
+	Customizations []Customization
+
+	// LegacyLabels carries the deprecated per-kind label knobs, desugared onto
+	// the same policy so there is one projection implementation.
+	LegacyLabels LegacyLabelConfig
 
 	// CounterIdleEvictionAfter overrides how long an idle counter handle is kept
 	// before its series is released. nil leaves the default in place.
 	CounterIdleEvictionAfter *time.Duration
-
-	// ExposeMetrics and DropMetrics select which families are registered at all.
-	// See MetricExposureFilter.
-	ExposeMetrics []string
-	DropMetrics   []string
 }
 
 // definition is one metric family the manager owns.
 type definition struct {
 	family    string
+	kind      metricKind
 	collector prometheus.Collector
 
-	// rebuild re-creates the underlying Vec under the current label filter and
-	// resolved buckets. nil when no config can change the label set — plain
-	// counters and gauges, and the histograms that declare their own buckets and
-	// carry no filterable schema.
-	rebuild func(buckets []float64)
-
-	// histogram marks the families SetHistogramBuckets applies to.
-	histogram bool
+	// rebuild re-creates the underlying Vec under the current policy. `buckets`
+	// is the bucket list to use and `explicit` says whether an operator named
+	// this family's buckets, which overrides what the definition declares in
+	// code. nil when nothing in the config can change the Vec — plain counters
+	// and gauges.
+	rebuild func(buckets []float64, explicit bool)
 
 	// registeredWith is the registerer this family was registered with, nil until
 	// then. Its label set is frozen from that point, so a later Configure leaves
@@ -82,10 +80,26 @@ var (
 	definitions []*definition
 	byFamily    = map[string]*definition{}
 
-	// exposure is the filter installed by the last Configure call. nil means no
-	// exposure config has been applied, which exposes everything.
-	exposure *MetricExposureFilter
+	// policyMu guards the installed policy separately from the definition index,
+	// because the label projection is read while a rebuild runs under registryMu.
+	policyMu sync.RWMutex
+
+	// policy is what the last Configure installed. nil is the unconfigured
+	// policy: every family exposed, every label kept.
+	policy *MetricPolicy
 )
+
+func currentPolicy() *MetricPolicy {
+	policyMu.RLock()
+	defer policyMu.RUnlock()
+	return policy
+}
+
+func setPolicy(p *MetricPolicy) {
+	policyMu.Lock()
+	policy = p
+	policyMu.Unlock()
+}
 
 // define records a family. Called from package-var initializers, so a duplicate
 // name is a programming error that should fail loudly at startup rather than
@@ -104,10 +118,14 @@ func define(d *definition) {
 // Use it for counters whose cardinality is bounded by deployment topology
 // (project × network × upstream and the like). Counters carrying
 // caller-controlled labels — a user id, a client-supplied agent name — belong in
-// DefineLabeledCounter so counterDropLabels can reach them.
+// DefineLabeledCounter so a customization's label rules can reach them.
 func DefineCounter(opts prometheus.CounterOpts, labels []string) *prometheus.CounterVec {
 	vec := prometheus.NewCounterVec(opts, labels)
-	define(&definition{family: familyName(opts.Namespace, opts.Subsystem, opts.Name), collector: vec})
+	define(&definition{
+		family:    familyName(opts.Namespace, opts.Subsystem, opts.Name),
+		kind:      kindCounter,
+		collector: vec,
+	})
 	return vec
 }
 
@@ -117,50 +135,40 @@ func DefineCounter(opts prometheus.CounterOpts, labels []string) *prometheus.Cou
 // rather than a coarser one.
 func DefineGauge(opts prometheus.GaugeOpts, labels []string) *prometheus.GaugeVec {
 	vec := prometheus.NewGaugeVec(opts, labels)
-	define(&definition{family: familyName(opts.Namespace, opts.Subsystem, opts.Name), collector: vec})
-	return vec
-}
-
-// DefineHistogram declares a histogram family with fixed labels and its own
-// buckets. Histograms that should follow metrics.histogramBuckets, or whose
-// labels should follow histogramDropLabels, use DefineLabeledHistogram.
-func DefineHistogram(opts prometheus.HistogramOpts, labels []string) *prometheus.HistogramVec {
-	if len(opts.Buckets) == 0 {
-		panic(fmt.Sprintf("telemetry: histogram %q declares no buckets; use DefineLabeledHistogram to take the buckets from config", opts.Name))
-	}
-	vec := prometheus.NewHistogramVec(opts, labels)
 	define(&definition{
 		family:    familyName(opts.Namespace, opts.Subsystem, opts.Name),
+		kind:      kindGauge,
 		collector: vec,
-		histogram: true,
 	})
 	return vec
 }
 
 // DefineLabeledCounter declares a counter whose label set is projected through
-// counterDropLabels / counterLabelOverrides. `schema` is the canonical, full
-// label list; call sites always pass values for all of it, and the wrapper
-// forwards only the retained positions.
+// the metrics customizations. `schema` is the canonical, full label list; call
+// sites always pass values for all of it, and the wrapper forwards only the
+// retained positions.
 func DefineLabeledCounter(opts prometheus.CounterOpts, schema []string) *LabeledCounter {
 	lc := newLabeledCounterUnregistered(opts, schema)
 	define(&definition{
 		family:    familyName(opts.Namespace, opts.Subsystem, opts.Name),
+		kind:      kindCounter,
 		collector: lc,
-		rebuild:   func([]float64) { lc.rebuildInPlace() },
+		rebuild:   func([]float64, bool) { lc.rebuildInPlace() },
 	})
 	return lc
 }
 
-// DefineLabeledHistogram declares a histogram whose label set is projected
-// through histogramDropLabels / histogramLabelOverrides. Leaving opts.Buckets
-// empty takes the buckets from metrics.histogramBuckets; set them explicitly
-// only when the global latency buckets resolve this metric's range poorly.
+// DefineLabeledHistogram declares a histogram whose label set and buckets follow
+// the metrics customizations. Leaving opts.Buckets empty takes the buckets from
+// metrics.histogramBuckets; set them explicitly only when the global latency
+// buckets resolve this metric's range poorly. Either way a customization naming
+// this family overrides them.
 func DefineLabeledHistogram(opts prometheus.HistogramOpts, schema []string) *LabeledHistogram {
 	lh := NewLabeledHistogram(opts, schema)
 	define(&definition{
 		family:    familyName(opts.Namespace, opts.Subsystem, opts.Name),
+		kind:      kindHistogram,
 		collector: lh,
-		histogram: true,
 		rebuild:   lh.rebuildInPlace,
 	})
 	return lh
@@ -180,39 +188,35 @@ func familyName(namespace, subsystem, name string) string {
 // apply them — processes that never scrape do not need those collectors on the
 // default registry.
 //
-// Returns an error for an invalid exposeMetrics/dropMetrics entry, wrapped in
-// ErrNothingRegistered because nothing is registered in that case, and for an
-// unparseable histogramBuckets value, unwrapped because the defaults are applied
-// and registration proceeds. The caller can surface either without failing
-// startup over bucket syntax, and tell the outage apart from the typo.
+// Returns an error for an invalid customization, wrapped in ErrNothingRegistered
+// because nothing is registered in that case, and for an unparseable
+// histogramBuckets value, unwrapped because the defaults are applied and
+// registration proceeds. The caller can surface either without failing startup
+// over bucket syntax, and tell the outage apart from the typo.
 func Configure(o *Options) error {
 	if o == nil {
 		return SetHistogramBuckets("")
 	}
 
-	filter, err := NewMetricExposureFilter(o.ExposeMetrics, o.DropMetrics)
+	p, err := NewMetricPolicy(o.Customizations, o.LegacyLabels)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrNothingRegistered, err)
 	}
 	buckets, bucketErr := ParseHistogramBuckets(o.HistogramBuckets)
 	if bucketErr != nil {
 		buckets = DefaultHistogramBuckets
-		// The exposure errors name their field; this one is a bare strconv
+		// The customization errors name their field; this one is a bare strconv
 		// message, and the caller logs both through the same line.
 		bucketErr = fmt.Errorf("metrics.histogramBuckets: %w", bucketErr)
 	}
 
-	// The label filters must be installed before anything is rebuilt, since the
-	// rebuild is what reads them.
-	SetHistogramLabelFilter(o.HistogramDropLabels, o.HistogramLabelOverrides)
-	SetCounterLabelFilter(o.CounterDropLabels, o.CounterLabelOverrides)
 	if o.CounterIdleEvictionAfter != nil {
 		SetCounterIdleEvictionAfter(*o.CounterIdleEvictionAfter)
 	}
 
-	registryMu.Lock()
-	exposure = filter
-	registryMu.Unlock()
+	// The policy must be installed before anything is rebuilt, since the rebuild
+	// is what reads the label projection out of it.
+	setPolicy(p)
 
 	apply(buckets, false)
 	return bucketErr
@@ -237,18 +241,20 @@ func SetHistogramBuckets(bucketsStr string) error {
 // apply rebuilds and registers every exposed definition that is not yet
 // registered with the current DefaultRegisterer.
 func apply(buckets []float64, histogramsOnly bool) {
+	p := currentPolicy()
+
 	registryMu.Lock()
 	defer registryMu.Unlock()
 
 	reg := prometheus.DefaultRegisterer
 	for _, d := range definitions {
-		if histogramsOnly && !d.histogram {
+		if histogramsOnly && d.kind != kindHistogram {
 			continue
 		}
 		// Skipping before the rebuild is what makes exposure control work: an
 		// unexposed family is never registered, so it costs no series and never
 		// reaches /metrics.
-		if !exposure.Exposed(d.family) {
+		if !p.Exposed(d.family) {
 			continue
 		}
 		// Already registered: its label set is frozen and rebuilding it now
@@ -257,7 +263,13 @@ func apply(buckets []float64, histogramsOnly bool) {
 			continue
 		}
 		if d.rebuild != nil {
-			d.rebuild(buckets)
+			// A customization naming this family's buckets overrides both the
+			// global list and what the definition declares in code.
+			familyBuckets, explicit := p.BucketsFor(d.family)
+			if !explicit {
+				familyBuckets = buckets
+			}
+			d.rebuild(familyBuckets, explicit)
 		}
 		register(reg, d.collector)
 		d.registeredWith = reg
@@ -296,41 +308,67 @@ func KnownFamilies() []string {
 	return out
 }
 
-// ExposedFamilyCount reports how many known families the installed exposure
-// filter keeps, out of how many exist, for a startup log line.
+// ExposedFamilyCount reports how many known families the installed policy keeps,
+// out of how many exist, for a startup log line.
 func ExposedFamilyCount() (exposed, total int) {
+	p := currentPolicy()
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	for _, d := range definitions {
-		if exposure.Exposed(d.family) {
+		if p.Exposed(d.family) {
 			exposed++
 		}
 	}
 	return exposed, len(definitions)
 }
 
-// UnmatchedExposureEntries returns the configured exposeMetrics/dropMetrics
-// entries that match no known family, verbatim as written. An entry that matches
-// nothing does nothing, so a typo is otherwise invisible — the caller turns this
-// into a startup warning.
-func UnmatchedExposureEntries() []string {
-	registryMu.Lock()
-	f := exposure
-	registryMu.Unlock()
-	return UnmatchedEntries(f, KnownFamilies())
+// UnmatchedSubjects returns the configured customization subjects that match no
+// known family, verbatim as written. A subject that matches nothing does nothing,
+// so a typo is otherwise invisible — the caller turns this into a startup
+// warning.
+func UnmatchedSubjects() []string {
+	return currentPolicy().UnmatchedSubjects(KnownFamilies())
 }
 
-// Gatherer wraps g so the exposure filter also applies to families the manager
-// does not own — the stock go_/process_/promhttp_ collectors the default registry
-// installs. eRPC's own unexposed families are already absent, having never been
-// registered. Returns g unchanged when no exposure list is configured, so the
-// scrape path is untouched in the default case.
-func Gatherer(g prometheus.Gatherer) prometheus.Gatherer {
+// IgnoredCustomizations describes the label and bucket rules that name a family
+// which cannot honor them: labels on a family with no label projection (a gauge,
+// or a counter declared with a fixed label set), buckets on anything that is not
+// a histogram. Only families named exactly are reported — a subject like
+// "upstream_*" is expected to sweep up families that support different
+// customizations, and warning for each would bury the real typos.
+func IgnoredCustomizations() []string {
+	p := currentPolicy()
+
 	registryMu.Lock()
-	f := exposure
-	registryMu.Unlock()
-	if !f.Active() {
+	defer registryMu.Unlock()
+
+	var notes []string
+	for _, d := range definitions {
+		if !p.namesExactly(d.family) {
+			continue
+		}
+		if _, explicit := p.BucketsFor(d.family); explicit && d.kind != kindHistogram {
+			notes = append(notes, fmt.Sprintf("%s: buckets ignored, not a histogram", d.family))
+		}
+		// rebuild is what applies a label projection; a family without one has a
+		// label set fixed in code.
+		if d.rebuild == nil && p.hasLabelRules(d.family) {
+			notes = append(notes, fmt.Sprintf("%s: labels ignored, this family's label set is fixed in code", d.family))
+		}
+	}
+	sort.Strings(notes)
+	return notes
+}
+
+// Gatherer wraps g so the exposure rules also apply to families the manager does
+// not own — the stock go_/process_/promhttp_ collectors the default registry
+// installs. eRPC's own dropped families are already absent, having never been
+// registered. Returns g unchanged when nothing is customized, so the scrape path
+// is untouched in the default case.
+func Gatherer(g prometheus.Gatherer) prometheus.Gatherer {
+	p := currentPolicy()
+	if !p.Active() {
 		return g
 	}
-	return NewFilteredGatherer(g, f)
+	return NewFilteredGatherer(g, p)
 }
