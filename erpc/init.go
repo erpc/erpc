@@ -75,8 +75,15 @@ func Init(
 	// so the label filters have to be installed before the first registration,
 	// and a family excluded by exposeMetrics/dropMetrics is simply never
 	// registered.
+	// Two very different failures come back through this one error, so the
+	// message must not promise working metrics: a bad histogramBuckets value
+	// falls back to the default buckets and registers everything, while a
+	// malformed exposeMetrics/dropMetrics entry registers nothing at all. The
+	// CLI rejects the latter in MetricsConfig.Validate, but Init is public and a
+	// caller assembling a *common.Config by hand reaches here. The error names
+	// the offending field either way.
 	if err := telemetry.Configure(metricsOptions(cfg.Metrics)); err != nil {
-		logger.Warn().Err(err).Msg("failed to apply metrics configuration, using defaults where possible")
+		logger.Error().Err(err).Msg("failed to apply metrics configuration; some or all metric families are not registered")
 	}
 	if cfg.Metrics != nil && (len(cfg.Metrics.ExposeMetrics) > 0 || len(cfg.Metrics.DropMetrics) > 0) {
 		exposed, total := telemetry.ExposedFamilyCount()
