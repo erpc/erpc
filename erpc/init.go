@@ -13,9 +13,34 @@ import (
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 )
+
+// metricsOptions maps the metrics config onto the telemetry manager's options.
+// telemetry cannot import common (common imports telemetry), so the translation
+// lives here. A nil config yields nil, which Configure reads as "no metrics
+// section".
+func metricsOptions(cfg *common.MetricsConfig) *telemetry.Options {
+	if cfg == nil {
+		return nil
+	}
+	o := &telemetry.Options{
+		HistogramBuckets:        cfg.HistogramBuckets,
+		HistogramDropLabels:     cfg.HistogramDropLabels,
+		HistogramLabelOverrides: cfg.HistogramLabelOverrides,
+		CounterDropLabels:       cfg.CounterDropLabels,
+		CounterLabelOverrides:   cfg.CounterLabelOverrides,
+		ExposeMetrics:           cfg.ExposeMetrics,
+		DropMetrics:             cfg.DropMetrics,
+	}
+	if cfg.CounterIdleEvictionAfter != nil {
+		d := cfg.CounterIdleEvictionAfter.Duration()
+		o.CounterIdleEvictionAfter = &d
+	}
+	return o
+}
 
 func Init(
 	appCtx context.Context,
@@ -43,32 +68,31 @@ func Init(
 	}
 
 	//
-	// 2) Set the right histogram buckets and label filter
+	// 2) Apply the metrics configuration and register the exposed metrics
 	//
-	bucketStr := ""
-	if cfg.Metrics != nil {
-		if cfg.Metrics.HistogramBuckets != "" {
-			bucketStr = cfg.Metrics.HistogramBuckets
-		}
-		// Must run before SetHistogramBuckets so the new Vecs are built with the filter applied.
-		telemetry.SetHistogramLabelFilter(cfg.Metrics.HistogramDropLabels, cfg.Metrics.HistogramLabelOverrides)
-		if cfg.Metrics.CounterIdleEvictionAfter != nil {
-			telemetry.SetCounterIdleEvictionAfter(cfg.Metrics.CounterIdleEvictionAfter.Duration())
-		}
-		// Counters are built unregistered at package init (Prometheus freezes
-		// a metric's label-set hash for the life of the registry, so we cannot
-		// register first and filter later). Install any filter, then register
-		// once under it. Only when metrics config is present — processes that
-		// never scrape do not need these collectors on DefaultRegisterer, and
-		// tests that call Init without metrics must not freeze the full label
-		// set before a later Init can apply counterDropLabels.
-		if len(cfg.Metrics.CounterDropLabels) > 0 || len(cfg.Metrics.CounterLabelOverrides) > 0 {
-			telemetry.SetCounterLabelFilter(cfg.Metrics.CounterDropLabels, cfg.Metrics.CounterLabelOverrides)
-		}
-		telemetry.RebuildFilteredCounters()
+	// Metrics are defined unregistered at package init and registered here:
+	// Prometheus freezes a family's label-set hash for the life of the registry,
+	// so the label filters have to be installed before the first registration,
+	// and a family excluded by exposeMetrics/dropMetrics is simply never
+	// registered.
+	if err := telemetry.Configure(metricsOptions(cfg.Metrics)); err != nil {
+		logger.Warn().Err(err).Msg("failed to apply metrics configuration, using defaults where possible")
 	}
-	if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
-		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
+	if cfg.Metrics != nil && (len(cfg.Metrics.ExposeMetrics) > 0 || len(cfg.Metrics.DropMetrics) > 0) {
+		exposed, total := telemetry.ExposedFamilyCount()
+		logger.Info().
+			Int("exposed", exposed).
+			Int("total", total).
+			Strs("exposeMetrics", cfg.Metrics.ExposeMetrics).
+			Strs("dropMetrics", cfg.Metrics.DropMetrics).
+			Msg("metric exposure filter applied")
+		// An entry that matches nothing does nothing, so a typo'd metric name is
+		// otherwise invisible until someone notices the series never appeared.
+		if unmatched := telemetry.UnmatchedExposureEntries(); len(unmatched) > 0 {
+			logger.Warn().
+				Strs("entries", unmatched).
+				Msg("metrics.exposeMetrics/dropMetrics entries match no known metric family; check for typos")
+		}
 	}
 
 	// Install a global networkId -> alias resolver so network-labeled metrics from
@@ -168,8 +192,13 @@ func Init(
 			BaseContext: func(ln net.Listener) context.Context {
 				return appCtx
 			},
-			Addr:              fmt.Sprintf(":%d", *cfg.Metrics.Port),
-			Handler:           promhttp.Handler(),
+			Addr: fmt.Sprintf(":%d", *cfg.Metrics.Port),
+			// promhttp.Handler() with the gatherer wrapped, so exposeMetrics /
+			// dropMetrics also govern the collectors the manager does not own.
+			Handler: promhttp.InstrumentMetricHandler(
+				prometheus.DefaultRegisterer,
+				promhttp.HandlerFor(telemetry.Gatherer(prometheus.DefaultGatherer), promhttp.HandlerOpts{}),
+			),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
