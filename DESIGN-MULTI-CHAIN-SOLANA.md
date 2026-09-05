@@ -507,7 +507,8 @@ type SvmNetworkConfig struct {
 
     // Default commitment injected into requests that omit one. One of
     // "processed", "confirmed", "finalized". NO DEFAULT: when unset nothing is
-    // injected and each upstream's own server-side default governs.
+    // injected and each node applies its own default (Solana's is "finalized",
+    // which serving and routing assume; cacheability stays stricter).
     Commitment string `yaml:"commitment,omitempty" json:"commitment"`
 
     // Minimum interval between poll fan-outs. Default 400ms (one slot). This is a
@@ -520,7 +521,9 @@ type SvmNetworkConfig struct {
     MaxFinalizedSlotLag *int64 `yaml:"maxFinalizedSlotLag,omitempty" json:"maxFinalizedSlotLag,omitempty"`
 
     // Gates the getBlock/getConfirmedBlock guard that short-circuits slots above
-    // the pool's indexed frontier. nil => true.
+    // what the pool can serve: min(max finalized root, indexed frontier) at
+    // finalized commitment (including unpinned requests), the indexed frontier
+    // alone at confirmed/processed. nil => true.
     EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 

@@ -1377,14 +1377,50 @@ func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 	return pick.Tip
 }
 
-// SvmHighestFinalizedSlot is the finalized-slot counterpart. Used by the
-// slot-lag consensus filter as the reference "pool leader" value.
+// SvmHighestFinalizedSlot is the finalized-slot counterpart: the MAJORITY tip.
+// Used by the slot-lag consensus filter as the reference "pool leader" value
+// and by networkPostForward_getSlot to advertise a head to clients. Rejection
+// gates want SvmHighestFinalizedSlotMax instead.
 func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlot")
 	defer span.End()
 	pick := evm.PickServedTip(n.gatherSvmTipInputs(ctx, true))
 	span.SetAttributes(attribute.Int64("highest_finalized_slot", pick.Tip))
 	return pick.Tip
+}
+
+// SvmHighestFinalizedSlotMax returns the MAX finalized root across SVM
+// upstreams. Used only by the networkPreForward_getBlock guard: at finalized
+// commitment an upstream answers -32004 for any slot above its own root, so
+// the pool can serve a slot iff the LEADING upstream has rooted it. The
+// majority tip is the wrong aggregate for that decision — with three upstreams
+// whose roots are 1000/1000/1100, it reports 1000 and the guard would null out
+// ~100 slots the third upstream is holding, converting a served request into a
+// client-visible -32014.
+//
+// Same rationale as SvmHighestIndexedSlot and EVM's evmHighestBlockMax: never
+// reject a block the most-ahead upstream actually has. Zero means UNKNOWN (no
+// poller has reported a root yet), and every caller must treat it as "no bound"
+// rather than as slot 0.
+//
+// Reads the pollers directly rather than through gatherSvmTipInputs: a MAX
+// needs no sorting, and this runs on the pre-forward path of every getBlock, so
+// it must not allocate a slice per request.
+func (n *Network) SvmHighestFinalizedSlotMax(ctx context.Context) int64 {
+	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlotMax")
+	defer span.End()
+	var maxSlot int64
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		sp := u.SvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		if slot := sp.FinalizedSlot(); slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+	span.SetAttributes(attribute.Int64("highest_finalized_slot_max", maxSlot))
+	return maxSlot
 }
 
 // SvmEnforceBlockAvailability reports whether the networkPreForward_getBlock
