@@ -836,11 +836,120 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 		"getBlock on the clamped slot must succeed")
 }
 
+// TestSvm_GetBlock_UnpinnedCommitment_SkewedRoots_ServedByLeadingUpstream is the
+// end-to-end proof for both halves of the availability-guard fix, on the
+// deployment shape that carries the traffic: no svm.commitment, and a client
+// that omits the field.
+//
+//	lag upstream:  finalized root 1000, indexed 1200
+//	lead upstream: finalized root 1100, indexed 1200
+//
+// The majority tip is 1000 (PickServedTip on two inputs takes the lower), the
+// pool max is 1100. Slot 1050 sits in the skew band:
+//
+//   - Bounding by the indexed frontier alone (the pre-fix behaviour for an
+//     unpinned request) forwarded slot 1195 too, which every upstream answers
+//     -32004 for.
+//   - Bounding by the MAJORITY finalized tip would short-circuit slot 1050,
+//     which the lead upstream is holding.
+//
+// Only min(poolMaxFinalized, indexed) serves 1050 and rejects 1195.
+func TestSvm_GetBlock_UnpinnedCommitment_SkewedRoots_ServedByLeadingUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	const (
+		lagHost  = "svm-skew-lag.localhost"
+		leadHost = "svm-skew-lead.localhost"
+	)
+	util.SetupMocksForSvmStatePollerWithShred(lagHost, 1200, 1000, 1200)
+	util.SetupMocksForSvmStatePollerWithShred(leadHost, 1200, 1100, 1200)
+
+	// Slot 1050 — inside the skew band. Whichever upstream is selected answers.
+	for _, host := range []string{lagHost, leadHost} {
+		host := host
+		gock.New("http://" + host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != host {
+					return false
+				}
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"method":"getBlock"`) && strings.Contains(body, "1050")
+			}).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":{"blockhash":"skew-block-1050","parentSlot":1049}}`)
+	}
+
+	// Slot 1195 — above the pool's finalized roots. The guard must short-circuit
+	// it without any upstream call; a hit here means the finalized bound was
+	// dropped for unpinned requests.
+	for _, host := range []string{lagHost, leadHost} {
+		host := host
+		gock.New("http://" + host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != host {
+					return false
+				}
+				body := util.SafeReadBody(r)
+				if strings.Contains(body, `"method":"getBlock"`) && strings.Contains(body, "1195") {
+					t.Errorf("%s was contacted for slot 1195, above every upstream's finalized root — "+
+						"the finalized bound is not applied to unpinned requests. Body: %s", host, body)
+					return true
+				}
+				return false
+			}).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32004,"message":"Block not available for slot 1195"}}`)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	net, _ := setupTestSvmNetworkWithCommitment(t, ctx, "", []*common.UpstreamConfig{
+		svmUpstreamConfig("lag", lagHost),
+		svmUpstreamConfig("lead", leadHost),
+	})
+
+	// The two aggregates must differ, or the rest of the test proves nothing.
+	require.Equal(t, int64(1000), net.SvmHighestFinalizedSlot(ctx),
+		"majority tip must be the trailing root (what we advertise to clients)")
+	require.Equal(t, int64(1100), net.SvmHighestFinalizedSlotMax(ctx),
+		"pool max must be the leading root (what the guard may serve up to)")
+
+	// In-band slot: served, not short-circuited.
+	blockResp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[1050]}`)))
+	require.NoError(t, err, "slot 1050 is rooted on the lead upstream and must be served")
+	blockJrr, err := blockResp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Contains(t, string(blockJrr.GetResultBytes()), "skew-block-1050")
+
+	// Above every root: short-circuited with the missing-data class, no upstream call.
+	_, err = svmProjectForward(ctx, net, common.NewNormalizedRequest(
+		[]byte(`{"jsonrpc":"2.0","id":2,"method":"getBlock","params":[1195]}`)))
+	require.Error(t, err, "slot 1195 is above every upstream's finalized root and must short-circuit")
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData),
+		"expected ErrEndpointMissingData, got %T: %v", err, err)
+}
+
 // setupTestSvmNetworkFinalized is setupTestSvmNetwork with commitment:finalized,
 // matching the production default that causes the Solana client's BlockPollingLeader to
 // call getBlock(getSlot(), commitment:finalized).
 // Returns the network and the upstreams registry so callers can seed slot state.
 func setupTestSvmNetworkFinalized(t *testing.T, ctx context.Context, upstreams []*common.UpstreamConfig) (*Network, *upstream.UpstreamsRegistry) {
+	t.Helper()
+	return setupTestSvmNetworkWithCommitment(t, ctx, "finalized", upstreams)
+}
+
+// setupTestSvmNetworkWithCommitment builds the SVM network with an explicit
+// svm.commitment. Pass "" for the UNPINNED deployment — nothing is injected and
+// each node applies its own documented default (finalized), which is the shape
+// of every SDK call that omits the field.
+func setupTestSvmNetworkWithCommitment(t *testing.T, ctx context.Context, commitment string, upstreams []*common.UpstreamConfig) (*Network, *upstream.UpstreamsRegistry) {
 	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
@@ -873,7 +982,7 @@ func setupTestSvmNetworkFinalized(t *testing.T, ctx context.Context, upstreams [
 		Architecture: common.ArchitectureSvm,
 		Svm: &common.SvmNetworkConfig{
 			Cluster:    "mainnet-beta",
-			Commitment: "finalized",
+			Commitment: commitment,
 		},
 	}
 	network, err := NewNetwork(

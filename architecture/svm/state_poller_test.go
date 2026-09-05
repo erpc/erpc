@@ -720,8 +720,8 @@ func TestSvmStatePoller_Poll_ShredWatermarkBehindProcessedClampsToZero(t *testin
 // three slot signals must run on EVERY poll because their values move at chain
 // rate and each is a bound — getSlot(finalized) for the getBlock guard,
 // getSlot(processed) for non-finalized routing, and getMaxShredInsertSlot for
-// non-finalized commitments, whose indexedTipStalenessMargin assumes the
-// snapshot is at most one debounce old.
+// every commitment level, whose tipStalenessMargin assumes the snapshot is at
+// most one debounce old.
 func TestSvmStatePoller_HealthThrottled_SlotSignalsStayHot(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
@@ -748,6 +748,43 @@ func TestSvmStatePoller_HealthThrottled_SlotSignalsStayHot(t *testing.T) {
 	// Cold start must still sample health on the very first poll — routing must
 	// never act on a zero-valued verdict.
 	require.Positive(t, wantHealth)
+}
+
+// TestSvmStatePoller_HealthThrottled_FailedProbeRetriesNextPoll is the guard on
+// the throttle's blast radius. An unhealthy verdict CORDONS the upstream out of
+// rotation, so a single transient probe error — a vendor 429 against the poller
+// is the common one — must not keep it out for the whole throttle window. The
+// throttle applies to healthy probes only; a failure re-probes on the next poll.
+func TestSvmStatePoller_HealthThrottled_FailedProbeRetriesNextPoll(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllFour(up)
+	up.scriptError("getHealth", -32000, "degraded")
+	p := newPollerWithUpstream(t, up)
+
+	// Poll 1 probes (cold start) and gets the failure.
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, 1, up.callCount("getHealth"))
+	require.False(t, p.IsHealthy(), "a failed probe must flip the verdict")
+	require.Len(t, up.cordons(), 1, "the failed verdict must reach routing")
+
+	// Recovery: the very next poll must re-probe rather than wait out the
+	// window, so the upstream is back in rotation after one debounce.
+	up.script("getHealth", []byte(`"ok"`))
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, 2, up.callCount("getHealth"),
+		"the poll after a failed probe must re-probe, not skip to poll N")
+	require.True(t, p.IsHealthy(), "the re-probe must clear the verdict")
+	require.Len(t, up.uncordons(), 1, "recovery must lift the poller's own cordon")
+
+	// Back to the throttled cadence now that the verdict is healthy again.
+	for range healthPollEveryNTicks - 1 {
+		require.NoError(t, p.Poll(context.Background()))
+	}
+	require.Equal(t, 2, up.callCount("getHealth"),
+		"a healthy verdict must ride out the throttle window")
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, 3, up.callCount("getHealth"), "the Nth poll after a probe must sample again")
 }
 
 func TestSvmStatePoller_HealthToRouting_EdgeTriggered(t *testing.T) {

@@ -226,23 +226,28 @@ const (
 	commitmentAppend                           // append a fresh {commitment} options object
 )
 
-// resolveCommitment is the single source of truth for "what commitment will
-// actually reach the upstream for this request" — shared by the injection hook
-// (which mutates) and GetFinality (which classifies). Keeping one predicate
-// guarantees the forwarded/cached commitment and the finality classification
-// can never diverge.
+// resolveCommitment is the single source of truth for "what commitment does
+// erpc PIN on this request" — shared by the injection hook (which mutates) and
+// GetFinality (which classifies cacheability). Keeping one predicate guarantees
+// the injected commitment and the finality classification can never diverge.
 //
 // Crucially it decides from the request SHAPE + network config, never from
 // whether injection has already mutated params, so it returns the same answer
 // whether called before injection (e.g. the memoized finality computation in
 // erpc/projects.go) or after. It does not mutate.
 //
-// Returns the effective commitment ("" when unknown — the upstream applies its
-// own server-side default), the action injection should take, and the options
-// index for commitmentSet. The returned default is CLAMPED to a level the
-// method accepts (see clampCommitmentForMethod), so the value reported here is
-// always the one that will really reach the upstream — never one the upstream
-// would answer -32602 to.
+// Returns the pinned commitment ("" when NOTHING is pinned — no caller value
+// and no injectable network default, so the node's own default governs), the
+// action injection should take, and the options index for commitmentSet. The
+// returned default is CLAMPED to a level the method accepts (see
+// clampCommitmentForMethod), so the value reported here is always the one that
+// will really reach the upstream — never one the upstream would answer -32602
+// to.
+//
+// "" is deliberately NOT "the level the node will apply": that is
+// effectiveCommitment, which folds in Solana's documented default. Serving and
+// routing decisions want effectiveCommitment; only cacheability wants this
+// stricter "did we pin it ourselves" reading.
 //
 // Shape rules (per commitmentOptionsIndex):
 //   - explicit commitment already present                  → (value, commitmentExplicit)
@@ -323,6 +328,53 @@ func resolveCommitment(ctx context.Context, n common.Network, r *common.Normaliz
 		// Required positional args missing — don't fabricate them.
 		return "", commitmentSkip, -1
 	}
+}
+
+// solanaDefaultCommitment is the commitment an agave node applies when a
+// request carries none: `CommitmentConfig::default()` is Finalized, and the
+// JSON-RPC reference documents "Default: finalized" on every commitment-bearing
+// method (https://solana.com/docs/rpc/http/getblock). It is a wire-contract
+// fact, not an assumption, so the readers below encode it instead of treating
+// an absent commitment as unknowable.
+const solanaDefaultCommitment = "finalized"
+
+// effectiveCommitment answers "which commitment will the node actually evaluate
+// this request at" — the question every SERVING decision needs: the getBlock
+// availability guard, the getSlot tip we advertise, which slot counter routing
+// filters compare, and which view a harvested context.slot belongs to.
+//
+// It differs from resolveCommitment in exactly one case, and that case is the
+// common one: when neither the caller nor svm.commitment pins a level,
+// resolveCommitment returns "" (nothing to INJECT — its job is the mutation
+// plan) while the node still evaluates at finalized. Treating that "" as
+// unknown is what left implicit-commitment getBlock traffic bounded by the
+// indexed frontier alone — i.e. forwarded into the ~60-slot band above the
+// finalized root that every upstream answers -32004 for, which is the band the
+// guard exists to eliminate. Same defect on the advertising side: an
+// implicit-commitment getSlot was floored at the PROCESSED tip, handing clients
+// a slot ~60 above finalized and provoking the very -32004 the guard then
+// short-circuits.
+//
+// Returns "" only for methods with no commitment dimension at all (no-param
+// methods, writes that carry preflightCommitment, getSignatureStatuses) — there
+// is no level to report, not an unknown one.
+func effectiveCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) string {
+	if r == nil {
+		return ""
+	}
+	if commitment, _, _ := resolveCommitment(ctx, n, r); commitment != "" {
+		return commitment
+	}
+	method, err := r.Method()
+	if err != nil {
+		return ""
+	}
+	if _, hasCommitment := commitmentOptionsIndex[method]; !hasCommitment {
+		return ""
+	}
+	// The node's own default is never a level the method rejects, so no clamp is
+	// needed here (clampCommitmentForMethod only narrows "processed").
+	return solanaDefaultCommitment
 }
 
 // writeCommitmentTarget locates the commitment field on a write method's config
@@ -435,15 +487,31 @@ func toInt64(v interface{}) (int64, bool) {
 //
 // The bound is COMMITMENT-DEPENDENT, because "can serve" is:
 //
-//   - finalized     → min(finalizedTip, indexedTip). An upstream returns -32004
+//   - finalized     → min(finalizedMax, indexedTip). An upstream returns -32004
 //     for any slot above its own finalized root, whatever it has
-//     indexed. This is the same bound networkPostForward_getSlot
-//     advertises for getSlot(finalized), so what we advertise and
-//     what we serve stay in lockstep.
+//     indexed.
 //   - anything else → indexedTip alone. Slots between the finalized and indexed
 //     frontiers ARE held at processed/confirmed, so bounding
 //     them by the finalized tip would reject a wide band every
 //     upstream can answer.
+//
+// The commitment is the EFFECTIVE one (effectiveCommitment), not merely a
+// pinned one: a getBlock that names no commitment is evaluated at finalized by
+// the node, so it gets the finalized bound. Gating that case on a configured
+// svm.commitment would leave every client that omits the field — the default
+// shape of every SDK call — forwarded into the dead band below.
+//
+// finalizedMax is the MAX finalized root across upstreams
+// (SvmHighestFinalizedSlotMax), never the majority tip. This is a REJECTION
+// gate: its only job is to avoid short-circuiting a slot that SOME upstream can
+// serve, so the most-advanced upstream sets the bound. The majority tip
+// (SvmHighestFinalizedSlot) exists for the opposite purpose — advertising a
+// head to clients, where a lone rogue upstream must not inflate what we
+// promise. Using it here would null out blocks the leading upstream has already
+// rooted, exactly the failure SvmHighestIndexedSlot's MAX was chosen to avoid.
+// The two are consistent in the safe direction: we advertise no more than
+// min(finalizedMajority, indexedTip) and serve up to min(finalizedMax,
+// indexedTip), so every advertised slot is inside the served bound.
 //
 // Collapsing both cases to indexedTip (the historical behaviour) left a ~60-slot
 // band — finalized tip up to maxShredInsertSlot — in which finalized-commitment
@@ -461,7 +529,7 @@ func toInt64(v interface{}) (int64, bool) {
 // getSlot(confirmed) is routinely 1..N slots above the snapshot. Measured on
 // staging (debounce 2s): ~30 false -32014/min at the head, always 1-2 slots
 // ahead of the tip. The guard therefore allows a staleness margin above the
-// snapshot (see indexedTipStalenessMargin) — within it the request forwards
+// snapshot (see tipStalenessMargin) — within it the request forwards
 // (the pool almost certainly indexed the slot since the last poll; the serving
 // upstream is often the very one that answered the getSlot). Beyond the margin
 // the guard still short-circuits genuinely-future slots, keeping the
@@ -480,11 +548,11 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 		return false, nil, nil
 	}
 
-	// Resolve the effective commitment BEFORE taking the params read lock below:
-	// resolveCommitment acquires rpcReq.RLock itself, and a recursive RLock on the
-	// same RWMutex deadlocks whenever a writer is queued between the two
-	// acquisitions. Returns "" when unknown, which keeps the indexed-frontier bound.
-	commitment, _, _ := resolveCommitment(ctx, n, r)
+	// Resolve the commitment BEFORE taking the params read lock below:
+	// effectiveCommitment acquires rpcReq.RLock itself, and a recursive RLock on
+	// the same RWMutex deadlocks whenever a writer is queued between the two
+	// acquisitions.
+	commitment := effectiveCommitment(ctx, n, r)
 
 	rpcReq, err := r.JsonRpcRequest(ctx)
 	if err != nil {
@@ -501,9 +569,9 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 		return false, nil, nil
 	}
 
-	// The indexed frontier is the only bound we can apply without knowing the
-	// commitment, and only when we actually have it. Unknown frontier → forward:
-	// absence of shred-insert tracking is not evidence of unavailability.
+	// The indexed frontier bounds every commitment level, and only when we
+	// actually have it. Unknown frontier → forward: absence of shred-insert
+	// tracking is not evidence of unavailability.
 	indexedTip := svmNet.SvmHighestIndexedSlot(ctx)
 	if indexedTip <= 0 {
 		return false, nil, nil
@@ -516,15 +584,12 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 	// band is where ~71% of getBlock requests died: forwarded by this guard,
 	// then rejected by every upstream.
 	//
-	// min(finalizedTip, indexedTip) is exactly the bound networkPostForward_getSlot
-	// already advertises for getSlot(finalized), so the two stay in lockstep —
-	// we serve precisely what we advertise, no more and no less.
-	//
-	// A zero finalized tip means UNKNOWN, never a literal bound: treating it as
-	// one would collapse the bound to 0 and gate every request.
+	// MAX, not the majority tip: see the rejection-gate rationale on the doc
+	// comment. A zero value means UNKNOWN, never a literal bound — treating it
+	// as one would collapse the bound to 0 and gate every request.
 	tip := indexedTip
 	if commitment == "finalized" {
-		if finalizedTip := svmNet.SvmHighestFinalizedSlot(ctx); finalizedTip > 0 && finalizedTip < tip {
+		if finalizedTip := svmNet.SvmHighestFinalizedSlotMax(ctx); finalizedTip > 0 && finalizedTip < tip {
 			tip = finalizedTip
 		}
 	}
@@ -534,7 +599,7 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 	// the guard into a reject-everything gate. Subtracting from slot instead
 	// cannot wrap — slot is > 0 and the margin is a small positive derived from
 	// the poll debounce.
-	if slot-indexedTipStalenessMargin(n) <= tip {
+	if slot-tipStalenessMargin(n) <= tip {
 		return false, nil, nil
 	}
 
@@ -552,15 +617,15 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 	)
 }
 
-// indexedTipStalenessMargin returns the slot tolerance the getBlock guard adds
-// on top of the pool's indexed frontier. The frontier snapshot is refreshed at
-// most once per StatePollerDebounce while the chain advances one slot per
-// ~400ms, so the maximum legitimate gap between a live confirmed head and the
-// snapshot is roughly debounce/400ms slots; +2 covers tick scheduling and the
-// cross-source skew between getSlot (served by the most-ahead upstream) and
-// the MAX-over-snapshots frontier. Default debounce (400ms) → margin 3;
-// staging's 2s debounce → margin 7.
-func indexedTipStalenessMargin(n common.Network) int64 {
+// tipStalenessMargin returns the slot tolerance the getBlock guard adds on top
+// of whichever tip bounds the request — the indexed frontier, or the finalized
+// root at finalized commitment. Both are snapshots refreshed at most once per
+// StatePollerDebounce while the chain advances one slot per ~400ms, so the
+// maximum legitimate gap between a live head and either snapshot is roughly
+// debounce/400ms slots; +2 covers tick scheduling and the cross-source skew
+// between getSlot (served by the most-ahead upstream) and the MAX-over-snapshots
+// tips. Default debounce (400ms) → margin 3; staging's 2s debounce → margin 7.
+func tipStalenessMargin(n common.Network) int64 {
 	margin := int64(2)
 	if cfg := n.Config(); cfg != nil && cfg.Svm != nil {
 		if d := time.Duration(cfg.Svm.StatePollerDebounce); d > 0 {
@@ -615,8 +680,9 @@ var contextSlotMethods = map[string]struct{}{
 // failover decisions AND lets the poller's traffic gate skip redundant
 // getSlot calls (see SvmStatePoller.Poll).
 //
-// The observation is routed by the request's EFFECTIVE commitment (the same
-// resolveCommitment predicate injection and finality use): context.slot on a
+// The observation is routed by the request's EFFECTIVE commitment
+// (effectiveCommitment — what the NODE applied, including its documented
+// finalized default when the request pins nothing): context.slot on a
 // finalized-commitment response is a finalized slot, so it feeds the
 // finalized view too. A finalized slot is always a valid lower bound for the
 // latest view, so it feeds both; weaker commitments feed only latest.
@@ -665,7 +731,7 @@ func upstreamPostForward_trackContextSlot(ctx context.Context, n common.Network,
 		return
 	}
 	if n != nil {
-		if commitment, _, _ := resolveCommitment(ctx, n, r); commitment == "finalized" {
+		if effectiveCommitment(ctx, n, r) == "finalized" {
 			poller.SuggestFinalizedSlot(slot)
 		}
 	}
@@ -777,9 +843,15 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 	// When indexedTip is unavailable (poller cold or provider doesn't support
 	// getMaxShredInsertSlot) we fall back to finalizedTip - 32, the fixed
 	// one-epoch lag that has always been safe for mainnet providers.
+	//
+	// finalizedTip here is the MAJORITY tip (SvmHighestFinalizedSlot), not the
+	// pool max the getBlock guard bounds by: advertising a head is where a lone
+	// rogue upstream must not inflate what we promise. The asymmetry is safe in
+	// one direction only, and this is that direction — every slot we advertise
+	// is at or below the guard's served bound.
 	const finalizedIndexingLagFallback = 32
 
-	commitment, _, _ := resolveCommitment(ctx, network, nq)
+	commitment := effectiveCommitment(ctx, network, nq)
 	var highestSlot int64
 	switch commitment {
 	case "finalized":
@@ -806,14 +878,15 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 		// a branch here that floors against it.
 		return nr, re
 	default:
-		// "processed", or "" when no network default is configured and the
-		// upstream's own server-side default governs. LatestSlot IS the
-		// processed tip, so the floor is exact for "processed".
+		// "processed" — LatestSlot IS the processed tip, so the floor is exact.
 		//
-		// ponytail: for "" the effective level is whatever the upstream defaults
-		// to, which we cannot observe, so we keep the historical processed-tip
-		// floor. Configure svm.commitment (the normal deployment) and the
-		// effective level is always known here.
+		// "" cannot reach here: getSlot carries a commitment dimension, so
+		// effectiveCommitment always resolves it (to the node's finalized
+		// default when nothing pins it). That matters — the previous
+		// resolveCommitment reading landed an unpinned getSlot HERE and floored
+		// it at the processed tip, ~60 slots above the finalized root, which is
+		// precisely the slot band the getBlock guard rejects. We advertised a
+		// head we then refused to serve.
 		highestSlot = svmNet.SvmHighestLatestSlot(reqCtx)
 	}
 	// If the state poller hasn't populated the tip yet (e.g. devnet upstreams
