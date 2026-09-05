@@ -96,11 +96,22 @@ https://docs.erpc.cloud/reference/svm/commitment.llms.txt`}
 | "Which slot does the node evaluate this at?" | `IsFinalizedCommitment` — used for **routing** and upstream selection | `finalized` |
 | "Is this response immutable enough to cache?" | `GetFinality` — used for **cacheability** | `realtime` |
 
-Both are thin wrappers over one predicate, `resolveCommitment`, so the forwarded commitment, the cache key, and the finality classification can never diverge. Use `IsFinalizedCommitment` semantics when reasoning about which upstream can serve a request; use `GetFinality` semantics when reasoning about cache policies.
+Two predicates answer them, and they differ in exactly one case — a request that pins **no** commitment:
+
+| Predicate | Question | Unpinned request |
+|---|---|---|
+| `effectiveCommitment` | Which level will the **node** apply? | `finalized` — Solana's documented default (`CommitmentConfig::default()`) |
+| `resolveCommitment` | Which level does **eRPC pin**? | `""` — nothing is injected |
+
+`effectiveCommitment` drives every **serving** decision: the `getBlock` availability guard, the `getSlot` tip eRPC advertises, which slot counter the routing filters compare (`IsFinalizedCommitment`), and which view a harvested `context.slot` feeds. Reading the unpinned case as "unknown" is what left implicit-commitment `getBlock` traffic bounded by the indexed frontier alone — forwarded into the ~60-slot band above the finalized root that every upstream answers `-32004` for.
+
+`resolveCommitment` drives injection and **cacheability** (`GetFinality`), which stays deliberately stricter: `finality: finalized` is the zero value an unset-TTL policy matches, so a wrong promotion pins a value forever while a wrong demotion costs one re-fetch. An unpinned slot-addressed read therefore classifies `unfinalized`; set `svm.commitment` to have it cached as final.
+
+Use `IsFinalizedCommitment` semantics when reasoning about which upstream can serve a request; use `GetFinality` semantics when reasoning about cache policies.
 
 **Why `finalized` does not mean immutable.** Solana's `finalized` commitment is the state at the latest **rooted** slot, and the rooted slot advances roughly every 400 ms. It is a moving head, exactly like EVM's `latest` tag — not a finality horizon like EVM's `finalized` block. Only a response pinned to an explicit slot or transaction signature is immutable once that slot is rooted. The full classification table is on the [SVM cache page](/config/database/svm-json-rpc-cache).
 
-**`resolveCommitment` decides from request shape plus config, never from mutation state.** It returns the effective commitment (`""` when unknown — the upstream applies its own server-side default), the action injection should take, and the param index. Because it never inspects whether injection already ran, it returns the same answer called before or after injection:
+**`resolveCommitment` decides from request shape plus config, never from mutation state.** It returns the pinned commitment (`""` when nothing is pinned — the node applies its own default, which `effectiveCommitment` reports as `finalized`), the action injection should take, and the param index. Because it never inspects whether injection already ran, it returns the same answer called before or after injection:
 
 | Request shape | Result |
 |---|---|
@@ -160,7 +171,7 @@ The upstream pre-filter is defensive: unknown state (no poller, zero slot, non-S
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `networks[*].svm.commitment` | string | `""` — **no default** | One of `finalized`, `confirmed`, `processed`. When unset, nothing is injected and each upstream's own server-side default governs (Solana's is `finalized`), so upstreams can disagree. Setting it pins one level across the pool; note that doing so makes finality classification track the configured level. |
+| `networks[*].svm.commitment` | string | `""` — **no default** | One of `finalized`, `confirmed`, `processed`. When unset, nothing is injected and each node applies its own default (Solana's is `finalized`), so a vendor that deviates can disagree with the pool. Serving and routing assume that documented default; **cacheability does not** — unpinned slot-addressed reads classify `unfinalized`. Setting it pins one level across the pool and makes finality classification track it. |
 | `networkDefaults.svm.commitment` | string | `""` | Inherited by any network whose own `svm.commitment` is empty. The normal place to set it. |
 
 `svm.commitment` is deliberately **not** defaulted by `SetDefaults` — the injection hook is a no-op when it is empty, which is the correct behavior when an operator has not opted in.
@@ -286,7 +297,7 @@ Commitment injection emits no metrics of its own — it is a params rewrite. Its
 
 ### Source code entry points
 
-- [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `resolveCommitment`, `commitmentOptionsIndex`, `atLeastConfirmedMethods`, `clampCommitmentForMethod`, `writeCommitmentField`, `networkPreForward_injectCommitment`, `networkPreForward_injectWriteCommitment`, `projectPreForward_getGenesisHash`.
+- [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `resolveCommitment`, `effectiveCommitment`, `solanaDefaultCommitment`, `commitmentOptionsIndex`, `atLeastConfirmedMethods`, `clampCommitmentForMethod`, `writeCommitmentField`, `networkPreForward_injectCommitment`, `networkPreForward_injectWriteCommitment`, `projectPreForward_getGenesisHash`.
 - [`architecture/svm/finality.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/finality.go) — `GetFinality`, `IsFinalizedCommitment`, and the moving-head rationale.
 - [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByMinContextSlot`, `MinContextSlotOf`, `isAtOrAheadOfSlot`.
 - <SourceLink file="common/config.go" lines="2336-2342" label="common/config.go — SvmNetworkConfig.Commitment" />

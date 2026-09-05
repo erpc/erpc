@@ -138,14 +138,23 @@ var slotPinnedMethods = map[string]bool{
 // unset TTL means "no expiry" in the connectors.
 //
 // Step 3 uses resolveCommitment — the SAME predicate the injection hook uses —
-// so finality reflects the commitment that actually reaches the upstream, not
-// merely whether a network default exists. When injection legitimately skips a
-// request (legacy encoding-string form, missing args, non-injectable method),
-// no default reaches the upstream and the response is classified Unfinalized
-// rather than wrongly trusting the network default. Because resolveCommitment
-// reads request shape + config (not mutation state), this is correct whether
-// GetFinality runs before or after injection (finality is memoized on the first
-// call, which happens pre-injection in erpc/projects.go).
+// so cacheability tracks the commitment ERPC PINNED, not merely the level the
+// node happens to default to. When nothing is pinned (no caller commitment, no
+// svm.commitment, or injection legitimately skips the legacy encoding-string
+// form) the response is classified Unfinalized.
+//
+// That is deliberately STRICTER than IsFinalizedCommitment, which follows the
+// node's documented finalized default for routing. Cache permanence is a
+// one-way door: `finality: finalized` is the zero value that an unset-TTL
+// policy matches, so a wrong promotion pins a value forever, while a wrong
+// demotion only costs a re-fetch. Nothing in the request forces the promotion
+// here — an operator who wants unpinned traffic cached as final sets
+// svm.commitment, which is the recommended deployment anyway.
+//
+// Because resolveCommitment reads request shape + config (not mutation state),
+// this is correct whether GetFinality runs before or after injection (finality
+// is memoized on the first call, which happens pre-injection in
+// erpc/projects.go).
 func GetFinality(ctx context.Context, network common.Network, req *common.NormalizedRequest, _ *common.NormalizedResponse) common.DataFinalityState {
 	if req == nil {
 		return common.DataFinalityStateUnknown
@@ -167,7 +176,7 @@ func GetFinality(ctx context.Context, network common.Network, req *common.Normal
 		return common.DataFinalityStateRealtime
 	}
 
-	if IsFinalizedCommitment(ctx, network, req) {
+	if commitment, _, _ := resolveCommitment(ctx, network, req); commitment == "finalized" {
 		return common.DataFinalityStateFinalized
 	}
 	// confirmed / processed / unknown: pinned to a slot but not yet rooted, so
@@ -175,25 +184,30 @@ func GetFinality(ctx context.Context, network common.Network, req *common.Normal
 	return common.DataFinalityStateUnfinalized
 }
 
-// IsFinalizedCommitment reports whether the commitment that will actually
-// reach the upstream for this request is "finalized".
+// IsFinalizedCommitment reports whether the commitment the NODE will apply to
+// this request is "finalized" — including the case where the request pins
+// nothing and Solana's documented default governs (see effectiveCommitment).
 //
-// This is deliberately NOT the same question as GetFinality — since the
-// moving-head fix the two concepts have diverged and conflating them is the
-// trap to avoid. GetFinality answers "is this RESPONSE immutable enough to
-// cache", so getBalance at commitment:finalized is Realtime (the rooted head
-// moves every ~400ms). IsFinalizedCommitment answers "which slot does the node
-// evaluate this at", which for that same getBalance is finalized — and that is
-// the question upstream ROUTING needs when deciding whether an upstream's
+// This is deliberately NOT the same question as GetFinality, and the difference
+// is now two-fold; conflating them is the trap to avoid.
+//
+// GetFinality answers "is this RESPONSE immutable enough to cache", so
+// getBalance at commitment:finalized is Realtime (the rooted head moves every
+// ~400ms). IsFinalizedCommitment answers "which slot does the node evaluate
+// this at", which for that same getBalance is finalized — and that is the
+// question upstream ROUTING needs when deciding whether an upstream's
 // FinalizedSlot (rather than its processed tip) is the right thing to compare
 // against. Use this for routing/selection; use GetFinality for cacheability.
 //
-// Thin wrapper over resolveCommitment so there stays exactly one
-// commitment-resolution path shared by injection, finality and routing.
+// The second difference is the unpinned case. Routing must follow the node:
+// FilterByMinContextSlot comparing an unpinned request against an upstream's
+// PROCESSED tip keeps upstreams whose finalized root is still behind
+// minContextSlot, which is a guaranteed -32016. Caching stays stricter on
+// purpose — see the note on GetFinality's step 3 — because cache permanence is
+// a one-way door and nothing forces us through it.
 func IsFinalizedCommitment(ctx context.Context, network common.Network, req *common.NormalizedRequest) bool {
 	if req == nil {
 		return false
 	}
-	commitment, _, _ := resolveCommitment(ctx, network, req)
-	return commitment == "finalized"
+	return effectiveCommitment(ctx, network, req) == "finalized"
 }

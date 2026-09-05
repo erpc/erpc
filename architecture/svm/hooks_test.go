@@ -664,10 +664,10 @@ func TestUpstreamPostForward_TrackContextSlot_NoOpForNonSvmUpstream(t *testing.T
 
 // TestUpstreamPostForward_TrackContextSlot_CommitmentRouting locks the
 // commitment-routed harvesting contract: context.slot on a response whose
-// EFFECTIVE commitment (explicit param wins, else network default) is
-// "finalized" feeds BOTH the finalized and latest views; any weaker
-// commitment — or a nil network, which makes the default unresolvable —
-// feeds only the latest view.
+// EFFECTIVE commitment (explicit param wins, else network default, else the
+// node's own finalized default) is "finalized" feeds BOTH the finalized and
+// latest views; any weaker commitment — or a nil network, which makes the
+// level unresolvable — feeds only the latest view.
 func TestUpstreamPostForward_TrackContextSlot_CommitmentRouting(t *testing.T) {
 	t.Parallel()
 
@@ -704,6 +704,16 @@ func TestUpstreamPostForward_TrackContextSlot_CommitmentRouting(t *testing.T) {
 		{
 			name:          "network default finalized feeds both views",
 			network:       finalizedNet,
+			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey"]}`,
+			wantFinalized: slot,
+		},
+		{
+			// Nothing pinned: the node answered at its finalized default, so
+			// context.slot IS a finalized slot. Reading this as "unknown" fed
+			// the finalized view nothing on unpinned deployments — the exact
+			// view the getBlock guard bounds by.
+			name:          "unpinned commitment feeds both views",
+			network:       &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}},
 			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey"]}`,
 			wantFinalized: slot,
 		},
@@ -782,9 +792,17 @@ func readSlot(t *testing.T, resp *common.NormalizedResponse) int64 {
 	return slot
 }
 
+// The floor mechanism itself, exercised at the one commitment whose tip the
+// poller tracks exactly. Commitment is pinned to processed on purpose: an
+// UNPINNED getSlot is a finalized read (Solana's default) and must not be
+// floored at the processed tip — see
+// TestNetworkPostForward_GetSlot_UnpinnedCommitment_TreatedAsFinalized.
 func TestNetworkPostForward_GetSlot_UpgradesStaleResponse(t *testing.T) {
 	t.Parallel()
-	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}, latestSlot: 12345678}
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "processed"},
+	}, latestSlot: 12345678}
 	req, resp := slotResponse(t, "getSlot", 12340000)
 
 	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
@@ -798,7 +816,10 @@ func TestNetworkPostForward_GetSlot_UpgradesStaleResponse(t *testing.T) {
 
 func TestNetworkPostForward_GetSlot_AlreadyAtTip_Unchanged(t *testing.T) {
 	t.Parallel()
-	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}, latestSlot: 12340000}
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "processed"},
+	}, latestSlot: 12340000}
 	req, resp := slotResponse(t, "getSlot", 12340000)
 
 	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
@@ -827,7 +848,10 @@ func TestNetworkPostForward_GetSlot_ErrorPassthrough(t *testing.T) {
 
 func TestNetworkPostForward_GetSlot_FromCachePreserved(t *testing.T) {
 	t.Parallel()
-	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}, latestSlot: 12345678}
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "processed"},
+	}, latestSlot: 12345678}
 	req, resp := slotResponse(t, "getSlot", 12340000)
 	resp.WithFromCache(true)
 
@@ -1257,8 +1281,8 @@ func TestNetworkPreForwardGetBlock_MarginDerivesFromDebounce(t *testing.T) {
 	}
 }
 
-// indexedTipStalenessMargin: 2 base slots + floor(debounce / 400ms).
-func TestIndexedTipStalenessMargin(t *testing.T) {
+// tipStalenessMargin: 2 base slots + floor(debounce / 400ms).
+func TestTipStalenessMargin(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
@@ -1273,10 +1297,259 @@ func TestIndexedTipStalenessMargin(t *testing.T) {
 		{"2s debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(2 * time.Second)}}, 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := indexedTipStalenessMargin(&fakeNetwork{cfg: tc.cfg}); got != tc.want {
+			if got := tipStalenessMargin(&fakeNetwork{cfg: tc.cfg}); got != tc.want {
 				t.Fatalf("margin = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestNetworkPreForwardGetBlock_UnpinnedCommitment_BoundedByFinalizedTip is the
+// regression for the case that carries most production traffic: a getBlock that
+// names no commitment. The node evaluates it at its finalized default, so the
+// finalized bound applies — gating that on a configured svm.commitment left
+// every SDK call that omits the field forwarded into the band above the
+// finalized root that every upstream answers -32004 for.
+//
+// All three unpinned shapes must behave identically, including the legacy
+// encoding-string form where commitment injection is skipped: injection being
+// skipped changes what WE send, never what the node defaults to.
+func TestNetworkPreForwardGetBlock_UnpinnedCommitment_BoundedByFinalizedTip(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:   1060,
+		finalizedSlot: 1000,
+	}
+	for _, method := range []string{"getBlock", "getConfirmedBlock"} {
+		for _, params := range []string{`[1030]`, `[1030, {}]`, `[1030, {"encoding":"jsonParsed"}]`, `[1030, "base64"]`} {
+			handled, resp, err := networkPreForward_getBlock(context.Background(), net, newReq(method, params))
+			if !handled {
+				t.Fatalf("%s%s: slot 1030 is above the finalized tip 1000 + margin 2 — expected short-circuit", method, params)
+			}
+			if resp != nil {
+				t.Fatalf("%s%s: expected nil response on short-circuit", method, params)
+			}
+			if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+				t.Fatalf("%s%s: expected ErrEndpointMissingData, got %T: %v", method, params, err, err)
+			}
+			if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
+				t.Fatalf("%s%s: guard error must carry ErrJsonRpcExceptionInternal for the -32014 wire code", method, params)
+			}
+			// The reported bound must be the finalized tip, not the indexed one:
+			// the message is what an operator debugs a -32014 from.
+			if msg := err.Error(); !strings.Contains(msg, "tip: 1000") {
+				t.Fatalf("%s%s: expected the finalized tip in the error message, got %q", method, params, msg)
+			}
+		}
+		// At and just above the finalized tip (inside the margin) it still forwards.
+		for _, slot := range []int64{999, 1000, 1002} {
+			handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq(method, fmt.Sprintf(`[%d]`, slot)))
+			if handled || err != nil {
+				t.Fatalf("%s slot %d: expected pass-through, got handled=%v err=%v", method, slot, handled, err)
+			}
+		}
+	}
+}
+
+// TestNetworkPreForwardGetBlock_FinalizedBoundIsPoolMaxNotMajority is the
+// regression for using a majority tip in a rejection gate. The guard's only job
+// is to avoid short-circuiting a slot SOME upstream can serve, so the bound is
+// the LEADING upstream's finalized root. With roots skewed 1000/1000/1100 the
+// majority tip is 1000, and bounding by it nulls out ~100 slots the third
+// upstream is already holding — turning a servable request into a
+// client-visible -32014.
+func TestNetworkPreForwardGetBlock_FinalizedBoundIsPoolMaxNotMajority(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:              &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:      1200,
+		finalizedSlot:    1000, // majority tip (advertised to clients)
+		finalizedSlotMax: 1100, // leading upstream's root (what the pool can serve)
+	}
+	// Inside the skew band: rejected by the majority bound, served by the pool.
+	for _, slot := range []int64{1001, 1050, 1100, 1102} {
+		handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", fmt.Sprintf(`[%d]`, slot)))
+		if handled || err != nil {
+			t.Fatalf("slot %d is at or below the leading upstream's root 1100 (+margin 2): expected pass-through, got handled=%v err=%v", slot, handled, err)
+		}
+	}
+	// Beyond the leading root + margin the guard still fires, and reports the
+	// max as the bound.
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", `[1103]`))
+	if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("slot 1103 beyond root 1100 + margin 2: expected short-circuit, got handled=%v err=%v", handled, err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "tip: 1100") {
+		t.Fatalf("expected the pool-max finalized tip in the error message, got %q", msg)
+	}
+}
+
+// The advertised head must always be inside the served bound, at every tip
+// skew: getSlot(finalized) is the exact value a Solana client feeds straight
+// back into getBlock, so any slot this instance advertises must survive the
+// guard. The advertising side uses the MAJORITY finalized tip and the guard
+// uses the pool MAX, which is safe in exactly one direction — this pins that
+// direction instead of trusting it.
+func TestNetworkPreForwardGetBlock_ServesEveryAdvertisedSlot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                                          string
+		finalizedMajority, finalizedMax, indexed, raw int64
+	}{
+		{"no skew", 1000, 1000, 1060, 1000},
+		{"leading upstream ahead", 1000, 1100, 1200, 1100},
+		{"indexer behind the roots", 1000, 1100, 1040, 1100},
+		{"indexer far behind", 5000, 5000, 4000, 5000},
+		{"majority far behind the leader", 900, 1100, 1150, 1100},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			net := &fakeNetwork{
+				cfg:              &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+				latestSlot:       tc.indexed + 60,
+				finalizedSlot:    tc.finalizedMajority,
+				finalizedSlotMax: tc.finalizedMax,
+				indexedSlot:      tc.indexed,
+			}
+			// What we advertise for an unpinned getSlot (the SDK's default shape).
+			req, resp := slotResponse(t, "getSlot", tc.raw)
+			advertised, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+			if err != nil {
+				t.Fatalf("getSlot: unexpected error: %v", err)
+			}
+			slot := readSlot(t, advertised)
+
+			// …must be servable by the guard, at the same unpinned commitment.
+			handled, _, gErr := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", fmt.Sprintf(`[%d]`, slot)))
+			if handled || gErr != nil {
+				t.Fatalf("advertised slot %d was rejected by the guard (handled=%v err=%v)", slot, handled, gErr)
+			}
+		})
+	}
+}
+
+// A zero finalized tip is UNKNOWN, not a bound of 0 — including on the unpinned
+// path, where the finalized bound now applies by default. Collapsing to 0 would
+// gate every getBlock on a cold poller.
+func TestNetworkPreForwardGetBlock_UnpinnedCommitment_ZeroFinalizedTipIsUnknown(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:         &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot: 1000,
+	}
+	for _, slot := range []int64{1, 500, 1000, 1002} {
+		handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", fmt.Sprintf(`[%d]`, slot)))
+		if handled || err != nil {
+			t.Fatalf("slot %d with no finalized tip must fall back to the indexed bound, got handled=%v err=%v", slot, handled, err)
+		}
+	}
+	// The indexed bound still applies beyond the margin.
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", `[1003]`))
+	if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("slot 1003 beyond indexedTip 1000 + margin 2: expected short-circuit, got handled=%v err=%v", handled, err)
+	}
+}
+
+// A pinned weaker commitment keeps the indexed bound even when the request
+// itself names nothing: slots between the finalized and indexed frontiers ARE
+// held at confirmed/processed.
+func TestNetworkPreForwardGetBlock_PinnedWeakerCommitment_KeepsIndexedBound(t *testing.T) {
+	t.Parallel()
+	for _, pinned := range []string{"confirmed", "processed"} {
+		net := &fakeNetwork{
+			cfg: &common.NetworkConfig{
+				Architecture: common.ArchitectureSvm,
+				Svm:          &common.SvmNetworkConfig{Commitment: pinned},
+			},
+			indexedSlot:   1060,
+			finalizedSlot: 1000,
+		}
+		handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", `[1030]`))
+		if handled || err != nil {
+			t.Fatalf("pinned %s: slot 1030 is below indexedTip 1060 and must forward, got handled=%v err=%v", pinned, handled, err)
+		}
+		// getBlock rejects processed, so the injected level is clamped to
+		// confirmed — either way the bound stays the indexed frontier, and the
+		// indexed bound itself still fires.
+		handled2, _, err2 := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", `[1063]`))
+		if !handled2 || !common.HasErrorCode(err2, common.ErrCodeEndpointMissingData) {
+			t.Fatalf("pinned %s: slot 1063 beyond indexedTip 1060 + margin 2: expected short-circuit, got handled=%v err=%v", pinned, handled2, err2)
+		}
+	}
+}
+
+// The finalized bound honours the debounce-derived margin exactly as the indexed
+// bound does — the finalized snapshot is refreshed by the same poll.
+func TestNetworkPreForwardGetBlock_FinalizedBound_MarginDerivesFromDebounce(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureSvm,
+			Svm:          &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(2 * time.Second)},
+		},
+		indexedSlot:   5000, // far above, so the finalized tip is the binding bound
+		finalizedSlot: 1000,
+	}
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", `[1007]`))
+	if handled || err != nil {
+		t.Fatalf("slot 1007 within finalized tip 1000 + margin 7: expected pass-through, got handled=%v err=%v", handled, err)
+	}
+	handled2, _, err2 := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", `[1008]`))
+	if !handled2 || !common.HasErrorCode(err2, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("slot 1008 beyond finalized tip 1000 + margin 7: expected short-circuit, got handled=%v err=%v", handled2, err2)
+	}
+}
+
+// Overflow safety on the finalized path too: a bogus tip near math.MaxInt64
+// must not wrap the margin arithmetic, in either direction.
+func TestNetworkPreForwardGetBlock_FinalizedBound_NoOverflow(t *testing.T) {
+	t.Parallel()
+	// Absurd tips, real slot → forward.
+	wide := &fakeNetwork{
+		cfg:              &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:      math.MaxInt64,
+		finalizedSlotMax: math.MaxInt64,
+	}
+	handled, _, err := networkPreForward_getBlock(context.Background(), wide, newReq("getBlock", `[1000]`))
+	if handled || err != nil {
+		t.Fatalf("slot far below both tips must forward, got handled=%v err=%v", handled, err)
+	}
+	// Real tips, absurd slot → reject, and the subtraction must not wrap.
+	narrow := &fakeNetwork{
+		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:   5000,
+		finalizedSlot: 1000,
+	}
+	handled2, _, err2 := networkPreForward_getBlock(context.Background(), narrow, newReq("getBlock", fmt.Sprintf(`[%d]`, int64(math.MaxInt64))))
+	if !handled2 || !common.HasErrorCode(err2, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("MaxInt64 slot must short-circuit, got handled=%v err=%v", handled2, err2)
+	}
+}
+
+// TestNetworkPostForward_GetSlot_UnpinnedCommitment_TreatedAsFinalized is the
+// advertising half of the unpinned fix. An unpinned getSlot is a finalized read,
+// so it is capped to min(finalizedMajority, indexed) — NOT floored at the
+// processed tip, which sits ~60 slots higher and is exactly the band the getBlock
+// guard rejects. Handing a client that number and then refusing to serve the
+// block is the -32004/-32014 loop this PR exists to close.
+func TestNetworkPostForward_GetSlot_UnpinnedCommitment_TreatedAsFinalized(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		latestSlot:    12345678, // processed tip — must NOT be advertised
+		finalizedSlot: 12345000,
+		indexedSlot:   12344500,
+	}
+	// The upstream answers with its own (processed-ish) head; we cap it.
+	req, resp := slotResponse(t, "getSlot", 12345678)
+	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if slot := readSlot(t, got); slot != 12344500 {
+		t.Fatalf("unpinned getSlot must be capped to min(finalized 12345000, indexed 12344500), got %d", slot)
 	}
 }
 
@@ -1287,7 +1560,12 @@ func TestIndexedTipStalenessMargin(t *testing.T) {
 // lastValidBlockHeight and makes clients see all transactions as expired.
 func TestHandleNetworkPostForward_CorrectsGetSlotOnly(t *testing.T) {
 	t.Parallel()
-	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}, latestSlot: 99999}
+	// Pinned to processed so the dispatch assertion turns on routing alone, not
+	// on which floor a given commitment picks.
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "processed"},
+	}, latestSlot: 99999}
 	h := &SvmArchitectureHandler{}
 
 	for _, method := range []string{"getSlot", "GETSLOT"} {

@@ -157,9 +157,11 @@ The floor is chosen **per commitment**, and never exceeds the tip for the commit
 
 | Effective commitment | Floor |
 |---|---|
-| `finalized` | `min(finalizedTip, indexedTip)`; when the indexed tip is unknown, `finalizedTip − 32`. **Clamped from both directions** — stale values are raised, values above the floor are capped down. |
+| `finalized` | `min(finalizedTip, indexedTip)`; when the indexed tip is unknown, `finalizedTip − 32`. **Clamped from both directions** — stale values are raised, values above the floor are capped down. `finalizedTip` here is the **majority** tip, because this value is advertised to clients and a lone rogue upstream must not inflate it. |
 | `confirmed` | **Passed through uncorrected.** |
-| `processed`, or unset | The processed tip (`LatestSlot()`). Stale values are raised only; a value above the tip is left alone. |
+| `processed` | The processed tip (`LatestSlot()`). Stale values are raised only; a value above the tip is left alone. |
+
+"Effective" includes the level the node applies when the request pins none: Solana's documented default is `finalized`, so an **unset** commitment takes the `finalized` row, not the `processed` one. Flooring an unpinned `getSlot` at the processed tip advertised a slot ~60 above the finalized root — exactly the band the `getBlock` guard below rejects, so eRPC handed clients a head it then refused to serve.
 
 `confirmed` is passed through because **no confirmed tip is tracked**. The poller's `LatestSlot` is the *processed* slot, and processed runs ahead of confirmed — flooring a confirmed answer with it would hand back a slot that is not confirmed and may never be, since its fork can be abandoned. That is a commitment-contract violation, not a freshness improvement, so eRPC declines to fabricate a confirmed tip.
 
@@ -167,7 +169,16 @@ The `finalized` branch caps downward for a different reason: `getSlot(finalized)
 
 **`getBlockHeight` is never corrected.** Only `getSlot` is routed to the corrector. Block height is a different counter that trails the slot number by every skipped slot, so rewriting a `getBlockHeight` answer to a slot value would be straightforwardly wrong. It is passed through untouched.
 
-**`getBlock` availability guard.** Solana RPC nodes return `-32004` for any slot above their `maxShredInsertSlot`, so hitting all upstreams only to collect N identical `-32004`s wastes quota and delays the retry. When the requested slot is above the pool's indexed frontier, `getBlock`/`getConfirmedBlock` are short-circuited with `ErrEndpointMissingData` before any upstream call — the same error class that maps to the `missing_data` retry reason, so the indexing-lag retry fires immediately.
+**`getBlock` availability guard.** An upstream returns `-32004` both for a slot above its `maxShredInsertSlot` and for a slot above its own finalized root, so hitting all upstreams only to collect N identical `-32004`s wastes quota and delays the retry. When the requested slot is above what the pool can serve, `getBlock`/`getConfirmedBlock` are short-circuited with `ErrEndpointMissingData` before any upstream call — the same error class that maps to the `missing_data` retry reason, so the indexing-lag retry fires immediately.
+
+The bound is **commitment-dependent**, on the same effective commitment as the `getSlot` correction:
+
+| Effective commitment | Bound |
+|---|---|
+| `finalized` (including unpinned) | `min(maxFinalizedRoot, indexedFrontier)` |
+| `confirmed`, `processed` | `indexedFrontier` alone — slots between the finalized and indexed frontiers *are* held at those levels |
+
+Both inputs are **MAX across upstreams**, never the majority tip: this is a rejection gate, so its only job is to avoid short-circuiting a slot that *some* upstream can serve, and the most-advanced upstream sets the bound. With roots skewed `1000/1000/1100`, the majority tip is `1000` and bounding by it would null out ~100 slots the third upstream is already holding. The advertising side above uses the majority tip, so every slot eRPC advertises is at or below the bound it serves.
 
 The guard allows a **staleness margin** above the frontier snapshot, because the snapshot refreshes at most once per debounce while the chain advances one slot per ~400 ms:
 
@@ -177,7 +188,7 @@ margin ≈ statePollerDebounce / 400ms + 2
 
 The `+2` covers tick scheduling and the cross-source skew between `getSlot` (served by the most-ahead upstream) and the MAX-over-snapshots frontier. Default debounce (400 ms) gives a margin of 3; a 2 s debounce gives 7. Within the margin the request forwards — the pool almost certainly indexed the slot since the last poll. Beyond it the guard still short-circuits genuinely-future slots.
 
-The guard **fails open** whenever the indexed frontier is unknown. Absence of shred-insert tracking is not evidence of unavailability, so a cold poller or a vendor without `getMaxShredInsertSlot` must not cost requests every upstream could serve.
+The guard **fails open** whenever the tip it needs is unknown — an indexed frontier of `0` forwards every slot, and a finalized root of `0` falls back to the indexed bound rather than collapsing to slot `0`. Absence of tracking is not evidence of unavailability, so a cold poller or a vendor without `getMaxShredInsertSlot` must not cost requests every upstream could serve.
 
 **Consensus slot-lag pre-filter.** For a request whose resolved finality is `Finalized` **and** with a consensus policy active, upstreams whose `FinalizedSlot` trails the reference by more than `svm.maxFinalizedSlotLag` are pruned before consensus runs — the same query sent to a stale upstream and a current one returns different answers for data the caller has been promised is immutable.
 
@@ -377,7 +388,7 @@ The SVM poller feeds the shared health tracker, so the standard upstream gauges 
 ### Source code entry points
 
 - [`architecture/svm/svm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/svm_state_poller.go) — `Poll` fan-out, debounce and traffic gates, ingestion-lag computation, `IsHealthy`, `applyHealthToRouting` (edge-triggered cordoning), slot accessors, shared-counter wiring.
-- [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `networkPostForward_getSlot` (per-commitment correction), `networkPreForward_getBlock` (availability guard), `indexedTipStalenessMargin`, `upstreamPostForward_trackContextSlot`.
+- [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `networkPostForward_getSlot` (per-commitment correction), `networkPreForward_getBlock` (availability guard), `effectiveCommitment`, `tipStalenessMargin`, `upstreamPostForward_trackContextSlot`.
 - [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByFinalizedSlotLag`, `ReferenceFinalizedSlot` (second-highest clamp), `HighestFinalizedSlot`, `FilterByMinContextSlot`.
 - <SourceLink file="common/architecture_svm.go" lines="29-59" label="common/architecture_svm.go — SvmStatePoller interface, MaxShredInsertSlotLagThreshold" />
 - <SourceLink file="common/config.go" lines="2344-2367" label="common/config.go — statePollerDebounce, maxFinalizedSlotLag, enforceBlockAvailability" />

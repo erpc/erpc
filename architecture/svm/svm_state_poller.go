@@ -44,13 +44,21 @@ const maxConsecutiveSlotPollSkips = 4
 // The other three calls are deliberately NOT throttled, because their VALUES
 // move at chain rate (~2.5-3.7 slots/sec, measured) and each is a live bound:
 //
-//   - getSlot(finalized) IS the getBlock guard's bound, so a staler tip
+//   - getSlot(finalized) IS the getBlock guard's bound at finalized commitment
+//     — which includes every request that pins no commitment — so a staler tip
 //     directly widens the window of requests that escape to upstreams.
 //   - getSlot(processed) is the bound for non-finalized routing.
-//   - getMaxShredInsertSlot is the bound for non-finalized commitments, and
-//     indexedTipStalenessMargin is derived from the assumption that this
-//     snapshot is at most ONE debounce old. Throttling it without widening that
-//     margin would silently start rejecting slots the upstreams actually hold.
+//   - getMaxShredInsertSlot bounds every commitment level, and
+//     tipStalenessMargin is derived from the assumption that this snapshot is
+//     at most ONE debounce old. Throttling it without widening that margin
+//     would silently start rejecting slots the upstreams actually hold.
+//
+// A FAILED probe is never throttled: an unhealthy verdict cordons the upstream
+// out of rotation (applyHealthToRouting), so letting one transient probe error
+// — a vendor 429 against the poller is the common case — ride out the whole
+// window would multiply a 400ms outage into N * debounce. The next poll
+// re-probes instead, which costs extra calls only while something is actually
+// wrong.
 //
 // ponytail: fixed multiplier, promote to SvmNetworkConfig only if a deployment
 // needs a different health-detection latency than ~2s.
@@ -102,10 +110,14 @@ type SvmStatePoller struct {
 	lastExternalFinalizedAt atomic.Int64
 	// slotPollSkips counts consecutive traffic-gated skips; guarded by pollMu.
 	slotPollSkips int
-	// pollCount counts completed polls; drives healthPollEveryNTicks so getHealth
-	// runs on the first poll (cold start) and every Nth after. Guarded by pollMu.
+	// pollCount counts polls that passed the debounce gate. Guarded by pollMu.
 	pollCount int
-	pollMu    sync.Mutex
+	// nextHealthPoll is the pollCount at which getHealth runs again. Starts at 0
+	// so the first poll always probes (cold start must not route on a
+	// zero-valued health verdict), then advances by healthPollEveryNTicks — or
+	// back to the immediate next poll after a failed probe. Guarded by pollMu.
+	nextHealthPoll int
+	pollMu         sync.Mutex
 
 	// loopStarted guards the polling goroutine. Bootstrap is retried on the
 	// SAME poller instance (the upstream initializer reuses a pending Upstream
@@ -317,10 +329,12 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	}
 
 	// getHealth carries a near-static boolean and feeds only the cordon edge, so
-	// run it every Nth poll instead of every one. pollCount starts at 0 so the
-	// first poll always samples it (cold start must not route on a zero-valued
-	// health verdict).
-	runHealth := e.pollCount%healthPollEveryNTicks == 0
+	// run it every Nth poll instead of every one. See healthPollEveryNTicks for
+	// why a FAILED probe re-schedules itself onto the next poll.
+	runHealth := e.pollCount >= e.nextHealthPoll
+	if runHealth {
+		e.nextHealthPoll = e.pollCount + healthPollEveryNTicks
+	}
 	e.pollCount++
 
 	var wg sync.WaitGroup
@@ -394,6 +408,15 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 			}
 			e.maxShredInsertSlotLag.Store(lag)
 		}
+	}
+
+	// A probe that came back unhealthy cordons this upstream out of rotation
+	// below, so it must not ride out the throttle window on the strength of one
+	// sample: re-probe on the very next poll. Extra calls happen only while
+	// something is actually wrong, and recovery is detected in one debounce
+	// instead of N.
+	if runHealth && !e.healthy.Load() {
+		e.nextHealthPoll = e.pollCount
 	}
 
 	// A health verdict nobody routes on is not a defense; publish it.
