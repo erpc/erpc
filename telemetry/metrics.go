@@ -747,11 +747,14 @@ var (
 	// the first policy that matched (a finalized request also matches an
 	// unfinalized policy), not the request's — so they cannot say which
 	// executor a read landed on, and cannot explain why a breaker tripped.
+	// project/network come from the request; the executor itself is shared
+	// across both. "success" means answered in budget, not cache hit — the
+	// gRPC connector returns a miss as a null-result success.
 	MetricCacheExecutorAttempt = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_executor_attempt_total",
-		Help:      "Per cache-connector failsafe executor attempt count by outcome. Outcomes: hit/miss/timeout/transport_error/error/breaker_open/interrupted.",
-	}, []string{"connector", "direction", "match_method", "match_finality", "outcome"})
+		Help:      "Per cache-connector failsafe executor attempt count by outcome. Outcomes: success/not_found/timeout/transport_error/error/breaker_open/interrupted. success = answered within budget (a null-result miss is a success here; hit/miss live in cache_get_*).",
+	}, []string{"project", "network", "connector", "direction", "match_method", "match_finality", "outcome"})
 
 	// MetricCacheExecutorBreakerStateChange is the cache-connector twin of
 	// MetricUpstreamBreakerStateChange, keyed by executor identity.

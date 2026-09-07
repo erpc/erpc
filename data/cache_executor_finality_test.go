@@ -17,8 +17,9 @@ import (
 )
 
 // finalityNetwork is the smallest common.Network that lets a request resolve
-// a fixed finality: NormalizedRequest.Finality delegates to network.GetFinality
-// and caches the answer, and everything else on the interface is unused here.
+// a fixed finality and carry a project/network identity: Finality delegates to
+// network.GetFinality, the executor metric reads ProjectId/Label, and nothing
+// else on the interface is touched.
 type finalityNetwork struct {
 	common.Network
 	finality common.DataFinalityState
@@ -27,6 +28,9 @@ type finalityNetwork struct {
 func (n *finalityNetwork) GetFinality(context.Context, *common.NormalizedRequest, *common.NormalizedResponse) common.DataFinalityState {
 	return n.finality
 }
+func (n *finalityNetwork) ProjectId() string { return "test-project" }
+func (n *finalityNetwork) Label() string     { return "evm:4663" }
+func (n *finalityNetwork) Id() string        { return "evm:4663" }
 
 func requestWithFinality(method string, f common.DataFinalityState) context.Context {
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
@@ -35,7 +39,7 @@ func requestWithFinality(method string, f common.DataFinalityState) context.Cont
 }
 
 func executorAttempts(connector, direction, method, finality, outcome string) float64 {
-	return promUtil.ToFloat64(telemetry.MetricCacheExecutorAttempt.WithLabelValues(connector, direction, method, finality, outcome))
+	return promUtil.ToFloat64(telemetry.MetricCacheExecutorAttempt.WithLabelValues("test-project", "evm:4663", connector, direction, method, finality, outcome))
 }
 
 func executorTransitions(connector, direction, method, finality, transition string) float64 {
