@@ -154,6 +154,20 @@ func TestProbeVerdicts_RemoveCordonedDefaultNoProbe(t *testing.T) {
 	require.False(t, probeable["plain1"], "cordoned upstream must NOT be probed by default")
 }
 
+// Admin cordons live on AdminCordoned, not the automatic Cordoned bit.
+// Policy metrics must surface that reason or .removeCordoned() is a no-op
+// for erpc_cordonUpstream / shared-state reconcile.
+func TestProbeVerdicts_RemoveCordonedAdminBitExcluded(t *testing.T) {
+	engine, ups, tracker, cancel := mkVerdictEngine(t, `(upstreams) => upstreams.removeCordoned()`)
+	defer cancel()
+	defer engine.Stop()
+
+	tracker.CordonAdmin(ups[0], "*", "operator incident")
+	probeable, excludedAll := probeSet(engine)
+	require.True(t, excludedAll["plain1"], "admin-cordoned upstream must be excluded from routing")
+	require.False(t, probeable["plain1"], "admin-cordoned upstream must NOT be probed by default")
+}
+
 func TestProbeVerdicts_RemoveCordonedProbeOverride(t *testing.T) {
 	engine, ups, tracker, cancel := mkVerdictEngine(t, `(upstreams) => upstreams.removeCordoned({ probe: true })`)
 	defer cancel()
