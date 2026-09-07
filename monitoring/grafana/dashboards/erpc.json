@@ -14791,8 +14791,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", direction=\"get\"}[$__interval])) by (region, connector, match_method, match_finality, outcome) > 0",
-              "legendFormat": "{{region}} {{connector}} [{{match_method}} / {{match_finality}}] {{outcome}}",
+              "expr": "sum(increase(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", direction=\"get\"}[$__interval])) by (region, project, network, connector, match_method, match_finality, outcome) > 0",
+              "legendFormat": "{{region}} {{project}} {{network}} {{connector}} [{{match_method}} / {{match_finality}}] {{outcome}}",
               "range": true,
               "refId": "A"
             }
@@ -14897,8 +14897,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", direction=\"get\", outcome=~\"timeout|transport_error\"}[$rate_window])) by (region, connector, match_method, match_finality) / sum(rate(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", direction=\"get\", outcome!~\"breaker_open|interrupted\"}[$rate_window])) by (region, connector, match_method, match_finality)",
-              "legendFormat": "{{region}} {{connector}} [{{match_method}} / {{match_finality}}]",
+              "expr": "sum(rate(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", direction=\"get\", outcome=~\"timeout|transport_error\"}[$rate_window])) by (region, project, network, connector, match_method, match_finality) / sum(rate(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\", direction=\"get\", outcome!~\"breaker_open|interrupted\"}[$rate_window])) by (region, project, network, connector, match_method, match_finality)",
+              "legendFormat": "{{region}} {{project}} {{network}} {{connector}} [{{match_method}} / {{match_finality}}]",
               "range": true,
               "refId": "A"
             }

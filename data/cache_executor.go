@@ -100,13 +100,24 @@ func finalityLabel(fs []common.DataFinalityState) string {
 }
 
 // observe records one governed attempt's outcome under this executor's
-// identity. No-op until identify() has run.
-func (e *cacheExecutor) observe(outcome string) {
+// identity plus the request's project and network, read from ctx the same
+// way pickCacheExecutor reads finality. No-op until identify() has run.
+// A connector is shared across projects and (for pooled connectors) across
+// networks; the executor is the unit the breaker lives on, the request is
+// the unit operators filter on, so both are labelled.
+func (e *cacheExecutor) observe(ctx context.Context, outcome string) {
 	if e.connectorId == "" {
 		return
 	}
+	project, network := "n/a", "n/a"
+	if r, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok && r != nil {
+		network = r.NetworkLabel()
+		if n := r.Network(); n != nil {
+			project = n.ProjectId()
+		}
+	}
 	telemetry.MetricCacheExecutorAttempt.WithLabelValues(
-		e.connectorId, e.direction, e.method, e.finalityLabel, outcome,
+		project, network, e.connectorId, e.direction, e.method, e.finalityLabel, outcome,
 	).Inc()
 }
 
@@ -293,7 +304,7 @@ func (e *cacheExecutor) callBreaker(
 ) ([]byte, error) {
 	if e.breaker != nil {
 		if !e.breaker.TryAcquirePermit() {
-			e.observe("breaker_open")
+			e.observe(ctx, "breaker_open")
 			startTime := time.Now()
 			return nil, common.NewErrFailsafeCircuitBreakerOpen(scopeConnector, failsafe.ErrCircuitOpen, &startTime)
 		}
@@ -344,14 +355,20 @@ func (e *cacheExecutor) callBreaker(
 	if e.breaker != nil {
 		e.breaker.Record(breakerOutcome(err, ourTimeout, interrupted))
 	}
-	e.observe(attemptOutcome(err, ourTimeout, interrupted))
+	e.observe(ctx, attemptOutcome(err, ourTimeout, interrupted))
 	return data, err
 }
 
 // attemptOutcome names a completed attempt for cache_executor_attempt_total.
 // Same partition breakerOutcome uses, kept apart so the metric can tell a
-// miss from a hit and a timeout from a transport failure — the breaker
-// collapses those pairs, the operator reading the ratio must not.
+// not-found from a success and a timeout from a transport failure — the
+// breaker collapses those pairs, the operator reading the ratio must not.
+//
+// "success" is NOT "cache hit". It means the connector answered inside the
+// budget; whether the answer carried data is decided above this layer. The
+// gRPC connector returns a prism miss as a successful call with a null result
+// (clients/grpc_bds_client.go), so at this level it is a success — which is
+// also exactly what the breaker counts it as. Hit/miss live in cache_get_*.
 func attemptOutcome(err error, ourTimeout, interrupted bool) string {
 	switch {
 	case interrupted:
@@ -359,9 +376,9 @@ func attemptOutcome(err error, ourTimeout, interrupted bool) string {
 	case ourTimeout:
 		return "timeout"
 	case err == nil:
-		return "hit"
+		return "success"
 	case common.HasErrorCode(err, common.ErrCodeRecordNotFound):
-		return "miss"
+		return "not_found"
 	case isTransportError(err):
 		return "transport_error"
 	default:
