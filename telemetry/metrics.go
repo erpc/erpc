@@ -739,6 +739,28 @@ var (
 		Help:      "Total circuit-breaker state transitions per upstream and direction (closed_to_open/half_open_to_open/half_open_to_closed/open_to_half_open).",
 	}, []string{"project", "upstream", "transition"})
 
+	// MetricCacheExecutorAttempt counts every attempt a cache-connector
+	// failsafe executor governs, keyed by the executor's identity (the
+	// matchMethod / matchFinality it was configured with) and the outcome
+	// the breaker saw. This is the breaker's own denominator: the
+	// cache_get_* counters carry the POLICY's finality, which for a GET is
+	// the first policy that matched (a finalized request also matches an
+	// unfinalized policy), not the request's — so they cannot say which
+	// executor a read landed on, and cannot explain why a breaker tripped.
+	MetricCacheExecutorAttempt = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_executor_attempt_total",
+		Help:      "Per cache-connector failsafe executor attempt count by outcome. Outcomes: hit/miss/timeout/transport_error/error/breaker_open/interrupted.",
+	}, []string{"connector", "direction", "match_method", "match_finality", "outcome"})
+
+	// MetricCacheExecutorBreakerStateChange is the cache-connector twin of
+	// MetricUpstreamBreakerStateChange, keyed by executor identity.
+	MetricCacheExecutorBreakerStateChange = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_executor_breaker_state_change_total",
+		Help:      "Total circuit-breaker state transitions per cache-connector failsafe executor (closed_to_open/half_open_to_open/half_open_to_closed/open_to_half_open).",
+	}, []string{"connector", "direction", "match_method", "match_finality", "transition"})
+
 	MetricNetworkFailedRequests = newLabeledCounterUnregistered(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",

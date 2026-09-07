@@ -3,11 +3,14 @@ package data
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -43,6 +46,68 @@ type cacheExecutor struct {
 
 	method     string
 	finalities []common.DataFinalityState
+
+	// Telemetry identity, set once by identify(). connectorId and direction
+	// come from the owning FailsafeConnector; finalityLabel is the sorted
+	// `a|b` join of finalities, or "*" when the executor has no finality
+	// filter. Empty connectorId means telemetry is off (executor built
+	// outside a connector, e.g. tests).
+	connectorId   string
+	direction     string
+	finalityLabel string
+}
+
+// identify binds the executor to the connector and direction it serves and
+// wires breaker state transitions to the cache_executor_breaker_state_change
+// metric and a warn log. Called by buildCacheExecutors; without it the
+// executor runs but emits nothing.
+func (e *cacheExecutor) identify(connectorId, direction string) {
+	e.connectorId = connectorId
+	e.direction = direction
+	e.finalityLabel = finalityLabel(e.finalities)
+	if e.breaker == nil {
+		return
+	}
+	e.breaker.OnTransition = func(from, to failsafe.State, reason string) {
+		telemetry.MetricCacheExecutorBreakerStateChange.WithLabelValues(
+			connectorId, direction, e.method, e.finalityLabel, from.String()+"_to_"+to.String(),
+		).Inc()
+		e.logger.Warn().
+			Str("connector", connectorId).
+			Str("direction", direction).
+			Str("matchMethod", e.method).
+			Str("matchFinality", e.finalityLabel).
+			Str("from", from.String()).
+			Str("to", to.String()).
+			Str("reason", reason).
+			Msg("cache connector circuit breaker state changed")
+	}
+}
+
+// finalityLabel renders a matchFinality filter as a stable metric label:
+// "*" for no filter, otherwise the sorted names joined by "|" so the same
+// set always yields the same series regardless of config order.
+func finalityLabel(fs []common.DataFinalityState) string {
+	if len(fs) == 0 {
+		return "*"
+	}
+	names := make([]string, len(fs))
+	for i, f := range fs {
+		names[i] = f.String()
+	}
+	sort.Strings(names)
+	return strings.Join(names, "|")
+}
+
+// observe records one governed attempt's outcome under this executor's
+// identity. No-op until identify() has run.
+func (e *cacheExecutor) observe(outcome string) {
+	if e.connectorId == "" {
+		return
+	}
+	telemetry.MetricCacheExecutorAttempt.WithLabelValues(
+		e.connectorId, e.direction, e.method, e.finalityLabel, outcome,
+	).Inc()
 }
 
 // NewCacheExecutor builds a per-(method, finality) cache executor. ctx
@@ -228,6 +293,7 @@ func (e *cacheExecutor) callBreaker(
 ) ([]byte, error) {
 	if e.breaker != nil {
 		if !e.breaker.TryAcquirePermit() {
+			e.observe("breaker_open")
 			startTime := time.Now()
 			return nil, common.NewErrFailsafeCircuitBreakerOpen(scopeConnector, failsafe.ErrCircuitOpen, &startTime)
 		}
@@ -278,7 +344,29 @@ func (e *cacheExecutor) callBreaker(
 	if e.breaker != nil {
 		e.breaker.Record(breakerOutcome(err, ourTimeout, interrupted))
 	}
+	e.observe(attemptOutcome(err, ourTimeout, interrupted))
 	return data, err
+}
+
+// attemptOutcome names a completed attempt for cache_executor_attempt_total.
+// Same partition breakerOutcome uses, kept apart so the metric can tell a
+// miss from a hit and a timeout from a transport failure — the breaker
+// collapses those pairs, the operator reading the ratio must not.
+func attemptOutcome(err error, ourTimeout, interrupted bool) string {
+	switch {
+	case interrupted:
+		return "interrupted"
+	case ourTimeout:
+		return "timeout"
+	case err == nil:
+		return "hit"
+	case common.HasErrorCode(err, common.ErrCodeRecordNotFound):
+		return "miss"
+	case isTransportError(err):
+		return "transport_error"
+	default:
+		return "error"
+	}
 }
 
 // breakerOutcome classifies a completed cache attempt for the breaker.

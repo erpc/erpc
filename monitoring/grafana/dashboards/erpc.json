@@ -14701,6 +14701,322 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 62
+          },
+          "id": 956,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(increase(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", direction=\"get\"}[$__interval])) by (region, connector, match_method, match_finality, outcome) > 0",
+              "legendFormat": "{{region}} {{connector}} [{{match_method}} / {{match_finality}}] {{outcome}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Cache executor attempts (by executor & outcome)",
+          "type": "timeseries",
+          "description": "Per failsafe executor on each cache connector: which (matchMethod, matchFinality) entry a GET landed on and how it ended. Unlike the Cache GET panels above, whose policy label carries the POLICY's finality (a finalized read matches the unfinalized policy first), this is keyed by the executor that actually ran the read."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 62
+          },
+          "id": 957,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Max",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", direction=\"get\", outcome=~\"timeout|transport_error\"}[$rate_window])) by (region, connector, match_method, match_finality) / sum(rate(erpc_cache_executor_attempt_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", direction=\"get\", outcome!~\"breaker_open|interrupted\"}[$rate_window])) by (region, connector, match_method, match_finality)",
+              "legendFormat": "{{region}} {{connector}} [{{match_method}} / {{match_finality}}]",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Cache executor failure ratio (what the breaker sees)",
+          "type": "timeseries",
+          "description": "(timeout + transport_error) / (all attempts the breaker records). breaker_open and interrupted are excluded because the breaker ignores them. Compare against the executor's failureThresholdCount / failureThresholdCapacity to see how close it is to tripping - and remember the window is count-based, so this time-based ratio is only an approximation of the ring's."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 72
+          },
+          "id": 958,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(increase(erpc_cache_executor_breaker_state_change_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\"}[$__interval])) by (region, connector, match_method, match_finality, direction, transition) > 0",
+              "legendFormat": "{{region}} {{connector}} {{direction}} [{{match_method}} / {{match_finality}}] {{transition}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Cache executor breaker transitions",
+          "type": "timeseries",
+          "description": "Circuit-breaker state transitions per cache failsafe executor, both directions."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "description": "Block range each read-through cache connector (e.g. gRPC indexer) currently serves, per network (PR #909): earliest / latest / finalized.",
           "fieldConfig": {
             "defaults": {
@@ -14763,7 +15079,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 62
+            "y": 80
           },
           "id": 221,
           "options": {
@@ -14915,7 +15231,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 62
+            "y": 80
           },
           "id": 222,
           "interval": "1m",
@@ -15042,7 +15358,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 72
+            "y": 90
           },
           "id": 223,
           "interval": "1m",
@@ -15155,7 +15471,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 80
+            "y": 98
           },
           "id": 953,
           "interval": "1m",
@@ -15263,7 +15579,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 80
+            "y": 98
           },
           "id": 954,
           "interval": "1m",
@@ -15371,7 +15687,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 88
+            "y": 106
           },
           "id": 955,
           "interval": "1m",
