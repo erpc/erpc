@@ -173,6 +173,8 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 | `networks[*].evm.servedTip.enabledFor` | []string | `[]` (max mode for all tags) | Tags for which cluster-min mode is active. Valid: `"latest"`, `"finalized"`, `"safe"` (`"safe"` is an alias for `"finalized"`). Source: <SourceLink file="common/config.go" lines="2272" /> |
 | `networks[*].evm.servedTip.clusterDelta` | int64 | `0` (auto-derive) | Max block gap between adjacent sorted upstream tips that still groups them into one cluster. Auto-derive: `clamp(ceil(2.0 / blockTimeSec), 2, 10)`. Examples: Ethereum (12 s) → 2; Polygon (2 s) → 1, clamped to 2; Arbitrum (0.25 s) → 8; sub-100 ms → 10 (ceiling). When block time is unknown (EMA not warmed up) the fallback is 2. Source: <SourceLink file="architecture/evm/served_tip.go" lines="225-246" /> |
 | `networks[*].evm.servedTip.guaranteedMethods` | []string | `[]` | Glob patterns (e.g. `"trace_*"`). For each pattern the served tip is clamped down to the cluster-min of supporting upstreams only, ensuring `"latest"` is always servable for these methods. Source: <SourceLink file="erpc/networks.go" lines="705-747" /> |
+| `networks[*].evm.servedTip.lagBlocks` | int64 | `0` (no cushion) | Blocks subtracted from the advertised tip *after* the full pipeline (pick → referee → regression guard → guaranteed-method floor): `advertised = max(0, servedTip - lagBlocks)`. Lets a required-but-slightly-behind group (e.g. internals a few blocks behind the majority tip in a mixed internal/external pool) still serve `"latest"`, without a hard per-group minimum a single stuck upstream could use to pin the whole network. `0` is byte-identical to today. Applies only to tags in `enabledFor`; the max mode is unaffected. Negative values are rejected at config load. Source: <SourceLink file="erpc/networks.go" lines="895" /> |
+| `networks[*].evm.servedTip.lag` | Duration | `nil` | Same cushion expressed as a duration, converted to blocks via the network EMA block time at evaluation (`floor(lag / blockTime)`). A no-op until the block time is known. If both `lag` and `lagBlocks` are set the explicit `lagBlocks` wins. Write it as a duration string (`lag: "12s"`); a bare number is milliseconds. Source: <SourceLink file="erpc/networks.go" lines="1383" /> |
 
 ### Worked examples
 
@@ -253,6 +255,28 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 }]`}
 />
 
+**5. Lag cushion for a mixed internal/external pool.** Internals trail the strict-majority served tip by a couple of blocks, so the advertised `"latest"` lands on a block they cannot serve yet, breaking consensus. A small `lagBlocks` cushion backs the advertised tip off so the trailing-but-required group can serve it, without pinning the network to a stuck node:
+
+<ConfigTabs
+  path="networks[].evm.servedTip"
+  yaml={`networks:
+  - architecture: evm
+    evm:
+      chainId: 1
+      servedTip:
+        enabledFor: ["latest"]
+        lagBlocks: 3`}
+  ts={`networks: [{
+  architecture: "evm",
+  evm: {
+    chainId: 1,
+    servedTip: { enabledFor: ["latest"], lagBlocks: 3 },
+  },
+}]`}
+/>
+
+Use `lag: "6s"` instead of `lagBlocks` to express the cushion in wall-clock time; it is converted to blocks via the EMA block time at evaluation (and is a no-op until that block time is known).
+
 ### Request/response behavior
 
 - In cluster mode, eRPC gates routing so only upstreams at or above the served tip are eligible. A request for `"latest"` receives a block number ≤ the served tip, guaranteed to be present on the upstream that handles it.
@@ -292,6 +316,9 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 17. **`eth_syncing` result `{Ok: false}` is interpreted as SYNCING.** The non-standard `{Ok: bool}` response shape is handled by `!Ok`: `Ok=false` means not-ok = still syncing. Source: [`architecture/evm/evm_state_poller.go:L1087-L1100`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L1087-L1100)
 18. **`erpc_network_served_tip_lag_blocks` uses `MaxEligible` (post-velocity-gate), not `MaxObserved`.** A far-future tip from a misbehaving upstream is velocity-dropped and does not inflate the lag gauge. The gauge accurately reflects deliberate lag vs. the highest plausible eligible upstream tip.
 19. **Finalized block polling is permanently skipped on unsupported chains.** After 10 consecutive `eth_getBlockByNumber("finalized")` failures without any prior success, `skipFinalizedCheck = true`. `IsBlockFinalized` then falls back exclusively to `latestBlock − FallbackFinalityDepth`. On PoW chains or chains without EIP-4895 finality, this is the only reachable path.
+20. **`servedTip.lagBlocks` is applied last and clamps at 0.** The cushion runs *after* the pick, trajectory referee, regression guard, and guaranteed-method floor — never before the guard, so a cushion can never look like a poisoned ballot (a subtracted tip must not be mistaken for a regression). If the cushion exceeds the pick the advertised tip is `0`, never negative. Because it is applied after the referee's accounting, it neither masks nor triggers a referee-intervention alert.
+21. **`servedTip.lag` (duration) is a no-op until the EMA block time is known.** A cold process has no block-time estimate, so a `lag`-only cushion is `0` until cadence is measured (typically within the first few produced blocks). Use `lagBlocks` for a cushion that is in effect from the first served tip. When both are set, `lagBlocks` wins.
+22. **The lag cushion does not apply in max mode.** Like every other `servedTip` sub-field it is inert unless the tag is listed in `enabledFor`; an unset or `0` cushion is byte-identical to today's behaviour.
 
 ### Observability
 
@@ -307,7 +334,7 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 | `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | Current EMA block-time estimate in ms; absent until ≥3 samples |
 | `erpc_network_latest_block_timestamp_distance_seconds` | gauge | project, network, origin | `(now_ms − block.timestamp × 1000) / 1000`; `origin="evm_state_poller"` |
 | `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Post-clamp served tip; **cluster mode only** (`lane="all"` or named group) |
-| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | `MaxEligible − served`; **cluster mode only**; grows during monotonic clamp hold-down |
+| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | `MaxEligible − served`; **cluster mode only**; grows during monotonic clamp hold-down. When `servedTip.lagBlocks`/`lag` is configured, the cushion is part of this gap — the gauge reads the actual distance the advertised tip sits behind the freshest eligible head, cushion included, so a healthy configured cushion shows as a steady non-zero baseline |
 | `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream excluded from pick; `reason="velocity"` or `"outlier"`; **cluster mode only, network-wide pick only** |
 
 **OTel trace spans** (under detailed tracing): `EvmStatePoller.PollLatestBlockNumber`, `EvmStatePoller.PollFinalizedBlockNumber`, `Network.EvmHighestLatestBlockNumber`, `Network.EvmHighestFinalizedBlockNumber`, `Evm.ExtractBlockReferenceFromRequest`, `Evm.ExtractBlockReferenceFromResponse`. The network span includes attributes: `served_tip.axis`, `served_tip.candidate`, `served_tip.max_observed`, `served_tip.cluster_count`, `served_tip.dominant_size`, `served_tip.outliers_count`, `served_tip.velocity_dropped`, `served_tip.lag_vs_max`. Source: <SourceLink file="erpc/networks.go" lines="777-793" />

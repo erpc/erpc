@@ -883,7 +883,8 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 // them already has (see evm.PickServedTip) — lets the trajectory referee prefer
 // a corroborated on-trajectory group when that majority has stalled, guards the
 // result against a regression far below the live heads, applies the
-// guaranteed-method floor, and exports the gauges.
+// guaranteed-method floor, backs the advertised tip off the configured lag
+// cushion (servedTip.lagBlocks / lag), and exports the gauges.
 //
 // Both history-aware layers are in-process, bounded and one-directional (the
 // referee can only raise the pick; the guard can only hold it, and only
@@ -932,6 +933,20 @@ func (n *Network) servedTip(
 	// (or below) the majority pick changed nothing, and counting or logging it
 	// would page someone about an intervention that did not happen.
 	n.observeServedTipRefereeTransition(axis, lane, anchor, majority, pick.Tip, decision)
+
+	// Lag cushion: back the advertised tip off a fixed number of blocks so a
+	// required-but-slightly-behind group can still serve it. Applied dead last —
+	// after the guard, the guaranteed-method floor and the referee's accounting —
+	// so the cushion never looks like a poisoned ballot to the guard, never masks
+	// a referee intervention, and shows up in the anchor + gauges as the value the
+	// network actually advertises. Unset (0) leaves pick.Tip untouched.
+	if pick.Tip > 0 {
+		if cushion := n.servedTipLagBlocks(); cushion > 0 {
+			if pick.Tip -= cushion; pick.Tip < 0 {
+				pick.Tip = 0
+			}
+		}
+	}
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
@@ -1364,6 +1379,36 @@ func (n *Network) servedTipMaxRegressionBlocks() int64 {
 		return n.cfg.Evm.ServedTip.MaxRegressionBlocks
 	}
 	return common.DefaultToleratedBlockHeadRollback
+}
+
+// servedTipLagBlocks resolves the configured lag cushion in blocks. The explicit
+// LagBlocks wins; otherwise a Lag duration is converted via the EMA block time,
+// which is 0 (no cushion) until the process has measured the chain's cadence.
+// Returns 0 when the cushion is unconfigured — the current behaviour.
+func (n *Network) servedTipLagBlocks() int64 {
+	if n.cfg == nil || n.cfg.Evm == nil || n.cfg.Evm.ServedTip == nil {
+		return 0
+	}
+	st := n.cfg.Evm.ServedTip
+	if st.LagBlocks > 0 {
+		return st.LagBlocks
+	}
+	if st.Lag != nil && st.Lag.Duration() > 0 {
+		if bt := n.servedTipBlockTime(); bt > 0 {
+			return int64(st.Lag.Duration() / bt)
+		}
+	}
+	return 0
+}
+
+// servedTipBlockTime is the block time used to convert a servedTip.lag duration
+// into blocks: the test-only override when set (the EMA needs live timestamped
+// blocks that fixtures don't produce), otherwise the tracker's EMA estimate.
+func (n *Network) servedTipBlockTime() time.Duration {
+	if n.servedTipBlockTimeOverride > 0 {
+		return time.Duration(n.servedTipBlockTimeOverride * float64(time.Second))
+	}
+	return n.EvmBlockTime()
 }
 
 // SvmHighestLatestSlot returns the majority-vote latest slot across SVM
