@@ -1425,7 +1425,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		beforeCordonCount := promUtil.ToFloat64(cordonCounter)
 		beforeUncordonCount := promUtil.ToFloat64(uncordonCounter)
 
-		tracker.Cordon(ups, "*", "vendor maintenance")
+		tracker.Cordon(ups, "*", CordonOwnerAuto, common.CordonEntry{Reason: "vendor maintenance"})
 		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
 			"cordon event counter increments on OFF→ON edge")
 
@@ -1434,13 +1434,15 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		// — only the OFF→ON edge records start so durations measure
 		// real outages.
 		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
-		startedAt := tm.CordonedAtMs.Load()
-		require.NotZero(t, startedAt, "CordonedAtMs must be set on OFF→ON edge")
+		startedAt := tm.cordonedAtMs
+		require.NotZero(t, startedAt, "cordonedAtMs must be set on OFF→ON edge")
 
 		time.Sleep(5 * time.Millisecond)
-		tracker.Cordon(ups, "*", "vendor maintenance (extended)")
-		require.Equal(t, startedAt, tm.CordonedAtMs.Load(),
+		tracker.Cordon(ups, "*", CordonOwnerAuto, common.CordonEntry{Reason: "vendor maintenance (extended)"})
+		require.Equal(t, startedAt, tm.cordonedAtMs,
 			"already-cordoned re-cordon must preserve original start timestamp")
+		entry, _ := tm.CordonEntryFor(CordonOwnerAuto)
+		require.Equal(t, startedAt, entry.CordonedAtMs)
 		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
 			"already-cordoned re-cordon must NOT increment the event counter")
 
@@ -1448,11 +1450,11 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		// non-zero value, then uncordon.
 		time.Sleep(20 * time.Millisecond)
 		histBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
-		tracker.Uncordon(ups, "*", "vendor resolved")
+		tracker.Uncordon(ups, "*", CordonOwnerAuto)
 		histAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
 
-		assert.Equal(t, int64(0), tm.CordonedAtMs.Load(),
-			"CordonedAtMs reset to 0 on uncordon")
+		assert.Equal(t, int64(0), tm.cordonedAtMs,
+			"cordonedAtMs reset to 0 on uncordon")
 		assert.False(t, tm.Cordoned.Load(), "Cordoned flag must be false after uncordon")
 		assert.Equal(t, beforeUncordonCount+1, promUtil.ToFloat64(uncordonCounter),
 			"uncordon event counter increments on ON→OFF edge")
@@ -1471,20 +1473,20 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		beforeCordon := promUtil.ToFloat64(cordonCounter)
 		beforeUncordon := promUtil.ToFloat64(uncordonCounter)
 
-		tracker.Cordon(ups, method, "automatic")
-		tracker.CordonAdmin(ups, method, "operator")
+		tracker.Cordon(ups, method, CordonOwnerAuto, common.CordonEntry{Reason: "automatic"})
+		tracker.Cordon(ups, method, CordonOwnerAdmin, common.CordonEntry{Reason: "operator"})
 		assert.Equal(t, beforeCordon+1, promUtil.ToFloat64(cordonCounter),
 			"adding a second owner must not emit another effective cordon")
 		assert.Equal(t, float64(1), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "automatic")))
 		assert.Equal(t, float64(1), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "operator")))
 
-		tracker.UncordonAdmin(ups, method)
+		tracker.Uncordon(ups, method, CordonOwnerAdmin)
 		assert.Equal(t, beforeUncordon, promUtil.ToFloat64(uncordonCounter),
 			"removing one owner must not emit an effective uncordon")
 		assert.Equal(t, float64(1), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "automatic")))
 		assert.Equal(t, float64(0), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "operator")))
 
-		tracker.Uncordon(ups, method, "automatic recovered")
+		tracker.Uncordon(ups, method, CordonOwnerAuto)
 		assert.Equal(t, beforeUncordon+1, promUtil.ToFloat64(uncordonCounter),
 			"the final owner removal emits the effective uncordon")
 		assert.Equal(t, float64(0), promUtil.ToFloat64(tracker.getCordonedGauge(ups, method, "automatic")))
@@ -1493,7 +1495,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 	t.Run("admin_cordon_is_visible_in_metrics_json", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "json-project", 2*time.Second)
 		ups := common.NewFakeUpstream("json-upstream")
-		tracker.CordonAdmin(ups, "*", "operator incident")
+		tracker.Cordon(ups, "*", CordonOwnerAdmin, common.CordonEntry{Reason: "operator incident"})
 		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
 
 		raw, err := tm.MarshalJSON()
@@ -1624,7 +1626,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 
 		ups := common.NewFakeUpstream("cordoned-method-target")
 		tracker.RecordUpstreamRequest(ups, "eth_call", common.DataFinalityStateUnknown)
-		tracker.Cordon(ups, "eth_call", "investigated regression")
+		tracker.Cordon(ups, "eth_call", CordonOwnerAuto, common.CordonEntry{Reason: "investigated regression"})
 
 		// Wait through a couple of sweep cycles.
 		time.Sleep(2500 * time.Millisecond)
@@ -1655,11 +1657,11 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		before := promUtil.ToFloat64(uncordonCounter)
 
 		require.NotPanics(t, func() {
-			tracker.Uncordon(ups, "*", "spurious uncordon")
+			tracker.Uncordon(ups, "*", CordonOwnerAuto)
 		})
 		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
 		assert.False(t, tm.Cordoned.Load())
-		assert.Equal(t, int64(0), tm.CordonedAtMs.Load())
+		assert.Equal(t, int64(0), tm.cordonedAtMs)
 		assert.Equal(t, before, promUtil.ToFloat64(uncordonCounter),
 			"no-op uncordon must NOT increment the event counter")
 	})

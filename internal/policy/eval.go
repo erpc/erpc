@@ -95,27 +95,10 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 		out.BlockHeadLagSeconds = float64(out.BlockHeadLag) * btSec
 		out.FinalizationLagSeconds = float64(out.FinalizationLag) * btSec
 	}
-	out.CordonedReason = effectiveCordonReason(m)
-	return out
-}
-
-// effectiveCordonReason mirrors health.Tracker.CordonedReason: admin
-// ownership wins over automatic. Both bits must reach JS so
-// `.removeCordoned()` drops operator-persisted cordons, not only
-// consensus/health sit-outs that set the automatic `Cordoned` flag.
-func effectiveCordonReason(m *health.TrackedMetrics) string {
-	if m == nil {
-		return ""
-	}
-	if m.AdminCordoned.Load() {
-		r, _ := m.AdminCordonReason.Load().(string)
-		return r
-	}
 	if m.Cordoned.Load() {
-		r, _ := m.LastCordonedReason.Load().(string)
-		return r
+		out.CordonedReason = m.CordonedReason()
 	}
-	return ""
+	return out
 }
 
 // quantileFractions is the canonical p50/p70/p90/p95/p99 set
@@ -266,7 +249,9 @@ func convertTrackedMetrics(tr healthTracker, u common.Upstream, m *health.Tracke
 		out.BlockHeadLagSeconds = float64(out.BlockHeadLag) * btSec
 		out.FinalizationLagSeconds = float64(out.FinalizationLag) * btSec
 	}
-	out.CordonedReason = effectiveCordonReason(m)
+	if m.Cordoned.Load() {
+		out.CordonedReason = m.CordonedReason()
+	}
 	return out
 }
 

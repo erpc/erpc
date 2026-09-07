@@ -654,9 +654,16 @@ func (e *ERPC) findUpstreamById(projectID, upstreamID string) (*upstream.Upstrea
 }
 
 // handleCordonUpstream marks an upstream cordoned (cordon=true) or
-// uncordoned (cordon=false) for a specific method scope.
-func (e *ERPC) handleCordonUpstream(_ context.Context, nq *common.NormalizedRequest, cordon bool) (*common.NormalizedResponse, error) {
+// uncordoned (cordon=false) for a specific method scope. With a remote
+// shared-state connector the change is persisted first and every replica
+// converges on it within upstream.cordonSyncInterval; a persistence failure
+// is returned to the operator and changes nothing locally.
+func (e *ERPC) handleCordonUpstream(ctx context.Context, nq *common.NormalizedRequest, cordon bool) (*common.NormalizedResponse, error) {
 	p, err := parseCordonParams(nq)
+	if err != nil {
+		return nil, err
+	}
+	prj, err := e.GetProject(p.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -673,13 +680,12 @@ func (e *ERPC) handleCordonUpstream(_ context.Context, nq *common.NormalizedRequ
 		}
 	}
 	if cordon {
-		if err := u.CordonAdmin(p.Method, reason); err != nil {
-			return nil, err
-		}
+		err = prj.upstreamsRegistry.CordonAdmin(ctx, u, p.Method, reason)
 	} else {
-		if err := u.UncordonAdmin(p.Method, reason); err != nil {
-			return nil, err
-		}
+		err = prj.upstreamsRegistry.UncordonAdmin(ctx, u, p.Method)
+	}
+	if err != nil {
+		return nil, err
 	}
 	return makeSelectionResponse(nq, map[string]interface{}{
 		"projectId": p.ProjectID,

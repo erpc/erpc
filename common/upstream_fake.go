@@ -340,10 +340,10 @@ func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, fi
 	// No-op for testing
 }
 
-func (t *FakeHealthTracker) Cordon(upstream Upstream, method string, reason string) {
+func (t *FakeHealthTracker) Cordon(upstream Upstream, method string, owner string, entry CordonEntry) {
 	// No-op for testing
 }
 
-func (t *FakeHealthTracker) Uncordon(upstream Upstream, method string, reason string) {
+func (t *FakeHealthTracker) Uncordon(upstream Upstream, method string, owner string) {
 	// No-op for testing
 }

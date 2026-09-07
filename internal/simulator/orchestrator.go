@@ -938,9 +938,7 @@ func (o *Orchestrator) snapshotUpstreamRows(last bucketTotals) map[string]Upstre
 					row.ErrorsTotal = m.ErrorsTotal.Load()
 					if m.Cordoned.Load() {
 						row.Cordoned = true
-						if r, ok := m.LastCordonedReason.Load().(string); ok {
-							row.CordonedReason = r
-						}
+						row.CordonedReason = m.CordonedReason()
 					}
 					if m.ResponseQuantiles != nil {
 						row.P50Ms = m.ResponseQuantiles.GetQuantile(0.50).Seconds() * 1000

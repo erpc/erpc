@@ -33,8 +33,11 @@ type HealthTracker interface {
 	RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState)
 	RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState)
 	RecordUpstreamFailure(up Upstream, method string, finality DataFinalityState, err error)
-	Cordon(upstream Upstream, method string, reason string)
-	Uncordon(upstream Upstream, method string, reason string)
+	// Cordon records owner's cordon on (upstream, method); the cell stays
+	// cordoned while any owner holds one. Uncordon lifts owner's cordon,
+	// or every owner's when owner is "*".
+	Cordon(upstream Upstream, method string, owner string, entry CordonEntry)
+	Uncordon(upstream Upstream, method string, owner string)
 }
 
 type Upstream interface {

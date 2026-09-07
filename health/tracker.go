@@ -109,23 +109,18 @@ type TrackedMetrics struct {
 	MisbehaviorsTotal      *RollingCounter  `json:"misbehaviorsTotal"`
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
-	Cordoned               atomic.Bool      `json:"cordoned"`
-	LastCordonedReason     atomic.Value     `json:"lastCordonedReason"`
-	// CordonedAtMs is unix-millis when Cordoned was last flipped true.
-	// `0` means not cordoned (or never cordoned). Read by Uncordon to
-	// observe the cordon-duration histogram for dashboards.
-	CordonedAtMs atomic.Int64 `json:"cordonedAtMs"`
+	// Cordoned mirrors `len(cordons) > 0` for lock-free reads on the policy
+	// eval path. Mutations go through Tracker.Cordon / Tracker.Uncordon.
+	Cordoned atomic.Bool `json:"cordoned"`
 
-	// AdminCordoned tracks operator-driven cordons separately from automatic ones
-	// (consensus, health). Both bits are checked by IsCordoned so either source
-	// blocks routing independently without clobbering the other.
-	AdminCordoned     atomic.Bool  `json:"adminCordoned"`
-	AdminCordonReason atomic.Value `json:"adminCordonReason"` // string
-	AdminCordonedAtMs atomic.Int64 `json:"adminCordonedAtMs"`
-	// cordonMu makes transitions across the automatic/admin ownership bits
-	// atomic for event, duration, and reason-labeled gauge bookkeeping.
-	cordonMu              sync.Mutex
-	EffectiveCordonedAtMs atomic.Int64 `json:"-"`
+	// cordons holds every active cordon keyed by owner (see CordonOwner*).
+	// The cell is cordoned while any owner is present; owners never clobber
+	// each other, so a consensus sit-out ending cannot lift an operator
+	// cordon and vice versa. cordonedAtMs is the OFF→ON edge of the
+	// effective state, used for the duration histogram.
+	cordonMu     sync.Mutex
+	cordons      map[string]common.CordonEntry
+	cordonedAtMs int64
 
 	// LastAccessedAtMs is unix-millis of the last Record* or Get*
 	// touching this entry. Drives the tracker's idle-sweep — entries
@@ -198,16 +193,46 @@ func (m *TrackedMetrics) MisbehaviorRate() float64 {
 	return float64(m.MisbehaviorsTotal.Load()) / float64(reqs)
 }
 
-func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
+// Cordon owners. A cell stays cordoned while any owner holds a cordon;
+// each owner only ever lifts its own. `admin` is the operator-driven
+// owner persisted to shared state; `auto` covers in-process detectors
+// (consensus sit-out, state-poller health/identity checks).
+const (
+	CordonOwnerAuto  = "auto"
+	CordonOwnerAdmin = "admin"
+)
+
+// CordonedReason returns the effective reason: the admin owner wins,
+// otherwise the lowest owner name for determinism. Empty when not cordoned.
+func (m *TrackedMetrics) CordonedReason() string {
 	m.cordonMu.Lock()
 	defer m.cordonMu.Unlock()
-	effectiveCordoned := m.Cordoned.Load() || m.AdminCordoned.Load()
-	var effectiveReason interface{}
-	if m.AdminCordoned.Load() {
-		effectiveReason = m.AdminCordonReason.Load()
-	} else {
-		effectiveReason = m.LastCordonedReason.Load()
+	return m.cordonedReasonLocked()
+}
+
+func (m *TrackedMetrics) cordonedReasonLocked() string {
+	if e, ok := m.cordons[CordonOwnerAdmin]; ok {
+		return e.Reason
 	}
+	reason := ""
+	first := ""
+	for owner, e := range m.cordons {
+		if first == "" || owner < first {
+			first, reason = owner, e.Reason
+		}
+	}
+	return reason
+}
+
+// CordonEntryFor returns the owner's cordon on this cell, if any.
+func (m *TrackedMetrics) CordonEntryFor(owner string) (common.CordonEntry, bool) {
+	m.cordonMu.Lock()
+	defer m.cordonMu.Unlock()
+	e, ok := m.cordons[owner]
+	return e, ok
+}
+
+func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 	return common.SonicCfg.Marshal(map[string]interface{}{
 		"responseQuantiles":      m.ResponseQuantiles,
 		"errorsTotal":            m.ErrorsTotal.Load(),
@@ -216,8 +241,8 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 		"misbehaviorsTotal":      m.MisbehaviorsTotal.Load(),
 		"blockHeadLag":           m.BlockHeadLag.Load(),
 		"finalizationLag":        m.FinalizationLag.Load(),
-		"cordoned":               effectiveCordoned,
-		"lastCordonedReason":     effectiveReason,
+		"cordoned":               m.Cordoned.Load(),
+		"lastCordonedReason":     m.CordonedReason(),
 		"errorRate":              m.ErrorRate(),
 		"throttledRate":          m.ThrottledRate(),
 		"misbehaviorRate":        m.MisbehaviorRate(),
@@ -246,20 +271,16 @@ func (m *TrackedMetrics) Rotate() {
 // Reset wipes every counter and the quantile sketch fully. Test/admin
 // helper — the request path uses Rotate.
 func (m *TrackedMetrics) Reset() {
-	m.cordonMu.Lock()
-	defer m.cordonMu.Unlock()
 	m.ErrorsTotal.Wipe()
 	m.RequestsTotal.Wipe()
 	m.RemoteRateLimitedTotal.Wipe()
 	m.MisbehaviorsTotal.Wipe()
 	m.ResponseQuantiles.Reset()
+	m.cordonMu.Lock()
+	m.cordons = nil
+	m.cordonedAtMs = 0
 	m.Cordoned.Store(false)
-	m.LastCordonedReason.Store("")
-	m.AdminCordoned.Store(false)
-	m.AdminCordonReason.Store("")
-	m.AdminCordonedAtMs.Store(0)
-	m.CordonedAtMs.Store(0)
-	m.EffectiveCordonedAtMs.Store(0)
+	m.cordonMu.Unlock()
 }
 
 // ------------------------------------
@@ -643,7 +664,7 @@ func (t *Tracker) sweepIdle() {
 			return true // never evict the per-upstream wildcard rollup
 		}
 		tm := value.(*TrackedMetrics)
-		if tm.Cordoned.Load() || tm.AdminCordoned.Load() {
+		if tm.Cordoned.Load() {
 			return true // preserve cordon state
 		}
 		if tm.LastAccessedAtMs.Load() >= cutoffMs {
@@ -866,232 +887,144 @@ func (t *Tracker) getNtwMetrics(k networkKey) *TrackedMetrics {
 // Cordon / Uncordon
 // --------------------
 
-func (t *Tracker) Cordon(upstream common.Upstream, method, reason string) {
-	t.CordonAt(upstream, method, reason, time.Now().UnixMilli())
+// Cordon records owner's cordon on (upstream, method). The cell is cordoned
+// while any owner holds an entry. A repeated call by the same owner updates
+// the reason but keeps the original start timestamp, so duration accounting
+// survives reason edits mid-incident. entry.CordonedAtMs == 0 means "now";
+// restores from shared state pass the persisted edge instead.
+//
+// Cordon state is finality-agnostic — operators cordon "drpc for eth_call",
+// not "drpc for eth_call when reading finalized data" — so it lives on the
+// all-finalities key and every finality-specific lookup sees the same flag.
+func (t *Tracker) Cordon(upstream common.Upstream, method, owner string, entry common.CordonEntry) {
+	upstream.Logger().Debug().
+		Str("method", method).
+		Str("owner", owner).
+		Str("reason", entry.Reason).
+		Msg("cordoning upstream to disable routing")
+
+	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
+	tm.cordonMu.Lock()
+	defer tm.cordonMu.Unlock()
+
+	prev, had := tm.cordons[owner]
+	switch {
+	case had:
+		entry.CordonedAtMs = prev.CordonedAtMs
+	case entry.CordonedAtMs == 0:
+		entry.CordonedAtMs = time.Now().UnixMilli()
+	}
+	if tm.cordons == nil {
+		tm.cordons = make(map[string]common.CordonEntry, 2)
+	}
+	tm.cordons[owner] = entry
+
+	if !tm.Cordoned.Swap(true) {
+		tm.cordonedAtMs = entry.CordonedAtMs
+		telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			t.projectId, upstream.NetworkId(), upstream.Id(), "cordon",
+		).Inc()
+	}
+	if had && prev.Reason != entry.Reason {
+		t.setCordonedGaugeLocked(tm, upstream, method, prev.Reason)
+	}
+	t.setCordonedGaugeLocked(tm, upstream, method, entry.Reason)
 }
 
-func isEffectivelyCordoned(tm *TrackedMetrics) bool {
-	return tm.Cordoned.Load() || tm.AdminCordoned.Load()
-}
+// Uncordon lifts owner's cordon on (upstream, method); owner "*" lifts every
+// owner's (operator override). Emits the duration histogram and uncordon
+// event only on the last owner leaving. Flipping a method cell never lifts
+// a wildcard-method cordon on the same upstream.
+func (t *Tracker) Uncordon(upstream common.Upstream, method, owner string) {
+	upstream.Logger().Debug().
+		Str("method", method).
+		Str("owner", owner).
+		Msg("uncordoning upstream to enable routing")
 
-func loadCordonReason(v *atomic.Value) string {
-	reason, _ := v.Load().(string)
-	return reason
-}
+	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
+	tm.cordonMu.Lock()
+	defer tm.cordonMu.Unlock()
 
-func (t *Tracker) refreshCordonedGauges(tm *TrackedMetrics, upstream common.Upstream, method string, reasons ...string) {
-	autoReason := loadCordonReason(&tm.LastCordonedReason)
-	adminReason := loadCordonReason(&tm.AdminCordonReason)
-	seen := make(map[string]struct{}, len(reasons))
-	for _, reason := range reasons {
-		if _, ok := seen[reason]; ok {
-			continue
+	removed := make([]string, 0, len(tm.cordons))
+	for o, e := range tm.cordons {
+		if owner == "*" || o == owner {
+			removed = append(removed, e.Reason)
+			delete(tm.cordons, o)
 		}
-		seen[reason] = struct{}{}
-		active := (tm.Cordoned.Load() && autoReason == reason) ||
-			(tm.AdminCordoned.Load() && adminReason == reason)
-		if active {
-			t.getCordonedGauge(upstream, method, reason).Set(1)
-		} else {
-			t.getCordonedGauge(upstream, method, reason).Set(0)
-		}
 	}
-}
-
-func (t *Tracker) recordEffectiveCordonTransition(
-	tm *TrackedMetrics,
-	upstream common.Upstream,
-	before, after bool,
-	startedAtMs int64,
-	emitMetrics bool,
-) {
-	if before == after {
-		return
-	}
-	if after {
-		tm.EffectiveCordonedAtMs.Store(startedAtMs)
-		if emitMetrics {
-			telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-				t.projectId, upstream.NetworkId(), upstream.Id(), "cordon",
-			).Inc()
-		}
-		return
-	}
-
-	startedMs := tm.EffectiveCordonedAtMs.Swap(0)
-	if !emitMetrics {
-		return
-	}
-	if startedMs > 0 {
-		dur := time.Duration(time.Now().UnixMilli()-startedMs) * time.Millisecond
-		if dur > 0 {
+	if len(tm.cordons) == 0 && tm.Cordoned.Swap(false) {
+		startedMs := tm.cordonedAtMs
+		tm.cordonedAtMs = 0
+		if dur := time.Duration(time.Now().UnixMilli()-startedMs) * time.Millisecond; startedMs > 0 && dur > 0 {
 			telemetry.MetricUpstreamCordonDurationSeconds.WithLabelValues(
 				t.projectId, upstream.NetworkId(), upstream.Id(),
 			).Observe(dur.Seconds())
 		}
+		telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			t.projectId, upstream.NetworkId(), upstream.Id(), "uncordon",
+		).Inc()
 	}
-	telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-		t.projectId, upstream.NetworkId(), upstream.Id(), "uncordon",
-	).Inc()
+	for _, reason := range removed {
+		t.setCordonedGaugeLocked(tm, upstream, method, reason)
+	}
 }
 
-func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason string) {
-	lg := upstream.Logger()
-	lg.Debug().
-		Str("method", method).
-		Msg("uncordoning upstream to enable routing")
-
-	// Cordon state is finality-agnostic — operators cordon "drpc for
-	// eth_call", not "drpc for eth_call when reading finalized data".
-	// Store on the all-finalities key so every finality-specific
-	// lookup sees the same cordon flag.
-	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
-	tm.cordonMu.Lock()
-	defer tm.cordonMu.Unlock()
-	before := isEffectivelyCordoned(tm)
-	oldReason := loadCordonReason(&tm.LastCordonedReason)
-	wasCordoned := tm.Cordoned.Swap(false)
-	tm.LastCordonedReason.Store("")
-	if wasCordoned {
-		tm.CordonedAtMs.Store(0)
+// setCordonedGaugeLocked sets the reason-labelled gauge to 1 while any
+// owner still holds that reason, else 0, so a reason edit or one owner
+// leaving never strands a stale `1` series.
+func (t *Tracker) setCordonedGaugeLocked(tm *TrackedMetrics, upstream common.Upstream, method, reason string) {
+	active := 0.0
+	for _, e := range tm.cordons {
+		if e.Reason == reason {
+			active = 1
+			break
+		}
 	}
-	after := isEffectivelyCordoned(tm)
-	t.recordEffectiveCordonTransition(tm, upstream, before, after, 0, true)
-	t.refreshCordonedGauges(tm, upstream, method, oldReason)
+	t.getCordonedGauge(upstream, method, reason).Set(active)
 }
 
-// IsCordoned checks if (ups, network, method) or (ups, network, "*") is cordoned
-// by either an automatic (consensus, health) or admin cordon.
-// Cordon flags live on the all-finalities key (see Cordon).
+// IsCordoned checks if (ups, network, method) or (ups, network, "*") is
+// cordoned by any owner. Cordon flags live on the all-finalities key.
 func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
-	isCordonedAt := func(m string) bool {
-		val, ok := t.upsMetrics.Load(upstreamKey{upstream, m, common.DataFinalityStateAll})
-		if !ok {
-			return false
-		}
-		tm := val.(*TrackedMetrics)
-		return tm.Cordoned.Load() || tm.AdminCordoned.Load()
+	if tm, ok := t.upsMetrics.Load(upstreamKey{upstream, "*", common.DataFinalityStateAll}); ok && tm.(*TrackedMetrics).Cordoned.Load() {
+		return true
 	}
-	return isCordonedAt("*") || isCordonedAt(method)
+	if tm, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll}); ok {
+		return tm.(*TrackedMetrics).Cordoned.Load()
+	}
+	return false
 }
 
-// CordonedReason returns the cordon reason and whether the (upstream,
-// method) is currently cordoned. Admin reason takes precedence over auto.
-// Falls back to the wildcard (`"*"`) cordon if the specific method scope
-// isn't cordoned.
+// CordonedReason returns the effective cordon reason and whether the
+// (upstream, method) is currently cordoned. Falls back to the wildcard
+// (`"*"`) cordon if the specific method scope isn't cordoned.
 func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (string, bool) {
-	checkAt := func(m string) (string, bool) {
-		val, ok := t.upsMetrics.Load(upstreamKey{upstream, m, common.DataFinalityStateAll})
-		if !ok {
-			return "", false
+	for _, m := range [...]string{"*", method} {
+		if v, ok := t.upsMetrics.Load(upstreamKey{upstream, m, common.DataFinalityStateAll}); ok {
+			if tm := v.(*TrackedMetrics); tm.Cordoned.Load() {
+				return tm.CordonedReason(), true
+			}
 		}
-		tm := val.(*TrackedMetrics)
-		tm.cordonMu.Lock()
-		defer tm.cordonMu.Unlock()
-		if tm.AdminCordoned.Load() {
-			r, _ := tm.AdminCordonReason.Load().(string)
-			return r, true
+	}
+	return "", false
+}
+
+// CordonsOwnedBy lists every (method, entry) on this upstream held by owner.
+// The shared-state sync uses it to diff local admin cordons against the
+// persisted set.
+func (t *Tracker) CordonsOwnedBy(upstream common.Upstream, owner string) map[string]common.CordonEntry {
+	out := map[string]common.CordonEntry{}
+	t.upsMetrics.Range(func(key, value any) bool {
+		k := key.(upstreamKey)
+		if k.ups != upstream || k.finality != common.DataFinalityStateAll {
+			return true
 		}
-		if tm.Cordoned.Load() {
-			r, _ := tm.LastCordonedReason.Load().(string)
-			return r, true
+		if e, ok := value.(*TrackedMetrics).CordonEntryFor(owner); ok {
+			out[k.method] = e
 		}
-		return "", false
-	}
-	if r, ok := checkAt("*"); ok {
-		return r, true
-	}
-	return checkAt(method)
-}
-
-// CordonAt is like Cordon but uses an explicit cordonedAtMs (unix milliseconds)
-// instead of time.Now(). Used by Cordon to avoid duplicating the body.
-func (t *Tracker) CordonAt(upstream common.Upstream, method, reason string, cordonedAtMs int64) {
-	lg := upstream.Logger()
-	lg.Debug().Str("method", method).Str("reason", reason).Msg("cordoning upstream to disable routing")
-	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
-	tm.cordonMu.Lock()
-	defer tm.cordonMu.Unlock()
-	before := isEffectivelyCordoned(tm)
-	oldReason := loadCordonReason(&tm.LastCordonedReason)
-	wasCordoned := tm.Cordoned.Swap(true)
-	tm.LastCordonedReason.Store(reason)
-	if !wasCordoned {
-		tm.CordonedAtMs.Store(cordonedAtMs)
-	}
-	t.recordEffectiveCordonTransition(tm, upstream, before, true, cordonedAtMs, true)
-	t.refreshCordonedGauges(tm, upstream, method, oldReason, reason)
-}
-
-// CordonAdmin sets the admin cordon bit for (upstream, method). Emits the
-// cordon event counter on the first OFF→ON transition; repeated calls update
-// the reason without resetting the duration start time. Returns the stored
-// AdminCordonedAtMs so callers can persist the original timestamp unchanged.
-func (t *Tracker) CordonAdmin(upstream common.Upstream, method, reason string) int64 {
-	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
-	tm.cordonMu.Lock()
-	defer tm.cordonMu.Unlock()
-	before := isEffectivelyCordoned(tm)
-	oldReason := loadCordonReason(&tm.AdminCordonReason)
-	wasAdmin := tm.AdminCordoned.Swap(true)
-	tm.AdminCordonReason.Store(reason)
-	if !wasAdmin {
-		tm.AdminCordonedAtMs.Store(time.Now().UnixMilli())
-	}
-	startedAtMs := tm.AdminCordonedAtMs.Load()
-	t.recordEffectiveCordonTransition(tm, upstream, before, true, startedAtMs, true)
-	t.refreshCordonedGauges(tm, upstream, method, oldReason, reason)
-	return tm.AdminCordonedAtMs.Load()
-}
-
-// UncordonAdmin clears the admin cordon bit. It emits duration and an uncordon
-// event only when no automatic cordon remains.
-func (t *Tracker) UncordonAdmin(upstream common.Upstream, method string) {
-	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
-	tm.cordonMu.Lock()
-	defer tm.cordonMu.Unlock()
-	before := isEffectivelyCordoned(tm)
-	cordonReason := loadCordonReason(&tm.AdminCordonReason)
-	wasAdmin := tm.AdminCordoned.Swap(false)
-	if wasAdmin {
-		tm.AdminCordonedAtMs.Store(0)
-	}
-	tm.AdminCordonReason.Store("")
-	after := isEffectivelyCordoned(tm)
-	t.recordEffectiveCordonTransition(tm, upstream, before, after, 0, true)
-	t.refreshCordonedGauges(tm, upstream, method, cordonReason)
-}
-
-// ApplyAdminCordon sets the admin cordon bits from a persisted entry without
-// emitting event metrics. Used by reconcileCordonState to restore state from
-// shared storage on startup or cross-replica notification.
-func (t *Tracker) ApplyAdminCordon(upstream common.Upstream, method, reason string, cordonedAtMs int64) {
-	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
-	tm.cordonMu.Lock()
-	defer tm.cordonMu.Unlock()
-	before := isEffectivelyCordoned(tm)
-	oldReason := loadCordonReason(&tm.AdminCordonReason)
-	tm.AdminCordoned.Store(true)
-	tm.AdminCordonReason.Store(reason)
-	tm.AdminCordonedAtMs.Store(cordonedAtMs)
-	t.recordEffectiveCordonTransition(tm, upstream, before, true, cordonedAtMs, false)
-	t.refreshCordonedGauges(tm, upstream, method, oldReason, reason)
-}
-
-// ClearAdminCordon clears the admin cordon bit without emitting event metrics.
-// Used by reconcileCordonState when a method is absent from the remote map.
-func (t *Tracker) ClearAdminCordon(upstream common.Upstream, method string) {
-	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
-	tm.cordonMu.Lock()
-	defer tm.cordonMu.Unlock()
-	before := isEffectivelyCordoned(tm)
-	cordonReason := loadCordonReason(&tm.AdminCordonReason)
-	tm.AdminCordoned.Store(false)
-	tm.AdminCordonReason.Store("")
-	tm.AdminCordonedAtMs.Store(0)
-	after := isEffectivelyCordoned(tm)
-	t.recordEffectiveCordonTransition(tm, upstream, before, after, 0, false)
-	t.refreshCordonedGauges(tm, upstream, method, cordonReason)
+		return true
+	})
+	return out
 }
 
 // ------------------------------------

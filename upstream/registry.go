@@ -61,6 +61,10 @@ type UpstreamsRegistry struct {
 	pendingUpstreams sync.Map // upstreamId -> *Upstream
 
 	onUpstreamRegistered func(ups *Upstream) error
+
+	// cordonMu serializes operator cordon writes with the shared-state sync
+	// so a tick that read before a write cannot undo it after.
+	cordonMu sync.Mutex
 }
 
 type UpstreamsHealth struct {
@@ -115,6 +119,9 @@ func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
 			u.logger.Info().Msg("upstreams registration completed")
 		}
 	}()
+	if u.cordonStore() != nil {
+		go u.runCordonSync()
+	}
 }
 
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {

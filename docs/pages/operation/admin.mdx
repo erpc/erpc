@@ -326,7 +326,7 @@ Fetches the current record to retrieve `userId` (range key for deletion), then c
 
 **Params**: `[{"projectId": string, "upstream": string, "method"?: string, "reason"?: string}]`
 
-`method` defaults to `"*"` (all methods). `reason` defaults to `"admin: manual cordon"`. When `database.sharedState` is configured, admin cordon state is persisted and survives pod restarts; without it, state is in-process only and lost on restart. Source: [`erpc/admin.go:L658-L687`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L658-L687)
+`method` defaults to `"*"` (all methods). `reason` defaults to `"admin: manual cordon"`. With a remote `database.sharedState` connector the cordon is persisted before it is applied and every replica converges within 15 s; a persistence failure returns an error and changes nothing. With the `memory` driver the cordon is in-process only. See [Cordoning](/operation/cordoning). Source: [`erpc/admin.go:L658-L687`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L658-L687)
 
 **Response**:
 ```json
@@ -418,7 +418,7 @@ Source: [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd
 - Always set a real `admin.auth.strategies` entry — running without admin auth means the endpoint is unauthenticated.
 - Override `admin.cors.allowedOrigins` to a specific origin (e.g. your internal dashboard URL) when the admin endpoint is reachable from a browser; the default `"*"` is safe only when the endpoint is not browser-accessible.
 - Use method-scoped cordons (`"method": "eth_getLogs"`) to surgically remove an upstream from expensive calls while keeping it available for others — but remember `erpc_listCordoned` will not show them; monitor via `erpc_upstream_cordoned` metric.
-- When `database.sharedState` is configured, admin cordon state survives pod restarts; without it, cordons are in-process only. For permanent upstream removal, update config and redeploy. Cordons are a break-glass tool for transient degradations.
+- Cordons survive restarts and reach every replica only with a remote `database.sharedState` connector. For permanent upstream removal, update config and redeploy. Cordons are a break-glass tool for transient degradations.
 - Run `erpc validate` in CI with `--format json` and parse the exit code. Treat any `errors` entry as a deployment blocker. Use `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION=true` in local dev to skip live checks that will fail against localhost URLs.
 - Do not store the admin secret in the config file directly — inject it via an environment variable reference or a secrets manager so it stays out of version control.
 
@@ -430,7 +430,7 @@ Source: [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd
 4. **API key methods target the project's consumer auth connector, not admin auth.** The `connectorId` must exist in the project's consumer `auth.strategies[].database.connector` config. Source: [`erpc/admin.go:L82-L100`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L82-L100)
 5. **`erpc_listApiKeys` timestamps are always `time.Now()`.** `createdAt`/`updatedAt` do not reflect actual creation or modification time — timestamps are not stored in the connector. Source: [`erpc/admin.go:L257-L259`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L257-L259)
 6. **`erpc_updateApiKey` uses patch semantics.** `null` in `updates` deletes the field; non-null overwrites. No schema validation; any JSON field name is accepted. Source: [`erpc/admin.go:L351-L357`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L351-L357)
-7. **Cordon state survival depends on shared-state config.** With `database.sharedState` configured, admin cordons persist across restarts. Without it, state is in-memory only and lost on pod restart. Source: [`erpc/admin.go:L641-L654`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L641-L654)
+7. **Cordon persistence depends on `database.sharedState`.** Remote connector: persisted per project, replicas poll every 15 s. Memory driver: in-process only, lost on restart. Source: [`erpc/admin.go:L641-L654`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L641-L654)
 8. **Config validator genesis check is skipped for full nodes.** `evm.nodeType: full` or `evm.maxAvailableRecentBlocks > 0` suppresses genesis hash fetching since full nodes may not retain block 0. Source: [`erpc/config_analyzer.go:L400-L403`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L400-L403)
 9. **Config validator groups by resolved chain ID.** If `eth_chainId` fails, the upstream is grouped under `"unknown"`. Two `"unknown"` upstreams skip cross-comparison to avoid false positives from different chains. The config-declared chain ID is used as a fallback grouping key when the live fetch fails. Source: [`erpc/config_analyzer.go:L449-L489`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L449-L489)
 10. **Config validator uses `finalized - 64` for historical hash comparison.** Falls back to `latest - 1024` when finalized is unsupported. This avoids reorg false-positives. Source: [`erpc/config_analyzer.go:L589-L631`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L589-L631)
