@@ -106,7 +106,12 @@ func TestCacheFailsafe_FinalitySplit_BreakerIsolatedPerExecutor(t *testing.T) {
 	assert.Equal(t, 2.0, executorAttempts("prism-test", "get", "*", cold, "transport_error")-coldErrBefore)
 	assert.Equal(t, 1.0, executorAttempts("prism-test", "get", "*", cold, "breaker_open")-coldBefore)
 	assert.Equal(t, 0.0, executorAttempts("prism-test", "get", "*", hot, "breaker_open")-hotBefore)
-	assert.Equal(t, 1.0, executorTransitions("prism-test", "get", "*", cold, "closed_to_open")-openBefore)
+	// The breaker fires OnTransition on its own goroutine (failsafe/breaker.go:
+	// "without holding the breaker mutex"), so the counter lands after the
+	// rejecting call returns; read it as an eventual fact, not an immediate one.
+	assert.Eventually(t, func() bool {
+		return executorTransitions("prism-test", "get", "*", cold, "closed_to_open")-openBefore == 1.0
+	}, 2*time.Second, 10*time.Millisecond, "exactly one closed_to_open transition on the cold executor")
 }
 
 func TestFinalityLabel_StableAcrossOrder(t *testing.T) {
