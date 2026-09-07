@@ -2643,13 +2643,16 @@ type EvmServedTipConfig struct {
 	// has decided what to serve, so the cushion can never look like a poisoned
 	// ballot to the regression guard. 0 (unset) is the current behaviour, exactly.
 	// Applies only to tags in EnabledFor; the default max mode is unaffected.
+	// Takes effect only when > 0, matching the 0-means-unset convention of the
+	// other numeric fields here (ClusterDelta, MaxRegressionBlocks); a positive
+	// LagBlocks wins over Lag.
 	LagBlocks int64 `yaml:"lagBlocks,omitempty" json:"lagBlocks,omitempty"`
 
 	// Lag is the same cushion expressed as a duration, converted to blocks via the
 	// network's EMA block time at evaluation. It is a no-op until the block time is
 	// known (a cold process advertises no cushion until it has measured cadence).
-	// If both Lag and LagBlocks are set the explicit LagBlocks wins. WRITE IT AS A
-	// DURATION STRING — lag: "12s"; a bare number is parsed as MILLISECONDS.
+	// Used only when LagBlocks is not positive; a positive LagBlocks wins. WRITE IT
+	// AS A DURATION STRING — lag: "12s"; a bare number is parsed as MILLISECONDS.
 	Lag *Duration `yaml:"lag,omitempty" json:"lag,omitempty"`
 }
 

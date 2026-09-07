@@ -2292,8 +2292,11 @@ func TestServedTip_LagBlocks_LaggingMinorityWithinNCanServe(t *testing.T) {
 	advertised := network.EvmHighestLatestBlockNumber(ctx)
 	assert.Equal(t, int64(97), advertised,
 		"majority 100 minus cushion 3 = 97")
-	assert.GreaterOrEqual(t, int64(97), advertised,
-		"the head-3 minority (effective head 97) can serve the advertised 97")
+	// Derived from the fixture, independent of `advertised`, so the check is not
+	// vacuous: u3's effective head is its latest (100) capped at head-minus-3.
+	u3EffectiveHead := fixtures[2].latestBlock - minus3 // 97
+	assert.GreaterOrEqual(t, u3EffectiveHead, advertised,
+		"the head-3 minority (effective head 97) can serve the advertised tip")
 }
 
 // A minority stalled far beyond the cushion does not pin the tip to that stall:
