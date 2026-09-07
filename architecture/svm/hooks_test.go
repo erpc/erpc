@@ -1522,7 +1522,20 @@ func TestNetworkPreForwardGetBlock_FinalizedBound_NoOverflow(t *testing.T) {
 		indexedSlot:   5000,
 		finalizedSlot: 1000,
 	}
-	handled2, _, err2 := networkPreForward_getBlock(context.Background(), narrow, newReq("getBlock", fmt.Sprintf(`[%d]`, int64(math.MaxInt64))))
+	// Inject the slot as int64. Encoding MaxInt64 as a JSON number loses it:
+	// sonic unmarshals interface{} numbers as float64, and int64(float64(MaxInt64))
+	// is architecture-dependent (saturates on arm64, wraps to MinInt64 on amd64).
+	// A wrapped/negative slot hits the guard's fail-open (`slot <= 0`) and this
+	// assertion never exercises the overflow-safe subtraction it exists for.
+	req := newReq("getBlock", `[1]`)
+	jr, err := req.JsonRpcRequest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr.Lock()
+	jr.Params[0] = int64(math.MaxInt64)
+	jr.Unlock()
+	handled2, _, err2 := networkPreForward_getBlock(context.Background(), narrow, req)
 	if !handled2 || !common.HasErrorCode(err2, common.ErrCodeEndpointMissingData) {
 		t.Fatalf("MaxInt64 slot must short-circuit, got handled=%v err=%v", handled2, err2)
 	}
