@@ -134,6 +134,17 @@ func TestStateProber(t *testing.T) {
 		assert.True(t, remembered, "unsupported must be remembered, not rediscovered every block")
 	})
 
+	t.Run("getProof ignored by the upstream's own config: latched without a forward, context still proves", func(t *testing.T) {
+		pn := newProbeNetwork(t)
+		pn.upstream.Config().IgnoreMethods = []string{"eth_getProof"}
+		pn.execContext, pn.proofErr = head, "must not be forwarded"
+		p, _ := proberFor(pn, head, stateRoot)
+		p.probeAll(head)
+		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
+		_, remembered := p.proofUnsupported.Load("u1")
+		assert.True(t, remembered, "an ignored method is remembered as unsupported, not re-asked every block")
+	})
+
 	t.Run("no verified header at the height: nothing advances (no anchor, no proof)", func(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head, trieNode

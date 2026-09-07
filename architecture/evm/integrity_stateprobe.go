@@ -275,6 +275,16 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 	if _, off := p.proofUnsupported.Load(u.Id()); off {
 		return probeUnknown
 	}
+	// An upstream whose own configuration excludes the method (ignoreMethods /
+	// allowMethods) never receives the probe: the router refuses the forward
+	// first, and that refusal does not read as "unsupported" to the check
+	// below — so the probe erred on every block instead of latching once.
+	// Ask the upstream before forwarding and remember the answer.
+	if ok, _ := u.ShouldHandleMethod("eth_getProof"); !ok {
+		p.proofUnsupported.Store(u.Id(), true)
+		p.count(u, "proof", "unsupported")
+		return probeUnknown
+	}
 	body := fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getProof","params":["%s",[],"0x%x"]}`,
 		p.ctxProbe.To, n)
