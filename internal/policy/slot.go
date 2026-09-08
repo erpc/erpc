@@ -646,7 +646,7 @@ func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string, fin
 			if m == "*" || tm == nil {
 				continue
 			}
-			um := convertTrackedMetrics(tr, u, tm)
+			um := convertTrackedMetrics(tr, u, m, tm)
 			if um.RequestsTotal == 0 {
 				continue
 			}
