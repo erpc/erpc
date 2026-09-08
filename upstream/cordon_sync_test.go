@@ -79,7 +79,7 @@ func TestCordonAdmin_PropagatesAcrossReplicasAndRestarts(t *testing.T) {
 	require.True(t, regA.metricsTracker.IsCordoned(upsA, "eth_call"), "originating replica applies immediately")
 	require.False(t, regB.metricsTracker.IsCordoned(upsB, "eth_call"), "peer converges on its next sync tick")
 
-	regB.syncOperatorCordons()
+	regB.SyncOperatorCordons()
 	require.True(t, regB.metricsTracker.IsCordoned(upsB, "eth_call"))
 	reason, ok := upsB.CordonedReason("eth_call")
 	require.True(t, ok)
@@ -90,7 +90,7 @@ func TestCordonAdmin_PropagatesAcrossReplicasAndRestarts(t *testing.T) {
 	// the persisted start on every replica.
 	started := regA.OperatorCordons().Cordons["alchemy"]["*"].CordonedAtMs
 	require.NoError(t, regB.CordonAdmin(ctx, "alchemy", "*", "vendor incident #1 (extended)"))
-	regA.syncOperatorCordons()
+	regA.SyncOperatorCordons()
 	for _, reg := range []*UpstreamsRegistry{regA, regB} {
 		e := reg.OperatorCordons().Cordons["alchemy"]["*"]
 		require.Equal(t, "vendor incident #1 (extended)", e.Reason)
@@ -108,8 +108,8 @@ func TestCordonAdmin_PropagatesAcrossReplicasAndRestarts(t *testing.T) {
 	// Uncordon on B lifts it on every replica after their next tick.
 	require.NoError(t, regB.UncordonAdmin(ctx, "alchemy", "*", "resolved"))
 	require.False(t, regB.metricsTracker.IsCordoned(upsB, "*"))
-	regA.syncOperatorCordons()
-	regC.syncOperatorCordons()
+	regA.SyncOperatorCordons()
+	regC.SyncOperatorCordons()
 	require.False(t, regA.metricsTracker.IsCordoned(upsA, "*"))
 	require.False(t, regC.metricsTracker.IsCordoned(upsC, "*"))
 }
@@ -151,7 +151,7 @@ func TestCordonSync_OperatorAndAutomaticCordonsAreIndependent(t *testing.T) {
 	// operator cordons from A.
 	upsB.Cordon("*", "misbehaving in consensus")
 	require.NoError(t, regA.CordonAdmin(ctx, "alchemy", "*", "operator"))
-	regB.syncOperatorCordons()
+	regB.SyncOperatorCordons()
 	reason, _ := upsB.CordonedReason("*")
 	require.Equal(t, "operator", reason, "operator reason wins while both hold")
 
@@ -162,7 +162,7 @@ func TestCordonSync_OperatorAndAutomaticCordonsAreIndependent(t *testing.T) {
 	// Operator lifts from A: sync clears only the operator layer on B.
 	upsB.Cordon("*", "misbehaving in consensus")
 	require.NoError(t, regA.UncordonAdmin(ctx, "alchemy", "*", "resolved"))
-	regB.syncOperatorCordons()
+	regB.SyncOperatorCordons()
 	require.True(t, regB.metricsTracker.IsCordoned(upsB, "*"), "sync never touches automatic cordons")
 	reason, _ = upsB.CordonedReason("*")
 	require.Equal(t, "misbehaving in consensus", reason)
@@ -188,7 +188,7 @@ func TestCordonAdmin_PersistFailureChangesNothing(t *testing.T) {
 	require.True(t, reg.metricsTracker.IsCordoned(ups, "eth_getLogs"), "an uncordon peers will never see is not applied locally")
 
 	before := reg.OperatorCordons()
-	reg.syncOperatorCordons()
+	reg.SyncOperatorCordons()
 	require.Equal(t, before, reg.OperatorCordons(), "unreadable store keeps the current snapshot")
 }
 
@@ -199,7 +199,7 @@ func TestCordonAdmin_MemoryDriverStaysInProcess(t *testing.T) {
 
 	require.NoError(t, regA.CordonAdmin(ctx, "alchemy", "*", "local only"))
 	require.True(t, regA.metricsTracker.IsCordoned(upsA, "*"))
-	regB.syncOperatorCordons()
+	regB.SyncOperatorCordons()
 	require.False(t, regB.metricsTracker.IsCordoned(upsB, "*"), "memory driver shares nothing")
 	require.NoError(t, regA.UncordonAdmin(ctx, "alchemy", "*", "done"))
 	require.False(t, regA.metricsTracker.IsCordoned(upsA, "*"))

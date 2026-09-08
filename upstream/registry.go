@@ -119,7 +119,7 @@ func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
 	// Restore operator cordons before any upstream can be routed to. Lookups
 	// are by upstream id, so a snapshot loaded now covers upstreams that
 	// register later; a store that is down only delays this by fallbackTimeout.
-	u.syncOperatorCordons()
+	u.SyncOperatorCordons()
 	go u.runOperatorCordonSync()
 
 	// Fire-and-forget: register upstreams in background to avoid blocking service startup

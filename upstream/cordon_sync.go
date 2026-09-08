@@ -65,10 +65,10 @@ func (u *UpstreamsRegistry) upstreamById(id string) *Upstream {
 	return nil
 }
 
-// syncOperatorCordons fetches the persisted snapshot once; the tracker keeps
+// SyncOperatorCordons fetches the persisted snapshot once; the tracker keeps
 // it only if it is newer than what it holds, so a slow fetch racing a local
 // write can never roll that write back.
-func (u *UpstreamsRegistry) syncOperatorCordons() {
+func (u *UpstreamsRegistry) SyncOperatorCordons() {
 	timeout := 3 * time.Second
 	if u.sharedStateRegistry != nil {
 		timeout = u.sharedStateRegistry.GetFallbackTimeout()
@@ -91,7 +91,7 @@ func (u *UpstreamsRegistry) runOperatorCordonSync() {
 		case <-u.appCtx.Done():
 			return
 		case <-ticker.C:
-			u.syncOperatorCordons()
+			u.SyncOperatorCordons()
 		}
 	}
 }
