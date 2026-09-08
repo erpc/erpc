@@ -109,7 +109,7 @@ func TestCordonAdmin_PropagatesAcrossReplicasAndRestarts(t *testing.T) {
 	require.Eventually(t, cordoned(a), 5*time.Second, 20*time.Millisecond)
 }
 
-func TestCordonAdmin_OperatorAndAutomaticCordonsAreIndependent(t *testing.T) {
+func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
 	m, err := miniredis.Run()
 	require.NoError(t, err)
 	defer m.Close()
@@ -125,23 +125,22 @@ func TestCordonAdmin_OperatorAndAutomaticCordonsAreIndependent(t *testing.T) {
 	require.Eventually(t, func() bool {
 		r, _ := b.CordonedReason("*")
 		return r == "operator cordon (set on another replica)"
-	}, 5*time.Second, 20*time.Millisecond, "operator reason wins while both hold")
+	}, 5*time.Second, 20*time.Millisecond)
 
-	// The sit-out ends: the operator cordon holds.
+	// The sit-out ends on B: the operator cordon holds there and on A.
 	b.Uncordon("*", "end of consensus penalty")
 	require.True(t, cordoned(b)(), "consensus timer must not lift an operator cordon")
+	require.True(t, cordoned(a)())
 
-	// Operator lifts from A: only the operator layer clears on B.
+	// Operator lifts from A: the override clears the upstream on every
+	// replica, automatic wildcard cordons included.
 	b.Cordon("*", "misbehaving in consensus")
 	a.UncordonAdmin(ctx, "resolved")
-	require.Eventually(t, func() bool {
-		r, ok := b.CordonedReason("*")
-		return ok && r == "misbehaving in consensus"
-	}, 5*time.Second, 20*time.Millisecond, "shared uncordon never touches automatic cordons")
+	require.Eventually(t, notCordoned(b), 5*time.Second, 20*time.Millisecond, "operator uncordon is fleet-wide")
 
-	// A local operator uncordon is the override: it lifts the detector's
-	// cordon on this replica too.
-	b.UncordonAdmin(ctx, "override")
+	// With no operator cordon held, detectors work as before.
+	b.Cordon("*", "misbehaving in consensus")
+	b.Uncordon("*", "end of consensus penalty")
 	require.True(t, notCordoned(b)())
 }
 

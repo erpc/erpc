@@ -55,7 +55,7 @@ func TestRemoveCordoned_HonorsWildcardAndMethodCordonsAtEveryScope(t *testing.T)
 			for _, u := range ups {
 				byId[u.Id()] = u
 			}
-			tracker.SetOperatorCordon(byId["operator-wild"], "incident", 1)
+			tracker.Cordon(byId["operator-wild"], "*", "incident")
 			tracker.Cordon(byId["operator-method"], "eth_getLogs", "slow logs")
 			tracker.Cordon(byId["auto-wild"], "*", "consensus sit-out")
 

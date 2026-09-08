@@ -220,7 +220,7 @@ type Upstream struct {
 	// counter: unix-ms when it was set, 0 when lifted. Shared state keeps
 	// replicas in sync and restores it at bootstrap; the memory driver keeps
 	// it in-process. Created once, lazily (see operatorCordonVar).
-	operatorCordon     data.CounterInt64SharedVariable
+	operatorCordon     atomic.Value // data.CounterInt64SharedVariable
 	operatorCordonOnce sync.Once
 	// operatorCordonReason is the reason given on this replica; peers and
 	// restarted pods only see that an operator cordon exists.
@@ -1500,48 +1500,52 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(uppub)
 }
 
-// Cordon / Uncordon are the in-process detectors' path (consensus sit-out,
-// state-poller health and identity checks) and method-scoped operator
-// cordons. They flip the tracker cell for (upstream, method) on this pod
-// only and never touch the shared operator cordon.
+// Cordon / Uncordon flip the tracker cell for (upstream, method) on this pod:
+// in-process detectors (consensus sit-out, state-poller checks) and
+// method-scoped operator cordons use them.
 func (u *Upstream) Cordon(method string, reason string) {
 	u.metricsTracker.Cordon(u, method, reason)
 }
 
+// Uncordon lifts a pod-local cordon. While the operator holds the shared
+// whole-upstream cordon, a detector cannot lift the "*" cell; only
+// UncordonAdmin can.
 func (u *Upstream) Uncordon(method string, reason string) {
+	if v, ok := u.operatorCordon.Load().(data.CounterInt64SharedVariable); ok && method == "*" && v.GetValue() > 0 {
+		return
+	}
 	u.metricsTracker.Uncordon(u, method, reason)
 }
 
-// CordonedReason returns the effective cordon reason and whether the
-// (upstream, method) is currently cordoned. Pass `"*"` for the wildcard scope.
+// CordonedReason returns the cordon reason and whether the (upstream,
+// method) is currently cordoned. Pass `"*"` for the wildcard scope.
 func (u *Upstream) CordonedReason(method string) (string, bool) {
 	return u.metricsTracker.CordonedReason(u, method)
 }
 
-// CordonAdmin sets the operator's whole-upstream cordon fleet-wide. A cordon
-// already held keeps its start time. The write is local-first and pushed to
-// shared state in the background, like every other shared counter.
+// CordonAdmin sets the operator's whole-upstream cordon fleet-wide through
+// the shared counter (value = unix-ms, kept while already held). Local-first
+// and pushed in the background, like every other shared counter.
 func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
 	u.operatorCordonReason.Store(reason)
-	v := u.operatorCordonVar()
-	if v.GetValue() > 0 {
-		u.metricsTracker.SetOperatorCordon(u, reason, v.GetValue())
-		return
+	if v := u.operatorCordonVar(); v.GetValue() == 0 {
+		v.TryUpdate(ctx, time.Now().UnixMilli())
+	} else {
+		u.metricsTracker.Cordon(u, "*", reason)
 	}
-	v.TryUpdate(ctx, time.Now().UnixMilli())
 }
 
-// UncordonAdmin lifts the operator's cordon fleet-wide and, on this pod,
-// any automatic wildcard cordon as well: the operator call is the override
-// for a detector verdict.
+// UncordonAdmin lifts the operator's cordon fleet-wide; on this pod that
+// also clears any automatic wildcard cordon — the operator call is the
+// override for a detector verdict.
 func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
+	u.operatorCordonReason.Store(reason)
 	u.operatorCordonVar().TryUpdate(ctx, 0)
 	u.metricsTracker.Uncordon(u, "*", reason)
 }
 
-// operatorCordonVar creates the shared variable on first use and applies
-// every value it takes — from this pod, a peer, or the bootstrap fetch —
-// to the tracker.
+// operatorCordonVar creates the shared counter on first use; every value it
+// takes — from this pod, a peer, or the bootstrap fetch — flips the "*" cell.
 func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
 	u.operatorCordonOnce.Do(func() {
 		key := data.CounterValueSchemaVersion + "/operatorCordon/" + u.ProjectId + "/" + common.UniqueUpstreamKey(u)
@@ -1551,9 +1555,13 @@ func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
 			if r, ok := u.operatorCordonReason.Load().(string); ok && r != "" {
 				reason = r
 			}
-			u.metricsTracker.SetOperatorCordon(u, reason, cordonedAtMs)
+			if cordonedAtMs > 0 {
+				u.metricsTracker.Cordon(u, "*", reason)
+			} else {
+				u.metricsTracker.Uncordon(u, "*", reason)
+			}
 		})
-		u.operatorCordon = v
+		u.operatorCordon.Store(v)
 	})
-	return u.operatorCordon
+	return u.operatorCordon.Load().(data.CounterInt64SharedVariable)
 }

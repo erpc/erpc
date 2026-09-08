@@ -71,12 +71,7 @@ func (u *suggestGateUpstream) Logger() *zerolog.Logger        { return &u.logger
 func (u *suggestGateUpstream) Vendor() common.Vendor          { return nil }
 func (u *suggestGateUpstream) Tracker() common.HealthTracker  { return nil }
 func (u *suggestGateUpstream) IgnoreMethod(string)            {}
-func (u *suggestGateUpstream) Uncordon(_, _ string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.cordoned = false
-	u.reason = ""
-}
+func (u *suggestGateUpstream) Uncordon(_, _ string)           {}
 func (u *suggestGateUpstream) ShouldHandleMethod(string) (bool, error) {
 	return true, nil
 }

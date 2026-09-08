@@ -121,12 +121,6 @@ type EvmStatePoller struct {
 	// keep-fresh advances never touch this.
 	latestMajorVerifyInProgress sync.Mutex
 
-	// chainIdCordoned is set by cordonForChainIdMismatch and cleared once a
-	// later poll sees eth_chainId agree with the config again, which lifts
-	// the cordon. This is the detector's own recovery path so the cordon
-	// is never permanent on an endpoint that was fixed.
-	chainIdCordoned atomic.Bool
-
 	// Earliest per probe tracking
 	earliestByProbe              map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
 	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
@@ -413,12 +407,6 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		e.initializeEarliestBlockDetectionAndStartScheduler(ctx)
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		e.recheckChainIdentity(ctx)
 	}()
 
 	wg.Wait()
@@ -736,44 +724,15 @@ func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag s
 }
 
 // cordonForChainIdMismatch fails loud on a proven cross-wired endpoint: the
-// sample is rejected and the upstream is cordoned. The cordon lifts by itself
-// once a poll observes the configured chainId again (recheckChainIdentity);
-// an operator can lift it earlier via erpc_uncordonUpstream.
+// sample is rejected and the upstream is cordoned (admins uncordon via the
+// existing erpc_uncordonUpstream admin method once the endpoint is fixed).
 func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled int64, cause error) {
 	e.logger.Error().Err(cause).
 		Str("tag", tag).
 		Int64("currentValue", current).
 		Int64("polledValue", polled).
 		Msg("major head move REJECTED: upstream answers for a different chain — cordoning upstream")
-	e.chainIdCordoned.Store(true)
 	e.upstream.Cordon("*", fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error()))
-}
-
-// recheckChainIdentity runs once per poll while a chain-identity cordon is
-// held: one eth_chainId call, and the cordon is lifted when the answer
-// matches the configured chain again.
-func (e *EvmStatePoller) recheckChainIdentity(ctx context.Context) {
-	if !e.chainIdCordoned.Load() {
-		return
-	}
-	cfgChainId := int64(0)
-	if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil {
-		cfgChainId = cfg.Evm.ChainId
-	}
-	eu, ok := e.upstream.(common.EvmUpstream)
-	if !ok || cfgChainId <= 0 {
-		return
-	}
-	detected, err := eu.EvmGetChainId(ctx)
-	if err != nil || detected != strconv.FormatInt(cfgChainId, 10) {
-		e.logger.Debug().Err(err).Str("detected", detected).Int64("configured", cfgChainId).
-			Msg("chain identity still mismatched; cordon stays")
-		return
-	}
-	if e.chainIdCordoned.CompareAndSwap(true, false) {
-		e.logger.Warn().Int64("chainId", cfgChainId).Msg("chain identity verified again; lifting cordon")
-		e.upstream.Uncordon("*", "chain identity verified")
-	}
 }
 
 func absInt64(v int64) int64 {

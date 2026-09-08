@@ -251,12 +251,6 @@ type Tracker struct {
 	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
 	mu                 sync.RWMutex             // Protect the map
 
-	// operatorCordons holds the operator's whole-upstream cordons by
-	// upstream id (see SetOperatorCordon). Automatic cordons stay on their
-	// TrackedMetrics cell; the two never overwrite each other.
-	operatorCordons   map[string]operatorCordon
-	operatorCordonsMu sync.RWMutex
-
 	// trackByFinality switches Record* between a 2-key write (current
 	// behavior — only the all-finalities aggregate) and a 4-key write
 	// (per-finality + all-finalities + cross-method finality rollups).
@@ -903,99 +897,42 @@ func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason strin
 	t.getCordonedGauge(upstream, method, reason).Set(0)
 }
 
-// operatorCordon is one operator (admin) cordon on a whole upstream. It
-// lives beside the automatic cordon cells rather than on them so a
-// detector lifting its own cordon can never lift the operator's.
-type operatorCordon struct {
-	reason       string
-	cordonedAtMs int64
-}
-
-// SetOperatorCordon records the operator's whole-upstream cordon state:
-// cordonedAtMs > 0 cordons (idempotent while held), 0 lifts. Called from
-// the upstream's shared cordon variable on every change, local or remote.
-func (t *Tracker) SetOperatorCordon(upstream common.Upstream, reason string, cordonedAtMs int64) {
-	t.operatorCordonsMu.Lock()
-	defer t.operatorCordonsMu.Unlock()
-
-	prev, had := t.operatorCordons[upstream.Id()]
-	if cordonedAtMs > 0 {
-		if t.operatorCordons == nil {
-			t.operatorCordons = map[string]operatorCordon{}
+// IsCordoned checks if (ups, network, method) or (ups, network, "*") is cordoned.
+// Cordon flags live on the all-finalities key (see Cordon).
+func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*", common.DataFinalityStateAll}); ok {
+		if val.(*TrackedMetrics).Cordoned.Load() {
+			return true
 		}
-		t.operatorCordons[upstream.Id()] = operatorCordon{reason: reason, cordonedAtMs: cordonedAtMs}
-		if had && prev.reason != reason {
-			t.getCordonedGauge(upstream, "*", prev.reason).Set(0)
-		}
-		t.getCordonedGauge(upstream, "*", reason).Set(1)
-		if !had && !t.autoCordoned(upstream, "*") {
-			telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-				t.projectId, upstream.NetworkId(), upstream.Id(), "cordon",
-			).Inc()
-		}
-		return
 	}
-	if !had {
-		return
-	}
-	delete(t.operatorCordons, upstream.Id())
-	t.getCordonedGauge(upstream, "*", prev.reason).Set(0)
-	if t.autoCordoned(upstream, "*") {
-		return
-	}
-	if dur := time.Duration(time.Now().UnixMilli()-prev.cordonedAtMs) * time.Millisecond; dur > 0 {
-		telemetry.MetricUpstreamCordonDurationSeconds.WithLabelValues(
-			t.projectId, upstream.NetworkId(), upstream.Id(),
-		).Observe(dur.Seconds())
-	}
-	telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-		t.projectId, upstream.NetworkId(), upstream.Id(), "uncordon",
-	).Inc()
-}
-
-func (t *Tracker) operatorCordon(upstream common.Upstream) (operatorCordon, bool) {
-	t.operatorCordonsMu.RLock()
-	defer t.operatorCordonsMu.RUnlock()
-	c, ok := t.operatorCordons[upstream.Id()]
-	return c, ok
-}
-
-// autoCordoned reports whether an in-process detector holds (upstream,
-// method) or the wildcard cell.
-func (t *Tracker) autoCordoned(upstream common.Upstream, method string) bool {
-	if v, ok := t.upsMetrics.Load(upstreamKey{upstream, "*", common.DataFinalityStateAll}); ok && v.(*TrackedMetrics).Cordoned.Load() {
-		return true
-	}
-	if v, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll}); ok {
-		return v.(*TrackedMetrics).Cordoned.Load()
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll}); ok {
+		return val.(*TrackedMetrics).Cordoned.Load()
 	}
 	return false
 }
 
-// IsCordoned reports whether (upstream, method) is out of routing: an
-// operator cordon on the upstream, or an automatic one on the method or
-// on the wildcard.
-func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
-	if _, ok := t.operatorCordon(upstream); ok {
-		return true
-	}
-	return t.autoCordoned(upstream, method)
-}
-
-// CordonedReason returns the effective cordon reason for (upstream,
-// method). The operator's reason wins over a detector's; the wildcard
-// scope shadows the method scope. This is the single lookup the policy
-// engine, admin RPCs and health checks use.
+// CordonedReason returns the cordon reason and whether the (upstream,
+// method) is currently cordoned. Falls back to the wildcard (`"*"`)
+// cordon if the specific method scope isn't cordoned. Used by admin
+// endpoints + tooling to surface "why is this upstream out" without
+// going through the metrics-snapshot JSON path.
 func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (string, bool) {
-	if c, ok := t.operatorCordon(upstream); ok {
-		return c.reason, true
-	}
-	for _, m := range [...]string{"*", method} {
-		if v, ok := t.upsMetrics.Load(upstreamKey{upstream, m, common.DataFinalityStateAll}); ok {
-			if tm := v.(*TrackedMetrics); tm.Cordoned.Load() {
-				r, _ := tm.LastCordonedReason.Load().(string)
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*", common.DataFinalityStateAll}); ok {
+		tm := val.(*TrackedMetrics)
+		if tm.Cordoned.Load() {
+			if r, ok := tm.LastCordonedReason.Load().(string); ok {
 				return r, true
 			}
+			return "", true
+		}
+	}
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll}); ok {
+		tm := val.(*TrackedMetrics)
+		if tm.Cordoned.Load() {
+			if r, ok := tm.LastCordonedReason.Load().(string); ok {
+				return r, true
+			}
+			return "", true
 		}
 	}
 	return "", false
