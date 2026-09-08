@@ -409,13 +409,13 @@ No chain catalog — SupportsNetwork always probes live `eth_chainId`. Missing `
 
 #### solidrpc
 
-[SolidRPC](https://solidrpc.io/) uses a static map of 55 EVM chains. URL: `https://rpc.solidrpc.io/{apiKey}/evm/{chainId}`. JSON-RPC error `-32005` is normalized to `ErrEndpointCapacityExceeded`. OwnsUpstream: scheme prefixes or `rpc.solidrpc.io`.
+[SolidRPC](https://solidrpc.io/) uses a static map of 55 EVM chains. URL: `https://rpc.solidrpc.io/{apiKey}/evm/{chainId}`. Supply the literal API key; it is URL-escaped exactly once as a single path segment. JSON-RPC error `-32005` is normalized to `ErrEndpointCapacityExceeded`. OwnsUpstream: parsed `solidrpc` or `evm+solidrpc` schemes, or HTTP(S) URLs whose hostname is exactly `rpc.solidrpc.io` (case-insensitive, with optional port); occurrences in another hostname, userinfo, path, query, or fragment do not establish ownership.
 
 | key | required | default |
 |---|---|---|
 | `apiKey` | yes | — |
 
-<SourceLink file="thirdparty/solidrpc.go" lines="15-107" />
+<SourceLink file="thirdparty/solidrpc.go" lines="15-117" />
 
 #### superchain
 

@@ -71,9 +71,10 @@ func (v *SolidrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Lo
 	}
 
 	endpointURL := &url.URL{
-		Scheme: "https",
-		Host:   "rpc.solidrpc.io",
-		Path:   fmt.Sprintf("/%s/evm/%d", url.PathEscape(apiKey), chainID),
+		Scheme:  "https",
+		Host:    "rpc.solidrpc.io",
+		Path:    fmt.Sprintf("/%s/evm/%d", apiKey, chainID),
+		RawPath: fmt.Sprintf("/%s/evm/%d", url.PathEscape(apiKey), chainID),
 	}
 	upstream.Endpoint = endpointURL.String()
 	upstream.Type = common.UpstreamTypeEvm
@@ -101,8 +102,16 @@ func (v *SolidrpcVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReque
 }
 
 func (v *SolidrpcVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
-	if strings.HasPrefix(ups.Endpoint, "solidrpc://") || strings.HasPrefix(ups.Endpoint, "evm+solidrpc://") {
+	if ups == nil {
+		return false
+	}
+	endpointURL, err := url.Parse(ups.Endpoint)
+	if err != nil {
+		return false
+	}
+	if endpointURL.Scheme == "solidrpc" || endpointURL.Scheme == "evm+solidrpc" {
 		return true
 	}
-	return strings.Contains(ups.Endpoint, "rpc.solidrpc.io")
+	return (endpointURL.Scheme == "http" || endpointURL.Scheme == "https") &&
+		strings.EqualFold(endpointURL.Hostname(), "rpc.solidrpc.io")
 }
