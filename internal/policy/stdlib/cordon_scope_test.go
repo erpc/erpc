@@ -15,9 +15,9 @@ import (
 
 // removeCordoned() must see a cordon whatever slot grain the network runs
 // at: a wildcard cordon (operator or automatic) shadows every method slot,
-// and a method-scoped operator cordon shadows only its own. The lookup is
-// by upstream id, so the policy reads it before any traffic populated the
-// slot's metrics bucket.
+// and a method-scoped cordon shadows only its own. The lookup is by
+// upstream, not by the slot's metrics bucket, so it applies before any
+// traffic populated that bucket.
 func TestRemoveCordoned_HonorsWildcardAndMethodCordonsAtEveryScope(t *testing.T) {
 	for _, scope := range []common.EvalScope{
 		common.EvalScopeNetwork,
@@ -55,10 +55,8 @@ func TestRemoveCordoned_HonorsWildcardAndMethodCordonsAtEveryScope(t *testing.T)
 			for _, u := range ups {
 				byId[u.Id()] = u
 			}
-			tracker.SetOperatorCordons(&common.CordonSnapshot{Version: 1, Cordons: common.ProjectCordons{
-				"operator-wild":   {"*": {Reason: "incident"}},
-				"operator-method": {"eth_getLogs": {Reason: "slow logs"}},
-			}}, func(id string) common.Upstream { return byId[id] })
+			tracker.SetOperatorCordon(byId["operator-wild"], "incident", 1)
+			tracker.Cordon(byId["operator-method"], "eth_getLogs", "slow logs")
 			tracker.Cordon(byId["auto-wild"], "*", "consensus sit-out")
 
 			// excluded = upstreams the slot's routing output no longer contains.

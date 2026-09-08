@@ -341,7 +341,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 - **Block-number refreshes** are debounced via `TryUpdateIfStale`; the foreground caller waits at most `updateMaxWait` (default 50 ms). If the refresh completes within that window the fresh value influences the current request; otherwise the stale value is used and the refresh completes asynchronously for the next request.
 - **Served-tip counters** (`servedLatestBlock`, `servedFinalizedBlock`) are updated after a response is selected and do not add latency. They gate the "never serve older than seen" invariant that prevents block-number regressions across requests in a scaled fleet.
 - A broken or unreachable shared-state connector degrades to per-pod local state — no error is returned to the client; routing quality degrades silently.
-- **Operator cordons** (`erpc_cordonUpstream`) are persisted here too, one versioned record per project, fetched by every replica at bootstrap and every 15 s. Unlike block counters they fail closed: an unreachable connector makes the admin RPC return an error rather than apply a pod-local cordon. The `grpc` driver cannot lock, so cordons stay in-process there as with `memory`. See [Cordoning](/operation/cordoning).
+- **Operator cordons** (`erpc_cordonUpstream`) are one more shared counter per upstream (`operatorCordon`, value = cordon time in unix-ms, `0` = lifted), with the same propagation, bootstrap fetch and local-first semantics as the block counters. See [Cordoning](/operation/cordoning).
 
 ### Best practices
 

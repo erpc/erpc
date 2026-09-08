@@ -39,10 +39,6 @@ type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
 	GetLockTtl() time.Duration
 	GetFallbackTimeout() time.Duration
-	// Cordons is the store for operator cordons: shared across replicas on a
-	// remote connector, process-local on the memory driver (and on grpc,
-	// which has no lock support).
-	Cordons() CordonStore
 }
 
 type sharedStateRegistry struct {
@@ -57,7 +53,6 @@ type sharedStateRegistry struct {
 	lockMaxWait     time.Duration
 	updateMaxWait   time.Duration
 	initializer     *util.Initializer
-	cordons         CordonStore
 }
 
 func NewSharedStateRegistry(
@@ -90,7 +85,7 @@ func NewSharedStateRegistry(
 
 	instanceId := resolveSharedStateInstanceID()
 
-	r := &sharedStateRegistry{
+	return &sharedStateRegistry{
 		appCtx:          appCtx,
 		logger:          &lg,
 		clusterKey:      cfg.ClusterKey,
@@ -101,21 +96,7 @@ func NewSharedStateRegistry(
 		lockMaxWait:     lockMaxWait,
 		updateMaxWait:   updateMaxWait,
 		initializer:     util.NewInitializer(appCtx, &lg, nil),
-	}
-	switch cfg.Connector.Driver {
-	case common.DriverMemory:
-		r.cordons = NewMemoryCordonStore()
-	case common.DriverGrpc:
-		lg.Warn().Msg("grpc shared-state connector cannot lock; operator cordons stay process-local")
-		r.cordons = NewMemoryCordonStore()
-	default:
-		r.cordons = &connectorCordonStore{registry: r}
-	}
-	return r, nil
-}
-
-func (r *sharedStateRegistry) Cordons() CordonStore {
-	return r.cordons
+	}, nil
 }
 
 func resolveSharedStateInstanceID() string {

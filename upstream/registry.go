@@ -61,10 +61,6 @@ type UpstreamsRegistry struct {
 	pendingUpstreams sync.Map // upstreamId -> *Upstream
 
 	onUpstreamRegistered func(ups *Upstream) error
-
-	// cordons is the source of truth for operator cordons; the tracker holds
-	// the newest snapshot this replica has seen (see cordon_sync.go).
-	cordons data.CordonStore
 }
 
 type UpstreamsHealth struct {
@@ -85,10 +81,6 @@ func NewUpstreamsRegistry(
 	onUpstreamRegistered func(*Upstream) error,
 ) *UpstreamsRegistry {
 	lg := logger.With().Str("component", "upstreams").Logger()
-	cordons := data.NewMemoryCordonStore()
-	if ssr != nil {
-		cordons = ssr.Cordons()
-	}
 	return &UpstreamsRegistry{
 		appCtx:              appCtx,
 		prjId:               prjId,
@@ -111,17 +103,10 @@ func NewUpstreamsRegistry(
 		networkMu:              &sync.Map{},
 		initializer:            util.NewInitializer(appCtx, &lg, nil),
 		onUpstreamRegistered:   onUpstreamRegistered,
-		cordons:                cordons,
 	}
 }
 
 func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
-	// Restore operator cordons before any upstream can be routed to. Lookups
-	// are by upstream id, so a snapshot loaded now covers upstreams that
-	// register later; a store that is down only delays this by fallbackTimeout.
-	u.SyncOperatorCordons()
-	go u.runOperatorCordonSync()
-
 	// Fire-and-forget: register upstreams in background to avoid blocking service startup
 	go func() {
 		if err := u.registerUpstreams(u.appCtx, u.upsCfg...); err != nil {
@@ -704,7 +689,6 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 		Str("upstreamId", cfg.Id).
 		Str("networkId", networkId).
 		Msg("upstream registered and initialized in registry")
-	u.metricsTracker.RefreshOperatorCordonGauges(ups)
 }
 
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {

@@ -21,7 +21,7 @@ import (
 
 // Two full eRPC instances share one Redis. An operator cordon issued on one
 // instance's admin endpoint takes the upstream out of routing on the other
-// after its sync tick, a freshly started third instance restores it before
+// through shared state, a freshly started third instance restores it before
 // serving its first request, and an uncordon on any instance clears it
 // everywhere. Routing is observed through real JSON-RPC responses: each mock
 // upstream answers eth_getBalance with a distinct value.
@@ -152,63 +152,54 @@ func TestAdminCordon_TwoInstancesConvergeThroughSharedState(t *testing.T) {
 			require.Equal(t, want, balance(t, baseURL))
 		}
 	}
-	sync := func(t *testing.T, instance *ERPC) {
+	listedEventually := func(t *testing.T, baseURL string, n int) {
 		t.Helper()
-		prj, err := instance.GetProject("test_project")
-		require.NoError(t, err)
-		prj.upstreamsRegistry.SyncOperatorCordons()
+		require.Eventually(t, func() bool { return len(listed(t, baseURL)) == n }, 5*time.Second, 50*time.Millisecond,
+			"%s: cordoned=%v", baseURL, listed(t, baseURL))
 	}
 
-	a, urlA, stopA := newInstance(t)
+	_, urlA, stopA := newInstance(t)
 	defer stopA()
-	b, urlB, stopB := newInstance(t)
+	_, urlB, stopB := newInstance(t)
 	defer stopB()
 
-	// Cordon rpc3 on A: A stops using it immediately, B after its sync tick.
+	// Cordon rpc3 on A: A stops using it immediately, B through shared state.
 	res := admin(t, urlA, "erpc_cordonUpstream", `{"projectId":"test_project","upstream":"rpc3","reason":"vendor incident #1"}`)
 	require.Equal(t, true, res["result"].(map[string]any)["cordoned"])
 	servedOnlyBy(t, urlA, "0x4")
 	require.Len(t, listed(t, urlA), 1)
-	sync(t, b)
+	require.Equal(t, "vendor incident #1", listed(t, urlA)[0].(map[string]any)["reason"])
 	servedOnlyBy(t, urlB, "0x4")
-	require.Equal(t, listed(t, urlA), listed(t, urlB), "both instances list the same cordon")
-	require.Equal(t, "vendor incident #1", listed(t, urlB)[0].(map[string]any)["reason"])
+	require.Equal(t, "rpc3", listed(t, urlB)[0].(map[string]any)["upstream"])
 
 	// A "restarted pod" restores the cordon before it serves anything.
-	c, urlC, stopC := newInstance(t)
+	_, urlC, stopC := newInstance(t)
 	defer stopC()
-	require.Len(t, listed(t, urlC), 1, "restored from shared state at boot, no admin call needed")
+	listedEventually(t, urlC, 1)
 	servedOnlyBy(t, urlC, "0x4")
 
-	// Uncordon from C; A and B pick it up on sync. Then cordon rpc4 from B
-	// and every instance ends up on rpc3 only.
+	// Uncordon from C reaches A and B. Then cordon rpc4 from B and every
+	// instance ends up on rpc3 only.
 	admin(t, urlC, "erpc_uncordonUpstream", `{"projectId":"test_project","upstream":"rpc3"}`)
-	sync(t, a)
-	sync(t, b)
 	for _, url := range []string{urlA, urlB, urlC} {
-		require.Empty(t, listed(t, url))
+		listedEventually(t, url, 0)
 	}
 	admin(t, urlB, "erpc_cordonUpstream", `{"projectId":"test_project","upstream":"rpc4","reason":"vendor incident #2"}`)
-	sync(t, a)
-	sync(t, c)
 	for _, url := range []string{urlA, urlB, urlC} {
 		servedOnlyBy(t, url, "0x3")
 	}
 
-	// A method-scoped cordon is listed with its method and does not touch
-	// other methods; the record for an unknown id can still be removed.
+	// A method-scoped cordon stays on the replica that set it and does not
+	// touch other methods.
 	admin(t, urlA, "erpc_cordonUpstream", `{"projectId":"test_project","upstream":"rpc3","method":"eth_getLogs","reason":"slow logs"}`)
-	rows := listed(t, urlA)
-	require.Len(t, rows, 2)
 	servedOnlyBy(t, urlA, "0x3")
 	admin(t, urlA, "erpc_uncordonUpstream", `{"projectId":"test_project","upstream":"rpc3","method":"eth_getLogs"}`)
-	admin(t, urlA, "erpc_uncordonUpstream", `{"projectId":"test_project","upstream":"removed-long-ago"}`)
-	require.Len(t, listed(t, urlA), 1)
-
-	// Redis gone: the admin write fails closed and nothing changes locally.
-	redis.Close()
-	out := post(t, urlA+"/admin", adminSecret,
-		`{"jsonrpc":"2.0","id":1,"method":"erpc_uncordonUpstream","params":[{"projectId":"test_project","upstream":"rpc4"}]}`)
-	require.Contains(t, out, "error", "persistence failure must surface to the operator")
 	servedOnlyBy(t, urlA, "0x3")
+
+	// Redis gone: the admin call still applies on this replica (local-first,
+	// pushed when shared state returns), like every other shared counter.
+	redis.Close()
+	admin(t, urlA, "erpc_uncordonUpstream", `{"projectId":"test_project","upstream":"rpc4"}`)
+	require.Empty(t, listed(t, urlA))
+	require.Len(t, listed(t, urlB), 1, "peers keep their last known state")
 }

@@ -654,40 +654,35 @@ func (e *ERPC) findUpstreamById(projectID, upstreamID string) (*upstream.Upstrea
 }
 
 // handleCordonUpstream marks an upstream cordoned (cordon=true) or
-// uncordoned (cordon=false) for a specific method scope. The cordon is
-// persisted to the shared-state cordon store first and applied locally from
-// the persisted result; a store failure returns an error and changes
-// nothing. Uncordon accepts an upstream id that is no longer configured so
-// a stale record can always be removed.
+// uncordoned (cordon=false) for a specific method scope. The whole-upstream
+// scope ("*") is the operator cordon shared across replicas through
+// database.sharedState; a method scope stays on this replica.
 func (e *ERPC) handleCordonUpstream(ctx context.Context, nq *common.NormalizedRequest, cordon bool) (*common.NormalizedResponse, error) {
 	p, err := parseCordonParams(nq)
 	if err != nil {
 		return nil, err
 	}
-	prj, err := e.GetProject(p.ProjectID)
+	u, err := e.findUpstreamById(p.ProjectID, p.Upstream)
 	if err != nil {
 		return nil, err
-	}
-	if prj.upstreamsRegistry == nil {
-		return nil, fmt.Errorf("cordon admin: project %s has no upstream registry", p.ProjectID)
 	}
 	reason := p.Reason
-	if cordon {
-		if _, err := e.findUpstreamById(p.ProjectID, p.Upstream); err != nil {
-			return nil, err
-		}
-		if reason == "" {
+	if reason == "" {
+		if cordon {
 			reason = "admin: manual cordon"
-		}
-		err = prj.upstreamsRegistry.CordonAdmin(ctx, p.Upstream, p.Method, reason)
-	} else {
-		if reason == "" {
+		} else {
 			reason = "admin: manual uncordon"
 		}
-		err = prj.upstreamsRegistry.UncordonAdmin(ctx, p.Upstream, p.Method, reason)
 	}
-	if err != nil {
-		return nil, err
+	switch {
+	case p.Method != "*" && cordon:
+		u.Cordon(p.Method, reason)
+	case p.Method != "*":
+		u.Uncordon(p.Method, reason)
+	case cordon:
+		u.CordonAdmin(ctx, reason)
+	default:
+		u.UncordonAdmin(ctx, reason)
 	}
 	return makeSelectionResponse(nq, map[string]interface{}{
 		"projectId": p.ProjectID,
@@ -726,34 +721,12 @@ func (e *ERPC) handleListCordoned(_ context.Context, nq *common.NormalizedReques
 	}
 	type cordonedRow struct {
 		Upstream string `json:"upstream"`
-		Method   string `json:"method"`
 		Reason   string `json:"reason"`
 	}
 	rows := []cordonedRow{}
-	var operator common.ProjectCordons
-	if snap := prj.upstreamsRegistry.OperatorCordons(); snap != nil {
-		operator = snap.Cordons
-	}
-	registered := map[string]bool{}
 	for _, u := range prj.upstreamsRegistry.GetAllUpstreams() {
-		registered[u.Id()] = true
 		if reason, cordoned := u.CordonedReason("*"); cordoned {
-			rows = append(rows, cordonedRow{Upstream: u.Id(), Method: "*", Reason: reason})
-		}
-		for method, e := range operator[u.Id()] {
-			if method != "*" {
-				rows = append(rows, cordonedRow{Upstream: u.Id(), Method: method, Reason: e.Reason})
-			}
-		}
-	}
-	// Persisted cordons for upstream ids not (or not yet) registered on this
-	// replica are listed too, so a stale record is visible and removable.
-	for id, methods := range operator {
-		if registered[id] {
-			continue
-		}
-		for method, e := range methods {
-			rows = append(rows, cordonedRow{Upstream: id, Method: method, Reason: e.Reason})
+			rows = append(rows, cordonedRow{Upstream: u.Id(), Reason: reason})
 		}
 	}
 	return makeSelectionResponse(nq, map[string]interface{}{

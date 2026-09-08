@@ -251,12 +251,11 @@ type Tracker struct {
 	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
 	mu                 sync.RWMutex             // Protect the map
 
-	// operatorCordons is the newest operator cordon snapshot this replica
-	// has seen (see SetOperatorCordons). Read lock-free on the policy eval
-	// path; nil until the first snapshot is applied. Automatic cordons stay
-	// on their TrackedMetrics cell; the two never overwrite each other.
-	operatorCordons   atomic.Pointer[common.CordonSnapshot]
-	operatorCordonsMu sync.Mutex // serializes SetOperatorCordons swap + metric edges
+	// operatorCordons holds the operator's whole-upstream cordons by
+	// upstream id (see SetOperatorCordon). Automatic cordons stay on their
+	// TrackedMetrics cell; the two never overwrite each other.
+	operatorCordons   map[string]operatorCordon
+	operatorCordonsMu sync.RWMutex
 
 	// trackByFinality switches Record* between a 2-key write (current
 	// behavior — only the all-finalities aggregate) and a 4-key write
@@ -904,92 +903,61 @@ func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason strin
 	t.getCordonedGauge(upstream, method, reason).Set(0)
 }
 
-// SetOperatorCordons publishes a project snapshot when it is newer than
-// the one held (Version 0 is a reset and always wins). resolve maps an
-// upstream id to its registered upstream for metric labels; unknown ids
-// (not registered yet) still cordon by id and get their gauge on
-// RefreshOperatorCordonGauges. Returns whether the snapshot was applied.
-func (t *Tracker) SetOperatorCordons(snap *common.CordonSnapshot, resolve func(upstreamId string) common.Upstream) bool {
-	if snap == nil {
-		return false
-	}
+// operatorCordon is one operator (admin) cordon on a whole upstream. It
+// lives beside the automatic cordon cells rather than on them so a
+// detector lifting its own cordon can never lift the operator's.
+type operatorCordon struct {
+	reason       string
+	cordonedAtMs int64
+}
+
+// SetOperatorCordon records the operator's whole-upstream cordon state:
+// cordonedAtMs > 0 cordons (idempotent while held), 0 lifts. Called from
+// the upstream's shared cordon variable on every change, local or remote.
+func (t *Tracker) SetOperatorCordon(upstream common.Upstream, reason string, cordonedAtMs int64) {
 	t.operatorCordonsMu.Lock()
 	defer t.operatorCordonsMu.Unlock()
 
-	prev := t.operatorCordons.Load()
-	if prev != nil && snap.Version != 0 && snap.Version <= prev.Version {
-		return false
-	}
-	t.operatorCordons.Store(snap)
-
-	var before common.ProjectCordons
-	if prev != nil {
-		before = prev.Cordons
-	}
-	nowMs := time.Now().UnixMilli()
-	for id, methods := range snap.Cordons {
-		ups := resolve(id)
-		for method, e := range methods {
-			old, had := before[id][method]
-			if had && old.Reason != e.Reason && ups != nil {
-				t.getCordonedGauge(ups, method, old.Reason).Set(0)
-			}
-			if ups != nil {
-				t.getCordonedGauge(ups, method, e.Reason).Set(1)
-			}
-			if !had && ups != nil && !t.autoCordoned(ups, method) {
-				telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-					t.projectId, ups.NetworkId(), ups.Id(), "cordon",
-				).Inc()
-			}
+	prev, had := t.operatorCordons[upstream.Id()]
+	if cordonedAtMs > 0 {
+		if t.operatorCordons == nil {
+			t.operatorCordons = map[string]operatorCordon{}
 		}
-	}
-	for id, methods := range before {
-		ups := resolve(id)
-		for method, old := range methods {
-			if _, still := snap.Cordons[id][method]; still || ups == nil {
-				continue
-			}
-			t.getCordonedGauge(ups, method, old.Reason).Set(0)
-			if t.autoCordoned(ups, method) {
-				continue
-			}
-			if dur := time.Duration(nowMs-old.CordonedAtMs) * time.Millisecond; old.CordonedAtMs > 0 && dur > 0 {
-				telemetry.MetricUpstreamCordonDurationSeconds.WithLabelValues(
-					t.projectId, ups.NetworkId(), ups.Id(),
-				).Observe(dur.Seconds())
-			}
+		t.operatorCordons[upstream.Id()] = operatorCordon{reason: reason, cordonedAtMs: cordonedAtMs}
+		if had && prev.reason != reason {
+			t.getCordonedGauge(upstream, "*", prev.reason).Set(0)
+		}
+		t.getCordonedGauge(upstream, "*", reason).Set(1)
+		if !had && !t.autoCordoned(upstream, "*") {
 			telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
-				t.projectId, ups.NetworkId(), ups.Id(), "uncordon",
+				t.projectId, upstream.NetworkId(), upstream.Id(), "cordon",
 			).Inc()
 		}
-	}
-	return true
-}
-
-// RefreshOperatorCordonGauges emits the gauge for every operator cordon on
-// an upstream that registered after the snapshot was applied.
-func (t *Tracker) RefreshOperatorCordonGauges(ups common.Upstream) {
-	snap := t.operatorCordons.Load()
-	if snap == nil {
 		return
 	}
-	for method, e := range snap.Cordons[ups.Id()] {
-		t.getCordonedGauge(ups, method, e.Reason).Set(1)
+	if !had {
+		return
 	}
+	delete(t.operatorCordons, upstream.Id())
+	t.getCordonedGauge(upstream, "*", prev.reason).Set(0)
+	if t.autoCordoned(upstream, "*") {
+		return
+	}
+	if dur := time.Duration(time.Now().UnixMilli()-prev.cordonedAtMs) * time.Millisecond; dur > 0 {
+		telemetry.MetricUpstreamCordonDurationSeconds.WithLabelValues(
+			t.projectId, upstream.NetworkId(), upstream.Id(),
+		).Observe(dur.Seconds())
+	}
+	telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+		t.projectId, upstream.NetworkId(), upstream.Id(), "uncordon",
+	).Inc()
 }
 
-// OperatorCordons returns the snapshot currently applied, or nil.
-func (t *Tracker) OperatorCordons() *common.CordonSnapshot {
-	return t.operatorCordons.Load()
-}
-
-func (t *Tracker) operatorCordon(upstream common.Upstream, method string) (common.CordonEntry, bool) {
-	snap := t.operatorCordons.Load()
-	if snap == nil {
-		return common.CordonEntry{}, false
-	}
-	return snap.Cordons.Lookup(upstream.Id(), method)
+func (t *Tracker) operatorCordon(upstream common.Upstream) (operatorCordon, bool) {
+	t.operatorCordonsMu.RLock()
+	defer t.operatorCordonsMu.RUnlock()
+	c, ok := t.operatorCordons[upstream.Id()]
+	return c, ok
 }
 
 // autoCordoned reports whether an in-process detector holds (upstream,
@@ -1005,9 +973,10 @@ func (t *Tracker) autoCordoned(upstream common.Upstream, method string) bool {
 }
 
 // IsCordoned reports whether (upstream, method) is out of routing: an
-// operator cordon or an automatic one, on the method or on the wildcard.
+// operator cordon on the upstream, or an automatic one on the method or
+// on the wildcard.
 func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
-	if _, ok := t.operatorCordon(upstream, method); ok {
+	if _, ok := t.operatorCordon(upstream); ok {
 		return true
 	}
 	return t.autoCordoned(upstream, method)
@@ -1018,8 +987,8 @@ func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
 // scope shadows the method scope. This is the single lookup the policy
 // engine, admin RPCs and health checks use.
 func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (string, bool) {
-	if e, ok := t.operatorCordon(upstream, method); ok {
-		return e.Reason, true
+	if c, ok := t.operatorCordon(upstream); ok {
+		return c.reason, true
 	}
 	for _, m := range [...]string{"*", method} {
 		if v, ok := t.upsMetrics.Load(upstreamKey{upstream, m, common.DataFinalityStateAll}); ok {

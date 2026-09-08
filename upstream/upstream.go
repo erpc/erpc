@@ -216,6 +216,15 @@ type Upstream struct {
 	// Highest block at which the integrity state probe PROVED this upstream
 	// holds the state trie (0 = never proven). See EvmStateProvenBlock.
 	stateProvenBlock atomic.Int64
+	// operatorCordon is the operator's whole-upstream cordon as a shared
+	// counter: unix-ms when it was set, 0 when lifted. Shared state keeps
+	// replicas in sync and restores it at bootstrap; the memory driver keeps
+	// it in-process. Created once, lazily (see operatorCordonVar).
+	operatorCordon     data.CounterInt64SharedVariable
+	operatorCordonOnce sync.Once
+	// operatorCordonReason is the reason given on this replica; peers and
+	// restarted pods only see that an operator cordon exists.
+	operatorCordonReason atomic.Value
 }
 
 func NewUpstream(
@@ -330,6 +339,7 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 			u.svmStatePoller = svm.NewSvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
 		}
 	})
+	u.operatorCordonVar()
 
 	if u.evmStatePoller != nil {
 		err = u.evmStatePoller.Bootstrap(ctx)
@@ -1490,6 +1500,10 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(uppub)
 }
 
+// Cordon / Uncordon are the in-process detectors' path (consensus sit-out,
+// state-poller health and identity checks) and method-scoped operator
+// cordons. They flip the tracker cell for (upstream, method) on this pod
+// only and never touch the shared operator cordon.
 func (u *Upstream) Cordon(method string, reason string) {
 	u.metricsTracker.Cordon(u, method, reason)
 }
@@ -1498,8 +1512,48 @@ func (u *Upstream) Uncordon(method string, reason string) {
 	u.metricsTracker.Uncordon(u, method, reason)
 }
 
-// CordonedReason returns the cordon reason and whether the (upstream,
-// method) is currently cordoned. Pass `"*"` for the wildcard scope.
+// CordonedReason returns the effective cordon reason and whether the
+// (upstream, method) is currently cordoned. Pass `"*"` for the wildcard scope.
 func (u *Upstream) CordonedReason(method string) (string, bool) {
 	return u.metricsTracker.CordonedReason(u, method)
+}
+
+// CordonAdmin sets the operator's whole-upstream cordon fleet-wide. A cordon
+// already held keeps its start time. The write is local-first and pushed to
+// shared state in the background, like every other shared counter.
+func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
+	u.operatorCordonReason.Store(reason)
+	v := u.operatorCordonVar()
+	if v.GetValue() > 0 {
+		u.metricsTracker.SetOperatorCordon(u, reason, v.GetValue())
+		return
+	}
+	v.TryUpdate(ctx, time.Now().UnixMilli())
+}
+
+// UncordonAdmin lifts the operator's cordon fleet-wide and, on this pod,
+// any automatic wildcard cordon as well: the operator call is the override
+// for a detector verdict.
+func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
+	u.operatorCordonVar().TryUpdate(ctx, 0)
+	u.metricsTracker.Uncordon(u, "*", reason)
+}
+
+// operatorCordonVar creates the shared variable on first use and applies
+// every value it takes — from this pod, a peer, or the bootstrap fetch —
+// to the tracker.
+func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
+	u.operatorCordonOnce.Do(func() {
+		key := data.CounterValueSchemaVersion + "/operatorCordon/" + u.ProjectId + "/" + common.UniqueUpstreamKey(u)
+		v := u.sharedStateRegistry.GetCounterInt64(key, 0)
+		v.OnValue(func(cordonedAtMs int64) {
+			reason := "operator cordon (set on another replica)"
+			if r, ok := u.operatorCordonReason.Load().(string); ok && r != "" {
+				reason = r
+			}
+			u.metricsTracker.SetOperatorCordon(u, reason, cordonedAtMs)
+		})
+		u.operatorCordon = v
+	})
+	return u.operatorCordon
 }
