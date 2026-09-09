@@ -63,6 +63,7 @@ func BenchmarkTrackerRecordUpstreamRequest(b *testing.B) {
 
 	methods := []string{"eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_sendRawTransaction"}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -73,6 +74,38 @@ func BenchmarkTrackerRecordUpstreamRequest(b *testing.B) {
 			i++
 		}
 	})
+}
+
+// Serial counterpart so lock contention on upsMetrics/ntwMetrics is visible
+// against the parallel bench above.
+func BenchmarkTrackerRecordUpstreamRequest_Serial(b *testing.B) {
+	tracker := NewTracker(&log.Logger, "test-project", 1*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	up := &MockUpstream{id: "upstream-0", network: "network-0", vendor: "test-vendor"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tracker.RecordUpstreamRequest(up, "eth_getBalance", common.DataFinalityStateUnknown)
+	}
+}
+
+// Unique methods force a new upsMetrics map entry per op — the growth /
+// LoadOrStore path, not the steady-state hit path.
+func BenchmarkTrackerRecordUpstreamRequest_UniqueMethods(b *testing.B) {
+	tracker := NewTracker(&log.Logger, "test-project", 1*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+	up := &MockUpstream{id: "upstream-0", network: "network-0", vendor: "test-vendor"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tracker.RecordUpstreamRequest(up, fmt.Sprintf("eth_method_%d", i), common.DataFinalityStateUnknown)
+	}
 }
 
 // BenchmarkTrackerRecordUpstreamDuration benchmarks duration recording
@@ -93,6 +126,7 @@ func BenchmarkTrackerRecordUpstreamDuration(b *testing.B) {
 
 	methods := []string{"eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_sendRawTransaction"}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -132,6 +166,7 @@ func BenchmarkTrackerRecordUpstreamFailure(b *testing.B) {
 	methods := []string{"eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_sendRawTransaction"}
 	testErr := fmt.Errorf("test error")
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -142,6 +177,21 @@ func BenchmarkTrackerRecordUpstreamFailure(b *testing.B) {
 			i++
 		}
 	})
+}
+
+func BenchmarkTrackerRecordUpstreamFailure_Serial(b *testing.B) {
+	tracker := NewTracker(&log.Logger, "test-project", 1*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+	up := &MockUpstream{id: "upstream-0", network: "network-0", vendor: "test-vendor"}
+	testErr := fmt.Errorf("test error")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tracker.RecordUpstreamFailure(up, "eth_getBalance", common.DataFinalityStateUnknown, testErr)
+	}
 }
 
 // BenchmarkTrackerSetLatestBlockNumber benchmarks block number updates
@@ -163,6 +213,7 @@ func BenchmarkTrackerSetLatestBlockNumber(b *testing.B) {
 		tracker.RecordUpstreamRequest(upstreams[i], "eth_call", common.DataFinalityStateUnknown)
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -196,6 +247,7 @@ func BenchmarkTrackerMixedOperations(b *testing.B) {
 	methods := []string{"eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_sendRawTransaction"}
 	testErr := fmt.Errorf("test error")
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -243,6 +295,7 @@ func BenchmarkTrackerRecordUpstreamDurationWithTimer(b *testing.B) {
 
 	methods := []string{"eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_sendRawTransaction"}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
