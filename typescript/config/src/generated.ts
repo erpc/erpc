@@ -1899,39 +1899,45 @@ export interface MetricsConfig {
   errorLabelMode?: LabelMode;
   histogramBuckets?: string;
   /**
-   * HistogramDropLabels removes these labels from every histogram. Counters
-   * and gauges are unaffected. Useful to cap per-instance /metrics response
-   * size when high-cardinality labels (e.g. "user") push a scrape past the
-   * managed scraper's sample/body limits.
+   * Customizations is the single knob for shaping /metrics: which metric
+   * families are exposed at all, which of their labels survive, and which
+   * buckets a histogram uses. Entries are applied by specificity rather than
+   * by list order — see MetricsCustomizationConfig.
+   *
+   * 	metrics:
+   * 	  customizations:
+   * 	    - subject: "consensus_*"
+   * 	      action: drop
+   * 	    - subject: upstream_request_total
+   * 	      labels:
+   * 	        - subject: "agent_*"
+   * 	          action: drop
+   * 	        - subject: agent_name
+   * 	          action: keep
+   * 	    - subject: network_request_duration_seconds
+   * 	      buckets: [0.05, 0.5, 5]
+   */
+  customizations?: MetricsCustomizationConfig[];
+  /**
+   * Deprecated: use Customizations with a `labels` list. Kept working so
+   * existing configs keep loading; it is desugared onto the same rules as an
+   * every-histogram label drop.
    */
   histogramDropLabels?: string[];
   /**
-   * HistogramLabelOverrides re-adds labels for specific histograms even if
-   * they appear in HistogramDropLabels. Key is the metric Name (without the
-   * "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
-   * Value is the list of label names to keep for that metric.
+   * Deprecated: use Customizations with an exact `subject` and a `labels` list
+   * keeping what this metric needs.
    */
   histogramLabelOverrides?: { [key: string]: string[]};
   /**
-   * CounterDropLabels removes these labels from every counter that carries
-   * caller-controlled dimensions (user, agent_name, attempt, composite,
-   * hedge, error). Histograms and gauges are unaffected; use
-   * HistogramDropLabels for the histogram side.
-   * Counters are usually the largest contributor to /metrics size, because a
-   * label like a client-supplied user-agent is unbounded and every tuple ever
-   * seen is re-emitted on every scrape. Dropping a label collapses the series
-   * that differed only in it — sums stay correct, but the dimension stops
-   * being queryable, so check what consumes it (billing/attribution
-   * pipelines, dashboards) before dropping.
+   * Deprecated: use Customizations with a `labels` list. Kept working so
+   * existing configs keep loading; it is desugared onto the same rules as an
+   * every-counter label drop.
    */
   counterDropLabels?: string[];
   /**
-   * CounterLabelOverrides re-adds labels for specific counters even if they
-   * appear in CounterDropLabels. Key is the metric Name (without the "erpc_"
-   * namespace prefix), e.g. "upstream_request_total". Value is the list of
-   * label names to keep for that metric. Use this to drop a label fleet-wide
-   * while preserving it on the one or two counters a downstream pipeline
-   * actually reads.
+   * Deprecated: use Customizations with an exact `subject` and a `labels` list
+   * keeping what this metric needs.
    */
   counterLabelOverrides?: { [key: string]: string[]};
   /**
@@ -1946,6 +1952,71 @@ export interface MetricsConfig {
    * disable eviction entirely.
    */
   counterIdleEvictionAfter?: Duration;
+}
+/**
+ * MetricCustomizationAction is what a customization entry does to what it
+ * selects.
+ */
+export type MetricCustomizationAction = string;
+export const MetricActionKeep: MetricCustomizationAction = "keep";
+export const MetricActionDrop: MetricCustomizationAction = "drop";
+/**
+ * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
+ * selecting metric families, and what to do with them.
+ *
+ * Overlapping subjects resolve by specificity, not by list order: an exact
+ * family name beats a prefix, a longer prefix beats a shorter one, and equally
+ * specific subjects break to the one written later. So "drop consensus_*, keep
+ * consensus_duration_seconds" means the same thing whichever order it is written
+ * in.
+ */
+export interface MetricsCustomizationConfig {
+  /**
+   * Subject selects metric families: an exact name ("upstream_request_total"),
+   * a prefix ending in "*" ("consensus_*"), or "*" for every family. The
+   * "erpc_" namespace prefix is optional. The Go runtime, process and promhttp
+   * collectors are named in full ("go_goroutines") and are subject to the same
+   * rules, so `subject: "*", action: drop` drops them too.
+   */
+  subject: string;
+  /**
+   * Action drops the matched families from /metrics, or keeps them against a
+   * broader drop. Omit it to leave exposure alone and only customize labels or
+   * buckets.
+   *
+   * A dropped eRPC family is never registered, so it costs no series and no
+   * collection time — but that makes it a startup decision, undone only by a
+   * restart. Stock collectors are registered outside eRPC and so are filtered
+   * out of the scrape response instead, which shrinks the page without saving
+   * collection.
+   */
+  action?: 'keep' | 'drop';
+  /**
+   * Labels projects the matched families' label sets. Same precedence rules as
+   * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
+   * drops the group and spares the one label.
+   *
+   * Dropping a label collapses every series that differed only in it. Counter
+   * sums stay correct, but the dimension stops being queryable — check what
+   * reads it (billing or attribution pipelines, dashboards) first. Gauges have
+   * no projection, because collapsing gauge series would report whichever
+   * writer wrote last rather than a coarser number.
+   */
+  labels?: MetricLabelCustomizationConfig[];
+  /**
+   * Buckets replaces the bucket boundaries of the matched histograms,
+   * overriding both metrics.histogramBuckets and what the metric declares in
+   * code. Must be strictly increasing.
+   */
+  buckets?: number[];
+}
+/**
+ * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
+ * group of them, on the families its parent customization matched.
+ */
+export interface MetricLabelCustomizationConfig {
+  subject: string;
+  action: 'keep' | 'drop';
 }
 /**
  * RateLimitStoreConfig defines where rate limit counters are stored
