@@ -46,6 +46,12 @@ type SvmNetwork interface {
 	Network
 	SvmHighestLatestSlot(ctx context.Context) int64
 	SvmHighestFinalizedSlot(ctx context.Context) int64
+	// SvmHighestFinalizedSlotMax is the finalized root of the MOST-ADVANCED
+	// upstream, where SvmHighestFinalizedSlot is the majority tip. Rejection
+	// gates (the getBlock availability guard) need this one: they must not null
+	// out a slot some upstream can already serve. Advertising a head to clients
+	// needs the majority one, so a lone rogue upstream cannot inflate it.
+	SvmHighestFinalizedSlotMax(ctx context.Context) int64
 	SvmHighestIndexedSlot(ctx context.Context) int64
 	SvmEnforceBlockAvailability() bool
 }

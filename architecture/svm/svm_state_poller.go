@@ -30,6 +30,40 @@ const DefaultPollInterval = 400 * time.Millisecond
 // routers; make it configurable only if a real workload needs it.
 const maxConsecutiveSlotPollSkips = 4
 
+// healthPollEveryNTicks throttles getHealth to every Nth eligible poll. On paid
+// vendor RPCs the poller is the dominant background cost — measured on
+// solana-devnet it ran ~3.7 getHealth calls/sec, comparable to ALL
+// client-driven getBlock traffic after the finalized-tip guard landed.
+//
+// getHealth is the one poller signal whose VALUE is near-static: a boolean that
+// flips only when an upstream actually degrades, and it feeds only the
+// cordon/uncordon edge in applyHealthToRouting. Worst-case detection latency
+// becomes N * debounce (~2s at defaults), against a circuit breaker that
+// already reacts to real request failures far sooner.
+//
+// The other three calls are deliberately NOT throttled, because their VALUES
+// move at chain rate (~2.5-3.7 slots/sec, measured) and each is a live bound:
+//
+//   - getSlot(finalized) IS the getBlock guard's bound at finalized commitment
+//     — which includes every request that pins no commitment — so a staler tip
+//     directly widens the window of requests that escape to upstreams.
+//   - getSlot(processed) is the bound for non-finalized routing.
+//   - getMaxShredInsertSlot bounds every commitment level, and
+//     tipStalenessMargin is derived from the assumption that this snapshot is
+//     at most ONE debounce old. Throttling it without widening that margin
+//     would silently start rejecting slots the upstreams actually hold.
+//
+// A FAILED probe is never throttled: an unhealthy verdict cordons the upstream
+// out of rotation (applyHealthToRouting), so letting one transient probe error
+// — a vendor 429 against the poller is the common case — ride out the whole
+// window would multiply a 400ms outage into N * debounce. The next poll
+// re-probes instead, which costs extra calls only while something is actually
+// wrong.
+//
+// ponytail: fixed multiplier, promote to SvmNetworkConfig only if a deployment
+// needs a different health-detection latency than ~2s.
+const healthPollEveryNTicks = 5
+
 // Static request payloads — avoid allocating on every tick.
 var (
 	reqGetHealth             = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
@@ -76,7 +110,14 @@ type SvmStatePoller struct {
 	lastExternalFinalizedAt atomic.Int64
 	// slotPollSkips counts consecutive traffic-gated skips; guarded by pollMu.
 	slotPollSkips int
-	pollMu        sync.Mutex
+	// pollCount counts polls that passed the debounce gate. Guarded by pollMu.
+	pollCount int
+	// nextHealthPoll is the pollCount at which getHealth runs again. Starts at 0
+	// so the first poll always probes (cold start must not route on a
+	// zero-valued health verdict), then advances by healthPollEveryNTicks — or
+	// back to the immediate next poll after a failed probe. Guarded by pollMu.
+	nextHealthPoll int
+	pollMu         sync.Mutex
 
 	// loopStarted guards the polling goroutine. Bootstrap is retried on the
 	// SAME poller instance (the upstream initializer reuses a pending Upstream
@@ -246,9 +287,17 @@ func (e *SvmStatePoller) loop(interval time.Duration) {
 // SuggestFinalizedSlot, fed by upstreamPostForward_trackContextSlot), the two
 // getSlot calls are skipped this tick — traffic already proved slot freshness,
 // and on paid vendor RPCs the poller is the dominant background cost.
-// getHealth and getMaxShredInsertSlot always run: traffic carries neither
-// signal. Bounded by maxConsecutiveSlotPollSkips so suggestions can never
-// fully replace the poller's own observations.
+// Bounded by maxConsecutiveSlotPollSkips so suggestions can never fully
+// replace the poller's own observations.
+//
+// getMaxShredInsertSlot always runs: traffic carries no such signal, and the
+// watermark advances at chain rate, so a throttled snapshot would go stale
+// against indexedTipStalenessMargin and start rejecting servable slots.
+//
+// getHealth cannot use the traffic gate either, but its value is a near-static
+// boolean, so it is throttled by count instead (healthPollEveryNTicks). A
+// skipped tick leaves the previously stored verdict in place;
+// applyHealthToRouting still runs every poll off that last-known value.
 func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	e.pollMu.Lock()
 	defer e.pollMu.Unlock()
@@ -279,19 +328,30 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 		e.slotPollSkips = 0
 	}
 
+	// getHealth carries a near-static boolean and feeds only the cordon edge, so
+	// run it every Nth poll instead of every one. See healthPollEveryNTicks for
+	// why a FAILED probe re-schedules itself onto the next poll.
+	runHealth := e.pollCount >= e.nextHealthPoll
+	if runHealth {
+		e.nextHealthPoll = e.pollCount + healthPollEveryNTicks
+	}
+	e.pollCount++
+
 	var wg sync.WaitGroup
 
 	// Shared variable for shred → filled by the shred goroutine, read after Wait.
 	// Only the shred goroutine writes, so no atomics needed.
 	var shredSlot int64
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer e.recoverPanic("fetchHealth")
-		healthy := e.fetchHealth(ctx)
-		e.healthy.Store(healthy)
-	}()
+	if runHealth {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer e.recoverPanic("fetchHealth")
+			healthy := e.fetchHealth(ctx)
+			e.healthy.Store(healthy)
+		}()
+	}
 
 	if !skipSlots {
 		wg.Add(2)
@@ -348,6 +408,15 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 			}
 			e.maxShredInsertSlotLag.Store(lag)
 		}
+	}
+
+	// A probe that came back unhealthy cordons this upstream out of rotation
+	// below, so it must not ride out the throttle window on the strength of one
+	// sample: re-probe on the very next poll. Extra calls happen only while
+	// something is actually wrong, and recovery is detected in one debounce
+	// instead of N.
+	if runHealth && !e.healthy.Load() {
+		e.nextHealthPoll = e.pollCount
 	}
 
 	// A health verdict nobody routes on is not a defense; publish it.

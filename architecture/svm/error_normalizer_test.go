@@ -307,7 +307,7 @@ func TestExtract_BlockNotAvailable_IsRetryableAndPreservesRawCode(t *testing.T) 
 		t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
 	}
 	// Wire code must preserve raw -32004, NOT normalize to -32014 (JsonRpcErrorMissingData).
-	// Normalizing to -32014 caused sol-client BlockNotAvailableException → infinite retry loop.
+	// Normalizing to -32014 caused Solana client BlockNotAvailableException → infinite retry loop.
 	if jre.NormalizedCode() != common.JsonRpcErrorNumber(-32004) {
 		t.Fatalf("wire code must preserve raw -32004, got %v", jre.NormalizedCode())
 	}
