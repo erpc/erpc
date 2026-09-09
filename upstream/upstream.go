@@ -222,8 +222,10 @@ type Upstream struct {
 	// it in-process. Created once, lazily (see operatorCordonVar).
 	operatorCordon     atomic.Value // data.CounterInt64SharedVariable
 	operatorCordonOnce sync.Once
-	// operatorCordonReason is the reason given on this replica; peers and
-	// restarted pods only see that an operator cordon exists.
+	// operatorCordonReason is the reason given on this replica for the
+	// in-flight CordonAdmin/UncordonAdmin call; it is cleared when that
+	// call returns. Peers and restarted pods only see that an operator
+	// cordon exists.
 	operatorCordonReason atomic.Value
 }
 
@@ -1528,6 +1530,7 @@ func (u *Upstream) CordonedReason(method string) (string, bool) {
 // and pushed in the background, like every other shared counter.
 func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
 	u.operatorCordonReason.Store(reason)
+	defer u.operatorCordonReason.Store("")
 	if v := u.operatorCordonVar(); v.GetValue() == 0 {
 		v.TryUpdate(ctx, time.Now().UnixMilli())
 	} else {
@@ -1540,6 +1543,7 @@ func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
 // override for a detector verdict.
 func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
 	u.operatorCordonReason.Store(reason)
+	defer u.operatorCordonReason.Store("")
 	u.operatorCordonVar().TryUpdate(ctx, 0)
 	u.metricsTracker.Uncordon(u, "*", reason)
 }
