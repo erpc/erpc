@@ -104,9 +104,14 @@ func TestCordonAdmin_PropagatesAcrossReplicasAndRestarts(t *testing.T) {
 	require.Eventually(t, notCordoned(a), 5*time.Second, 20*time.Millisecond)
 	require.Eventually(t, notCordoned(c), 5*time.Second, 20*time.Millisecond)
 
-	// A later cordon after an uncordon is accepted again.
+	// A later cordon after an uncordon is accepted again. The originating
+	// replica's reason must not leak into a peer that never issued this call.
 	c.CordonAdmin(ctx, "incident #2")
 	require.Eventually(t, cordoned(a), 5*time.Second, 20*time.Millisecond)
+	reason, _ = a.CordonedReason("eth_call")
+	require.Equal(t, "operator cordon (set on another replica)", reason)
+	reason, _ = c.CordonedReason("eth_call")
+	require.Equal(t, "incident #2", reason)
 }
 
 func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
