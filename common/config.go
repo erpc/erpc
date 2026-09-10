@@ -2632,6 +2632,28 @@ type EvmServedTipConfig struct {
 	// configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
 	// bare number is parsed as MILLISECONDS.
 	TrajectoryWindow *Duration `yaml:"trajectoryWindow,omitempty" json:"trajectoryWindow,omitempty"`
+
+	// LagBlocks is an optional cushion subtracted from the advertised served tip
+	// AFTER the full pick → referee → regression-guard → guaranteed-method
+	// pipeline has run: advertised = max(0, servedTip - LagBlocks). It lets a
+	// required-but-slightly-behind group (a mixed internal/external pool where the
+	// internals trail the strict-majority tip by a few blocks) still serve the
+	// advertised block, without a hard per-group minimum that a single stuck
+	// upstream could use to pin the whole network. Applied only once the pipeline
+	// has decided what to serve, so the cushion can never look like a poisoned
+	// ballot to the regression guard. 0 (unset) is the current behaviour, exactly.
+	// Applies only to tags in EnabledFor; the default max mode is unaffected.
+	// Takes effect only when > 0, matching the 0-means-unset convention of the
+	// other numeric fields here (ClusterDelta, MaxRegressionBlocks); a positive
+	// LagBlocks wins over Lag.
+	LagBlocks int64 `yaml:"lagBlocks,omitempty" json:"lagBlocks,omitempty"`
+
+	// Lag is the same cushion expressed as a duration, converted to blocks via the
+	// network's EMA block time at evaluation. It is a no-op until the block time is
+	// known (a cold process advertises no cushion until it has measured cadence).
+	// Used only when LagBlocks is not positive; a positive LagBlocks wins. WRITE IT
+	// AS A DURATION STRING — lag: "12s"; a bare number is parsed as MILLISECONDS.
+	Lag *Duration `yaml:"lag,omitempty" json:"lag,omitempty"`
 }
 
 // ServedTipEnabledFor reports whether the majority served tip is enabled for
