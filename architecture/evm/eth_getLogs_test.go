@@ -690,6 +690,9 @@ func TestUpstreamPreForward_eth_getLogs_DirectiveDefaultsWinOverIntegrity(t *tes
 		"fromBlock": "0x1",
 		"toBlock":   "0x5",
 	})
+	r.ApplyDirectiveDefaults(&common.DirectiveDefaultsConfig{
+		EnforceGetLogsBlockRange: util.BoolPtr(false),
+	})
 	n.On("Id").Return("evm:123").Maybe()
 	n.On("Config").Return(&common.NetworkConfig{
 		DirectiveDefaults: &common.DirectiveDefaultsConfig{

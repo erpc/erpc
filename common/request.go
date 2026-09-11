@@ -185,14 +185,9 @@ type RequestDirectives struct {
 
 	// Validation: Block Integrity (consumed by the EVM block/getLogs hooks; not
 	// part of the data-integrity module).
-	EnforceHighestBlock      bool `json:"enforceHighestBlock,omitempty"`
-	EnforceGetLogsBlockRange bool `json:"enforceGetLogsBlockRange,omitempty"`
-	// EnforceGetLogsBlockRangeSet is true when EnforceGetLogsBlockRange was
-	// copied from directiveDefaults or from an HTTP/query override. Distinguishes
-	// an explicit false from the Go zero value so a request can disable the
-	// getLogs range hook on a network whose default is true.
-	EnforceGetLogsBlockRangeSet bool `json:"-"`
-	EnforceNonNullTaggedBlocks  bool `json:"enforceNonNullTaggedBlocks,omitempty"`
+	EnforceHighestBlock        bool `json:"enforceHighestBlock,omitempty"`
+	EnforceGetLogsBlockRange   bool `json:"enforceGetLogsBlockRange,omitempty"`
+	EnforceNonNullTaggedBlocks bool `json:"enforceNonNullTaggedBlocks,omitempty"`
 
 	// IntegritySelector is the per-request data-integrity selection from the
 	// X-ERPC-Integrity header / integrity query param. It is a bare word — a
@@ -206,18 +201,17 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		return &RequestDirectives{}
 	}
 	return &RequestDirectives{
-		RetryEmpty:                  d.RetryEmpty,
-		RetryPending:                d.RetryPending,
-		SkipCacheRead:               d.SkipCacheRead,
-		UseUpstream:                 d.UseUpstream,
-		ByPassMethodExclusion:       d.ByPassMethodExclusion,
-		SkipInterpolation:           d.SkipInterpolation,
-		SkipConsensus:               d.SkipConsensus,
-		EnforceHighestBlock:         d.EnforceHighestBlock,
-		EnforceGetLogsBlockRange:    d.EnforceGetLogsBlockRange,
-		EnforceGetLogsBlockRangeSet: d.EnforceGetLogsBlockRangeSet,
-		EnforceNonNullTaggedBlocks:  d.EnforceNonNullTaggedBlocks,
-		IntegritySelector:           d.IntegritySelector,
+		RetryEmpty:                 d.RetryEmpty,
+		RetryPending:               d.RetryPending,
+		SkipCacheRead:              d.SkipCacheRead,
+		UseUpstream:                d.UseUpstream,
+		ByPassMethodExclusion:      d.ByPassMethodExclusion,
+		SkipInterpolation:          d.SkipInterpolation,
+		SkipConsensus:              d.SkipConsensus,
+		EnforceHighestBlock:        d.EnforceHighestBlock,
+		EnforceGetLogsBlockRange:   d.EnforceGetLogsBlockRange,
+		EnforceNonNullTaggedBlocks: d.EnforceNonNullTaggedBlocks,
+		IntegritySelector:          d.IntegritySelector,
 	}
 }
 
@@ -677,7 +671,6 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	}
 	if directiveDefaults.EnforceGetLogsBlockRange != nil {
 		r.directives.EnforceGetLogsBlockRange = *directiveDefaults.EnforceGetLogsBlockRange
-		r.directives.EnforceGetLogsBlockRangeSet = true
 	}
 	if directiveDefaults.EnforceNonNullTaggedBlocks != nil {
 		r.directives.EnforceNonNullTaggedBlocks = *directiveDefaults.EnforceNonNullTaggedBlocks
@@ -783,7 +776,6 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if hv := getHeader(headerDirectiveEnforceGetLogsRange); hv != "" {
 		r.directives.EnforceGetLogsBlockRange = strings.ToLower(strings.TrimSpace(hv)) == "true"
-		r.directives.EnforceGetLogsBlockRangeSet = true
 	}
 	if hv := getHeader(headerDirectiveEnforceNonNullTaggedBlocks); hv != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(hv)) == "true"
@@ -834,7 +826,6 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if v := getQueryArg(queryDirectiveEnforceGetLogsRange); v != "" {
 		r.directives.EnforceGetLogsBlockRange = strings.ToLower(strings.TrimSpace(v)) == "true"
-		r.directives.EnforceGetLogsBlockRangeSet = true
 	}
 	if v := getQueryArg(queryDirectiveEnforceNonNullTaggedBlocks); v != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(v)) == "true"
