@@ -317,14 +317,20 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 }
 
 // enforceGetLogsBlockRangeEnabled is the getLogs / trace_filter range-check gate.
-// DirectiveDefaults (and a request directive of true) win over the deprecated
-// EvmIntegrityConfig field. Integrity is only consulted when directiveDefaults
-// did not set the flag — otherwise an explicit directiveDefaults: false is
-// ignored while Integrity.SetDefaults() still leaves the hook on.
+// An explicit request directive (directiveDefaults copy or HTTP/query override)
+// wins, including false. Otherwise DirectiveDefaults, then the deprecated
+// EvmIntegrityConfig field. Integrity is only consulted when those are unset —
+// otherwise directiveDefaults: false was ignored while Integrity.SetDefaults()
+// left the hook on.
 func enforceGetLogsBlockRangeEnabled(ncfg *common.NetworkConfig, nrq *common.NormalizedRequest) bool {
 	if nrq != nil {
-		if dirs := nrq.Directives(); dirs != nil && dirs.EnforceGetLogsBlockRange {
-			return true
+		if dirs := nrq.Directives(); dirs != nil {
+			if dirs.EnforceGetLogsBlockRangeSet {
+				return dirs.EnforceGetLogsBlockRange
+			}
+			if dirs.EnforceGetLogsBlockRange {
+				return true
+			}
 		}
 	}
 	if ncfg != nil && ncfg.DirectiveDefaults != nil && ncfg.DirectiveDefaults.EnforceGetLogsBlockRange != nil {

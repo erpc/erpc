@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -704,6 +705,39 @@ func TestUpstreamPreForward_eth_getLogs_DirectiveDefaultsWinOverIntegrity(t *tes
 	handled, resp, err := upstreamPreForward_eth_getLogs(context.Background(), n, u, r)
 	assert.NoError(t, err)
 	assert.False(t, handled, "directiveDefaults: false must skip the range hook even if Integrity is true")
+	assert.Nil(t, resp)
+	u.AssertNotCalled(t, "EvmAssertBlockAvailability")
+}
+
+func TestUpstreamPreForward_eth_getLogs_HeaderFalseOverridesDirectiveDefaultsTrue(t *testing.T) {
+	n := new(mockNetwork)
+	u := new(mockEvmUpstream)
+	r := createTestRequest(map[string]interface{}{
+		"fromBlock": "0x1",
+		"toBlock":   "0x5",
+	})
+	r.ApplyDirectiveDefaults(&common.DirectiveDefaultsConfig{
+		EnforceGetLogsBlockRange: util.BoolPtr(true),
+	})
+	headers := http.Header{}
+	headers.Set("X-ERPC-Enforce-GetLogs-Range", "false")
+	r.EnrichFromHttp(headers, nil, common.UserAgentTrackingModeSimplified)
+
+	n.On("Id").Return("evm:123").Maybe()
+	n.On("Config").Return(&common.NetworkConfig{
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		},
+		Evm: &common.EvmNetworkConfig{
+			Integrity: &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			},
+		},
+	})
+
+	handled, resp, err := upstreamPreForward_eth_getLogs(context.Background(), n, u, r)
+	assert.NoError(t, err)
+	assert.False(t, handled, "X-ERPC-Enforce-GetLogs-Range: false must skip the range hook")
 	assert.Nil(t, resp)
 	u.AssertNotCalled(t, "EvmAssertBlockAvailability")
 }
