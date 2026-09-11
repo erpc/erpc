@@ -1671,12 +1671,18 @@ func hasLinearErrorCode(err error, codes ...ErrorCode) bool {
 // window" is the answer for the WHOLE request, rather than something one upstream
 // happened to say.
 //
-// For a multi-upstream bundle that requires every non-skipped cause to agree. A
+// For a multi-upstream bundle that requires every non-neutral cause to agree. A
 // plurality is not enough: -32014 tells a client the data is definitively absent,
 // and a consumer may act on that by permanently skipping the block, so a single
 // dissenting timeout or server error — an upstream that never actually answered —
-// must fall back to a generic failure the client will retry. Skips carry no
-// verdict (the upstream was never asked) and are ignored.
+// must fall back to a generic failure the client will retry.
+//
+// Two kinds of skip are distinguished:
+//   - Skip caused by ErrUpstreamBlockUnavailable: the pre-check determined the
+//     upstream cannot serve the block (bound exceeded). This carries a verdict and
+//     counts toward unanimity — the upstream was consulted, just not over the wire.
+//   - Any other skip (method filter, cordon, selector, etc.): neutral; neither
+//     agrees nor disagrees, so a pool of pure neutral skips cannot claim -32014.
 //
 // Must be evaluated BEFORE the dominance scan in TranslateToJsonRpcException,
 // which collapses the bundle to one representative cause and thereby makes a
@@ -1689,6 +1695,11 @@ func isBlockUnavailableVerdict(err error) bool {
 	agreed := 0
 	for _, cause := range erx.Errors() {
 		if HasErrorCode(cause, ErrCodeUpstreamRequestSkipped) {
+			// Pre-check skip due to block-unavailable bound: counts toward unanimity.
+			// Other skips (method filter, cordon, etc.) are neutral.
+			if hasLinearErrorCode(cause, ErrCodeUpstreamBlockUnavailable) {
+				agreed++
+			}
 			continue
 		}
 		if !hasLinearErrorCode(cause, ErrCodeUpstreamBlockUnavailable) {
