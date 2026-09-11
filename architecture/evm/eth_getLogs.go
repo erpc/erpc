@@ -316,6 +316,20 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	return false, nil, nil
 }
 
+// enforceGetLogsBlockRangeEnabled: request directives if present, else the
+// deprecated Integrity flag (still used by tests that never attach directives).
+func enforceGetLogsBlockRangeEnabled(ncfg *common.NetworkConfig, nrq *common.NormalizedRequest) bool {
+	if nrq != nil {
+		if dirs := nrq.Directives(); dirs != nil {
+			return dirs.EnforceGetLogsBlockRange
+		}
+	}
+	if ncfg == nil || ncfg.Evm == nil || ncfg.Evm.Integrity == nil || ncfg.Evm.Integrity.EnforceGetLogsBlockRange == nil {
+		return false
+	}
+	return *ncfg.Evm.Integrity.EnforceGetLogsBlockRange
+}
+
 func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, nrq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	up, ok := u.(common.EvmUpstream)
 	if !ok {
@@ -324,12 +338,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	ncfg := n.Config()
-	if ncfg == nil ||
-		ncfg.Evm == nil ||
-		ncfg.Evm.Integrity == nil ||
-		ncfg.Evm.Integrity.EnforceGetLogsBlockRange == nil ||
-		!*ncfg.Evm.Integrity.EnforceGetLogsBlockRange {
-		// If integrity check for eth_getLogs block range is disabled, skip this hook.
+	if !enforceGetLogsBlockRangeEnabled(ncfg, nrq) {
 		return false, nil, nil
 	}
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PreForwardHook.eth_getLogs", trace.WithAttributes(

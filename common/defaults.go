@@ -1681,8 +1681,27 @@ func (n *NetworkDefaults) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for directive defaults: %w", err)
 		}
 	}
+	syncDeprecatedEvmIntegrityFromDirectiveDefaults(n.DirectiveDefaults, n.Evm)
 
 	return nil
+}
+
+func syncDeprecatedEvmIntegrityFromDirectiveDefaults(dd *DirectiveDefaultsConfig, evm *EvmNetworkConfig) {
+	if dd == nil || evm == nil {
+		return
+	}
+	if evm.Integrity == nil {
+		evm.Integrity = &EvmIntegrityConfig{}
+	}
+	if dd.EnforceGetLogsBlockRange != nil {
+		evm.Integrity.EnforceGetLogsBlockRange = dd.EnforceGetLogsBlockRange
+	}
+	if dd.EnforceHighestBlock != nil {
+		evm.Integrity.EnforceHighestBlock = dd.EnforceHighestBlock
+	}
+	if dd.EnforceNonNullTaggedBlocks != nil {
+		evm.Integrity.EnforceNonNullTaggedBlocks = dd.EnforceNonNullTaggedBlocks
+	}
 }
 
 func (d *DirectiveDefaultsConfig) SetDefaults() error {
@@ -2313,6 +2332,11 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if err := n.DirectiveDefaults.SetDefaults(); err != nil {
 		return err
 	}
+	// Runtime getLogs/trace_filter hooks historically read EvmIntegrityConfig.
+	// Keep that deprecated field in sync with DirectiveDefaults so an explicit
+	// directiveDefaults.enforceGetLogsBlockRange: false is not overwritten by
+	// Integrity.SetDefaults() (which always fills true when the field is unset).
+	syncDeprecatedEvmIntegrityFromDirectiveDefaults(n.DirectiveDefaults, n.Evm)
 
 	// Backward compatibility: translate the deprecated per-check data-integrity
 	// validation flags (DirectiveDefaults.Validate*/Enforce*) into the integrity
