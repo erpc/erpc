@@ -172,11 +172,18 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			admissionCap = remoteAdmissionCap(r.cfg.Store.Redis.ConnPoolSize)
 		}
 		budget := &RateLimiterBudget{
-			Id:         budgetCfg.Id,
-			Rules:      make([]*RateLimitRule, 0),
-			registry:   r,
-			logger:     &lg,
-			maxTimeout: maxTimeout,
+			Id:          budgetCfg.Id,
+			Rules:       make([]*RateLimitRule, 0),
+			registry:    r,
+			logger:      &lg,
+			maxTimeout:  maxTimeout,
+			creditUnits: budgetCfg.CreditUnits,
+		}
+		for _, rule := range budgetCfg.Rules {
+			if rule.CountMode != "" {
+				budget.hasRuleCountMode = true
+				break
+			}
 		}
 		if admissionCap > 0 {
 			budget.admission = make(chan struct{}, admissionCap)
@@ -207,7 +214,7 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			if rule.PerIP {
 				scope = append(scope, "ip")
 			}
-			telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetCfg.Id, rule.Method, strings.Join(scope, ",")).Set(float64(rule.MaxCount))
+			telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetCfg.Id, rule.Method, strings.Join(scope, ","), rule.CountModeString()).Set(float64(rule.MaxCount))
 		}
 
 		r.budgetsLimiters.Store(budgetCfg.Id, budget)

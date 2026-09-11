@@ -2028,6 +2028,11 @@ type RateLimiterConfig struct {
 type RateLimitBudgetConfig struct {
 	Id    string                 `yaml:"id" json:"id"`
 	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules" tstype:"RateLimitRuleConfig[]"`
+	// CreditUnits prices methods for this budget's countMode: credit rules. "*"
+	// is the fallback, an unpriced method costs 1, and a method priced 0 is
+	// exempt. An upstream on rateLimitCountMode: credit prices from its vendor
+	// instead and may not combine the two.
+	CreditUnits map[string]int64 `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
 }
 
 type RateLimitRuleConfig struct {
@@ -2039,6 +2044,11 @@ type RateLimitRuleConfig struct {
 	PerIP      bool            `yaml:"perIP,omitempty" json:"perIP,omitempty"`
 	PerUser    bool            `yaml:"perUser,omitempty" json:"perUser,omitempty"`
 	PerNetwork bool            `yaml:"perNetwork,omitempty" json:"perNetwork,omitempty"`
+	// CountMode selects what this rule counts. "request" charges 1 per call and
+	// counts per method. "credit" charges the method's cost from the budget's
+	// creditUnits and pools all methods into one counter, making maxCount a
+	// wallet. Empty inherits the caller's mode.
+	CountMode RateLimitCountMode `yaml:"countMode,omitempty" json:"countMode,omitempty"`
 }
 
 // ScopeString returns a comma-separated list of enabled scopes in deterministic order.
@@ -2055,6 +2065,14 @@ func (c *RateLimitRuleConfig) ScopeString() string {
 		scopes = append(scopes, "ip")
 	}
 	return strings.Join(scopes, ",")
+}
+
+// CountModeString returns the count mode with the empty default resolved.
+func (c *RateLimitRuleConfig) CountModeString() string {
+	if c.CountMode == "" {
+		return string(RateLimitCountModeRequest)
+	}
+	return string(c.CountMode)
 }
 
 // RateLimitPeriod enumerates supported periods for rate limiting.
@@ -2194,15 +2212,20 @@ func (p RateLimitPeriod) Unit() pb.RateLimitResponse_RateLimit_Unit {
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
-	if c.RateLimiters == nil || len(c.RateLimiters.Budgets) == 0 {
-		return false
+	return c.RateLimiterBudget(id) != nil
+}
+
+// RateLimiterBudget returns the budget with the given id, or nil.
+func (c *Config) RateLimiterBudget(id string) *RateLimitBudgetConfig {
+	if c.RateLimiters == nil {
+		return nil
 	}
 	for _, budget := range c.RateLimiters.Budgets {
-		if budget.Id == id {
-			return true
+		if budget != nil && budget.Id == id {
+			return budget
 		}
 	}
-	return false
+	return nil
 }
 
 type ProxyPoolConfig struct {

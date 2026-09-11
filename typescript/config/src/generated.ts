@@ -1291,6 +1291,13 @@ export interface RateLimiterConfig {
 export interface RateLimitBudgetConfig {
   id: string;
   rules: RateLimitRuleConfig[];
+  /**
+   * CreditUnits prices methods for this budget's countMode: credit rules. "*"
+   * is the fallback, an unpriced method costs 1, and a method priced 0 is
+   * exempt. An upstream on rateLimitCountMode: credit prices from its vendor
+   * instead and may not combine the two.
+   */
+  creditUnits?: { [key: string]: number /* int64 */};
 }
 export interface RateLimitRuleConfig {
   method: string;
@@ -1303,6 +1310,13 @@ export interface RateLimitRuleConfig {
   perIP?: boolean;
   perUser?: boolean;
   perNetwork?: boolean;
+  /**
+   * CountMode selects what this rule counts. "request" charges 1 per call and
+   * counts per method. "credit" charges the method's cost from the budget's
+   * creditUnits and pools all methods into one counter, making maxCount a
+   * wallet. Empty inherits the caller's mode.
+   */
+  countMode?: RateLimitCountMode;
 }
 /**
  * RateLimitPeriod enumerates supported periods for rate limiting.

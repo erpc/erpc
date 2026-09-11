@@ -28,6 +28,12 @@ type RateLimiterBudget struct {
 	rulesMu    sync.RWMutex
 	maxTimeout time.Duration
 
+	// creditUnits is read-only after construction.
+	creditUnits map[string]int64
+	// hasRuleCountMode lets TryAcquirePermit keep its whole-budget zero-cost
+	// fast path: without a rule-level override every rule inherits the caller.
+	hasRuleCountMode bool
+
 	// admission is a buffered semaphore that bounds the number of concurrent
 	// in-flight remote (Redis) DoLimit calls per budget. It exists because the
 	// underlying envoyproxy/ratelimit + radix client does not honor context
@@ -73,7 +79,11 @@ func ruleKeyFor(c *common.RateLimitRuleConfig) string {
 	if scope == "" {
 		scope = "global"
 	}
-	return fmt.Sprintf("method:%s scope:%s maxCount:%d period:%s", c.Method, scope, c.MaxCount, c.Period)
+	mode := c.CountMode
+	if mode == "" {
+		mode = common.RateLimitCountModeRequest
+	}
+	return fmt.Sprintf("method:%s scope:%s maxCount:%d period:%s countMode:%s", c.Method, scope, c.MaxCount, c.Period, mode)
 }
 
 func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, error) {
@@ -107,7 +117,7 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 	}
 	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d", prev, newMaxCount)
 	rule.Config.MaxCount = newMaxCount
-	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString()).Set(float64(newMaxCount))
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString(), rule.Config.CountModeString()).Set(float64(newMaxCount))
 	return nil
 }
 
@@ -151,7 +161,7 @@ func (b *RateLimiterBudget) AdjustBudgetByFactor(rule *RateLimitRule, factor flo
 	}
 
 	rule.Config.MaxCount = next
-	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString()).Set(float64(next))
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString(), rule.Config.CountModeString()).Set(float64(next))
 	return prev, next, true
 }
 
@@ -168,10 +178,10 @@ func (b *RateLimiterBudget) getCache() limiter.RateLimitCache {
 
 // PermitCost is what one acquisition consumes from a budget.
 type PermitCost struct {
-	// Hits is the amount consumed. Zero is admitted for free.
+	// Hits is what a credit-counting rule consumes. Zero means exempt.
 	Hits uint32
-	// Mode is the accounting unit Hits is expressed in. Empty means request
-	// counting. See UpstreamConfig.RateLimitCountMode.
+	// Mode is the unit Hits is in; empty means request counting. A rule may
+	// override it with its own countMode.
 	Mode common.RateLimitCountMode
 }
 
@@ -182,9 +192,9 @@ var requestPermit = PermitCost{Hits: 1, Mode: common.RateLimitCountModeRequest}
 // Rules are evaluated in parallel for lower latency. Returns true if allowed, false if rate limited.
 //
 // cost is optional (only the first value is read; default one request hit). In
-// credit mode it carries the request's estimated vendor credit-unit cost and
-// the budget is enforced as a single pool shared by every method, matching how
-// providers bill a plan. A 0-cost call is admitted without consuming budget.
+// credit mode it carries the request's estimated vendor credit-unit cost, and
+// the matching rules are enforced as one pool shared by every method. What a
+// rule actually charges is resolved per rule in resolveCost.
 func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string, cost ...PermitCost) (bool, error) {
 	permit := requestPermit
 	if len(cost) > 0 {
@@ -193,8 +203,11 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 			permit.Mode = common.RateLimitCountModeRequest
 		}
 	}
-	if permit.Hits == 0 {
-		return true, nil // 0-cost call: admit without consuming budget
+	// Whole-budget shortcut, valid only when no rule overrides the mode;
+	// otherwise a request-counting rule would be skipped by a 0-credit caller.
+	// evaluateRule handles that case per rule.
+	if permit.Hits == 0 && !b.hasRuleCountMode {
+		return true, nil
 	}
 
 	cache := b.getCache()
@@ -287,6 +300,31 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 	return true, nil
 }
 
+// resolveCost returns the mode and hits this rule charges for one call. The
+// rule's countMode wins and an unset one inherits the caller's, so a rule that
+// states its mode is honored even under a credit caller. A credit rule prices
+// from the caller's vendor estimate if there is one, else from creditUnits.
+func (b *RateLimiterBudget) resolveCost(rule *RateLimitRule, method string, permit PermitCost) (common.RateLimitCountMode, uint32) {
+	mode := rule.Config.CountMode
+	if mode == "" {
+		mode = permit.Mode
+	}
+	if mode != common.RateLimitCountModeCredit {
+		return common.RateLimitCountModeRequest, 1
+	}
+	if permit.Mode == common.RateLimitCountModeCredit {
+		return mode, permit.Hits
+	}
+	units := common.ResolveCreditUnits(nil, b.creditUnits, method)
+	if units <= 0 {
+		return mode, 0
+	}
+	if units > math.MaxUint32 {
+		return mode, math.MaxUint32
+	}
+	return mode, uint32(units)
+}
+
 // evaluateRule checks a single rate limit rule against the cache.
 // Returns true if allowed, false if over limit.
 func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string, permit PermitCost) bool {
@@ -295,13 +333,20 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 		return true // Fail-open when no cache is available
 	}
 
+	mode, hits := b.resolveCost(rule, method, permit)
+	if mode == common.RateLimitCountModeCredit && hits == 0 {
+		// Skip rather than send a 0 addend: envoy GetHitsAddends coerces a
+		// request-level 0 to 1, which would charge a full hit.
+		return true
+	}
+
 	// Build descriptor entries. "rule" gives each rule its own counter; without it
 	// rules resolving to the same {method, scope} at the same period collide.
 	entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "rule", Value: rule.key}}
 	// Request counting is per method. Credit counting is not: the cost is already
 	// carried by the addend, so every method draws from one pool and the budget
 	// behaves as the provider wallet it is meant to model.
-	if permit.Mode != common.RateLimitCountModeCredit {
+	if mode != common.RateLimitCountModeCredit {
 		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "method", Value: method})
 	}
 	if rule.Config.PerIP && clientIP != "" && clientIP != "n/a" {
@@ -317,7 +362,7 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 	rlReq := &pb.RateLimitRequest{
 		Domain:      b.Id,
 		Descriptors: []*pb_struct.RateLimitDescriptor{{Entries: entries}},
-		HitsAddend:  permit.Hits,
+		HitsAddend:  hits,
 	}
 
 	// Build stats key
