@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -311,6 +313,96 @@ func TestMemoryConnector_ReverseIndex_SvmDelete(t *testing.T) {
 	require.Error(t, err, "reverse-index entry must be cleared when the concrete key is deleted")
 	require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound),
 		"expected ErrRecordNotFound, got %T %v", err, err)
+}
+
+// Ristretto's Cache.processItems/defaultPolicy.processItems goroutines only stop via
+// cache.Close() — they don't watch the connector's ctx on their own. Nothing in erpc calls
+// MemoryConnector.Close() directly (it's only reachable via ctx cancellation), so a process
+// that creates many short-lived connectors (e.g. this package's own test binary, which builds
+// one per test/subtest) leaks 2 goroutines per connector forever.
+func TestMemoryConnector_ClosesRistrettoGoroutinesOnContextCancel(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+
+	before := runtime.NumGoroutine()
+
+	const n = 20
+	for i := 0; i < n; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := NewMemoryConnector(ctx, &logger, fmt.Sprintf("leak-test-%d", i), &common.MemoryConnectorConfig{
+			MaxItems: 1_000, MaxTotalSize: "10MB",
+		})
+		require.NoError(t, err)
+		cancel()
+	}
+
+	require.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= before+5
+	}, 2*time.Second, 20*time.Millisecond,
+		"goroutine count should return close to baseline after connector contexts are cancelled, got %d (baseline %d)", runtime.NumGoroutine(), before)
+}
+
+// TestMemoryConnector_ClosesRistrettoGoroutinesOnExplicitClose covers callers that build a
+// connector with a non-cancelable ctx (context.Background(), as several call sites in this repo
+// do) and rely solely on calling Close() themselves. The ctx-watcher goroutine added to fix the
+// Ristretto leak must not become its own permanent leak in that case.
+func TestMemoryConnector_ClosesRistrettoGoroutinesOnExplicitClose(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+
+	before := runtime.NumGoroutine()
+
+	const n = 20
+	connectors := make([]*MemoryConnector, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := NewMemoryConnector(context.Background(), &logger, fmt.Sprintf("leak-test-close-%d", i), &common.MemoryConnectorConfig{
+			MaxItems: 1_000, MaxTotalSize: "10MB",
+		})
+		require.NoError(t, err)
+		connectors = append(connectors, c)
+	}
+	for _, c := range connectors {
+		require.NoError(t, c.Close())
+	}
+
+	require.Eventually(t, func() bool {
+		return runtime.NumGoroutine() <= before+5
+	}, 2*time.Second, 20*time.Millisecond,
+		"goroutine count should return close to baseline after explicit Close(), got %d (baseline %d)", runtime.NumGoroutine(), before)
+}
+
+// TestMemoryConnector_SetRacingContextCancelDoesNotPanic reproduces the shape of
+// TestSvmStatePoller_ConcurrentSuggestionsDuringPoll_StaySlotMonotonic: a background goroutine
+// keeps calling Set() while the connector's ctx is cancelled out from under it (e.g. request
+// handling still in flight during shutdown). Ristretto's Cache.Close() closes internal channels,
+// so calling it concurrently with Set()/Get()/Delete() is unsafe on its own — must run under
+// -race to actually catch a regression here.
+func TestMemoryConnector_SetRacingContextCancelDoesNotPanic(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	connector, err := NewMemoryConnector(ctx, &logger, "race-test", &common.MemoryConnectorConfig{
+		MaxItems: 1_000, MaxTotalSize: "10MB",
+	})
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = connector.Set(ctx, "pk", fmt.Sprintf("rk-%d", i), []byte("v"), nil)
+			}
+		}
+	}()
+
+	time.Sleep(5 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
 
 // TestIsReverseIndexable_Filters validates the predicate's rejection rules so
