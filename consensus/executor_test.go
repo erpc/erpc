@@ -16,6 +16,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -751,4 +753,111 @@ func TestRecordMetricsAndTracing_InfoSeverityNotCountedAsConsensusError(t *testi
 		assert.Equal(t, errBefore+1, testutil.ToFloat64(errCounter),
 			"non-info errors must still be counted as consensus errors")
 	})
+}
+
+// TestRecordMetricsAndTracing_MissingTagLowParticipants_NotConsensusOnError
+// covers the case where a requiredParticipants tag matched zero participants
+// this round: enforceWinnerComposition returns ErrConsensusLowParticipants
+// even though the untagged responders still reached agreementThreshold on
+// count (so hasConsensus would be true by count alone). The outcome label
+// must key off the error code and report "low_participants", not
+// "consensus_on_error".
+func TestRecordMetricsAndTracing_MissingTagLowParticipants_NotConsensusOnError(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	cfg := &config{agreementThreshold: 2}
+	e := &executor{
+		consensusPolicy: &consensusPolicy{
+			config: cfg,
+			logger: &logger,
+		},
+	}
+
+	// Two agreeing (untagged) responses satisfy agreementThreshold=2 on
+	// count, but the winner-composition quota (checked elsewhere) found the
+	// required tag missing entirely, so the caller-facing error is
+	// ErrConsensusLowParticipants rather than a plain success.
+	responses := []*execResult{
+		{Index: 0},
+		{Index: 1},
+	}
+	analysis := &consensusAnalysis{
+		config:            cfg,
+		groups:            make(map[string]*responseGroup),
+		totalParticipants: len(responses),
+	}
+	for _, r := range responses {
+		classifyAndHashResponse(r, nil, cfg)
+		analysis.validParticipants++
+		group, exists := analysis.groups[r.CachedHash]
+		if !exists {
+			group = &responseGroup{Hash: r.CachedHash, ResponseType: r.CachedResponseType}
+			analysis.groups[r.CachedHash] = group
+		}
+		group.Count++
+		group.Results = append(group.Results, r)
+	}
+
+	labels := metricsLabels{
+		projectId:   "test-proj-missing-tag",
+		networkId:   "test-net",
+		category:    "eth_call",
+		finalityStr: "latest",
+		method:      "eth_call",
+		userId:      "n/a",
+		agentName:   "n/a",
+	}
+
+	// A real recording span (not the no-op default) is required here: the
+	// "consensus.achieved" attribute must not contradict a low_participants
+	// outcome, and a no-op span silently accepts any attribute value.
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	tracer := tp.Tracer("test")
+	_, span := tracer.Start(context.Background(), "test-span")
+
+	lowParticipantsCounter := telemetry.MetricConsensusTotal.WithLabelValues(
+		labels.projectId, labels.networkId, labels.category, "low_participants", labels.finalityStr, labels.userId, labels.agentName)
+	consensusOnErrorCounter := telemetry.MetricConsensusTotal.WithLabelValues(
+		labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr, labels.userId, labels.agentName)
+	lowErrCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+		labels.projectId, labels.networkId, labels.category, "low_participants", labels.finalityStr, labels.userId, labels.agentName)
+	onErrorErrCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+		labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr, labels.userId, labels.agentName)
+	lowBefore := testutil.ToFloat64(lowParticipantsCounter)
+	onErrorBefore := testutil.ToFloat64(consensusOnErrorCounter)
+	lowErrBefore := testutil.ToFloat64(lowErrCounter)
+	onErrorErrBefore := testutil.ToFloat64(onErrorErrCounter)
+
+	result := &slotResult{
+		Error: common.NewErrConsensusLowParticipants(
+			"a requiredParticipants tag matched zero participants this round", nil, nil),
+	}
+	e.recordMetricsAndTracing(newTestRequest(), time.Now(), result, analysis, labels, span)
+	span.End()
+	require.NoError(t, tp.ForceFlush(context.Background()))
+
+	assert.Equal(t, lowBefore+1, testutil.ToFloat64(lowParticipantsCounter),
+		"missing-tag round must be labeled low_participants even though count alone reached agreementThreshold")
+	assert.Equal(t, onErrorBefore, testutil.ToFloat64(consensusOnErrorCounter),
+		"missing-tag round must not be mislabeled consensus_on_error")
+	assert.Equal(t, lowErrBefore+1, testutil.ToFloat64(lowErrCounter),
+		"consensus_errors_total must also be labeled low_participants")
+	assert.Equal(t, onErrorErrBefore, testutil.ToFloat64(onErrorErrCounter),
+		"consensus_errors_total must not be mislabeled consensus_on_error")
+
+	spans := exp.GetSpans()
+	require.Len(t, spans, 1)
+	var outcome string
+	var achieved bool
+	for _, a := range spans[0].Attributes {
+		switch string(a.Key) {
+		case "consensus.outcome":
+			outcome = a.Value.AsString()
+		case "consensus.achieved":
+			achieved = a.Value.AsBool()
+		}
+	}
+	assert.Equal(t, "low_participants", outcome)
+	assert.False(t, achieved,
+		"consensus.achieved must not contradict a low_participants outcome even though the raw vote count reached agreementThreshold")
 }

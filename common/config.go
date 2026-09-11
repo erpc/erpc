@@ -1868,8 +1868,10 @@ type ConsensusPolicyConfig struct {
 // set (pool quota, best-effort). `MinAgreement` is the minimum number of
 // matching upstreams that must be part of the WINNING response group
 // (winner-composition quota, hard-enforced: a winner that does not satisfy
-// it becomes a composition dispute regardless of disputeBehavior). A single
-// upstream can satisfy multiple entries it matches.
+// it becomes a composition dispute regardless of disputeBehavior). When any
+// entry sets MinAgreement > 0 and top-level agreementThreshold is omitted,
+// it defaults to sum(minAgreement); an explicit value is left untouched. A
+// single upstream can satisfy multiple entries it matches.
 type ConsensusRequiredParticipant struct {
 	Tag             string `yaml:"tag" json:"tag"`
 	MinParticipants int    `yaml:"minParticipants" json:"minParticipants"`
