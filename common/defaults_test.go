@@ -14,6 +14,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNetworkConfig_DirectiveDefaultsGetLogsRangeSyncsDeprecatedIntegrity(t *testing.T) {
+	n := &NetworkConfig{
+		Architecture: ArchitectureEvm,
+		Evm:          &EvmNetworkConfig{},
+		DirectiveDefaults: &DirectiveDefaultsConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(false),
+		},
+	}
+	require.NoError(t, n.SetDefaults(nil, nil))
+	require.NotNil(t, n.Evm.Integrity)
+	require.NotNil(t, n.Evm.Integrity.EnforceGetLogsBlockRange)
+	assert.False(t, *n.Evm.Integrity.EnforceGetLogsBlockRange,
+		"explicit directiveDefaults: false must copy onto deprecated EvmIntegrityConfig")
+}
+
 // "Data not available yet" retries (empty/missing-data/block-unavailable) default
 // to one original attempt + one retry, independent of MaxAttempts.
 func TestRetryPolicyConfig_DefaultEmptyResultMaxAttempts(t *testing.T) {
