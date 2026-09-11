@@ -163,6 +163,40 @@ func (c *RemoteDataCache[T]) Has(cacheKey string) bool {
 	return ok
 }
 
+// StoreProvisional publishes val under cacheKey without marking it fresh.
+// Lookup will return fresh=false so the primary source is retried on the
+// next recheck interval. Used when a fallback URL seeds the cache on cold
+// start and the primary URL should replace it once reachable.
+func (c *RemoteDataCache[T]) StoreProvisional(cacheKey string, val T) {
+	c.store(cacheKey, val, false)
+}
+
+// StoreFresh publishes val under cacheKey and marks it fresh for recheckInterval.
+func (c *RemoteDataCache[T]) StoreFresh(cacheKey string, val T) {
+	c.store(cacheKey, val, true)
+}
+
+func (c *RemoteDataCache[T]) store(cacheKey string, val T, fresh bool) {
+	old := c.snapshot.Load()
+	newSnap := &remoteCacheSnapshot[T]{
+		values:    make(map[string]T),
+		fetchedAt: make(map[string]time.Time),
+	}
+	if old != nil {
+		for k, v := range old.values {
+			newSnap.values[k] = v
+		}
+		for k, v := range old.fetchedAt {
+			newSnap.fetchedAt[k] = v
+		}
+	}
+	newSnap.values[cacheKey] = val
+	if fresh {
+		newSnap.fetchedAt[cacheKey] = time.Now()
+	}
+	c.snapshot.Store(newSnap)
+}
+
 // TriggerAsyncRefresh starts a single-flight background refresh for
 // cacheKey. NEVER holds a mutex while calling fetcher. If a refresh is
 // already running for the same key, this call is a no-op (the in-flight
