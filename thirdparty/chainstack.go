@@ -274,17 +274,18 @@ func (v *ChainstackVendor) fetchNodes(ctx context.Context, logger *zerolog.Logge
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
-
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
 			return nil, fmt.Errorf("chainstack API returned status %d: %s", resp.StatusCode, string(body))
 		}
 
 		var nodesResp ChainstackNodesResponse
 		if err := common.SonicCfg.NewDecoder(resp.Body).Decode(&nodesResp); err != nil {
+			resp.Body.Close()
 			return nil, fmt.Errorf("failed to decode Chainstack nodes response: %w", err)
 		}
+		resp.Body.Close()
 
 		// Decode each node individually, ignoring nodes that fail to decode
 		for _, rawNode := range nodesResp.Results {
