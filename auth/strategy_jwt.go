@@ -130,8 +130,50 @@ func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRe
 			user.RateLimitBudget = s
 		}
 	}
+	if granted := grantedConsensusPolicies(claims, s.cfg.ConsensusPoliciesByClaim); granted != nil {
+		user.ConsensusPolicies = &granted
+	}
 
 	return user, nil
+}
+
+// grantedConsensusPolicies resolves the acceptance grades a token's claims
+// grant, unioned across every matching claim value so a caller holding
+// several roles gets all of their grades rather than whichever role happened
+// to be matched first. Returns nil when nothing is configured, leaving the
+// caller unrestricted (the strategy-level baseline still applies).
+func grantedConsensusPolicies(claims jwt.MapClaims, byClaim map[string]map[string][]string) []string {
+	if len(byClaim) == 0 {
+		return nil
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	for claim, grants := range byClaim {
+		raw, ok := claims[claim]
+		if !ok {
+			continue
+		}
+		values, err := normalizeClaimToStrings(raw)
+		if err != nil {
+			continue
+		}
+		for _, v := range values {
+			for _, policy := range grants[v] {
+				if _, dup := seen[policy]; dup {
+					continue
+				}
+				seen[policy] = struct{}{}
+				out = append(out, policy)
+			}
+		}
+	}
+	if out == nil {
+		// Configured but nothing matched: an explicit empty grant, not
+		// "unrestricted". Returning nil here would silently widen a caller
+		// whose roles grant no grade into one allowed every grade.
+		return []string{}
+	}
+	return out
 }
 
 func (s *JwtStrategy) findVerificationKey(ctx context.Context, token *jwt.Token) (jwt.Keyfunc, error) {
