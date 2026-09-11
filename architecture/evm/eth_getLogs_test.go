@@ -682,6 +682,32 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 	}
 }
 
+func TestUpstreamPreForward_eth_getLogs_DirectiveDefaultsWinOverIntegrity(t *testing.T) {
+	n := new(mockNetwork)
+	u := new(mockEvmUpstream)
+	r := createTestRequest(map[string]interface{}{
+		"fromBlock": "0x1",
+		"toBlock":   "0x5",
+	})
+	n.On("Id").Return("evm:123").Maybe()
+	n.On("Config").Return(&common.NetworkConfig{
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(false),
+		},
+		Evm: &common.EvmNetworkConfig{
+			Integrity: &common.EvmIntegrityConfig{
+				EnforceGetLogsBlockRange: util.BoolPtr(true),
+			},
+		},
+	})
+
+	handled, resp, err := upstreamPreForward_eth_getLogs(context.Background(), n, u, r)
+	assert.NoError(t, err)
+	assert.False(t, handled, "directiveDefaults: false must skip the range hook even if Integrity is true")
+	assert.Nil(t, resp)
+	u.AssertNotCalled(t, "EvmAssertBlockAvailability")
+}
+
 func TestNetworkPostForward_eth_getLogs(t *testing.T) {
 	tests := []struct {
 		name        string
