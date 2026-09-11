@@ -1037,7 +1037,11 @@ func (n *Network) observeServedTipRefereeTransition(axis string, lane string, an
 
 	// Load first: "still idle" is the answer on essentially every evaluation
 	// this process ever makes.
-	if anchor.refereeState.Load() == state || anchor.refereeState.Swap(state) == state {
+	if anchor.refereeState.Load() == state {
+		return
+	}
+	previous := anchor.refereeState.Swap(state)
+	if previous == state {
 		return
 	}
 	switch state {
@@ -1058,10 +1062,15 @@ func (n *Network) observeServedTipRefereeTransition(axis string, lane string, an
 			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "fallback").
 			Inc()
 	default:
-		n.logger.Warn().
-			Str("axis", axis).
-			Int64("pick", final).
-			Msg("served tip is back on the majority pick; the trajectory referee is no longer overriding")
+		// Idle is reachable from Overriding (an actual override just ended)
+		// and from Declining (the referee never intervened; it fell back to
+		// the majority pick). Only the former ever overrode anything.
+		if previous == servedTipRefereeOverriding {
+			n.logger.Warn().
+				Str("axis", axis).
+				Int64("pick", final).
+				Msg("served tip is back on the majority pick; the trajectory referee is no longer overriding")
+		}
 	}
 }
 
