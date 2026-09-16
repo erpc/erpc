@@ -108,11 +108,6 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		assert.Equal(t, int64(0), blockHeadLag(tracker, ups))
 	})
 
-	// The poisoned-head scenario: one upstream briefly reports a bogus far-ahead
-	// head. The network head is corroborated (second-highest reporter), so the
-	// bogus sample never becomes the reference the healthy upstreams are
-	// measured against, and its correction only re-derives the head from the
-	// remaining values.
 	t.Run("BogusHeadNeverPinsNetworkHead", func(t *testing.T) {
 		tracker := newRollbackTestTracker(t, "test-rollback-rederive")
 		upsA := common.NewFakeUpstream("a")
@@ -142,8 +137,6 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		assert.Equal(t, int64(50), blockHeadLag(tracker, upsB))
 		assert.Equal(t, int64(0), blockHeadLag(tracker, upsC))
 
-		// Gauges follow: the network gauge is the corroborated head, the
-		// per-upstream gauge is the raw report.
 		assert.Equal(t, float64(32_000_050),
 			promUtil.ToFloat64(tracker.getLatestBlockGauge(tracker.projectId, "*", upsA.NetworkLabel(), "*")))
 		assert.Equal(t, float64(32_000_100),
@@ -169,8 +162,6 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		assert.Equal(t, int64(1_000_000), networkLatest(tracker, net))
 		assert.Equal(t, int64(1_000_000-200), blockHeadLag(tracker, upsB))
 
-		// upsB going bogus-high does not move the head (not corroborated), and
-		// its correction does not lower it either.
 		tracker.SetLatestBlockNumber(upsB, 90_000_000, 0)
 		assert.Equal(t, int64(1_000_000), networkLatest(tracker, net))
 		assert.Equal(t, int64(0), blockHeadLag(tracker, upsB))

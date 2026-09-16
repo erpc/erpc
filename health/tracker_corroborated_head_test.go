@@ -9,14 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// The network head the tracker derives lag from is corroborated: it is the
-// second-highest per-upstream head once two or more upstreams have reported,
-// and the only head while a single upstream has. One upstream can therefore
-// never move the reference every other upstream is measured against — a lone
-// far-future head (a provider answering from another chain, a corrupted
-// response) yields lag 0 for itself and leaves the honest upstreams at lag 0
-// too, instead of making all of them look millions of blocks behind. This is
-// the same order statistic evm.PickServedTip uses for its lag reference.
+// The network head is corroborated: the second-highest reporter once two
+// upstreams have reported, the only head while one has. A lone far-ahead report
+// therefore never becomes the reference the honest upstreams are measured
+// against.
 
 func networkLatestGauge(t *Tracker, ups common.Upstream) float64 {
 	return promUtil.ToFloat64(t.getLatestBlockGauge(t.projectId, "*", ups.NetworkLabel(), "*"))
@@ -114,7 +110,6 @@ func TestTrackerCorroboratedLatestHead(t *testing.T) {
 		tracker.SetLatestBlockNumber(a, 100, 0)
 		tracker.SetLatestBlockNumber(b, 101, 0)
 		tracker.SetLatestBlockNumber(c, 1_000_000, 0)
-		// c rolls back by more than the tolerance: accepted as a correction.
 		tracker.SetLatestBlockNumber(c, 102, 0)
 
 		assert.Equal(t, int64(102), upstreamLatest(tracker, c))
@@ -162,7 +157,6 @@ func TestTrackerCorroboratedLatestHead(t *testing.T) {
 		}
 		assert.Equal(t, int64(0), blockHeadLag(tracker, rogue))
 
-		// The honest fleet keeps advancing the head without the rogue.
 		for _, ups := range honest {
 			tracker.SetLatestBlockNumber(ups, 32_610_720, 0)
 		}
