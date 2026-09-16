@@ -18,9 +18,8 @@ Behavior detail lives in feature.md; this table is the implementer’s checklist
 | Decision | Choice |
 |----------|--------|
 | Pin location | Response `context.slot` (not request rewrite) |
-| Agreement / hashing | Full result minus per-method `ignoreFields`. End-state SVM envelope defaults: ignore only `context.apiVersion` (Phase 1) |
-| Winner / wait / short-circuit / misbehavior / mix | Count-first + slot-tiebreak; wait/short-circuit only for equal top count at higher slot; cross-slot ≠ misbehavior; mix on winning slot cohort (feature.md §3.1–3.6) |
-| Mixed slotted / non-slotted | Prefer slotted qualifying groups (§3.1) |
+| Agreement / hashing | **`ignoreFields` unchanged** (strip from hash only). For `contextSlotMethods`, **`context.slot` is always used** in slot-grouped consensus when present; end-state **defaults** ignore only `context.apiVersion` so slot stays in the digest (Phase 1). Re-adding `context.slot` to ignores collapses adjacent tips (defeats this feature). No parallel hasher. |
+| Winner / wait / short-circuit / misbehavior / mix | Count-first + slot-tiebreak among **slotted** groups only; non-slotted never wins; wait/short-circuit only for equal top count at higher slot; cross-slot ≠ misbehavior; mix on winning slot cohort (feature.md §3.1–3.6) |
 | Activation / rollout | Auto on parseable `context.slot`; binary/network canary; rollback = redeploy (§3.3) |
 | Financial threshold | No code default change; **docs recommend** raising `agreementThreshold` above 2 for `getBalance` / `getAccountInfo` / other financial soak methods when upstreams allow (§3.3) |
 | Paired finality (§4) | Optional with/after §3; tip = `SvmHighestFinalizedSlot` (`PickServedTip`) |
@@ -47,11 +46,13 @@ Behavior detail lives in feature.md; this table is the implementer’s checklist
 Implement feature.md §3 (defaults, winner, wait/short-circuit, misbehavior,
 composition, canary rollout). Keep EVM and non-envelope paths untouched.
 
-1. **Defaults:** in `common/defaults.go`, change enveloped-method
+1. **Defaults only:** in `common/defaults.go`, change enveloped-method
    `ignoreFields` from `["context.slot","context.apiVersion"]` to
-   `["context.apiVersion"]` only. Map is per-method, operator-overridable
-   (set replacement). Update `defaults_test.go` and consensus docs. Hashing
-   stays `CanonicalHashWithIgnoredFields`; do not add a parallel hash path.
+   `["context.apiVersion"]` only. Keep `ignoreFields` semantics unchanged
+   (strip from hash only; per-method set replacement). Do **not** add a
+   parallel hash path or force-slot cohorting outside the hash. Update
+   `defaults_test.go` and consensus docs: putting `context.slot` back into
+   ignores undoes slot-separated agreement for that method.
 2. **Winner / misbehavior / composition / wait / short-circuit** (feature.md
    §3.1–3.6).
 3. **Rollout** (feature.md §3.3): canary binary/network; no restore-old-ignore
@@ -61,7 +62,7 @@ composition, canary rollout). Keep EVM and non-envelope paths untouched.
    - Equal counts, different slots → highest slot wins.
    - **3× V@1000 vs 2× V'@1050** → V@1000 (count-first security).
    - Same slot, different values → dispute under `returnError`.
-   - Mixed slotted + non-slotted → slotted wins.
+   - Mixed: non-slotted majority never wins; no slotted at threshold → error.
    - Wait/short-circuit with fake clock.
    - Mix quota on winning slot cohort; cross-slot ≠ misbehavior.
    - Default `ignoreFields` for `getBalance` is `["context.apiVersion"]` only.
@@ -79,11 +80,20 @@ Optional with/after Phase 1. Implement feature.md §4.
    (PickServedTip) **and** `effectiveCommitment == finalized` → finality
    `finalized`.
 2. Do not promote confirmed/processed via this path.
-3. Tests: finalized + slot ≤ tip → `GetFinality` finalized; confirmed →
-   remains realtime.
+3. **Response path:** change control flow so `NormalizedResponse.Finality` /
+   `resp.Finality()` can apply response-aware finality for these successes
+   (today `req.Finality` returning `realtime` short-circuits and never reaches
+   the new branch). Production metrics via `PreparedProject.Forward` must see
+   the updated label.
+4. **Tests:**
+   - Unit: finalized commitment + slot ≤ tip → response-aware path yields
+     `finalized`; confirmed → remains realtime.
+   - Integration: after forward, assert `resp.Finality()` (and finality
+     metrics) — not only a direct `GetFinality` call that bypasses the
+     request short-circuit.
 
-**Acceptance**: Finality/metrics correct; no implication that never-cache
-methods are stored.
+**Acceptance**: `resp.Finality()` / metrics correct on the forward path; no
+implication that never-cache methods are stored.
 
 ---
 

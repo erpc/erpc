@@ -130,11 +130,20 @@ winner (§3) — dropping `context.slot` from ignores alone is not enough.
 ## 3. Solution — moving-head consensus
 
 Consensus grouping is unchanged at the mechanism layer: hash each successful
-response with that method’s `ignoreFields`, then apply threshold / dispute /
+response with that method’s `ignoreFields` (strips those paths from the
+digest only — response body unchanged), then apply threshold / dispute /
 prefer rules. This feature changes the **winner policy** when responses carry
-`context.slot`. End-state enveloped `ignoreFields` defaults (drop
-`context.slot`; keep only `context.apiVersion`) are in
-[plan.md](./plan.md) Phase 1.
+`context.slot`.
+
+For **`contextSlotMethods`**
+([`hooks.go`](https://github.com/erpc/erpc/blob/e8a375a1d5b740fe13c1d50a9f3b06758fa7c933/architecture/svm/hooks.go#L654-L672))
+under active consensus, **`context.slot` is always used** for slot-grouped
+winner selection when the response has a parseable slot. End-state
+**defaults** keep `context.slot` in the digest (ignore only
+`context.apiVersion` — [plan.md](./plan.md) Phase 1) so hash cohorts match
+slots. Do not invent a second grouping key beside the hash; do not change
+`ignoreFields` semantics. Re-adding `context.slot` to ignores for these
+methods collapses adjacent tips and defeats this feature.
 
 `getBalance` responses already self-pin via `result.context.slot`.
 `value @ rooted-slot-N` is immutable for that N. Under end-state defaults,
@@ -149,19 +158,15 @@ How one consensus round decides a winner for an enveloped read such as
 2. Hash each successful response with that method’s `ignoreFields` (end-state
    default for enveloped SVM: ignore only `context.apiVersion` — see plan).
 3. A hash group **qualifies** when `count ≥ agreementThreshold`.
-4. **Winner (count-first, slot-tiebreak):**
-   - Let `C` = maximum `count` among qualifying groups.
-   - Let `S` = qualifying groups with `count == C` that expose a parseable
-     `context.slot`.
-   - If `S` is non-empty → winner = member of `S` with the **highest**
+4. **Winner (count-first, slot-tiebreak):** only hash groups with a
+   parseable `context.slot` compete. A **non-slotted** success (no usable
+   `context.slot`) **never** wins in slot-grouped mode.
+   - Let `C` = maximum `count` among qualifying **slotted** groups.
+   - Among slotted groups with `count == C`, pick the **highest**
      `context.slot` (freshest among equal top counts).
-   - Else → today’s count-based winner among all qualifying groups (no slot
-     ranking).
-   - **Mixed slotted / non-slotted:** if any qualifying group has a
-     parseable slot, only slotted groups compete for the slot-tiebreak path
-     above; a non-slotted group never wins while a slotted group also
-     qualifies (even with equal count). Non-slotted winners only when **no**
-     slotted group qualifies.
+   - If no slotted group qualifies → no winner from this path (`returnError`
+     / low-participants under production policy) — do **not** fall back to a
+     non-slotted majority.
 5. Same slot + different values at/above threshold with no unique winner →
    real dispute → `disputeBehavior` (production: `returnError`).
 6. Different slots alone are **not** a dispute; keep collecting until
@@ -320,8 +325,9 @@ Framed on `getBalance` (same rules for other enveloped moving-head methods):
 4. Tip with count below the current top count does not overturn; wait only
    while remaining participants can still form an **equal** top count at a
    higher slot (§3.2 / §3.6).
-5. Mixed slotted + non-slotted qualifying groups → slotted path wins; non-
-   slotted only if no slotted group qualifies.
+5. Non-slotted successes never win in slot-grouped mode (even if they outnumber
+   slotted groups); if no slotted group reaches threshold → error, not
+   non-slotted fallback.
 6. Mix `minAgreement` enforced on winning **slot** cohort.
 7. Slot-pinned strict path for `getBlock` / `getTransaction` unchanged.
 8. §4 (if shipped): `commitment: confirmed` is **not** classified
