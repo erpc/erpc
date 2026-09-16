@@ -342,15 +342,18 @@ func TestBlockHeadLagPersistsAcrossResets(t *testing.T) {
 
 	ups1 := common.NewFakeUpstream("upstream1")
 	ups2 := common.NewFakeUpstream("upstream2")
+	ups3 := common.NewFakeUpstream("upstream3")
 
 	// First, ensure TrackedMetrics exist by recording some requests
 	tracker.RecordUpstreamRequest(ups1, "method1", common.DataFinalityStateUnknown)
 	tracker.RecordUpstreamRequest(ups2, "method1", common.DataFinalityStateUnknown)
 	tracker.RecordUpstreamFailure(ups1, "method1", common.DataFinalityStateUnknown, fmt.Errorf("test error"))
 
-	// Now set different block numbers to create lag
+	// Now set different block numbers to create lag. The network head is the
+	// second-highest reporter, so ups3 corroborates ups1's head.
 	tracker.SetLatestBlockNumber(ups1, 1000, 0) // ups1 is at block 1000
-	tracker.SetLatestBlockNumber(ups2, 990, 0)  // ups2 is behind by 10 blocks
+	tracker.SetLatestBlockNumber(ups3, 1000, 0)
+	tracker.SetLatestBlockNumber(ups2, 990, 0) // ups2 is behind by 10 blocks
 
 	// Get initial metrics AFTER setting block numbers
 	metrics1Before := tracker.GetUpstreamMethodMetrics(ups1, "method1", common.DataFinalityStateAll)
@@ -406,13 +409,16 @@ func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
 
 	ups1 := common.NewFakeUpstream("upstream1")
 	ups2 := common.NewFakeUpstream("upstream2")
+	ups3 := common.NewFakeUpstream("upstream3")
 
 	// First, ensure TrackedMetrics exist by recording some requests
 	tracker.RecordUpstreamRequest(ups1, "method1", common.DataFinalityStateUnknown)
 	tracker.RecordUpstreamRequest(ups2, "method1", common.DataFinalityStateUnknown)
 
-	// Now set different finalized block numbers to create lag
+	// Now set different finalized block numbers to create lag; ups3
+	// corroborates ups1's finalized head.
 	tracker.SetFinalizedBlockNumber(ups1, 900) // ups1 finalized at block 900
+	tracker.SetFinalizedBlockNumber(ups3, 900)
 	tracker.SetFinalizedBlockNumber(ups2, 880) // ups2 finalized at block 880 (behind by 20)
 
 	// Get initial metrics
@@ -458,6 +464,7 @@ func TestWildcardLagMirroredForPeerUpstreams(t *testing.T) {
 
 	ups1 := common.NewFakeUpstream("upstream1")
 	ups2 := common.NewFakeUpstream("upstream2")
+	ups3 := common.NewFakeUpstream("upstream3")
 
 	// Register both upstreams with traffic so their per-method buckets exist.
 	tracker.RecordUpstreamRequest(ups1, "eth_blockNumber", common.DataFinalityStateUnknown)
@@ -467,10 +474,12 @@ func TestWildcardLagMirroredForPeerUpstreams(t *testing.T) {
 	// After this, ups2's own poller never fires again.
 	tracker.SetLatestBlockNumber(ups2, 900, 0)
 
-	// ups1 advances the tip to 1000. updateNetworkLagMetrics now computes
-	// ups2's lag as 100 and must mirror it onto {ups2,"*",All} — the peer-write
-	// path that was previously missing.
+	// ups1 and ups3 advance the tip to 1000 (the head is the second-highest
+	// reporter, so it takes two). updateNetworkLagMetrics now computes ups2's
+	// lag as 100 and must mirror it onto {ups2,"*",All} — the peer-write path
+	// that was previously missing.
 	tracker.SetLatestBlockNumber(ups1, 1000, 0)
+	tracker.SetLatestBlockNumber(ups3, 1000, 0)
 
 	// evalScope:network reads {ups, "*", All}.BlockHeadLag
 	ups2WildcardLag := tracker.GetUpstreamMethodMetrics(ups2, "*", common.DataFinalityStateAll).BlockHeadLag.Load()

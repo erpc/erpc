@@ -56,6 +56,14 @@ type NetworkMetadata struct {
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 
+	// Network-level entries only. evmHeadMu serializes head derivation for one
+	// network across its pollers; evmHeadReporters is every upstream that has
+	// reported a head, so the corroborated head is derived from all of them
+	// rather than from the request-metrics index, which is empty until traffic
+	// flows and never carries upstreams that only poll.
+	evmHeadMu        sync.Mutex
+	evmHeadReporters []common.Upstream
+
 	// Dynamic block time via EMA on on-chain block timestamps.
 	// Uses block.timestamp (integer seconds) normalized by block count gap.
 	// For fast chains where consecutive blocks share the same timestamp,
@@ -1242,7 +1250,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 					Msg("ignoring lag tracking for non-positive value")
 				return true
 			}
-			lag := networkValue - upsValue
+			lag := headLag(networkValue, upsValue)
 			setLag(tm, lag)
 			if k.finality != common.DataFinalityStateAll {
 				setLag(t.getUpsMetrics(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}), lag)
@@ -1269,7 +1277,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 						Msg("ignoring lag tracking for non-positive value")
 					continue
 				}
-				lag := networkValue - upsValue
+				lag := headLag(networkValue, upsValue)
 				setLag(tm, lag)
 				// Block-head/finalization lag is a per-upstream property, but the
 				// (ups,method) dedup index stores a single, arbitrary-finality key
@@ -1348,45 +1356,120 @@ func (t *Tracker) updateSingleUpstreamLag(
 	}
 }
 
-// recomputeNetworkBlockHead re-derives a network-level block head as the max of
-// the stored per-upstream values (getVal picks the latest vs finalized axis).
-// Called after an accepted per-upstream rollback: the network head is monotonic
-// under forward progress, so the only safe way to move it backwards is to
-// re-derive it from its inputs — adopting a single (possibly lagging) upstream's
-// sample directly would let genuinely-behind upstreams drag the head down.
-func (t *Tracker) recomputeNetworkBlockHead(net string, getVal func(*NetworkMetadata) int64) int64 {
-	t.mu.RLock()
-	relevantKeys := t.upstreamsByNetwork[net]
-	t.mu.RUnlock()
+// headAxis selects the latest or finalized block-number field of a metadata
+// entry. Both network heads are derived the same way; only the axis differs.
+type headAxis func(*NetworkMetadata) *atomic.Int64
 
-	var maxVal int64
-	seen := make(map[common.Upstream]struct{}, len(relevantKeys))
-	consider := func(ups common.Upstream) {
-		if ups == nil {
+func latestHeadAxis(meta *NetworkMetadata) *atomic.Int64    { return &meta.evmLatestBlockNumber }
+func finalizedHeadAxis(meta *NetworkMetadata) *atomic.Int64 { return &meta.evmFinalizedBlockNumber }
+
+// headLag is how far an upstream's head sits behind the network head. An
+// upstream ahead of the corroborated head is not lagging: negative lag would
+// reward a lone far-ahead report in every lag-weighted score.
+func headLag(networkHead, upstreamHead int64) int64 {
+	if upstreamHead >= networkHead {
+		return 0
+	}
+	return networkHead - upstreamHead
+}
+
+// registerHeadReporter records that an upstream reports heads for a network.
+// Caller holds ntwMeta.evmHeadMu.
+func registerHeadReporter(ntwMeta *NetworkMetadata, upstream common.Upstream) {
+	id := upstream.Id()
+	for _, seen := range ntwMeta.evmHeadReporters {
+		if seen.Id() == id {
 			return
 		}
-		if _, done := seen[ups]; done {
-			return
+	}
+	ntwMeta.evmHeadReporters = append(ntwMeta.evmHeadReporters, upstream)
+}
+
+// corroboratedHead derives a network head on one axis from every upstream that
+// has reported on it: the second-highest head once two or more upstreams have
+// reported, the only head while one has. No single upstream can move the value
+// every other upstream is measured against — a lone far-ahead report (an
+// endpoint answering for another chain, a corrupted response) is simply not
+// corroborated, while one stale upstream cannot hold the head back either. This
+// is the same order statistic evm.PickServedTip uses for its lag reference.
+// Returns the head and the upstream whose report it is (nil when no upstream
+// has a positive head). Caller holds ntwMeta.evmHeadMu.
+func (t *Tracker) corroboratedHead(ntwMeta *NetworkMetadata, net string, axis headAxis) (int64, common.Upstream) {
+	var highest, second int64
+	var highestUps, secondUps common.Upstream
+	reported := 0
+	for _, ups := range ntwMeta.evmHeadReporters {
+		v := axis(t.getMetadata(metadataKey{ups, net})).Load()
+		if v <= 0 {
+			continue
 		}
-		seen[ups] = struct{}{}
-		if v := getVal(t.getMetadata(metadataKey{ups, net})); v > maxVal {
-			maxVal = v
+		reported++
+		if v >= highest {
+			second, secondUps = highest, highestUps
+			highest, highestUps = v, ups
+		} else if v > second {
+			second, secondUps = v, ups
 		}
 	}
-	if len(relevantKeys) == 0 {
-		// Fallback if the index is not ready — mirrors updateNetworkLagMetrics.
-		t.upsMetrics.Range(func(key, _ any) bool {
-			if k, ok := key.(upstreamKey); ok && k.ups != nil && k.ups.NetworkId() == net {
-				consider(k.ups)
-			}
-			return true
-		})
-	} else {
-		for _, k := range relevantKeys {
-			consider(k.ups)
-		}
+	if reported < 2 {
+		return highest, highestUps
 	}
-	return maxVal
+	return second, secondUps
+}
+
+// acceptUpstreamHead stores a reported head for one upstream on one axis.
+// Forward progress is always accepted; a decrease within
+// common.DefaultToleratedBlockHeadRollback is noise and ignored; a larger
+// decrease is a correction (a deep reorg, or a previously recorded bogus
+// sample) and accepted, mirroring the shared-state counter semantics. Returns
+// whether the stored value changed.
+func acceptUpstreamHead(field *atomic.Int64, blockNumber int64, lg *zerolog.Logger, rollbackMsg string) bool {
+	old := field.Load()
+	if blockNumber > old {
+		field.Store(blockNumber)
+		return true
+	}
+	if old-blockNumber > common.DefaultToleratedBlockHeadRollback {
+		field.Store(blockNumber)
+		lg.Warn().
+			Int64("previousValue", old).
+			Int64("newValue", blockNumber).
+			Msg(rollbackMsg)
+		return true
+	}
+	return false
+}
+
+// propagateHeadLag writes every reporter's lag against a changed network head:
+// the request-metrics index covers the per-method buckets, and the reporter
+// list covers the {*, All} wildcard bucket that network-scope selection
+// policies read, which the index may not carry for an upstream that only polls.
+func (t *Tracker) propagateHeadLag(
+	ntwMeta *NetworkMetadata,
+	net string,
+	networkHead int64,
+	axis headAxis,
+	setLag func(*TrackedMetrics, int64),
+	getGauge func(string, string, string, string) prometheus.Gauge,
+	lg *zerolog.Logger,
+) {
+	t.updateNetworkLagMetrics(
+		net,
+		networkHead,
+		func(meta *NetworkMetadata) int64 { return axis(meta).Load() },
+		setLag,
+		getGauge,
+		lg,
+	)
+	for _, ups := range ntwMeta.evmHeadReporters {
+		v := axis(t.getMetadata(metadataKey{ups, net})).Load()
+		if v <= 0 {
+			continue
+		}
+		lag := headLag(networkHead, v)
+		setLag(t.loadOrStoreUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll}), lag)
+		getGauge(t.projectId, ups.VendorName(), ups.NetworkLabel(), ups.Id()).Set(float64(lag))
+	}
 }
 
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
@@ -1402,35 +1485,50 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		return
 	}
 
-	mdKey := metadataKey{upstream, net}
-	ntwMdKey := metadataKey{nil, net}
+	upsMeta := t.getMetadata(metadataKey{upstream, net})
+	ntwMeta := t.getMetadata(metadataKey{nil, net})
 
-	// 1) Possibly update the network-level highest block head
-	ntwMeta := t.getMetadata(ntwMdKey)
+	ntwMeta.evmHeadMu.Lock()
+	defer ntwMeta.evmHeadMu.Unlock()
+	registerHeadReporter(ntwMeta, upstream)
+
+	// 1) This upstream's head. The timestamp travels with the accepted sample
+	// so the network timestamp can follow whichever report becomes the head.
+	if acceptUpstreamHead(&upsMeta.evmLatestBlockNumber, blockNumber, &lg, "applied large latest block rollback for upstream in tracker") {
+		upsMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
+		t.getLatestBlockGauge(t.projectId, vendor, netLabel, id).Set(float64(blockNumber))
+	}
+
+	// 2) The corroborated network head.
 	oldNtwVal := ntwMeta.evmLatestBlockNumber.Load()
-	needsGlobalUpdate := false
-	if blockNumber > oldNtwVal {
-		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
-		g := t.getLatestBlockGauge(t.projectId, "*", netLabel, "*")
-		g.Set(float64(blockNumber))
-		needsGlobalUpdate = true
-
-		// Feed block.timestamp into EMA for dynamic block time estimation.
-		// Uses on-chain timestamps (not local clock) so the EMA tracks actual
-		// chain production rate, not our polling cadence. For fast chains where
-		// consecutive blocks share the same integer-second timestamp, samples
-		// are skipped until the timestamp advances; blockGap normalization
-		// recovers sub-second precision.
-		if blockTimestamp > 0 {
-			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp)
+	ntwBn, headUps := t.corroboratedHead(ntwMeta, net, latestHeadAxis)
+	if ntwBn <= 0 {
+		lg.Warn().Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+		return
+	}
+	headChanged := ntwBn != oldNtwVal
+	if headChanged {
+		ntwMeta.evmLatestBlockNumber.Store(ntwBn)
+		t.getLatestBlockGauge(t.projectId, "*", netLabel, "*").Set(float64(ntwBn))
+		if ntwBn < oldNtwVal {
+			lg.Warn().
+				Int64("previousValue", oldNtwVal).
+				Int64("newValue", ntwBn).
+				Msg("re-derived network latest block from corroborated upstream heads in tracker")
 		}
 
-		// Atomically update timestamp when network-level block number is updated
-		if blockTimestamp > 0 {
-			ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
+		if ts := t.getMetadata(metadataKey{headUps, net}).evmLatestBlockTimestamp.Load(); ts > 0 {
+			// Feed block.timestamp into EMA for dynamic block time estimation.
+			// Uses on-chain timestamps (not local clock) so the EMA tracks actual
+			// chain production rate, not our polling cadence. For fast chains where
+			// consecutive blocks share the same integer-second timestamp, samples
+			// are skipped until the timestamp advances; blockGap normalization
+			// recovers sub-second precision.
+			t.updateBlockTimeSample(ntwMeta, netLabel, ntwBn, ts)
 
+			ntwMeta.evmLatestBlockTimestamp.Store(ts)
 			detectedAtMs := time.Now().UnixMilli()
-			distanceMs := detectedAtMs - blockTimestamp*1000
+			distanceMs := detectedAtMs - ts*1000
 			telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
 				t.projectId,
 				netLabel,
@@ -1439,91 +1537,20 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		}
 	}
 
-	// 2) Update this upstream's latest block
-	upsMeta := t.getMetadata(mdKey)
-	oldUpsVal := upsMeta.evmLatestBlockNumber.Load()
-	if blockNumber > oldUpsVal {
-		upsMeta.evmLatestBlockNumber.Store(blockNumber)
-		g := t.getLatestBlockGauge(t.projectId, vendor, netLabel, id)
-		g.Set(float64(blockNumber))
-	} else if oldUpsVal-blockNumber > common.DefaultToleratedBlockHeadRollback {
-		// The upstream reports a head far behind the one stored for it: treat it
-		// as a correction (a deep reorg, or a previously recorded bogus sample),
-		// mirroring the shared-state counter semantics. Max-only storage would
-		// pin the bad sample — and every lag-based routing decision derived
-		// from it — until process restart.
-		upsMeta.evmLatestBlockNumber.Store(blockNumber)
-		g := t.getLatestBlockGauge(t.projectId, vendor, netLabel, id)
-		g.Set(float64(blockNumber))
-		lg.Warn().
-			Int64("previousValue", oldUpsVal).
-			Int64("newValue", blockNumber).
-			Msg("applied large latest block rollback for upstream in tracker")
-
-		// The rolled-back value may have been the network head: re-derive it
-		// from the remaining per-upstream values.
-		if ntwVal := ntwMeta.evmLatestBlockNumber.Load(); ntwVal > blockNumber {
-			recomputed := t.recomputeNetworkBlockHead(net, func(meta *NetworkMetadata) int64 {
-				return meta.evmLatestBlockNumber.Load()
-			})
-			if recomputed > 0 && recomputed < ntwVal {
-				ntwMeta.evmLatestBlockNumber.Store(recomputed)
-				t.getLatestBlockGauge(t.projectId, "*", netLabel, "*").Set(float64(recomputed))
-				needsGlobalUpdate = true
-				lg.Warn().
-					Int64("previousValue", ntwVal).
-					Int64("newValue", recomputed).
-					Msg("re-derived network latest block after upstream rollback in tracker")
-			}
-		}
-	}
-
-	// 3) Recompute block head lag for this upstream
-	ntwBn := ntwMeta.evmLatestBlockNumber.Load()
-	if ntwBn <= 0 {
-		lg.Warn().Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+	// 3) Lag. A changed head moves every reporter; otherwise only this one.
+	setLag := func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) }
+	if headChanged {
+		t.propagateHeadLag(ntwMeta, net, ntwBn, latestHeadAxis, setLag, t.getHeadLagGauge, &lg)
 		return
 	}
-
-	upsLag := ntwBn - upsMeta.evmLatestBlockNumber.Load()
-	gLag := t.getHeadLagGauge(t.projectId, vendor, netLabel, id)
-	gLag.Set(float64(upsLag))
-
-	// 4) Update the TrackedMetrics.BlockHeadLag fields for Upstream(s)
-	if needsGlobalUpdate {
-		// Recompute for every upstream in the network
-		t.updateNetworkLagMetrics(
-			net,
-			ntwBn,
-			func(meta *NetworkMetadata) int64 { return meta.evmLatestBlockNumber.Load() },
-			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
-			t.getHeadLagGauge,
-			&lg,
-		)
-	} else {
-		// Only update items for this single upstream
-		t.updateSingleUpstreamLag(
-			id,
-			net,
-			upsLag,
-			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
-		)
-	}
-
-	// The dedup index (`upstreamsByNetwork`) is not guaranteed to carry the
-	// {*, All} wildcard aggregate for this upstream — it dedups per (id,
-	// method) and the aggregate can be created lazily (e.g. a policy read, or
-	// a poll firing before any request traffic indexes it). When it's absent,
-	// the index-driven writes above fill every per-method bucket but leave the
-	// {*, All} bucket — the one network-scope selection policies read — at 0,
-	// so blockNumberLagAbove silently never fires. Write it directly here, the
-	// same way request metrics always reach {*, All} via getUpsKeys.
-	t.loadOrStoreUpsMetrics(upstreamKey{upstream, "*", common.DataFinalityStateAll}).BlockHeadLag.Store(upsLag)
-}
-
-func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int64) {
-	ntwMeta := t.getMetadata(metadataKey{nil, network})
-	ntwMeta.evmLatestBlockNumber.Store(blockNumber)
+	upsLag := headLag(ntwBn, upsMeta.evmLatestBlockNumber.Load())
+	t.getHeadLagGauge(t.projectId, vendor, netLabel, id).Set(float64(upsLag))
+	t.updateSingleUpstreamLag(id, net, upsLag, setLag)
+	// The dedup index may not carry the {*, All} wildcard aggregate for this
+	// upstream (it dedups per (id, method) and the aggregate can be created
+	// lazily), and that bucket is the one network-scope selection policies
+	// read. Write it directly, the same way request metrics reach {*, All}.
+	setLag(t.loadOrStoreUpsMetrics(upstreamKey{upstream, "*", common.DataFinalityStateAll}), upsLag)
 }
 
 // ------------------------------------
@@ -1626,108 +1653,54 @@ func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
-	lg := upstream.Logger().With().Str("networkId", upstream.NetworkId()).Logger()
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	netLabel := upstream.NetworkLabel()
+	vendor := upstream.VendorName()
+	lg := upstream.Logger().With().Str("networkId", net).Logger()
 
 	lg.Trace().Int64("value", blockNumber).Msg("updating finalized block number in tracker")
-
 	if blockNumber <= 0 {
 		lg.Warn().Int64("value", blockNumber).Msg("ignoring setting non-positive block number in finalized block tracker")
 		return
 	}
 
-	id := upstream.Id()
-	net := upstream.NetworkId()
-	netLabel := upstream.NetworkLabel()
-	vendor := upstream.VendorName()
+	upsMeta := t.getMetadata(metadataKey{upstream, net})
+	ntwMeta := t.getMetadata(metadataKey{nil, net})
 
-	mdKey := metadataKey{upstream, net}
-	ntwMdKey := metadataKey{nil, net}
+	ntwMeta.evmHeadMu.Lock()
+	defer ntwMeta.evmHeadMu.Unlock()
+	registerHeadReporter(ntwMeta, upstream)
 
-	upsMeta := t.getMetadata(mdKey)
-	ntwMeta := t.getMetadata(ntwMdKey)
+	if acceptUpstreamHead(&upsMeta.evmFinalizedBlockNumber, blockNumber, &lg, "applied large finalized block rollback for upstream in tracker") {
+		t.getFinalizedBlockGauge(t.projectId, vendor, netLabel, id).Set(float64(blockNumber))
+	}
 
-	// Possibly update the network-level highest finalized block
 	oldNtwVal := ntwMeta.evmFinalizedBlockNumber.Load()
-	needsGlobalUpdate := false
-	if blockNumber > oldNtwVal {
-		ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		g := t.getFinalizedBlockGauge(t.projectId, "*", netLabel, "*")
-		g.Set(float64(blockNumber))
-		needsGlobalUpdate = true
-	}
-
-	// Update this upstream's finalized block
-	oldUpsVal := upsMeta.evmFinalizedBlockNumber.Load()
-	if blockNumber > oldUpsVal {
-		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		g := t.getFinalizedBlockGauge(t.projectId, vendor, netLabel, id)
-		g.Set(float64(blockNumber))
-	} else if oldUpsVal-blockNumber > common.DefaultToleratedBlockHeadRollback {
-		// Same rollback semantics as SetLatestBlockNumber: accept large
-		// corrections instead of pinning a bogus sample until restart.
-		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		g := t.getFinalizedBlockGauge(t.projectId, vendor, netLabel, id)
-		g.Set(float64(blockNumber))
-		lg.Warn().
-			Int64("previousValue", oldUpsVal).
-			Int64("newValue", blockNumber).
-			Msg("applied large finalized block rollback for upstream in tracker")
-
-		if ntwBn := ntwMeta.evmFinalizedBlockNumber.Load(); ntwBn > blockNumber {
-			recomputed := t.recomputeNetworkBlockHead(net, func(meta *NetworkMetadata) int64 {
-				return meta.evmFinalizedBlockNumber.Load()
-			})
-			if recomputed > 0 && recomputed < ntwBn {
-				ntwMeta.evmFinalizedBlockNumber.Store(recomputed)
-				t.getFinalizedBlockGauge(t.projectId, "*", netLabel, "*").Set(float64(recomputed))
-				needsGlobalUpdate = true
-				lg.Warn().
-					Int64("previousValue", ntwBn).
-					Int64("newValue", recomputed).
-					Msg("re-derived network finalized block after upstream rollback in tracker")
-			}
-		}
-	}
-
-	// Recompute finalization lag for this upstream
-	ntwVal := ntwMeta.evmFinalizedBlockNumber.Load()
+	ntwVal, _ := t.corroboratedHead(ntwMeta, net, finalizedHeadAxis)
 	if ntwVal <= 0 {
 		lg.Warn().Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
 		return
 	}
-
-	upsVal := upsMeta.evmFinalizedBlockNumber.Load()
-	upsLag := ntwVal - upsVal
-
-	// Update Prometheus for this upstream
-	gLag := t.getFinalizationLagGauge(t.projectId, vendor, netLabel, id)
-	gLag.Set(float64(upsLag))
-
-	// Update the finalization lag across the network if needed
-	if needsGlobalUpdate {
-		// Recompute for every upstream in the network
-		t.updateNetworkLagMetrics(
-			net,
-			ntwVal,
-			func(meta *NetworkMetadata) int64 { return meta.evmFinalizedBlockNumber.Load() },
-			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
-			t.getFinalizationLagGauge,
-			&lg,
-		)
-	} else {
-		// Only update finalization lag for this single upstream
-		t.updateSingleUpstreamLag(
-			id,
-			net,
-			upsLag,
-			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
-		)
+	setLag := func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) }
+	if ntwVal != oldNtwVal {
+		ntwMeta.evmFinalizedBlockNumber.Store(ntwVal)
+		t.getFinalizedBlockGauge(t.projectId, "*", netLabel, "*").Set(float64(ntwVal))
+		if ntwVal < oldNtwVal {
+			lg.Warn().
+				Int64("previousValue", oldNtwVal).
+				Int64("newValue", ntwVal).
+				Msg("re-derived network finalized block from corroborated upstream heads in tracker")
+		}
+		t.propagateHeadLag(ntwMeta, net, ntwVal, finalizedHeadAxis, setLag, t.getFinalizationLagGauge, &lg)
+		return
 	}
 
-	// Same {*, All} wildcard-aggregate guarantee as SetLatestBlockNumber (see
-	// the comment there): the dedup index may not carry the "*" rollup, so
-	// write it directly to keep finalization-lag-based scoring/predicates honest.
-	t.loadOrStoreUpsMetrics(upstreamKey{upstream, "*", common.DataFinalityStateAll}).FinalizationLag.Store(upsLag)
+	upsLag := headLag(ntwVal, upsMeta.evmFinalizedBlockNumber.Load())
+	t.getFinalizationLagGauge(t.projectId, vendor, netLabel, id).Set(float64(upsLag))
+	t.updateSingleUpstreamLag(id, net, upsLag, setLag)
+	// Same {*, All} wildcard-aggregate guarantee as SetLatestBlockNumber.
+	setLag(t.loadOrStoreUpsMetrics(upstreamKey{upstream, "*", common.DataFinalityStateAll}), upsLag)
 }
 
 func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finality string, currentVal, newVal int64) {

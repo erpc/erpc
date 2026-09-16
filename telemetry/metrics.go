@@ -49,13 +49,13 @@ var (
 	MetricUpstreamBlockHeadLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_block_head_lag",
-		Help:      "Total number of blocks (head) behind the most up-to-date upstream.",
+		Help:      "Total number of blocks (head) behind the corroborated network head (second-highest upstream head).",
 	}, []string{"project", "vendor", "network", "upstream"})
 
 	MetricUpstreamFinalizationLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_finalization_lag",
-		Help:      "Total number of finalized blocks behind the most up-to-date upstream.",
+		Help:      "Total number of finalized blocks behind the corroborated network finalized head (second-highest upstream finalized head).",
 	}, []string{"project", "vendor", "network", "upstream"})
 
 	MetricUpstreamLatestBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
