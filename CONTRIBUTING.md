@@ -81,6 +81,11 @@ Conventions that keep the system working:
   `AI_FETCHER_UA` regex.
 - **Build:** `cd docs && pnpm install && pnpm build` (standalone pnpm
   workspace; `next dev` for live preview).
+- **Docs container:** `docker build -t erpc-docs ./docs` uses the pnpm version
+  pinned in `docs/Dockerfile`, matching the root `packageManager`. Dependency
+  build-script decisions live in `docs/pnpm-workspace.yaml`; this file must be
+  copied before `pnpm install`. Sharp's install script is intentionally skipped;
+  its platform-specific prebuilt packages support image optimization.
 
 When you change runtime behavior — a new config field, a changed default, a
 new edge case or metric — the same PR must update the relevant page's agent
