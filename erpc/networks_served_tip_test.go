@@ -354,8 +354,9 @@ func TestServedTip_AllSyncing_ReturnsZero(t *testing.T) {
 // ----- opt-in gating + eligible-set sourcing -------------------------------
 
 // With the served-tip feature DISABLED (the default, nil config), the network
-// must preserve the legacy MAX-across-upstreams behavior.
-func TestServedTip_DisabledByDefault_ReturnsMax(t *testing.T) {
+// head is the corroborated head across eligible upstreams: the second-highest,
+// not the majority pick and not the raw max.
+func TestServedTip_DisabledByDefault_ReturnsCorroboratedHead(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -367,11 +368,34 @@ func TestServedTip_DisabledByDefault_ReturnsMax(t *testing.T) {
 		{id: "u1", chainID: 123, latestBlock: 100},
 		{id: "u2", chainID: 123, latestBlock: 99},
 		{id: "u3", chainID: 123, latestBlock: 98},
-	}, nil) // nil ServedTip config => feature disabled => legacy MAX
+	}, nil) // nil ServedTip config => feature disabled
 
 	served := network.EvmHighestLatestBlockNumber(ctx)
-	assert.Equal(t, int64(100), served,
-		"served-tip clustering disabled (default) must return MAX(tips)=100, not cluster-min")
+	assert.Equal(t, int64(99), served,
+		"default mode serves the second-highest head, not MAX(tips)=100")
+}
+
+// A lone upstream reporting another chain's height must not define the network
+// head in default mode either: "latest" interpolation, the eth_blockNumber
+// floor, and the cache's known-highest-block all read this accessor.
+func TestServedTip_DisabledByDefault_LoneFarAheadUpstreamDoesNotDefineHead(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 32_610_710},
+		{id: "u2", chainID: 123, latestBlock: 32_610_709},
+		{id: "rogue", chainID: 123, latestBlock: 62_381_379},
+	}, nil)
+
+	assert.Equal(t, int64(32_610_710), network.EvmHighestLatestBlockNumber(ctx),
+		"the rogue's head is not corroborated")
+	assert.Equal(t, int64(62_381_379), network.evmHeadReference(ctx, false).Max,
+		"the raw max stays visible for the future-block short-circuit")
 }
 
 // A selection-policy-EXCLUDED upstream must drop out of the served tip — head
