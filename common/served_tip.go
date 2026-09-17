@@ -32,6 +32,12 @@ type ServedTipPick struct {
 	// erpc_upstream_latest_block_number.
 	Freshest int64
 
+	// Max is the highest valid input: the raw ceiling no pick may exceed. It is
+	// deliberately not corroborated — a ceiling a single rogue can only RAISE
+	// cannot be used to make a caller serve anything the rogue chose — and it
+	// is the one place a lone far-ahead head is still visible to callers.
+	Max int64
+
 	// Inputs is the number of valid (BlockNumber > 0) observations.
 	Inputs int
 
@@ -96,6 +102,7 @@ func PickServedTip(tips []ServedTipInput) ServedTipPick {
 	return ServedTipPick{
 		Tip:      sorted[len(sorted)/2].BlockNumber,
 		Freshest: freshest,
+		Max:      sorted[0].BlockNumber,
 		Inputs:   len(sorted),
 		Sorted:   sorted,
 	}
