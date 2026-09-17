@@ -23,7 +23,7 @@ import (
 // even when the same upstream serves both calls).
 //
 // Topology (shared bni* helpers): rpc1 head 0x800, rpc2 head 0x1000. With two
-// upstreams the majority tip is the LOWER head (evm.PickServedTip: N=2 → the
+// upstreams the majority tip is the LOWER head (common.PickServedTip: N=2 → the
 // 2nd-highest), so the served tip is 0x800 while rpc2 answers 0x1000.
 
 // bniServedTipConfig is bniConfig (modern, no deprecated integrity block) with

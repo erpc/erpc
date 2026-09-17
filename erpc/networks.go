@@ -55,7 +55,7 @@ type Network struct {
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
 	// servedTipAnchor watchdogs track when this process last SAW the served
 	// value change — purely for the advance-age stuck-tip gauge. The pick
-	// itself is stateless (evm.PickServedTip); nothing here feeds back into
+	// itself is stateless (common.PickServedTip); nothing here feeds back into
 	// what clients receive.
 	servedLatestAnchor    servedTipAnchor
 	servedFinalizedAnchor servedTipAnchor
@@ -446,7 +446,7 @@ func (n *Network) gatherEvmTipInputsForMethod(
 	ctx context.Context,
 	useFinalized bool,
 	method string,
-) ([]evm.ServedTipInput, servedTipReference) {
+) ([]common.ServedTipInput, servedTipReference) {
 	return evmTipBallot(n.tipCandidateUpstreams(ctx, method), useFinalized)
 }
 
@@ -469,9 +469,9 @@ func (n *Network) gatherEvmTipInputsForMethod(
 // contains at least one live head. A set of only historical/frozen upstreams
 // legitimately serves its cap — that cap is the freshest block anyone in it can
 // serve — so it keeps voting.
-func evmTipBallot(upstreams []common.Upstream, useFinalized bool) ([]evm.ServedTipInput, servedTipReference) {
-	out := make([]evm.ServedTipInput, 0, len(upstreams))
-	var capped []evm.ServedTipInput
+func evmTipBallot(upstreams []common.Upstream, useFinalized bool) ([]common.ServedTipInput, servedTipReference) {
+	out := make([]common.ServedTipInput, 0, len(upstreams))
+	var capped []common.ServedTipInput
 	var liveTop, liveSecond int64
 	for _, cu := range upstreams {
 		u, ok := cu.(common.EvmUpstream)
@@ -485,7 +485,7 @@ func evmTipBallot(upstreams []common.Upstream, useFinalized bool) ([]evm.ServedT
 		if blk <= 0 {
 			continue
 		}
-		in := evm.ServedTipInput{
+		in := common.ServedTipInput{
 			UpstreamID:  u.Id(),
 			BlockNumber: blk,
 		}
@@ -880,7 +880,7 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 
 // servedTip computes the majority served tip for one axis over the
 // selection-policy-eligible upstreams — the freshest block a strict majority of
-// them already has (see evm.PickServedTip) — lets the trajectory referee prefer
+// them already has (see common.PickServedTip) — lets the trajectory referee prefer
 // a corroborated on-trajectory group when that majority has stalled, guards the
 // result against a regression far below the live heads, applies the
 // guaranteed-method floor, and exports the gauges.
@@ -901,7 +901,7 @@ func (n *Network) servedTip(
 	lane string,
 ) int64 {
 	tips, ref := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
-	pick := evm.PickServedTip(tips)
+	pick := common.PickServedTip(tips)
 
 	// Trajectory referee: when the live heads split and the majority is the
 	// STALLED group, serve the corroborated group that matches where this
@@ -990,9 +990,9 @@ func (n *Network) servedTip(
 //     divergence can trigger an intervention.
 //
 // Serving a winning group's MINIMUM also keeps the pick ≤
-// evm.ServedTipPick.Freshest (the 2nd-highest head): a group has at least two
+// common.ServedTipPick.Freshest (the 2nd-highest head): a group has at least two
 // members, so at least two heads sit at or above what it serves.
-func (n *Network) refereeServedTip(anchor *servedTipAnchor, sorted []evm.ServedTipInput, median int64, ref servedTipReference) evm.TipTrajectoryDecision {
+func (n *Network) refereeServedTip(anchor *servedTipAnchor, sorted []common.ServedTipInput, median int64, ref servedTipReference) evm.TipTrajectoryDecision {
 	stood := evm.TipTrajectoryDecision{Pick: median}
 	if anchor == nil || median <= 0 || ref.Max <= 0 {
 		// A live head is also what makes `sorted` safe to sample and cluster:
@@ -1367,12 +1367,12 @@ func (n *Network) servedTipMaxRegressionBlocks() int64 {
 }
 
 // SvmHighestLatestSlot returns the majority-vote latest slot across SVM
-// upstreams. Uses evm.PickServedTip (floor(N/2)-th highest) so a single
+// upstreams. Uses common.PickServedTip (floor(N/2)-th highest) so a single
 // fast/rogue upstream cannot inflate the served tip.
 func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestLatestSlot")
 	defer span.End()
-	pick := evm.PickServedTip(n.gatherSvmTipInputs(ctx, false))
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, false))
 	span.SetAttributes(attribute.Int64("highest_latest_slot", pick.Tip))
 	return pick.Tip
 }
@@ -1384,7 +1384,7 @@ func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlot")
 	defer span.End()
-	pick := evm.PickServedTip(n.gatherSvmTipInputs(ctx, true))
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, true))
 	span.SetAttributes(attribute.Int64("highest_finalized_slot", pick.Tip))
 	return pick.Tip
 }
@@ -1460,10 +1460,10 @@ func (n *Network) SvmHighestIndexedSlot(ctx context.Context) int64 {
 }
 
 // gatherSvmTipInputs collects slot values from SVM state pollers for
-// majority-tip computation via evm.PickServedTip.
-func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []evm.ServedTipInput {
+// majority-tip computation via common.PickServedTip.
+func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []common.ServedTipInput {
 	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	out := make([]evm.ServedTipInput, 0, len(upstreams))
+	out := make([]common.ServedTipInput, 0, len(upstreams))
 	for _, u := range upstreams {
 		sp := u.SvmStatePoller()
 		if sp == nil || sp.IsObjectNull() {
@@ -1478,7 +1478,7 @@ func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []e
 		if slot <= 0 {
 			continue
 		}
-		out = append(out, evm.ServedTipInput{UpstreamID: u.Id(), BlockNumber: slot})
+		out = append(out, common.ServedTipInput{UpstreamID: u.Id(), BlockNumber: slot})
 	}
 	return out
 }
@@ -1579,7 +1579,7 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 			// value.
 			continue
 		}
-		if t := evm.PickServedTip(tips).Tip; t > 0 && (floor == 0 || t < floor) {
+		if t := common.PickServedTip(tips).Tip; t > 0 && (floor == 0 || t < floor) {
 			floor = t
 		}
 	}
@@ -1619,7 +1619,7 @@ func (n *Network) liveUpstreamServesMethod(ctx context.Context, method string, u
 // keep the gauge set small. lane="all" is the network-wide pick; a named lane
 // is a use-upstream group's own pick; the stateless lane-none sentinel emits
 // nothing (a subset value must never overwrite a gauge).
-func (n *Network) observeServedTipMetrics(axis string, lane string, pick evm.ServedTipPick, advanceAge time.Duration) {
+func (n *Network) observeServedTipMetrics(axis string, lane string, pick common.ServedTipPick, advanceAge time.Duration) {
 	if lane == servedTipLaneNone {
 		return
 	}

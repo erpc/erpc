@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
@@ -26,7 +25,7 @@ import (
 
 // These tests pin the semantics of Network.EvmHighestLatestBlockNumber in
 // served-tip mode: the MAJORITY order statistic — the freshest block a strict
-// majority of eligible upstreams already have (evm.PickServedTip). Each case
+// majority of eligible upstreams already have (common.PickServedTip). Each case
 // is designed so MAX(tips) != majority to make regressions visible.
 
 // servedTipFixture is a compact description of one upstream's poller state
@@ -1619,7 +1618,7 @@ func TestServedTip_TrajectoryReferee_StalledMajorityLosesToFreshMinority(t *test
 
 	// What the plain majority pick WOULD be over the very same ballot: the
 	// frozen head, held by 3 of the 5 upstreams.
-	majority := evm.PickServedTip([]evm.ServedTipInput{
+	majority := common.PickServedTip([]common.ServedTipInput{
 		{UpstreamID: "u1", BlockNumber: fresh},
 		{UpstreamID: "u2", BlockNumber: fresh},
 		{UpstreamID: "u3", BlockNumber: frozen},

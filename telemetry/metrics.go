@@ -121,7 +121,7 @@ var (
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
 	// freshest block a strict MAJORITY of eligible upstreams already have (see
-	// evm.PickServedTip). lane="all" is the network-wide pick; a named lane is a
+	// common.PickServedTip). lane="all" is the network-wide pick; a named lane is a
 	// use-upstream group's own pick (present only for networks receiving
 	// targeted traffic).
 	MetricNetworkServedTipBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{

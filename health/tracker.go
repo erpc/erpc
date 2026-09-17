@@ -1356,39 +1356,29 @@ func blocksBehind(networkHead, upstreamHead int64) int64 {
 }
 
 // recomputeNetworkBlockHead derives a network-level head from the stored
-// per-upstream values (getVal picks the latest vs finalized axis): the
-// second-highest once two upstreams have reported, the only value while one
-// has. One upstream can therefore never move the head every other upstream is
-// measured against — a lone far-ahead report is not corroborated, and a lone
-// stale upstream cannot hold the head back. Same order statistic as
-// evm.PickServedTip's lag reference. `reporter` is always considered: it may
-// not be indexed yet on its first poll.
+// per-upstream values (getVal picks the latest vs finalized axis) as
+// common.PickServedTip's corroborated Freshest: the second-highest once two
+// upstreams have reported, the only value while one has. `reporter` is always
+// included: it may not be indexed yet on its first poll.
 func (t *Tracker) recomputeNetworkBlockHead(net string, reporter common.Upstream, getVal func(*NetworkMetadata) int64) int64 {
 	t.mu.RLock()
 	relevantKeys := t.upstreamsByNetwork[net]
 	t.mu.RUnlock()
 
-	var highest, second int64
-	reported := 0
-	seen := make(map[string]struct{}, len(relevantKeys)+1)
+	heads := make([]common.ServedTipInput, 0, len(relevantKeys)+1)
 	consider := func(ups common.Upstream) {
 		if ups == nil {
 			return
 		}
-		if _, done := seen[ups.Id()]; done {
-			return
+		for _, h := range heads {
+			if h.UpstreamID == ups.Id() {
+				return
+			}
 		}
-		seen[ups.Id()] = struct{}{}
-		v := getVal(t.getMetadata(metadataKey{ups, net}))
-		if v <= 0 {
-			return
-		}
-		reported++
-		if v >= highest {
-			second, highest = highest, v
-		} else if v > second {
-			second = v
-		}
+		heads = append(heads, common.ServedTipInput{
+			UpstreamID:  ups.Id(),
+			BlockNumber: getVal(t.getMetadata(metadataKey{ups, net})),
+		})
 	}
 	consider(reporter)
 	if len(relevantKeys) == 0 {
@@ -1404,10 +1394,7 @@ func (t *Tracker) recomputeNetworkBlockHead(net string, reporter common.Upstream
 			consider(k.ups)
 		}
 	}
-	if reported < 2 {
-		return highest
-	}
-	return second
+	return common.PickServedTip(heads).Freshest
 }
 
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
