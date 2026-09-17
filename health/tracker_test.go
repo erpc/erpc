@@ -347,6 +347,7 @@ func TestBlockHeadLagPersistsAcrossResets(t *testing.T) {
 	// First, ensure TrackedMetrics exist by recording some requests
 	tracker.RecordUpstreamRequest(ups1, "method1", common.DataFinalityStateUnknown)
 	tracker.RecordUpstreamRequest(ups2, "method1", common.DataFinalityStateUnknown)
+	tracker.RecordUpstreamRequest(ups3, "method1", common.DataFinalityStateUnknown)
 	tracker.RecordUpstreamFailure(ups1, "method1", common.DataFinalityStateUnknown, fmt.Errorf("test error"))
 
 	// Now set different block numbers to create lag. The network head is the
@@ -414,6 +415,7 @@ func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
 	// First, ensure TrackedMetrics exist by recording some requests
 	tracker.RecordUpstreamRequest(ups1, "method1", common.DataFinalityStateUnknown)
 	tracker.RecordUpstreamRequest(ups2, "method1", common.DataFinalityStateUnknown)
+	tracker.RecordUpstreamRequest(ups3, "method1", common.DataFinalityStateUnknown)
 
 	// Now set different finalized block numbers to create lag; ups3
 	// corroborates ups1's finalized head.

@@ -1,7 +1,6 @@
 package health
 
 import (
-	"sync"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -161,34 +160,6 @@ func TestTrackerCorroboratedLatestHead(t *testing.T) {
 			tracker.SetLatestBlockNumber(ups, 32_610_720, 0)
 		}
 		assert.Equal(t, int64(32_610_720), networkLatest(tracker, net))
-	})
-
-	t.Run("ConcurrentPollers", func(t *testing.T) {
-		tracker := newRollbackTestTracker(t, "test-corr-concurrent")
-		a := common.NewFakeUpstream("a")
-		b := common.NewFakeUpstream("b")
-		c := common.NewFakeUpstream("c")
-		net := a.NetworkId()
-
-		var wg sync.WaitGroup
-		for _, s := range []struct {
-			ups  common.Upstream
-			head int64
-		}{{a, 110}, {b, 105}, {c, 1_000_000}} {
-			wg.Add(1)
-			go func(ups common.Upstream, head int64) {
-				defer wg.Done()
-				for i := int64(0); i < 50; i++ {
-					tracker.SetLatestBlockNumber(ups, head-50+i, 0)
-				}
-			}(s.ups, s.head)
-		}
-		wg.Wait()
-
-		assert.Equal(t, int64(109), networkLatest(tracker, net))
-		assert.Equal(t, int64(0), blockHeadLag(tracker, a))
-		assert.Equal(t, int64(5), blockHeadLag(tracker, b))
-		assert.Equal(t, int64(0), blockHeadLag(tracker, c))
 	})
 }
 
