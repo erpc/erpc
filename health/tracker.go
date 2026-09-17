@@ -1016,6 +1016,10 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 	//   site in upstream.tryForward, so cancellations only reach here for
 	//   primary attempts — where they almost always mean "client gave up,"
 	//   not "upstream failed."  Slowness is already captured by ResponseQuantiles.
+	// - BlockUnavailable: the requested height is outside this upstream's
+	//   served window or has not been applied yet. Retry/failover still
+	//   happens; scoring lag is BlockHeadLag, not ErrorRate. Counting these
+	//   as errors punishes a recent-only replica for honest refuses.
 	if common.HasErrorCode(
 		err,
 		common.ErrCodeEndpointExecutionException,
@@ -1027,9 +1031,11 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 		common.ErrCodeEndpointClientSideException,
 		common.ErrCodeEndpointRequestCanceled,
 		common.ErrCodeUpstreamHedgeCancelled,
+		common.ErrCodeUpstreamBlockUnavailable,
 	) {
 		return
 	}
+
 
 	nowMs := time.Now().UnixMilli()
 	for _, k := range t.getUpsKeys(up, method, finality) {
