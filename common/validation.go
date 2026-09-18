@@ -1517,6 +1517,12 @@ func (e *EvmNetworkConfig) Validate() error {
 		if e.ServedTip.MaxRegressionBlocks < -1 {
 			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0, or -1 to disable the regression guard (0 uses the default rollback tolerance)")
 		}
+		if e.ServedTip.LagBlocks < 0 {
+			return fmt.Errorf("network.*.evm.servedTip.lagBlocks must be >= 0 (0 = no cushion)")
+		}
+		if e.ServedTip.Lag != nil && e.ServedTip.Lag.Duration() < 0 {
+			return fmt.Errorf("network.*.evm.servedTip.lag must be >= 0 (0 = no cushion); when both lag and lagBlocks are set, lagBlocks wins")
+		}
 		if w := e.ServedTip.TrajectoryWindow; w != nil && w.Duration() != 0 {
 			if d := w.Duration(); d < MinServedTipTrajectoryWindow || d > MaxServedTipTrajectoryWindow {
 				return fmt.Errorf(

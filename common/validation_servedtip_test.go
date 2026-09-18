@@ -59,6 +59,32 @@ func TestEvmNetworkConfig_Validate_ServedTip(t *testing.T) {
 		require.NoError(t, e.Validate())
 	})
 
+	t.Run("negative lagBlocks rejected", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{LagBlocks: -1}
+		err := e.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lagBlocks")
+	})
+
+	t.Run("negative lag rejected", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{Lag: Duration(-time.Second).Ptr()}
+		err := e.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lag")
+	})
+
+	t.Run("zero and positive lagBlocks/lag pass", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}, LagBlocks: 0}
+		require.NoError(t, e.Validate())
+		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}, LagBlocks: 8}
+		require.NoError(t, e.Validate())
+		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}, Lag: Duration(12 * time.Second).Ptr()}
+		require.NoError(t, e.Validate())
+	})
+
 	t.Run("zero maxRegressionBlocks means the default tolerance", func(t *testing.T) {
 		e := baseValidEvmNetworkConfig()
 		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}}

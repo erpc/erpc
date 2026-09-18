@@ -1671,6 +1671,27 @@ export interface EvmServedTipConfig {
    * bare number is parsed as MILLISECONDS.
    */
   trajectoryWindow?: Duration;
+  /**
+   * LagBlocks is an optional cushion subtracted from the advertised served tip
+   * AFTER the full pick → referee → regression-guard → guaranteed-method
+   * pipeline has run: advertised = max(0, servedTip - LagBlocks). It lets a
+   * required-but-slightly-behind group (a mixed internal/external pool where the
+   * internals trail the strict-majority tip by a few blocks) still serve the
+   * advertised block, without a hard per-group minimum that a single stuck
+   * upstream could use to pin the whole network. Applied only once the pipeline
+   * has decided what to serve, so the cushion can never look like a poisoned
+   * ballot to the regression guard. 0 (unset) is the current behaviour, exactly.
+   * Applies only to tags in EnabledFor; the default max mode is unaffected.
+   */
+  lagBlocks?: number /* int64 */;
+  /**
+   * Lag is the same cushion expressed as a duration, converted to blocks via the
+   * network's EMA block time at evaluation. It is a no-op until the block time is
+   * known (a cold process advertises no cushion until it has measured cadence).
+   * If both Lag and LagBlocks are set the explicit LagBlocks wins. WRITE IT AS A
+   * DURATION STRING — lag: "12s"; a bare number is parsed as MILLISECONDS.
+   */
+  lag?: Duration;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

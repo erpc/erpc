@@ -2192,3 +2192,187 @@ func TestServedTip_TrajectoryReferee_DisabledByZeroWindow(t *testing.T) {
 	assert.Zero(t, network.servedLatestAnchor.trajectory.SampleCount(),
 		"a disabled referee must not even record a head track")
 }
+
+// ----- lag cushion (lagBlocks / lag) ---------------------------------------
+
+// Unset lagBlocks/lag is byte-identical to the plain majority pick — the
+// cushion must be a strict no-op when unconfigured.
+func TestServedTip_LagBlocks_UnsetIsNoOp(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fixtures := []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 99},
+		{id: "u3", chainID: 123, latestBlock: 98},
+	}
+
+	network, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
+		EnabledFor: []string{"latest"},
+	})
+	assert.Equal(t, int64(99), network.EvmHighestLatestBlockNumber(ctx),
+		"no lag cushion → served is the plain majority head (99)")
+}
+
+// lagBlocks: N backs the advertised tip off by exactly N blocks below the
+// majority pick.
+func TestServedTip_LagBlocks_AdvertisesMajorityMinusN(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fixtures := []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 99},
+		{id: "u3", chainID: 123, latestBlock: 98},
+	}
+
+	network, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
+		EnabledFor: []string{"latest"},
+		LagBlocks:  5,
+	})
+	assert.Equal(t, int64(94), network.EvmHighestLatestBlockNumber(ctx),
+		"majority 99 minus lagBlocks 5 = 94")
+}
+
+// A cushion larger than the pick clamps to 0 — never a negative served tip and
+// never a poisoned-looking zero fed back into the pipeline.
+func TestServedTip_LagBlocks_ClampsToZero(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fixtures := []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 10},
+		{id: "u2", chainID: 123, latestBlock: 9},
+		{id: "u3", chainID: 123, latestBlock: 8},
+	}
+
+	network, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
+		EnabledFor: []string{"latest"},
+		LagBlocks:  100,
+	})
+	assert.Equal(t, int64(0), network.EvmHighestLatestBlockNumber(ctx),
+		"pick 9 minus lagBlocks 100 clamps to 0, not a negative block")
+}
+
+// A required-but-slightly-behind minority (here u3, capped at head-3 via
+// latestBlockMinus) can serve the advertised block: with the majority at 100
+// and a 3-block cushion the network advertises 97, and u3's effective head
+// (100-3=97) is exactly able to serve it.
+func TestServedTip_LagBlocks_LaggingMinorityWithinNCanServe(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	minus3 := int64(3)
+	fixtures := []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 100},
+		{id: "u3", chainID: 123, latestBlock: 100, upperLatestMinus: &minus3},
+	}
+
+	network, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
+		EnabledFor: []string{"latest"},
+		LagBlocks:  3,
+	})
+	advertised := network.EvmHighestLatestBlockNumber(ctx)
+	assert.Equal(t, int64(97), advertised,
+		"majority 100 minus cushion 3 = 97")
+	// Derived from the fixture, independent of `advertised`, so the check is not
+	// vacuous: u3's effective head is its latest (100) capped at head-minus-3.
+	u3EffectiveHead := fixtures[2].latestBlock - minus3 // 97
+	assert.GreaterOrEqual(t, u3EffectiveHead, advertised,
+		"the head-3 minority (effective head 97) can serve the advertised tip")
+}
+
+// A minority stalled far beyond the cushion does not pin the tip to that stall:
+// the served tip stays at majority-minus-cushion, exactly as if the stalled
+// minority were absent. The cushion is not a per-group hard minimum.
+func TestServedTip_LagBlocks_StalledMinorityBeyondNDoesNotPin(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fixtures := []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 1000},
+		{id: "u2", chainID: 123, latestBlock: 1000},
+		{id: "u3", chainID: 123, latestBlock: 1000},
+		{id: "stalled", chainID: 123, latestBlock: 400}, // ~600 blocks behind, >> cushion
+	}
+
+	network, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
+		EnabledFor: []string{"latest"},
+		LagBlocks:  5,
+	})
+	assert.Equal(t, int64(995), network.EvmHighestLatestBlockNumber(ctx),
+		"majority 1000 minus cushion 5 = 995; the 400 stall must not pin the tip to itself")
+}
+
+// The lag duration path converts via the EMA block time (test override): a 12s
+// lag at a 2s block time is a 6-block cushion.
+func TestServedTip_Lag_DurationConvertsViaBlockTime(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fixtures := []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 100},
+		{id: "u3", chainID: 123, latestBlock: 100},
+	}
+
+	network, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
+		EnabledFor: []string{"latest"},
+		Lag:        common.Duration(12 * time.Second).Ptr(),
+	})
+	network.servedTipBlockTimeOverride = 2 // seconds/block
+
+	assert.Equal(t, int64(94), network.EvmHighestLatestBlockNumber(ctx),
+		"lag 12s / 2s-per-block = 6-block cushion; 100 - 6 = 94")
+}
+
+// When both lag and lagBlocks are set the explicit lagBlocks wins.
+func TestServedTip_Lag_LagBlocksWinsWhenBothSet(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fixtures := []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 100},
+		{id: "u3", chainID: 123, latestBlock: 100},
+	}
+
+	network, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
+		EnabledFor: []string{"latest"},
+		LagBlocks:  2,
+		Lag:        common.Duration(20 * time.Second).Ptr(),
+	})
+	network.servedTipBlockTimeOverride = 2 // would be a 10-block cushion via lag
+
+	assert.Equal(t, int64(98), network.EvmHighestLatestBlockNumber(ctx),
+		"explicit lagBlocks 2 wins over lag 20s (which would be 10 blocks); 100 - 2 = 98")
+}
