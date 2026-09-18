@@ -14,14 +14,13 @@ import (
 // These tests pin the rollback tolerance of the tracker's block-head state:
 // a single bogus head sample (e.g. a provider briefly reporting another
 // chain's height, or a corrupted response) must not pin the per-upstream
-// latest/finalized values — nor the network-level head and every lag-based
-// routing decision derived from it — until process restart. The semantics
-// mirror the shared-state counter (data.CounterInt64SharedVariable): forward
-// progress is always accepted, decreases within
-// common.DefaultToleratedBlockHeadRollback are ignored as noise, larger
-// decreases are accepted as corrections. The network head is never lowered by
-// adopting a single sample; it is re-derived as the max over the per-upstream
-// values, so genuinely-behind upstreams can never drag it down.
+// latest/finalized values until process restart. The semantics mirror the
+// shared-state counter (data.CounterInt64SharedVariable): forward progress is
+// always accepted, decreases within common.DefaultToleratedBlockHeadRollback
+// are ignored as noise, larger decreases are accepted as corrections. The
+// network head is corroborated — the second-highest reporter, see
+// tracker_corroborated_head_test.go — so a bogus sample never becomes the
+// reference and a genuinely-behind upstream can never drag the head down.
 
 func newRollbackTestTracker(t *testing.T, projectID string) *Tracker {
 	t.Helper()
@@ -109,13 +108,7 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		assert.Equal(t, int64(0), blockHeadLag(tracker, ups))
 	})
 
-	// The poisoned-head scenario this change exists for: one upstream briefly
-	// reports a bogus far-ahead head. Before the fix, the bogus sample pinned
-	// both its own stored value and the network head forever, which made every
-	// OTHER (healthy) upstream appear to lag by tens of millions of blocks —
-	// selection policies using blockNumberLagAbove then excluded all of them
-	// until the process restarted.
-	t.Run("BogusHeadCorrectedAndNetworkRederived", func(t *testing.T) {
+	t.Run("BogusHeadNeverPinsNetworkHead", func(t *testing.T) {
 		tracker := newRollbackTestTracker(t, "test-rollback-rederive")
 		upsA := common.NewFakeUpstream("a")
 		upsB := common.NewFakeUpstream("b")
@@ -127,27 +120,28 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		// upsA delivers a bogus sample far ahead of the real chain.
 		tracker.SetLatestBlockNumber(upsA, 100_000_000, 0)
 
-		assert.Equal(t, int64(100_000_000), networkLatest(tracker, net))
-		assert.Equal(t, int64(100_000_000-32_000_000), blockHeadLag(tracker, upsB),
-			"healthy upstreams appear to lag the bogus head")
+		assert.Equal(t, int64(100_000_000), upstreamLatest(tracker, upsA))
+		assert.Equal(t, int64(32_000_050), networkLatest(tracker, net),
+			"a lone far-ahead report is not corroborated")
+		assert.Equal(t, int64(50), blockHeadLag(tracker, upsB))
+		assert.Equal(t, int64(0), blockHeadLag(tracker, upsC))
+		assert.Equal(t, int64(0), blockHeadLag(tracker, upsA))
 
-		// upsA's next real observation corrects it.
+		// upsA's next real observation corrects it (rollback beyond tolerance).
 		tracker.SetLatestBlockNumber(upsA, 32_000_100, 0)
 
 		assert.Equal(t, int64(32_000_100), upstreamLatest(tracker, upsA))
-		assert.Equal(t, int64(32_000_100), networkLatest(tracker, net),
-			"network head re-derived as max over per-upstream values")
+		assert.Equal(t, int64(32_000_050), networkLatest(tracker, net),
+			"network head stays at the second-highest reporter")
 		assert.Equal(t, int64(0), blockHeadLag(tracker, upsA))
-		assert.Equal(t, int64(100), blockHeadLag(tracker, upsB),
-			"healthy upstreams' lag recomputed against the corrected head")
-		assert.Equal(t, int64(50), blockHeadLag(tracker, upsC))
+		assert.Equal(t, int64(50), blockHeadLag(tracker, upsB))
+		assert.Equal(t, int64(0), blockHeadLag(tracker, upsC))
 
-		// Gauges follow the corrected values.
-		assert.Equal(t, float64(32_000_100),
+		assert.Equal(t, float64(32_000_050),
 			promUtil.ToFloat64(tracker.getLatestBlockGauge(tracker.projectId, "*", upsA.NetworkLabel(), "*")))
 		assert.Equal(t, float64(32_000_100),
 			promUtil.ToFloat64(tracker.getLatestBlockGauge(tracker.projectId, upsA.VendorName(), upsA.NetworkLabel(), upsA.Id())))
-		assert.Equal(t, float64(100),
+		assert.Equal(t, float64(50),
 			promUtil.ToFloat64(tracker.getHeadLagGauge(tracker.projectId, upsB.VendorName(), upsB.NetworkLabel(), upsB.Id())))
 	})
 
@@ -155,9 +149,11 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		tracker := newRollbackTestTracker(t, "test-rollback-nodrag")
 		upsA := common.NewFakeUpstream("a")
 		upsB := common.NewFakeUpstream("b")
+		upsC := common.NewFakeUpstream("c")
 		net := upsA.NetworkId()
 
 		tracker.SetLatestBlockNumber(upsA, 1_000_000, 0)
+		tracker.SetLatestBlockNumber(upsC, 1_000_000, 0)
 
 		// A far-behind upstream reporting forward progress of its own never
 		// lowers the network head.
@@ -166,15 +162,12 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		assert.Equal(t, int64(1_000_000), networkLatest(tracker, net))
 		assert.Equal(t, int64(1_000_000-200), blockHeadLag(tracker, upsB))
 
-		// Even when upsB goes bogus-high and then corrects itself, the head is
-		// re-derived from the remaining values (upsA's), NOT lowered to upsB's
-		// corrected sample.
 		tracker.SetLatestBlockNumber(upsB, 90_000_000, 0)
-		assert.Equal(t, int64(90_000_000), networkLatest(tracker, net))
+		assert.Equal(t, int64(1_000_000), networkLatest(tracker, net))
+		assert.Equal(t, int64(0), blockHeadLag(tracker, upsB))
 		tracker.SetLatestBlockNumber(upsB, 300, 0)
 		assert.Equal(t, int64(300), upstreamLatest(tracker, upsB))
-		assert.Equal(t, int64(1_000_000), networkLatest(tracker, net),
-			"head re-derived to the healthy upstream's value, not the corrector's")
+		assert.Equal(t, int64(1_000_000), networkLatest(tracker, net))
 		assert.Equal(t, int64(0), blockHeadLag(tracker, upsA))
 		assert.Equal(t, int64(1_000_000-300), blockHeadLag(tracker, upsB))
 	})
@@ -210,24 +203,27 @@ func TestTrackerFinalizedBlockRollbackTolerance(t *testing.T) {
 		assert.Equal(t, int64(10_000), networkFinalized(tracker, ups.NetworkId()))
 	})
 
-	t.Run("BogusFinalizedCorrectedAndNetworkRederived", func(t *testing.T) {
+	t.Run("BogusFinalizedNeverPinsNetworkHead", func(t *testing.T) {
 		tracker := newRollbackTestTracker(t, "test-fin-rollback-rederive")
 		upsA := common.NewFakeUpstream("a")
 		upsB := common.NewFakeUpstream("b")
+		upsC := common.NewFakeUpstream("c")
 		net := upsA.NetworkId()
 
 		tracker.SetFinalizedBlockNumber(upsB, 31_000_000)
+		tracker.SetFinalizedBlockNumber(upsC, 31_000_005)
 		tracker.SetFinalizedBlockNumber(upsA, 99_000_000) // bogus
 
-		assert.Equal(t, int64(99_000_000), networkFinalized(tracker, net))
-		assert.Equal(t, int64(99_000_000-31_000_000), finalizationLag(tracker, upsB))
+		assert.Equal(t, int64(31_000_005), networkFinalized(tracker, net))
+		assert.Equal(t, int64(5), finalizationLag(tracker, upsB))
+		assert.Equal(t, int64(0), finalizationLag(tracker, upsA))
 
 		tracker.SetFinalizedBlockNumber(upsA, 31_000_010)
 
 		assert.Equal(t, int64(31_000_010), upstreamFinalized(tracker, upsA))
-		assert.Equal(t, int64(31_000_010), networkFinalized(tracker, net))
+		assert.Equal(t, int64(31_000_005), networkFinalized(tracker, net))
 		assert.Equal(t, int64(0), finalizationLag(tracker, upsA))
-		assert.Equal(t, int64(10), finalizationLag(tracker, upsB))
+		assert.Equal(t, int64(5), finalizationLag(tracker, upsB))
 	})
 }
 

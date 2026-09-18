@@ -15,7 +15,7 @@ import (
 // the cache. The correction is a pure in-memory synthesis (poller state),
 // never an extra upstream call.
 //
-// In the default max mode the served tip is the MAX head across upstreams, so
+// In the default mode the served tip is the corroborated head across upstreams (second-highest, see common.ServedTipPick.Freshest), so
 // the enforcement is floor-only: a response behind the tip is raised to it and
 // a response at/above it is fresher truth that passes through. In majority
 // served-tip mode (EvmServedTipConfig.EnabledFor "latest") the response is

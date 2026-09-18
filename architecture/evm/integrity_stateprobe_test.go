@@ -193,10 +193,10 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 
 	// The tip eRPC advertises: the majority order statistic over CLAIMED heads
 	// (all live and within a block of each other).
-	tips := make([]ServedTipInput, 0, len(fleet))
+	tips := make([]common.ServedTipInput, 0, len(fleet))
 	ups := make([]common.Upstream, 0, len(fleet))
 	for _, f := range fleet {
-		tips = append(tips, ServedTipInput{UpstreamID: f.id, BlockNumber: head})
+		tips = append(tips, common.ServedTipInput{UpstreamID: f.id, BlockNumber: head})
 		u := &cadenceLaggedUpstream{
 			FakeUpstream: common.NewFakeUpstream(f.id).(*common.FakeUpstream),
 			claimed:      head,
@@ -206,7 +206,7 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 		}
 		ups = append(ups, u)
 	}
-	tip := PickServedTip(tips).Tip
+	tip := common.PickServedTip(tips).Tip
 	require.Equal(t, head, tip, "sanity: a healthy fleet's majority tip is the head")
 
 	// The precondition, asserted so the fixture cannot rot into triviality: the

@@ -28,11 +28,12 @@ import (
 // only upstream HTTP responses are mocked):
 //
 //	rpc1 (lagging): head 0x800
-//	rpc2 (healthy): head 0x1000  →  network tip (default max mode) = 0x1000
+//	rpc2 (healthy): head 0x1000
+//	rpc3 (healthy): head 0x1000  →  network tip (corroborated head) = 0x1000
 //
-// The selection order is pinned to [rpc1, rpc2] so user traffic lands on the
-// lagging upstream first, mirroring the customer's "a small amount of volume
-// is handled by lagging nodes" condition.
+// The selection order is pinned to [rpc1, rpc2, rpc3] so user traffic lands on
+// the lagging upstream first, mirroring the customer's "a small amount of
+// volume is handled by lagging nodes" condition.
 //
 // Bug inventory exercised here (hook: architecture/evm/eth_blockNumber.go):
 //
@@ -57,12 +58,12 @@ import (
 //	   silently ignored for eth_blockNumber.
 const (
 	bniLaggingHead = int64(0x800)  // rpc1's head
-	bniHealthyHead = int64(0x1000) // rpc2's head == expected network tip
+	bniHealthyHead = int64(0x1000) // rpc2/rpc3's head == expected network tip
 )
 
 // setupBniPollerMocks registers persistent state-poller bootstrap mocks for
-// both upstreams (chainId / syncing / latest / finalized), giving rpc1 a
-// lagging head and rpc2 a healthy head. The state pollers fetch heads via
+// every upstream (chainId / syncing / latest / finalized), giving rpc1 a
+// lagging head and rpc2/rpc3 a healthy head. The state pollers fetch heads via
 // eth_getBlockByNumber, so these never collide with user eth_blockNumber
 // traffic.
 func setupBniPollerMocks() {
@@ -73,6 +74,7 @@ func setupBniPollerMocks() {
 	}{
 		{"http://rpc1.localhost", "0x800", "0x700"},
 		{"http://rpc2.localhost", "0x1000", "0x900"},
+		{"http://rpc3.localhost", "0x1000", "0x900"},
 	} {
 		gock.New(h.host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
@@ -104,7 +106,7 @@ func setupBniPollerMocks() {
 }
 
 // setupBniBlockNumberMocks registers persistent user-facing eth_blockNumber
-// mocks: the lagging upstream answers with its stale head, the healthy one
+// mocks: the lagging upstream answers with its stale head, the healthy ones
 // with the tip. Persist (rather than Times(1)) keeps every sub-test
 // deterministic regardless of how many forwards the implementation performs.
 func setupBniBlockNumberMocks() {
@@ -114,15 +116,17 @@ func setupBniBlockNumberMocks() {
 		}).
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x800"}`))
-	gock.New("http://rpc2.localhost").Post("").Persist().
-		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), "eth_blockNumber")
-		}).
-		Reply(200).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+	for _, host := range []string{"http://rpc2.localhost", "http://rpc3.localhost"} {
+		gock.New(host).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_blockNumber")
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+	}
 }
 
-// bniConfig builds a 2-upstream EVM project. integrity==nil exercises the
+// bniConfig builds a 3-upstream EVM project. integrity==nil exercises the
 // modern config path (only DirectiveDefaults, which default enforcement to
 // true). withCache adds a realtime cache policy on eth_blockNumber backed by
 // a real in-memory connector — the customer's setup (theirs had a 2s TTL; we
@@ -163,6 +167,15 @@ func bniConfig(withCache bool, integrity *common.EvmIntegrityConfig) *common.Con
 							StatePollerInterval: common.Duration(10 * time.Second),
 						},
 					},
+					{
+						Id:       "rpc3",
+						Endpoint: "http://rpc3.localhost",
+						Type:     common.UpstreamTypeEvm,
+						Evm: &common.EvmUpstreamConfig{
+							ChainId:             123,
+							StatePollerInterval: common.Duration(10 * time.Second),
+						},
+					},
 				},
 			},
 		},
@@ -195,7 +208,7 @@ func bniConfig(withCache bool, integrity *common.EvmIntegrityConfig) *common.Con
 }
 
 // bniBoot spins up the server, pins upstream order to [rpc1(lagging),
-// rpc2(healthy)] and waits until the pollers have learned the healthy head so
+// rpc2, rpc3 (healthy)] and waits until the pollers have learned the healthy head so
 // the network tip is deterministic before any assertion runs.
 func bniBoot(t *testing.T, cfg *common.Config) (
 	func(body string, headers map[string]string, queryParams map[string]string) (int, map[string]string, string),
@@ -207,7 +220,7 @@ func bniBoot(t *testing.T, cfg *common.Config) (
 
 	prj, err := erpcInstance.GetProject("test_project")
 	require.NoError(t, err)
-	policy.OverrideAllForTest(prj.policyEngine, "rpc1", "rpc2")
+	policy.OverrideAllForTest(prj.policyEngine, "rpc1", "rpc2", "rpc3")
 
 	ntw, err := prj.GetNetwork(context.Background(), util.EvmNetworkId(123))
 	require.NoError(t, err)
