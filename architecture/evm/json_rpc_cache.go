@@ -846,7 +846,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, valueToStore, storageTTL)
+			setCtx := data.WithReverseIndex(ctx, req.NetworkId(), req.CacheKeySuffix())
+			err = connector.Set(setCtx, pk, rk, valueToStore, storageTTL)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -1242,11 +1243,11 @@ func generateKeysForJsonRpcRequest(
 		return "", "", err
 	}
 
-	if blockRef != "" {
-		return fmt.Sprintf("%s:%s", req.NetworkId(), blockRef), cacheKey, nil
-	} else {
-		return fmt.Sprintf("%s:nil", req.NetworkId()), cacheKey, nil
+	ref := blockRef
+	if ref == "" {
+		ref = "nil"
 	}
+	return common.CachePartitionKey(req.NetworkId(), req.CacheKeySuffix(), ref), cacheKey, nil
 }
 
 // compressValueBytes compresses byte data using zstd

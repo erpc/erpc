@@ -237,19 +237,19 @@ type NormalizedRequest struct {
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
-	lastValidResponse      atomic.Pointer[NormalizedResponse]
-	integrityCaught        atomic.Bool  // an integrity check rejected a response during this request
+	lastValidResponse         atomic.Pointer[NormalizedResponse]
+	integrityCaught           atomic.Bool  // an integrity check rejected a response during this request
 	integrityRejectedCheck    atomic.Value // id of the last check that rejected (the "why")
 	integrityRejectedFinality atomic.Value // finality of the last rejected block (for saved/failed metric)
 	// integrityFallback holds the newest FALLBACK-ELIGIBLE original: a response
 	// a recordOnly verdict flagged, escalated to a rejection only so the
 	// failsafe could hunt a validated replacement. If the hunt exhausts,
 	// project.Forward serves this instead of an error.
-	integrityFallback atomic.Pointer[IntegrityFallback]
-	integrityOverheadNs       atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
-	lastUpstream           atomic.Value
-	evmBlockRef            atomic.Value
-	evmBlockNumber         atomic.Value
+	integrityFallback   atomic.Pointer[IntegrityFallback]
+	integrityOverheadNs atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
+	lastUpstream        atomic.Value
+	evmBlockRef         atomic.Value
+	evmBlockNumber      atomic.Value
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -566,6 +566,24 @@ func (r *NormalizedRequest) NetworkId() string {
 		return "n/a"
 	}
 	return r.network.Id()
+}
+
+// CacheKeySuffix returns the optional JSON-RPC cache partition-key suffix
+// configured on this request's network, or "" when unset / no network.
+func (r *NormalizedRequest) CacheKeySuffix() string {
+	if r == nil {
+		return ""
+	}
+	r.RLock()
+	defer r.RUnlock()
+	if r.network == nil {
+		return ""
+	}
+	cfg := r.network.Config()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.CacheKeySuffix
 }
 
 // NetworkLabel returns a user-friendly label for the network suitable for metrics.

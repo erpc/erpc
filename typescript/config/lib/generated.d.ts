@@ -664,6 +664,7 @@ export declare const UserAgentTrackingModeSimplified: UserAgentTrackingMode;
 export declare const UserAgentTrackingModeRaw: UserAgentTrackingMode;
 export interface NetworkDefaults {
     rateLimitBudget?: string;
+    cacheKeySuffix?: string;
     failsafe?: (FailsafeConfig | undefined)[];
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
@@ -1313,6 +1314,7 @@ export interface NetworkConfig {
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
     alias?: string;
+    cacheKeySuffix?: string;
     methods?: MethodsConfig;
     multiplexing?: boolean;
     staticResponses?: (StaticResponseConfig | undefined)[];

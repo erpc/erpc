@@ -703,7 +703,8 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	value := []byte("tx-receipt-value")
 
 	// Store the value using the concrete partition key. This should also create the reverse index entry.
-	err = connector.Set(ctx, concretePartitionKey, rangeKey, value, nil)
+	setCtx := WithReverseIndexWildcard(ctx, wildcardPartitionKey)
+	err = connector.Set(setCtx, concretePartitionKey, rangeKey, value, nil)
 	require.NoError(t, err)
 
 	// Verify that the reverse index key exists in Redis
@@ -715,6 +716,119 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	got, err := connector.Get(ctx, "idx_reverse", wildcardPartitionKey, rangeKey, nil)
 	require.NoError(t, err)
 	require.Equal(t, value, got)
+}
+
+func TestRedisConnector_ReverseIndex_CacheKeySuffix(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+
+	cfg := &common.RedisConnectorConfig{
+		Addr:        m.Addr(),
+		InitTimeout: common.Duration(2 * time.Second),
+		GetTimeout:  common.Duration(2 * time.Second),
+		SetTimeout:  common.Duration(2 * time.Second),
+	}
+	require.NoError(t, cfg.SetDefaults())
+
+	connector, err := NewRedisConnector(ctx, &logger, "test-reverse-index-suffix", cfg)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return connector.initializer.State() == util.StateReady
+	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+	rangeKey := "eth_getTransactionReceipt:abc"
+	require.NoError(t, connector.Set(WithReverseIndexWildcard(ctx, "evm:998:*"), "evm:998:64321354", rangeKey, []byte("regular"), nil))
+	require.NoError(t, connector.Set(WithReverseIndexWildcard(ctx, "evm:998:systx:*"), "evm:998:systx:64321354", rangeKey, []byte("systx"), nil))
+
+	require.True(t, m.Exists(fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, "evm:998:*", rangeKey)))
+	require.True(t, m.Exists(fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, "evm:998:systx:*", rangeKey)))
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "evm:998:*", rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("regular"), got)
+
+	got, err = connector.Get(ctx, ConnectorReverseIndex, "evm:998:systx:*", rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("systx"), got)
+}
+
+func TestRedisConnector_ReverseIndex_CacheKeySuffix_Delete(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+
+	cfg := &common.RedisConnectorConfig{
+		Addr:        m.Addr(),
+		InitTimeout: common.Duration(2 * time.Second),
+		GetTimeout:  common.Duration(2 * time.Second),
+		SetTimeout:  common.Duration(2 * time.Second),
+	}
+	require.NoError(t, cfg.SetDefaults())
+
+	connector, err := NewRedisConnector(ctx, &logger, "test-reverse-index-suffix-delete", cfg)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return connector.initializer.State() == util.StateReady
+	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+	rangeKey := "eth_getTransactionReceipt:abc"
+	require.NoError(t, connector.Set(WithReverseIndex(ctx, "evm:998", ""), "evm:998:64321354", rangeKey, []byte("regular"), nil))
+	require.NoError(t, connector.Set(WithReverseIndex(ctx, "evm:998", "systx"), "evm:998:systx:64321354", rangeKey, []byte("systx"), nil))
+
+	regularRvi := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, "evm:998:*", rangeKey)
+	systxRvi := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, "evm:998:systx:*", rangeKey)
+	require.True(t, m.Exists(regularRvi))
+	require.True(t, m.Exists(systxRvi))
+
+	require.NoError(t, connector.Delete(WithReverseIndex(ctx, "evm:998", "systx"), "evm:998:systx:64321354", rangeKey))
+
+	require.True(t, m.Exists(regularRvi), "unsuffixed reverse-index slot must survive a suffixed delete")
+	require.False(t, m.Exists(systxRvi), "suffixed reverse-index slot must be cleared")
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "evm:998:*", rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("regular"), got)
+}
+
+func TestRedisConnector_ReverseIndex_ColonContainingRef(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+	cfg := &common.RedisConnectorConfig{
+		Addr:        m.Addr(),
+		InitTimeout: common.Duration(2 * time.Second),
+		GetTimeout:  common.Duration(2 * time.Second),
+		SetTimeout:  common.Duration(2 * time.Second),
+	}
+	require.NoError(t, cfg.SetDefaults())
+	connector, err := NewRedisConnector(ctx, &logger, "test-reverse-index-colon-ref", cfg)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return connector.initializer.State() == util.StateReady
+	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+	rangeKey := "eth_getTransactionReceipt:colon-ref"
+	require.NoError(t, connector.Set(
+		WithReverseIndexWildcard(ctx, "evm:998:*"),
+		"evm:998:foo:bar", rangeKey, []byte("colon-ref-body"), nil,
+	))
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "evm:998:*", rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("colon-ref-body"), got)
+
+	_, err = connector.Get(ctx, ConnectorReverseIndex, "evm:998:foo:*", rangeKey, nil)
+	require.Error(t, err, "must not index under a last-colon split of a colon-containing ref")
 }
 
 func TestRedisConnector_ChainIsolation(t *testing.T) {
