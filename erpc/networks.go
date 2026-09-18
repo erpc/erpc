@@ -472,6 +472,7 @@ func (n *Network) gatherEvmTipInputsForMethod(
 func evmTipBallot(upstreams []common.Upstream, useFinalized bool) (common.ServedTipPick, servedTipReference) {
 	live := make([]common.ServedTipInput, 0, len(upstreams))
 	var capped []common.ServedTipInput
+	var available int64
 	for _, cu := range upstreams {
 		u, ok := cu.(common.EvmUpstream)
 		if !ok || u.EvmStatePoller() == nil {
@@ -484,6 +485,7 @@ func evmTipBallot(upstreams []common.Upstream, useFinalized bool) (common.Served
 		if blk <= 0 {
 			continue
 		}
+		available = max(available, blk)
 		in := common.ServedTipInput{
 			UpstreamID:  u.Id(),
 			BlockNumber: blk,
@@ -499,10 +501,10 @@ func evmTipBallot(upstreams []common.Upstream, useFinalized bool) (common.Served
 		// the only observations available. (No live head means no live reference
 		// for the regression guard either; it falls back to its own last
 		// corroborated pick, see guardServedTipRegression.)
-		return common.PickServedTip(capped), servedTipReference{}
+		return common.PickServedTip(capped), servedTipReference{Available: available}
 	}
 	pick := common.PickServedTip(live)
-	return pick, servedTipReference{Corroborated: pick.Freshest, Max: pick.Max}
+	return pick, servedTipReference{Corroborated: pick.Freshest, Max: pick.Max, Available: available}
 }
 
 // servedTipReference is what the LIVE (non-capped) heads of one ballot say,
@@ -539,6 +541,12 @@ type servedTipReference struct {
 	// pick in the very shape the guard exists for (one live witness left, two
 	// stuck upstreams outvoting it).
 	Max int64
+
+	// Available is the highest effective head across EVERY candidate, live or
+	// static-capped: the bound above which no candidate holds the block. Only
+	// the future-block short-circuit reads it; the ballot and the guard ignore
+	// caps, but a capped archive still serves the blocks below its cap.
+	Available int64
 }
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
@@ -809,16 +817,17 @@ func (n *Network) servedTipEnabledFor(tag string) bool {
 	return n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTipEnabledFor(tag)
 }
 
-// evmHeadReference is the corroborated head and the raw max over the eligible,
-// non-syncing upstreams for one axis — the same ballot the served tip votes
-// on. It serves the default (non-served-tip) head accessors and the
-// future-block short-circuit, which needs the raw max. A cap-only set has no
-// live reference, so its caps stand in: they are the only heads anyone in it
-// can serve.
+// evmHeadReference is the corroborated head, the raw live max and the servable
+// ceiling over the eligible, non-syncing upstreams for one axis — the same
+// ballot the served tip votes on. It serves the default (non-served-tip) head
+// accessors and the future-block short-circuit. A cap-only set has no live
+// reference, so its caps stand in: they are the only heads anyone in it can
+// serve.
 func (n *Network) evmHeadReference(ctx context.Context, useFinalized bool) servedTipReference {
 	pick, ref := evmTipBallot(n.tipCandidateUpstreams(ctx, "*"), useFinalized)
 	if ref.Max <= 0 && pick.Inputs > 0 {
-		return servedTipReference{Corroborated: pick.Freshest, Max: pick.Max}
+		ref.Corroborated = pick.Freshest
+		ref.Max = pick.Max
 	}
 	return ref
 }
@@ -830,9 +839,9 @@ func (n *Network) evmHeadReference(ctx context.Context, useFinalized bool) serve
 // them only burns latency and load before they each return empty — returning the
 // null here skips that fan-out entirely.
 //
-// Safety: it compares against the MAX observed head across eligible upstreams
-// (not the majority served tip), so it never nulls out a block the most-ahead
-// upstream actually has. It is gated on served-tip being enabled for the latest
+// Safety: it compares against the highest effective head across eligible
+// upstreams, static caps included (servedTipReference.Available), so it never
+// nulls out a block any upstream actually serves. It is gated on served-tip being enabled for the latest
 // axis — the same opt-in that makes the head trustworthy — and the synthesized
 // response is returned directly from Forward, so it is never written to cache
 // (the block will exist later). The post-forward empty guard remains as
@@ -851,7 +860,7 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 		return nil, false
 	}
 	useFinalized := n.cfg.Evm.EmptyResultConfidence == common.AvailbilityConfidenceFinalized
-	maxHead := n.evmHeadReference(ctx, useFinalized).Max
+	maxHead := n.evmHeadReference(ctx, useFinalized).Available
 	if maxHead <= 0 || bn <= maxHead {
 		// Unknown head (fail open) or block within reach of some upstream.
 		return nil, false

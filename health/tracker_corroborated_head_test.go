@@ -1,7 +1,9 @@
 package health
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
@@ -23,6 +25,93 @@ func upstreamLatestGauge(t *Tracker, ups common.Upstream) float64 {
 
 func networkLatestTimestamp(t *Tracker, net string) int64 {
 	return t.getMetadata(metadataKey{nil, net}).evmLatestBlockTimestamp.Load()
+}
+
+type blockingIDUpstream struct {
+	common.Upstream
+	armed   atomic.Bool
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (u *blockingIDUpstream) Id() string {
+	if u.armed.CompareAndSwap(true, false) {
+		close(u.reached)
+		<-u.release
+	}
+	return u.Upstream.Id()
+}
+
+func TestTrackerCorroboratedHeadConcurrentUpdatesDoNotRegress(t *testing.T) {
+	tracker := newRollbackTestTracker(t, "test-corr-concurrent")
+	a := common.NewFakeUpstream("a")
+	b := common.NewFakeUpstream("b")
+	c := &blockingIDUpstream{
+		Upstream: common.NewFakeUpstream("c"),
+		reached:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	d := common.NewFakeUpstream("d")
+	net := a.NetworkId()
+	upstreams := []common.Upstream{a, b, c, d}
+
+	ntwMeta := tracker.getMetadata(metadataKey{nil, net})
+	ntwMeta.reporters = upstreams
+	for i, head := range []int64{99, 100, 99, 99} {
+		tracker.getMetadata(metadataKey{upstreams[i], net}).evmLatestBlockNumber.Store(head)
+	}
+	ntwMeta.evmLatestBlockNumber.Store(99)
+
+	c.armed.Store(true)
+	firstDone := make(chan struct{})
+	go func() {
+		tracker.SetLatestBlockNumber(a, 101, 0)
+		close(firstDone)
+	}()
+	<-c.reached
+
+	secondDone := make(chan struct{})
+	go func() {
+		tracker.SetLatestBlockNumber(b, 102, 0)
+		close(secondDone)
+	}()
+
+	close(c.release)
+	<-firstDone
+	<-secondDone
+	assert.Equal(t, int64(101), networkLatest(tracker, net))
+}
+
+func TestTrackerCorroboratedHeadIncludesPollersWithoutRequestMetrics(t *testing.T) {
+	tracker := newRollbackTestTracker(t, "test-corr-reporters")
+	a := common.NewFakeUpstream("a")
+	b := common.NewFakeUpstream("b")
+	outlier := common.NewFakeUpstream("outlier")
+	net := a.NetworkId()
+
+	tracker.getUpsMetrics(upstreamKey{ups: outlier, method: "eth_call", finality: common.DataFinalityStateAll})
+	tracker.SetLatestBlockNumber(a, 100, 0)
+	tracker.SetLatestBlockNumber(b, 101, 0)
+	tracker.SetLatestBlockNumber(outlier, 1_000_000, 0)
+
+	assert.Equal(t, int64(101), networkLatest(tracker, net))
+}
+
+func TestTrackerCorroboratedHeadCarriesItsReportersTimestamp(t *testing.T) {
+	tracker := newRollbackTestTracker(t, "test-corr-block-time")
+	a := common.NewFakeUpstream("a")
+	b := common.NewFakeUpstream("b")
+	net := a.NetworkId()
+
+	tracker.SetLatestBlockNumber(a, 100, 1_800_000_000)
+	tracker.SetLatestBlockNumber(b, 101, 1_800_000_001)
+	tracker.SetLatestBlockNumber(a, 102, 1_800_000_002)
+	tracker.SetLatestBlockNumber(b, 103, 1_800_000_003)
+	tracker.SetLatestBlockNumber(a, 104, 1_800_000_004)
+
+	assert.Equal(t, int64(103), networkLatest(tracker, net))
+	assert.Equal(t, int64(1_800_000_003), networkLatestTimestamp(tracker, net))
+	assert.Equal(t, time.Second, tracker.GetNetworkBlockTime(net))
 }
 
 func TestTrackerCorroboratedLatestHead(t *testing.T) {
