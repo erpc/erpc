@@ -708,6 +708,7 @@ type NetworkDefaults struct {
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
 	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm" tstype:"TsSvmNetworkConfigForDefaults"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+	CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -741,6 +742,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
 		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
 		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
+		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
 	}
 
 	var old oldNetworkDefaults
@@ -752,6 +754,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 
 	// Convert old format to new format
 	n.RateLimitBudget = old.RateLimitBudget
+	n.CacheKeySuffix = old.CacheKeySuffix
 	n.SelectionPolicy = old.SelectionPolicy
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Evm = old.Evm
@@ -2235,6 +2238,10 @@ type NetworkConfig struct {
 	// Integrity overrides the project-wide data-integrity configuration for this
 	// network. Merges over the project block (network wins).
 	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
+	// CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
+	// key as {networkId}:{suffix}:{blockRef} so two networks that share a
+	// chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+	CacheKeySuffix string `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2305,6 +2312,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		Alias             string                   `yaml:"alias,omitempty"`
 		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
 		StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty"`
+		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
 	}
 
 	var old oldNetworkConfig
@@ -2324,6 +2332,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.Alias = old.Alias
 	n.Methods = old.Methods
 	n.StaticResponses = old.StaticResponses
+	n.CacheKeySuffix = old.CacheKeySuffix
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -3006,6 +3015,15 @@ type RateLimitStoreConfig struct {
 	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
 	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
 	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
+}
+
+// CachePartitionKey builds the JSON-RPC cache partition key.
+// Empty suffix keeps {networkId}:{ref}; a set suffix yields {networkId}:{suffix}:{ref}.
+func CachePartitionKey(networkId, suffix, ref string) string {
+	if suffix == "" {
+		return networkId + ":" + ref
+	}
+	return networkId + ":" + suffix + ":" + ref
 }
 
 func (c *NetworkConfig) NetworkId() string {

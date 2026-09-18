@@ -703,6 +703,7 @@ export const UserAgentTrackingModeSimplified: UserAgentTrackingMode = "simplifie
 export const UserAgentTrackingModeRaw: UserAgentTrackingMode = "raw";
 export interface NetworkDefaults {
   rateLimitBudget?: string;
+  cacheKeySuffix?: string;
   failsafe?: (FailsafeConfig | undefined)[];
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
@@ -1334,6 +1335,7 @@ export interface NetworkConfig {
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   alias?: string;
+  cacheKeySuffix?: string;
   methods?: MethodsConfig;
   multiplexing?: boolean;
   staticResponses?: (StaticResponseConfig | undefined)[];

@@ -118,17 +118,15 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 		m.cache.Set(key, value, 0)
 	}
 
-	// Reverse index: let wildcard Gets ("evm:1:*" / "svm:mainnet-beta:*") resolve
-	// to the concrete partition key that was most recently written, so callers
-	// can look up cached entries without knowing the block/slot ref up front.
-	//
-	// The partition key shape is <arch>:<networkId>:<ref> for both EVM and SVM
-	// (and any future <arch>:<id>:<ref> architecture). We stop after 3 segments
-	// so the "ref" itself may contain colons without breaking the wildcard.
+	// Reverse index: let wildcard Gets ("evm:1:*" / "svm:mainnet-beta:*" /
+	// "evm:998:systx:*") resolve to the concrete partition key that was most
+	// recently written, so callers can look up cached entries without knowing
+	// the block/slot ref up front. The wildcard partition comes from
+	// WithReverseIndex / WithReverseIndexWildcard
+	// (CachePartitionKey(networkId, suffix, "*")), not from splitting the
+	// opaque concrete key.
 	if isReverseIndexable(partitionKey) {
-		parts := strings.SplitAfterN(partitionKey, ":", 3)
-		if len(parts) >= 2 {
-			wildcardPartitionKey := parts[0] + parts[1] + "*"
+		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, []byte(partitionKey), 0)
 		}
 	}
@@ -325,12 +323,11 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 	m.cache.Del(key)
 
 	// Clean up reverse index if Set would have written one. Must mirror Set
-	// exactly — anything Set writes, Delete must clear, or wildcard lookups
-	// will return stale pointers to evicted partition keys.
+	// exactly (same WithReverseIndex ctx) — anything Set writes, Delete must
+	// clear, or wildcard lookups will return stale pointers to evicted
+	// partition keys.
 	if isReverseIndexable(partitionKey) {
-		parts := strings.SplitAfterN(partitionKey, ":", 3)
-		if len(parts) >= 2 {
-			wildcardPartitionKey := parts[0] + parts[1] + "*"
+		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
 			m.cache.Del(reverseKey)
 		}

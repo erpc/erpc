@@ -2104,6 +2104,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
+		if n.CacheKeySuffix == "" {
+			n.CacheKeySuffix = defaults.CacheKeySuffix
+		}
 		if len(defaults.Failsafe) > 0 {
 			if len(n.Failsafe) == 0 {
 				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
