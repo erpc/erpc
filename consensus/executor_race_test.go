@@ -540,7 +540,7 @@ func TestRace_TwoParticipants_OneInfraError_CorrectlyLowParticipants(t *testing.
 		"validParticipants=1 < threshold=2 is low-participants")
 
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(&lg, nil, analysis)
 
 	require.NotNil(t, winner)
 	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),
@@ -686,7 +686,7 @@ func TestRace_AllParticipantsReturnNil_LowParticipants(t *testing.T) {
 	}
 
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(&lg, nil, analysis)
 
 	require.NotNil(t, winner)
 	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),
