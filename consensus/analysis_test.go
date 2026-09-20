@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,151 @@ import (
 
 func init() {
 	util.ConfigureTestLogger()
+}
+
+func permanentMissingData(code int, msg string) error {
+	err := common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, nil),
+		nil,
+	)
+	err.(*common.ErrEndpointMissingData).WithPermanentMissingData(true)
+	return err
+}
+
+func transientMissingData(code int, msg string) error {
+	return common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, nil),
+		nil,
+	)
+}
+
+// TestErrorToConsensusHash_PermanentMissingDataAgreesAcrossWireCodes locks that
+// Alchemy -32007 and QuickNode -32009 (both permanent ErrEndpointMissingData for
+// the same skipped/absent slot) share one consensus hash so returnError does
+// not dispute them.
+func TestErrorToConsensusHash_PermanentMissingDataAgreesAcrossWireCodes(t *testing.T) {
+	t.Parallel()
+
+	alchemy := permanentMissingData(-32007, "Slot 500281501 was skipped")
+	quicknode := permanentMissingData(-32009, "Slot 500281501 was skipped, or missing in long-term storage")
+
+	hAlchemy := errorToConsensusHash(alchemy)
+	hQuicknode := errorToConsensusHash(quicknode)
+
+	assert.Equal(t, "ErrEndpointMissingData:permanent", hAlchemy)
+	assert.Equal(t, hAlchemy, hQuicknode,
+		"-32007 and -32009 permanent missing-data must hash identically")
+
+	// Wire codes must still disagree — only the consensus hash collapses them.
+	var jreAlchemy, jreQN *common.ErrJsonRpcExceptionInternal
+	require.True(t, errors.As(alchemy, &jreAlchemy))
+	require.True(t, errors.As(quicknode, &jreQN))
+	assert.EqualValues(t, -32007, jreAlchemy.NormalizedCode())
+	assert.EqualValues(t, -32009, jreQN.NormalizedCode())
+}
+
+func TestErrorToConsensusHash_TransientMissingDataKeepsWireCode(t *testing.T) {
+	t.Parallel()
+
+	tipLag := transientMissingData(-32004, "Block not available for slot 500281501")
+	assert.Equal(t, "jsonrpc:-32004", errorToConsensusHash(tipLag),
+		"transient missing-data must not join the permanent class")
+
+	// Transient tip-lag must not share the permanent skipped-slot hash.
+	perm := permanentMissingData(-32007, "Slot skipped")
+	assert.NotEqual(t, errorToConsensusHash(tipLag), errorToConsensusHash(perm))
+}
+
+func TestErrorToConsensusHash_DistinctJsonRpcErrorsDoNotCollide(t *testing.T) {
+	t.Parallel()
+
+	client := common.NewErrEndpointClientSideException(
+		common.NewErrJsonRpcExceptionInternal(-32602, common.JsonRpcErrorNumber(-32602), "invalid params", nil, nil),
+	)
+	unsupported := common.NewErrEndpointUnsupported(
+		common.NewErrJsonRpcExceptionInternal(-32601, common.JsonRpcErrorNumber(-32601), "method not found", nil, nil),
+	)
+	exec := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(3, 3, "execution reverted", nil, nil),
+	)
+
+	hClient := errorToConsensusHash(client)
+	hUnsupported := errorToConsensusHash(unsupported)
+	hExec := errorToConsensusHash(exec)
+	hPerm := errorToConsensusHash(permanentMissingData(-32007, "skipped"))
+
+	assert.Equal(t, "jsonrpc:-32602", hClient)
+	assert.Equal(t, "jsonrpc:-32601", hUnsupported)
+	assert.Equal(t, "jsonrpc:3", hExec)
+	assert.NotEqual(t, hClient, hUnsupported)
+	assert.NotEqual(t, hClient, hExec)
+	assert.NotEqual(t, hPerm, hClient)
+	assert.NotEqual(t, hPerm, hUnsupported)
+	assert.NotEqual(t, hPerm, hExec)
+}
+
+// TestClassifyAndHash_PermanentSlotSkippedAgreesUnderReturnError: 2-of-N with
+// Alchemy -32007 vs QuickNode -32009 must agree as ConsensusError, not
+// ErrConsensusDispute.
+func TestClassifyAndHash_PermanentSlotSkippedAgreesUnderReturnError(t *testing.T) {
+	t.Parallel()
+
+	lg := zerolog.Nop()
+	alchemy := permanentMissingData(-32007, "Slot skipped")
+	quicknode := permanentMissingData(-32009, "Slot skipped, or missing in long-term storage")
+
+	responses := []*execResult{
+		{Err: alchemy, Index: 0},
+		{Err: quicknode, Index: 1},
+	}
+	cfg := &config{
+		maxParticipants:         2,
+		agreementThreshold:      2,
+		disputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+		lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+	}
+
+	analysis := &consensusAnalysis{
+		config:            cfg,
+		groups:            make(map[string]*responseGroup),
+		totalParticipants: len(responses),
+		method:            "getBlock",
+	}
+	for _, r := range responses {
+		classifyAndHashResponse(r, nil, cfg)
+		if r.CachedResponseType != ResponseTypeInfrastructureError {
+			analysis.validParticipants++
+		}
+		group, exists := analysis.groups[r.CachedHash]
+		if !exists {
+			group = &responseGroup{
+				Hash:         r.CachedHash,
+				ResponseType: r.CachedResponseType,
+				ResponseSize: r.CachedResponseSize,
+			}
+			analysis.groups[r.CachedHash] = group
+		}
+		group.Count++
+		group.Results = append(group.Results, r)
+		if r.Err != nil && group.FirstError == nil {
+			group.FirstError = r.Err
+		}
+	}
+
+	validGroups := analysis.getValidGroups()
+	require.Len(t, validGroups, 1, "Alchemy -32007 and QN -32009 must form one group")
+	assert.Equal(t, 2, validGroups[0].Count)
+	assert.Equal(t, ResponseTypeConsensusError, validGroups[0].ResponseType)
+	assert.Equal(t, "ErrEndpointMissingData:permanent", validGroups[0].Hash)
+
+	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
+	winner := e.determineWinner(&lg, analysis)
+
+	require.NotNil(t, winner)
+	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeEndpointMissingData),
+		"winner must be missing-data, not a dispute")
+	assert.False(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusDispute),
+		"must NOT return ErrConsensusDispute when permanent skips agree")
 }
 
 // TestErrUpstreamsExhausted_NotMisclassifiedAsConsensusError verifies that
