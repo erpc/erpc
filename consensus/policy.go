@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,13 @@ type config struct {
 	maxWaitOnResult         *common.AdaptiveDuration
 	maxWaitOnEmpty          *common.AdaptiveDuration
 	requiredParticipants    []*common.ConsensusRequiredParticipant
+
+	// matchKeyFn derives an architecture-specific grouping key from a
+	// participant's response (e.g. SVM commitment level). When it returns
+	// non-empty, the key is mixed into the response's consensus hash so
+	// responses that differ only along that dimension never share a group.
+	// nil preserves plain canonical-hash grouping.
+	matchKeyFn func(ctx context.Context, resp *common.NormalizedResponse) string
 }
 
 // builder is the internal builder used by NewConsensus.
@@ -133,6 +141,15 @@ func (b *builder) WithMaxWaitOnEmpty(d *common.AdaptiveDuration) *builder {
 }
 func (b *builder) WithRequiredParticipants(v []*common.ConsensusRequiredParticipant) *builder {
 	b.cfg.requiredParticipants = v
+	return b
+}
+
+// WithMatchKeyFn installs an architecture-specific response grouping key
+// (see config.matchKeyFn). Used by NewConsensus callers that serve an
+// architecture whose responses are only comparable along an extra
+// dimension — SVM networks install svm.CommitmentMatchKey.
+func (b *builder) WithMatchKeyFn(fn func(ctx context.Context, resp *common.NormalizedResponse) string) *builder {
+	b.cfg.matchKeyFn = fn
 	return b
 }
 

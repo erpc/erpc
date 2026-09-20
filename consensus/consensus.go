@@ -82,3 +82,14 @@ func (c *Consensus) Run(
 	ex := &executor{consensusPolicy: c.policy}
 	return ex.Run(ctx, req, inner)
 }
+
+// SetResponseMatchKeyFn installs an architecture-specific grouping key for
+// consensus responses — e.g. svm.CommitmentMatchKey on SVM networks, so
+// responses evaluated at different commitment levels never share a voting
+// group. Must be called before Run; it is not safe to swap mid-flight.
+func (c *Consensus) SetResponseMatchKeyFn(fn func(ctx context.Context, resp *common.NormalizedResponse) string) {
+	if c == nil || c.policy == nil || c.policy.config == nil || fn == nil {
+		return
+	}
+	c.policy.config.matchKeyFn = fn
+}

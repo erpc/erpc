@@ -128,6 +128,12 @@ func NewNetwork(
 				if err != nil {
 					return nil, err
 				}
+				// SVM responses are only comparable at the same commitment
+				// level; group participants accordingly so differing levels
+				// form separate voting groups instead of fabricated disputes.
+				if nwCfg.Svm != nil {
+					c.SetResponseMatchKeyFn(svm.CommitmentMatchKey)
+				}
 				cons = c
 			}
 			ex, err := NewNetworkExecutor(fsCfg, &lg, cons, dynamicBlockUnavailableDelay)

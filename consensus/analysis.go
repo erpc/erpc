@@ -536,14 +536,33 @@ func resultOrErrorToHash(r *execResult, ctx context.Context, config *config) (st
 		return "", errNoJsonRpcResponse
 	}
 
+	var (
+		hash string
+		err  error
+	)
 	if config.ignoreFields != nil {
 		if originalReq, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok {
 			if method, err := originalReq.Method(); err == nil {
 				if fields, ok := methodFields(config.ignoreFields, method); ok {
-					return jr.CanonicalHashWithIgnoredFields(fields, ctx)
+					hash, err = jr.CanonicalHashWithIgnoredFields(fields, ctx)
 				}
 			}
 		}
 	}
-	return jr.CanonicalHash()
+	if hash == "" && err == nil {
+		hash, err = jr.CanonicalHash()
+	}
+	if err != nil {
+		return "", err
+	}
+
+	// Mix in the architecture-specific match key (e.g. SVM commitment
+	// level) so responses that legitimately differ along that dimension
+	// land in separate groups instead of fabricating a dispute.
+	if config.matchKeyFn != nil && r.Result != nil {
+		if mk := config.matchKeyFn(ctx, r.Result); mk != "" {
+			return "match:" + mk + "|" + hash, nil
+		}
+	}
+	return hash, nil
 }
