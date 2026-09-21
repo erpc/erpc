@@ -92,7 +92,7 @@ var counterHandleCreateMu sync.Mutex
 // after an idle sweep evicts the series, a held child mutates an object
 // that is no longer collected.
 func CounterHandle(cv CounterIncrementable, labels ...string) prometheus.Counter {
-	// Key on the POST-filter labels. Under a CounterLabelFilter several
+	// Key on the POST-projection labels. Under a label customization several
 	// full-schema tuples collapse onto one underlying series; keying on the
 	// full tuple would create one cache entry per tuple sharing that series,
 	// and the idle sweep would then delete a series another live entry is

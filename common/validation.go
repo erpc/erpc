@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
@@ -156,6 +157,14 @@ func (m *MetricsConfig) Validate() error {
 				return fmt.Errorf("metrics.histogramBuckets contains invalid float value: %s", part)
 			}
 		}
+	}
+
+	// A malformed customization silently keeps or drops the wrong families, so
+	// reject it here rather than at Init, where the process is already committed
+	// to starting.
+	o := m.TelemetryOptions()
+	if _, err := telemetry.NewMetricPolicy(o.Customizations, o.LegacyLabels); err != nil {
+		return err
 	}
 
 	return nil
