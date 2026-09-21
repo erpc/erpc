@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -1242,6 +1243,8 @@ func (r *JsonRpcRequest) NetworkIdHint() string {
 // such as "Method" that Go's case-insensitive field matching maps onto the
 // same field. Decoders disagree about which of the two wins, so erpc reads
 // none of them and reports the object as malformed instead.
+var errNoMethodMember = errors.New(`json-rpc request has no "method" member`)
+
 type uniqueString struct {
 	member string
 	value  string
@@ -1377,9 +1380,11 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	type Alias JsonRpcRequest
 	aux := &struct {
 		*Alias
-		ID        json.RawMessage `json:"id,omitempty"`
-		Method    uniqueString    `json:"method"`
-		NetworkID string          `json:"networkId,omitempty"`
+		ID     json.RawMessage `json:"id,omitempty"`
+		Method uniqueString    `json:"method"`
+		// interface{} rather than string: a non-string value is ignored, as it
+		// always was, instead of failing a request the URL already routed.
+		NetworkID interface{} `json:"networkId,omitempty"`
 	}{
 		Alias:  (*Alias)(r),
 		Method: uniqueString{member: "method"},
@@ -1390,8 +1395,14 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	// Absent and present-but-empty stay distinct on the wire: an object with
+	// no "method" member has always been reported as unparseable (-32700),
+	// while "" or null reaches Validate's "method is required" (-32602).
+	if !aux.Method.seen {
+		return errNoMethodMember
+	}
 	r.Method = aux.Method.value
-	r.networkId = aux.NetworkID
+	r.networkId, _ = aux.NetworkID.(string)
 
 	if aux.ID != nil {
 		var id interface{}

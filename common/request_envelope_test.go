@@ -39,6 +39,9 @@ func TestEnvelope_MethodMatchesForwardedMethod(t *testing.T) {
 		"with networkId":     {`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1,"networkId":"evm:42161"}`, "eth_blockNumber"},
 		"string id":          {`{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":"abc"}`, "eth_syncing"},
 		"unknown extra keys": {`{"jsonrpc":"2.0","method":"debug_traceCall","params":[],"id":1,"extra":{"method":"nope"}}`, "debug_traceCall"},
+		"escaped value":      {`{"jsonrpc":"2.0","method":"eth_\u0063all","params":[],"id":1}`, "eth_call"},
+		"padded whitespace":  {`{ "jsonrpc" : "2.0" , "method" :  "eth_call" , "params" : [ ] , "id" : 1 }`, "eth_call"},
+		"non-ascii value":    {`{"jsonrpc":"2.0","method":"eth_callé","params":[],"id":1}`, "eth_callé"},
 	}
 
 	for name, tc := range bodies {
@@ -85,6 +88,8 @@ func TestEnvelope_RejectsRepeatedMethodMember(t *testing.T) {
 		"case variant":       `{"jsonrpc":"2.0","method":"eth_chainId","Method":"eth_sendRawTransaction","id":1}`,
 		"upper case variant": `{"jsonrpc":"2.0","method":"eth_chainId","METHOD":"eth_sendRawTransaction","id":1}`,
 		"three of them":      `{"jsonrpc":"2.0","method":"eth_chainId","method":"eth_call","Method":"eth_sendRawTransaction","id":1}`,
+		"same value twice":   `{"jsonrpc":"2.0","method":"eth_call","method":"eth_call","id":1}`,
+		"null then string":   `{"jsonrpc":"2.0","method":null,"method":"eth_sendRawTransaction","id":1}`,
 	}
 
 	for name, body := range bodies {
@@ -108,6 +113,37 @@ func TestEnvelope_RejectsRepeatedMethodMember(t *testing.T) {
 	}
 }
 
+// TestEnvelope_UnusableMethodNeverResolves covers member values that are not a
+// method name: the request is reported, never forwarded, and nothing panics.
+func TestEnvelope_UnusableMethodNeverResolves(t *testing.T) {
+	bodies := map[string]string{
+		"absent":  `{"jsonrpc":"2.0","params":[],"id":1}`,
+		"empty":   `{"jsonrpc":"2.0","method":"","params":[],"id":1}`,
+		"null":    `{"jsonrpc":"2.0","method":null,"params":[],"id":1}`,
+		"number":  `{"jsonrpc":"2.0","method":123,"params":[],"id":1}`,
+		"object":  `{"jsonrpc":"2.0","method":{"a":1},"params":[],"id":1}`,
+		"array":   `{"jsonrpc":"2.0","method":["eth_call"],"params":[],"id":1}`,
+		"cut off": `{"jsonrpc":"2.0","method":"eth_ca`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			nq := NewNormalizedRequest([]byte(body))
+			if err := nq.Validate(); err == nil {
+				t.Fatal("Validate() accepted a request with no usable method")
+			}
+			if m, err := nq.Method(); err == nil || m != "" {
+				t.Fatalf("Method() = (%q, %v), want an error and no method", m, err)
+			}
+			if jrq, err := nq.JsonRpcRequest(); err == nil || jrq != nil {
+				t.Fatalf("JsonRpcRequest() = (%v, %v), want an error and no envelope", jrq, err)
+			}
+			if nq.NetworkIdHint() != "" {
+				t.Fatal("NetworkIdHint() returned a hint from a request that never parsed")
+			}
+		})
+	}
+}
+
 // TestEnvelope_NetworkIdHint covers body-based routing reading the hint off the
 // same parse, and confirms the hint stays server-side.
 func TestEnvelope_NetworkIdHint(t *testing.T) {
@@ -122,6 +158,22 @@ func TestEnvelope_NetworkIdHint(t *testing.T) {
 		nq := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
 		if got := nq.NetworkIdHint(); got != "" {
 			t.Fatalf("NetworkIdHint() = %q, want empty", got)
+		}
+	})
+
+	t.Run("non-string value is ignored, not fatal", func(t *testing.T) {
+		for name, body := range map[string]string{
+			"number": `{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1,"networkId":123}`,
+			"null":   `{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1,"networkId":null}`,
+			"object": `{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1,"networkId":{"a":1}}`,
+		} {
+			nq := NewNormalizedRequest([]byte(body))
+			if err := nq.Validate(); err != nil {
+				t.Fatalf("%s: Validate() rejected a request the URL would route: %v", name, err)
+			}
+			if got := nq.NetworkIdHint(); got != "" {
+				t.Fatalf("%s: NetworkIdHint() = %q, want empty", name, got)
+			}
 		}
 	})
 

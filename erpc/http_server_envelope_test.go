@@ -88,6 +88,47 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 		}
 	})
 
+	t.Run("BatchItemsAreParsedIndependently", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		// Exactly the two well-formed items reach the upstream; the item in
+		// between is answered locally.
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Times(2).
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "trace_transaction") && !strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0xfeed"})
+		defer util.AssertNoPendingMocks(t, 0)
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(envelopeTestConfig(), t)
+		defer shutdown()
+		time.Sleep(1500 * time.Millisecond)
+
+		statusCode, _, respBody := sendRequest(`[`+
+			`{"jsonrpc":"2.0","method":"trace_transaction","params":["0x01"],"id":1},`+
+			`{"jsonrpc":"2.0","method":"trace_transaction","method":"eth_sendRawTransaction","params":["0x02"],"id":2},`+
+			`{"jsonrpc":"2.0","method":"trace_transaction","params":["0x03"],"id":3}`+
+			`]`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode, "body: %s", respBody)
+
+		var items []map[string]interface{}
+		require.NoError(t, common.SonicCfg.Unmarshal([]byte(respBody), &items), "body: %s", respBody)
+		require.Len(t, items, 3)
+		assert.Equal(t, "0xfeed", items[0]["result"])
+		assert.Equal(t, "0xfeed", items[2]["result"])
+		assert.Nil(t, items[1]["result"])
+		errObj, ok := items[1]["error"].(map[string]interface{})
+		require.True(t, ok, "item 2 should carry an error object: %v", items[1])
+		t.Logf("batch item error: %v", errObj)
+		assert.EqualValues(t, common.JsonRpcErrorParseException, errObj["code"])
+	})
+
 	t.Run("NetworkIdMemberRoutesPathlessRequest", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
