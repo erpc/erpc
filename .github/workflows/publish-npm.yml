@@ -105,21 +105,26 @@ jobs:
 
       # Hard guarantee that every package name actually serves this version,
       # so a swallowed or half-failed publish can never go unnoticed again.
-      # NODE_AUTH_TOKEN is needed because setup-node's .npmrc references it
-      # for every npm invocation, not just publishes.
+      #
+      # npm accepts a publish and then processes it out of band ("Your package
+      # is being processed and may take a few minutes to become available"), so
+      # the window has to be minutes: on 0.3.0 four packages appeared inside a
+      # minute and erpc took three. Read the registry directly rather than via
+      # npm view, whose CDN response lags the packument by another minute.
       - name: Verify packages are live on npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ inputs.version_tag }}
         run: |
+          ATTEMPTS=40
           for pkg in @erpc-cloud/cli erpc start-rpc start-erpc @erpc-cloud/config; do
-            for attempt in 1 2 3 4 5; do
-              if [ -n "$(npm view "${pkg}@${VERSION}" version 2>/dev/null)" ]; then
+            for attempt in $(seq 1 $ATTEMPTS); do
+              if curl -sf "https://registry.npmjs.org/${pkg}/${VERSION}" \
+                   -o /dev/null -H 'accept: application/json'; then
                 echo "OK: ${pkg}@${VERSION} is live"
                 continue 2
               fi
-              echo "Waiting for ${pkg}@${VERSION} (attempt ${attempt}/5)..."
-              sleep 10
+              echo "Waiting for ${pkg}@${VERSION} (attempt ${attempt}/${ATTEMPTS})..."
+              sleep 15
             done
             echo "::error::${pkg}@${VERSION} is not on the registry after publishing"
             exit 1
