@@ -278,6 +278,11 @@ Use `atomic.Int64` / `atomic.Uint64` for single values read and written from mul
 ### Config Setters and Consumers Run on Different Goroutines
 Methods like `SetNetworkConfig` are called from the project registry goroutine, while the ticker goroutine and request-serving goroutines read that config. Any field shared between them must be protected by a mutex or atomic. When adding new shared state, check who writes it and who reads it.
 
+## Public Repository Content
+
+- Keep branches, commits, PR titles, PR bodies, and other public text self-contained.
+- Never include private issue identifiers, private workspace URLs, or assume readers can access Goldsky Linear or other internal systems.
+
 ## Commit and PR Guidelines
 - Follow the [Conventional Commits](https://www.conventionalcommits.org/) style (e.g. `feat:`, `fix:`) when writing commit messages.
 - Create feature branches for new work and open Pull Requests against `main`.
