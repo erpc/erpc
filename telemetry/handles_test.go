@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // newTestCounterVec builds a CounterVec on a private registry so tests never
@@ -222,4 +223,153 @@ func TestCounterHandle_SweepRaceNeverOrphansHandles(t *testing.T) {
 			t.Fatalf("round %d: orphaned counter handle: before=%v after=%v — Inc through cached handle is invisible in the registry", round, before, after)
 		}
 	}
+}
+
+// newTestHistogramVec builds a HistogramVec on a private registry so tests
+// never touch the global package metrics.
+func newTestHistogramVec(t *testing.T, name string) *prometheus.HistogramVec {
+	t.Helper()
+	vec := prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: name, Buckets: []float64{0.1, 1}}, []string{"a", "b"})
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(vec)
+	ResetHandleCache()
+	t.Cleanup(ResetHandleCache)
+	return vec
+}
+
+// A future-cutoff sweep evicts every idle observer from BOTH the cache and
+// the parent vec. CollectAndCount counts one per label combination pinned —
+// releasing a combination must release all of its bucket/_sum/_count series.
+func TestSweepIdleObserverHandles_EvictsIdleSeries(t *testing.T) {
+	vec := newTestHistogramVec(t, "test_observer_sweep_evicts")
+
+	ObserverHandle(vec, "x", "1").Observe(0.5)
+	ObserverHandle(vec, "y", "2").Observe(0.5)
+	if got := testutil.CollectAndCount(vec); got != 2 {
+		t.Fatalf("precondition: expected 2 series, got %d", got)
+	}
+
+	evicted := sweepIdleObserverHandlesBefore(time.Now().UnixMilli() + 1000)
+	if evicted != 2 {
+		t.Fatalf("expected 2 evicted, got %d", evicted)
+	}
+	if got := testutil.CollectAndCount(vec); got != 0 {
+		t.Fatalf("expected 0 series after sweep, got %d — DeleteLabelValues did not release the series", got)
+	}
+}
+
+// A past-cutoff sweep evicts nothing, and the cached handle keeps observing
+// into the SAME series (sample count keeps growing rather than resetting).
+func TestSweepIdleObserverHandles_RetainsActiveSeries(t *testing.T) {
+	vec := newTestHistogramVec(t, "test_observer_sweep_retains")
+
+	ObserverHandle(vec, "x", "1").Observe(0.5)
+
+	if evicted := sweepIdleObserverHandlesBefore(time.Now().UnixMilli() - 60_000); evicted != 0 {
+		t.Fatalf("expected 0 evicted with past cutoff, got %d", evicted)
+	}
+	if got := testutil.CollectAndCount(vec); got != 1 {
+		t.Fatalf("expected series retained, got %d", got)
+	}
+
+	ObserverHandle(vec, "x", "1").Observe(0.5)
+	if got := sampleCount(t, vec, "x", "1"); got != 2 {
+		t.Fatalf("expected same series to continue at 2 observations, got %d", got)
+	}
+}
+
+// Re-fetching a handle refreshes its idle timestamp, exactly like counters.
+func TestObserverHandle_TouchRefreshPreventsEviction(t *testing.T) {
+	vec := newTestHistogramVec(t, "test_observer_touch_refresh")
+
+	ObserverHandle(vec, "x", "1").Observe(0.5) // created at t0
+	sleepMs(t)
+	cutoff := time.Now().UnixMilli()
+	sleepMs(t)
+	ObserverHandle(vec, "x", "1") // touch refreshes lastAccessedAtMs past cutoff
+
+	if evicted := sweepIdleObserverHandlesBefore(cutoff); evicted != 0 {
+		t.Fatalf("expected 0 evicted after touch refresh, got %d", evicted)
+	}
+	if got := testutil.CollectAndCount(vec); got != 1 {
+		t.Fatalf("expected series to survive sweep, got %d series", got)
+	}
+}
+
+// SetHistogramIdleEvictionAfter(0) disables the public sweep entirely.
+func TestSweepIdleObserverHandles_DisabledThresholdEvictsNothing(t *testing.T) {
+	t.Cleanup(func() { SetHistogramIdleEvictionAfter(DefaultHistogramIdleEvictionAfter) })
+	vec := newTestHistogramVec(t, "test_observer_sweep_disabled")
+
+	SetHistogramIdleEvictionAfter(0)
+	ObserverHandle(vec, "x", "1").Observe(0.5)
+	sleepMs(t)
+
+	if evicted := SweepIdleObserverHandles(); evicted != 0 {
+		t.Fatalf("expected 0 evicted with eviction disabled, got %d", evicted)
+	}
+	if got := testutil.CollectAndCount(vec); got != 1 {
+		t.Fatalf("expected series retained with eviction disabled, got %d", got)
+	}
+}
+
+// The public no-arg sweep respects the configured threshold.
+func TestSweepIdleObserverHandles_ConfiguredThresholdEvicts(t *testing.T) {
+	t.Cleanup(func() { SetHistogramIdleEvictionAfter(DefaultHistogramIdleEvictionAfter) })
+	vec := newTestHistogramVec(t, "test_observer_sweep_configured")
+
+	SetHistogramIdleEvictionAfter(1 * time.Millisecond)
+	ObserverHandle(vec, "x", "1").Observe(0.5)
+	time.Sleep(5 * time.Millisecond)
+
+	if evicted := SweepIdleObserverHandles(); evicted < 1 {
+		t.Fatalf("expected >=1 evicted past configured threshold, got %d", evicted)
+	}
+	if got := testutil.CollectAndCount(vec); got != 0 {
+		t.Fatalf("expected series released after threshold sweep, got %d", got)
+	}
+}
+
+// LabeledHistogram path: the cache keys on POST-filter labels (several full
+// tuples share one underlying series), the handle stores the FULL tuple, and
+// the sweep must delete through LabeledHistogram's full-schema
+// DeleteLabelValues — releasing the shared series exactly once.
+func TestSweepIdleObserverHandles_LabeledHistogramSharedSeries(t *testing.T) {
+	t.Cleanup(func() {
+		SetHistogramLabelFilter(nil, nil)
+		ResetHandleCache()
+	})
+	// Drop label "b": full tuples (x,1) and (x,2) collapse onto active tuple (x).
+	SetHistogramLabelFilter([]string{"b"}, nil)
+	lh := NewLabeledHistogram(prometheus.HistogramOpts{Name: "test_observer_sweep_labeled", Buckets: []float64{0.1, 1}}, []string{"a", "b"})
+	prometheus.NewRegistry().MustRegister(lh)
+	ResetHandleCache()
+
+	ObserverHandle(lh, "x", "1").Observe(0.5)
+	ObserverHandle(lh, "x", "2").Observe(0.5) // same active series, same cache entry
+	if got := testutil.CollectAndCount(lh); got != 1 {
+		t.Fatalf("precondition: expected 1 shared series, got %d", got)
+	}
+
+	evicted := sweepIdleObserverHandlesBefore(time.Now().UnixMilli() + 1000)
+	if evicted != 1 {
+		t.Fatalf("expected exactly 1 evicted shared entry, got %d", evicted)
+	}
+	if got := testutil.CollectAndCount(lh); got != 0 {
+		t.Fatalf("expected shared series released, got %d", got)
+	}
+}
+
+// sampleCount reads the histogram's _count for one label tuple.
+func sampleCount(t *testing.T, vec *prometheus.HistogramVec, labels ...string) uint64 {
+	t.Helper()
+	h, err := vec.GetMetricWithLabelValues(labels...)
+	if err != nil {
+		t.Fatalf("GetMetricWithLabelValues: %v", err)
+	}
+	m := &dto.Metric{}
+	if err := h.(prometheus.Metric).Write(m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetHistogram().GetSampleCount()
 }
