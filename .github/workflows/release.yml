@@ -17,11 +17,10 @@ on:
 permissions: read-all
 
 jobs:
-  # Create Release PR - only on workflow_dispatch
+  # Prepare the release branch - only on workflow_dispatch
   prepare-release:
     permissions:
       contents: write
-      pull-requests: write
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     if: github.event_name == 'workflow_dispatch'
     outputs:
@@ -104,23 +103,48 @@ jobs:
         run: |
           rm -rf dist/
 
-      # Create PR with all changes
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
-        with:
-          commit-message: "chore: release ${{ github.event.inputs.version_tag }}"
-          title: "chore: release ${{ github.event.inputs.version_tag }}"
-          body: |
-            🚀 Release preparation for version ${{ github.event.inputs.version_tag }}
-            
-            This PR includes:
-            - Version bumps in package.json files
-            - Generated TypeScript types
-            - Generated release files
-            - Generated checksums
-          branch: "release/${{ github.event.inputs.version_tag }}"
-          base: main
-          labels: release
+      # GitHub Actions is not permitted to open pull requests on this repo, so
+      # this job pushes the branch and the summary carries the link to open it.
+      - name: Push release branch
+        id: release_branch
+        env:
+          VERSION: ${{ github.event.inputs.version_tag }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/${VERSION}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --force-create "$BRANCH"
+          git add -A
+          git commit -m "chore: release ${VERSION}"
+          git push --force-with-lease origin "$BRANCH:refs/heads/$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Link release pull request
+        env:
+          VERSION: ${{ github.event.inputs.version_tag }}
+          BRANCH: ${{ steps.release_branch.outputs.branch }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TITLE="chore: release ${VERSION}"
+          BODY=$(printf '\xf0\x9f\x9a\x80 Release preparation for version %s\n\nThis PR includes:\n- Version bumps in package.json files\n- Generated TypeScript types\n- Generated release files\n- Generated checksums\n' "$VERSION")
+          QUERY="quick_pull=1&labels=release&title=$(printf '%s' "$TITLE" | jq -sRr @uri)&body=$(printf '%s' "$BODY" | jq -sRr @uri)"
+          {
+            echo "## Release ${VERSION}"
+            echo
+            echo "Branch \`${BRANCH}\` is pushed. Open the pull request:"
+            echo
+            echo "**[Open pull request](https://github.com/${REPO}/compare/main...${BRANCH}?${QUERY})**"
+            echo
+            echo "Or from a terminal:"
+            echo
+            echo '```bash'
+            echo "gh pr create --repo ${REPO} --base main --head ${BRANCH} --label release \\"
+            echo "  --title '${TITLE}' \\"
+            echo "  --body '${BODY}'"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Run on release PR merge
   release:
