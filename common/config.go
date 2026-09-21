@@ -2481,8 +2481,8 @@ type EvmNetworkConfig struct {
 
 	// ServedTip configures how the network derives the "latest"/"finalized"
 	// block it advertises to clients (and enforces via block-availability).
-	// Nil or disabled selects the default max mode (MAX latest across eligible
-	// upstreams); set Enabled to opt into the cluster-min tip. See
+	// Nil or disabled selects the default mode (the corroborated latest across eligible
+	// upstreams, see ServedTipPick.Freshest); set Enabled to opt into the majority tip. See
 	// EvmServedTipConfig.
 	ServedTip                  *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
 	GetLogsMaxAllowedRange     int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
@@ -2578,17 +2578,17 @@ type EvmNetworkConfig struct {
 // EvmServedTipConfig controls how the network derives the "latest"/"finalized"
 // block it advertises (and enforces) from its upstreams.
 //
-// In the default max mode the served tip is the MAX latest block across eligible
-// non-syncing upstreams — which can advertise a block only the single most-ahead
-// upstream has, causing "block not found" churn when requests route to a
+// In the default mode the served tip is the corroborated latest block across eligible
+// non-syncing upstreams (second-highest, or the only one) — which can still advertise a block a slightly-ahead
+// pair has, causing "block not found" churn when requests route to a
 // slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
 // served value is instead the freshest block a strict MAJORITY of the eligible
 // upstreams already have, so interpolated requests land on upstreams that can
 // serve the advertised block.
 type EvmServedTipConfig struct {
 	// EnabledFor lists the block tags whose served value uses the cluster-min tip
-	// instead of the default max. Valid entries: "latest" and "finalized" (the
-	// "safe" tag follows "finalized"). Empty selects the max mode for all tags.
+	// instead of the default corroborated head. Valid entries: "latest" and "finalized" (the
+	// "safe" tag follows "finalized"). Empty selects the default mode for all tags.
 	EnabledFor []string `yaml:"enabledFor,omitempty" json:"enabledFor,omitempty"`
 
 	// Deprecated: ClusterDelta configured the former cluster-based picker and is
@@ -2637,7 +2637,7 @@ type EvmServedTipConfig struct {
 // ServedTipEnabledFor reports whether the majority served tip is enabled for
 // the given block axis ("latest" or "finalized"). The "safe" tag resolves to the
 // finalized axis, so listing "safe" in EnabledFor enables it for "finalized".
-// Anything not listed uses the default max mode. Nil-receiver safe.
+// Anything not listed uses the default corroborated head. Nil-receiver safe.
 func (c *EvmNetworkConfig) ServedTipEnabledFor(tag string) bool {
 	if c == nil || c.ServedTip == nil {
 		return false

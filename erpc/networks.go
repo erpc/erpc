@@ -55,7 +55,7 @@ type Network struct {
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
 	// servedTipAnchor watchdogs track when this process last SAW the served
 	// value change — purely for the advance-age stuck-tip gauge. The pick
-	// itself is stateless (evm.PickServedTip); nothing here feeds back into
+	// itself is stateless (common.PickServedTip); nothing here feeds back into
 	// what clients receive.
 	servedLatestAnchor    servedTipAnchor
 	servedFinalizedAnchor servedTipAnchor
@@ -446,7 +446,7 @@ func (n *Network) gatherEvmTipInputsForMethod(
 	ctx context.Context,
 	useFinalized bool,
 	method string,
-) ([]evm.ServedTipInput, servedTipReference) {
+) (common.ServedTipPick, servedTipReference) {
 	return evmTipBallot(n.tipCandidateUpstreams(ctx, method), useFinalized)
 }
 
@@ -469,10 +469,10 @@ func (n *Network) gatherEvmTipInputsForMethod(
 // contains at least one live head. A set of only historical/frozen upstreams
 // legitimately serves its cap — that cap is the freshest block anyone in it can
 // serve — so it keeps voting.
-func evmTipBallot(upstreams []common.Upstream, useFinalized bool) ([]evm.ServedTipInput, servedTipReference) {
-	out := make([]evm.ServedTipInput, 0, len(upstreams))
-	var capped []evm.ServedTipInput
-	var liveTop, liveSecond int64
+func evmTipBallot(upstreams []common.Upstream, useFinalized bool) (common.ServedTipPick, servedTipReference) {
+	live := make([]common.ServedTipInput, 0, len(upstreams))
+	var capped []common.ServedTipInput
+	var available int64
 	for _, cu := range upstreams {
 		u, ok := cu.(common.EvmUpstream)
 		if !ok || u.EvmStatePoller() == nil {
@@ -485,7 +485,8 @@ func evmTipBallot(upstreams []common.Upstream, useFinalized bool) ([]evm.ServedT
 		if blk <= 0 {
 			continue
 		}
-		in := evm.ServedTipInput{
+		available = max(available, blk)
+		in := common.ServedTipInput{
 			UpstreamID:  u.Id(),
 			BlockNumber: blk,
 		}
@@ -493,25 +494,17 @@ func evmTipBallot(upstreams []common.Upstream, useFinalized bool) ([]evm.ServedT
 			capped = append(capped, in)
 			continue
 		}
-		switch {
-		case blk > liveTop:
-			liveTop, liveSecond = blk, liveTop
-		case blk > liveSecond:
-			liveSecond = blk
-		}
-		out = append(out, in)
+		live = append(live, in)
 	}
-	if len(out) == 0 {
+	if len(live) == 0 {
 		// All-capped set: there is no live head to prefer, so the caps remain
 		// the only observations available. (No live head means no live reference
 		// for the regression guard either; it falls back to its own last
 		// corroborated pick, see guardServedTipRegression.)
-		return capped, servedTipReference{}
+		return common.PickServedTip(capped), servedTipReference{Available: available}
 	}
-	if liveSecond <= 0 {
-		liveSecond = liveTop // a single live input corroborates only itself
-	}
-	return out, servedTipReference{Corroborated: liveSecond, Max: liveTop}
+	pick := common.PickServedTip(live)
+	return pick, servedTipReference{Corroborated: pick.Freshest, Max: pick.Max, Available: available}
 }
 
 // servedTipReference is what the LIVE (non-capped) heads of one ballot say,
@@ -548,6 +541,12 @@ type servedTipReference struct {
 	// pick in the very shape the guard exists for (one live witness left, two
 	// stuck upstreams outvoting it).
 	Max int64
+
+	// Available is the highest effective head across EVERY candidate, live or
+	// static-capped: the bound above which no candidate holds the block. Only
+	// the future-block short-circuit reads it; the ballot and the guard ignore
+	// caps, but a capped archive still serves the blocks below its cap.
+	Available int64
 }
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
@@ -780,20 +779,23 @@ func isSimpleGroupSelector(selector string) bool {
 
 // EvmHighestLatestBlockNumber returns the served latest block for this network.
 //
-// In the default max mode it is the MAX effective latest block across eligible
-// non-syncing upstreams. When the served tip is enabled (EvmServedTipConfig),
-// it is instead the freshest block a strict MAJORITY of the eligible upstreams
-// already have — so interpolated requests land on upstreams that can serve the
-// advertised block. Advertising a block visible on only the single most-ahead
-// upstream is what causes the "block not found" churn the majority mode avoids.
+// By default it is the corroborated effective latest block across eligible
+// non-syncing upstreams: the second-highest, or the only one (see
+// common.ServedTipPick.Freshest). When the served tip is enabled
+// (EvmServedTipConfig), it is instead the freshest block a strict MAJORITY of
+// the eligible upstreams already have — so interpolated requests land on
+// upstreams that can serve the advertised block. Neither mode advertises a
+// block visible on only the single most-ahead upstream: that is the "block not
+// found" churn the majority mode avoids, and the wrong-chain head a lone
+// upstream can report.
 func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
 
 	if !n.servedTipEnabledFor("latest") {
-		// Max mode: evmHighestBlockMax → tipCandidateUpstreams already scopes
-		// to the request's selector (if any), so the MAX is within-subset.
-		return n.evmHighestBlockMax(ctx, false)
+		// tipCandidateUpstreams already scopes to the request's selector (if
+		// any), so the head is within-subset.
+		return n.evmHeadReference(ctx, false).Corroborated
 	}
 	if sel := requestSelector(ctx); sel != "" {
 		// Targeted request: the gather is already scoped to the selector's
@@ -810,30 +812,24 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 
 // servedTipEnabledFor reports whether the majority served tip is enabled for
 // the given block tag ("latest"/"finalized") on this (EVM) network. Default is
-// the max mode for every tag — see EvmServedTipConfig.
+// the corroborated head for every tag — see EvmServedTipConfig.
 func (n *Network) servedTipEnabledFor(tag string) bool {
 	return n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTipEnabledFor(tag)
 }
 
-// evmHighestBlockMax returns the MAX effective latest/finalized block across the
-// eligible, non-syncing upstreams — the default max-mode served tip used when
-// the majority served tip is not enabled for this network.
-func (n *Network) evmHighestBlockMax(ctx context.Context, useFinalized bool) int64 {
-	var maxBlock int64
-	for _, cu := range n.tipCandidateUpstreams(ctx, "*") {
-		u, ok := cu.(common.EvmUpstream)
-		if !ok || u.EvmStatePoller() == nil || u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-			continue
-		}
-		b := u.EvmEffectiveLatestBlock()
-		if useFinalized {
-			b = u.EvmEffectiveFinalizedBlock()
-		}
-		if b > maxBlock {
-			maxBlock = b
-		}
+// evmHeadReference is the corroborated head, the raw live max and the servable
+// ceiling over the eligible, non-syncing upstreams for one axis — the same
+// ballot the served tip votes on. It serves the default (non-served-tip) head
+// accessors and the future-block short-circuit. A cap-only set has no live
+// reference, so its caps stand in: they are the only heads anyone in it can
+// serve.
+func (n *Network) evmHeadReference(ctx context.Context, useFinalized bool) servedTipReference {
+	pick, ref := evmTipBallot(n.tipCandidateUpstreams(ctx, "*"), useFinalized)
+	if ref.Max <= 0 && pick.Inputs > 0 {
+		ref.Corroborated = pick.Freshest
+		ref.Max = pick.Max
 	}
-	return maxBlock
+	return ref
 }
 
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
@@ -843,9 +839,9 @@ func (n *Network) evmHighestBlockMax(ctx context.Context, useFinalized bool) int
 // them only burns latency and load before they each return empty — returning the
 // null here skips that fan-out entirely.
 //
-// Safety: it compares against the MAX observed head across eligible upstreams
-// (not the majority served tip), so it never nulls out a block the most-ahead
-// upstream actually has. It is gated on served-tip being enabled for the latest
+// Safety: it compares against the highest effective head across eligible
+// upstreams, static caps included (servedTipReference.Available), so it never
+// nulls out a block any upstream actually serves. It is gated on served-tip being enabled for the latest
 // axis — the same opt-in that makes the head trustworthy — and the synthesized
 // response is returned directly from Forward, so it is never written to cache
 // (the block will exist later). The post-forward empty guard remains as
@@ -864,7 +860,7 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 		return nil, false
 	}
 	useFinalized := n.cfg.Evm.EmptyResultConfidence == common.AvailbilityConfidenceFinalized
-	maxHead := n.evmHighestBlockMax(ctx, useFinalized)
+	maxHead := n.evmHeadReference(ctx, useFinalized).Available
 	if maxHead <= 0 || bn <= maxHead {
 		// Unknown head (fail open) or block within reach of some upstream.
 		return nil, false
@@ -880,7 +876,7 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 
 // servedTip computes the majority served tip for one axis over the
 // selection-policy-eligible upstreams — the freshest block a strict majority of
-// them already has (see evm.PickServedTip) — lets the trajectory referee prefer
+// them already has (see common.PickServedTip) — lets the trajectory referee prefer
 // a corroborated on-trajectory group when that majority has stalled, guards the
 // result against a regression far below the live heads, applies the
 // guaranteed-method floor, and exports the gauges.
@@ -900,8 +896,7 @@ func (n *Network) servedTip(
 	anchor *servedTipAnchor,
 	lane string,
 ) int64 {
-	tips, ref := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
-	pick := evm.PickServedTip(tips)
+	pick, ref := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
 
 	// Trajectory referee: when the live heads split and the majority is the
 	// STALLED group, serve the corroborated group that matches where this
@@ -990,9 +985,9 @@ func (n *Network) servedTip(
 //     divergence can trigger an intervention.
 //
 // Serving a winning group's MINIMUM also keeps the pick ≤
-// evm.ServedTipPick.Freshest (the 2nd-highest head): a group has at least two
+// common.ServedTipPick.Freshest (the 2nd-highest head): a group has at least two
 // members, so at least two heads sit at or above what it serves.
-func (n *Network) refereeServedTip(anchor *servedTipAnchor, sorted []evm.ServedTipInput, median int64, ref servedTipReference) evm.TipTrajectoryDecision {
+func (n *Network) refereeServedTip(anchor *servedTipAnchor, sorted []common.ServedTipInput, median int64, ref servedTipReference) evm.TipTrajectoryDecision {
 	stood := evm.TipTrajectoryDecision{Pick: median}
 	if anchor == nil || median <= 0 || ref.Max <= 0 {
 		// A live head is also what makes `sorted` safe to sample and cluster:
@@ -1367,12 +1362,12 @@ func (n *Network) servedTipMaxRegressionBlocks() int64 {
 }
 
 // SvmHighestLatestSlot returns the majority-vote latest slot across SVM
-// upstreams. Uses evm.PickServedTip (floor(N/2)-th highest) so a single
+// upstreams. Uses common.PickServedTip (floor(N/2)-th highest) so a single
 // fast/rogue upstream cannot inflate the served tip.
 func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestLatestSlot")
 	defer span.End()
-	pick := evm.PickServedTip(n.gatherSvmTipInputs(ctx, false))
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, false))
 	span.SetAttributes(attribute.Int64("highest_latest_slot", pick.Tip))
 	return pick.Tip
 }
@@ -1384,7 +1379,7 @@ func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlot")
 	defer span.End()
-	pick := evm.PickServedTip(n.gatherSvmTipInputs(ctx, true))
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, true))
 	span.SetAttributes(attribute.Int64("highest_finalized_slot", pick.Tip))
 	return pick.Tip
 }
@@ -1398,7 +1393,7 @@ func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 // ~100 slots the third upstream is holding, converting a served request into a
 // client-visible -32014.
 //
-// Same rationale as SvmHighestIndexedSlot and EVM's evmHighestBlockMax: never
+// Same rationale as SvmHighestIndexedSlot and EVM's evmHeadReference.Max: never
 // reject a block the most-ahead upstream actually has. Zero means UNKNOWN (no
 // poller has reported a root yet), and every caller must treat it as "no bound"
 // rather than as slot 0.
@@ -1436,7 +1431,7 @@ func (n *Network) SvmEnforceBlockAvailability() bool {
 // This is used only by the networkPreForward_getBlock guard — its job is to
 // avoid short-circuiting requests that ANY upstream can serve. It therefore
 // uses MAX, not the majority (median) tip. This mirrors how EVM's
-// tryShortCircuitFutureBlock uses evmHighestBlockMax (not PickServedTip.Tip):
+// tryShortCircuitFutureBlock uses evmHeadReference.Max (not PickServedTip.Tip):
 // "never null out a block the most-ahead upstream actually has."
 // SvmHighestLatestSlot / SvmHighestFinalizedSlot remain median-based because
 // they advertise the chain head to clients — a different, conservative goal.
@@ -1460,10 +1455,10 @@ func (n *Network) SvmHighestIndexedSlot(ctx context.Context) int64 {
 }
 
 // gatherSvmTipInputs collects slot values from SVM state pollers for
-// majority-tip computation via evm.PickServedTip.
-func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []evm.ServedTipInput {
+// majority-tip computation via common.PickServedTip.
+func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []common.ServedTipInput {
 	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	out := make([]evm.ServedTipInput, 0, len(upstreams))
+	out := make([]common.ServedTipInput, 0, len(upstreams))
 	for _, u := range upstreams {
 		sp := u.SvmStatePoller()
 		if sp == nil || sp.IsObjectNull() {
@@ -1478,7 +1473,7 @@ func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []e
 		if slot <= 0 {
 			continue
 		}
-		out = append(out, evm.ServedTipInput{UpstreamID: u.Id(), BlockNumber: slot})
+		out = append(out, common.ServedTipInput{UpstreamID: u.Id(), BlockNumber: slot})
 	}
 	return out
 }
@@ -1493,7 +1488,7 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	defer span.End()
 
 	if !n.servedTipEnabledFor("finalized") {
-		return n.evmHighestBlockMax(ctx, true)
+		return n.evmHeadReference(ctx, true).Corroborated
 	}
 	if sel := requestSelector(ctx); sel != "" {
 		// See EvmHighestLatestBlockNumber: a configured-tag selector gets its
@@ -1566,8 +1561,8 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 			}
 			supporting = append(supporting, cu)
 		}
-		tips, ref := evmTipBallot(supporting, useFinalized)
-		if len(tips) == 0 {
+		pick, ref := evmTipBallot(supporting, useFinalized)
+		if pick.Inputs == 0 {
 			// No supporting upstream for this method → no constraint (fall through
 			// rather than pinning the tip to 0).
 			continue
@@ -1579,8 +1574,8 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 			// value.
 			continue
 		}
-		if t := evm.PickServedTip(tips).Tip; t > 0 && (floor == 0 || t < floor) {
-			floor = t
+		if pick.Tip > 0 && (floor == 0 || pick.Tip < floor) {
+			floor = pick.Tip
 		}
 	}
 	return floor
@@ -1619,7 +1614,7 @@ func (n *Network) liveUpstreamServesMethod(ctx context.Context, method string, u
 // keep the gauge set small. lane="all" is the network-wide pick; a named lane
 // is a use-upstream group's own pick; the stateless lane-none sentinel emits
 // nothing (a subset value must never overwrite a gauge).
-func (n *Network) observeServedTipMetrics(axis string, lane string, pick evm.ServedTipPick, advanceAge time.Duration) {
+func (n *Network) observeServedTipMetrics(axis string, lane string, pick common.ServedTipPick, advanceAge time.Duration) {
 	if lane == servedTipLaneNone {
 		return
 	}
