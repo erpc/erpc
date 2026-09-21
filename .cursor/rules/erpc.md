@@ -281,7 +281,7 @@ Methods like `SetNetworkConfig` are called from the project registry goroutine, 
 ## Public Repository Content
 
 - Keep branches, commits, PR titles, PR bodies, and other public text self-contained.
-- Never include private issue identifiers, private workspace URLs, or assume readers can access Goldsky Linear or other internal systems.
+- Never include private issue identifiers, private workspace URLs, or assume readers can access internal systems.
 
 ## Commit and PR Guidelines
 - Follow the [Conventional Commits](https://www.conventionalcommits.org/) style (e.g. `feat:`, `fix:`) when writing commit messages.
