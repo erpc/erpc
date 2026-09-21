@@ -913,11 +913,13 @@ func (n *Network) servedTip(
 	pick.Tip = n.guardServedTipRegression(axis, lane, anchor, pick.Tip, ref)
 
 	// Capability guarantee (#855): the served tip must never exceed what any
-	// configured guaranteed-method's supporting upstreams can serve, so a
-	// request on such a method (e.g. trace_*) never resolves "latest" to a
-	// block only non-supporting upstreams have.
+	// configured guarantee SUBSET can serve — a method's supporting upstreams
+	// (guaranteedMethods) or an operator-named group (guaranteedFor) — so a
+	// request on such a method (e.g. trace_*), or one consensus requires that
+	// group to answer, never resolves "latest" to a block only upstreams
+	// outside the subset have.
 	if pick.Tip > 0 {
-		if floor := n.guaranteedMethodFloor(ctx, useFinalized); floor > 0 && floor < pick.Tip {
+		if floor := n.guaranteedFloor(ctx, useFinalized); floor > 0 && floor < pick.Tip {
 			pick.Tip = floor
 		}
 	}
@@ -1502,13 +1504,24 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	return n.servedTip(ctx, span, true, "finalized", &n.servedFinalizedAnchor, "")
 }
 
-// guaranteedMethodFloor returns the lowest majority served tip across the
-// configured GuaranteedMethods' supporting (eligible) upstream sets, or 0 when
-// no guaranteed methods are configured or none constrain the tip. Each method's
-// supporting set is the selection-policy-eligible set for that method (which,
-// via autoIgnoreUnsupportedMethods, excludes upstreams that don't support it).
+// guaranteedFloor returns the lowest majority served tip across every
+// configured guarantee SUBSET, or 0 when none is configured or none constrains
+// the tip. Two kinds of subset, one rule:
 //
-// Each method's ballot is built by evmTipBallot, i.e. by exactly the rule the
+//   - GuaranteedMethods — the selection-policy-eligible set for that method
+//     (which, via autoIgnoreUnsupportedMethods, excludes upstreams that don't
+//     support it). "latest" never resolves to a block only non-supporting
+//     upstreams have.
+//   - GuaranteedFor — the eligible upstreams matching an id/tag selector. The
+//     advertised tip stays servable by an operator-named GROUP, which is what a
+//     mixed internal/external pool needs when consensus requires the internals
+//     (consensus.requiredParticipants names them with the same vocabulary).
+//
+// Each subset is clamped to its OWN MAJORITY, never its minimum, so a single
+// frozen member is outvoted inside its group and cannot pin the network. An
+// empty subset constrains nothing.
+//
+// Every subset's ballot is built by evmTipBallot, i.e. by exactly the rule the
 // network-wide ballot uses — including the static-cap filter, applied to THAT
 // method's supporting set. Without it the floor was a second door onto the
 // incident value: with `guaranteedMethods` configured, the floor ballot took raw
@@ -1541,17 +1554,42 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 // serving that method. Otherwise the method sets no floor for this evaluation
 // and the guard's hold (and its bounded fail-open) governs, exactly as it does
 // when the whole ballot goes cap-only.
-func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) int64 {
+func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 {
 	if n.cfg == nil || n.cfg.Evm == nil || n.cfg.Evm.ServedTip == nil {
 		return 0
 	}
-	methods := n.cfg.Evm.ServedTip.GuaranteedMethods
-	if len(methods) == 0 {
+	st := n.cfg.Evm.ServedTip
+	methods := st.GuaranteedMethods
+	if len(methods) == 0 && len(st.GuaranteedFor) == 0 {
 		return 0
 	}
 	eligible := n.tipCandidateUpstreams(ctx, "*")
 	supporting := make([]common.Upstream, 0, len(eligible))
 	var floor int64
+	for _, sel := range st.GuaranteedFor {
+		// Group guarantee: the advertised tip must be servable by this group's
+		// own MAJORITY. Same ballot, same min-across-subsets fold, same
+		// transient-absence rule as the method guarantee below — only the
+		// membership predicate differs (selector match instead of method
+		// support).
+		supporting = supporting[:0]
+		for _, cu := range eligible {
+			if m, _ := common.UpstreamMatchesSelector(sel, cu); !m {
+				continue
+			}
+			supporting = append(supporting, cu)
+		}
+		pick, ref := evmTipBallot(supporting, useFinalized)
+		if pick.Inputs == 0 {
+			continue
+		}
+		if ref.Max <= 0 && n.liveUpstreamInGroup(ctx, sel, useFinalized) {
+			continue
+		}
+		if pick.Tip > 0 && (floor == 0 || pick.Tip < floor) {
+			floor = pick.Tip
+		}
+	}
 	for _, m := range methods {
 		supporting = supporting[:0]
 		for _, cu := range eligible {
@@ -1583,7 +1621,7 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 
 // liveUpstreamServesMethod reports whether any REGISTERED upstream that is not a
 // static serving-range cap is configured to serve `method` — the static-config
-// question guaranteedMethodFloor asks before letting a cap-only ballot set a
+// question guaranteedFloor asks before letting a cap-only ballot set a
 // floor. It reads the registered set, not the eligible one, precisely because
 // eligibility is the thing that churns.
 //
@@ -1597,6 +1635,30 @@ func (n *Network) liveUpstreamServesMethod(ctx context.Context, method string, u
 	}
 	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 		if handle, _ := u.ShouldHandleMethod(method); !handle {
+			continue
+		}
+		if eu, ok := common.Upstream(u).(common.EvmUpstream); ok {
+			if _, capped := evmTipObservation(eu, useFinalized); capped {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// liveUpstreamInGroup is liveUpstreamServesMethod for a group guarantee: does
+// any REGISTERED upstream matching `selector` observe a real head rather than a
+// static serving-range cap. Same reason as the method case — a cap-only group
+// ballot must floor the tip only when the operator's CONFIG says nobody in that
+// group is live, never when live members are merely absent from this instant's
+// eligible set.
+func (n *Network) liveUpstreamInGroup(ctx context.Context, selector string, useFinalized bool) bool {
+	if n.upstreamsRegistry == nil {
+		return false
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		if m, _ := common.UpstreamMatchesSelector(selector, u); !m {
 			continue
 		}
 		if eu, ok := common.Upstream(u).(common.EvmUpstream); ok {

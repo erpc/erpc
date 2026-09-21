@@ -853,7 +853,7 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
 		"the floor must not undo the guard's hold: live upstreams serve eth_getLogs, "+
 			"they are merely absent, so the cap-only floor is a transient lie")
-	assert.Zero(t, network.guaranteedMethodFloor(ctx, false),
+	assert.Zero(t, network.guaranteedFloor(ctx, false),
 		"and the method must contribute no floor at all while that is true")
 
 	advance(servedTipRegressionTTL + time.Second)

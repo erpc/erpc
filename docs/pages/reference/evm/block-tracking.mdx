@@ -15,6 +15,7 @@ Every upstream sees the chain at a slightly different block. Without coordinatio
 
 - Chain head and finality tracked per upstream, refreshed automatically at the right cadence for each chain's block time
 - Consensus-cluster served tip that only advances when the majority of upstreams agree — no phantom future blocks, no stale tips
+- Optional per-group guarantee so the advertised tip stays servable by the upstreams your consensus policy requires
 - Per-upstream lag gauges that feed selection policies so slow nodes are deprioritized before requests reach them
 - Works across pods: Redis-backed shared counters mean only one replica polls per debounce window
 
@@ -138,6 +139,8 @@ When `servedTip.enabledFor` includes `"latest"` or `"finalized"`, the pure funct
 
 The result is monotonically clamped via a cross-pod shared counter so the served tip never regresses, even across pods.
 
+**Guarantee subsets (`guaranteedMethods`, `guaranteedFor`).** After the pick, the advertised tip is clamped down to the lowest majority of every configured guarantee subset, so it is never a block a required subset cannot serve. `guaranteedMethods` names a subset by method support; `guaranteedFor` names one by upstream id/tag selector — the same vocabulary as `use-upstream` and `consensus.requiredParticipants`. Both run through the same ballot and the same min-across-subsets fold in `guaranteedFloor`; only the membership predicate differs. Each subset is clamped to its OWN MAJORITY, never its minimum, so a single frozen member is outvoted inside its group. An empty or unmatched subset constrains nothing (the tip is never pinned to 0), and the clamp can only lower the tip — a group ahead of the network majority never raises it. Source: [`erpc/networks.go:L1505-L1600`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1505-L1600)
+
 **Selector-scoped served tip.** When a `use-upstream` selector is present, `tipCandidateUpstreams` narrows to the matching upstreams. A "simple group selector" is a single glob pattern (optionally negated with `!` at position 0), containing no whitespace or `()|&,` characters, of length ≤128, that matches 2–(N−1) upstreams. For such selectors, a per-group `servedTipPartition` is lazily materialized: `partitionKeyFor` resolves the matched upstream ID set, sorts it, SHA-256 hashes the sorted `\0`-joined IDs, truncates to 8 bytes, and encodes as hex (key = `"grp:" + hex`). Equivalent selectors (same matched set) share one partition. Up to 16 partitions are allowed per network; beyond this, extra selectors fall back to stateless cluster-min. Boolean-expression selectors (containing `|`, `&`, `(`, `)`) always use the stateless path. Source: [`erpc/networks.go:L466-L506`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L466-L506)
 
 **Syncing state machine.** `eth_syncing` is called with a 5 s sub-context on each tick. The upstream is declared fully synced only after 4 consecutive "not syncing" responses (`synced counter ≥ 4`); any syncing response resets the counter to 1. The non-standard `{Ok: bool}` response shape is supported: `Ok=false` is treated as still-syncing. After 10 consecutive failures with no prior success, `skipSyncingCheck` is set permanently and the state is fixed at `Unknown` for the process lifetime. If `upstreams[*].evm.skipSyncingCheck: true` is set in config, `eth_syncing` is never called at all and the state is immediately fixed at `NotSyncing` — use this for nodes that always return a syncing object regardless of actual sync status.
@@ -173,6 +176,7 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 | `networks[*].evm.servedTip.enabledFor` | []string | `[]` (default mode for all tags) | Tags for which majority mode is active. Valid: `"latest"`, `"finalized"`, `"safe"` (`"safe"` is an alias for `"finalized"`). Source: <SourceLink file="common/config.go" lines="2272" /> |
 | `networks[*].evm.servedTip.clusterDelta` | int64 | `0` (auto-derive) | Max block gap between adjacent sorted upstream tips that still groups them into one cluster. Auto-derive: `clamp(ceil(2.0 / blockTimeSec), 2, 10)`. Examples: Ethereum (12 s) → 2; Polygon (2 s) → 1, clamped to 2; Arbitrum (0.25 s) → 8; sub-100 ms → 10 (ceiling). When block time is unknown (EMA not warmed up) the fallback is 2. Source: <SourceLink file="architecture/evm/served_tip.go" lines="225-246" /> |
 | `networks[*].evm.servedTip.guaranteedMethods` | []string | `[]` | Glob patterns (e.g. `"trace_*"`). For each pattern the served tip is clamped down to the cluster-min of supporting upstreams only, ensuring `"latest"` is always servable for these methods. Source: <SourceLink file="erpc/networks.go" lines="705-747" /> |
+| `networks[*].evm.servedTip.guaranteedFor` | []string | `[]` | Upstream selectors (id or tag glob, e.g. `"type:internal"`, `"int*"`) whose group must be able to serve the advertised tip. For each selector the tip is clamped down to that group's own MAJORITY — not its minimum, so one frozen member cannot pin the network. Several selectors fold to the lowest. An unmatched selector constrains nothing. Source: <SourceLink file="common/config.go" lines="2608-2615" /> |
 
 ### Worked examples
 
@@ -239,7 +243,34 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 }]`}
 />
 
-**4. Disable the poller for a static archive upstream.** When an archive node is used only for historical queries and tracking chain head is unnecessary or costly:
+**4. Keep the advertised tip servable by the group consensus requires.** A mixed pool whose own nodes trail the third-party majority by a few blocks: `consensus.requiredParticipants` demands them in the winning group, but `"latest"` resolves to a block they do not have yet, so every request becomes a composition dispute. Name the same tag in `guaranteedFor` and the tip tracks whatever the group can actually serve — no cushion constant to size or revisit:
+
+<ConfigTabs
+  path="networks[].evm.servedTip"
+  focusYaml="8"
+  focusTs="7"
+  yaml={`networks:
+  - architecture: evm
+    evm:
+      chainId: 1
+      servedTip:
+        enabledFor: ["latest"]
+        # the same tag consensus.requiredParticipants names
+        guaranteedFor: ["type:internal"]`}
+  ts={`networks: [{
+  architecture: "evm",
+  evm: {
+    chainId: 1,
+    servedTip: {
+      enabledFor: ["latest"],
+      // the same tag consensus.requiredParticipants names
+      guaranteedFor: ["type:internal"],
+    },
+  },
+}]`}
+/>
+
+**5. Disable the poller for a static archive upstream.** When an archive node is used only for historical queries and tracking chain head is unnecessary or costly:
 
 <ConfigTabs
   path="upstreams[].evm"
@@ -291,7 +322,10 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 16. **`SuggestLatestBlock` monotonic within a process but not across pod restarts.** It calls `TryUpdate` which the shared counter rejects if the value is ≤ current. Across pod restarts the shared counter (Redis) retains the last value, so a restarted upstream reporting a lower block number after a reorg is silently ignored for up to 1024 blocks of rollback.
 17. **`eth_syncing` result `{Ok: false}` is interpreted as SYNCING.** The non-standard `{Ok: bool}` response shape is handled by `!Ok`: `Ok=false` means not-ok = still syncing. Source: [`architecture/evm/evm_state_poller.go:L1087-L1100`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L1087-L1100)
 18. **`erpc_network_served_tip_lag_blocks` uses `MaxEligible` (post-velocity-gate), not `MaxObserved`.** A far-future tip from a misbehaving upstream is velocity-dropped and does not inflate the lag gauge. The gauge accurately reflects deliberate lag vs. the highest plausible eligible upstream tip.
-19. **Finalized block polling is permanently skipped on unsupported chains.** After 10 consecutive `eth_getBlockByNumber("finalized")` failures without any prior success, `skipFinalizedCheck = true`. `IsBlockFinalized` then falls back exclusively to `latestBlock − FallbackFinalityDepth`. On PoW chains or chains without EIP-4895 finality, this is the only reachable path.
+19. **`guaranteedFor` on a ONE-member group lets that upstream set the tip.** The clamp is the group's majority, and a group of one has no majority to outvote a stall — a single frozen member holds the network tip at its head. Naming exactly one upstream is declaring it mandatory; name ≥3 for a group that tolerates one stall. Same property `guaranteedMethods` already has for a method only one upstream supports.
+20. **`guaranteedFor` constrains nothing when its group is absent from the eligible set.** If every matching upstream is lag-excluded, cordoned or mid-restart, the group ballot has no inputs and the clamp is skipped rather than pinning the tip to 0. A group whose members are all static serving-range caps floors the tip only when no REGISTERED member is live — the same transient-vs-permanent rule `guaranteedMethods` applies, so an eligibility collapse cannot hand back a frozen cap. Source: [`erpc/networks.go:L1654-L1675`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1654-L1675)
+21. **`guaranteedFor` is subject to `enabledFor`.** The clamp lives in the served-tip pipeline, so it is a no-op on any axis not listed in `enabledFor` — setting `guaranteedFor` without `enabledFor` changes nothing.
+22. **Finalized block polling is permanently skipped on unsupported chains.** After 10 consecutive `eth_getBlockByNumber("finalized")` failures without any prior success, `skipFinalizedCheck = true`. `IsBlockFinalized` then falls back exclusively to `latestBlock − FallbackFinalityDepth`. On PoW chains or chains without EIP-4895 finality, this is the only reachable path.
 
 ### Observability
 
