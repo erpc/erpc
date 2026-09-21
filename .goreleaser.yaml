@@ -33,7 +33,10 @@ checksum:
 
 release:
   draft: false
+  # mode governs the release notes; replace_existing_artifacts governs the
+  # binaries. Without it a re-run 422s on every asset that already exists.
   mode: replace
+  replace_existing_artifacts: true
   make_latest: true
   name_template: "{{.Version}}"
   header: |
