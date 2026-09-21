@@ -1215,7 +1215,54 @@ type JsonRpcRequest struct {
 	// UnmarshalJSON. Empty when the request was constructed programmatically.
 	idRaw []byte
 
+	// networkId holds the optional top-level "networkId" member, the body-side
+	// equivalent of the /<architecture>/<chainId> path segments. It is captured
+	// by the envelope parse so routing reads it from the same result as
+	// everything else instead of parsing the body a second time. Never sent
+	// upstream: the outbound body is rebuilt from the four JSON-RPC members.
+	networkId string
+
 	cacheHash atomic.Value
+}
+
+// NetworkIdHint returns the "networkId" member carried in the request body, or
+// an empty string when the body omitted it.
+func (r *JsonRpcRequest) NetworkIdHint() string {
+	if r == nil {
+		return ""
+	}
+	return r.networkId
+}
+
+// uniqueString decodes a JSON string member that a well-formed object states
+// at most once. The decoder calls UnmarshalJSON once per member it binds to
+// this field, so a second call means the object stated the same member twice
+// — including the spellings a plain string field folds together silently: a
+// repeated key, an escaped spelling such as "\u006dethod", and a case variant
+// such as "Method" that Go's case-insensitive field matching maps onto the
+// same field. Decoders disagree about which of the two wins, so erpc reads
+// none of them and reports the object as malformed instead.
+type uniqueString struct {
+	member string
+	value  string
+	seen   bool
+}
+
+func (s *uniqueString) UnmarshalJSON(data []byte) error {
+	if s.seen {
+		return fmt.Errorf("json-rpc request states the %q member more than once", s.member)
+	}
+	s.seen = true
+	// A method name is an ordinary unescaped JSON string, so copy it straight
+	// out and skip a decoder call. The copy is deliberate: the decoder owns
+	// data and may reuse it. Anything carrying an escape goes through the
+	// decoder to be unescaped properly.
+	if n := len(data); n >= 2 && data[0] == '"' && data[n-1] == '"' &&
+		bytes.IndexByte(data[1:n-1], '\\') < 0 {
+		s.value = string(data[1 : n-1])
+		return nil
+	}
+	return SonicCfg.Unmarshal(data, &s.value)
 }
 
 func NewJsonRpcRequest(method string, params []interface{}) *JsonRpcRequest {
@@ -1322,19 +1369,29 @@ func (r *JsonRpcRequest) IDRawBytes() []byte {
 	return out
 }
 
+// UnmarshalJSON is the one place a raw request body becomes a JsonRpcRequest.
+// Method resolution, validation, routing, the cache key, and the body sent
+// upstream all read the result of this single parse, so they cannot reach
+// different conclusions about what the request says.
 func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	type Alias JsonRpcRequest
 	aux := &struct {
 		*Alias
-		ID json.RawMessage `json:"id,omitempty"`
+		ID        json.RawMessage `json:"id,omitempty"`
+		Method    uniqueString    `json:"method"`
+		NetworkID string          `json:"networkId,omitempty"`
 	}{
-		Alias: (*Alias)(r),
+		Alias:  (*Alias)(r),
+		Method: uniqueString{member: "method"},
 	}
 	aux.JSONRPC = "2.0"
 
 	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
 		return err
 	}
+
+	r.Method = aux.Method.value
+	r.networkId = aux.NetworkID
 
 	if aux.ID != nil {
 		var id interface{}
@@ -1358,7 +1415,7 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 			// onto the same internal id. idRaw still preserves the original
 			// bytes for the client echo, but this typed ID feeds the upstream
 			// request body and internal identity, so it must not be corrupted.
-			idInt, err := strconv.ParseInt(string(bytes.TrimSpace(aux.ID)), 10, 64)
+			idInt, err := strconv.ParseInt(util.B2Str(bytes.TrimSpace(aux.ID)), 10, 64)
 			if err != nil {
 				return fmt.Errorf("json-rpc request id %s cannot be represented as a 64-bit integer", aux.ID)
 			}
