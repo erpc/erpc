@@ -59,6 +59,22 @@ jobs:
           GORELEASER_CURRENT_TAG: ${{ github.event.inputs.version_tag }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The ldflags path and the Go symbol it targets drifted apart once and
+      # every release binary shipped reporting "dev". The snapshot is already
+      # built here, so ask it what version it thinks it is.
+      - name: Check the snapshot binary reports its version
+        env:
+          VERSION: ${{ github.event.inputs.version_tag }}
+        run: |
+          set -euo pipefail
+          BIN=$(jq -r 'map(select(.type == "Binary" and .goos == "linux" and .goarch == "amd64"))[0].path' dist/artifacts.json)
+          REPORTED=$("$BIN" --version)
+          echo "$REPORTED"
+          if [[ "$REPORTED" != *"$VERSION"* ]]; then
+            echo "::error::binary reports '$REPORTED', expected it to carry '$VERSION' - ldflags are not reaching common.ErpcVersion"
+            exit 1
+          fi
+
       # Setup pnpm + node and install dependencies
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0

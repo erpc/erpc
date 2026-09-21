@@ -16,7 +16,7 @@ builds:
         goarch: arm64
     main: ./cmd/erpc/main.go
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X github.com/erpc/erpc/common.ErpcVersion={{.Version}} -X github.com/erpc/erpc/common.ErpcCommitSha={{.Commit}}
 
 archives:
   - formats: ['binary']
