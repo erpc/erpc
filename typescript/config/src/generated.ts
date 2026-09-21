@@ -1505,8 +1505,8 @@ export interface EvmNetworkConfig {
   /**
    * ServedTip configures how the network derives the "latest"/"finalized"
    * block it advertises to clients (and enforces via block-availability).
-   * Nil or disabled selects the default max mode (MAX latest across eligible
-   * upstreams); set Enabled to opt into the cluster-min tip. See
+   * Nil or disabled selects the default mode (the corroborated latest across eligible
+   * upstreams, see ServedTipPick.Freshest); set Enabled to opt into the majority tip. See
    * EvmServedTipConfig.
    */
   servedTip?: EvmServedTipConfig;
@@ -1610,9 +1610,9 @@ export interface EvmNetworkConfig {
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
  * block it advertises (and enforces) from its upstreams.
- * In the default max mode the served tip is the MAX latest block across eligible
- * non-syncing upstreams — which can advertise a block only the single most-ahead
- * upstream has, causing "block not found" churn when requests route to a
+ * In the default mode the served tip is the corroborated latest block across eligible
+ * non-syncing upstreams (second-highest, or the only one) — which can still advertise a block a slightly-ahead
+ * pair has, causing "block not found" churn when requests route to a
  * slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
  * served value is instead the freshest block a strict MAJORITY of the eligible
  * upstreams already have, so interpolated requests land on upstreams that can
@@ -1621,8 +1621,8 @@ export interface EvmNetworkConfig {
 export interface EvmServedTipConfig {
   /**
    * EnabledFor lists the block tags whose served value uses the cluster-min tip
-   * instead of the default max. Valid entries: "latest" and "finalized" (the
-   * "safe" tag follows "finalized"). Empty selects the max mode for all tags.
+   * instead of the default corroborated head. Valid entries: "latest" and "finalized" (the
+   * "safe" tag follows "finalized"). Empty selects the default mode for all tags.
    */
   enabledFor?: string[];
   /**
@@ -2400,6 +2400,67 @@ export type SvmNetwork =
     Network;
 export type QuantileTracker = any;
 export type TrackedMetrics = any;
+
+//////////
+// source: served_tip.go
+
+/**
+ * ServedTipInput is a single observation: an upstream's last-known tip block.
+ * Callers are responsible for excluding syncing or cordoned upstreams BEFORE
+ * passing observations here; the picker treats every input as a candidate.
+ */
+export interface ServedTipInput {
+  /**
+   * UpstreamID is preserved only for telemetry attribution. It is not used
+   * in the pick.
+   */
+  upstreamid: string;
+  /**
+   * BlockNumber is the upstream's reported tip. Zero or negative values are
+   * treated as "no data yet" and filtered before picking.
+   */
+  blocknumber: number /* int64 */;
+}
+/**
+ * ServedTipPick is the picker's output.
+ */
+export interface ServedTipPick {
+  /**
+   * Tip is the value to advertise as latest/finalized: the highest block
+   * number that a strict MAJORITY of the inputs have already reached, or 0
+   * when there are no valid inputs.
+   */
+  tip: number /* int64 */;
+  /**
+   * Freshest is the freshest CORROBORATED view: the 2nd-highest valid input
+   * (or the only input when N=1) — the reference for the deliberate-lag
+   * gauge (Freshest - Tip). Using the 2nd-highest instead of the raw max
+   * means a single rogue far-future upstream cannot inflate the lag gauge
+   * (the problem the old velocity gate solved via MaxEligible: one
+   * wrong-chain endpoint used to make the gauge read hundreds of thousands
+   * of blocks). The absolute per-upstream maxima remain observable via
+   * erpc_upstream_latest_block_number.
+   */
+  freshest: number /* int64 */;
+  /**
+   * Max is the highest valid input: the raw ceiling no pick may exceed. It is
+   * deliberately not corroborated — a ceiling a single rogue can only RAISE
+   * cannot be used to make a caller serve anything the rogue chose — and it
+   * is the one place a lone far-ahead head is still visible to callers.
+   */
+  max: number /* int64 */;
+  /**
+   * Inputs is the number of valid (BlockNumber > 0) observations.
+   */
+  inputs: number /* int */;
+  /**
+   * Sorted is the valid inputs, DESCENDING by block number — the order
+   * statistic's own working slice, exposed so the trajectory referee can
+   * cluster the very same ballot without sorting it a second time. Nil when
+   * there are no valid inputs; never mutate it.
+   */
+  sorted: ServedTipInput[];
+}
 
 //////////
 // source: timeout_func.go
