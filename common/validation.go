@@ -3,11 +3,13 @@ package common
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
@@ -174,6 +176,14 @@ func (m *MetricsConfig) Validate() error {
 		}
 	}
 
+	// A malformed customization silently keeps or drops the wrong families, so
+	// reject it here rather than at Init, where the process is already committed
+	// to starting.
+	o := m.TelemetryOptions()
+	if _, err := telemetry.NewMetricPolicy(o.Customizations, o.LegacyLabels); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -221,7 +231,22 @@ func (b *RateLimitBudgetConfig) Validate() error {
 			return err
 		}
 	}
+	for method, units := range b.CreditUnits {
+		if units < 0 {
+			return fmt.Errorf("rateLimiter.*.budget.creditUnits.%s must not be negative", method)
+		}
+	}
 	return nil
+}
+
+// HasCreditRule reports whether any rule in the budget counts credits.
+func (b *RateLimitBudgetConfig) HasCreditRule() bool {
+	for _, rule := range b.Rules {
+		if rule != nil && rule.CountMode == RateLimitCountModeCredit {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *RateLimitRuleConfig) Validate() error {
@@ -240,6 +265,18 @@ func (r *RateLimitRuleConfig) Validate() error {
 		// ok
 	default:
 		return fmt.Errorf("rateLimiter.*.budget.rules.*.period must be one of: second, minute, hour, day, week, month, year")
+	}
+
+	switch r.CountMode {
+	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
+		// ok
+	default:
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.countMode '%s' is invalid, must be one of: %s, %s", r.CountMode, RateLimitCountModeRequest, RateLimitCountModeCredit)
+	}
+
+	// A zero ceiling would reject every request with a non-zero cost.
+	if r.CountMode == RateLimitCountModeCredit && r.MaxCount == 0 {
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.maxCount must be greater than 0 when countMode is %s", RateLimitCountModeCredit)
 	}
 	return nil
 }
@@ -266,6 +303,17 @@ func (p *ProxyPoolConfig) Validate() error {
 func (d *DatabaseConfig) Validate() error {
 	if d.EvmJsonRpcCache != nil {
 		if err := d.EvmJsonRpcCache.Validate(); err != nil {
+			return err
+		}
+	}
+	// SVM reuses the same CacheConfig/CachePolicyConfig types as EVM, so it gets
+	// the identical connector-uniqueness, connector-reference, item-size, TTL and
+	// appliesTo checks simply by being wired in here. Before this, a malformed
+	// svmJsonRpcCache block sailed through startup and only failed later inside
+	// svm.NewSvmJsonRpcCache — which erpc/init.go downgrades to a warning, so the
+	// cache silently did not exist.
+	if d.SvmJsonRpcCache != nil {
+		if err := d.SvmJsonRpcCache.Validate(); err != nil {
 			return err
 		}
 	}
@@ -425,6 +473,17 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 		return fmt.Errorf("cache.*.policies.*.appliesTo must be one of: get, set, both")
 	}
 
+	if p.TTL != nil {
+		if err := p.TTL.validate("cache.*.policies.*.ttl"); err != nil {
+			return err
+		}
+		// Block-time-derived TTLs describe head freshness; other finality
+		// states are immutable and must not silently pick up a dynamic TTL.
+		if p.TTL.BlockTimeMultiplier > 0 && p.Finality != DataFinalityStateRealtime {
+			return fmt.Errorf("cache.*.policies.*.ttl.blockTimeMultiplier is only supported when finality is 'realtime'")
+		}
+	}
+
 	return nil
 }
 
@@ -486,6 +545,11 @@ func (c *ConnectorConfig) Validate() error {
 			return err
 		}
 	}
+	if c.Grpc != nil {
+		if err := c.Grpc.Validate(); err != nil {
+			return err
+		}
+	}
 
 	for i, fsCfg := range c.FailsafeForGets {
 		if err := validateConnectorFailsafe(c.Id, "failsafeForGets", i, fsCfg); err != nil {
@@ -501,6 +565,33 @@ func (c *ConnectorConfig) Validate() error {
 	return nil
 }
 
+// MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool
+// size. It guards against a fat-fingered value opening an absurd number of
+// connections to each backing server; it is not a recommended operating point.
+const MaxGrpcConnPoolSize = 256
+
+func validateGrpcConnPoolSize(scope string, poolSize int) error {
+	if poolSize < 0 {
+		return fmt.Errorf("%s.poolSize must not be negative", scope)
+	}
+	if poolSize > MaxGrpcConnPoolSize {
+		return fmt.Errorf("%s.poolSize must be <= %d", scope, MaxGrpcConnPoolSize)
+	}
+	return nil
+}
+
+// Validate checks the gRPC cache-connector knobs. A zero PoolSize is valid and
+// means "use the built-in default".
+func (g *GrpcConnectorConfig) Validate() error {
+	return validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize)
+}
+
+// Validate checks the gRPC upstream knobs. A zero PoolSize is valid and means
+// "use the built-in default".
+func (g *GrpcUpstreamConfig) Validate() error {
+	return validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize)
+}
+
 func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
 	if fsCfg == nil {
 		return nil
@@ -508,9 +599,6 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	prefix := fmt.Sprintf("connector '%s'.%s[%d]", connectorId, field, index)
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
-	}
-	if fsCfg.Hedge != nil && fsCfg.Hedge.Delay != nil && fsCfg.Hedge.Delay.Quantile > 0 {
-		return fmt.Errorf("%s: hedge quantile is not supported for connector-level failsafe (no latency metric source)", prefix)
 	}
 	return nil
 }
@@ -568,6 +656,45 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 	if p.SetTimeout == 0 {
 		return fmt.Errorf("database.*.connector.postgresql.setTimeout is required")
 	}
+
+	if p.IAMAuth != nil && p.IAMAuth.Enabled {
+		if p.IAMAuth.Endpoint == "" {
+			return fmt.Errorf("postgresql.iamAuth.endpoint could not be derived from connectionUri; set it explicitly as host:port")
+		}
+		if !strings.Contains(p.IAMAuth.Endpoint, ":") {
+			return fmt.Errorf("postgresql.iamAuth.endpoint must include a port (host:port)")
+		}
+		if p.IAMAuth.DBUser == "" {
+			return fmt.Errorf("postgresql.iamAuth.dbUser could not be derived from connectionUri; set it explicitly or include a user in connectionUri")
+		}
+		if parsed, err := url.Parse(p.ConnectionUri); err == nil {
+			// Reject static password alongside IAM auth.
+			if parsed.User != nil {
+				if pw, hasPw := parsed.User.Password(); hasPw && pw != "" {
+					return fmt.Errorf("postgresql.iamAuth: cannot combine IAM auth with a static password in connectionUri (got password for user %q)", parsed.User.Username())
+				}
+			}
+			// Reject dbUser that disagrees with the URI user — rdsutils signs for
+			// DBUser while pgx connects as the URI user, causing a silent auth mismatch.
+			if parsed.User != nil {
+				if uriUser := parsed.User.Username(); uriUser != "" && p.IAMAuth.DBUser != uriUser {
+					return fmt.Errorf("postgresql.iamAuth.dbUser %q does not match the user in connectionUri %q; they must be identical", p.IAMAuth.DBUser, uriUser)
+				}
+			}
+			// Require a TLS-enforcing sslmode; checking for sslmode= presence alone
+			// would let sslmode=disable through.
+			sslmode := parsed.Query().Get("sslmode")
+			if !slices.Contains([]string{"require", "verify-ca", "verify-full"}, sslmode) {
+				return fmt.Errorf("postgresql.iamAuth requires SSL; sslmode must be require, verify-ca, or verify-full (got %q; SetDefaults appends sslmode=require automatically)", sslmode)
+			}
+		}
+		if p.IAMAuth.Auth != nil {
+			if !slices.Contains([]string{"file", "env", "secret"}, p.IAMAuth.Auth.Mode) {
+				return fmt.Errorf("postgresql.iamAuth.auth.mode %q is invalid; must be file, env, or secret", p.IAMAuth.Auth.Mode)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -580,6 +707,30 @@ func (c *RedisConnectorConfig) Validate() error {
 	// Enforce supported schemes.
 	if !strings.HasPrefix(uri, "rediss://") && !strings.HasPrefix(uri, "redis://") {
 		return fmt.Errorf("redis connector: invalid URI scheme, must be 'rediss://' or 'redis://'")
+	}
+
+	if c.IAMAuth != nil && c.IAMAuth.Enabled {
+		if c.IAMAuth.CacheName == "" {
+			return fmt.Errorf("redis.iamAuth.cacheName is required when iamAuth.enabled is true")
+		}
+		if c.IAMAuth.UserID == "" {
+			return fmt.Errorf("redis.iamAuth.userID is required when iamAuth.enabled is true")
+		}
+		// IAM auth requires TLS; SetDefaults promotes addr to rediss:// automatically.
+		if !strings.HasPrefix(uri, "rediss://") {
+			return fmt.Errorf("redis.iamAuth requires in-transit TLS: URI must use 'rediss://' scheme (set tls.enabled: true with addr, or use a rediss:// URI)")
+		}
+		// Reject static password alongside IAM auth.
+		if parsed, perr := url.Parse(uri); perr == nil && parsed.User != nil {
+			if pw, hasPw := parsed.User.Password(); hasPw && pw != "" {
+				return fmt.Errorf("redis.iamAuth: cannot combine IAM auth with a static password (got password for user %q)", parsed.User.Username())
+			}
+		}
+		if c.IAMAuth.Auth != nil {
+			if !slices.Contains([]string{"file", "env", "secret"}, c.IAMAuth.Auth.Mode) {
+				return fmt.Errorf("redis.iamAuth.auth.mode %q is invalid; must be file, env, or secret", c.IAMAuth.Auth.Mode)
+			}
+		}
 	}
 
 	// Validate lock retry interval
@@ -644,6 +795,11 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			}
 		}
 	}
+	// Cross-object: both lists are validated individually above; this catches the
+	// pair that is individually legal but jointly useless.
+	if err := validateSvmUpstreamNetworkPairing(p.Upstreams, p.Networks); err != nil {
+		return err
+	}
 	if p.Auth != nil {
 		if err := p.Auth.Validate(); err != nil {
 			return err
@@ -654,10 +810,18 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			return err
 		}
 	}
+	if p.AllowClientDirectives != nil && *p.AllowClientDirectives != "" {
+		if _, err := NewWildcardMatcher(*p.AllowClientDirectives); err != nil {
+			return fmt.Errorf("project.*.allowClientDirectives pattern is invalid: %w", err)
+		}
+	}
 	if p.RateLimitBudget != "" {
 		if !c.HasRateLimiterBudget(p.RateLimitBudget) {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)
 		}
+	}
+	if err := p.Integrity.Validate(); err != nil {
+		return fmt.Errorf("project.*: %w", err)
 	}
 	return nil
 }
@@ -692,6 +856,11 @@ func (a *AuthConfig) Validate() error {
 func (s *AuthStrategyConfig) Validate() error {
 	if s.Type == "" {
 		return fmt.Errorf("auth.*.type is required")
+	}
+	if s.AllowClientDirectives != nil && *s.AllowClientDirectives != "" {
+		if _, err := NewWildcardMatcher(*s.AllowClientDirectives); err != nil {
+			return fmt.Errorf("auth.*.allowClientDirectives pattern is invalid: %w", err)
+		}
 	}
 	switch s.Type {
 	case AuthTypeNetwork:
@@ -776,10 +945,28 @@ func (s *SecretStrategyConfig) Validate() error {
 }
 
 func (j *JwtStrategyConfig) Validate() error {
-	if len(j.VerificationKeys) == 0 {
-		return fmt.Errorf("auth.*.jwt.verificationKeys is required, add at least one verification key")
+	jwksURL := strings.TrimSpace(j.VerificationJwksUrl)
+	if len(j.VerificationKeys) == 0 && jwksURL == "" {
+		return fmt.Errorf("auth.*.jwt.verificationKeys or auth.*.jwt.verificationJwksUrl is required")
 	}
-	// No validation required for RateLimitBudgetClaimName; empty is allowed and defaulted in SetDefaults
+	if jwksURL != "" {
+		parsed, err := url.Parse(jwksURL)
+		// Prefer Hostname() over Host: values like "https://:443/jwks" parse with
+		// Host=":443" but an empty hostname, which cannot be fetched.
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+			return fmt.Errorf("auth.*.jwt.verificationJwksUrl must be a valid HTTP or HTTPS URL, got: %s", j.VerificationJwksUrl)
+		}
+	}
+	for claim, values := range j.ClaimMatchers {
+		if len(values) == 0 {
+			return fmt.Errorf("auth.*.jwt.claimMatchers.%s: must not be empty", claim)
+		}
+		for _, v := range values {
+			if strings.TrimSpace(v) == "" {
+				return fmt.Errorf("auth.*.jwt.claimMatchers.%s: empty value not allowed", claim)
+			}
+		}
+	}
 	return nil
 }
 
@@ -840,6 +1027,11 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return err
 		}
 	}
+	if u.Svm != nil {
+		if err := u.Svm.Validate(u); err != nil {
+			return err
+		}
+	}
 	if u.Failsafe != nil {
 		for _, fs := range u.Failsafe {
 			if err := fs.Validate(); err != nil {
@@ -852,14 +1044,34 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return err
 		}
 	}
+	if u.Grpc != nil {
+		if err := u.Grpc.Validate(); err != nil {
+			return err
+		}
+	}
 	if u.RateLimitAutoTune != nil {
 		if err := u.RateLimitAutoTune.Validate(); err != nil {
 			return err
 		}
 	}
+	switch u.RateLimitCountMode {
+	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
+	default:
+		return fmt.Errorf("upstream.*.rateLimitCountMode '%s' is invalid, must be one of: %s, %s", u.RateLimitCountMode, RateLimitCountModeRequest, RateLimitCountModeCredit)
+	}
 	if u.RateLimitBudget != "" {
-		if !c.HasRateLimiterBudget(u.RateLimitBudget) {
+		budget := c.RateLimiterBudget(u.RateLimitBudget)
+		if budget == nil {
 			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
+		}
+		// Two cost sources for one counter; reject rather than pick silently.
+		if u.RateLimitCountMode == RateLimitCountModeCredit {
+			if len(budget.CreditUnits) > 0 {
+				return fmt.Errorf("upstream.*.rateLimitCountMode is '%s' but its budget '%s' also defines creditUnits; an upstream prices calls from its vendor's table, so remove one of them", RateLimitCountModeCredit, budget.Id)
+			}
+			if budget.HasCreditRule() {
+				return fmt.Errorf("upstream.*.rateLimitCountMode is '%s' but its budget '%s' also sets rules.*.countMode; set it in one place only", RateLimitCountModeCredit, budget.Id)
+			}
 		}
 	}
 	return nil
@@ -1004,6 +1216,12 @@ func (f *FailsafeConfig) Validate() error {
 		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
 	}
 
+	switch f.MatchRequestKind {
+	case "", "*", "user", "internal":
+	default:
+		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+	}
+
 	if f.Timeout != nil {
 		if err := f.Timeout.Validate(); err != nil {
 			return err
@@ -1112,6 +1330,12 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		if rp.MinParticipants > c.MaxParticipants {
 			return fmt.Errorf("consensus.requiredParticipants[%d].minParticipants (%d) cannot exceed maxParticipants (%d)", i, rp.MinParticipants, c.MaxParticipants)
 		}
+		if rp.MinAgreement < 0 {
+			return fmt.Errorf("consensus.requiredParticipants[%d].minAgreement must not be negative", i)
+		}
+		if rp.MinAgreement > rp.MinParticipants {
+			return fmt.Errorf("consensus.requiredParticipants[%d].minAgreement (%d) cannot exceed minParticipants (%d): the pool quota must invite at least as many matching upstreams as the winning group is required to contain", i, rp.MinAgreement, rp.MinParticipants)
+		}
 	}
 
 	return nil
@@ -1159,6 +1383,11 @@ func (c *S3FlushConfig) Validate() error {
 	}
 	if c.FlushInterval < 0 {
 		return fmt.Errorf("s3.flushInterval must be >= 0")
+	}
+	if c.Endpoint != "" {
+		if u, err := url.Parse(c.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("s3.endpoint must be a valid http(s) URL, got %q", c.Endpoint)
+		}
 	}
 	if c.Credentials != nil {
 		mode := strings.ToLower(strings.TrimSpace(c.Credentials.Mode))
@@ -1256,8 +1485,16 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Architecture == "evm" && n.Evm == nil {
 		return fmt.Errorf("network.*.evm is required for evm networks")
 	}
+	if n.Architecture == ArchitectureSvm && n.Svm == nil {
+		return fmt.Errorf("network.*.svm is required for svm networks")
+	}
 	if n.Evm != nil {
 		if err := n.Evm.Validate(); err != nil {
+			return err
+		}
+	}
+	if n.Svm != nil {
+		if err := n.Svm.Validate(); err != nil {
 			return err
 		}
 	}
@@ -1288,6 +1525,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 		if err := sr.Validate(); err != nil {
 			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
 		}
+	}
+	if err := n.Integrity.Validate(); err != nil {
+		return fmt.Errorf("network.*: %w", err)
 	}
 	return nil
 }
@@ -1326,6 +1566,147 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.GetLogsMaxAllowedRange == 0 {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
+	if e.ServedTip != nil {
+		for _, tag := range e.ServedTip.EnabledFor {
+			switch strings.ToLower(strings.TrimSpace(tag)) {
+			case "latest", "finalized", "safe":
+			default:
+				return fmt.Errorf("network.*.evm.servedTip.enabledFor contains unknown tag %q (valid: latest, finalized, safe)", tag)
+			}
+		}
+		if e.ServedTip.ClusterDelta < 0 {
+			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
+		}
+		if e.ServedTip.MaxRegressionBlocks < -1 {
+			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0, or -1 to disable the regression guard (0 uses the default rollback tolerance)")
+		}
+		if w := e.ServedTip.TrajectoryWindow; w != nil && w.Duration() != 0 {
+			if d := w.Duration(); d < MinServedTipTrajectoryWindow || d > MaxServedTipTrajectoryWindow {
+				return fmt.Errorf(
+					"network.*.evm.servedTip.trajectoryWindow must be 0 (disables the trajectory referee) "+
+						"or between %s and %s, got %s — NOTE a bare number in YAML is parsed as MILLISECONDS, "+
+						"so write trajectoryWindow: \"10m\", not trajectoryWindow: 10",
+					MinServedTipTrajectoryWindow, MaxServedTipTrajectoryWindow, d)
+			}
+		}
+		for _, m := range e.ServedTip.GuaranteedMethods {
+			if err := ValidatePattern(m); err != nil {
+				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)
+			}
+		}
+	}
+	if e.SafeBlockSource != "" {
+		if err := ValidatePattern(e.SafeBlockSource); err != nil {
+			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
+		}
+	}
+	return nil
+}
+
+// isValidSvmSegment reports whether a chain or cluster name is usable as one
+// segment of an "svm:..." network id. It delegates to IsValidNetwork so config
+// validation and network-id parsing can never drift apart on what is legal
+// (notably: dots are allowed here but not by util.IsValidIdentifier).
+func isValidSvmSegment(seg string) bool {
+	// The colon test must come first: "svm:a:b" is a legal *two*-segment network
+	// id, so a colon-bearing chain or cluster would otherwise validate here and
+	// only be caught by the composite check, with a much vaguer message.
+	return seg != "" && !strings.Contains(seg, ":") && IsValidNetwork("svm:"+seg)
+}
+
+// Validate checks the SVM network block, mirroring EvmNetworkConfig.Validate.
+// Everything rejected here would otherwise surface asynchronously at request
+// time or, worse, silently disable behavior: an unrecognized commitment makes
+// the injection hook a no-op (architecture/svm/hooks.go) rather than an error,
+// so a typo like "finalised" quietly reverts every request to whatever each
+// vendor's server-side default happens to be.
+func (s *SvmNetworkConfig) Validate() error {
+	if s.Cluster == "" {
+		return fmt.Errorf("network.*.svm.cluster is required (e.g. mainnet-beta, devnet)")
+	}
+	// Chain is optional — empty legally means solana, which keeps the network id
+	// at the pre-multi-chain "svm:<cluster>" shape. Validate it, don't reject it.
+	if s.Chain != "" && !isValidSvmSegment(s.Chain) {
+		return fmt.Errorf("network.*.svm.chain '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Chain)
+	}
+	if !isValidSvmSegment(s.Cluster) {
+		return fmt.Errorf("network.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	// Belt-and-braces on the derived id: the pieces are legal individually, so
+	// this only fires if SvmNetworkId's composition rules ever change.
+	if ntwId := util.SvmNetworkId(s.Chain, s.Cluster); !IsValidNetwork(ntwId) {
+		return fmt.Errorf("network.*.svm derives an invalid network id '%s' from chain '%s' and cluster '%s'", ntwId, s.Chain, s.Cluster)
+	}
+	// Matched case-insensitively because the injection hooks lowercase before
+	// comparing; empty means "inject nothing" and is a legal opt-out.
+	switch strings.ToLower(s.Commitment) {
+	case "", "processed", "confirmed", "finalized":
+	default:
+		return fmt.Errorf("network.*.svm.commitment '%s' is invalid, must be one of: processed, confirmed, finalized", s.Commitment)
+	}
+	if s.StatePollerDebounce.Duration() < 0 {
+		return fmt.Errorf("network.*.svm.statePollerDebounce must be greater than or equal to 0")
+	}
+	// nil is "unset" (SetDefaults fills 100) and 0 is the documented disable
+	// switch; only a negative value is meaningless.
+	if s.MaxFinalizedSlotLag != nil && *s.MaxFinalizedSlotLag < 0 {
+		return fmt.Errorf("network.*.svm.maxFinalizedSlotLag must be greater than or equal to 0 (0 disables the lag filter)")
+	}
+	return nil
+}
+
+// Validate checks the per-upstream SVM block. Cluster is what upstream.go turns
+// into the upstream's networkId, so a missing one currently fails at bootstrap
+// ("svm upstream %q is missing svm.cluster") long after startup reported success.
+func (s *SvmUpstreamConfig) Validate(u *UpstreamConfig) error {
+	if s.Cluster == "" {
+		// Only fatal once the upstream is actually typed svm. UpstreamConfig
+		// .SetDefaults defaults an unset Type to evm, so by validation time this
+		// is decided — and an svm block inherited from upstreamDefaults onto an
+		// evm upstream in a mixed project is inert, not a config error.
+		if u.Type == UpstreamTypeSvm {
+			return fmt.Errorf("upstream.*.svm.cluster is required for svm upstreams (e.g. mainnet-beta, devnet)")
+		}
+		return nil
+	}
+	if s.Chain != "" && !isValidSvmSegment(s.Chain) {
+		return fmt.Errorf("upstream.*.svm.chain '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Chain)
+	}
+	if !isValidSvmSegment(s.Cluster) {
+		return fmt.Errorf("upstream.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	return nil
+}
+
+// validateSvmUpstreamNetworkPairing catches an SVM upstream whose cluster matches
+// a declared network but whose chain does not. Selection pairs on resolved chain
+// AND cluster (see erpc/healthcheck.go), so such an upstream serves nothing while
+// reporting itself perfectly healthy — the exact silent-misconfiguration this
+// validator exists to prevent.
+//
+// It only fires when some network already declares that cluster, so projects that
+// rely on lazy network creation (upstreams configured, networks not) are untouched.
+func validateSvmUpstreamNetworkPairing(upstreams []*UpstreamConfig, networks []*NetworkConfig) error {
+	for _, u := range upstreams {
+		if u == nil || u.Type != UpstreamTypeSvm || u.Svm == nil || u.Svm.Cluster == "" {
+			continue
+		}
+		upChain := ResolveSvmChain(u.Svm.Chain)
+		matched, clusterDeclared := false, false
+		for _, n := range networks {
+			if n == nil || n.Svm == nil || n.Svm.Cluster != u.Svm.Cluster {
+				continue
+			}
+			clusterDeclared = true
+			if ResolveSvmChain(n.Svm.Chain) == upChain {
+				matched = true
+				break
+			}
+		}
+		if clusterDeclared && !matched {
+			return fmt.Errorf("upstream.*.svm.chain '%s' (upstream '%s') matches no network.*.svm.chain for cluster '%s'; the upstream would never be selected", upChain, u.Id, u.Svm.Cluster)
+		}
+	}
 	return nil
 }
 
@@ -1359,6 +1740,104 @@ func (c *SelectionPolicyConfig) Validate() error {
 	}
 	if c.CompiledProgram == nil {
 		return fmt.Errorf("selectionPolicy.evalFunc failed to compile (CompiledProgram is nil)")
+	}
+	return nil
+}
+
+// --- integrity ---
+
+// integrityCheckIDs is the catalog of known integrity check ids, registered by
+// the integrity package at init time (common cannot import it — that would be
+// a cycle). When empty (a build that doesn't link the integrity package), the
+// unknown-id validation is skipped rather than false-failing every config.
+var integrityCheckIDs = map[string]struct{}{}
+
+// RegisterIntegrityCheckID adds a check id to the validation catalog. Called
+// from the integrity package's check registrations.
+func RegisterIntegrityCheckID(id string) { integrityCheckIDs[id] = struct{}{} }
+
+// isIntegrityBehavior mirrors the runtime behavior vocabulary (evm
+// parseBehavior): unrecognized values are silently ignored at runtime, so the
+// only place a typo can be caught is here. The vocabulary is EXACTLY
+// recordOnly | hardReject | off — the pre-release reject/soft-flag words are
+// deliberately NOT accepted (fail loudly, no silent aliasing).
+func isIntegrityBehavior(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "recordonly", "hardreject", "off":
+		return true
+	}
+	return false
+}
+
+func (i *IntegrityConfig) Validate() error {
+	if i == nil {
+		return nil
+	}
+	if err := i.IntegritySettings.validate(); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(i.HeaderMode)) {
+	case "", IntegrityHeaderModeOff, IntegrityHeaderModeProfiles, IntegrityHeaderModeFull:
+	default:
+		return fmt.Errorf("integrity.headerMode '%s' is invalid, must be one of: off | profiles | full", i.HeaderMode)
+	}
+	for name, p := range i.Profiles {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("integrity.profiles contains an empty profile name")
+		}
+		if p == nil {
+			continue
+		}
+		if err := p.validate(); err != nil {
+			return fmt.Errorf("integrity.profiles.%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// validate checks an IntegritySettings body. Every rule here guards a silent
+// runtime failure: an unknown level enables ZERO checks, an unknown check id
+// does nothing, and an unknown behavior string keeps the default — none of
+// which are visible without this validation.
+func (s *IntegritySettings) validate() error {
+	switch strings.ToLower(strings.TrimSpace(s.Level)) {
+	case "", "off", "intrinsic", "corroborated", "authoritative":
+	default:
+		return fmt.Errorf("integrity.level '%s' is invalid (an unknown level silently enables zero checks), must be one of: off | intrinsic | corroborated | authoritative", s.Level)
+	}
+	for id, oc := range s.Checks {
+		if len(integrityCheckIDs) > 0 {
+			if _, ok := integrityCheckIDs[id]; !ok {
+				known := make([]string, 0, len(integrityCheckIDs))
+				for k := range integrityCheckIDs {
+					known = append(known, k)
+				}
+				slices.Sort(known)
+				return fmt.Errorf("integrity.checks.%s is not a known check id (a typo'd id silently does nothing); known ids: %s", id, strings.Join(known, ", "))
+			}
+		}
+		if oc != nil && oc.OnFailure != "" && !isIntegrityBehavior(oc.OnFailure) {
+			return fmt.Errorf("integrity.checks.%s.onFailure '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", id, oc.OnFailure)
+		}
+	}
+	if ib := s.InvalidBehavior; ib != nil {
+		if ib.Finalized != "" && !isIntegrityBehavior(ib.Finalized) {
+			return fmt.Errorf("integrity.invalidBehavior.finalized '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", ib.Finalized)
+		}
+		if ib.Unfinalized != "" && !isIntegrityBehavior(ib.Unfinalized) {
+			return fmt.Errorf("integrity.invalidBehavior.unfinalized '%s' is invalid (an unknown value silently keeps the default), must be one of: recordOnly | hardReject | off", ib.Unfinalized)
+		}
+	}
+	if b := s.Budget; b != nil && (b.MaxPerSecond < 0 || b.MaxConcurrent < 0) {
+		return fmt.Errorf("integrity.budget.maxPerSecond/maxConcurrent must be >= 0")
+	}
+	if s.ReorgWindow < 0 {
+		return fmt.Errorf("integrity.reorgWindow must be >= 0")
+	}
+	if s.MisbehaviorsDestination != nil {
+		if err := s.MisbehaviorsDestination.Validate(); err != nil {
+			return fmt.Errorf("integrity.misbehaviorsDestination: %w", err)
+		}
 	}
 	return nil
 }

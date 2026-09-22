@@ -123,17 +123,24 @@ func NewPostgreSQLConnector(
 	lg.Debug().Interface("config", cfg).Msg("creating postgresql connector")
 
 	connector := &PostgreSQLConnector{
-		id:            id,
-		logger:        &lg,
-		appCtx:        ctx,
-		table:         cfg.Table,
-		minConns:      cfg.MinConns,
-		maxConns:      cfg.MaxConns,
-		initTimeout:   cfg.InitTimeout.Duration(),
-		getTimeout:    cfg.GetTimeout.Duration(),
-		setTimeout:    cfg.SetTimeout.Duration(),
-		cleanupTicker: time.NewTicker(5 * time.Minute),
-		connMu:        sync.RWMutex{},
+		id:          id,
+		logger:      &lg,
+		appCtx:      ctx,
+		table:       cfg.Table,
+		minConns:    cfg.MinConns,
+		maxConns:    cfg.MaxConns,
+		initTimeout: cfg.InitTimeout.Duration(),
+		getTimeout:  cfg.GetTimeout.Duration(),
+		setTimeout:  cfg.SetTimeout.Duration(),
+		connMu:      sync.RWMutex{},
+	}
+
+	// Only arm the local expired-row cleanup ticker when this connector owns
+	// the schema (writer region). On a read-only replica the periodic DELETE
+	// either fails or gets needlessly cross-region write-forwarded, so leave
+	// the ticker nil — startCleanup and the cleanupOnce gate both handle it.
+	if !cfg.SkipSchemaSetup {
+		connector.cleanupTicker = time.NewTicker(5 * time.Minute)
 	}
 
 	// create an Initializer to handle (re)connecting
@@ -183,6 +190,22 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	config.MaxConnLifetime = 5 * time.Hour
 	config.MaxConnIdleTime = 30 * time.Minute
 
+	if iam := cfg.IAMAuth; iam != nil && iam.Enabled {
+		sess, err := createAWSSession(iam.Auth, iam.Region)
+		if err != nil {
+			return common.NewTaskFatal(fmt.Errorf("rds iam: failed to create AWS session: %w", err))
+		}
+		// BeforeConnect is called on every new pgxpool connection, ensuring each
+		// connection uses a fresh IAM token (tokens are valid for 15 minutes but
+		// only checked at connection establishment time).
+		config.BeforeConnect = newRDSBeforeConnect(sess, iam)
+		p.logger.Info().
+			Str("endpoint", iam.Endpoint).
+			Str("region", iam.Region).
+			Str("dbUser", iam.DBUser).
+			Msg("PostgreSQL IAM auth enabled (RDS)")
+	}
+
 	connectCtx, cancel := context.WithTimeout(ctx, p.initTimeout)
 	defer cancel()
 
@@ -197,12 +220,19 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	// the `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` parts
 	// are safe under that race; the TEXT→BYTEA `DROP COLUMN` and
 	// `cron.schedule` steps are not.
-	if err := p.ensureSchema(connectCtx, newConn, cfg); err != nil {
-		// The pool we just opened is about to be discarded — close it
-		// synchronously so its connections are released back to the
-		// pooler rather than lingering until GC.
-		newConn.Close()
-		return err
+	// Schema setup issues DDL (CREATE TABLE/INDEX, ALTER, pg_cron) that a
+	// read-only replica cannot execute (SQLSTATE 25006) and that Aurora global
+	// write-forwarding does not forward. SkipSchemaSetup lets a reader-region
+	// connector come up without it; the writer-region connector owns the
+	// schema and it arrives via storage replication.
+	if !cfg.SkipSchemaSetup {
+		if err := p.ensureSchema(connectCtx, newConn, cfg); err != nil {
+			// The pool we just opened is about to be discarded — close it
+			// synchronously so its connections are released back to the
+			// pooler rather than lingering until GC.
+			newConn.Close()
+			return err
+		}
 	}
 
 	// Publish the new pool. This is the only critical section: readers see
@@ -563,13 +593,13 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 
 	if err != nil {
 		p.handleConnectionFailure(err)
-		go tx.Rollback(context.Background())
+		go tx.Rollback(context.Background()) // #nosec G118 -- ctx may be cancelled; background is correct for cleanup rollback
 		common.SetTraceSpanError(span, err)
 		return nil, fmt.Errorf("failed to acquire advisory lock: %w", err)
 	}
 
 	if !acquired {
-		go tx.Rollback(context.Background())
+		go tx.Rollback(context.Background()) // #nosec G118 -- ctx may be cancelled; background is correct for cleanup rollback
 		err := fmt.Errorf("failed to acquire lock: already locked")
 		common.SetTraceSpanError(span, err)
 		return nil, err

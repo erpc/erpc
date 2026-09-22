@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
 	"github.com/rs/zerolog"
@@ -115,18 +116,20 @@ func (e *upstreamExecutor) Run(
 		return inner(ctx, false)
 	}
 
+	startTime := time.Now()
+
 	// Internal requests bypass retry+hedge+breaker. The per-attempt
 	// timeout still wraps inner.
 	if req != nil && req.IsInternal() {
 		resp, err := e.callWithTimeout(ctx, req, inner, false)
-		return resp, e.wrapTimeout(err)
+		return resp, e.wrapTimeout(err, startTime)
 	}
 
 	// Retry loop wraps hedge wrapper.
 	resp, err := e.runRetry(ctx, req, func(ctx context.Context) (*common.NormalizedResponse, error) {
 		return e.runHedge(ctx, req, inner)
 	})
-	return resp, e.wrapTimeout(err)
+	return resp, e.wrapTimeout(err, startTime)
 }
 
 // wrapTimeout converts a bare context.Cause sentinel into a typed
@@ -134,7 +137,12 @@ func (e *upstreamExecutor) Run(
 // Wraps even if err is already a StandardError, provided this scope
 // owns the timeout and the dynamic-timeout sentinel sits anywhere in
 // the cause chain — the sentinel is what we promised the caller.
-func (e *upstreamExecutor) wrapTimeout(err error) error {
+//
+// startTime is when Run() began: the error message reports elapsed time
+// since then. Passing time.Now() here would render a bogus nanosecond
+// duration ("exceeded after 279ns") that reads like an instantly-expired
+// deadline.
+func (e *upstreamExecutor) wrapTimeout(err error, startTime time.Time) error {
 	if err == nil {
 		return nil
 	}
@@ -149,8 +157,7 @@ func (e *upstreamExecutor) wrapTimeout(err error) error {
 	if common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded) {
 		return err
 	}
-	now := time.Now()
-	return common.NewErrFailsafeTimeoutExceeded(common.ScopeUpstream, err, &now)
+	return common.NewErrFailsafeTimeoutExceeded(common.ScopeUpstream, err, &startTime)
 }
 
 func (e *upstreamExecutor) callWithTimeout(
@@ -240,7 +247,7 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 		return false
 	}
 	if req != nil {
-		if m, _ := req.Method(); m != "" && evm.IsNonRetryableWriteMethod(m) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return false
 		}
 	}
@@ -278,7 +285,7 @@ func (e *upstreamExecutor) runHedge(
 		if req.IsCompositeRequest() {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
-		if m, _ := req.Method(); m != "" && evm.IsNonRetryableWriteMethod(m) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
 	}

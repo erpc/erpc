@@ -138,12 +138,26 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	if r.initTimeout == 0 && options.DialTimeout > 0 {
 		r.initTimeout = options.DialTimeout
 	}
+	// Ensure go-redis's DialTimeout doesn't cap the connection attempt shorter
+	// than our initTimeout (go-redis defaults DialTimeout to 5s).
+	if r.initTimeout > 0 && options.DialTimeout < r.initTimeout {
+		options.DialTimeout = r.initTimeout
+	}
 	if r.getTimeout == 0 && options.ReadTimeout > 0 {
 		r.getTimeout = options.ReadTimeout
 	}
 	if r.setTimeout == 0 && options.WriteTimeout > 0 {
 		r.setTimeout = options.WriteTimeout
 	}
+
+	// Honor context deadlines on in-flight commands. go-redis v9 defaults
+	// ContextTimeoutEnabled to false, where a ctx deadline only gates pool
+	// acquisition and an in-flight read waits for the socket ReadTimeout —
+	// so every WithTimeout wrapper in this file (getTimeout/setTimeout) and
+	// the connector-failsafe timeout silently failed to bound a slow
+	// command. ReadTimeout/WriteTimeout remain the safety net for
+	// deadline-less contexts.
+	options.ContextTimeoutEnabled = true
 
 	/**
 	* if tls.enabled: true in config → build a tls.Config and
@@ -177,6 +191,29 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		}
 	} else if options.TLSConfig != nil {
 		r.logger.Debug().Msg("using TLS configuration implied by rediss:// URI (verify against system CAs or InsecureSkipVerify)")
+	}
+
+	if iam := r.cfg.IAMAuth; iam != nil && iam.Enabled {
+		sess, err := createAWSSession(iam.Auth, iam.Region)
+		if err != nil {
+			return common.NewTaskFatal(fmt.Errorf("elasticache iam: failed to create AWS session: %w", err))
+		}
+
+		// CredentialsProviderContext is called on every new physical connection,
+		// ensuring each connection gets a fresh (<15 min old) token.
+		options.CredentialsProviderContext = newElastiCacheCredentialsProvider(sess, iam)
+		// Clear any credentials that may have been embedded in the URI.
+		options.Username = iam.UserID
+		options.Password = ""
+
+		options.ConnMaxLifetime = iamRedisConnMaxLifetime
+		options.ConnMaxLifetimeJitter = iamRedisConnMaxLifetimeJitter
+
+		r.logger.Info().
+			Str("cacheName", iam.CacheName).
+			Str("region", iam.Region).
+			Str("userID", iam.UserID).
+			Msg("Redis IAM auth enabled (ElastiCache)")
 	}
 
 	r.logger.Debug().Str("addr", options.Addr).Msg("attempting to connect to Redis")

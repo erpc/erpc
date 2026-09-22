@@ -108,7 +108,7 @@ func TestNoteObservedLatestBlock_FloorsEvmHighestLatest(t *testing.T) {
 	// Shared already at 1001 from NoteObserved; verify lastReturned alone
 	// is enough by calling apply path with a lower computed tip via the
 	// monotonic guard — EvmHighest after noting must never go backwards.
-	assert.GreaterOrEqual(t, network.lastReturnedLatestBlock.Load(), int64(1001))
+	assert.GreaterOrEqual(t, network.deliveredLatestBlock.Load(), int64(1001))
 	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
 }
 
@@ -188,7 +188,7 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 		"per-upstream poller must advance")
 	assert.Equal(t, int64(90677359), network.EvmHighestLatestBlockNumber(ctx),
 		"network tip must advance before any client would see the WS head")
-	assert.GreaterOrEqual(t, network.lastReturnedLatestBlock.Load(), int64(90677359),
+	assert.GreaterOrEqual(t, network.deliveredLatestBlock.Load(), int64(90677359),
 		"process-local high-water mark must cover the delivered WS tip")
 }
 

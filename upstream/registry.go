@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -47,6 +47,20 @@ type UpstreamsRegistry struct {
 
 	providerOnce sync.Map // networkId -> *sync.Once
 
+	// networkFirstPreparedAt is when each network first entered
+	// PrepareUpstreamsForNetwork, which is the only clock that can tell "still
+	// coming up" from "never came up". Written once per network and read only
+	// on the zero-upstream error paths.
+	networkFirstPreparedAt sync.Map // networkId -> time.Time
+
+	// pendingUpstreams holds Upstream instances created by bootstrap task
+	// attempts that have not completed successfully yet, keyed by upstream id.
+	// Retried or concurrent attempts MUST reuse the same instance: creating a
+	// fresh one per attempt duplicates HTTP clients and — once an attempt
+	// reaches Upstream.Bootstrap — state pollers, whose ticker goroutines can
+	// only be stopped by the app context.
+	pendingUpstreams sync.Map // upstreamId -> *Upstream
+
 	onUpstreamRegistered func(ups *Upstream) error
 }
 
@@ -77,7 +91,7 @@ func NewUpstreamsRegistry(
 			logger,
 			prjId,
 			ppr,
-			evm.NewJsonRpcErrorExtractor(),
+			NewCompositeJsonRpcErrorExtractor(),
 		),
 		rateLimitersRegistry:   rr,
 		vendorsRegistry:        vr,
@@ -148,10 +162,22 @@ func (u *UpstreamsRegistry) GetProvidersRegistry() *thirdparty.ProvidersRegistry
 	return u.providersRegistry
 }
 
+// NoUpstreamsAvailableAfter is how long a network may keep initializing with
+// zero upstreams registered before eRPC stops calling it "initializing" and
+// reports that no RPC provider serves this network at all.
+//
+// It is a claim about permanence, so it is set well past any real bootstrap:
+// provider discovery, chain-id detection and the initializer's own retry
+// backoff all finish inside a few tens of seconds. Anything still empty five
+// minutes in is not slow, it is unserved.
+var NoUpstreamsAvailableAfter = 5 * time.Minute
+
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, networkId string) error {
 	networkMu := u.getNetworkMutex(networkId)
 	networkMu.Lock()
 	defer networkMu.Unlock()
+
+	u.networkFirstPreparedAt.LoadOrStore(networkId, time.Now())
 
 	// 1) Static upstreams are expected to be registered via Bootstrap() already.
 
@@ -223,7 +249,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 				// Consider per-network and unknown upstream/provider activity
 				summary := u.summarizeNetworkTasks(networkId)
 				if summary.hasOngoing {
-					return common.NewErrNetworkInitializing(u.prjId, networkId)
+					return u.errStillInitializing(networkId)
 				}
 				if summary.providersAllTerminal {
 					// Grace period to allow in-flight upstream registrations to complete
@@ -243,7 +269,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 					return common.NewErrNetworkNotSupported(u.prjId, networkId)
 				}
 				// Default: initializing
-				return common.NewErrNetworkInitializing(u.prjId, networkId)
+				return u.errStillInitializing(networkId)
 			}
 			return timeoutCtx.Err()
 		case <-ticker.C:
@@ -286,6 +312,34 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			return nil
 		}
 	}
+}
+
+// errStillInitializing names the state of a network that has no upstream yet.
+//
+// Callers reach it only from the zero-upstream branches, so the single thing
+// left to decide is whether waiting is still a reasonable thing to ask of the
+// client. Below NoUpstreamsAvailableAfter it is: bootstrap genuinely takes time
+// and the initializer keeps retrying. Past it, the same answer would be a
+// standing lie — nothing is coming for this network — so the client is told
+// that instead.
+//
+// The clock is the first PrepareUpstreamsForNetwork call, not process start:
+// a network first requested a minute ago is a minute old however long eRPC has
+// been running.
+func (u *UpstreamsRegistry) errStillInitializing(networkId string) error {
+	if NoUpstreamsAvailableAfter > 0 {
+		if v, ok := u.networkFirstPreparedAt.Load(networkId); ok {
+			if elapsed := time.Since(v.(time.Time)); elapsed >= NoUpstreamsAvailableAfter {
+				telemetry.MetricNetworkNoUpstreamsAvailableTotal.WithLabelValues(u.prjId, networkId).Inc()
+				u.logger.Warn().
+					Str("networkId", networkId).
+					Dur("initializingFor", elapsed).
+					Msg("no upstream could be initialized for network; reporting it as unavailable")
+				return common.NewErrNetworkNoUpstreamsAvailable(u.prjId, networkId)
+			}
+		}
+	}
+	return common.NewErrNetworkInitializing(u.prjId, networkId)
 }
 
 func (u *UpstreamsRegistry) GetNetworkShadowUpstreams(networkId string) []*Upstream {
@@ -493,12 +547,29 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			}
 			u.upstreamsMu.RUnlock()
 
+			if ups == nil {
+				// Reuse the instance created by a previous failed attempt, if any,
+				// instead of building a new one per retry.
+				if v, ok := u.pendingUpstreams.Load(cfg.Id); ok {
+					ups = v.(*Upstream)
+				}
+			}
+
 			var err error
 			if ups == nil {
-				ups, err = u.NewUpstream(cfg)
+				var created *Upstream
+				// Copy the config per attempt: NewUpstream mutates it (vendor
+				// detection), and concurrent attempts of this task would
+				// otherwise race on the shared task-level copy.
+				created, err = u.NewUpstream(cfg.Copy())
 				if err != nil {
 					return err
 				}
+				// LoadOrStore so concurrent attempts of this task converge on a
+				// single instance; the loser is discarded before it starts any
+				// background work.
+				actual, _ := u.pendingUpstreams.LoadOrStore(cfg.Id, created)
+				ups = actual.(*Upstream)
 			}
 
 			err = ups.Bootstrap(ctx)
@@ -506,6 +577,7 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 				return err
 			}
 			u.doRegisterBootstrappedUpstream(ups)
+			u.pendingUpstreams.Delete(cfg.Id)
 
 			if u.onUpstreamRegistered != nil {
 				// TODO Refactor the upstream<->network relationship to avoid circular dependency. Then we can remove this goroutine.
@@ -618,7 +690,18 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	u.upstreamsMu.Lock()
 	defer u.upstreamsMu.Unlock()
 
-	u.allUpstreams = append(u.allUpstreams, ups)
+	// A bootstrap task may be re-executed against an already-registered
+	// upstream; never register the same instance twice.
+	alreadyInAll := false
+	for _, existing := range u.allUpstreams {
+		if existing == ups {
+			alreadyInAll = true
+			break
+		}
+	}
+	if !alreadyInAll {
+		u.allUpstreams = append(u.allUpstreams, ups)
+	}
 
 	// Add to network upstreams map
 	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled

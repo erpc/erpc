@@ -16,6 +16,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -77,6 +78,85 @@ func classifyUpstreamOutcome(resp *common.NormalizedResponse, err error) common.
 	return common.UpstreamOutcomeSuccess
 }
 
+// defaultCreditUnitsPerRequest is the flat per-request cost assumed for
+// vendors that implement no pricing (common.CreditUnitsProvider): 1 request
+// = 1 credit. Under-counting to zero would be worse — a request to a
+// self-hosted or unknown vendor still costs one request. Operators opt a
+// vendor out explicitly with `creditUnits: {"*": 0}`.
+const defaultCreditUnitsPerRequest int64 = 1
+
+// attemptCreditUnits prices one physical attempt. The VENDOR owns the
+// pricing logic (common.CreditUnitsProvider — typically its published
+// table merged with the operator's override, but anything request-aware it
+// chooses). The erpc layer stays unopinionated and only covers the
+// no-vendor-pricing case: the config override alone when present, else the
+// flat 1-credit-per-request default.
+func (u *Upstream) attemptCreditUnits(req *common.NormalizedRequest) int64 {
+	if u == nil {
+		return 0
+	}
+	if p, ok := u.vendor.(common.CreditUnitsProvider); ok {
+		return p.CreditUnits(req, u.config)
+	}
+	if u.config != nil && len(u.config.CreditUnits) > 0 {
+		method := ""
+		if req != nil {
+			method, _ = req.Method()
+		}
+		return common.ResolveCreditUnits(nil, u.config.CreditUnits, method)
+	}
+	return defaultCreditUnitsPerRequest
+}
+
+// rateLimitCost returns what one rate-limit permit acquisition consumes from
+// this upstream's budget: a flat 1 in the default request-count mode, or the
+// request's PRE-FLIGHT estimated vendor credit-unit cost when the upstream
+// opts into credit counting (RateLimitCountMode == "credit"). The estimate is
+// table-based -- the real cost is not known until after the call -- and a
+// 0-CU method consumes nothing. Clamped into uint32 for the Envoy hits-addend.
+func (u *Upstream) rateLimitCost(req *common.NormalizedRequest) PermitCost {
+	if u == nil || u.config == nil || u.config.RateLimitCountMode != common.RateLimitCountModeCredit {
+		return requestPermit
+	}
+	cost := PermitCost{Mode: common.RateLimitCountModeCredit}
+	est := u.attemptCreditUnits(req)
+	switch {
+	case est <= 0:
+		cost.Hits = 0
+	case est > math.MaxUint32:
+		cost.Hits = math.MaxUint32
+	default:
+		cost.Hits = uint32(est)
+	}
+	return cost
+}
+
+// deriveSelectionReason answers "why was this upstream picked for this
+// attempt" for the per-attempt record (UpstreamAttempt.Reason, the
+// X-ERPC-Upstreams trace, and erpc_upstream_selection_total).
+//
+// Precedence is outermost-fan-out-cause first: a consensus participant slot
+// explains the attempt's existence even when the slot internally hedged or
+// retried (the attempt record's IsHedge/IsRetry fields preserve those inner
+// mechanics), and a hedge explains it even when the hedged execution swept
+// past its first upstream. sweep marks the non-first picks of the
+// try-all-upstreams loop within one execution; the first pick of a fresh
+// execution round after a network-scope retry reads retry.
+func deriveSelectionReason(ctx context.Context, isHedge bool, retries int) common.UpstreamSelectionReason {
+	switch {
+	case common.IsConsensusSlot(ctx):
+		return common.SelectionReasonConsensusSlot
+	case isHedge:
+		return common.SelectionReasonHedge
+	case common.IsSweepIteration(ctx):
+		return common.SelectionReasonSweep
+	case retries > 0:
+		return common.SelectionReasonRetry
+	default:
+		return common.SelectionReasonPrimary
+	}
+}
+
 func boolStr(b bool) string {
 	if b {
 		return "true"
@@ -129,13 +209,24 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
-	// Guards lazy creation of evmStatePoller so concurrent or repeated
-	// Bootstrap calls don't construct a second poller — every prior poller's
-	// goroutine listens on appCtx and never exits, so reassigning leaks one
-	// goroutine per call.
-	evmStatePollerMu sync.Mutex
+	svmStatePoller       common.SvmStatePoller
+	statePollerOnce      sync.Once
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
+	// Highest block at which the integrity state probe PROVED this upstream
+	// holds the state trie (0 = never proven). See EvmStateProvenBlock.
+	stateProvenBlock atomic.Int64
+	// operatorCordon is the operator's whole-upstream cordon as a shared
+	// counter: unix-ms when it was set, 0 when lifted. Shared state keeps
+	// replicas in sync and restores it at bootstrap; the memory driver keeps
+	// it in-process. Created once, lazily (see operatorCordonVar).
+	operatorCordon     atomic.Value // data.CounterInt64SharedVariable
+	operatorCordonOnce sync.Once
+	// operatorCordonReason is the reason given on this replica for the
+	// in-flight CordonAdmin/UncordonAdmin call; it is cleared when that
+	// call returns. Peers and restarted pods only see that an operator
+	// cordon exists.
+	operatorCordonReason atomic.Value
 }
 
 func NewUpstream(
@@ -202,6 +293,11 @@ func NewUpstream(
 			return nil, fmt.Errorf("no upstreams generated by vendor: %s", vn.Name())
 		}
 		pup.config = cfgs[0]
+		// A vendor building fresh configs must not lose the caller's
+		// credit-unit override (providers copy it onto the base config).
+		if pup.config.CreditUnits == nil {
+			pup.config.CreditUnits = cfg.CreditUnits
+		}
 	}
 
 	if pup.config.VendorName == "" {
@@ -232,22 +328,44 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		return err
 	}
 
-	if u.config.Type == common.UpstreamTypeEvm {
-		// Guard against repeated calls. Bootstrap can be re-entered when the
-		// owning task is retried (e.g. provider regeneration re-submits the
-		// same upstream task name); without this check the previous
-		// EvmStatePoller's polling goroutine would be orphaned and live
-		// until appCtx shutdown.
-		u.evmStatePollerMu.Lock()
-		if u.evmStatePoller == nil {
+	// Create the poller exactly once per Upstream: Bootstrap can run more
+	// than once (bootstrap tasks are retried, and a retry may re-invoke
+	// Bootstrap on an already-registered upstream). Replacing the poller
+	// would orphan the previous instance while its ticker goroutine keeps
+	// polling the upstream forever (it only stops via appCtx).
+	u.statePollerOnce.Do(func() {
+		switch u.config.Type {
+		case common.UpstreamTypeEvm:
 			u.evmStatePoller = evm.NewEvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
-			if perr := u.evmStatePoller.Bootstrap(ctx); perr != nil {
-				// The reason we're not returning error is to allow upstream to still be registered
-				// even if background block polling fails initially.
-				u.logger.Error().Err(perr).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
-			}
+		case common.UpstreamTypeSvm:
+			u.svmStatePoller = svm.NewSvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
 		}
-		u.evmStatePollerMu.Unlock()
+	})
+	u.operatorCordonVar()
+
+	if u.evmStatePoller != nil {
+		err = u.evmStatePoller.Bootstrap(ctx)
+		if err != nil {
+			// The reason we're not returning error is to allow upstream to still be registered
+			// even if background block polling fails initially.
+			u.logger.Error().Err(err).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
+		}
+	}
+	if u.svmStatePoller != nil {
+		// Fail-closed genesis validation runs BEFORE the poller starts its
+		// polling loop. A wrong-cluster (or unverifiable) upstream must never
+		// get a loop at all: the initializer reuses this same pending Upstream
+		// and retries the whole bootstrap task on failure, so anything started
+		// ahead of this gate would have to be idempotent on every retry path.
+		// The poller's own CompareAndSwap guard covers the remaining retries
+		// (a later attempt that validates then bootstraps twice); this ordering
+		// covers the "never validates" case, where no loop should exist.
+		if err := u.svmVerifyGenesisHash(ctx); err != nil {
+			return err
+		}
+		if err := u.svmStatePoller.Bootstrap(ctx); err != nil {
+			u.logger.Error().Err(err).Msg("failed on initial bootstrap of svm state poller (will retry in background)")
+		}
 	}
 
 	return nil
@@ -375,6 +493,11 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 		// propagate alias to evm config so the poller can use it without a direct network reference
 		u.evmStatePoller.SetNetworkConfig(cfg)
 	}
+	if cfg.Svm != nil && u.svmStatePoller != nil {
+		// StatePollerDebounce is a network-level SVM setting; the per-upstream
+		// poller has no direct network reference, so push the cadence in here.
+		u.svmStatePoller.SetDebounceInterval(cfg.Svm.StatePollerDebounce.Duration())
+	}
 	// Always set networkId from the provided config
 	nid := cfg.NetworkId()
 	if nid != "" {
@@ -496,7 +619,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream")
+			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitCost(nrq))
 			if err != nil {
 				common.SetTraceSpanError(span, err)
 				return nil, err
@@ -539,12 +662,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					return
 				}
 				outcome := classifyUpstreamOutcome(resp, retErr)
-				reason := common.SelectionReasonPrimary
-				if isHedge {
-					reason = common.SelectionReasonHedge
-				} else if snap.Retries > 0 {
-					reason = common.SelectionReasonRetry
-				}
+				reason := deriveSelectionReason(ctx, isHedge, snap.Retries)
 				errCode := ""
 				errDetail := ""
 				if retErr != nil {
@@ -554,6 +672,16 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						es = es[:max]
 					}
 					errDetail = es
+				}
+				// Cost accrues for every attempt that dialed the vendor —
+				// retries, hedges and consensus slots included; skipped /
+				// breaker-open attempts provably never left the process.
+				// Pricing itself is the vendor's call (attemptCreditUnits).
+				var creditUnits int64
+				switch outcome {
+				case common.UpstreamOutcomeSkipped, common.UpstreamOutcomeBreakerOpen:
+				default:
+					creditUnits = u.attemptCreditUnits(nrq)
 				}
 				st.RecordUpstreamAttempt(common.UpstreamAttempt{
 					UpstreamId:  cfg.Id,
@@ -567,6 +695,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					AttemptIdx:  snap.Attempts,
 					ErrorCode:   errCode,
 					ErrorDetail: errDetail,
+					CreditUnits: creditUnits,
 				})
 				// Prometheus: one outcome counter increment per attempt.
 				finality := nrq.Finality(ctx)
@@ -588,6 +717,23 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					string(reason),
 					finality.String(),
 				).Inc()
+				// Fold this attempt's vendor cost into the per-(project,
+				// network, upstream, vendor, method, finality) credit counter.
+				// The per-request aggregate (X-ERPC-Credits, CreditUnitsByVendor,
+				// CreditUnitsTotal) derives from the attempt log recorded just
+				// above, so no extra bookkeeping is needed for it here. Cost
+				// accrues for every attempt that dialed the vendor; 0-cost
+				// attempts (opted-out or never-dialed) are skipped.
+				if vendorName := u.VendorName(); creditUnits > 0 && vendorName != "" {
+					telemetry.MetricUpstreamCreditUnitsTotal.WithLabelValues(
+						u.ProjectId,
+						nrq.NetworkLabel(),
+						cfg.Id,
+						vendorName,
+						method,
+						finality.String(),
+					).Add(float64(creditUnits))
+				}
 			}()
 
 			// Span to track pre-request overhead (metrics, finality calculation)
@@ -615,24 +761,12 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					finality,
 				)
 			}
-			// TODO(memory): this and the matching MetricUpstreamErrorTotal /
-			// MetricUpstreamWrongEmptyResponseTotal / MetricUpstreamCanceledTotal
-			// sites in this file + erpc/networks.go all emit label-sets
-			// keyed by user-controlled inputs (method, finality, userId,
-			// agentName, etc.) WITHOUT going through a tracker cache, so
-			// the Prometheus registry accumulates one series per unique
-			// combo forever — even after the in-memory caches added in
-			// the 826df9f5 idle-sweep get cleared.
-			//
-			// The fix is parallel to the urdObsCache / remoteRateLimited
-			// pattern: wrap each WithLabelValues call in a cached*-style
-			// indirection that remembers the label tuple + a
-			// lastAccessedAtMs, then sweep on idle with
-			// MetricVec.DeleteLabelValues. Each direct call site needs the
-			// same retrofit. Out of scope for this PR — flagged for a
-			// follow-up titled "sweep direct Prom emissions in
-			// upstream/erpc hot paths".
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
+			// These direct counter emissions carry label-sets keyed by
+			// caller-controlled inputs (method, finality, userId, agentName).
+			// They go through telemetry.CounterHandle so the health tracker's
+			// idle sweep can evict stale label combinations and release the
+			// series via DeleteLabelValues (see SweepIdleCounterHandles).
+			telemetry.CounterHandle(telemetry.MetricUpstreamRequestTotal,
 				u.ProjectId,
 				u.VendorName(),
 				u.NetworkLabel(),
@@ -642,8 +776,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				nrq.CompositeType(),
 				finality.String(),
 				nrq.UserId(),
-				nrq.AgentName(),
-			).Inc()
+				nrq.AgentName()).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
 			preReqSpan.End()
@@ -709,7 +842,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(
+					telemetry.CounterHandle(telemetry.MetricUpstreamMissingDataErrorTotal,
 						u.ProjectId,
 						u.VendorName(),
 						u.NetworkLabel(),
@@ -717,8 +850,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						method,
 						finality.String(),
 						nrq.UserId(),
-						nrq.AgentName(),
-					).Inc()
+						nrq.AgentName()).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
 					// Cancelled request (hedge lost the race or client
 					// disconnected). Not attributable to upstream quality
@@ -745,7 +877,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						)
 					}
 					severity := common.ClassifySeverity(errCall)
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
+					telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
 						u.ProjectId,
 						u.VendorName(),
 						u.NetworkLabel(),
@@ -756,8 +888,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.CompositeType(),
 						finality.String(),
 						nrq.UserId(),
-						nrq.AgentName(),
-					).Inc()
+						nrq.AgentName()).Inc()
 				}
 
 				// Only ExecutionException (EVM revert) feeds the latency
@@ -889,241 +1020,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 		)
 		common.SetTraceSpanError(span, err)
 		return nil, err
-	}
-}
-
-// TODO move to evm package
-func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
-	// Always make a real upstream call here. End-user requests can be short-circuited
-	// via higher-level hooks (e.g. project/network pre-forward for eth_chainId).
-
-	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
-
-	resp, err := u.Forward(ctx, pr, true, false)
-	if resp != nil {
-		defer resp.Release()
-	}
-	if err != nil {
-		return "", err
-	}
-
-	jrr, err := resp.JsonRpcResponse()
-	if err != nil {
-		return "", err
-	}
-	if jrr.Error != nil {
-		return "", jrr.Error
-	}
-	var chainId string
-	err = common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &chainId)
-	if err != nil {
-		return "", err
-	}
-	hex, err := common.NormalizeHex(chainId)
-	if err != nil {
-		return "", err
-	}
-	dec, err := common.HexToUint64(hex)
-	if err != nil {
-		return "", err
-	}
-
-	return strconv.FormatUint(dec, 10), nil
-}
-
-// TODO move to evm package
-func (u *Upstream) EvmIsBlockFinalized(ctx context.Context, blockNumber int64, forceFreshIfStale bool) (bool, error) {
-	if u.evmStatePoller == nil {
-		return false, fmt.Errorf("evm state poller not initialized yet")
-	}
-	isFinalized, err := u.evmStatePoller.IsBlockFinalized(blockNumber)
-	if err != nil {
-		return false, err
-	}
-	if !isFinalized && forceFreshIfStale {
-		newFinalizedBlock, err := u.evmStatePoller.PollFinalizedBlockNumber(ctx)
-		if err != nil {
-			return false, err
-		}
-		return newFinalizedBlock >= blockNumber, nil
-	}
-	return isFinalized, nil
-}
-
-// TODO move to evm package?
-func (u *Upstream) EvmSyncingState() common.EvmSyncingState {
-	if u.evmStatePoller == nil {
-		return common.EvmSyncingStateUnknown
-	}
-	return u.evmStatePoller.SyncingState()
-}
-
-// TODO move to evm package?
-func (u *Upstream) EvmLatestBlock() (int64, error) {
-	if u.evmStatePoller == nil {
-		return 0, fmt.Errorf("evm state poller not initialized yet")
-	}
-	return u.evmStatePoller.LatestBlock(), nil
-}
-
-// TODO move to evm package?
-func (u *Upstream) EvmFinalizedBlock() (int64, error) {
-	if u.evmStatePoller == nil {
-		return 0, fmt.Errorf("evm state poller not initialized yet")
-	}
-	return u.evmStatePoller.FinalizedBlock(), nil
-}
-
-// TODO move to evm package?
-func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
-	return u.evmStatePoller
-}
-
-// TODO move to evm package?
-// EvmAssertBlockAvailability checks if the upstream is supposed to have the data for a certain block number.
-// For full nodes it will check the first available block number, and for archive nodes it will check if the block is less than the latest block number.
-// If the requested block is beyond the current latest block, it will force-poll the latest block number once.
-// This method also increments appropriate metrics when the upstream cannot handle the block.
-func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence common.AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error) {
-	if u == nil || u.config == nil {
-		return false, fmt.Errorf("upstream or config is nil")
-	}
-
-	// Get the state poller
-	statePoller := u.EvmStatePoller()
-	if statePoller == nil || statePoller.IsObjectNull() {
-		return false, fmt.Errorf("upstream evm state poller is not available")
-	}
-
-	cfg := u.config
-	if cfg.Type != common.UpstreamTypeEvm || cfg.Evm == nil {
-		// If not an EVM upstream, we can't determine block handling capability
-		return false, fmt.Errorf("upstream is not an EVM type")
-	}
-
-	// Resolve configured availability bounds (min/max) and enforce before legacy logic
-	minBound, maxBound := u.resolveAvailabilityBounds()
-	if minBound != math.MinInt64 && blockNumber < minBound {
-		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
-			u.ProjectId,
-			u.VendorName(),
-			u.NetworkLabel(),
-			u.Id(),
-			forMethod,
-			confidence.String(),
-		).Inc()
-		u.logger.Debug().
-			Int64("blockNumber", blockNumber).
-			Int64("minBound", minBound).
-			Str("method", forMethod).
-			Str("upstreamId", u.config.Id).
-			Msg("block rejected: below lower availability bound")
-		return false, nil
-	}
-	if maxBound != math.MaxInt64 && blockNumber > maxBound {
-		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
-			u.ProjectId,
-			u.VendorName(),
-			u.NetworkLabel(),
-			u.Id(),
-			forMethod,
-			confidence.String(),
-		).Inc()
-		u.logger.Debug().
-			Int64("blockNumber", blockNumber).
-			Int64("maxBound", maxBound).
-			Str("method", forMethod).
-			Str("upstreamId", u.config.Id).
-			Msg("block rejected: above upper availability bound")
-		return false, nil
-	}
-
-	switch confidence {
-	case common.AvailbilityConfidenceFinalized:
-		//
-		// UPPER BOUND: Check if the block is finalized
-		//
-		isFinalized, err := u.EvmIsBlockFinalized(ctx, blockNumber, forceFreshIfStale)
-		if err != nil {
-			return false, fmt.Errorf("failed to check if block is finalized: %w", err)
-		}
-		if !isFinalized {
-			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
-				u.ProjectId,
-				u.VendorName(),
-				u.NetworkLabel(),
-				u.Id(),
-				forMethod,
-				confidence.String(),
-			).Inc()
-			return false, nil
-		}
-
-		//
-		// LOWER BOUND: For full nodes, also check if the block is within the available range
-		//
-		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
-			// First check with current data
-			available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
-			if err != nil {
-				return false, err
-			}
-			if !available {
-				// If it can't handle, return immediately
-				return false, nil
-			}
-		}
-
-		// Block is finalized and within range (or archive node)
-		return true, nil
-	case common.AvailbilityConfidenceBlockHead:
-		//
-		// UPPER BOUND: Check if block is before the latest block
-		//
-		latestBlock := statePoller.LatestBlock()
-		// If the requested block is beyond the current latest block, force-poll
-		// once with debounce bypassed. A debounced PollLatestBlockNumber can
-		// reuse a tip that is still behind the request (common when network
-		// TipHW advanced via WS/Redis while this upstream's poller has not
-		// refreshed yet) and falsely trip the upper-bound gate.
-		if blockNumber > latestBlock && forceFreshIfStale {
-			var err error
-			latestBlock, err = statePoller.PollLatestBlockNumberNow(ctx)
-			if err != nil {
-				return false, fmt.Errorf("failed to poll latest block number: %w", err)
-			}
-		}
-		// Check if the requested block is still beyond the latest known block
-		if blockNumber > latestBlock {
-			// Upper bound issue - block is beyond latest
-			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
-				u.ProjectId,
-				u.VendorName(),
-				u.NetworkLabel(),
-				u.Id(),
-				forMethod,
-				confidence.String(),
-			).Inc()
-			return false, nil
-		}
-
-		//
-		// LOWER BOUND: For full nodes, check if the block is within the available range
-		//
-		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
-			available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
-			if err != nil {
-				return false, err
-			}
-			if !available {
-				return false, nil
-			}
-		}
-
-		// If MaxAvailableRecentBlocks is not configured, assume the node can handle the block if it's <= latest
-		return blockNumber <= latestBlock, nil
-	default:
-		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
 	}
 }
 
@@ -1483,10 +1379,37 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
 		u.chainIdValidated.Store(true)
 
+		// Arm chain-identity enforcement on clients that support it (the gRPC
+		// BDS client asserts this chainId on every request and keeps verifying
+		// its connections). Clients constructed from a configured chainId are
+		// armed at construction already; this covers the auto-detected case
+		// (config chainId 0), where the chain is only known now. No request
+		// can route to this upstream before detection completes — its
+		// networkId is derived from the chainId — so enforcement is in place
+		// for every served request.
+		if armer, ok := u.Client.(interface{ SetExpectedChainId(uint64) }); ok {
+			armer.SetExpectedChainId(uint64(realChainID))
+		}
+
 		// @deprecated: NodeType-specific logic removed; availability is handled by blockAvailability bounds.
 
 		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)
 		// TODO evm: detect max eth_getLogs max block range
+	} else if cfg.Type == common.UpstreamTypeSvm {
+		if cfg.Svm == nil {
+			return common.NewErrUpstreamClientInitialization(
+				fmt.Errorf("svm upstream %q is missing svm config", cfg.Id), u,
+			)
+		}
+		if cfg.Svm.Cluster == "" {
+			return common.NewErrUpstreamClientInitialization(
+				fmt.Errorf("svm upstream %q is missing svm.cluster", cfg.Id), u,
+			)
+		}
+		u.networkId.Store(util.SvmNetworkId(cfg.Svm.Chain, cfg.Svm.Cluster))
+		// Genesis-hash validation runs in Bootstrap (svmVerifyGenesisHash) once
+		// the client and networkId are in place, so it can go through the
+		// upstream's normal Forward path.
 	} else {
 		return fmt.Errorf("upstream type not supported: %s", cfg.Type)
 	}
@@ -1551,7 +1474,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 
 	dirs := req.Directives()
 	if dirs != nil && dirs.UseUpstream != "" {
-		match, err := common.WildcardMatch(dirs.UseUpstream, u.config.Id)
+		match, err := common.UpstreamMatchesSelector(dirs.UseUpstream, u)
 		if err != nil {
 			return err, true
 		}
@@ -1591,11 +1514,20 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(uppub)
 }
 
+// Cordon / Uncordon flip the tracker cell for (upstream, method) on this pod:
+// in-process detectors (consensus sit-out, state-poller checks) and
+// method-scoped operator cordons use them.
 func (u *Upstream) Cordon(method string, reason string) {
 	u.metricsTracker.Cordon(u, method, reason)
 }
 
+// Uncordon lifts a pod-local cordon. While the operator holds the shared
+// whole-upstream cordon, a detector cannot lift the "*" cell; only
+// UncordonAdmin can.
 func (u *Upstream) Uncordon(method string, reason string) {
+	if v, ok := u.operatorCordon.Load().(data.CounterInt64SharedVariable); ok && method == "*" && v.GetValue() > 0 {
+		return
+	}
 	u.metricsTracker.Uncordon(u, method, reason)
 }
 
@@ -1603,4 +1535,49 @@ func (u *Upstream) Uncordon(method string, reason string) {
 // method) is currently cordoned. Pass `"*"` for the wildcard scope.
 func (u *Upstream) CordonedReason(method string) (string, bool) {
 	return u.metricsTracker.CordonedReason(u, method)
+}
+
+// CordonAdmin sets the operator's whole-upstream cordon fleet-wide through
+// the shared counter (value = unix-ms, kept while already held). Local-first
+// and pushed in the background, like every other shared counter.
+func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
+	u.operatorCordonReason.Store(reason)
+	defer u.operatorCordonReason.Store("")
+	if v := u.operatorCordonVar(); v.GetValue() == 0 {
+		v.TryUpdate(ctx, time.Now().UnixMilli())
+	} else {
+		u.metricsTracker.Cordon(u, "*", reason)
+	}
+}
+
+// UncordonAdmin lifts the operator's cordon fleet-wide; on this pod that
+// also clears any automatic wildcard cordon — the operator call is the
+// override for a detector verdict.
+func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
+	u.operatorCordonReason.Store(reason)
+	defer u.operatorCordonReason.Store("")
+	u.operatorCordonVar().TryUpdate(ctx, 0)
+	u.metricsTracker.Uncordon(u, "*", reason)
+}
+
+// operatorCordonVar creates the shared counter on first use; every value it
+// takes — from this pod, a peer, or the bootstrap fetch — flips the "*" cell.
+func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
+	u.operatorCordonOnce.Do(func() {
+		key := data.CounterValueSchemaVersion + "/operatorCordon/" + u.ProjectId + "/" + common.UniqueUpstreamKey(u)
+		v := u.sharedStateRegistry.GetCounterInt64(key, 0)
+		v.OnValue(func(cordonedAtMs int64) {
+			reason := "operator cordon (set on another replica)"
+			if r, ok := u.operatorCordonReason.Load().(string); ok && r != "" {
+				reason = r
+			}
+			if cordonedAtMs > 0 {
+				u.metricsTracker.Cordon(u, "*", reason)
+			} else {
+				u.metricsTracker.Uncordon(u, "*", reason)
+			}
+		})
+		u.operatorCordon.Store(v)
+	})
+	return u.operatorCordon.Load().(data.CounterInt64SharedVariable)
 }

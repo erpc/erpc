@@ -21,6 +21,13 @@ func (u *phonyUpstream) Type() common.UpstreamType {
 	return common.UpstreamTypeEvm
 }
 
+// Config must be overridden: the embedded common.Upstream is nil, so the
+// promoted Config() would panic when callers (e.g. the EVM error extractor)
+// read upstream.Config().Type during a SupportsNetwork probe.
+func (u *phonyUpstream) Config() *common.UpstreamConfig {
+	return &common.UpstreamConfig{Id: u.id, Type: common.UpstreamTypeEvm}
+}
+
 func (u *phonyUpstream) Vendor() common.Vendor {
 	return nil
 }

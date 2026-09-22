@@ -58,8 +58,8 @@ type Orchestrator struct {
 
 	hub *UpstreamHub
 
-	cfgMu       sync.Mutex
-	currentCfg  *common.Config
+	cfgMu      sync.Mutex
+	currentCfg *common.Config
 	// currentYAML is the last-applied YAML source, with the policy body
 	// fully inlined (no `{SELECTION_POLICY_FUNC}` placeholder). The
 	// backend treats this as opaque text — substitution of the
@@ -118,9 +118,9 @@ type upstreamRollingStats struct {
 
 // Options configures the orchestrator at boot.
 type Options struct {
-	Logger          zerolog.Logger
-	SeedYAML        string // initial config in YAML form. The orchestrator
-	                       // parses + validates + boots eRPC from it.
+	Logger   zerolog.Logger
+	SeedYAML string // initial config in YAML form. The orchestrator
+	// parses + validates + boots eRPC from it.
 	UpstreamHubBind string // typically "127.0.0.1:0"
 	// Dumper, if non-nil, receives a JSONL record of every observable
 	// event (boot, knob change, request/response, …). See dump.go.
@@ -152,14 +152,14 @@ func New(opts Options) (*Orchestrator, error) {
 	// with `ReferenceError: SELECTION_POLICY_FUNC is not defined`.
 	opts.SeedYAML = expandPolicyPlaceholder(opts.SeedYAML, policyDefault())
 	o := &Orchestrator{
-		logger:         opts.Logger,
-		dumper:         opts.Dumper,
-		hub:            hub,
-		currentYAML:    opts.SeedYAML,
-		stopCh:         make(chan struct{}),
-		upstreamStats:  make(map[string]*upstreamRollingStats),
-		curBucket:      bucketTotals{perUpstream: make(map[string]int)},
-		lastBucket:     bucketTotals{perUpstream: make(map[string]int)},
+		logger:        opts.Logger,
+		dumper:        opts.Dumper,
+		hub:           hub,
+		currentYAML:   opts.SeedYAML,
+		stopCh:        make(chan struct{}),
+		upstreamStats: make(map[string]*upstreamRollingStats),
+		curBucket:     bucketTotals{perUpstream: make(map[string]int)},
+		lastBucket:    bucketTotals{perUpstream: make(map[string]int)},
 	}
 	return o, nil
 }
@@ -266,12 +266,22 @@ func (o *Orchestrator) bootFromYAML(ctx context.Context, yamlSrc string) error {
 	o.currentYAML = yamlSrc
 	o.cfgMu.Unlock()
 
-	e, err := erpc.NewERPC(ctx, &o.logger, nil, nil, cfg)
+	e, err := erpc.NewERPC(ctx, &o.logger, nil, nil, nil, cfg)
 	if err != nil {
 		return fmt.Errorf("simulator: NewERPC: %w", err)
 	}
 	e.Bootstrap(ctx)
-	net, err := e.GetNetwork(ctx, "sim", "evm:1")
+	// Resolve the project + network the simulator drives from the YAML
+	// itself rather than hard-coding — non-EVM presets (svm:mainnet-beta)
+	// and operator edits both change the id.
+	if len(cfg.Projects) == 0 || len(cfg.Projects[0].Networks) == 0 {
+		return fmt.Errorf("simulator: config must declare one project with at least one network")
+	}
+	netID := cfg.Projects[0].Networks[0].NetworkId()
+	if netID == "" {
+		return fmt.Errorf("simulator: could not derive network id from the first network in config")
+	}
+	net, err := e.GetNetwork(ctx, cfg.Projects[0].Id, netID)
 	if err != nil {
 		return fmt.Errorf("simulator: GetNetwork: %w", err)
 	}
@@ -822,15 +832,15 @@ func (o *Orchestrator) Stats() StatsFrame {
 	}
 
 	frame := StatsFrame{
-		TickMs:            time.Now().UnixMilli(),
-		ActualRps:         actualRps,
-		LastSecondTotal:   last.total,
-		LastSecondSucc:    last.success,
-		LastSecondErr:     last.failure,
-		LastSecondCache:   last.cacheHit,
-		LastSecondRetryOk: last.retryOk,
-		LastSecondHedge:   last.hedgeWin,
-		LastSecondMiss:    last.miss,
+		TickMs:             time.Now().UnixMilli(),
+		ActualRps:          actualRps,
+		LastSecondTotal:    last.total,
+		LastSecondSucc:     last.success,
+		LastSecondErr:      last.failure,
+		LastSecondCache:    last.cacheHit,
+		LastSecondRetryOk:  last.retryOk,
+		LastSecondHedge:    last.hedgeWin,
+		LastSecondMiss:     last.miss,
 		PerUpstreamLastS:   copyIntMap(last.perUpstream),
 		Upstreams:          upstreams,
 		PolicyLastSwitchMs: lastSwitchMs,
@@ -856,11 +866,11 @@ func copyIntMap(m map[string]int) map[string]int {
 // what the engine sees.
 //
 // Position semantics:
-//   * 0     = primary
-//   * 1..N  = fallback order
-//   * -1    = upstream is in the config but the selection policy
-//             excluded it this tick (failed an excludeIf rule, or it
-//             carries a tag the chain steered away from).
+//   - 0     = primary
+//   - 1..N  = fallback order
+//   - -1    = upstream is in the config but the selection policy
+//     excluded it this tick (failed an excludeIf rule, or it
+//     carries a tag the chain steered away from).
 //
 // Position changes only when the policy re-evaluates (every
 // `evalInterval`, default 15s). The ordering stays stable when the

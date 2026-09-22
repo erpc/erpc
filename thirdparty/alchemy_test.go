@@ -231,3 +231,28 @@ func swapAlchemyApiURL(t *testing.T, newURL string) string {
 	alchemyApiUrl = newURL
 	return prev
 }
+
+func TestAlchemyVendor_Code3_MissingDataIsRetryable(t *testing.T) {
+	v := CreateAlchemyVendor()
+
+	makeErr := func(msg string) error {
+		jrr, err := common.NewJsonRpcResponse(1, nil, common.NewErrJsonRpcExceptionExternal(3, msg, ""))
+		require.NoError(t, err)
+		return v.GetVendorSpecificErrorIfAny(nil, &http.Response{StatusCode: 400}, jrr, map[string]interface{}{})
+	}
+
+	// Code 3 with a data-availability message must be classified as missing
+	// data (retryable toward other upstreams), not as an execution revert.
+	for _, msg := range []string{"Unknown block", "block not found with number 0x1234abc"} {
+		err := makeErr(msg)
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData), "expected missing-data for %q, got %v", msg, err)
+		assert.True(t, common.IsRetryableTowardNetwork(err), "missing-data must stay network-retryable for %q", msg)
+	}
+
+	// A genuine execution revert on code 3 keeps the existing classification.
+	err := makeErr("execution reverted")
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException), "expected execution exception, got %v", err)
+	assert.False(t, common.IsRetryableTowardNetwork(err))
+}

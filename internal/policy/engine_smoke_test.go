@@ -38,9 +38,10 @@ func (f *fakeUpstream) Tracker() common.HealthTracker {
 func (f *fakeUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (f *fakeUpstream) Cordon(method, reason string)   {}
-func (f *fakeUpstream) Uncordon(method, reason string) {}
-func (f *fakeUpstream) IgnoreMethod(method string)     {}
+func (f *fakeUpstream) Cordon(method, reason string)                   {}
+func (f *fakeUpstream) Uncordon(method, reason string)                 {}
+func (f *fakeUpstream) IgnoreMethod(method string)                     {}
+func (f *fakeUpstream) ShouldHandleMethod(method string) (bool, error) { return true, nil }
 
 // TestEngine_IdentityPolicy_PassesThrough runs the simplest possible eval —
 // `(upstreams, ctx) => upstreams` — and verifies the engine returns the
@@ -53,8 +54,8 @@ func TestEngine_IdentityPolicy_PassesThrough(t *testing.T) {
 	tracker := health.NewTracker(&logger, "test", time.Minute)
 
 	cfg := &common.SelectionPolicyConfig{
-		EvalInterval:    common.Duration(50 * time.Millisecond),
-		EvalTimeout:     common.Duration(10 * time.Millisecond),
+		EvalInterval: common.Duration(50 * time.Millisecond),
+		EvalTimeout:  common.Duration(10 * time.Millisecond),
 		// Distinct from `common.DefaultSelectionPolicySource` so the engine
 		// does NOT auto-upgrade to the rich default policy.
 		EvalFunc: "(ups, _ctx) => ups",
@@ -89,8 +90,8 @@ func TestEngine_OverrideOrderForTest(t *testing.T) {
 	tracker := health.NewTracker(&logger, "test", time.Minute)
 
 	cfg := &common.SelectionPolicyConfig{
-		EvalInterval:    common.Duration(0), // frozen: only manual ticks
-		EvalTimeout:     common.Duration(10 * time.Millisecond),
+		EvalInterval: common.Duration(0), // frozen: only manual ticks
+		EvalTimeout:  common.Duration(10 * time.Millisecond),
 	}
 	require.NoError(t, cfg.SetDefaults())
 

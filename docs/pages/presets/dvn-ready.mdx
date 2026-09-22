@@ -1,35 +1,28 @@
 ---
-title: DVN (LayerZero)
-description: Minimal eRPC config for DVN operators — multi-provider unanimous consensus on the RPC methods cross-chain message verification depends on.
+title: DVN-ready preset (LayerZero)
+description: A drop-in eRPC config for DVN operators — unanimous consensus on the four source-chain verification methods closes the forged-log attack vector that hit KelpDAO.
 ---
 
 import {
 	ConfigTabs,
-	ConfigCode,
 	AISection,
 	LLMsTxtLink,
+	SourceLink,
+	PromptExample,
 } from "../../components";
-
-# DVN (LayerZero) preset
 
 <LLMsTxtLink />
 
-A minimal, self-hosted eRPC config for **DVN (Decentralized Verifier Network) operators** and any off-chain service that reads on-chain state to verify cross-chain messages. A single compromised RPC provider can forge log responses (the KelpDAO attack vector); consensus across independent providers closes that door.
+# DVN-ready preset (LayerZero)
 
-**What this preset configures:**
+Running a Decentralized Verifier Network means trusting on-chain state to validate cross-chain messages. A single compromised RPC provider can forge log responses — the KelpDAO attack vector. This preset closes that door: unanimous consensus across three independent providers, misbehavior logging to disk, and hedged retries for everything else.
 
-- Three independent provider upstreams — a single compromised provider cannot dictate the response
-- Unanimous `consensus` (`agreementThreshold: 3`) on `eth_getLogs`, `eth_getBlockByNumber`, `eth_getTransactionReceipt`, `eth_getBlockReceipts` — the four methods DVNs depend on for source-chain verification
-- `disputeBehavior: returnError` — mismatched reads surface as errors, never silently pick a winner
-- `preferNonEmpty: true` — rejects an empty log set if any provider returned real data (the exact KelpDAO signature)
-- `preferLargerResponses: true` — rejects a truncated log set when a larger valid one exists
-- `punishMisbehavior` — upstreams that repeatedly dispute consensus are automatically cordoned
-- `misbehaviorsDestination` — every dispute is written to disk as JSONL for audit and alerting
-- Standard hedged retries for all other methods
+Drop this config in, swap the three endpoint env-vars, and you're protected.
 
 <ConfigTabs
-	path="projects > networks[] > failsafe[] / upstreams[]"
-	focus="9-73"
+	path="projects[].networks[].failsafe[]"
+	focusYaml="10,16,18-23,36,40"
+  focusTs="13,17,19-24,39,44"
 	yaml={`logLevel: warn
 
 projects:
@@ -72,7 +65,7 @@ projects:
               misbehaviorsDestination:
                 type: file
                 path: /var/log/erpc/dvn-misbehaviors
-                filePattern: "{dateByDay}-{networkId}-{method}.jsonl"
+                filePattern: "{dateByDay}-{networkId}-{method}"
 
           # 2. Default policy for everything else: hedged reads with retries.
           - matchMethod: "*"
@@ -140,7 +133,7 @@ export default createConfig({
               misbehaviorsDestination: {
                 type: "file",
                 path: "/var/log/erpc/dvn-misbehaviors",
-                filePattern: "{dateByDay}-{networkId}-{method}.jsonl",
+                filePattern: "{dateByDay}-{networkId}-{method}",
               },
             },
           },
@@ -165,89 +158,96 @@ export default createConfig({
 });`}
 />
 
-<AISection title="Copy for your AI assistant — full DVN preset reference">
+## Agent reference
 
-### What this preset is for
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-DVN operators (LayerZero and comparable off-chain verifiers) read source-chain state to prove that a cross-chain message was genuinely emitted. The four critical methods are:
+<PromptExample
+	n={1}
+	title="deploy the DVN-ready preset for my LayerZero verifier"
+	defaultOpen
+	prompt={`I run a LayerZero DVN and need eRPC configured with unanimous consensus on the four
+source-chain verification methods (eth_getLogs, eth_getBlockByNumber,
+eth_getTransactionReceipt, eth_getBlockReceipts) to close the forged-log attack
+vector. Drop the DVN-ready preset into my eRPC config, swap in my three provider
+endpoint env-vars, and explain why agreementThreshold must equal maxParticipants.
+Read the reference first:
+https://docs.erpc.cloud/presets/dvn-ready.llms.txt`}
+/>
 
-- **`eth_getLogs`** — retrieves the `PacketSent` (or equivalent) events proving a message was emitted. The KelpDAO attack forged this exact response. **This is the kill shot — get consensus right here above all.**
+<PromptExample
+	n={2}
+	title="extend the preset to cover multiple chains"
+	prompt={`I need the DVN-ready consensus policy applied to Ethereum mainnet, Arbitrum One,
+and Base in a single eRPC config. Show me how to use YAML anchors to avoid
+repeating the failsafe block, and what ignoreFields entries I need to add for
+L2-specific fields on Arbitrum and Base to avoid benign disputes. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/presets/dvn-ready.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="configure S3 misbehavior export for a multi-instance deployment"
+	prompt={`I'm running multiple eRPC DVN instances and need all consensus dispute records
+centralized in S3 so I have a single audit trail. Configure misbehaviorsDestination
+with type: s3, show the correct filePattern to avoid object overwrites across
+concurrent instances, and explain the IAM minimum permissions needed. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/presets/dvn-ready.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="alert on provider misbehavior and audit my dispute settings"
+	prompt={`I want to set up alerting when a provider starts diverging from consensus on my
+DVN verification path, and audit whether my punishMisbehavior thresholds are
+appropriate for production traffic. Check my eRPC config for missing required fields
+(disputeThreshold, disputeWindow) and tell me which Prometheus metric to alert on
+and what spike patterns to watch for. Reference:
+https://docs.erpc.cloud/presets/dvn-ready.llms.txt`}
+/>
+
+<AISection title="DVN-ready preset — full agent reference">
+
+### How it works
+
+DVN operators (LayerZero and comparable off-chain verifiers) read source-chain state to prove a cross-chain message was genuinely emitted. The four critical methods are:
+
+- **`eth_getLogs`** — retrieves `PacketSent` (or equivalent) events proving a message was emitted. The KelpDAO attack forged this exact response. **This is the kill shot — get consensus right here above all.**
 - **`eth_getBlockByNumber`** — confirms block finality and confirmation depth before accepting a message.
 - **`eth_getTransactionReceipt`** — confirms the originating transaction was actually included in a block.
 - **`eth_getBlockReceipts`** — used for batch verification of message inclusion.
 
 State-read methods like `eth_call` and `eth_getBalance` are not part of typical DVN verification paths and are left under the default (hedged) policy to keep latency reasonable.
 
-### Why `agreementThreshold: 3` (unanimous)
+**Why `agreementThreshold: 3` (unanimous).** A 2-of-3 quorum can still be poisoned if two providers share infrastructure or are both compromised via a common dependency (same cloud region, same indexing stack). Unanimity means an attacker must corrupt every provider simultaneously.
 
-A 2-of-3 quorum can still be poisoned if two providers share infrastructure or are both compromised via a common dependency (same cloud region, same indexing stack). Unanimity means an attacker must corrupt every provider simultaneously. Accept the availability tradeoff: `disputeBehavior: returnError` surfaces real disagreements rather than silently picking a winner.
+Per KB14: `lowParticipantsBehavior` fires when `validParticipants < agreementThreshold` (not enough upstreams responded); `disputeBehavior` fires when enough upstreams responded but disagree (no group meets threshold). Setting both to `returnError` means any degraded state surfaces immediately rather than silently picking a winner.
 
-### Provider selection rationale
+Consensus sits in `networkExecutor.Run` — when `ConsensusPolicyConfig` is present and `SkipConsensus` is false, the executor calls `consensus.Run(ctx, req, slotInner)` where `slotInner` is `retry(hedge(tryOneUpstream))`. [<SourceLink file="erpc/network_executor.go" lines="183-188" />]
 
-Mix provider categories for independence:
-- At least one **managed RPC provider** (Alchemy, Infura, QuickNode, dRPC) — broadest chain coverage, fast updates
-- At least one **alternative managed provider** from a different infrastructure stack (e.g. Ankr, Chainstack, PublicNode)
-- Optionally a **self-hosted full node** — you control it, but you must maintain it; strongest trust guarantee
+### Config schema
 
-Do not pick three providers that run on the same cloud provider in the same region. A zonal failure or provider-side incident would trigger `lowParticipantsBehavior: returnError` on every request. Geo-distribute or mix cloud providers.
+Fields used in this preset. For the complete consensus schema see [Consensus](/config/failsafe/consensus).
 
-### `ignoreFields` rationale
-
-These fields legitimately differ between correct nodes and must be excluded from the canonical hash comparison or every request disputes:
-
-- `*.blockTimestamp` in `eth_getLogs` — some providers populate this extension field, others do not
-- `blockTimestamp`, `logs.*.blockTimestamp` in `eth_getTransactionReceipt` — same extension, inconsistently present
-- `l1Fee`, `l1GasPrice`, `l1GasUsed` in `eth_getTransactionReceipt` — L2 fee accounting fields; providers compute slightly differently
-- `transactions.*.gasPrice`, `transactions.*.l1Fee`, `transactions.*.yParity` in `eth_getBlockByNumber` — encoding and L2 extras differ across providers
-
-For L2s and rollups, additional fields drift (deposit receipt extras, Arbitrum-specific fields, Optimism `timeboosted`, etc.). Extend `ignoreFields` as needed; the [consensus reference](/config/failsafe/consensus#ignorefields--matcher-syntax) has the full production set for Arbitrum, Base, Optimism, Mantle, Blast, and others.
-
-### `misbehaviorsDestination` — file vs S3
-
-**File export** (as in this preset) is the right starting point:
-
-```yaml
-misbehaviorsDestination:
-  type: file
-  path: /var/log/erpc/dvn-misbehaviors
-  filePattern: "{dateByDay}-{networkId}-{method}.jsonl"
-```
-
-Each JSONL line contains the full request, every participant response, the analysis summary, and the winning (or disputed) result. Rotate with `logrotate`.
-
-**S3 export** is better for multi-instance deployments or when you want centralised audit storage:
-
-```yaml
-misbehaviorsDestination:
-  type: s3
-  path: s3://my-bucket/erpc-dvn-disputes
-  filePattern: "{dateByHour}/{networkId}/{method}-{instanceId}.jsonl"
-  s3:
-    region: us-east-1
-    maxRecords: 100
-    maxSize: 1048576   # 1 MB
-    flushInterval: 60s
-    credentials:
-      mode: env        # reads AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-```
-
-IAM minimum: `s3:PutObject` on the target prefix. Do not grant `s3:GetObject` or broader permissions to the eRPC process.
-
-### `punishMisbehavior` tuning
-
-The preset uses aggressive values (`disputeThreshold: 3`, `sitOutPenalty: 30m`) appropriate for a strict DVN setup. Loosen for less critical use-cases:
-
-| Scenario | `disputeThreshold` | `disputeWindow` | `sitOutPenalty` |
+| Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| DVN / high-security | 3 | 10m | 30m |
-| DeFi correctness check | 10 | 10m | 15m |
-| General best-effort | 20 | 30m | 5m |
+| `consensus.maxParticipants` | int | `5` | Number of upstreams to fan out to. This preset sets `3`. Must be `<= len(upstreams)` or `lowParticipantsBehavior` fires on every request. Source: <SourceLink file="common/defaults.go" lines="2390-2392" /> |
+| `consensus.agreementThreshold` | int | `2` | Minimum agreeing participants. Set to `maxParticipants` for unanimity. Source: <SourceLink file="common/defaults.go" lines="2393-2395" /> |
+| `consensus.disputeBehavior` | string | `"returnError"` | Action when participants disagree above threshold. Values: `returnError`, `acceptMostCommonValidResult`, `preferBlockHeadLeader`, `onlyBlockHeadLeader`. Source: <SourceLink file="common/defaults.go" lines="2396-2398" /> |
+| `consensus.lowParticipantsBehavior` | string | `"acceptMostCommonValidResult"` | Action when fewer upstreams respond than `agreementThreshold`. Source: <SourceLink file="common/defaults.go" lines="2399-2401" /> |
+| `consensus.preferNonEmpty` | \*bool | `true` | Prefer non-empty over empty/error winner even when empty group meets threshold. Source: <SourceLink file="common/defaults.go" lines="2420-2422" /> |
+| `consensus.preferLargerResponses` | \*bool | `true` | Prefer larger response body. **Disables all short-circuit** — every request waits for all participants. Source: <SourceLink file="common/defaults.go" lines="2423-2425" /> |
+| `consensus.ignoreFields` | map\[string\]\[\]string | Built-in per-method defaults | **Set replacement, not merge.** Adding any entry removes the entire default map. Source: <SourceLink file="common/defaults.go" lines="2405-2419" /> |
+| `consensus.punishMisbehavior.disputeThreshold` | uint | **Required** | Disputes allowed per window before punishment. Must be `> 0`; omitting is a startup error. Source: <SourceLink file="common/validation.go" lines="1172-1173" /> |
+| `consensus.punishMisbehavior.disputeWindow` | Duration | **Required** | Token-bucket window. Must be `> 0`. Source: <SourceLink file="common/validation.go" lines="1175-1176" /> |
+| `consensus.punishMisbehavior.sitOutPenalty` | Duration | — | How long to cordon a misbehaving upstream. |
+| `misbehaviorsDestination.type` | string | `"file"` | `"file"` or `"s3"`. Source: <SourceLink file="common/defaults.go" lines="2460-2462" /> |
+| `misbehaviorsDestination.path` | string | — | Absolute directory path (file) or `s3://bucket/prefix/` (S3). Relative path is a startup error for file type. |
+| `misbehaviorsDestination.filePattern` | string | `"{timestampMs}-{method}-{networkId}"` | Supports `{dateByHour}`, `{dateByDay}`, `{method}`, `{networkId}`, `{instanceId}`, `{timestampMs}`. `.jsonl` appended automatically. Source: <SourceLink file="common/defaults.go" lines="2464-2466" /> |
+| `misbehaviorsDestination.s3.credentials.accessKeyID` | string | — | **YAML key is `accessKeyID` (capital D).** Using `accessKeyId` silently falls back to the SDK default chain. Source: <SourceLink file="common/config.go" lines="483" /> |
 
-Do not set `disputeWindow` shorter than one minute or `disputeThreshold` below 3 in production — a transient provider incident can cause benign disputes that flap upstreams in and out of the penalty box.
+### Worked examples
 
-### Adding networks
-
-Repeat the `networks[]` entry for every LayerZero-supported chain you verify. Only the `chainId` changes; the `failsafe` block is identical across chains:
+**1. Multi-chain DVN (Ethereum + Arbitrum + Base).** Repeat the `networks[]` entry for every chain you verify — only `chainId` changes. Use a YAML anchor to avoid duplication:
 
 ```yaml
 networks:
@@ -255,7 +255,7 @@ networks:
     evm: { chainId: 1 }       # Ethereum mainnet
     failsafe: &dvn-failsafe   # YAML anchor for reuse
       - matchMethod: "eth_getLogs|eth_getBlockByNumber|eth_getTransactionReceipt|eth_getBlockReceipts"
-        # ... (full consensus block)
+        # ... (full consensus block as above)
       - matchMethod: "*"
         # ... (default hedge block)
 
@@ -268,51 +268,114 @@ networks:
     failsafe: *dvn-failsafe
 ```
 
-For L2s, also extend `ignoreFields` with the chain-specific extras listed in the [consensus reference](/config/failsafe/consensus#ignorefields--matcher-syntax).
+For L2s, extend `ignoreFields` with chain-specific extras (deposit receipt fields, L2 fee fields) — and include all the base defaults, since `ignoreFields` is set-replacement not merge.
 
-### Adding upstreams
+**2. Centralized audit with S3 export.** For multi-instance deployments where you need a single audit trail, switch `misbehaviorsDestination` to S3. Use `{instanceId}` in the pattern so concurrent instances don't overwrite each other:
 
-Add one `upstreams[]` entry per provider per project. The `endpoint` value is the full HTTPS URL including your API key. Use environment-variable interpolation to avoid committing credentials:
+```yaml
+misbehaviorsDestination:
+  type: s3
+  path: s3://my-bucket/erpc-dvn-disputes
+  filePattern: "{dateByHour}/{networkId}/{method}-{instanceId}"
+  s3:
+    region: us-east-1
+    maxRecords: 100
+    maxSize: 1048576   # 1 MiB
+    flushInterval: 60s
+    credentials:
+      mode: env        # reads AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+```
+
+IAM minimum: `s3:PutObject` on the target prefix. The S3 exporter validates bucket access at startup via `HeadBucket`; if unreachable, export is disabled and consensus continues — check startup logs. Source: <SourceLink file="consensus/policy.go" lines="155-168" />
+
+**3. Relaxed punish settings for DeFi correctness checks (non-DVN).** The preset uses DVN-grade values. For DeFi apps that want correctness without the strict availability penalty, soften the punishment window and increase the threshold:
+
+```yaml
+punishMisbehavior:
+  disputeThreshold: 10
+  disputeWindow: 10m
+  sitOutPenalty: 15m
+```
+
+**4. Mixing provider types for independence.** The three upstreams should come from different infrastructure stacks. Use the shorthand provider form (KB09) or explicit HTTPS URLs:
 
 ```yaml
 upstreams:
   - id: alchemy-eth
-    endpoint: \${ALCHEMY_ETH_ENDPOINT}
+    endpoint: ${ALCHEMY_ETH_ENDPOINT}      # managed, broad chain support
   - id: drpc-eth
-    endpoint: \${DRPC_ETH_ENDPOINT}
+    endpoint: ${DRPC_ETH_ENDPOINT}         # different infrastructure stack
   - id: self-hosted
-    endpoint: http://your-eth-node:8545
+    endpoint: http://your-eth-node:8545    # you control it; strongest trust guarantee
 ```
 
-Each upstream applies to all networks in the project. You do not need separate upstream entries per chain — eRPC routes each network request to the matching endpoint automatically based on `chainId`.
+Each upstream applies to all networks in the project — no separate entries per chain are needed.
+
+### Request/response behavior
+
+- A consensus dispute on a verification method returns `ErrConsensusDispute` (JSON-RPC code `-32603`, HTTP `200`). The caller receives a structured error; it does NOT silently accept a forged response. [<SourceLink file="common/errors.go" lines="2559-2588" />]
+- `lowParticipantsBehavior: returnError` produces `ErrConsensusLowParticipants` (JSON-RPC `-32603`, HTTP `200`). This fires when fewer upstreams responded than `agreementThreshold` — not the same as a dispute. [<SourceLink file="common/errors.go" lines="2593-2626" />]
+- `preferLargerResponses: true` disables all short-circuit — every consensus request waits for all `maxParticipants` responses (or `maxWaitOnResult`/`maxWaitOnEmpty` caps). This increases latency but prevents a fast truncated-log response from winning. [<SourceLink file="consensus/rules.go" lines="913-915" />]
+- Any request can bypass consensus via `X-ERPC-Skip-Consensus: true` header, `?skip-consensus=true` query param, or `directiveDefaults.skipConsensus: true` in config. Only the literal string `"true"` activates bypass. [<SourceLink file="common/request.go" lines="746-747" />]
+- `ignoreFields` comparison uses `CanonicalHashWithIgnoredFields` — dot-path wildcard segments (`*`) match any key at that depth. [<SourceLink file="consensus/analysis.go" lines="442-453" />]
+- `punishMisbehavior` requires a clear majority (`consensusGroup.Count > validParticipants / 2`) before cordoning. [<SourceLink file="consensus/executor.go" lines="1196" />]
+
+### Best practices
+
+- **Mix provider infrastructure categories.** Use at least one managed RPC provider (Alchemy, Infura, QuickNode, dRPC) and one alternative from a different stack (Ankr, Chainstack, PublicNode). A self-hosted full node provides the strongest trust guarantee if you can maintain it.
+- **Never pick three providers from the same cloud region.** A zonal incident causes all three to agree on stale state or all go down simultaneously, triggering `lowParticipantsBehavior: returnError` on every request. Geo-distribute or mix cloud providers.
+- **Always include the base `ignoreFields` defaults when extending.** `ignoreFields` is set-replacement — adding `eth_getBlockByNumber` entries without copying `eth_getLogs`, `eth_getTransactionReceipt`, `eth_getBlockReceipts` silently removes timestamp-ignore for those methods, causing constant spurious disputes. Source: <SourceLink file="common/defaults.go" lines="2405-2419" />
+- **Extend `ignoreFields` for L2s.** Running the Ethereum `ignoreFields` set on Arbitrum or Base without adding chain-specific extras (deposit receipt fields, Arbitrum-specific fields, Optimism extras) causes constant benign disputes.
+- **Do not apply `disputeBehavior: returnError` to the default (`matchMethod: "*"`) policy.** Methods like `eth_gasPrice` or `eth_estimateGas` legitimately differ between nodes — surfacing those as errors would break non-DVN callers.
+- **Alert on `erpc_consensus_misbehavior_detected_total`.** A sudden spike means a provider is diverging from consensus on a live verification path. This is your primary DVN health signal.
+- **Both `punishMisbehavior.disputeThreshold` and `disputeWindow` are required.** Omitting either when the `punishMisbehavior` block is present is a startup validation error, not a silent default.
+
+### Edge cases & gotchas
+
+1. **`ignoreFields` is set-replacement.** Setting any entry removes the built-in defaults for `eth_getLogs`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`. Always include all entries you want to keep. Source: <SourceLink file="common/defaults.go" lines="2405-2419" />.
+2. **`maxParticipants` must not exceed available healthy upstreams.** If `maxParticipants: 3` but only 2 upstreams are healthy, every request triggers `lowParticipantsBehavior: returnError`. Always ensure `len(upstreams) >= maxParticipants`.
+3. **`preferLargerResponses: true` increases latency for all consensus requests.** It disables short-circuit so every request waits for all `maxParticipants` responses (or `maxWaitOnResult`/`maxWaitOnEmpty` caps). Consider disabling in low-latency scenarios.
+4. **`disputeBehavior: returnError` must not be applied to the default (`matchMethod: "*"`) policy** unless you want disputes on `eth_gasPrice` or `eth_estimateGas` to surface as errors to callers. Keep it only on the verification methods.
+5. **Three providers in the same cloud region fail together.** A zonal incident causes all three to agree on stale state or all three to go down simultaneously. Geo-distribute and mix cloud providers.
+6. **`punishMisbehavior.disputeThreshold` and `disputeWindow` are both required.** Omitting either when the `punishMisbehavior` block is present is a startup validation error, not a silent default.
+7. **S3 content is overwritten on flush**, not appended. The `PutObject` call replaces the object at `prefix/<filename>`. Use `{timestampMs}` or `{instanceId}` in `filePattern` to create new objects per flush; `{dateByHour}` causes the same-hour flush to overwrite the previous object.
+8. **`recheckInterval` in vendor settings cannot be set from YAML.** The Go type assertion `.(time.Duration)` fails silently when set from YAML. The vendor default (1h for repository/quicknode/chainstack, 24h for alchemy/drpc/superchain/tenderly) always applies in YAML configs. Only programmatic Go configs can override this.
+9. **Not extending `ignoreFields` for L2s causes benign disputes.** Running the Ethereum `ignoreFields` set on Arbitrum or Base without adding chain-specific extras will cause constant disputes. Add per-chain extras and include all defaults.
+10. **S3 `accessKeyID` YAML casing.** The YAML key is `accessKeyID` (capital D). The common typo `accessKeyId` is silently ignored; the AWS SDK falls back to its default credential chain.
 
 ### Observability
 
-Every consensus dispute increments `erpc_consensus_misbehavior_detected_total{network,category}`. Wire your alerting to this metric: a sudden spike means a provider is diverging from consensus on a live verification path.
+Every consensus dispute increments `erpc_consensus_misbehavior_detected_total`. Wire your alerting to this metric: a sudden spike means a provider is diverging from consensus on a live verification path.
 
-Other useful metrics:
-
-- `erpc_consensus_misbehavior_detected_total{upstream}` — per-upstream misbehavior count; identifies which provider is the outlier
-- `erpc_consensus_upstream_punished_total{upstream}` — cumulative number of times an upstream was penalised
-- `erpc_network_request_duration_seconds` — latency distribution per method and network
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_consensus_total` | counter | project, network, category, outcome, finality | Every `Run` completion. `outcome`: `success`, `consensus_on_error`, `dispute`, `low_participants`, `generic_error`, `caller_abandoned`. |
+| `erpc_consensus_misbehavior_detected_total` | counter | project, network, upstream, category, finality, response_type, larger_than_consensus | Per misbehaving upstream per round. Primary alert metric for DVN operators. |
+| `erpc_consensus_upstream_punished_total` | counter | project, network, upstream | When an upstream is cordoned. |
+| `erpc_consensus_upstream_errors_total` | counter | project, network, upstream, category, finality, response_type, error_code | Per upstream per round when upstream has an error disagreeing with consensus group. |
+| `erpc_consensus_responses_collected` | histogram | project, network, category, vendors, short_circuited, finality | After all responses collected; records count. `short_circuited=false` expected when `preferLargerResponses: true`. |
+| `erpc_consensus_short_circuit_total` | counter | project, network, category, reason, finality | When short-circuit fires (`preferLargerResponses: true` disables this). |
 
 See [Monitoring](/operation/monitoring) for the full Prometheus metric set.
 
-### Common pitfalls
+### Source code entry points
 
-- **`agreementThreshold` too low** — `agreementThreshold: 2` with 3 providers sounds like majority voting, but if two providers share infrastructure and both serve a forged response, they form a majority. Use unanimity (`= maxParticipants`) for DVN-grade security.
-- **Providers in the same region or cohort** — three providers all running on AWS us-east-1 fail together and corroborate each other's stale state. Geo-distribute.
-- **S3 IAM too broad** — the eRPC process only needs `s3:PutObject`. Do not attach `s3:*` or `s3:GetObject`.
-- **`disputeBehavior: returnError` in latency-sensitive paths** — this is correct for DVN verification methods, but do not apply it to the default (`matchMethod: "*"`) policy unless you want disputes on `eth_gasPrice` to surface as errors.
-- **Not extending `ignoreFields` for L2s** — running the Ethereum `ignoreFields` set on Arbitrum or Base will cause benign disputes on deposit receipt extras and L2 fee fields. Add the chain-specific fields from the [consensus reference](/config/failsafe/consensus#ignorefields--matcher-syntax).
-- **Too few upstreams for `maxParticipants`** — if you configure `maxParticipants: 3` but only provide 2 upstreams, every request triggers `lowParticipantsBehavior: returnError`. Always ensure `len(upstreams) >= maxParticipants`.
-- **Cost at high dispute rates with S3 destination** — start with `type: file`. Switch to S3 once you have validated that your dispute volume is manageable.
+- [`consensus/executor.go:L183-L291`](https://github.com/erpc/erpc/blob/main/consensus/executor.go#L183-L291) — `executeConsensus`: fan-out, wait caps, short-circuit, analyzer loop
+- [`consensus/rules.go:L24-L840`](https://github.com/erpc/erpc/blob/main/consensus/rules.go#L24-L840) — `consensusRules`: all 24 priority-ordered decision rules including `preferNonEmpty`, `preferLargerResponses`, `returnError` semantics
+- [`consensus/export.go:L1-L120`](https://github.com/erpc/erpc/blob/main/consensus/export.go#L1-L120) — `fileMisbehaviorExporter`: JSONL record structs and file write logic
+- [`consensus/export_s3.go:L1-L200`](https://github.com/erpc/erpc/blob/main/consensus/export_s3.go#L1-L200) — `s3MisbehaviorExporter`: buffered per-key S3 uploads with background flush
+- [`common/defaults.go:L2389-L2487`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2389-L2487) — `ConsensusPolicyConfig.SetDefaults`: all default values including `ignoreFields` map
+- [`erpc/network_executor.go:L174-L188`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L174-L188) — integration point: routes to `consensus.Run` when policy present and `SkipConsensus` is false
+- [`consensus/analysis.go:L442-L453`](https://github.com/erpc/erpc/blob/main/consensus/analysis.go#L442-L453) — `CanonicalHashWithIgnoredFields`: dot-path wildcard hashing
+- [`consensus/quota.go:L27-L79`](https://github.com/erpc/erpc/blob/main/consensus/quota.go#L27-L79) — `reorderForParticipantQuota`: tag-aware participant front-loading
 
-### Related references
+### Related pages
 
-- [Consensus reference](/config/failsafe/consensus) — full option matrix and behavior semantics
-- [Failsafe integrity](/config/failsafe/integrity) — empty/missing data handling
-- [Monitoring](/operation/monitoring) — Prometheus metrics for live dispute observability
-- [Auth](/config/auth) — restrict who can reach your eRPC instance once deployed
+- [Consensus](/config/failsafe/consensus) — full reference for every consensus config field and rule.
+- [Retry](/config/failsafe/retry) — wraps the consensus slot; each retry attempt is a fresh upstream call.
+- [Hedge](/config/failsafe/hedge) — used by the default (`matchMethod: "*"`) policy in this preset.
+- [Rate limiters](/config/rate-limiters) — cap request volume per upstream to stay within provider budgets.
+- [Providers & vendors](/config/projects/providers) — shorthand endpoint forms (`alchemy://KEY`, etc.) supported in `upstreams[].endpoint`.
+- [Survive provider outages](/use-cases/survive-provider-outages) — the broader resilience pattern this preset builds on.
 
 </AISection>

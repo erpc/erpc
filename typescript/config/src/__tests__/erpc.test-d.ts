@@ -204,7 +204,33 @@ const _upstreamHelpers: SelectionPolicyEvalFunction = (upstreams) =>
     return u.metrics.errorRate < 0.5;
   }) as unknown as PolicyEvalUpstreamArray;
 
+/* ─────────────── 6b. includeIf conditions type-check ──────────────────── */
+
+// Target comes first (tag shorthand or selector object); conditions are
+// native array methods over the per-upstream predicate factories.
+const _includeIfConditions: SelectionPolicyEvalFunction = (upstreams) =>
+  upstreams
+    .excludeTag("tier:reserve")
+    .includeIf("tier:reserve", (p) => p.every(blockSecondsLagAbove(30)))
+    .includeIf(["tier:reserve", "tier:overflow"], (p) => p.length < 2)
+    .includeIf({ id: "reserve-*" }, (p) => p.some(errorRateAbove(0.5)))
+    .includeIf({ vendor: "premium", position: "tail" }, (p) => p.length < 2)
+    .includeIf(
+      { tag: "tier:reserve" },
+      (p) => p.filter(blockNumberLagAbove(16)).length >= 2,
+    )
+    .includeIf({ type: "evm" }, true)
+    .sortByScore(PREFER_FASTEST);
+
 /* ───────────────────────── 7. Negative cases (must error) ─────────────── */
+
+const _includeIfBadCondition: SelectionPolicyEvalFunction = (upstreams) =>
+  // @ts-expect-error — condition must be a boolean or an array→boolean function
+  upstreams.includeIf("tier:reserve", 42);
+
+const _includeIfMissingCondition: SelectionPolicyEvalFunction = (upstreams) =>
+  // @ts-expect-error — includeIf requires a condition argument
+  upstreams.includeIf("tier:reserve");
 
 createConfig({
   projects: [

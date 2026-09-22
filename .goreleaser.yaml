@@ -16,7 +16,7 @@ builds:
         goarch: arm64
     main: ./cmd/erpc/main.go
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X github.com/erpc/erpc/common.ErpcVersion={{.Version}} -X github.com/erpc/erpc/common.ErpcCommitSha={{.Commit}}
 
 archives:
   - formats: ['binary']
@@ -33,7 +33,10 @@ checksum:
 
 release:
   draft: false
+  # mode governs the release notes; replace_existing_artifacts governs the
+  # binaries. Without it a re-run 422s on every asset that already exists.
   mode: replace
+  replace_existing_artifacts: true
   make_latest: true
   name_template: "{{.Version}}"
   header: |

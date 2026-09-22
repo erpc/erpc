@@ -15,6 +15,83 @@ Please be aware that by contributing to this project, you acknowledge that your 
 5. Push to the branch (`git push origin feature/YourFeature`).
 6. Open a Pull Request.
 
+## AI-assisted contributions
+
+Agent-written PRs are welcome — the docs here are authored agent-first, so it
+would be strange to bar agents from the code. We do ask that you say so.
+
+`.github/PULL_REQUEST_TEMPLATE.md` has an **AI assistance** section: the model,
+the harness and any skills, and whether a human read every changed line before
+you pushed. Delete the section if you wrote the change by hand.
+
+This is triage information, not a scarlet letter. Agent diffs fail differently
+from human ones — they are longer, they read as confident regardless of whether
+they are right, and the plausible-but-wrong parts look exactly like the correct
+parts. A reviewer who knows what produced a change knows where to spend the
+skepticism, and the answer to "did anyone actually read this?" is worth more
+than any other line in the PR body.
+
+## Documentation
+
+The docs (`docs/pages/`, published at <https://docs.erpc.cloud>) are written
+**agent-first, human-second**. Every page has exactly two layers:
+
+1. **Visible body (humans, short attention span).** A 40–90 word promise-level
+   pitch — what pain disappears, what the user gets — plus at most one
+   "Quick taste" config snippet. The snippet must show the **full parent chain**
+   from the config root (`projects:` …), put explanatory comments **above** the
+   line they describe, and highlight only the teaching lines via
+   `focusYaml`/`focusTs` line ranges. No field tables, no defaults, no algorithm
+   narration in the visible body.
+2. **Agent panel (`<AISection>`, collapsible).** The exhaustive reference an AI
+   agent needs to actually configure the feature, structured as: How it works,
+   Config schema (every field with exact defaults cited to source), Worked
+   examples (realistic scenarios with WHY comments), Request/response behavior,
+   Best practices, Edge cases & gotchas, Observability (exact metric
+   names/labels), Source code entry points (GitHub permalinks incl. one test),
+   Related pages.
+
+Between the two layers sits an `## Agent reference` heading with copy-paste
+`<PromptExample>` blocks — goal-phrased prompts that point an agent at the
+page's machine-readable companion (`https://docs.erpc.cloud/<path>.llms.txt`).
+Prompts must stay config-format agnostic ("my eRPC config", never a specific
+filename).
+
+Conventions that keep the system working:
+
+- **Ground every claim in code.** Defaults come from `common/defaults.go` /
+  `SetDefaults` methods, behaviors from the executing code and its tests —
+  cite `file.go:L123` as GitHub permalinks. Never write a default from memory.
+- **Exemplar page:** `docs/pages/config/failsafe/hedge.mdx` — match its shape
+  when adding a page.
+- **Examples must never identify any operator's infrastructure.** Chain names
+  and public vendor names are fine; company names, internal service names,
+  cluster keys, internal hostnames/k8s DNS, and platform fingerprints are not —
+  use neutral placeholders (`prod-us-east-1`, `eth-reader`, `${REGION}`).
+- **llms.txt is generated** — `docs/scripts/build-llms.mjs` runs on every
+  build, emitting a `.llms.txt` companion per page (agent panels fully
+  expanded, navigation links up/down/sideways), the root `llms.txt`, and
+  `llms-full.txt`. Don't edit generated files; new pages just need a
+  `_meta.js` entry.
+- **Agents are served markdown automatically** — `docs/middleware.ts`
+  302-redirects requests whose `Accept` header lists `text/markdown` (Claude
+  Code sends this on every fetch) or whose `User-Agent` matches a known AI
+  fetcher to the page's `.llms.txt` twin. If you add a non-page route, make
+  sure the middleware's `matcher` excludes it; new AI fetchers belong in the
+  `AI_FETCHER_UA` regex.
+- **Build:** `cd docs && pnpm install && pnpm build` (standalone pnpm
+  workspace; `next dev` for live preview).
+- **Docs container:** `docker build -t erpc-docs ./docs` uses the pnpm version
+  pinned in `docs/Dockerfile`, matching the root `packageManager`. Dependency
+  build-script decisions live in `docs/pnpm-workspace.yaml`; this file must be
+  copied before `pnpm install`. Sharp's install script is intentionally skipped;
+  its platform-specific prebuilt packages support image optimization.
+
+When you change runtime behavior — a new config field, a changed default, a
+new edge case or metric — the same PR must update the relevant page's agent
+panel (schema table, edge cases, observability) and, only if the *promise*
+changed, the visible body.
+
 ## Contributor License Agreement (CLA)
 
 By submitting a pull request, you agree to the [CLA](./CLA.md).

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -212,6 +213,21 @@ func (e *BaseError) WithRetryableTowardNetwork(r bool) RetryableError {
 			e.Details = map[string]interface{}{}
 		}
 		e.Details["retryableTowardNetwork"] = r
+	}
+	return e
+}
+
+// WithPermanentMissingData marks a MissingData verdict as permanent — the data
+// is skipped/absent, not merely not-yet-indexed — so a time-delayed re-fetch
+// cannot change it. Distinct from retryableTowardNetwork (which governs whether
+// another *upstream* is worth trying): a skipped slot stays retryable across
+// upstreams for one sweep, yet must not trigger a wait-and-retry afterwards.
+func (e *BaseError) WithPermanentMissingData(p bool) *BaseError {
+	if e != nil {
+		if e.Details == nil {
+			e.Details = map[string]interface{}{}
+		}
+		e.Details["permanentMissingData"] = p
 	}
 	return e
 }
@@ -444,13 +460,20 @@ type ErrInvalidRequest struct{ BaseError }
 const ErrCodeInvalidRequest ErrorCode = "ErrInvalidRequest"
 
 var NewErrInvalidRequest = func(cause error) error {
-	return &ErrInvalidRequest{
+	e := &ErrInvalidRequest{
 		BaseError{
 			Code:    ErrCodeInvalidRequest,
 			Message: "invalid request body or headers",
 			Cause:   cause,
 		},
 	}
+	// An invalid/malformed request is rejected identically by every upstream, so it
+	// must never be retried: not failed-over to another upstream (network scope, set
+	// here) and not re-tried on the same upstream (upstream scope, enforced via
+	// IsRetryableTowardsUpstream). IsClientError additionally makes it info severity
+	// (the caller's fault), not a critical infra error.
+	e.WithRetryableTowardNetwork(false)
+	return e
 }
 
 func (e *ErrInvalidRequest) ErrorStatusCode() int {
@@ -868,6 +891,92 @@ func (e *ErrUpstreamsExhausted) Request() *NormalizedRequest {
 
 const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
+// orderCauses drains a per-upstream error map into a slice with a deterministic,
+// data-safe total order.
+//
+// sync.Map.Range yields Go-map order, which varies run to run. Everything
+// downstream that picks ONE representative cause out of the bundle — most
+// visibly TranslateToJsonRpcException's dominance scan — would then hand the
+// client a different wire code on every request for an identical set of
+// upstream failures. The order imposed here is the single source of
+// determinism for all of them.
+//
+// Two ranks, both architecture-neutral:
+//
+//  1. Retryable-toward-network causes before terminal ones. When upstreams
+//     disagree about the same datum — one says "not available yet", another
+//     says "gone forever" — the retryable verdict is the safe representative.
+//     Reporting "gone forever" can make a consumer permanently skip data that
+//     does exist (unrecoverable); reporting "not yet" merely costs a retry.
+//     This reads the very same flag the retry path consults, so no
+//     chain-specific error code leaks into common/.
+//  2. Then by upstream id, so equally-retryable causes still have exactly one
+//     canonical order. Causes that tie on both ranks fall back to their text;
+//     if that also ties they are indistinguishable to every consumer.
+func orderCauses(ersObj *sync.Map) []error {
+	if ersObj == nil {
+		return nil
+	}
+	type orderedCause struct {
+		err       error
+		key       string
+		retryable bool
+	}
+	ocs := []orderedCause{}
+	ersObj.Range(func(key, value any) bool {
+		err, ok := value.(error)
+		if !ok || err == nil {
+			return true
+		}
+		ocs = append(ocs, orderedCause{
+			err:       err,
+			key:       causeSortKey(key, err),
+			retryable: IsRetryableTowardNetwork(err),
+		})
+		return true
+	})
+	sort.Slice(ocs, func(i, j int) bool {
+		a, b := &ocs[i], &ocs[j]
+		if a.retryable != b.retryable {
+			return a.retryable
+		}
+		if a.key != b.key {
+			return a.key < b.key
+		}
+		// ponytail: Error() only on a key tie (same upstream twice, or
+		// upstream-less causes) — never on the common path.
+		return a.err.Error() < b.err.Error()
+	})
+	ers := make([]error, len(ocs))
+	for i := range ocs {
+		ers[i] = ocs[i].err
+	}
+	return ers
+}
+
+// causeSortKey derives a stable identity for one cause of an exhausted bundle.
+// Callers key the map by the Upstream itself; tests key it by id string. Either
+// way the id is the natural key (at most one cause per upstream). Falls back to
+// the upstream carried on the error, then to the error text — never to the map
+// key's address, which would not be stable across runs.
+func causeSortKey(key any, err error) string {
+	switch k := key.(type) {
+	case Upstream:
+		if k != nil {
+			return k.Id()
+		}
+	case string:
+		return k
+	}
+	var ue interface{ Upstream() Upstream }
+	if errors.As(err, &ue) {
+		if up := ue.Upstream(); up != nil {
+			return up.Id()
+		}
+	}
+	return err.Error()
+}
+
 var NewErrUpstreamsExhausted = func(
 	req *NormalizedRequest,
 	ersObj *sync.Map,
@@ -875,11 +984,7 @@ var NewErrUpstreamsExhausted = func(
 	duration time.Duration,
 	attempts, retries, hedges, upstreams int,
 ) error {
-	ers := []error{}
-	ersObj.Range(func(key, value any) bool {
-		ers = append(ers, value.(error))
-		return true
-	})
+	ers := orderCauses(ersObj)
 	e := &ErrUpstreamsExhausted{
 		BaseError: BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
@@ -1268,6 +1373,47 @@ var NewErrNetworkInitializing = func(project string, network string) error {
 
 func (e *ErrNetworkInitializing) ErrorStatusCode() int { return http.StatusServiceUnavailable }
 
+// ErrNetworkNoUpstreamsAvailable is the terminal counterpart of
+// ErrNetworkInitializing: the network has been initializing for longer than
+// NoUpstreamsAvailableAfter and still has zero upstreams registered.
+//
+// It exists because "initializing; please retry shortly" is true of the first
+// seconds and a lie after the first hour. A chain that no configured upstream
+// or provider serves — removed from config, deprecated, never supported — sits
+// in that state permanently, so callers keep retrying and operators read the
+// message as a temporary blip. This one names the actual condition.
+//
+// It maps to 404, not 503. The state is terminal rather than transient: once a
+// network has sat past NoUpstreamsAvailableAfter with zero upstreams registered,
+// no amount of caller retrying changes the outcome — the project does not serve
+// that network. A 5xx invites a retry that cannot succeed and reports what is
+// really a coverage gap as a server fault. Operators should alert on the
+// erpc_network_no_upstreams_available_total counter, which is emitted regardless
+// of the wire status.
+type ErrNetworkNoUpstreamsAvailable struct{ BaseError }
+
+const ErrCodeNetworkNoUpstreamsAvailable ErrorCode = "ErrNetworkNoUpstreamsAvailable"
+
+var NewErrNetworkNoUpstreamsAvailable = func(project string, network string) error {
+	return &ErrNetworkNoUpstreamsAvailable{
+		BaseError{
+			Code: ErrCodeNetworkNoUpstreamsAvailable,
+			Message: fmt.Sprintf(
+				"no RPC providers are available for network '%s' in project '%s'",
+				network, project,
+			),
+			Details: map[string]interface{}{
+				"project": project,
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkNoUpstreamsAvailable) ErrorStatusCode() int {
+	return http.StatusNotFound
+}
+
 // ErrNetworkNotSupported indicates that providers do not support the requested network
 // and no static upstreams exist. It should be treated as fatal for initialization tasks.
 type ErrNetworkNotSupported struct{ BaseError }
@@ -1431,10 +1577,12 @@ var NewErrUpstreamShadowing = func(upstreamId string) error {
 
 type ErrUpstreamNotAllowed struct{ BaseError }
 
+const ErrCodeUpstreamNotAllowed ErrorCode = "ErrUpstreamNotAllowed"
+
 var NewErrUpstreamNotAllowed = func(required, upstreamId string) error {
 	return &ErrUpstreamNotAllowed{
 		BaseError{
-			Code:    "ErrUpstreamNotAllowed",
+			Code:    ErrCodeUpstreamNotAllowed,
 			Message: "upstream not allowed based on use-upstream directive",
 			Details: map[string]interface{}{
 				"required":   required,
@@ -1857,6 +2005,29 @@ var NewErrEndpointUnauthorized = func(cause error) error {
 
 func (e *ErrEndpointUnauthorized) ErrorStatusCode() int {
 	return 401
+}
+
+type ErrEndpointChainIdMismatch struct{ BaseError }
+
+const ErrCodeEndpointChainIdMismatch = "ErrEndpointChainIdMismatch"
+
+// NewErrEndpointChainIdMismatch marks a PROVEN cross-wired endpoint: the
+// server answering for this upstream reported a different chainId than the
+// upstream is configured for (e.g. a stale DNS record or reused address
+// pointing at another chain's server). Consumers treat this as strong
+// evidence the endpoint must not be used (see the state poller's major-move
+// guard, which cordons the upstream on this code).
+var NewErrEndpointChainIdMismatch = func(detected, expected uint64) error {
+	return &ErrEndpointChainIdMismatch{
+		BaseError{
+			Code:    ErrCodeEndpointChainIdMismatch,
+			Message: "endpoint answers for a different chainId than configured (cross-wired endpoint)",
+			Details: map[string]interface{}{
+				"detectedChainId": detected,
+				"expectedChainId": expected,
+			},
+		},
+	}
 }
 
 type ErrEndpointUnsupported struct{ BaseError }
@@ -2435,6 +2606,33 @@ func IsRetryableTowardNetwork(err error) bool {
 	return true
 }
 
+// IsPermanentlyMissingData reports whether a MissingData verdict is permanent —
+// the data is skipped/absent, not merely not-yet-indexed — so a time-delayed
+// re-fetch cannot change it. Mirrors IsRetryableTowardNetwork's single-cause
+// chain walk (never descending into multi-error wrappers). Default false: a
+// plain MissingData error is treated as potentially-transient (a not-yet-indexed
+// block that may appear as the tip advances), preserving existing retry
+// behaviour for every caller that does not set the flag.
+func IsPermanentlyMissingData(err error) bool {
+	for cur := err; cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			break
+		}
+		if base := cse.Base(); base != nil && base.Details != nil {
+			if p, ok := base.Details["permanentMissingData"].(bool); ok && p {
+				return true
+			}
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			break
+		}
+		cur = next
+	}
+	return false
+}
+
 func IsRetryableTowardsUpstream(err error) bool {
 	// Check if this is an exhausted upstreams error with retryable underlying errors
 	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
@@ -2468,6 +2666,11 @@ func IsRetryableTowardsUpstream(err error) bool {
 
 		// 400 / 404 / 405 / 413 -> No Retry
 		ErrCodeJsonRpcRequestUnmarshal,
+
+		// Invalid/malformed request (e.g. eth_getLogs fromBlock > toBlock, bad
+		// params, missing method) -> No Retry: no upstream will accept it, so
+		// retrying the same upstream is pointless.
+		ErrCodeInvalidRequest,
 
 		// Execution exceptions are not retryable
 		ErrCodeEndpointExecutionException,
@@ -2513,9 +2716,11 @@ func IsClientError(err error) bool {
 		err,
 		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
+		ErrCodeInvalidRequest,
 		ErrCodeGetLogsExceededMaxAllowedRange,
 		ErrCodeGetLogsExceededMaxAllowedAddresses,
 		ErrCodeGetLogsExceededMaxAllowedTopics,
+		ErrCodeGetLogsExceededMaxAllowedResponseSize,
 	))
 }
 
@@ -2534,6 +2739,23 @@ func ClassifySeverity(err error) Severity {
 	}
 	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException) {
 		return SeverityInfo
+	}
+	// ErrUpstreamBlockUnavailable / ErrEndpointMissingData are both intentionally
+	// retryable (the retry loop is keyed on these codes), but they only mean an
+	// upstream hasn't indexed the requested block yet — expected, self-healing
+	// conditions, not infra failures an operator must urgently act on.
+	if HasErrorCode(err, ErrCodeUpstreamBlockUnavailable, ErrCodeEndpointMissingData) {
+		return SeverityWarning
+	}
+	// ErrNetworkNotSupported is, like block-unavailable, intentionally retryable —
+	// upstream/registry.go returns it from the network-readiness wait loop so the
+	// auto-retry loop can re-attempt once lazily-registered upstreams warm up. (Do
+	// NOT move it into the no-retry list; that would break bootstrap recovery.)
+	// Whether it means "client requested an unconfigured network" or "upstreams
+	// aren't ready yet", it is a client/transient condition, not a critical infra
+	// failure — so it is a warning.
+	if HasErrorCode(err, ErrCodeNetworkNotSupported) {
+		return SeverityWarning
 	}
 	if !IsRetryableTowardsUpstream(err) {
 		return SeverityWarning
@@ -2585,6 +2807,47 @@ func (e *ErrConsensusDispute) Errors() []error {
 }
 
 func (e *ErrConsensusDispute) ErrorStatusCode() int {
+	return http.StatusConflict
+}
+
+// ErrConsensusCompositionDispute is returned when a response group won
+// consensus by count (agreementThreshold) but does not satisfy the
+// winner-composition quotas (`requiredParticipants[].minAgreement`), e.g.
+// the agreeing upstreams are all from one provider cluster while the
+// operator requires at least one matching a given tag. It is intentionally
+// NOT bypassable by disputeBehavior: composition is a data-trust boundary,
+// not a liveness preference.
+type ErrConsensusCompositionDispute struct{ BaseError }
+
+const ErrCodeConsensusCompositionDispute ErrorCode = "ErrConsensusCompositionDispute"
+
+var NewErrConsensusCompositionDispute = func(message string, participants []ParticipantInfo, causes []error) error {
+	return &ErrConsensusCompositionDispute{
+		BaseError{
+			Code:    ErrCodeConsensusCompositionDispute,
+			Message: message,
+			Cause:   errors.Join(causes...),
+			Details: map[string]interface{}{
+				"participants": participants,
+			},
+		},
+	}
+}
+
+func (e *ErrConsensusCompositionDispute) Errors() []error {
+	if e.Cause == nil {
+		return nil
+	}
+
+	errs, ok := e.Cause.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+
+	return errs.Unwrap()
+}
+
+func (e *ErrConsensusCompositionDispute) ErrorStatusCode() int {
 	return http.StatusConflict
 }
 
@@ -2651,6 +2914,32 @@ func (e *ErrConsensusLowParticipants) SummarizeParticipants() string {
 		}
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+type ErrGetLogsExceededMaxAllowedResponseSize struct{ BaseError }
+
+const ErrCodeGetLogsExceededMaxAllowedResponseSize ErrorCode = "ErrGetLogsExceededMaxAllowedResponseSize"
+
+// NewErrGetLogsExceededMaxAllowedResponseSize reports that a MERGED eth_getLogs response
+// crossed the network's GetLogsMaxResponseBytes budget. Deliberately its own code rather
+// than ErrEndpointRequestTooLarge: the too-large code is what networkPostForward_eth_getLogs
+// treats as a cue to split and merge, so raising it here would feed the very path this
+// budget exists to bound.
+var NewErrGetLogsExceededMaxAllowedResponseSize = func(responseBytes int64, maxAllowedBytes int64) error {
+	return &ErrGetLogsExceededMaxAllowedResponseSize{
+		BaseError{
+			Code:    ErrCodeGetLogsExceededMaxAllowedResponseSize,
+			Message: "getLogs response exceeded max allowed size; narrow the block range, addresses or topics",
+			Details: map[string]interface{}{
+				"responseBytes":   responseBytes,
+				"maxAllowedBytes": maxAllowedBytes,
+			},
+		},
+	}
+}
+
+func (e *ErrGetLogsExceededMaxAllowedResponseSize) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
 }
 
 type ErrGetLogsExceededMaxAllowedRange struct{ BaseError }

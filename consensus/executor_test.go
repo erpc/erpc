@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,8 +65,6 @@ func validResponseWithCloser(value string, closeCount *atomic.Int32) *common.Nor
 	return validResponseWithValue(value).WithBody(&trackingReadCloser{closeCount: closeCount})
 }
 
-
-
 // TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants verifies
 // the original bug fix: when the parent context is cancelled after every
 // participant has completed innerFn with a valid result, the consensus machinery
@@ -96,7 +95,6 @@ func TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -216,7 +214,6 @@ func TestConsensus_CallerAbandons_ParticipantsStillComplete(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-
 	callerReturned := make(chan struct{})
 	go func() {
 		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -277,7 +274,6 @@ func TestConsensus_TwoParticipants_CancelAfterExecution_DoesNotReturnLowParticip
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -345,7 +341,6 @@ func TestConsensus_ShortCircuit_CallerGetsWinnerBeforeSlowParticipants(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
 
 	start := time.Now()
 	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -470,7 +465,6 @@ func TestConsensus_CancelBeforeExecution_ReturnsLowParticipants(t *testing.T) {
 	cancel() // cancel immediately, before any participant runs
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-
 	var callCount atomic.Int32
 	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		callCount.Add(1)
@@ -515,7 +509,6 @@ func TestConsensus_FireAndForget_CallerCancelDoesNotStopParticipants(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
 
 	callerReturned := make(chan struct{})
 	go func() {
@@ -583,7 +576,6 @@ func TestConsensus_CallerAbandons_WinnerResponseIsReleased(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
 
 	callerReturned := make(chan struct{})
 	go func() {
@@ -654,5 +646,109 @@ func TestRecordMetricsAndTracing_NilAnalysis_DoesNotPanic(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		e.recordMetricsAndTracing(req, time.Now(), result, nil /* analysis */, labels, span)
+	})
+}
+
+// TestRecordMetricsAndTracing_InfoSeverityNotCountedAsConsensusError verifies
+// that rounds settling on a deterministic client/execution error (severity
+// info — e.g. all upstreams reject an eth_sendRawTransaction broadcast with
+// nonce-too-low) do not increment consensus_errors_total: consensus itself
+// succeeded, the error belongs to the caller. Non-info errors on the same
+// path must still be counted.
+func TestRecordMetricsAndTracing_InfoSeverityNotCountedAsConsensusError(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	cfg := &config{agreementThreshold: 2}
+	e := &executor{
+		consensusPolicy: &consensusPolicy{
+			config: cfg,
+			logger: &logger,
+		},
+	}
+
+	revertErr := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(3, 3, "execution reverted", nil, nil),
+	)
+
+	// Two participants agreeing on the same execution error → hasConsensus,
+	// outcome "consensus_on_error".
+	buildAgreedErrorAnalysis := func() *consensusAnalysis {
+		responses := []*execResult{
+			{Err: revertErr, Index: 0},
+			{Err: revertErr, Index: 1},
+		}
+		analysis := &consensusAnalysis{
+			config:            cfg,
+			groups:            make(map[string]*responseGroup),
+			totalParticipants: len(responses),
+			method:            "eth_sendRawTransaction",
+		}
+		for _, r := range responses {
+			classifyAndHashResponse(r, nil, cfg)
+			analysis.validParticipants++
+			group, exists := analysis.groups[r.CachedHash]
+			if !exists {
+				group = &responseGroup{
+					Hash:         r.CachedHash,
+					ResponseType: r.CachedResponseType,
+				}
+				analysis.groups[r.CachedHash] = group
+			}
+			group.Count++
+			group.Results = append(group.Results, r)
+			if group.FirstError == nil {
+				group.FirstError = r.Err
+			}
+		}
+		return analysis
+	}
+
+	span := trace.SpanFromContext(context.Background()) // noop span
+
+	t.Run("info severity skips consensus_errors_total", func(t *testing.T) {
+		labels := metricsLabels{
+			projectId:   "test-proj-info-sev",
+			networkId:   "test-net",
+			category:    "eth_sendRawTransaction",
+			finalityStr: "latest",
+			method:      "eth_sendRawTransaction",
+			userId:      "n/a",
+			agentName:   "n/a",
+		}
+		errCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+			labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr, labels.userId, labels.agentName)
+		totalCounter := telemetry.MetricConsensusTotal.WithLabelValues(
+			labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr, labels.userId, labels.agentName)
+		errBefore := testutil.ToFloat64(errCounter)
+		totalBefore := testutil.ToFloat64(totalCounter)
+
+		e.recordMetricsAndTracing(newTestRequest(), time.Now(),
+			&slotResult{Error: revertErr}, buildAgreedErrorAnalysis(), labels, span)
+
+		assert.Equal(t, totalBefore+1, testutil.ToFloat64(totalCounter),
+			"round must still be counted in consensus_total with consensus_on_error outcome")
+		assert.Equal(t, errBefore, testutil.ToFloat64(errCounter),
+			"info-severity agreed error must not count as a consensus error")
+	})
+
+	t.Run("non-info severity still increments consensus_errors_total", func(t *testing.T) {
+		labels := metricsLabels{
+			projectId:   "test-proj-warn-sev",
+			networkId:   "test-net",
+			category:    "eth_sendRawTransaction",
+			finalityStr: "latest",
+			method:      "eth_sendRawTransaction",
+			userId:      "n/a",
+			agentName:   "n/a",
+		}
+		serverErr := common.NewErrEndpointServerSideException(errors.New("boom"), nil, 500)
+		errCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+			labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr, labels.userId, labels.agentName)
+		errBefore := testutil.ToFloat64(errCounter)
+
+		e.recordMetricsAndTracing(newTestRequest(), time.Now(),
+			&slotResult{Error: serverErr}, buildAgreedErrorAnalysis(), labels, span)
+
+		assert.Equal(t, errBefore+1, testutil.ToFloat64(errCounter),
+			"non-info errors must still be counted as consensus errors")
 	})
 }

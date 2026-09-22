@@ -50,6 +50,9 @@ func TestExecutionHeaders_All_FullTrace(t *testing.T) {
 	require.Equal(t, 200, statusCode)
 	assert.Contains(t, body, `"result":"0x42"`)
 
+	// Build-identity headers present when not 'off'.
+	assert.NotEmpty(t, headers["X-Erpc-Version"], "version header should be present when not 'off'")
+	assert.NotEmpty(t, headers["X-Erpc-Commit"], "commit header should be present when not 'off'")
 	// Summary counters always present.
 	assert.Equal(t, "MISS", headers["X-Erpc-Cache"])
 	assert.NotEmpty(t, headers["X-Erpc-Attempts"])
@@ -159,14 +162,8 @@ func TestExecutionHeaders_Off_NoDiagnosticHeaders(t *testing.T) {
 	require.Equal(t, 200, statusCode)
 
 	for k := range headers {
-		assert.False(t, strings.HasPrefix(k, "X-Erpc-Cache") ||
-			strings.HasPrefix(k, "X-Erpc-Upstream") ||
-			strings.HasPrefix(k, "X-Erpc-Attempts") ||
-			strings.HasPrefix(k, "X-Erpc-Duration") ||
-			strings.HasPrefix(k, "X-Erpc-Network-") ||
-			strings.HasPrefix(k, "X-Erpc-Consensus-"),
-			"diagnostic header %q must be suppressed in 'off' mode", k,
-		)
+		assert.Falsef(t, strings.HasPrefix(strings.ToLower(k), "x-erpc-"),
+			"no X-ERPC-* header may be emitted in 'off' mode, found %q", k)
 	}
 }
 

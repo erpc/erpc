@@ -202,6 +202,7 @@ func (s *HttpServer) handleHealthCheck(
 		// Filter upstreams by network if architecture and chainId are specified
 		var filteredUpstreams []*upstream.Upstream
 		if architecture != "" && chainId != "" {
+			targetNetworkId := fmt.Sprintf("%s:%s", architecture, chainId)
 			for _, ups := range projHealthInfo.Upstreams {
 				upsConfig := ups.Config()
 				switch common.NetworkArchitecture(architecture) {
@@ -212,6 +213,10 @@ func (s *HttpServer) handleHealthCheck(
 						continue
 					}
 					if upsConfig.Evm != nil && upsConfig.Evm.ChainId == cid {
+						filteredUpstreams = append(filteredUpstreams, ups)
+					}
+				case common.ArchitectureSvm:
+					if ups.NetworkId() == targetNetworkId {
 						filteredUpstreams = append(filteredUpstreams, ups)
 					}
 				}
@@ -515,6 +520,12 @@ func (s *HttpServer) evaluateNetworkHealth(
 				switch nwCfg.Architecture {
 				case common.ArchitectureEvm:
 					if upsCfg.Evm != nil && nwCfg.Evm != nil && upsCfg.Evm.ChainId == nwCfg.Evm.ChainId {
+						networkStaticUpsCount++
+					}
+				case common.ArchitectureSvm:
+					if upsCfg.Svm != nil && nwCfg.Svm != nil &&
+						common.ResolveSvmChain(upsCfg.Svm.Chain) == common.ResolveSvmChain(nwCfg.Svm.Chain) &&
+						upsCfg.Svm.Cluster == nwCfg.Svm.Cluster {
 						networkStaticUpsCount++
 					}
 				}

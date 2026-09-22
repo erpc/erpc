@@ -1,57 +1,603 @@
 ---
 title: Matcher syntax
-description: Pattern matching DSL used wherever eRPC compares network/method/param/header values — supports wildcards, OR/AND/NOT, and numeric comparisons over hex/decimal.
+description: One pattern engine everywhere — globs, boolean logic, and hex ranges that work identically across cache policies, failsafe rules, rate limits, method filters, and routing directives.
 ---
 
-import { LLMsTxtLink } from "../../components";
-
-# Matcher syntax
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-Certain configurations accept a matcher syntax with some basic operations designed for blockchain json-rpc request/response values.
+# Matcher syntax
 
-Matchers are used in the following configurations:
-- [Upstream](/config/projects/upstreams)'s allowMethods or ignoreMethods.
-- [Cache policy](/config/database/evm-json-rpc-cache#cache-policies) patterns for network/method/params.
-- [Aliasing](/operation/url#domain-aliasing) rules for `Host` header.
-- [Failsafe](/config/failsafe) `matchMethod` patterns.
+Write one pattern, use it everywhere. eRPC's single `WildcardMatch` engine handles globs (`eth_*`),
+boolean composition (`eth_* & !eth_call`), and hex numeric ranges (`>=0x100 & <=0x200`) identically
+across cache policies, failsafe rules, rate limits, method allow/ignore lists, CORS, aliasing,
+upstream selectors, and routing. There is nothing new to learn when you reach a new config section.
 
-## Examples
+## Quick taste
 
-```js
-// Match one exact method OR any eth_ method
-arbtrace_transaction | eth_*
+Illustrative — any method, any finality; exclude debug_ from rate limits:
 
-// Match all methods expect those prefixed with alchemy_*
-!alchemy_*
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  focusYaml="7-8"
+  focusTs="7-8"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        failsafe:
+          # glob + boolean: all eth_ methods except eth_call
+          - matchMethod: "eth_* & !eth_call"
+            retry:
+              maxAttempts: 3`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    failsafe: [{
+      // glob + boolean: all eth_ methods except eth_call
+      matchMethod: "eth_* & !eth_call",
+      retry: { maxAttempts: 3 },
+    }],
+  }],
+}]`}
+/>
 
-// Match a number between 1 and 100
->=1 & <=100
+## Agent reference
 
-// Match some block tags AND any numeric blocks higher than 1000 (also with hex example)
-(latest | safe | finalized) | >=1000
-(latest | safe | finalized) | >=0x4096
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-// Match only numeric values (e.g. ignore block tags)
-0x*
+<PromptExample
+	n={1}
+	title="configure failsafe rules for specific methods and finalities"
+	defaultOpen
+	prompt={`I want to tune my eRPC failsafe config so different retry/hedge policies apply to
+different methods and finality states — e.g. aggressive retry for finalized eth_getLogs,
+light retry for realtime, and no hedge on tx-hash lookups. Work with my existing eRPC config.
+Read the matcher syntax reference first:
+https://docs.erpc.cloud/config/matcher.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="build an upstream method whitelist"
+	prompt={`One of my upstreams is an archive node that should only handle eth_getLogs,
+eth_getBlockByNumber, eth_getBlockByHash, eth_getTransactionByHash, and
+eth_getTransactionReceipt — all other methods should fall to other upstreams. Configure
+ignoreMethods and allowMethods correctly. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/matcher.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="set up cache policies with hex-range and finality scoping"
+	prompt={`I want eRPC to cache eth_getLogs and block-lookup methods only for finalized and
+unfinalized requests, using hex block-range patterns in params so only concrete block
+numbers are cached (not "latest"). Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/matcher.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug why my matchMethod or matchFinality rule is not matching"
+	prompt={`My eRPC failsafe rule with matchMethod "eth_get*" and matchFinality [finalized] does
+not seem to be picked up for some requests. Walk me through how network-scope vs
+upstream-scope failsafe selection works (4-tier vs config-order), and check my eRPC config
+for ordering mistakes or wrong finality values. Reference:
+https://docs.erpc.cloud/config/matcher.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="add per-method rate-limit rules without accidentally stacking them"
+	prompt={`I want to add a rate-limit budget rule that caps debug_* and trace_* at 30 RPS and
+a separate rule that caps eth_getBlockReceipts at 100 RPS, but I don't want a wildcard
+"*" rule to stack on top and double-count. Explain how GetRulesByMethod works and write
+the correct rules for my eRPC config. Reference:
+https://docs.erpc.cloud/config/matcher.llms.txt`}
+/>
+
+<AISection title="Matcher syntax — full agent reference">
+
+### How it works
+
+**Core engine (`WildcardMatch`).** Every call tokenizes the pattern string into operators (`|`, `&`,
+`!`, `(`, `)`) and atom tokens, then builds a recursive function AST via Pratt-style
+recursive-descent parsing (`parseOr → parseAnd → parseUnary → parsePrimary`). The resulting
+`func(string) bool` closure is invoked immediately against the test value. There is **no compiled-
+pattern cache** — each call re-tokenizes and re-parses. This is lightweight for short patterns but
+re-tokenization cost is paid on every forwarded request for failsafe executor selection.
+
+**Glob atoms.** Plain atoms (no operator prefix) are dispatched to the `go-wildcard` library:
+`*` matches any number of characters, `?` matches exactly one. The `<empty>` literal is handled
+specially before the glob library — it matches only the empty string.
+
+**Boolean composition.** Operator precedence, highest to lowest: NOT (`!`) &gt; AND (`&`) &gt; OR (`|`).
+Parentheses override. Both `&` and `|` are left-associative. Spaces are atom separators —
+`"a | b"` and `"a|b"` are identical. The characters `|`, `&`, `!`, `(`, `)` **cannot appear as
+literals** in a pattern — there is no escape mechanism.
+
+**Hex numeric comparisons.** When the *runtime value* starts with `0x`, the engine tries numeric
+comparison operators (`>=`, `<=`, `>`, `<`, `=`) as pattern prefixes. Both sides are parsed as hex
+integers. If the value does **not** start with `0x` (e.g., a decimal block number or a named tag
+like `"latest"`), numeric operators fall through to glob matching and will not compare as expected.
+Use `0x*` to match hex-format values, and combine with named tags using `|` for full coverage.
+
+**`MatchesSelector` and upstream tag awareness.** The `use-upstream` directive and served-tip
+partition grouping use `MatchesSelector` rather than plain `WildcardMatch`. The function first
+tests the pattern against the upstream's `id`. If that matches, it returns `true` immediately. If
+the pattern contains **no `!` anywhere** (purely-positive), it also iterates the upstream's
+`tags []string` and returns `true` on any tag match. Any `!` anywhere in the pattern — even
+`"!other-upstream"` — disables tag matching entirely. This is intentional: a tag match must never
+rescue an upstream the operator meant to exclude.
+
+**`matchMethodPattern` helper.** Inside `SelectExecutor`, method matching uses a helper that treats both empty string and `"*"` as match-anything, and tries exact equality before calling `WildcardMatch` to reduce overhead on common exact-match patterns. Source: <SourceLink file="common/match.go" lines="83-92" />
+
+**`SelectExecutor` — 4-tier priority for failsafe dispatch.** Given executors with `(matchMethod,
+matchFinality)` fields and the request's `(method, finality)`, `SelectExecutor` selects the first
+matching executor across four tiers in priority order (single pass):
+
+1. **Exact** — specific method AND specific finality
+2. **Method-only** — specific method, any finality (`matchFinality: []`)
+3. **Finality-only** — `matchMethod: "*"`, specific finality
+4. **Catch-all** — `matchMethod: "*"`, `matchFinality: []`
+
+**Important:** upstream-level and network-level failsafe selection use different algorithms.
+Upstreams use the 4-tier priority algorithm above. Networks use a simpler **first-match-in-
+config-order scan** — if an any-method entry appears before a specific-method entry in config, the
+any-method entry wins. Place most-specific entries *before* catch-all entries in network-scope
+failsafe.
+
+**Cache policy param matching.** `matchParams` is positional: index `i` in the config pattern
+matches `params[i]` in the request. Matching is recursive: map patterns require all keys to match,
+array patterns require equal length then per-element matching, string patterns use `WildcardMatch`,
+and other types are converted to strings via `paramToString` (JSON `float64` numbers become their
+decimal string form: `1234.0 → "1234"`).
+
+**Auth method filter semantics.** `ignoreMethods` is checked first (any match → method blocked),
+then `allowMethods` overrides (any match → force-allowed). Same semantics at upstream, project,
+and auth-strategy scopes.
+
+**Rate-limit rules.** `GetRulesByMethod` returns **all** rules whose method pattern matches — not
+just the first. Multiple rules can simultaneously consume token-bucket permits for a single request.
+
+### Config schema
+
+The matcher engine has no dedicated config block. The table below covers every config field
+matched via `WildcardMatch`, `MatchesSelector`, `SelectExecutor`, or `MatchFinalities`, grouped by
+subsystem.
+
+**Failsafe** — `*.failsafe[]` (networks, upstreamDefaults, upstreams, networkDefaults, and cache
+connector `failsafeForGets[]`/`failsafeForSets[]`)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `matchMethod` | string | `"*"` (set by `SetDefaults` when empty) | `WildcardMatch` against the request's JSON-RPC method. Empty is rejected by `Validate()`. During defaults inheritance, a default's `matchMethod` is glob-matched against the entry's `matchMethod` to select which default to apply. Source: <SourceLink file="common/config.go" lines="1280" />, <SourceLink file="common/defaults.go" lines="2131-2137" /> |
+| `matchFinality` | []DataFinalityState | `[]` (empty = any finality) | Exact set-membership check at dispatch time: `slices.Contains(list, finality)`. Empty list = catch-all finality tier. No wildcard inside the list — each element must be an exact finality name. Source: <SourceLink file="common/config.go" lines="1281" />, <SourceLink file="common/match.go" lines="38-41" /> |
+
+**Cache policies** — `database.evmJsonRpcCache.policies[]`
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `network` | string | `"*"` (set by `SetDefaults`) | `WildcardMatch` against the network ID (e.g., `"evm:1"`, `"evm:*"`). Source: <SourceLink file="common/config.go" lines="320" />, <SourceLink file="data/cache_policy.go" lines="67" /> |
+| `method` | string | `"*"` (set by `SetDefaults`) | `WildcardMatch` against the JSON-RPC method. Source: <SourceLink file="common/config.go" lines="321" />, <SourceLink file="data/cache_policy.go" lines="75" /> |
+| `params` | []interface{} | `nil` (nil = match any params) | Positional param matching; strings use `WildcardMatch`. Maps/arrays matched recursively. Non-string types converted via `paramToString`. Source: <SourceLink file="common/config.go" lines="322" />, <SourceLink file="data/cache_policy.go" lines="166-232" /> |
+| `finality` | DataFinalityState | `finalized` (zero value = 0) | For `MatchesForSet`: exact equality. For `MatchesForGet`: `finalized` requests also match `unfinalized` policies; `unknown` finality matches any policy. **Footgun:** omitting `finality` yields a finalized-only policy silently. Source: <SourceLink file="common/config.go" lines="323" />, <SourceLink file="data/cache_policy.go" lines="99-150" /> |
+
+**Rate-limit rules** — `rateLimiters.budgets[].rules[]`
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `method` | string | required | `WildcardMatch` against request method. **ALL** matching rules are returned (not just first) — each independently consumes a token-bucket permit. Source: <SourceLink file="common/config.go" lines="1811" />, <SourceLink file="upstream/ratelimiter_budget.go" lines="63-78" /> |
+
+**Upstream method filters** — `upstreams[]`, `projects[]`, `auth.strategies[]`
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `ignoreMethods` | []string | `nil` | `WildcardMatch` per entry; any match → method reported unsupported. Applied before `allowMethods`. Source: <SourceLink file="common/config.go" lines="731" />, <SourceLink file="upstream/upstream.go" lines="1375-1385" /> |
+| `allowMethods` | []string | `nil` | `WildcardMatch` per entry; any match → overrides an `ignoreMethods` hit. To allow only `eth_getLogs`: set `ignoreMethods: ["*"]`, `allowMethods: ["eth_getLogs"]`. Source: <SourceLink file="common/config.go" lines="732" />, <SourceLink file="upstream/upstream.go" lines="1388-1399" /> |
+
+**CORS, aliasing, headers, selectors**
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `projects[].cors.allowedOrigins[]` | []string | `["*"]` | `WildcardMatch` against `Origin` header; first match allows. Source: <SourceLink file="erpc/http_server.go" lines="1024" /> |
+| `server.aliasing.rules[].matchDomain` | string | — | `WildcardMatch` against `Host` header (port stripped); first rule match wins. Source: <SourceLink file="common/config.go" lines="258" />, <SourceLink file="erpc/http_server.go" lines="244-257" /> |
+| `projects[].forwardHeaders[]` | []string | `nil` | `WildcardMatch` against incoming header names; matching headers forwarded to upstreams. Source: <SourceLink file="common/config.go" lines="519" />, <SourceLink file="erpc/http_server.go" lines="480-493" /> |
+| `upstreams[].id` | string | — | Primary identity matched by `MatchesSelector` against `use-upstream` directive value. Source: <SourceLink file="common/matcher.go" lines="106-112" /> |
+| `upstreams[].tags[]` | []string | `nil` | Secondary match by `MatchesSelector` if id didn't match and pattern has no `!`. Source: <SourceLink file="common/matcher.go" lines="73-100" /> |
+
+**Score multipliers** — `upstreams[].routing.scoreMultipliers[]`
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `network` | string | `""` (empty = any) | `WildcardMatch` against network ID. Source: <SourceLink file="common/config.go" lines="798" /> |
+| `method` | string | `""` (empty = any) | `WildcardMatch` against method. Source: <SourceLink file="common/config.go" lines="799" /> |
+| `finality` | []DataFinalityState | `[]` (any) | `slices.Contains` check. Source: <SourceLink file="common/config.go" lines="800" /> |
+
+**Tracing force-trace matchers** — `tracing.forceTraceMatchers[]`
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `network` | string | `""` (absent = any) | `WildcardMatch` against network ID. Both `network` AND `method` must match. Source: <SourceLink file="common/config.go" lines="241" />, <SourceLink file="common/tracing_core.go" lines="306-329" /> |
+| `method` | string | `""` (absent = any) | `WildcardMatch` against method. Source: <SourceLink file="common/config.go" lines="245" /> |
+
+**Served-tip guaranteed methods** — `networks[].evm.servedTip.guaranteedMethods[]`
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `networks[].evm.servedTip.guaranteedMethods[]` | []string | — | Each element validated by `ValidatePattern` at config load (the only config field with startup validation). At runtime, `WildcardMatch` against the request method determines whether the served-tip mechanism applies. Source: <SourceLink file="common/validation.go" lines="1323-1326" /> |
+
+**Provider network overrides** — `providers[].overrides` (map keys)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `providers[].overrides` (map key) | string | — | `WildcardMatch` pattern against network ID. First matching key wins. Source: [`thirdparty/provider.go:L80-L91`](https://github.com/erpc/erpc/blob/main/thirdparty/provider.go#L80-L91) |
+
+**Consensus quota tags** — `consensus/quota.go`
+
+Tag membership for quota matching uses `WildcardMatch(pattern, t)` against each tag string in the upstream config's `Tags` slice. Source: [`consensus/quota.go:L96`](https://github.com/erpc/erpc/blob/main/consensus/quota.go#L96)
+
+**Static responses** — `networks[].staticResponses[]` (**NOT** WildcardMatch)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `method` | string | required | **Exact string equality only** — no glob, no boolean operators. `"eth_getBlock*"` will NOT match `eth_getBlockByNumber`. Source: <SourceLink file="common/static_response.go" lines="16" /> |
+| `params` | []interface{} | `nil` (nil = match any params) | Deep equality with numeric-type tolerance (YAML int vs JSON float64). NOT `WildcardMatch`. Source: <SourceLink file="common/static_response.go" lines="19-39" /> |
+
+**`DataFinalityState` values**
+
+| YAML string | Go constant | iota | Meaning |
+|---|---|---|---|
+| `"finalized"` | `DataFinalityStateFinalized` | 0 | Block ≤ upstream finalized block. Zero value — omitting `finality` in config gives this. |
+| `"unfinalized"` | `DataFinalityStateUnfinalized` | 1 | Block known and &gt; upstream finalized block. |
+| `"realtime"` | `DataFinalityStateRealtime` | 2 | Fresh, block-unbound data (e.g., `eth_gasPrice`). |
+| `"unknown"` | `DataFinalityStateUnknown` | 3 | Block number cannot be determined (trace-by-hash, etc.). |
+
+YAML/JSON accepts string names or their numeric iota indices (`"0"` = `finalized`, `"1"` = `unfinalized`, `"2"` = `realtime`, `"3"` = `unknown`).
+
+Source: <SourceLink file="common/data.go" lines="8-76" />
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Method whitelist on a narrow upstream: block everything, allow only what it indexes.**
+Production indexing upstreams (e.g. archive nodes, specialized caches) only serve a small
+set of methods — blocking everything else avoids wasting a request slot and lets the router
+immediately fall to a full-service upstream. This is the canonical `ignoreMethods + allowMethods`
+pattern used on every specialized upstream in the fleet:
+
+<ConfigTabs
+  path="upstreams[]"
+  yaml={`upstreams:
+  - id: archive-node
+    # Block all methods on this upstream by default
+    ignoreMethods:
+      - "*"
+    # Then re-allow only the methods this upstream actually serves — anything
+    # else immediately falls to the next upstream without a wasted RTT
+    allowMethods:
+      - "eth_getLogs"
+      - "eth_getBlockByNumber"
+      - "eth_getBlockByHash"
+      - "eth_getBlockReceipts"
+      - "eth_getTransactionByHash"
+      - "eth_getTransactionReceipt"`}
+  ts={`upstreams: [{
+  id: "archive-node",
+  // Block all methods on this upstream by default
+  ignoreMethods: ["*"],
+  // Then re-allow only the methods this upstream actually serves — anything
+  // else immediately falls to the next upstream without a wasted RTT
+  allowMethods: [
+    "eth_getLogs",
+    "eth_getBlockByNumber",
+    "eth_getBlockByHash",
+    "eth_getBlockReceipts",
+    "eth_getTransactionByHash",
+    "eth_getTransactionReceipt",
+  ],
+}]`}
+/>
+
+**2. Finality-scoped network failsafe: different retry+hedge per finality state.**
+In production, `realtime` and `unfinalized` requests are subject to block-availability races —
+a short non-zero `delay` gives the state-propagation poller time to catch up before retrying.
+Finalized requests have no race, so `delay: 0` is correct there. At upstream scope the 4-tier
+priority resolves conflicts automatically; at network scope, most-specific entries MUST come
+first in config order:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  # Specific method + specific finality wins over all catch-alls (at upstream scope,
+  # this is tier 1 priority; at network scope, place this BEFORE the catch-all)
+  - matchMethod: "eth_call|eth_getLogs"
+    matchFinality: [realtime, unfinalized]
+    retry:
+      maxAttempts: 4
+      # MUST NOT be 0: a short delay lets block-state propagation catch up before
+      # retrying a "block not available yet" error across another upstream
+      delay: 50ms
+    hedge:
+      delay:
+        quantile: 0.95
+        min: 500ms
+        max: 10s
+      maxCount: 1
+  # Same methods, finalized — no block-availability race, so delay: 0 is correct
+  - matchMethod: "eth_call|eth_getLogs"
+    matchFinality: [finalized, unknown]
+    retry:
+      maxAttempts: 4
+      delay: 0
+  # Catch-all for everything else — realtime/unfinalized needs the delay too
+  - matchMethod: "*"
+    matchFinality: [realtime, unfinalized]
+    retry:
+      maxAttempts: 6
+      delay: 50ms
+  - matchMethod: "*"
+    matchFinality: [finalized, unknown]
+    retry:
+      maxAttempts: 6
+      delay: 0`}
+  ts={`failsafe: [
+  {
+    matchMethod: "eth_call|eth_getLogs",
+    matchFinality: ["realtime", "unfinalized"],
+    retry: {
+      maxAttempts: 4,
+      // MUST NOT be 0: block-state propagation needs a moment to catch up
+      delay: "50ms",
+    },
+    hedge: { delay: { quantile: 0.95, min: "500ms", max: "10s" }, maxCount: 1 },
+  },
+  {
+    matchMethod: "eth_call|eth_getLogs",
+    matchFinality: ["finalized", "unknown"],
+    retry: { maxAttempts: 4, delay: 0 },
+  },
+  {
+    matchMethod: "*",
+    matchFinality: ["realtime", "unfinalized"],
+    retry: { maxAttempts: 6, delay: "50ms" },
+  },
+  {
+    matchMethod: "*",
+    matchFinality: ["finalized", "unknown"],
+    retry: { maxAttempts: 6, delay: 0 },
+  },
+]`}
+/>
+
+**3. Per-method upstream timeouts using glob priority.**
+Production upstream failsafe sets tight timeouts per method tier — heavy methods like
+`eth_getLogs` need a generous ceiling; light point-reads need a tight one to encourage fast
+hedging on stuck upstreams. Glob patterns (`eth_get*`) serve as a catch-all tier, with
+more-specific exact entries placed before them. At upstream scope, 4-tier priority handles
+the ordering automatically, so explicit placement is not required — but it is still good style:
+
+<ConfigTabs
+  path="upstreamDefaults.failsafe[]"
+  yaml={`upstreamDefaults:
+  failsafe:
+    # Exact method entries are tier 2 (method-only) — win over the glob catch-all tier
+    - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+      timeout:
+        # Variable latency tied to range/density — routinely seconds on big queries
+        duration: 15s
+    - matchMethod: "eth_getTransactionReceipt"
+      timeout:
+        duration: 8s
+    - matchMethod: "eth_getBlockByNumber"
+      timeout:
+        # min raised: archive lookups on fast chains (Sei, Monad) can take 350–500ms
+        duration: 3s
+    - matchMethod: "trace_*|debug_*|arbtrace_*"
+      timeout:
+        # Trace methods can be slow — 30s gives them room without blocking others
+        duration: 30s
+    # Glob catch-all for remaining eth_get* light getters — tier 2, wins over "*"
+    - matchMethod: "eth_get*"
+      timeout:
+        duration: 5s
+    # Final catch-all — tier 4, lowest priority
+    - matchMethod: "*"
+      timeout:
+        duration: 60s`}
+  ts={`upstreamDefaults: {
+  failsafe: [
+    {
+      matchMethod: "eth_getLogs|eth_getBlockReceipts",
+      // Variable latency tied to range/density — routinely seconds on big queries
+      timeout: { duration: "15s" },
+    },
+    { matchMethod: "eth_getTransactionReceipt", timeout: { duration: "8s" } },
+    {
+      matchMethod: "eth_getBlockByNumber",
+      // min raised: archive lookups on fast chains can take 350–500ms
+      timeout: { duration: "3s" },
+    },
+    {
+      matchMethod: "trace_*|debug_*|arbtrace_*",
+      // Trace methods can be slow — 30s gives them room without blocking others
+      timeout: { duration: "30s" },
+    },
+    // Glob catch-all for remaining eth_get* light getters
+    { matchMethod: "eth_get*", timeout: { duration: "5s" } },
+    // Final catch-all — lowest priority
+    { matchMethod: "*", timeout: { duration: "60s" } },
+  ],
+}`}
+/>
+
+**4. Cache policy with explicit method allowlist and all-finality coverage.**
+In production, cache policies use a pipe-joined method pattern (`|`) rather than a broad
+glob because `eth_get*` would flood every connector with requests for methods nothing
+serves (eth_getBalance, eth_getCode, eth_getStorageAt, …), paying a connector RTT for
+a guaranteed miss. Three finality tiers cover all concrete-block requests; `realtime`
+finality is intentionally excluded so head-tracking queries always hit fresh upstreams:
+
+```yaml
+database:
+  evmJsonRpcCache:
+    policies:
+      # Using | instead of eth_get* avoids cache misses on balance/code/storage methods
+      - network: "evm:1"
+        method: "eth_getBlockByNumber|eth_getBlockByHash|eth_getBlockReceipts|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt"
+        finality: unfinalized
+        connector: my-cache
+      - network: "evm:1"
+        method: "eth_getBlockByNumber|eth_getBlockByHash|eth_getBlockReceipts|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt"
+        finality: unknown
+        connector: my-cache
+      - network: "evm:1"
+        method: "eth_getBlockByNumber|eth_getBlockByHash|eth_getBlockReceipts|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt"
+        finality: finalized
+        connector: my-cache
+      # realtime deliberately omitted — eth_blockNumber / eth_getBlockByNumber("latest")
+      # must always hit upstreams so clients see the current chain head
 ```
 
-## Operations
+**5. Per-method rate-limit rules: protect heavy methods without stacking a wildcard.**
+Heavy-method traffic (`eth_getBlockReceipts`, `trace_*`) can exhaust proxy concurrency
+when a single user sends high-error-rate bursts, holding a connection per failed attempt.
+A method-specific rule caps only that traffic; a separate wildcard rule caps global volume.
+Note that ALL matching rules fire simultaneously — if you add a `"*"` rule AND a specific
+rule, a heavy-method request consumes from both buckets:
 
-### Wildcards
-- `*` - matches any number of characters
-- `<empty>` - matches an empty string
+<ConfigTabs
+  path="rateLimiters.budgets[]"
+  yaml={`rateLimiters:
+  budgets:
+    - id: chain-admission
+      rules:
+        # Heavy receipt methods empirically drive proxy-connection stack-ups — cap tightly.
+        # Healthy peak is ~5 RPS total; 100 RPS gives 20× headroom for legitimate spikes
+        - method: "eth_getBlockReceipts|eth_getTransactionReceipt"
+          maxCount: 100
+          period: 1s
+        # Trace methods have low typical volume; 30 RPS matches observed traffic
+        - method: "debug_*|trace_*|arbtrace_*"
+          maxCount: 30
+          period: 1s
+        # Global wildcard intentionally omitted here — these two rules are
+        # independent; a request matching both rules debits both buckets`}
+  ts={`rateLimiters: {
+  budgets: [{
+    id: "chain-admission",
+    rules: [
+      // Heavy receipt methods empirically drive proxy-connection stack-ups — cap tightly.
+      // Healthy peak is ~5 RPS total; 100 RPS gives 20× headroom for legitimate spikes
+      { method: "eth_getBlockReceipts|eth_getTransactionReceipt", maxCount: 100, period: "1s" },
+      // Trace methods have low typical volume; 30 RPS matches observed traffic
+      { method: "debug_*|trace_*|arbtrace_*", maxCount: 30, period: "1s" },
+      // Global wildcard intentionally omitted here — these two rules are
+      // independent; a request matching both rules debits both buckets
+    ],
+  }],
+}`}
+/>
 
-### Logical Operations
-- `|` - OR operation
-- `&` - AND operation
-- `!` - NOT operation
-- `()` - grouping/nesting operations
+### Request/response behavior
 
-### Numeric Comparisons (for hex values)
-- `>` - greater than
-- `<` - less than
-- `>=` - greater than or equal
-- `<=` - less than or equal
-- `=` - equal to
+- The `use-upstream` directive is set via the `X-ERPC-Use-Upstream` request header or query param.
+  The value is a `MatchesSelector` pattern — id first, then tags if no `!` in pattern.
+- `ignoreMethods` and `allowMethods` at project or upstream scope cause eRPC to return
+  `ErrUpstreamMethodIgnored` for blocked methods — surfaced to the client as an upstream
+  unsupported error.
+- Rate-limit rules whose `method` matches fire simultaneously: a request denied by two matching
+  rules gets a rate-limit error even if only one rule was intended as the effective gate.
+- A malformed pattern in most config fields silently skips matches at runtime (caller
+  `continue`-on-error pattern) — no error is returned to the client; the config field is simply
+  treated as non-matching.
+
+### Best practices
+
+- Prefer **exact method names or simple globs** (`"eth_*"`, `"*"`) on hot paths like failsafe
+  `matchMethod` — complex boolean expressions re-parse on every request with no caching.
+- At **network scope, order failsafe entries from most-specific to least-specific manually** —
+  unlike upstream scope, there is no 4-tier priority; the first matching entry wins.
+- For rate-limit budgets, remember that **all matching rules fire simultaneously** — a global
+  `"*"` rule and a per-method rule both debit their buckets. Size them with overlap in mind.
+- Use **`ignoreMethods: ["*"]` + `allowMethods: [...]`** to build explicit whitelists — it is
+  cleaner and safer than long lists of specific ignore patterns.
+- For hex numeric comparisons in cache policy params, always **also cover named tags** with `|`:
+  `"(latest | safe | finalized) | >=0x1000000"` — a value like `"latest"` has no `0x` prefix
+  and falls through to glob matching, so numeric-only patterns miss it.
+- Avoid setting `!` in `use-upstream` selector patterns unless you specifically want to suppress
+  tag matching — any `!` anywhere in the pattern disables tag fallback entirely.
+- **Validate patterns at startup** where possible: `ValidatePattern` is only automatically called
+  for `evm.servedTip.guaranteedMethods`; other fields accept invalid patterns silently and fail
+  at runtime.
+
+### Edge cases & gotchas
+
+1. **No escaping for meta-characters.** `|`, `&`, `!`, `(`, `)` cannot appear as literal values in a pattern. A method name like `net_!custom` is untestable via `WildcardMatch`. Source: <SourceLink file="common/matcher.go" lines="226-258" />
+2. **Spaces are atom separators.** `"eth_getLogs "` (trailing space) tokenizes as `["eth_getLogs"]`. A pattern intended to match a literal space will silently split into two tokens. Source: <SourceLink file="common/matcher.go" lines="229-260" />
+3. **Numeric operators require `0x` prefix on the runtime value.** `>100` against value `"200"` does NOT compare numerically — it falls through to glob. Use hex-prefixed values (`"0x64"` = 100) to enable numeric comparison. Source: <SourceLink file="common/matcher.go" lines="373-391" />
+4. **Hex overflow at `0x7FFFFFFFFFFFFFFF`.** `parseNumber` uses `strconv.ParseInt(s, 16, 64)` — values above signed 64-bit max parse silently as errors and `compareNumbers` returns `false`. Source: <SourceLink file="common/matcher.go" lines="399-438" />
+5. **`MatchesSelector` negation guard is coarse.** Any `!` anywhere in the pattern — even `"!other-upstream"` — disables tag matching entirely. This is by design: a tag match must not rescue an excluded upstream. Source: <SourceLink file="common/matcher.go" lines="87-89" />
+6. **Network-level vs upstream-level failsafe selection differ.** Upstream uses 4-tier priority; network uses config-order first-match. Same field names, different semantics. Source: <SourceLink file="upstream/upstream.go" lines="372-408" />, <SourceLink file="erpc/networks.go" lines="910-928" />
+7. **`matchFinality: []` is catch-all at dispatch, but `MatchFinalities` empty-means-any is only for defaults merging.** Two different functions handle the same field in different contexts. Source: <SourceLink file="common/defaults.go" lines="17-34" />, <SourceLink file="common/match.go" lines="38-41" />
+8. **Static response `method` is exact equality, not wildcard.** Unlike every other string matcher, `FindStaticResponseMatch` uses byte equality. A glob pattern in `staticResponses[].method` is silently treated as a literal string. Source: <SourceLink file="common/static_response.go" lines="16" />
+9. **`CachePolicyConfig.finality` zero-value is `finalized`.** Omitting `finality` in a cache policy gives a finalized-only policy without any warning. Source: <SourceLink file="common/data.go" lines="15" />
+10. **Multiple rate-limit rules fire simultaneously.** All rules whose `method` pattern matches are returned and each independently debits a token bucket. A single request may be throttled by a `"*"` rule and a specific-method rule at the same time. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="63-78" />
+11. **`ValidatePattern` is called only for `evm.servedTip.guaranteedMethods` at startup.** Other pattern fields (cache policy method, failsafe matchMethod, etc.) are not validated at config load — an invalid pattern silently skips matches at runtime. Source: <SourceLink file="common/validation.go" lines="1323-1326" />
+12. **`WildcardMatch` concurrent calls are safe** (no shared mutable state per call) but `RateLimiterBudget.GetRulesByMethod` holds a `sync.RWMutex` during iteration. Re-tokenization cost is paid under the read lock on every matching call. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="63-78" />
+13. **`paramToString` on float64 from JSON.** JSON numbers decode as `float64`; `strconv.FormatFloat(v, 'f', -1, 64)` produces `"1234"` not `"1234.0"`. A string pattern `"123*"` would match numeric param `1234`. Source: <SourceLink file="data/cache_policy.go" lines="234-249" />
+14. **Cache `MatchesForGet` returns `true` for `unknown` finality across all policies.** A request with indeterminate finality can be served from a `finalized` policy's cache, potentially returning stale data. Source: <SourceLink file="data/cache_policy.go" lines="146-149" />
+15. **Legacy single-object failsafe migration is silent.** An old `failsafe: {…}` (object form) is quietly converted to a 1-element slice. No log or warning is emitted. The migration only forces `matchMethod` to `"*"` when the field is empty — an explicitly-set non-empty `matchMethod` value (e.g., `"eth_call"`) is preserved as-is. The migration applies at YAML parse time across `NetworkConfig`, `NetworkDefaults`, and `UpstreamConfig`. Source: <SourceLink file="common/config.go" lines="2041-2103" />
+16. **Zero-config auto-generated project only when `projects:` is entirely absent.** Even `projects: []` skips the auto-generated 'main' project defaults. Source: <SourceLink file="common/defaults.go" lines="100-167" />
+17. **`DataFinalityStateAll = -1` is an internal sentinel.** It must never appear in config or on requests — it only lives in health-tracker cross-finality rollup keys. Source: <SourceLink file="common/data.go" lines="29-36" />
+18. **Empty pattern in `MatchesSelector` always returns `false`.** The function guards against empty patterns at entry and immediately returns `false`. Callers must ensure the `use-upstream` directive value is non-empty — an empty `X-ERPC-Use-Upstream` header or query param results in no upstream being selected by that directive. Source: <SourceLink file="common/matcher.go" lines="73" />
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_unexpected_panic_total{scope="validate-pattern"}` | counter | scope, extra (pattern), error | `ValidatePattern` catches a tokenizer/parser panic |
+| `erpc_network_static_response_served_total` | counter | project, network, method | Every static-response cache hit in `tryServeStaticResponse` |
+
+Trace span attributes set during network-level failsafe selection:
+- `failsafe.matched_method` — the matched `matchMethod` value
+- `failsafe.matched_finalities` — the matched finality list
+
+Source: <SourceLink file="erpc/networks.go" lines="1179-1180" />
+
+Notable log lines:
+- `"method support result"` — Debug, `upstream/upstream.go`, fields: `allowed` (bool), `method` (string). Emitted after each upstream method-support check.
+- `"skipping static response: cannot inspect request"` — Debug, `erpc/networks_static_responses.go`. Emitted when params cannot be read for static-response matching.
+- `"served static response (no upstream contacted)"` — Debug, `erpc/networks_static_responses.go`. Emitted on a static-response cache hit.
+- `"error matching ignore method … with method …"` — Error, `auth/authorizer.go`. Emitted when `WildcardMatch` returns an error during auth method-filter evaluation.
+
+### Source code entry points
+
+- [`common/matcher.go:L221-L272`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L221-L272) — `tokenize`: byte-by-byte tokenizer producing `tokenOr`, `tokenAnd`, `tokenNot`, `tokenLParen`, `tokenRParen`, `tokenPattern`
+- [`common/matcher.go:L73-L134`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L73-L134) — `MatchesSelector`, `UpstreamMatchesSelector`, `ValidatePattern`
+- [`common/match.go:L18-L78`](https://github.com/erpc/erpc/blob/main/common/match.go#L18-L78) — `SelectExecutor[E]`: generic 4-tier executor picker (single pass, four tier buckets)
+- [`data/cache_policy.go:L62-L249`](https://github.com/erpc/erpc/blob/main/data/cache_policy.go#L62-L249) — `MatchesForSet`, `MatchesForGet`, `matchParams`, `matchParam`, `paramToString`
+- [`common/static_response.go:L14-L39`](https://github.com/erpc/erpc/blob/main/common/static_response.go#L14-L39) — `FindStaticResponseMatch`: exact-equality path (distinct from `WildcardMatch`)
+- [`common/defaults.go:L17-L34`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L17-L34) — `MatchFinalities`: set-overlap utility used only in defaults merging
+- [`upstream/upstream.go:L372-L408`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L372-L408) — upstream-level `getFailsafeExecutor`: manual 4-tier loop
+- [`erpc/networks.go:L910-L928`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L910-L928) — network-level `getFailsafeExecutor`: config-order first-match scan
+- [`auth/authorizer.go:L80-L115`](https://github.com/erpc/erpc/blob/main/auth/authorizer.go#L80-L115) — `shouldApplyToMethod`: ignore-then-allow semantics
+- [`consensus/quota.go:L96`](https://github.com/erpc/erpc/blob/main/consensus/quota.go#L96) — `WildcardMatch` on upstream tag strings for consensus quota matching
+- [`common/matcher_test.go`](https://github.com/erpc/erpc/blob/main/common/matcher_test.go) — comprehensive table-driven tests for `WildcardMatch`, `MatchesSelector`, `ValidatePattern`
+
+### Related pages
+
+- [Failsafe](/config/failsafe/retry) — uses `matchMethod` + `matchFinality` for executor dispatch.
+- [Rate limiters](/config/rate-limiters) — uses `method` pattern; all matching rules fire simultaneously.
+- [Auth](/config/auth) — uses `ignoreMethods`/`allowMethods` with same ignore-then-allow semantics.
+- [Database / cache](/config/database) — uses `network`, `method`, and `params` patterns in policies.
+- [Projects](/config/projects) — project-level `ignoreMethods`/`allowMethods` and `forwardHeaders` patterns.
+
+</AISection>

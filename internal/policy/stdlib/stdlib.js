@@ -163,6 +163,47 @@
     }
   }
 
+  // ─── Probe verdicts ─────────────────────────────────────────────────
+  // Each exclude-family step renders a per-upstream VERDICT about probe
+  // eligibility, independent of which step actually dropped the upstream.
+  // The chain is first-excluder-wins, so "which step dropped it" is
+  // order-sensitive; the verdict matrix is not: every exclude step judges
+  // every upstream it WOULD drop — current chain members AND upstreams
+  // already removed by earlier steps.
+  //
+  //   probe-eligible (probe: true)  — the exclusion reverses via fresh
+  //     traffic metrics (errors/latency/throttle); probing helps.
+  //   probe-blocking (probe: false) — the exclusion is static (tags,
+  //     cordons) or otherwise traffic-independent; probing changes
+  //     nothing and only burns quota on the excluded upstream.
+  //
+  // After the eval an excluded upstream is shadow-probed iff it has at
+  // least one eligible verdict AND no blocking verdict. Upstreams
+  // excluded only by untracked means (raw filters, take, …) carry no
+  // verdicts and default to probing — preserving prior behavior.
+  // `routing.probe: 'off'` remains the per-upstream hard veto on top.
+  function _recordProbeVerdict(id, eligible) {
+    const v = globalThis.__policyProbeVerdicts;
+    if (!v) return;
+    const cur = v[id] || (v[id] = { e: false, b: false });
+    if (eligible) cur.e = true; else cur.b = true;
+  }
+  // Judge upstreams NOT in the current chain (already dropped by earlier
+  // steps) so later exclude steps still contribute verdicts for them. A
+  // throwing judge is treated as "would not drop" — same defensive
+  // posture as the rest of the eval.
+  function _sweepAbsentForVerdicts(chain, wouldDrop, eligible) {
+    const all = globalThis.__policyAllUpstreams;
+    if (!all || all.length === chain.length) return;
+    const present = new Set(chain.map(u => u.id));
+    for (const u of all) {
+      if (present.has(u.id)) continue;
+      let drop = false;
+      try { drop = !!wouldDrop(u); } catch (_e) { drop = false; }
+      if (drop) _recordProbeVerdict(u.id, eligible);
+    }
+  }
+
   function define(name, fn) {
     if (proto[name]) return; // idempotent: a re-installed primer must not throw
     const wrapped = function () {
@@ -296,7 +337,23 @@
   define('byId', function (id) { return this.filter(u => matchAny(id, u.id)); });
   define('excludeId', function (id) { return this.filter(u => !matchAny(id, u.id)); });
   define('byTag', function (pat) { return this.filter(u => hasMatchingTag(u, pat)); });
-  define('excludeTag', function (pat) { return this.filter(u => !hasMatchingTag(u, pat)); });
+  // excludeTag(pat, opts?) — static exclusion by tag. Static exclusions
+  // default to probe-BLOCKING: the upstream is out by decision, not by
+  // data, so no amount of fresh traffic metrics changes the outcome.
+  // Pass `{ probe: true }` to opt the dropped upstreams back into
+  // shadow probing.
+  define('excludeTag', function (pat, opts) {
+    const probe = !!(opts && opts.probe === true);
+    const wouldDrop = (u) => hasMatchingTag(u, pat);
+    _sweepAbsentForVerdicts(this, wouldDrop, probe);
+    return this.filter(u => {
+      if (wouldDrop(u)) {
+        _recordProbeVerdict(u.id, probe);
+        return false;
+      }
+      return true;
+    });
+  });
   define('byVendor', function (v) { return this.filter(u => matchAny(v, u.vendor)); });
   define('excludeVendor', function (v) { return this.filter(u => !matchAny(v, u.vendor)); });
   define('byType', function (t) { return this.filter(u => matchAny(t, u.type)); });
@@ -339,8 +396,21 @@
   define('removeByMinRequests', function (min) {
     return this.filter(u => u.metrics.requestsTotal >= min);
   });
-  define('removeCordoned', function () {
-    return this.filter(u => !u.metrics.cordonedReason);
+  // removeCordoned(opts?) — cordons reverse via timers (consensus
+  // sit-out) or operator action, never via fresh traffic metrics, so
+  // cordoned upstreams default to probe-BLOCKING. `{ probe: true }`
+  // opts them back in.
+  define('removeCordoned', function (opts) {
+    const probe = !!(opts && opts.probe === true);
+    const wouldDrop = (u) => !!u.metrics.cordonedReason;
+    _sweepAbsentForVerdicts(this, wouldDrop, probe);
+    return this.filter(u => {
+      if (wouldDrop(u)) {
+        _recordProbeVerdict(u.id, probe);
+        return false;
+      }
+      return true;
+    });
   });
   define('removeByLatency', function (opts) {
     return this.filter(u => {
@@ -397,13 +467,30 @@
   // back below the excludeIf predicate's threshold the upstream falls
   // out of the excluded set on the next tick. No separate cooldown
   // timer — the same predicate that excluded it is what re-admits it.
-  define('excludeIf', function (predicate, reasonOverride) {
+  // excludeIf(predicate, reasonOverrideOrOpts?) — conditional exclusion.
+  // The second arg is either the legacy reason-override string, or an
+  // options object `{ probe?: boolean, reason?: string }`. Conditional
+  // exclusions default to probe-ELIGIBLE: the predicate reads traffic
+  // metrics that freeze without traffic, so shadow probes are what let
+  // the upstream prove recovery. Pass `{ probe: false }` for predicates
+  // whose inputs refresh without traffic (e.g. block-head lag, fed by
+  // the state poller) — probing those is pure waste.
+  define('excludeIf', function (predicate, reasonOverrideOrOpts) {
     if (typeof predicate !== 'function') {
       // Graceful no-op for invalid first arg — keeps the chain alive
       // rather than throwing mid-eval and falling back to the default
       // policy at the engine level.
       return this.slice();
     }
+    let reasonOverride;
+    let probe = true;
+    if (typeof reasonOverrideOrOpts === 'string') {
+      reasonOverride = reasonOverrideOrOpts;
+    } else if (reasonOverrideOrOpts != null && typeof reasonOverrideOrOpts === 'object') {
+      if (typeof reasonOverrideOrOpts.reason === 'string') reasonOverride = reasonOverrideOrOpts.reason;
+      if (reasonOverrideOrOpts.probe === false) probe = false;
+    }
+    _sweepAbsentForVerdicts(this, predicate, probe);
     // Per-upstream leaf-slug attribution for metrics. The Go-side metric
     // emitter reads `__policyLeafReasons[id]` after the eval and emits
     // one `selection_exclusion_total{reason=<slug>}` increment per leaf.
@@ -412,6 +499,7 @@
     const leafLog = globalThis.__policyLeafReasons;
     return this.filter(u => {
       if (predicate(u)) {
+        _recordProbeVerdict(u.id, probe);
         if (leafLog) {
           let leaves;
           if (typeof reasonOverride === 'string') {
@@ -1014,6 +1102,100 @@
     const matchFn = (typeof idOrFn === 'function')
       ? idOrFn
       : (u) => matchAny(idOrFn, u.id);
+    const haves = new Set(this.map(u => u.id));
+    const adds = all.filter(u => !haves.has(u.id) && matchFn(u));
+    if (adds.length === 0) return this.slice();
+    return (position === 'head') ? adds.concat(this) : this.concat(adds);
+  });
+
+  // includeIf — conditionally admit upstreams from the full universe back
+  // into the chain. The dual of `excludeIf`: where `excludeIf` DROPS a
+  // per-upstream offender, `includeIf` ADDS a selected set of upstreams
+  // when an aggregate condition over the surviving pool holds. It never
+  // removes anyone.
+  //
+  // The intended use is a "break-glass" tier: keep a set of upstreams out
+  // of normal rotation (e.g. via `excludeTag('tier:<x>')`) and bring them
+  // in ONLY when the upstreams that are currently serving become
+  // collectively unfit — too few left, all of them lagging, all of them
+  // slow. Because it adds rather than excludes, a single degraded primary
+  // is never evicted; the reserve set is offered alongside it and ranked
+  // by the subsequent `sortByScore`.
+  //
+  //   target: WHAT to admit — placed first so the policy reads
+  //     "include <these> if <condition>" and is never ambiguous. Either:
+  //       * a tag pattern (string / array, `!negation` accepted) — the
+  //         common case: `includeIf('tier:reserve', cond)`; or
+  //       * a selector object `{ id, tag, vendor, type, position }` whose
+  //         facets AND together (same semantics as `where`). At least one
+  //         facet must resolve to a concrete value — otherwise includeIf is
+  //         a no-op (it never pulls the whole universe by accident, e.g. for
+  //         `{}` or `{ position: 'head' }`).
+  //     `position` ('head' | 'tail', default 'tail') only applies to the
+  //     object form; admitted upstreams go to the tail by default so the
+  //     surviving pool keeps priority — let `sortByScore` reorder if a
+  //     reserve upstream is genuinely better. Already-present upstreams (by
+  //     id) are not duplicated.
+  //
+  //   condition: boolean OR (upstreams, ctx) => boolean. The function form
+  //     receives the CURRENT chain array — the pool that survived earlier
+  //     steps — so it can ask aggregate ("network-level") questions about
+  //     what is left, using native array methods over the existing
+  //     per-upstream predicate factories:
+  //
+  //       // admit when EVERY survivor is lagging (empty pool also admits —
+  //       // native `every` is true on []):
+  //       .includeIf('tier:reserve', p => p.every(blockSecondsLagAbove(30)))
+  //       // ...or when too few survive:
+  //       .includeIf('tier:reserve', p => p.length < 2)
+  //
+  // Defensive: any malformed argument degrades to a no-op (returns the
+  // chain unchanged) rather than throwing — a throw mid-eval would drop the
+  // whole network back to the engine's default policy.
+  define('includeIf', function (target, condition) {
+    // 1. Resolve the target into selector facets + position. A string/array
+    //    is the tag shorthand; an object carries explicit facets. Gating on
+    //    the RESOLVED facets (not on "an object was passed") is what keeps
+    //    `{}` / `{ position: 'head' }` a no-op instead of a match-all that
+    //    admits the entire universe.
+    let idPat, tagPat, vendorPat, typePat, position;
+    if (typeof target === 'string' || Array.isArray(target)) {
+      tagPat = target;
+    } else if (target != null && typeof target === 'object') {
+      idPat = target.id;
+      tagPat = target.tag;
+      vendorPat = target.vendor;
+      typePat = target.type;
+      position = target.position;
+    }
+    if (idPat == null && tagPat == null && vendorPat == null && typePat == null) {
+      return this.slice();
+    }
+
+    // 2. Evaluate the gate. Function form gets (upstreams, ctx); a thrown
+    //    predicate is swallowed (treated as "do not include") so one bad
+    //    custom condition can't sink the eval.
+    let pass;
+    if (typeof condition === 'function') {
+      try {
+        pass = !!condition(this, globalThis.__policyCtx || {});
+      } catch (_e) {
+        pass = false;
+      }
+    } else {
+      pass = !!condition;
+    }
+    if (!pass) return this.slice();
+
+    // 3. Union in matching upstreams from the universe, deduped by id.
+    const matchFn = function (u) {
+      if (idPat     != null && !matchAny(idPat, u.id)) return false;
+      if (tagPat    != null && !hasMatchingTag(u, tagPat)) return false;
+      if (vendorPat != null && !matchAny(vendorPat, u.vendor)) return false;
+      if (typePat   != null && !matchAny(typePat, u.type)) return false;
+      return true;
+    };
+    const all = globalThis.__policyAllUpstreams || [];
     const haves = new Set(this.map(u => u.id));
     const adds = all.filter(u => !haves.has(u.id) && matchFn(u));
     if (adds.length === 0) return this.slice();

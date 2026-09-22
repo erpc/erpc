@@ -53,7 +53,7 @@ func TestNetworkForward_CacheSetDoesNotBlockForward(t *testing.T) {
 			{
 				Network:   "*",
 				Method:    "*",
-				TTL:       common.Duration(5 * time.Minute),
+				TTL:       common.FixedDuration(5 * time.Minute),
 				Connector: "slow-mock",
 			},
 		},
@@ -281,7 +281,7 @@ func TestNetworkForward_ConcurrentForwardAndReleaseWithCache(t *testing.T) {
 			{
 				Network:   "*",
 				Method:    "*",
-				TTL:       common.Duration(5 * time.Minute),
+				TTL:       common.FixedDuration(5 * time.Minute),
 				Connector: "mock",
 			},
 		},

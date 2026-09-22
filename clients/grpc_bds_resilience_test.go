@@ -91,7 +91,7 @@ func TestGrpcBdsClient_HardTimeoutFreesGoroutineWithinCap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0)
 	require.NoError(t, err)
 
 	// Use a tight caller-supplied deadline so the test runs fast — the
@@ -151,7 +151,7 @@ func TestGrpcBdsClient_WatchdogReplacesWedgedConn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0)
 	require.NoError(t, err)
 	gen := client.(*GenericGrpcBdsClient)
 
@@ -169,10 +169,13 @@ func TestGrpcBdsClient_WatchdogReplacesWedgedConn(t *testing.T) {
 		_, _ = client.SendRequest(context.Background(), req)
 	}
 
+	// Generous max wait so loaded CI runners (where the 250ms-capped calls and the
+	// watchdog goroutine get scheduled late) don't flake; Eventually returns as soon
+	// as the slot is replaced, so the fast/local path stays ~instant.
 	require.Eventually(t, func() bool {
 		current := gen.pool.Pick().conn
 		return current != originalConn
-	}, 2*time.Second, 20*time.Millisecond,
+	}, 10*time.Second, 20*time.Millisecond,
 		"pool slot should have been replaced after threshold stuck calls")
 }
 
@@ -191,7 +194,7 @@ func TestGrpcBdsClient_WatchdogIgnoresCallerDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0)
 	require.NoError(t, err)
 	gen := client.(*GenericGrpcBdsClient)
 	gen.pool.conns = gen.pool.conns[:1]
@@ -212,6 +215,54 @@ func TestGrpcBdsClient_WatchdogIgnoresCallerDeadline(t *testing.T) {
 	current := gen.pool.Pick().conn
 	require.Same(t, originalConn, current,
 		"caller-deadline timeouts must NOT trigger conn replacement")
+}
+
+// TestGrpcBdsClient_WatchdogIgnoresCallerDynamicTimeoutCause reproduces the
+// production warn/replacement storm: the upstream/network failsafe executors
+// arm CALLER contexts via context.WithTimeoutCause(ctx, td,
+// common.ErrDynamicTimeoutExceeded) (upstream_executor.go /
+// network_executor.go), so when a quantile-driven timeout (e.g. 200ms floor)
+// expires, context.Cause surfaces that shared sentinel. The BDS client must
+// NOT mistake it for its own bdsHardCallTimeout: these are routine
+// caller-side budget expiries, not wedged streams. Before the dedicated
+// hard-cap sentinel, every such expiry counted a watchdog strike and
+// healthy conns were replaced in a self-sustaining churn loop.
+func TestGrpcBdsClient_WatchdogIgnoresCallerDynamicTimeoutCause(t *testing.T) {
+	addr, _, stop := startWedgedServer(t)
+	defer stop()
+
+	parsedURL, err := url.Parse(fmt.Sprintf("grpc://%s", addr))
+	require.NoError(t, err)
+
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0)
+	require.NoError(t, err)
+	gen := client.(*GenericGrpcBdsClient)
+	gen.pool.conns = gen.pool.conns[:1]
+	originalConn := gen.pool.Pick().conn
+
+	// Exactly the ctx shape upstreamExecutor.callWithTimeout produces for
+	// every failsafe-timeout-bounded call (poller included).
+	for i := 0; i < bdsStuckCallThreshold+2; i++ {
+		callCtx, cancelCall := context.WithTimeoutCause(
+			context.Background(), 250*time.Millisecond, common.ErrDynamicTimeoutExceeded)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
+		_, serr := client.SendRequest(callCtx, req)
+		cancelCall()
+		require.Error(t, serr)
+		// Classification must remain a request-timeout (not transport failure).
+		require.True(t, common.HasErrorCode(serr, common.ErrCodeEndpointRequestTimeout),
+			"caller dynamic-timeout must classify as request timeout, got %v", serr)
+	}
+
+	// Give the watchdog a chance to (wrongly) fire if it's going to.
+	time.Sleep(200 * time.Millisecond)
+	current := gen.pool.Pick().conn
+	require.Same(t, originalConn, current,
+		"caller failsafe dynamic-timeout expiries must NOT count as wedge strikes")
 }
 
 // TestCallBoundedReturnsOnCtxCancel proves the bounded-wait primitive

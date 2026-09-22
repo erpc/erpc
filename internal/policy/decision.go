@@ -75,6 +75,12 @@ type ExcludedUpstream struct {
 	ID     string
 	Reason string
 	Step   string
+	// ProbeEligible is the resolved verdict-matrix outcome for this
+	// upstream: true when shadow probing can help it re-admit (some
+	// probe-eligible step excluded it and no probe-blocking step did,
+	// or it was excluded by untracked means). False means the prober
+	// skips it (e.g. static tag exclusion, cordon).
+	ProbeEligible bool
 	// LeafReasons is the stable metric-label slug(s) attributing this
 	// exclusion. Populated by `excludeIf`'s leaf-walk against compound
 	// predicates: `any(A,B)` excluding because A trips gives `[A.slug]`;
@@ -119,11 +125,11 @@ type DecisionDiff struct {
 // Mirrors §3.1 of the spec. Built per-tick from health.Tracker.
 //
 // Lag is exposed in TWO units:
-//   * blockHeadLag / finalizationLag — count of blocks behind the network's
+//   - blockHeadLag / finalizationLag — count of blocks behind the network's
 //     latest / finalized tip. Chain-agnostic but unitless for time-based
 //     decisions (a 16-block lag means 4 min on Eth mainnet but ~32 s on a
 //     2 s chain).
-//   * blockHeadLagSeconds / finalizationLagSeconds — same lag multiplied
+//   - blockHeadLagSeconds / finalizationLagSeconds — same lag multiplied
 //     by the tracker's EMA-estimated block time for the network. Zero
 //     until the tracker has enough samples to estimate block time
 //     (typically a few seconds after first traffic). Use these when the

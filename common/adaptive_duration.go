@@ -38,7 +38,7 @@ func parseJSONDuration(raw json.RawMessage) (Duration, error) {
 //
 // Resolution rules:
 //
-//   final = Base + adaptive
+//	final = Base + adaptive
 //
 // where `adaptive` is:
 //   - `qt.GetQuantile(Quantile)` when Quantile > 0 and quantile data exists

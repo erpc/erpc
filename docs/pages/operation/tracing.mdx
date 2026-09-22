@@ -1,248 +1,675 @@
 ---
-title: Tracing
-description: OpenTelemetry tracing for eRPC — OTLP export, sampling, force-trace rules, custom resource attributes.
+title: Tracing & logging
+description: Every request, cache lookup, and upstream call becomes a searchable span — shipped to any OTel backend. Secrets never leave the process.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# OpenTelemetry tracing
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-eRPC instruments every layer of the request pipeline (HTTP server → network → upstream → cache → failsafe → client) with OpenTelemetry spans. Export over OTLP (gRPC or HTTP) to Jaeger, Tempo, Honeycomb, Datadog, or any OTel-compatible backend.
+# Tracing & logging
 
-**You can configure:**
+eRPC instruments every layer of the request pipeline — inbound HTTP, routing, cache
+lookups, upstream calls — and exports those spans over OTLP to any OpenTelemetry-compatible
+backend. Structured JSON logs run at five verbosity levels, secrets are redacted before any
+line is written, and a force-trace override lets you capture full detail for a single
+network or method without touching global sampling.
 
-- **Where to send** — OTLP endpoint, gRPC or HTTP transport, optional TLS, optional auth headers
-- **How much to send** — `sampleRate` (probabilistic), `forceTraceMatchers` (always-trace specific network/method combos), `detailed` (include high-cardinality attributes)
-- **How to label** — `serviceName` and arbitrary `resourceAttributes` (env-var expanded)
+**What you get**
 
-## Minimum useful config
+- End-to-end distributed traces from caller through every upstream hop
+- Two span tiers: always-on for data-plane ops, detailed for high-cardinality debug info
+- Force-trace by request header, query param, or config pattern — even at `sampleRate: 0`
+- Automatic secret redaction for all API keys and passwords in logs and config dumps
+- W3C TraceContext propagation: eRPC becomes a child of your caller's trace
 
-A working setup with 10% sampling, gRPC export to a local Jaeger.
+## Quick taste
 
-<ConfigTabs
-	path="tracing"
-	focus="3-9"
-	yaml={`server: # ...
-projects: # ...
-
-tracing:
-  enabled: true
-  endpoint: localhost:4317           # OTLP gRPC endpoint
-  protocol: grpc                     # "grpc" or "http"
-  sampleRate: 0.1                    # 10% probabilistic sampling
-  serviceName: erpc-prod             # OTel service.name resource attribute
-  detailed: false                    # set true to include high-cardinality attrs`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  server: { /* ... */ },
-  projects: [ /* ... */ ],
-  tracing: {
-    enabled: true,
-    endpoint: "localhost:4317",
-    protocol: "grpc",
-    sampleRate: 0.1,
-    serviceName: "erpc-prod",
-    detailed: false,
-  },
-});`}
-/>
-
-## Force-tracing specific methods
-
-When you need deterministic traces for a specific (network, method) pair regardless of the global `sampleRate`, use `forceTraceMatchers`. Useful for debugging a customer-impacting issue without raising the global sample rate.
+Illustrative, not a tuned production config — 10 % sampling, gRPC export:
 
 <ConfigTabs
-	path="tracing > forceTraceMatchers[]"
-	focus="6-11"
-	yaml={`tracing:
+  path="tracing"
+  focusYaml="2,4-8"
+  focusTs="2,4-8"
+  yaml={`tracing:
   enabled: true
+  # OTLP gRPC collector — eRPC always overrides OTEL_EXPORTER_OTLP_ENDPOINT
   endpoint: localhost:4317
   protocol: grpc
-  sampleRate: 0.01                # 1% global sample
-  forceTraceMatchers:
-    - network: "evm:1"             # always trace mainnet
-      method: "eth_getLogs"        # ...for getLogs specifically
-    - network: "evm:*"
-      method: "debug_*|trace_*"    # always trace expensive trace/debug methods on any chain`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  tracing: {
-    enabled: true,
-    endpoint: "localhost:4317",
-    protocol: "grpc",
-    sampleRate: 0.01,
-    forceTraceMatchers: [
-      { network: "evm:1", method: "eth_getLogs" },
-      { network: "evm:*", method: "debug_*|trace_*" },
-    ],
-  },
-});`}
+  # 10 % ambient sampling — sampleRate: 0 is rewritten to 1.0 by SetDefaults, use enabled: false to disable
+  sampleRate: 0.1
+  serviceName: erpc-prod`}
+  ts={`tracing: {
+  enabled: true,
+  // OTLP gRPC collector — eRPC always overrides OTEL_EXPORTER_OTLP_ENDPOINT
+  endpoint: "localhost:4317",
+  protocol: "grpc",
+  // 10 % ambient sampling — sampleRate: 0 is rewritten to 1.0 by SetDefaults, use enabled: false to disable
+  sampleRate: 0.1,
+  serviceName: "erpc-prod",
+}`}
 />
 
-## Custom resource attributes
+## Agent reference
 
-Attach instance-level metadata that flows into every span. Useful for filtering by region, machine, or pod in your tracing backend.
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-```yaml
-tracing:
-  enabled: true
-  endpoint: localhost:4317
-  resourceAttributes:
-    fly.region: ${FLY_REGION}
-    fly.machine_id: ${FLY_MACHINE_ID}
-    # Or for Kubernetes:
-    # k8s.pod_name: ${HOSTNAME}
-    # k8s.node_name: ${NODE_NAME}
+<PromptExample
+	n={1}
+	title="wire eRPC traces to my OTel collector"
+	defaultOpen
+	prompt={`Set up distributed tracing in my eRPC instance so every request, cache lookup, and
+upstream call produces spans exported to my OpenTelemetry collector. Work with my existing eRPC config. and my collector is at otel-collector:4317. Choose a sensible production
+sample rate and explain the sampleRate: 0 footgun. Read the full reference first:
+https://docs.erpc.cloud/operation/tracing.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="force full traces on debug methods only"
+	prompt={`I want eRPC to sample at 5% normally but always capture 100% traces for debug_* and
+trace_* methods so I can triage slow calls without raising global sample rate. Update
+my eRPC config with the right forceTraceMatchers config. Reference:
+https://docs.erpc.cloud/operation/tracing.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="send traces to Grafana Cloud with auth"
+	prompt={`Configure eRPC's OTLP exporter in my eRPC config to send traces to my Grafana Cloud OTLP
+HTTP endpoint with bearer-token auth headers and TLS enabled. Include the sample rate
+and serviceName settings appropriate for production. Reference:
+https://docs.erpc.cloud/operation/tracing.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug missing or noisy spans"
+	prompt={`My tracing backend shows either no spans from eRPC or too many after a config change.
+Diagnose the issue in my eRPC config — check sampleRate zero-rewrite, OTEL env var
+overrides, and detailed mode cost — and fix the config so I get the spans I expect.
+Reference: https://docs.erpc.cloud/operation/tracing.llms.txt`}
+/>
+
+<AISection title="Tracing & logging — full agent reference">
+
+### How it works
+
+**Tracing initialization.** On startup, `NewERPC` calls `common.InitializeTracing` exactly
+once (guarded by `sync.Once`). When enabled, it builds an OTLP exporter (gRPC via
+`otlptracegrpc` or HTTP via `otlptracehttp`), constructs a `TracerProvider` with a batcher
+and a custom sampler, wires W3C TraceContext + Baggage propagation, and stores any
+`forceTraceMatchers` for per-request evaluation. Two package-level booleans —
+`IsTracingEnabled` and `IsTracingDetailed` — are set once and consulted on every hot-path
+span call with zero allocation when tracing is off.
+[<SourceLink file="common/tracing_core.go" lines="53-148" />]
+
+**Two span tiers.** All instrumented call sites use one of two helpers:
+
+- `StartSpan` — fires whenever `IsTracingEnabled`; covers major external interactions:
+  cache, upstreams, connectors, rate limiters, consensus.
+- `StartDetailSpan` — fires only when both `IsTracingEnabled` and `IsTracingDetailed`; covers
+  eRPC-internal operations and spans carrying high-cardinality attributes such as request
+  params, block numbers, lock contention, and hook execution. Enabling `detailed: true`
+  roughly doubles span count.
+
+When tracing is disabled, both helpers return the caller's unchanged context and a singleton
+`noopSpan` — no allocation on the hot path.
+[<SourceLink file="common/tracing_util.go" lines="1-234" />]
+
+**Span hierarchy for a single HTTP request (normal mode):**
+
+```
+Http.ReceivedRequest  (SpanKindServer)
+  └─ Request.Handle   (SpanKindInternal)
+       └─ Network.Forward
+            └─ Network.forwardAttempt
+                 ├─ Cache.Get
+                 └─ Upstream.Forward
+                      └─ HttpJsonRpcClient.sendSingleRequest
 ```
 
-Values support `${VAR}` env-var expansion. Attributes with empty values (after expansion) are automatically omitted.
+With `detailed: true`, additional spans appear inside the HTTP layer (`Http.ReadBody`,
+`Http.ParseRequests`, `HttpServer.WriteResponse`), between Forward and forwardAttempt
+(`Project.Forward`, `Network.TryForward`, `Network.UpstreamLoop`), and inside upstream
+execution (`RateLimiter.TryAcquirePermit`, `Upstream.tryForward.PreRequest`,
+`Upstream.tryForward.SendRequest`), cache lookup, lock/parse ops, and method-specific hooks.
 
-## Using with Jaeger
+**Sampler logic.** `createTracingSampler` builds the base sampler from `sampleRate`:
+- `<= 0` → `NeverSample()`
+- `>= 1.0` → `AlwaysSample()`
+- otherwise → `ParentBased(TraceIDRatioBased(rate))` with all four parent-sampling options
+  configured for consistency (no orphan spans)
 
-The repo's [docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml) includes a Jaeger service for development.
+The `forceTraceSampler` always wraps the base sampler regardless of rate.
+[<SourceLink file="common/tracing_core.go" lines="229-268" />]
 
-```bash
-docker-compose up jaeger
+**Force-trace mechanism.** Three paths can force a span to be recorded regardless of
+`sampleRate`:
+
+1. HTTP header `X-ERPC-Force-Trace: true` (or `1`, `yes`) — checked at request entry.
+2. Query parameter `?force-trace=true` — same check.
+3. Config-driven `forceTraceMatchers` — evaluated after the URL is parsed and the network is
+   known. Each matcher can specify `network` (in `architecture:chainId` form, e.g. `evm:1`)
+   and/or `method` (JSON-RPC method pattern). Pipe (`|`) = OR; wildcards supported. Both
+   fields present on one matcher = AND semantics.
+
+In all cases, the force-trace decision is communicated to the OTel sampler by setting the
+span attribute `erpc.force_trace = true` at creation time. The custom `forceTraceSampler`
+wraps the base sampler and returns `RecordAndSample` unconditionally when it sees this
+attribute — even when `sampleRate: 0`.
+[<SourceLink file="common/tracing_core.go" lines="257-268" />]
+
+**Context propagation.** Incoming HTTP requests have `traceparent`/`tracestate` extracted via
+W3C `TraceContext{}` carrier, making eRPC spans children of the caller's trace. After the
+response is written, `InjectHTTPResponseTraceContext` injects the active span context back
+into response headers so downstream callers can correlate their traces. gRPC requests have
+no OTel trace extraction — they start with a fresh root span.
+[<SourceLink file="common/tracing_util.go" lines="58-74" />]
+
+**Logging system.** zerolog is the structured JSON logger used throughout eRPC. Default
+output is newline-delimited JSON with Unix-millisecond timestamps:
+
+```json
+{"level":"info","time":1718000000123,"message":"...","key":"value"}
 ```
 
-```yaml
-tracing:
-  enabled: true
-  endpoint: localhost:4317
-  protocol: grpc
-  sampleRate: 1.0        # sample everything during development
-  detailed: true
+Set `LOG_WRITER=console` to switch to a human-readable format for local development:
+
+```
+04:05.000ms INF message key=value
 ```
 
-Then open the Jaeger UI at http://localhost:16686.
+Five levels are available: `trace`, `debug`, `info`, `warn`, `error` (plus `fatal`,
+`panic`, `disabled`). `LOG_LEVEL` environment variable overrides `logLevel` config at
+startup and again when the config is loaded, so it always wins. `ERPC_NOLOGS=1` silences all
+output at the binary level.
 
-<AISection title="Copy for your AI assistant — full tracing reference">
+When the resolved level is `info` or lower, eRPC serializes the entire loaded config as a
+JSON field in a startup log line. All secrets are redacted before this serialization.
 
-### `TracingConfig` — every field
+**Secret redaction.** Two layers:
 
-| Field | Type | Default | Notes |
+1. `MarshalJSON`/`MarshalYAML` overrides on config types — called whenever config is
+   serialized — replace secret fields with `"REDACTED"` or apply `util.RedactEndpoint`:
+
+   | Config type | Field | Replacement |
+   |---|---|---|
+   | `RedisConnectorConfig` | `password` | `"REDACTED"` |
+   | `RedisConnectorConfig` | `uri` | `util.RedactEndpoint(uri)` |
+   | `PostgreSQLConnectorConfig` | `connectionUri` | `util.RedactEndpoint(connectionUri)` |
+   | `AwsAuthConfig` | `secretAccessKey` | `"REDACTED"` |
+   | `ProviderConfig` | `settings` | `"REDACTED"` |
+   | `UpstreamConfig` | `endpoint` | `util.RedactEndpoint(endpoint)` |
+   | `SecretStrategyConfig` | `value` | `"REDACTED"` |
+
+   [<SourceLink file="common/config.go" lines="397-503" />]
+
+2. `util.RedactEndpoint` — computes a SHA-256 of the full original URL, takes the first 5
+   hex chars as a stable identifier, then strips path and credentials according to scheme:
+   - Native-protocol endpoints (`alchemyv2://`, `erigon://`, etc.): `scheme://host#redacted=<hash>`
+   - Envio-suffix schemes: `scheme://host` (no hash needed — no secrets in path)
+   - Repository-suffix schemes: `scheme://host#redacted=<hash>`
+   - Standard `http`/`https` RPC endpoints: `scheme#redacted=<hash>` — **hostname is also dropped**
+   - Unparseable URL: `"redacted=<hash>"`
+
+   Two endpoints with the same scheme but different paths (API keys) produce different hashes,
+   enabling correlation without exposing secrets.
+
+[<SourceLink file="util/redact.go" lines="10-36" />]
+
+**OTel resource attributes.** The `TracerProvider` is built with a resource that includes
+`service.name` (from `tracing.serviceName`), `service.version` (the compiled-in `ErpcVersion`
+constant), `commit.sha` (the compiled-in `ErpcCommitSha` constant), and any key/value pairs
+from `tracing.resourceAttributes`. Environment variables in `resourceAttributes` values are
+expanded via `os.ExpandEnv` at config load; empty values after expansion are silently skipped.
+[<SourceLink file="common/tracing_core.go" lines="93-102" />]
+
+The OTel instrumentation name registered by eRPC is `"github.com/erpc/erpc"`.
+[<SourceLink file="common/tracing_core.go" lines="26" />]
+
+**Error recording.** `SetTraceSpanError` checks `span.IsRecording()` before acting. For
+`StandardError` types it sets an `error.code` span attribute (the full error-code chain) and
+records the error as a span event; for plain `error` values it calls `span.RecordError` and
+sets the span status to `codes.Error`.
+[<SourceLink file="common/tracing_core.go" lines="163-183" />]
+
+**Force-flush.** `common.ForceFlushTraces(ctx)` calls `tracerProvider.ForceFlush(ctx)`,
+flushing all batched but not-yet-exported spans to the collector immediately. It is called
+automatically on graceful shutdown and exposed for callers that need guaranteed delivery of
+critical traces.
+[<SourceLink file="common/tracing_core.go" lines="237-245" />]
+
+**Graceful shutdown.** A goroutine watches `appCtx.Done` and flushes buffered spans with a
+5-second grace period before the process exits.
+[<SourceLink file="erpc/erpc.go" lines="92-99" />]
+
+### Config schema
+
+#### Top-level `logLevel`
+
+| Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `enabled` | bool | `false` | Master switch. When `false`, no spans are exported (instrumentation still runs as no-ops). |
-| `endpoint` | string | — | OTLP exporter target. For gRPC: `host:port` (e.g. `localhost:4317`). For HTTP: full URL (e.g. `http://localhost:4318/v1/traces`). |
-| `protocol` | `"grpc"\|"http"` | `grpc` | OTLP transport. `grpc` uses standard OTLP/gRPC; `http` uses OTLP/HTTP+protobuf. |
-| `sampleRate` | float 0..1 | `0` | Probabilistic head sampling — fraction of root spans recorded. `0` = no traces; `1.0` = every request. |
-| `detailed` | bool | `false` | When `true`, includes high-cardinality attributes on spans: request JSON-RPC IDs, request params, actual cache keys, internal mutex/lock spans. Significantly increases trace volume; use sparingly. |
-| `serviceName` | string | hostname-derived | Overrides the OTel `service.name` resource attribute that tracing backends use as the service grouping. |
-| `headers` | `map[string]string` | none | Extra headers attached to OTLP exporter requests. Use for authenticated collectors: e.g. `Authorization: Bearer ...` for Honeycomb / DataDog / Tempo Cloud. |
-| `tls` | TLSConfig | none | TLS for OTLP/gRPC connections. See "TLS sub-fields" below. |
-| `resourceAttributes` | `map[string]string` | none | Extra OTel resource attributes attached to every span. Values support `${VAR}` env-var expansion; empty values are dropped. |
-| `forceTraceMatchers[]` | `ForceTraceMatcher[]` | none | Force-trace rules that bypass `sampleRate`. See "ForceTraceMatcher" below. |
+| `logLevel` | string | `"INFO"` (<SourceLink file="common/defaults.go" lines="50-51" />) | Controls log verbosity for all eRPC subsystems. Valid: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`, `disabled` (case-insensitive). Invalid value → warning + fallback to `debug` (<SourceLink file="erpc/init.go" lines="27-32" />). Overridden by `LOG_LEVEL` env var at config-load time (<SourceLink file="cmd/erpc/main.go" lines="354-363" />). |
 
-**Key spans you'll see:**
+#### `tracing.*`
 
-- HTTP server request handling
-- Network-level (chain) forwarding — the `Network.Forward` span carries the full per-request execution trace (`execution.attempts`, `upstreams.tried`, `upstreams.outcomes`, `upstreams.reasons`, `upstreams.durations_ms`). See [failsafe → Per-attempt observability](/config/failsafe#per-attempt-observability).
-- Upstream-level request forwarding
-- Cache operations (get/set)
-- Failsafe executor operations (hedges, retries, timeouts, breaker probes)
-- HTTP client requests to upstreams
-- Rate limiters
+Full struct: <SourceLink file="common/config.go" lines="218-235" />.
 
-### TLS sub-fields (when `protocol: grpc` with TLS)
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `tracing.enabled` | bool | `false` (Go zero value) | Master switch. When `false`, sets `IsTracingEnabled = false` globally; all span calls are no-ops (<SourceLink file="common/tracing_core.go" lines="53-58" />). |
+| `tracing.endpoint` | string | `"localhost:4317"` (gRPC) or `"http://localhost:4318"` (HTTP) — derived from `protocol` in `SetDefaults` (<SourceLink file="common/defaults.go" lines="622-628" />) | OTLP collector endpoint. gRPC: `host:port` with no scheme. HTTP: full URL including scheme. **Footgun:** `OTEL_EXPORTER_OTLP_ENDPOINT` is always overridden by this field even when it holds the default value. |
+| `tracing.protocol` | TracingProtocol | `"grpc"` (<SourceLink file="common/defaults.go" lines="619-621" />) | `"grpc"` uses `otlptracegrpc`; `"http"` uses `otlptracehttp`. Any other value → error at init (<SourceLink file="common/tracing_core.go" lines="71-78" />). |
+| `tracing.sampleRate` | float64 | `1.0` (<SourceLink file="common/defaults.go" lines="629-631" />) | `<= 0` → `NeverSample()`, `>= 1.0` → `AlwaysSample()`, otherwise → `ParentBased(TraceIDRatioBased(rate))`. **Footgun:** `SetDefaults` replaces `0` with `1.0`, so `sampleRate: 0` in YAML means "always sample", not "never sample". To keep tracing on but silent, use a very small positive value like `0.0000001`. |
+| `tracing.detailed` | bool | `false` (Go zero value) | When `true`, sets `IsTracingDetailed = true`, enabling `StartDetailSpan` calls. Roughly 2× span count. Includes request params, block numbers, lock spans, hook execution spans. |
+| `tracing.serviceName` | string | `"erpc"` (<SourceLink file="common/defaults.go" lines="632-634" />) | OTel `service.name` resource attribute. |
+| `tracing.headers` | map[string]string | nil | Additional metadata headers sent with every OTLP export batch. Used for auth to managed collectors (Grafana Cloud, Honeycomb, Datadog). When set, takes precedence over `OTEL_EXPORTER_OTLP_HEADERS`. |
+| `tracing.tls.enabled` | bool | `false` (Go zero value) | Master switch for TLS on the OTLP exporter. When `false`, exporters are created with `WithInsecure()` (<SourceLink file="common/tracing_core.go" lines="187" />). |
+| `tracing.tls.certFile` | string | `""` | Path to PEM client certificate for mTLS. Both `certFile` and `keyFile` must be non-empty; supplying one without the other silently skips mutual TLS. |
+| `tracing.tls.keyFile` | string | `""` | Path to PEM private key corresponding to `certFile`. Required alongside `certFile` for mTLS. |
+| `tracing.tls.caFile` | string | `""` | Path to PEM CA certificate. When set, the collector's server cert is validated against this CA instead of the system pool. |
+| `tracing.tls.insecureSkipVerify` | bool | `false` | When `true`, disables verification of the OTLP collector's server cert. Does not affect client-cert loading. Only for development or trusted private networks. |
+| `tracing.resourceAttributes` | map[string]string | nil | Custom OTel resource attributes. Values are `os.ExpandEnv`-expanded at config load. Empty values after expansion are silently skipped (<SourceLink file="common/tracing_core.go" lines="93-97" />). |
+| `tracing.forceTraceMatchers` | []*ForceTraceMatcher | nil | Matchers that bypass `sampleRate` and force `RecordAndSample`. |
+| `tracing.forceTraceMatchers[].network` | string | — | Network pattern in `architecture:chainId` form, e.g. `"evm:1"`, `"evm:1\|evm:42161"`, `"evm:*"`. Pipe = OR; wildcards via `WildcardMatch`. |
+| `tracing.forceTraceMatchers[].method` | string | — | JSON-RPC method pattern, e.g. `"eth_call"`, `"debug_*\|trace_*"`. Pipe = OR; wildcards supported. |
 
-The `tls` block uses the shared `TLSConfig` struct. See [TLS configuration](/config/server#tls-configuration) for the full field reference (`enabled`, `certFile`, `keyFile`, `caFile`, `insecureSkipVerify`).
+**ForceTraceMatcher AND/OR semantics:** when both `network` and `method` are specified on one
+matcher, both must match (AND). If only one field is set, only that field is checked. An
+empty matcher (neither field) never matches (<SourceLink file="common/tracing_core.go" lines="306-330" />).
 
-Example for a gRPC OTLP collector with mutual-TLS:
+#### Standard `OTEL_*` environment variables
 
-```yaml
-tracing:
-  endpoint: collector.example.com:4317
-  protocol: grpc
-  tls:
-    enabled: true
-    certFile: /path/to/client.crt        # optional client cert
-    keyFile: /path/to/client.key         # optional client key
-    caFile: /path/to/ca.crt              # CA chain for verifying the collector
-    insecureSkipVerify: false            # set true for development; never in prod
-```
-
-### `ForceTraceMatcher`
-
-```yaml
-forceTraceMatchers:
-  - network: <matcher-pattern>
-    method: <matcher-pattern>
-```
-
-| Field | Notes |
+| Env var | Interaction with eRPC config |
 |---|---|
-| `network` | Matcher pattern (matcher syntax: `*`, `\|`, `!`). e.g. `evm:1`, `evm:1\|evm:10`, `evm:*`. When omitted, matches any network. |
-| `method` | Same matcher syntax. e.g. `eth_getLogs`, `eth_*`, `debug_*\|trace_*`. When omitted, matches any method. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | **Overridden.** eRPC always passes `WithEndpoint(cfg.Endpoint)`; this env var is silently ignored. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | **Partially overridden.** Only takes effect when `tracing.headers` is nil/empty in config. |
+| `OTEL_SERVICE_NAME` | **Not explicitly overridden, but eRPC always sets `service.name`.** eRPC builds its resource with `semconv.ServiceNameKey.String(cfg.ServiceName)`. If the OTel SDK's default detectors also read `OTEL_SERVICE_NAME`, last-writer-wins resource merge semantics apply; eRPC's explicit value is always present. |
+| `OTEL_TRACES_SAMPLER` | **Ignored.** eRPC supplies its own sampler via explicit SDK option. |
+| `OTEL_PROPAGATORS` | **Ignored.** eRPC explicitly sets TraceContext + Baggage propagators. |
+| `OTEL_SDK_DISABLED` | **Honored.** Disables all OTel SDK operations globally before `InitializeTracing` runs. |
 
-A request is force-traced if **any** matcher's `network` AND `method` both match. Force-traced requests bypass `sampleRate` entirely (treated as sampled-in regardless of the random draw).
+### Worked examples
 
-Common uses:
+**1. Production setup: 10 % sampling with force-trace on debug methods.** Low ambient cost;
+debug-namespace calls always produce a full trace for triage:
 
-- Always trace expensive methods: `{ method: "debug_*|trace_*" }`
-- Always trace one chain that's the focus of debugging: `{ network: "evm:42161" }`
-- Trace one method on one chain during a customer escalation: `{ network: "evm:1", method: "eth_call" }`
-
-### Headers — concrete examples
-
-For authenticated OTLP collectors:
-
-```yaml
-# Honeycomb
-tracing:
-  endpoint: api.honeycomb.io:443
+<ConfigTabs
+  path="tracing"
+  yaml={`tracing:
+  enabled: true
+  endpoint: otel-collector:4317
   protocol: grpc
+  sampleRate: 0.1
+  serviceName: erpc-prod
+  forceTraceMatchers:
+    - method: "debug_*|trace_*"`}
+  ts={`tracing: {
+  enabled: true,
+  endpoint: "otel-collector:4317",
+  protocol: "grpc",
+  sampleRate: 0.1,
+  serviceName: "erpc-prod",
+  forceTraceMatchers: [{ method: "debug_*|trace_*" }],
+}`}
+/>
+
+**2. Detailed mode for a staging environment.** Capture every span including request params,
+block numbers, and lock contention to understand slow calls — not recommended in production
+due to 2× span volume:
+
+<ConfigTabs
+  path="tracing"
+  yaml={`tracing:
+  enabled: true
+  endpoint: tempo:4317
+  sampleRate: 1.0
+  detailed: true
+  serviceName: erpc-staging`}
+  ts={`tracing: {
+  enabled: true,
+  endpoint: "tempo:4317",
+  sampleRate: 1.0,
+  detailed: true,
+  serviceName: "erpc-staging",
+}`}
+/>
+
+**3. Managed collector with auth headers and TLS.** For Grafana Cloud or Honeycomb where the
+OTLP endpoint requires a bearer token:
+
+<ConfigTabs
+  path="tracing"
+  yaml={`tracing:
+  enabled: true
+  endpoint: "https://otlp-gateway.grafana.net/otlp"
+  protocol: http
+  sampleRate: 0.05
   headers:
-    x-honeycomb-team: ${HONEYCOMB_API_KEY}
+    Authorization: "Basic <base64-token>"`}
+  ts={`tracing: {
+  enabled: true,
+  endpoint: "https://otlp-gateway.grafana.net/otlp",
+  protocol: "http",
+  sampleRate: 0.05,
+  headers: { Authorization: "Basic <base64-token>" },
+}`}
+/>
 
-# Grafana Cloud Tempo (basic auth via Authorization header)
-tracing:
-  endpoint: tempo-eu-west-0.grafana.net:443
-  protocol: grpc
-  headers:
-    Authorization: Basic \${GRAFANA_CLOUD_BASIC_AUTH}
+**4. Silent tracing for force-trace-only capture.** Keep tracing on but produce no ambient
+spans — only requests that carry `X-ERPC-Force-Trace: true` or match a configured matcher
+are recorded. Use `sampleRate: 0.0000001` because `sampleRate: 0` is rewritten to `1.0` by
+`SetDefaults`:
 
-# Self-hosted with mTLS, no headers needed (use tls.* instead)
-```
+<ConfigTabs
+  path="tracing"
+  yaml={`tracing:
+  enabled: true
+  endpoint: localhost:4317
+  sampleRate: 0.0000001
+  forceTraceMatchers:
+    - network: "evm:1"
+      method: "eth_call"`}
+  ts={`tracing: {
+  enabled: true,
+  endpoint: "localhost:4317",
+  sampleRate: 0.0000001,
+  forceTraceMatchers: [{ network: "evm:1", method: "eth_call" }],
+}`}
+/>
 
-`Authorization` headers should use env-var interpolation; never commit credentials to YAML/TS.
+### Request/response behavior
 
-### Traced components
+- Incoming HTTP requests with `traceparent`/`tracestate` headers become children of the
+  caller's trace. eRPC spans are nested under the caller's root span.
+- After the response is written, the active span's W3C context is injected back into
+  HTTP response headers unconditionally — including error responses. Trace IDs are
+  observable to callers. [<SourceLink file="erpc/http_server.go" lines="701" />]
+- For batch HTTP requests, each item gets its own `Request.Handle` child span under a single
+  `Http.ReceivedRequest` parent. All child spans may be in-flight simultaneously.
+  [<SourceLink file="erpc/http_server.go" lines="465" />]
+- gRPC requests start a fresh root span — no trace context extraction is implemented for
+  the gRPC server path. [<SourceLink file="erpc/grpc_server.go" />]
+- OTLP export failures are logged at `trace` level only and never propagate to callers.
+  [<SourceLink file="common/tracing_core.go" lines="125-127" />]
+- `Request.Handle` is started via `tracer.Start` directly (not `StartSpan`), so it fires
+  whenever `IsTracingEnabled`, regardless of `IsTracingDetailed`. This is the correct attach
+  point for distributed callers. [<SourceLink file="common/tracing_util.go" lines="165" />]
 
-Every span eRPC emits is a child of an HTTP server root span. The instrumented layers:
+**Span attributes on `Request.Handle`** (set by `StartRequestSpan`/`EndRequestSpan`):
 
-| Layer | What spans cover |
-|---|---|
-| HTTP server | Parsing, auth check, project + network selection, response serialization |
-| Network forwarding | Selection-policy eval, upstream pick, retry/hedge/consensus orchestration |
-| Upstream forwarding | Rate-limit check, payload assembly, response normalization |
-| Cache | Get/set per policy, compression/decompression, multi-connector fanout |
-| Failsafe | Each attempt within a retry/hedge; circuit-breaker decisions; consensus participants |
-| HTTP client | Outbound request, response read |
-| Rate limiters | Token acquisition, queue wait |
+| Attribute | Mode | Value |
+|---|---|---|
+| `request.method` | always | JSON-RPC method name |
+| `erpc.force_trace` | always, when forced | `true` (bool, internal — used by sampler to force `RecordAndSample`; not a user-visible exported attribute) |
+| `erpc.forced_trace_reason` | when forced | `"header_or_query"` or `"network:<n>,method:<m>"` etc. |
+| `request.id` | detailed only | JSON-RPC request ID as string |
+| `request.jsonrpc.params` | detailed only | JSON-serialized params array |
+| `network.id` | detailed only, on response | Network ID string |
+| `user.id` | detailed only, on response | Auth user ID |
+| `request.finality` | detailed only, on response | Finality label (e.g. `"realtime"`, `"finalized"`) |
+| `response.finality` | detailed only, on response | Response finality |
+| `execution.attempts` | detailed only, on response | Total attempts |
+| `execution.retries` | detailed only, on response | Number of retries |
+| `execution.hedges` | detailed only, on response | Number of hedges |
+| `response.result_size` | detailed only, on response | Length of JSON-RPC result field |
+| `upstream.id` | always (if non-nil), on response | Upstream identifier |
+| `cache.hit` | always (if non-nil), on response | bool: whether response was served from cache |
 
-`detailed: true` adds finer-grained internal spans (mutexes, internal selection-policy bookkeeping) and high-cardinality attributes.
+**Span attributes on `Http.ReceivedRequest`** (set by `StartHTTPServerSpan`/`EnrichHTTPServerSpan`):
 
-### Common pitfalls
+| Attribute | Phase | Value |
+|---|---|---|
+| `http.method` | on request | HTTP method (semconv) |
+| `http.url` | on request | Full request URL |
+| `http.scheme` | on request | URL scheme |
+| `http.user_agent` | on request | User-Agent header value |
+| `erpc.force_trace` | on request, when forced | `true` (if forced via header/query) |
+| `erpc.forced_trace_reason` | on request, when forced | `"header_or_query"` |
+| `http.status_code` | on response | HTTP response status code (semconv) |
 
-- **`sampleRate: 0.1` and 100% of force-traced requests** — `forceTraceMatchers` operates **on top of** sampling; force-traced requests are not subject to the rate. So your collector ingests `sampleRate * total + forceTraced`. Make sure that's affordable.
-- **`detailed: true` in production** — request params and cache keys can be huge (think `eth_getLogs` filters), and they hit your ingest cost. Reserve for debugging.
-- **`headers` interpolation** — `${VAR}` is only resolved at config load time. Rotating tokens requires a config reload.
-- **`tls.insecureSkipVerify: true`** — accepts any cert. Never set in production; use a proper CA chain or mTLS.
-- **`protocol: http` without `https://` in `endpoint`** — exports go to plaintext HTTP. Most managed providers require HTTPS; set the endpoint to the `https://.../v1/traces` form.
-- **OTLP/HTTP endpoint format** — `protocol: http` expects a FULL URL including the `/v1/traces` path segment; `protocol: grpc` expects just `host:port` without scheme.
+[<SourceLink file="common/tracing_util.go" lines="80-138" />]
+
+### Best practices
+
+- Set `sampleRate: 0.05`–`0.2` in production — `AlwaysSample()` at scale sends enormous
+  span volume to your collector.
+- Use `forceTraceMatchers` with `method: "debug_*|trace_*"` to guarantee full traces on
+  expensive diagnostic methods regardless of sample rate — this costs nothing extra for
+  normal traffic.
+- Never set `sampleRate: 0` thinking it means "disabled" — `SetDefaults` rewrites it to
+  `1.0`. Use `enabled: false` to disable tracing entirely.
+- Enable `detailed: true` only in staging or on-demand: 2× span count and high-cardinality
+  attributes (params, block numbers) can saturate a collector or inflate storage costs.
+- Always set `tracing.endpoint` explicitly — do not rely on `OTEL_EXPORTER_OTLP_ENDPOINT`
+  to route spans to a remote collector; eRPC overrides it unconditionally.
+- Enable `tracing.tls.enabled: true` for any span export that leaves a trusted network;
+  the default is `WithInsecure()`.
+- Force-trace via the `X-ERPC-Force-Trace: true` request header during integration testing
+  to capture full detail without raising global sample rate.
+
+### Edge cases & gotchas
+
+1. **`initOnce.Do` means tracing config cannot change after first `NewERPC`.** Tests or
+   multi-tenant code creating multiple ERPC instances will silently use only the first
+   instance's tracing config. Source: <SourceLink file="common/tracing_core.go" lines="53" />
+2. **`sampleRate: 0` in YAML means "always sample", not "never sample".** `SetDefaults`
+   replaces `0` with `1.0`. To keep tracing enabled but silent, set `0.0000001` or a very
+   small positive value. Source: <SourceLink file="common/defaults.go" lines="629-631" />
+3. **Force-trace network matching requires URL parsing to have succeeded.** `forceTraceMatchers`
+   with `network` patterns never match admin or healthcheck requests. Source: <SourceLink file="erpc/http_server.go" lines="285-288" />
+4. **W3C traceparent injection into HTTP responses is unconditional** when tracing is enabled
+   — including error responses. Trace IDs are observable to callers. Source: <SourceLink file="erpc/http_server.go" lines="701" />
+5. **gRPC server has no OTel trace extraction.** gRPC-originated requests start with a fresh
+   root span, not as children of the caller's trace. Source: `erpc/grpc_server.go`
+6. **TLS on the OTLP exporter is off by default.** Both gRPC and HTTP exporters use
+   `WithInsecure()` unless `tracing.tls.enabled: true`. Production deployments sending spans
+   over the internet should enable TLS. Source: <SourceLink file="common/tracing_core.go" lines="187" />
+7. **`OTEL_EXPORTER_OTLP_ENDPOINT` is silently overridden.** eRPC always calls
+   `WithEndpoint(cfg.Endpoint)`, so this env var has no effect. Set `tracing.endpoint` in
+   config explicitly. Source: <SourceLink file="common/tracing_core.go" lines="197" />
+8. **`OTEL_TRACES_SAMPLER` and `OTEL_PROPAGATORS` have no effect.** eRPC supplies its own
+   sampler and propagator via explicit SDK options. Source: <SourceLink file="common/tracing_core.go" lines="109" />
+9. **`OTEL_EXPORTER_OTLP_HEADERS` only takes effect when `tracing.headers` is nil/empty in
+   config.** Source: <SourceLink file="common/tracing_core.go" lines="200-202" />
+10. **`util.RedactEndpoint` drops the entire hostname for standard http/https URLs.** An
+    endpoint like `https://eth-mainnet.alchemyapi.io/v2/SECRET` becomes
+    `https#redacted=ab3c4`. Only native-protocol and repository-type endpoints keep
+    `scheme://host`. Source: <SourceLink file="util/redact.go" lines="32-34" />
+11. **`LOG_LEVEL` env var is applied twice** — once globally before config load, and again
+    when `getConfig` overrides `cfg.LogLevel`. The second application persists into the
+    running instance and always wins over the YAML `logLevel`. Source: <SourceLink file="cmd/erpc/main.go" lines="354-363" />
+12. **OTel debug logging (zerologr bridge) is wired only at tracing init time.** If zerolog
+    level is not `<= Debug` when `InitializeTracing` runs, OTel SDK internals are never
+    logged, even if you lower the level later via the admin API. Source: <SourceLink file="common/tracing_core.go" lines="119-122" />
+13. **`console.error` in TypeScript config scripts throws `TypeError`.** Only `debug`,
+    `info`, `log`, `trace`, and `warn` are registered in the Sobek runtime. Source: <SourceLink file="common/console.go" lines="15-21" />
+
+### Observability
+
+There are no Prometheus metrics emitted by the tracing or logging subsystem. The tracing
+pipeline is a pure OTel concern; OTLP export errors are logged at `trace` level only and do
+not increment any counter.
+
+**Notable log messages:**
+
+| Level | Message | When |
+|---|---|---|
+| info | `"OpenTelemetry tracing is disabled"` | `tracing.enabled = false` |
+| info | `"initializing OpenTelemetry tracing"` + endpoint/protocol/sampleRate/detailed | Before exporter creation |
+| info | `"OpenTelemetry debug logging enabled"` | Only if zerolog level ≤ debug at init time |
+| info | `"OpenTelemetry tracing initialized successfully"` | After successful init |
+| info | `"force-trace matcher configured"` + index/network/method | Once per configured matcher |
+| trace | `"open telemetry export error"` | OTLP export failure |
+| error | `"failed to create span exporter"` | Exporter init failure |
+| error | `"failed to create resource"` | OTel resource build failure |
+| error | `"failed to initialize tracing"` | From `NewERPC` when `InitializeTracing` errors |
+| error | `"failed to shutdown tracer provider"` | On process shutdown |
+| warn | `"invalid log level '%s', defaulting to 'debug'"` | Unrecognized `logLevel` value |
+| info | (empty message, `config` JSON field) | Startup when level ≤ info: full redacted config dump |
+
+**OTel span name inventory.** "normal" = emitted when `tracing.enabled`; "detail" = emitted
+only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start` directly
+(same threshold as normal). OTel instrumentation name: `"github.com/erpc/erpc"`.
+
+<details>
+<summary>All 126 span names (expand)</summary>
+
+| Span name | Mode | Call site |
+|---|---|---|
+| `Cache.FindGetPolicies` | detail | `architecture/evm/json_rpc_cache.go:L173` |
+| `Cache.Get` | normal | `architecture/evm/json_rpc_cache.go:L153` |
+| `Cache.GetForPolicy` | detail | `architecture/evm/json_rpc_cache.go:L241` |
+| `Cache.Set` | normal | `architecture/evm/json_rpc_cache.go:L572` |
+| `ConnectorFailsafe.Delete` | detail | `data/failsafe.go:L286` |
+| `ConnectorFailsafe.Get` | detail | `data/failsafe.go:L224` |
+| `ConnectorFailsafe.Set` | detail | `data/failsafe.go:L253` |
+| `Consensus.CollectResponses` | detail | `consensus/executor.go:L189` |
+| `Consensus.Run` | normal | `consensus/executor.go:L1282` |
+| `CounterInt64.TryUpdate` | normal | `data/shared_state_variable.go:L365` |
+| `CounterInt64.TryUpdateIfStale` | normal | `data/shared_state_variable.go:L391` |
+| `CounterInt64.TryUpdateIfStale.AcquireMutex` | normal | `data/shared_state_variable.go:L405` |
+| `CounterInt64.TryUpdateIfStale.ExecuteRefresh` | normal | `data/shared_state_variable.go:L430` |
+| `DynamoDBConnector.Delete` | normal | `data/dynamodb.go:L833` |
+| `DynamoDBConnector.Get` | normal | `data/dynamodb.go:L414` |
+| `DynamoDBConnector.List` | normal | `data/dynamodb.go:L874` |
+| `DynamoDBConnector.Lock` | normal | `data/dynamodb.go:L579` |
+| `DynamoDBConnector.Set` | normal | `data/dynamodb.go:L355` |
+| `DynamoDBConnector.Unlock` | normal | `data/dynamodb.go:L691` |
+| `DynamoDBConnector.getSimpleValue` | detail | `data/dynamodb.go:L766` |
+| `Evm.ExtractBlockReferenceFromRequest` | detail | `architecture/evm/block_ref.go:L19` |
+| `Evm.ExtractBlockReferenceFromResponse` | detail | `architecture/evm/block_ref.go:L118` |
+| `Evm.ExtractBlockTimestampFromResponse` | detail | `architecture/evm/block_ref.go:L191` |
+| `Evm.PickHighestBlock` | detail | `architecture/evm/eth_getBlockByNumber.go:L336` |
+| `Evm.extractRefFromJsonRpcRequest` | detail | `architecture/evm/block_ref.go:L240` |
+| `Evm.extractRefFromJsonRpcResponse` | detail | `architecture/evm/block_ref.go:L314` |
+| `EvmStatePoller.PollFinalizedBlockNumber` | detail | `architecture/evm/evm_state_poller.go:L491` |
+| `EvmStatePoller.PollLatestBlockNumber` | detail | `architecture/evm/evm_state_poller.go:L394` |
+| `GrpcBdsClient.GetBlockByHash` | detail | `clients/grpc_bds_client.go:L365` |
+| `GrpcBdsClient.GetBlockByNumber` | detail | `clients/grpc_bds_client.go:L422` |
+| `GrpcBdsClient.GetLogs` | detail | `clients/grpc_bds_client.go:L632` |
+| `GrpcBdsClient.QueryBlocks` | detail | `clients/grpc_bds_client.go:L1097` |
+| `GrpcBdsClient.QueryLogs` | detail | `clients/grpc_bds_client.go:L1173` |
+| `GrpcBdsClient.QueryTraces` | detail | `clients/grpc_bds_client.go:L1209` |
+| `GrpcBdsClient.QueryTransactions` | detail | `clients/grpc_bds_client.go:L1138` |
+| `GrpcBdsClient.QueryTransfers` | detail | `clients/grpc_bds_client.go:L1245` |
+| `GrpcBdsClient.SendRequest` | normal | `clients/grpc_bds_client.go:L194` |
+| `Http.ParseRequests` | detail | `erpc/http_server.go:L397` |
+| `Http.ReadBody` | detail | `erpc/http_server.go:L373` |
+| `Http.ReceivedRequest` | normal | `common/tracing_util.go:L96` |
+| `HttpJsonRpcClient.sendSingleRequest` | normal | `clients/http_json_rpc_client.go:L675` |
+| `HttpServer.WriteResponse` | detail | `erpc/http_server.go:L680` |
+| `JsonRpcRequest.Lock` | detail | `common/json_rpc.go:L1229` |
+| `JsonRpcRequest.RLock` | detail | `common/json_rpc.go:L1235` |
+| `JsonRpcResponse.IsResultEmptyish` | detail | `common/json_rpc.go:L799` |
+| `JsonRpcResponse.ParseFromStream` | detail | `common/json_rpc.go:L288` |
+| `JsonRpcResponse.PeekBytesByPath` | detail | `common/json_rpc.go:L486` |
+| `JsonRpcResponse.PeekStringByPath` | detail | `common/json_rpc.go:L464` |
+| `Multiplexer.Close` | detail | `erpc/multiplexer.go:L37` |
+| `Network.EnrichStatePoller` | detail | `erpc/networks.go:L2146` |
+| `Network.EvmHighestFinalizedBlockNumber` | detail | `erpc/networks.go:L679` |
+| `Network.EvmHighestLatestBlockNumber` | detail | `erpc/networks.go:L518` |
+| `Network.EvmLowestFinalizedBlockNumber` | detail | `erpc/networks.go:L855` |
+| `Network.Forward` | normal | `erpc/networks.go:L943` |
+| `Network.GetFinality` | detail | `erpc/networks.go:L1646` |
+| `Network.NormalizeResponse` | detail | `erpc/networks.go:L2235` |
+| `Network.PostForward.eth_getBlockByNumber` | detail | `architecture/evm/eth_getBlockByNumber.go:L44` |
+| `Network.PostForward.eth_sendRawTransaction` | detail | `architecture/evm/eth_sendRawTransaction.go:L280` |
+| `Network.PostForwardHook` | detail | `architecture/evm/hooks.go:L64` |
+| `Network.PreForwardHook` | detail | `architecture/evm/hooks.go:L41` |
+| `Network.PreForwardHook.eth_chainId` | detail | `architecture/evm/eth_chainId.go:L79` |
+| `Network.TryForward` | detail | `erpc/networks.go:L1137` |
+| `Network.UpstreamLoop` | detail | `erpc/networks.go:L1227` |
+| `Network.WaitForMultiplexResult` | normal | `erpc/networks.go:L2058` |
+| `Network.forwardAttempt` | normal | `erpc/networks.go:L1188` |
+| `PolicyEngine.GetOrdered` | detail | `erpc/networks.go:L1023` |
+| `PostgreSQLConnector.Delete` | normal | `data/postgresql.go:L1130` |
+| `PostgreSQLConnector.Get` | normal | `data/postgresql.go:L466` |
+| `PostgreSQLConnector.List` | normal | `data/postgresql.go:L1165` |
+| `PostgreSQLConnector.Lock` | normal | `data/postgresql.go:L526` |
+| `PostgreSQLConnector.PublishCounterInt64` | normal | `data/postgresql.go:L683` |
+| `PostgreSQLConnector.Set` | normal | `data/postgresql.go:L409` |
+| `PostgreSQLConnector.Unlock` | normal | `data/postgresql.go:L589` |
+| `PostgreSQLConnector.getCurrentValue` | detail | `data/postgresql.go:L974` |
+| `PostgreSQLConnector.getWithWildcard` | detail | `data/postgresql.go:L1006` |
+| `Project.Forward` | detail | `erpc/projects.go:L103` |
+| `Project.PreForwardHook` | detail | `architecture/evm/hooks.go:L14` |
+| `Project.PreForwardHook.eth_blockNumber` | detail | `architecture/evm/eth_blockNumber.go:L16` |
+| `Project.PreForwardHook.eth_chainId` | detail | `architecture/evm/eth_chainId.go:L30` |
+| `Project.executeShadowRequest` | detail | `erpc/shadow.go:L82` |
+| `Query.Execute` | detail | `erpc/query_executor.go:L45` |
+| `Query.ForwardSubrequest` | detail | `erpc/query_shim.go:L427` |
+| `Query.ResolveQueryBounds` | detail | `erpc/query_executor.go:L277` |
+| `Query.ShimBlocks` | detail | `erpc/query_shim.go:L18` |
+| `Query.ShimLogs` | detail | `erpc/query_shim.go:L112` |
+| `Query.ShimTraces` | detail | `erpc/query_shim.go:L187` |
+| `Query.ShimTransactions` | detail | `erpc/query_shim.go:L55` |
+| `QueryStream.Handle` | normal | `erpc/request_processor.go:L76` |
+| `RateLimiter.DoLimit` | normal | `upstream/ratelimiter_budget.go:L279` |
+| `RateLimiter.TryAcquirePermit` | detail | `upstream/ratelimiter_budget.go:L161` |
+| `RedisConnector.Delete` | normal | `data/redis.go:L636` |
+| `RedisConnector.Get` | normal | `data/redis.go:L341` |
+| `RedisConnector.List` | normal | `data/redis.go:L682` |
+| `RedisConnector.Lock` | normal | `data/redis.go:L435` |
+| `RedisConnector.PublishCounterInt64` | normal | `data/redis.go:L558` |
+| `RedisConnector.Set` | normal | `data/redis.go:L281` |
+| `RedisConnector.Unlock` | normal | `data/redis.go:L612` |
+| `Request.GenerateCacheHash` | detail | `common/json_rpc.go:L1387` |
+| `Request.Handle` | direct | `common/tracing_util.go:L165` |
+| `Request.Lock` | detail | `common/request.go:L925` |
+| `Request.RLock` | detail | `common/request.go:L931` |
+| `Request.ResolveJsonRpc` | detail | `common/request.go:L939` |
+| `Response.IsObjectNull` | detail | `common/response.go:L420` |
+| `Response.Lock` | detail | `common/response.go:L84` |
+| `Response.RLock` | detail | `common/response.go:L90` |
+| `Response.ResolveJsonRpc` | detail | `common/response.go:L293` |
+| `Upstream.Forward` | normal | `upstream/upstream.go:L416` |
+| `Upstream.PostForwardHook` | detail | `architecture/evm/hooks.go:L110` |
+| `Upstream.PostForwardHook.eth_getBlockByNumber` | detail | `architecture/evm/eth_getBlockByNumber.go:L435` |
+| `Upstream.PostForwardHook.eth_getBlockReceipts` | detail | `architecture/evm/eth_getBlockReceipts.go:L31` |
+| `Upstream.PostForwardHook.eth_getLogs` | detail | `architecture/evm/eth_getLogs.go:L350` |
+| `Upstream.PostForwardHook.eth_sendRawTransaction` | detail | `architecture/evm/eth_sendRawTransaction.go:L59` |
+| `Upstream.PostForwardHook.trace_filter` | detail | `architecture/evm/trace_filter.go:L362` |
+| `Upstream.PreForwardHook` | detail | `architecture/evm/hooks.go:L87` |
+| `Upstream.PreForwardHook.eth_chainId` | detail | `architecture/evm/eth_chainId.go:L124` |
+| `Upstream.PreForwardHook.eth_getLogs` | detail | `architecture/evm/eth_getLogs.go:L289` |
+| `Upstream.PreForwardHook.trace_filter` | detail | `architecture/evm/trace_filter.go:L298` |
+| `Upstream.tryForward.PreRequest` | detail | `upstream/upstream.go:L572` |
+| `Upstream.tryForward.SendRequest` | detail | `upstream/upstream.go:L630` |
+| `UpstreamsRegistry.GetNetworkUpstreams` | detail | `upstream/registry.go:L349` |
+| `UpstreamsRegistry.GetSortedUpstreams` | detail | `upstream/registry.go:L387` |
+| `UpstreamsRegistry.buildProviderBootstrapTask` | detail | `upstream/registry.go:L485` |
+| `UpstreamsRegistry.buildUpstreamBootstrapTask` | detail | `upstream/registry.go:L431` |
+| `createSyntheticSuccessResponse` | detail | `architecture/evm/eth_sendRawTransaction.go:L179` |
+| `extractTxHashFromSendRawTransaction` | detail | `architecture/evm/eth_sendRawTransaction.go:L136` |
+| `verifyAndHandleNonceTooLow` | detail | `architecture/evm/eth_sendRawTransaction.go:L206` |
+
+</details>
+
+### Source code entry points
+
+- [`common/tracing_core.go:L53-L170`](https://github.com/erpc/erpc/blob/main/common/tracing_core.go#L53-L170) — `InitializeTracing`: exporter creation, sampler construction, propagator setup, `forceTraceSampler`, `IsTracingEnabled`/`IsTracingDetailed` globals
+- [`common/tracing_util.go:L1-L234`](https://github.com/erpc/erpc/blob/main/common/tracing_util.go#L1-L234) — `noopSpan` singleton, `StartSpan`/`StartDetailSpan` helpers, `StartHTTPServerSpan`, `StartRequestSpan`/`EndRequestSpan`, `InjectHTTPResponseTraceContext`
+- [`common/defaults.go:L618-L637`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L618-L637) — `TracingConfig.SetDefaults`: protocol, endpoint, sampleRate, serviceName
+- [`common/config.go:L218-L235`](https://github.com/erpc/erpc/blob/main/common/config.go#L218-L235) — `TracingConfig` struct definition
+- [`common/config.go:L397-L503`](https://github.com/erpc/erpc/blob/main/common/config.go#L397-L503) — `MarshalJSON`/`MarshalYAML` redaction overrides for secret-bearing config types
+- [`util/redact.go:L10-L36`](https://github.com/erpc/erpc/blob/main/util/redact.go#L10-L36) — `RedactEndpoint`: SHA-256-based URL sanitization with scheme-aware rules
+- [`cmd/erpc/main.go:L48-L66`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L48-L66) — zerolog global setup: `TimeFieldFormat`, `ErrorMarshalFunc`, `LOG_WRITER` console mode, `LOG_LEVEL` env override
+- [`erpc/erpc.go:L31-L99`](https://github.com/erpc/erpc/blob/main/erpc/erpc.go#L31-L99) — calls `InitializeTracing` on startup, registers shutdown goroutine with 5-second grace period
+- [`erpc/http_server.go:L285-L288`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L285-L288) — network context for force-trace matcher evaluation
+- [`erpc/http_server.go:L701`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L701) — W3C traceparent injection into HTTP response headers
+- [`erpc/init.go:L27-L42`](https://github.com/erpc/erpc/blob/main/erpc/init.go#L27-L42) — parses `cfg.LogLevel` into zerolog level; logs full redacted config at info level
+- [`common/console.go:L15-L29`](https://github.com/erpc/erpc/blob/main/common/console.go#L15-L29) — JS/TS `console.{debug,info,log,trace,warn}` → zerolog bridge (note: `console.error` is absent)
+- [`common/runtime.go:L39`](https://github.com/erpc/erpc/blob/main/common/runtime.go#L39) — installs `console` object into every Sobek runtime
+- [`cmd/erpc/initflags.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/initflags.go) — `ERPC_NOLOGS=1` → zerolog.Disabled + io.Discard writer (build-tagged, non-test only)
+
+### Related pages
+
+- [Metrics & Prometheus](/operation/metrics) — the Prometheus side of observability; no overlap with OTel spans.
+- [Admin API](/operation/admin) — runtime log-level changes via the admin endpoint.
+- [Health checks](/operation/health-check) — healthcheck requests bypass force-trace network matchers.
+- [Deployment](/deployment/docker) — how to wire an OTel collector sidecar alongside eRPC.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

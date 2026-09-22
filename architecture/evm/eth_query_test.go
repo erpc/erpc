@@ -94,6 +94,9 @@ func (u *queryTestConfigUpstream) Forward(ctx context.Context, nq *common.Normal
 func (u *queryTestConfigUpstream) Cordon(method string, reason string)   {}
 func (u *queryTestConfigUpstream) Uncordon(method string, reason string) {}
 func (u *queryTestConfigUpstream) IgnoreMethod(method string)            {}
+func (u *queryTestConfigUpstream) ShouldHandleMethod(method string) (bool, error) {
+	return true, nil
+}
 
 func TestParseQueryRequest_ResolvesCursorAndSelections(t *testing.T) {
 	network := &queryTestNetwork{

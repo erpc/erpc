@@ -4,37 +4,37 @@
 //
 // Architecture (browser drives traffic, backend executes real eRPC):
 //
-//   ┌──────────────────────────────────────────────────────────────────────┐
-//   │  erpc-simulator (Go)                                                 │
-//   │                                                                      │
-//   │   ┌─────────────────────┐    ┌──────────────────────────┐            │
-//   │   │ static asset server │    │  WebSocket /ws            │            │
-//   │   │ /index.html, .css,  │    │  per-conn Session:        │            │
-//   │   │ .jsx, .js (embed.FS)│    │   - reads send-batch      │            │
-//   │   └─────────────────────┘    │   - executes via          │            │
-//   │             ↑                │     Orchestrator.Execute  │            │
-//   │     HTTP    │                │   - flushes stats + traces│            │
-//   │             ↓                └────────────┬──────────────┘            │
-//   │                                           ↓                           │
-//   │                              ┌────────────────────────────┐           │
-//   │                              │  Orchestrator               │          │
-//   │                              │   ├─ real *erpc.ERPC        │          │
-//   │                              │   ├─ real *erpc.Network     │          │
-//   │                              │   │     ↓ Forward(ctx,req)  │          │
-//   │                              │   ├─ UpstreamHub (fakes)    │          │
-//   │                              │   │     ↑ HTTP loopback     │          │
-//   │                              │   └─ Rolling counters       │          │
-//   │                              │       + scenario loop       │          │
-//   │                              └────────────────────────────┘           │
-//   └──────────────────────────────────────────────────────────────────────┘
-//                                       ↑ WebSocket (JSON frames)
-//   ┌──────────────────────────────────────────────────────────────────────┐
-//   │  Browser tab                                                         │
-//   │   - React + Babel UI                                                 │
-//   │   - simulator.js: traffic generator (poisson/constant/bursty),       │
-//   │     method sampler, WS shim. Sends `send-batch` frames per tick.     │
-//   │   - flow stage, charts, policy editor, knob panel, log/drawer.       │
-//   └──────────────────────────────────────────────────────────────────────┘
+//	┌──────────────────────────────────────────────────────────────────────┐
+//	│  erpc-simulator (Go)                                                 │
+//	│                                                                      │
+//	│   ┌─────────────────────┐    ┌──────────────────────────┐            │
+//	│   │ static asset server │    │  WebSocket /ws            │            │
+//	│   │ /index.html, .css,  │    │  per-conn Session:        │            │
+//	│   │ .jsx, .js (embed.FS)│    │   - reads send-batch      │            │
+//	│   └─────────────────────┘    │   - executes via          │            │
+//	│             ↑                │     Orchestrator.Execute  │            │
+//	│     HTTP    │                │   - flushes stats + traces│            │
+//	│             ↓                └────────────┬──────────────┘            │
+//	│                                           ↓                           │
+//	│                              ┌────────────────────────────┐           │
+//	│                              │  Orchestrator               │          │
+//	│                              │   ├─ real *erpc.ERPC        │          │
+//	│                              │   ├─ real *erpc.Network     │          │
+//	│                              │   │     ↓ Forward(ctx,req)  │          │
+//	│                              │   ├─ UpstreamHub (fakes)    │          │
+//	│                              │   │     ↑ HTTP loopback     │          │
+//	│                              │   └─ Rolling counters       │          │
+//	│                              │       + scenario loop       │          │
+//	│                              └────────────────────────────┘           │
+//	└──────────────────────────────────────────────────────────────────────┘
+//	                                    ↑ WebSocket (JSON frames)
+//	┌──────────────────────────────────────────────────────────────────────┐
+//	│  Browser tab                                                         │
+//	│   - React + Babel UI                                                 │
+//	│   - simulator.js: traffic generator (poisson/constant/bursty),       │
+//	│     method sampler, WS shim. Sends `send-batch` frames per tick.     │
+//	│   - flow stage, charts, policy editor, knob panel, log/drawer.       │
+//	└──────────────────────────────────────────────────────────────────────┘
 //
 // Usage:
 //
@@ -96,6 +96,16 @@ func main() {
 	// and idiomatic queries — so an AI agent investigating the dump after
 	// the fact has everything it needs in one place.
 	dumpFile := flag.String("dump-file", "", "path to write a JSONL dump of every simulator event (boot, knob/policy/config changes, requests). Empty disables.")
+	// `-preset svm` boots the Solana seed (svm:mainnet-beta network +
+	// SVM upstreams advancing 400ms synthetic slots) instead of the
+	// default eth-mainnet one. Knobs, policy editor, failsafe, charts
+	// all work identically.
+	preset := flag.String("preset", "evm", "seed config preset: evm | svm")
+	// `-seed-file` boots from an operator-provided YAML instead of a
+	// built-in preset — e.g. a copy of a production topology. Endpoints
+	// are still rewritten to the synthetic loopback hub; the file only
+	// shapes topology (upstream ids/vendors/tags, network, failsafe).
+	seedFile := flag.String("seed-file", "", "path to a seed config YAML (overrides -preset)")
 	flag.Parse()
 
 	level, err := zerolog.ParseLevel(*logLevel)
@@ -122,6 +132,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "erpc-simulator: dumping events to %s\n", *dumpFile)
 	}
 
+	seedYAML := simulator.SeedYAMLExpanded
+	switch *preset {
+	case "evm":
+	case "svm":
+		seedYAML = simulator.SeedYAMLSvmExpanded
+	default:
+		logger.Fatal().Str("preset", *preset).Msg("erpc-simulator: unknown -preset (want evm or svm)")
+	}
+	if *seedFile != "" {
+		s, serr := simulator.SeedFromFile(*seedFile)
+		if serr != nil {
+			logger.Fatal().Err(serr).Str("path", *seedFile).Msg("erpc-simulator: -seed-file load failed")
+		}
+		seedYAML = s
+	}
+
 	o, err := simulator.New(simulator.Options{
 		Logger: logger,
 		// Use the placeholder-EXPANDED seed (built once at init() in
@@ -129,7 +155,7 @@ func main() {
 		// const keeps the `{SELECTION_POLICY_FUNC}` placeholder for the
 		// frontend's "↺ default" button on the YAML editor, but the
 		// orchestrator needs a fully-formed eRPC config to boot.
-		SeedYAML:        simulator.SeedYAMLExpanded,
+		SeedYAML:        seedYAML,
 		UpstreamHubBind: "127.0.0.1:0",
 		Dumper:          dumper,
 	})

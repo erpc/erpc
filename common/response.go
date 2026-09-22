@@ -29,6 +29,12 @@ type NormalizedResponse struct {
 	evmBlockRef     atomic.Value
 	finality        atomic.Value // Cached finality state
 
+	// integrityRejected marks a response a content-integrity check rejected: it
+	// must never (re-)enter a request's last-valid-response slot (an attempt
+	// stores its response as LVR BEFORE post-forward validation runs, so a
+	// hedged corrupt body could otherwise be re-served after the reject).
+	integrityRejected atomic.Bool
+
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
 
@@ -288,6 +294,18 @@ func (r *NormalizedResponse) WithFromCache(fromCache bool) *NormalizedResponse {
 	return r
 }
 
+// WithFinality explicitly sets the finality of the response, bypassing the
+// automatic derivation logic. Use this when constructing synthetic responses
+// (e.g. in tests or direct cache seeding) where the normal upstream/network
+// inference is not available.
+func (r *NormalizedResponse) WithFinality(f DataFinalityState) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.finality.Store(f)
+	return r
+}
+
 func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcResponse, error) {
 	if len(ctx) > 0 {
 		_, span := StartDetailSpan(ctx[0], "Response.ResolveJsonRpc")
@@ -391,6 +409,20 @@ func (r *NormalizedResponse) Request() *NormalizedRequest {
 	r.RLock()
 	defer r.RUnlock()
 	return r.request
+}
+
+// MarkIntegrityRejected flags this response as rejected by a content-integrity
+// check — see the field comment; SetLastValidResponse refuses marked responses.
+func (r *NormalizedResponse) MarkIntegrityRejected() {
+	if r != nil {
+		r.integrityRejected.Store(true)
+	}
+}
+
+// IsIntegrityRejected reports whether a content-integrity check rejected this
+// response.
+func (r *NormalizedResponse) IsIntegrityRejected() bool {
+	return r != nil && r.integrityRejected.Load()
 }
 
 func (r *NormalizedResponse) IsResultEmptyish(ctx ...context.Context) bool {

@@ -40,9 +40,9 @@ func ResolveEffectiveSelectionPolicies(cfg *common.Config) {
 	// read their source. Errors disable resolution silently — dump is
 	// best-effort.
 	var (
-		tsVM        *sobek.Runtime
-		tsVMTried   bool
-		tsVMReady   bool
+		tsVM      *sobek.Runtime
+		tsVMTried bool
+		tsVMReady bool
 	)
 	resolveTS := func(id string) (string, bool) {
 		if id == "" || cfg.UserScript == nil {

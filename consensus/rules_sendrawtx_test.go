@@ -62,7 +62,7 @@ func TestSendRawTransaction_ConsensusRule(t *testing.T) {
 		}
 
 		require.NotNil(t, matchedRule, "eth_sendRawTransaction rule should match")
-		assert.Contains(t, matchedRule.Description, "eth_sendRawTransaction")
+		assert.Contains(t, matchedRule.Description, "tx broadcast")
 
 		result := matchedRule.Action(analysis)
 		require.NotNil(t, result)
@@ -210,7 +210,7 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 
 		// Find and test the eth_sendRawTransaction short-circuit rule (should be first)
 		shortCircuitRule := shortCircuitRules[0]
-		assert.Contains(t, shortCircuitRule.Description, "eth_sendRawTransaction")
+		assert.Contains(t, shortCircuitRule.Description, "tx broadcast")
 		assert.Equal(t, "sendrawtx_first_success", shortCircuitRule.Reason)
 
 		shouldShortCircuit := shortCircuitRule.Condition(winner, analysis)
@@ -327,11 +327,11 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 func TestSendRawTransaction_RulePriority(t *testing.T) {
 	t.Run("eth_sendRawTransaction rule is evaluated first", func(t *testing.T) {
 		// Verify the eth_sendRawTransaction consensus rule is first
-		assert.Contains(t, consensusRules[0].Description, "eth_sendRawTransaction",
+		assert.Contains(t, consensusRules[0].Description, "tx broadcast",
 			"eth_sendRawTransaction consensus rule should be first in the rules list")
 
 		// Verify the eth_sendRawTransaction short-circuit rule is first
-		assert.Contains(t, shortCircuitRules[0].Description, "eth_sendRawTransaction",
+		assert.Contains(t, shortCircuitRules[0].Description, "tx broadcast",
 			"eth_sendRawTransaction short-circuit rule should be first in the rules list")
 	})
 

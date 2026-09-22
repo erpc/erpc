@@ -416,6 +416,54 @@ func TestExtractBlockReference(t *testing.T) {
 			expectedNum: 437,
 			expectedErr: false,
 		},
+		// Non-canonical method casings must extract the same refs as canonical
+		// casing: hook dispatch routes methods case-insensitively, so the
+		// method-config lookup resolves case-insensitively too (lookup-only —
+		// the wire method string itself stays verbatim).
+		{
+			name: "ETH_CALL uppercase casing extracts like eth_call",
+			request: &common.JsonRpcRequest{
+				Method: "ETH_CALL",
+				Params: []interface{}{
+					map[string]interface{}{
+						"to": "0x6b175474e89094c44da98b954eedeac495271d0f",
+					},
+					"0x1b4",
+				},
+			},
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
+		},
+		{
+			name: "eth_getblockbynumber all-lowercase casing extracts like eth_getBlockByNumber",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getblockbynumber",
+				Params: []interface{}{"0xc5043f", false},
+			},
+			expectedRef: "12911679",
+			expectedNum: 12911679,
+			expectedErr: false,
+		},
+		{
+			name: "ETH_GETTRANSACTIONRECEIPT uppercase casing extracts from response like canonical",
+			request: &common.JsonRpcRequest{
+				Method: "ETH_GETTRANSACTIONRECEIPT",
+			},
+			response:    common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`{"blockNumber":"0x1b4","blockHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`), nil),
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
+		},
+		{
+			name: "eth_ChainId mixed casing resolves the static-table entry",
+			request: &common.JsonRpcRequest{
+				Method: "eth_ChainId",
+			},
+			expectedRef: "*",
+			expectedNum: 1,
+			expectedErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -530,4 +578,24 @@ func TestResolveCacheBlockRef(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "earliest", ref, "earliest does not move with the tip; must not be rewritten")
 	})
+}
+
+// Operator-defined methods.definitions keys resolve case-insensitively as
+// well, with an exact-case hit taking precedence (see
+// common.FindCacheMethodConfig for the tie-break rules).
+func TestGetMethodConfigOperatorDefinitionsCaseInsensitive(t *testing.T) {
+	customCfg := &common.CacheMethodConfig{ReqRefs: common.FirstParam}
+	n := &mockNetwork{}
+	n.On("Config").Return(&common.NetworkConfig{
+		Methods: &common.MethodsConfig{
+			Definitions: map[string]*common.CacheMethodConfig{
+				"custom_traceThing": customCfg,
+			},
+		},
+	})
+
+	assert.Same(t, customCfg, getMethodConfig("custom_traceThing", n), "exact casing resolves")
+	assert.Same(t, customCfg, getMethodConfig("CUSTOM_TRACETHING", n), "non-canonical casing resolves the operator key")
+	assert.Same(t, customCfg, getMethodConfig("custom_tracething", n), "lowercase casing resolves the operator key")
+	assert.Nil(t, getMethodConfig("custom_otherThing", n), "unrelated methods still miss")
 }

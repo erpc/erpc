@@ -1,9 +1,11 @@
-FROM prom/prometheus:v3.9.1@sha256:1f0f50f06acaceb0f5670d2c8a658a599affe7b0d8e78b898c1035653849a702 as prometheus
-FROM grafana/grafana:12.3.3@sha256:9e1e77ade304069aee3196e9a4f210830e96e80ce9a2640891eccc324b152faf as grafana
+FROM prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69 as prometheus
+FROM grafana/grafana:12.4.7@sha256:0b059afc13dc5bd60ac35b8655976faa1b6f61ef83fc87491a03a7cdb8bf9d18 as grafana
 
-FROM ubuntu:22.10@sha256:e322f4808315c387868a9135beeb11435b5b83130a8599fd7d0014452c34f489
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
-RUN apt-get update && apt-get install -y curl
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
 
 # Copy Prometheus files
 COPY --from=prometheus /bin/prometheus /bin/prometheus

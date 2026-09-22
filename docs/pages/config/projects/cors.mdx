@@ -1,222 +1,226 @@
 ---
 title: CORS
-description: Configure Cross-Origin Resource Sharing (CORS) per project so browser-based frontends can call eRPC directly — control which origins, methods, and headers are permitted.
+description: Let your frontend talk to eRPC safely — configure which browser origins are allowed, in seconds, without blocking a single server-to-server call.
 ---
 
-import { Callout } from "nextra/components";
-import { ConfigTabs, ConfigCode, AISection, LLMsTxtLink } from "../../../components";
-
-# CORS
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
 
 <LLMsTxtLink />
 
-When your frontend calls eRPC directly from the browser, you need CORS configured so browsers allow the cross-origin request. eRPC evaluates the `Origin` header on every incoming request and, when it matches an allowed origin, adds the appropriate `Access-Control-*` response headers.
+# CORS
 
-**You can configure:**
+Your backend calls always get through — eRPC only applies CORS to requests that carry an `Origin` header, which is every browser and nothing else. Add `cors.allowedOrigins` to a project and browser clients from your listed domains are allowed in; everyone else is quietly blocked by the browser. No config change needed for your servers, indexers, or scripts.
 
-- **`allowedOrigins`** — exact origins or wildcard-subdomain patterns (e.g. `https://*.example.com`)
-- **`allowedMethods`** — HTTP methods browsers may use (`GET`, `POST`, `OPTIONS`)
-- **`allowedHeaders`** — request headers the browser may send
-- **`exposedHeaders`** — response headers the browser JS may read
-- **`allowCredentials`** — whether cookies / auth headers are included
-- **`maxAge`** — how long (seconds) the browser caches a preflight response
+## Quick taste
 
-## Minimal config — single origin
+Illustrative, not a tuned production config — allow one origin and expose cache headers to browser JS:
 
 <ConfigTabs
-  path="projects > cors"
-  focus="3-10"
+  path="projects[].cors"
+  focusYaml="3-4,6-7"
+  focusTs="3-6"
   yaml={`projects:
   - id: main
     cors:
       allowedOrigins:
         - "https://app.example.com"
-      allowedMethods:
-        - "GET"
-        - "POST"
-        - "OPTIONS"
-      allowedHeaders:
-        - "Content-Type"
-    upstreams:
-      - endpoint: alchemy://\${ALCHEMY_KEY}`}
-  ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    cors: {
-      allowedOrigins: ["https://app.example.com"],
-      allowedMethods: ["GET", "POST", "OPTIONS"],
-      allowedHeaders: ["Content-Type"],
-    },
-    upstreams: [{ endpoint: \`alchemy://\${process.env.ALCHEMY_KEY}\` }],
-  }],
-});`}
-/>
-
-## Wildcard subdomains + credentials
-
-Allow any subdomain and include cookies or `Authorization` headers. Note: `allowCredentials: true` requires an explicit origin — `"*"` is rejected by browsers.
-
-<ConfigTabs
-  path="projects > cors"
-  focus="3-12"
-  yaml={`projects:
-  - id: main
-    cors:
-      allowedOrigins:
-        - "https://*.example.com"
-      allowedMethods:
-        - "GET"
-        - "POST"
-        - "OPTIONS"
-      allowedHeaders:
-        - "Content-Type"
-        - "Authorization"
+      # list every X-ERPC-* header your browser JS needs to read
       exposedHeaders:
-        - "X-Request-ID"
-      allowCredentials: true
-      maxAge: 3600`}
-  ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    cors: {
-      allowedOrigins: ["https://*.example.com"],
-      allowedMethods: ["GET", "POST", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization"],
-      exposedHeaders: ["X-Request-ID"],
-      allowCredentials: true,
-      maxAge: 3600,
-    },
-  }],
-});`}
+        - "X-ERPC-Cache"
+        - "X-ERPC-Duration"`}
+  ts={`projects: [{
+  id: "main",
+  cors: {
+    allowedOrigins: ["https://app.example.com"],
+    // list every X-ERPC-* header your browser JS needs to read
+    exposedHeaders: ["X-ERPC-Cache", "X-ERPC-Duration"],
+  },
+}]`}
 />
 
-## Development (localhost)
+## Agent reference
 
-<ConfigTabs
-  path="projects > cors"
-  focus="3-8"
-  yaml={`projects:
-  - id: main
-    cors:
-      allowedOrigins:
-        - "http://localhost:3000"
-        - "http://127.0.0.1:3000"
-      allowedMethods:
-        - "GET"
-        - "POST"
-        - "OPTIONS"
-      allowedHeaders:
-        - "*"
-      allowCredentials: true
-      maxAge: 86400`}
-  ts={`import { createConfig } from "@erpc-cloud/config";
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-export default createConfig({
-  projects: [{
-    id: "main",
-    cors: {
-      allowedOrigins: [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-      ],
-      allowedMethods: ["GET", "POST", "OPTIONS"],
-      allowedHeaders: ["*"],
-      allowCredentials: true,
-      maxAge: 86400,
-    },
-  }],
-});`}
+<PromptExample
+	n={1}
+	title="serve my dApp frontend directly from eRPC"
+	defaultOpen
+	prompt={`My dApp frontend at https://app.example.com needs to call my eRPC endpoint directly
+from the browser. Configure CORS so only my origins are allowed, preflight requests
+are handled correctly, and local development on localhost keeps working. Work with
+my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/projects/cors.llms.txt`}
 />
 
-<AISection title="Copy for your AI assistant — full CORS reference">
+<PromptExample
+	n={2}
+	title="debug browser requests being blocked"
+	prompt={`Browser requests to my eRPC endpoint fail with CORS errors while curl works fine.
+Diagnose which CORS setting is wrong (origins, methods, headers, credentials) in my
+eRPC config and fix it, then explain what preflight response eRPC sends for my
+corrected config. Reference:
+https://docs.erpc.cloud/config/projects/cors.llms.txt`}
+/>
 
-### `CORSConfig` — all fields
+<AISection title="CORS — full agent reference">
 
-| Field | Type | Default | Notes |
+### How it works
+
+`handleCORS` ([`erpc/http_server.go:1008-1077`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1008-L1077)) is called right after project resolution, once per inbound request.
+
+**No `Origin` header → always allowed.** The code comment at `erpc/http_server.go:1010-1018` explicitly states this is a soft deterrent against casual browser embedding, not a security boundary. Server-to-server callers, indexers, `curl`, and any client that omits `Origin` bypass CORS entirely and go straight to JSON-RPC processing. No headers are written and no metrics fire.
+
+**With an `Origin` header present**, eRPC increments `erpc_cors_requests_total`, then evaluates each `allowedOrigins` pattern via `WildcardMatch` (eRPC's glob+boolean grammar). First match wins; pattern-match errors are logged at debug and the pattern is skipped.
+
+**Allowed origin:** eRPC writes `Access-Control-Allow-Origin` set to the echoed request origin (never the literal `*`), plus `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, `Access-Control-Expose-Headers`, and conditionally `Access-Control-Allow-Credentials` and `Access-Control-Max-Age`. An `OPTIONS` preflight then terminates with HTTP 204 before any JSON-RPC parsing happens.
+
+**Disallowed origin:** eRPC omits all `Access-Control-*` headers but still processes the request — non-OPTIONS requests continue and produce a full JSON-RPC response; the browser enforces the block. OPTIONS returns a bare 204. [`erpc/http_server.go:1035-1051`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1035-L1051)
+
+**CORS for a project runs only when `cors` is configured.** When `cors: nil`, OPTIONS falls through to the JSON-RPC body parser and errors instead of returning a clean 204. [`erpc/http_server.go:343-347`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L343-L347)
+
+**Admin CORS** is a separate surface evaluated before any admin request handling (`erpc/http_server.go:295-301`). When `admin` is configured but `admin.cors` is absent, `SetDefaults` auto-injects `{allowedOrigins: ["*"], allowCredentials: false}` — safe because admin endpoints require a secret token.
+
+**Origin pattern syntax.** `allowedOrigins` entries are full `WildcardMatch` patterns: `*` = any sequence, `?` = exactly one character, `.` = **any single character** (not a literal dot — see gotchas), `|` OR, `&` AND, `!` NOT, parentheses for grouping. Precedence: NOT &gt; AND &gt; OR. Examples: `"https://*.example.com"` allows all subdomains; `"https://app.example.com | https://staging.example.com"` allows either of two explicit origins. Source: [`common/matcher.go:34-47`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L34-L47).
+
+### Config schema
+
+All fields belong to `projects[].cors` (`CORSConfig`, <SourceLink file="common/config.go" lines="658-665" />). Defaults applied by <SourceLink file="common/defaults.go" lines="2824-2846" />. Validation at <SourceLink file="common/validation.go" lines="773-775" />.
+
+| Field | Type | Default (after `SetDefaults`) | Behavior / footguns |
 |---|---|---|---|
-| `allowedOrigins` | `string[]` | `[]` | Origins permitted to make cross-origin requests. Supports exact strings (`https://app.example.com`) and wildcard-subdomain patterns (`https://*.example.com`). Use `["*"]` to allow any origin — but NOT with `allowCredentials: true`. |
-| `allowedMethods` | `string[]` | `[]` | HTTP methods the browser may use. For JSON-RPC over POST, minimum is `["POST", "OPTIONS"]`. Include `GET` if you also serve REST-style endpoints. |
-| `allowedHeaders` | `string[]` | `[]` | Request headers the browser is allowed to send. Use `["*"]` to allow all headers (non-standard headers still require explicit listing in some older browsers). Typical set: `["Content-Type", "Authorization"]`. |
-| `exposedHeaders` | `string[]` | `[]` | Response headers the browser JS may read via `response.headers.get(...)`. By default only a small safe-listed set (`Cache-Control`, `Content-Language`, `Content-Type`, `Expires`, `Last-Modified`, `Pragma`) is accessible. |
-| `allowCredentials` | `bool` | `false` | When `true`, tells browsers to include cookies, `Authorization` headers, and TLS client certs. **Cannot be combined with `allowedOrigins: ["*"]`** — browsers will block the response. |
-| `maxAge` | `int` | `0` | Seconds the browser caches the preflight (`OPTIONS`) response. Reduces preflight round-trips. Common values: `300` (5 min), `3600` (1 h). Maximum varies by browser — Chrome caps at 7200, Firefox at 86400. |
+| `cors.allowedOrigins` | `[]string` | **Required** — validation errors if missing/empty (`*.cors.allowedOrigins is required`). `["*"]` only for auto-injected admin CORS and programmatic configs that skip validation. | Each entry is a full `WildcardMatch` pattern matched against the `Origin` header. First match wins; match errors are logged and the pattern is skipped. Source: <SourceLink file="erpc/http_server.go" lines="1022-1033" /> |
+| `cors.allowedMethods` | `[]string` | `["GET","POST","OPTIONS"]` | Joined into `Access-Control-Allow-Methods`. No server-side enforcement; informational for the browser preflight. Source: <SourceLink file="common/defaults.go" lines="2828-2830" /> |
+| `cors.allowedHeaders` | `[]string` | `["content-type","authorization","x-erpc-secret-token"]` | Joined into `Access-Control-Allow-Headers`. Source: <SourceLink file="common/defaults.go" lines="2831-2837" /> |
+| `cors.exposedHeaders` | `[]string` | `nil` — **no default set**; `strings.Join(nil, ", ")` emits `""` so the browser exposes zero extra headers. | Joined into `Access-Control-Expose-Headers`. **Footgun**: omitting this field silently blocks browser JS access to every `X-ERPC-*` diagnostic header. eRPC emits the following response headers that are inaccessible to browser JS without an explicit list: `X-ERPC-Cache`, `X-ERPC-Upstream`, `X-ERPC-Duration`, `X-ERPC-Attempts`, `X-ERPC-Upstream-Attempts`, `X-ERPC-Upstream-Retries`, `X-ERPC-Upstream-Hedges`, `X-ERPC-Network-Attempts`, `X-ERPC-Network-Retries`, `X-ERPC-Network-Hedges`, `X-ERPC-Consensus-Slots`, `X-ERPC-Consensus-Disputes`, `X-ERPC-Consensus-Low-Participants`, `X-ERPC-Cache-Attempts`, `X-ERPC-Cache-Retries`, `X-ERPC-Cache-Hedges`. Enumerate desired headers explicitly — glob shorthand is not part of the CORS spec. Sources: <SourceLink file="erpc/http_server.go" lines="1057" />, <SourceLink file="erpc/http_server.go" lines="1088-1204" /> |
+| `cors.allowCredentials` | `*bool` | `false` | When `true`, emits `Access-Control-Allow-Credentials: true`. **Footgun**: browsers reject `allowCredentials: true` combined with `allowedOrigins: ["*"]`; the response is blocked entirely. Source: <SourceLink file="common/defaults.go" lines="2838-2840" /> |
+| `cors.maxAge` | `int` (seconds) | `3600` when `0` | Emitted as `Access-Control-Max-Age` only when `> 0`. Controls browser preflight cache TTL. Source: <SourceLink file="common/defaults.go" lines="2841-2843" /> |
 
-### Where CORS lives
+`admin.cors` uses the same `CORSConfig` struct. When `admin` is present and `cors` is nil, `SetDefaults` injects `{allowedOrigins: ["*"], allowCredentials: false}` then runs `SetDefaults`. Source: <SourceLink file="common/defaults.go" lines="769-787" />.
 
-CORS is configured per project, directly under the project object:
+### Worked examples
 
-```yaml
-projects:
-  - id: main
-    cors:
-      allowedOrigins: ["https://app.example.com"]
-      # ...
-```
+**1. Minimal single-origin setup.** The simplest production config: one explicit origin allowed, no extras needed. Browser preflight is answered with 204; all server-to-server calls are unaffected:
 
-There is no global CORS config — each project sets its own policy. This lets you lock down a `frontend` project to your app's domain while keeping a `backend` project unrestricted (no CORS headers at all).
+<ConfigTabs
+  path="projects[].cors"
+  yaml={`cors:
+  allowedOrigins:
+    - "https://app.example.com"`}
+  ts={`cors: {
+  allowedOrigins: ["https://app.example.com"],
+}`}
+/>
 
-The admin HTTP server (`adminServer`) does not share the project CORS config. If you expose an admin UI in a browser context, restrict it via network/firewall rather than CORS.
+**2. Frontend dashboard that reads eRPC diagnostic headers.** Browser JS cannot read `X-ERPC-Cache` or `X-ERPC-Duration` without explicit `exposedHeaders`. Add every header your frontend needs — glob shorthand (`X-ERPC-*`) is not part of the CORS spec and most browsers ignore it:
 
-### Origin matching rules
+<ConfigTabs
+  path="projects[].cors"
+  yaml={`cors:
+  allowedOrigins:
+    - "https://dashboard.example.com"
+  exposedHeaders:
+    - "X-ERPC-Cache"
+    - "X-ERPC-Upstream"
+    - "X-ERPC-Duration"
+    - "X-ERPC-Attempts"`}
+  ts={`cors: {
+  allowedOrigins: ["https://dashboard.example.com"],
+  exposedHeaders: [
+    "X-ERPC-Cache",
+    "X-ERPC-Upstream",
+    "X-ERPC-Duration",
+    "X-ERPC-Attempts",
+  ],
+}`}
+/>
 
-eRPC matches the request's `Origin` header against each entry in `allowedOrigins` in order:
+**3. Multi-environment with boolean OR pattern.** When you have a production and staging origin, use the boolean OR syntax instead of two separate entries — the matcher evaluates them as a single expression:
 
-- **Exact match**: `"https://app.example.com"` matches only that origin.
-- **Wildcard subdomain**: `"https://*.example.com"` matches `https://app.example.com`, `https://staging.example.com`, etc. The `*` matches exactly one label — `https://a.b.example.com` does NOT match `https://*.example.com`.
-- **Wildcard all origins**: `"*"` matches every origin. Only safe when `allowCredentials: false`.
+<ConfigTabs
+  path="projects[].cors"
+  yaml={`cors:
+  allowedOrigins:
+    - "https://app.example.com | https://staging.example.com"
+  exposedHeaders:
+    - "X-ERPC-Cache"`}
+  ts={`cors: {
+  allowedOrigins: ["https://app.example.com | https://staging.example.com"],
+  exposedHeaders: ["X-ERPC-Cache"],
+}`}
+/>
 
-If no entry matches, eRPC returns the response without any `Access-Control-*` headers. The browser then blocks the response for cross-origin JS callers (standards-compliant behavior — the server never hard-drops the request).
+**4. Wildcard subdomain with credentials.** Allow any subdomain of your company domain and send cookies/auth headers. Never combine `allowedOrigins: ["*"]` with `allowCredentials: true` — browsers will reject the response:
 
-### Preflight (OPTIONS) handling
+<ConfigTabs
+  path="projects[].cors"
+  yaml={`cors:
+  allowedOrigins:
+    - "https://*.example.com"
+  allowCredentials: true`}
+  ts={`cors: {
+  allowedOrigins: ["https://*.example.com"],
+  allowCredentials: true,
+}`}
+/>
 
-Browsers send an `OPTIONS` preflight before any cross-origin request that is not a "simple request" (e.g. uses `POST` with `Content-Type: application/json`, or custom headers). eRPC automatically handles the `OPTIONS` preflight when the origin matches — it returns `200 OK` with the `Access-Control-*` headers and does not forward the preflight to an upstream.
+### Request/response behavior
 
-Always include `"OPTIONS"` in `allowedMethods` if you want preflights to succeed.
+- No `Origin` header → CORS is skipped entirely; no headers written, no metrics fired. <SourceLink file="erpc/http_server.go" lines="1010-1018" />
+- Origin present → `erpc_cors_requests_total` incremented before allow/deny evaluation. <SourceLink file="erpc/http_server.go" lines="1020" />
+- Allowed origin → `Access-Control-Allow-Origin` is set to the **echoed request origin**, never the literal `*`. <SourceLink file="erpc/http_server.go" lines="1053-1065" />
+- Disallowed origin → no `Access-Control-*` headers; non-OPTIONS request continues to JSON-RPC processing; OPTIONS returns bare 204. <SourceLink file="erpc/http_server.go" lines="1035-1051" />
+- OPTIONS + allowed origin → `erpc_cors_preflight_requests_total` incremented; response is HTTP 204; caller returns without JSON-RPC parsing. <SourceLink file="erpc/http_server.go" lines="1069-1075" />
+- CORS for a project runs only when `cors` is configured; `cors: nil` means OPTIONS falls through to JSON-RPC body parsing and errors. <SourceLink file="erpc/http_server.go" lines="343-347" />
+- CORS for a project can only run after project resolution succeeds; an unknown project id → HTTP 404 with no CORS headers (browsers may surface this as a CORS error rather than a 404). <SourceLink file="erpc/http_server.go" lines="326-347" />
+- All pattern-match errors are logged at debug and the pattern is skipped — never panics. <SourceLink file="erpc/http_server.go" lines="1022-1033" />
 
-### Full example — browser frontend + multi-project
+### Best practices
 
-```yaml
-projects:
-  # Browser dApp — tight CORS, no credentials
-  - id: frontend
-    cors:
-      allowedOrigins:
-        - "https://app.example.com"
-        - "https://*.app.example.com"
-      allowedMethods:
-        - "GET"
-        - "POST"
-        - "OPTIONS"
-      allowedHeaders:
-        - "Content-Type"
-      exposedHeaders:
-        - "X-Request-ID"
-      allowCredentials: false
-      maxAge: 3600
-    upstreams:
-      - endpoint: alchemy://${ALCHEMY_KEY}
+- Always list `exposedHeaders` explicitly when your frontend reads any `X-ERPC-*` response header. The default produces `Access-Control-Expose-Headers: ""`, silently blocking browser JS access to all eRPC diagnostic headers: `X-ERPC-Cache`, `X-ERPC-Upstream`, `X-ERPC-Duration`, `X-ERPC-Attempts`, `X-ERPC-Upstream-Attempts`, `X-ERPC-Upstream-Retries`, `X-ERPC-Upstream-Hedges`, `X-ERPC-Network-Attempts`, `X-ERPC-Network-Retries`, `X-ERPC-Network-Hedges`, `X-ERPC-Consensus-Slots`, `X-ERPC-Consensus-Disputes`, `X-ERPC-Consensus-Low-Participants`, `X-ERPC-Cache-Attempts`, `X-ERPC-Cache-Retries`, `X-ERPC-Cache-Hedges`. (<SourceLink file="erpc/http_server.go" lines="1088-1204" />)
+- Never use `allowedOrigins: ["*"]` with `allowCredentials: true`. eRPC will emit both headers; browsers reject the combination entirely. Use an explicit origin list when credentials are required.
+- Use the boolean OR pattern (`"https://app.example.com | https://staging.example.com"`) rather than two entries when combining origins — both forms work but the single-expression form is easier to audit.
+- Verify disallowed-origin behavior with `curl --header "Origin: https://evil.example.com" ...`. eRPC still returns a JSON-RPC response; only the browser enforces the block. CORS is not an access-control boundary — pair it with an [auth strategy](/config/auth) for real security.
+- Be aware that `.` in wildcard patterns matches any single character, not a literal dot. `allowedOrigins: ["https://erpc.cloud"]` also matches `https://erpcXcloud`. Prefer explicit origins in security-sensitive deployments.
+- Set `maxAge` to a higher value (e.g. `86400`) in production to reduce browser preflight frequency. The default of 3600 seconds is conservative.
 
-  # Backend indexer — no CORS needed (server-to-server)
-  - id: indexer
-    upstreams:
-      - endpoint: ${ARCHIVE_NODE_URL}
-```
+### Edge cases & gotchas
 
-### Common pitfalls
+1. **`.` matches any single character, not a literal dot.** `"https://erpc.cloud"` also matches `"https://erpcXcloud"`. No escape syntax exists. Review each pattern for unintended substitutions. Source: <SourceLink file="common/matcher.go" lines="34-47" />
+2. **Disallowed origins are not rejected server-side.** Non-OPTIONS requests proceed and receive a full JSON-RPC response; only the browser enforces the block. Test with `curl` and `Origin: https://evil.example.com` to confirm.
+3. **`exposedHeaders: nil` silently blocks all `X-ERPC-*` headers from browser JS.** `strings.Join(nil, ", ")` → `""`. Browser interprets as zero extra headers. eRPC writes these headers on every response (all blocked without an explicit list): `X-ERPC-Cache`, `X-ERPC-Upstream`, `X-ERPC-Duration`, `X-ERPC-Attempts`, `X-ERPC-Upstream-Attempts`, `X-ERPC-Upstream-Retries`, `X-ERPC-Upstream-Hedges`, `X-ERPC-Network-Attempts`, `X-ERPC-Network-Retries`, `X-ERPC-Network-Hedges`, `X-ERPC-Consensus-Slots`, `X-ERPC-Consensus-Disputes`, `X-ERPC-Consensus-Low-Participants`, `X-ERPC-Cache-Attempts`, `X-ERPC-Cache-Retries`, `X-ERPC-Cache-Hedges`. Enumerate by name — no wildcard shorthand is accepted by current browsers. Sources: <SourceLink file="erpc/http_server.go" lines="1057" />, <SourceLink file="erpc/http_server.go" lines="1088-1204" />
+4. **CORS metrics label `project` contains the URL path, not the project id.** The value passed for the `project` label at metric increment time is `r.URL.Path` (e.g. `/main/evm/1`). Cardinality grows with distinct request paths; you cannot group by project id from these counters alone. Source: <SourceLink file="erpc/http_server.go" lines="1020" />
+5. **`allowedOrigins` is required — explicit `cors:` block without it fails startup** with `*.cors.allowedOrigins is required`. The `["*"]` fallback only applies to auto-injected admin CORS. Source: <SourceLink file="common/validation.go" lines="773-775" />
+6. **OPTIONS to a project without `cors` configured falls through to JSON-RPC parsing.** The `OPTIONS` early-return lives inside the `project.Config.CORS != nil` branch. Without `cors`, the request errors on body parsing rather than returning a clean 204. Source: <SourceLink file="erpc/http_server.go" lines="343-347" />
+7. **`allowCredentials: true` with `allowedOrigins: ["*"]` is not rejected at startup**, only at browser runtime. eRPC will send the conflicting headers; browsers refuse the response with a CORS error. Validate this combination manually.
+8. **CORS is not a security boundary.** Any client that omits `Origin` bypasses CORS entirely. For real access control use [auth strategies](/config/auth) or [rate limiters](/config/rate-limiters).
 
-- **`allowCredentials: true` with `allowedOrigins: ["*"]`** — browsers refuse the response with a CORS error. You must list explicit origins when credentials are enabled.
-- **Missing `"OPTIONS"` in `allowedMethods`** — preflight is answered without the methods header; browsers block the actual request.
-- **`maxAge` above the browser cap** — Chrome silently caps at 7200 s, Firefox at 86400 s. Setting a higher value has no effect and may mislead you about cache TTL.
-- **Case sensitivity of header names** — `allowedHeaders` entries are matched case-insensitively by eRPC, but list them in their canonical form (e.g. `Content-Type`, not `content-type`) for clarity.
-- **Wildcard subdomain too broad** — `https://*.example.com` also matches `https://evil.example.com` if an attacker can create a subdomain. Combine with auth strategies for production frontends.
-- **No CORS on the admin server** — admin endpoints (`:9090/admin/...`) do not inherit project CORS. Do not expose the admin port publicly; restrict via network rules.
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_cors_requests_total` | counter | `project` (URL path), `origin` | Every request that carries an `Origin` header, before allow/deny |
+| `erpc_cors_preflight_requests_total` | counter | `project` (URL path), `origin` | Allowed-origin OPTIONS preflight only |
+| `erpc_cors_disallowed_origin_total` | counter | `project` (URL path), `origin` | Origin present but no pattern matched |
+
+Note: the `project` label value is `r.URL.Path` (e.g. `/main/evm/1`), not the project id. Cardinality scales with distinct request paths.
+
+### Source code entry points
+
+- [`erpc/http_server.go:L1008-L1077`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1008-L1077) — `handleCORS`: full algorithm; no-origin fast path, wildcard matching loop, header writing, 204 preflight termination
+- [`common/config.go:L658-L665`](https://github.com/erpc/erpc/blob/main/common/config.go#L658-L665) — `CORSConfig` struct definition
+- [`common/defaults.go:L2824-L2846`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2824-L2846) — `CORSConfig.SetDefaults`: method/header defaults, `allowCredentials` false, `maxAge` 3600
+- [`common/validation.go:L773-L775`](https://github.com/erpc/erpc/blob/main/common/validation.go#L773-L775) — `CORSConfig.Validate`: `allowedOrigins` required check
+- [`common/matcher.go:L34-L47`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L34-L47) — `WildcardMatch` tokenizer including the `.` = any-char rule
+- [`common/defaults.go:L769-L787`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L769-L787) — admin CORS auto-injection (`allowedOrigins: ["*"]`)
+- [`erpc/http_server_test.go:L3239-L3376`](https://github.com/erpc/erpc/blob/main/erpc/http_server_test.go#L3239-L3376) — CORS allowed/disallowed/preflight test suite
+
+### Related pages
+
+- [Auth](/config/auth) — the correct tool for access control; pair with CORS to stop real attackers, not just browsers.
+- [Rate limiters](/config/rate-limiters) — per-IP or per-user limits complement CORS for public-facing projects.
+- [Projects overview](/config/projects) — full per-project config including method filtering, auth strategies, and rate-limit budgets.
+- [Server config](/config/server) — domain aliasing rules that pre-select a project via `Host` header, evaluated before CORS runs.
 
 </AISection>
-
-<Callout type="tip">
-  Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

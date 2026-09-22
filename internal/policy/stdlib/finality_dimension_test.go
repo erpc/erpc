@@ -46,9 +46,9 @@ func TestStdlib_EvalPerFinality_SeparateSlots(t *testing.T) {
 	})
 
 	cfg := &common.SelectionPolicyConfig{
-		EvalInterval:    common.Duration(0), // frozen — drive manually
-		EvalTimeout:     common.Duration(50 * time.Millisecond),
-		EvalFunc:        eval,
+		EvalInterval: common.Duration(0), // frozen — drive manually
+		EvalTimeout:  common.Duration(50 * time.Millisecond),
+		EvalFunc:     eval,
 		EvalScope:    common.EvalScopeNetworkFinality,
 	}
 	require.NoError(t, cfg.SetDefaults())
@@ -91,9 +91,9 @@ func TestStdlib_EvalPerFinality_SeparateSlots(t *testing.T) {
 	defer cancel2()
 
 	cfg2 := &common.SelectionPolicyConfig{
-		EvalInterval:    common.Duration(10 * time.Millisecond),
-		EvalTimeout:     common.Duration(100 * time.Millisecond),
-		EvalFunc:        eval,
+		EvalInterval: common.Duration(10 * time.Millisecond),
+		EvalTimeout:  common.Duration(100 * time.Millisecond),
+		EvalFunc:     eval,
 		EvalScope:    common.EvalScopeNetworkFinality,
 	}
 	require.NoError(t, cfg2.SetDefaults())

@@ -281,8 +281,8 @@ func TestHttpServer_GetBlockByNumber_NearTipPinsEvmLeaderUpstream(t *testing.T) 
 }
 
 // When TipHW is ahead of every upstream's concrete block response,
-// EnforceHighestBlock must NOT fail-open to the stale "latest" — that is
-// the MultiNode FOOS trigger once WS has already delivered the higher head.
+// EnforceHighestBlock must NOT fail-open to the stale "latest" — a strict
+// client treats that as out of sync once WS has already delivered the higher head.
 func TestHttpServer_GetBlockByNumberLatest_RefusesStaleFailOpen(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()

@@ -1,0 +1,149 @@
+logLevel: info
+
+server:
+  httpHostV4: 0.0.0.0
+  httpHostV6: '[::]'
+  httpPort: 4000
+
+metrics:
+  enabled: true
+  hostV4: 0.0.0.0
+  port: 4001
+
+# SVM example: Solana mainnet-beta and testnet fronted by multiple upstreams.
+#
+# Network-ID format:
+#   - Solana (or chain unset): svm:<cluster>           — e.g. svm:mainnet-beta
+#   - Other SVM chains:        svm:<chain>:<cluster>   — e.g. svm:fogo:mainnet
+#
+# Known (chain, cluster) pairs — currently just Solana mainnet-beta / devnet /
+# testnet — have their genesis hash validated at bootstrap via a single
+# getGenesisHash RPC compared against a hardcoded table, catching upstreams
+# mis-pointed at the wrong cluster. For unknown/custom (chain, cluster) pairs
+# set checkGenesisHash:true so bootstrap fetches and cross-validates across
+# upstreams in the same network.
+#
+# To host multiple SVM chains side by side (e.g. Solana + Fogo + Eclipse),
+# add a separate `networks` entry per chain with distinct `svm.chain` values;
+# their network IDs and cache partitions won't collide.
+#
+# Multiple upstreams per cluster give you score-based routing, failover, and
+# consensus (if you enable a consensus policy) for free. Requests land on the
+# healthiest upstream; errors surface a retry against the next one.
+projects:
+  - id: main
+    # Shared SVM tuning for every network in this project. Cluster stays per-network
+    # (network identity — like chainId for EVM). Do not set cluster here.
+    networkDefaults:
+      svm:
+        commitment: confirmed
+        statePollerDebounce: 500ms
+    networks:
+      - architecture: svm
+        svm:
+          cluster: mainnet-beta
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 30s
+            retry:
+              maxAttempts: 3
+              # 150ms initial delay is deliberate: a -32004 BlockNotAvailable at
+              # the tip usually means the block hasn't propagated to that node
+              # yet — one slot-ish of patience typically resolves it, where an
+              # instant cross-upstream volley finds every node equally early.
+              delay: 150ms
+              backoffMaxDelay: 10s
+              backoffFactor: 0.3
+              jitter: 100ms
+          # sendTransaction / sendRawTransaction are automatically marked
+          # non-retryable at the architecture layer — adding retry here would
+          # be ignored for those methods. Authoritative skip verdicts
+          # (-32009 "missing in long-term storage") are likewise terminal and
+          # exempt from cross-upstream retries.
+        # Optional: a consensus policy fans reads out to several upstreams and
+        # compares answers. SVM responses carrying the RpcResponse envelope
+        # ({context:{slot,apiVersion},value:…}) are compared on their VALUE —
+        # context.slot / context.apiVersion are ignored by default (they differ
+        # across healthy upstreams on nearly every call). Requests with
+        # commitment=finalized additionally pre-filter upstreams trailing the
+        # pool's finalized slot by more than svm.maxFinalizedSlotLag (omit for
+        # the default of 100 slots; set it to 0 to disable the filter and let
+        # every upstream vote regardless of lag), and any request carrying
+        # minContextSlot skips upstreams known to be behind it.
+
+      - architecture: svm
+        svm:
+          cluster: testnet
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 30s
+            retry:
+              maxAttempts: 3
+              delay: 500ms
+              backoffMaxDelay: 10s
+              backoffFactor: 0.3
+              jitter: 500ms
+
+    upstreams:
+      # --- mainnet-beta upstreams ---
+      - id: solana-labs-mainnet
+        type: svm
+        endpoint: https://api.mainnet-beta.solana.com
+        svm:
+          cluster: mainnet-beta
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 8s
+
+      # publicnode mainnet uses Cloudflare in front of the RPC node and
+      # intermittently resets unauthenticated connections — it's listed here
+      # so score-based routing can use it when it's healthy and skip it
+      # otherwise. For latency-sensitive production, pair with an authenticated
+      # provider.
+      - id: publicnode-mainnet
+        type: svm
+        endpoint: https://solana-rpc.publicnode.com
+        svm:
+          cluster: mainnet-beta
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 8s
+
+      - id: helius-mainnet
+        type: svm
+        endpoint: https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY
+        svm:
+          cluster: mainnet-beta
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 8s
+
+      # --- testnet upstreams ---
+      - id: publicnode-testnet
+        type: svm
+        endpoint: https://solana-testnet-rpc.publicnode.com
+        svm:
+          cluster: testnet
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 8s
+
+  # A mixed EVM + SVM project is supported — each network has its own architecture
+  # handler and upstream pool. Requests route by the path prefix:
+  #   POST /main/evm/1              → Ethereum mainnet
+  #   POST /main/svm/mainnet-beta   → Solana mainnet-beta
+  #   POST /main/svm/testnet        → Solana testnet
+
+  #
+  # Poller cost note: each SVM upstream is polled every 400ms (getHealth,
+  # getSlot processed+finalized, getMaxShredInsertSlot), throttled by
+  # statePollerDebounce. Under live traffic the poller harvests context.slot
+  # from responses and skips the redundant getSlot calls (bounded, health
+  # checks always run) — so background quota burn drops on busy networks
+  # automatically.

@@ -576,12 +576,12 @@ func (h *networkHandle) FinalityDepth() int64 {
 //
 // Ordering matters: Indexer.Ingest calls this BEFORE fan-out, so by the
 // time any client sees head N on WS, EvmHighestLatestBlockNumber on this
-// pod is already ≥ N. That invariant applies to every ingress source,
-// including tier:fallback: Ingest fans out all sources, so skipping TipHW
-// for fallback heads while still delivering them to clients causes
-// MultiNode FOOS (WS tip ahead of HTTP TipHW). Tip re-fetch of a TipHW
-// that came from a fallback must reach that fallback via the emptyish
-// escape hatch instead.
+// instance is already ≥ N. That invariant applies to every ingress source,
+// including tier:fallback: Ingest fans out all sources, so skipping the tip
+// advance for fallback heads while still delivering them to clients leaves
+// the WS tip ahead of the HTTP tip, which strict clients treat as out of
+// sync. A tip re-fetch for a head that came from a fallback must reach that
+// fallback via the emptyish escape hatch instead.
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64, payload json.RawMessage) {
 	_ = payload
 	const prefix = "ws:"

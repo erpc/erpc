@@ -142,10 +142,10 @@ func TestMetrics_ShadowExcludeIf_ObservesButDoesNotDrop(t *testing.T) {
 
 // TestMetrics_ExcludedSecondsGaugeTransitions verifies that the
 // `selection_excluded_seconds` gauge:
-//   * is 0 for in-rotation upstreams (clean upstream stays at 0)
-//   * is non-zero for excluded ones (after the second tick to give the
+//   - is 0 for in-rotation upstreams (clean upstream stays at 0)
+//   - is non-zero for excluded ones (after the second tick to give the
 //     gauge a chance to read excludedSince)
-//   * resets to 0 when an upstream is readmitted.
+//   - resets to 0 when an upstream is readmitted.
 func TestMetrics_ExcludedSecondsGaugeTransitions(t *testing.T) {
 	eval := `(upstreams, ctx) => upstreams.excludeIf(errorRateAbove(0.5))`
 	engine, _, tracker, cancel := newTestEngine(t, eval)

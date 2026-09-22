@@ -48,9 +48,10 @@ func (s *stubProbeUpstream) Forward(ctx context.Context, nq *common.NormalizedRe
 	}
 	return nil, nil
 }
-func (s *stubProbeUpstream) Cordon(method, reason string)   {}
-func (s *stubProbeUpstream) Uncordon(method, reason string) {}
-func (s *stubProbeUpstream) IgnoreMethod(method string)     {}
+func (s *stubProbeUpstream) Cordon(method, reason string)                   {}
+func (s *stubProbeUpstream) Uncordon(method, reason string)                 {}
+func (s *stubProbeUpstream) IgnoreMethod(method string)                     {}
+func (s *stubProbeUpstream) ShouldHandleMethod(method string) (bool, error) { return true, nil }
 
 // stubEngine implements the narrow proberDeps interface so we can
 // drive the prober without standing up a full Engine.

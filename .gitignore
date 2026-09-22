@@ -12,6 +12,7 @@ vendor/
 coverage.txt
 .DS_Store
 erpc.yaml
+erpc-*.yaml
 erpc.ts
 .generated-go-semantic-release-changelog.md
 .semrel/
@@ -24,3 +25,6 @@ temp/**
 erpc-bin
 erpc.yml
 .claude/**
+
+# goreleaser build output
+/dist/

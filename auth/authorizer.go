@@ -38,7 +38,7 @@ func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId str
 		if cfg.Jwt == nil {
 			return nil, common.NewErrInvalidConfig("JWT strategy config is nil")
 		}
-		strategy, err = NewJwtStrategy(cfg.Jwt)
+		strategy, err = NewJwtStrategy(appCtx, logger, cfg.Jwt)
 		if err != nil {
 			return nil, err
 		}

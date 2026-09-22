@@ -1,0 +1,407 @@
+---
+title: HTTP Client & Proxy Pools
+description: eRPC keeps a single pre-warmed, high-throughput connection to every upstream — and can rotate traffic across a fleet of SOCKS5 or HTTP proxies with zero extra latency.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# HTTP Client & Proxy Pools
+
+Every upstream you configure gets its own persistent, pre-warmed connection — 256 idle connections per host, unlimited active, and TCP keepalives that kill wedged flows in ~45 seconds instead of two hours. Add a named proxy pool and eRPC rotates requests round-robin across any number of SOCKS5 or HTTP proxies on every call — useful for IP diversity, egress compliance, or budget isolation.
+
+**What you get:**
+- One connection pool per upstream, created once and reused forever
+- Transparent gzip in both directions, pooled to avoid allocation pressure
+- SOCKS5 / HTTP proxy rotation via lock-free round-robin
+- OTel `traceparent` injected on every outbound call automatically
+
+## Quick taste
+
+Illustrative, not a tuned production config — enable gzip and route one upstream through a proxy pool:
+
+<ConfigTabs
+  path="proxyPools + projects[].upstreams[].jsonRpc"
+  focusYaml="1-6,13-16"
+  focusTs="1-6,14-17"
+  yaml={`# route this upstream's requests through the named proxy pool
+proxyPools:
+  - id: my-proxies
+    urls:
+      - socks5://proxy1.example.com:1080
+      - http://proxy2.example.com:3128
+
+projects:
+  - id: main
+    upstreams:
+      - endpoint: https://mainnet.infura.io/v3/KEY
+        jsonRpc:
+          # reference the pool by id — eRPC rotates requests round-robin
+          proxyPool: my-proxies
+          # compress request bodies; responses are always decompressed
+          enableGzip: true`}
+  ts={`// route this upstream's requests through the named proxy pool
+proxyPools: [{
+  id: "my-proxies",
+  urls: [
+    "socks5://proxy1.example.com:1080",
+    "http://proxy2.example.com:3128",
+  ],
+}],
+projects: [{
+  id: "main",
+  upstreams: [{
+    endpoint: "https://mainnet.infura.io/v3/KEY",
+    jsonRpc: {
+      // reference the pool by id — eRPC rotates requests round-robin
+      proxyPool: "my-proxies",
+      // compress request bodies; responses are always decompressed
+      enableGzip: true,
+    },
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="configure proxy rotation for IP-diverse egress"
+	defaultOpen
+	prompt={`I want to route eRPC upstream requests through a pool of SOCKS5 proxies to spread
+the source IP fingerprint across providers that rate-limit by IP. Set up a proxyPool
+in my config and wire it to the right upstreams. Work with my existing eRPC config. Read
+the full reference first:
+https://docs.erpc.cloud/reference/http-client.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="enable batch aggregation for a high-QPS indexer"
+	prompt={`My indexer fires hundreds of eth_getTransactionReceipt calls per second and I want
+to coalesce them into batches to reduce HTTP round-trips. Enable supportsBatch with
+sane batchMaxSize and batchMaxWait values on my upstream(s) — and warn me about the
+footguns (batchMaxSize: 0, batchMaxWait: 0, forwarded-header loss). Work with my existing eRPC config. Reference: https://docs.erpc.cloud/reference/http-client.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug unexpected upstream errors or timeout behavior"
+	prompt={`My eRPC instance is returning ErrUpstreamMalformedResponse and occasional
+ErrEndpointRequestTimeout errors I don't understand. Explain the HTTP client error
+classification table, check my eRPC config for misconfigured batchMaxSize/batchMaxWait
+or missing timeout settings, and suggest what to look for in the upstream request logs.
+Reference: https://docs.erpc.cloud/reference/http-client.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="apply shared JSON-RPC client defaults across all upstreams"
+	prompt={`I want gzip compression and batch settings applied to every upstream without
+repeating config. Show me how to use upstreamDefaults.jsonRpc in my eRPC config,
+and explain the all-or-nothing inheritance footgun so I don't accidentally drop
+settings on upstreams that already have a jsonRpc block.
+Reference: https://docs.erpc.cloud/reference/http-client.llms.txt`}
+/>
+
+<AISection title="HTTP Client & Proxy Pools — full agent reference">
+
+### How it works
+
+**Client lifecycle.** `ClientRegistry.GetOrCreateClient` (`clients/registry.go:L47-L53`) uses a `sync.Map` keyed on `common.UniqueUpstreamKey(ups)`. The first call creates the client; all subsequent calls for the same upstream return the cached instance. Creation is guarded by `sync.Once`. The registry also holds a reference to a `ProxyPoolRegistry`, resolving the proxy pool by ID at creation time.
+
+**Scheme dispatch.** `CreateClient` inspects `parsedUrl.Scheme`. `http`/`https` → `NewGenericHttpJsonRpcClient`. `grpc`/`grpc+bds` → `GrpcBdsClient`. `ws`/`wss` → error (not yet implemented). Any other scheme → error (`clients/registry.go:L84-L117`).
+
+**Transport construction.** Each `GenericHttpJsonRpcClient` owns its own `http.Transport`:
+- `DialContext` via `util.DefaultOutboundDialer()`: `net.Dialer{Timeout: 10s, KeepAlive: 15s}`. The 15-second probe interval means wedged TCP flows die in ~45 seconds (3 probes), versus the Linux kernel default of ~7200 seconds.
+- `MaxConnsPerHost: 0` (unlimited) is intentional. The prior default of 2 capped throughput at ~5 req/s per host with 400ms upstream latency; removing the cap makes the OS TCP stack the only limit. Validated in `clients/http_connection_test.go`.
+- Overall `http.Client.Timeout` is 60 seconds (includes body read).
+
+**Request preparation.** Every outbound call gets: `Content-Type: application/json`, `Accept-Encoding: gzip`, `User-Agent: erpc (<version>/<sha>; Project/<projectId>)`. Custom `headers` from `jsonRpc.headers` are applied via `Header.Set` after those defaults — they can override `Content-Type` or `User-Agent`. OTel W3C `traceparent`/`baggage` injection runs last and cannot be overridden.
+
+**Gzip.** The client always sends `Accept-Encoding: gzip` and decompresses any gzip response regardless of `enableGzip`. When `enableGzip: true`, request bodies are also compressed using pooled `gzip.Writer` instances. Both reader and writer are pooled via `sync.Pool` to avoid allocation pressure.
+
+**Forwarded headers.** Inbound headers matching `project.forwardHeaders` patterns are forwarded to the upstream only on single (non-batch) requests — the batch path aggregates multiple caller contexts into one outbound call.
+
+**Batch aggregation.** When `supportsBatch: true`, `SendRequest` queues calls into a map keyed by JSON-RPC ID. A `time.AfterFunc(batchMaxWait, ...)` fires `processBatch` when the timer elapses; the batch also fires immediately when the queue reaches `batchMaxSize`. The batch context deadline is set to the earliest deadline among queued requests. Responses are matched back to callers by JSON-RPC `id`. A single-object response (e.g. a rate-limit error with `"id": null`) is broadcast to all queued callers. Duplicate IDs within a window flush the pending batch immediately and start fresh.
+
+**Proxy pool.** `createProxyPool` builds one `http.Client` per proxy URL, with identical transport settings to the direct path plus `Proxy: http.ProxyURL(proxyURL)`. On every outbound call, `GetClient()` selects the next client via `atomic.AddUint64(&counter, 1) % len(clients)` — a lock-free round-robin. Counter wraps naturally at `uint64` overflow; it is never reset. On error (empty pool), the client falls back to the direct transport and logs an error.
+
+**Proxy URL validation** uses a case-insensitive prefix check, not `url.Parse`: only `http://`, `https://`, and `socks5://` are accepted. `socks4://`, `ws://`, and any other scheme fail at startup.
+
+**Shutdown.** A goroutine watches `appCtx.Done()` and drains the in-flight batch. Already-canceled contexts in the queue are dropped silently.
+
+**Test mode.** When `util.IsTest()` is true, the client substitutes `http.DefaultTransport` to allow gock mock interceptors.
+
+### Config schema
+
+#### `proxyPools[]` — top-level array ([`common/config.go:L48`](https://github.com/erpc/erpc/blob/main/common/config.go#L48))
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `proxyPools[].id` | `string` | required | Pool name referenced by `upstream.jsonRpc.proxyPool`. Must be unique. Non-existent ID referenced by an upstream fails at startup. Source: <SourceLink file="clients/proxy_pool_registry.go" lines="58" /> |
+| `proxyPools[].urls` | `[]string` | required, min 1 | Proxy URLs. Empty list fails with `"proxyPool.*.urls is required..."`. Each URL is lowercased then checked via `strings.HasPrefix` against `"http://"`, `"https://"`, or `"socks5://"` — not `url.Parse`. `socks4://` and all other schemes fail validation and prevent eRPC from starting. Each valid URL gets its own `http.Client` with identical transport settings. Source: <SourceLink file="common/validation.go" lines="230-247" /> |
+
+#### `upstreams[].jsonRpc.*` (also `upstreamDefaults.jsonRpc.*`)
+
+All fields are optional. `JsonRpcUpstreamConfig.SetDefaults()` is a no-op; pointer-zero fields retain Go zero values. **Important:** when an upstream has no `jsonRpc:` block at all, the full `upstreamDefaults.jsonRpc` struct is shallow-copied. But if any `jsonRpc:` block is present (even `jsonRpc: {}`), field-level defaults are not merged — inheritance is all-or-nothing.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `supportsBatch` | `*bool` | `nil` (false) | Enables batch aggregation. `nil` or `false` → every request is a direct single HTTP call. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="132-137" /> |
+| `batchMaxSize` | `int` | `0` | Max requests per batch; batch fires immediately when reached. **Footgun:** `0` with `supportsBatch: true` evaluates as `1 >= 0` (always true) and fires on the first queued request, disabling coalescing. Use `≥ 2`. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="294-300" /> |
+| `batchMaxWait` | `Duration` | zero (instant) | How long to wait before flushing. `time.AfterFunc(0, fn)` schedules immediately. **Footgun:** zero disables coalescing. Set `"10ms"` or similar for meaningful batching. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="289-291" /> |
+| `enableGzip` | `*bool` | `nil` (false) | Compresses outbound request body with a pooled `gzip.Writer`; adds `Content-Encoding: gzip`. Decompression of responses is always active regardless. Independent of `server.enableGzip`. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="139-142" /> |
+| `headers` | `map[string]string` | `nil` | Static headers on every outbound request. Applied via `Header.Set` (overwrites). Runs after built-in defaults but before OTel injection — `traceparent` cannot be overridden. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="838-847" /> |
+| `proxyPool` | `string` | `""` (direct) | ID of a `proxyPools[]` entry. Resolved at client creation; non-existent ID fails at startup. Empty string → direct transport. Source: <SourceLink file="clients/proxy_pool_registry.go" lines="107-111" /> |
+
+#### Fixed transport parameters (not user-configurable)
+
+Same values apply to both direct and proxy transports (source: <SourceLink file="clients/http_json_rpc_client.go" lines="109-128" />, <SourceLink file="clients/proxy_pool_registry.go" lines="82-98" />).
+
+| Parameter | Value | Purpose |
+|---|---|---|
+| `DialContext` | `net.Dialer{Timeout: 10s, KeepAlive: 15s}` | Dial timeout + TCP keepalive probe interval |
+| `MaxIdleConns` | `1024` | Global idle connection pool |
+| `MaxIdleConnsPerHost` | `256` | Per-host idle connection limit |
+| `MaxConnsPerHost` | `0` (unlimited) | Prevents connection queuing under high RPS / high latency |
+| `IdleConnTimeout` | `90s` | Idle connection closure |
+| `ResponseHeaderTimeout` | `30s` | Time to first response header byte |
+| `TLSHandshakeTimeout` | `10s` | TLS negotiation deadline |
+| `ExpectContinueTimeout` | `1s` | 100-continue wait |
+| `http.Client.Timeout` | `60s` | End-to-end timeout including body read |
+
+### Worked examples
+
+**1. SOCKS5 proxy rotation for IP-diverse egress.** Multiple providers rate-limit by source IP. Routing requests through a pool of residential or datacenter proxies distributes the source IP fingerprint and avoids per-IP throttles:
+
+<ConfigTabs
+  path="proxyPools"
+  yaml={`proxyPools:
+  - id: egress-proxies
+    urls:
+      - socks5://proxy1.example.com:1080
+      - socks5://proxy2.example.com:1080
+      - socks5://proxy3.example.com:1080
+
+projects:
+  - id: main
+    upstreams:
+      - endpoint: https://mainnet.infura.io/v3/KEY
+        jsonRpc:
+          proxyPool: egress-proxies`}
+  ts={`proxyPools: [{
+  id: "egress-proxies",
+  urls: [
+    "socks5://proxy1.example.com:1080",
+    "socks5://proxy2.example.com:1080",
+    "socks5://proxy3.example.com:1080",
+  ],
+}]`}
+/>
+
+**2. Batch aggregation for high-QPS read workloads.** An indexer fires hundreds of `eth_getTransactionReceipt` calls per second. Batching coalesces them into fewer HTTP round-trips, reducing latency and upstream connection overhead. Set `batchMaxSize` and `batchMaxWait` together so batches fill before the timer fires:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`upstreams:
+  - endpoint: https://mainnet.infura.io/v3/KEY
+    jsonRpc:
+      supportsBatch: true
+      batchMaxSize: 50
+      batchMaxWait: 10ms`}
+  ts={`upstreams: [{
+  endpoint: "https://mainnet.infura.io/v3/KEY",
+  jsonRpc: {
+    supportsBatch: true,
+    batchMaxSize: 50,
+    batchMaxWait: "10ms",
+  },
+}]`}
+/>
+
+**3. Gzip + custom API-key header.** Enable request compression and inject a bearer token on every upstream call. The token is sent via `Header.Set` after the built-in defaults, so it cannot accidentally stomp `traceparent`:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`upstreams:
+  - endpoint: https://rpc.example.com
+    jsonRpc:
+      enableGzip: true
+      headers:
+        Authorization: "Bearer my-secret-key"`}
+  ts={`upstreams: [{
+  endpoint: "https://rpc.example.com",
+  jsonRpc: {
+    enableGzip: true,
+    headers: { Authorization: "Bearer my-secret-key" },
+  },
+}]`}
+/>
+
+**4. Shared defaults across all upstreams.** Use `upstreamDefaults.jsonRpc` to apply batch + gzip to every upstream without repeating config. Note: any upstream that defines its own `jsonRpc:` block (even empty) does not inherit from `upstreamDefaults.jsonRpc`:
+
+<ConfigTabs
+  path="projects[].upstreamDefaults"
+  yaml={`projects:
+  - id: main
+    upstreamDefaults:
+      jsonRpc:
+        supportsBatch: true
+        batchMaxSize: 20
+        batchMaxWait: 5ms
+        enableGzip: true
+    upstreams:
+      - endpoint: https://rpc-a.example.com
+      - endpoint: https://rpc-b.example.com`}
+  ts={`projects: [{
+  id: "main",
+  upstreamDefaults: {
+    jsonRpc: {
+      supportsBatch: true,
+      batchMaxSize: 20,
+      batchMaxWait: "5ms",
+      enableGzip: true,
+    },
+  },
+  upstreams: [
+    { endpoint: "https://rpc-a.example.com" },
+    { endpoint: "https://rpc-b.example.com" },
+  ],
+}]`}
+/>
+
+### Request/response behavior
+
+**Outbound HTTP request shape (single):**
+```
+POST <upstream endpoint URL>
+Content-Type: application/json
+Accept-Encoding: gzip
+User-Agent: erpc (<ErpcVersion>/<ErpcCommitSha>; Project/<projectId>)
+[Content-Encoding: gzip]        — only when enableGzip=true
+[<custom headers>]              — from jsonRpc.headers, via Header.Set
+[traceparent: ...]              — OTel W3C trace context (injected last)
+[baggage: ...]
+[<forwarded headers>]           — only on single requests, from project.forwardHeaders
+
+Body: {"jsonrpc":"2.0","method":"...","params":[...],"id":...}
+```
+
+**Outbound HTTP request shape (batch):**
+Same headers except forwarded headers (absent). Body is a JSON array of `JsonRpcRequest` objects.
+
+**Batch response matching:**
+- Array response: each element's `id` is looked up in the queued request map; matched response returned to caller. Unmatched IDs produce `"no response received for request ID: N"` (logged as ERROR with full body).
+- Single-object response: broadcast to ALL callers. Handles rate-limit errors returned as `{"error":{...},"id":null}` for the whole batch.
+- Non-JSON response: parsed as JSON-RPC error and broadcast; if that fails, all callers receive the parse error.
+
+**Error type mapping:**
+
+| Condition | Error type |
+|---|---|
+| Transport-level failure | `ErrEndpointTransportFailure` |
+| `context.DeadlineExceeded` / `ErrDynamicTimeoutExceeded` | `ErrEndpointRequestTimeout` |
+| `context.Canceled` | `ErrEndpointRequestCanceled` |
+| JSON-RPC error message containing `"context canceled"` | `ErrEndpointRequestCanceled` (reclassified) |
+| JSON-RPC error message containing `"context deadline exceeded"` | `ErrEndpointRequestTimeout` (reclassified) |
+| Unparseable JSON body | `ErrJsonRpcExceptionInternal/ParseException` |
+| Upstream `error` field in response | `ErrJsonRpcExceptionInternal/ServerSideException` (after extractor) |
+| Batch response body is not array or object | `ErrUpstreamMalformedResponse` (retryable) |
+| Pre-request creation error (e.g. failed to build `http.Request`) | `ErrHttp` (BaseError) |
+
+**Behavioral invariants:**
+- `ClientRegistry.GetOrCreateClient` uses `sync.Map` + `sync.Once`; all callers for the same upstream share exactly one client instance. [<SourceLink file="clients/registry.go" lines="47-125" />]
+- OTel `traceparent` + `baggage` are injected on every request, including retried and batched calls. [<SourceLink file="clients/http_json_rpc_client.go" lines="845-847" />]
+- Both single and batch paths decompress gzip responses whenever `Content-Encoding: gzip` is present. [<SourceLink file="clients/http_json_rpc_client.go" lines="852-867" />]
+- At shutdown, `appCtx.Done()` triggers `processBatch(true)` to drain in-flight batches; already-canceled contexts in the queue are dropped silently. [<SourceLink file="clients/http_json_rpc_client.go" lines="211-217" />]
+- **Pre-queue cancellation check.** `queueRequest` inspects `req.ctx.Err()` before inserting into the batch map. Already-canceled requests are immediately failed with `ErrEndpointRequestTimeout` or `ErrEndpointRequestCanceled` without touching the network. [<SourceLink file="clients/http_json_rpc_client.go" lines="241-253" />]
+- **Post-queue pre-send cancellation drop.** Inside `processBatch`, a pass over the queued requests drops any entry whose `ctx.Err()` is non-nil before the HTTP call is made. [<SourceLink file="clients/http_json_rpc_client.go" lines="349-361" />]
+
+### Best practices
+
+- **Set both `batchMaxSize` and `batchMaxWait` together.** Either alone produces degenerate behavior: `batchMaxSize: 0` fires on every first request (size check `1 >= 0`); `batchMaxWait: 0` fires before other requests can join. Use at minimum `batchMaxSize: 10` + `batchMaxWait: "10ms"` for meaningful coalescing.
+- **Do not use `supportsBatch: true` for upstreams receiving forwarded `Authorization` headers.** Forwarded headers are applied only on single requests; batch requests share one outbound call and carry no per-caller headers.
+- **Prefer `upstreamDefaults.jsonRpc` to avoid repetition — but know it is all-or-nothing.** Any upstream with an explicit `jsonRpc:` block (even `jsonRpc: {}`) does not inherit defaults field-by-field. Either use defaults everywhere or configure each upstream fully.
+- **`enableGzip: true` is worth enabling for most RPC endpoints.** JSON-RPC responses (especially `eth_getLogs`, `debug_traceTransaction`) compress well. The reader and writer are pooled, so CPU overhead is minimal.
+- **Add at least 3 proxy URLs per pool.** With a single-URL pool the round-robin is meaningless (always index 0); with 2 the distribution is uneven under any non-even request count. Three or more gives meaningful rotation.
+- **Proxy scheme validation is strict at startup.** Test proxy URLs locally before deploying — `socks4://` and other schemes will prevent eRPC from starting with no graceful fallback.
+- **There is no per-upstream TLS configuration.** Custom CA bundles, client certs, and `InsecureSkipVerify` are not supported. If an upstream requires mutual TLS or a private CA, the connection must be proxied through a sidecar or gateway that handles TLS termination.
+
+### Edge cases & gotchas
+
+1. **`batchMaxSize: 0` with `supportsBatch: true` fires instantly.** The request is added to the queue before the size check (`len >= batchMaxSize`), so the check evaluates as `1 >= 0` (always true). Use `batchMaxSize: 2` or higher. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="294" />
+2. **`batchMaxWait: 0` (default) fires instantly.** `time.AfterFunc(0, fn)` schedules in a new goroutine immediately. Set a non-zero duration to enable coalescing. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="291" />
+3. **Duplicate JSON-RPC IDs within a batch window flush the pending batch.** The in-flight batch fires immediately and the duplicate starts a fresh batch. Clients that reuse IDs will see reduced batch efficiency. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="255-261" />
+4. **Custom `headers` overwrite built-in defaults.** `Header.Set` replaces any existing value. A `headers: {Content-Type: text/plain}` will overwrite `application/json`. OTel headers are injected after and cannot be overridden. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="838-847" />
+5. **Forwarded headers are absent on batch requests.** Callers relying on `Authorization` or custom headers forwarded to upstreams must not enable `supportsBatch` for those upstreams. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="736-742" />
+6. **`upstreamDefaults.jsonRpc` is all-or-nothing.** If an upstream has any `jsonRpc:` block (even empty `jsonRpc: {}`), defaults are not merged field-by-field. Source: <SourceLink file="common/defaults.go" lines="1550-1558" />
+7. **Proxy URL scheme check is a `strings.HasPrefix` after `strings.ToLower`, not `url.Parse`.** `socks4://`, `ws://`, `ftp://`, and other schemes fail at startup regardless of syntactic validity. Only `http://`, `https://`, `socks5://` are accepted. Source: <SourceLink file="common/validation.go" lines="238-244" />
+8. **Empty proxy pool falls back to direct transport.** If `GetClient` returns an error (pool created with zero URLs), the client logs an error and uses the direct transport. Startup validation should prevent this in production. Source: <SourceLink file="clients/proxy_pool_registry.go" lines="69-71" />
+9. **`MaxConnsPerHost: 0` is deliberate.** Go's prior default of 2 capped throughput at ~5 req/s per host with 400ms latency. Unlimited removes the queue; the OS TCP stack becomes the only cap. Source: <SourceLink file="clients/http_connection_test.go" lines="141-414" />
+10. **No per-upstream TLS configuration.** Custom CA bundles, client certificates, and `InsecureSkipVerify` are not supported for HTTP upstreams. Go uses the system CA bundle. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="109-118" />
+11. **HTTP/2 is not explicitly enabled.** `ForceAttemptHTTP2` is not set. HTTP/2 may negotiate via ALPN on `https://` upstreams that offer it, but this is unverified. Proxy transports are HTTP/1.1 tunnels. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="109-118" />
+12. **Batch single-object response broadcasts to all callers.** When an upstream returns `{"jsonrpc":"2.0","error":{...},"id":null}`, every pending request in the batch receives the same response — intended for upstream-wide rate-limit errors. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="606-636" />
+13. **Partial batch response leaves unmatched callers with an error.** If the array is shorter than queued requests, absent IDs receive `"no response received for request ID: N"`, logged as ERROR with the full response body. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="597-605" />
+14. **5ms race-fix window for timeout sentinels in batch.** When `batchCtx` expires with `DeadlineExceeded`, the per-request context `Cause` may lag by a few microseconds. The client waits up to 5ms for the cause to stabilize so `ErrDynamicTimeoutExceeded` sentinels are preserved for the upstream classifier. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="471-479" />
+15. **`ErrUpstreamMalformedResponse` is retryable.** Raised when a batch response body is neither a JSON array nor object. Not in the non-retryable allowlist — eRPC will try another upstream. If all upstreams return malformed responses, the request ends as `ErrUpstreamsExhausted`. Source: <SourceLink file="common/errors.go" lines="835-858" />
+16. **`ErrEndpointServerSideException.originalStatusCode` zero-value fallback is 500.** When `originalStatusCode == 0` (e.g. synthetic gRPC status), `ErrorStatusCode()` returns 500. A 500 from eRPC does not necessarily mean the upstream returned 500. Source: <SourceLink file="common/errors.go" lines="1974-1979" />
+17. **`JsonRpcErrorExtractor` is wired once at startup.** The EVM extractor is injected at `UpstreamsRegistry` construction and cannot be changed at runtime. Non-EVM architectures require a code change to swap extractors. Source: <SourceLink file="upstream/registry.go" lines="79" />
+18. **`ErrUpstreamMalformedResponse` method-level 400 vs wire-level 200 discrepancy.** `ErrorStatusCode()` returns 400, which appears in eRPC logs and metrics labels. However, the HTTP response to the calling client is sent with wire-level HTTP 200 (standard JSON-RPC transport), and the 400 appears only inside the JSON-RPC error envelope's metadata. The 400 is not visible in the HTTP response line seen by callers — only in logs and `erpc_upstream_request_errors_total`. Source: <SourceLink file="common/errors.go" lines="856-858" />
+19. **`ErrEndpointServerSideException` is retryable toward both upstream and network.** The error code is not in the non-retryable allowlist in `IsRetryableTowardsUpstream`, so eRPC will attempt another upstream. A 500 fallback (when `originalStatusCode == 0`) does not mean the error is deterministic. Source: <SourceLink file="common/errors.go" lines="1951-1979" />
+20. **`proxyPool` is set twice when `jsonRpcCfg != nil`.** `NewGenericHttpJsonRpcClient` assigns `client.proxyPool = proxyPool` in the struct literal and then again unconditionally inside the `if jsonRpcCfg != nil` block. The net effect is always the passed value — harmless but worth noting when reading the code. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="91-148" />
+
+### Observability
+
+The HTTP client layer emits no Prometheus metrics directly. All upstream-level metrics are recorded by `upstream/upstream.go` and `health/tracker.go` which wrap the client calls. Errors originating in the HTTP client surface under these metrics:
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_request_total` | counter | project, network, upstream, category, method | Every upstream attempt including batched calls |
+| `erpc_upstream_request_errors_total` | counter | project, network, upstream, category, error_type | Transport failures, timeouts, malformed responses; `error_type=ErrUpstreamMalformedResponse` visible here |
+| `erpc_upstream_request_duration_seconds` | histogram | project, network, upstream, category | End-to-end duration per upstream call |
+
+**Trace spans.** Single requests produce an `HttpJsonRpcClient.sendSingleRequest` span with `network.id`, `upstream.id`, and (at detailed tracing level) `request.id` and `request.method` attributes. Batch requests do not create per-call spans; they run under the propagated caller context.
+
+**Log messages (key entries):**
+- `DEBUG` `"sending json rpc POST request (single|batch)"` — host, raw request body, headers
+- `DEBUG` `"queuing request ... for batch (current batch size: N)"`
+- `DEBUG` `"processing batch with N requests"`
+- `TRACE` `"using client from proxy pool"` — pool ID, transport pointer, resolved proxy URL
+- `TRACE` `"starting batch timer"`, `"setting batch deadline to earliest request deadline"`, `"committing batch to process total of N requests"`
+- `TRACE` response body (first 20 KiB + last 20 KiB when response body is oversized)
+- `ERROR` `"failed to get client from proxy pool"` — when `ProxyPool.GetClient` returns error (empty pool)
+- `WARN` `"unexpected response received without ID"` — batch response element has no `id` field
+- `WARN` `"unexpected response received with ID: <id>"` — batch response ID not in pending request map
+- `ERROR` `"some requests did not receive a response (matching ID)"` — with full response body
+
+### Source code entry points
+
+- [`clients/http_json_rpc_client.go:L89-L148`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L89-L148) — `NewGenericHttpJsonRpcClient`: transport construction, field initialization, gzip and batch config
+- [`clients/http_json_rpc_client.go:L786-L951`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L786-L951) — `prepareRequest`, `sendSingleRequest`, `normalizeJsonRpcError`: request shape, OTel injection, error classification
+- [`clients/http_json_rpc_client.go:L241-L479`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L241-L479) — `queueRequest`, `processBatch`: batch aggregation, deadline propagation, context pre-checks
+- [`clients/registry.go:L47-L125`](https://github.com/erpc/erpc/blob/main/clients/registry.go#L47-L125) — `ClientRegistry.GetOrCreateClient` / `CreateClient`: sync.Map cache, scheme dispatch, proxy pool resolution
+- [`clients/proxy_pool_registry.go:L23-L98`](https://github.com/erpc/erpc/blob/main/clients/proxy_pool_registry.go#L23-L98) — `ProxyPool.GetClient` (round-robin), `createProxyPool`, proxy transport construction
+- [`util/http_dialer.go:L8-L24`](https://github.com/erpc/erpc/blob/main/util/http_dialer.go#L8-L24) — `DefaultOutboundDialer`: `net.Dialer{Timeout: 10s, KeepAlive: 15s}`
+- [`common/validation.go:L230-L247`](https://github.com/erpc/erpc/blob/main/common/validation.go#L230-L247) — `ProxyPoolConfig.Validate`: ID required, URLs non-empty, prefix scheme check
+- [`common/error_extractor.go:L10-L21`](https://github.com/erpc/erpc/blob/main/common/error_extractor.go#L10-L21) — `JsonRpcErrorExtractor` interface + `JsonRpcErrorExtractorFunc` adapter
+- [`common/errors.go:L835-L858`](https://github.com/erpc/erpc/blob/main/common/errors.go#L835-L858) — `ErrUpstreamMalformedResponse`: meaning, `ErrorStatusCode` returns 400, retryable
+- [`common/errors.go:L1951-L1979`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1951-L1979) — `ErrEndpointServerSideException`: `originalStatusCode` field, 500 fallback
+- [`clients/http_connection_test.go`](https://github.com/erpc/erpc/blob/main/clients/http_connection_test.go) — behavior-locking tests validating `MaxConnsPerHost: 0` fix under load
+- [`common/config.go:L1072-L1079`](https://github.com/erpc/erpc/blob/main/common/config.go#L1072-L1079) — `JsonRpcUpstreamConfig` struct definition
+- [`common/config.go:L1985-L1988`](https://github.com/erpc/erpc/blob/main/common/config.go#L1985-L1988) — `ProxyPoolConfig` struct definition
+- [`common/defaults.go:L1700-L1704`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1700-L1704) — unconditional `u.JsonRpc = &JsonRpcUpstreamConfig{}` if nil before `SetDefaults()`
+
+### Related pages
+
+- [Retry](/config/failsafe/retry) — retry policy wrapping upstream calls; transport errors flow through here.
+- [Timeout](/config/failsafe/timeout) — per-request timeout bounds that feed `ErrDynamicTimeoutExceeded` into the batch deadline path.
+- [Rate limiters](/config/rate-limiters) — cap outbound RPS per upstream or proxy pool to stay within provider budgets.
+- [Upstreams](/config/projects/upstreams) — full upstream config including `endpoint`, `jsonRpc`, and `upstreamDefaults`.
+- [Selection policies](/config/projects/selection-policies) — how eRPC chooses which upstream (and which proxy-pool-backed client) receives each request.
+
+</AISection>

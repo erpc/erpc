@@ -1,0 +1,432 @@
+---
+title: Static responses
+description: Return hardcoded JSON-RPC replies instantly for specific method+params pairs — no upstream contact, zero quota consumed, microsecond latency.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
+
+<LLMsTxtLink />
+
+# Static responses
+
+Some chains deviate from standard EVM assumptions — a genesis block at a non-zero number,
+a hardcoded `eth_chainId`, a known-null receipt for a synthetic transaction. Sending those
+requests upstream returns errors or inconsistent data. Static responses short-circuit the
+entire pipeline and return your configured answer in microseconds, consuming zero upstream
+quota.
+
+**What you get**
+
+- Matched requests never touch an upstream or the cache
+- Any JSON-RPC shape: success result, typed error, or `null`
+- Full param matching with YAML/JSON type tolerance built in
+- One Prometheus counter to confirm every match
+
+## Quick taste
+
+Illustrative, not a tuned production config — serve block 0 from config:
+
+<ConfigTabs
+  path="projects[].networks[].staticResponses"
+  focusYaml="6-11"
+  focusTs="6-10"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        staticResponses:
+          # short-circuit: matched requests never reach an upstream
+          - method: eth_blockNumber
+            params: []
+            response:
+              result: "0x0"`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    staticResponses: [{
+      // short-circuit: matched requests never reach an upstream
+      method: "eth_blockNumber",
+      params: [],
+      response: { result: "0x0" },
+    }],
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="stub a chain that has no real genesis block"
+	defaultOpen
+	prompt={`Some EVM chains don't have a real block at number 0x0 — querying it returns
+an error or times out. Add a staticResponse to my eRPC network config that returns
+a synthetic, well-formed genesis block object for eth_getBlockByNumber("0x0", false)
+so clients never hit the upstream for this. Work with my existing eRPC config. Read the
+full reference first:
+https://docs.erpc.cloud/config/projects/static-responses.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="hardcode eth_chainId across all providers"
+	prompt={`Some of my upstream providers return inconsistent or wrong eth_chainId values
+for a custom network. Pin eth_chainId to the correct hex value in my eRPC config
+in my eRPC config using a staticResponse so no upstream is ever consulted for this
+method. Reference:
+https://docs.erpc.cloud/config/projects/static-responses.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="return a typed error for unsupported methods"
+	prompt={`Certain JSON-RPC methods (e.g. eth_newFilter, debug_traceTransaction) are not
+supported by my network and return garbage from upstreams. Add staticResponse entries
+in my eRPC config that return a proper JSON-RPC -32601 methodNotFound error for each of
+those methods instead of forwarding to upstreams. Reference:
+https://docs.erpc.cloud/config/projects/static-responses.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug why a static rule isn't matching"
+	prompt={`I configured a staticResponse in my eRPC config but requests are still reaching
+my upstream — the erpc_network_static_response_served_total counter stays at zero.
+Help me diagnose the mismatch: explain hex-string normalization gotchas, YAML int
+vs JSON float64 equivalence, and how to confirm the exact param form my client sends.
+Reference:
+https://docs.erpc.cloud/config/projects/static-responses.llms.txt`}
+/>
+
+<AISection title="Static responses — full agent reference">
+
+### How it works
+
+`Network.Forward` checks for a static-response match immediately after extracting the
+JSON-RPC method — before multiplexing, cache reads, and upstream selection
+(<SourceLink file="erpc/networks.go" lines="973-981" />). A hit short-circuits the entire
+pipeline and returns the configured reply in microseconds. A miss falls through to the
+normal path unmodified.
+
+Matching is performed by `FindStaticResponseMatch` (<SourceLink file="common/static_response.go" lines="14-24" />),
+which iterates the `staticResponses` slice in declaration order and returns the first entry
+whose `method` equals the request method (exact, case-sensitive string match) AND whose
+`params` deep-equal the inbound params. First match wins; subsequent entries are never
+evaluated.
+
+On a hit, `tryServeStaticResponse` (<SourceLink file="erpc/networks_static_responses.go" lines="15-63" />)
+builds a `JsonRpcResponse` with the inbound request's `id` (not any stored value), the
+configured `result` or `error` object, and `jsonrpc: "2.0"`. The response carries no
+upstream metadata — `Upstream()` is nil and `FromCache()` is false.
+
+**Numeric type tolerance.** YAML config deserializes integers as Go `int`; inbound JSON
+deserializes them as `float64`. `valueEqual` normalizes both to `float64`, so a config
+param of `0` matches an inbound `0` (or `0.0`) without any special handling. All numeric
+types (float32/64, int/8/16/32/64, uint/8/16/32/64) are converted to float64 before
+comparison. Maps are compared key-count-first then recursively, order-independently.
+Other types fall back to `reflect.DeepEqual`.
+
+**Hex strings are not normalized.** `"0x0"` and `"0x00"` are different values. If your
+client sends `"0x00"` but your config uses `"0x0"`, no match occurs and the request falls
+through to an upstream. Use the exact form your client sends.
+
+**No params wildcard.** Every element in `params` must match exactly. To match a method
+regardless of its params, configure an entry with an empty `params` array (which also
+matches inbound `null` params and omitted params, since all three have `len == 0`).
+
+**No defaults applied.** Neither `StaticResponseConfig` nor its sub-structs have any
+`SetDefaults` wiring — all fields are fully explicit. The list itself defaults to nil
+(feature off).
+
+### Config schema
+
+All fields live under `networks[*].staticResponses[*]`.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `networks[*].staticResponses` | `[]*StaticResponseConfig` | `nil` (feature off) | Checked in declaration order; first match wins. Source: <SourceLink file="common/config.go" lines="2005" /> |
+| `networks[*].staticResponses[*].method` | `string` | required | Exact JSON-RPC method name; case-sensitive string equality. Empty string rejected at startup. Source: <SourceLink file="common/config.go" lines="2015" />, <SourceLink file="common/validation.go" lines="1282-1284" /> |
+| `networks[*].staticResponses[*].params` | `[]interface{}` | `nil` | Params to match; nil and empty-slice are equivalent in matching (both `len == 0`). Omitting the key yields nil; `params: []` yields non-nil empty slice — irrelevant to matching. Supports numbers, strings, booleans, arrays, maps. Source: <SourceLink file="common/config.go" lines="2016" /> |
+| `networks[*].staticResponses[*].response` | `*StaticResponseBodyConfig` | required | Exactly one of `result` or `error` must be set; nil rejected at startup. Source: <SourceLink file="common/config.go" lines="2017" />, <SourceLink file="common/validation.go" lines="1285-1298" /> |
+| `networks[*].staticResponses[*].response.result` | `interface{}` | `nil` | Any JSON-serializable value; set to serve a successful response. Mutually exclusive with `error`. `result: null` YAML is treated as set (non-nil interface wrapping nil). Source: <SourceLink file="common/config.go" lines="2023" /> |
+| `networks[*].staticResponses[*].response.error` | `*StaticResponseErrorConfig` | `nil` | Set to return a JSON-RPC error response. Mutually exclusive with `result`. Requires `message` to be non-empty. Source: <SourceLink file="common/config.go" lines="2024" /> |
+| `networks[*].staticResponses[*].response.error.code` | `int` | `0` (no range enforced) | JSON-RPC error code. Typical values: `-32700` parse error, `-32600` invalid request, `-32601` method not found, `-32602` invalid params, `-32603` internal error. **Footgun:** code `0` passes validation but is omitted from wire JSON because `ErrJsonRpcExceptionExternal.Code` uses `json:"code,omitempty"`. Always set a non-zero value. Source: <SourceLink file="common/config.go" lines="2029" />, <SourceLink file="common/errors.go" lines="2226" /> |
+| `networks[*].staticResponses[*].response.error.message` | `string` | required when `error` is set | Human-readable error description. Empty string rejected at startup with `"response.error.message is required"`. Source: <SourceLink file="common/config.go" lines="2030" />, <SourceLink file="common/validation.go" lines="1296-1298" /> |
+| `networks[*].staticResponses[*].response.error.data` | `interface{}` | `nil` | Optional extra data in the JSON-RPC error object. Any JSON-serializable value. Omitted from wire JSON when nil (`omitempty`). Source: <SourceLink file="common/config.go" lines="2031" /> |
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Synthetic genesis block (canonical production pattern).** HyperEVM, LightLink, Sei
+testnet, and several other EVM chains have no real state at block 0x0 — their node RPCs
+return an error or an empty response for `eth_getBlockByNumber("0x0", false)`. Indexers and
+client libraries assume a valid block always exists at that slot. The fix is a fully-formed
+synthetic block object served straight from config; zero upstream calls are made:
+
+<ConfigTabs
+  path="projects[].networks[].staticResponses"
+  yaml={`staticResponses:
+  - method: eth_getBlockByNumber
+    # match the exact hex form clients send — "0x00" would NOT match "0x0"
+    params: ["0x0", false]
+    response:
+      result:
+        baseFeePerGas: "0x0"
+        difficulty: "0x1"
+        extraData: "0x"
+        # gasLimit should be plausible for the chain; 10M is a safe default
+        gasLimit: "0x989680"
+        gasUsed: "0x0"
+        # zero hash signals "synthetic" to any tooling that inspects it
+        hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        logsBloom: "0x000...000"
+        miner: "0x0000000000000000000000000000000000000000"
+        mixHash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        nonce: "0x0000000000000000"
+        number: "0x0"
+        parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        receiptsRoot: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        sha3Uncles: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        size: "0x1d01"
+        stateRoot: "0x0000000000000000000000000000000000000000000000000000000000000000"
+        timestamp: "0x0"
+        totalDifficulty: "0x1"
+        transactions: []
+        transactionsRoot: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+        uncles: []`}
+  ts={`staticResponses: [{
+  method: "eth_getBlockByNumber",
+  // match the exact hex form clients send — "0x00" would NOT match "0x0"
+  params: ["0x0", false],
+  response: {
+    result: {
+      baseFeePerGas: "0x0",
+      difficulty: "0x1",
+      extraData: "0x",
+      // gasLimit should be plausible for the chain; 10M is a safe default
+      gasLimit: "0x989680",
+      gasUsed: "0x0",
+      // zero hash signals "synthetic" to any tooling that inspects it
+      hash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      logsBloom: "0x000...000",
+      miner: "0x0000000000000000000000000000000000000000",
+      mixHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      nonce: "0x0000000000000000",
+      number: "0x0",
+      parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      receiptsRoot: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      sha3Uncles: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      size: "0x1d01",
+      stateRoot: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      timestamp: "0x0",
+      totalDifficulty: "0x1",
+      transactions: [],
+      transactionsRoot: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+      uncles: [],
+    },
+  },
+}]`}
+/>
+
+**2. Hash-addressed genesis (pair with block-number entry).** Some clients look up genesis
+by its known zero hash (`0x000...000`) rather than by number. HyperEVM production adds a
+second static entry for `eth_getBlockByHash` using the same synthetic object — declaration
+order means the hash lookup is served before the catch-all, no upstream contact either way:
+
+<ConfigTabs
+  path="projects[].networks[].staticResponses"
+  yaml={`staticResponses:
+  - method: eth_getBlockByNumber
+    params: ["0x0", false]
+    response:
+      result: { number: "0x0", hash: "0x000...000" }   # full block object
+  - method: eth_getBlockByHash
+    # clients that cache "genesis hash = all zeros" hit this instead of falling through
+    params: ["0x0000000000000000000000000000000000000000000000000000000000000000", true]
+    response:
+      result: { number: "0x0", hash: "0x000...000" }   # same synthetic block, with txs`}
+  ts={`staticResponses: [
+  {
+    method: "eth_getBlockByNumber",
+    params: ["0x0", false],
+    response: { result: { number: "0x0", hash: "0x000...000" } },
+  },
+  {
+    method: "eth_getBlockByHash",
+    // clients that cache "genesis hash = all zeros" hit this instead of falling through
+    params: ["0x0000000000000000000000000000000000000000000000000000000000000000", true],
+    response: { result: { number: "0x0", hash: "0x000...000" } },
+  },
+]`}
+/>
+
+**3. Hardcoded chain identity.** Some chains return inconsistent `eth_chainId` values
+across providers (e.g. decimal vs hex, or different values on archive vs realtime nodes).
+Serve it from config to guarantee determinism — upstreams are never consulted for this
+method, which also eliminates a round-trip on every new client connection:
+
+<ConfigTabs
+  path="projects[].networks[].staticResponses"
+  yaml={`staticResponses:
+  - method: eth_chainId
+    # empty params matches inbound null params, [], and omitted params — all equivalent
+    params: []
+    response:
+      # use the canonical hex form your chain uses; 0x539 = 1337 (local devnet)
+      result: "0x539"`}
+  ts={`staticResponses: [{
+  method: "eth_chainId",
+  // empty params matches inbound null params, [], and omitted params — all equivalent
+  params: [],
+  response: {
+    // use the canonical hex form your chain uses; 0x539 = 1337 (local devnet)
+    result: "0x539",
+  },
+}]`}
+/>
+
+**4. Typed error for unsupported or dangerous methods.** Return a proper JSON-RPC error
+instead of forwarding to an upstream that will reject the call anyway. Declaration order
+matters — put specific error stubs BEFORE any catch-all entries:
+
+<ConfigTabs
+  path="projects[].networks[].staticResponses"
+  yaml={`staticResponses:
+  - method: eth_getBlockByNumber
+    params: ["0x0", false]
+    response:
+      error:
+        # -32602 = invalid params (genesis not available is a client input problem)
+        code: -32602
+        message: "genesis block not available on this network"
+        # optional structured data surfaced in the JSON-RPC error.data field
+        data: { reason: "chain does not expose pre-migration history" }`}
+  ts={`staticResponses: [{
+  method: "eth_getBlockByNumber",
+  params: ["0x0", false],
+  response: {
+    error: {
+      // -32602 = invalid params (genesis not available is a client input problem)
+      code: -32602,
+      message: "genesis block not available on this network",
+      // optional structured data surfaced in the JSON-RPC error.data field
+      data: { reason: "chain does not expose pre-migration history" },
+    },
+  },
+}]`}
+/>
+
+**5. Known-null receipt for a synthetic transaction.** Some bridge or L2 networks produce
+transaction hashes that will never appear on-chain. Instead of falling through to an
+upstream that returns an error, return `null` explicitly — sets `result: null` in the wire
+JSON, which is the correct "not found" shape for receipt lookups:
+
+<ConfigTabs
+  path="projects[].networks[].staticResponses"
+  yaml={`staticResponses:
+  - method: eth_getTransactionReceipt
+    params: ["0xdeadbeef000000000000000000000000000000000000000000000000deadbeef"]
+    response:
+      # result: null is treated as "result is set to null" — valid wire JSON
+      result: null`}
+  ts={`staticResponses: [{
+  method: "eth_getTransactionReceipt",
+  params: ["0xdeadbeef000000000000000000000000000000000000000000000000deadbeef"],
+  response: { result: null },
+}]`}
+/>
+
+### Request/response behavior
+
+- Static responses short-circuit `Network.Forward` before cache reads and upstream
+  selection. The only things that run earlier are method extraction and OTel span setup.
+  [<SourceLink file="erpc/networks.go" lines="973-981" />]
+- The inbound request's `id` is always echoed in the response — not any stored value.
+  String ids work correctly. [<SourceLink file="erpc/networks_static_responses.go" lines="45" />]
+- The response carries no upstream metadata: `Upstream()` is nil and `FromCache()` is
+  false. [<SourceLink file="erpc/networks_static_responses.go" lines="15" />]
+- `result` and `error` are mutually exclusive. Setting both or neither causes a startup
+  validation error.
+- If `req.JsonRpcRequest()` fails (malformed request), the function returns `(nil, false)`
+  and the request falls through to normal handling — it is not aborted.
+  [<SourceLink file="erpc/networks_static_responses.go" lines="23" />]
+- If `NewJsonRpcResponse` fails during response construction (rare — only if result/error
+  marshaling panics), the function logs an error (`"failed to build static response"`) and
+  returns `(nil, false)`, falling through to normal handling.
+  [<SourceLink file="erpc/networks_static_responses.go" lines="48" />]
+- OTel span attribute `static_response.hit=true` is set on the `Network.Forward` span on
+  every hit. [<SourceLink file="erpc/networks.go" lines="978" />]
+
+### Best practices
+
+- **Match the exact param form your client sends.** Hex strings are not normalized:
+  `"0x0"` and `"0x00"` are different. Run a quick test request and confirm the exact
+  serialization before committing to config.
+- **Use `params: []` (empty array) to catch any params.** There is no wildcard — the only
+  way to match a method regardless of its params is an empty params array, which also
+  matches `null` and omitted params.
+- **Always set a non-zero error code.** Error code `0` passes startup validation but is
+  silently dropped from the wire JSON due to `json:"code,omitempty"`. Clients will see no
+  `code` field. Use standard JSON-RPC codes like `-32602` for invalid params.
+- **Declaration order is priority order.** If two entries could match the same request,
+  put the more specific one first. The second entry is never evaluated once the first
+  matches.
+- **Do not expect static responses to populate the cache.** Matched requests bypass cache
+  reads and writes entirely. If you also cache the same method, those entries come from
+  real upstream responses, not your static config.
+- **Verify coverage with the Prometheus counter.** `erpc_network_static_response_served_total`
+  increments on every match. If a counter you expect stays at zero, the params form in
+  your config likely does not match what the client is sending.
+
+### Edge cases & gotchas
+
+1. **Hex string case-sensitivity.** `"0x0"` and `"0x00"` are different param values — no hex normalization occurs. Match the exact form your clients send. [`common/static_response_test.go:L84`](https://github.com/erpc/erpc/blob/main/common/static_response_test.go#L84) explicitly documents this.
+2. **YAML int vs JSON float64 tolerance.** YAML `params: [0]` stores `int(0)`; inbound JSON stores `float64(0)`. `valueEqual` normalizes via `toFloat64` — the match succeeds. [`common/static_response_test.go:L59`](https://github.com/erpc/erpc/blob/main/common/static_response_test.go#L59)
+3. **nil and empty params are equivalent in matching.** All three forms — omitted params key (nil), `params: []` (non-nil empty), inbound `"params":null` — have `len == 0` and match each other. The nil vs non-nil distinction only affects re-serialization via `omitempty`.
+4. **Declaration order matters.** If two entries share the same (method, params), only the first is served. The second is never evaluated.
+5. **No params wildcard.** There is no glob or `*` support. To match a method regardless of params, add an entry with `params: []`.
+6. **Static responses bypass the cache.** A matched static response never reads from or writes to the cache. The cache is not populated even if caching is configured for the same method.
+7. **Static responses bypass multiplexing.** Matched requests never enter the mux leader/follower logic.
+8. **Inbound id is always echoed.** The `Params` slice in config does not store an id. The id in the response comes from `req.ID()` at build time. String ids work correctly.
+9. **Exactly one of result/error enforced at startup.** Setting both or neither causes a startup validation error. `result: null` YAML is treated as "result set" (non-nil interface).
+10. **Error code 0 omitted from wire JSON.** Code `0` passes `Validate()` but `json:"code,omitempty"` causes it to be silently dropped during serialization. Clients see no `code` field. Always use a non-zero code.
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_static_response_served_total` | counter | `project`, `network`, `category` | A request matched a static entry and was served without upstream contact; `category` = the JSON-RPC method name |
+
+- OTel span attribute `static_response.hit=true` is set on the `Network.Forward` span on a hit. [<SourceLink file="erpc/networks.go" lines="978" />]
+- Debug log: `"served static response (no upstream contacted)"` emitted with the matched `method` field. [<SourceLink file="erpc/networks_static_responses.go" lines="60-63" />]
+- Debug log on match-check failure: `"skipping static response: cannot inspect request"`. [<SourceLink file="erpc/networks_static_responses.go" lines="23" />]
+- Error log: `"failed to build static response"` on `NewJsonRpcResponse` failure (rare). [<SourceLink file="erpc/networks_static_responses.go" lines="48" />]
+
+### Source code entry points
+
+- [`erpc/networks_static_responses.go:L15-L63`](https://github.com/erpc/erpc/blob/main/erpc/networks_static_responses.go#L15-L63) — `tryServeStaticResponse`: params extraction, match call, response construction, metric emission
+- [`common/static_response.go:L14-L71`](https://github.com/erpc/erpc/blob/main/common/static_response.go#L14-L71) — `FindStaticResponseMatch`, `paramsEqual`, `valueEqual`, `mapEqual`, `sliceEqual`, `toFloat64`: pure matching logic
+- [`erpc/networks.go:L973-L981`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L973-L981) — call site in `Network.Forward`; placement relative to multiplexer and cache
+- [`common/config.go:L2005-L2032`](https://github.com/erpc/erpc/blob/main/common/config.go#L2005-L2032) — `StaticResponseConfig`, `StaticResponseBodyConfig`, `StaticResponseErrorConfig` struct definitions
+- [`common/validation.go:L1270-L1300`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1270-L1300) — `NetworkConfig` iterates entries; `StaticResponseConfig.Validate()` enforces field requirements
+- [`common/errors.go:L2225-L2231`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2225-L2231) — `ErrJsonRpcExceptionExternal`; `Code` field uses `json:"code,omitempty"` causing zero code to be dropped from wire JSON
+- [`telemetry/metrics.go:L419-L423`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L419-L423) — `MetricNetworkStaticResponseServedTotal` counter definition
+- [`common/static_response_test.go`](https://github.com/erpc/erpc/blob/main/common/static_response_test.go) — unit tests encoding hex case-sensitivity, numeric equivalence, nil/empty params, map ordering, validation rules
+- [`erpc/networks_static_responses_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_static_responses_test.go) — integration tests: upstream not contacted on match, params fall-through, error-shaped stubs, string id echo
+
+### Related pages
+
+- [Networks](/config/projects/networks) — `staticResponses` is configured per network under `projects[].networks[]`.
+- [Cache](/config/database/evmcache) — static responses fire before and bypass the cache entirely; they do not populate it.
+- [Failsafe](/config/failsafe/timeout) — static matches skip failsafe processing; no retry or timeout applies.
+- [Rate limiters](/config/rate-limiters) — matched static responses never consume upstream quota or rate-limit slots.
+
+</AISection>

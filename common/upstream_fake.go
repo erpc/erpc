@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -24,6 +25,7 @@ type FakeUpstream struct {
 	lastCordonedReason string
 	cordonMu           sync.RWMutex
 	tracker            HealthTracker
+	stateProvenBlock   atomic.Int64
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -53,6 +55,14 @@ func WithEvmStatePoller(evmStatePoller EvmStatePoller) func(*FakeUpstream) {
 func WithTags(tags ...string) func(*FakeUpstream) {
 	return func(u *FakeUpstream) {
 		u.config.Tags = tags
+	}
+}
+
+// WithGrpcConfig sets the upstream's grpc config block (headers, etc.). Used by
+// client tests that exercise grpc.headers handling.
+func WithGrpcConfig(cfg *GrpcUpstreamConfig) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.config.Grpc = cfg
 	}
 }
 
@@ -149,6 +159,20 @@ func (u *FakeUpstream) Cordon(method string, reason string) {
 	u.lastCordonedReason = reason
 }
 
+// ShouldHandleMethod honors the upstream config's IgnoreMethods (glob patterns);
+// everything else is handled. Mirrors the concrete upstream's default-allow
+// behavior for tests.
+func (u *FakeUpstream) ShouldHandleMethod(method string) (bool, error) {
+	if u.config != nil {
+		for _, ig := range u.config.IgnoreMethods {
+			if m, err := WildcardMatch(ig, method); err == nil && m {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
 func (u *FakeUpstream) Uncordon(method string, reason string) {
 	u.cordonMu.Lock()
 	defer u.cordonMu.Unlock()
@@ -164,6 +188,16 @@ func (u *FakeUpstream) CordonedReason() (string, bool) {
 
 func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error) {
 	return true, nil
+}
+
+func (u *FakeUpstream) EvmStateProvenBlock() int64 { return u.stateProvenBlock.Load() }
+func (u *FakeUpstream) EvmSetStateProvenBlock(n int64) {
+	for {
+		cur := u.stateProvenBlock.Load()
+		if n <= cur || u.stateProvenBlock.CompareAndSwap(cur, n) {
+			return
+		}
+	}
 }
 
 func (u *FakeUpstream) EvmEffectiveLatestBlock() int64 {
@@ -286,9 +320,11 @@ func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
 
 // FakeHealthTracker is a no-op implementation of HealthTracker for testing
 type FakeHealthTracker struct {
-	MisbehaviorRecorded bool
-	MisbehaviorCount    int
-	mu                  sync.Mutex
+	MisbehaviorRecorded     bool
+	MisbehaviorCount        int
+	LastMisbehaviorMethod   string
+	LastMisbehaviorFinality DataFinalityState
+	mu                      sync.Mutex
 }
 
 func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState) {
@@ -296,6 +332,8 @@ func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string
 	defer t.mu.Unlock()
 	t.MisbehaviorRecorded = true
 	t.MisbehaviorCount++
+	t.LastMisbehaviorMethod = method
+	t.LastMisbehaviorFinality = finality
 }
 
 func (t *FakeHealthTracker) RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState) {

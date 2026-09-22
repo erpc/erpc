@@ -54,7 +54,7 @@ func recordEvmBlockRangeHeatmap(ctx context.Context, projectId string, network *
 			}
 		}
 
-		tip := network.EvmHighestLatestBlockNumber(ctx)
+		tip := common.EvmHighestLatestBlockNumber(network, ctx)
 		finalityStr = resp.Finality(ctx).String()
 
 		var start, end int64

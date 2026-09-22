@@ -1,10 +1,14 @@
 package util
 
 import (
-	"compress/flate"
-	"compress/gzip"
 	"io"
 	"sync"
+
+	// klauspost/compress produces standard RFC 1952 gzip streams but is
+	// substantially faster than compress/gzip; this pool sits on the hot
+	// per-request HTTP serving path, so compression CPU is paid per response.
+	"github.com/klauspost/compress/flate"
+	"github.com/klauspost/compress/gzip"
 )
 
 // eofReader is used to reset gzip readers without allocating bufio.Reader

@@ -13,7 +13,7 @@ import (
 // countingCloser tracks Close call count + records prior Close error if any.
 type countingCloser struct {
 	io.Reader
-	closes  atomic.Int32
+	closes   atomic.Int32
 	closeErr error
 }
 

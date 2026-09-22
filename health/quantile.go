@@ -1,6 +1,7 @@
 package health
 
 import (
+	"context"
 	"math"
 	"sync"
 	"time"
@@ -68,6 +69,32 @@ func (q *QuantileTracker) RotateOldest() {
 	defer q.mu.Unlock()
 	q.buckets[q.head], _ = ddsketch.NewDefaultDDSketch(0.01)
 	q.head = (q.head + 1) % len(q.buckets)
+}
+
+// StartRotation spawns a goroutine that advances the sliding window so
+// the tracker reflects roughly the last `window` of samples: one bucket
+// rotates every window/rollingBuckets, mirroring Tracker.rotateMetricsLoop.
+// For trackers used OUTSIDE health.Tracker (e.g. cache-connector latency
+// tracking), which have no central rotation loop. Stops when ctx is done.
+func (q *QuantileTracker) StartRotation(ctx context.Context, window time.Duration) {
+	interval := window / rollingBuckets
+	if interval <= 0 {
+		// Defensive — mirrors rotateMetricsLoop's floor so a misconfigured
+		// window can't panic time.NewTicker.
+		interval = time.Millisecond
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				q.RotateOldest()
+			}
+		}
+	}()
 }
 
 func (q *QuantileTracker) MarshalJSON() ([]byte, error) {

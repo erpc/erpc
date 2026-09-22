@@ -14,6 +14,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,7 +27,10 @@ const GrpcDriverName = "grpc"
 // It is read-only: Set/Delete/List/Lock/Watch/Publish are no-ops or unsupported.
 // It bootstraps from an endpoint that returns a list of gRPC server URLs.
 // Each server is probed for chainId to map it to a network.
-// A background poller tracks the earliest available block per network for fast misses.
+// A background poller tracks the earliest/latest/finalized block per network:
+// earliest powers fast-miss rejection in Get, while each block's number and
+// timestamp are exported as gauges so operators can observe how far the
+// read-through cache trails each network's head.
 type GrpcConnector struct {
 	id     string
 	logger *zerolog.Logger
@@ -35,8 +39,12 @@ type GrpcConnector struct {
 	mu     sync.RWMutex
 	// networkId -> single client
 	clientByNetwork map[string]clients.GrpcBdsClient
-	// earliest block per network (0 if unknown)
-	earliestByNetwork map[string]uint64
+	// earliest/latest/finalized block per network (0 if unknown)
+	earliestByNetwork  map[string]uint64
+	latestByNetwork    map[string]uint64
+	finalizedByNetwork map[string]uint64
+	// unix timestamp (seconds) of the latest block per network (0 if unknown)
+	latestTsByNetwork map[string]int64
 	// headers to apply to all clients
 	headers     map[string]string
 	initializer *util.Initializer
@@ -44,6 +52,7 @@ type GrpcConnector struct {
 }
 
 var _ Connector = (*GrpcConnector)(nil)
+var _ CacheHeadReporter = (*GrpcConnector)(nil)
 
 // supportedMethods is a fast allowlist for methods served by gRPC BDS.
 var supportedMethods = map[string]struct{}{
@@ -54,6 +63,12 @@ var supportedMethods = map[string]struct{}{
 	"eth_getTransactionReceipt": {},
 	"eth_getBlockReceipts":      {},
 	"eth_chainId":               {},
+	// eth_blockNumber has no native BDS gRPC method; Get derives it from the
+	// latest block (see the translation in Get).
+	"eth_blockNumber": {},
+	// SVM. Solana method names are unprefixed, so they cannot collide with the
+	// eth_* entries above and one allowlist serves both architectures.
+	"getBlock": {},
 }
 
 func NewGrpcConnector(
@@ -86,14 +101,17 @@ func NewGrpcConnector(
 	}
 
 	gc := &GrpcConnector{
-		id:                id,
-		logger:            &lg,
-		appCtx:            ctx,
-		clientByNetwork:   make(map[string]clients.GrpcBdsClient),
-		earliestByNetwork: make(map[string]uint64),
-		headers:           map[string]string{},
-		initializer:       util.NewInitializer(ctx, &lg, nil),
-		getTimeout:        cfg.GetTimeout.Duration(),
+		id:                 id,
+		logger:             &lg,
+		appCtx:             ctx,
+		clientByNetwork:    make(map[string]clients.GrpcBdsClient),
+		earliestByNetwork:  make(map[string]uint64),
+		latestByNetwork:    make(map[string]uint64),
+		finalizedByNetwork: make(map[string]uint64),
+		latestTsByNetwork:  make(map[string]int64),
+		headers:            map[string]string{},
+		initializer:        util.NewInitializer(ctx, &lg, nil),
+		getTimeout:         cfg.GetTimeout.Duration(),
 	}
 	if cfg.Headers != nil {
 		for k, v := range cfg.Headers {
@@ -113,44 +131,87 @@ func NewGrpcConnector(
 					gc.logger.Error().Err(perr).Str("server", serverURL).Msg("invalid gRPC server URL")
 					return common.NewTaskFatal(perr)
 				}
-				cli, cerr := clients.NewGrpcBdsClient(gc.appCtx, &lg, "<cache>", nil, parsed)
+				cli, cerr := clients.NewGrpcBdsClient(gc.appCtx, &lg, "<cache>", nil, parsed, cfg.PoolSize)
 				if cerr != nil {
 					gc.logger.Warn().Err(cerr).Str("server", serverURL).Msg("failed to create gRPC client")
 					return cerr
 				}
+				// This task is retried with backoff by the initializer, and every
+				// attempt builds a fresh client with its own connection pool. A
+				// client abandoned on any path below therefore leaks its
+				// maintainLoop goroutine plus the callback-serializer and HTTP/2
+				// goroutines of each pooled conn — roughly eight per attempt,
+				// forever. A server whose chainId probe keeps failing leaks on
+				// every retry, which is unbounded.
+				//
+				// Retained is set only where the client is handed to
+				// clientByNetwork; every other exit closes it, including the
+				// duplicate-server case that returns nil.
+				retained := false
+				defer func() {
+					if retained {
+						return
+					}
+					if sd, ok := cli.(clients.ShutdownableClient); ok {
+						sd.Shutdown()
+					}
+				}()
 				// Apply headers
 				if len(gc.headers) > 0 {
 					cli.SetHeaders(gc.headers)
 				}
-				// Probe chainId with a short timeout derived from task context
-				probeCtx, cancel := context.WithTimeout(tctx, 5*time.Second)
-				defer cancel()
-				nrq := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest("eth_chainId", nil))
-				resp, rerr := cli.SendRequest(probeCtx, nrq)
-				if rerr != nil {
-					gc.logger.Warn().Err(rerr).Str("server", serverURL).Msg("chainId probe failed")
-					return rerr
-				}
-				jrr, jerr := resp.JsonRpcResponse(probeCtx)
-				if jerr != nil || jrr == nil {
-					gc.logger.Warn().Err(jerr).Str("server", serverURL).Msg("chainId response parse failed")
-					if jerr != nil {
-						return jerr
+				// Identity is either asserted by config or probed. Probing is
+				// EVM-only: it costs a round trip, and it is the thing that
+				// arms the per-request chainId assertion, so it is kept as the
+				// default wherever a chain id exists.
+				var networkId string
+				if cfg.NetworkId != "" {
+					networkId = cfg.NetworkId
+				} else {
+					// Probe chainId with a short timeout derived from task context
+					probeCtx, cancel := context.WithTimeout(tctx, 5*time.Second)
+					defer cancel()
+					nrq := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest("eth_chainId", nil))
+					resp, rerr := cli.SendRequest(probeCtx, nrq)
+					if rerr != nil {
+						gc.logger.Warn().Err(rerr).Str("server", serverURL).Msg("chainId probe failed")
+						return rerr
 					}
-					return fmt.Errorf("empty chainId response")
-				}
-				var chainHex string
-				if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &chainHex); err != nil || chainHex == "" {
-					gc.logger.Warn().Err(err).Str("server", serverURL).Msg("invalid chainId result")
-					if err != nil {
-						return err
+					jrr, jerr := resp.JsonRpcResponse(probeCtx)
+					if jerr != nil || jrr == nil {
+						gc.logger.Warn().Err(jerr).Str("server", serverURL).Msg("chainId response parse failed")
+						if jerr != nil {
+							return jerr
+						}
+						return fmt.Errorf("empty chainId response")
 					}
-					return fmt.Errorf("invalid chainId")
+					var chainHex string
+					if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &chainHex); err != nil || chainHex == "" {
+						gc.logger.Warn().Err(err).Str("server", serverURL).Msg("invalid chainId result")
+						if err != nil {
+							return err
+						}
+						return fmt.Errorf("invalid chainId")
+					}
+					// normalize to network id
+					uval, _ := evm.HexToUint64(chainHex)
+					networkId = util.EvmNetworkId(int64(uval))
+					// Arm chain-identity enforcement with the probed chainId:
+					// from here on every request to this server carries the
+					// chainId assertion and the client's pool maintainer keeps
+					// re-verifying the connections — the bootstrap probe alone
+					// cannot catch an endpoint that gets cross-wired LATER
+					// (stale DNS / reused address answering for another
+					// chain). Narrow assertion: the method is intentionally
+					// not on the GrpcBdsClient interface.
+					//
+					// There is no equivalent for a configured networkId: with
+					// nothing to assert per request, a cross-wired SVM server
+					// stays undetected. That is the cost of static binding.
+					if armer, ok := cli.(interface{ SetExpectedChainId(uint64) }); ok {
+						armer.SetExpectedChainId(uval)
+					}
 				}
-				// normalize to network id
-				uval, _ := evm.HexToUint64(chainHex)
-				val := int64(uval)
-				networkId := util.EvmNetworkId(val)
 				gc.mu.Lock()
 				defer gc.mu.Unlock()
 				if existing := gc.clientByNetwork[networkId]; existing != nil {
@@ -158,6 +219,7 @@ func NewGrpcConnector(
 					return nil
 				}
 				gc.clientByNetwork[networkId] = cli
+				retained = true
 				gc.logger.Info().Str("server", serverURL).Str("networkId", networkId).Msg("gRPC client initialized for network")
 				return nil
 			},
@@ -169,13 +231,24 @@ func NewGrpcConnector(
 		}
 	}
 
-	// Start earliest poller per network
-	go gc.startEarliestPoller(ctx)
+	// Start background poller for per-network block heads (earliest/latest/finalized)
+	go gc.startBlockHeadPoller(ctx)
 
 	return gc, nil
 }
 
 func (g *GrpcConnector) Id() string { return g.id }
+
+// CacheLatestBlockTimestamp reports the unix timestamp (seconds) of the latest block this
+// read-through cache currently has for networkId (refreshed by the background head poller), and
+// whether it is known. Implements CacheHeadReporter so the realtime cache age guard can be enforced
+// for responses that carry no block timestamp of their own.
+func (g *GrpcConnector) CacheLatestBlockTimestamp(networkId string) (int64, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	ts := g.latestTsByNetwork[networkId]
+	return ts, ts > 0
+}
 
 func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {
 	span := trace.SpanFromContext(ctx)
@@ -237,6 +310,20 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 		}
 	}
 
+	// The backing reader has no eth_blockNumber RPC; derive it from the latest
+	// block. Read getBlockByNumber("latest") and return just its number in the
+	// eth_blockNumber result shape (a quoted hex string). Freshness is enforced
+	// by the cache layer's realtime gate via the connector's reported head.
+	if method == "eth_blockNumber" {
+		num, _, ok := g.fetchTaggedBlock(callCtx, cli, "latest")
+		if !ok {
+			span.SetAttributes(attribute.String("grpc.skip_reason", "latest_block_unavailable"))
+			return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
+		}
+		span.SetAttributes(attribute.String("grpc.result", "success_block_number"))
+		return []byte(fmt.Sprintf("\"0x%x\"", num)), nil
+	}
+
 	resp, err := cli.SendRequest(callCtx, req)
 	if err != nil || resp == nil {
 		if err != nil {
@@ -259,7 +346,7 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 	return resultBytes, nil
 }
 
-func (g *GrpcConnector) startEarliestPoller(ctx context.Context) {
+func (g *GrpcConnector) startBlockHeadPoller(ctx context.Context) {
 	t := time.NewTicker(60 * time.Second)
 	defer t.Stop()
 	for {
@@ -267,12 +354,19 @@ func (g *GrpcConnector) startEarliestPoller(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			g.pollEarliestOnce(ctx)
+			g.pollBlockHeadsOnce(ctx)
 		}
 	}
 }
 
-func (g *GrpcConnector) pollEarliestOnce(ctx context.Context) {
+// pollBlockHeadsOnce refreshes the earliest, latest, and finalized block per
+// network from the backing gRPC servers. earliest also feeds fast-miss rejection
+// in Get; each block's number and timestamp are reported as gauges so operators
+// can observe how far the read-through cache trails each network's head. Each tag
+// is best-effort: a failed/unparsable response leaves the prior value (and its
+// gauges) untouched rather than zeroing them on a transient error. The block
+// timestamp gauge is only set when present (>0).
+func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 	g.mu.RLock()
 	// snapshot to avoid holding lock during RPCs
 	snapshot := make(map[string]clients.GrpcBdsClient)
@@ -284,36 +378,102 @@ func (g *GrpcConnector) pollEarliestOnce(ctx context.Context) {
 	g.mu.RUnlock()
 
 	for nid, cli := range snapshot {
-		jr := common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"earliest", false})
-		nrq := common.NewNormalizedRequestFromJsonRpcRequest(jr)
-		resp, err := cli.SendRequest(ctx, nrq)
-		if err != nil || resp == nil {
+		// The head poller speaks EVM: fetchTaggedBlock issues
+		// eth_getBlockByNumber("earliest"/"latest"/"finalized"), which a
+		// Solana BDS server answers Unimplemented. Polling it would be three
+		// wasted round trips per interval, forever, for values that stay
+		// unknown either way.
+		//
+		// Consequence worth knowing: earliest stays 0, so the fast-miss
+		// rejection in Get never fires for SVM (it is keyed on
+		// EvmBlockNumber anyway), and CacheLatestBlockTimestamp reports
+		// unknown, so the realtime age guard fails open. Only cache SVM
+		// methods under a finalized policy until there is a slot-aware
+		// poller (BDA-3111).
+		if !strings.HasPrefix(nid, "evm:") {
 			continue
 		}
-		jrr, err := resp.JsonRpcResponse(ctx)
-		if err != nil || jrr == nil {
-			continue
+		// Label metrics by the network alias (e.g. "arbitrum-one") so they line up
+		// with every other metric; fall back to the raw networkId when no alias is
+		// configured. Internal map keys stay keyed by networkId.
+		lbl := common.NetworkAlias(nid)
+		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "earliest"); ok {
+			g.mu.Lock()
+			g.earliestByNetwork[nid] = num
+			g.mu.Unlock()
+			telemetry.MetricCacheConnectorEarliestBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
+			if ts > 0 {
+				telemetry.MetricCacheConnectorEarliestBlockTimestamp.WithLabelValues(g.id, lbl).Set(float64(ts))
+			}
 		}
-		// Parse number field
-		num := parseBlockNumberHex(jrr.GetResultBytes())
-		if num == "" {
-			continue
+
+		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
+			g.mu.Lock()
+			g.latestByNetwork[nid] = num
+			// Store the timestamp in lockstep with the number (even when ts is 0/unknown) so the
+			// reported head timestamp always corresponds to the current latest block. Retaining a
+			// previous ts after the number advances would make CacheLatestBlockTimestamp report a
+			// stale head time; storing 0 instead makes it report "unknown" so the realtime guard
+			// fails open rather than judging an advanced head by an older block's timestamp.
+			g.latestTsByNetwork[nid] = ts
+			g.mu.Unlock()
+			telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
+			if ts > 0 {
+				telemetry.MetricCacheConnectorLatestBlockTimestamp.WithLabelValues(g.id, lbl).Set(float64(ts))
+			}
 		}
-		u, err := evm.HexToUint64(num)
-		if err != nil {
-			continue
+
+		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "finalized"); ok {
+			g.mu.Lock()
+			g.finalizedByNetwork[nid] = num
+			g.mu.Unlock()
+			telemetry.MetricCacheConnectorFinalizedBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
+			if ts > 0 {
+				telemetry.MetricCacheConnectorFinalizedBlockTimestamp.WithLabelValues(g.id, lbl).Set(float64(ts))
+			}
 		}
-		g.mu.Lock()
-		g.earliestByNetwork[nid] = u
-		g.mu.Unlock()
 	}
 }
 
-func parseBlockNumberHex(b []byte) string {
+// fetchTaggedBlock requests a block by tag ("earliest"/"latest"/"finalized") from
+// a single gRPC client and returns its number and unix timestamp (seconds). ok is
+// false when the call fails or the result has no parsable block number; timestamp
+// is best-effort and may be 0 even when ok is true.
+func (g *GrpcConnector) fetchTaggedBlock(ctx context.Context, cli clients.GrpcBdsClient, tag string) (number uint64, timestamp int64, ok bool) {
+	jr := common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{tag, false})
+	nrq := common.NewNormalizedRequestFromJsonRpcRequest(jr)
+	resp, err := cli.SendRequest(ctx, nrq)
+	if err != nil || resp == nil {
+		return 0, 0, false
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil {
+		return 0, 0, false
+	}
+	result := jrr.GetResultBytes()
+	numStr := parseBlockField(result, "number")
+	if numStr == "" {
+		return 0, 0, false
+	}
+	num, err := evm.HexToUint64(numStr)
+	if err != nil {
+		return 0, 0, false
+	}
+	if tsStr := parseBlockField(result, "timestamp"); tsStr != "" {
+		if v, terr := common.HexToInt64(tsStr); terr == nil {
+			timestamp = v
+		}
+	}
+	return num, timestamp, true
+}
+
+// parseBlockField extracts a top-level string field (e.g. "number" or
+// "timestamp") from a JSON block result. Returns "" when absent or unparsable.
+func parseBlockField(b []byte, field string) string {
 	if len(b) == 0 {
 		return ""
 	}
-	node, err := sonic.Get(b, "number")
+	node, err := sonic.Get(b, field)
 	if err == nil {
 		v, _ := node.String()
 		return v

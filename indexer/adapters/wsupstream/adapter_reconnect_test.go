@@ -114,8 +114,8 @@ func syntheticSubscribeResponse(subID string) *common.NormalizedResponse {
 
 // --- the regression test -------------------------------------------------
 
-// TestAdapterResubscribesWithRetryAfterReconnect reproduces the wedge from
-// the 2026-06-12 zkSync incident at the adapter layer:
+// TestAdapterResubscribesWithRetryAfterReconnect reproduces a production
+// resubscribe wedge at the adapter layer:
 //
 //  1. subscribe RPCs ride the upstream's failsafe pipeline, whose circuit
 //     breaker is typically still OPEN at the instant the WS layer

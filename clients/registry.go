@@ -126,18 +126,45 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 					cerr = fmt.Errorf("failed to create WebSocket client for upstream %v: %w", cfg.Id, cerr)
 				}
 			case "grpc", "grpc+bds":
+				grpcPoolSize := 0
+				if cfg.Grpc != nil {
+					grpcPoolSize = cfg.Grpc.PoolSize
+				}
 				c, cerr = NewGrpcBdsClient(
 					appCtx,
 					&lg,
 					manager.projectId,
 					ups,
 					parsedUrl,
+					grpcPoolSize,
 				)
 				if cerr != nil {
 					cerr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v: %w", cfg.Id, cerr)
 				}
 			default:
 				cerr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
+			}
+		case common.UpstreamTypeSvm:
+			switch parsedUrl.Scheme {
+			case "http", "https":
+				// Reuse the composite extractor — it dispatches by architecture so SVM
+				// errors are handled by the SVM normalizer and EVM errors fall through
+				// untouched on this same client path.
+				c, cerr = NewGenericHttpJsonRpcClient(
+					appCtx,
+					&lg,
+					manager.projectId,
+					ups,
+					parsedUrl,
+					cfg.JsonRpc,
+					proxyPool,
+					manager.evmExtractor,
+				)
+				if cerr != nil {
+					cerr = fmt.Errorf("failed to create HTTP client for upstream: %v: %w", cfg.Id, cerr)
+				}
+			default:
+				cerr = fmt.Errorf("unsupported endpoint scheme for svm upstream %v: %v (only http/https supported)", cfg.Id, parsedUrl.Scheme)
 			}
 		default:
 			cerr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)

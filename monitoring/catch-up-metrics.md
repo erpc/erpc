@@ -1,0 +1,220 @@
+# Catch-up metrics — how to read them
+
+A reasoning guide for the **Catch-up Retries / Wait / Pressure** panels (Grafana
+row *Networks – Advanced*). Read this before concluding anything from those
+panels — a non-zero baseline is **normal**, and the panel that looks scariest
+(p95 = 10 s) is usually the healthiest signal.
+
+## TL;DR
+
+erpc deliberately waits **~one block** and retries when the selected upstream
+doesn't have the requested data *yet* ("catch-up"), instead of failing the
+request. Three panels expose it:
+
+| panel | metric | answers |
+|---|---|---|
+| **Catch-up Retries by Reason** | `rate(network_retry_attempt_total{reason=~"block_unavailable\|empty_result\|missing_data"})` | how *often* catch-up fires, by reason & network |
+| **Catch-up Wait — p95** | `histogram_quantile(0.95, rate(..._wait_seconds_bucket))` | how *long* each wait is — expect ≈ one block time |
+| **Catch-up Wait Pressure** | `rate(..._wait_seconds_sum)` | the *impact*: ≈ how many requests are sitting in a catch-up wait right now |
+
+Two sibling panels keep genuine-error retries out of the catch-up view (they are
+retries but **not** catch-up):
+
+| panel | metric | answers |
+|---|---|---|
+| **Failover Retries by Reason** | `rate(network_retry_attempt_total{reason=~"retryable_error\|pending_tx"})` | how often upstreams *error* (failover), by network |
+| **Upstream Errors by Type** | `topk(15, rate(upstream_request_errors_total))` by `upstream,error` | the *why*: which upstream + error code (e.g. `ErrEndpointUnsupported`, `ErrEndpointCapacityExceeded`) |
+
+Healthy = per-retry wait ≈ the chain's block time, and pressure low/flat.
+**Act** when pressure climbs unbounded, p95 ≫ one block (verify vs. the EMA gauge
+first — see bucket caveat), catch-up fires on `finalized` data, or **Failover
+Retries spike** (then check *Upstream Errors by Type*).
+
+## What "catch-up" actually is
+
+A request asks for data at the chain tip — `eth_getBlockByNumber(latest)`,
+logs in the newest block, a just-broadcast receipt. The upstream that gets
+picked may not have indexed that block yet (it's a second behind the tip, or
+returns `null`/`[]` for a block it hasn't ingested). Rather than surface an
+empty/error to the caller, erpc treats this as *"data not available **yet**"*
+and does a **block-time-relative wait, then retries** — betting the data
+appears within ~one block. This is fundamentally different from **genuine-error
+failover** (a 5xx / timeout / dead upstream), which retries on **exponential
+backoff**, not a block-time wait.
+
+Code: `networkExecutor.computeDelay` / `shouldRetryWithReason` /
+`isDataUnavailableReason` in `erpc/network_executor.go`.
+
+## The two metrics (count + duration, same `reason` label)
+
+Both are network-scope and share labels `{project, network, category, reason, finality}`
+(`category` = the RPC method; historically named).
+
+- **`erpc_network_retry_attempt_total`** — counter. Every network-scope retry,
+  by `reason`. The **count** side.
+- **`erpc_network_data_unavailable_wait_seconds`** — histogram
+  (`_bucket`/`_sum`/`_count`). The wall-clock delay **deliberately** spent
+  waiting before a data-not-yet-available retry. The **duration** side.
+  Recorded **only** for the catch-up reasons below.
+
+> **Counting note — events vs. unique requests.** `_count` (and
+> `network_retry_attempt_total`) count catch-up *retry events*, not distinct
+> requests. One request can retry up to `emptyResultMaxAttempts - 1` times, so
+> "% of requests affected" (events ÷ total requests) is **exact only when
+> `emptyResultMaxAttempts ≤ 2`** (one retry). With higher caps it *overcounts*
+> unique affected requests — e.g. a network with `emptyResultMaxAttempts: 6` can
+> log up to 5 waits for a single stubborn request, inflating the apparent share.
+> Read it as "catch-up retry load per request"; for true unique-request counts
+> we'd need a per-request counter (not yet emitted). Lowering an oversized cap
+> fixes both the overcount *and* the wasted work.
+
+### Reasons
+
+| reason | meaning | catch-up wait? |
+|---|---|---|
+| `block_unavailable` | upstream explicitly said it doesn't have that block yet (`ErrUpstreamBlockUnavailable`) — request is ahead of the upstream's head | ✅ block-time wait |
+| `empty_result` | upstream returned emptyish (`null` block, `[]` logs, empty receipt) for a recent block, with `RetryEmpty` set | ✅ block-time wait |
+| `missing_data` | point-lookup returned `ErrEndpointMissingData` ("I don't have this") | ✅ block-time wait |
+| `pending_tx` | tx-lookup retry (`RetryPending`) hunting an upstream that has the tx | ❌ exponential backoff — **excluded** from the wait histogram |
+| `retryable_error` | genuine retryable error (network/5xx) | ❌ exponential backoff (failover) |
+
+Only the first three are "catch-up". `pending_tx`/`retryable_error` show up in
+the **Retries** panel (they're retries) but **not** in Wait/Pressure (their cost
+is backoff, not chain catch-up — mixing them would mislabel failover as
+freshness).
+
+### The `finality` label — read it first (it's the highest-signal split)
+
+Panel: **Catch-up by Finality**. Split every catch-up number by `finality`
+before drawing conclusions:
+
+- catch-up on `unfinalized` / `realtime` data = **normal** (tip reads race the
+  chain — this is what catch-up is *for*).
+- catch-up on **`finalized`** data = **red flag, and the waits are wasted**.
+  Finalized data is permanent — waiting one block will **not** make it appear, so
+  a block-time wait here buys nothing. It means the upstream genuinely lacks the
+  data (incomplete archive / range gap) or the result is legitimately empty and
+  `RetryEmpty` is over-eager. The right response is **fail over immediately**, not
+  wait — so finalized catch-up is pure overhead. Expect it ≈ 0; if it dominates,
+  that's the bottleneck.
+- `unknown` = finality couldn't be classified; triage it like `finalized`.
+
+This interacts with the counting note above: a high `emptyResultMaxAttempts` on a
+network that empties on *finalized* data multiplies wasted waits — every empty is
+retried (with a block-time wait) several times for data that can't appear. Fixing
+such a network is usually **config** (drop `emptyResultMaxAttempts`, check the
+upstream's archive completeness) rather than tuning the wait.
+
+## How the wait is computed (so you know what "normal" looks like)
+
+`computeDelay` for a catch-up reason returns, in order:
+
+1. **`dynamicBlockUnavailableDelay()`** = EMA-estimated block time ×
+   `blockUnavailableDelayMultiplier` (default **1.0**) — i.e. *wait one block*.
+   This is the steady-state path once the block-time EMA has warmed up.
+2. else **`emptyResultDelay`** — a fixed fallback (default **700 ms**), used
+   before the EMA warms up (e.g. a freshly-deployed pod).
+
+Total catch-up retries are bounded by **`emptyResultMaxAttempts`** (default
+**2** → one retry), a cap **separate** from `maxAttempts` (genuine-error
+failover). So a request takes at most ~one block-time wait before giving up.
+
+**Consequence:** the expected p95 wait is *per-chain* and equals roughly one
+block:
+
+| chain (block time) | expected p95 catch-up wait |
+|---|---|
+| Ethereum mainnet (~12 s) | ~10–12 s |
+| Polygon / Base / Optimism / Avalanche (~2 s) | ~2 s |
+| BSC (~3 s) | ~3 s |
+| Arbitrum One (~0.25 s) | ~250–500 ms (or the 700 ms cold fallback) |
+
+A 10 s p95 on **mainnet** is therefore *correct* — it's one Ethereum block. The
+same 10 s on Arbitrum would be alarming.
+
+## Reading the panels (decision tree)
+
+1. **Retries by Reason** — is catch-up firing, what reason, which network?
+   Baseline non-zero is fine. Look at the *mix*:
+   - `block_unavailable` heavy on a fast chain → the picked upstream's head lags
+     the tip (cross-check the selection policy / `block_head_lag`).
+   - `empty_result` / `missing_data` → upstream returns empty for recent blocks
+     (indexing lag) **or** the data is legitimately empty and `RetryEmpty` is
+     over-eager.
+2. **Wait p95** — is each wait ≈ one block for that chain (table above)?
+   - p95 ≫ one block → the EMA block-time estimate is inflated (a laggy upstream
+     dragging the EMA), or backoff is leaking onto this path. **Before blaming the
+     EMA, verify it directly** with `erpc_network_dynamic_block_time_milliseconds`
+     and look at the **average** wait (`rate(_sum)/rate(_count)`). If the EMA is
+     correct (e.g. mainnet ≈ 12000 ms) and the avg ≈ one block but p95 looks huge,
+     it's a *histogram-bucket artifact*, not inflation — see the caveat below.
+   - p95 pinned at exactly 700 ms → EMA never warmed (cold pods / churn);
+     everything's on the fixed fallback.
+
+   > **Bucket caveat (learned the hard way).** `network_data_unavailable_wait_seconds`
+   > now uses dedicated buckets `{0.1,0.25,0.5,1,2,4,8,16,32,64}` (see
+   > `CatchUpWaitHistogramBuckets`) tuned for per-chain block times. Earlier it
+   > shared the global request-latency buckets (e.g. `…,1,3,5,10,30`), whose sparse
+   > 10→30 s gap put mainnet's 12 s wait in one coarse bucket — so `histogram_quantile`
+   > read ~30 s/"1 min" while the **avg was a healthy 12 s**. If you ever see a
+   > scary p95 here, confirm against the EMA gauge and the avg before concluding
+   > anything; trust p95 only with the dedicated buckets in place.
+3. **Wait Pressure** — the only panel that measures *impact*. `rate(_sum)` is
+   wait-seconds accrued per second ≈ **average number of requests concurrently
+   blocked in a catch-up wait** (Little's law: `concurrency = rate × duration`).
+   - < 1 → negligible; a handful of tip reads waiting. Ignore.
+   - high & **rising / unbounded** → many requests stuck waiting = an upstream
+     freshness problem, or you're hammering the tip faster than upstreams index.
+     This is what actually adds latency to user requests.
+   - Note pressure scales with *wait length*: a slow chain (10 s waits) reaches
+     pressure 1.0 at just 0.1 retries/s, while Arbitrum (0.4 s waits) needs
+     ~2.5 retries/s. Pressure normalizes "how often" against "how costly".
+
+## Healthy vs. act-now
+
+**Healthy:** flat/low pressure; p95 ≈ one block per chain; reason mix matches
+chain speed; all on `unfinalized` finality; brief regime shifts right after a
+deploy (cold EMA → 700 ms fallback until warm) that settle within a minute.
+
+**Act:**
+- Pressure climbing without a ceiling on a network → upstreams chronically
+  behind tip. Check the selection policy (is it routing to a laggy primary?) and
+  upstream `block_head_lag`.
+- p95 wait ≫ one block on a fast chain → EMA inflated by a bad upstream; or the
+  multiplier is set too high.
+- Retries high **and** hitting `emptyResultMaxAttempts` → requests exhaust
+  catch-up and surface empties/errors to callers.
+- **Any** catch-up volume on `finalized` finality → investigate the upstream
+  (missing range / incomplete archive), not the timing.
+
+## Tuning knobs (`retry` / `evm` config)
+
+| knob | path | effect |
+|---|---|---|
+| `blockUnavailableDelayMultiplier` | `evm` (default 1.0) | scales the per-block wait. <1 = fail faster, less latency, more empties; >1 = wait longer, fewer empties, more latency. |
+| `emptyResultDelay` | `retry` (default 700 ms) | the cold fallback wait before the block-time EMA warms up. |
+| `emptyResultMaxAttempts` | `retry` (default 2) | how many catch-up retries before giving up. Separate from `maxAttempts`. |
+
+## Worked example
+
+A typical snapshot of the three panels:
+
+- **Retries**: `mainnet / missing_data` and `base / block_unavailable` dominate,
+  `arbitrum-one / empty_result` rising — ~2–3 retries/s total. Reason mix tracks
+  chain speed (fast L2s race the tip via `block_unavailable`; mainnet sees
+  `missing_data`/`empty_result` on recent blocks). **Normal.**
+- **Wait p95**: `mainnet / empty_result` = 10 s, everything else ≈ 480 ms.
+  The 10 s is *one Ethereum block* — expected, not a stall. The sub-second
+  values are one block on the L2s (or the cold fallback). **Healthy.**
+- **Pressure**: peaks around ~1.0 (≈ one request continuously waiting) on
+  `arbitrum-one / empty_result`. Low impact — **not alarming**. If it kept
+  climbing past a few, *then* you'd chase upstream freshness.
+- A regime shift where the reason mix flips within a minute usually lines up
+  with a **deploy**: new pods start with a cold block-time EMA and fall back to
+  `emptyResultDelay` until it warms, briefly changing both the dominant reason
+  and the wait length. Correlate with release time before suspecting an upstream.
+
+**Bottom line:** catch-up firing is the system doing its job (trading a
+sub-block wait for fresher, non-empty responses). Judge it by **pressure trend**
+and **per-chain wait sanity**, not by raw retry counts or a scary-looking
+slow-chain p95.

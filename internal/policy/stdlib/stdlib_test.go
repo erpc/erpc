@@ -41,9 +41,10 @@ func (f *fakeUpstream) Tracker() common.HealthTracker {
 func (f *fakeUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (f *fakeUpstream) Cordon(method, reason string)   {}
-func (f *fakeUpstream) Uncordon(method, reason string) {}
-func (f *fakeUpstream) IgnoreMethod(method string)     {}
+func (f *fakeUpstream) Cordon(method, reason string)                   {}
+func (f *fakeUpstream) Uncordon(method, reason string)                 {}
+func (f *fakeUpstream) IgnoreMethod(method string)                     {}
+func (f *fakeUpstream) ShouldHandleMethod(method string) (bool, error) { return true, nil }
 
 func mkUps(ids ...string) []common.Upstream {
 	out := make([]common.Upstream, len(ids))
@@ -106,9 +107,9 @@ func newTestEngine(t *testing.T, eval string) (*policy.Engine, []common.Upstream
 	logger := zerolog.Nop()
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	cfg := &common.SelectionPolicyConfig{
-		EvalInterval:    common.Duration(0), // frozen — tests drive manual ticks
-		EvalTimeout:     common.Duration(50 * time.Millisecond),
-		EvalFunc:            eval,
+		EvalInterval: common.Duration(0), // frozen — tests drive manual ticks
+		EvalTimeout:  common.Duration(50 * time.Millisecond),
+		EvalFunc:     eval,
 	}
 	require.NoError(t, cfg.SetDefaults())
 	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
@@ -597,12 +598,12 @@ func TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 // tick.
 //
 // Setup:
-//   1. Seed rpc1 with 80% error rate → excludeIf trips → excluded.
-//   2. Advance "time" arbitrarily — without metric improvement,
-//      rpc1 MUST stay excluded forever (no time-based readmit).
-//   3. Feed rpc1 with a fresh batch of clean samples that brings the
-//      rolling error rate below 0.7 → next tick, rpc1 is back in
-//      rotation.
+//  1. Seed rpc1 with 80% error rate → excludeIf trips → excluded.
+//  2. Advance "time" arbitrarily — without metric improvement,
+//     rpc1 MUST stay excluded forever (no time-based readmit).
+//  3. Feed rpc1 with a fresh batch of clean samples that brings the
+//     rolling error rate below 0.7 → next tick, rpc1 is back in
+//     rotation.
 func TestStdlib_DefaultPolicy_ReadmitsWhenMetricsHeal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -865,9 +866,9 @@ func TestStdlib_ByFinality_RoutesToCorrectHandler(t *testing.T) {
 
 			ups := mkUps("rpc1", "rpc2")
 			cfg := &common.SelectionPolicyConfig{
-				EvalInterval:    0,
-				EvalTimeout:     common.Duration(50 * time.Millisecond),
-				EvalFunc:            eval,
+				EvalInterval: 0,
+				EvalTimeout:  common.Duration(50 * time.Millisecond),
+				EvalFunc:     eval,
 			}
 			require.NoError(t, cfg.SetDefaults())
 			require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
@@ -901,9 +902,9 @@ func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
 
 	ups := mkUps("rpc1", "rpc2")
 	cfg := &common.SelectionPolicyConfig{
-		EvalInterval:    0,
-		EvalTimeout:     common.Duration(50 * time.Millisecond),
-		EvalFunc:            eval,
+		EvalInterval: 0,
+		EvalTimeout:  common.Duration(50 * time.Millisecond),
+		EvalFunc:     eval,
 	}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
@@ -1412,9 +1413,9 @@ func TestStdlib_LatencyDeviationAbove_GenuinelySlowAcrossAllMethods(t *testing.T
 // (1× on the other). Latencies are well above the dampingMs default
 // (100ms) so the damping factor is ≈1 and the raw ratio comes through.
 // Mode behavior differentiates:
-//   • geomean: √(1 × 5) ≈ 2.24 < 3 → no trip
-//   • majority: 1/2 = 50% slow → ≥0.5 → trip
-//   • veto: 1 slow method → trip
+//   - geomean: √(1 × 5) ≈ 2.24 < 3 → no trip
+//   - majority: 1/2 = 50% slow → ≥0.5 → trip
+//   - veto: 1 slow method → trip
 func TestStdlib_LatencyDeviationAbove_OneMethodSlow_ModesDifferentiate(t *testing.T) {
 	cases := []struct {
 		mode      string

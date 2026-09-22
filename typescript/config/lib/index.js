@@ -21,6 +21,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var index_exports = {};
 __export(index_exports, {
   ArchitectureEvm: () => ArchitectureEvm,
+  ArchitectureSvm: () => ArchitectureSvm,
   AuthTypeJwt: () => AuthTypeJwt,
   AuthTypeNetwork: () => AuthTypeNetwork,
   AuthTypeSecret: () => AuthTypeSecret,
@@ -68,6 +69,7 @@ __export(index_exports, {
   UNFINALIZED: () => UNFINALIZED,
   UNKNOWN: () => UNKNOWN,
   UpstreamTypeEvm: () => UpstreamTypeEvm,
+  UpstreamTypeSvm: () => UpstreamTypeSvm,
   createConfig: () => createConfig
 });
 module.exports = __toCommonJS(index_exports);
@@ -80,6 +82,7 @@ var EvmNodeTypeArchive = "archive";
 var EvmSyncingStateUnknown = 0;
 var EvmSyncingStateSyncing = 1;
 var EvmSyncingStateNotSyncing = 2;
+var UpstreamTypeSvm = "svm";
 var ConsensusLowParticipantsBehaviorReturnError = "returnError";
 var ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult = "acceptMostCommonValidResult";
 var ConsensusLowParticipantsBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
@@ -111,6 +114,7 @@ var CacheEmptyBehaviorIgnore = 0;
 var CacheEmptyBehaviorAllow = 1;
 var CacheEmptyBehaviorOnly = 2;
 var ArchitectureEvm = "evm";
+var ArchitectureSvm = "svm";
 var ScopeNetwork = "network";
 var ScopeUpstream = "upstream";
 
@@ -131,6 +135,7 @@ var createConfig = (cfg) => {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ArchitectureEvm,
+  ArchitectureSvm,
   AuthTypeJwt,
   AuthTypeNetwork,
   AuthTypeSecret,
@@ -178,6 +183,7 @@ var createConfig = (cfg) => {
   UNFINALIZED,
   UNKNOWN,
   UpstreamTypeEvm,
+  UpstreamTypeSvm,
   createConfig
 });
 //# sourceMappingURL=index.js.map

@@ -220,7 +220,7 @@ func setupTestERPCServer(t *testing.T, cfg *common.Config) (string, context.Canc
 	})
 	require.NoError(t, err)
 
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 
 	erpcInstance.Bootstrap(ctx)

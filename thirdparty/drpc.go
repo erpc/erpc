@@ -204,6 +204,39 @@ func (v *DrpcVendor) Name() string {
 	return "drpc"
 }
 
+// drpcCreditUnits is dRPC's published compute-unit (CU) model
+// (https://drpc.org/docs/pricing/compute-units, 2026-07-23). Since dRPC's
+// 2025-06-02 move to flat pricing there is no tier/multiplier structure: a
+// flat 20 CU applies to every billable method on every chain (debug/trace
+// included), with a 0-CU carve-out for informational methods and a
+// documented default of 20 CU for anything unlisted ("*"). Values are dRPC
+// CUs, not money.
+var drpcCreditUnits = map[string]int64{
+	"*":                   20,
+	"eth_chainId":         0,
+	"eth_accounts":        0,
+	"eth_coinbase":        0,
+	"eth_hashrate":        0,
+	"eth_mining":          0,
+	"eth_protocolVersion": 0,
+	"eth_syncing":         0,
+	"net_listening":       0,
+	"net_peerCount":       0,
+	"net_version":         0,
+	"web3_clientVersion":  0,
+}
+
+// CreditUnits implements common.CreditUnitsProvider: dRPC's flat CU model,
+// overridable per method via `providers[].settings.creditUnits`.
+func (v *DrpcVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
+	method, _ := req.Method()
+	var override map[string]int64
+	if upstream != nil {
+		override = upstream.CreditUnits
+	}
+	return common.ResolveCreditUnits(drpcCreditUnits, override, method)
+}
+
 func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

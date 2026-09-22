@@ -23,7 +23,7 @@ func refreshHighestLatestBlockNumber(ctx context.Context, network common.Network
 	if r, ok := network.(tipRefresher); ok {
 		return r.EvmRefreshHighestLatestBlockNumber(ctx)
 	}
-	return network.EvmHighestLatestBlockNumber(ctx)
+	return common.EvmHighestLatestBlockNumber(network, ctx)
 }
 
 func BuildGetBlockByNumberRequest(blockNumberOrTag interface{}, includeTransactions bool) (*common.JsonRpcRequest, error) {
@@ -79,7 +79,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 
 					// Calculate block number lag
 					if common.IsTracingDetailed && bnErr == nil && respBlockNumber > 0 {
-						highestBlock := network.EvmHighestLatestBlockNumber(ctx)
+						highestBlock := common.EvmHighestLatestBlockNumber(network, ctx)
 						blockNumberLag := highestBlock - respBlockNumber
 						if blockNumberLag < 0 {
 							blockNumberLag = 0
@@ -118,7 +118,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		}
 	}
 
-	return enforceNonNullBlock(nq, nr)
+	return enforceNonNullBlock(ctx, nq, nr)
 }
 
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
@@ -137,7 +137,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 	// Cached "latest" can lag TipHW across pods / tip races. Only skip
 	// enforcement when the cached payload already meets the tip floor.
 	if nr.FromCache() {
-		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		highestBlockNumber := common.EvmHighestLatestBlockNumber(network, ctx)
 		_, cachedBN, cerr := ExtractBlockReferenceFromResponse(ctx, nr)
 		if cerr == nil && cachedBN >= highestBlockNumber {
 			if refreshed := refreshHighestLatestBlockNumber(ctx, network); refreshed > highestBlockNumber {
@@ -181,18 +181,25 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
+	// Resolve tips with the request bound to the context so a use-upstream
+	// selector scopes the tip to the targeted subset (the selector-scoped
+	// served-tip semantics): a request pinned to a lagging group must not be
+	// re-forwarded towards a block that group cannot serve.
+	tipCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+
 	switch bnp {
 	case "latest":
-		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		highestBlockNumber := common.EvmHighestLatestBlockNumber(network, tipCtx)
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
 		}
 		if highestBlockNumber <= respBlockNumber {
-			// Local TipHW appears caught up — but sibling pods may have
-			// published a higher tip to Redis that this process has not yet
-			// adopted via async pubsub. Refresh once before skipping enforce;
-			// this is the cross-pod race that silently demotes MultiNode FOOS.
+			// The local tip appears caught up — but a sibling instance may have
+			// published a higher tip to shared state that this process has not
+			// yet adopted via async pub/sub. Refresh once before skipping
+			// enforcement; this is the cross-instance race that makes a strict
+			// client mark the gateway as out of sync.
 			if refreshed := refreshHighestLatestBlockNumber(ctx, network); refreshed > highestBlockNumber {
 				highestBlockNumber = refreshed
 			}
@@ -232,7 +239,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		// the leader once before deciding. Fall back to excluding the
 		// stale responder when no local poller has caught up yet.
 		useUpstream := ""
-		if leader := network.EvmLeaderUpstream(ctx); leader != nil {
+		if leader := common.EvmLeaderUpstream(network, ctx); leader != nil {
 			if eu, ok := leader.(common.EvmUpstream); ok {
 				if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 					if sp.LatestBlock() < highestBlockNumber {
@@ -250,7 +257,8 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 		// Do not use pickHighestBlock against the stale "latest" response —
 		// that helper fail-opens to stale when the tip re-fetch misses, which
-		// is exactly the MultiNode FOOS / EnforceRepeatableRead trigger.
+		// is exactly what strict clients (repeatable-read / head-sync checks)
+		// reject.
 		nnr, ferr := forwardGetBlockByNumber(ctx, network, nq, highestBlockNumber, itx, useUpstream)
 		if meetsTipFloor(ctx, nnr, highestBlockNumber) {
 			if nr != nil {
@@ -304,7 +312,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			nil,
 		)
 	case "finalized":
-		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(ctx)
+		highestBlockNumber := common.EvmHighestFinalizedBlockNumber(network, tipCtx)
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
@@ -339,7 +347,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 // enforceNonNullBlock checks if the block result is null/empty and returns an appropriate error
 // This is now controlled by the EnforceNonNullTaggedBlocks directive
-func enforceNonNullBlock(nq *common.NormalizedRequest, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+func enforceNonNullBlock(ctx context.Context, nq *common.NormalizedRequest, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
 	if nr != nil && !nr.IsObjectNull() && !nr.IsResultEmptyish() {
 		return nr, nil
 	}
@@ -366,6 +374,14 @@ func enforceNonNullBlock(nq *common.NormalizedRequest, nr *common.NormalizedResp
 			// Directive not set or disabled - allow null tagged blocks
 			return nr, nil
 		}
+	}
+
+	// A block beyond the network's confidence head (latest by default, or finalized)
+	// isn't produced/confirmed yet and legitimately returns null on every upstream —
+	// it isn't missing/pruned data, so don't convert it to an error and churn retries.
+	// Mirrors the upstream-level markUnexpectedEmpty guard so the two layers agree.
+	if emptyResultBeyondConfidence(ctx, nq) {
+		return nr, nil
 	}
 
 	// Create error for:
@@ -509,345 +525,4 @@ func pickHighestBlock(ctx context.Context, x *common.NormalizedResponse, y *comm
 		x.Release()
 	}
 	return y, nil
-}
-
-// upstreamPostForward_eth_getBlockByNumber validates block responses based on request directives.
-// It performs validation for:
-// - ValidateHeaderFieldLengths (hash, parentHash, stateRoot, etc.)
-// - ValidateTransactionFields (tx hash length, uniqueness)
-// - ValidateTransactionBlockInfo (tx block hash/number/index match)
-// - ValidateBlockLogsBloom (non-zero bloom implies logs in receipts)
-func upstreamPostForward_eth_getBlockByNumber(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
-	if re != nil || rs == nil {
-		return rs, re
-	}
-
-	var networkId, upstreamId string
-	if n != nil {
-		networkId = n.Id()
-	}
-	if u != nil {
-		upstreamId = u.Id()
-	}
-	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.eth_getBlockByNumber", trace.WithAttributes(
-		attribute.String("network.id", networkId),
-		attribute.String("upstream.id", upstreamId),
-	))
-	defer span.End()
-
-	// Skip validation if response is empty
-	if rs.IsObjectNull() || rs.IsResultEmptyish() {
-		return rs, re
-	}
-
-	// Only run validation when directives are set (avoids JSON parsing overhead otherwise).
-	// Always-on integrity checks piggyback on the same parse as directive-gated checks.
-	dirs := rq.Directives()
-	if dirs == nil {
-		return rs, re
-	}
-	if err := validateBlock(ctx, u, dirs, rs); err != nil {
-		return rs, err
-	}
-
-	return rs, re
-}
-
-// blockValidationTxLite is a minimal transaction model for block validation
-type blockValidationTxLite struct {
-	Hash             string `json:"hash"`
-	From             string `json:"from"`
-	Gas              string `json:"gas"`
-	BlockHash        string `json:"blockHash"`
-	BlockNumber      string `json:"blockNumber"`
-	TransactionIndex string `json:"transactionIndex"`
-}
-
-// emptyTrieRoot is the keccak256 of the RLP-encoded empty trie.
-// Blocks with zero transactions have this as their transactionsRoot.
-const emptyTrieRoot = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
-
-// zeroHash32 is the 32-byte all-zeros hash. Some non-standard chains (e.g. ZKSync Era)
-// use this instead of the canonical empty trie root for blocks with zero transactions.
-const zeroHash32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
-
-// blockValidationBlockLite is a minimal block model for validation
-type blockValidationBlockLite struct {
-	Hash             string `json:"hash"`
-	ParentHash       string `json:"parentHash"`
-	StateRoot        string `json:"stateRoot"`
-	TransactionsRoot string `json:"transactionsRoot"`
-	ReceiptsRoot     string `json:"receiptsRoot"`
-	LogsBloom        string `json:"logsBloom"`
-	Number           string `json:"number"`
-	Transactions     []any  `json:"transactions"` // Can be []string (hashes) or []blockValidationTxLite (full txs)
-}
-
-// validateBlock validates eth_getBlockByNumber/Hash responses.
-// It runs always-on integrity checks first (fundamental Ethereum invariants),
-// then directive-gated checks. Callers must ensure dirs is non-nil.
-func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rs *common.NormalizedResponse) error {
-	jrr, err := rs.JsonRpcResponse(ctx)
-	if err != nil {
-		return err
-	}
-
-	var block blockValidationBlockLite
-	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &block); err != nil {
-		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid JSON result for block validation: %w", err), u)
-	}
-
-	// ── Directive-gated checks (opt-in via config/library) ───────────────
-
-	// 1. TransactionsRoot vs Transaction Count (default: enabled)
-	// The transactionsRoot is a Merkle trie root over the block's transactions.
-	// The canonical empty trie root is a universal constant for blocks with zero transactions.
-	// Some chains (e.g. ZKSync Era) use the all-zeros hash instead.
-	// If they disagree, the upstream returned truncated/incomplete data.
-	// Disable via validateTransactionsRoot: false for non-standard chains.
-	//
-	// Special case: some chains (e.g. Polygon PoS) inject "phantom" system transactions
-	// (from=0x0, gas=0x0) that do NOT participate in the transactions trie. These blocks
-	// legitimately have an empty trie root while containing transaction objects.
-	if dirs.ValidateTransactionsRoot && block.TransactionsRoot != "" {
-		txRootLower := strings.ToLower(block.TransactionsRoot)
-		isEmptyRoot := txRootLower == emptyTrieRoot || txRootLower == zeroHash32
-		txCount := len(block.Transactions)
-
-		if !isEmptyRoot && txCount == 0 {
-			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("transactionsRoot is %s (non-empty) but block contains 0 transactions; upstream returned incomplete block data", block.TransactionsRoot),
-				u,
-			)
-		}
-		if isEmptyRoot && txCount > 0 && !allPhantomTransactions(block.Transactions) {
-			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("transactionsRoot is empty trie root but block contains %d non-phantom transactions; inconsistent block data", txCount),
-				u,
-			)
-		}
-	}
-
-	// 2. Header Field Length Validation
-	if dirs.ValidateHeaderFieldLengths {
-		if err := validateHeaderFieldLengths(u, &block); err != nil {
-			return err
-		}
-	}
-
-	// 3. Transaction Validation (only if we have full transactions)
-	if len(block.Transactions) > 0 {
-		// Check if transactions are full objects or just hashes
-		var fullTxs []blockValidationTxLite
-		for i, tx := range block.Transactions {
-			switch t := tx.(type) {
-			case map[string]interface{}:
-				// Full transaction object - re-parse it
-				txBytes, err := common.SonicCfg.Marshal(t)
-				if err != nil {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: failed to marshal: %w", i, err), u)
-				}
-				var txl blockValidationTxLite
-				if err := common.SonicCfg.Unmarshal(txBytes, &txl); err != nil {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: failed to unmarshal: %w", i, err), u)
-				}
-				fullTxs = append(fullTxs, txl)
-			case string:
-				// Just a hash - skip full tx validation
-				continue
-			}
-		}
-
-		if len(fullTxs) > 0 {
-			if err := validateBlockTransactions(u, dirs, &block, fullTxs); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// allPhantomTransactions returns true when every transaction in the slice is a
-// "phantom" system transaction that does not participate in the transactions
-// trie. Some chains (Polygon PoS, BSC) inject these for internal bookkeeping;
-// they have from=0x0 and gas=0x0. When a block contains only phantoms the
-// empty trie root is expected even though the transactions array is non-empty.
-func allPhantomTransactions(txs []any) bool {
-	for _, tx := range txs {
-		switch t := tx.(type) {
-		case map[string]interface{}:
-			from, _ := t["from"].(string)
-			gas, _ := t["gas"].(string)
-			if !isZeroishHex(gas) || !isZeroishHex(from) {
-				// At least one real transaction — not all phantoms.
-				return false
-			}
-		case string:
-			// Hash-only response — we can't inspect the tx, so we must
-			// assume it is a real transaction (conservative).
-			return false
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// isZeroishHex returns true if h is a hex string representing zero or empty
-// (e.g. "0x", "0x0", "0x00", "0x0000").
-func isZeroishHex(h string) bool {
-	if h == "" {
-		return false
-	}
-	h = strings.TrimPrefix(h, "0x")
-	for _, c := range h {
-		if c != '0' {
-			return false
-		}
-	}
-	return true
-}
-
-func validateHeaderFieldLengths(u common.Upstream, block *blockValidationBlockLite) error {
-	// Hash must be 32 bytes (64 hex chars + 0x prefix)
-	if block.Hash != "" {
-		hashBytes, err := common.HexToBytes(block.Hash)
-		if err != nil {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid block hash hex: %w", err), u)
-		}
-		if len(hashBytes) != 32 {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("block hash length invalid: %d", len(hashBytes)), u)
-		}
-	}
-
-	// ParentHash must be 32 bytes
-	if block.ParentHash != "" {
-		parentHashBytes, err := common.HexToBytes(block.ParentHash)
-		if err != nil {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid parentHash hex: %w", err), u)
-		}
-		if len(parentHashBytes) != 32 {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("parentHash length invalid: %d", len(parentHashBytes)), u)
-		}
-	}
-
-	// StateRoot must be 32 bytes
-	if block.StateRoot != "" {
-		stateRootBytes, err := common.HexToBytes(block.StateRoot)
-		if err != nil {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid stateRoot hex: %w", err), u)
-		}
-		if len(stateRootBytes) != 32 {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("stateRoot length invalid: %d", len(stateRootBytes)), u)
-		}
-	}
-
-	// TransactionsRoot must be 32 bytes
-	if block.TransactionsRoot != "" {
-		txRootBytes, err := common.HexToBytes(block.TransactionsRoot)
-		if err != nil {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid transactionsRoot hex: %w", err), u)
-		}
-		if len(txRootBytes) != 32 {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("transactionsRoot length invalid: %d", len(txRootBytes)), u)
-		}
-	}
-
-	// ReceiptsRoot must be 32 bytes
-	if block.ReceiptsRoot != "" {
-		receiptsRootBytes, err := common.HexToBytes(block.ReceiptsRoot)
-		if err != nil {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid receiptsRoot hex: %w", err), u)
-		}
-		if len(receiptsRootBytes) != 32 {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("receiptsRoot length invalid: %d", len(receiptsRootBytes)), u)
-		}
-	}
-
-	// LogsBloom must be 256 bytes
-	if block.LogsBloom != "" {
-		bloomBytes, err := common.HexToBytes(block.LogsBloom)
-		if err != nil {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid logsBloom hex: %w", err), u)
-		}
-		if len(bloomBytes) != 256 {
-			return common.NewErrEndpointContentValidation(fmt.Errorf("logsBloom length invalid: %d", len(bloomBytes)), u)
-		}
-	}
-
-	return nil
-}
-
-func validateBlockTransactions(u common.Upstream, dirs *common.RequestDirectives, block *blockValidationBlockLite, txs []blockValidationTxLite) error {
-	// ValidateTransactionFields: hash length and uniqueness
-	if dirs.ValidateTransactionFields {
-		seenHashes := make(map[string]struct{}, len(txs))
-		for i, tx := range txs {
-			// Hash length must be 32 bytes
-			if tx.Hash != "" {
-				hashBytes, err := common.HexToBytes(tx.Hash)
-				if err != nil {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: invalid hash hex: %w", i, err), u)
-				}
-				if len(hashBytes) != 32 {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: hash length invalid: %d", i, len(hashBytes)), u)
-				}
-
-				// Check for duplicates
-				hashLower := strings.ToLower(tx.Hash)
-				if _, exists := seenHashes[hashLower]; exists {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("duplicate transaction hash in block: %s", tx.Hash), u)
-				}
-				seenHashes[hashLower] = struct{}{}
-			}
-		}
-	}
-
-	// ValidateTransactionBlockInfo: block hash/number/index match
-	if dirs.ValidateTransactionBlockInfo {
-		blockHash := strings.ToLower(strings.TrimPrefix(block.Hash, "0x"))
-		var blockNum int64
-		if block.Number != "" {
-			var err error
-			blockNum, err = common.HexToInt64(block.Number)
-			if err != nil {
-				return common.NewErrEndpointContentValidation(fmt.Errorf("invalid block number hex: %w", err), u)
-			}
-		}
-
-		for i, tx := range txs {
-			// Block hash must match
-			if tx.BlockHash != "" && blockHash != "" {
-				txBlockHash := strings.ToLower(strings.TrimPrefix(tx.BlockHash, "0x"))
-				if txBlockHash != blockHash {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: block hash mismatch", i), u)
-				}
-			}
-
-			// Block number must match
-			if tx.BlockNumber != "" && block.Number != "" {
-				txBlockNum, err := common.HexToInt64(tx.BlockNumber)
-				if err != nil {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: invalid blockNumber hex: %w", i, err), u)
-				}
-				if txBlockNum != blockNum {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: block number mismatch", i), u)
-				}
-			}
-
-			// Transaction index must match array position
-			if tx.TransactionIndex != "" {
-				txIdx, err := common.HexToInt64(tx.TransactionIndex)
-				if err != nil {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: invalid transactionIndex hex: %w", i, err), u)
-				}
-				if txIdx != int64(i) {
-					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: transactionIndex mismatch: got %d want %d", i, txIdx, i), u)
-				}
-			}
-		}
-	}
-
-	return nil
 }

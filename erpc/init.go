@@ -2,16 +2,19 @@ package erpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 )
@@ -42,18 +45,68 @@ func Init(
 	}
 
 	//
-	// 2) Set the right histogram buckets and label filter
+	// 2) Apply the metrics configuration and register the exposed metrics
 	//
-	bucketStr := ""
-	if cfg.Metrics != nil {
-		if cfg.Metrics.HistogramBuckets != "" {
-			bucketStr = cfg.Metrics.HistogramBuckets
+	// Metrics are defined unregistered at package init and registered here:
+	// Prometheus freezes a family's label-set hash for the life of the registry,
+	// so label and bucket customizations have to be resolved before the first
+	// registration, and a family dropped by a customization is simply never
+	// registered.
+	// Two very different failures come back through this one error and they do
+	// not deserve the same severity. A malformed customization entry
+	// stops registration before it starts, so no eRPC family reaches /metrics —
+	// an outage worth paging on. A bad histogramBuckets value only substitutes
+	// the default buckets, leaving every family registered — a config mistake,
+	// not an outage. The CLI rejects both in MetricsConfig.Validate, but Init is
+	// public and a caller assembling a *common.Config by hand reaches here. The
+	// error names the offending field either way.
+	if err := telemetry.Configure(cfg.Metrics.TelemetryOptions()); err != nil {
+		if errors.Is(err, telemetry.ErrNothingRegistered) {
+			logger.Error().Err(err).Msg("failed to apply metrics configuration; no metric families are registered")
+		} else {
+			logger.Warn().Err(err).Msg("failed to apply metrics configuration; falling back to default histogram buckets")
 		}
-		// Must run before SetHistogramBuckets so the new Vecs are built with the filter applied.
-		telemetry.SetHistogramLabelFilter(cfg.Metrics.HistogramDropLabels, cfg.Metrics.HistogramLabelOverrides)
 	}
-	if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
-		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
+	if cfg.Metrics != nil && len(cfg.Metrics.Customizations) > 0 {
+		exposed, total := telemetry.ExposedFamilyCount()
+		logger.Info().
+			Int("customizations", len(cfg.Metrics.Customizations)).
+			Int("exposed", exposed).
+			Int("total", total).
+			Msg("metric customizations applied")
+		// A subject that matches nothing does nothing, so a typo'd metric name is
+		// otherwise invisible until someone notices the series never appeared.
+		if unmatched := telemetry.UnmatchedSubjects(); len(unmatched) > 0 {
+			logger.Warn().
+				Strs("subjects", unmatched).
+				Msg("metrics.customizations subjects match no known metric family; check for typos")
+		}
+		// A rule aimed at a family that cannot honor it is likewise silent.
+		if ignored := telemetry.IgnoredCustomizations(); len(ignored) > 0 {
+			logger.Warn().
+				Strs("rules", ignored).
+				Msg("some metrics.customizations rules do not apply to the family they name")
+		}
+	}
+
+	// Install a global networkId -> alias resolver so network-labeled metrics from
+	// components that only know the raw networkId (e.g. the gRPC cache connector,
+	// which discovers networks by chainId) use the same alias as every other metric.
+	if cfg != nil {
+		aliasByNetworkId := make(map[string]string)
+		for _, p := range cfg.Projects {
+			if p == nil {
+				continue
+			}
+			for _, n := range p.Networks {
+				if n != nil && n.Evm != nil && n.Evm.ChainId != 0 && n.Alias != "" {
+					aliasByNetworkId[util.EvmNetworkId(n.Evm.ChainId)] = n.Alias
+				}
+			}
+		}
+		if len(aliasByNetworkId) > 0 {
+			common.SetNetworkAliasResolver(func(networkId string) string { return aliasByNetworkId[networkId] })
+		}
 	}
 
 	//
@@ -61,12 +114,19 @@ func Init(
 	//
 	logger.Info().Msg("initializing eRPC core")
 	var evmJsonRpcCache *evm.EvmJsonRpcCache
+	var svmJsonRpcCache *svm.SvmJsonRpcCache
 	var sharedState data.SharedStateRegistry
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
 			evmJsonRpcCache, err = evm.NewEvmJsonRpcCache(appCtx, &logger, cfg.Database.EvmJsonRpcCache)
 			if err != nil {
 				logger.Warn().Msgf("failed to initialize evm json rpc cache: %v", err)
+			}
+		}
+		if cfg.Database.SvmJsonRpcCache != nil {
+			svmJsonRpcCache, err = svm.NewSvmJsonRpcCache(appCtx, &logger, cfg.Database.SvmJsonRpcCache)
+			if err != nil {
+				logger.Warn().Msgf("failed to initialize svm json rpc cache: %v", err)
 			}
 		}
 		if cfg.Database.SharedState != nil {
@@ -76,7 +136,7 @@ func Init(
 			}
 		}
 	}
-	erpcInstance, err := NewERPC(appCtx, &logger, sharedState, evmJsonRpcCache, cfg)
+	erpcInstance, err := NewERPC(appCtx, &logger, sharedState, evmJsonRpcCache, svmJsonRpcCache, cfg)
 	if err != nil {
 		return err
 	}
@@ -126,8 +186,13 @@ func Init(
 			BaseContext: func(ln net.Listener) context.Context {
 				return appCtx
 			},
-			Addr:              fmt.Sprintf(":%d", *cfg.Metrics.Port),
-			Handler:           promhttp.Handler(),
+			Addr: fmt.Sprintf(":%d", *cfg.Metrics.Port),
+			// promhttp.Handler() with the gatherer wrapped, so drop customizations
+			// also govern the stock collectors the manager does not own.
+			Handler: promhttp.InstrumentMetricHandler(
+				prometheus.DefaultRegisterer,
+				promhttp.HandlerFor(telemetry.Gatherer(prometheus.DefaultGatherer), promhttp.HandlerOpts{}),
+			),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
@@ -152,6 +217,9 @@ func Init(
 	// Wait until the context is cancelled, then give the http server some time to finish draining.
 	<-appCtx.Done()
 	logger.Info().Msg("shutting down gracefully...")
+	// Flush buffered integrity forensics before the process goes away; the S3
+	// exporter otherwise loses everything written since its last interval.
+	evm.CloseIntegrityExporters()
 	if cfg.Server != nil && cfg.Server.WaitAfterShutdown != nil {
 		time.Sleep(cfg.Server.WaitAfterShutdown.Duration())
 	}

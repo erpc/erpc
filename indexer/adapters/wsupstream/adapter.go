@@ -316,7 +316,7 @@ func filterKey(subType, paramsHash string) string {
 // outage the breaker is typically still open at the moment the WS layer
 // reconnects; a previous single-shot resubscribe failed once with a warning
 // and never tried again, leaving the pod permanently head-less while still
-// accepting client subscriptions (zkSync chain-324 incident, 2026-06-12).
+// accepting client subscriptions.
 func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 	needHeads := true
 	pending := make(map[string]struct{})
@@ -464,11 +464,11 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 		return
 	}
 	a.sink.Ingest(indexer.StreamEvent{
-		Kind:      indexer.KindNewHead,
-		NetworkId: a.networkID,
-		SourceId:  a.Name(),
-		Block:     indexer.BlockRef{Number: num, Hash: header.Hash, ParentHash: header.ParentHash},
-		Payload:   outer.Result,
+		Kind:       indexer.KindNewHead,
+		NetworkId:  a.networkID,
+		SourceId:   a.Name(),
+		Block:      indexer.BlockRef{Number: num, Hash: header.Hash, ParentHash: header.ParentHash},
+		Payload:    outer.Result,
 		ObservedAt: time.Now(),
 	})
 }

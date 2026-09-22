@@ -18,6 +18,7 @@ var ankrNetworkNames = map[int64]string{
 	14:     "flare",
 	40:     "telos",
 	50:     "xdc",
+	51:     "xdc_testnet",
 	56:     "bsc",
 	57:     "syscoin",
 	88:     "velas",

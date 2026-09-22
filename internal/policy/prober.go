@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
@@ -220,7 +221,7 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 			continue
 		}
 		p.wg.Add(1)
-		go p.mirror(req, u, cfg)
+		go p.mirror(req, u, cfg) // #nosec G118 -- probe runs independently; must not be cancelled by the originating request
 	}
 }
 
@@ -388,7 +389,7 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout) // #nosec G118 -- probe runs independently; must not be cancelled by the originating request
 	defer cancel()
 
 	method, _ := req.Method()
@@ -425,6 +426,12 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 func isProbeUnsafeMethod(method string) bool {
 	if method == "" {
 		return true // unknown method → skip
+	}
+	// SVM write set (bare, unprefixed names): sendTransaction,
+	// sendRawTransaction, requestAirdrop. Mirroring a broadcast is a
+	// duplicate wire send; mirroring requestAirdrop double-airdrops.
+	if svm.IsNonRetryableWriteMethod(method) {
+		return true
 	}
 	// Lowercase prefix check — covers eth_sendRawTransaction,
 	// eth_sendTransaction, eth_sign*, personal_sign*,

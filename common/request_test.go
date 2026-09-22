@@ -29,6 +29,9 @@ func (m *mockUpstreamForSelection) Forward(ctx context.Context, nq *NormalizedRe
 func (m *mockUpstreamForSelection) Cordon(method string, reason string)   {}
 func (m *mockUpstreamForSelection) Uncordon(method string, reason string) {}
 func (m *mockUpstreamForSelection) IgnoreMethod(method string)            {}
+func (m *mockUpstreamForSelection) ShouldHandleMethod(method string) (bool, error) {
+	return true, nil
+}
 
 func newMockUpstream(id string) *mockUpstreamForSelection {
 	return &mockUpstreamForSelection{id: id}
@@ -287,100 +290,6 @@ func createEmptyNormalizedResponse(t *testing.T) *NormalizedResponse {
 	return NewNormalizedResponse().WithJsonRpcResponse(jrr)
 }
 
-func TestEnrichFromHttpHandlesBloomValidationHeaders(t *testing.T) {
-	req := NewNormalizedRequest(nil)
-	headers := http.Header{}
-	headers.Set(headerDirectiveValidateLogsBloomEmpty, "true")
-
-	req.EnrichFromHttp(headers, nil, UserAgentTrackingModeSimplified)
-
-	dir := req.Directives()
-	if dir == nil {
-		t.Fatalf("expected directives to be initialized when headers are provided")
-	}
-	if !dir.ValidateLogsBloomEmptiness {
-		t.Fatalf("expected ValidateLogsBloomEmptiness to be true")
-	}
-}
-
-func TestEnrichFromHttpHandlesBloomValidationQueryParams(t *testing.T) {
-	req := NewNormalizedRequest(nil)
-	query := url.Values{}
-	query.Set(queryDirectiveValidateLogsBloomMatch, "true")
-
-	req.EnrichFromHttp(nil, query, UserAgentTrackingModeSimplified)
-
-	dir := req.Directives()
-	if dir == nil {
-		t.Fatalf("expected directives to be initialized when query params are provided")
-	}
-	if !dir.ValidateLogsBloomMatch {
-		t.Fatalf("expected ValidateLogsBloomMatch to be true")
-	}
-}
-
-// TestHeaderOverridesConfigDefault_ValidateTransactionsRoot verifies that when the
-// config defaults set ValidateTransactionsRoot=true, a header/query-string can
-// override it to false.
-func TestHeaderOverridesConfigDefault_ValidateTransactionsRoot(t *testing.T) {
-	trueVal := true
-	cfgDefaults := &DirectiveDefaultsConfig{
-		ValidateTransactionsRoot: &trueVal,
-	}
-
-	t.Run("header_overrides_config_true_to_false", func(t *testing.T) {
-		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber"}`))
-		req.ApplyDirectiveDefaults(cfgDefaults)
-
-		if dir := req.Directives(); dir == nil || !dir.ValidateTransactionsRoot {
-			t.Fatalf("expected ValidateTransactionsRoot=true after ApplyDirectiveDefaults")
-		}
-
-		headers := http.Header{}
-		headers.Set("X-ERPC-Validate-Transactions-Root", "false")
-		req.EnrichFromHttp(headers, nil, UserAgentTrackingModeSimplified)
-
-		if dir := req.Directives(); dir == nil || dir.ValidateTransactionsRoot {
-			t.Fatalf("expected ValidateTransactionsRoot=false after header override, but got true")
-		}
-	})
-
-	t.Run("query_string_overrides_config_true_to_false", func(t *testing.T) {
-		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber"}`))
-		req.ApplyDirectiveDefaults(cfgDefaults)
-
-		query := url.Values{}
-		query.Set("validate-transactions-root", "false")
-		req.EnrichFromHttp(nil, query, UserAgentTrackingModeSimplified)
-
-		if dir := req.Directives(); dir == nil || dir.ValidateTransactionsRoot {
-			t.Fatalf("expected ValidateTransactionsRoot=false after query string override, but got true")
-		}
-	})
-
-	t.Run("header_and_query_both_false_override_config_true", func(t *testing.T) {
-		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber"}`))
-		req.ApplyDirectiveDefaults(cfgDefaults)
-
-		headers := http.Header{}
-		headers.Set("X-ERPC-Validate-Transactions-Root", "false")
-		headers.Set("X-ERPC-Skip-Cache-Read", "true")
-
-		query := url.Values{}
-		query.Set("validate-transactions-root", "false")
-
-		req.EnrichFromHttp(headers, query, UserAgentTrackingModeSimplified)
-
-		dir := req.Directives()
-		if dir == nil || dir.ValidateTransactionsRoot {
-			t.Fatalf("expected ValidateTransactionsRoot=false after header+query override, but got true")
-		}
-		if dir.SkipCacheRead != "true" {
-			t.Fatalf("expected SkipCacheRead='true' from header, got '%s'", dir.SkipCacheRead)
-		}
-	})
-}
-
 // ----------------------------------------------------------------------------
 // SkipConsensus directive
 // ----------------------------------------------------------------------------
@@ -535,4 +444,237 @@ func TestSkipConsensusDirective_ClonePreservesValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDirectiveAllowFilter(t *testing.T) {
+	ptr := func(s string) *string { return &s }
+	tests := []struct {
+		name    string
+		pattern *string
+		key     string
+		want    bool
+	}{
+		{"nil allows all", nil, "skip-cache-read", true},
+		{"nil allows any key", nil, "use-upstream", true},
+		{"empty string blocks all", ptr(""), "skip-cache-read", false},
+		{"empty string blocks any key", ptr(""), "retry-empty", false},
+		{"wildcard allows all", ptr("*"), "skip-cache-read", true},
+		{"wildcard allows any key", ptr("*"), "use-upstream", true},
+		{"exact match allows", ptr("skip-cache-read"), "skip-cache-read", true},
+		{"exact match denies other", ptr("skip-cache-read"), "use-upstream", false},
+		{"OR allows first", ptr("skip-cache-read | use-upstream"), "skip-cache-read", true},
+		{"OR allows second", ptr("skip-cache-read | use-upstream"), "use-upstream", true},
+		{"OR denies other", ptr("skip-cache-read | use-upstream"), "retry-empty", false},
+		{"negation denies target", ptr("!skip-cache-read"), "skip-cache-read", false},
+		{"negation allows other", ptr("!skip-cache-read"), "use-upstream", true},
+		{"AND negation denies first", ptr("!skip-cache-read & !use-upstream"), "skip-cache-read", false},
+		{"AND negation denies second", ptr("!skip-cache-read & !use-upstream"), "use-upstream", false},
+		{"AND negation allows other", ptr("!skip-cache-read & !use-upstream"), "retry-empty", true},
+		{"glob allows matching", ptr("retry-*"), "retry-empty", true},
+		{"glob allows matching 2", ptr("retry-*"), "retry-pending", true},
+		{"glob denies non-matching", ptr("retry-*"), "skip-cache-read", false},
+		{"glob OR allows glob match", ptr("retry-* | skip-consensus"), "retry-empty", true},
+		{"glob OR allows exact match", ptr("retry-* | skip-consensus"), "skip-consensus", true},
+		{"glob OR denies other", ptr("retry-* | skip-consensus"), "use-upstream", false},
+		{"grouped negation denies first", ptr("!(skip-cache-read | use-upstream)"), "skip-cache-read", false},
+		{"grouped negation denies second", ptr("!(skip-cache-read | use-upstream)"), "use-upstream", false},
+		{"grouped negation allows other", ptr("!(skip-cache-read | use-upstream)"), "retry-empty", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := NewNormalizedRequest(nil)
+			if tc.pattern != nil {
+				if *tc.pattern == "" {
+					req.SetAllowClientDirectiveMatcher(DenyAllClientDirectives)
+				} else {
+					matcher, err := NewWildcardMatcher(*tc.pattern)
+					if err != nil {
+						t.Fatalf("failed to compile pattern %q: %v", *tc.pattern, err)
+					}
+					req.SetAllowClientDirectiveMatcher(matcher)
+				}
+			}
+			got := req.isDirectiveAllowed(tc.key)
+			if got != tc.want {
+				patternStr := "<nil>"
+				if tc.pattern != nil {
+					patternStr = *tc.pattern
+				}
+				t.Fatalf("isDirectiveAllowed(%q, %q) = %v, want %v", tc.key, patternStr, got, tc.want)
+			}
+		})
+	}
+}
+
+func setDirectiveFilter(t *testing.T, req *NormalizedRequest, pattern string) {
+	t.Helper()
+	if pattern == "" {
+		req.SetAllowClientDirectiveMatcher(DenyAllClientDirectives)
+		return
+	}
+	matcher, err := NewWildcardMatcher(pattern)
+	if err != nil {
+		t.Fatalf("failed to compile pattern %q: %v", pattern, err)
+	}
+	req.SetAllowClientDirectiveMatcher(matcher)
+}
+
+func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
+	t.Run("nil allows all directives", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Cache-Read", "true")
+		h.Set("X-ERPC-Use-Upstream", "alchemy")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir.SkipCacheRead != "true" {
+			t.Fatalf("expected SkipCacheRead=true, got %q", dir.SkipCacheRead)
+		}
+		if dir.UseUpstream != "alchemy" {
+			t.Fatalf("expected UseUpstream=alchemy, got %q", dir.UseUpstream)
+		}
+	})
+
+	t.Run("empty string blocks all directives", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		setDirectiveFilter(t, req, "")
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Cache-Read", "true")
+		h.Set("X-ERPC-Use-Upstream", "alchemy")
+		h.Set("X-ERPC-Skip-Consensus", "true")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir == nil {
+			t.Fatal("expected directives struct to exist")
+		}
+		if dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked, got %q", dir.SkipCacheRead)
+		}
+		if dir.UseUpstream != "" {
+			t.Fatalf("expected UseUpstream blocked, got %q", dir.UseUpstream)
+		}
+		if dir.SkipConsensus {
+			t.Fatal("expected SkipConsensus=false")
+		}
+	})
+
+	t.Run("negation blocks specific directive", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		setDirectiveFilter(t, req, "!skip-cache-read")
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Cache-Read", "true")
+		h.Set("X-ERPC-Use-Upstream", "alchemy")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked, got %q", dir.SkipCacheRead)
+		}
+		if dir.UseUpstream != "alchemy" {
+			t.Fatalf("expected UseUpstream=alchemy (allowed), got %q", dir.UseUpstream)
+		}
+	})
+
+	t.Run("blocks query params too", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		setDirectiveFilter(t, req, "!skip-cache-read")
+		q := url.Values{}
+		q.Set("skip-cache-read", "true")
+		q.Set("use-upstream", "alchemy")
+		req.EnrichFromHttp(nil, q, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked via query, got %q", dir.SkipCacheRead)
+		}
+		if dir.UseUpstream != "alchemy" {
+			t.Fatalf("expected UseUpstream=alchemy via query (allowed), got %q", dir.UseUpstream)
+		}
+	})
+
+	t.Run("user agent always extracted regardless of filter", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		setDirectiveFilter(t, req, "")
+		h := http.Header{}
+		h.Set("User-Agent", "curl/7.68.0")
+		h.Set("X-ERPC-Skip-Cache-Read", "true")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		if req.AgentName() == "" || req.AgentName() == "unknown" {
+			t.Fatalf("expected user-agent to be extracted even when all directives blocked, got %q", req.AgentName())
+		}
+		dir := req.Directives()
+		if dir != nil && dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked, got %q", dir.SkipCacheRead)
+		}
+	})
+
+	t.Run("directive defaults still apply when client directives blocked", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		retryEmpty := true
+		req.ApplyDirectiveDefaults(&DirectiveDefaultsConfig{
+			RetryEmpty: &retryEmpty,
+		})
+		setDirectiveFilter(t, req, "")
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Cache-Read", "true")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+		dir := req.Directives()
+		if dir == nil {
+			t.Fatal("expected directives from defaults to survive, got nil")
+		}
+		if !dir.RetryEmpty {
+			t.Fatal("expected RetryEmpty=true from defaults even when client directives blocked")
+		}
+		if dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked, got %q", dir.SkipCacheRead)
+		}
+	})
+}
+
+func newReqForUser() *NormalizedRequest {
+	return NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
+}
+
+func TestSetUserFromTrustedHeader(t *testing.T) {
+	t.Run("sets the user id when none was resolved", func(t *testing.T) {
+		req := newReqForUser()
+		req.SetUserFromTrustedHeader("proj_edge_ep1")
+		if u := req.User(); u == nil || u.Id != "proj_edge_ep1" {
+			t.Fatalf("expected user id %q, got %+v", "proj_edge_ep1", u)
+		}
+	})
+
+	t.Run("trims surrounding whitespace", func(t *testing.T) {
+		req := newReqForUser()
+		req.SetUserFromTrustedHeader("  proj_edge_ep1\n")
+		if u := req.User(); u == nil || u.Id != "proj_edge_ep1" {
+			t.Fatalf("expected trimmed user id, got %+v", u)
+		}
+	})
+
+	t.Run("is a no-op for an empty or whitespace-only value", func(t *testing.T) {
+		for _, v := range []string{"", "   ", "\t\n"} {
+			req := newReqForUser()
+			req.SetUserFromTrustedHeader(v)
+			if u := req.User(); u != nil {
+				t.Fatalf("expected no user for value %q, got %+v", v, u)
+			}
+		}
+	})
+
+	t.Run("never derives a rate-limit budget", func(t *testing.T) {
+		req := newReqForUser()
+		req.SetUserFromTrustedHeader("proj_edge_ep1")
+		if u := req.User(); u == nil || u.RateLimitBudget != "" {
+			t.Fatalf("trusted-header user must carry no budget, got %+v", u)
+		}
+	})
+
+	t.Run("auth wins — does not overwrite an already-resolved user", func(t *testing.T) {
+		req := newReqForUser()
+		req.SetUser(&User{Id: "auth-resolved", RateLimitBudget: "tier-1"})
+		req.SetUserFromTrustedHeader("header-user")
+		if u := req.User(); u == nil || u.Id != "auth-resolved" || u.RateLimitBudget != "tier-1" {
+			t.Fatalf("auth-resolved user must be preserved, got %+v", u)
+		}
+	})
 }

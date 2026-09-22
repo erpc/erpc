@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -47,6 +48,51 @@ func resolveBlockTagForGetLogs(ctx context.Context, network common.Network, bloc
 
 	// Tag could not be resolved (e.g., "safe", "pending", "earliest", or no state available)
 	return "", 0
+}
+
+// getLogsConcreteRangeSize returns the block-range size (toBlock-fromBlock+1) for an
+// eth_getLogs request whose bounds are already concrete hex numbers, with ok=true. It
+// returns ok=false when the request carries no numeric range — block tags (e.g. "latest"),
+// an EIP-234 blockHash filter, or malformed params — since those cannot be attributed to a
+// fixed range without network state. Unlike resolveBlockTagForGetLogs it performs no tag
+// resolution and no network I/O, so it is safe to call on hot paths such as cache hits,
+// where a cached getLogs always carries concrete bounds.
+func getLogsConcreteRangeSize(ctx context.Context, rpcReq *common.JsonRpcRequest) (float64, bool) {
+	if rpcReq == nil {
+		return 0, false
+	}
+	rpcReq.RLockWithTrace(ctx)
+	defer rpcReq.RUnlock()
+	if len(rpcReq.Params) < 1 {
+		return 0, false
+	}
+	filter, ok := rpcReq.Params[0].(map[string]interface{})
+	if !ok {
+		return 0, false
+	}
+	if _, ok := filter["blockHash"].(string); ok {
+		return 0, false
+	}
+	fbStr, _ := filter["fromBlock"].(string)
+	tbStr, _ := filter["toBlock"].(string)
+	if !strings.HasPrefix(fbStr, "0x") || !strings.HasPrefix(tbStr, "0x") {
+		return 0, false
+	}
+	fromBlock, err := common.HexToInt64(fbStr)
+	if err != nil {
+		return 0, false
+	}
+	toBlock, err := common.HexToInt64(tbStr)
+	if err != nil {
+		return 0, false
+	}
+	// fromBlock >= 0 admits genesis-anchored ranges (0x0-...). Safe here because this
+	// helper only accepts concrete 0x hex — unlike the block-tag resolver, a 0 lower
+	// bound can only mean genesis, never an unresolved tag.
+	if fromBlock >= 0 && toBlock >= fromBlock {
+		return float64(toBlock - fromBlock + 1), true
+	}
+	return 0, false
 }
 
 func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}) (*common.JsonRpcRequest, error) {
@@ -663,6 +709,23 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 		concurrency = cfg.Evm.GetLogsSplitConcurrency
 	}
 	semaphore := make(chan struct{}, concurrency)
+
+	// Bound the MERGED response, not the pieces. Splitting exists to get past an
+	// upstream's per-request limits, so past this point nothing else bounds what one
+	// client request can make the proxy hold: the halves are fetched concurrently and
+	// merged whole. Cancel the rest of the fan-out the moment the running total crosses
+	// the budget, so the in-flight sub-requests do not materialise either — checking only
+	// after wg.Wait() would let every one of them land first, which is the failure this
+	// budget exists to prevent. Zero keeps the historical unbounded behaviour.
+	var maxResponseBytes int64
+	if cfg := n.Config(); cfg != nil && cfg.Evm != nil {
+		maxResponseBytes = cfg.Evm.GetLogsMaxResponseBytes
+	}
+	var totalBytes atomic.Int64
+	var sizeExceeded atomic.Bool
+	subCtx, cancelSubRequests := context.WithCancel(ctx)
+	defer cancelSubRequests()
+
 	for idx, sr := range subRequests {
 		wg.Add(1)
 		// Acquire semaphore token (blocks if at capacity)
@@ -703,7 +766,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
 			sbnrq.CopyHttpContextFrom(r)
 
-			rs, re := n.Forward(ctx, sbnrq)
+			rs, re := n.Forward(subCtx, sbnrq)
 			if re != nil {
 				mu.Lock()
 				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
@@ -760,6 +823,20 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 				return
 			}
 
+			// Check the budget BEFORE Clone(): the clone is a second copy of the
+			// same bytes, so a piece that already blows the budget must not be
+			// duplicated on its way to being discarded.
+			if maxResponseBytes > 0 {
+				if sz, szErr := jrr.Size(ctx); szErr == nil && sz > 0 {
+					if totalBytes.Add(int64(sz)) > maxResponseBytes {
+						sizeExceeded.Store(true)
+						cancelSubRequests()
+						rs.Release()
+						return
+					}
+				}
+			}
+
 			mu.Lock()
 			telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitSuccess,
 				n.ProjectId(),
@@ -781,6 +858,12 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 		}(sr, idx)
 	}
 	wg.Wait()
+
+	// Ahead of len(errs): cancelling the fan-out makes the remaining sub-requests fail
+	// with context.Canceled, and the client needs the reason, not the consequence.
+	if sizeExceeded.Load() {
+		return nil, false, common.NewErrGetLogsExceededMaxAllowedResponseSize(totalBytes.Load(), maxResponseBytes)
+	}
 
 	if len(errs) > 0 {
 		return nil, false, errors.Join(errs...)

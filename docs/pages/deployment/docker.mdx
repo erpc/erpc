@@ -1,63 +1,15 @@
 ---
-title: Docker deployment
-description: Deploy eRPC using official Docker images — quick start, docker-compose, custom NPM modules, and production tuning.
+title: Docker
+description: A 30 MB distroless image, one mount, two ports — eRPC runs anywhere Docker runs, with a pre-wired Grafana dashboard ready the moment you start.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# Docker deployment
+import { LLMsTxtLink, AISection, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-eRPC ships multi-arch Docker images (`linux/amd64`, `linux/arm64`) to `ghcr.io/erpc/erpc`. The typical deployment is a single container with a mounted config file and two exposed ports.
+# Docker
 
-**What this page covers:**
-
-- Quick start — single `docker run` command
-- docker-compose example
-- Custom NPM modules for TypeScript configs
-- Port mapping, volume mounts, and environment variables
-- Production tuning and healthcheck integration
-
-## Quick start
-
-Create a minimal `erpc.yaml`:
-
-<ConfigTabs
-	path="projects"
-	yaml={`logLevel: debug
-projects:
-  - id: main
-    upstreams:
-      - endpoint: alchemy://\${ALCHEMY_API_KEY}
-      - endpoint: blastapi://\${BLASTAPI_API_KEY}`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  logLevel: "debug",
-  projects: [
-    {
-      id: "main",
-      upstreams: [
-        { endpoint: "alchemy://\${ALCHEMY_API_KEY}" },
-        { endpoint: "blastapi://\${BLASTAPI_API_KEY}" },
-      ],
-    },
-  ],
-});`}
-/>
-
-<Callout type="info">
-	See the [complete config example](/config/example) for all available options.
-</Callout>
-
-Run the container:
+Pull, mount your config, and you're live. eRPC's official image is distroless and ~30 MB — nothing but the proxy binary and TypeScript config support. Expose two ports and traffic flows immediately; an optional compose stack brings up Prometheus and Grafana with 80+ pre-built panels in the same command.
 
 ```bash
 docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
@@ -65,264 +17,212 @@ docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
   ghcr.io/erpc/erpc:latest
 ```
 
-Send a test request:
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="get eRPC running in Docker"
+	defaultOpen
+	prompt={`Deploy eRPC using Docker for the first time. Mount my config from my eRPC config, expose
+the RPC and metrics ports, set GOMEMLIMIT correctly for the container, and pin the
+image to a specific release tag rather than :latest. Work with my existing eRPC config.
+Read the full reference first:
+https://docs.erpc.cloud/deployment/docker.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="spin up local dev stack with Grafana"
+	prompt={`Set up a full local dev environment with eRPC, Redis, Prometheus, and Grafana using
+docker-compose so I can see the 80+ dashboard panels. Work with my existing eRPC config.
+Reference: https://docs.erpc.cloud/deployment/docker.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug a crashing container"
+	prompt={`My eRPC Docker container is restarting unexpectedly in production. Help me diagnose
+whether it is an OOM kill (missing GOMEMLIMIT), a bad config mount, or a graceful
+shutdown issue. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/deployment/docker.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="profile memory or CPU in staging"
+	prompt={`Enable the pprof profiling build of eRPC in my staging Docker container so I can
+capture heap and CPU profiles to investigate high memory usage. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/deployment/docker.llms.txt`}
+/>
+
+<AISection title="Docker — full agent reference">
+
+### How it works
+
+**Image structure.** The Dockerfile uses six named build stages: `go-builder` compiles both `erpc-server` (production) and `erpc-server-pprof` (pprof build tag); `ts-core` installs shared pnpm dependencies on Node 20 alpine; `ts-dev` and `ts-prod` extend `ts-core` for their respective build targets; `symlink` creates a `/root/erpc-server → /erpc-server` compatibility symlink; `final` copies only the two Go binaries, the symlink, and compiled TypeScript files into a `gcr.io/distroless/static-debian12:nonroot` base. CGO is disabled and `-ldflags="-w -s"` strips debug info. The default `CMD` is `/erpc-server`.
+
+**Ports.** The image exposes three ports:
+- `4000` — JSON-RPC HTTP ingress (default `server.httpPortV4`)
+- `4001` — Prometheus metrics (`/metrics`)
+- `6060` — pprof (only functional in the `erpc-server-pprof` binary)
+
+**Config discovery.** At startup eRPC searches for a config file in this order: `--config` flag → positional arg → `./erpc.yaml`, `./erpc.yml`, `./erpc.ts`, `./erpc.js`, then the same paths under `/` and `/root/`. The simplest production mount is `-v $(pwd)/erpc.yaml:/erpc.yaml`.
+
+**Compose stack.** The repo's `docker-compose.yml` defines a `monitoring` service (Grafana on `:3000`, Prometheus on `:9090`) and a `redis` service (`redis:latest`, port `6379:6379`, restart always, on the `erpc` bridge network). The eRPC container entry is commented out by default (references `ghcr.io/erpc/erpc:main`) — operators add it back with a volume-mounted config. Additional optional services (Jaeger with OTLP gRPC/HTTP and UI, PostgreSQL, ScyllaDB in Alternator mode) are also present as commented-out blocks. Point monitoring at a running eRPC instance:
 
 ```bash
-curl --location 'http://localhost:4000/main/evm/1' \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "method": "eth_getBlockByNumber",
-    "params": ["0x1203319", false],
-    "id": 1,
-    "jsonrpc": "2.0"
-  }'
+SERVICE_ENDPOINT=host.docker.internal SERVICE_PORT=4001 docker compose up monitoring
 ```
 
-## docker-compose
+`make down` passes `--volumes`, which destroys `prometheus_data` and `grafana_data` named volumes; use `docker compose down` (no `--volumes`) to preserve monitoring history.
 
-Basic production-ready compose file with Prometheus and Grafana:
+**Distroless/nonroot implications.** The final image has no shell, no package manager, and no standard utilities. You cannot exec into it with a shell. Attaching debug tools or copying files at runtime requires a privileged ephemeral sidecar. All file paths must be absolute. If you mount a config that does not exist, the process exits cleanly (non-zero) — it does not hang.
 
-```bash
-# Clone the repo if you haven't
-git clone https://github.com/erpc/erpc.git
-cd erpc
+TypeScript configs (`erpc.ts`) are supported: the image includes compiled TypeScript SDK files and node_modules. Node itself is not present as a standalone binary, but the bundled runtime path invoked by eRPC for TS config evaluation does work. If you strip `node_modules` from the image, TypeScript configs fail silently and fall back to YAML.
 
-# Start eRPC + monitoring stack
-docker-compose up -d
-```
+**Layer caching.** `go.mod` and `go.sum` are copied into the builder stage first and `go mod download` runs before the source copy, so dependency layers are cached across rebuilds ([`Dockerfile:L16-L21`](https://github.com/erpc/erpc/blob/main/Dockerfile#L16-L21)). The pnpm stages use `--mount=type=cache,id=pnpm,target=/pnpm/store` to avoid re-downloading npm packages across builds ([`Dockerfile:L51`](https://github.com/erpc/erpc/blob/main/Dockerfile#L51), [`L63`](https://github.com/erpc/erpc/blob/main/Dockerfile#L63)).
 
-Minimal standalone compose:
+**CLI subcommands.** The `erpc` binary supports three subcommands:
+- `erpc [config]` or `erpc start` — start the server
+- `erpc validate [--format json|md]` — parse config and run a validation report; exits non-zero on errors
+- `erpc dump [--format yaml|json]` — parse config, resolve effective selection policies, and dump to stdout
 
-```yaml
-version: '3.8'
-services:
-  erpc:
-    image: ghcr.io/erpc/erpc:latest
-    ports:
-      - "4000:4000"
-      - "4001:4001"
-    volumes:
-      - ./erpc.yaml:/erpc.yaml
-    restart: unless-stopped
-```
+**Monitoring container internals.** `monitoring/Dockerfile` pulls Prometheus `v3.9.1` and Grafana `12.3.3` (both pinned by digest) into an `ubuntu:22.10` base. The entrypoint substitutes `SERVICE_ENDPOINT` and `SERVICE_PORT` into `prometheus.yml` using `sed`, then starts both processes in the background and tails `/dev/null` to keep the container alive. If either process crashes, the container stays up but becomes non-functional. This design is intentional for local dev convenience; run separate Prometheus and Grafana containers in production.
 
-See the [monitoring guide](/operation/monitoring) for metrics and Grafana dashboards.
+### Config schema
 
-## Custom NPM modules
+The deployment layer has no `erpc.yaml` fields. The following environment variables control the running process:
 
-When your TypeScript config imports packages beyond `@erpc-cloud/config`, make them available inside the container using one of these two approaches.
-
-### Option 1: Custom image
-
-```dockerfile
-FROM debian:12
-
-COPY package.json pnpm-lock.yaml /
-# COPY package.json package-lock.yaml /  # For npm
-# COPY package.json yarn.lock /          # For yarn
-
-RUN pnpm install
-# RUN npm install   # For npm
-# RUN yarn install  # For yarn
-
-FROM ghcr.io/erpc/erpc:latest
-
-COPY --from=0 /node_modules /node_modules
-```
-
-```bash
-docker build -t erpc-custom -f Dockerfile.custom .
-docker run -v $(pwd)/erpc.ts:/erpc.ts \
-  -p 4000:4000 -p 4001:4001 \
-  erpc-custom
-```
-
-### Option 2: Mount host dependencies
-
-```bash
-docker run \
-  -v $(pwd)/package.json:/package.json \
-  -v $(pwd)/node_modules:/node_modules \
-  -v $(pwd)/erpc.ts:/erpc.ts \
-  -p 4000:4000 -p 4001:4001 \
-  ghcr.io/erpc/erpc:latest
-```
-
-docker-compose equivalent:
-
-```yaml
-version: '3.8'
-services:
-  erpc:
-    image: ghcr.io/erpc/erpc:latest
-    ports:
-      - "4000:4000"
-      - "4001:4001"
-    volumes:
-      - ./erpc.ts:/erpc.ts
-      - ./package.json:/package.json
-      - ./node_modules:/node_modules
-    restart: unless-stopped
-```
-
-<Callout type="info">
-	If you only use `@erpc-cloud/config`, no extra steps are needed — the base image already includes it.
-</Callout>
-
-<AISection title="Copy for your AI assistant — full Docker deployment reference">
-
-### Image reference
-
-```
-ghcr.io/erpc/erpc:latest          # latest stable
-ghcr.io/erpc/erpc:<version>       # e.g. ghcr.io/erpc/erpc:0.0.46
-```
-
-Pin to a specific version tag in production. The `latest` tag is overwritten on every release. Both `linux/amd64` and `linux/arm64` are published in the same multi-arch manifest.
-
-### Port mapping
-
-| Port | Protocol | Purpose |
+| Variable | Effect | Source |
 |---|---|---|
-| `4000` | HTTP | Main proxy + admin endpoint |
-| `4001` | HTTP | Prometheus `/metrics` scrape endpoint |
-| `4100` | gRPC | gRPC listener (only if `server.grpc` is enabled in config) |
+| `LOG_LEVEL` | Overrides `cfg.LogLevel`; parsed as zerolog level (`trace`/`debug`/`info`/`warn`/`error`) | <SourceLink file="cmd/erpc/main.go" lines="354-363" /> |
+| `LOG_WRITER` | If `"console"` → human-readable zerolog output with `04:05.000ms` timestamps; default is JSON | <SourceLink file="cmd/erpc/main.go" lines="53-57" /> |
+| `GOMEMLIMIT` | Go soft memory limit (e.g. `GOMEMLIMIT=2700MiB`). **Not set in any manifest** — operators must set manually. Rule of thumb: 90% of container memory limit. | n/a |
+| `GOGC` | Go GC target percentage. Lower values (25–50) keep heap smaller at slightly higher CPU cost. Default is Go runtime default (100). | n/a |
+| `SERVICE_ENDPOINT` | Monitoring container only — injected into Prometheus scrape target by `monitoring/scripts/entrypoint.sh`. Default target is `host.docker.internal:4001`. | <SourceLink file="monitoring/scripts/entrypoint.sh" lines="1" /> |
+| `SERVICE_PORT` | Same as above. | <SourceLink file="monitoring/scripts/entrypoint.sh" lines="1" /> |
 
-Expose only the ports your deployment actually uses. `4001` metrics should be reachable by your Prometheus scraper but not exposed publicly.
+### Worked examples
 
-### Volume mounts
-
-| Mount | Required | Notes |
-|---|---|---|
-| `/erpc.yaml` or `/erpc.ts` | yes (unless using `--endpoint`) | Config file. The path must match `--config` (default auto-discovery looks for `erpc.yaml` in `/`). |
-| `/data` or similar | optional | Persistent volume for cache connectors (Redis-less local cache). Not required for the stateless proxy mode. |
-
-Default auto-discovery in the container checks `/erpc.yaml` then `/erpc.ts`. To use a different path, pass `--config /path/to/config.yaml` as the CMD override.
-
-### Environment variables
-
-| Variable | Effect |
-|---|---|
-| `LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `error`. Defaults to `info`. |
-| `LOG_WRITER` | Set to `console` for human-readable output; default is JSON. |
-| `HOSTNAME` | Container hostname — used as fallback instance ID and interpolated into `server.responseHeaders`. Set by Docker automatically. |
-| `INSTANCE_ID` | Override the instance identifier (takes precedence over `HOSTNAME`). Useful for stable names in non-k8s environments, e.g. `INSTANCE_ID=erpc-eu-01`. |
-| `GOGC` | Go GC target (percent heap growth). Default `100`. Set to `30` for tighter memory control. |
-| `GOMEMLIMIT` | Go soft memory limit, e.g. `GOMEMLIMIT=2GiB`. Set to ~80% of the container memory limit to prevent OOM kills. |
-
-See [CLI & env vars](/operation/cli) for the full reference including `POD_NAME`, AWS credentials, and OTEL variables.
-
-### Production docker-compose with monitoring
-
-```yaml
-version: '3.8'
-services:
-  erpc:
-    image: ghcr.io/erpc/erpc:latest
-    ports:
-      - "4000:4000"
-      - "4001:4001"
-    volumes:
-      - ./erpc.yaml:/erpc.yaml
-    environment:
-      LOG_LEVEL: info
-      GOGC: "30"
-      GOMEMLIMIT: 2GiB
-      INSTANCE_ID: erpc-prod-01
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4000/healthcheck"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-
-  prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-    ports:
-      - "9090:9090"
-
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-```
-
-### Healthcheck integration
-
-eRPC exposes `GET /healthcheck` on port 4000. It returns `200 OK` once the proxy is listening and at least one upstream is reachable.
+**1. Minimal single-container run.** The simplest production-ready invocation: mount config, expose both ports, no compose required:
 
 ```bash
-# Manual check
-curl -fsS http://localhost:4000/healthcheck
-```
-
-For Docker healthcheck:
-
-```yaml
-healthcheck:
-  test: ["CMD", "wget", "-qO-", "http://localhost:4000/healthcheck"]
-  interval: 10s
-  timeout: 5s
-  retries: 3
-  start_period: 15s
-```
-
-Kubernetes liveness/readiness probes use the same endpoint:
-
-```yaml
-livenessProbe:
-  httpGet:
-    path: /healthcheck
-    port: 4000
-  initialDelaySeconds: 15
-  periodSeconds: 10
-readinessProbe:
-  httpGet:
-    path: /healthcheck
-    port: 4000
-  initialDelaySeconds: 5
-  periodSeconds: 5
-```
-
-### Production memory tuning
-
-The Go runtime defaults work for most workloads. Tune `GOGC` and `GOMEMLIMIT` together:
-
-```bash
-# Tight memory ceiling (2 GiB container limit)
-docker run \
-  -e GOGC=30 \
-  -e GOMEMLIMIT=1600MiB \
+docker run --restart=unless-stopped \
   -v $(pwd)/erpc.yaml:/erpc.yaml \
+  -e GOMEMLIMIT=2700MiB \
   -p 4000:4000 -p 4001:4001 \
-  --memory=2g \
   ghcr.io/erpc/erpc:latest
 ```
 
-Rule of thumb: set `GOMEMLIMIT` to ~80% of `--memory` so the GC triggers before the OOM-killer. Lower `GOGC` (25-50) keeps heaps smaller at the cost of slightly higher CPU. See [CLI & env vars — GOGC and GOMEMLIMIT](/operation/cli#gogc-and-gomemlimit--production-tuning) for details.
+Set `GOMEMLIMIT` to 90% of your container's memory allowance to prevent Go GC from allowing the heap to reach the hard OOM limit.
 
-### Restart policy
+**2. Full local dev stack with monitoring.** Spin up eRPC, Redis, Prometheus, and Grafana together. Add the eRPC service block back into `docker-compose.yml`, then:
 
-Always set `restart: unless-stopped` (compose) or `--restart=unless-stopped` (docker run) in production. eRPC exits with a non-zero code on config errors or failed upstream initialization — the restart policy will handle transient failures (e.g. a dependent service not yet up).
+```bash
+SERVICE_ENDPOINT=erpc SERVICE_PORT=4001 docker compose up
+```
 
-For `always` vs `unless-stopped`: use `unless-stopped` so a deliberate `docker stop` doesn't trigger an immediate restart.
+Open `http://localhost:3000` for Grafana (default credentials `admin`/`admin`). The dashboard auto-loads with 80+ panels.
 
-### Common pitfalls
+**3. Profiling build.** Override CMD to the pprof variant when debugging performance in a staging environment. The binary is always present in every image:
 
-- **Config volume not mounted** — without `-v ./erpc.yaml:/erpc.yaml`, auto-discovery finds nothing in `/` and the process exits. Pass `--config` explicitly or ensure the mount path matches.
-- **Port 4000 already in use** — eRPC fails to bind and exits with code `2`. Check with `lsof -i :4000` and pick a free host port via `-p 4100:4000`.
-- **Image cache** — `docker pull ghcr.io/erpc/erpc:latest` may serve a cached layer. Force a fresh pull with `docker pull --no-cache` or pin to a version digest.
-- **`GOMEMLIMIT` without `GOGC`** — the runtime relies entirely on the soft limit, which can cause large heap swings just under the limit. Always pair them.
-- **TypeScript config auto-discovery** — the container's cwd is `/`. Drop your `erpc.ts` at `/erpc.ts` or pass `--config /path/to/erpc.ts` as the CMD.
-- **gRPC port not exposed** — port `4100` is only active when `server.grpc` is configured. Exposing it on an image without gRPC config is harmless but confusing.
+```bash
+docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
+  -p 4000:4000 -p 4001:4001 -p 6060:6060 \
+  --entrypoint /erpc-server-pprof \
+  ghcr.io/erpc/erpc:latest
+```
+
+Access pprof endpoints at `http://localhost:6060/debug/pprof/`.
+
+**4. `make docker-run`.** The Makefile wraps the single-container run: it maps ports `4000:4000` and `4001:4001`, mounts `./erpc.yaml:/erpc.yaml`, and explicitly invokes `/erpc-server --config /erpc.yaml` rather than relying on the image's default CMD. Equivalent to: [`Makefile:L127-L129`](https://github.com/erpc/erpc/blob/main/Makefile#L127-L129)
+
+```bash
+docker run -p 4000:4000 -p 4001:4001 \
+  -v ./erpc.yaml:/erpc.yaml \
+  ghcr.io/erpc/erpc:latest /erpc-server --config /erpc.yaml
+```
+
+**5. Pinned production image.** Never run `:latest` in production — pin a specific tag or SHA:
+
+```bash
+docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
+  -p 4000:4000 -p 4001:4001 \
+  ghcr.io/erpc/erpc:v0.0.x
+```
+
+### Request/response behavior
+
+- Graceful shutdown: `SIGINT`/`SIGTERM` triggers `signal.NotifyContext`; the HTTP server drains in-flight requests, returns 503 on healthcheck, then calls `Shutdown`. [<SourceLink file="cmd/erpc/main.go" lines="72-74" />]
+- The `/healthcheck` endpoint returns 200 while healthy and 503 during drain — wire it to Docker's `HEALTHCHECK` instruction or a load-balancer probe.
+- `VERSION` and `COMMIT_SHA` build args are injected via `-X` ldflags into `common.ErpcVersion` and `common.ErpcCommitSha` at build time and surfaced in startup logs and the `/healthcheck` response body. [<SourceLink file="Dockerfile" lines="24-34" />]
+
+### Best practices
+
+- **Always set `GOMEMLIMIT`** to 90% of the container's memory limit. Without it, Go's GC may allow the heap to reach the hard OOM limit, triggering a container restart rather than a managed GC cycle.
+- **Pin the image tag** to a specific release (e.g. `ghcr.io/erpc/erpc:v0.0.x`) rather than `:latest` for reproducible deploys.
+- **Expose port 4001** even if you're not using the monitoring stack yet — it's zero cost and unlocks observability later without a redeploy.
+- **Use `docker compose down` (without `--volumes`)** to stop the local stack; `make down` passes `--volumes` and destroys all Prometheus/Grafana state.
+- **Do not use the monitoring container in production.** Prometheus and Grafana share one process group — a crash in either is not independently restarted. Use separate containers for production monitoring.
+- **Mount a non-existent config → clean exit.** If the path you mount at `/erpc.yaml` doesn't exist, eRPC exits non-zero immediately — verify your bind-mount paths before starting.
+- **gRPC port needs explicit mapping.** The image exposes `4000`, `4001`, `6060`. If you configure a separate `server.grpcPortV4`, add `-p <grpc_port>:<grpc_port>` explicitly.
+
+### Edge cases & gotchas
+
+1. **No shell in distroless**: Cannot exec with a shell; debug tools require privileged sidecars.
+2. **`make down` destroys volumes**: `Makefile:L114` passes `--volumes` — this drops `prometheus_data` and `grafana_data`. Use `docker compose down` (without `--volumes`) to preserve monitoring state.
+3. **`GOMEMLIMIT` not set in any manifest**: With a 3 Gi container limit and no `GOMEMLIMIT`, Go's GC may allow the heap to approach 3 Gi before collecting, triggering container OOM. Set `GOMEMLIMIT=2700MiB` (90% of limit).
+4. **pprof binary always present but never used by default**: `/erpc-server-pprof` exists in every image but the default `CMD` runs `/erpc-server`. To use profiling endpoints, override `CMD` to `/erpc-server-pprof` and expose port `6060`.
+5. **`SERVICE_ENDPOINT` sed-based substitution**: If the value contains `/` or other sed-special characters, substitution breaks. Use a plain hostname or IP, not a URL with a path.
+6. **Monitoring container is not HA**: Both Prometheus and Grafana run in one container via `tail -f /dev/null`; a crash in either is not detected and the container stays running. Not suitable for production.
+7. **gRPC port not exposed by default**: The image exposes `4000`, `4001`, `6060`. If you configure a separate `server.grpcPortV4`, add `-p <grpc_port>:<grpc_port>` explicitly.
+8. **`prometheus.yaml` at repo root is NOT the monitoring container's config**: It is the production Prometheus Operator config. The monitoring container uses `monitoring/prometheus/prometheus.yml`. They have different scrape configs and targets.
+
+### Observability
+
+All eRPC metrics are emitted at port `4001` path `/metrics`. The monitoring container's Prometheus scrapes this endpoint at `scrape_interval: 10s` and `evaluation_interval: 10s`. The local Prometheus config (`monitoring/prometheus/prometheus.yml`) defines two scrape jobs: `prometheus` (self-scrape at `localhost:9090`) and `erpc` (dual targets: `host.docker.internal:4001` plus a placeholder replaced by `SERVICE_ENDPOINT`/`SERVICE_PORT` at container start).
+
+**Grafana configuration.** `monitoring/grafana/grafana.ini` sets `http_addr=0.0.0.0`, `http_port=3000`, disables anonymous access and user sign-up, enables the `publicDashboards` feature toggle, and sets `default_home_dashboard_path` to point at the pre-built eRPC dashboard JSON. The datasource provisioning file (`monitoring/grafana/datasources/prometheus.yml`) registers `http://localhost:9090` as the default Prometheus datasource. The dashboard provider (`monitoring/grafana/dashboards/default.yml`) scans `/etc/grafana/dashboards` every 10 seconds for JSON files and loads them with UI editing allowed.
+
+**Dashboard template variables.** The Grafana dashboard uses `$datasource` to select the Prometheus datasource and `$finality` to filter Vendor Share panels by finality type.
+
+Key alert expressions from `monitoring/prometheus/alert.rules`:
+
+| Alert | Expression basis | Severity |
+|---|---|---|
+| `HighErrorRate` | `erpc_upstream_request_errors_total` rate &gt; 5% for 5m | warning |
+| `SlowRequests` | `erpc_upstream_request_duration_seconds_budget` p95 &gt; 1s for 5m | warning |
+| `HighRateLimiting` | `erpc_upstream_request_self_rate_limited_total` rate &gt; 10% for 5m | warning |
+| `NetworkRateLimiting` | `erpc_network_request_self_rate_limited_total` &gt; 10 req/s for 5m | warning |
+| `HighRequestRate` | `erpc_upstream_request_total` rate &gt; 1000 req/s for 5m | warning |
+| `LowRequestRate` | `erpc_upstream_request_total` rate &lt; 1 req/s for 15m | warning |
+
+The Grafana dashboard (`monitoring/grafana/dashboards/erpc.json`, 80+ panels) covers: request rates and RPS, latency (P50/P90/P99), failover retries by reason, upstream errors by type, block-head lag, cache hit/miss, consensus operations, selection policy, and rate limiter budgets.
+
+### Source code entry points
+
+- [`Dockerfile:L70-L88`](https://github.com/erpc/erpc/blob/main/Dockerfile#L70-L88) — final distroless stage: what files land in the image
+- [`Dockerfile:L24-L34`](https://github.com/erpc/erpc/blob/main/Dockerfile#L24-L34) — `VERSION`/`COMMIT_SHA` ldflags injection
+- [`cmd/erpc/main.go:L279-L294`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279-L294) — config file search order (12 paths)
+- [`cmd/erpc/main.go:L72-L74`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L72-L74) — SIGINT/SIGTERM graceful shutdown via `signal.NotifyContext`
+- [`monitoring/scripts/entrypoint.sh`](https://github.com/erpc/erpc/blob/main/monitoring/scripts/entrypoint.sh) — sed substitution + dual-process startup
+- [`docker-compose.yml:L84-L86`](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L84-L86) — named volumes `prometheus_data` and `grafana_data`
+- [`Makefile:L114`](https://github.com/erpc/erpc/blob/main/Makefile#L114) — `make down` passes `--volumes`, destroying monitoring state
+- [`Makefile:L121-L123`](https://github.com/erpc/erpc/blob/main/Makefile#L121-L123) — `make docker-build` defaults to `linux/amd64`
+- [`Makefile:L127-L129`](https://github.com/erpc/erpc/blob/main/Makefile#L127-L129) — `make docker-run`: mounts config, maps ports, invokes `/erpc-server --config /erpc.yaml`
+- [`monitoring/grafana/grafana.ini`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/grafana.ini) — Grafana server config (port 3000, provisioning, publicDashboards feature toggle)
+- [`monitoring/grafana/datasources/prometheus.yml`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/datasources/prometheus.yml) — auto-provisions Prometheus datasource at `localhost:9090`
+- [`monitoring/grafana/dashboards/default.yml`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/dashboards/default.yml) — dashboard file provider scanning `/etc/grafana/dashboards` every 10s
+- [`monitoring/prometheus/prometheus.yml`](https://github.com/erpc/erpc/blob/main/monitoring/prometheus/prometheus.yml) — local scrape config (self at `localhost:9090` + eRPC at `host.docker.internal:4001`)
+
+### Related pages
+
+- [Kubernetes](/deployment/kubernetes) — Deployment, ConfigMap, Service, PodMonitor, and probe tuning.
+- [Railway](/deployment/railway) — one-click managed deploy with monitoring included.
+- [Monitoring & metrics](/operation/monitoring) — full metrics reference for dashboards and alerting.
+- [Healthcheck](/operation/healthcheck) — probe strategy and evaluation logic.
+- [Authentication](/config/auth) — lock down the exposed RPC port before going public.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

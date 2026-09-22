@@ -1,0 +1,163 @@
+---
+title: Cut RPC cost & latency
+description: Serve repeated questions from cache, deduplicate identical requests, and stop paying providers for the same answer twice.
+---
+
+import { LLMsTxtLink, AISection, CapabilityGrid, ConfigTabs, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# Cut RPC cost & latency
+
+Most blockchain data never changes — a block from last year is the same block forever.
+eRPC caches those answers permanently, merges identical in-flight requests into one,
+and races a backup upstream only when it actually helps. Teams typically watch their
+provider bill drop while p99 latency gets faster: cached answers return in microseconds
+and never count against a rate limit.
+
+<CapabilityGrid
+  columns={3}
+  items={[
+    { title: "EVM JSON-RPC cache", href: "/config/database/evm-json-rpc-cache", summary: "Finality-aware caching: permanent for old blocks, careful for fresh ones." },
+    { title: "Cache drivers", href: "/config/database/drivers", summary: "Memory for speed, Redis/Postgres/DynamoDB for shared permanence." },
+    { title: "Batching & multiplexing", href: "/operation/batch", summary: "A thousand identical requests become one upstream call." },
+    { title: "Hedge", href: "/config/failsafe/hedge", summary: "Pay for a second request only when the first is being slow." },
+    { title: "Shared state", href: "/config/database/shared-state", summary: "A fleet of eRPC pods shares one view of chain progress." },
+  ]}
+/>
+
+All of the above in one place — illustrative, not a tuned production config:
+
+<ConfigTabs
+  path="(root)"
+  focusYaml="4,12,21,33,39"
+  focusTs="4,9,16,26,31"
+  yaml={`database:
+  evmJsonRpcCache:
+    # two cache tiers: in-process for speed, redis for shared permanence
+    connectors:
+      - id: hot
+        driver: memory
+      - id: cold
+        driver: redis
+        redis:
+          addr: redis-cache:6379
+    # finalized data is immutable: cache it forever; fresh data gets a short TTL
+    policies:
+      - connector: hot
+        finality: finalized
+      - connector: cold
+        finality: finalized
+      - connector: hot
+        finality: unfinalized
+        ttl: 5s
+  # one shared view of chain tip across all pods
+  sharedState:
+    connector:
+      id: redis-shared
+      driver: redis
+      redis:
+        addr: redis-cache:6379
+projects:
+  - id: main
+    networkDefaults:
+      failsafe:
+        - matchMethod: "*"
+          # pay for a 2nd request only on slow tails
+          hedge:
+            delay: { quantile: 0.7, min: 100ms, max: 2s }
+            maxCount: 1
+    upstreamDefaults:
+      # pack outbound calls into JSON-RPC batches
+      jsonRpc:
+        supportsBatch: true
+        batchMaxSize: 10
+        batchMaxWait: 50ms
+# In-flight multiplexing (identical concurrent requests → one call) is automatic.`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    // two cache tiers: in-process for speed, redis for shared permanence
+    connectors: [
+      { id: "hot", driver: "memory" },
+      { id: "cold", driver: "redis", redis: { addr: "redis-cache:6379" } },
+    ],
+    // finalized data is immutable: cache forever; fresh data gets a short TTL
+    policies: [
+      { connector: "hot", finality: "finalized" },
+      { connector: "cold", finality: "finalized" },
+      { connector: "hot", finality: "unfinalized", ttl: "5s" },
+    ],
+  },
+  // one shared view of chain tip across all pods
+  sharedState: {
+    connector: { id: "redis-shared", driver: "redis", redis: { addr: "redis-cache:6379" } },
+  },
+},
+projects: [{
+  id: "main",
+  networkDefaults: {
+    failsafe: [{
+      matchMethod: "*",
+      // pay for a 2nd request only on slow tails
+      hedge: { delay: { quantile: 0.7, min: "100ms", max: "2s" }, maxCount: 1 },
+    }],
+  },
+  upstreamDefaults: {
+    // pack outbound calls into JSON-RPC batches
+    jsonRpc: { supportsBatch: true, batchMaxSize: 10, batchMaxWait: "50ms" },
+  },
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="cut my RPC provider bill with eRPC caching"
+	defaultOpen
+	prompt={`I want to reduce the number of paid RPC calls my app makes by caching
+blockchain data in eRPC. Set up a two-tier cache (memory + Redis) in my eRPC config
+with finality-aware TTLs so finalized data is cached forever and fresh data
+expires quickly. Read the reference and follow the child-page links inside it:
+https://docs.erpc.cloud/use-cases/cut-costs-and-latency.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="reduce p99 latency with caching and hedge together"
+	prompt={`I want to push p99 RPC latency as low as possible. Review my eRPC config and
+configure eRPC's cache layer and hedge feature together so cached answers return
+in microseconds and slow uncached calls are raced against a backup upstream.
+Reference:
+https://docs.erpc.cloud/use-cases/cut-costs-and-latency.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="deduplicate identical in-flight requests under high concurrency"
+	prompt={`Under high concurrency my backend fires hundreds of identical eth_blockNumber
+and eth_getBlockByNumber calls simultaneously. Configure eRPC's multiplexing
+and batching in my eRPC config so those collapse to a single upstream call. Reference:
+https://docs.erpc.cloud/use-cases/cut-costs-and-latency.llms.txt`}
+/>
+
+<AISection title="Cut costs — agent starting points">
+
+This page sells the outcome; implementation lives in the feature pages. Fetch their
+machine-readable companions:
+
+- [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache) — policy matching, finality semantics, TTLs, freshness gating, skip-cache directives.
+- [Cache drivers](/config/database/drivers) — every connector's config, TTL behavior, and operational footguns.
+- [Batching & multiplexing](/operation/batch) — inbound JSON-RPC batches, outbound upstream batching, in-flight dedup rules and exclusions.
+- [Shared state](/config/database/shared-state) — what's shared, pubsub propagation, clusterKey.
+- [Hedge](/config/failsafe/hedge) — quantile-based delays so hedging only fires on slow tails.
+
+Cost-relevant interactions an agent should weigh: cache hits skip rate-limit budgets and
+selection entirely; the multiplexer dedupes only identical (network, method, params) requests;
+finality classification decides whether a response is cached forever, with TTL, or gated on
+connector freshness. Field-level tables live in each page's agent section.
+
+</AISection>

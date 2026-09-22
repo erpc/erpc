@@ -81,15 +81,12 @@ func buildLeakTestBudget(t testing.TB, redisDelay, maxTimeout time.Duration, adm
 	)
 	cache := &blockingCache{inner: mem, delay: redisDelay, panicRate: panicRate}
 
-	rules := []*RateLimitRule{
-		{
-			Config: &common.RateLimitRuleConfig{
-				Method:   "*",
-				MaxCount: 1_000_000_000,
-				Period:   common.RateLimitPeriodSecond,
-			},
-		},
+	leakRuleCfg := &common.RateLimitRuleConfig{
+		Method:   "*",
+		MaxCount: 1_000_000_000,
+		Period:   common.RateLimitPeriodSecond,
 	}
+	rules := []*RateLimitRule{{Config: leakRuleCfg, key: ruleKeyFor(leakRuleCfg)}}
 
 	logger := zerolog.Nop()
 	registry := &RateLimitersRegistry{

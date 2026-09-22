@@ -15,10 +15,10 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
-	"golang.org/x/time/rate"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -32,6 +32,8 @@ type metricsLabels struct {
 	category    string
 	networkId   string
 	projectId   string
+	userId      string
+	agentName   string
 	finalityStr string
 	// finality is the enum form of `finalityStr` — needed for tracker
 	// writes (RecordUpstreamMisbehavior) which now stratify per
@@ -241,6 +243,10 @@ func (e *executor) executeConsensus(
 	attemptCancels := make([]context.CancelFunc, maxToSpawn)
 	for i := 0; i < maxToSpawn; i++ {
 		slotCtx := context.WithValue(cancellableCtx, common.RequestContextKey, originalReq)
+		// Mark the slot so upstream attempts made under it are attributed to
+		// consensus fan-out (Reason = consensus_slot) in the attempt log,
+		// the X-ERPC-Upstreams trace, and erpc_upstream_selection_total.
+		slotCtx = common.WithConsensusSlot(slotCtx)
 		slotCtx, attemptCancels[i] = context.WithCancel(slotCtx)
 		go e.executeParticipant(slotCtx, lg, labels, in, originalReq, i, responseChan)
 	}
@@ -324,13 +330,13 @@ func (e *executor) handleCallerAbandoned(
 	cancelErr error,
 ) *slotResult {
 	telemetry.MetricConsensusCancellations.
-		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr, labels.userId, labels.agentName).
 		Inc()
 	telemetry.MetricConsensusTotal.
-		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr, labels.userId, labels.agentName).
 		Inc()
 	telemetry.MetricConsensusDuration.
-		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr, labels.userId, labels.agentName).
 		Observe(time.Since(startTime).Seconds())
 	common.SetTraceSpanError(consensusSpan, cancelErr)
 	consensusSpan.SetAttributes(attribute.String("consensus.outcome", "caller_abandoned"))
@@ -387,7 +393,7 @@ func (e *executor) runAnalyzer(
 				Str("stack", string(debug.Stack())).
 				Msg("panic in consensus analyzer")
 			telemetry.MetricConsensusPanics.
-				WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
+				WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr, labels.userId, labels.agentName).
 				Inc()
 			sendOutcomeOnce(consensusOutcome{
 				winner: &slotResult{Error: errPanicInConsensus},
@@ -450,8 +456,43 @@ func (e *executor) runAnalyzer(
 		if maxWaitOnEmpty <= 0 && maxWaitOnResult <= 0 {
 			return
 		}
+		// Results that never reached an upstream (config-static skips like
+		// ignored methods or shadow upstreams, and empty-cursor outcomes —
+		// see isNoAttemptResult) are produced locally in microseconds and
+		// carry no signal about how long the round's real participants
+		// need. Arming the caps off them would start the countdown before
+		// any live attempt exists: under fan-out configs where some
+		// upstreams statically skip the method, the round would resolve
+		// with only non-votable infrastructure errors while the real
+		// participants are still in flight. The collection loop still
+		// counts these results toward maxToSpawn, so rounds where every
+		// participant skips terminate immediately without any cap.
+		if isNoAttemptResult(resp) {
+			return
+		}
+		// The caps mean "a usable answer is in hand; stragglers get this
+		// much longer". With minAgreement quotas, a response set that
+		// cannot yet satisfy the winner-composition quota is NOT a usable
+		// answer — arming the countdown off it would resolve the round
+		// before the required tagged upstream responds, converting every
+		// such round into a retryable composition dispute. Hold arming
+		// until the collected responses cover every quota tag with
+		// DISTINCT upstreams (resultsSatisfyAgreementQuotas dedupes by ID
+		// — the raw slice may hold the same upstream twice via hedge).
+		// Slot timeouts and the overall request timeout still bound the
+		// round. Deliberate ceiling: an errored or dissenting tagged
+		// response counts as coverage. When several tagged upstreams are
+		// in the round, an early tagged error/dissent can arm the cap and
+		// time out a slower tagged sibling that would have completed the
+		// quota — the failure is a retryable composition dispute, and the
+		// alternative (hold caps until a tagged vote joins the WINNER)
+		// would disable the caps on every genuine-disagreement round.
+		if anyAgreementQuota(e.config.requiredParticipants) &&
+			!resultsSatisfyAgreementQuotas(responses, e.config.requiredParticipants) {
+			return
+		}
 		now := time.Now()
-		// First response of any kind arms maxWaitOnEmpty.
+		// First response from an actual upstream attempt arms maxWaitOnEmpty.
 		if maxWaitOnEmpty > 0 && waitDeadline.IsZero() {
 			armTimer(now.Add(maxWaitOnEmpty))
 		}
@@ -568,6 +609,8 @@ func (e *executor) runAnalyzer(
 			strings.Join(vendorNames, ","),
 			strconv.FormatBool(shortCircuited),
 			labels.finalityStr,
+			labels.userId,
+			labels.agentName,
 		).
 		Observe(float64(len(responses)))
 	if shortCircuited {
@@ -576,7 +619,7 @@ func (e *executor) runAnalyzer(
 			reason = "unknown"
 		}
 		telemetry.MetricConsensusShortCircuit.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, reason, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, reason, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 	}
 	if waitCapped {
@@ -591,7 +634,7 @@ func (e *executor) runAnalyzer(
 			}
 		}
 		telemetry.MetricConsensusWaitCapped.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, trigger, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, trigger, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 	}
 
@@ -601,32 +644,105 @@ func (e *executor) runAnalyzer(
 	e.trackAndPunishMisbehavingUpstreams(lg, originalReq, labels, winner, analysis)
 
 	// Release non-winning response objects. Previously inlined in Apply().
-	e.releaseNonWinningResponses(analysis, winner)
+	e.releaseNonWinningResponses(responses, winner)
 }
 
 // releaseNonWinningResponses releases the Result pointers on every non-winning
-// execResult in analysis.groups. Extracted verbatim from the previous inline
-// loop in Apply() so behavior is preserved.
+// execResult collected this round. It iterates the raw responses slice (not
+// analysis.groups) so responses dropped by upstream-deduplication are released
+// too — they never appear in any group.
 func (e *executor) releaseNonWinningResponses(
-	analysis *consensusAnalysis,
+	responses []*execResult,
 	winner *slotResult,
 ) {
-	if analysis == nil {
-		return
-	}
 	var winnerResp *common.NormalizedResponse
 	if winner != nil {
 		if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
 			winnerResp = wr
 		}
 	}
-	for _, group := range analysis.groups {
-		for _, result := range group.Results {
-			if result != nil && result.Result != nil && result.Result != winnerResp {
-				result.Result.Release()
-			}
+	for _, result := range responses {
+		if result != nil && result.Result != nil && result.Result != winnerResp {
+			result.Result.Release()
 		}
 	}
+}
+
+// isNoAttemptResult reports whether a participant's result was produced
+// without any network call to an upstream: config-static skips (method
+// ignored/not allowed, shadow upstreams, syncing nodes, use-upstream
+// directive mismatch) and empty-cursor outcomes (no upstreams left to
+// select, exhausted lists where every recorded error is itself a skip).
+// Such results are decided locally in microseconds, so they say nothing
+// about how long the round's real participants need — the wait caps must
+// not be armed off them. Genuine attempt failures (timeouts, 5xx,
+// connection resets) are NOT no-attempt: they prove the round is live and
+// should keep arming the caps.
+func isNoAttemptResult(r *execResult) bool {
+	if r == nil {
+		return true
+	}
+	if r.Err == nil {
+		return false
+	}
+	return isNoAttemptError(r.Err)
+}
+
+func isNoAttemptError(err error) bool {
+	se, ok := err.(common.StandardError)
+	if !ok {
+		return false
+	}
+	base := se.Base()
+	if base == nil {
+		return false
+	}
+	switch base.Code {
+	case common.ErrCodeUpstreamRequestSkipped,
+		common.ErrCodeUpstreamMethodIgnored,
+		common.ErrCodeUpstreamShadowing,
+		common.ErrCodeUpstreamSyncing,
+		common.ErrCodeUpstreamNotAllowed,
+		common.ErrCodeNoUpstreamsLeftToSelect:
+		return true
+	case common.ErrCodeUpstreamsExhausted:
+		// Wrapper: the verdict follows the recorded child errors. No
+		// children at all means no upstream was ever tried.
+		cause := se.GetCause()
+		if cause == nil {
+			return true
+		}
+		return isNoAttemptCause(cause)
+	case common.ErrCodeFailsafeRetryExceeded:
+		// Wrapper: retry-exceeded always carries the last attempt's error;
+		// the verdict follows it.
+		cause := se.GetCause()
+		if cause == nil {
+			return false
+		}
+		return isNoAttemptCause(cause)
+	}
+	return false
+}
+
+// isNoAttemptCause unwraps a wrapper's cause, which may be an errors.Join
+// multi-error (e.g. ErrUpstreamsExhausted joining ErrorsByUpstream): ALL
+// children must be no-attempt for the wrapper to count as no-attempt — a
+// single real attempt failure means the round is live.
+func isNoAttemptCause(cause error) bool {
+	if multi, ok := cause.(interface{ Unwrap() []error }); ok {
+		children := multi.Unwrap()
+		if len(children) == 0 {
+			return true
+		}
+		for _, child := range children {
+			if !isNoAttemptError(child) {
+				return false
+			}
+		}
+		return true
+	}
+	return isNoAttemptError(cause)
 }
 
 // executeParticipant runs a single upstream request within a goroutine.
@@ -647,7 +763,7 @@ func (e *executor) executeParticipant(
 				Int("index", index).
 				Str("stack", string(debug.Stack())).
 				Msg("Panic in consensus participant")
-			telemetry.MetricConsensusPanics.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).Inc()
+			telemetry.MetricConsensusPanics.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr, labels.userId, labels.agentName).Inc()
 			responseChan <- &execResult{Err: errPanicInConsensus}
 		}
 	}()
@@ -655,7 +771,7 @@ func (e *executor) executeParticipant(
 	// Check for cancellation before execution
 	if ctx.Err() != nil {
 		telemetry.MetricConsensusCancellations.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 		responseChan <- nil
 		return
@@ -669,7 +785,7 @@ func (e *executor) executeParticipant(
 	// consensus analysis.
 	if ctx.Err() != nil {
 		telemetry.MetricConsensusCancellations.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 	}
 
@@ -707,6 +823,14 @@ func (e *executor) executeParticipant(
 // This happens if one group's lead over the second-place group is greater
 // than the number of remaining responses.
 func (e *executor) shouldShortCircuit(winner *slotResult, analysis *consensusAnalysis) (string, bool) {
+	// A composition dispute is provisional while more responses can still
+	// arrive: a later response may join the leading group (or grow another
+	// group) and satisfy the minAgreement quota. Never cancel remaining
+	// participants because of it — the final pass after collection decides.
+	if winner != nil && winner.Error != nil && analysis.hasRemaining() &&
+		common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute) {
+		return "", false
+	}
 	for _, rule := range shortCircuitRules {
 		if rule.Condition(winner, analysis) {
 			return rule.Reason, true
@@ -769,7 +893,7 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 			lg.Debug().
 				Str("rule", rule.Description).
 				Msg("consensus rule matched")
-			return rule.Action(analysis)
+			return e.enforceWinnerComposition(lg, analysis, rule.Action(analysis))
 		}
 	}
 
@@ -780,11 +904,128 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 	}
 }
 
+// enforceWinnerComposition applies the winner-composition quotas
+// (`requiredParticipants[].minAgreement`) to the winner produced by the
+// rules engine. This is the single enforcement point: every rule's output
+// flows through here, so no individual rule needs to be composition-aware.
+//
+//   - Opt-in: no-op unless some entry sets minAgreement > 0.
+//   - eth_sendRawTransaction is exempt: a broadcast accepted by any node
+//     propagates network-wide, so winner composition proves nothing there
+//     (mirrors the dedicated first-success rule/short-circuit).
+//   - Synthesized winners (dispute/low-participants errors) and
+//     infrastructure-error groups pass through: they never assert data
+//     correctness, and converting one error into another would only mask
+//     the original failure.
+//   - A failing winner becomes ErrConsensusCompositionDispute. While
+//     responses are still outstanding the dispute is provisional — see the
+//     guard in shouldShortCircuit — because a later response can still
+//     complete the quota.
+func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consensusAnalysis, winner *slotResult) *slotResult {
+	if winner == nil || !anyAgreementQuota(e.config.requiredParticipants) {
+		return winner
+	}
+	if isTxBroadcastMethod(analysis.method) {
+		return winner
+	}
+	g := analysis.groupOf(winner)
+	if g == nil || g.ResponseType == ResponseTypeInfrastructureError {
+		return winner
+	}
+	if resultsSatisfyAgreementQuotas(e.agreeingResults(analysis, g), e.config.requiredParticipants) {
+		return winner
+	}
+	// A quota tag matching zero participants in the ENTIRE round (not just
+	// the winning group) means the config is structurally unable to ever
+	// satisfy the quota right now — a typo'd tag or every tagged upstream
+	// down. That is an outage, not a routine dispute: escalate to Warn so
+	// operators see it without debug logging. Only when the round is
+	// complete (nothing can still arrive): this gate also runs on every
+	// mid-collection analysis, where a slower tagged upstream simply hasn't
+	// answered yet — warning there would fire on every healthy
+	// mixed-latency round.
+	for _, req := range e.config.requiredParticipants {
+		if req == nil || req.MinAgreement <= 0 {
+			continue
+		}
+		matchedAnywhere := false
+		for _, og := range analysis.groups {
+			for _, r := range og.Results {
+				if r != nil && r.Upstream != nil && upstreamMatchesTag(r.Upstream, req.Tag) {
+					matchedAnywhere = true
+					break
+				}
+			}
+			if matchedAnywhere {
+				break
+			}
+		}
+		if !matchedAnywhere && !analysis.hasRemaining() {
+			lg.Warn().
+				Str("tag", req.Tag).
+				Int("minAgreement", req.MinAgreement).
+				Msg("minAgreement quota tag matched ZERO participants this round — check for a typo'd tag or unavailable tagged upstreams; consensus cannot succeed while this persists")
+		}
+	}
+	lg.Debug().
+		Str("hash", g.Hash).
+		Int("count", g.Count).
+		Msg("winning group does not satisfy minAgreement composition quotas")
+	return &slotResult{
+		Error: common.NewErrConsensusCompositionDispute(
+			"winning group does not satisfy requiredParticipants minAgreement quotas",
+			analysis.participants(),
+			nil,
+		),
+	}
+}
+
+// agreeingResults returns every result that agrees with the winning group.
+// Normally that is exactly the group's own results, but when
+// preferHighestValueFor is configured for the method, agreement is counted
+// by numeric value — the same value with a different encoding (0x5 vs 0x05)
+// hashes into a different group, and its upstream must still count toward
+// the composition quota.
+func (e *executor) agreeingResults(analysis *consensusAnalysis, g *responseGroup) []*execResult {
+	fields, _ := methodFields(e.config.preferHighestValueFor, analysis.method)
+	if len(fields) == 0 {
+		return g.Results
+	}
+	winnerValues := extractFieldValues(g.LargestResult, fields)
+	if winnerValues == nil {
+		return g.Results
+	}
+	agreeing := append([]*execResult(nil), g.Results...)
+	for _, og := range analysis.getValidGroups() {
+		if og == g {
+			continue
+		}
+		for _, r := range og.Results {
+			if r == nil || r.Result == nil || r.Err != nil {
+				continue
+			}
+			if v := extractFieldValues(r.Result, fields); v != nil && compareValueChains(v, winnerValues) == 0 {
+				agreeing = append(agreeing, r)
+			}
+		}
+	}
+	return agreeing
+}
+
 // --- Tracing, Metrics, and Punishment ---
 
 func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *common.NormalizedRequest, labels metricsLabels, winner *slotResult, analysis *consensusAnalysis) {
 	// Skip tracking when there are no valid participants (all infra errors)
 	if analysis.validParticipants == 0 {
+		return
+	}
+	// A composition dispute means the count-majority itself was rejected as
+	// untrustworthy (insufficient quota-tagged members). Falling through
+	// would pick that same majority as the "consensus" group and punish the
+	// quota-tagged dissenters — inverting the trust boundary minAgreement
+	// enforces. No one is punishable in this state.
+	if winner != nil && winner.Error != nil &&
+		common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute) {
 		return
 	}
 
@@ -951,6 +1192,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 							labels.finalityStr,
 							group.ResponseType.String(),
 							errorCode,
+							labels.userId,
+							labels.agentName,
 						).Inc()
 				}
 
@@ -974,6 +1217,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 							labels.finalityStr,
 							group.ResponseType.String(),
 							largerThanConsensusStr,
+							labels.userId,
+							labels.agentName,
 						).Inc()
 
 					// Record misbehavior in tracker for score calculation.
@@ -989,7 +1234,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 					if e.shouldPunishUpstream(lg, consensusGroup, analysis) {
 						limiter := e.createRateLimiter(lg, upstreamId)
 						if !limiter.Allow() {
-							e.handleMisbehavingUpstream(lg, result.Upstream, upstreamId, labels.projectId, labels.networkId)
+							e.handleMisbehavingUpstream(lg, result.Upstream, upstreamId, labels)
 						}
 					}
 				}
@@ -1166,6 +1411,7 @@ func (e *executor) buildMisbehaviorRecord(labels metricsLabels, req *common.Norm
 	rec := misbehaviorRecord{
 		TimestampMs:  time.Now().UnixMilli(),
 		ProjectID:    labels.projectId,
+		UserId:       labels.userId,
 		NetworkID:    labels.networkId,
 		Method:       labels.method,
 		Finality:     labels.finalityStr,
@@ -1196,7 +1442,7 @@ func (e *executor) shouldPunishUpstream(lg *zerolog.Logger, consensusGroup *resp
 	return consensusGroup.Count > analysis.validParticipants/2
 }
 
-func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream common.Upstream, upstreamId, projectId, networkId string) {
+func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream common.Upstream, upstreamId string, labels metricsLabels) {
 	// Create a placeholder value to claim ownership atomically
 	placeholder := &struct{}{}
 
@@ -1213,7 +1459,7 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 		Msg("misbehaviour limit exhausted, punishing upstream")
 
 	// Record punishment metric
-	telemetry.MetricConsensusUpstreamPunished.WithLabelValues(projectId, networkId, upstreamId).Inc()
+	telemetry.MetricConsensusUpstreamPunished.WithLabelValues(labels.projectId, labels.networkId, upstreamId, labels.userId, labels.agentName).Inc()
 
 	// Cordon the upstream first
 	upstream.Cordon("*", "misbehaving in consensus")
@@ -1273,6 +1519,8 @@ func (e *executor) extractMetricsLabels(ctx context.Context, req *common.Normali
 		category:    method,
 		networkId:   req.NetworkLabel(),
 		projectId:   projectId,
+		userId:      req.UserId(),
+		agentName:   req.AgentName(),
 		finalityStr: finality.String(),
 		finality:    finality,
 	}
@@ -1299,13 +1547,13 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 		span.SetAttributes(attribute.String("consensus.outcome", outcome))
 		duration := time.Since(startTime).Seconds()
 		telemetry.MetricConsensusTotal.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 		telemetry.MetricConsensusDuration.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).
 			Observe(duration)
 		telemetry.MetricConsensusErrors.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 		return
 	}
@@ -1316,9 +1564,17 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	isLowParticipants := analysis.isLowParticipants(e.agreementThreshold)
 	isDispute := !hasConsensus && !isLowParticipants
 
+	// A composition dispute means the count-winner failed the minAgreement
+	// quota — label it distinctly so operators can alert on it and measure
+	// how often composition (not vote count) rejected a winner.
+	isCompositionDispute := result.Error != nil &&
+		common.HasErrorCode(result.Error, common.ErrCodeConsensusCompositionDispute)
+
 	outcome := "success"
 	if result.Error != nil {
-		if hasConsensus {
+		if isCompositionDispute {
+			outcome = "dispute_composition"
+		} else if hasConsensus {
 			outcome = "consensus_on_error"
 		} else if isDispute {
 			outcome = "dispute"
@@ -1342,18 +1598,25 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	)
 
 	duration := time.Since(startTime).Seconds()
-	telemetry.MetricConsensusTotal.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).Inc()
-	telemetry.MetricConsensusDuration.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).Observe(duration)
+	telemetry.MetricConsensusTotal.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).Inc()
+	telemetry.MetricConsensusDuration.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).Observe(duration)
 	// Record agreement count histogram when available
 	if best != nil && best.Count > 0 {
 		telemetry.MetricConsensusAgreementCount.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr, labels.userId, labels.agentName).
 			Observe(float64(best.Count))
 	}
-	// Record categorized error counters for failure modes
-	if result.Error != nil {
+	// Record categorized error counters for failure modes, but only for
+	// alert-worthy severities (warning/critical). Deterministic client/execution
+	// errors (severity info) are the caller's failure that upstreams merely
+	// agreed on (e.g. nonce-too-low on eth_sendRawTransaction broadcast), not a
+	// consensus failure — keep them out of the error counter.
+	severity := common.ClassifySeverity(result.Error)
+	if result.Error != nil && (severity == common.SeverityWarning || severity == common.SeverityCritical) {
 		errLabel := "generic_error"
-		if hasConsensus {
+		if isCompositionDispute {
+			errLabel = "dispute_composition"
+		} else if hasConsensus {
 			errLabel = "consensus_on_error"
 		} else if isDispute {
 			errLabel = "dispute"
@@ -1361,7 +1624,7 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 			errLabel = "low_participants"
 		}
 		telemetry.MetricConsensusErrors.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, errLabel, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, errLabel, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 	}
 }

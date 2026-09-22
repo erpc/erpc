@@ -18,8 +18,9 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-// TipHW advanced via WS must not fail-open to a stale HTTP "latest" when tip
-// re-fetch cannot reach TipHW. Prefer an error over demoting MultiNode FOOS.
+// A tip advanced via WS must not fail-open to a stale HTTP "latest" when the
+// tip re-fetch cannot reach it. Prefer an error over a regressing tip that a
+// strict client would treat as out of sync.
 func TestHttpServer_GetBlockByNumberLatest_RefusesStaleWhenTipRefetchMisses(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()

@@ -29,7 +29,10 @@ export type {
   LatencyDeviationOptions,
   ByFinalityHandlers,
   WhereFilter,
+  PolicyEvalArrayCondition,
+  IncludeIfTarget,
   EvmNetworkConfigForDefaults,
+  SvmNetworkConfigForDefaults,
 } from "./types";
 export {
   // Data finality const exports
@@ -59,8 +62,10 @@ export {
   EvmSyncingStateNotSyncing,
   // Architecture export
   ArchitectureEvm,
+  ArchitectureSvm,
   // Upstream types const exprots
   UpstreamTypeEvm,
+  UpstreamTypeSvm,
   // Auth types
   AuthTypeSecret,
   AuthTypeJwt,
@@ -83,6 +88,9 @@ export {
   RateLimitPeriodWeek,
   RateLimitPeriodMonth,
   RateLimitPeriodYear,
+  // Rate limiter count modes
+  RateLimitCountModeRequest,
+  RateLimitCountModeCredit,
 } from "./generated";
 // Short-name re-exports for selection-policy evalScope / stickyPrimary
 // scope (CAPITAL_SNAKE_CASE matching the JS ambient globals installed
@@ -108,6 +116,7 @@ export type {
   UpstreamConfig,
   EvmUpstreamConfig,
   EvmQueryShimConfig,
+  SvmUpstreamConfig,
   UpstreamIntegrityConfig,
   UpstreamIntegrityEthGetBlockReceiptsConfig,
   RateLimitAutoTuneConfig,
@@ -123,6 +132,7 @@ export type {
   NetworkConfig,
   EvmNetworkConfig,
   EvmIntegrityConfig,
+  SvmNetworkConfig,
   SelectionPolicyConfig,
   EvalScope,
   DirectiveDefaultsConfig,

@@ -134,9 +134,9 @@ func TestAdaptiveDuration_UnmarshalJSON(t *testing.T) {
 // fakeQuantile is a test stub for QuantileTracker.
 type fakeQuantile struct{ val time.Duration }
 
-func (f *fakeQuantile) Add(_ float64)                        {}
-func (f *fakeQuantile) GetQuantile(_ float64) time.Duration  { return f.val }
-func (f *fakeQuantile) Reset()                               {}
+func (f *fakeQuantile) Add(_ float64)                       {}
+func (f *fakeQuantile) GetQuantile(_ float64) time.Duration { return f.val }
+func (f *fakeQuantile) Reset()                              {}
 
 func TestAdaptiveDuration_Resolve(t *testing.T) {
 	t.Parallel()

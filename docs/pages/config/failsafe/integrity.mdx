@@ -1,327 +1,661 @@
 ---
-title: Integrity & Empty Data
-description: Integrity directives enforce block tracking, response validation, and empty/missing-data handling. Configure via directiveDefaults on networks or per-request headers.
+title: Integrity checks
+description: eRPC silently discards stale or structurally broken upstream responses and retries on another provider — callers always get the correct answer.
 ---
 
-import { Callout } from "nextra/components";
 import {
-	ConfigTabs,
-	ConfigCode,
 	AISection,
+	ConfigTabs,
 	LLMsTxtLink,
+	PromptExample,
+	SourceLink,
 } from "../../../components";
-
-# Integrity & Empty Data
 
 <LLMsTxtLink />
 
-RPC nodes may return stale, empty, or structurally invalid data — especially near the tip of the chain. eRPC's integrity layer enforces block tracking, validates response structure, and handles empty or unavailable results by retrying across upstreams automatically. All controls live in `directiveDefaults` on the network (or `networkDefaults`) and in `failsafe[].retry` for empty-result tuning.
+# Integrity checks
 
-<Callout type="tip">
-Combine with [retry](/config/failsafe/retry) and [consensus](/config/failsafe/consensus) policies for automatic failover when integrity checks fail.
-</Callout>
+Upstream providers occasionally return stale block numbers, null blocks, logs outside
+their available range, or structurally broken receipts. eRPC catches all of it
+silently — bad responses are discarded and retried against a different upstream before
+the caller ever sees them.
 
-**You can configure:**
+eRPC has **two independent layers** of integrity, configured separately:
 
-- **Block tracking** — `enforceHighestBlock`, `enforceGetLogsBlockRange`, `enforceNonNullTaggedBlocks`
-- **Transaction and header validation** — `validateTransactionsRoot`, `validateTransactionFields`, `validateTransactionBlockInfo`, `validateHeaderFieldLengths`
-- **Log and receipt validation** — `validateLogFields`, `validateLogsBloomEmptiness`, `validateLogsBloomMatch`, `enforceLogIndexStrictIncrements`, `validateTxHashUniqueness`, `validateTransactionIndex`
-- **Receipt cross-checks** — `validateReceiptTransactionMatch`, `validateContractCreation`, `receiptsCountExact`, `receiptsCountAtLeast`, `validationExpectedBlockHash`, `validationExpectedBlockNumber`
-- **Empty/missing result handling** — `retry.emptyResultAccept`, `emptyResultConfidence`, `emptyResultMaxAttempts`, `emptyResultDelay`, `blockUnavailableDelay`
-- **Per-network empty-as-error promotion** — `evm.markEmptyAsErrorMethods`
+1. **Block-tip & availability enforcement** — always-on, configured under
+   `networks[].directiveDefaults`. Keeps `eth_blockNumber`/`eth_getBlockByNumber` from
+   going backward, pre-screens `eth_getLogs` ranges, and turns null tagged-block
+   responses into retries.
+2. **Data-integrity validation** — the `integrity:` module: an **opt-in** catalog of
+   structural and cryptographic checks (schema, bloom, sender recovery, block-hash and
+   root recompute, cross-block continuity, authoritative corroboration). **Off by
+   default** — deploy with no `integrity:` block and nothing runs.
 
-## Minimum useful config
+## Quick taste
 
-Enable the three most common block-tracking directives and configure empty-result retry behavior:
+Turn on the intrinsic data-integrity checks (cheap, self-contained, no extra upstream calls):
 
 <ConfigTabs
-	path="projects > networks[] > directiveDefaults"
-	focus="6-12"
+	path="projects[].networks[]"
+	focusYaml="6-7"
+	focusTs="6-7"
 	yaml={`projects:
   - id: main
     networks:
       - architecture: evm
-        evm:
-          chainId: 1
-        directiveDefaults:
-          enforceHighestBlock: true          # serve the freshest latest/finalized across all upstreams
-          enforceGetLogsBlockRange: true     # skip upstreams that don't have the requested range
-          enforceNonNullTaggedBlocks: true   # treat null for tagged blocks as an error
-          retryEmpty: true                   # retry empty responses on other upstreams`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    networks: [{
-      architecture: "evm",
-      evm: { chainId: 1 },
-      directiveDefaults: {
-        enforceHighestBlock: true,
-        enforceGetLogsBlockRange: true,
-        enforceNonNullTaggedBlocks: true,
-        retryEmpty: true,
-      },
-    }],
+        evm: { chainId: 1 }
+        integrity:
+          level: intrinsic   # off | intrinsic | corroborated | authoritative`}
+	ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    integrity: {
+      level: "intrinsic", // off | intrinsic | corroborated | authoritative
+    },
   }],
-});`}
+}]`}
 />
 
-## Response validation for indexers
+## Agent reference
 
-Validation directives are disabled by default (they add JSON-parsing overhead). Enable them for high-integrity workloads like indexing, where structurally corrupt responses must be rejected and retried:
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-<ConfigTabs
-	path="projects > networks[] > directiveDefaults"
-	focus="6-19"
-	yaml={`projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-        directiveDefaults:
-          validateLogsBloomEmptiness: true     # logs exist iff bloom is non-zero
-          validateLogsBloomMatch: true         # recompute bloom from logs and verify
-          enforceLogIndexStrictIncrements: true
-          validateTxHashUniqueness: true
-          validateTransactionIndex: true
-        # Recommended for indexers: hedge + consensus + retry
-        # Invalid responses are rejected, valid ones are compared, retries if all fail
-        failsafe:
-          - matchMethod: eth_getBlockReceipts
-            hedge:
-              maxCount: 3
-              delay: 100ms
-            consensus:
-              maxParticipants: 3
-              agreementThreshold: 2
-            retry:
-              maxAttempts: 5`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    networks: [{
-      architecture: "evm",
-      evm: { chainId: 1 },
-      directiveDefaults: {
-        validateLogsBloomEmptiness: true,
-        validateLogsBloomMatch: true,
-        enforceLogIndexStrictIncrements: true,
-        validateTxHashUniqueness: true,
-        validateTransactionIndex: true,
-      },
-      failsafe: [{
-        matchMethod: "eth_getBlockReceipts",
-        hedge: { maxCount: 3, delay: "100ms" },
-        consensus: { maxParticipants: 3, agreementThreshold: 2 },
-        retry: { maxAttempts: 5 },
-      }],
-    }],
-  }],
-});`}
+<PromptExample
+	n={1}
+	title="harden an indexer pipeline against bad upstream data"
+	defaultOpen
+	prompt={`I'm running an eRPC-fronted indexer that backfills historical blocks. Turn on the
+data-integrity module at the strongest free tier (level: intrinsic) so structurally
+broken or cryptographically-inconsistent upstream responses are silently retried rather
+than written to the database. Keep it scoped to the right networks. Read the full
+reference first: https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 />
 
-## Empty-result retry tuning (chain-specific)
-
-This example tunes empty-result handling for Polygon (2.3 s blocks). `blockUnavailableDelay` and `emptyResultDelay` only fire when relevant — for finalized blocks the delay is skipped automatically, so one retry policy works across all finalities.
-
-<ConfigTabs
-	path="projects > networks[] > failsafe[]"
-	focus="6-25"
-	yaml={`projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 137
-        directiveDefaults:
-          retryEmpty: true
-        failsafe:
-          # Unfinalized logs/receipts: consensus guards against reorg splits
-          - matchMethod: eth_getLogs|eth_getBlockReceipts
-            matchFinality: [unfinalized, unknown]
-            retry: &retry-polygon
-              maxAttempts: 6
-              delay: 0ms
-              blockUnavailableDelay: 1s
-              emptyResultDelay: 500ms
-              emptyResultMaxAttempts: 3
-              emptyResultConfidence: blockHead
-              emptyResultAccept: [eth_getLogs]
-            consensus:
-              maxParticipants: 3
-              agreementThreshold: 2
-          # All other logs/receipts
-          - matchMethod: eth_getLogs|eth_getBlockReceipts
-            retry: *retry-polygon
-          # eth_call: empty is a valid contract return
-          - matchMethod: eth_call
-            retry:
-              <<: *retry-polygon
-              emptyResultAccept: [eth_call]
-          # Everything else
-          - matchMethod: '*'
-            retry:
-              <<: *retry-polygon
-              emptyResultMaxAttempts: 2`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-const retryPolygon = {
-  maxAttempts: 6,
-  delay: "0ms",
-  blockUnavailableDelay: "1s",
-  emptyResultDelay: "500ms",
-  emptyResultMaxAttempts: 3,
-  emptyResultConfidence: "blockHead" as const,
-  emptyResultAccept: ["eth_getLogs"],
-};
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    networks: [{
-      architecture: "evm",
-      evm: { chainId: 137 },
-      directiveDefaults: { retryEmpty: true },
-      failsafe: [
-        {
-          matchMethod: "eth_getLogs|eth_getBlockReceipts",
-          matchFinality: ["unfinalized", "unknown"],
-          retry: { ...retryPolygon },
-          consensus: { maxParticipants: 3, agreementThreshold: 2 },
-        },
-        {
-          matchMethod: "eth_getLogs|eth_getBlockReceipts",
-          retry: { ...retryPolygon },
-        },
-        {
-          matchMethod: "eth_call",
-          retry: { ...retryPolygon, emptyResultAccept: ["eth_call"] },
-        },
-        {
-          matchMethod: "*",
-          retry: { ...retryPolygon, emptyResultMaxAttempts: 2 },
-        },
-      ],
-    }],
-  }],
-});`}
+<PromptExample
+	n={2}
+	title="disable checks that break a non-standard chain"
+	prompt={`My eRPC setup serves ZKSync Era (chainId 324). The default enforceNonNullTaggedBlocks
+check causes infinite retries because ZKSync legitimately returns null for some tagged
+blocks. Disable exactly that check, and make sure the data-integrity module is not
+enabled for this network (its block-hash/root recompute would reject ZKSync's
+non-standard encoding). Reference: https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 />
 
-<AISection title="Copy for your AI assistant — full integrity & empty-data reference">
+<PromptExample
+	n={3}
+	title="strongest guarantees on a high-value network"
+	prompt={`I want the strongest data-integrity guarantees on my mainnet network, including
+force-fetching the canonical block to corroborate single receipts. Set integrity level
+to authoritative with a sensible budget, and explain the per-finality invalidBehavior
+(hardReject on finalized, recordOnly on unfinalized) and autoCorrectWhenPossible. Reference:
+https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
+/>
 
-### Block tracking directives (`directiveDefaults`)
+<PromptExample
+	n={4}
+	title="let callers pick an integrity profile per-request"
+	prompt={`I want to define a couple of named integrity profiles (e.g. "strict", "lenient")
+and let specific callers select one per request via the X-ERPC-Integrity header, without
+letting them set arbitrary levels. Show me the profiles + headerMode config. Reference:
+https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
+/>
 
-| Directive | Default | Notes |
-|---|---|---|
-| `enforceHighestBlock` | `true` | Track the highest block seen across all upstreams. For `eth_blockNumber`, replaces stale values with the known highest. For `eth_getBlockByNumber("latest"\|"finalized")`, retries on other upstreams when the response is behind the known tip. Metrics: `erpc_upstream_stale_latest_block_total`, `erpc_upstream_stale_finalized_block_total`. |
-| `enforceGetLogsBlockRange` | `true` | Before sending `eth_getLogs`, `trace_filter`, or `arbtrace_filter`, verify the upstream has the requested block range. Skips upstreams whose `toBlock` exceeds their latest, or whose `fromBlock` is below their available window (`maxAvailableRecentBlocks`). Forces a fresh poll if the upstream's latest is stale before deciding. Metrics: `erpc_upstream_evm_get_logs_stale_upper_bound_total`, `erpc_upstream_evm_get_logs_stale_lower_bound_total`. |
-| `enforceNonNullTaggedBlocks` | `true` | Convert `null` responses to errors for `eth_getBlockByNumber` when called with `"latest"`, `"pending"`, `"safe"`, `"finalized"`, or `"earliest"`. Numeric block requests are always errors when null regardless of this setting. Set `false` for chains that legitimately return null for some tags (e.g. zkSync). |
+<AISection title="Integrity checks — full agent reference">
 
-### Transaction and header validation directives
+### How it works
 
-All disabled by default. Enable for high-integrity use-cases where the overhead of JSON parsing is acceptable.
+eRPC's integrity is two separate planes — keep them distinct when configuring:
 
-| Directive | Header | Notes |
-|---|---|---|
-| `validateTransactionsRoot` | `X-ERPC-Validate-Transactions-Root` | Recompute the transactions root from the block's transaction list and verify it matches the header. Catches truncated or reordered tx lists. |
-| `validateTransactionFields` | `X-ERPC-Validate-Transaction-Fields` | Validate field formats (hex lengths, required keys) for each transaction in a block. Rejects responses with malformed fields. |
-| `validateTransactionBlockInfo` | `X-ERPC-Validate-Transaction-Block-Info` | Verify that each transaction's embedded `blockHash` and `blockNumber` match the containing block. Catches upstreams returning cross-contaminated responses. |
-| `validateHeaderFieldLengths` | `X-ERPC-Validate-Header-Field-Lengths` | Check byte lengths of block header fields (hash, parentHash, etc.). Rejects headers with truncated or padded values. |
+- **Block-tip & availability enforcement** lives on `RequestDirectives` (populated from
+  `directiveDefaults` + `X-ERPC-Enforce-*` headers) and runs in method-specific
+  hooks. It is **on by default**.
+- **Data-integrity validation** is the `integrity:` config block (project + network). It
+  compiles to a set of checks the EVM post-forward hook runs through a single engine. It
+  is **opt-in** — with no config, the engine runs nothing.
 
-### Log and receipt validation directives
+Both surfaces produce the same failure mode: `ErrEndpointContentValidation` — retryable
+at network scope (try another upstream), not retryable at the same upstream, feeding the
+`validation` exhaustion bucket. On the wire, HTTP 200 with a JSON-RPC error body
+(`code: -32603`). <SourceLink file="common/errors.go" lines="2719-2747" />
 
-| Directive | Header | Notes |
-|---|---|---|
-| `validateLogFields` | `X-ERPC-Validate-Log-Fields` | Validate log address and topic lengths. Rejects logs with malformed addresses (not 20 bytes) or topics (not 32 bytes). |
-| `validateLogsBloomEmptiness` | `X-ERPC-Validate-Logs-Bloom-Emptiness` | Consistency check: if logs are present the bloom must be non-zero; if logs are absent the bloom must be zero. Catches upstreams that zero out the bloom without zeroing the logs. |
-| `validateLogsBloomMatch` | `X-ERPC-Validate-Logs-Bloom-Match` | Recompute the bloom filter from the actual logs and compare to the header. Most expensive validation — only enable when you need to guarantee bloom correctness (e.g. indexers that rely on bloom-based filtering). |
-| `enforceLogIndexStrictIncrements` | `X-ERPC-Enforce-Log-Index-Strict-Increments` | Log indices must increment by exactly 1 across all receipts in a block response. Catches upstreams that return receipts with gaps or duplicated log indices. |
-| `validateTxHashUniqueness` | `X-ERPC-Validate-Tx-Hash-Uniqueness` | No transaction hash may appear more than once in a block's receipt set. Catches duplicate-receipt bugs in some upstreams. |
-| `validateTransactionIndex` | `X-ERPC-Validate-Transaction-Index` | Receipt transaction indices must be sequential starting from `0`. Rejects responses with out-of-order or missing indices. |
+---
 
-### Receipt cross-check directives
+## Layer 1 — Block-tip & availability enforcement
 
-| Directive | Header | Notes |
-|---|---|---|
-| `validateReceiptTransactionMatch` | `X-ERPC-Validate-Receipt-Transaction-Match` | Cross-validate that each receipt's fields match the corresponding transaction (e.g. `to`, `from`, `contractAddress`). Requires the ground-truth transactions to be available (library/indexer mode). |
-| `validateContractCreation` | `X-ERPC-Validate-Contract-Creation` | Verify that `contractAddress` is populated when `to` is null (contract creation tx) and absent otherwise. |
-| `receiptsCountExact` | `X-ERPC-Receipts-Count-Exact` | Integer. The `eth_getBlockReceipts` response must contain exactly this many receipts. Useful when the caller knows the transaction count from the block header. |
-| `receiptsCountAtLeast` | `X-ERPC-Receipts-Count-At-Least` | Integer. The response must contain at least this many receipts. Softer than `receiptsCountExact` — allows appended receipts (e.g. from internal transactions on some chains). |
-| `validationExpectedBlockHash` | `X-ERPC-Validation-Expected-Block-Hash` | Hex string. All receipts in the response must carry this block hash. Rejects responses that mix receipts from different blocks. |
-| `validationExpectedBlockNumber` | `X-ERPC-Validation-Expected-Block-Number` | Hex or decimal. All receipts must carry this block number. Same purpose as `validationExpectedBlockHash` but keyed by number. |
+Configured under `networks[].directiveDefaults`. On by default; toggle per-request via
+`X-ERPC-Enforce-*` headers / `?enforce-*=` query params.
 
-### Empty/missing data handling — `failsafe[].retry` fields
+**Highest-block enforcement — `eth_blockNumber`.** Reads `dirs.EnforceHighestBlock`. If
+the response block is below the network-known highest, eRPC replaces the response with a
+synthetic JSON-RPC result containing the highest hex block number — no re-request is
+made. Applies to EVERY response source, including cache hits, so a stale value planted in
+a shared cache can never be served below the tip this instance knows. The tip is resolved
+request-aware: a `use-upstream` selector scopes it to the targeted subset. <SourceLink file="architecture/evm/eth_blockNumber.go" lines="31-123" />
 
-| Field | Default | Notes |
-|---|---|---|
-| `emptyResultAccept` | `["eth_getLogs", "eth_call"]` | Methods where an empty response is **valid data** — never retry on empty for these. `eth_getLogs` returns `[]` for blocks with no matching logs. `eth_call` returns `0x` for calls that return nothing. |
-| `emptyResultConfidence` | `blockHead` | When to trust an empty result: `blockHead` (block ≤ upstream's latest) or `finalizedBlock` (block ≤ finalized). `finalizedBlock` is more conservative: empties below the finalized horizon are trusted; empties in unfinalized range are retried. |
-| `emptyResultMaxAttempts` | = `maxAttempts` | Separate attempt cap for empty-result retries. Set lower than `maxAttempts` when you want aggressive retries for errors but lighter retries for empties. |
-| `emptyResultDelay` | = `delay` | Fixed delay between empty-result retries. Overrides the normal `delay` for this case. Set to roughly one block time divided by your `emptyResultMaxAttempts`. |
-| `blockUnavailableDelay` | dynamic | Fallback delay when ALL upstreams lack the requested block. When the network's dynamic block-time estimate is available, the delay is derived automatically as `blockTime × blockUnavailableDelayMultiplier` (default `0.8`). This static value is only used during warmup (first few seconds). Tune the multiplier via `evm.blockUnavailableDelayMultiplier` on the network. |
+**Highest-block enforcement — `eth_getBlockByNumber[latest/finalized]`.** Reads
+`dirs.EnforceHighestBlock`. If the returned block is behind the network-known highest,
+eRPC re-requests that block against a different upstream (`SkipCacheRead=true`,
+`UseUpstream=!<id>`); `pickHighestBlock` keeps the higher of the two — protecting against
+a corrupted state pointer. Cache responses skip the re-fetch (the read-side realtime age
+guard handles staleness instead). <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="111-283" />
 
-**Choosing `emptyResultDelay` by chain:**
+**Stale-tip cache write guard.** Under `enforceHighestBlock`, a realtime-finality
+response already behind the network-wide tip is never written to cache (the classic
+symptom it prevents: `eth_blockNumber` sawtoothing backwards on `x-erpc-cache: HIT` while
+one upstream lags). Fails open when pollers don't yet know a tip. <SourceLink file="architecture/evm/json_rpc_cache.go" lines="1075-1098" />
 
-| Chain | Block time | `emptyResultDelay` | `emptyResultMaxAttempts` |
+**Block-range availability.** Before forwarding `eth_getLogs`/`trace_filter`/`arbtrace_filter`
+to an upstream, `CheckBlockRangeAvailability` verifies `fromBlock`/`toBlock` are within
+the upstream's range; otherwise `ErrUpstreamBlockUnavailable` (retryable) routes to a
+different upstream. <SourceLink file="architecture/evm/block_range.go" />
+
+**Future-block empty-result guard.** `emptyResultBeyondConfidence` returns an empty
+result truthfully (rather than retrying) when the block is beyond the confidence head
+(latest or finalized, per `emptyResultConfidence`) — preventing retry storms on
+not-yet-produced blocks. Fail-open on unknown head or block tags. <SourceLink file="architecture/evm/common.go" lines="55-89" />
+
+### Layer 1 config schema — `networks[].directiveDefaults`
+
+| Field | Type | Default | Behavior |
 |---|---|---|---|
-| Ethereum | 12 s | `2000ms` | 3 |
-| Polygon | 2.3 s | `500ms` | 5-6 |
-| Base / Optimism | 2 s | `500ms` | 4-5 |
-| Arbitrum | 250 ms | `200ms` | 5 |
-| Monad | 500 ms | `200ms` | 3 |
+| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber` (synthetic upgrade, incl. cache hits) and `eth_getBlockByNumber[latest/finalized]` (re-fetch). Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
+| `enforceGetLogsBlockRange` | `*bool` | `true` | Pre-screens `eth_getLogs`/`trace_filter` ranges against upstream availability. The actual hooks read `evm.integrity.enforceGetLogsBlockRange` directly. Header: `X-ERPC-Enforce-GetLogs-Range`. <SourceLink file="common/defaults.go" lines="1461-1463" /> |
+| `enforceNonNullTaggedBlocks` | `*bool` | `true` | Converts null tagged `eth_getBlockByNumber` responses into `ErrEndpointMissingData`. Disable for chains that legitimately return null for some tags (e.g. ZKSync Era). Header: `X-ERPC-Enforce-Non-Null-Tagged-Blocks`. <SourceLink file="common/defaults.go" lines="1464-1466" /> |
 
-### `directiveDefaults.retryEmpty`
+`networks[].evm.emptyResultConfidence` (`AvailabilityConfidence`, default `"blockHead"`):
+`"blockHead"` retries empty results for blocks at/below the latest tip; `"finalizedBlock"`
+retries only at/below the finalized tip — use for archive workloads that legitimately
+return empty for unfinalized blocks. <SourceLink file="common/defaults.go" lines="2078" />
 
-| Field | Default | Notes |
+The deprecated `networks[].evm.integrity` (`EvmIntegrityConfig`:
+`enforceHighestBlock`/`enforceGetLogsBlockRange`/`enforceNonNullTaggedBlocks`) is
+auto-migrated into `directiveDefaults` during `SetDefaults` (explicit old values win;
+no warning). <SourceLink file="common/defaults.go" lines="1952-1964" />
+
+---
+
+## Layer 2 — Data-integrity validation (the `integrity:` module)
+
+**Opt-in and off by default.** With no `integrity:` block, the engine runs **zero**
+checks — safe to deploy this version and enable nothing. The block lives at the project
+level (applies to all networks) and the network level (overrides); the network block is
+merged over the project block at startup.
+
+### The front door: `level`
+
+One knob picks a preset over the check catalog. Each level is a superset of the previous:
+
+| Level | What runs | Upstream cost |
 |---|---|---|
-| `retryEmpty` | `true` | When `true`, eRPC treats empty responses (null, `[]`, `0x`) from non-`emptyResultAccept` methods as retryable — the request is replayed on other upstreams. When `false`, the first empty response is returned as-is. Disable only if your application explicitly handles empty responses itself. |
+| `off` | nothing | none |
+| `intrinsic` | self-consistency + cryptographic recompute on the single response | none |
+| `corroborated` | the above + cross-block continuity vs already-observed blocks | none (passive memory) |
+| `authoritative` | the above + force-fetch the canonical block to corroborate | bounded, budgeted |
 
-### `evm.markEmptyAsErrorMethods` (per-network)
+<ConfigTabs
+	path="projects[].networks[].integrity"
+	yaml={`integrity:
+  level: authoritative              # off | intrinsic | corroborated | authoritative
 
-Promote empty responses to hard errors (not just retryable empties) for specific methods. Retried AND counted as upstream errors (affects scoring and circuit breaker):
+  # Whether a violation hunts for a validated replacement (retry other
+  # upstreams) BEFORE the invalidBehavior verdict applies. Default true.
+  autoCorrectWhenPossible: true
 
-```yaml
-networks:
-  - architecture: evm
-    evm:
-      chainId: 1
-      markEmptyAsErrorMethods:
-        - eth_getTransactionReceipt   # empty means tx missing, not pending on this chain
+  # Per-finality verdict for the reorg-sensitive checks only — what happens
+  # when no valid answer is obtainable. At the tip you can't tell a node bug
+  # from a reorg, so unfinalized mismatches are recorded, not rejected.
+  invalidBehavior:
+    finalized: hardReject           # recordOnly | hardReject | off
+    unfinalized: recordOnly
+
+  # Override individual checks by id (enable / disable / params / onFailure).
+  checks:
+    receiptVsBlock: { enabled: false }          # drop one authoritative check
+    bloomMatch:     { onFailure: recordOnly }    # record instead of reject
+    txHashUniqueness: { params: { strict: "true" } }  # the one check with a param
+
+  # Cost cap on the canonical force-fetches the authoritative tier issues.
+  budget:
+    maxPerSecond: 50
+    maxConcurrent: 8`}
+	ts={`integrity: {
+  level: "authoritative",
+  autoCorrectWhenPossible: true,
+  invalidBehavior: { finalized: "hardReject", unfinalized: "recordOnly" },
+  checks: {
+    receiptVsBlock: { enabled: false },
+    bloomMatch: { onFailure: "recordOnly" },
+    txHashUniqueness: { params: { strict: "true" } },
+  },
+  budget: { maxPerSecond: 50, maxConcurrent: 8 },
+}`}
+/>
+
+### The check catalog
+
+Every check is an independently-toggleable unit, grouped by family. A check only runs for
+the methods it applies to (e.g. receipt checks on `eth_getBlockReceipts`/`eth_getTransactionReceipt`,
+block checks on `eth_getBlockByNumber`/`eth_getBlockByHash`). All cryptographic
+recomputes are **chain-safe**: the known-field set is derived from the reference encoder
+(go-ethereum), so a chain with custom header/receipt fields, a system/deposit tx, or a
+hashes-only response is **skipped, never false-flagged**.
+
+Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **receipts** = `eth_getBlockReceipts`; **receipt** = `eth_getTransactionReceipt`; **logs** = `eth_getLogs`; **txByHash** = `eth_getTransactionByHash`.
+
+| Check id | Level | Methods | What it catches |
+|---|---|---|---|
+| `schemaConformance` | intrinsic | block, receipts | a result that doesn't decode to the expected shape |
+| `indexMagnitude` | intrinsic | receipt, receipts, logs | `logIndex`/`transactionIndex` int32-underflow (the Amoy incident) |
+| `headerFieldShapes` | intrinsic | block | header hash fields ≠ 32 bytes, `logsBloom` ≠ 256 bytes |
+| `logFieldShapes` | intrinsic | receipts, receipt, logs | log address ≠ 20 bytes, topic count > 4, topic ≠ 32 bytes |
+| `bloomEmptiness` | intrinsic | receipts | logs present but zero bloom (or non-zero bloom with no logs) |
+| `sameBlockHash` | intrinsic | receipts | receipts that don't all share one `blockHash` |
+| `txHashUniqueness` | intrinsic | receipts | duplicate `transactionHash` (param `strict: "true"` also rejects empty) |
+| `transactionIndexConsistency` | intrinsic | receipts | `transactionIndex` ≠ array position |
+| `logMetadata` | intrinsic | receipts | a log's block/tx fields ≠ its parent receipt |
+| `logIndexContiguity` | intrinsic | receipts | global `logIndex` not `0,1,2,…N` across all receipts |
+| `transactionsRootConsistency` | intrinsic | block | `transactionsRoot` ↔ tx-count (phantom-tx-aware) |
+| `txFieldUniqueness` | intrinsic | block | duplicate / non-32-byte tx hashes (hydrated blocks) |
+| `txBlockInfo` | intrinsic | block | `tx.blockHash`/`blockNumber`/`transactionIndex` ≠ header |
+| `bloomMatch` | intrinsic | receipts | `logsBloom` ≠ bloom recomputed from the logs |
+| `blockHashRecompute` | intrinsic | block | `keccak(RLP(header))` ≠ the claimed block hash |
+| `transactionsRootRecompute` | intrinsic | block | the transactions' Merkle-Patricia root ≠ header `transactionsRoot` |
+| `senderRecovery` | intrinsic | txByHash | `ecrecover(signature)` ≠ the reported `from` |
+| `blockByHashIdentity` | intrinsic | `eth_getBlockByHash` | the returned block isn't the one whose hash was requested |
+| `blockByNumberIdentity` | intrinsic | `eth_getBlockByNumber` | an explicit height was requested and a different one came back (tags skip) |
+| `txByHashIdentity` | intrinsic | txByHash | the returned transaction isn't the one whose hash was requested |
+| `receiptIdentity` | intrinsic | receipt | the returned receipt isn't for the requested transaction |
+| `getLogsFilterSanity` | intrinsic | `eth_getLogs` | a returned log doesn't match the request's own filter/range |
+| `getLogsCompleteness` ※ | corroborated | `eth_getLogs` | logs missing/extra/altered vs the cached canonical receipts for that block |
+| `txPinConsistency` ※ | corroborated | txByHash | a mined tx's claimed block coordinates ≠ the committed pin |
+| `parentHashLinkage` ※ | corroborated | `eth_getBlockByNumber` | block N's `parentHash` ≠ the hash observed for N-1 |
+| `hashStability` ※ | corroborated | `eth_getBlockByNumber` | a block number's hash changed from what was observed |
+| `receiptVsBlock` ※ | authoritative | receipt | a single receipt ≠ the force-fetched canonical block |
+| `receiptsRootRecompute` | authoritative | receipts | receipt MPT root ≠ the header's `receiptsRoot` (force-fetched by hash) |
+
+※ = **reorg-sensitive** (governed by `invalidBehavior`). All others are deterministic and always reject on violation. Note the division of labour on `eth_getBlockByHash`: `blockByHashIdentity` enforces that you got **the block you asked for**, while the continuity pair (which judges *canonicality*, a question a by-hash lookup never asked) deliberately does not run there — see [Edge cases](#edge-cases--gotchas) #7. Both stateful tiers share one **reorg-aware per-network ChainView** — a bounded `number→hash` pin plus a content-addressed header cache (window `reorgWindow`, default 32). `corroborated` populates it passively from blocks your own traffic already pulled (it **never fetches a block sequence**); `authoritative` additionally force-fetches a missing anchor **once** through the normal network path (cache-backed, recursion-guarded, deduped by the ChainView), capped by `budget`. A changed hash for a number is treated as a reorg: the new fork is adopted and its stale descendants are rolled back, so the pin always reflects one consistent fork — block and receipts can't disagree.
+
+### Per-finality verdict: `invalidBehavior`
+
+Most checks are **deterministic** — a violation is corruption regardless of finality, so
+they always reject. A handful are **reorg-sensitive** (`parentHashLinkage`,
+`hashStability`, `receiptVsBlock`): they compare against another observation, and near the
+tip a disagreement may be a benign reorg rather than a bug. `invalidBehavior` decides
+what to do for those, by the block's finality (read from the upstream state poller):
+
+- `finalized` → default `hardReject` (a finalized block can't reorg; a mismatch is corruption).
+- `unfinalized` → default `recordOnly` (record a metric/log, still serve — it may be a reorg). `off` skips the check (and any force-fetch) on the hot tip entirely.
+
+The verdict is only half the policy. **`autoCorrectWhenPossible`** (default `true`)
+decides whether a violation first hunts for a **validated replacement** — the
+rejection routes the request to another upstream, whose response runs the same
+checks. The two knobs compose:
+
+| `autoCorrectWhenPossible` | verdict | on violation |
+|---|---|---|
+| `true` | `recordOnly` | seek a replacement; serve it if one validates; **exhausted → serve the flagged original** (never a client error; counted in `erpc_integrity_fallback_served_total`) |
+| `true` | `hardReject` | seek a replacement; exhausted → error (correct-or-die) |
+| `false` | `recordOnly` | serve the original immediately + record; no correction attempted |
+| `false` | `hardReject` | fail immediately; no alternates tried |
+
+The vocabulary is exactly `recordOnly | hardReject | off` — anything else
+(including the pre-release `reject`/`soft-flag` words) fails config validation
+loudly rather than aliasing silently.
+
+### Rolling out safely: `observeOnly`
+
+`observeOnly: true` runs every enabled check and reports everything, but **no verdict may
+touch the response** — a violation that would have been rejected is served anyway and
+recorded with the outcome `would_reject`. This is the way to turn integrity on for a
+network the first time: it surfaces bad upstream data *and* the module's own gaps on that
+chain at zero request risk, and
+
+```
+sum(rate(erpc_integrity_check_total{outcome="would_reject"}[5m])) by (network, check, upstream)
 ```
 
-eRPC ships with sensible defaults that cover common point-lookup methods (`eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getTransactionByHash`, traces, etc.). Only add entries when an empty response on that method specifically means the upstream lacks the data rather than "not found."
+is precisely the client-facing cost enforcement would incur — read it before promoting.
 
-`eth_getBlockByHash` and `eth_getTransactionReceipt` are intentionally excluded from defaults: subgraph upstreams commonly return null for `eth_getBlockByHash`, and `eth_getTransactionReceipt` returns null for pending transactions.
+Interpreting what you see, by how the `would_reject`s are spread:
 
-### Per-upstream integrity — `eth_getBlockReceipts` checks
+| spread across the chain's upstreams | meaning |
+| --- | --- |
+| one upstream | that node is serving bad data — enforcement would correct it via failover |
+| **all** upstreams | a **module gap for this chain** (a protocol quirk the check does not model). Enforcing would defeat failover and fail requests. Disable that check for the chain (or add a `chainProfile`) — never enforce through it |
 
-Two per-upstream flags gate which checks run locally on that upstream's responses (in addition to whatever `directiveDefaults` enable network-wide):
+`observeOnly` is **absolute** and deliberately outranks everything else: a per-check
+`onFailure: reject`, `invalidBehavior`, and any check a *future release* adds all cannot
+reject while it is set. That last property is the point — `invalidBehavior: soft-flag`
+cannot give you this, because the ~25 deterministic checks ignore `invalidBehavior` by
+design and always reject.
 
-| Field | Path | Notes |
-|---|---|---|
-| `checkLogIndexStrictIncrements` | `upstreams[].evm` | Upstream-local equivalent of `enforceLogIndexStrictIncrements`. Marks the upstream unhealthy when its receipts fail this check, without requiring the network-wide directive. |
-| `checkLogsBloom` | `upstreams[].evm.integrity.eth_getBlockReceipts` | Upstream-local bloom check for `eth_getBlockReceipts` responses: recomputes the bloom union of all receipt logs and verifies it matches the block header's `logsBloom`. Catches missing logs in the receipts response. Marks the upstream unhealthy on mismatch, without requiring the network-wide directive. |
+It is inherited like the rest of the block, which gives the natural rollout shape — a
+project-wide safety net, promoted one chain at a time:
 
-**`checkLogsBloom` vs `validateLogsBloomMatch` — two different checks at two different layers:**
+```yaml
+projects:
+  - id: main
+    integrity:
+      level: authoritative
+      observeOnly: true          # every network observes by default
+    networks:
+      - architecture: evm
+        evm: { chainId: 8453 }
+        integrity:
+          observeOnly: false     # base graduates to enforcement
+```
 
-- `evm.integrity.eth_getBlockReceipts.checkLogsBloom` (**upstream level**) — checks that the bloom union computed from the receipts' logs equals the block header's `logsBloom`. Fires on `eth_getBlockReceipts` responses only. Catches upstreams that return receipts with missing or truncated log entries.
-- `directiveDefaults.validateLogsBloomMatch` (**network level**) — checks that the addresses and topics in `eth_getLogs` results are consistent with the block headers' bloom filters. Fires on `eth_getLogs` responses. Catches upstreams that drop log entries from a getLogs response without reflecting that in the bloom.
+`off` still means off: `observeOnly` never resurrects a check you disabled, nor its
+force-fetches.
 
-### Common pitfalls
+### Why continuity is by-number only
 
-- **Validation directives are off by default** — they add JSON-parsing overhead on every response. Enable only what you actually need. For most non-indexer use-cases, the block-tracking directives (`enforceHighestBlock`, `enforceGetLogsBlockRange`) are sufficient.
-- **`validateLogsBloomMatch` is the most expensive** — it recomputes the bloom filter from every log in the response. Enable only on `eth_getBlockReceipts` or similar receipt-heavy methods, not network-wide.
-- **`emptyResultAccept` vs `markEmptyAsErrorMethods`** — `emptyResultAccept` says "empty is valid, don't retry." `markEmptyAsErrorMethods` says "empty is an error, retry AND penalize the upstream." They are opposites. Adding a method to both has undefined behavior; pick one.
-- **`emptyResultConfidence: finalizedBlock` is more conservative** — empties on unfinalized blocks are still retried even for methods in `emptyResultAccept`. Use `blockHead` (default) unless you specifically need finalized-only trust.
-- **`blockUnavailableDelay` static value is rarely needed** — the dynamic block-time estimate takes over within the first few seconds. Only set it if your use-case requires a specific floor during the warmup window.
-- **`enforceNonNullTaggedBlocks: false` for zkSync-style chains** — some L2s legitimately return null for certain block tags (e.g. `"pending"` on chains without a mempool). Disable only for those specific networks.
+Continuity answers "**what is the chain at height N**", so it runs on
+`eth_getBlockByNumber` and not on `eth_getBlockByHash`. A by-hash lookup asks for one
+named block: its *canonicality* was never the question — retrieving orphaned-but-real
+blocks by hash is exactly how indexers unwind a reorg. Rejecting there would discard data
+the caller explicitly asked for, and because an orphan hash does not exist on the
+canonical fork, no failover can produce an alternative: the request simply fails.
+
+What a by-hash lookup *does* require is **identity** — that you got the block you named —
+and that is enforced by its own check, `blockByHashIdentity` (intrinsic, deterministic).
+Do not rely on `blockHashRecompute` for this: it proves the returned header hashes to the
+hash it claims, i.e. that the block is real and self-consistent, but a node answering with
+an entirely different valid block satisfies it. Identity is what closes that gap.
+
+Symmetrically, a by-hash response **never moves the number→hash pin** (it only populates
+the content-addressed header cache). If it did, one client fetching an orphan would adopt
+that orphan as canonical at its height and roll back the real fork's descendants, turning
+a private reorg-unwind into mass rejections of everyone else's by-number traffic.
+
+All deterministic checks (hash recompute, roots, field shapes, identity) still apply to
+by-hash responses.
+
+### Per-request selection: profiles & headers
+
+An operator can define named profiles and let callers pick one per request, gated by
+`headerMode`:
+
+- `off` (default) — the `X-ERPC-Integrity` header / `?integrity=` query param is ignored.
+- `profiles` — a request may only select a named profile by word.
+- `full` — a request may also set a bare level word (`intrinsic`/`authoritative`/…).
+
+<ConfigTabs
+	path="projects[].networks[].integrity"
+	yaml={`integrity:
+  level: intrinsic
+  headerMode: profiles
+  profiles:
+    strict:        { level: authoritative }
+    lenient:       { level: off }`}
+	ts={`integrity: {
+  level: "intrinsic",
+  headerMode: "profiles",
+  profiles: {
+    strict: { level: "authoritative" },
+    lenient: { level: "off" },
+  },
+}`}
+/>
+
+```
+X-ERPC-Integrity: strict        # selects the "strict" profile (headerMode: profiles|full)
+```
+
+### Backward compatibility
+
+The deprecated per-check `directiveDefaults` validation flags
+(`validateLogsBloomMatch`, `enforceLogIndexStrictIncrements`, `validateTransactionsRoot`,
+`validateHeaderFieldLengths`, `validateTransactionFields`, `validateTransactionBlockInfo`,
+`validateTxHashUniqueness`, `validateTransactionIndex`, `validateLogFields`,
+`validateLogsBloomEmptiness`) are **translated into `integrity.checks` at config-load
+time** — an explicit `integrity:` block wins per check. This is the only place the old
+flags are read; there is no legacy path at runtime. <SourceLink file="common/defaults.go" lines="2031-2075" />
+
+The removed per-request `X-ERPC-Validate-*` headers, the `validateReceiptTransactionMatch`
+/ `receiptsCount*` / `validationExpectedBlock*` directives, the `GroundTruth*` library
+fields, and the non-functional `upstreams[].integrity` block no longer exist — use the
+`integrity:` config (and `X-ERPC-Integrity` for per-request selection) instead.
+
+### Layer 2 config schema — `integrity`
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `level` | enum | unset → `off` | `off`/`intrinsic`/`corroborated`/`authoritative`. The one field most users set. <SourceLink file="architecture/evm/integrity/levels.go" /> |
+| `checks.<id>` | object | per-level | Override a check by its catalog id: `{ enabled, params, onFailure }`. `enabled:false` removes it; `enabled:true` adds it above the level. <SourceLink file="common/config_integrity.go" /> |
+| `invalidBehavior.finalized` | enum | `reject` | `reject`/`soft-flag`/`off` for reorg-sensitive checks on finalized data. |
+| `invalidBehavior.unfinalized` | enum | `soft-flag` | …on unfinalized data. `off` skips the check (and its force-fetch). |
+| `observeOnly` | bool | `false` | Run every check but never reject: suppressed rejections are served and reported as `would_reject`. **Absolute** — outranks `checks.<id>.onFailure`, `invalidBehavior`, and any check added by a later release. The safe way to enable a new network; see [Rolling out safely](#rolling-out-safely-observeonly). <SourceLink file="architecture/evm/integrity/engine.go" /> |
+| `budget.maxPerSecond` | int | conservative | Token-bucket cap on the authoritative tier's canonical fetches. |
+| `budget.maxConcurrent` | int | small | Concurrency cap on in-flight fetches. |
+| `reorgWindow` | int | `32` | How many blocks back from the tip the per-network ChainView keeps a `number→hash` pin + header and tracks reorgs. Raise for deep-reorg chains (e.g. polygon `256`). Bounds both reorg depth and memory. <SourceLink file="architecture/evm/integrity_chainview.go" /> |
+| `headerMode` | enum | `off` | `off`/`profiles`/`full` — whether/how `X-ERPC-Integrity` may adjust integrity per request. |
+| `profiles.<name>` | object | — | Named settings (`level`/`checks`/`invalidBehavior`/`budget`) a request may select by name. |
+
+### Worked examples — real-world scenarios
+
+**1. Free structural hardening for an indexer (the common starting point).** Catch malformed / cryptographically-inconsistent data with zero extra upstream calls — bad responses fail over to another upstream before they reach your database:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: intrinsic`}
+  ts={`integrity: { level: "intrinsic" }`}
+/>
+
+**2. One default for the whole project, stronger on a high-value network.** A project-wide block applies to every network; a network block overrides it field-by-field:
+
+<ConfigTabs path="projects[]"
+  yaml={`integrity:
+  level: intrinsic           # project-wide default
+networks:
+  - evm: { chainId: 1 }
+    integrity:
+      level: authoritative   # mainnet gets force-fetch corroboration`}
+  ts={`integrity: { level: "intrinsic" },
+networks: [{ evm: { chainId: 1 }, integrity: { level: "authoritative" } }]`}
+/>
+
+**3. Strongest guarantees, cost-bounded.** `authoritative` force-fetches the canonical block to corroborate single receipts and recompute the receipts root. Cap the fetch rate, and skip corroboration on the volatile tip (where a mismatch is usually a reorg, not corruption):
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: authoritative
+  invalidBehavior:
+    finalized: reject
+    unfinalized: off       # don't force-fetch / corroborate the hot tip
+  budget:
+    maxPerSecond: 50
+    maxConcurrent: 8`}
+  ts={`integrity: {
+  level: "authoritative",
+  invalidBehavior: { finalized: "reject", unfinalized: "off" },
+  budget: { maxPerSecond: 50, maxConcurrent: 8 },
+}`}
+/>
+
+**4. Cross-block / cache correctness.** `corroborated` adds parent-hash linkage and hash-stability over blocks you've already seen — catching a node serving a block that doesn't link to the chain you were served before. Still no extra upstream calls:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: corroborated`}
+  ts={`integrity: { level: "corroborated" }`}
+/>
+
+**5. Safe rollout — observe before you enforce.** Set everything to `soft-flag` first: violations are recorded (a `WARN` log + the `validation` metrics bucket) but the response is still served, so you can measure your upstreams' data quality without failing traffic. Once it's quiet, flip `finalized` back to `reject`:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: intrinsic
+  invalidBehavior:
+    finalized: soft-flag     # record, don't reject — flip to 'reject' after rollout
+    unfinalized: soft-flag`}
+  ts={`integrity: {
+  level: "intrinsic",
+  invalidBehavior: { finalized: "soft-flag", unfinalized: "soft-flag" },
+}`}
+/>
+
+`invalidBehavior` only governs the reorg-sensitive checks (the ※ rows). To soft-flag a *deterministic* check during rollout, give it `onFailure: soft-flag` — e.g. `checks: { bloomMatch: { onFailure: soft-flag } }`.
+
+**6. Non-standard chain — leave it off.** ZK-rollups and chains with custom encodings: the recompute checks already skip what they can't model, but the simplest answer is to not enable the module for that network (it's off by default — this is only needed if you turned it on project-wide):
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`networks:
+  - evm: { chainId: 324 }     # zkSync Era
+    integrity:
+      level: off`}
+  ts={`networks: [{ evm: { chainId: 324 }, integrity: { level: "off" } }]`}
+/>
+
+**7. Per-tenant strictness via profiles + header.** Define named presets and let callers pick one per request (without letting them set arbitrary levels):
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: intrinsic           # the default for callers who send no header
+  headerMode: profiles       # off | profiles | full
+  profiles:
+    strict:  { level: authoritative }
+    relaxed: { level: off }`}
+  ts={`integrity: {
+  level: "intrinsic",
+  headerMode: "profiles",
+  profiles: { strict: { level: "authoritative" }, relaxed: { level: "off" } },
+}`}
+/>
+
+```
+X-ERPC-Integrity: strict       # or  ?integrity=strict
+```
+
+**8. Add or drop a single check around a level.** Levels are presets — fine-tune with `checks`:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: intrinsic
+  checks:
+    receiptVsBlock: { enabled: true }    # pull one authoritative check up to intrinsic
+    bloomMatch:     { enabled: false }   # …and drop one you don't want`}
+  ts={`integrity: {
+  level: "intrinsic",
+  checks: { receiptVsBlock: { enabled: true }, bloomMatch: { enabled: false } },
+}`}
+/>
+
+Enabling an authoritative check (like `receiptVsBlock`) at a lower level turns on its force-fetch — set a `budget` too.
+
+**9. Migrating from the old `validate*` flags.** If your config still sets the deprecated `directiveDefaults.validateLogsBloomMatch: true` (etc.), they're translated into `integrity.checks` automatically at startup — nothing breaks. To make it explicit (recommended), move them into an `integrity` block:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`# old (still works, auto-translated at startup):
+#   directiveDefaults: { validateLogsBloomMatch: true, enforceLogIndexStrictIncrements: true }
+# new (explicit):
+integrity:
+  checks:
+    bloomMatch:         { enabled: true }
+    logIndexContiguity: { enabled: true }`}
+  ts={`integrity: {
+  checks: { bloomMatch: { enabled: true }, logIndexContiguity: { enabled: true } },
+}`}
+/>
+
+### Request/response behavior
+
+- Violations produce `ErrEndpointContentValidation` — HTTP 200 with JSON-RPC error body `{"code": -32603}`. Retryable at network scope (try another upstream), not at the same upstream. <SourceLink file="common/errors.go" lines="2719-2747" />
+- Because content-validation errors are excluded from consensus's `preferLargerResponses` logic, a corrupt-but-larger response can no longer dispute an honest agreeing majority. <SourceLink file="consensus/rules.go" />
+- A `soft-flag` verdict serves the response and emits a recorded-mismatch log; only `reject` fails the response over to another upstream.
+
+### Best practices
+
+- **Start at `level: intrinsic`.** It's free (no extra upstream calls) and catches malformed/self-inconsistent data plus the cryptographic recompute checks. Most teams never need more.
+- **Roll out with `soft-flag`, then flip to `reject`.** Run `invalidBehavior: { finalized: soft-flag, unfinalized: soft-flag }` (and `onFailure: soft-flag` on any deterministic checks you're unsure about) first, watch the metrics for a few days, then enforce. This avoids failing real traffic on day one if an upstream has a quirk you didn't anticipate.
+- **Use `authoritative` only where data quality warrants it**, and always set a `budget` — it force-fetches the canonical block (one fetch per *cold* block, cache-amortized). Pair it with `invalidBehavior.unfinalized: off` to skip the force-fetch on the hot tip.
+- **Leave `invalidBehavior.unfinalized` at `soft-flag` (or `off`)** — rejecting unfinalized mismatches would reject benign reorgs. Only finalized data is safe to hard-reject on a cross-observation mismatch.
+- **It needs ≥2 upstreams to be useful.** A `reject` is a *failover* signal (`ErrEndpointContentValidation` is retryable toward the network) — with a single upstream it just surfaces an error. Pair integrity with a [retry](/config/failsafe/retry) policy.
+- **It's defense-in-depth with [consensus](/config/failsafe/consensus).** Consensus catches a *minority* bad upstream; integrity catches the case consensus can't see — when *every* serving upstream returns the same wrong value (shared client/indexer bug). High-value paths use both.
+- **Skip the module on non-standard chains** (ZK-rollups with custom encodings). The recompute checks are chain-safe (they skip what they can't model), but if a chain's normal data looks "custom", just leave `integrity` off for it and keep Layer-1 enforcement.
+- **Profiles, not free-form, for untrusted callers** — `headerMode: profiles` lets callers pick a named preset without setting arbitrary levels; `headerMode: off` (default) ignores the header entirely.
+- **Watch the rollout, then the steady state.** A persistent stream of recorded-mismatch `WARN` logs / `validation`-bucket metrics for one upstream means that provider's data quality is poor — down-weight or remove it.
+
+### Edge cases & gotchas
+
+1. **Opt-in means opt-in.** No `integrity:` block ⇒ zero data-integrity checks (Layer 1 enforcement still runs). Deploying this version changes nothing until you add the block.
+2. **Recompute checks skip rather than false-flag** — *almost always*. A header/receipt with a field the reference encoder doesn't know, a system/deposit tx, or a hashes-only block response is skipped, never rejected. The one case the skip-guard can't catch is #6.
+3. **Continuity never fetches.** `parentHashLinkage`/`hashStability` only compare against blocks already observed (bounded per-network `number→hash` store); an unseen parent skips the check.
+4. **`authoritative` force-fetches are recursion-guarded** (marked internal, skipped by the engine) and budgeted; on budget exhaustion the corroboration check no-ops.
+5. **Project⊕network precedence.** A project-wide `integrity:` applies to all networks; a network block overrides field-by-field (profiles unioned).
+6. **Some chains need recompute checks disabled — proven: HyperEVM (chainId 999).** A chain whose `eth_getBlock` keeps *system transactions* in the header's `transactionsRoot` but omits them from the returned `transactions` list will **systematically** fail `transactionsRootRecompute` (and, by the same mechanism, `receiptsRootRecompute`) — even though every returned tx is valid. The skip-guard in #2 can't catch it: each individual tx hash verifies, only the Merkle root differs. This is a chain representation quirk, **not corruption**. Disable the affected check(s) on that network — the level preset stays, the one check is turned off:
+   ```yaml
+   networks:
+     - evm:
+         chainId: 999          # HyperEVM
+       integrity:
+         level: authoritative
+         checks:
+           transactionsRootRecompute: { enabled: false }   # confirmed in production
+           receiptsRootRecompute:     { enabled: false }   # same mechanism — disable if you run authoritative receipt corroboration
+   ```
+   **Diagnostic rule of thumb:** if `erpc_integrity_violation_total{check="…Recompute"}` rejects across *every* upstream of one chain, it's the check, not the data — disable that check for that chain (and consider opening an issue so it can be added to this list).
+7. **Continuity does not run on `eth_getBlockByHash`** (see [Why continuity is by-number only](#why-continuity-is-by-number-only)) — and a by-hash response never moves the pin. Earlier builds checked by-hash lookups too, which produced a large stream of rejects (mostly ending as `integrity_failed` client errors) whenever one upstream kept serving settled orphaned blocks to clients unwinding reorgs: the pin correctly said "not canonical", but since the request named the orphan hash, no upstream could satisfy the pinned fork.
+
+### Source code entry points
+
+- [`architecture/evm/integrity/`](https://github.com/erpc/erpc/blob/main/architecture/evm/integrity) — the check engine, catalog, levels, decode, resolver, history.
+- [`architecture/evm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/hooks.go) — `HandleUpstreamPostForward` runs the engine (opt-in via `resolveIntegrity`).
+- [`architecture/evm/integrity_config.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/integrity_config.go) — compiles `integrity` config → check set + reorg policy.
+- [`common/config_integrity.go`](https://github.com/erpc/erpc/blob/main/common/config_integrity.go) — the `IntegrityConfig` schema + merge.
+- [`common/defaults.go`](https://github.com/erpc/erpc/blob/main/common/defaults.go) — `migrateLegacyIntegrityChecks`: deprecated flag → `integrity.checks` translation.
+- [`architecture/evm/eth_blockNumber.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_blockNumber.go) / [`eth_getBlockByNumber.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go) / [`block_range.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/block_range.go) — Layer-1 block-tip & availability enforcement.
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_integrity_violation_total` | counter | project, vendor, network, upstream, category, **check**, **verdict** | A data-integrity check (Layer 2) failed. The `check` label is the rule id and `verdict` is `reject` (response failed over to another upstream) or `soft_flag` (recorded but served). This is how you see *which rule* is failing for which method/network/upstream. Only fires on a violation. |
+| `erpc_integrity_check_total` | counter | …, **check**, **outcome** | Every check evaluation by `outcome` (`pass`/`reject`/`soft_flag`/`off`). Sum across outcomes = total attempts (the rate denominator). |
+| `erpc_integrity_aux_request_total` | counter | …, **kind**, **outcome** | Aux force-fetches the module issues that are *not* part of the user request (`kind` = `canonical_header`/`canonical_receipts`). |
+| `erpc_integrity_saved_total` | counter | project, network, category | Requests the module **saved**: a check rejected a bad response and a retry returned a good one — a wrong/invalid response prevented. |
+| `erpc_integrity_failed_total` | counter | project, network, category, **check** | Requests that **failed** toward the user due to integrity (a check rejected and no good response was found). The `check` is the why. |
+| `erpc_integrity_overhead_seconds` | histogram | project, network, category | Per-request latency the module added — time waited on data-checks + aux force-fetches. Same config-driven buckets as `network_request_duration_seconds`. |
+| `erpc_upstream_stale_latest_block_total` | counter | project, vendor, network, upstream, category | Upstream returned a block below the network-known latest head (Layer-1 highest-block enforcement). |
+| `erpc_upstream_stale_finalized_block_total` | counter | project, vendor, network, upstream | Upstream returned a finalized block below the known finalized head. |
+| `erpc_upstream_stale_upper_bound_total` / `_lower_bound_total` | counter | …, confidence | Request skipped: upstream's range doesn't cover the requested `toBlock`/`fromBlock`. |
+| `erpc_upstream_attempt_outcome_total` | counter | …, outcome | `outcome=block_unavailable` on range failure; `missing_data` on null responses. |
+| `erpc_network_retry_attempt_total` | counter | …, reason | `reason=block_unavailable` / `missing_data` on the corresponding retries. |
+
+Data-integrity violations are counted by `erpc_integrity_violation_total` (labeled
+by the individual `check` id and `verdict`) and also surface as
+`ErrEndpointContentValidation` feeding the `validation` bucket of
+`ErrUpstreamsExhausted`; a `soft-flag` verdict additionally emits a
+recorded-mismatch `WARN` log rather than failing the response. The bundled Grafana
+dashboard ([`monitoring/grafana/dashboards/erpc.json`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/dashboards/erpc.json))
+ships a collapsed **Data Integrity** row that breaks these violations down by
+check, verdict, network, upstream, vendor and method, with a drill-down table.
+
+**Tracing.** When tracing is enabled, each validation emits an `Integrity.Validate`
+span — its duration is the integrity overhead and the aux force-fetches nest under
+it. Attributes (simple mode): `integrity.method`, `integrity.upstream`,
+`integrity.outcome` (`pass`/`reject`/`soft_flag`), `integrity.checks`,
+`integrity.rejected_check`. In **detailed tracing mode** the span additionally
+records, verbatim and **without redaction**, the actual-vs-expected values of every
+violation (as `integrity.reject` / `integrity.soft_flag` events), each check's
+outcome, and — for caught requests — the **response bodies** (capped at 128 KB).
+That makes a caught request checkable by hand: the rejected attempt's
+`Integrity.Validate` span carries the *original* body (`integrity.response`) and the
+request-level `Project.Forward` span carries the *corrected* served body
+(`integrity.served_response`), so you can confirm the catch was real and the
+correction right. Bodies are recorded only on a violation (original) or a saved
+request (corrected) and only under the detailed-tracing gate, so it's zero-cost when
+tracing is off. Sample a few requests in detailed mode to audit a specific upstream.
+
+### Related pages
+
+- [Retry](/config/failsafe/retry) — integrity violations are retryable; retry routes them to a fresh upstream.
+- [Consensus](/config/failsafe/consensus) — content-validation errors are excluded from agreement/preferLargerResponses.
+- [Timeout](/config/failsafe/timeout) — bounds the re-fetch triggered by highest-block enforcement and authoritative force-fetch.
+- [Selection policies](/config/projects/selection-policies) — upstream scoring uses stale-block metrics.
+- [Survive provider outages](/use-cases/survive-provider-outages) — the broader scenario this feature serves.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

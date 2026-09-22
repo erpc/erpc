@@ -113,3 +113,41 @@ func TestProvider_SupportsNetwork_WithIgnoreNetworks(t *testing.T) {
 		})
 	}
 }
+
+// Overrides do not merge — the winning pattern is copied whole — so when
+// several match, WHICH one wins decides the entire upstream config. Selecting
+// the first match out of a Go map made that depend on randomized iteration
+// order, which is how a live deployment ended up with one chain's cost tier and
+// rate-limit budget differing between pods: the provider declared both "evm:*"
+// (carrying tags + rateLimitBudget) and "evm:42161" (carrying neither).
+func TestProviderOverrideMostSpecificWins(t *testing.T) {
+	cfg := &common.ProviderConfig{
+		Id:     "p",
+		Vendor: "alchemy",
+		Overrides: map[string]*common.UpstreamConfig{
+			"evm:*":     {Tags: []string{"tier:expensive"}, RateLimitBudget: "shared"},
+			"evm:42161": {RateLimitBudget: "arbitrum-only"},
+			"evm:1*":    {RateLimitBudget: "prefix"},
+		},
+	}
+	p := &Provider{config: cfg}
+
+	// Run it many times: a map-order-dependent implementation fails this
+	// probabilistically, which is exactly how the bug hid in production.
+	for i := 0; i < 200; i++ {
+		got, err := p.buildBaseUpstreamConfig("evm:42161")
+		assert.NoError(t, err)
+		assert.Equal(t, "arbitrum-only", got.RateLimitBudget,
+			"exact pattern must beat evm:* and evm:1* every time")
+	}
+	for i := 0; i < 200; i++ {
+		got, err := p.buildBaseUpstreamConfig("evm:1")
+		assert.NoError(t, err)
+		assert.Equal(t, "prefix", got.RateLimitBudget,
+			"the longer literal prefix must beat the bare wildcard every time")
+	}
+	got, err := p.buildBaseUpstreamConfig("evm:999")
+	assert.NoError(t, err)
+	assert.Equal(t, "shared", got.RateLimitBudget, "the wildcard still applies when nothing more specific matches")
+	assert.Equal(t, []string{"tier:expensive"}, got.Tags)
+}

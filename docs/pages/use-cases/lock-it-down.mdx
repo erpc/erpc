@@ -1,0 +1,141 @@
+---
+title: Lock it down
+description: Keys, JWTs, sign-in with Ethereum, per-user rate limits — your RPC endpoint stops being a free-for-all.
+---
+
+import { LLMsTxtLink, AISection, CapabilityGrid, ConfigTabs, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# Lock it down
+
+An open RPC endpoint gets discovered fast — and someone else's bot ends up spending your
+provider budget. eRPC puts real access control in front: API keys for your services, JWTs
+or Sign-in-with-Ethereum for your users, network allowlists for your infra, and per-user
+rate budgets so no single consumer can starve the rest. Browsers can talk to it directly,
+under CORS rules you control.
+
+<CapabilityGrid
+  columns={2}
+  items={[
+    { title: "Authentication", href: "/config/auth", summary: "Secrets, JWT, Sign-in-with-Ethereum, and IP allowlists." },
+    { title: "Rate limiters", href: "/config/rate-limiters", summary: "Budgets that protect providers, projects, and fairness between users." },
+    { title: "CORS", href: "/config/projects/cors", summary: "Serve browsers directly on your own origin rules." },
+    { title: "Admin API", href: "/operation/admin", summary: "Operational controls behind their own separate auth." },
+  ]}
+/>
+
+All of the above in one place — illustrative, not a tuned production config:
+
+<ConfigTabs
+  path="(root)"
+  focusYaml="3,12,16,18,23"
+  focusTs="3,11,16,19,25"
+  yaml={`rateLimiters:
+  # a reusable budget: fairness between consumers
+  budgets:
+    - id: per-user
+      rules:
+        - method: "*"
+          maxCount: 200
+          period: 1s
+projects:
+  - id: main
+    # serve browsers directly, on your own origin rules
+    cors:
+      allowedOrigins: ["https://app.example.com"]
+      allowCredentials: false
+    auth:
+      strategies:
+        # API keys for your services, throttled by the budget above
+        - type: secret
+          rateLimitBudget: per-user
+          secret:
+            value: \${MY_API_KEY}
+        # infra allowlist: no key needed inside your network
+        - type: network
+          network:
+            allowedCIDRs: ["10.0.0.0/8"]
+            allowLocalhost: true
+# Admin API auth is separate: admin.auth (same strategy types).`}
+  ts={`rateLimiters: {
+  // a reusable budget: fairness between consumers
+  budgets: [{
+    id: "per-user",
+    rules: [{ method: "*", maxCount: 200, period: "1s" }],
+  }],
+},
+projects: [{
+  id: "main",
+  // serve browsers directly, on your own origin rules
+  cors: {
+    allowedOrigins: ["https://app.example.com"],
+    allowCredentials: false,
+  },
+  auth: {
+    strategies: [
+      // API keys for your services, throttled by the budget above
+      {
+        type: "secret",
+        rateLimitBudget: "per-user",
+        secret: { value: process.env.MY_API_KEY },
+      },
+      // infra allowlist: no key needed inside your network
+      {
+        type: "network",
+        network: { allowedCIDRs: ["10.0.0.0/8"], allowLocalhost: true },
+      },
+    ],
+  },
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="add API-key auth and per-user rate limits"
+	defaultOpen
+	prompt={`My eRPC endpoint is wide open and I need to lock it down with API keys and per-user
+rate budgets so no single consumer can exhaust my provider quota. Update my eRPC config
+with authentication strategies and fair-use limits. Read the full reference first:
+https://docs.erpc.cloud/use-cases/lock-it-down.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="enable CORS for browser clients and configure JWT auth"
+	prompt={`I want my frontend app to call eRPC directly from the browser using JWT tokens
+issued by my auth service. Configure CORS and JWT strategy in my eRPC config so only
+my domain can make requests and tokens are validated properly. Reference:
+https://docs.erpc.cloud/use-cases/lock-it-down.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="audit auth and rate-limit config for gaps"
+	prompt={`Review the auth and rate-limiter setup in my eRPC config for security gaps —
+missing IP allowlist coverage, missing method-level rate rules, or strategies without
+budgets. Suggest hardening steps. Reference:
+https://docs.erpc.cloud/use-cases/lock-it-down.llms.txt`}
+/>
+
+<AISection title="Lock it down — agent starting points">
+
+This page sells the outcome; implementation lives in the feature pages. Fetch their
+machine-readable companions:
+
+- [Authentication](/config/auth) — every strategy (secret, jwt, siwe, network, database) with full per-strategy config.
+- [Rate limiters](/config/rate-limiters) — budgets, per-method rules, auto-tuner behavior and footguns.
+- [CORS](/config/projects/cors) — matching semantics and preflight behavior.
+- [Admin API](/operation/admin) — admin-scoped auth and every endpoint.
+
+Composition notes: auth strategies attach per project (and separately for admin); each
+strategy can carry its own `rateLimitBudget`, so per-user fairness is an auth-level concern
+while provider protection is an upstream-level budget. Exact fields and defaults live in
+each page's agent section.
+
+</AISection>

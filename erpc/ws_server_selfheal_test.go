@@ -100,7 +100,7 @@ func (m *selfHealMockUpstream) handle(conn *websocket.Conn) {
 }
 
 // TestWebSocket_UpstreamDiesUngracefully_SelfHeals is the end-to-end
-// regression test for the 2026-06-12 zkSync chain-324 incident: the single
+// regression test for an ungraceful upstream socket death: the single
 // WS upstream's connection dies with NO close handshake; eRPC must — with
 // no process restart —
 //

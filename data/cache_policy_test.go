@@ -301,3 +301,40 @@ func TestCachePolicy_MatchParams(t *testing.T) {
 		})
 	}
 }
+
+func TestCachePolicy_MatchesUpstreamSelector(t *testing.T) {
+	// Connector "prism" stands in for a system-transaction cache.
+	cases := []struct {
+		name     string
+		tags     []string
+		selector string
+		want     bool
+	}{
+		// Untagged connector: never gated by an upstream pin.
+		{name: "untagged, no selector", tags: nil, selector: "", want: true},
+		{name: "untagged, selector present", tags: nil, selector: "systx*", want: true},
+		{name: "untagged, unrelated upstream pin", tags: nil, selector: "alchemy", want: true},
+
+		// Tagged connector: participates only when the selector admits it.
+		{name: "tagged, no selector", tags: []string{"systx"}, selector: "", want: true},
+		{name: "tagged, selector matches tag", tags: []string{"systx"}, selector: "systx*", want: true},
+		{name: "tagged, selector excludes tag", tags: []string{"systx"}, selector: "!systx*", want: false},
+		{name: "tagged, unrelated selector", tags: []string{"systx"}, selector: "alchemy", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, err := NewCachePolicy(&common.CachePolicyConfig{
+				Network:  "*",
+				Method:   "*",
+				Finality: common.DataFinalityStateUnfinalized,
+			}, NewMockConnector("prism"))
+			assert.NoError(t, err)
+			policy.SetConnectorTags(tc.tags)
+
+			got, err := policy.MatchesUpstreamSelector(tc.selector)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

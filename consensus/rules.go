@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"math/big"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 )
@@ -19,16 +20,34 @@ type shortCircuitRule struct {
 	Condition   func(winner *slotResult, a *consensusAnalysis) bool
 }
 
+// isTxBroadcastMethod reports whether a method is a transaction
+// broadcast, where any single valid response (tx hash / signature) is
+// sufficient — the transaction propagates through the network on its
+// own, so waiting for agreement only adds duplicate broadcasts.
+// Covers EVM eth_sendRawTransaction and the SVM equivalents
+// (sendTransaction plus its sendRawTransaction alias).
+//
+// Matched case-insensitively to agree with dispatch (architecture/*/hooks.go),
+// so the exemption never turns on the casing the client happened to send.
+func isTxBroadcastMethod(method string) bool {
+	switch strings.ToLower(method) {
+	case "eth_sendrawtransaction", "sendtransaction", "sendrawtransaction":
+		return true
+	}
+	return false
+}
+
 // consensusRules defines all consensus rules in priority order
 // Rules are evaluated from most specific/nuanced to most generic, and ideally those that error must come before those that return a result.
 var consensusRules = []consensusRule{
-	// eth_sendRawTransaction: return first valid tx hash immediately
-	// For transaction broadcasting, we don't need consensus - any single valid response is sufficient
-	// because the transaction will propagate through the network.
+	// Tx broadcasts (eth_sendRawTransaction / SVM sendTransaction): return
+	// first valid tx hash/signature immediately. For transaction
+	// broadcasting, we don't need consensus - any single valid response is
+	// sufficient because the transaction will propagate through the network.
 	{
-		Description: "eth_sendRawTransaction: return first valid tx hash response",
+		Description: "tx broadcast: return first valid tx hash/signature response",
 		Condition: func(a *consensusAnalysis) bool {
-			if a.method != "eth_sendRawTransaction" {
+			if !isTxBroadcastMethod(a.method) {
 				return false
 			}
 			// Check if we have any non-empty response (tx hash)
@@ -64,10 +83,7 @@ var consensusRules = []consensusRule{
 		Description: "prefer-highest-value-for: return highest value where at least agreementThreshold upstreams agree",
 		Condition: func(a *consensusAnalysis) bool {
 			// Check if this method has preferHighestValueFor configured
-			if a.config.preferHighestValueFor == nil || a.method == "" {
-				return false
-			}
-			fields, ok := a.config.preferHighestValueFor[a.method]
+			fields, ok := methodFields(a.config.preferHighestValueFor, a.method)
 			if !ok || len(fields) == 0 {
 				return false
 			}
@@ -82,7 +98,7 @@ var consensusRules = []consensusRule{
 			return false // No extractable values, fall through to other rules
 		},
 		Action: func(a *consensusAnalysis) *slotResult {
-			fields := a.config.preferHighestValueFor[a.method]
+			fields, _ := methodFields(a.config.preferHighestValueFor, a.method)
 			threshold := a.config.agreementThreshold
 			if threshold < 1 {
 				threshold = 1
@@ -841,16 +857,17 @@ var consensusRules = []consensusRule{
 
 var shortCircuitRules = []shortCircuitRule{
 	{
-		Description: "eth_sendRawTransaction: short-circuit on first valid tx hash response",
+		Description: "tx broadcast: short-circuit on first valid tx hash/signature response",
 		Reason:      "sendrawtx_first_success",
 		Condition: func(w *slotResult, a *consensusAnalysis) bool {
-			// Only applies to eth_sendRawTransaction
-			if a.method != "eth_sendRawTransaction" {
+			// Applies to tx broadcasts only (eth_sendRawTransaction and the
+			// SVM sendTransaction/sendRawTransaction pair).
+			if !isTxBroadcastMethod(a.method) {
 				return false
 			}
 			// Short-circuit as soon as we have any valid non-empty response (tx hash)
-			// For eth_sendRawTransaction, once a tx is accepted by any node, it will
-			// propagate through the network, so we don't need to wait for consensus.
+			// Once a tx is accepted by any node, it will propagate through the
+			// network, so we don't need to wait for consensus.
 			for _, g := range a.groups {
 				if g.ResponseType == ResponseTypeNonEmpty && g.Count >= 1 {
 					return true
@@ -875,10 +892,8 @@ var shortCircuitRules = []shortCircuitRule{
 			}
 			// Don't short-circuit when preferHighestValueFor is configured for this method;
 			// we need all responses to find the truly highest value.
-			if a.config.preferHighestValueFor != nil && a.method != "" {
-				if _, ok := a.config.preferHighestValueFor[a.method]; ok {
-					return false
-				}
+			if _, ok := methodFields(a.config.preferHighestValueFor, a.method); ok {
+				return false
 			}
 			// Don't short-circuit to an error under AcceptMostCommon when a preference
 			// could change the winner (PreferNonEmpty or PreferLargerResponses).
@@ -903,10 +918,8 @@ var shortCircuitRules = []shortCircuitRule{
 			if a.hasRemaining() {
 				// Do not short-circuit when preferHighestValueFor is configured for this method;
 				// we need all responses to find the truly highest value.
-				if a.config.preferHighestValueFor != nil && a.method != "" {
-					if _, ok := a.config.preferHighestValueFor[a.method]; ok {
-						return false
-					}
+				if _, ok := methodFields(a.config.preferHighestValueFor, a.method); ok {
+					return false
 				}
 				// Do not short-circuit while PreferLargerResponses is enabled; a larger result
 				// arriving later may change the final decision even if the current leader is
@@ -933,7 +946,9 @@ var shortCircuitRules = []shortCircuitRule{
 					secondCount = g.Count
 				}
 			}
-			remaining := a.config.maxParticipants - a.totalParticipants
+			// Raw collected count, not deduplicated votes: a deduplicated
+			// duplicate consumed a slot and can no longer arrive.
+			remaining := a.config.maxParticipants - a.collectedResponses
 			// Without size preference, allow potential ties to short-circuit once threshold is met
 			// and the lead is unassailable by the number of remaining responses.
 			leadOverSecond := best.Count - secondCount

@@ -251,4 +251,4 @@ func patchJitterMul(mul float64) func(*Orchestrator, string) {
 }
 
 func float64Ptr(v float64) *float64 { return &v }
-func boolPtr(v bool) *bool           { return &v }
+func boolPtr(v bool) *bool          { return &v }

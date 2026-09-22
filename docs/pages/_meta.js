@@ -18,6 +18,11 @@ module.exports = {
 		title: "Config",
 	},
 	config: { display: "children", title: "Config" },
+	"-- Use cases": {
+		type: "separator",
+		title: "Use cases",
+	},
+	"use-cases": { title: "Use cases", display: "children" },
 	"-- Deployment": {
 		type: "separator",
 		title: "Deployment",
@@ -28,9 +33,12 @@ module.exports = {
 		title: "Operations",
 	},
 	operation: { title: "Operation", display: "children" },
+	"-- Reference": {
+		type: "separator",
+		title: "Reference",
+	},
+	reference: { title: "Reference", display: "children" },
 	// Presets / examples are still accessible via direct URL (/presets/*)
-	// but are not surfaced in the sidebar. Add `display: "hidden"` instead
-	// of omitting the keys entirely so Nextra doesn't auto-include them.
+	// but are not surfaced in the sidebar.
 	presets: { display: "hidden" },
-	"preview-retry": { display: "hidden" },
 };

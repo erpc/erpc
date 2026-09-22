@@ -348,6 +348,32 @@ export type WhereFilter = {
     type?: Pattern;
 };
 /**
+ * An aggregate condition over the whole surviving pool, returning a single
+ * boolean — consumed by `includeIf`. Distinct from `PolicyEvalPredicate`,
+ * which is per-upstream. Build one with native array methods over the
+ * per-upstream predicate factories, e.g.
+ * `(pool) => pool.every(blockSecondsLagAbove(30))` or `(pool) => pool.length < 2`.
+ */
+export type PolicyEvalArrayCondition = (upstreams: PolicyEvalUpstreamArray) => boolean;
+/**
+ * The selector-object form of `includeIf`'s target. At least one facet must
+ * resolve to a concrete value — the facets AND together (same semantics as
+ * `where`) to pick which upstreams are admitted from the full universe when
+ * the condition holds.
+ */
+export type IncludeIfTarget = {
+    id?: Pattern;
+    tag?: TagPattern;
+    vendor?: Pattern;
+    type?: Pattern;
+    /**
+     * Where admitted upstreams land relative to the survivors. `'tail'`
+     * (default) keeps the survivors as primaries; `'head'` puts the reserve
+     * set in front (rarely what you want — usually let `sortByScore` decide).
+     */
+    position?: "head" | "tail";
+};
+/**
  * The chainable upstream array passed into the eval. All methods return
  * a NEW array (immutable-style) so the chain is side-effect-free. Order
  * is meaningful: position 0 is the primary, position N is the Nth
@@ -363,7 +389,9 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
     byId(id: Pattern): PolicyEvalUpstreamArray;
     excludeId(id: Pattern): PolicyEvalUpstreamArray;
     byTag(pat: TagPattern): PolicyEvalUpstreamArray;
-    excludeTag(pat: TagPattern): PolicyEvalUpstreamArray;
+    excludeTag(pat: TagPattern, opts?: {
+        probe?: boolean;
+    }): PolicyEvalUpstreamArray;
     byVendor(v: Pattern): PolicyEvalUpstreamArray;
     excludeVendor(v: Pattern): PolicyEvalUpstreamArray;
     byType(t: Pattern): PolicyEvalUpstreamArray;
@@ -374,10 +402,15 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
     removeByMisbehavior(max: number): PolicyEvalUpstreamArray;
     removeByLag(opts: RemoveByLagOptions): PolicyEvalUpstreamArray;
     removeByMinRequests(min: number): PolicyEvalUpstreamArray;
-    removeCordoned(): PolicyEvalUpstreamArray;
+    removeCordoned(opts?: {
+        probe?: boolean;
+    }): PolicyEvalUpstreamArray;
     removeByLatency(opts: RemoveByLatencyOptions): PolicyEvalUpstreamArray;
     keepHealthy(opts?: KeepHealthyOptions): PolicyEvalUpstreamArray;
-    excludeIf(predicate: PolicyEvalPredicate, reasonOverride?: string): PolicyEvalUpstreamArray;
+    excludeIf(predicate: PolicyEvalPredicate, reasonOverrideOrOpts?: string | {
+        probe?: boolean;
+        reason?: string;
+    }): PolicyEvalUpstreamArray;
     /**
      * Dry-run / observed-only counterpart of `excludeIf`. The predicate runs
      * for every upstream, but no upstream is actually dropped — instead, every
@@ -451,6 +484,32 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
      */
     probeExcluded(opts?: ProbeExcludedOptions): PolicyEvalUpstreamArray;
     forceInclude(idOrFn: Pattern | ((u: PolicyEvalUpstream) => unknown), position?: "head" | "tail"): PolicyEvalUpstreamArray;
+    /**
+     * Conditionally admit upstreams from the full universe back into the
+     * chain — the dual of `excludeIf`. When `condition` holds, every upstream
+     * matching `target` (and not already present) is unioned in; otherwise the
+     * chain is unchanged. It never removes an upstream.
+     *
+     * `target` comes first so the policy reads "include <these> if
+     * <condition>". It is a tag pattern for the common case, or a selector
+     * object (`{ id, tag, vendor, type, position }`) for the rest. The function
+     * form of `condition` receives the CURRENT chain array (the pool that
+     * survived earlier steps), so it can ask aggregate questions about what is
+     * left using native array methods over the per-upstream predicate factories:
+     *
+     *   .excludeTag('tier:reserve')
+     *   .includeIf('tier:reserve', (p) => p.every(blockSecondsLagAbove(30)))
+     *   .includeIf('tier:reserve', (p) => p.length < 2)
+     *
+     * Use it for a break-glass reserve tier: kept out of normal rotation, but
+     * admitted alongside the survivors when the serving pool is collectively
+     * unfit (too few left, all lagging, all slow). At least one selector facet
+     * must resolve to a concrete value; otherwise it is a no-op (it never
+     * admits the whole universe). Added upstreams default to the tail so the
+     * survivors keep priority; a later `sortByScore` reorders if a reserve
+     * upstream is better.
+     */
+    includeIf(target: TagPattern | IncludeIfTarget, condition: boolean | PolicyEvalArrayCondition): PolicyEvalUpstreamArray;
     if(cond: boolean | ((arr: PolicyEvalUpstreamArray) => unknown), thenFn: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray, elseFn?: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray): PolicyEvalUpstreamArray;
     unless(cond: boolean | ((arr: PolicyEvalUpstreamArray) => unknown), fn: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray): PolicyEvalUpstreamArray;
     whenEmpty(fn: () => readonly PolicyEvalUpstream[]): PolicyEvalUpstreamArray;

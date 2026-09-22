@@ -78,10 +78,10 @@ func TestStdlib_LeafReasons_AnyAttributesToTruthyLeaves(t *testing.T) {
 	// across upstreams, lag is (tip - upstream's block). Clean & erroring
 	// advertise the tip (lag=0); lagging & both advertise 200 blocks back.
 	const tip = int64(1_000_000)
-	tracker.SetLatestBlockNumber(ups[0], tip, 0)        // erroring at tip
-	tracker.SetLatestBlockNumber(ups[1], tip-200, 0)    // lagging behind
-	tracker.SetLatestBlockNumber(ups[2], tip-200, 0)    // both: behind
-	tracker.SetLatestBlockNumber(ups[3], tip, 0)        // clean at tip
+	tracker.SetLatestBlockNumber(ups[0], tip, 0)     // erroring at tip
+	tracker.SetLatestBlockNumber(ups[1], tip-200, 0) // lagging behind
+	tracker.SetLatestBlockNumber(ups[2], tip-200, 0) // both: behind
+	tracker.SetLatestBlockNumber(ups[3], tip, 0)     // clean at tip
 
 	// erroring: high error rate, low lag.
 	for i := 0; i < 80; i++ {

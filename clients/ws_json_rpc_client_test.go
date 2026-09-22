@@ -22,8 +22,9 @@ import (
 // connection can be "black-holed": the TCP connection stays open but pings
 // are swallowed (no pong reply) and nothing is ever written — exactly what
 // an intermediate proxy does when the real upstream pod vanishes without a
-// FIN/RST. This is the failure mode from the 2026-06-12 zkSync incident:
-// the old client believed such a connection was healthy forever.
+// FIN/RST. This is the failure mode observed in production when the real
+// upstream pod behind a proxy was deleted: the old client believed such a
+// connection was healthy forever.
 type fakeWsServer struct {
 	t   *testing.T
 	srv *httptest.Server
@@ -172,8 +173,8 @@ func subscribeNewHeads(t *testing.T, c *WsJsonRpcClient) string {
 	return subID
 }
 
-// TestWsClientDetectsSilentPeerAndReconnects is the regression test for the
-// 2026-06-12 zkSync incident: the upstream socket dies WITHOUT a close
+// TestWsClientDetectsSilentPeerAndReconnects is the regression test for a
+// silent peer death: the upstream socket dies WITHOUT a close
 // handshake (peer keeps TCP open but stops responding — equivalent to a
 // proxy black-holing frames after the real upstream pod was deleted). The
 // client must declare the connection dead via the ping/pong liveness

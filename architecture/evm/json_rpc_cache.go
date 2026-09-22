@@ -41,12 +41,14 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 
 	// Create connectors map
 	connectors := make(map[string]data.Connector)
+	connectorTags := make(map[string][]string)
 	for _, connCfg := range cfg.Connectors {
 		c, err := data.NewConnector(ctx, logger, connCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connector %s: %w", connCfg.Id, err)
 		}
 		connectors[connCfg.Id] = c
+		connectorTags[connCfg.Id] = connCfg.Tags
 	}
 
 	// Create policies
@@ -61,6 +63,8 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 		if err != nil {
 			return nil, fmt.Errorf("failed to create policy: %w", err)
 		}
+		// Connector tags drive use-upstream gating of this policy's cache.
+		policy.SetConnectorTags(connectorTags[policyCfg.Connector])
 		policies = append(policies, policy)
 	}
 
@@ -149,6 +153,28 @@ func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
 	c.policies = policies
 }
 
+// observeGetLogsRange records the concrete block-range size of an eth_getLogs
+// request into MetricCacheEvmGetLogsRange, tagged by the connector/policy/ttl
+// involved and the hit/miss outcome. It is a no-op for non-getLogs methods and
+// for requests whose range is not concrete (block tags, blockHash, malformed).
+func (c *EvmJsonRpcCache) observeGetLogsRange(ctx context.Context, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest, connectorId, policy, ttl, outcome string) {
+	if rpcReq == nil || rpcReq.Method != "eth_getLogs" {
+		return
+	}
+	rangeSize, ok := getLogsConcreteRangeSize(ctx, rpcReq)
+	if !ok {
+		return
+	}
+	telemetry.MetricCacheEvmGetLogsRange.WithLabelValues(
+		c.projectId,
+		req.NetworkLabel(),
+		connectorId,
+		policy,
+		ttl,
+		outcome,
+	).Observe(rangeSize)
+}
+
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "Cache.Get",
 		trace.WithAttributes(
@@ -230,10 +256,15 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	results := make(chan fanResult, len(policies))
 	spawned := 0
 
+	useUpstream := useUpstreamSelector(req)
 	for _, p := range policies {
 		conn := p.GetConnector()
 		if req.ShouldSkipCacheRead(conn.Id()) {
 			c.logger.Debug().Str("connector", conn.Id()).Interface("id", req.ID()).Msg("skipping cache connector due to skip-cache-read directive pattern")
+			continue
+		}
+		if eligible, _ := p.MatchesUpstreamSelector(useUpstream); !eligible {
+			c.logger.Debug().Str("connector", conn.Id()).Str("useUpstream", useUpstream).Interface("id", req.ID()).Msg("skipping cache connector due to use-upstream directive selector")
 			continue
 		}
 		spawned++
@@ -370,6 +401,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		lastMiss   *fanResult
 		lastReject *fanResult
 		lastError  *fanResult
+		aborted    bool
 	)
 drain:
 	for received := 0; received < spawned && jrr == nil; {
@@ -408,6 +440,16 @@ drain:
 			// so the hit IS in the channel — Go's select just happened to
 			// pick the Done branch over the receive branch. Picking up
 			// that hit here avoids a phantom miss under the race.
+			//
+			// Mark the fan-out aborted: if no hit surfaces from the buffer
+			// below, we exited because of cancellation (a)/(b), not because
+			// every connector confirmed a genuine miss. The post-fan-out
+			// block uses this to avoid recording a cancelled read as a
+			// success_miss (which would inflate the miss count and attribute
+			// the cancellation latency — e.g. a request-level failsafe
+			// timeout ceiling — to the connector). Case (c) sets jrr below,
+			// so this flag is irrelevant there.
+			aborted = true
 		drainBuffer:
 			for {
 				select {
@@ -440,6 +482,22 @@ drain:
 	}
 
 	if jrr == nil {
+		// The fan-out was aborted by context cancellation (caller cancelled
+		// the parent ctx, or the 30s defensive backstop fired) rather than
+		// every connector confirming a genuine miss. This is NOT a cache
+		// miss: counting it inflates success_miss with cancelled reads and
+		// records the cancellation latency (often a fixed request-level
+		// failsafe/hedge timeout ceiling) against the connector. Fall through
+		// to the upstream layer without emitting a miss metric — mirroring the
+		// per-goroutine "cancelled" guard above.
+		if aborted {
+			span.SetAttributes(
+				attribute.Bool("cache.hit", false),
+				attribute.String("cache.miss_reason", "cancelled"),
+			)
+			return nil, nil
+		}
+
 		// All connectors confirmed miss / errored / age-rejected. Attribute the
 		// fall-through metric to the most informative outcome we observed,
 		// preferring rejections over plain misses over errors.
@@ -487,6 +545,7 @@ drain:
 			labelConnectorId,
 			labelPolicyStr,
 			labelTTL,
+			missReason,
 		).Inc()
 		telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 			c.projectId,
@@ -496,6 +555,7 @@ drain:
 			labelPolicyStr,
 			labelTTL,
 		).Observe(time.Since(start).Seconds())
+		c.observeGetLogsRange(ctx, req, rpcReq, labelConnectorId, labelPolicyStr, labelTTL, "miss")
 		span.SetAttributes(attribute.Bool("cache.hit", false))
 		return nil, nil
 	}
@@ -511,6 +571,7 @@ drain:
 				connector.Id(),
 				policy.String(),
 				policy.GetTTL().String(),
+				"empty_result",
 			).Inc()
 			telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 				c.projectId,
@@ -520,6 +581,7 @@ drain:
 				policy.String(),
 				policy.GetTTL().String(),
 			).Observe(time.Since(start).Seconds())
+			c.observeGetLogsRange(ctx, req, rpcReq, connector.Id(), policy.String(), policy.GetTTL().String(), "miss")
 			span.SetAttributes(attribute.Bool("cache.hit", false))
 			return nil, nil
 		case common.CacheEmptyBehaviorAllow, common.CacheEmptyBehaviorOnly:
@@ -549,6 +611,7 @@ drain:
 		policy.String(),
 		policy.GetTTL().String(),
 	).Observe(time.Since(start).Seconds())
+	c.observeGetLogsRange(ctx, req, rpcReq, connector.Id(), policy.String(), policy.GetTTL().String(), "hit")
 	span.SetAttributes(attribute.Bool("cache.hit", true))
 	if c.logger.GetLevel() <= zerolog.DebugLevel {
 		result := jrr.GetResultBytes()
@@ -691,14 +754,30 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	wg := sync.WaitGroup{}
 	errs := []error{}
 	errsMu := sync.Mutex{}
+	useUpstream := useUpstreamSelector(req)
 	for _, policy := range policies {
+		// Don't write a response into a cache the request's use-upstream selector
+		// excludes, so a source-tagged connector only stores matching data.
+		if eligible, _ := policy.MatchesUpstreamSelector(useUpstream); !eligible {
+			lg.Debug().Str("connector", policy.GetConnector().Id()).Str("useUpstream", useUpstream).Msg("skipping cache write due to use-upstream directive selector")
+			continue
+		}
 		wg.Add(1)
 		go func(policy *data.CachePolicy) {
 			defer wg.Done()
 			connector := policy.GetConnector()
+			// Fixed TTL component for telemetry labels (stable values only).
 			ttl := policy.GetTTL()
+			// Storage expiry must match the read-side window: for a block-time
+			// dynamic realtime TTL, the resolved value can exceed the fixed
+			// fallback, and writing with the fallback would evict entries long
+			// before the read-side age guard stops serving them.
+			storageTTL := ttl
+			if resolved := policy.ResolveTTL(networkBlockTime(req), defaultRealtimeColdStartTTL); resolved > 0 {
+				storageTTL = &resolved
+			}
 
-			shouldCache, err := shouldCacheResponse(lg, resp, rpcResp, policy)
+			shouldCache, err := shouldCacheResponse(ctx, lg, resp, rpcResp, policy, finState)
 			if !shouldCache {
 				if err != nil {
 					telemetry.MetricCacheSetErrorTotal.WithLabelValues(
@@ -771,7 +850,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, valueToStore, ttl)
+			err = connector.Set(ctx, pk, rk, valueToStore, storageTTL)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -835,11 +914,19 @@ func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
 }
 
-// shouldAcceptCachedResult checks if a cached result should be accepted based on its age
-// It compares the block timestamp against the policy's TTL to ensure freshness.
-// This validation only applies to realtime finality data (e.g., eth_gasPrice, latest block).
-// For finalized/unfinalized/unknown finality, block data is immutable and should always be accepted
-// regardless of how old the block timestamp is.
+// defaultRealtimeColdStartTTL bounds realtime staleness when a policy sets
+// ttlBlockTimeMultiplier but has no static ttl and the network's block time
+// isn't known yet (cold start / not head-tracked), so the guard never accepts
+// an unbounded-stale head.
+const defaultRealtimeColdStartTTL = 2 * time.Second
+
+// shouldAcceptCachedResult checks if a cached realtime result is still fresh enough to serve, by
+// comparing a block timestamp against the policy's TTL. The timestamp is taken from the response
+// when present; for responses that carry none (eth_blockNumber, eth_gasPrice, eth_getLogs) it falls
+// back to the serving connector's reported latest-block timestamp (read-through connectors that
+// implement data.CacheHeadReporter), so a lagging source is still caught for those methods.
+// Applies only to realtime finality — finalized/unfinalized/unknown block data is immutable and is
+// always accepted regardless of age.
 func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	ctx context.Context,
 	req *common.NormalizedRequest,
@@ -855,9 +942,13 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		return true
 	}
 
-	// If no TTL is set, accept the result
-	ttl := policy.GetTTL()
-	if ttl == nil || *ttl <= 0 {
+	// Resolve the realtime age limit from the policy TTL: a fixed value, or one
+	// derived from the network's estimated block time (object form). When
+	// block-time-dynamic but the block time isn't known yet (cold start, or a
+	// network without an estimate) it falls back to the configured value, or to
+	// a safe default — so the guard always bounds staleness. No limit -> accept.
+	effectiveTTL := policy.ResolveTTL(networkBlockTime(req), defaultRealtimeColdStartTTL)
+	if effectiveTTL <= 0 {
 		return true
 	}
 
@@ -869,16 +960,26 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 
 	blockTimestamp, err := ExtractBlockTimestampFromResponse(ctx, nr)
 	if err != nil || blockTimestamp <= 0 {
-		// If we can't extract a timestamp (e.g., for methods that don't have block data),
-		// we can't enforce age-based validation, so accept the result
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
-			method, _ := req.Method()
-			c.logger.Trace().
-				Err(err).
-				Str("method", method).
-				Msg("cannot extract block timestamp for age validation, accepting cached result")
+		// The response carries no block timestamp (e.g. eth_blockNumber, eth_gasPrice, eth_getLogs).
+		// Fall back to the serving connector's reported latest-block timestamp so realtime freshness
+		// can still be enforced for these methods when the connector is head-aware (read-through).
+		blockTimestamp = 0
+		if reporter, ok := policy.GetConnector().(data.CacheHeadReporter); ok {
+			if ts, known := reporter.CacheLatestBlockTimestamp(req.NetworkId()); known && ts > 0 {
+				blockTimestamp = ts
+			}
 		}
-		return true
+		if blockTimestamp <= 0 {
+			// Still can't determine the age (connector not head-aware or head unknown), so accept.
+			if c.logger.GetLevel() <= zerolog.TraceLevel {
+				method, _ := req.Method()
+				c.logger.Trace().
+					Err(err).
+					Str("method", method).
+					Msg("cannot determine block timestamp for age validation, accepting cached result")
+			}
+			return true
+		}
 	}
 
 	// Calculate the age of the block
@@ -886,18 +987,20 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	age := time.Duration(now-blockTimestamp) * time.Second
 
 	// Check if the age exceeds the TTL
-	if age > *ttl {
+	if age > effectiveTTL {
 		if c.logger.GetLevel() <= zerolog.DebugLevel {
 			c.logger.Debug().
 				Dur("age", age).
-				Dur("ttl", *ttl).
+				Dur("ttl", effectiveTTL).
 				Int64("blockTimestamp", blockTimestamp).
 				Int64("now", now).
 				Str("policy", policy.String()).
 				Msg("rejecting cached result because block age exceeds policy TTL")
 		}
 
-		// Record metric for age-guard rejection
+		// Record metric for age-guard rejection. Label with the policy's fixed
+		// TTL component, not the block-time-resolved value — the latter varies
+		// per sample (EMA-derived) and would explode label cardinality.
 		method, _ := req.Method()
 		telemetry.MetricCacheGetAgeGuardRejectTotal.WithLabelValues(
 			c.projectId,
@@ -905,7 +1008,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 			method,
 			policy.GetConnector().Id(),
 			policy.String(),
-			ttl.String(),
+			policy.GetTTL().String(),
 		).Inc()
 
 		return false
@@ -913,6 +1016,19 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 
 	// Accept the result as it's within the acceptable age
 	return true
+}
+
+// networkBlockTime returns the request network's estimated block time, or 0 if
+// it's not available (network unset, not head-tracked, or not yet warmed up).
+func networkBlockTime(req *common.NormalizedRequest) time.Duration {
+	ntw := req.Network()
+	if ntw == nil {
+		return 0
+	}
+	if p, ok := ntw.(interface{ EvmBlockTime() time.Duration }); ok {
+		return p.EvmBlockTime()
+	}
+	return 0
 }
 
 func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {
@@ -1049,10 +1165,12 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 }
 
 func shouldCacheResponse(
+	ctx context.Context,
 	lg zerolog.Logger,
 	resp *common.NormalizedResponse,
 	rpcResp *common.JsonRpcResponse,
 	policy *data.CachePolicy,
+	finality common.DataFinalityState,
 ) (bool, error) {
 	// Never cache responses with errors
 	if rpcResp != nil && rpcResp.Error != nil {
@@ -1066,9 +1184,42 @@ func shouldCacheResponse(
 		lg.Debug().Int("size", size).Msg("skip caching because response size does not match policy limits")
 		return false, nil
 	}
+
+	// Never persist a realtime response that is already behind the network
+	// tip while the request runs under enforceHighestBlock: enforcement will
+	// never serve such a value as-is, so caching it can only poison future
+	// reads (e.g. the eth_blockNumber sawtooth: a lagging upstream's value
+	// lands in the cache and is then served for a full TTL window). The tip
+	// is resolved network-wide on purpose — the cache entry is shared by all
+	// requests regardless of any use-upstream selector — and the guard fails
+	// open when pollers don't know a tip yet.
+	if finality == common.DataFinalityStateRealtime && resp != nil {
+		if req := resp.Request(); req != nil {
+			if dirs := req.Directives(); dirs != nil && dirs.EnforceHighestBlock {
+				if ntw := req.Network(); ntw != nil {
+					if _, respBlock, err := ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlock > 0 {
+						if tip := common.EvmHighestLatestBlockNumber(ntw, ctx); tip > respBlock {
+							lg.Debug().
+								Int64("responseBlockNumber", respBlock).
+								Int64("knownHighestBlock", tip).
+								Msg("skip caching realtime response older than the known highest block")
+							return false, nil
+						}
+					}
+				}
+			}
+		}
+	}
 	result := rpcResp.GetResultBytes()
 	// Check if we should cache empty results
 	isEmpty := resp == nil || rpcResp == nil || result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
+	// Never cache an empty result for a not-yet-produced (future) block: the block
+	// will exist later, so a cached null would be served as a wrong answer until the
+	// TTL expires. This holds regardless of the policy's empty behavior.
+	if isEmpty && resp != nil && emptyResultBeyondConfidence(ctx, resp.Request()) {
+		lg.Debug().Msg("skip caching empty result for a not-yet-produced (future) block")
+		return false, nil
+	}
 	switch policy.EmptyState() {
 	case common.CacheEmptyBehaviorIgnore:
 		return !isEmpty, nil
@@ -1079,6 +1230,15 @@ func shouldCacheResponse(
 	default:
 		return false, fmt.Errorf("unknown cache empty behavior: %s", policy.EmptyState())
 	}
+}
+
+// useUpstreamSelector returns the request's use-upstream directive, used to gate
+// which cache connectors may serve/store it (empty = no gating).
+func useUpstreamSelector(req *common.NormalizedRequest) string {
+	if d := req.Directives(); d != nil {
+		return d.UseUpstream
+	}
+	return ""
 }
 
 func generateKeysForJsonRpcRequest(

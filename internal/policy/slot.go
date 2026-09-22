@@ -28,6 +28,11 @@ type Slot struct {
 	networkLabel string
 	method       string
 	finality     string
+	// boundary is the block-availability lane key ("*" = full pool). It is
+	// part of the slot's identity and keeps per-lane eval state separate;
+	// it is intentionally NOT emitted as a metric label (boundary is a
+	// decision axis, not a metrics axis — see SelectionPolicyConfig.EvalPerBoundary).
+	boundary string
 
 	upstreamsFn func() []common.Upstream
 	cfg         *common.SelectionPolicyConfig
@@ -93,7 +98,7 @@ type Slot struct {
 	wg       sync.WaitGroup
 }
 
-func newSlot(e *Engine, networkID, networkLabel, method, finality string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
+func newSlot(e *Engine, networkID, networkLabel, method, finality, boundary string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
 	if networkLabel == "" {
 		networkLabel = networkID
 	}
@@ -103,6 +108,7 @@ func newSlot(e *Engine, networkID, networkLabel, method, finality string, upstre
 		networkLabel:  networkLabel,
 		method:        method,
 		finality:      finality,
+		boundary:      boundary,
 		upstreamsFn:   upstreamsFn,
 		cfg:           cfg,
 		excludedSince: make(map[string]int64),
@@ -283,6 +289,9 @@ func (s *Slot) tickOnce() {
 	// surface for `RecentDecisions` / simulator UI — metrics never read it.
 	ordered, excluded := materializeOrder(ups, orderedIDs)
 	for i := range excluded {
+		// Resolve the probe-eligibility verdict matrix: missing entry
+		// (untracked exclusion) resolves to probe=true via the zero value.
+		excluded[i].ProbeEligible = evalRes.ProbeVerdicts[excluded[i].ID].ShouldProbe()
 		entries, ok := evalRes.LeafReasons[excluded[i].ID]
 		if !ok || len(entries) == 0 {
 			continue
@@ -637,7 +646,7 @@ func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string, fin
 			if m == "*" || tm == nil {
 				continue
 			}
-			um := convertTrackedMetrics(tr, u, tm)
+			um := convertTrackedMetrics(tr, u, m, tm)
 			if um.RequestsTotal == 0 {
 				continue
 			}
@@ -770,6 +779,12 @@ func excludedIDs(ex []ExcludedUpstream) []string {
 // attribution) back to the concrete `common.Upstream` instances. Used
 // to populate the slot's `excludedCache` so the Prober can call
 // `Forward` against the excluded set without an extra ID→pointer hop.
+//
+// Only PROBE-ELIGIBLE exclusions are materialized: upstreams excluded by
+// probe-blocking steps (static tags, cordons — see the verdict matrix in
+// stdlib.js) are deliberately absent so the prober never shadow-mirrors
+// traffic whose results no gate consults. The full excluded set, with
+// per-upstream ProbeEligible, remains visible in DecisionOutput.Excluded.
 func materializeExcluded(ups []common.Upstream, excluded []ExcludedUpstream) []common.Upstream {
 	if len(excluded) == 0 {
 		return nil
@@ -780,6 +795,9 @@ func materializeExcluded(ups []common.Upstream, excluded []ExcludedUpstream) []c
 	}
 	out := make([]common.Upstream, 0, len(excluded))
 	for _, ex := range excluded {
+		if !ex.ProbeEligible {
+			continue
+		}
 		if u, ok := index[ex.ID]; ok {
 			out = append(out, u)
 		}

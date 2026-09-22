@@ -55,6 +55,9 @@ type Upstream interface {
 	Cordon(method string, reason string)
 	Uncordon(method string, reason string)
 	IgnoreMethod(method string)
+	// ShouldHandleMethod reports whether this upstream is expected to serve the
+	// given method (false when ignored/unsupported, e.g. via autoIgnoreUnsupportedMethods).
+	ShouldHandleMethod(method string) (bool, error)
 }
 
 // UniqueUpstreamKey returns a stable hash for an upstream, derived only from

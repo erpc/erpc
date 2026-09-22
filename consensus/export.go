@@ -100,6 +100,7 @@ func (e *fileMisbehaviorExporter) Close() error {
 type misbehaviorRecord struct {
 	TimestampMs  int64                 `json:"ts"`
 	ProjectID    string                `json:"projectId"`
+	UserId       string                `json:"userId,omitempty"`
 	NetworkID    string                `json:"networkId"`
 	Method       string                `json:"method"`
 	Finality     string                `json:"finality"`
@@ -151,4 +152,15 @@ type participantSnapshot struct {
 	// One of the below is set
 	Response json.RawMessage `json:"response,omitempty"`
 	Error    string          `json:"error,omitempty"`
+}
+
+// MisbehaviorExporter is the exported view of the JSONL exporter so other
+// subsystems (e.g. the data-integrity module's misbehaviorsDestination) can
+// reuse the same file/S3 machinery and config shape.
+type MisbehaviorExporter = misbehaviorExporter
+
+// NewMisbehaviorExporter builds the configured exporter. nil when the config
+// is unset or initialization fails — export is best-effort by design.
+func NewMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) MisbehaviorExporter {
+	return createMisbehaviorExporter(cfg, log)
 }

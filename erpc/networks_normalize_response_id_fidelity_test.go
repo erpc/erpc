@@ -11,14 +11,15 @@ import (
 )
 
 // TestNormalizeResponse_IDByteFidelity pins byte-for-byte preservation of the
-// client's request id in the response, even for ids that don't survive a
-// float64→int64 round-trip:
-//   - integers > 2^53 (e.g. nanosecond timestamps used by some indexers)
-//   - fractional ids (uncommon but legal per JSON-RPC spec)
+// client's request id in the response for every id that eRPC accepts, notably
+// integers above 2^53 that don't survive a float64 round-trip (e.g. nanosecond
+// timestamps used by some indexers).
 //
-// Prior to the fix, JsonRpcRequest.UnmarshalJSON parsed the id via
-// `interface{}` (Go decodes JSON numbers as float64) and cast to int64,
-// silently truncating both. The response then echoed the truncated value.
+// Sonic decodes JSON numbers as float64, so JsonRpcRequest.UnmarshalJSON used
+// to cast the id to int64 and silently truncate it. It now recovers the exact
+// integer from the verbatim id bytes; ids that cannot be represented losslessly
+// as int64 (fractional or out-of-range) are rejected before they can be
+// corrupted — see TestNormalizeResponse_IDLossyRejected.
 func TestNormalizeResponse_IDByteFidelity(t *testing.T) {
 	ctx := context.Background()
 	network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
@@ -49,14 +50,9 @@ func TestNormalizeResponse_IDByteFidelity(t *testing.T) {
 			wantID:    `9007199254740993`,
 		},
 		{
-			name:      "fractional_id_preserved",
-			requestID: `3.14`,
-			wantID:    `3.14`,
-		},
-		{
-			name:      "very_large_int_preserved",
-			requestID: `18446744073709551614`, // near uint64 max
-			wantID:    `18446744073709551614`,
+			name:      "nanosecond_timestamp_preserved",
+			requestID: `1755648000000000123`, // 19-digit int, > 2^53, still within int64
+			wantID:    `1755648000000000123`,
 		},
 	}
 
@@ -90,6 +86,40 @@ func TestNormalizeResponse_IDByteFidelity(t *testing.T) {
 	}
 }
 
+// TestNormalizeResponse_IDLossyRejected pins that a numeric request id which
+// cannot be represented losslessly as int64 is rejected at parse time rather
+// than silently truncated/clamped into a different internal id (issue #869).
+// eRPC represents numeric request ids as int64 internally and echoes them to
+// upstreams, so a lossy id would corrupt the upstream-facing request and could
+// collapse distinct client ids onto the same internal id.
+func TestNormalizeResponse_IDLossyRejected(t *testing.T) {
+	ctx := context.Background()
+	network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
+
+	lossy := []string{
+		`3.14`,                       // fractional
+		`1e20`,                       // exponent, out of int64 range
+		`9.3e18`,                     // exponent within magnitude but not an exact int
+		`9223372036854775808`,        // MaxInt64 + 1
+		`18446744073709551614`,       // near uint64 max
+		`99999999999999999999999999`, // far beyond int64
+	}
+
+	for _, idJSON := range lossy {
+		t.Run(idJSON, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":` + idJSON + `}`)
+			req := common.NewNormalizedRequest(body)
+
+			jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`"0x1"`), nil)
+			resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+			err := network.normalizeResponse(ctx, req, resp)
+			require.Error(t, err, "lossy id %s must be rejected, not silently converted", idJSON)
+			assert.Contains(t, err.Error(), "cannot be represented as a 64-bit integer")
+		})
+	}
+}
+
 // TestJsonRpcRequest_IDRawBytes verifies the verbatim id bytes are captured
 // during UnmarshalJSON for each id shape, and that programmatically-built
 // requests (no UnmarshalJSON) return nil.
@@ -102,7 +132,7 @@ func TestJsonRpcRequest_IDRawBytes(t *testing.T) {
 		{name: "int", body: `{"jsonrpc":"2.0","method":"x","id":1}`, want: `1`},
 		{name: "string", body: `{"jsonrpc":"2.0","method":"x","id":"a"}`, want: `"a"`},
 		{name: "large_int", body: `{"jsonrpc":"2.0","method":"x","id":9007199254740993}`, want: `9007199254740993`},
-		{name: "fractional", body: `{"jsonrpc":"2.0","method":"x","id":3.14}`, want: `3.14`},
+		{name: "negative_int", body: `{"jsonrpc":"2.0","method":"x","id":-42}`, want: `-42`},
 		{name: "null_id_no_raw", body: `{"jsonrpc":"2.0","method":"x","id":null}`, want: ``},
 		{name: "missing_id_no_raw", body: `{"jsonrpc":"2.0","method":"x"}`, want: ``},
 	}

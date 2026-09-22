@@ -19,6 +19,7 @@ import (
 	"github.com/envoyproxy/ratelimit/src/utils"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 )
@@ -112,20 +113,28 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 
 	r.logger.Debug().Str("url", util.RedactEndpoint(url)).Bool("tls", useTLS).Int("poolSize", poolSize).Msg("attempting to connect to Redis for rate limiting")
 
-	client := redis.NewClientImpl(
-		store.Scope("erpc_rl"),
-		useTLS,
-		r.cfg.Store.Redis.Username,
-		"tcp",
-		"single",
-		url,
-		poolSize,
-		5*time.Millisecond,
-		32,
-		nil,
-		false,
-		nil,
-	)
+	var client redis.Client
+	if iam := r.cfg.Store.Redis.IAMAuth; iam != nil && iam.Enabled {
+		client, err = data.NewIAMRateLimitClient(r.cfg.Store.Redis)
+		if err != nil {
+			return fmt.Errorf("rate-limiter redis IAM connect: %w", err)
+		}
+	} else {
+		client = redis.NewClientImpl(
+			store.Scope("erpc_rl"),
+			useTLS,
+			r.cfg.Store.Redis.Username,
+			"tcp",
+			"single",
+			url,
+			poolSize,
+			5*time.Millisecond,
+			32,
+			nil,
+			false,
+			nil,
+		)
+	}
 
 	cache := redis.NewFixedRateLimitCacheImpl(
 		client,
@@ -163,11 +172,18 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			admissionCap = remoteAdmissionCap(r.cfg.Store.Redis.ConnPoolSize)
 		}
 		budget := &RateLimiterBudget{
-			Id:         budgetCfg.Id,
-			Rules:      make([]*RateLimitRule, 0),
-			registry:   r,
-			logger:     &lg,
-			maxTimeout: maxTimeout,
+			Id:          budgetCfg.Id,
+			Rules:       make([]*RateLimitRule, 0),
+			registry:    r,
+			logger:      &lg,
+			maxTimeout:  maxTimeout,
+			creditUnits: budgetCfg.CreditUnits,
+		}
+		for _, rule := range budgetCfg.Rules {
+			if rule.CountMode != "" {
+				budget.hasRuleCountMode = true
+				break
+			}
 		}
 		if admissionCap > 0 {
 			budget.admission = make(chan struct{}, admissionCap)
@@ -185,7 +201,7 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			r.logger.Debug().Msgf("preparing rate limiter rule: %v", rule)
 
 			budget.rulesMu.Lock()
-			budget.Rules = append(budget.Rules, &RateLimitRule{Config: rule})
+			budget.Rules = append(budget.Rules, &RateLimitRule{Config: rule, key: ruleKeyFor(rule)})
 			budget.rulesMu.Unlock()
 
 			scope := []string{}
@@ -198,7 +214,7 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			if rule.PerIP {
 				scope = append(scope, "ip")
 			}
-			telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetCfg.Id, rule.Method, strings.Join(scope, ",")).Set(float64(rule.MaxCount))
+			telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetCfg.Id, rule.Method, strings.Join(scope, ","), rule.CountModeString()).Set(float64(rule.MaxCount))
 		}
 
 		r.budgetsLimiters.Store(budgetCfg.Id, budget)
