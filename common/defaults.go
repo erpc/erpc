@@ -318,18 +318,32 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	},
 	"eth_getBalance": {
 		ReqRefs: SecondParam,
+		// Preserve "latest"/"finalized" tags so the upstream returns current
+		// chain state at execution time. On instant-finality chains every
+		// numeric block ≤ tip gets classified as Finalized, so translation
+		// would pin the request to a stale poller block and route it into
+		// the long-TTL finalized cache. The cache layer's ResolveCacheBlockRef
+		// still keys tag-preserved requests by the network's current tip.
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_getTransactionCount": {
-		ReqRefs: SecondParam,
+		ReqRefs:               SecondParam,
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_getCode": {
 		ReqRefs: SecondParam,
 	},
 	"eth_call": {
-		ReqRefs: SecondParam,
+		ReqRefs:               SecondParam,
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_estimateGas": {
-		ReqRefs: SecondParam,
+		ReqRefs:               SecondParam,
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"trace_call": {
 		// Support both param orderings used in the wild:
@@ -881,6 +895,25 @@ func (s *ServerConfig) SetDefaults() error {
 		s.CostHeaders = util.BoolPtr(false)
 	}
 
+	if s.WebSocket == nil {
+		s.WebSocket = &WebSocketServerConfig{}
+	}
+	if s.WebSocket.ReadBufferSize == 0 {
+		s.WebSocket.ReadBufferSize = 4096
+	}
+	if s.WebSocket.WriteBufferSize == 0 {
+		s.WebSocket.WriteBufferSize = 4096
+	}
+	if s.WebSocket.MaxMessageSize == 0 {
+		s.WebSocket.MaxMessageSize = 1 * 1024 * 1024 // 1MB
+	}
+	if s.WebSocket.PingInterval == nil {
+		d := Duration(30 * time.Second)
+		s.WebSocket.PingInterval = &d
+	}
+	if s.WebSocket.MaxSubscriptionsPerConnection == 0 {
+		s.WebSocket.MaxSubscriptionsPerConnection = 100
+	}
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
 		// Only loopback by default; do not trust private subnets unless explicitly configured
@@ -1397,6 +1430,8 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
 	if strings.HasPrefix(upstream.Endpoint, "http://") ||
 		strings.HasPrefix(upstream.Endpoint, "https://") ||
+		strings.HasPrefix(upstream.Endpoint, "ws://") ||
+		strings.HasPrefix(upstream.Endpoint, "wss://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
 		return nil, nil
@@ -2163,6 +2198,14 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			v := *defaults.Multiplexing
 			n.Multiplexing = &v
 		}
+		if n.Failover == nil && defaults.Failover != nil {
+			cp := *defaults.Failover
+			if defaults.Failover.OnDefaultsExhausted != nil {
+				v := *defaults.Failover.OnDefaultsExhausted
+				cp.OnDefaultsExhausted = &v
+			}
+			n.Failover = &cp
+		}
 		if n.Evm != nil && defaults.Evm != nil {
 			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 				n.Evm.Integrity = &EvmIntegrityConfig{}
@@ -2276,7 +2319,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 
 	if len(upstreams) > 0 {
 		anyUpstreamInFallbackTier := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-			return u.HasTag("tier:fallback")
+			return u.HasTag(TagTierFallback)
 		})
 		if anyUpstreamInFallbackTier && n.SelectionPolicy == nil {
 			defCfg := NewDefaultNetworkConfig(upstreams)
@@ -2848,13 +2891,6 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 			c.FailureThresholdCapacity = 80
 		}
 	}
-	if c.SuccessThresholdCapacity == 0 {
-		if defaults != nil && defaults.SuccessThresholdCapacity != 0 {
-			c.SuccessThresholdCapacity = defaults.SuccessThresholdCapacity
-		} else {
-			c.SuccessThresholdCapacity = 200
-		}
-	}
 	if c.HalfOpenAfter == 0 {
 		if defaults != nil && defaults.HalfOpenAfter != 0 {
 			c.HalfOpenAfter = defaults.HalfOpenAfter
@@ -2873,6 +2909,11 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 		if defaults != nil && defaults.SuccessThresholdCapacity != 0 {
 			c.SuccessThresholdCapacity = defaults.SuccessThresholdCapacity
 		} else {
+			// 8-of-10 successes to close from half-open. A duplicated default
+			// block used to force this to 200 before this one could run,
+			// letting a half-open breaker absorb up to 192 probe failures
+			// before re-opening — meaningless thresholds for low-traffic
+			// (e.g. WS-only) upstreams.
 			c.SuccessThresholdCapacity = 10
 		}
 	}

@@ -63,7 +63,17 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 	// use-upstream selector scopes the tip to the targeted subset (the
 	// selector-scoped served-tip semantics): a request pinned to a lagging
 	// group must not be promised a block that group cannot serve.
-	highestBlock := common.EvmHighestLatestBlockNumber(network, context.WithValue(ctx, common.RequestContextKey, nq))
+	tipCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+	highestBlock := common.EvmHighestLatestBlockNumber(network, tipCtx)
+	if highestBlock <= blockNumber {
+		// The local view looks caught up, but a sibling instance may have
+		// published a higher delivered head that this process has not yet
+		// adopted via async pub/sub. Refresh once before accepting the
+		// response (same guard as enforceHighestBlock for "latest").
+		if refreshed := refreshHighestLatestBlockNumber(tipCtx, network); refreshed > highestBlock {
+			highestBlock = refreshed
+		}
+	}
 	if common.IsTracingDetailed {
 		blockNumberLag := highestBlock - blockNumber
 		if blockNumberLag < 0 {

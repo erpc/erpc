@@ -424,6 +424,16 @@ metrics: {
 16. **`erpc-server-pprof` is present in every image but is never the default CMD.** The pprof binary is always built into the image at `/erpc-server-pprof` but the default `CMD` is `/erpc-server`. Operators must override the container command to use pprof — it is not activated by any env var or config flag. Source: `Dockerfile:L84`, `Makefile` (`run-pprof` target)
 17. **The `prometheus.yaml` at the repo root is NOT the monitoring container's config.** It is the production Prometheus Operator config (with `remote_write` to Mimir, in-cluster job discovery). The monitoring container at `monitoring/prometheus/prometheus.yml` is a separate file with different scrape targets. Loading the wrong one into the monitoring container will produce empty or incorrect dashboards. Source: `prometheus.yaml`, `monitoring/prometheus/prometheus.yml`
 
+### WebSocket subscriptions
+
+If you serve [`eth_subscribe`](/operation/websocket) traffic, a few additional notes:
+
+- **One upstream subscription per (network, filter)** — eRPC de-duplicates across clients. 1,000 clients subscribed to the same `logs` filter consume one upstream subscription, not 1,000.
+- **Per-network memory for reorg tracking** — eRPC keeps a bounded ring of the last N canonical block headers per network (default 256, tune via [`indexer.canonicalChainDepth`](/operation/websocket#indexer-configuration)) plus an index of delivered logs keyed by `blockHash`. Upper bound is roughly `ring-depth × logs-per-block × payload-size`. On logs-heavy chains (~50 logs/block, ~400 B each) that is well under 10 MB per network — dominated by log payload, not ring metadata.
+- **Pod-local reorg view** — client WS connections are sticky to one pod. The `removed: true` re-emission that pod sends reflects *that pod's* local observation of the canonical chain. Cross-pod exactly-once reorg delivery is not provided; if required, rely on upstream consensus policies.
+- **Slow-client policy** — each subscription gets a bounded notification buffer. A slow client drops its *own* oldest queued notifications rather than blocking upstream delivery or other clients. No tuning knob; scale connections horizontally if drops become meaningful.
+- **`waitBeforeShutdown` still applies** — WS connections are drained during the grace window along with HTTP requests. A 30s `waitBeforeShutdown` is a safe default when a load balancer sits in front of eRPC.
+
 ### Observability
 
 | Metric | Type | Labels | When it fires |

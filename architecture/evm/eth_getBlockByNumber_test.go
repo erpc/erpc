@@ -194,3 +194,31 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		assert.True(t, result.IsResultEmptyish())
 	})
 }
+
+// tipRefreshNetwork stubs local TipHW separately from a remote-refreshed TipHW
+// so we can exercise the cross-pod false-negative refresh path.
+type tipRefreshNetwork struct {
+	testNetwork
+	localTip  int64
+	remoteTip int64
+}
+
+func (n *tipRefreshNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+	return n.localTip
+}
+
+func (n *tipRefreshNetwork) EvmRefreshHighestLatestBlockNumber(ctx context.Context) int64 {
+	return n.remoteTip
+}
+
+func TestRefreshHighestLatestBlockNumber_UsesTipRefresher(t *testing.T) {
+	n := &tipRefreshNetwork{localTip: 1000, remoteTip: 1001}
+	got := refreshHighestLatestBlockNumber(context.Background(), n)
+	assert.Equal(t, int64(1001), got, "must prefer remote TipHW from tipRefresher")
+}
+
+func TestRefreshHighestLatestBlockNumber_FallsBackWithoutRefresher(t *testing.T) {
+	n := &testNetwork{}
+	got := refreshHighestLatestBlockNumber(context.Background(), n)
+	assert.Equal(t, int64(0), got, "plain Network stubs use EvmHighestLatestBlockNumber")
+}

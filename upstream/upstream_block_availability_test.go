@@ -37,6 +37,9 @@ func (m *mockEvmStatePollerEnhanced) PollLatestBlockNumber(ctx context.Context) 
 	}
 	return m.latestBlock, nil
 }
+func (m *mockEvmStatePollerEnhanced) PollLatestBlockNumberNow(ctx context.Context) (int64, error) {
+	return m.PollLatestBlockNumber(ctx)
+}
 func (m *mockEvmStatePollerEnhanced) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
 	if m.pollError != nil {
 		return 0, m.pollError
@@ -602,6 +605,9 @@ func (m *mockEvmStatePollerWithCustomBehavior) Bootstrap(ctx context.Context) er
 func (m *mockEvmStatePollerWithCustomBehavior) Poll(ctx context.Context) error      { return nil }
 func (m *mockEvmStatePollerWithCustomBehavior) PollLatestBlockNumber(ctx context.Context) (int64, error) {
 	return m.pollLatestBlockNumber(ctx)
+}
+func (m *mockEvmStatePollerWithCustomBehavior) PollLatestBlockNumberNow(ctx context.Context) (int64, error) {
+	return m.PollLatestBlockNumber(ctx)
 }
 func (m *mockEvmStatePollerWithCustomBehavior) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
 	return m.finalizedBlock, nil

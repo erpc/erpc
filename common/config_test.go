@@ -1212,6 +1212,21 @@ projects:
 	})
 }
 
+// TestNetworkConfig_SetDefaults_FailoverInheritsFromDefaults verifies that a
+// failover flag set at the NetworkDefaults level is propagated to networks
+// that don't override it.
+func TestNetworkConfig_SetDefaults_FailoverInheritsFromDefaults(t *testing.T) {
+	enabled := true
+	defaults := &NetworkDefaults{
+		Failover: &FailoverConfig{OnDefaultsExhausted: &enabled},
+	}
+	n := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+	err := n.SetDefaults(nil, defaults)
+	assert.NoError(t, err)
+	assert.NotNil(t, n.Failover)
+	assert.True(t, n.Failover.Enabled())
+}
+
 func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
 	cfg := &Config{}
 	base := func(mode RateLimitCountMode) *UpstreamConfig {

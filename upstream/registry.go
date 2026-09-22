@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -148,6 +149,10 @@ func (u *UpstreamsRegistry) GetInitializer() *util.Initializer {
 	return u.initializer
 }
 
+func (u *UpstreamsRegistry) SharedStateRegistry() data.SharedStateRegistry {
+	return u.sharedStateRegistry
+}
+
 func (u *UpstreamsRegistry) getNetworkMutex(networkId string) *sync.RWMutex {
 	mutex, _ := u.networkMu.LoadOrStore(networkId, &sync.RWMutex{})
 	return mutex.(*sync.RWMutex)
@@ -155,15 +160,6 @@ func (u *UpstreamsRegistry) getNetworkMutex(networkId string) *sync.RWMutex {
 
 func (u *UpstreamsRegistry) GetProvidersRegistry() *thirdparty.ProvidersRegistry {
 	return u.providersRegistry
-}
-
-// SharedStateRegistry exposes the registry's shared-state backing store so
-// that consumers (e.g., Network) can register their own counters/values for
-// strict-monotonic coordination across pods. The registry is owned here
-// because UpstreamsRegistry is constructed with it; surfacing it via an
-// accessor is cheaper than threading it through Network's constructor.
-func (u *UpstreamsRegistry) SharedStateRegistry() data.SharedStateRegistry {
-	return u.sharedStateRegistry
 }
 
 // NoUpstreamsAvailableAfter is how long a network may keep initializing with
@@ -423,6 +419,60 @@ func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId s
 	u.networkUpstreamsAtomic.Store(networkId, cp)
 	u.upstreamsMu.RUnlock()
 	return cp
+}
+
+// GetFallbackEscapeUpstreams returns fallback-group upstreams for a network
+// that are eligible to serve a per-request escape when the primary set has
+// been exhausted with retryable errors.
+//
+// Filters by:
+//   - Group == UpstreamGroupFallback (the operator's explicit fallback tag)
+//   - Bootstrapped (present in networkUpstreams via GetNetworkUpstreams)
+//   - Not hard-down (IsDown == false; circuit breaker is closed)
+//   - Method allowed (ShouldHandleMethod respects IgnoreMethods / AllowMethods)
+//
+// Critically does NOT filter by metricsTracker.IsCordoned. The caller's
+// intent is to escape past the selectionPolicy cordon for this single
+// request. The selectionPolicy continues to govern steady-state routing
+// via the score-based sorted list; this escape path is orthogonal and
+// triggered only on per-request exhaustion in Network.Forward's inner loop.
+func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, networkId, method string) []*Upstream {
+	all := u.GetNetworkUpstreams(ctx, networkId)
+	out := make([]*Upstream, 0, len(all))
+	for _, up := range all {
+		cfg := up.Config()
+		if cfg == nil || !cfg.HasTag(common.TagTierFallback) {
+			continue
+		}
+		if up.IsDown() {
+			continue
+		}
+		if allowed, err := up.ShouldHandleMethod(method); err != nil || !allowed {
+			continue
+		}
+		out = append(out, up)
+	}
+	return out
+}
+
+// GetWsUpstreams returns all WS-capable upstreams for a network (ws:// or wss:// endpoints).
+func (u *UpstreamsRegistry) GetWsUpstreams(ctx context.Context, networkId string) []*Upstream {
+	all := u.GetNetworkUpstreams(ctx, networkId)
+	var ws []*Upstream
+	for _, up := range all {
+		cfg := up.Config()
+		if cfg == nil {
+			continue
+		}
+		parsed, err := url.Parse(cfg.Endpoint)
+		if err != nil {
+			continue
+		}
+		if parsed.Scheme == "ws" || parsed.Scheme == "wss" {
+			ws = append(ws, up)
+		}
+	}
+	return ws
 }
 
 func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {

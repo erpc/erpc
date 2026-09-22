@@ -841,6 +841,99 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	connector.AssertExpectations(t)
 }
 
+// TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline verifies that the
+// background refresh fn receives at least the caller-provided context deadline
+// as its timeout, rather than being silently capped at fallbackTimeout. This
+// matters for slow-chain state pollers whose eth_getBlockByNumber
+// legitimately exceeds the default 3s fallbackTimeout.
+func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
+	// refreshFn deliberately returns an error so applyRefreshResult short-circuits
+	// before scheduleBackgroundPushCurrent, avoiding a background Publish goroutine
+	// that would race across t.Run boundaries.
+	refreshErr := errors.New("intentional")
+	makeCounter := func(t *testing.T, registry *sharedStateRegistry, key string) *counterInt64 {
+		t.Helper()
+		c := &counterInt64{
+			registry:         registry,
+			key:              key,
+			ignoreRollbackOf: 1024,
+		}
+		c.value.Store(5)
+		c.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+		return c
+	}
+
+	t.Run("ctx deadline longer than fallback is honored", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 500 * time.Millisecond
+		registry.updateMaxWait = 5 * time.Second
+
+		counter := makeCounter(t, registry, "test-ctx-deadline")
+
+		const callerDeadline = 4 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+		defer cancel()
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.Greater(t, fnTimeout, registry.fallbackTimeout,
+			"fn timeout should honor caller ctx deadline when longer than fallbackTimeout")
+		assert.LessOrEqual(t, fnTimeout, callerDeadline)
+	})
+
+	t.Run("no ctx deadline falls back to fallbackTimeout", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 500 * time.Millisecond
+
+		counter := makeCounter(t, registry, "test-no-deadline")
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(context.Background(), time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.LessOrEqual(t, fnTimeout, registry.fallbackTimeout,
+			"fn timeout should be bounded by fallbackTimeout when caller has no deadline")
+	})
+
+	t.Run("ctx deadline shorter than fallback uses fallback", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 2 * time.Second
+		registry.updateMaxWait = 5 * time.Second
+
+		counter := makeCounter(t, registry, "test-short-deadline")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.Greater(t, fnTimeout, 500*time.Millisecond,
+			"fn timeout should use fallbackTimeout when caller deadline is shorter")
+	})
+}
+
 func TestCounterInt64_ReaderStarvation(t *testing.T) {
 	t.Run("GetValue NOT blocked by long-running TryUpdateIfStale", func(t *testing.T) {
 		counter := &counterInt64{
@@ -1741,6 +1834,107 @@ func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
 		assert.Equal(t, int64(100), setCallValue, "should push fresher local value to remote")
 		setCallMu.Unlock()
 	})
+}
+
+func TestCounterInt64_TryUpdateAndPublish_Sync(t *testing.T) {
+	registry, connector, ctx := setupTest("sync-pub")
+
+	published := make(chan struct{}, 1)
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			select {
+			case published <- struct{}{}:
+			default:
+			}
+		}).
+		Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil)
+	// Background reconcile may also Lock/Get after sync publish.
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(`{"v":10,"t":1,"b":"test"}`), nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+
+	got := counter.TryUpdateAndPublish(ctx, 10)
+	assert.Equal(t, int64(10), got)
+
+	select {
+	case <-published:
+		// sync SET happened before return
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("expected synchronous Set before TryUpdateAndPublish returned")
+	}
+}
+
+func TestCounterInt64_TryUpdateAndPublish_FallsBackOnPublishError(t *testing.T) {
+	registry, connector, ctx := setupTest("sync-pub-fail")
+
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).
+		Return(errors.New("redis down"))
+	// Async fallback still attempts publish/lock.
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(""), errors.New("get failed")).Maybe()
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(errors.New("redis down")).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+
+	got := counter.TryUpdateAndPublish(ctx, 42)
+	assert.Equal(t, int64(42), got, "local tip must advance even when sync publish fails")
+	time.Sleep(50 * time.Millisecond) // allow bg fallback to run
+}
+
+func TestCounterInt64_RefreshFromRemote_AdoptsHigherTip(t *testing.T) {
+	registry, connector, ctx := setupTest("refresh-tip")
+
+	remoteTs := time.Now().UnixMilli() + 60_000
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(fmt.Sprintf(`{"v":1001,"t":%d,"b":"pod-a"}`, remoteTs)), nil)
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(1000)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+
+	got := counter.RefreshFromRemote(ctx)
+	assert.Equal(t, int64(1001), got)
+	assert.Equal(t, int64(1001), counter.GetValue())
+	connector.AssertExpectations(t)
+}
+
+func TestCounterInt64_RefreshFromRemote_KeepsLocalWhenRemoteMissing(t *testing.T) {
+	registry, connector, ctx := setupTest("refresh-missing")
+
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(""), common.NewErrRecordNotFound("test", "value", "mock"))
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(777)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+
+	got := counter.RefreshFromRemote(ctx)
+	assert.Equal(t, int64(777), got)
 }
 
 // TestCounterInt64_ZeroIsNotAHeadObservation covers the case where a shared head

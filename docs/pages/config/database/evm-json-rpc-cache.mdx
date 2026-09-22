@@ -192,6 +192,8 @@ All fields are under `database.evmJsonRpcCache`. `Duration` values accept Go dur
 |---|---|---|---|
 | `database.evmJsonRpcCache` | `*CacheConfig` | `nil` | When `nil` (omitted): cache subsystem is entirely disabled — the `EvmJsonRpcCache` object is never created. `SetDefaults` on sub-fields is only called when this pointer is non-nil. The auto-generated project (`id: "main"`, created when no `projects:` block exists) has NO `evmJsonRpcCache` config. You must provide the key explicitly to enable caching. Source: <SourceLink file="common/defaults.go" lines="831-836" /> |
 
+For `eth_getBlockByNumber` requests that use a moving tag (`"latest"`, `"finalized"`, `"safe"`), eRPC keys the cache entry by the concrete block number — the response's own number on write, the network's tracked tip on read. That means a burst of concurrent tag queries landing on the same tip coalesces onto one cached entry, but once the tip advances the key changes and the next request forwards upstream. You don't have to worry about a `"latest"` query returning a block that's multiple tips stale just because the TTL hasn't expired.
+
 #### `evmJsonRpcCache.compression`
 
 Auto-created even when omitted: `CacheConfig.SetDefaults` always creates `&CompressionConfig{}` and calls its `SetDefaults()` when `c.Compression == nil`. The only way to opt out is `compression.enabled: false`.

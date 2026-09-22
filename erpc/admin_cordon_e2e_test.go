@@ -91,7 +91,7 @@ func TestAdminCordon_TwoInstancesConvergeThroughSharedState(t *testing.T) {
 		require.NoError(t, err)
 		instance.Bootstrap(ctx)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, instance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, instance)
 		require.NoError(t, err)
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)

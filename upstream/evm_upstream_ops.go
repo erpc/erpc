@@ -220,10 +220,14 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 		// beyond head+tolerance.
 		tolerance := cfg.Evm.HeadLagToleranceBlocks
 		// If the requested block is beyond the current latest block (plus
-		// tolerance), try force-polling once
+		// tolerance), force-poll once with the debounce bypassed. A debounced
+		// PollLatestBlockNumber can reuse a tip that is still behind the
+		// request (common when the network tip advanced via another ingress
+		// while this upstream's poller has not refreshed yet) and falsely
+		// trip the upper-bound gate.
 		if blockNumber > latestBlock+tolerance && forceFreshIfStale {
 			var err error
-			latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
+			latestBlock, err = statePoller.PollLatestBlockNumberNow(ctx)
 			if err != nil {
 				return false, fmt.Errorf("failed to poll latest block number: %w", err)
 			}

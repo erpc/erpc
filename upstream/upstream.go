@@ -420,6 +420,18 @@ func (u *Upstream) Config() *common.UpstreamConfig {
 	return u.config
 }
 
+func (u *Upstream) IsDown() bool {
+	if u == nil {
+		return true
+	}
+	for _, fe := range u.failsafeExecutors {
+		if br := fe.Breaker(); br != nil && br.State() == failsafe.StateOpen {
+			return true
+		}
+	}
+	return false
+}
+
 func (u *Upstream) MetricsTracker() *health.Tracker {
 	if u == nil {
 		return nil
@@ -634,7 +646,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	// Send the request based on client type
 	//
 	switch clientType {
-	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds:
+	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds, clients.ClientTypeWsJsonRpc:
 		tryForward := func(
 			ctx context.Context,
 			isHedge bool,

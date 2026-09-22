@@ -15,11 +15,61 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// subscriberChannel wraps a channel with metadata to prevent double-close
+// subscriberChannel wraps the delivery channel with a lifecycle signal.
+//
+// Historically this struct tracked `closed bool` guarded by a mutex so
+// writers could avoid "send on closed channel" panics. That forced every
+// publish to take a per-subscriber lock just to read a channel — which
+// is an anti-pattern, and got awkward fast once notifySubscribers grew a
+// drop-oldest retry loop (to keep the latest monotonic value when the
+// buffered slot was full).
+//
+// The replacement is the standard idiom: a `done` channel closed exactly
+// once. Receivers that also select on `<-done` observe subscriber
+// shutdown without requiring the sender-side to close `ch`, which means:
+//   - notifySubscribers can be lock-free (select on ch|done|default).
+//   - cleanup/stop call close(done), never close(ch).
+//   - A second cleanup is a no-op via sync.Once.
 type subscriberChannel struct {
-	ch     chan CounterInt64State
-	closed bool
-	mu     sync.Mutex
+	ch        chan CounterInt64State
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// close marks the subscriber as gone. Idempotent. Does not close `ch` —
+// consumers that also select on `<-done` see the shutdown signal there.
+func (sc *subscriberChannel) close() {
+	sc.closeOnce.Do(func() { close(sc.done) })
+}
+
+// sendKeepLatest delivers value into sc.ch using keep-latest semantics:
+// if the buffered slot is full, the stale value is drained and the new
+// one takes its place. Returns early if the subscriber has been closed.
+// Never blocks on a slow consumer.
+//
+// Keep-latest (rather than drop-new) matters for monotonic counters
+// (latest / finalized block): the freshest value is the only one
+// correctness depends on, and silently dropping it opens a propagation
+// window where different eRPC instances answer with regressing values.
+func (sc *subscriberChannel) sendKeepLatest(value CounterInt64State) {
+	for {
+		select {
+		case sc.ch <- value:
+			return
+		case <-sc.done:
+			return
+		default:
+		}
+		// Buffer full. Drain the stale entry, then loop and retry the send.
+		// The inner select also watches done so we don't spin after shutdown.
+		select {
+		case <-sc.ch:
+		case <-sc.done:
+			return
+		default:
+			// Concurrent consumer drained for us; loop and retry the send.
+		}
+	}
 }
 
 // RedisPubSubManager is a self-healing manager for Redis pubsub subscriptions.
@@ -106,16 +156,10 @@ func (m *RedisPubSubManager) stop() {
 		}
 	}
 
-	// Close all subscriber channels
+	// Signal shutdown to every subscriber. Idempotent via sync.Once.
 	m.subscribers.Range(func(key, value interface{}) bool {
-		channels := value.([]*subscriberChannel)
-		for _, sc := range channels {
-			sc.mu.Lock()
-			if !sc.closed {
-				close(sc.ch)
-				sc.closed = true
-			}
-			sc.mu.Unlock()
+		for _, sc := range value.([]*subscriberChannel) {
+			sc.close()
 		}
 		return true
 	})
@@ -191,35 +235,28 @@ func (m *RedisPubSubManager) Subscribe(key string) (<-chan CounterInt64State, fu
 	}
 
 	sc := &subscriberChannel{
-		ch: make(chan CounterInt64State, 1),
+		ch:   make(chan CounterInt64State, 1),
+		done: make(chan struct{}),
 	}
 
 	// Add the channel to subscribers
 	m.addSubscriber(key, sc)
 
-	// Get initial value in background
+	// Get initial value in background. Reuse sendKeepLatest so a pubsub
+	// message that landed first isn't clobbered by a stale initial fetch
+	// (processNewState's timestamp ordering also catches this, but
+	// keep-latest at the transport means the consumer never even sees
+	// the out-of-order value).
 	go func() {
 		if val, ok, err := m.getCurrentValue(m.appCtx, key); err == nil && ok {
-			sc.mu.Lock()
-			if !sc.closed {
-				select {
-				case sc.ch <- val:
-				case <-m.appCtx.Done():
-				}
-			}
-			sc.mu.Unlock()
+			sc.sendKeepLatest(val)
 		}
 	}()
 
-	// Return cleanup function
+	// Return cleanup function. Idempotent.
 	cleanup := func() {
 		m.removeSubscriber(key, sc)
-		sc.mu.Lock()
-		if !sc.closed {
-			close(sc.ch)
-			sc.closed = true
-		}
-		sc.mu.Unlock()
+		sc.close()
 	}
 
 	return sc.ch, cleanup, nil
@@ -438,23 +475,14 @@ func (m *RedisPubSubManager) removeSubscriber(key string, sc *subscriberChannel)
 	}
 }
 
-// notifySubscribers sends a value to all subscribers of a key
+// notifySubscribers delivers value to all subscribers of key with
+// keep-latest semantics. Lock-free on the hot path.
 func (m *RedisPubSubManager) notifySubscribers(key string, value CounterInt64State) {
 	subsValue, ok := m.subscribers.Load(key)
 	if !ok {
 		return
 	}
-
-	channels := subsValue.([]*subscriberChannel)
-	for _, sc := range channels {
-		sc.mu.Lock()
-		if !sc.closed {
-			select {
-			case sc.ch <- value:
-			default:
-				// Channel is full, skip
-			}
-		}
-		sc.mu.Unlock()
+	for _, sc := range subsValue.([]*subscriberChannel) {
+		sc.sendKeepLatest(value)
 	}
 }

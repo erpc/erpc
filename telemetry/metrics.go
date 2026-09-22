@@ -117,6 +117,12 @@ var (
 		Help:      "Dynamically computed block time per network in milliseconds.",
 	}, []string{"project", "network"})
 
+	MetricUpstreamWebsocketConnected = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_websocket_connected",
+		Help:      "Whether the upstream WebSocket connection is currently established (1) or down/wedged (0).",
+	}, []string{"project", "vendor", "network", "upstream"})
+
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
 	// freshest block a strict MAJORITY of eligible upstreams already have (see
@@ -737,6 +743,21 @@ var (
 		Name:      "upstream_breaker_state_change_total",
 		Help:      "Total circuit-breaker state transitions per upstream and direction (closed_to_open/half_open_to_open/half_open_to_closed/open_to_half_open).",
 	}, []string{"project", "upstream", "transition"})
+
+	// MetricNetworkFallbackEscapeTotal counts firings of the per-request
+	// fallback escape hatch in Network.Forward: when the primary set is
+	// exhausted with retryable errors mid-request, eRPC appends cordoned
+	// fallback-group upstreams and continues iterating so the client gets a
+	// response instead of ErrUpstreamsExhausted. Expected to be zero in
+	// steady state. Sustained non-zero values during an outage are expected
+	// during the ~1m window before selectionPolicy promotes fallbacks into
+	// upsList directly; sustained non-zero in steady state indicates a
+	// config issue or regression.
+	MetricNetworkFallbackEscapeTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_fallback_escape_total",
+		Help:      "Total number of times the per-request fallback escape hatch fired because the primary upstream set was exhausted with retryable errors.",
+	}, []string{"project", "network", "category"})
 
 	// MetricCacheExecutorAttempt counts every attempt a cache-connector
 	// failsafe executor governs, keyed by the executor's identity (the
