@@ -96,7 +96,7 @@ https://docs.erpc.cloud/reference/evm/method-handlers.llms.txt`}
 
 **Hook topology.** Five hook layers fire at specific points in the request lifecycle, ordered around the cache read and the failsafe retry loop:
 
-1. **Project.PreForward** (`HandleProjectPreForward`, `architecture/evm/hooks.go:L10`) — fires before cache read. Handles `eth_blockNumber` (returns highest known, replaces real upstream response), `eth_call` (injects missing block param), `eth_chainId` (responds from config), and records `trace_filter`/`arbtrace_filter` range histogram.
+1. **Project.PreForward** (`HandleProjectPreForward`, `architecture/evm/hooks.go:L10`) — fires before cache read. Handles `eth_blockNumber` (returns highest known, replaces real upstream response), `eth_call` and `eth_estimateGas` (inject missing block param), `eth_chainId` (responds from config), and records `trace_filter`/`arbtrace_filter` range histogram.
 2. **Network.PreForward** (`HandleNetworkPreForward`, `architecture/evm/hooks.go:L40`) — fires after upstream selection. Handles `eth_chainId` (responds from config), and proactive `trace_filter`/`arbtrace_filter` auto-splitting when the request range exceeds the per-upstream threshold.
 3. **Upstream.PreForward** (`HandleUpstreamPreForward`, `architecture/evm/hooks.go:L86`) — fires once per upstream attempt. Handles `eth_getLogs`/`trace_filter` block-range availability, `eth_chainId` fallback (upstream config → network ID string → network config), and `eth_query*` shim translation.
 4. **Upstream.PostForward** (`HandleUpstreamPostForward`, `architecture/evm/hooks.go:L109`) — fires after each upstream response. Handles `eth_getBlockByNumber`/`eth_getBlockByHash` block validation, `eth_getBlockReceipts` integrity checks, and `eth_sendRawTransaction` nonce-exception interception. Also applies the configurable `markEmptyAsErrorMethods` gate to convert null/empty results to retryable `ErrEndpointMissingData`. Conversion only fires when the `RetryEmpty` directive is `true` on the request; when `RetryEmpty=false`, null/empty passes through unchanged even for methods in the list.
@@ -108,7 +108,7 @@ Resolution is lock-efficient: param values are extracted under a read lock, reso
 
 **Future/missing block guard (`emptyResultBeyondConfidence`).** When an upstream returns null/empty for a numeric block request, `emptyResultBeyondConfidence` (`architecture/evm/common.go:L62`) compares the request's cached block number against the network's confidence head (`EvmHighestLatestBlockNumber` by default; `EvmHighestFinalizedBlockNumber` when `emptyResultConfidence: finalizedBlock`). If the requested block is strictly above the head, the result is truthful — no retry is triggered. If the head is unknown (0) the guard fails open: any block is treated as retryable. This prevents retry storms for not-yet-produced future blocks while preserving normal retry behavior for stale nodes.
 
-**eth_call missing-block-param injection.** If the request arrives with exactly one parameter (the call object, no block tag), the project pre-forward hook appends `"latest"` as the second param before forwarding. `eth_call` is intentionally excluded from `markEmptyAsErrorMethods` and from structured error wrapping — callers expect raw ABI revert data (a hex string), not a structured error object.
+**eth_call / eth_estimateGas missing-block-param injection.** If the request arrives with exactly one parameter (the call object, no block tag), the project pre-forward hook appends `"latest"` as the second param before forwarding; interpolation then pins it to the network's latest block number, so no upstream applies its own default block. `eth_call` is intentionally excluded from `markEmptyAsErrorMethods` and from structured error wrapping — callers expect raw ABI revert data (a hex string), not a structured error object.
 
 **eth_chainId synthetic response.** All three hook levels (project, network, upstream) attempt to return a synthetic response from config without contacting any upstream. The check gates on `ShouldSkipCacheRead("")`: when `x-erpc-skip-cache-read: true` is set, all three layers are bypassed so force-refresh requests reach a real upstream for validation. At the upstream level, the handler prefers `upstreams[].evm.chainId`, then falls back to parsing from the upstream's network ID string (e.g. `"evm:1"`), then falls back to the network config value.
 
@@ -292,7 +292,7 @@ upstreams: [
 
 ### Request/response behavior
 
-- `eth_call` with one param always has `"latest"` appended before forwarding; callers never see this normalization. [<SourceLink file="architecture/evm/eth_call.go" lines="9-32" />]
+- `eth_call` and `eth_estimateGas` with one param always have `"latest"` appended before forwarding; callers never see this normalization. [<SourceLink file="architecture/evm/eth_call.go" lines="12-34" />]
 - `eth_chainId` synthetic response is skipped when `ShouldSkipCacheRead("")` is true, allowing force-refresh requests to reach real upstreams. [<SourceLink file="architecture/evm/eth_chainId.go" lines="26" />]
 - `eth_blockNumber` cached responses are returned as-is, bypassing the highest-block comparison. [<SourceLink file="architecture/evm/eth_blockNumber.go" lines="40-48" />]
 - `eth_getBlockByNumber` `enforceHighestBlock` re-forward excludes the stale upstream only when the original response contained a real block number (non-zero). [<SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="196-202" />]
@@ -317,7 +317,7 @@ upstreams: [
 
 ### Edge cases & gotchas
 
-1. **eth_call missing block param auto-injection** — a client sending only the call object (no block tag) gets `"latest"` silently appended. Source: <SourceLink file="architecture/evm/eth_call.go" lines="15-28" />.
+1. **eth_call / eth_estimateGas missing block param auto-injection** — a client sending only the call object (no block tag) gets `"latest"` silently appended. Source: <SourceLink file="architecture/evm/eth_call.go" lines="18-30" />.
 2. **eth_chainId skip-cache-read bypasses all synthetic levels** — `x-erpc-skip-cache-read: true` causes all three hook levels to fall through to real upstreams. Source: <SourceLink file="architecture/evm/eth_chainId.go" lines="26" />.
 3. **eth_blockNumber from-cache bypass** — cached responses skip the highest-block comparison; TTL is the correctness control for stale cached data. Source: <SourceLink file="architecture/evm/eth_blockNumber.go" lines="40-48" />.
 4. **enforceHighestBlock excludes stale upstream only when block was extracted** — if the upstream returned a JSON-RPC error, the extracted block number is 0 and the upstream is NOT excluded from the re-forward. Source: <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="196-202" />.
