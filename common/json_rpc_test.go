@@ -769,7 +769,7 @@ func clientWireCode(t *testing.T, err error) JsonRpcErrorNumber {
 	t.Helper()
 	jre := &ErrJsonRpcExceptionInternal{}
 	require.True(t, errors.As(err, &jre), "no json-rpc exception in chain: %v", err)
-	return jre.NormalizedCode()
+	return jre.WireCode()
 }
 
 func newExhausted(t *testing.T, order []string, causes map[string]error) error {
