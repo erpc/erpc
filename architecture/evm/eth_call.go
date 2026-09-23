@@ -6,7 +6,10 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-func projectPreForward_eth_call(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+// projectPreForward_defaultLatestBlock pins a call simulation sent without a
+// block parameter to "latest". Forwarded bare, each node applies its own
+// default block, so the answer depends on which upstream serves it.
+func projectPreForward_defaultLatestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	jrq, err := nq.JsonRpcRequest()
 	if err != nil {
 		return false, nil, nil
@@ -19,7 +22,6 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 	}
 	jrq.RUnlock()
 
-	// Some upstreams require the block number to be specified as a parameter.
 	jrq.Lock()
 	jrq.Params = []interface{}{
 		jrq.Params[0],
