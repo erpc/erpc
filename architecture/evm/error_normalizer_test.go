@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -314,6 +315,69 @@ func TestExtractJsonRpcError_MempoolPolicyRejections(t *testing.T) {
 				if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
 					t.Fatalf("expected ErrEndpointServerSideException fallback for %q, got %T: %v", tc.message, err, err)
 				}
+			}
+		})
+	}
+}
+
+// TestExtractJsonRpcError_RethRevertError covers reth's Debug-formatted revert,
+// returned as -32603 with the revert bytes only in the message (seen on HyperEVM
+// nodes for eth_estimateGas pinned to a block number or "pending"). It is an
+// execution outcome: code 3, revert bytes in data, never retried or scored as an
+// upstream failure.
+func TestExtractJsonRpcError_RethRevertError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		method   string
+		message  string
+		wantData interface{}
+	}{
+		{
+			name:     "estimateGas custom error bytes",
+			method:   "eth_estimateGas",
+			message:  "Failed to estimate gas: InvalidTransaction(Revert(RevertError { output: Some(0x756688fe) }))",
+			wantData: "0x756688fe",
+		},
+		{
+			name:     "eth_call revert without output",
+			method:   "eth_call",
+			message:  "InvalidTransaction(Revert(RevertError { output: None }))",
+			wantData: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","method":"` + tc.method + `","params":[],"id":1}`))
+			nr := common.NewNormalizedResponse().WithRequest(req)
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(-32603, tc.message, "")
+			jrErr.Data = nil
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+			}
+			if common.IsRetryableTowardNetwork(err) {
+				t.Fatalf("revert must not be retried toward the network")
+			}
+			jre := &common.ErrJsonRpcExceptionInternal{}
+			if !errors.As(err, &jre) {
+				t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
+			}
+			if got := jre.NormalizedCode(); got != common.JsonRpcErrorEvmReverted {
+				t.Fatalf("normalized code: got %d, want %d", got, common.JsonRpcErrorEvmReverted)
+			}
+			if got := jre.Details["data"]; got != tc.wantData {
+				t.Fatalf("data: got %v, want %v", got, tc.wantData)
 			}
 		})
 	}

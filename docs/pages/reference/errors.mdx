@@ -278,7 +278,7 @@ Entry point: <SourceLink file="architecture/evm/error_normalizer.go" lines="20" 
 | 6 | Block-tag unsupported ("pending block is not available", "safe block not found", "finalized is not a supported", etc.) | `ErrEndpointClientSideException` | −32600 | yes | yes (deliberately retryable) |
 | 7 | Missing-data patterns ("missing trie node", "unknown block", "header not found", "transaction not found", "no historical rpc", etc.) | `ErrEndpointMissingData` | −32014 | yes | yes |
 | 8 | "execution timeout" | `ErrEndpointServerSideException` | −32015 | yes | yes |
-| 9 | Reverts: "reverted", "VM execution error", "VM Exception", "intrinsic gas too high" | `ErrEndpointExecutionException` | 3 | no | no (yes for `eth_sendRawTransaction`) |
+| 9 | Reverts: "reverted", "VM execution error", "VM Exception", "intrinsic gas too high", reth `RevertError { output: Some(0x…) \| None }` (−32603, no `data`; the `0x…` bytes become `data`) | `ErrEndpointExecutionException` | 3 | no | no (yes for `eth_sendRawTransaction`) |
 | 10 | "EVM error: InvalidJump" (Berachain) | `ErrEndpointExecutionException` | 3 | no | no (yes for `eth_sendRawTransaction`) |
 | 11 | Duplicate-tx: "already known", "tx already in mempool", "transaction already exists", etc. — **must precede rule 14** | `ErrEndpointNonceException` (`already_known`) | −32003 | yes | no |
 | 12 | Nonce conflict: "nonce too low", "nonce has already been used" | `ErrEndpointNonceException` (`nonce_too_low`) | −32003 | yes | no |
