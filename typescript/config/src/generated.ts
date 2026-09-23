@@ -1655,6 +1655,16 @@ export interface EvmServedTipConfig {
    */
   guaranteedMethods?: string[];
   /**
+   * GuaranteedFor lists upstream SELECTORS (id or tag glob — the same
+   * vocabulary as use-upstream and consensus.requiredParticipants, e.g.
+   * "type:internal") whose group must be able to serve the advertised tip.
+   * For each selector the tip is clamped down to that group's OWN majority,
+   * exactly as GuaranteedMethods clamps to a method's supporting set. The
+   * clamp is a group MAJORITY, not a group minimum, so one stuck member
+   * cannot pin the network; an empty group constrains nothing.
+   */
+  guaranteedFor?: string[];
+  /**
    * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
    * (the second-highest live head) the majority pick may fall before it is
    * treated as a poisoned ballot rather than as reality. While a pick is below
