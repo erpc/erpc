@@ -264,8 +264,11 @@ func TestExtract_SlotSkipped_IsRetryableAndPreservesCode(t *testing.T) {
 	if !errors.As(err, &jre) {
 		t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
 	}
-	if jre.NormalizedCode() != common.JsonRpcErrorNumber(-32007) {
-		t.Fatalf("wire code must be -32007, got %v", jre.NormalizedCode())
+	if jre.WireCode() != common.JsonRpcErrorNumber(-32007) {
+		t.Fatalf("wire code must be -32007, got %v", jre.WireCode())
+	}
+	if jre.NormalizedCode() != common.JsonRpcErrorMissingData {
+		t.Fatalf("normalized code must be -32014, got %v", jre.NormalizedCode())
 	}
 }
 
@@ -288,8 +291,11 @@ func TestExtract_LongTermStorage_IsSweptAndPreservesCode(t *testing.T) {
 	if !errors.As(err, &jre) {
 		t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
 	}
-	if jre.NormalizedCode() != common.JsonRpcErrorNumber(-32009) {
-		t.Fatalf("wire code must be -32009, got %v", jre.NormalizedCode())
+	if jre.WireCode() != common.JsonRpcErrorNumber(-32009) {
+		t.Fatalf("wire code must be -32009, got %v", jre.WireCode())
+	}
+	if jre.NormalizedCode() != common.JsonRpcErrorMissingData {
+		t.Fatalf("normalized code must be -32014, got %v", jre.NormalizedCode())
 	}
 }
 
@@ -306,10 +312,13 @@ func TestExtract_BlockNotAvailable_IsRetryableAndPreservesRawCode(t *testing.T) 
 	if !errors.As(err, &jre) {
 		t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
 	}
-	// Wire code must preserve raw -32004, NOT normalize to -32014 (JsonRpcErrorMissingData).
-	// Normalizing to -32014 caused Solana client BlockNotAvailableException → infinite retry loop.
-	if jre.NormalizedCode() != common.JsonRpcErrorNumber(-32004) {
-		t.Fatalf("wire code must preserve raw -32004, got %v", jre.NormalizedCode())
+	// A normalized -32014 on the wire put Solana clients into an infinite
+	// BlockNotAvailableException retry loop.
+	if jre.WireCode() != common.JsonRpcErrorNumber(-32004) {
+		t.Fatalf("wire code must preserve raw -32004, got %v", jre.WireCode())
+	}
+	if jre.NormalizedCode() != common.JsonRpcErrorMissingData {
+		t.Fatalf("normalized code must be -32014, got %v", jre.NormalizedCode())
 	}
 }
 
@@ -530,7 +539,7 @@ func wireCodeOf(t *testing.T, err error) common.JsonRpcErrorNumber {
 	if !errors.As(err, &jre) {
 		t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T: %v", err, err)
 	}
-	return jre.NormalizedCode()
+	return jre.WireCode()
 }
 
 // dataOf returns what buildErrorResponseBody would write as error.data.

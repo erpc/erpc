@@ -749,7 +749,8 @@ func TestJsonRpcRequest_CloneDeepCopy(t *testing.T) {
 func missingDataCause(t *testing.T, code int, retryableTowardNetwork, permanent bool) error {
 	t.Helper()
 	err := NewErrEndpointMissingData(
-		NewErrJsonRpcExceptionInternal(code, JsonRpcErrorNumber(code), fmt.Sprintf("slot unavailable (%d)", code), nil, nil),
+		NewErrJsonRpcExceptionInternal(code, JsonRpcErrorMissingData, fmt.Sprintf("slot unavailable (%d)", code), nil, nil).
+			WithWireCode(JsonRpcErrorNumber(code)),
 		nil,
 	)
 	me, ok := err.(*ErrEndpointMissingData)
