@@ -1,0 +1,131 @@
+name: publish-npm
+
+# Publishes the five npm packages for an already-tagged version.
+#
+# Called by release.yml after GoReleaser succeeds, and runnable on its own
+# from the Actions tab when a release job dies after the tag exists but
+# before the packages reach the registry. Every step is idempotent, so a
+# manual run on a fully published version is a no-op.
+
+on:
+  workflow_call:
+    inputs:
+      version_tag:
+        required: true
+        type: string
+    secrets:
+      NPM_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Existing git tag to publish to npm (e.g. 0.3.0)'
+        required: true
+
+permissions: read-all
+
+concurrency:
+  group: publish-npm-${{ inputs.version_tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    permissions:
+      contents: read
+    environment: release
+    runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          egress-policy: audit
+
+      # The tag, not the branch: a manual re-run must publish the exact tree
+      # the release was cut from, however far main has moved since.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.version_tag }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies without postinstall hooks
+        run: pnpm install --ignore-scripts
+        env:
+          CI: true
+
+      # Publish packages. publish-npm.sh tolerates already-published versions
+      # (idempotent re-runs) but fails the job on any other error, e.g. an
+      # expired NPM_TOKEN (npm reports rejected auth as E404 on the PUT).
+      - name: Build and publish CLI package
+        working-directory: typescript/cli
+        run: |
+          pnpm run build
+          ../../.github/scripts/publish-npm.sh
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Publish the same package under the "erpc" name
+      - name: Publish erpc alias package
+        working-directory: typescript/cli
+        run: ../../.github/scripts/publish-npm.sh erpc
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Publish the same package under the "start-rpc" name
+      - name: Publish start-rpc alias package
+        working-directory: typescript/cli
+        run: ../../.github/scripts/publish-npm.sh start-rpc
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Publish the same package under the "start-erpc" name
+      - name: Publish start-erpc alias package
+        working-directory: typescript/cli
+        run: ../../.github/scripts/publish-npm.sh start-erpc
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build and publish Config package
+        working-directory: typescript/config
+        run: |
+          pnpm run build
+          ../../.github/scripts/publish-npm.sh
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Hard guarantee that every package name actually serves this version,
+      # so a swallowed or half-failed publish can never go unnoticed again.
+      #
+      # npm accepts a publish and then processes it out of band ("Your package
+      # is being processed and may take a few minutes to become available"), so
+      # the window has to be minutes: on 0.3.0 four packages appeared inside a
+      # minute and erpc took three. Read the registry directly rather than via
+      # npm view, whose CDN response lags the packument by another minute.
+      - name: Verify packages are live on npm
+        env:
+          VERSION: ${{ inputs.version_tag }}
+        run: |
+          ATTEMPTS=40
+          for pkg in @erpc-cloud/cli erpc start-rpc start-erpc @erpc-cloud/config; do
+            for attempt in $(seq 1 $ATTEMPTS); do
+              if curl -sf "https://registry.npmjs.org/${pkg}/${VERSION}" \
+                   -o /dev/null -H 'accept: application/json'; then
+                echo "OK: ${pkg}@${VERSION} is live"
+                continue 2
+              fi
+              echo "Waiting for ${pkg}@${VERSION} (attempt ${attempt}/${ATTEMPTS})..."
+              sleep 15
+            done
+            echo "::error::${pkg}@${VERSION} is not on the registry after publishing"
+            exit 1
+          done

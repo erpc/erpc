@@ -12,8 +12,8 @@ import (
 // Decision matrix for networkPostForward_eth_blockNumber across the two
 // served-tip modes (common.EvmServedTipConfig):
 //
-//	max mode (default): floor only — below-tip responses are raised, at/above
-//	pass through (a response above the last-computed MAX is fresher truth).
+//	default mode: floor only — below-tip responses are raised, at/above
+//	pass through (a response above the last-computed head is fresher truth).
 //	majority mode ("latest" in servedTip.enabledFor): pinned EXACTLY — above-tip
 //	responses are capped too, so eth_blockNumber can never run ahead of the
 //	majority tip that "latest" interpolation anchors eth_call & friends to.
@@ -61,7 +61,7 @@ func TestNetworkPostForward_EthBlockNumber(t *testing.T) {
 	t.Run("MaxMode_AboveTipPassesThrough", func(t *testing.T) {
 		_, bn := run(t, netWith(false, 0x1000), true, "0x1200", false)
 		assert.Equal(t, int64(0x1200), bn,
-			"in max mode a response above the last-computed max is fresher truth and must never be capped")
+			"in default mode a response above the last-computed head is fresher truth and must never be capped")
 	})
 
 	t.Run("MaxMode_UnknownTipFailsOpen", func(t *testing.T) {

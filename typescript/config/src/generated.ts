@@ -1291,6 +1291,13 @@ export interface RateLimiterConfig {
 export interface RateLimitBudgetConfig {
   id: string;
   rules: RateLimitRuleConfig[];
+  /**
+   * CreditUnits prices methods for this budget's countMode: credit rules. "*"
+   * is the fallback, an unpriced method costs 1, and a method priced 0 is
+   * exempt. An upstream on rateLimitCountMode: credit prices from its vendor
+   * instead and may not combine the two.
+   */
+  creditUnits?: { [key: string]: number /* int64 */};
 }
 export interface RateLimitRuleConfig {
   method: string;
@@ -1303,6 +1310,13 @@ export interface RateLimitRuleConfig {
   perIP?: boolean;
   perUser?: boolean;
   perNetwork?: boolean;
+  /**
+   * CountMode selects what this rule counts. "request" charges 1 per call and
+   * counts per method. "credit" charges the method's cost from the budget's
+   * creditUnits and pools all methods into one counter, making maxCount a
+   * wallet. Empty inherits the caller's mode.
+   */
+  countMode?: RateLimitCountMode;
 }
 /**
  * RateLimitPeriod enumerates supported periods for rate limiting.
@@ -1505,8 +1519,8 @@ export interface EvmNetworkConfig {
   /**
    * ServedTip configures how the network derives the "latest"/"finalized"
    * block it advertises to clients (and enforces via block-availability).
-   * Nil or disabled selects the default max mode (MAX latest across eligible
-   * upstreams); set Enabled to opt into the cluster-min tip. See
+   * Nil or disabled selects the default mode (the corroborated latest across eligible
+   * upstreams, see ServedTipPick.Freshest); set Enabled to opt into the majority tip. See
    * EvmServedTipConfig.
    */
   servedTip?: EvmServedTipConfig;
@@ -1610,9 +1624,9 @@ export interface EvmNetworkConfig {
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
  * block it advertises (and enforces) from its upstreams.
- * In the default max mode the served tip is the MAX latest block across eligible
- * non-syncing upstreams — which can advertise a block only the single most-ahead
- * upstream has, causing "block not found" churn when requests route to a
+ * In the default mode the served tip is the corroborated latest block across eligible
+ * non-syncing upstreams (second-highest, or the only one) — which can still advertise a block a slightly-ahead
+ * pair has, causing "block not found" churn when requests route to a
  * slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
  * served value is instead the freshest block a strict MAJORITY of the eligible
  * upstreams already have, so interpolated requests land on upstreams that can
@@ -1621,8 +1635,8 @@ export interface EvmNetworkConfig {
 export interface EvmServedTipConfig {
   /**
    * EnabledFor lists the block tags whose served value uses the cluster-min tip
-   * instead of the default max. Valid entries: "latest" and "finalized" (the
-   * "safe" tag follows "finalized"). Empty selects the max mode for all tags.
+   * instead of the default corroborated head. Valid entries: "latest" and "finalized" (the
+   * "safe" tag follows "finalized"). Empty selects the default mode for all tags.
    */
   enabledFor?: string[];
   /**
@@ -1899,39 +1913,45 @@ export interface MetricsConfig {
   errorLabelMode?: LabelMode;
   histogramBuckets?: string;
   /**
-   * HistogramDropLabels removes these labels from every histogram. Counters
-   * and gauges are unaffected. Useful to cap per-instance /metrics response
-   * size when high-cardinality labels (e.g. "user") push a scrape past the
-   * managed scraper's sample/body limits.
+   * Customizations is the single knob for shaping /metrics: which metric
+   * families are exposed at all, which of their labels survive, and which
+   * buckets a histogram uses. Entries are applied by specificity rather than
+   * by list order — see MetricsCustomizationConfig.
+   *
+   * 	metrics:
+   * 	  customizations:
+   * 	    - subject: "consensus_*"
+   * 	      action: drop
+   * 	    - subject: upstream_request_total
+   * 	      labels:
+   * 	        - subject: "agent_*"
+   * 	          action: drop
+   * 	        - subject: agent_name
+   * 	          action: keep
+   * 	    - subject: network_request_duration_seconds
+   * 	      buckets: [0.05, 0.5, 5]
+   */
+  customizations?: MetricsCustomizationConfig[];
+  /**
+   * Deprecated: use Customizations with a `labels` list. Kept working so
+   * existing configs keep loading; it is desugared onto the same rules as an
+   * every-histogram label drop.
    */
   histogramDropLabels?: string[];
   /**
-   * HistogramLabelOverrides re-adds labels for specific histograms even if
-   * they appear in HistogramDropLabels. Key is the metric Name (without the
-   * "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
-   * Value is the list of label names to keep for that metric.
+   * Deprecated: use Customizations with an exact `subject` and a `labels` list
+   * keeping what this metric needs.
    */
   histogramLabelOverrides?: { [key: string]: string[]};
   /**
-   * CounterDropLabels removes these labels from every counter that carries
-   * caller-controlled dimensions (user, agent_name, attempt, composite,
-   * hedge, error). Histograms and gauges are unaffected; use
-   * HistogramDropLabels for the histogram side.
-   * Counters are usually the largest contributor to /metrics size, because a
-   * label like a client-supplied user-agent is unbounded and every tuple ever
-   * seen is re-emitted on every scrape. Dropping a label collapses the series
-   * that differed only in it — sums stay correct, but the dimension stops
-   * being queryable, so check what consumes it (billing/attribution
-   * pipelines, dashboards) before dropping.
+   * Deprecated: use Customizations with a `labels` list. Kept working so
+   * existing configs keep loading; it is desugared onto the same rules as an
+   * every-counter label drop.
    */
   counterDropLabels?: string[];
   /**
-   * CounterLabelOverrides re-adds labels for specific counters even if they
-   * appear in CounterDropLabels. Key is the metric Name (without the "erpc_"
-   * namespace prefix), e.g. "upstream_request_total". Value is the list of
-   * label names to keep for that metric. Use this to drop a label fleet-wide
-   * while preserving it on the one or two counters a downstream pipeline
-   * actually reads.
+   * Deprecated: use Customizations with an exact `subject` and a `labels` list
+   * keeping what this metric needs.
    */
   counterLabelOverrides?: { [key: string]: string[]};
   /**
@@ -1946,6 +1966,71 @@ export interface MetricsConfig {
    * disable eviction entirely.
    */
   counterIdleEvictionAfter?: Duration;
+}
+/**
+ * MetricCustomizationAction is what a customization entry does to what it
+ * selects.
+ */
+export type MetricCustomizationAction = string;
+export const MetricActionKeep: MetricCustomizationAction = "keep";
+export const MetricActionDrop: MetricCustomizationAction = "drop";
+/**
+ * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
+ * selecting metric families, and what to do with them.
+ *
+ * Overlapping subjects resolve by specificity, not by list order: an exact
+ * family name beats a prefix, a longer prefix beats a shorter one, and equally
+ * specific subjects break to the one written later. So "drop consensus_*, keep
+ * consensus_duration_seconds" means the same thing whichever order it is written
+ * in.
+ */
+export interface MetricsCustomizationConfig {
+  /**
+   * Subject selects metric families: an exact name ("upstream_request_total"),
+   * a prefix ending in "*" ("consensus_*"), or "*" for every family. The
+   * "erpc_" namespace prefix is optional. The Go runtime, process and promhttp
+   * collectors are named in full ("go_goroutines") and are subject to the same
+   * rules, so `subject: "*", action: drop` drops them too.
+   */
+  subject: string;
+  /**
+   * Action drops the matched families from /metrics, or keeps them against a
+   * broader drop. Omit it to leave exposure alone and only customize labels or
+   * buckets.
+   *
+   * A dropped eRPC family is never registered, so it costs no series and no
+   * collection time — but that makes it a startup decision, undone only by a
+   * restart. Stock collectors are registered outside eRPC and so are filtered
+   * out of the scrape response instead, which shrinks the page without saving
+   * collection.
+   */
+  action?: 'keep' | 'drop';
+  /**
+   * Labels projects the matched families' label sets. Same precedence rules as
+   * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
+   * drops the group and spares the one label.
+   *
+   * Dropping a label collapses every series that differed only in it. Counter
+   * sums stay correct, but the dimension stops being queryable — check what
+   * reads it (billing or attribution pipelines, dashboards) first. Gauges have
+   * no projection, because collapsing gauge series would report whichever
+   * writer wrote last rather than a coarser number.
+   */
+  labels?: MetricLabelCustomizationConfig[];
+  /**
+   * Buckets replaces the bucket boundaries of the matched histograms,
+   * overriding both metrics.histogramBuckets and what the metric declares in
+   * code. Must be strictly increasing.
+   */
+  buckets?: number[];
+}
+/**
+ * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
+ * group of them, on the families its parent customization matched.
+ */
+export interface MetricLabelCustomizationConfig {
+  subject: string;
+  action: 'keep' | 'drop';
 }
 /**
  * RateLimitStoreConfig defines where rate limit counters are stored
@@ -2400,6 +2485,67 @@ export type SvmNetwork =
     Network;
 export type QuantileTracker = any;
 export type TrackedMetrics = any;
+
+//////////
+// source: served_tip.go
+
+/**
+ * ServedTipInput is a single observation: an upstream's last-known tip block.
+ * Callers are responsible for excluding syncing or cordoned upstreams BEFORE
+ * passing observations here; the picker treats every input as a candidate.
+ */
+export interface ServedTipInput {
+  /**
+   * UpstreamID is preserved only for telemetry attribution. It is not used
+   * in the pick.
+   */
+  upstreamid: string;
+  /**
+   * BlockNumber is the upstream's reported tip. Zero or negative values are
+   * treated as "no data yet" and filtered before picking.
+   */
+  blocknumber: number /* int64 */;
+}
+/**
+ * ServedTipPick is the picker's output.
+ */
+export interface ServedTipPick {
+  /**
+   * Tip is the value to advertise as latest/finalized: the highest block
+   * number that a strict MAJORITY of the inputs have already reached, or 0
+   * when there are no valid inputs.
+   */
+  tip: number /* int64 */;
+  /**
+   * Freshest is the freshest CORROBORATED view: the 2nd-highest valid input
+   * (or the only input when N=1) — the reference for the deliberate-lag
+   * gauge (Freshest - Tip). Using the 2nd-highest instead of the raw max
+   * means a single rogue far-future upstream cannot inflate the lag gauge
+   * (the problem the old velocity gate solved via MaxEligible: one
+   * wrong-chain endpoint used to make the gauge read hundreds of thousands
+   * of blocks). The absolute per-upstream maxima remain observable via
+   * erpc_upstream_latest_block_number.
+   */
+  freshest: number /* int64 */;
+  /**
+   * Max is the highest valid input: the raw ceiling no pick may exceed. It is
+   * deliberately not corroborated — a ceiling a single rogue can only RAISE
+   * cannot be used to make a caller serve anything the rogue chose — and it
+   * is the one place a lone far-ahead head is still visible to callers.
+   */
+  max: number /* int64 */;
+  /**
+   * Inputs is the number of valid (BlockNumber > 0) observations.
+   */
+  inputs: number /* int */;
+  /**
+   * Sorted is the valid inputs, DESCENDING by block number — the order
+   * statistic's own working slice, exposed so the trajectory referee can
+   * cluster the very same ballot without sorting it a second time. Nil when
+   * there are no valid inputs; never mutate it.
+   */
+  sorted: ServedTipInput[];
+}
 
 //////////
 // source: timeout_func.go

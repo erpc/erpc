@@ -17,11 +17,10 @@ on:
 permissions: read-all
 
 jobs:
-  # Create Release PR - only on workflow_dispatch
+  # Prepare the release branch - only on workflow_dispatch
   prepare-release:
     permissions:
       contents: write
-      pull-requests: write
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     if: github.event_name == 'workflow_dispatch'
     outputs:
@@ -59,6 +58,22 @@ jobs:
         env:
           GORELEASER_CURRENT_TAG: ${{ github.event.inputs.version_tag }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The ldflags path and the Go symbol it targets drifted apart once and
+      # every release binary shipped reporting "dev". The snapshot is already
+      # built here, so ask it what version it thinks it is.
+      - name: Check the snapshot binary reports its version
+        env:
+          VERSION: ${{ github.event.inputs.version_tag }}
+        run: |
+          set -euo pipefail
+          BIN=$(jq -r 'map(select(.type == "Binary" and .goos == "linux" and .goarch == "amd64"))[0].path' dist/artifacts.json)
+          REPORTED=$("$BIN" --version)
+          echo "$REPORTED"
+          if [[ "$REPORTED" != *"$VERSION"* ]]; then
+            echo "::error::binary reports '$REPORTED', expected it to carry '$VERSION' - ldflags are not reaching common.ErpcVersion"
+            exit 1
+          fi
 
       # Setup pnpm + node and install dependencies
       - name: Setup pnpm
@@ -104,23 +119,48 @@ jobs:
         run: |
           rm -rf dist/
 
-      # Create PR with all changes
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
-        with:
-          commit-message: "chore: release ${{ github.event.inputs.version_tag }}"
-          title: "chore: release ${{ github.event.inputs.version_tag }}"
-          body: |
-            🚀 Release preparation for version ${{ github.event.inputs.version_tag }}
-            
-            This PR includes:
-            - Version bumps in package.json files
-            - Generated TypeScript types
-            - Generated release files
-            - Generated checksums
-          branch: "release/${{ github.event.inputs.version_tag }}"
-          base: main
-          labels: release
+      # GitHub Actions is not permitted to open pull requests on this repo, so
+      # this job pushes the branch and the summary carries the link to open it.
+      - name: Push release branch
+        id: release_branch
+        env:
+          VERSION: ${{ github.event.inputs.version_tag }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/${VERSION}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --force-create "$BRANCH"
+          git add -A
+          git commit -m "chore: release ${VERSION}"
+          git push --force-with-lease origin "$BRANCH:refs/heads/$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Link release pull request
+        env:
+          VERSION: ${{ github.event.inputs.version_tag }}
+          BRANCH: ${{ steps.release_branch.outputs.branch }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TITLE="chore: release ${VERSION}"
+          BODY=$(printf '\xf0\x9f\x9a\x80 Release preparation for version %s\n\nThis PR includes:\n- Version bumps in package.json files\n- Generated TypeScript types\n- Generated release files\n- Generated checksums\n' "$VERSION")
+          QUERY="quick_pull=1&labels=release&title=$(printf '%s' "$TITLE" | jq -sRr @uri)&body=$(printf '%s' "$BODY" | jq -sRr @uri)"
+          {
+            echo "## Release ${VERSION}"
+            echo
+            echo "Branch \`${BRANCH}\` is pushed. Open the pull request:"
+            echo
+            echo "**[Open pull request](https://github.com/${REPO}/compare/main...${BRANCH}?${QUERY})**"
+            echo
+            echo "Or from a terminal:"
+            echo
+            echo '```bash'
+            echo "gh pr create --repo ${REPO} --base main --head ${BRANCH} --label release \\"
+            echo "  --title '${TITLE}' \\"
+            echo "  --body '${BODY}'"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Run on release PR merge
   release:
@@ -134,6 +174,8 @@ jobs:
       contains(github.event.head_commit.message, 'chore: release')
     environment: release
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
@@ -186,85 +228,20 @@ jobs:
         with:
           subject-checksums: ./dist/checksums.txt
 
-      # Setup pnpm + node and install dependencies
-      - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'pnpm'
-
-      - name: Install dependencies without postinstall hooks
-        run: pnpm install --ignore-scripts
-        env:
-          CI: true
-
-      # Publish packages. publish-npm.sh tolerates already-published versions
-      # (idempotent re-runs) but fails the job on any other error, e.g. an
-      # expired NPM_TOKEN (npm reports rejected auth as E404 on the PUT).
-      - name: Build and publish CLI package
-        working-directory: typescript/cli
-        run: |
-          pnpm run build
-          ../../.github/scripts/publish-npm.sh
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # Publish the same package under the "erpc" name
-      - name: Publish erpc alias package
-        working-directory: typescript/cli
-        run: ../../.github/scripts/publish-npm.sh erpc
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # Publish the same package under the "start-rpc" name
-      - name: Publish start-rpc alias package
-        working-directory: typescript/cli
-        run: ../../.github/scripts/publish-npm.sh start-rpc
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # Publish the same package under the "start-erpc" name
-      - name: Publish start-erpc alias package
-        working-directory: typescript/cli
-        run: ../../.github/scripts/publish-npm.sh start-erpc
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Build and publish Config package
-        working-directory: typescript/config
-        run: |
-          pnpm run build
-          ../../.github/scripts/publish-npm.sh
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # Hard guarantee that every package name actually serves this version,
-      # so a swallowed or half-failed publish can never go unnoticed again.
-      # NODE_AUTH_TOKEN is needed because setup-node's .npmrc references it
-      # for every npm invocation, not just publishes.
-      - name: Verify packages are live on npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          VERSION=${{ steps.version.outputs.VERSION }}
-          for pkg in @erpc-cloud/cli erpc start-rpc start-erpc @erpc-cloud/config; do
-            for attempt in 1 2 3 4 5; do
-              if [ -n "$(npm view "${pkg}@${VERSION}" version 2>/dev/null)" ]; then
-                echo "OK: ${pkg}@${VERSION} is live"
-                continue 2
-              fi
-              echo "Waiting for ${pkg}@${VERSION} (attempt ${attempt}/5)..."
-              sleep 10
-            done
-            echo "::error::${pkg}@${VERSION} is not on the registry after publishing"
-            exit 1
-          done
+  # npm publishing lives in its own workflow so a release that dies after the
+  # tag exists can be completed from the Actions tab, without re-running
+  # GoReleaser or rebuilding the Docker images.
+  publish-npm:
+    needs: [release]
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      contains(github.event.head_commit.message, 'chore: release')
+    uses: ./.github/workflows/publish-npm.yml
+    with:
+      version_tag: ${{ needs.release.outputs.version }}
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Native single-arch builds on matching runners; then compose a multi-arch manifest
   docker-build-amd64:

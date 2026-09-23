@@ -5576,6 +5576,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
 					},
 				},
 			},
@@ -5738,6 +5747,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
 					},
 				},
 			},
@@ -5829,6 +5847,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Id:       "rpc2",
 							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
@@ -6875,6 +6902,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								StatePollerDebounce: common.Duration(10 * time.Second),
 							},
 						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
 					},
 				},
 			},
@@ -6955,6 +6991,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								ChainId:             123,
 								StatePollerInterval: common.Duration(30 * time.Second),
 								StatePollerDebounce: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},

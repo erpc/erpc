@@ -12,6 +12,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
@@ -2028,6 +2029,11 @@ type RateLimiterConfig struct {
 type RateLimitBudgetConfig struct {
 	Id    string                 `yaml:"id" json:"id"`
 	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules" tstype:"RateLimitRuleConfig[]"`
+	// CreditUnits prices methods for this budget's countMode: credit rules. "*"
+	// is the fallback, an unpriced method costs 1, and a method priced 0 is
+	// exempt. An upstream on rateLimitCountMode: credit prices from its vendor
+	// instead and may not combine the two.
+	CreditUnits map[string]int64 `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
 }
 
 type RateLimitRuleConfig struct {
@@ -2039,6 +2045,11 @@ type RateLimitRuleConfig struct {
 	PerIP      bool            `yaml:"perIP,omitempty" json:"perIP,omitempty"`
 	PerUser    bool            `yaml:"perUser,omitempty" json:"perUser,omitempty"`
 	PerNetwork bool            `yaml:"perNetwork,omitempty" json:"perNetwork,omitempty"`
+	// CountMode selects what this rule counts. "request" charges 1 per call and
+	// counts per method. "credit" charges the method's cost from the budget's
+	// creditUnits and pools all methods into one counter, making maxCount a
+	// wallet. Empty inherits the caller's mode.
+	CountMode RateLimitCountMode `yaml:"countMode,omitempty" json:"countMode,omitempty"`
 }
 
 // ScopeString returns a comma-separated list of enabled scopes in deterministic order.
@@ -2055,6 +2066,14 @@ func (c *RateLimitRuleConfig) ScopeString() string {
 		scopes = append(scopes, "ip")
 	}
 	return strings.Join(scopes, ",")
+}
+
+// CountModeString returns the count mode with the empty default resolved.
+func (c *RateLimitRuleConfig) CountModeString() string {
+	if c.CountMode == "" {
+		return string(RateLimitCountModeRequest)
+	}
+	return string(c.CountMode)
 }
 
 // RateLimitPeriod enumerates supported periods for rate limiting.
@@ -2194,15 +2213,20 @@ func (p RateLimitPeriod) Unit() pb.RateLimitResponse_RateLimit_Unit {
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
-	if c.RateLimiters == nil || len(c.RateLimiters.Budgets) == 0 {
-		return false
+	return c.RateLimiterBudget(id) != nil
+}
+
+// RateLimiterBudget returns the budget with the given id, or nil.
+func (c *Config) RateLimiterBudget(id string) *RateLimitBudgetConfig {
+	if c.RateLimiters == nil {
+		return nil
 	}
 	for _, budget := range c.RateLimiters.Budgets {
-		if budget.Id == id {
-			return true
+		if budget != nil && budget.Id == id {
+			return budget
 		}
 	}
-	return false
+	return nil
 }
 
 type ProxyPoolConfig struct {
@@ -2481,8 +2505,8 @@ type EvmNetworkConfig struct {
 
 	// ServedTip configures how the network derives the "latest"/"finalized"
 	// block it advertises to clients (and enforces via block-availability).
-	// Nil or disabled selects the default max mode (MAX latest across eligible
-	// upstreams); set Enabled to opt into the cluster-min tip. See
+	// Nil or disabled selects the default mode (the corroborated latest across eligible
+	// upstreams, see ServedTipPick.Freshest); set Enabled to opt into the majority tip. See
 	// EvmServedTipConfig.
 	ServedTip                  *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
 	GetLogsMaxAllowedRange     int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
@@ -2578,17 +2602,17 @@ type EvmNetworkConfig struct {
 // EvmServedTipConfig controls how the network derives the "latest"/"finalized"
 // block it advertises (and enforces) from its upstreams.
 //
-// In the default max mode the served tip is the MAX latest block across eligible
-// non-syncing upstreams — which can advertise a block only the single most-ahead
-// upstream has, causing "block not found" churn when requests route to a
+// In the default mode the served tip is the corroborated latest block across eligible
+// non-syncing upstreams (second-highest, or the only one) — which can still advertise a block a slightly-ahead
+// pair has, causing "block not found" churn when requests route to a
 // slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
 // served value is instead the freshest block a strict MAJORITY of the eligible
 // upstreams already have, so interpolated requests land on upstreams that can
 // serve the advertised block.
 type EvmServedTipConfig struct {
 	// EnabledFor lists the block tags whose served value uses the cluster-min tip
-	// instead of the default max. Valid entries: "latest" and "finalized" (the
-	// "safe" tag follows "finalized"). Empty selects the max mode for all tags.
+	// instead of the default corroborated head. Valid entries: "latest" and "finalized" (the
+	// "safe" tag follows "finalized"). Empty selects the default mode for all tags.
 	EnabledFor []string `yaml:"enabledFor,omitempty" json:"enabledFor,omitempty"`
 
 	// Deprecated: ClusterDelta configured the former cluster-based picker and is
@@ -2637,7 +2661,7 @@ type EvmServedTipConfig struct {
 // ServedTipEnabledFor reports whether the majority served tip is enabled for
 // the given block axis ("latest" or "finalized"). The "safe" tag resolves to the
 // finalized axis, so listing "safe" in EnabledFor enables it for "finalized".
-// Anything not listed uses the default max mode. Nil-receiver safe.
+// Anything not listed uses the default corroborated head. Nil-receiver safe.
 func (c *EvmNetworkConfig) ServedTipEnabledFor(tag string) bool {
 	if c == nil || c.ServedTip == nil {
 		return false
@@ -2937,37 +2961,41 @@ type MetricsConfig struct {
 	ErrorLabelMode   LabelMode `yaml:"errorLabelMode,omitempty" json:"errorLabelMode"`
 	HistogramBuckets string    `yaml:"histogramBuckets,omitempty" json:"histogramBuckets"`
 
-	// HistogramDropLabels removes these labels from every histogram. Counters
-	// and gauges are unaffected. Useful to cap per-instance /metrics response
-	// size when high-cardinality labels (e.g. "user") push a scrape past the
-	// managed scraper's sample/body limits.
+	// Customizations is the single knob for shaping /metrics: which metric
+	// families are exposed at all, which of their labels survive, and which
+	// buckets a histogram uses. Entries are applied by specificity rather than
+	// by list order — see MetricsCustomizationConfig.
+	//
+	//	metrics:
+	//	  customizations:
+	//	    - subject: "consensus_*"
+	//	      action: drop
+	//	    - subject: upstream_request_total
+	//	      labels:
+	//	        - subject: "agent_*"
+	//	          action: drop
+	//	        - subject: agent_name
+	//	          action: keep
+	//	    - subject: network_request_duration_seconds
+	//	      buckets: [0.05, 0.5, 5]
+	Customizations []*MetricsCustomizationConfig `yaml:"customizations,omitempty" json:"customizations,omitempty"`
+
+	// Deprecated: use Customizations with a `labels` list. Kept working so
+	// existing configs keep loading; it is desugared onto the same rules as an
+	// every-histogram label drop.
 	HistogramDropLabels []string `yaml:"histogramDropLabels,omitempty" json:"histogramDropLabels,omitempty"`
 
-	// HistogramLabelOverrides re-adds labels for specific histograms even if
-	// they appear in HistogramDropLabels. Key is the metric Name (without the
-	// "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
-	// Value is the list of label names to keep for that metric.
+	// Deprecated: use Customizations with an exact `subject` and a `labels` list
+	// keeping what this metric needs.
 	HistogramLabelOverrides map[string][]string `yaml:"histogramLabelOverrides,omitempty" json:"histogramLabelOverrides,omitempty"`
 
-	// CounterDropLabels removes these labels from every counter that carries
-	// caller-controlled dimensions (user, agent_name, attempt, composite,
-	// hedge, error). Histograms and gauges are unaffected; use
-	// HistogramDropLabels for the histogram side.
-	//
-	// Counters are usually the largest contributor to /metrics size, because a
-	// label like a client-supplied user-agent is unbounded and every tuple ever
-	// seen is re-emitted on every scrape. Dropping a label collapses the series
-	// that differed only in it — sums stay correct, but the dimension stops
-	// being queryable, so check what consumes it (billing/attribution
-	// pipelines, dashboards) before dropping.
+	// Deprecated: use Customizations with a `labels` list. Kept working so
+	// existing configs keep loading; it is desugared onto the same rules as an
+	// every-counter label drop.
 	CounterDropLabels []string `yaml:"counterDropLabels,omitempty" json:"counterDropLabels,omitempty"`
 
-	// CounterLabelOverrides re-adds labels for specific counters even if they
-	// appear in CounterDropLabels. Key is the metric Name (without the "erpc_"
-	// namespace prefix), e.g. "upstream_request_total". Value is the list of
-	// label names to keep for that metric. Use this to drop a label fleet-wide
-	// while preserving it on the one or two counters a downstream pipeline
-	// actually reads.
+	// Deprecated: use Customizations with an exact `subject` and a `labels` list
+	// keeping what this metric needs.
 	CounterLabelOverrides map[string][]string `yaml:"counterLabelOverrides,omitempty" json:"counterLabelOverrides,omitempty"`
 
 	// CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
@@ -2980,6 +3008,109 @@ type MetricsConfig struct {
 	// only clearly-dead label combinations are released). Set to 0 to
 	// disable eviction entirely.
 	CounterIdleEvictionAfter *Duration `yaml:"counterIdleEvictionAfter,omitempty" json:"counterIdleEvictionAfter,omitempty"`
+}
+
+// MetricCustomizationAction is what a customization entry does to what it
+// selects.
+type MetricCustomizationAction string
+
+const (
+	MetricActionKeep MetricCustomizationAction = telemetry.ActionKeep
+	MetricActionDrop MetricCustomizationAction = telemetry.ActionDrop
+)
+
+// MetricsCustomizationConfig is one entry of metrics.customizations: a subject
+// selecting metric families, and what to do with them.
+//
+// Overlapping subjects resolve by specificity, not by list order: an exact
+// family name beats a prefix, a longer prefix beats a shorter one, and equally
+// specific subjects break to the one written later. So "drop consensus_*, keep
+// consensus_duration_seconds" means the same thing whichever order it is written
+// in.
+type MetricsCustomizationConfig struct {
+	// Subject selects metric families: an exact name ("upstream_request_total"),
+	// a prefix ending in "*" ("consensus_*"), or "*" for every family. The
+	// "erpc_" namespace prefix is optional. The Go runtime, process and promhttp
+	// collectors are named in full ("go_goroutines") and are subject to the same
+	// rules, so `subject: "*", action: drop` drops them too.
+	Subject string `yaml:"subject" json:"subject"`
+
+	// Action drops the matched families from /metrics, or keeps them against a
+	// broader drop. Omit it to leave exposure alone and only customize labels or
+	// buckets.
+	//
+	// A dropped eRPC family is never registered, so it costs no series and no
+	// collection time — but that makes it a startup decision, undone only by a
+	// restart. Stock collectors are registered outside eRPC and so are filtered
+	// out of the scrape response instead, which shrinks the page without saving
+	// collection.
+	Action MetricCustomizationAction `yaml:"action,omitempty" json:"action,omitempty" tstype:"'keep' | 'drop'"`
+
+	// Labels projects the matched families' label sets. Same precedence rules as
+	// Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
+	// drops the group and spares the one label.
+	//
+	// Dropping a label collapses every series that differed only in it. Counter
+	// sums stay correct, but the dimension stops being queryable — check what
+	// reads it (billing or attribution pipelines, dashboards) first. Gauges have
+	// no projection, because collapsing gauge series would report whichever
+	// writer wrote last rather than a coarser number.
+	Labels []*MetricLabelCustomizationConfig `yaml:"labels,omitempty" json:"labels,omitempty"`
+
+	// Buckets replaces the bucket boundaries of the matched histograms,
+	// overriding both metrics.histogramBuckets and what the metric declares in
+	// code. Must be strictly increasing.
+	Buckets []float64 `yaml:"buckets,omitempty" json:"buckets,omitempty"`
+}
+
+// MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
+// group of them, on the families its parent customization matched.
+type MetricLabelCustomizationConfig struct {
+	Subject string                    `yaml:"subject" json:"subject"`
+	Action  MetricCustomizationAction `yaml:"action" json:"action" tstype:"'keep' | 'drop'"`
+}
+
+// TelemetryOptions maps the metrics config onto what the telemetry manager
+// needs. telemetry cannot import common (common imports telemetry), so the
+// translation lives here.
+func (m *MetricsConfig) TelemetryOptions() *telemetry.Options {
+	if m == nil {
+		return nil
+	}
+	o := &telemetry.Options{
+		HistogramBuckets: m.HistogramBuckets,
+		LegacyLabels: telemetry.LegacyLabelConfig{
+			HistogramDropLabels:     m.HistogramDropLabels,
+			HistogramLabelOverrides: m.HistogramLabelOverrides,
+			CounterDropLabels:       m.CounterDropLabels,
+			CounterLabelOverrides:   m.CounterLabelOverrides,
+		},
+	}
+	for _, c := range m.Customizations {
+		if c == nil {
+			continue
+		}
+		tc := telemetry.Customization{
+			Subject: c.Subject,
+			Action:  string(c.Action),
+			Buckets: c.Buckets,
+		}
+		for _, l := range c.Labels {
+			if l == nil {
+				continue
+			}
+			tc.Labels = append(tc.Labels, telemetry.LabelCustomization{
+				Subject: l.Subject,
+				Action:  string(l.Action),
+			})
+		}
+		o.Customizations = append(o.Customizations, tc)
+	}
+	if m.CounterIdleEvictionAfter != nil {
+		d := m.CounterIdleEvictionAfter.Duration()
+		o.CounterIdleEvictionAfter = &d
+	}
+	return o
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.

@@ -25,3 +25,6 @@ temp/**
 erpc-bin
 erpc.yml
 .claude/**
+
+# goreleaser build output
+/dist/
