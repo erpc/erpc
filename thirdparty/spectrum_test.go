@@ -27,7 +27,7 @@ func TestSpectrumVendor_GenerateConfigs(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		ep, err := generate(84532, common.VendorSettings{"apiKey": "KEY"})
 		require.NoError(t, err)
-		assert.Equal(t, "https://spectrum-03.simplystaking.xyz/KEY/base/tn_sepolia/84532/shared/archive/rpc/", ep)
+		assert.Equal(t, "https://spectrum-03.simplystaking.xyz/KEY/base/tn/84532/shared/archive/rpc/", ep)
 	})
 
 	t.Run("node type falls back to the one the chain offers", func(t *testing.T) {
@@ -37,7 +37,17 @@ func TestSpectrumVendor_GenerateConfigs(t *testing.T) {
 
 		ep, err = generate(84532, common.VendorSettings{"apiKey": "KEY", "nodeType": "pruned"}) // archive only
 		require.NoError(t, err)
-		assert.Equal(t, "https://spectrum-03.simplystaking.xyz/KEY/base/tn_sepolia/84532/shared/archive/rpc/", ep)
+		assert.Equal(t, "https://spectrum-03.simplystaking.xyz/KEY/base/tn/84532/shared/archive/rpc/", ep)
+	})
+
+	t.Run("chain-specific routes", func(t *testing.T) {
+		ep, err := generate(43114, common.VendorSettings{"apiKey": "KEY"})
+		require.NoError(t, err)
+		assert.Equal(t, "https://spectrum-03.simplystaking.xyz/KEY/avalanche/mn/43114/shared/archive/rpc/ext/bc/C/rpc", ep)
+
+		ep, err = generate(25, common.VendorSettings{"apiKey": "KEY"})
+		require.NoError(t, err)
+		assert.Equal(t, "https://spectrum-03.simplystaking.xyz/KEY/cronos/mn/cronosmainnet_25-1/shared/archive/rpc/", ep)
 	})
 
 	t.Run("host, plan and node type override the defaults", func(t *testing.T) {

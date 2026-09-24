@@ -299,7 +299,7 @@ Static map of 71 chains → subdomain prefixes. URL: `https://{subdomain}.dwelli
 
 #### spectrum
 
-[Spectrum Nodes](https://spectrumnodes.com). Static map of the 147 EVM chains in the public catalog at [spectrumnodes.com/networks](https://spectrumnodes.com/networks) → `{network}/{service}` path and offered node types. URL: `https://{host}/{apiKey}/{network}/{service}/{chainId}/{plan}/{nodeType}/rpc/`. A chain answers only after it is enabled in the Spectrum dashboard project that owns the key, so pair this vendor with `onlyNetworks` listing the enabled chains. OwnsUpstream: `spectrum://`, `evm+spectrum://`, or a `.simplystaking.xyz/` endpoint.
+[Spectrum Nodes](https://spectrumnodes.com). Static map of 142 EVM chains from the public catalog at [spectrumnodes.com/networks](https://spectrumnodes.com/networks) → route and offered node types. URL: `https://{host}/{apiKey}/{network}/{mn|tn}/{chain}/{plan}/{nodeType}/rpc/`; `{chain}` is the numeric chain ID except on Cronos (`cronosmainnet_25-1`, `cronostestnet_338`), and Avalanche ends in `rpc/ext/bc/C/rpc`. A chain answers only after it is enabled in the Spectrum dashboard project that owns the key, so pair this vendor with `onlyNetworks` listing the enabled chains. OwnsUpstream: `spectrum://`, `evm+spectrum://`, or a `.simplystaking.xyz/` endpoint.
 
 | key | required | default |
 |---|---|---|
@@ -308,7 +308,7 @@ Static map of 71 chains → subdomain prefixes. URL: `https://{subdomain}.dwelli
 | `plan` | no | `shared` (`dedicated` for dedicated nodes) |
 | `nodeType` | no | `archive`; `pruned` to prefer pruned nodes. A chain that offers only the other type uses that type. |
 
-<SourceLink file="thirdparty/spectrum.go" lines="1-270" />
+<SourceLink file="thirdparty/spectrum.go" lines="1-272" />
 
 #### envio
 
