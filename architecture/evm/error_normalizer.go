@@ -448,8 +448,11 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// failures, so they should not be retried across upstreams by default.
 		//----------------------------------------------------------------
 
+		// Monad reports the same condition as "reserve balance violation" from
+		// eth_call and eth_fillTransaction (it replaced "insufficient balance").
 		if strings.Contains(msg, "insufficient funds") ||
-			strings.Contains(msg, "insufficient balance") {
+			strings.Contains(msg, "insufficient balance") ||
+			strings.Contains(msg, "reserve balance violation") {
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
