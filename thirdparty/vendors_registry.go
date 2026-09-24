@@ -33,6 +33,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateRoutemeshVendor())
 	r.Register(CreateBlockdaemonVendor())
 	r.Register(CreateSatelinkVendor())
+	r.Register(CreateSpectrumVendor())
 	return r
 }
 

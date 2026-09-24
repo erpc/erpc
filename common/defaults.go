@@ -1595,6 +1595,21 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		}
 
 		return settings, nil
+	case "spectrum", "evm+spectrum":
+		// Spectrum keys span two path segments: spectrum://<team>/<key>
+		settings := VendorSettings{
+			"apiKey": endpoint.Host + strings.TrimSuffix(endpoint.Path, "/"),
+		}
+		params, err := url.ParseQuery(endpoint.RawQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse spectrum query parameters: %w", err)
+		}
+		for _, key := range []string{"host", "plan", "nodeType"} {
+			if value := params.Get(key); value != "" {
+				settings[key] = value
+			}
+		}
+		return settings, nil
 	case "onfinality", "evm+onfinality":
 		return VendorSettings{
 			"apiKey": endpoint.Host,

@@ -1207,6 +1207,14 @@ func TestBuildProviderSettings(t *testing.T) {
 		assert.Nil(t, settings["type"])
 	})
 
+	t.Run("spectrum keeps both key segments", func(t *testing.T) {
+		endpoint, _ := url.Parse("evm+spectrum://TeamToken/KeyPart?host=spectrum-02.simplystaking.xyz")
+		settings, err := buildProviderSettings("spectrum", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "TeamToken/KeyPart", settings["apiKey"])
+		assert.Equal(t, "spectrum-02.simplystaking.xyz", settings["host"])
+	})
+
 	// Test case for QuickNode with tag filters
 	t.Run("quicknode with filters", func(t *testing.T) {
 		endpoint, _ := url.Parse("quicknode://test-api-key?tagIds=123,456&tagLabels=production,staging")
