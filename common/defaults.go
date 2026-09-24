@@ -1574,7 +1574,7 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		}
 
 		return settings, nil
-	case "chainstack", "evm+chainstack":
+	case "chainstack", "evm+chainstack", "spectrum", "evm+spectrum":
 		settings := VendorSettings{
 			"apiKey": endpoint.Host,
 		}
@@ -1583,7 +1583,7 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		if endpoint.RawQuery != "" {
 			params, err := url.ParseQuery(endpoint.RawQuery)
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse chainstack query parameters: %w", err)
+				return nil, fmt.Errorf("failed to parse %s query parameters: %w", endpoint.Scheme, err)
 			}
 			for key, values := range params {
 				if len(values) == 1 {
