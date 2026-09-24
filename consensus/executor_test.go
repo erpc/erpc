@@ -16,6 +16,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -751,4 +753,91 @@ func TestRecordMetricsAndTracing_InfoSeverityNotCountedAsConsensusError(t *testi
 		assert.Equal(t, errBefore+1, testutil.ToFloat64(errCounter),
 			"non-info errors must still be counted as consensus errors")
 	})
+}
+
+// TestConsensus_ParticipantsTaggedBeforeAnyReturn is the stuck-round
+// contract: Consensus.Run (and its Network.Forward parent) must expose
+// consensus.participants as soon as the planned set is known — before
+// any upstream returns — so a hung span still answers who was in it.
+func TestConsensus_ParticipantsTaggedBeforeAnyReturn(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sr),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	common.SetTracerProviderForTest(tp)
+	t.Cleanup(func() { common.IsTracingEnabled = false })
+
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	pol := NewConsensusPolicyBuilder().
+		WithMaxParticipants(3).
+		WithAgreementThreshold(2).
+		WithLogger(&logger).
+		Build()
+
+	req := newTestRequest()
+	req.SetUpstreams([]common.Upstream{
+		common.NewFakeUpstream("internal-blue"),
+		common.NewFakeUpstream("internal-green"),
+		common.NewFakeUpstream("alchemy"),
+		common.NewFakeUpstream("should-not-appear"),
+	})
+
+	var started atomic.Int32
+	allStarted := make(chan struct{})
+	release := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	parentCtx, parentSpan := common.StartSpan(ctx, "Network.Forward")
+	defer parentSpan.End()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = pol.Run(parentCtx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			if started.Add(1) == 3 {
+				close(allStarted)
+			}
+			<-release
+			return validResponse(), nil
+		})
+	}()
+
+	select {
+	case <-allStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consensus participants did not start within 2s")
+	}
+
+	want := []string{"internal-blue", "internal-green", "alchemy", "should-not-appear"}
+	assert.Equal(t, want, stringSliceAttr(findStartedSpan(t, sr, "Consensus.Run"), "consensus.participants"))
+	assert.Equal(t, want, stringSliceAttr(findStartedSpan(t, sr, "Network.Forward"), "consensus.participants"))
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consensus did not return after participants were released")
+	}
+}
+
+func findStartedSpan(t *testing.T, sr *tracetest.SpanRecorder, name string) sdktrace.ReadWriteSpan {
+	t.Helper()
+	for _, s := range sr.Started() {
+		if s.Name() == name {
+			return s
+		}
+	}
+	t.Fatalf("in-flight span %q not found", name)
+	return nil
+}
+
+func stringSliceAttr(span sdktrace.ReadWriteSpan, key string) []string {
+	for _, a := range span.Attributes() {
+		if string(a.Key) == key {
+			return a.Value.AsStringSlice()
+		}
+	}
+	return nil
 }
