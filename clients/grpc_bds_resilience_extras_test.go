@@ -75,6 +75,20 @@ func (s *happyRPCServer) GetBlockByNumber(ctx context.Context, req *evm.GetBlock
 	}, nil
 }
 
+// GetTransactionByHash answers with a fixed one-byte r/s so tests can pin
+// the JSON-RPC signature encoding the client selects for its chain.
+func (s *happyRPCServer) GetTransactionByHash(ctx context.Context, req *evm.GetTransactionByHashRequest) (*evm.GetTransactionByHashResponse, error) {
+	s.calls.Add(1)
+	s.recordMetadata(ctx)
+	return &evm.GetTransactionByHashResponse{
+		Transaction: &evm.Transaction{
+			Hash: req.TransactionHash,
+			R:    []byte{0x01},
+			S:    []byte{0x02},
+		},
+	}, nil
+}
+
 func startHappyServer(t *testing.T, chainID, blockNumber uint64) (string, *happyRPCServer, func()) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
