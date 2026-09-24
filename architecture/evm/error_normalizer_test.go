@@ -136,6 +136,32 @@ func TestExtractJsonRpcError_InsufficientFunds_TracingMethodsRetryable(t *testin
 	}
 }
 
+// TestExtractJsonRpcError_MonadReserveBalanceViolation verifies that Monad's
+// `reserve balance violation` — its wording for a sender that cannot cover the
+// call, returned as -32000 by eth_call and eth_fillTransaction (where it
+// replaced "insufficient balance") — is an execution outcome, not an endpoint
+// failure. As a server-side exception every upstream returns the same verdict
+// and the network retry policy exhausts all of them for one simulation.
+func TestExtractJsonRpcError_MonadReserveBalanceViolation(t *testing.T) {
+	t.Parallel()
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+	nr := common.NewNormalizedResponse().WithRequest(req)
+
+	r := &http.Response{StatusCode: 200, Header: http.Header{}}
+	jrErr := common.NewErrJsonRpcExceptionExternal(-32000, "reserve balance violation", "")
+	jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+	err := ExtractJsonRpcError(r, nr, jr, nil)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+	}
+	if common.IsRetryableTowardNetwork(err) {
+		t.Fatalf("eth_call reserve balance violation must not be retried toward the network")
+	}
+}
+
 // TestExtractJsonRpcError_ResponseTooBig_JsonRpseeSizeCap verifies that
 // jsonrpsee's oversized-response rejection — used by reth and anything else
 // built on it — normalizes to ErrEndpointRequestTooLarge, so the eth_getLogs /
