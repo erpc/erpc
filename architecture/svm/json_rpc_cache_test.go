@@ -396,12 +396,12 @@ func (finalizedNetwork) Architecture() common.NetworkArchitecture { return commo
 func (finalizedNetwork) Config() *common.NetworkConfig {
 	return &common.NetworkConfig{Architecture: common.ArchitectureSvm}
 }
-func (finalizedNetwork) Logger() *zerolog.Logger                       { l := log.Logger; return &l }
-func (finalizedNetwork) GetMethodMetrics(string) common.TrackedMetrics { return nil }
-func (finalizedNetwork) SvmHighestLatestSlot(context.Context) int64    { return 0 }
-func (finalizedNetwork) SvmHighestFinalizedSlot(context.Context) int64 { return 0 }
+func (finalizedNetwork) Logger() *zerolog.Logger                          { l := log.Logger; return &l }
+func (finalizedNetwork) GetMethodMetrics(string) common.TrackedMetrics    { return nil }
+func (finalizedNetwork) SvmHighestLatestSlot(context.Context) int64       { return 0 }
+func (finalizedNetwork) SvmHighestFinalizedSlot(context.Context) int64    { return 0 }
 func (finalizedNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 { return 0 }
-func (finalizedNetwork) SvmHighestIndexedSlot(context.Context) int64   { return 0 }
+func (finalizedNetwork) SvmHighestIndexedSlot(context.Context) int64      { return 0 }
 func (finalizedNetwork) Forward(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
@@ -457,4 +457,53 @@ func TestRequestKey_PreservesBase58Case(t *testing.T) {
 	otherKey, err := RequestKey(ctx, otherMethod)
 	require.NoError(t, err)
 	require.NotEqual(t, lowerKey, otherKey, "method must be part of request identity")
+}
+
+type suffixSvmNet struct {
+	id     string
+	suffix string
+}
+
+func (n suffixSvmNet) Id() string                               { return n.id }
+func (n suffixSvmNet) Label() string                            { return n.id }
+func (n suffixSvmNet) ProjectId() string                        { return "test" }
+func (n suffixSvmNet) Architecture() common.NetworkArchitecture { return common.ArchitectureSvm }
+func (n suffixSvmNet) Config() *common.NetworkConfig {
+	return &common.NetworkConfig{CacheKeySuffix: n.suffix}
+}
+func (n suffixSvmNet) Logger() *zerolog.Logger                       { l := log.Logger; return &l }
+func (n suffixSvmNet) GetMethodMetrics(string) common.TrackedMetrics { return nil }
+func (n suffixSvmNet) Forward(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	return nil, nil
+}
+func (n suffixSvmNet) GetFinality(context.Context, *common.NormalizedRequest, *common.NormalizedResponse) common.DataFinalityState {
+	return common.DataFinalityStateFinalized
+}
+
+func TestSvmGenerateKeys_CacheKeySuffix(t *testing.T) {
+	t.Parallel()
+	c := &SvmJsonRpcCache{}
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100]}`)
+
+	keys := func(id, suffix string) string {
+		t.Helper()
+		req := common.NewNormalizedRequest(body)
+		req.SetNetwork(suffixSvmNet{id: id, suffix: suffix})
+		rpc, err := req.JsonRpcRequest()
+		require.NoError(t, err)
+		pk, _, err := c.generateKeys(req, rpc)
+		require.NoError(t, err)
+		return pk
+	}
+
+	empty := keys("svm:mainnet-beta", "")
+	require.Equal(t, "svm:mainnet-beta:*", empty, "empty suffix must keep today's key")
+
+	suffixed := keys("svm:mainnet-beta", "systx")
+	require.Equal(t, "svm:mainnet-beta:systx:*", suffixed)
+
+	other := keys("svm:mainnet-beta", "archive")
+	require.NotEqual(t, empty, suffixed)
+	require.NotEqual(t, empty, other)
+	require.NotEqual(t, suffixed, other)
 }

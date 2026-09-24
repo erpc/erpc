@@ -257,7 +257,7 @@ func TestMemoryConnector_ReverseIndex_SvmPrefix(t *testing.T) {
 	require.NoError(t, err)
 
 	// Write with a concrete slot ref.
-	require.NoError(t, connector.Set(ctx, "svm:mainnet-beta:12345", "hash-abc", []byte("payload"), nil))
+	require.NoError(t, connector.Set(WithReverseIndexWildcard(ctx, "svm:mainnet-beta:*"), "svm:mainnet-beta:12345", "hash-abc", []byte("payload"), nil))
 	time.Sleep(50 * time.Millisecond) // let ristretto admission drain
 
 	// Wildcard lookup should resolve to the concrete key's value.
@@ -276,12 +276,82 @@ func TestMemoryConnector_ReverseIndex_EvmStillWorks(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, connector.Set(ctx, "evm:1:0x42", "hash-abc", []byte("evm-payload"), nil))
+	require.NoError(t, connector.Set(WithReverseIndexWildcard(ctx, "evm:1:*"), "evm:1:0x42", "hash-abc", []byte("evm-payload"), nil))
 	time.Sleep(50 * time.Millisecond)
 
 	got, err := connector.Get(ctx, ConnectorReverseIndex, "evm:1:*", "hash-abc", nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("evm-payload"), got)
+}
+
+func TestMemoryConnector_ReverseIndex_CacheKeySuffix(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
+		MaxItems: 1000, MaxTotalSize: "1MB",
+	})
+	require.NoError(t, err)
+
+	rangeKey := "eth_getTransactionReceipt:abc"
+	require.NoError(t, connector.Set(WithReverseIndexWildcard(ctx, "evm:998:*"), "evm:998:64321354", rangeKey, []byte("regular"), nil))
+	require.NoError(t, connector.Set(WithReverseIndexWildcard(ctx, "evm:998:systx:*"), "evm:998:systx:64321354", rangeKey, []byte("systx"), nil))
+	time.Sleep(50 * time.Millisecond)
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "evm:998:*", rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("regular"), got, "unsuffixed wildcard must not see the systx write")
+
+	got, err = connector.Get(ctx, ConnectorReverseIndex, "evm:998:systx:*", rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("systx"), got, "suffixed wildcard must resolve its own reverse-index entry")
+}
+
+func TestMemoryConnector_ReverseIndex_CacheKeySuffix_Delete(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
+		MaxItems: 1000, MaxTotalSize: "1MB",
+	})
+	require.NoError(t, err)
+
+	rangeKey := "eth_getTransactionReceipt:abc"
+	require.NoError(t, connector.Set(WithReverseIndex(ctx, "evm:998", ""), "evm:998:64321354", rangeKey, []byte("regular"), nil))
+	require.NoError(t, connector.Set(WithReverseIndex(ctx, "evm:998", "systx"), "evm:998:systx:64321354", rangeKey, []byte("systx"), nil))
+	time.Sleep(50 * time.Millisecond)
+
+	require.NoError(t, connector.Delete(WithReverseIndex(ctx, "evm:998", "systx"), "evm:998:systx:64321354", rangeKey))
+	time.Sleep(50 * time.Millisecond)
+
+	_, err = connector.Get(ctx, ConnectorReverseIndex, "evm:998:systx:*", rangeKey, nil)
+	require.Error(t, err, "suffixed reverse-index slot must be cleared")
+	require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "evm:998:*", rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("regular"), got, "unsuffixed reverse-index slot must survive a suffixed delete")
+}
+
+func TestMemoryConnector_ReverseIndex_ColonContainingRef(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
+		MaxItems: 1000, MaxTotalSize: "1MB",
+	})
+	require.NoError(t, err)
+
+	rangeKey := "eth_getTransactionReceipt:colon-ref"
+	require.NoError(t, connector.Set(
+		WithReverseIndexWildcard(ctx, "evm:998:*"),
+		"evm:998:foo:bar", rangeKey, []byte("colon-ref-body"), nil,
+	))
+	time.Sleep(50 * time.Millisecond)
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "evm:998:*", rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("colon-ref-body"), got)
+
+	_, err = connector.Get(ctx, ConnectorReverseIndex, "evm:998:foo:*", rangeKey, nil)
+	require.Error(t, err, "must not index under a last-colon split of a colon-containing ref")
 }
 
 // TestMemoryConnector_ReverseIndex_SvmDelete guards against the reverse-index
@@ -297,14 +367,14 @@ func TestMemoryConnector_ReverseIndex_SvmDelete(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, connector.Set(ctx, "svm:mainnet-beta:12345", "hash-abc", []byte("payload"), nil))
+	require.NoError(t, connector.Set(WithReverseIndexWildcard(ctx, "svm:mainnet-beta:*"), "svm:mainnet-beta:12345", "hash-abc", []byte("payload"), nil))
 	time.Sleep(50 * time.Millisecond)
 
 	got, err := connector.Get(ctx, ConnectorReverseIndex, "svm:mainnet-beta:*", "hash-abc", nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("payload"), got)
 
-	require.NoError(t, connector.Delete(ctx, "svm:mainnet-beta:12345", "hash-abc"))
+	require.NoError(t, connector.Delete(WithReverseIndexWildcard(ctx, "svm:mainnet-beta:*"), "svm:mainnet-beta:12345", "hash-abc"))
 	time.Sleep(50 * time.Millisecond)
 
 	_, err = connector.Get(ctx, ConnectorReverseIndex, "svm:mainnet-beta:*", "hash-abc", nil)

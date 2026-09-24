@@ -172,7 +172,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 					ttl := 1 * time.Second
 
 					// Set with short TTL (simulating cache write)
-					err := conn.Set(ctx, actualPk, rk, value, &ttl)
+					err := conn.Set(WithReverseIndex(ctx, networkId, ""), actualPk, rk, value, &ttl)
 					require.NoError(t, err)
 
 					// Immediately get through reverse index - should succeed
@@ -235,9 +235,9 @@ func TestConnectorTTLExpiry(t *testing.T) {
 					ttl2 := 5 * time.Second
 
 					// Set two entries with different TTLs
-					err := conn.Set(ctx, pk1, rk, value1, &ttl1)
+					err := conn.Set(WithReverseIndex(ctx, networkId, ""), pk1, rk, value1, &ttl1)
 					require.NoError(t, err)
-					err = conn.Set(ctx, pk2, rk, value2, &ttl2)
+					err = conn.Set(WithReverseIndex(ctx, networkId, ""), pk2, rk, value2, &ttl2)
 					require.NoError(t, err)
 
 					// Get through reverse index - should get one of them

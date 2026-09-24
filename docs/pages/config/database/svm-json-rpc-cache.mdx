@@ -155,7 +155,7 @@ Two categories live in `neverCacheMethods`: **mutating or effectful** calls, whe
 
 **Cache-key derivation.** Two keys, as in EVM, but both dimensions differ:
 
-- **Partition key: `<networkId>:<slotRef>`.** `slotRef` is the request's `minContextSlot` when one is present in any object param, otherwise the literal `"*"`. This replaces EVM's `blockRef` dimension. Because `slotRef` is derived purely from the request params, a given `(method, params)` tuple always produces the same partition key on both `Set` and `Get` — so SVM always reads `ConnectorMainIndex` and never needs EVM's reverse-index wildcard fallback.
+- **Partition key: `<networkId>:<slotRef>`, or `<networkId>:<cacheKeySuffix>:<slotRef>` when `networks[].cacheKeySuffix` is set.** `slotRef` is the request's `minContextSlot` when one is present in any object param, otherwise the literal `"*"`. This replaces EVM's `blockRef` dimension. Because `slotRef` is derived purely from the request params, a given `(method, params)` tuple always produces the same partition key on both `Set` and `Get` — so SVM always reads `ConnectorMainIndex` and never needs EVM's reverse-index wildcard fallback.
 - **Request key: `<method>:<sha256(method ‖ 0x00 ‖ json(params))>`.** Derived by `svmRequestKey`, **not** by the shared `req.CacheHash()`.
 
 **Cache keys are case-preserving, and this is a correctness requirement.** The shared EVM hasher lowercases every string param, which is the right normalization for hex but catastrophic for Solana: base58 pubkeys and transaction signatures are **case-sensitive**, so two distinct valid accounts differing only by letter case would collapse onto one key and be served each other's data. `svmRequestKey` preserves case exactly. It marshals params with `encoding/json` (not sonic) on purpose — the standard library documents that it sorts map keys, which is what makes the key deterministic across runs and across Go map iteration order, and its grammar is both type- and structure-delimiting, so `"abc"`, `["a","bc"]`, and `{"a":"bc"}` cannot collide, nor can the number `1` and the string `"1"`. The method name is both hashed and prefixed, so a method name containing `:` cannot forge another method's key. Params `nil` and `params: []` normalize to the same key.
@@ -368,7 +368,7 @@ All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig
 
 ### Request/response behavior
 
-- **Cache key structure.** Partition key `<networkId>:<slotRef>` where `slotRef` is the request's `minContextSlot` or `"*"`. Request key `<method>:<sha256(method ‖ 0x00 ‖ json(params))>`, case-preserving. Always read from `ConnectorMainIndex` — no reverse index.
+- **Cache key structure.** Partition key `<networkId>:<slotRef>`, or `<networkId>:<cacheKeySuffix>:<slotRef>` when `networks[].cacheKeySuffix` is set. `slotRef` is the request's `minContextSlot` or `"*"`. Request key `<method>:<sha256(method ‖ 0x00 ‖ json(params))>`, case-preserving. Always read from `ConnectorMainIndex` — no reverse index.
 - **`neverCacheMethods` short-circuit both directions.** `Get` returns a miss and `Set` returns without writing, before any policy is consulted.
 - **Responses with a JSON-RPC `error` field are never cached.** Native Solana error codes and `error.data` are preserved to the client instead — see the [error reference](/reference/errors#svm-solana-error-contract).
 - **A `getSlot` response is corrected after the cache read.** The post-forward hook enforces the highest known slot for the request's commitment even on a cache hit, so a cached value can never make the slot number appear to move backwards. See [slot tracking](/reference/svm/slot-tracking).
@@ -399,6 +399,7 @@ All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig
 10. **`params: null` and `params: []` share one key.** They are the same call; the encoder normalizes them so `json.Marshal` cannot emit `null` for one and `[]` for the other.
 11. **No per-connector write timeout.** Unlike the EVM cache's hard 5 s `Set` ceiling, SVM `Set` relies on the connector's own configuration and the request context. Configure `failsafeForSets` on the connector if you need a bound.
 12. **Constructor failures are downgraded to a warning at startup.** `erpc/init.go` logs a WARN and continues if `NewSvmJsonRpcCache` fails, which would leave the cache silently absent — this is exactly why the config block is schema-validated eagerly at startup instead.
+13. **Same-chain networks share partition keys unless `cacheKeySuffix` is set.** Same rule as EVM: empty suffix keeps `<networkId>:<slotRef>`; `cacheKeySuffix: systx` yields `<networkId>:systx:<slotRef>`. Source: [`architecture/svm/json_rpc_cache.go:L443-L454`](https://github.com/erpc/erpc/blob/main/architecture/svm/json_rpc_cache.go#L443-L454).
 
 ### Observability
 
