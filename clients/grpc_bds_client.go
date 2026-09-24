@@ -219,6 +219,13 @@ func (c *GenericGrpcBdsClient) chainIdParam() *uint64 {
 	return &v
 }
 
+// signatureEncoding picks how transaction r/s render in JSON-RPC output for
+// the configured chain: 32-byte DATA on Tron, QUANTITY everywhere else
+// (including unknown chain 0), per execution-apis.
+func (c *GenericGrpcBdsClient) signatureEncoding() evm.SignatureEncoding {
+	return evm.SignatureEncodingForChain(c.expectedChainId.Load())
+}
+
 // grpcResponseMetadataInterceptor captures all response metadata (headers)
 // from gRPC calls and records them as span attributes on detailed traces.
 func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
@@ -475,7 +482,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 
 		var result interface{}
 		if grpcResp.Block != nil {
-			result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
+			result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
 		}
 
 		jsonRpcResp := &common.JsonRpcResponse{}
@@ -541,7 +548,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 
 	var result interface{}
 	if hasBlock {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
+		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -616,7 +623,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, conn *b
 
 	var result interface{}
 	if grpcResp.Block != nil {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
+		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -811,7 +818,7 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, c
 
 	var result interface{}
 	if grpcResp.Transaction != nil {
-		result = evm.TransactionToJsonRpc(grpcResp.Transaction)
+		result = evm.TransactionToJsonRpc(grpcResp.Transaction, c.signatureEncoding())
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -1288,7 +1295,7 @@ func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, conn
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
 	}
 
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransactionsResponseToJsonRpc(aggregated))
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransactionsResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
@@ -1327,7 +1334,7 @@ func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsCon
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
 	}
 
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryLogsResponseToJsonRpc(aggregated))
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryLogsResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
@@ -1366,7 +1373,7 @@ func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsC
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
 	}
 
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTracesResponseToJsonRpc(aggregated))
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTracesResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
@@ -1405,7 +1412,7 @@ func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *b
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
 	}
 
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransfersResponseToJsonRpc(aggregated))
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransfersResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 // svmGetBlockParams is the parsed second argument of Solana's `getBlock`.
