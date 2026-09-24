@@ -169,7 +169,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | `quicknode://<key>[?tagIds=1,2&tagLabels=a,b]` | `{apiKey: key}` + parsed `tagIds`/`tagLabels` |
 | `repository://<host>/<path>[?query]` | `{repositoryUrl: "https://"+host+"/"+path+"?"+query}` |
 | `routemesh://<host>/rpc/<chainId>/<apiKey>` | `{baseURL: host, apiKey: pathParts[2]}` — path must match exactly |
-| `spectrum://<key>[?host=&plan=&nodeType=]` | `{apiKey: key}` + all query params copied verbatim |
+| `spectrum://<team>/<key>[?host=&plan=&nodeType=]` | `{apiKey: "<team>/<key>"}` + all query params copied verbatim |
 | `superchain://<spec>` | `{registryUrl: host+path}` |
 | `tenderly://<key>` | `{apiKey: key}` |
 | `thirdweb://<clientId>` | `{clientId: host}` |

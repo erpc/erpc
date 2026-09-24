@@ -1575,8 +1575,13 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 
 		return settings, nil
 	case "chainstack", "evm+chainstack", "spectrum", "evm+spectrum":
+		apiKey := endpoint.Host
+		if vendorName == "spectrum" {
+			// Spectrum keys span two path segments: spectrum://<team>/<key>
+			apiKey += strings.TrimSuffix(endpoint.Path, "/")
+		}
 		settings := VendorSettings{
-			"apiKey": endpoint.Host,
+			"apiKey": apiKey,
 		}
 
 		// Parse query parameters for additional filters
