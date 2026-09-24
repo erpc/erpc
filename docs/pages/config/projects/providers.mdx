@@ -299,16 +299,16 @@ Static map of 71 chains → subdomain prefixes. URL: `https://{subdomain}.dwelli
 
 #### spectrum
 
-[Spectrum Nodes](https://spectrumnodes.com). Static map of EVM chains → `{slug, mn|tn}`. URL: `https://{host}/{apiKey}/{slug}/{mn|tn}/{chainId}/{plan}/{nodeType}/rpc/`. A chain answers only after it is enabled in the Spectrum dashboard project that owns the key, so pair this vendor with `onlyNetworks` listing the enabled chains. OwnsUpstream: `spectrum://`, `evm+spectrum://`, or a `.simplystaking.xyz/` endpoint.
+[Spectrum Nodes](https://spectrumnodes.com). Static map of the 147 EVM chains in the public catalog at [spectrumnodes.com/networks](https://spectrumnodes.com/networks) → `{network}/{service}` path and offered node types. URL: `https://{host}/{apiKey}/{network}/{service}/{chainId}/{plan}/{nodeType}/rpc/`. A chain answers only after it is enabled in the Spectrum dashboard project that owns the key, so pair this vendor with `onlyNetworks` listing the enabled chains. OwnsUpstream: `spectrum://`, `evm+spectrum://`, or a `.simplystaking.xyz/` endpoint.
 
 | key | required | default |
 |---|---|---|
 | `apiKey` | yes | — |
 | `host` | no | `spectrum-03.simplystaking.xyz` (the region host shown in the dashboard) |
 | `plan` | no | `shared` (`dedicated` for dedicated nodes) |
-| `nodeType` | no | `archive` (`pruned` for pruned nodes) |
+| `nodeType` | no | `archive`; `pruned` to prefer pruned nodes. A chain that offers only the other type uses that type. |
 
-<SourceLink file="thirdparty/spectrum.go" lines="1-189" />
+<SourceLink file="thirdparty/spectrum.go" lines="1-270" />
 
 #### envio
 
