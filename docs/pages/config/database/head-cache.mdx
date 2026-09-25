@@ -1,0 +1,88 @@
+---
+title: Head cache
+description: Hydrate each new block (with all its logs) once, verify it against the chain, and answer block and log reads for the recent window without touching providers.
+---
+
+import { LLMsTxtLink, AISection } from "../../../components";
+
+<LLMsTxtLink />
+
+# Head cache
+
+Most traffic reads the last few blocks: `eth_getBlockByNumber`, `eth_getBlockByHash`
+and `eth_getLogs` with many different filters. With the head cache enabled, eRPC
+follows the chain head, fetches every new block **once** (full transactions plus the
+complete log list of the block), verifies it links to its parent, and then answers
+those reads from memory for the recent window. Different log filters over the same
+blocks cost zero extra provider calls.
+
+With `mode: shared`, several eRPC replicas coordinate through Redis: one replica holds
+a fenced lease and hydrates, every replica serves the published window.
+
+Disabled by default. When disabled, behavior is unchanged.
+
+## Quick taste
+
+```yaml
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          headCache:
+            enabled: true
+            # "local" (per process) or "shared" (Redis-coordinated)
+            mode: shared
+            depth: 128
+            namespace: prod-eu
+            redis:
+              uri: redis://redis:6379
+```
+
+<AISection>
+
+## Config schema (`projects[].networks[].evm.headCache`)
+
+Defaults from `common/config_headcache.go` (`EvmHeadCacheConfig.SetDefaults`).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Opt-in. |
+| `mode` | `local` | `local`: in-process store, every replica hydrates on its own. `shared`: Redis lease + snapshot; requires `redis.uri`; never silently degrades to local. |
+| `depth` | `128` (1..4096) | Canonical blocks retained. |
+| `maxBytes` | `256MB` | Total retained block+log bytes; oldest blocks dropped first (become misses). |
+| `maxBlockBytes` | `16MB` | A block whose block+logs payload exceeds this is never cached. |
+| `maxPerTick` | `16` | Blocks fetched (including re-verification) per follow step. |
+| `concurrency` | `4` (1..64) | Parallel hydration fetches. |
+| `pollInterval` | `2s` | Follow/refresh tick; also re-verifies the tip hash so same-height reorgs are caught. Head advances seen by state pollers trigger an immediate tick. |
+| `fetchTimeout` | `10s` | Per hydration call. |
+| `maxLogsRange` | `depth` | Widest `eth_getLogs` range served from cache. |
+| `maxStaleness` | `5 × pollInterval` | If the local view was not refreshed (leader: successful verify/publish; follower: a newer snapshot adopted) within this window, the cache stops serving and all reads go upstream. Measured with the local clock. |
+| `leaseTtl` | `3 × pollInterval + 1s` | Shared-mode lease; `pollInterval` must be `< leaseTtl/2` (renewal happens every tick). |
+| `namespace` | `default` | Deployment isolation prefix. A hash of the project's upstream ids+endpoints and the network id is always appended, so replicas share data only when they run the same upstream set. |
+| `redis.uri` | — | Required for `shared`. `redis.tls`, `redis.connPoolSize` honored. Redis >= 6.2. |
+
+## What is served
+
+- `eth_getBlockByNumber` with an explicit hex number and boolean flag (`true` = full txs, `false` = tx hashes derived from the same record). Tags (`latest`, `finalized`, ...) always go through the normal path.
+- `eth_getBlockByHash`, only when the hash is canonical in the current window.
+- `eth_getLogs` with `blockHash`, or with hex `fromBlock`/`toBlock` where **every** block of the range is held and the span is <= `maxLogsRange`. Only `address`, `topics`, `blockHash`, `fromBlock`, `toBlock` members are accepted; anything else goes upstream.
+- Requests with `useUpstream`, an integrity selector, `skipCacheRead`, or internal requests bypass the head cache (they may target a different trust set).
+
+## Edge cases & gotchas
+
+1. **No partial answers.** A range with any missing, expired, evicted or oversized block is a miss and is forwarded upstream unchanged. Empty results are only returned when every block was held and none matched.
+2. **Record validation.** A block is cached only when: the logs list is non-null, every log's `blockHash`/`blockNumber` match, every `transactionHash` belongs to the block, `logIndex` strictly increases, no log is `removed`, and the bloom recomputed from the logs equals the block's `logsBloom` (catches an upstream returning `[]` for a block it has not indexed).
+3. **Reorgs.** Each tick re-fetches the window tip; on hash mismatch the follower walks back (bounded by `maxPerTick` per tick) until the stored hash matches, then extends forward requiring `parentHash` links. Orphaned heights are replaced atomically in the next snapshot; orphan hashes are never served. Reorgs deeper than `depth` reset the window.
+4. **Shared mode.** Records are immutable and hash-addressed; snapshots are published with an epoch-checked compare-and-set, and a leader whose lease was superseded gets `ErrLeaseLost` and stops. Records are written before the snapshot referencing them. Followers poll `LoadSnapshot` every tick (pub/sub is only a latency hint) and reject snapshots older than `maxStaleness` or dated more than 5s in the future.
+5. **Redis loss.** Reads never block on Redis. When Redis is unreachable, no snapshot is refreshed and after `maxStaleness` every replica serves from upstream. Nothing is served beyond `maxStaleness`.
+6. **Leadership is not derived from shared counters** (`database.sharedState`); it uses its own fenced lease.
+7. **Hydration traffic** goes through the normal network path (selection policy, priority tiers, failsafe) as internal requests. In `local` mode each replica hydrates independently (N× provider cost for N replicas); use `shared` to hydrate once per fleet.
+8. Chains whose `eth_getBlockByNumber(n,true)` omits `logsBloom` or returns non-standard log fields will not be cached (all misses).
+
+## Observability
+
+Hits carry the `head_cache.hit=true` attribute on the `Network.Forward` span and are marked `fromCache`. Lease acquisition/loss is logged under `component=headCache`.
+
+</AISection>
