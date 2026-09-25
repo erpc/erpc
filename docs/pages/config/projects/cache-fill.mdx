@@ -1,0 +1,92 @@
+---
+title: Cache fill
+description: Coordinate cacheable read misses across eRPC replicas so the same miss usually reaches the upstream once, with bounded, fail-open waits.
+---
+
+import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
+
+<LLMsTxtLink />
+
+# Cache fill
+
+With several eRPC replicas behind a load balancer, the same cache miss can arrive at
+every replica at once, and each replica calls the upstream. `cacheFill` makes the
+replicas coordinate through the shared-state connector: one replica fetches and
+stores the response, and the others wait briefly and then read it from the shared
+cache.
+
+Disabled by default. This reduces duplicate upstream reads. It is not exactly-once,
+and it has no effect on responses that no cache policy stores.
+
+## Quick taste
+
+```yaml
+database:
+  sharedState:
+    clusterKey: prod-main
+    connector:
+      driver: redis
+      redis: { uri: "redis://redis.internal:6379/0" }
+  evmJsonRpcCache:
+    connectors:
+      - id: redis-cache
+        driver: redis
+        redis: { uri: "redis://redis.internal:6379/0" }
+    policies:
+      - { connector: redis-cache, network: "*", method: "*", finality: finalized, ttl: 0 }
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        cacheFill:
+          enabled: true
+```
+
+<AISection>
+
+## Config schema (`projects[].networks[].cacheFill`)
+
+Defaults from `CacheFillConfig.SetDefaults` in <SourceLink file="common/config_coordination.go" />.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Opt-in. |
+| `lockTtl` | `30s` | How long the filling replica holds the lock. Must be `>= maxWait`. |
+| `maxWait` | `5s` | Longest a waiting replica waits before calling the upstream itself. Must be `>= pollInterval`. |
+| `pollInterval` | `50ms` | How often a waiting replica re-reads its cache and the done marker. |
+| `lockAcquireTimeout` | `100ms` | Bound on lock acquisition and on each marker read. Slower counts as "shared state unavailable". |
+
+All durations must be positive.
+
+## Behavior
+
+Runs in `Network.Forward` after a local cache miss and before upstream selection (<SourceLink file="erpc/cache_fill.go" />).
+
+1. **Scope.** A request takes part only when a cache GET policy matches it and its block reference is concrete (a number, a hash, or block-independent). Writes, unknown methods, tag-based reads (`latest`, `finalized`, ...), internal requests and `skip-cache-read` requests never take the lock or wait.
+2. **Local first.** Only the in-process multiplexer leader reaches the lock, so each replica takes at most one lock per key.
+3. **Lock key.** `<clusterKey>/cachefill/<project>/<network>/<digest>`. The digest covers the request hash, its directives, and a fingerprint of the network's upstream/trust configuration, so replicas with different configs never wait on each other.
+4. **Lock won.** The replica forwards as usual, stores a cacheable response **synchronously** (other requests store asynchronously), writes a done marker (`stored` or `uncached`) and releases the lock. The winner's client pays one cache write of extra latency.
+5. **Lock held elsewhere.** The replica re-reads its own cache every `pollInterval`. A hit is returned as an ordinary cache hit. An `uncached` marker from this fill ends the wait early and the replica forwards upstream. After `maxWait` it forwards upstream.
+6. **Fail open.** A lock timeout, a connector error, or a `memory` shared-state connector (no cross-replica store) means the request forwards immediately, as without `cacheFill`.
+
+## Edge cases & gotchas
+
+1. **Needs a cache policy.** Only responses a cache policy stores can be shared. Without matching policies every replica still fetches.
+2. **Not exactly-once.** Lock expiry, retries, hedges and `maxWait` timeouts can each add upstream calls. Prefer no hedge and no consensus on networks that rely on this (both fan out extra calls).
+3. **Bounded latency.** In the worst case a waiter adds `maxWait` before calling upstream itself, and an unreachable shared state adds up to `lockAcquireTimeout`.
+4. **Stored but missed.** If the winner reports `stored` but the waiter's read misses (eviction, different policy match), the waiter stops waiting and forwards.
+5. **Head cache hydration** does not write into this cache and never takes the fill lock.
+
+## Observability
+
+| Metric | Type | Labels |
+|---|---|---|
+| `erpc_cache_fill_total` | counter | `project`, `network`, `outcome` = `leader`, `follower_hit`, `follower_uncached`, `follower_timeout`, `error` |
+| `erpc_cache_fill_wait_seconds` | histogram | `project`, `network`, `outcome` |
+
+Fill hits set `cache_fill.hit=true` on the `Network.Forward` span.
+
+Tests (<SourceLink file="erpc/cache_fill_test.go" />): `TestCacheFill_TwoReplicasOneUpstreamRead`, `TestCacheFill_UncachedResponseReleasesWaiterEarly`, `TestCacheFill_MaxWaitBoundsWaiter`, `TestCacheFill_RedisDownFailsOpen`, `TestCacheFill_TagRequestsBypass`. They use scripted upstreams and miniredis.
+
+</AISection>

@@ -3,7 +3,7 @@ title: Head cache
 description: Hydrate each new block (with all its logs) once, verify it against the chain, and answer block and log reads for the recent window without touching providers.
 ---
 
-import { LLMsTxtLink, AISection } from "../../../components";
+import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
 
 <LLMsTxtLink />
 
@@ -60,6 +60,8 @@ Defaults from [`EvmHeadCacheConfig.SetDefaults`](https://github.com/gfx-labs/erp
 | `maxLogsRange` | `depth` | Widest `eth_getLogs` range served from cache. |
 | `maxStaleness` | `5 × pollInterval` | Leader freshness starts at successful verification. Follower freshness starts at `min(snapshot.At, receipt time)`, not at delayed receipt. Past that deadline the cache stops serving and reads go upstream. |
 | `leaseTtl` | `3 × pollInterval + 1s` | Shared-mode lease, renewed every tick; `pollInterval` must be `< leaseTtl/2`. Each tick (renew + verify + hydrate + publish) runs under a `0.8 × leaseTtl` deadline so a slow upstream cancels work before the lease can lapse. |
+| `headSource` | `served` | Which tip the window extends to. `served`: `min(served latest tip, live eth_blockNumber)`, so subscribers do not see blocks that HTTP `latest` would not return yet. Live discovery is used when the served tip is unknown (0) or lags live and has not changed for `servedTipMaxAge`. `max`: live discovery only (previous behavior). |
+| `servedTipMaxAge` | `3 × pollInterval` | How long a served tip that lags live discovery may stay unchanged before it is treated as stale. A quiet chain where served equals live is never stale. |
 | `namespace` | `default` | Deployment isolation prefix. A SHA-256 fingerprint includes upstream configurations, provider settings/overrides, upstream and network defaults, integrity and effective network forwarding configuration. Secrets contribute to the digest but are never emitted in it. |
 | `redis.uri` | — | Required for `shared`. `redis.tls`, `redis.connPoolSize` honored. Redis >= 6.2. |
 
@@ -78,18 +80,35 @@ Defaults from [`EvmHeadCacheConfig.SetDefaults`](https://github.com/gfx-labs/erp
 4. **Shared mode.** Records are immutable and hash-addressed; snapshots are published with an epoch-checked compare-and-set, and a leader whose lease was superseded gets `ErrLeaseLost` and stops. Records are written before the snapshot referencing them. Followers poll `LoadSnapshot` every tick (pub/sub is only a latency hint) and reject snapshots older than `maxStaleness` or dated more than 5s in the future. A follower's staleness window is anchored to the snapshot's writer timestamp (never extended by late receipt). When a follower lacks a record needed for a newHeads/logs event, subscribers are closed instead of receiving a gapped stream.
 5. **Redis loss and complete resets.** Reads never block on Redis. When Redis is unreachable, no snapshot is refreshed and after `maxStaleness` every replica serves from upstream. A newly acquired lease re-persists retained records before publishing, including after Redis restarts empty. Complete data loss also loses Redis epoch counters: a follower rejects regressed ordering while its old view is trusted. Only after that view expires may it adopt a newer-timestamp, complete authoritative snapshot with reset ordering, closing existing subscriptions because continuity is uncertain (`TestCache_RedisEmptyRestartRecoversCompleteWindow`). No claim of durable monotonic epochs survives total Redis data loss.
 6. **Leadership is not derived from shared counters** (`database.sharedState`); it uses its own fenced lease.
-7. **Hydration traffic** goes through the normal network path (selection policy, priority tiers, failsafe) as internal JSON-RPC requests with explicit IDs. In `local` mode each replica hydrates independently (N× provider cost for N replicas); use `shared` to hydrate once per fleet. A stable head costs one height discovery plus one compact verification per leader tick, not full-block/log hydration. Snapshot notifications do not trigger the leader's own hydration loop. Heartbeats are published at most once per `maxStaleness / 3` on unchanged heads (`TestCache_StartLoopNoSelfSpin`). Discovery is autonomous even if upstream state pollers are disabled or stale.
+7. **Hydration traffic** goes through the normal network path (selection policy, priority tiers, failsafe) as internal JSON-RPC requests with explicit IDs. Hydration responses are not written into the ordinary [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache), so orphaned head data is not left behind there. In `local` mode each replica hydrates independently (one hydration per replica); use `shared` to hydrate once per fleet. A stable head costs one height discovery plus one compact verification per leader tick, not full-block/log hydration. Snapshot notifications do not trigger the leader's own hydration loop. Heartbeats are published at most once per `maxStaleness / 3` on unchanged heads (`TestCache_StartLoopNoSelfSpin`). Discovery is autonomous even if upstream state pollers are disabled or stale.
 8. Chains whose `eth_getBlockByNumber(n,true)` omits `logsBloom` or returns non-standard log fields will not be cached (all misses).
 9. **Lease work is bounded as a whole.** Coordination, discovery, verification, all hydration batches, and publication share the 80%-of-lease deadline. A configured `fetchTimeout` longer than that budget is capped by its parent context. Slow calls may prevent a tick from publishing rather than extending leadership implicitly (`TestCache_WholeTickDeadlinePreventsLatePublish`).
 10. **Subscription gaps fail closed.** Missing added/removed records or a snapshot jump that skips unobserved heights closes subscriptions, never emits a partial event. Clients must reconnect/resubscribe and recover their own missed range (`TestCache_GapClosesSubscribers`, `TestCache_WindowJumpClosesSubscription`).
 11. **Redis connection lifecycle.** Clients are registry/application-scoped, keyed by URI, TLS and pool settings, and closed when the application context ends. Different TLS verification policies or application contexts cannot reuse the same connection (`TestHeadCache_RedisRegistryLifecycleAndTLSIdentity`).
 12. **Exact input semantics.** Addresses require 20-byte hex and topics/hashes require 32-byte hex. A trailing wildcard topic still requires that topic position to exist. Invalid filters, mixed blockHash/range selectors, unknown members and directed requests bypass local answers (`TestHttp_HeadCache_MalformedFiltersBypassAndTopicPositionsMatchGeth`).
 13. **Memory sizing.** `maxBytes` applies per enabled network per replica, including followers in shared mode, not to the whole process. The default `256MB` is 256 MiB (`256 << 20`): 32 enabled networks can retain about 8 GiB of cached data per replica alone. Budget separately for Go/object overhead, in-flight hydration and serialization, other caches, and Redis storage. Tune `maxBytes`, `depth`, concurrency and container/pod memory limits for the enabled network count rather than assuming existing limits are sufficient.
+14. **Head source never truncates.** The chosen tip only bounds forward extension. A lower tip (for example live 25 first, then a served tip of 20) holds the window at 25 and emits no removals. Orphans are detected only by hash and parent re-verification (`TestHeadSource_Initial25ThenServed20NoFalseReorg`, `TestHeadSource_ColdAndStaleServedTipStayLive`, `TestHeadSource_Selector`).
 
 ## Observability
 
 Hits carry the `head_cache.hit=true` attribute on the `Network.Forward` span and are marked `fromCache`. Lease acquisition/loss is logged under `component=headCache`.
 
-There are no dedicated Prometheus head-cache metrics or metric labels. `Cache.Stats` exposes in-process atomic counters (`Hydrated`, `Published`, `Hits`, `Misses`, `Reorgs`, `LeaderEpochs`, `Rejected`) for tests and integrations, not a registered metrics endpoint. Count leader discovery/compact verification separately from full block/log hydration when assessing upstream cost.
+All series carry `project` and `network` (the network label). Defined in <SourceLink file="telemetry/feature_metrics.go" />, emitted from <SourceLink file="headcache/metrics.go" />.
+
+| Metric | Type | Extra labels | Meaning |
+|---|---|---|---|
+| `erpc_head_cache_requests_total` | counter | `result` = `hit`, `miss` | Head cache lookups for eligible reads. |
+| `erpc_head_cache_fetches_total` | counter | `result` = `ok`, `rejected` | Blocks hydrated by this replica. `rejected` failed record validation or `maxBlockBytes`. |
+| `erpc_head_cache_reorgs_total` | counter | | Hash mismatches detected by the leader. |
+| `erpc_head_cache_snapshots_published_total` | counter | | Snapshots published while leader. |
+| `erpc_head_cache_leader_acquisitions_total` | counter | | Times this replica acquired the hydration lease. |
+| `erpc_head_cache_subscriber_closed_total` | counter | `reason` = `unsubscribe`, `slow_consumer`, `gap`, `reset`, `stop` | Subscriptions ended. |
+| `erpc_head_cache_leader` | gauge | | 1 while this replica holds the hydration lease. |
+| `erpc_head_cache_head_block` | gauge | | Head of the snapshot held by this replica. |
+| `erpc_head_cache_bytes` | gauge | | Bytes of block records held in memory. |
+| `erpc_head_cache_snapshot_timestamp_seconds` | gauge | | Leader publish time of the held snapshot. Freshness is `time() - value`. |
+| `erpc_head_cache_subscribers` | gauge | | Active in-process subscriptions. |
+
+Gauges are removed when the network's head cache stops. Tests: `headcache/metrics_test.go`, `telemetry/feature_metrics_test.go`. `Cache.Stats` still exposes the in-process atomic counters. Count leader discovery and compact verification separately from full block/log hydration when assessing upstream cost.
 
 </AISection>

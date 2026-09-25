@@ -1,0 +1,77 @@
+---
+title: Head polling
+description: Let one eRPC replica per network poll upstream latest/finalized block numbers while the others reuse the shared counters, falling back to their own polls when shared state goes stale.
+---
+
+import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
+
+<LLMsTxtLink />
+
+# Head polling
+
+Each eRPC replica runs a state poller per upstream that fetches the latest and
+finalized block numbers. With [shared state](/config/database/shared-state) the
+results are already shared, but every replica still polls. `evm.headPolling.mode: lease`
+elects one replica per network to poll. The others read the shared per-upstream
+counters, and poll again themselves as soon as those counters go stale.
+
+Default `all` (every replica polls, as before).
+
+## Quick taste
+
+```yaml
+database:
+  sharedState:
+    clusterKey: prod-main
+    connector:
+      driver: redis
+      redis: { uri: "redis://redis.internal:6379/0" }
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          headPolling:
+            mode: lease
+```
+
+<AISection>
+
+## Config schema (`projects[].networks[].evm.headPolling`)
+
+Defaults from `EvmHeadPollingConfig.SetDefaults` in <SourceLink file="common/config_coordination.go" />.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `mode` | `all` | `all`: every replica polls. `lease`: one lease holder per network polls. |
+| `leaseTtl` | `10s` (min `1s`) | Lease length. Acquire/renew runs every `leaseTtl/3`. |
+| `staleAfter` | `0` (= 3 × the upstream's `statePollerInterval`) | A non-holder polls anyway when an upstream's shared counter has not been observed for this long. |
+
+## Behavior
+
+1. **Lease.** Key `<clusterKey>/headPollLease/<project>/<network>/<fingerprint>` in the shared-state connector (<SourceLink file="erpc/head_poll_lease.go" />). The fingerprint covers the network's upstream/trust configuration, so replicas with different configs never suppress each other's polling.
+2. **Holder** polls as usual. Every successful poll also refreshes the shared counter's timestamp, even when the height did not change, so a frozen chain still looks fresh to other replicas.
+3. **Non-holder** skips a latest/finalized poll while the upstream's shared counter is fresher than `staleAfter`, and returns the shared value. Otherwise it polls (<SourceLink file="architecture/evm/evm_state_poller.go" />).
+4. **Conservative holding.** The lease counts as held only until 90% of `leaseTtl` after the start of the last successful acquire/renew. Any renew or acquire error drops it immediately.
+5. **Fail open.** When shared state is unreachable nobody holds the lease, and the stale counters make every replica poll again. A dead holder's lease expires after `leaseTtl` and another replica takes it.
+6. **Upstreams added later** get the lease within about one second.
+
+## Edge cases & gotchas
+
+1. **Poll counts, not savings.** Skipped polls are counted, but the reduction in provider calls depends on replica count, block time and poller intervals. Measure it with `erpc_upstream_latest_block_polled_total` before and after.
+2. **Memory connector.** With a `memory` shared-state connector each process has its own lock, so every replica holds its own lease and polls, which is the same as `all`. (Inspected in source, not covered by a dedicated test.)
+3. **Separate from the head cache lease.** The [head cache](/config/database/head-cache) has its own hydration lease and its own `eth_blockNumber` discovery. Leased head polling does not change head cache traffic.
+4. **Served tip unchanged.** The shared counter protocol is unchanged, so served-tip and rollback handling behave as before.
+
+## Observability
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `erpc_head_poll_lease_held` | gauge | `project`, `network` | 1 while this replica holds the lease. |
+| `erpc_head_poll_skipped_total` | counter | `project`, `network` | Polls skipped because another replica holds the lease and the shared counter is fresh. |
+| `erpc_upstream_latest_block_polled_total` | counter | `project`, `vendor`, `network`, `upstream` | Existing metric: actual latest-block polls. |
+
+Tests: `TestHeadPollLease_OneHolderRenewAndTakeover`, `TestHeadPollLease_HeldExpiresLocallyWithoutRenew`, `TestHeadPollLease_RedisDownFailsOpen` (<SourceLink file="data/head_poll_lease_test.go" />), `TestEvmStatePoller_HeadPollLease_FollowerSkipsWhileFresh`, `TestEvmStatePoller_HeadPollLease_HolderStalledChainStaysFresh`, `TestEvmStatePoller_HeadPollLease_NilLeaseUnchanged`, and the two-replica `TestHeadPollLease_TwoReplicasFrozenChainAndTakeover` (<SourceLink file="erpc/head_poll_lease_test.go" />), all with scripted upstreams and miniredis.
+
+</AISection>
