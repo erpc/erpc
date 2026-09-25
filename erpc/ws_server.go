@@ -46,6 +46,8 @@ import (
 // subscription overflows, is closed with 1008), writeTimeout per frame.
 // Connections close with 1001 when the server shuts down.
 
+var wsPingInterval = 30 * time.Second
+
 const (
 	wsMaxInflightPerConn = 16
 	wsCloseSlowConsumer  = "slow consumer"
@@ -220,6 +222,9 @@ type wsSub struct {
 	filter *headcache.LogFilter
 	// unsubscribed distinguishes client eth_unsubscribe from overflow closes.
 	unsubscribed atomic.Bool
+	// last is the highest block number emitted (0 = nothing yet); used to
+	// detect discontinuities so clients never see a silent gap.
+	last int64
 }
 
 type wsConn struct {
@@ -260,10 +265,15 @@ func (c *wsConn) run() {
 
 	writerDone := make(chan struct{})
 	go c.writeLoop(writerDone)
+	go c.pingLoop()
 
 	sem := make(chan struct{}, wsMaxInflightPerConn)
 	for {
-		_, data, err := c.conn.Read(c.ctx)
+		// Not c.ctx: coder/websocket tears the connection down without a
+		// close frame when a Read context is cancelled, which would hide
+		// the 1008/1001 status from the client. writeLoop's Close/CloseNow
+		// unblocks this Read instead.
+		_, data, err := c.conn.Read(context.Background())
 		if err != nil {
 			if websocket.CloseStatus(err) == websocket.StatusMessageTooBig {
 				c.closeWith(websocket.StatusMessageTooBig, "message too big")
@@ -344,7 +354,60 @@ func (c *wsConn) writeLoop(done chan struct{}) {
 	}
 }
 
-// send enqueues without blocking. A full queue disconnects the client.
+// pingLoop detects dead peers (which would otherwise hold a connection slot
+// until TCP gives up) and keeps idle connections alive behind LB idle
+// timeouts. Pong handling requires the concurrent reader in run().
+func (c *wsConn) pingLoop() {
+	t := time.NewTicker(wsPingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(c.ctx, c.ws.cfg.WriteTimeout.Duration())
+			err := c.conn.Ping(pctx)
+			cancel()
+			if err != nil && c.ctx.Err() == nil {
+				c.closeWith(websocket.StatusPolicyViolation, "ping timeout")
+				return
+			}
+			// Re-check the upgrade credentials so revoked keys and expired
+			// JWTs stop streaming within one ping interval.
+			if _, err := c.ws.authenticate(c.ctx, c.project, c.req, "eth_subscribe", nil); err != nil && c.ctx.Err() == nil {
+				c.closeWith(websocket.StatusPolicyViolation, "unauthorized")
+				return
+			}
+		}
+	}
+}
+
+// sendStream enqueues a subscription notification, waiting up to
+// WriteTimeout for queue space. Backpressure thus lands on the head cache's
+// per-subscription queue (which closes on overflow) instead of dropping a
+// client that is keeping up with a large block.
+func (c *wsConn) sendStream(msg []byte) bool {
+	select {
+	case c.out <- msg:
+		return true
+	case <-c.ctx.Done():
+		return false
+	default:
+	}
+	t := time.NewTimer(c.ws.cfg.WriteTimeout.Duration())
+	defer t.Stop()
+	select {
+	case c.out <- msg:
+		return true
+	case <-c.ctx.Done():
+		return false
+	case <-t.C:
+		c.closeWith(websocket.StatusPolicyViolation, wsCloseSlowConsumer)
+		return false
+	}
+}
+
+// send enqueues an RPC reply without blocking. A full queue disconnects the client.
 func (c *wsConn) send(msg []byte) {
 	if c.ctx.Err() != nil {
 		return
@@ -618,8 +681,8 @@ func (c *wsConn) unsubscribe(req *wsRequest) {
 	c.sendResult(req.ID, ok)
 }
 
-func (c *wsConn) notify(id string, result json.RawMessage) {
-	c.send([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":%s}}`, id, result)))
+func (c *wsConn) notify(id string, result json.RawMessage) bool {
+	return c.sendStream([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":%s}}`, id, result)))
 }
 
 func (c *wsConn) pump(s *wsSub) {
@@ -638,7 +701,12 @@ func (c *wsConn) pump(s *wsSub) {
 				}
 				return
 			}
-			if err := c.emit(s, ev); err != nil {
+			if err := c.emit(s, ev); errors.Is(err, errWsGap) {
+				// Missing heights (evicted records, window reset, recovery
+				// after staleness): the client must resync, never skip.
+				c.closeWith(websocket.StatusPolicyViolation, "subscription gap: resubscribe")
+				return
+			} else if err != nil {
 				c.lg.Warn().Err(err).Str("subscription", s.id).Msg("failed to render subscription event")
 				c.closeWith(websocket.StatusInternalError, "failed to render subscription event")
 				return
@@ -647,14 +715,58 @@ func (c *wsConn) pump(s *wsSub) {
 	}
 }
 
+var errWsGap = errors.New("head discontinuity")
+
+// checkContinuity verifies an event extends what the subscriber has seen:
+// Added must be contiguous and start right after the last emitted block, or
+// right at the lowest Removed block for a reorg rewind. The first event of a
+// subscription establishes the baseline.
+func checkContinuity(last int64, ev headcache.Event) error {
+	for i := 1; i < len(ev.Added); i++ {
+		if ev.Added[i].Number != ev.Added[i-1].Number+1 {
+			return errWsGap
+		}
+	}
+	for i := 1; i < len(ev.Removed); i++ {
+		if ev.Removed[i].Number != ev.Removed[i-1].Number-1 {
+			return errWsGap
+		}
+	}
+	if last == 0 {
+		return nil
+	}
+	next := last + 1
+	if len(ev.Removed) > 0 {
+		lowest := ev.Removed[len(ev.Removed)-1].Number
+		if ev.Removed[0].Number > last || lowest > next {
+			return errWsGap
+		}
+		next = lowest
+	}
+	if len(ev.Added) > 0 && ev.Added[0].Number != next {
+		return errWsGap
+	}
+	return nil
+}
+
 func (c *wsConn) emit(s *wsSub, ev headcache.Event) error {
+	if err := checkContinuity(s.last, ev); err != nil {
+		return err
+	}
+	if len(ev.Added) > 0 {
+		s.last = ev.Added[len(ev.Added)-1].Number
+	} else if len(ev.Removed) > 0 {
+		s.last = ev.Removed[len(ev.Removed)-1].Number - 1
+	}
 	if !s.logs {
 		for _, rec := range ev.Added {
 			h, err := rec.HeaderJSON()
 			if err != nil {
 				return err
 			}
-			c.notify(s.id, h)
+			if !c.notify(s.id, h) {
+				return nil
+			}
 		}
 		return nil
 	}
@@ -664,7 +776,9 @@ func (c *wsConn) emit(s *wsSub, ev headcache.Event) error {
 			return err
 		}
 		for _, l := range logs {
-			c.notify(s.id, l)
+			if !c.notify(s.id, l) {
+				return nil
+			}
 		}
 	}
 	for _, rec := range ev.Added {
@@ -673,7 +787,9 @@ func (c *wsConn) emit(s *wsSub, ev headcache.Event) error {
 			return err
 		}
 		for _, l := range logs {
-			c.notify(s.id, l)
+			if !c.notify(s.id, l) {
+				return nil
+			}
 		}
 	}
 	return nil

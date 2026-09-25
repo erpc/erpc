@@ -11,7 +11,9 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/headcache"
 	"github.com/erpc/erpc/util"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -332,4 +334,130 @@ func TestWs_SlowConsumerDisconnected(t *testing.T) {
 	require.Contains(t, ce.reason, wsCloseSlowConsumer)
 	// Sends after close are dropped without panicking.
 	c.send([]byte("c"))
+}
+
+func testWsConn(t *testing.T, queue int) (*wsConn, context.CancelCauseFunc) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	return &wsConn{
+		ctx: ctx, cancel: cancel, out: make(chan []byte, queue),
+		ws: &wsServer{cfg: &common.WebSocketServerConfig{WriteTimeout: common.Duration(2 * time.Second)}},
+	}, cancel
+}
+
+func manyLogsRecord(n int64, logs int) *headcache.BlockRecord {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i := 0; i < logs; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"address":%q,"topics":[%q],"data":"0x","blockNumber":"0x%x","blockHash":"0xh%d","transactionHash":"0xt","transactionIndex":"0x0","logIndex":"0x%x","removed":false}`,
+			scriptedEmitter, scriptedTopicEven, n, n, i)
+	}
+	b.WriteByte(']')
+	return &headcache.BlockRecord{Number: n, Hash: fmt.Sprintf("0xh%d", n), Block: []byte(`{}`), Logs: []byte(b.String())}
+}
+
+func TestWs_BusyBlockDeliveredToReadingClient(t *testing.T) {
+	c, _ := testWsConn(t, 16)
+	got := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for got < 1000 {
+			select {
+			case <-c.out:
+				got++
+			case <-c.ctx.Done():
+				return
+			}
+		}
+	}()
+	s := &wsSub{id: "0x1", logs: true}
+	require.NoError(t, c.emit(s, headcache.Event{Added: []*headcache.BlockRecord{manyLogsRecord(10, 1000)}}))
+	<-done
+	require.NoError(t, c.ctx.Err(), "a reading client must not be disconnected")
+	require.Equal(t, 1000, got)
+}
+
+func TestWs_StreamStalledClientDisconnected(t *testing.T) {
+	c, _ := testWsConn(t, 4)
+	c.ws.cfg.WriteTimeout = common.Duration(100 * time.Millisecond)
+	s := &wsSub{id: "0x1", logs: true}
+	require.NoError(t, c.emit(s, headcache.Event{Added: []*headcache.BlockRecord{manyLogsRecord(10, 50)}}))
+	var ce *wsCloseErr
+	require.ErrorAs(t, context.Cause(c.ctx), &ce)
+	require.Equal(t, websocket.StatusPolicyViolation, ce.code)
+}
+
+func TestWs_GapDetection(t *testing.T) {
+	rec := func(n int64) *headcache.BlockRecord { return &headcache.BlockRecord{Number: n} }
+	ev := func(rem []int64, add ...int64) headcache.Event {
+		e := headcache.Event{}
+		for _, n := range rem {
+			e.Removed = append(e.Removed, rec(n))
+		}
+		for _, n := range add {
+			e.Added = append(e.Added, rec(n))
+		}
+		return e
+	}
+	require.NoError(t, checkContinuity(0, ev(nil, 50, 51)))
+	require.NoError(t, checkContinuity(10, ev(nil, 11, 12)))
+	require.ErrorIs(t, checkContinuity(10, ev(nil, 12)), errWsGap)            // skipped 11
+	require.ErrorIs(t, checkContinuity(10, ev(nil, 11, 13)), errWsGap)        // hole inside
+	require.ErrorIs(t, checkContinuity(10, ev(nil, 100)), errWsGap)           // window jump
+	require.NoError(t, checkContinuity(10, ev([]int64{10, 9}, 9, 10, 11)))    // reorg rewind
+	require.NoError(t, checkContinuity(10, ev([]int64{10}, 10)))              // same-height
+	require.ErrorIs(t, checkContinuity(10, ev([]int64{10, 9}, 10)), errWsGap) // rewind mismatch
+	require.ErrorIs(t, checkContinuity(10, ev([]int64{12}, 12)), errWsGap)    // removed beyond seen
+
+	// emit closes via pump on gap; emit itself reports it without sending.
+	c, _ := testWsConn(t, 16)
+	s := &wsSub{id: "0x1"}
+	require.NoError(t, c.emit(s, headcache.Event{Added: []*headcache.BlockRecord{manyLogsRecord(5, 0)}}))
+	require.ErrorIs(t, c.emit(s, headcache.Event{Added: []*headcache.BlockRecord{manyLogsRecord(7, 0)}}), errWsGap)
+}
+
+func TestWs_PingAndReauthClosesExpiredJwt(t *testing.T) {
+	old := wsPingInterval
+	wsPingInterval = 200 * time.Millisecond
+	defer func() { wsPingInterval = old }()
+
+	const key = "ws-test-hmac"
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
+		{Type: common.AuthTypeJwt, Jwt: &common.JwtStrategyConfig{
+			VerificationKeys: map[string]string{"default": key}, AllowedAlgorithms: []string{"HS256"},
+		}},
+	}}
+	_, _, base, shutdown, _ := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	sign := func(exp time.Duration) http.Header {
+		tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"sub": "u", "exp": time.Now().Add(exp).Unix(),
+		}).SignedString([]byte(key))
+		require.NoError(t, err)
+		return http.Header{"Authorization": {"Bearer " + tok}}
+	}
+
+	// Long-lived token: survives several ping+reauth rounds.
+	long, _, err := dialWs(t, wsURL(base, ""), sign(time.Hour))
+	require.NoError(t, err)
+	require.Nil(t, long.call("eth_subscribe", `["newHeads"]`).Error)
+
+	// Token expiring in ~2s: accepted at upgrade, closed after exp.
+	short, _, err := dialWs(t, wsURL(base, ""), sign(2*time.Second))
+	require.NoError(t, err)
+	require.Nil(t, short.call("eth_subscribe", `["newHeads"]`).Error)
+	select {
+	case err := <-short.done:
+		require.Equal(t, websocket.StatusPolicyViolation, websocket.CloseStatus(err))
+	case <-time.After(8 * time.Second):
+		t.Fatal("expired JWT kept streaming")
+	}
+	require.Nil(t, long.call("eth_chainId", `[]`).Error)
 }

@@ -46,7 +46,7 @@ Defaults from `common/config_headcache.go` (`WebSocketServerConfig.SetDefaults`)
 | `enabled` | `false` | When false, Upgrade requests are handled as plain HTTP (no 101). |
 | `maxConnections` | `1024` | Concurrent WS connections per process. Beyond it the upgrade gets HTTP 503. |
 | `maxSubscriptionsPerConnection` | `32` | Further `eth_subscribe` calls return JSON-RPC error `-32005`. |
-| `sendQueueSize` | `256` | Outbound messages queued per connection, and the head cache event queue per subscription. Overflow closes the connection with 1008. |
+| `sendQueueSize` | `256` | Outbound messages queued per connection, and the head cache event queue per subscription. RPC replies never wait: a full queue closes with 1008. Subscription notifications wait up to `writeTimeout` for space, so a large block (thousands of matching logs) reaches a client that keeps reading. A client stalled longer, or a head cache queue overflow, closes with 1008. |
 | `maxMessageBytes` | `1MB` (min 1024) | Inbound frame limit. Larger frames close with 1009. |
 | `writeTimeout` | `10s` | Per outbound frame. A timeout closes with 1008. |
 
@@ -62,10 +62,11 @@ Defaults from `common/config_headcache.go` (`WebSocketServerConfig.SetDefaults`)
 
 ## Edge cases & gotchas
 
-1. **No silent gaps.** If a subscription's event queue overflows or the head cache stops, the connection is closed with 1008 rather than skipping events. Clients should reconnect and resubscribe.
+1. **No silent gaps.** Every head cache event is checked for continuity, including blocks with no matching logs: Added blocks must be contiguous and continue from the last block seen, or rewind exactly to the lowest Removed block on a reorg. Missing heights (evicted records, a window reset, recovery after staleness), a subscription queue overflow, or a stopped head cache close the connection with 1008 (`subscription gap: resubscribe` / `slow consumer`). Clients should reconnect, resubscribe and backfill with `eth_getLogs`.
 2. **Stale head cache.** When the head cache stops serving (see its `maxStaleness`), no events are produced. Reads over the same connection still fall through to upstream.
 3. **Shutdown.** Connections are hijacked, so `http.Server.Shutdown` does not wait for them. They close with 1001 when the application context ends. New upgrades during draining get 503.
-4. `maxConnections` is per process, not per project or fleet.
+4. `maxConnections` is per process, not per project, client IP or fleet. One tenant can use all of it, so front eRPC with a per-client connection limit at the load balancer.
+6. **Keepalive and re-auth.** Every 30s the server pings (a missing pong within `writeTimeout` closes with 1008, freeing the slot) and re-checks the upgrade credentials. A revoked key or expired JWT stops streaming within about 30s, closing with 1008 `unauthorized`.
 5. Only `newHeads` and `logs` are supported. `newPendingTransactions` and `syncing` return `-32602`.
 
 ## Observability
