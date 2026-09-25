@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -14,6 +15,19 @@ import (
 // polls unconditionally before it honors the lease. Re-applying is an
 // in-memory pointer store per upstream, so the loop is cheap.
 const headPollLeaseRewireInterval = time.Second
+
+// headPollLeases maps *Network to its running lease (kept outside Network so
+// the feature stays self-contained; removed when the app context ends).
+var headPollLeases sync.Map
+
+// HeadPollLease returns the network's head polling lease, or nil when
+// leased polling is not enabled.
+func (n *Network) HeadPollLease() *data.HeadPollLease {
+	if v, ok := headPollLeases.Load(n); ok {
+		return v.(*data.HeadPollLease)
+	}
+	return nil
+}
 
 // initHeadPollLease enables evm.headPolling.mode=lease for one network: a
 // single replica per (cluster, project, network, trust fingerprint) polls
@@ -60,6 +74,7 @@ func (nr *NetworksRegistry) initHeadPollLease(n *Network, cfg *common.NetworkCon
 	staleAfter := hp.StaleAfter.Duration()
 
 	ctx := nr.appCtx
+	headPollLeases.Store(n, lease)
 	lease.Start(ctx)
 	go func() {
 		t := time.NewTicker(headPollLeaseRewireInterval)
@@ -69,6 +84,7 @@ func (nr *NetworksRegistry) initHeadPollLease(n *Network, cfg *common.NetworkCon
 			select {
 			case <-ctx.Done():
 				lease.Stop()
+				headPollLeases.Delete(n)
 				telemetry.MetricHeadPollLeaseHeld.DeleteLabelValues(project, label)
 				return
 			case <-t.C:
