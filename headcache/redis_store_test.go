@@ -392,3 +392,81 @@ func TestRedisStore_InvalidInputIsNotUnavailable(t *testing.T) {
 		}
 	}
 }
+
+func TestRedisStore_EpochCounterEvictionDoesNotWedge(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	s := NewRedisStore(env.client, RedisStoreOptions{Prefix: uniquePrefix(t)})
+	var l *Lease
+	for i := 0; i < 3; i++ {
+		var err error
+		if l, err = s.AcquireLease(ctx, sc, "A", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PublishSnapshot(ctx, l, snap(l, 1, int64(10+i), "0xa")); err != nil {
+			t.Fatal(err)
+		}
+		_ = s.ReleaseLease(ctx, l)
+	}
+	old := l.Epoch
+	// Simulate eviction of the counter, then of snapmeta as well.
+	for _, keys := range [][]string{{s.epochKey(sc)}, {s.epochKey(sc), s.snapMetaKey(sc)}} {
+		if err := env.client.Del(ctx, keys...).Err(); err != nil {
+			t.Fatal(err)
+		}
+		nl, err := s.AcquireLease(ctx, sc, "B", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if nl.Epoch <= old {
+			t.Fatalf("epoch regressed after eviction: %d <= %d", nl.Epoch, old)
+		}
+		if err := s.PublishSnapshot(ctx, nl, snap(nl, 1, 20, "0xb")); err != nil {
+			t.Fatalf("scope wedged after eviction: %v", err)
+		}
+		_ = s.ReleaseLease(ctx, nl)
+		old = nl.Epoch
+	}
+}
+
+func TestRedisStore_SnapMetaEvictionKeepsSeqFence(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	s := NewRedisStore(env.client, RedisStoreOptions{Prefix: uniquePrefix(t)})
+	l, _ := s.AcquireLease(ctx, sc, "A", time.Minute)
+	if err := s.PublishSnapshot(ctx, l, snap(l, 5, 10, "0xa")); err != nil {
+		t.Fatal(err)
+	}
+	_ = env.client.Del(ctx, s.snapMetaKey(sc)).Err()
+	if err := s.PublishSnapshot(ctx, l, snap(l, 4, 9, "0xold")); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("seq regression after snapmeta eviction must fail, got %v", err)
+	}
+	if err := s.PublishSnapshot(ctx, l, snap(l, 6, 11, "0xb")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRedisStore_StaleReleaseAndRenew(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	s := NewRedisStore(env.client, RedisStoreOptions{Prefix: uniquePrefix(t)})
+	la, _ := s.AcquireLease(ctx, sc, "A", time.Second)
+	env.expire(1500 * time.Millisecond)
+	// Renew after expiry with no successor fails; it must not resurrect.
+	if _, err := s.RenewLease(ctx, la, time.Minute); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("renew after expiry: %v", err)
+	}
+	lb, err := s.AcquireLease(ctx, sc, "B", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReleaseLease(ctx, la); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcquireLease(ctx, sc, "C", time.Minute); !errors.Is(err, ErrLeaseHeld) {
+		t.Fatalf("stale release deleted successor lease: %v", err)
+	}
+	if _, err := s.RenewLease(ctx, lb, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+}

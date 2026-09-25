@@ -31,6 +31,13 @@ import (
 //
 // The epoch counter has no TTL and is never deleted, so epochs never reset.
 //
+// Requirements: Redis >= 6.2 with Lua scripting (EVALSHA, TIME, cjson);
+// validated against Redis 8 and miniredis. Cluster works by construction
+// (single hash tag per scope) but is not integration-tested. Use a
+// noeviction policy or dedicated DB where possible; epoch fencing survives
+// eviction of the counter or snapmeta (floored from surviving snapshot state).
+// Holder ids passed to AcquireLease must be unique per process.
+//
 // Any backend failure is reported wrapped in ErrStoreUnavailable (context
 // cancellation/deadline is returned as the context error instead). The store
 // never fabricates a lease or snapshot when Redis is unreachable.
@@ -151,9 +158,21 @@ func (s *RedisStore) GetBlock(ctx context.Context, scope Scope, hash string) (*B
 	return rec, nil
 }
 
-// KEYS: lease, epoch. ARGV: holder, ttlMs. Returns epoch or 0 if held.
+// KEYS: lease, epoch, snapmeta, snap. ARGV: holder, ttlMs. Returns epoch or 0 if held.
 var acquireScript = redis.NewScript(`
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+-- Floor the counter at the highest epoch still visible in snapshot state so
+-- an evicted/lost counter can never re-issue an epoch that is already fenced.
+local floor = 0
+local me = redis.call('HGET', KEYS[3], 'e')
+if me then floor = tonumber(me) end
+local raw = redis.call('GET', KEYS[4])
+if raw then
+  local ok, d = pcall(cjson.decode, raw)
+  if ok and type(d) == 'table' and tonumber(d['e']) and tonumber(d['e']) > floor then floor = tonumber(d['e']) end
+end
+local cur = tonumber(redis.call('GET', KEYS[2]) or '0')
+if cur < floor then redis.call('SET', KEYS[2], floor) end
 local e = redis.call('INCR', KEYS[2])
 redis.call('HSET', KEYS[1], 'holder', ARGV[1], 'epoch', e)
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
@@ -190,6 +209,14 @@ if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
 local e = tonumber(ARGV[2])
 local s = tonumber(ARGV[3])
 local m = redis.call('HMGET', KEYS[4], 'e', 's')
+if not m[1] then
+  -- snapmeta lost (eviction): recover the fence from the snapshot itself.
+  local raw = redis.call('GET', KEYS[3])
+  if raw then
+    local ok, d = pcall(cjson.decode, raw)
+    if ok and type(d) == 'table' and tonumber(d['e']) then m = {d['e'], d['s'] or 0} end
+  end
+end
 if m[1] then
   local ce = tonumber(m[1])
   local cs = tonumber(m[2])
@@ -218,7 +245,8 @@ func (s *RedisStore) AcquireLease(ctx context.Context, scope Scope, holder strin
 	}
 	start := time.Now()
 	res, err := acquireScript.Run(ctx, s.client,
-		[]string{s.leaseKey(scope), s.epochKey(scope)}, holder, ttl.Milliseconds()).Int64()
+		[]string{s.leaseKey(scope), s.epochKey(scope), s.snapMetaKey(scope), s.snapKey(scope)},
+		holder, ttl.Milliseconds()).Int64()
 	if err != nil {
 		return nil, wrapErr(ctx, "AcquireLease", err)
 	}
@@ -314,10 +342,11 @@ func (s *RedisStore) LoadSnapshot(ctx context.Context, scope Scope) (*Snapshot, 
 	return snap, nil
 }
 
-// WatchSnapshots subscribes to publication notices. The returned channel is
-// closed when the subscription ends (ctx done, stop called, or the pubsub
-// connection is torn down), so consumers can detect loss of notifications
-// and fall back to polling or bypass.
+// WatchSnapshots subscribes to publication notices. Delivery is best-effort:
+// go-redis transparently reconnects the pubsub connection, so notices
+// published while disconnected are silently lost and the channel stays open.
+// Consumers MUST also poll LoadSnapshot periodically. The channel closes only
+// when ctx is done or stop is called.
 func (s *RedisStore) WatchSnapshots(ctx context.Context, scope Scope) (<-chan struct{}, func(), error) {
 	if err := validScope(scope); err != nil {
 		return nil, nil, err
