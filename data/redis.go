@@ -645,6 +645,21 @@ func (l *redisLock) IsNil() bool {
 	return l == nil || l.mutex == nil
 }
 
+// Extend renews the lock's expiry (by the TTL it was acquired with) only if
+// this holder still owns it. Returns an error when ownership was lost.
+func (l *redisLock) Extend(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, l.connector.setTimeout)
+	defer cancel()
+	ok, err := l.mutex.ExtendContext(ctx)
+	if err != nil {
+		return fmt.Errorf("error extending lock: %w", err)
+	}
+	if !ok {
+		return errors.New("failed to extend lock")
+	}
+	return nil
+}
+
 func (l *redisLock) Unlock(ctx context.Context) error {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.Unlock",
 		trace.WithAttributes(

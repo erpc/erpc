@@ -117,6 +117,14 @@ func resolveSharedStateInstanceID() string {
 	return "unknown"
 }
 
+// Connector exposes the shared-state backing connector (locks, pub/sub) to
+// coordination features. Consumers type-assert
+// interface{ Connector() Connector } so SharedStateRegistry stays unchanged.
+func (r *sharedStateRegistry) Connector() Connector { return r.connector }
+
+// ClusterKey returns the configured shared-state cluster key.
+func (r *sharedStateRegistry) ClusterKey() string { return r.clusterKey }
+
 func (r *sharedStateRegistry) GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable {
 	fkey := fmt.Sprintf("%s/%s", r.clusterKey, key)
 	value, alreadySetup := r.variables.LoadOrStore(fkey, &counterInt64{
