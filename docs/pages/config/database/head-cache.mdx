@@ -44,7 +44,7 @@ projects:
 
 ## Config schema (`projects[].networks[].evm.headCache`)
 
-Defaults from [`EvmHeadCacheConfig.SetDefaults`](https://github.com/erpc/erpc/blob/d461ac6/common/config_headcache.go#L65-L103), called by [`common/defaults.go`](https://github.com/erpc/erpc/blob/d461ac6/common/defaults.go).
+Defaults from [`EvmHeadCacheConfig.SetDefaults`](https://github.com/gfx-labs/erpc/blob/d461ac614b5fee2c39dbd2b47ab3045a08ee2c2f/common/config_headcache.go#L65-L103), called by [`common/defaults.go`](https://github.com/gfx-labs/erpc/blob/d461ac614b5fee2c39dbd2b47ab3045a08ee2c2f/common/defaults.go).
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -84,6 +84,7 @@ Defaults from [`EvmHeadCacheConfig.SetDefaults`](https://github.com/erpc/erpc/bl
 10. **Subscription gaps fail closed.** Missing added/removed records or a snapshot jump that skips unobserved heights closes subscriptions, never emits a partial event. Clients must reconnect/resubscribe and recover their own missed range (`TestCache_GapClosesSubscribers`, `TestCache_WindowJumpClosesSubscription`).
 11. **Redis connection lifecycle.** Clients are registry/application-scoped, keyed by URI, TLS and pool settings, and closed when the application context ends. Different TLS verification policies or application contexts cannot reuse the same connection (`TestHeadCache_RedisRegistryLifecycleAndTLSIdentity`).
 12. **Exact input semantics.** Addresses require 20-byte hex and topics/hashes require 32-byte hex. A trailing wildcard topic still requires that topic position to exist. Invalid filters, mixed blockHash/range selectors, unknown members and directed requests bypass local answers (`TestHttp_HeadCache_MalformedFiltersBypassAndTopicPositionsMatchGeth`).
+13. **Memory sizing.** `maxBytes` applies per enabled network per replica, including followers in shared mode, not to the whole process. The default `256MB` is 256 MiB (`256 << 20`): 32 enabled networks can retain about 8 GiB of cached data per replica alone. Budget separately for Go/object overhead, in-flight hydration and serialization, other caches, and Redis storage. Tune `maxBytes`, `depth`, concurrency and container/pod memory limits for the enabled network count rather than assuming existing limits are sufficient.
 
 ## Observability
 
