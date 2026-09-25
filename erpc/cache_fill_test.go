@@ -267,3 +267,36 @@ func TestCacheFill_TagRequestsBypass(t *testing.T) {
 	require.Equal(t, int64(2), up.ethCalls.Load())
 	require.Equal(t, leaderBefore, fillCounter("leader"), "tag reads must not take the fill lock")
 }
+
+// Head cache hydration reads unfinalized head data that a later reorg may
+// orphan. Those reads must not be written into the ordinary JSON-RPC cache
+// (where they would only expire by TTL); the head cache owns that data.
+func TestHeadCache_HydrationDoesNotWriteOrdinaryCache(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
+		Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond),
+	})
+	cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{
+		Connectors: []*common.ConnectorConfig{{Id: "mem", Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 10_000, MaxTotalSize: "64MB"}}},
+		Policies: []*common.CachePolicyConfig{{Network: "*", Method: "*", Finality: common.DataFinalityStateUnfinalized,
+			Connector: "mem", TTL: common.FixedDuration(time.Minute)}},
+	}}
+	_, _, _, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	p, err := e.GetProject("test_project")
+	require.NoError(t, err)
+	n, err := p.GetNetwork(t.Context(), "evm:123")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return n.HeadCache().Head() == 20 }, 10*time.Second, 50*time.Millisecond)
+	require.NotNil(t, n.cacheDal)
+	time.Sleep(200 * time.Millisecond) // async writes, if any, would have landed
+
+	for _, params := range []string{`["0x14",true]`, `["0x13",true]`} {
+		rq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":` + params + `}`))
+		rq.SetNetwork(n)
+		resp, _ := n.cacheDal.Get(t.Context(), rq)
+		require.True(t, resp == nil || resp.IsObjectNull(t.Context()), "hydrated block %s leaked into ordinary cache", params)
+	}
+}
