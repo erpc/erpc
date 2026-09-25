@@ -3,11 +3,14 @@ package erpc
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/headcache"
 	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/require"
 )
@@ -131,4 +134,68 @@ func TestHttp_HeadCache_DisabledPreservesBehavior(t *testing.T) {
 	r := doRpc(t, send, "eth_getBlockByNumber", `["0x13",false]`)
 	require.Contains(t, string(r.Result), up.HashAt(19))
 	require.Greater(t, up.BlockCalls(19), before)
+}
+
+// Two eRPC processes (separate ERPC instances and HTTP servers) share one
+// Redis: exactly one hydrates, both serve the committed window, and the
+// follower takes over hydration when the leader stops.
+func TestHttp_HeadCache_SharedRedisTwoReplicas(t *testing.T) {
+	addr := os.Getenv("HEADCACHE_TEST_REDIS_ADDR")
+	if addr == "" {
+		mr := miniredis.RunT(t)
+		addr = mr.Addr()
+	}
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	mk := func() *common.Config {
+		return headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
+			Enabled: true, Mode: common.HeadCacheModeShared, Depth: 16,
+			Namespace:    fmt.Sprintf("e2e-%d", time.Now().UnixNano()),
+			PollInterval: common.Duration(100 * time.Millisecond),
+			Redis:        &common.RedisConnectorConfig{URI: "redis://" + addr},
+		})
+	}
+	cfgA, cfgB := mk(), mk()
+	cfgB.Projects[0].Networks[0].Evm.HeadCache.Namespace = cfgA.Projects[0].Networks[0].Evm.HeadCache.Namespace
+	sendA, _, _, shutdownA, eA := createServerTestFixtures(cfgA, t)
+	sendB, _, _, shutdownB, eB := createServerTestFixtures(cfgB, t)
+	defer shutdownB()
+
+	get := func(e *ERPC) *Network {
+		p, err := e.GetProject("test_project")
+		require.NoError(t, err)
+		n, err := p.GetNetwork(t.Context(), "evm:123")
+		require.NoError(t, err)
+		return n
+	}
+	ca, cb := get(eA).HeadCache(), get(eB).HeadCache()
+	require.Eventually(t, func() bool { return ca.Head() == 20 && cb.Head() == 20 }, 10*time.Second, 50*time.Millisecond)
+	leaders := 0
+	for _, c := range []*headcache.Cache{ca, cb} {
+		if c.Stats.Hydrated.Load() > 0 {
+			leaders++
+		}
+	}
+	require.Equal(t, 1, leaders, "exactly one replica hydrates")
+
+	before := up.BlockCalls(15) + up.RangeLogCalls()
+	ra := doRpc(t, sendA, "eth_getLogs", `[{"fromBlock":"0xa","toBlock":"0x12"}]`)
+	rb := doRpc(t, sendB, "eth_getLogs", `[{"fromBlock":"0xa","toBlock":"0x12"}]`)
+	require.JSONEq(t, string(ra.Result), string(rb.Result))
+	require.Equal(t, before, up.BlockCalls(15)+up.RangeLogCalls())
+
+	// Stop the leader; the other replica must take over and keep advancing.
+	leader, follower := ca, cb
+	if cb.Stats.Hydrated.Load() > 0 {
+		leader, follower = cb, ca
+	}
+	leader.Stop()
+	if leader == ca {
+		shutdownA()
+	} else {
+		defer shutdownA()
+	}
+	up.Mine(3)
+	require.Eventually(t, func() bool { return follower.Head() == 23 }, 15*time.Second, 50*time.Millisecond)
+	require.Positive(t, follower.Stats.LeaderEpochs.Load())
 }
