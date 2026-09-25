@@ -268,7 +268,7 @@ func (f *networkHeadFetcher) call(ctx context.Context, method string, params []i
 	}
 	rq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	rq.SetDirectives(&common.RequestDirectives{IsInternal: true, SkipCacheRead: "true", RetryEmpty: true})
-	resp, err := f.n.Forward(withHeadCacheBypass(ctx), rq)
+	resp, err := f.n.Forward(withCacheWriteBypass(withHeadCacheBypass(ctx)), rq)
 	if err != nil {
 		return nil, err
 	}

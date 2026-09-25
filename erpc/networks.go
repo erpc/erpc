@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -54,6 +53,11 @@ type Network struct {
 
 	// headCache is the opt-in head-driven block/log cache (nil when disabled).
 	headCache *headcache.Cache
+
+	// cacheFillScope is the upstream trust-set fingerprint mixed into
+	// cache-fill lock keys so replicas with different upstream configs never
+	// coordinate (set only when cacheFill is enabled).
+	cacheFillScope string
 
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
@@ -1910,6 +1914,24 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
+	// Cross-replica cache fill (opt-in). Only the local multiplexer leader
+	// gets here, so each replica takes at most one lock per key.
+	var fill *cacheFillLeader
+	if n.cacheFillConfig() != nil {
+		var filled *common.NormalizedResponse
+		filled, fill = n.coordinateCacheFill(ctx, &lg, req)
+		if filled != nil {
+			if mlx != nil {
+				mlx.Close(ctx, filled, nil)
+			}
+			forwardSpan.SetAttributes(attribute.Bool("cache.hit", true), attribute.Bool("cache_fill.hit", true))
+			return filled, nil
+		}
+		if fill != nil {
+			defer fill.finish(n, n.cfg.CacheFill)
+		}
+	}
+
 	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
 	var upsList []common.Upstream
 	if n.policyEngine != nil {
@@ -2503,36 +2525,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if n.cacheDal != nil {
+		if n.cacheDal != nil && !cacheWriteBypassed(ctx) {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)
 			resp.AddRef()
 
-			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
-				defer (func() {
-					if rec := recover(); rec != nil {
-						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-							"cache-set",
-							fmt.Sprintf("network:%s method:%s", n.networkId, method),
-							common.ErrorFingerprint(rec),
-						).Inc()
-						lg.Error().
-							Interface("panic", rec).
-							Str("stack", string(debug.Stack())).
-							Msgf("unexpected panic on cache-set")
-					}
-				})()
-				defer resp.DoneRef()
-
-				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
-				defer timeoutCtxCancel()
-				tracedCtx := trace.ContextWithSpanContext(timeoutCtx, forwardSpan.SpanContext())
-				err := n.cacheDal.Set(tracedCtx, req, resp)
-				if err != nil {
-					lg.Warn().Err(err).Msgf("could not store response in cache")
-				}
-			})(resp, forwardSpan)
+			if fill != nil {
+				// Cache-fill leader: persist synchronously so waiting replicas
+				// find the entry before the lock is released.
+				stored, serr := n.storeInCache(&lg, method, req, resp, forwardSpan.SpanContext())
+				fill.stored = stored && serr == nil
+			} else {
+				go func(resp *common.NormalizedResponse, spanCtx trace.SpanContext) {
+					_, _ = n.storeInCache(&lg, method, req, resp, spanCtx)
+				}(resp, forwardSpan.SpanContext())
+			}
 		}
 
 		// Per-request execution counters + full upstream-attempt trace.
