@@ -1373,6 +1373,11 @@ export interface NetworkConfig {
    * network. Merges over the project block (network wins).
    */
   integrity?: IntegrityConfig;
+  /**
+   * CacheFill coordinates cacheable read misses across replicas through the
+   * shared-state connector. Nil or disabled changes nothing.
+   */
+  cacheFill?: CacheFillConfig;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1645,6 +1650,11 @@ export interface EvmNetworkConfig {
    * feeds WebSocket subscriptions. Nil or disabled changes nothing.
    */
   headCache?: EvmHeadCacheConfig;
+  /**
+   * HeadPolling selects whether every replica polls upstream head numbers
+   * ("all", default) or one lease holder per network does ("lease").
+   */
+  headPolling?: EvmHeadPollingConfig;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -2078,6 +2088,67 @@ export interface RateLimitStoreConfig {
 }
 
 //////////
+// source: config_coordination.go
+
+/**
+ * CacheFillConfig coordinates cacheable read misses across replicas through
+ * the shared-state connector. Default off. It only reduces duplicate upstream
+ * reads for responses a cache policy actually stores; it is not exactly-once.
+ */
+export interface CacheFillConfig {
+  enabled?: boolean;
+  /**
+   * LockTtl is how long the filling replica holds the lock. Default 30s.
+   */
+  lockTtl?: Duration;
+  /**
+   * MaxWait bounds how long a replica waits for another replica's fill
+   * before calling upstream itself. Default 5s.
+   */
+  maxWait?: Duration;
+  /**
+   * PollInterval is how often a waiting replica re-reads the cache. Default 50ms.
+   */
+  pollInterval?: Duration;
+  /**
+   * LockAcquireTimeout bounds lock acquisition. Slower means "shared state
+   * unavailable" and the request proceeds upstream immediately. Default 100ms.
+   */
+  lockAcquireTimeout?: Duration;
+}
+export const HeadPollingModeAll = "all";
+export const HeadPollingModeLease = "lease";
+/**
+ * EvmHeadPollingConfig selects who polls upstream latest/finalized block
+ * numbers. "all" (default) keeps every replica polling. "lease" lets one
+ * replica per network poll while others reuse the shared per-upstream
+ * counters, polling themselves whenever that shared state is older than
+ * StaleAfter.
+ */
+export interface EvmHeadPollingConfig {
+  mode?: string;
+  /**
+   * LeaseTtl is the lease length, renewed every LeaseTtl/3. Default 10s.
+   */
+  leaseTtl?: Duration;
+  /**
+   * StaleAfter: a non-holder polls anyway when the upstream's shared
+   * counter has not been updated for this long. 0 = 3x the upstream's
+   * statePollerInterval.
+   */
+  staleAfter?: Duration;
+}
+/**
+ * HeadPollLease tells a state poller whether this replica currently holds
+ * the network's head polling lease. Nil means "always poll".
+ */
+export type HeadPollLease = any;
+/**
+ * HeadPollLeaseAware is implemented by state pollers that honor a lease.
+ */
+export type HeadPollLeaseAware = any;
+
+//////////
 // source: config_headcache.go
 
 /**
@@ -2163,7 +2234,24 @@ export interface EvmHeadCacheConfig {
    * Default 3*pollInterval + 1s.
    */
   leaseTtl?: Duration;
+  /**
+   * HeadSource selects which tip the window publishes up to:
+   *   "served" (default): cap at the network's served latest tip when it is
+   *     known and fresh, so subscribers never see blocks that HTTP `latest`
+   *     would not yet return. When the served tip is unknown (cold pollers)
+   *     or stale (dormant pollers), live eth_blockNumber discovery is used so
+   *     the window cannot freeze.
+   *   "max": publish up to the live-discovered head (pre-existing behavior).
+   */
+  headSource?: string;
+  /**
+   * ServedTipMaxAge is how old the served tip may be before it is treated
+   * as stale and live discovery is used uncapped. Default 3*pollInterval.
+   */
+  servedTipMaxAge?: Duration;
 }
+export const HeadCacheHeadSourceServed = "served";
+export const HeadCacheHeadSourceMax = "max";
 /**
  * HeadCacheModeShared coordinates replicas through Redis: one lease holder
  * hydrates and publishes epoch-fenced snapshots, every replica serves them.
@@ -2203,6 +2291,19 @@ export interface WebSocketServerConfig {
    * WriteTimeout bounds each outbound write. Default 10s.
    */
   writeTimeout?: Duration;
+  /**
+   * MaxInflightPerConnection bounds concurrently handled requests per
+   * connection. Default 16.
+   */
+  maxInflightPerConnection?: number /* int */;
+  /**
+   * PingInterval is the keepalive ping period. Default 30s.
+   */
+  pingInterval?: Duration;
+  /**
+   * MaxBatchSize caps JSON-RPC batch length over WS. Default 100.
+   */
+  maxBatchSize?: number /* int */;
 }
 
 //////////
