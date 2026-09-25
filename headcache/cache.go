@@ -274,6 +274,7 @@ func (c *Cache) consume(ctx context.Context) {
 	}
 	c.mu.RLock()
 	cur := c.snap
+	trusted := c.viewLocked() != nil
 	c.mu.RUnlock()
 	// Age guard on the writer timestamp: a snapshot older than MaxStaleness
 	// (dead leader) or dated in the future beyond a small skew is not adopted.
@@ -281,16 +282,17 @@ func (c *Cache) consume(ctx context.Context) {
 	if age := now.Sub(snap.At); age > c.opt.MaxStaleness || age < -maxFutureSkew {
 		return
 	}
-	if cur != nil && cur.Epoch == snap.Epoch && cur.Seq == snap.Seq {
+	if cur != nil && cur.Epoch == snap.Epoch && cur.Seq == snap.Seq && !snap.At.After(cur.At) {
 		return // unchanged: freshness is NOT extended
 	}
-	if cur != nil && (snap.Epoch < cur.Epoch || (snap.Epoch == cur.Epoch && snap.Seq < cur.Seq)) {
-		return // never go backwards
+	reset := cur != nil && (snap.Epoch < cur.Epoch || (snap.Epoch == cur.Epoch && snap.Seq <= cur.Seq))
+	if reset && (trusted || !snap.At.After(cur.At)) {
+		return // never regress a trusted view or replay older verification
 	}
 	recs := make(map[string]*BlockRecord, len(snap.Hashes))
 	c.mu.RLock()
 	for _, h := range snap.Hashes {
-		if r, ok := c.records[h]; ok {
+		if r, ok := c.records[h]; ok && !reset {
 			recs[h] = r
 		}
 	}
@@ -301,15 +303,31 @@ func (c *Cache) consume(ctx context.Context) {
 		}
 		r, err := c.store.GetBlock(ctx, c.opt.Scope, h)
 		if err != nil {
-			if errors.Is(err, ErrStoreUnavailable) {
+			if reset || errors.Is(err, ErrStoreUnavailable) {
 				return
 			}
 			continue // missing/expired record => height is a cache miss
 		}
-		if r.Hash != h || r.Number != snap.Base()+int64(i) {
+		if r == nil || r.Hash != h || r.Number != snap.Base()+int64(i) {
+			if reset {
+				return
+			}
 			continue
 		}
 		recs[h] = r
+	}
+	if reset {
+		// Empty Redis restarts can reset epoch counters. Only after the old
+		// view expired and a newer, complete authoritative snapshot was read
+		// may we reset local ordering. Event continuity cannot be guaranteed.
+		c.mu.Lock()
+		for sub := range c.subs {
+			c.closeSubLocked(sub)
+		}
+		c.snap = nil
+		c.records = map[string]*BlockRecord{}
+		c.freshAt = time.Time{}
+		c.mu.Unlock()
 	}
 	fresh := now
 	if snap.At.Before(fresh) {
@@ -383,6 +401,7 @@ func (c *Cache) lead(ctx context.Context) {
 			break
 		}
 		mismatched = true
+		c.invalidateLocal()
 		hashes = hashes[:len(hashes)-1]
 		head--
 		c.Stats.Reorgs.Add(1)
@@ -431,7 +450,7 @@ func (c *Cache) lead(ctx context.Context) {
 				// Chain moved between verification and extension. The earlier
 				// verification no longer establishes this prefix as canonical.
 				c.invalidateLocal()
-				c.walk = &Snapshot{Head: r.Number - 2, Hashes: hashes[:len(hashes)-1]}
+				c.walk = nil // restart from committed records, not unpersisted additions
 				c.Stats.Reorgs.Add(1)
 				return
 			}
@@ -459,7 +478,7 @@ func (c *Cache) lead(ctx context.Context) {
 	c.mu.RLock()
 	unchanged := c.snap != nil && c.snap.Epoch == c.lease.Epoch && c.snap.Head == newHead && equalStrings(c.snap.Hashes, hashes)
 	c.mu.RUnlock()
-	if unchanged && c.nowFn().Sub(c.publishAt) < c.opt.MaxStaleness/3 {
+	if c.publishCt > 0 && unchanged && c.nowFn().Sub(c.publishAt) < c.opt.MaxStaleness/3 {
 		// Verified, nothing new: refresh local freshness only. A heartbeat
 		// republish still happens every maxStaleness/3 so followers keep
 		// serving while the chain is quiet.
@@ -470,6 +489,34 @@ func (c *Cache) lead(ctx context.Context) {
 	}
 	// Every referenced record must exist in the store before publication
 	// (publish-after-hydrate).
+	if c.publishCt == 0 {
+		// A reacquired lease may follow total store loss. Re-persist the
+		// retained window once per lease, not on every heartbeat. Missing
+		// evicted records shorten the window rather than creating holes.
+		newRecs = nil
+		first := 0
+		for i, hash := range hashes {
+			r := recs[hash]
+			if r == nil {
+				var err error
+				r, err = c.store.GetBlock(ctx, c.opt.Scope, hash)
+				if err != nil && !errors.Is(err, ErrNotFound) {
+					return
+				}
+			}
+			if r == nil {
+				first = i + 1
+				newRecs = nil
+				continue
+			}
+			recs[hash] = r
+			newRecs = append(newRecs, r)
+		}
+		hashes = hashes[first:]
+		if len(hashes) == 0 {
+			return
+		}
+	}
 	for _, r := range newRecs {
 		if err := c.store.PutBlock(ctx, c.opt.Scope, r, c.opt.RecordTTL); err != nil {
 			return

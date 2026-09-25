@@ -33,6 +33,7 @@ type NetworksRegistry struct {
 	aliasMu              *sync.RWMutex
 	initializer          *util.Initializer
 	logger               *zerolog.Logger
+	headCacheRedis       headCacheRedisPool
 }
 
 type aliasEntry struct {

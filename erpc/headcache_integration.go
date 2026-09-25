@@ -88,19 +88,64 @@ func (nr *NetworksRegistry) headCacheRedisClient(cfg *common.RedisConnectorConfi
 	return c, nil
 }
 
-// headCacheFingerprint hashes the project's upstream identities so that only
-// replicas running the same upstream (trust) configuration share records.
-func headCacheFingerprint(prj *common.ProjectConfig, networkId string) string {
-	var parts []string
+// headCacheFingerprint hashes the complete configured hydration trust set.
+// Alias types deliberately bypass the display serializers' redaction: secrets
+// affect trust identity but only the digest ever leaves this function.
+func headCacheFingerprint(prj *common.ProjectConfig, nw *common.NetworkConfig) (string, error) {
+	type upstreamTrust common.UpstreamConfig
+	type providerTrust common.ProviderConfig
+	var upstreams, providers []string
 	for _, u := range prj.Upstreams {
 		if u == nil {
 			continue
 		}
-		parts = append(parts, u.Id+"="+u.Endpoint)
+		b, err := json.Marshal((*upstreamTrust)(u))
+		if err != nil {
+			return "", fmt.Errorf("head cache upstream fingerprint: %w", err)
+		}
+		upstreams = append(upstreams, string(b))
 	}
-	sort.Strings(parts)
-	h := sha256.Sum256([]byte(networkId + "\n" + strings.Join(parts, "\n")))
-	return hex.EncodeToString(h[:8])
+	for _, p := range prj.Providers {
+		if p == nil {
+			continue
+		}
+		overrides := make(map[string]*upstreamTrust, len(p.Overrides))
+		for key, u := range p.Overrides {
+			overrides[key] = (*upstreamTrust)(u)
+		}
+		b, err := json.Marshal(struct {
+			*providerTrust
+			Overrides map[string]*upstreamTrust `json:"overrides"`
+		}{(*providerTrust)(p), overrides})
+		if err != nil {
+			return "", fmt.Errorf("head cache provider fingerprint: %w", err)
+		}
+		providers = append(providers, string(b))
+	}
+	sort.Strings(upstreams)
+	sort.Strings(providers)
+	// Cache sizing/storage is not part of upstream trust. Keep the effective
+	// network's selectors, integrity, failsafe and other forwarding settings.
+	network := *nw
+	if nw.Evm != nil {
+		evm := *nw.Evm
+		evm.HeadCache = nil
+		network.Evm = &evm
+	}
+	b, err := json.Marshal(struct {
+		NetworkID        string
+		Upstreams        []string
+		Providers        []string
+		UpstreamDefaults *upstreamTrust
+		NetworkDefaults  *common.NetworkDefaults
+		Integrity        *common.IntegrityConfig
+		Network          *common.NetworkConfig
+	}{nw.NetworkId(), upstreams, providers, (*upstreamTrust)(prj.UpstreamDefaults), prj.NetworkDefaults, prj.Integrity, &network})
+	if err != nil {
+		return "", fmt.Errorf("head cache trust fingerprint: %w", err)
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:]), nil
 }
 
 // initHeadCache builds and starts the head cache for an EVM network when
@@ -119,7 +164,13 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 	if ns == "" {
 		ns = "default"
 	}
-	ns += ":" + headCacheFingerprint(nr.project.Config, nwCfg.NetworkId())
+	nr.project.cfgMu.RLock()
+	fingerprint, err := headCacheFingerprint(nr.project.Config, nwCfg)
+	nr.project.cfgMu.RUnlock()
+	if err != nil {
+		return err
+	}
+	ns += ":" + fingerprint
 	var store headcache.Store
 	switch hc.Mode {
 	case common.HeadCacheModeShared:
@@ -150,7 +201,24 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 	}
 	lg := network.logger.With().Str("component", "headCache").Str("mode", hc.Mode).Logger()
 	f := &networkHeadFetcher{n: network}
-	headFn := func(ctx context.Context) int64 { return network.EvmHighestLatestBlockNumber(ctx) }
+	headFn := func(ctx context.Context) int64 {
+		// Pollers can be disabled, dormant or behind. Subscription delivery must
+		// advance without a user HTTP read waking a poller. Only the lease holder
+		// calls headFn, and its whole-tick deadline bounds this discovery too.
+		raw, err := f.call(ctx, "eth_blockNumber", []interface{}{})
+		if err != nil {
+			return 0
+		}
+		var quantity string
+		if err := json.Unmarshal(raw, &quantity); err != nil {
+			return 0
+		}
+		number, err := parseExplicitBlockNumber(quantity)
+		if err != nil {
+			return 0
+		}
+		return number
+	}
 	c := headcache.New(opts, store, f, headFn, &lg)
 	network.headCache = c
 	c.Start(nr.appCtx)
@@ -269,6 +337,9 @@ func (n *Network) tryServeHeadCache(ctx context.Context, req *common.NormalizedR
 		var raw json.RawMessage
 		var ok bool
 		if method == "eth_getBlockByHash" {
+			if !validHeadCacheHash(ref) {
+				return nil, false
+			}
 			raw, ok = c.BlockByHash(ref, full)
 		} else {
 			num, err := parseExplicitBlockNumber(ref)
@@ -301,7 +372,11 @@ func (n *Network) tryServeHeadCache(ctx context.Context, req *common.NormalizedR
 			return nil, false
 		}
 		var logs []json.RawMessage
-		if bh, ok := obj["blockHash"].(string); ok {
+		if rawHash, hasHash := obj["blockHash"]; hasHash {
+			bh, ok := rawHash.(string)
+			if !ok || !validHeadCacheHash(bh) {
+				return nil, false
+			}
 			_, hasFrom := obj["fromBlock"]
 			_, hasTo := obj["toBlock"]
 			if hasFrom || hasTo {
@@ -344,8 +419,17 @@ func (n *Network) tryServeHeadCache(ctx context.Context, req *common.NormalizedR
 // parseExplicitBlockNumber accepts only hex block numbers; tags resolve
 // through the normal path (served-tip semantics may differ from our head).
 func parseExplicitBlockNumber(s string) (int64, error) {
-	if !strings.HasPrefix(s, "0x") {
+	if !strings.HasPrefix(s, "0x") || len(s) < 3 || (len(s) > 3 && s[2] == '0') {
 		return 0, fmt.Errorf("not an explicit block number")
 	}
-	return strconv.ParseInt(s[2:], 16, 64)
+	n, err := strconv.ParseUint(s[2:], 16, 63)
+	return int64(n), err
+}
+
+func validHeadCacheHash(s string) bool {
+	if len(s) != 66 || !strings.HasPrefix(s, "0x") {
+		return false
+	}
+	_, err := hex.DecodeString(s[2:])
+	return err == nil
 }

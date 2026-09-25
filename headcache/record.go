@@ -51,11 +51,11 @@ func parseBlockHeader(raw json.RawMessage) (*rawBlock, int64, error) {
 		return nil, 0, err
 	}
 	n, err := parseHexInt(b.Number)
-	if err != nil {
+	if err != nil || n < 0 {
 		return nil, 0, fmt.Errorf("block number: %w", err)
 	}
-	if b.Hash == "" || b.ParentHash == "" {
-		return nil, 0, fmt.Errorf("block missing hash/parentHash")
+	if !isHexOfLen(b.Hash, 64) || !isHexOfLen(b.ParentHash, 64) {
+		return nil, 0, fmt.Errorf("block has invalid hash/parentHash")
 	}
 	return &b, n, nil
 }
