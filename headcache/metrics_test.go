@@ -2,17 +2,29 @@ package headcache
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/stretchr/testify/require"
 )
+
+// Metric families are process-global, so repeated runs (-count>1) would
+// accumulate counters on one label set. Each run uses a unique project label;
+// scrape rewrites it back to "mproj" so expectations stay exact.
+var runProj string
+
+func newRunProj(t *testing.T) string {
+	runProj = fmt.Sprintf("mproj-%s-%d", t.Name(), time.Now().UnixNano())
+	return runProj
+}
 
 // scrape serves the head cache families from a private registry over real
 // promhttp and returns the /metrics text body.
@@ -36,7 +48,14 @@ func scrape(t *testing.T) string {
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	return string(b)
+	var keep []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.Contains(l, `project="mproj`) && !strings.Contains(l, `project="`+runProj+`"`) {
+			continue // another run's series
+		}
+		keep = append(keep, l)
+	}
+	return strings.ReplaceAll(strings.Join(keep, "\n"), `project="`+runProj+`"`, `project="mproj"`)
 }
 
 func has(body, line string) bool {
@@ -53,9 +72,10 @@ func TestMetrics_ScrapeLeaderFollowerReorgSubscribers(t *testing.T) {
 	ch := newFakeChain(10)
 	store := NewMemoryStore()
 	a := New(testOpts("a"), store, ch, ch.head, nil)
-	a.EnableMetrics("mproj", "mnet-a")
+	proj := newRunProj(t)
+	a.EnableMetrics(proj, "mnet-a")
 	b := New(testOpts("b"), store, ch, ch.head, nil)
-	b.EnableMetrics("mproj", "mnet-b")
+	b.EnableMetrics(proj, "mnet-b")
 
 	a.Tick(ctx)
 	b.Tick(ctx)
@@ -114,7 +134,7 @@ func TestMetrics_LeaseLossDropsLeaderGauge(t *testing.T) {
 	ch := newFakeChain(5)
 	store := NewMemoryStore()
 	a := New(testOpts("a"), store, ch, ch.head, nil)
-	a.EnableMetrics("mproj", "mnet-loss")
+	a.EnableMetrics(newRunProj(t), "mnet-loss")
 	b := New(testOpts("b"), store, ch, ch.head, nil)
 	a.Tick(ctx)
 	require.True(t, has(scrape(t), `erpc_head_cache_leader{network="mnet-loss",project="mproj"} 1`))
