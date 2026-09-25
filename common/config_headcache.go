@@ -57,7 +57,23 @@ type EvmHeadCacheConfig struct {
 	// TTL so publication cannot outlive the lease. Must be > 2*pollInterval.
 	// Default 3*pollInterval + 1s.
 	LeaseTTL Duration `yaml:"leaseTtl,omitempty" json:"leaseTtl,omitempty" tstype:"Duration"`
+	// HeadSource selects which tip the window publishes up to:
+	//   "served" (default): cap at the network's served latest tip when it is
+	//     known and fresh, so subscribers never see blocks that HTTP `latest`
+	//     would not yet return. When the served tip is unknown (cold pollers)
+	//     or stale (dormant pollers), live eth_blockNumber discovery is used so
+	//     the window cannot freeze.
+	//   "max": publish up to the live-discovered head (pre-existing behavior).
+	HeadSource string `yaml:"headSource,omitempty" json:"headSource,omitempty"`
+	// ServedTipMaxAge is how old the served tip may be before it is treated
+	// as stale and live discovery is used uncapped. Default 3*pollInterval.
+	ServedTipMaxAge Duration `yaml:"servedTipMaxAge,omitempty" json:"servedTipMaxAge,omitempty" tstype:"Duration"`
 }
+
+const (
+	HeadCacheHeadSourceServed = "served"
+	HeadCacheHeadSourceMax    = "max"
+)
 
 // HeadCacheModeShared coordinates replicas through Redis: one lease holder
 // hydrates and publishes epoch-fenced snapshots, every replica serves them.
@@ -99,6 +115,12 @@ func (c *EvmHeadCacheConfig) SetDefaults() {
 	}
 	if c.LeaseTTL == 0 {
 		c.LeaseTTL = Duration(3*c.PollInterval.Duration() + time.Second)
+	}
+	if c.HeadSource == "" {
+		c.HeadSource = HeadCacheHeadSourceServed
+	}
+	if c.ServedTipMaxAge == 0 {
+		c.ServedTipMaxAge = Duration(3 * c.PollInterval.Duration())
 	}
 }
 
@@ -143,6 +165,12 @@ func (c *EvmHeadCacheConfig) Validate() error {
 	if c.PollInterval.Duration() >= c.LeaseTTL.Duration()/2 {
 		return fmt.Errorf("evm.headCache.pollInterval must be < leaseTtl/2")
 	}
+	if c.HeadSource != HeadCacheHeadSourceServed && c.HeadSource != HeadCacheHeadSourceMax {
+		return fmt.Errorf("evm.headCache.headSource %q is not supported (use %q or %q)", c.HeadSource, HeadCacheHeadSourceServed, HeadCacheHeadSourceMax)
+	}
+	if c.ServedTipMaxAge < 0 {
+		return fmt.Errorf("evm.headCache.servedTipMaxAge must be >= 0")
+	}
 	return nil
 }
 
@@ -166,6 +194,13 @@ type WebSocketServerConfig struct {
 	MaxMessageBytes int64 `yaml:"maxMessageBytes,omitempty" json:"maxMessageBytes,omitempty"`
 	// WriteTimeout bounds each outbound write. Default 10s.
 	WriteTimeout Duration `yaml:"writeTimeout,omitempty" json:"writeTimeout,omitempty" tstype:"Duration"`
+	// MaxInflightPerConnection bounds concurrently handled requests per
+	// connection. Default 16.
+	MaxInflightPerConnection int `yaml:"maxInflightPerConnection,omitempty" json:"maxInflightPerConnection,omitempty"`
+	// PingInterval is the keepalive ping period. Default 30s.
+	PingInterval Duration `yaml:"pingInterval,omitempty" json:"pingInterval,omitempty" tstype:"Duration"`
+	// MaxBatchSize caps JSON-RPC batch length over WS. Default 100.
+	MaxBatchSize int `yaml:"maxBatchSize,omitempty" json:"maxBatchSize,omitempty"`
 }
 
 func (c *WebSocketServerConfig) SetDefaults() {
@@ -187,6 +222,15 @@ func (c *WebSocketServerConfig) SetDefaults() {
 	if c.WriteTimeout == 0 {
 		c.WriteTimeout = Duration(10 * time.Second)
 	}
+	if c.MaxInflightPerConnection == 0 {
+		c.MaxInflightPerConnection = 16
+	}
+	if c.PingInterval == 0 {
+		c.PingInterval = Duration(30 * time.Second)
+	}
+	if c.MaxBatchSize == 0 {
+		c.MaxBatchSize = 100
+	}
 }
 
 func (c *WebSocketServerConfig) Validate() error {
@@ -198,6 +242,9 @@ func (c *WebSocketServerConfig) Validate() error {
 	}
 	if c.MaxConnectionsPerProject < 0 || c.MaxConnectionsPerProject > c.MaxConnections {
 		return fmt.Errorf("server.webSocket.maxConnectionsPerProject must be within 0..maxConnections")
+	}
+	if c.MaxInflightPerConnection < 1 || c.PingInterval <= 0 || c.MaxBatchSize < 1 {
+		return fmt.Errorf("server.webSocket maxInflightPerConnection, pingInterval and maxBatchSize must be positive")
 	}
 	return nil
 }
