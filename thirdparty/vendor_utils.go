@@ -1,9 +1,18 @@
 package thirdparty
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 )
+
+func closeResponseBody(body io.Closer, precedingErr error) error {
+	if err := body.Close(); err != nil {
+		return errors.Join(precedingErr, fmt.Errorf("failed to close response body: %w", err))
+	}
+	return precedingErr
+}
 
 // validateChainsURL returns a non-nil error if rawURL is structurally invalid
 // (bad scheme, empty host). A reachable-but-failing URL is a network error,
