@@ -2534,8 +2534,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if fill != nil {
 				// Cache-fill leader: persist synchronously so waiting replicas
 				// find the entry before the lock is released.
-				stored, serr := n.storeInCache(&lg, method, req, resp, forwardSpan.SpanContext())
-				fill.stored = stored && serr == nil
+				// storeInCache already logs serr. A partial failure (one
+				// connector failed, another persisted) is still "stored":
+				// waiters can read the entry from the connector that has it.
+				stored, _ := n.storeInCache(&lg, method, req, resp, forwardSpan.SpanContext())
+				fill.stored = stored
 			} else {
 				go func(resp *common.NormalizedResponse, spanCtx trace.SpanContext) {
 					_, _ = n.storeInCache(&lg, method, req, resp, spanCtx)

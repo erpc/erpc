@@ -394,3 +394,52 @@ func TestCacheFill_ExpiredHolderDoesNotPublish(t *testing.T) {
 	require.Len(t, gens, 0, "both holders exceeded lockTtl (1.2s call > 400ms), neither may publish: %v", gens)
 	require.NotEmpty(t, cur.G)
 }
+
+// Two cache policies: one connector persists, the other fails. SetReport
+// returns stored=true with an error; the leader must still publish "stored"
+// so the waiter reads the entry instead of treating it as uncached.
+func TestCacheFill_PartialStoreStillStored(t *testing.T) {
+	mr := miniredis.RunT(t)
+	dead := miniredis.RunT(t)
+	deadAddr := dead.Addr()
+	dead.Close()
+	up := newFillUpstream()
+	defer up.srv.Close()
+	up.delay.Store(300)
+	mk := func() *common.Config {
+		cfg := cacheFillTestConfig(up.srv.URL, mr.Addr(), defaultFill())
+		c := cfg.Database.EvmJsonRpcCache
+		c.Connectors = append(c.Connectors, &common.ConnectorConfig{Id: "broken", Driver: common.DriverRedis,
+			Redis: &common.RedisConnectorConfig{URI: "redis://" + deadAddr,
+				InitTimeout: common.Duration(200 * time.Millisecond), GetTimeout: common.Duration(200 * time.Millisecond),
+				SetTimeout: common.Duration(200 * time.Millisecond)}})
+		c.Policies = append(c.Policies, &common.CachePolicyConfig{Network: "*", Method: "*",
+			Finality: common.DataFinalityStateFinalized, Connector: "broken", TTL: common.FixedDuration(time.Minute)})
+		return cfg
+	}
+	sa, _, _, shutA, _ := createServerTestFixtures(mk(), t)
+	sb, _, _, shutB, _ := createServerTestFixtures(mk(), t)
+	t.Cleanup(func() { shutA(); shutB() })
+
+	uncachedBefore := fillCounter("follower_uncached")
+	res := concurrentCalls([]fillReplica{{sa}, {sb}}, fmt.Sprintf(fillCallBody, "08", "0x5"))
+	for _, r := range res {
+		require.Equal(t, 200, r.code, r.body)
+		require.Contains(t, r.body, "ff\"")
+	}
+	require.Equal(t, int64(1), up.ethCalls.Load(), "waiter must hit the entry the healthy connector stored")
+	require.Equal(t, uncachedBefore, fillCounter("follower_uncached"))
+
+	var done cacheFillMarker
+	found := false
+	for _, k := range mr.Keys() {
+		if strings.Contains(k, "/cachefill/") && strings.Contains(k, ":done:") {
+			raw, err := mr.Get(k)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal([]byte(raw), &done))
+			found = true
+		}
+	}
+	require.True(t, found, "leader must publish a done record")
+	require.Equal(t, cacheFillStored, done.S)
+}
