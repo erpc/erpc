@@ -232,9 +232,53 @@ else
   redis.call('SET', KEYS[3], ARGV[4])
   redis.call('HSET', KEYS[4], 'e', e, 's', s)
 end
+-- Fences passed and the new snapshot is committed: drop the declared block
+-- keys it no longer references (computed by the caller, same hash tag).
+for i = 5, #KEYS do redis.call('DEL', KEYS[i]) end
 redis.call('PUBLISH', ARGV[6], ARGV[2] .. ':' .. ARGV[3])
 return 1
 `)
+
+// maxPrunePerPublish caps how many superseded block keys one publish deletes.
+// Anything beyond it (e.g. a first publish after a long outage) keeps relying
+// on RecordTTL; the next publishes only diff consecutive windows.
+const maxPrunePerPublish = 512
+
+// pruneCandidates returns block keys referenced by the committed snapshot but
+// not by next. It is a best-effort pre-read: on any error it returns nil and
+// retention falls back to RecordTTL. Correctness does not depend on it being
+// current, since only hashes absent from next are ever listed, and the delete
+// runs inside the fenced publish script after next is committed.
+//
+// Residual (TTL-bounded, not chain-rate proportional): records that were put
+// but never entered a committed snapshot (rejected publish, lease lost after
+// the put, gap truncation) are not in any prev snapshot and still expire only
+// via RecordTTL. That is at most MaxPerTick records per failed tick.
+func (s *RedisStore) pruneCandidates(ctx context.Context, scope Scope, next *Snapshot) []string {
+	data, err := s.client.Get(ctx, s.snapKey(scope)).Bytes()
+	if err != nil {
+		return nil
+	}
+	prev := &Snapshot{}
+	if json.Unmarshal(data, prev) != nil {
+		return nil
+	}
+	keep := make(map[string]struct{}, len(next.Hashes))
+	for _, h := range next.Hashes {
+		keep[h] = struct{}{}
+	}
+	var out []string
+	for _, h := range prev.Hashes {
+		if _, ok := keep[h]; ok || h == "" {
+			continue
+		}
+		out = append(out, s.blockKey(scope, h))
+		if len(out) >= maxPrunePerPublish {
+			break
+		}
+	}
+	return out
+}
 
 func (s *RedisStore) AcquireLease(ctx context.Context, scope Scope, holder string, ttl time.Duration) (*Lease, error) {
 	if err := validScope(scope); err != nil {
@@ -307,8 +351,9 @@ func (s *RedisStore) PublishSnapshot(ctx context.Context, lease *Lease, snap *Sn
 		return fmt.Errorf("headcache: marshal snapshot: %w", err)
 	}
 	sc := lease.Scope
-	res, err := publishScript.Run(ctx, s.client,
-		[]string{s.leaseKey(sc), s.epochKey(sc), s.snapKey(sc), s.snapMetaKey(sc)},
+	keys := append([]string{s.leaseKey(sc), s.epochKey(sc), s.snapKey(sc), s.snapMetaKey(sc)},
+		s.pruneCandidates(ctx, sc, snap)...)
+	res, err := publishScript.Run(ctx, s.client, keys,
 		lease.Holder, strconv.FormatUint(lease.Epoch, 10), strconv.FormatUint(snap.Seq, 10),
 		data, s.snapshotTTL.Milliseconds(), s.channel(sc),
 		snap.At.UnixMilli(), MaxSnapshotFutureSkew.Milliseconds()).Int64()
