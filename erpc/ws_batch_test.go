@@ -232,3 +232,54 @@ func TestWs_OutlivesHTTPWriteTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestWs_BatchResponseSizeCap(t *testing.T) {
+	old := wsMaxBatchResponseBytes
+	wsMaxBatchResponseBytes = 64
+	defer func() { wsMaxBatchResponseBytes = old }()
+	c, _ := testWsConn(t, 4)
+	sem := make(chan struct{}, 4)
+	acquire := func() bool { sem <- struct{}{}; return true }
+	release := func() { <-sem }
+	require.True(t, c.dispatchBatch([]byte(`[1,2,3]`), acquire, release))
+	select {
+	case b := <-c.out:
+		var r wsMsg
+		require.NoError(t, json.Unmarshal(b, &r), string(b))
+		require.Equal(t, int(common.JsonRpcErrorCapacityExceeded), r.Error.Code)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reply")
+	}
+	c.wg.Wait()
+}
+
+// Each batch item consumes project rate-limit budget on its own.
+func TestWs_BatchPerItemRateLimit(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg.RateLimiters = &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{{
+		Id: "ws-batch", Rules: []*common.RateLimitRuleConfig{{Method: "eth_chainId", MaxCount: 2, Period: common.RateLimitPeriodMinute}},
+	}}}
+	cfg.Projects[0].RateLimitBudget = "ws-batch"
+	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	c := dialRaw(t, base)
+	items := make([]string, 5)
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, i+1)
+	}
+	m := byId(t, wsRaw(t, c, "["+strings.Join(items, ",")+"]"))
+	require.Len(t, m, 5)
+	ok, limited := 0, 0
+	for _, r := range m {
+		if r.Error == nil {
+			ok++
+		} else {
+			limited++
+		}
+	}
+	require.Equal(t, 2, ok)
+	require.Equal(t, 3, limited)
+}

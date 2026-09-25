@@ -53,9 +53,10 @@ const (
 	wsDefaultInflight     = 16
 	wsDefaultPingInterval = 30 * time.Second
 	wsDefaultMaxBatchSize = 100
-	// wsMaxBatchResponseBytes bounds one batch reply frame.
-	wsMaxBatchResponseBytes = 32 << 20
 )
+
+// wsMaxBatchResponseBytes bounds one batch reply frame (var for tests).
+var wsMaxBatchResponseBytes = 32 << 20
 
 func (ws *wsServer) inflight() int {
 	if ws.cfg.MaxInflightPerConnection > 0 {
