@@ -137,6 +137,8 @@ No price or dollar model exists: tiers are purely the integers you configure.
 5. Hedging never calls the paid tier while the cheap tier is merely slow. Test: `…/HedgeDoesNotCrossIntoPaidTier`.
 6. Within-tier load is not round-robined: the policy's best upstream in tier 0 takes the traffic.
 7. The engine's cached slice is never mutated; the sort copies.
+8. Don't mix `tier:fallback` tags with `priority`. The default policy's tier-split skip checks the upstreams in the pool it is evaluating. With per-boundary lanes on, a lane holding only one priority still runs `preferTag` and can drop `tier:fallback` upstreams from that lane. Express tiers with `priority` alone.
+9. `routing` inherits from `upstreamDefaults` all-or-nothing. An upstream that sets any `routing` field itself (e.g. `probe` or `scoreMultipliers`) does NOT inherit `upstreamDefaults.routing.priority`, so set `priority` on it explicitly.
 
 ### Observability
 
