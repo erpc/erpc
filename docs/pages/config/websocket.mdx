@@ -3,7 +3,7 @@ title: WebSocket
 description: Serve JSON-RPC and eth_subscribe (newHeads, logs) over WebSocket on the same URL as HTTP, fed by the head cache so every subscriber shares one hydration of each block.
 ---
 
-import { LLMsTxtLink, AISection } from "../../components";
+import { LLMsTxtLink, AISection, SourceLink } from "../../components";
 
 <LLMsTxtLink />
 
@@ -50,13 +50,17 @@ Defaults from `common/config_headcache.go` (`WebSocketServerConfig.SetDefaults`)
 | `sendQueueSize` | `256` | Outbound messages queued per connection, and the head cache event queue per subscription. RPC replies never wait: a full queue closes with 1008. Subscription notifications wait up to `writeTimeout` for space, so a large block (thousands of matching logs) reaches a client that keeps reading. A client stalled longer, or a head cache queue overflow, closes with 1008. |
 | `maxMessageBytes` | `1MB` (min 1024) | Inbound frame limit. Larger frames close with 1009. |
 | `writeTimeout` | `10s` | Per outbound frame. A timeout closes with 1008. |
+| `maxInflightPerConnection` | `16` | Requests handled concurrently per connection. Every batch item takes one slot, so batches cannot bypass it. Reading pauses while all slots are busy. |
+| `pingInterval` | `30s` | Keepalive ping and credential re-check period. A zero or negative value falls back to `30s`, so pings cannot be disabled. |
+| `maxBatchSize` | `100` | Maximum items in one JSON-RPC batch. A larger batch gets a single `-32600` "batch too large" error. |
 
 ## Behavior
 
 - **Routing.** Same path and domain aliasing as HTTP. A connection is bound to one project and network. Only a path ending in `/healthcheck` is treated as a healthcheck.
 - **Auth.** Credentials (`?secret=`, `X-ERPC-Secret-Token`, `Authorization`) are taken from the upgrade request. They are checked at upgrade (401 on failure) and again for every message with that message's method, through the project's consumer auth.
 - **Origin.** Browsers do not apply CORS to WebSockets. When the project has `cors.allowedOrigins`, an upgrade with a non-matching `Origin` gets 403. Without a CORS config any origin is accepted, same as HTTP.
-- **RPC.** Non-subscription methods use the HTTP pipeline: `ignoreMethods`/`allowMethods`, forward headers, directives, project/network rate limits, `project.Forward`. Batches are rejected (`-32600`). Up to 16 requests per connection run concurrently, and responses may arrive out of order (match by `id`).
+- **RPC.** Non-subscription methods use the HTTP pipeline: `ignoreMethods`/`allowMethods`, forward headers, directives, project/network rate limits, `project.Forward`. Up to `maxInflightPerConnection` requests per connection run concurrently, and responses may arrive out of order (match by `id`).
+- **Batches.** A top-level JSON array is a batch of up to `maxBatchSize` items. Items run concurrently, and each is validated, authenticated, rate-limited and checked against the subscription cap on its own. Replies come back as one array whose order is not guaranteed (match by `id`). Items without an `id` (notifications) get no entry, and a batch made only of notifications gets no reply frame. Parseable items that are not valid request objects (including nested arrays) each get an `id: null` `-32600` entry, and the same applies to a single message. `-32700` is returned only for unparsable JSON. An empty batch returns `-32600`. A reply array larger than 32 MiB is replaced by one `-32005` error. `eth_subscribe` and `eth_unsubscribe` are allowed inside a batch, and their notifications are separate frames sent after the batch reply.
 - **Subscriptions.** `newHeads` emits header fields (no `transactions`, `uncles`, `size`, `totalDifficulty`, `withdrawals`) per new canonical block, ascending. `logs` accepts `address` (string or array) and `topics` (up to 4 positions, `null` wildcard, nested arrays for OR). On a reorg, the orphaned blocks' matching logs are sent first with `removed: true` (highest block first), then the new canonical logs. Subscription setup consumes project rate-limit budget for `eth_subscribe`.
 - **Unsubscribe.** `eth_unsubscribe` returns `false` for ids that were not created on the same connection.
 - **No head cache.** `eth_subscribe` returns `-32601` "subscriptions unavailable". eRPC never proxies upstream WebSockets.
@@ -67,11 +71,22 @@ Defaults from `common/config_headcache.go` (`WebSocketServerConfig.SetDefaults`)
 2. **Stale head cache.** When the head cache stops serving (see its `maxStaleness`), no events are produced. Reads over the same connection still fall through to upstream.
 3. **Shutdown.** Connections are hijacked, so `http.Server.Shutdown` does not wait for them. They close with 1001 when the application context ends. New upgrades during draining get 503.
 4. `maxConnections` and `maxConnectionsPerProject` are per process, not per client IP or fleet. Front eRPC with a per-client connection limit at the load balancer.
-6. **Keepalive and re-auth.** Every 30s the server pings (a missing pong within `writeTimeout` closes with 1008, freeing the slot) and re-checks the upgrade credentials. Each re-check goes through consumer auth, so it consumes one auth rate-limit permit when the strategy has a `rateLimitBudget`. An exceeded auth rate limit does not close the stream. A revoked key or expired JWT stops streaming within about 30s, closing with 1008 `unauthorized`.
-5. Only `newHeads` and `logs` are supported. `newPendingTransactions` and `syncing` return `-32602`.
+5. Only `newHeads` and `logs` are supported. `newPendingTransactions`, `syncing` and unknown kinds return `-32601` (same code as geth).
+6. **Keepalive and re-auth.** Every `pingInterval` the server pings (a missing pong within `writeTimeout` closes with 1008, freeing the slot) and re-checks the upgrade credentials. Each re-check goes through consumer auth, so it consumes one auth rate-limit permit when the strategy has a `rateLimitBudget`. An exceeded auth rate limit does not close the stream. A revoked key or expired JWT stops streaming within about one `pingInterval`, closing with 1008 `unauthorized`.
+7. **Server timeouts.** Upgraded connections are hijacked, which clears the HTTP server's read/write deadlines, so connections outlive `server.writeTimeout` (`TestWs_OutlivesHTTPWriteTimeout`).
+8. **Full send queue.** A full outbound queue closes with 1008 (`slow consumer`), including while a batch reply is queued.
 
 ## Observability
 
-Panics are counted in `erpc_unexpected_panic_total` with scope `ws-handler` / `ws-message`. Per-request metrics and spans are the same as HTTP, since calls go through `project.Forward`.
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `erpc_ws_connections` | gauge | `project`, `network` | Open connections. |
+| `erpc_ws_subscriptions` | gauge | `project`, `network`, `kind` | Active subscriptions (`newHeads`, `logs`). |
+| `erpc_ws_notifications_total` | counter | `project`, `network`, `kind` | `eth_subscription` notifications sent. |
+| `erpc_ws_connections_closed_total` | counter | `project`, `network`, `reason` | Closed connections: `client`, `slow_consumer`, `shutdown`, `error`. |
+
+Defined in <SourceLink file="telemetry/feature_metrics.go" /> and emitted from <SourceLink file="erpc/ws_server.go" />. Panics are counted in `erpc_unexpected_panic_total` with scope `ws-handler` / `ws-message`. Per-request metrics and spans are the same as HTTP, since calls go through `project.Forward`.
+
+Tests: `TestWs_Batch`, `TestWs_BatchNotificationOnlyNoReply`, `TestWs_BatchRespectsInflight`, `TestWs_BatchResponseSizeCap`, `TestWs_BatchPerItemRateLimit`, `TestWs_ConfigFallbacks`, `TestWs_OutlivesHTTPWriteTimeout`, `TestWs_PingAndReauthClosesExpiredJwt`, `TestWs_SubscriptionsReorgAndRpc`.
 
 </AISection>
