@@ -1,0 +1,75 @@
+---
+title: WebSocket
+description: Serve JSON-RPC and eth_subscribe (newHeads, logs) over WebSocket on the same URL as HTTP, fed by the head cache so every subscriber shares one hydration of each block.
+---
+
+import { LLMsTxtLink, AISection } from "../../components";
+
+<LLMsTxtLink />
+
+# WebSocket
+
+Clients can open a WebSocket on the same URL they already use for HTTP
+(`ws://host:4000/<project>/evm/<chainId>`). Normal JSON-RPC calls behave exactly
+like HTTP. `eth_subscribe("newHeads")` and `eth_subscribe("logs", filter)` are
+served from the network's [head cache](/config/database/head-cache), so a
+thousand subscribers cost the same provider traffic as one, and reorgs arrive
+as `removed: true` logs.
+
+Disabled by default.
+
+## Quick taste
+
+```yaml
+server:
+  webSocket:
+    enabled: true
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # subscriptions require the head cache on this network
+          headCache:
+            enabled: true
+```
+
+<AISection>
+
+## Config schema (`server.webSocket`)
+
+Defaults from `common/config_headcache.go` (`WebSocketServerConfig.SetDefaults`).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | When false, Upgrade requests are handled as plain HTTP (no 101). |
+| `maxConnections` | `1024` | Concurrent WS connections per process. Beyond it the upgrade gets HTTP 503. |
+| `maxSubscriptionsPerConnection` | `32` | Further `eth_subscribe` calls return JSON-RPC error `-32005`. |
+| `sendQueueSize` | `256` | Outbound messages queued per connection, and the head cache event queue per subscription. Overflow closes the connection with 1008. |
+| `maxMessageBytes` | `1MB` (min 1024) | Inbound frame limit. Larger frames close with 1009. |
+| `writeTimeout` | `10s` | Per outbound frame. A timeout closes with 1008. |
+
+## Behavior
+
+- **Routing.** Same path and domain aliasing as HTTP. A connection is bound to one project and network. Only a path ending in `/healthcheck` is treated as a healthcheck.
+- **Auth.** Credentials (`?secret=`, `X-ERPC-Secret-Token`, `Authorization`) are taken from the upgrade request. They are checked at upgrade (401 on failure) and again for every message with that message's method, through the project's consumer auth.
+- **Origin.** Browsers do not apply CORS to WebSockets. When the project has `cors.allowedOrigins`, an upgrade with a non-matching `Origin` gets 403. Without a CORS config any origin is accepted, same as HTTP.
+- **RPC.** Non-subscription methods use the HTTP pipeline: `ignoreMethods`/`allowMethods`, forward headers, directives, project/network rate limits, `project.Forward`. Batches are rejected (`-32600`). Up to 16 requests per connection run concurrently, and responses may arrive out of order (match by `id`).
+- **Subscriptions.** `newHeads` emits header fields (no `transactions`, `uncles`, `size`, `totalDifficulty`, `withdrawals`) per new canonical block, ascending. `logs` accepts `address` (string or array) and `topics` (up to 4 positions, `null` wildcard, nested arrays for OR). On a reorg, the orphaned blocks' matching logs are sent first with `removed: true` (highest block first), then the new canonical logs. Subscription setup consumes project rate-limit budget for `eth_subscribe`.
+- **Unsubscribe.** `eth_unsubscribe` returns `false` for ids that were not created on the same connection.
+- **No head cache.** `eth_subscribe` returns `-32601` "subscriptions unavailable". eRPC never proxies upstream WebSockets.
+
+## Edge cases & gotchas
+
+1. **No silent gaps.** If a subscription's event queue overflows or the head cache stops, the connection is closed with 1008 rather than skipping events. Clients should reconnect and resubscribe.
+2. **Stale head cache.** When the head cache stops serving (see its `maxStaleness`), no events are produced. Reads over the same connection still fall through to upstream.
+3. **Shutdown.** Connections are hijacked, so `http.Server.Shutdown` does not wait for them. They close with 1001 when the application context ends. New upgrades during draining get 503.
+4. `maxConnections` is per process, not per project or fleet.
+5. Only `newHeads` and `logs` are supported. `newPendingTransactions` and `syncing` return `-32602`.
+
+## Observability
+
+Panics are counted in `erpc_unexpected_panic_total` with scope `ws-handler` / `ws-message`. Per-request metrics and spans are the same as HTTP, since calls go through `project.Forward`.
+
+</AISection>
