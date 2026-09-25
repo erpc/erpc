@@ -17,12 +17,13 @@ import (
 // fakeChain is a deterministic scripted chain. Blocks are identified by
 // (number, fork) so a reorg swaps the fork of a height range.
 type fakeChain struct {
-	mu        sync.Mutex
-	blocks    map[int64]string // number -> fork label
-	tip       int64
-	calls     atomic.Int64
-	dropLogs  map[string]bool // hash -> return [] (incomplete) logs
-	failBlock map[int64]bool
+	mu          sync.Mutex
+	blocks      map[int64]string // number -> fork label
+	tip         int64
+	calls       atomic.Int64
+	headerCalls atomic.Int64
+	dropLogs    map[string]bool // hash -> return [] (incomplete) logs
+	failBlock   map[int64]bool
 }
 
 var emitter = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
@@ -87,6 +88,11 @@ func (c *fakeChain) BlockByNumber(_ context.Context, n int64) (json.RawMessage, 
 		"transactions": []map[string]interface{}{{"hash": txHashOf(n, fork), "from": emitter}},
 	}
 	return json.Marshal(b)
+}
+
+func (c *fakeChain) HeaderByNumber(ctx context.Context, n int64) (json.RawMessage, error) {
+	c.headerCalls.Add(1)
+	return c.BlockByNumber(ctx, n)
 }
 
 func (c *fakeChain) LogsByBlockHash(_ context.Context, hash string) (json.RawMessage, error) {
@@ -304,4 +310,32 @@ func TestCache_SlowSubscriberDropped(t *testing.T) {
 	<-sub.C
 	_, open := <-sub.C
 	require.False(t, open)
+}
+
+// Regression: with a fixed head, the running loop must not spin on its own
+// snapshot notifications. Fetches and publications stay bounded by the poll
+// interval, and re-verification uses compact headers, not full blocks.
+func TestCache_StartLoopNoSelfSpin(t *testing.T) {
+	ch := newFakeChain(10)
+	store := NewMemoryStore()
+	o := testOpts("a")
+	o.PollInterval = 50 * time.Millisecond
+	o.MaxStaleness = 3 * time.Second
+	leader := New(o, store, ch, ch.head, nil)
+	follower := New(testOpts("b"), store, ch, ch.head, nil)
+	leader.Start(context.Background())
+	defer leader.Stop()
+	require.Eventually(t, func() bool { return leader.Head() == 10 }, 2*time.Second, 10*time.Millisecond)
+	follower.Start(context.Background())
+	defer follower.Stop()
+	require.Eventually(t, func() bool { return follower.Head() == 10 }, 2*time.Second, 10*time.Millisecond)
+
+	calls0, hdr0, pub0 := ch.calls.Load(), ch.headerCalls.Load(), leader.Stats.Published.Load()
+	time.Sleep(500 * time.Millisecond) // ~10 poll intervals
+	fullCalls := (ch.calls.Load() - calls0) - (ch.headerCalls.Load() - hdr0)
+	require.Zero(t, fullCalls, "no full block/log fetches when head is unchanged")
+	require.LessOrEqual(t, ch.headerCalls.Load()-hdr0, int64(14), "header checks bounded by poll interval")
+	require.LessOrEqual(t, leader.Stats.Published.Load()-pub0, int64(2), "no republish storm (heartbeat only)")
+	require.Zero(t, follower.Stats.Hydrated.Load())
+	require.True(t, follower.Fresh())
 }

@@ -19,6 +19,10 @@ type Fetcher interface {
 	BlockByNumber(ctx context.Context, n int64) (json.RawMessage, error)
 	// LogsByBlockHash returns eth_getLogs({blockHash}) raw result.
 	LogsByBlockHash(ctx context.Context, hash string) (json.RawMessage, error)
+	// HeaderByNumber returns a compact block (eth_getBlockByNumber(n, false))
+	// used only to re-verify canonical hashes; full transactions are fetched
+	// only for blocks being hydrated.
+	HeaderByNumber(ctx context.Context, n int64) (json.RawMessage, error)
 }
 
 // Options configure a Cache.
@@ -92,6 +96,7 @@ type Cache struct {
 	done      chan struct{}
 	stepMu    sync.Mutex
 	publishCt uint64
+	publishAt time.Time
 }
 
 func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context) int64, logger *zerolog.Logger) *Cache {
@@ -158,19 +163,39 @@ func (c *Cache) run(ctx context.Context) {
 	}()
 	t := time.NewTicker(c.opt.PollInterval)
 	defer t.Stop()
+	tick := true
 	for {
 		if watch == nil {
 			if w, stop, err := c.store.WatchSnapshots(ctx, c.opt.Scope); err == nil {
 				watch, stopWatch = w, stop
 			}
 		}
-		c.Tick(ctx)
+		if tick {
+			c.Tick(ctx)
+		}
+		tick = true
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		case <-c.kick:
 		case _, ok := <-watch:
+			if ok {
+				// Snapshot notices only matter to followers. The leader's own
+				// publications also arrive here and must never trigger more
+				// lead work (that would spin fetch+publish without pause).
+				if c.isLeader() {
+					tick = false
+					continue
+				}
+				c.stepMu.Lock()
+				if c.lease == nil {
+					c.consume(ctx)
+				}
+				c.stepMu.Unlock()
+				tick = false
+				continue
+			}
 			if !ok {
 				// Subscription lost: resubscribe next iteration; the ticker
 				// keeps LoadSnapshot polling meanwhile.
@@ -214,6 +239,12 @@ func (c *Cache) Tick(ctx context.Context) {
 		return
 	}
 	c.consume(ctx)
+}
+
+func (c *Cache) isLeader() bool {
+	c.stepMu.Lock()
+	defer c.stepMu.Unlock()
+	return c.lease != nil
 }
 
 func (c *Cache) releaseLease() {
@@ -313,7 +344,7 @@ func (c *Cache) lead(ctx context.Context) {
 	// 1) Re-verify the window tip (catches same-height and shortening reorgs)
 	//    and walk back to the common ancestor.
 	for len(hashes) > 0 && budget > 0 {
-		blk, err := c.fetchBlock(ctx, head)
+		blk, err := c.fetchHeader(ctx, head)
 		budget--
 		if err != nil {
 			return // cannot verify: do not publish (freshness lapses)
@@ -375,6 +406,18 @@ func (c *Cache) lead(ctx context.Context) {
 		return
 	}
 	newHead = last.Number
+	c.mu.RLock()
+	unchanged := c.snap != nil && c.snap.Epoch == c.lease.Epoch && c.snap.Head == newHead && equalStrings(c.snap.Hashes, hashes)
+	c.mu.RUnlock()
+	if unchanged && c.nowFn().Sub(c.publishAt) < c.opt.MaxStaleness/3 {
+		// Verified, nothing new: refresh local freshness only. A heartbeat
+		// republish still happens every maxStaleness/3 so followers keep
+		// serving while the chain is quiet.
+		c.mu.Lock()
+		c.freshAt = c.nowFn()
+		c.mu.Unlock()
+		return
+	}
 	// Every referenced record must exist in the store before publication
 	// (publish-after-hydrate).
 	for _, r := range newRecs {
@@ -392,6 +435,7 @@ func (c *Cache) lead(ctx context.Context) {
 		return
 	}
 	c.Stats.Published.Add(1)
+	c.publishAt = c.nowFn()
 	final := make(map[string]*BlockRecord, len(hashes))
 	for _, h := range hashes {
 		if r, ok := recs[h]; ok {
@@ -401,11 +445,29 @@ func (c *Cache) lead(ctx context.Context) {
 	c.apply(snap, final)
 }
 
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func minI64(a, b int64) int64 {
 	if a < b {
 		return a
 	}
 	return b
+}
+
+func (c *Cache) fetchHeader(ctx context.Context, n int64) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.opt.FetchTimeout)
+	defer cancel()
+	return c.fetcher.HeaderByNumber(ctx, n)
 }
 
 func (c *Cache) fetchBlock(ctx context.Context, n int64) (json.RawMessage, error) {

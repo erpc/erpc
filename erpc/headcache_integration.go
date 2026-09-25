@@ -192,6 +192,10 @@ func (f *networkHeadFetcher) BlockByNumber(ctx context.Context, n int64) (json.R
 	return f.call(ctx, "eth_getBlockByNumber", []interface{}{fmt.Sprintf("0x%x", n), true})
 }
 
+func (f *networkHeadFetcher) HeaderByNumber(ctx context.Context, n int64) (json.RawMessage, error) {
+	return f.call(ctx, "eth_getBlockByNumber", []interface{}{fmt.Sprintf("0x%x", n), false})
+}
+
 func (f *networkHeadFetcher) LogsByBlockHash(ctx context.Context, hash string) (json.RawMessage, error) {
 	return f.call(ctx, "eth_getLogs", []interface{}{map[string]interface{}{"blockHash": hash}})
 }
