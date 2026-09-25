@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,7 +30,9 @@ import (
 //   - Lock contended: re-read the replica's OWN cache every pollInterval up
 //     to maxWait. Responses are never handed across replicas directly; a hit
 //     is an ordinary cache hit under the waiter's own directives. An
-//     "uncached" marker newer than the wait start ends the wait early.
+//     "uncached" marker ends the wait early only when it carries the same
+//     generation id as the "inflight" record the waiter observed, so a stale
+//     leader (expired lock) can never end a newer generation's wait.
 //   - Lock unavailable (timeout, connector error, memory connector): forward
 //     immediately.
 //
@@ -39,9 +42,6 @@ import (
 const (
 	cacheFillStored   = "stored"
 	cacheFillUncached = "uncached"
-	// cacheFillMarkerSkew tolerates cross-replica clock skew when deciding
-	// whether a done marker belongs to the fill this waiter is waiting on.
-	cacheFillMarkerSkew = 2 * time.Second
 )
 
 type cacheFillEligibility interface {
@@ -50,12 +50,14 @@ type cacheFillEligibility interface {
 
 type cacheFillMarker struct {
 	S string `json:"s"`
+	G string `json:"g"`
 	T int64  `json:"t"`
 }
 
 // cacheFillLeader is non-nil while this request holds the fill lock.
 type cacheFillLeader struct {
 	key       string
+	gen       string
 	lock      data.DistributedLock
 	connector data.Connector
 	stored    bool
@@ -158,11 +160,17 @@ func (n *Network) coordinateCacheFill(ctx context.Context, lg *zerolog.Logger, r
 	lock, err := conn.Lock(lockCtx, key, cfg.LockTtl.Duration())
 	cancel()
 	if err == nil && lock != nil && !lock.IsNil() {
-		// New generation: drop any marker left by an earlier fill of this key.
-		dctx, dcancel := context.WithTimeout(ctx, cfg.LockAcquireTimeout.Duration())
-		_ = conn.Delete(dctx, key, "done")
-		dcancel()
-		return nil, &cacheFillLeader{key: key, lock: lock, connector: conn, start: start}
+		// New generation: publish its id so waiters only trust a done marker
+		// written by this leader.
+		var gb [12]byte
+		_, _ = rand.Read(gb[:])
+		gen := hex.EncodeToString(gb[:])
+		payload, _ := json.Marshal(cacheFillMarker{S: "inflight", G: gen, T: time.Now().UnixMilli()})
+		ttl := cfg.LockTtl.Duration()
+		ictx, icancel := context.WithTimeout(ctx, cfg.LockAcquireTimeout.Duration())
+		_ = conn.Set(ictx, key, "inflight", payload, &ttl)
+		icancel()
+		return nil, &cacheFillLeader{key: key, gen: gen, lock: lock, connector: conn, start: start}
 	}
 	if err == nil || !isLockContention(err) {
 		lg.Debug().Err(err).Str("key", key).Msg("cache fill lock unavailable, forwarding upstream")
@@ -176,6 +184,22 @@ func (n *Network) waitForCacheFill(ctx context.Context, lg *zerolog.Logger, req 
 	deadline := start.Add(cfg.MaxWait.Duration())
 	ticker := time.NewTicker(cfg.PollInterval.Duration())
 	defer ticker.Stop()
+	opTimeout := cfg.LockAcquireTimeout.Duration()
+	readMarker := func(rk string) (cacheFillMarker, bool) {
+		mctx, mcancel := context.WithTimeout(ctx, opTimeout)
+		defer mcancel()
+		raw, err := conn.Get(mctx, data.ConnectorMainIndex, key, rk, nil)
+		var m cacheFillMarker
+		if err != nil || len(raw) == 0 || json.Unmarshal(raw, &m) != nil || m.G == "" {
+			return m, false
+		}
+		return m, true
+	}
+	// The generation this waiter is waiting on (first inflight id seen).
+	gen := ""
+	if m, ok := readMarker("inflight"); ok {
+		gen = m.G
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -183,16 +207,20 @@ func (n *Network) waitForCacheFill(ctx context.Context, lg *zerolog.Logger, req 
 			return nil
 		case <-ticker.C:
 		}
-		if resp, err := n.cacheDal.Get(ctx, req); err == nil && resp != nil && !resp.IsObjectNull(ctx) {
+		gctx, gcancel := context.WithDeadline(ctx, deadline.Add(cfg.PollInterval.Duration()))
+		resp, err := n.cacheDal.Get(gctx, req)
+		gcancel()
+		if err == nil && resp != nil && !resp.IsObjectNull(ctx) {
 			n.cacheFillMetric("follower_hit", start)
 			return resp
 		}
-		mctx, mcancel := context.WithTimeout(ctx, cfg.LockAcquireTimeout.Duration())
-		raw, err := conn.Get(mctx, data.ConnectorMainIndex, key, "done", nil)
-		mcancel()
-		if err == nil && len(raw) > 0 {
-			var m cacheFillMarker
-			if json.Unmarshal(raw, &m) == nil && m.T >= start.Add(-cacheFillMarkerSkew).UnixMilli() {
+		if gen == "" {
+			if m, ok := readMarker("inflight"); ok {
+				gen = m.G
+			}
+		}
+		if gen != "" {
+			if m, ok := readMarker("done"); ok && m.G == gen {
 				if m.S == cacheFillUncached {
 					lg.Debug().Str("key", key).Msg("cache fill leader did not store a response, forwarding upstream")
 					n.cacheFillMetric("follower_uncached", start)
@@ -221,9 +249,14 @@ func (f *cacheFillLeader) finish(n *Network, cfg *common.CacheFillConfig) {
 	}
 	ctx, cancel := context.WithTimeout(n.appCtx, time.Second)
 	defer cancel()
-	payload, _ := json.Marshal(cacheFillMarker{S: status, T: time.Now().UnixMilli()})
-	ttl := cfg.MaxWait.Duration() + 2*cfg.PollInterval.Duration()
-	_ = f.connector.Set(ctx, f.key, "done", payload, &ttl)
+	// Only a leader still inside its lock TTL may publish; a leader whose
+	// lock expired may be racing a newer generation. The generation id makes
+	// a late write harmless anyway (waiters match on it).
+	if time.Since(f.start) < cfg.LockTtl.Duration() {
+		payload, _ := json.Marshal(cacheFillMarker{S: status, G: f.gen, T: time.Now().UnixMilli()})
+		ttl := cfg.MaxWait.Duration() + 2*cfg.PollInterval.Duration()
+		_ = f.connector.Set(ctx, f.key, "done", payload, &ttl)
+	}
 	_ = f.lock.Unlock(ctx)
 	n.cacheFillMetric(outcome, f.start)
 }

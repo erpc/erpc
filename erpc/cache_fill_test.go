@@ -300,3 +300,43 @@ func TestHeadCache_HydrationDoesNotWriteOrdinaryCache(t *testing.T) {
 		require.True(t, resp == nil || resp.IsObjectNull(t.Context()), "hydrated block %s leaked into ordinary cache", params)
 	}
 }
+
+// A done marker from another generation (e.g. a leader whose lock expired)
+// must not end a waiter's wait: waiters only trust the generation they saw in
+// the "inflight" record.
+func TestCacheFill_StaleGenerationMarkerIgnored(t *testing.T) {
+	mr := miniredis.RunT(t)
+	up := newFillUpstream()
+	defer up.srv.Close()
+	up.delay.Store(600)
+	a, b := startFillReplicas(t, up.srv.URL, mr.Addr(), defaultFill)
+
+	// Replica A leads; once its inflight record exists, plant a stale
+	// "uncached" done marker with a different generation.
+	body := fmt.Sprintf(fillCallBody, "06", "0x5")
+	done := make(chan timedResult, 1)
+	go func() {
+		code, _, b := a.send(body, nil, nil)
+		done <- timedResult{code: code, body: b}
+	}()
+	var inflightKey string
+	require.Eventually(t, func() bool {
+		for _, k := range mr.Keys() {
+			if strings.Contains(k, "/cachefill/") && strings.HasSuffix(k, ":inflight") {
+				inflightKey = k
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 5*time.Millisecond)
+	doneKey := strings.TrimSuffix(inflightKey, ":inflight") + ":done"
+	require.NoError(t, mr.Set(doneKey, fmt.Sprintf(`{"s":"uncached","g":"stale","t":%d}`, time.Now().UnixMilli())))
+
+	st := time.Now()
+	code, _, rb := b.send(body, nil, nil)
+	require.Equal(t, 200, code, rb)
+	require.Contains(t, rb, "ff\"")
+	ra := <-done
+	require.Equal(t, 200, ra.code, ra.body)
+	require.Equal(t, int64(1), up.ethCalls.Load(), "waiter must wait for the real generation, not the stale marker (waited %s)", time.Since(st))
+}
