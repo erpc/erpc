@@ -68,8 +68,8 @@ Defaults from `EvmHeadPollingConfig.SetDefaults` in <SourceLink file="common/con
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `erpc_head_poll_lease_held` | gauge | `project`, `network` | 1 while this replica holds the lease. |
-| `erpc_head_poll_skipped_total` | counter | `project`, `network` | Polls skipped because another replica holds the lease and the shared counter is fresh. |
+| `erpc_head_poll_lease_held` | gauge | `project`, `network` | 1 while this replica holds the lease, else 0. The series is removed on shutdown. |
+| `erpc_head_poll_skipped_total` | counter | `project`, `network` | Incremented once per skipped latest or finalized poll (another replica holds the lease and the shared counter is fresh). |
 | `erpc_upstream_latest_block_polled_total` | counter | `project`, `vendor`, `network`, `upstream` | Existing metric: actual latest-block polls. |
 
 Tests: `TestHeadPollLease_OneHolderRenewAndTakeover`, `TestHeadPollLease_HeldExpiresLocallyWithoutRenew`, `TestHeadPollLease_RedisDownFailsOpen` (<SourceLink file="data/head_poll_lease_test.go" />), `TestEvmStatePoller_HeadPollLease_FollowerSkipsWhileFresh`, `TestEvmStatePoller_HeadPollLease_HolderStalledChainStaysFresh`, `TestEvmStatePoller_HeadPollLease_NilLeaseUnchanged`, and the two-replica `TestHeadPollLease_TwoReplicasFrozenChainAndTakeover` (<SourceLink file="erpc/head_poll_lease_test.go" />), all with scripted upstreams and miniredis.

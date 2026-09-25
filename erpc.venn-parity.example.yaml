@@ -13,7 +13,7 @@
 #   - evm.headPolling (mode: lease): one replica polls upstream head numbers,
 #     others reuse the shared counters and poll again when those go stale.
 #
-# Validated by the Go config loader (see the test that loads this file). It does
+# Validated by the Go config loader (common/venn_parity_example_test.go). It does
 # not claim any provider-cost saving. Measure with the metrics listed in the docs.
 #
 # Environment variables (expanded by the loader):
