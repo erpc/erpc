@@ -38,7 +38,7 @@ var (
 	MetricHeadCacheRequestsTotal = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_cache_requests_total",
-		Help:      "Head cache lookups by result (hit, miss, bypass).",
+		Help:      "Head cache lookups by result (hit, miss).",
 	}, []string{"project", "network", "result"})
 
 	MetricHeadCacheFetchesTotal = DefineLabeledCounter(prometheus.CounterOpts{
@@ -98,7 +98,7 @@ var (
 	MetricHeadCacheSubscriberClosedTotal = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_cache_subscriber_closed_total",
-		Help:      "Head cache subscriptions terminated, by reason (unsubscribe, slow_consumer, gap, stop).",
+		Help:      "Head cache subscriptions terminated, by reason (unsubscribe, slow_consumer, gap, reset, stop).",
 	}, []string{"project", "network", "reason"})
 
 	// WebSocket server.

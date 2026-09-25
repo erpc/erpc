@@ -46,12 +46,37 @@ import (
 // subscription overflows, is closed with 1008), writeTimeout per frame.
 // Connections close with 1001 when the server shuts down.
 
-var wsPingInterval = 30 * time.Second
-
 const (
-	wsMaxInflightPerConn = 16
-	wsCloseSlowConsumer  = "slow consumer"
+	wsCloseSlowConsumer = "slow consumer"
+	// Fallbacks for configs that bypassed SetDefaults (validation rejects
+	// non-positive values). Ping never becomes disabled: re-auth rides on it.
+	wsDefaultInflight     = 16
+	wsDefaultPingInterval = 30 * time.Second
+	wsDefaultMaxBatchSize = 100
+	// wsMaxBatchResponseBytes bounds one batch reply frame.
+	wsMaxBatchResponseBytes = 32 << 20
 )
+
+func (ws *wsServer) inflight() int {
+	if ws.cfg.MaxInflightPerConnection > 0 {
+		return ws.cfg.MaxInflightPerConnection
+	}
+	return wsDefaultInflight
+}
+
+func (ws *wsServer) pingInterval() time.Duration {
+	if d := ws.cfg.PingInterval.Duration(); d > 0 {
+		return d
+	}
+	return wsDefaultPingInterval
+}
+
+func (ws *wsServer) maxBatchSize() int {
+	if ws.cfg.MaxBatchSize > 0 {
+		return ws.cfg.MaxBatchSize
+	}
+	return wsDefaultMaxBatchSize
+}
 
 type wsServer struct {
 	s     *HttpServer
@@ -190,7 +215,11 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		lg:        &lg,
 		out:       make(chan []byte, ws.cfg.SendQueueSize),
 		subs:      map[string]*wsSub{},
+		mProject:  projectId,
+		mNetwork:  nw.Label(),
 	}
+	telemetry.MetricWsConnections.WithLabelValues(c.mProject, c.mNetwork).Inc()
+	defer telemetry.MetricWsConnections.WithLabelValues(c.mProject, c.mNetwork).Dec()
 	c.run()
 }
 
@@ -251,6 +280,7 @@ type wsSub struct {
 	id     string
 	sub    *headcache.Subscription
 	logs   bool
+	kind   string
 	filter *headcache.LogFilter
 	// unsubscribed distinguishes client eth_unsubscribe from overflow closes.
 	unsubscribed atomic.Bool
@@ -268,6 +298,8 @@ type wsConn struct {
 	req       *http.Request
 	clientIP  string
 	lg        *zerolog.Logger
+	// metric labels (empty in unit tests that build a bare wsConn)
+	mProject, mNetwork string
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -299,7 +331,14 @@ func (c *wsConn) run() {
 	go c.writeLoop(writerDone)
 	go c.pingLoop()
 
-	sem := make(chan struct{}, wsMaxInflightPerConn)
+	sem := make(chan struct{}, c.ws.inflight())
+	acquire := func() bool {
+		select {
+		case sem <- struct{}{}:
+		case <-c.ctx.Done():
+		}
+		return c.ctx.Err() == nil
+	}
 	for {
 		// Not c.ctx: coder/websocket tears the connection down without a
 		// close frame when a Read context is cancelled, which would hide
@@ -314,11 +353,15 @@ func (c *wsConn) run() {
 			}
 			break
 		}
-		select {
-		case sem <- struct{}{}:
-		case <-c.ctx.Done():
+		if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '[' {
+			// Each batch item takes its own inflight slot, acquired here so a
+			// batch cannot exceed the per-connection concurrency bound.
+			if !c.dispatchBatch(trimmed, acquire, func() { <-sem }) {
+				break
+			}
+			continue
 		}
-		if c.ctx.Err() != nil {
+		if !acquire() {
 			break
 		}
 		c.wg.Add(1)
@@ -342,6 +385,7 @@ func (c *wsConn) cleanup() {
 	c.cancel(nil)
 	c.mu.Lock()
 	for id, s := range c.subs {
+		telemetry.MetricWsSubscriptions.WithLabelValues(c.mProject, c.mNetwork, s.kind).Dec()
 		s.unsubscribed.Store(true)
 		s.sub.Close()
 		delete(c.subs, id)
@@ -362,12 +406,24 @@ func (c *wsConn) writeLoop(done chan struct{}) {
 			switch {
 			case errors.As(cause, &ce):
 				code, reason = ce.code, ce.reason
+				if c.ws.s.appCtx.Err() != nil {
+					c.recordClose("shutdown")
+				} else if strings.Contains(reason, wsCloseSlowConsumer) || reason == "write timeout" {
+					c.recordClose("slow_consumer")
+				} else {
+					c.recordClose("error")
+				}
 			case websocket.CloseStatus(cause) != -1:
 				// Peer closed; the library echoes the close frame.
+				c.recordClose("client")
 				_ = c.conn.CloseNow()
 				return
 			case c.ws.s.appCtx.Err() != nil:
 				code, reason = websocket.StatusGoingAway, "server shutting down"
+				c.recordClose("shutdown")
+			default:
+				// Read failed without a close frame (dropped TCP etc).
+				c.recordClose("client")
 			}
 			go func() {
 				time.Sleep(wt)
@@ -390,7 +446,7 @@ func (c *wsConn) writeLoop(done chan struct{}) {
 // until TCP gives up) and keeps idle connections alive behind LB idle
 // timeouts. Pong handling requires the concurrent reader in run().
 func (c *wsConn) pingLoop() {
-	t := time.NewTicker(wsPingInterval)
+	t := time.NewTicker(c.ws.pingInterval())
 	defer t.Stop()
 	for {
 		select {
@@ -462,29 +518,139 @@ type wsRequest struct {
 	Params  json.RawMessage `json:"params"`
 }
 
-func (c *wsConn) sendError(id json.RawMessage, code int, msg string) {
+func (c *wsConn) recordClose(reason string) {
+	telemetry.MetricWsClosedTotal.WithLabelValues(c.mProject, c.mNetwork, reason).Inc()
+}
+
+func errorReply(id json.RawMessage, code int, msg string) []byte {
 	if len(id) == 0 {
 		id = json.RawMessage("null")
 	}
 	b, _ := json.Marshal(msg)
-	c.send([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":%s}}`, id, code, b)))
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":%s}}`, id, code, b))
 }
 
-func (c *wsConn) sendResult(id json.RawMessage, result interface{}) {
+func resultReply(id json.RawMessage, result interface{}) []byte {
 	rb, _ := json.Marshal(result)
-	c.send([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":%s}`, id, rb)))
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":%s}`, id, rb))
 }
 
 func (c *wsConn) handleMessage(data []byte) {
-	trimmed := bytes.TrimSpace(data)
+	reply, after := c.handleOne(bytes.TrimSpace(data))
+	if reply != nil {
+		c.send(reply)
+	}
+	if after != nil {
+		after()
+	}
+}
+
+// dispatchBatch runs a JSON-RPC batch. Items run concurrently, each holding
+// one inflight slot and passing through the same per-item pipeline as a
+// single message (auth, method lists, rate limits, directives, subscription
+// caps). Replies are sent as one array; items without an "id" member are
+// notifications and get no entry, and an all-notification batch gets no
+// reply. Subscription pumps start only after the array is enqueued so the
+// subscription id always precedes its notifications. Returns false when the
+// connection is closing.
+func (c *wsConn) dispatchBatch(data []byte, acquire func() bool, release func()) bool {
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		c.send(errorReply(nil, int(common.JsonRpcErrorParseException), "invalid json"))
+		return true
+	}
+	if len(items) == 0 {
+		c.send(errorReply(nil, int(common.JsonRpcErrorClientSideException), "empty batch"))
+		return true
+	}
+	if max := c.ws.maxBatchSize(); len(items) > max {
+		c.send(errorReply(nil, int(common.JsonRpcErrorClientSideException), fmt.Sprintf("batch too large (max %d)", max)))
+		return true
+	}
+	replies := make([][]byte, len(items))
+	afters := make([]func(), len(items))
+	var iwg sync.WaitGroup
+	for i, item := range items {
+		if !acquire() {
+			// Wait for already-started items so they don't outlive cleanup.
+			iwg.Wait()
+			return false
+		}
+		iwg.Add(1)
+		c.wg.Add(1)
+		go func(i int, item []byte) {
+			defer c.wg.Done()
+			defer iwg.Done()
+			defer release()
+			defer func() {
+				if rec := recover(); rec != nil {
+					telemetry.MetricUnexpectedPanicTotal.WithLabelValues("ws-message", c.networkId, common.ErrorFingerprint(rec)).Inc()
+					c.lg.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).Msg("unexpected panic handling websocket batch item")
+					c.closeWith(websocket.StatusInternalError, "internal error")
+				}
+			}()
+			item = bytes.TrimSpace(item)
+			reply, after := c.handleOne(item)
+			if isJsonRpcNotification(item) {
+				reply = nil
+			}
+			replies[i], afters[i] = reply, after
+		}(i, item)
+	}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		iwg.Wait()
+		var buf bytes.Buffer
+		buf.WriteByte('[')
+		n := 0
+		for _, r := range replies {
+			if r == nil {
+				continue
+			}
+			if n > 0 {
+				buf.WriteByte(',')
+			}
+			buf.Write(r)
+			n++
+		}
+		buf.WriteByte(']')
+		if buf.Len() > wsMaxBatchResponseBytes {
+			c.send(errorReply(nil, int(common.JsonRpcErrorCapacityExceeded), fmt.Sprintf("batch response too large (max %d bytes)", wsMaxBatchResponseBytes)))
+		} else if n > 0 {
+			c.send(buf.Bytes())
+		}
+		for _, a := range afters {
+			if a != nil {
+				a()
+			}
+		}
+	}()
+	return true
+}
+
+// isJsonRpcNotification reports a well-formed request object with no "id"
+// member. Malformed items always get an error entry.
+func isJsonRpcNotification(item []byte) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(item, &m) != nil {
+		return false
+	}
+	_, hasId := m["id"]
+	method, hasMethod := m["method"]
+	return !hasId && hasMethod && len(method) > 2
+}
+
+// handleOne processes one request object and returns its reply (nil when
+// nothing should be sent) and an optional hook to run once the reply is
+// enqueued (used to start subscription pumps).
+func (c *wsConn) handleOne(trimmed []byte) ([]byte, func()) {
 	if len(trimmed) > 0 && trimmed[0] == '[' {
-		c.sendError(nil, -32600, "batch requests are not supported over websocket")
-		return
+		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "nested batch is not allowed"), nil
 	}
 	var req wsRequest
 	if err := json.Unmarshal(trimmed, &req); err != nil || req.Method == "" {
-		c.sendError(nil, -32700, "invalid json-rpc request")
-		return
+		return errorReply(nil, -32700, "invalid json-rpc request"), nil
 	}
 	if len(req.ID) == 0 {
 		req.ID = json.RawMessage("null")
@@ -500,13 +666,13 @@ func (c *wsConn) handleMessage(data []byte) {
 	if err == nil {
 		switch req.Method {
 		case "eth_subscribe":
-			c.subscribe(ctx, nq, &req)
+			reply, after := c.subscribe(ctx, nq, &req)
 			common.EndRequestSpan(ctx, nil, nil)
-			return
+			return reply, after
 		case "eth_unsubscribe":
-			c.unsubscribe(&req)
+			reply := c.unsubscribe(&req)
 			common.EndRequestSpan(ctx, nil, nil)
-			return
+			return reply, nil
 		}
 		fres, ferr := c.project.Forward(ctx, c.networkId, nq)
 		if ferr != nil {
@@ -514,31 +680,28 @@ func (c *wsConn) handleMessage(data []byte) {
 				go fres.Release()
 			}
 			body := processErrorBody(c.lg, &startedAt, nq, ferr, c.ws.s.serverCfg.IncludeErrorDetails)
-			c.writeAny(body)
 			common.EndRequestSpan(ctx, nil, ferr)
-			return
+			return c.render(body), nil
 		}
-		c.writeAny(fres)
 		common.EndRequestSpan(ctx, fres, nil)
-		return
+		return c.render(fres), nil
 	}
 	if errors.Is(err, errSkipForward) {
-		c.writeAny(res)
 		common.EndRequestSpan(ctx, nil, nil)
-		return
+		return c.render(res), nil
 	}
 	body := processErrorBody(c.lg, &startedAt, nq, err, c.ws.s.serverCfg.IncludeErrorDetails, common.NetworkArchitecture(c.network.Architecture()))
-	c.writeAny(body)
 	common.EndRequestSpan(ctx, nil, err)
+	return c.render(body), nil
 }
 
-func (c *wsConn) writeAny(v interface{}) {
+func (c *wsConn) render(v interface{}) []byte {
 	var buf bytes.Buffer
 	var err error
 	switch r := v.(type) {
 	case *common.NormalizedResponse:
 		if r == nil {
-			return
+			return nil
 		}
 		_, err = r.WriteTo(&buf)
 		go r.Release()
@@ -549,9 +712,9 @@ func (c *wsConn) writeAny(v interface{}) {
 	}
 	if err != nil {
 		c.lg.Warn().Err(err).Msg("failed to serialize websocket response")
-		return
+		return nil
 	}
-	c.send(bytes.TrimRight(buf.Bytes(), "\n"))
+	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
 // admit applies the same gating as HTTP: validation, forward headers,
@@ -627,82 +790,74 @@ func newSubscriptionId() string {
 	return "0x" + hex.EncodeToString(b[:])
 }
 
-func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, req *wsRequest) {
+func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, req *wsRequest) ([]byte, func()) {
 	var params []json.RawMessage
 	if err := json.Unmarshal(req.Params, &params); err != nil || len(params) == 0 {
-		c.sendError(req.ID, int(common.JsonRpcErrorInvalidArgument), "eth_subscribe requires a subscription type")
-		return
+		return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), "eth_subscribe requires a subscription type"), nil
 	}
 	var kind string
 	if err := json.Unmarshal(params[0], &kind); err != nil {
-		c.sendError(req.ID, int(common.JsonRpcErrorInvalidArgument), "invalid subscription type")
-		return
+		return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), "invalid subscription type"), nil
 	}
-	s := &wsSub{id: newSubscriptionId()}
+	s := &wsSub{id: newSubscriptionId(), kind: kind}
 	switch kind {
 	case "newHeads":
 		if len(params) > 1 {
-			c.sendError(req.ID, int(common.JsonRpcErrorInvalidArgument), "newHeads takes no filter")
-			return
+			return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), "newHeads takes no filter"), nil
 		}
 	case "logs":
 		s.logs = true
 		obj := map[string]interface{}{}
 		if len(params) > 1 {
 			if err := json.Unmarshal(params[1], &obj); err != nil || obj == nil {
-				c.sendError(req.ID, int(common.JsonRpcErrorInvalidArgument), "logs filter must be an object")
-				return
+				return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), "logs filter must be an object"), nil
 			}
 		}
 		f, err := headcache.ParseLogFilter(obj)
 		if err != nil {
-			c.sendError(req.ID, int(common.JsonRpcErrorInvalidArgument), err.Error())
-			return
+			return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), err.Error()), nil
 		}
 		s.filter = f
 	default:
-		c.sendError(req.ID, int(common.JsonRpcErrorInvalidArgument), fmt.Sprintf("unsupported subscription type %q (supported: newHeads, logs)", kind))
-		return
+		return errorReply(req.ID, int(common.JsonRpcErrorUnsupportedException), fmt.Sprintf("unsupported subscription type %q (supported: newHeads, logs)", kind)), nil
 	}
 
 	hc := c.network.HeadCache()
 	if hc == nil {
-		c.sendError(req.ID, int(common.JsonRpcErrorUnsupportedException), "subscriptions unavailable: head cache is not enabled for this network")
-		return
+		return errorReply(req.ID, int(common.JsonRpcErrorUnsupportedException), "subscriptions unavailable: head cache is not enabled for this network"), nil
 	}
 	// Subscription setup consumes project rate-limit budget like any call.
 	if err := c.project.AcquireRateLimitPermit(ctx, nq); err != nil {
 		now := time.Now()
-		c.writeAny(processErrorBody(c.lg, &now, nq, err, c.ws.s.serverCfg.IncludeErrorDetails))
-		return
+		return c.render(processErrorBody(c.lg, &now, nq, err, c.ws.s.serverCfg.IncludeErrorDetails)), nil
 	}
 
 	c.mu.Lock()
 	if c.ctx.Err() != nil {
 		c.mu.Unlock()
-		return
+		return nil, nil
 	}
 	if len(c.subs) >= c.ws.cfg.MaxSubscriptionsPerConnection {
 		c.mu.Unlock()
-		c.sendError(req.ID, int(common.JsonRpcErrorCapacityExceeded), fmt.Sprintf("too many subscriptions on this connection (max %d)", c.ws.cfg.MaxSubscriptionsPerConnection))
-		return
+		return errorReply(req.ID, int(common.JsonRpcErrorCapacityExceeded), fmt.Sprintf("too many subscriptions on this connection (max %d)", c.ws.cfg.MaxSubscriptionsPerConnection)), nil
 	}
 	s.sub = hc.Subscribe(c.ws.cfg.SendQueueSize)
 	c.subs[s.id] = s
-	c.mu.Unlock()
-
-	// The id reply is enqueued before the pump starts so no notification can
-	// precede it.
-	c.sendResult(req.ID, s.id)
+	// Reserve the pump in the wait group while still registered so cleanup
+	// cannot finish before the deferred start runs.
 	c.wg.Add(1)
-	go c.pump(s)
+	c.mu.Unlock()
+	telemetry.MetricWsSubscriptions.WithLabelValues(c.mProject, c.mNetwork, kind).Inc()
+
+	// The caller enqueues the id reply before starting the pump so no
+	// notification can precede it.
+	return resultReply(req.ID, s.id), func() { go c.pump(s) }
 }
 
-func (c *wsConn) unsubscribe(req *wsRequest) {
+func (c *wsConn) unsubscribe(req *wsRequest) []byte {
 	var params []string
 	if err := json.Unmarshal(req.Params, &params); err != nil || len(params) != 1 {
-		c.sendError(req.ID, int(common.JsonRpcErrorInvalidArgument), "eth_unsubscribe requires a subscription id")
-		return
+		return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), "eth_unsubscribe requires a subscription id")
 	}
 	c.mu.Lock()
 	s, ok := c.subs[params[0]]
@@ -711,14 +866,19 @@ func (c *wsConn) unsubscribe(req *wsRequest) {
 	}
 	c.mu.Unlock()
 	if ok {
+		telemetry.MetricWsSubscriptions.WithLabelValues(c.mProject, c.mNetwork, s.kind).Dec()
 		s.unsubscribed.Store(true)
 		s.sub.Close()
 	}
-	c.sendResult(req.ID, ok)
+	return resultReply(req.ID, ok)
 }
 
-func (c *wsConn) notify(id string, result json.RawMessage) bool {
-	return c.sendStream([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":%s}}`, id, result)))
+func (c *wsConn) notify(s *wsSub, result json.RawMessage) bool {
+	ok := c.sendStream([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":%s}}`, s.id, result)))
+	if ok {
+		telemetry.MetricWsNotificationsTotal.WithLabelValues(c.mProject, c.mNetwork, s.kind).Inc()
+	}
+	return ok
 }
 
 func (c *wsConn) pump(s *wsSub) {
@@ -800,7 +960,7 @@ func (c *wsConn) emit(s *wsSub, ev headcache.Event) error {
 			if err != nil {
 				return err
 			}
-			if !c.notify(s.id, h) {
+			if !c.notify(s, h) {
 				return nil
 			}
 		}
@@ -812,7 +972,7 @@ func (c *wsConn) emit(s *wsSub, ev headcache.Event) error {
 			return err
 		}
 		for _, l := range logs {
-			if !c.notify(s.id, l) {
+			if !c.notify(s, l) {
 				return nil
 			}
 		}
@@ -823,7 +983,7 @@ func (c *wsConn) emit(s *wsSub, ev headcache.Event) error {
 			return err
 		}
 		for _, l := range logs {
-			if !c.notify(s.id, l) {
+			if !c.notify(s, l) {
 				return nil
 			}
 		}

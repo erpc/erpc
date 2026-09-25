@@ -204,6 +204,8 @@ func TestWs_SubscriptionsReorgAndRpc(t *testing.T) {
 	// Unsupported kinds and bad filters are JSON-RPC errors, not disconnects.
 	bad := w.call("eth_subscribe", `["newPendingTransactions"]`)
 	require.NotNil(t, bad.Error)
+	// Geth: subscriptionNotFoundError is -32601.
+	require.Equal(t, -32601, bad.Error.Code)
 	bad = w.call("eth_subscribe", `["logs",{"topics":[1]}]`)
 	require.NotNil(t, bad.Error)
 
@@ -216,7 +218,7 @@ func TestWs_SubscriptionsReorgAndRpc(t *testing.T) {
 func TestWs_AuthOriginAndDisabled(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true, PingInterval: common.Duration(200 * time.Millisecond)})
 	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 		{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Id: "s1", Value: "s3cret"}},
 	}}
@@ -421,14 +423,10 @@ func TestWs_GapDetection(t *testing.T) {
 }
 
 func TestWs_PingAndReauthClosesExpiredJwt(t *testing.T) {
-	old := wsPingInterval
-	wsPingInterval = 200 * time.Millisecond
-	defer func() { wsPingInterval = old }()
-
 	const key = "ws-test-hmac"
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true, PingInterval: common.Duration(200 * time.Millisecond)})
 	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 		{Type: common.AuthTypeJwt, Jwt: &common.JwtStrategyConfig{
 			VerificationKeys: map[string]string{"default": key}, AllowedAlgorithms: []string{"HS256"},
