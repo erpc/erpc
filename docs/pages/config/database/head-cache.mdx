@@ -56,10 +56,10 @@ Defaults from `common/config_headcache.go` (`EvmHeadCacheConfig.SetDefaults`).
 | `maxPerTick` | `16` | Blocks fetched (including re-verification) per follow step. |
 | `concurrency` | `4` (1..64) | Parallel hydration fetches. |
 | `pollInterval` | `2s` | Follow/refresh tick; also re-verifies the tip hash so same-height reorgs are caught. Head advances seen by state pollers trigger an immediate tick. |
-| `fetchTimeout` | `10s` | Per hydration call. |
+| `fetchTimeout` | `10s` | Per hydration call; additionally capped by the whole-tick deadline (`0.8 × leaseTtl`). |
 | `maxLogsRange` | `depth` | Widest `eth_getLogs` range served from cache. |
 | `maxStaleness` | `5 × pollInterval` | If the local view was not refreshed (leader: successful verify/publish; follower: a newer snapshot adopted) within this window, the cache stops serving and all reads go upstream. Measured with the local clock. |
-| `leaseTtl` | `3 × pollInterval + 1s` | Shared-mode lease; `pollInterval` must be `< leaseTtl/2` (renewal happens every tick). |
+| `leaseTtl` | `3 × pollInterval + 1s` | Shared-mode lease, renewed every tick; `pollInterval` must be `< leaseTtl/2`. Each tick (renew + verify + hydrate + publish) runs under a `0.8 × leaseTtl` deadline so a slow upstream cancels work before the lease can lapse. |
 | `namespace` | `default` | Deployment isolation prefix. A hash of the project's upstream ids+endpoints and the network id is always appended, so replicas share data only when they run the same upstream set. |
 | `redis.uri` | — | Required for `shared`. `redis.tls`, `redis.connPoolSize` honored. Redis >= 6.2. |
 
@@ -67,15 +67,15 @@ Defaults from `common/config_headcache.go` (`EvmHeadCacheConfig.SetDefaults`).
 
 - `eth_getBlockByNumber` with an explicit hex number and boolean flag (`true` = full txs, `false` = tx hashes derived from the same record). Tags (`latest`, `finalized`, ...) always go through the normal path.
 - `eth_getBlockByHash`, only when the hash is canonical in the current window.
-- `eth_getLogs` with `blockHash`, or with hex `fromBlock`/`toBlock` where **every** block of the range is held and the span is <= `maxLogsRange`. Only `address`, `topics`, `blockHash`, `fromBlock`, `toBlock` members are accepted; anything else goes upstream.
+- `eth_getLogs` with `blockHash`, or with hex `fromBlock`/`toBlock` where **every** block of the range is held and the span is <= `maxLogsRange`. Only `address`, `topics`, `blockHash`, `fromBlock`, `toBlock` members are accepted (`blockHash` together with `fromBlock`/`toBlock` goes upstream); addresses must be 20-byte and topics 32-byte hex, and topic matching follows geth (a filter with more topic positions than a log never matches it). Anything else goes upstream.
 - Requests with `useUpstream`, an integrity selector, `skipCacheRead`, or internal requests bypass the head cache (they may target a different trust set).
 
 ## Edge cases & gotchas
 
 1. **No partial answers.** A range with any missing, expired, evicted or oversized block is a miss and is forwarded upstream unchanged. Empty results are only returned when every block was held and none matched.
 2. **Record validation.** A block is cached only when: the logs list is non-null, every log's `blockHash`/`blockNumber` match, every `transactionHash` belongs to the block, `logIndex` strictly increases, no log is `removed`, and the bloom recomputed from the logs equals the block's `logsBloom` (catches an upstream returning `[]` for a block it has not indexed).
-3. **Reorgs.** Each tick re-fetches the window tip; on hash mismatch the follower walks back (bounded by `maxPerTick` per tick) until the stored hash matches, then extends forward requiring `parentHash` links. Orphaned heights are replaced atomically in the next snapshot; orphan hashes are never served. Reorgs deeper than `depth` reset the window.
-4. **Shared mode.** Records are immutable and hash-addressed; snapshots are published with an epoch-checked compare-and-set, and a leader whose lease was superseded gets `ErrLeaseLost` and stops. Records are written before the snapshot referencing them. Followers poll `LoadSnapshot` every tick (pub/sub is only a latency hint) and reject snapshots older than `maxStaleness` or dated more than 5s in the future.
+3. **Reorgs.** Each tick re-fetches the window tip as a compact header (`eth_getBlockByNumber(n,false)`); on hash mismatch the leader stops serving immediately and walks back (at most `maxPerTick` fetches per tick, progress kept across ticks) until the stored hash matches. Nothing is published until the ancestor is confirmed; then it extends forward requiring `parentHash` links. A `null` or malformed tip (lagging upstream) is a failed verification, not a reorg. Reorgs deeper than `depth` rebuild the window from the tip.
+4. **Shared mode.** Records are immutable and hash-addressed; snapshots are published with an epoch-checked compare-and-set, and a leader whose lease was superseded gets `ErrLeaseLost` and stops. Records are written before the snapshot referencing them. Followers poll `LoadSnapshot` every tick (pub/sub is only a latency hint) and reject snapshots older than `maxStaleness` or dated more than 5s in the future. A follower's staleness window is anchored to the snapshot's writer timestamp (never extended by late receipt). When a follower lacks a record needed for a newHeads/logs event, subscribers are closed instead of receiving a gapped stream.
 5. **Redis loss.** Reads never block on Redis. When Redis is unreachable, no snapshot is refreshed and after `maxStaleness` every replica serves from upstream. Nothing is served beyond `maxStaleness`.
 6. **Leadership is not derived from shared counters** (`database.sharedState`); it uses its own fenced lease.
 7. **Hydration traffic** goes through the normal network path (selection policy, priority tiers, failsafe) as internal requests. In `local` mode each replica hydrates independently (N× provider cost for N replicas); use `shared` to hydrate once per fleet.
