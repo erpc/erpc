@@ -58,6 +58,27 @@ func TestHeadSource_Selector(t *testing.T) {
 	live.Store(0)
 	require.EqualValues(t, 0, s.Head(ctx))
 
+	// Slow chain (12s blocks, maxAge 3s): served unchanged for 12s while
+	// equal to live, then live moves one block ahead. Lag just began, so the
+	// served tip stays authoritative.
+	served.Store(50)
+	live.Store(50)
+	require.EqualValues(t, 50, s.Head(ctx))
+	now = now.Add(12 * time.Second)
+	live.Store(51)
+	require.EqualValues(t, 50, s.Head(ctx), "lag must be measured from when it began")
+	now = now.Add(2 * time.Second)
+	require.EqualValues(t, 50, s.Head(ctx))
+	// Served advancing resets the lag clock.
+	served.Store(51)
+	live.Store(52)
+	now = now.Add(2 * time.Second)
+	require.EqualValues(t, 51, s.Head(ctx))
+	now = now.Add(2 * time.Second)
+	require.EqualValues(t, 51, s.Head(ctx))
+	now = now.Add(2 * time.Second)
+	require.EqualValues(t, 52, s.Head(ctx), "lagging >maxAge without advancing -> live")
+
 	// max mode ignores served.
 	m := newHeadSourceSelector(common.HeadCacheHeadSourceMax, time.Second,
 		func(context.Context) int64 { return 5 }, func(context.Context) int64 { return 9 })
