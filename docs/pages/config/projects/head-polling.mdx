@@ -62,7 +62,7 @@ Defaults from `EvmHeadPollingConfig.SetDefaults` in <SourceLink file="common/con
 1. **Poll counts, not savings.** Skipped polls are counted, but the reduction in provider calls depends on replica count, block time and poller intervals. Measure it with `erpc_upstream_latest_block_polled_total` before and after.
 2. **Memory connector.** With a `memory` shared-state connector each process has its own lock, so every replica holds its own lease and polls, which is the same as `all`. (Inspected in source, not covered by a dedicated test.)
 3. **Separate from the head cache lease.** The [head cache](/config/database/head-cache) has its own hydration lease and its own `eth_blockNumber` discovery. Leased head polling does not change head cache traffic.
-4. **Served tip unchanged.** The shared counter protocol is unchanged, so served-tip and rollback handling behave as before.
+4. **Served tip rules unchanged.** Served-tip and rollback rules are unchanged. Lease mode adds one thing to the shared counters: successful polls also publish equal-height observations, so freshness propagates on a chain that is not advancing.
 
 ## Observability
 
