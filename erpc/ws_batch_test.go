@@ -3,8 +3,10 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -355,4 +358,98 @@ func TestWs_UnauthorizedUpgradeDoesNotCreateNetwork(t *testing.T) {
 	require.Nil(t, r.Error)
 	require.JSONEq(t, `"0x7b"`, string(r.Result))
 	require.GreaterOrEqual(t, upCalls(), before)
+}
+
+// Regression: a batch aborted mid-dispatch (connection closing) must still
+// start pumps reserved by already-handled subscribe items, or cleanup's
+// wg.Wait hangs forever and leaks connection slots.
+func TestWs_BatchAbortAfterSubscribeDoesNotHangCleanup(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	_, _, _, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	prj, err := e.GetProject("test_project")
+	require.NoError(t, err)
+	nw, err := prj.GetNetwork(t.Context(), "evm:123")
+	require.NoError(t, err)
+
+	c, cancel := testWsConn(t, 16)
+	lg := zerolog.Nop()
+	c.lg, c.project, c.network, c.networkId = &lg, prj, nw, "evm:123"
+	c.req = httptest.NewRequest(http.MethodGet, "/test_project/evm/123", nil)
+	c.subs = map[string]*wsSub{}
+	c.ws.s = &HttpServer{serverCfg: &common.ServerConfig{}}
+	c.ws.cfg.MaxSubscriptionsPerConnection = 10
+	c.ws.cfg.SendQueueSize = 16
+
+	calls := 0
+	acquire := func() bool {
+		calls++
+		if calls == 1 {
+			return true
+		}
+		// Second slot: wait for the subscribe to register, then close.
+		require.Eventually(t, func() bool { return subCount(t, e) == 1 }, 5*time.Second, 10*time.Millisecond)
+		cancel(errors.New("closing"))
+		return false
+	}
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]},{"jsonrpc":"2.0","id":2,"method":"eth_chainId"}]`
+	require.False(t, c.dispatchBatch([]byte(batch), acquire, func() {}))
+
+	done := make(chan struct{})
+	go func() { c.cleanup(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup hung: reserved subscription pump never started")
+	}
+	require.Eventually(t, func() bool { return subCount(t, e) == 0 }, 5*time.Second, 20*time.Millisecond)
+}
+
+// Public path: a client sends a batch larger than the inflight limit (with
+// subscribes) and disconnects mid-batch. Connection slots, subscriptions and
+// gauges must all be released.
+func TestWs_BatchDisconnectReleasesResources(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{
+		Enabled: true, MaxConnections: 1, MaxInflightPerConnection: 1, MaxBatchSize: 50, MaxSubscriptionsPerConnection: 50,
+	})
+	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	conns := func() float64 {
+		return promUtil.ToFloat64(telemetry.MetricWsConnections.WithLabelValues("test_project", "evm:123"))
+	}
+	subs := func() float64 {
+		return promUtil.ToFloat64(telemetry.MetricWsSubscriptions.WithLabelValues("test_project", "evm:123", "newHeads"))
+	}
+	conns0, subs0 := conns(), subs()
+
+	for round := 0; round < 3; round++ {
+		var c *websocket.Conn
+		require.Eventually(t, func() bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			var err error
+			c, _, err = websocket.Dial(ctx, wsURL(base, ""), nil)
+			return err == nil
+		}, 10*time.Second, 50*time.Millisecond, "connection slot must be released (round %d)", round)
+		items := make([]string, 40)
+		for i := range items {
+			if i%2 == 0 {
+				items[i] = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_subscribe","params":["newHeads"]}`, i)
+			} else {
+				items[i] = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["0x13",true]}`, i)
+			}
+		}
+		require.NoError(t, c.Write(context.Background(), websocket.MessageText, []byte("["+strings.Join(items, ",")+"]")))
+		time.Sleep(time.Duration(round*5) * time.Millisecond)
+		_ = c.CloseNow()
+	}
+	require.Eventually(t, func() bool {
+		return subCount(t, e) == 0 && conns() == conns0 && subs() == subs0
+	}, 10*time.Second, 20*time.Millisecond, "subs=%d conns=%v subsGauge=%v", subCount(t, e), conns(), subs())
 }

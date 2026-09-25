@@ -578,8 +578,16 @@ func (c *wsConn) dispatchBatch(data []byte, acquire func() bool, release func())
 	var iwg sync.WaitGroup
 	for i, item := range items {
 		if !acquire() {
-			// Wait for already-started items so they don't outlive cleanup.
+			// Wait for already-started items so they don't outlive cleanup,
+			// then run their hooks: a subscribe item reserved a pump in c.wg
+			// and the pump (which exits on ctx.Done) must run to release it,
+			// or cleanup's c.wg.Wait would hang forever.
 			iwg.Wait()
+			for _, a := range afters {
+				if a != nil {
+					a()
+				}
+			}
 			return false
 		}
 		iwg.Add(1)
