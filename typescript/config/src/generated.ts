@@ -254,6 +254,12 @@ export interface ServerConfig {
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
   /**
+   * WebSocket opts into the JSON-RPC WebSocket endpoint (eth_subscribe
+   * newHeads/logs reconstructed from HTTP upstreams). Nil or disabled keeps
+   * the server HTTP-only. See WebSocketServerConfig.
+   */
+  webSocket?: WebSocketServerConfig;
+  /**
    * ExecutionHeaders controls the per-request diagnostic headers
    * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
    * eRPC routed and resolved each request. Defaults to "all" — set
@@ -1631,6 +1637,14 @@ export interface EvmNetworkConfig {
    * provider-defined routing. This does not affect eth_query* or gRPC Query.
    */
   safeBlockSource?: string;
+  /**
+   * HeadCache opts into the head-driven full-block/log cache: a local,
+   * parent-hash-verified window of recent canonical blocks (with their
+   * logs) hydrated from upstreams as the head advances. It serves
+   * eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
+   * feeds WebSocket subscriptions. Nil or disabled changes nothing.
+   */
+  headCache?: EvmHeadCacheConfig;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -2061,6 +2075,134 @@ export interface RateLimitStoreConfig {
   redis?: RedisConnectorConfig;
   cacheKeyPrefix?: string;
   nearLimitRatio?: number /* float32 */;
+}
+
+//////////
+// source: config_headcache.go
+
+/**
+ * HeadCacheModeLocal uses per-instance coordination:
+ * every eRPC instance follows the chain and hydrates its own window. No
+ * cross-instance leadership is claimed; instances may duplicate upstream
+ * fetches (bounded by depth and concurrency).
+ */
+export const HeadCacheModeLocal = "local";
+/**
+ * EvmHeadCacheConfig configures the head-driven full-block/log cache.
+ */
+export interface EvmHeadCacheConfig {
+  /**
+   * Enabled turns the cache on. Default false.
+   */
+  enabled?: boolean;
+  /**
+   * Mode selects "local" (default) or Redis-coordinated "shared".
+   */
+  mode?: string;
+  /**
+   * Depth is how many recent canonical blocks the window holds. Default 128.
+   */
+  depth?: number /* int64 */;
+  /**
+   * MaxBytes bounds the total serialized size (blocks + logs) held. When the
+   * window would exceed it, the oldest blocks are evicted. Default 256MB.
+   */
+  maxBytes?: number /* int64 */;
+  /**
+   * MaxPerTick bounds how many blocks a single follow step hydrates, so a
+   * cold start or a long outage converges steadily. Default 16.
+   */
+  maxPerTick?: number /* int64 */;
+  /**
+   * Concurrency bounds in-flight upstream fetches per network. Default 4.
+   */
+  concurrency?: number /* int */;
+  /**
+   * PollInterval is the fallback tick that re-verifies the tip hash even
+   * when the height has not changed (same-height reorgs). Default 2s.
+   */
+  pollInterval?: Duration;
+  /**
+   * FetchTimeout bounds each hydration fetch, additionally capped by the
+   * whole-tick lease deadline. Default 10s.
+   */
+  fetchTimeout?: Duration;
+  /**
+   * MaxLogsRange caps the block span an eth_getLogs range may have to be
+   * served from the cache. Wider ranges go upstream. Default = Depth.
+   */
+  maxLogsRange?: number /* int64 */;
+  /**
+   * MaxBlockBytes rejects (never caches) any single block whose block+logs
+   * payload exceeds it. Default 16MB.
+   */
+  maxBlockBytes?: number /* int64 */;
+  /**
+   * MaxStaleness disables serving (normal upstream path) when the local
+   * view has not been verified for this long. Followers anchor freshness to
+   * the snapshot's writer timestamp, clamped to local receipt time.
+   * Default 5 * pollInterval.
+   */
+  maxStaleness?: Duration;
+  /**
+   * Namespace isolates shared state between deployments. Defaults to
+   * "default". A fingerprint of the
+   * network's upstream set is always appended, so replicas only share data
+   * when they run the same upstream configuration.
+   */
+  namespace?: string;
+  /**
+   * Redis is required when mode is "shared". Only the URI (and optional
+   * TLS) of the connector config are used.
+   */
+  redis?: RedisConnectorConfig;
+  /**
+   * LeaseTTL is the shared-mode leadership lease. It is renewed every
+   * tick. Coordination and all batch work share a deadline of 80% of this
+   * TTL so publication cannot outlive the lease. Must be > 2*pollInterval.
+   * Default 3*pollInterval + 1s.
+   */
+  leaseTtl?: Duration;
+}
+/**
+ * HeadCacheModeShared coordinates replicas through Redis: one lease holder
+ * hydrates and publishes epoch-fenced snapshots, every replica serves them.
+ */
+export const HeadCacheModeShared = "shared";
+/**
+ * WebSocketServerConfig configures the JSON-RPC WebSocket endpoint. It is
+ * served on the same port/paths as HTTP (/<project>/evm/<chainId>) when a
+ * client sends an Upgrade request.
+ */
+export interface WebSocketServerConfig {
+  enabled?: boolean;
+  /**
+   * MaxConnections bounds concurrent WS connections per server. Default 1024.
+   */
+  maxConnections?: number /* int */;
+  /**
+   * MaxConnectionsPerProject bounds concurrent WS connections per project so
+   * one tenant cannot exhaust MaxConnections. 0 = only the global cap.
+   */
+  maxConnectionsPerProject?: number /* int */;
+  /**
+   * MaxSubscriptionsPerConnection. Default 32.
+   */
+  maxSubscriptionsPerConnection?: number /* int */;
+  /**
+   * SendQueueSize bounds queued outbound messages per connection. A client
+   * that falls this far behind is disconnected (policy violation) rather
+   * than buffered without bound. Default 256.
+   */
+  sendQueueSize?: number /* int */;
+  /**
+   * MaxMessageBytes caps inbound frame size. Default 1MB.
+   */
+  maxMessageBytes?: number /* int64 */;
+  /**
+   * WriteTimeout bounds each outbound write. Default 10s.
+   */
+  writeTimeout?: Duration;
 }
 
 //////////
