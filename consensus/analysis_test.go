@@ -139,7 +139,7 @@ func TestConsensusWithExhaustedParticipants_StillReachesThreshold(t *testing.T) 
 
 	// determineWinner must return the agreed-upon revert, not a dispute.
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(&lg, nil, analysis)
 
 	require.NotNil(t, winner)
 	assert.NotNil(t, winner.Error, "winner should be the consensus error (revert)")
