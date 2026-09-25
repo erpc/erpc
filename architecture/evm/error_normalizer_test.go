@@ -408,3 +408,83 @@ func TestExtractJsonRpcError_RethRevertError(t *testing.T) {
 		})
 	}
 }
+
+// hl-node's reply when a HyperEVM read precompile (0x…0800 onwards) runs
+// against a block for which the node holds no HyperCore state. The trailing
+// number is the node's RPC gas cap and differs per provider.
+const hyperEvmPrecompileStateGap = "out of gas: gas exhausted during precompiled contract execution: 600000000"
+
+// TestExtractJsonRpcError_HyperEvmPrecompileStateGap verifies that the
+// precompile-state gap is classified as missing data, so the network sweep
+// moves on to an upstream that holds the state. A generic "out of gas" stays a
+// final execution result, and eth_sendRawTransaction keeps its existing
+// transaction-rejected handling.
+func TestExtractJsonRpcError_HyperEvmPrecompileStateGap(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name            string
+		method          string // empty = no request attached to the response
+		message         string
+		wantCode        common.ErrorCode
+		wantNormalized  common.JsonRpcErrorNumber
+		wantRetryableNw bool
+	}{
+		{name: "eth_call", method: "eth_call", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_estimateGas", method: "eth_estimateGas", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_createAccessList", method: "eth_createAccessList", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_simulateV1", method: "eth_simulateV1", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "debug_traceCall", method: "debug_traceCall", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "unknown method", method: "hl_someFutureCall", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "no request attached", method: "", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "other gas cap", method: "eth_call", message: "out of gas: gas exhausted during precompiled contract execution: 50000000",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "plain out of gas stays a final execution result", method: "eth_call", message: "out of gas",
+			wantCode: common.ErrCodeEndpointExecutionException, wantNormalized: common.JsonRpcErrorTransactionRejected, wantRetryableNw: false},
+		{name: "eth_sendRawTransaction keeps transaction-rejected handling", method: "eth_sendRawTransaction", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointExecutionException, wantNormalized: common.JsonRpcErrorTransactionRejected, wantRetryableNw: true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var nr *common.NormalizedResponse
+			if tc.method != "" {
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","method":"` + tc.method + `","params":[],"id":1}`))
+				nr = common.NewNormalizedResponse().WithRequest(req)
+			}
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(-32003, tc.message, "")
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if !common.HasErrorCode(err, tc.wantCode) {
+				t.Fatalf("expected %s, got %T: %v", tc.wantCode, err, err)
+			}
+			if got := common.IsRetryableTowardNetwork(err); got != tc.wantRetryableNw {
+				t.Fatalf("IsRetryableTowardNetwork: got %v, want %v", got, tc.wantRetryableNw)
+			}
+			jre := &common.ErrJsonRpcExceptionInternal{}
+			if !errors.As(err, &jre) {
+				t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
+			}
+			if got := jre.NormalizedCode(); got != tc.wantNormalized {
+				t.Fatalf("normalized code: got %d, want %d", got, tc.wantNormalized)
+			}
+			if got := jre.Message; got != tc.message {
+				t.Fatalf("node message must reach the caller verbatim: got %q, want %q", got, tc.message)
+			}
+		})
+	}
+}
