@@ -81,6 +81,7 @@ type Cache struct {
 	headFn  func(context.Context) int64
 	logger  *zerolog.Logger
 	Stats   Stats
+	metrics *metrics // nil unless EnableMetrics
 
 	mu        sync.RWMutex
 	snap      *Snapshot
@@ -148,9 +149,10 @@ func (c *Cache) Stop() {
 		}
 		c.mu.Lock()
 		for s := range c.subs {
-			c.closeSubLocked(s)
+			c.closeSubLocked(s, "stop")
 		}
 		c.mu.Unlock()
+		c.metrics.stop()
 	})
 }
 
@@ -237,6 +239,7 @@ func (c *Cache) Tick(ctx context.Context) {
 		if err == nil {
 			c.lease = l
 			c.Stats.LeaderEpochs.Add(1)
+			c.metrics.acquired()
 			c.publishCt = 0
 			c.walk = nil
 			c.logger.Info().Uint64("epoch", l.Epoch).Msg("headcache acquired hydration lease")
@@ -244,9 +247,11 @@ func (c *Cache) Tick(ctx context.Context) {
 	}
 	if c.lease != nil {
 		c.lead(ctx)
-		return
+	} else {
+		c.consume(ctx)
 	}
-	c.consume(ctx)
+	// lead may drop the lease (publish rejected), so report after the step.
+	c.metrics.leader(c.lease != nil)
 }
 
 func (c *Cache) isLeader() bool {
@@ -264,6 +269,7 @@ func (c *Cache) releaseLease() {
 		cancel()
 		c.lease = nil
 	}
+	c.metrics.leader(false)
 }
 
 // consume adopts the latest committed snapshot (follower role).
@@ -322,11 +328,12 @@ func (c *Cache) consume(ctx context.Context) {
 		// may we reset local ordering. Event continuity cannot be guaranteed.
 		c.mu.Lock()
 		for sub := range c.subs {
-			c.closeSubLocked(sub)
+			c.closeSubLocked(sub, "reset")
 		}
 		c.snap = nil
 		c.records = map[string]*BlockRecord{}
 		c.freshAt = time.Time{}
+		c.metrics.snapshot(nil, 0)
 		c.mu.Unlock()
 	}
 	fresh := now
@@ -405,6 +412,7 @@ func (c *Cache) lead(ctx context.Context) {
 		hashes = hashes[:len(hashes)-1]
 		head--
 		c.Stats.Reorgs.Add(1)
+		c.metrics.reorg()
 	}
 	if mismatched {
 		// The held window is known to contain orphans: stop serving it now,
@@ -452,6 +460,7 @@ func (c *Cache) lead(ctx context.Context) {
 				c.invalidateLocal()
 				c.walk = nil // restart from committed records, not unpersisted additions
 				c.Stats.Reorgs.Add(1)
+				c.metrics.reorg()
 				return
 			}
 			hashes = append(hashes, r.Hash)
@@ -535,6 +544,7 @@ func (c *Cache) lead(ctx context.Context) {
 		return
 	}
 	c.Stats.Published.Add(1)
+	c.metrics.published()
 	c.publishAt = c.nowFn()
 	c.walk = nil
 	final := make(map[string]*BlockRecord, len(hashes))
@@ -622,9 +632,11 @@ func (c *Cache) hydrate(ctx context.Context, n int64) (*BlockRecord, error) {
 	r, err := buildRecord(blk, logs, c.opt.MaxBlockSize)
 	if err != nil {
 		c.Stats.Rejected.Add(1)
+		c.metrics.fetch(false)
 		return nil, err
 	}
 	c.Stats.Hydrated.Add(1)
+	c.metrics.fetch(true)
 	return r, nil
 }
 
@@ -689,19 +701,20 @@ func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord, freshAt time
 	c.records = recs
 	c.bytes = total
 	c.freshAt = freshAt
+	c.metrics.snapshot(snap, total)
 	if gap {
 		// A record needed for a complete event is missing (expired or
 		// evicted). Never deliver a gapped stream: terminate subscribers so
 		// clients resubscribe.
 		for s := range c.subs {
-			c.closeSubLocked(s)
+			c.closeSubLocked(s, "gap")
 		}
 	} else if len(ev.Removed) > 0 || len(ev.Added) > 0 {
 		for s := range c.subs {
 			select {
 			case s.C <- ev:
 			default:
-				c.closeSubLocked(s) // slow consumer: drop, never buffer unbounded
+				c.closeSubLocked(s, "slow_consumer") // slow consumer: drop, never buffer unbounded
 			}
 		}
 	}
@@ -716,19 +729,22 @@ func (c *Cache) Subscribe(queue int) *Subscription {
 	s := &Subscription{C: make(chan Event, queue), c: c}
 	c.mu.Lock()
 	c.subs[s] = struct{}{}
+	c.metrics.subscribers(len(c.subs))
 	c.mu.Unlock()
 	return s
 }
 
 func (c *Cache) unsubscribe(s *Subscription) {
 	c.mu.Lock()
-	c.closeSubLocked(s)
+	c.closeSubLocked(s, "unsubscribe")
 	c.mu.Unlock()
 }
 
-func (c *Cache) closeSubLocked(s *Subscription) {
+func (c *Cache) closeSubLocked(s *Subscription, reason string) {
 	if _, ok := c.subs[s]; ok {
 		delete(c.subs, s)
+		c.metrics.subClosed(reason)
+		c.metrics.subscribers(len(c.subs))
 	}
 	if s.closed.CompareAndSwap(false, true) {
 		close(s.C)
@@ -773,6 +789,7 @@ func (c *Cache) hit(ok bool) {
 	} else {
 		c.Stats.Misses.Add(1)
 	}
+	c.metrics.request(ok)
 }
 
 // BlockByNumber serves a canonical block within the window.
