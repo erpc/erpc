@@ -30,19 +30,45 @@ func withHeadCacheBypass(ctx context.Context) context.Context {
 // HeadCache returns the network's head cache, or nil when disabled.
 func (n *Network) HeadCache() *headcache.Cache { return n.headCache }
 
-var (
-	headCacheRedisMu      sync.Mutex
-	headCacheRedisClients = map[string]redis.UniversalClient{}
-)
+// Connections belong to one registry/application context, never a process-global
+// map. TLS identity and verification settings are part of connection identity.
+type headCacheRedisPool struct {
+	mu      sync.Mutex
+	clients map[[32]byte]redis.UniversalClient
+}
 
-func headCacheRedisClient(ctx context.Context, cfg *common.RedisConnectorConfig) (redis.UniversalClient, error) {
-	key := strings.TrimSpace(cfg.URI)
-	headCacheRedisMu.Lock()
-	defer headCacheRedisMu.Unlock()
-	if c, ok := headCacheRedisClients[key]; ok {
+func (nr *NetworksRegistry) headCacheRedisClient(cfg *common.RedisConnectorConfig) (redis.UniversalClient, error) {
+	p := &nr.headCacheRedis
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := nr.appCtx.Err(); err != nil {
+		return nil, fmt.Errorf("head cache Redis context: %w", err)
+	}
+	if p.clients == nil {
+		p.clients = make(map[[32]byte]redis.UniversalClient)
+		context.AfterFunc(nr.appCtx, func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			for key, client := range p.clients {
+				_ = client.Close()
+				delete(p.clients, key)
+			}
+		})
+	}
+	// Do not use RedisConnectorConfig.MarshalJSON: it redacts credentials.
+	identity, err := json.Marshal(struct {
+		URI  string
+		TLS  *common.TLSConfig
+		Pool int
+	}{strings.TrimSpace(cfg.URI), cfg.TLS, cfg.ConnPoolSize})
+	if err != nil {
+		return nil, fmt.Errorf("head cache Redis identity: %w", err)
+	}
+	key := sha256.Sum256(identity)
+	if c, ok := p.clients[key]; ok {
 		return c, nil
 	}
-	opts, err := redis.ParseURL(key)
+	opts, err := redis.ParseURL(strings.TrimSpace(cfg.URI))
 	if err != nil {
 		return nil, fmt.Errorf("evm.headCache.redis.uri: %w", err)
 	}
@@ -58,7 +84,7 @@ func headCacheRedisClient(ctx context.Context, cfg *common.RedisConnectorConfig)
 	}
 	opts.ContextTimeoutEnabled = true
 	c := redis.NewClient(opts)
-	headCacheRedisClients[key] = c
+	p.clients[key] = c
 	return c, nil
 }
 
@@ -97,7 +123,7 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 	var store headcache.Store
 	switch hc.Mode {
 	case common.HeadCacheModeShared:
-		client, err := headCacheRedisClient(nr.appCtx, hc.Redis)
+		client, err := nr.headCacheRedisClient(hc.Redis)
 		if err != nil {
 			return err
 		}
@@ -276,7 +302,9 @@ func (n *Network) tryServeHeadCache(ctx context.Context, req *common.NormalizedR
 		}
 		var logs []json.RawMessage
 		if bh, ok := obj["blockHash"].(string); ok {
-			if _, has := obj["fromBlock"]; has {
+			_, hasFrom := obj["fromBlock"]
+			_, hasTo := obj["toBlock"]
+			if hasFrom || hasTo {
 				return nil, false
 			}
 			logs, ok = c.LogsByHash(bh, filter)

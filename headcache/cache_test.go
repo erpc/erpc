@@ -24,6 +24,7 @@ type fakeChain struct {
 	headerCalls atomic.Int64
 	dropLogs    map[string]bool // hash -> return [] (incomplete) logs
 	failBlock   map[int64]bool
+	nullAt      map[int64]bool // simulate a lagging upstream (null block)
 }
 
 var emitter = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
@@ -31,7 +32,7 @@ var topicA = "0x1111111111111111111111111111111111111111111111111111111111111111
 var topicB = "0x2222222222222222222222222222222222222222222222222222222222222222"
 
 func newFakeChain(tip int64) *fakeChain {
-	c := &fakeChain{blocks: map[int64]string{}, tip: tip, dropLogs: map[string]bool{}, failBlock: map[int64]bool{}}
+	c := &fakeChain{blocks: map[int64]string{}, tip: tip, dropLogs: map[string]bool{}, nullAt: map[int64]bool{}, failBlock: map[int64]bool{}}
 	for i := int64(0); i <= tip; i++ {
 		c.blocks[i] = "a"
 	}
@@ -68,7 +69,7 @@ func (c *fakeChain) BlockByNumber(_ context.Context, n int64) (json.RawMessage, 
 		return nil, fmt.Errorf("upstream failure")
 	}
 	fork, ok := c.blocks[n]
-	if !ok || n > c.tip {
+	if !ok || n > c.tip || c.nullAt[n] {
 		return json.RawMessage("null"), nil
 	}
 	var bloom types.Bloom
@@ -338,4 +339,130 @@ func TestCache_StartLoopNoSelfSpin(t *testing.T) {
 	require.LessOrEqual(t, leader.Stats.Published.Load()-pub0, int64(2), "no republish storm (heartbeat only)")
 	require.Zero(t, follower.Stats.Hydrated.Load())
 	require.True(t, follower.Fresh())
+}
+
+// H1: a null tip from a lagging upstream is a failed verification, not a reorg.
+func TestCache_NullTipIsNotReorg(t *testing.T) {
+	ctx := context.Background()
+	ch := newFakeChain(10)
+	c := New(testOpts("a"), NewMemoryStore(), ch, ch.head, nil)
+	c.Tick(ctx)
+	sub := c.Subscribe(8)
+	ch.mu.Lock()
+	ch.nullAt[10] = true
+	ch.mu.Unlock()
+	c.Tick(ctx)
+	require.Equal(t, int64(10), c.Head())
+	require.Zero(t, c.Stats.Reorgs.Load())
+	select {
+	case ev := <-sub.C:
+		t.Fatalf("unexpected event %+v", ev)
+	default:
+	}
+}
+
+// H2: a reorg deeper than one tick's budget is never published partially;
+// orphans stop being served immediately and the walk resumes next tick.
+func TestCache_DeepReorgBudgetNeverPublishesOrphans(t *testing.T) {
+	ctx := context.Background()
+	ch := newFakeChain(20)
+	o := testOpts("a")
+	o.MaxPerTick = 4
+	c := New(o, NewMemoryStore(), ch, ch.head, nil)
+	for i := 0; i < 8 && c.Head() != 20; i++ {
+		c.Tick(ctx)
+	}
+	require.Equal(t, int64(20), c.Head())
+	pub := c.Stats.Published.Load()
+	ch.reorg(12, "b")
+	c.Tick(ctx)
+	require.Equal(t, pub, c.Stats.Published.Load(), "no publish before ancestor is confirmed")
+	require.False(t, c.Fresh(), "held window with known orphans must stop serving")
+	_, ok := c.BlockByNumber(15, false)
+	require.False(t, ok)
+	for i := 0; i < 10 && c.Head() != 20; i++ {
+		c.Tick(ctx)
+	}
+	require.Equal(t, int64(20), c.Head())
+	for n := int64(5); n <= 20; n++ {
+		if b, ok := c.BlockByNumber(n, false); ok {
+			require.Contains(t, string(b), ch.hashAt(n))
+		}
+	}
+}
+
+// H3/H4: geth topic-length semantics; malformed filters are rejected (miss).
+func TestLogFilter_GethSemantics(t *testing.T) {
+	ch := newFakeChain(3)
+	c := New(testOpts("a"), NewMemoryStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	cases := []struct {
+		name  string
+		obj   map[string]interface{}
+		err   bool
+		count int
+	}{
+		{"extra null position never matches", map[string]interface{}{"topics": []interface{}{topicA, nil}}, false, 0},
+		{"single position", map[string]interface{}{"topics": []interface{}{topicA}}, false, 2},
+		{"null wildcard", map[string]interface{}{"topics": []interface{}{nil}}, false, 4},
+		{"or list", map[string]interface{}{"topics": []interface{}{[]interface{}{topicA, topicB}}}, false, 4},
+		{"empty or list is wildcard", map[string]interface{}{"topics": []interface{}{[]interface{}{}}}, false, 4},
+		{"bad address", map[string]interface{}{"address": "not-an-address"}, true, 0},
+		{"short topic", map[string]interface{}{"topics": []interface{}{"0x11"}}, true, 0},
+		{"too many topics", map[string]interface{}{"topics": []interface{}{nil, nil, nil, nil, nil}}, true, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := ParseLogFilter(tc.obj)
+			if tc.err {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			logs, ok := c.LogsRange(0, 3, f)
+			require.True(t, ok)
+			require.Len(t, logs, tc.count)
+		})
+	}
+}
+
+// S1: a follower's freshness is anchored to the writer's verification time.
+func TestCache_FollowerFreshnessAnchoredToSnapshot(t *testing.T) {
+	ctx := context.Background()
+	ch := newFakeChain(5)
+	store := NewMemoryStore()
+	a := New(testOpts("a"), store, ch, ch.head, nil)
+	b := New(testOpts("b"), store, ch, ch.head, nil)
+	a.Tick(ctx)
+	now := time.Now()
+	b.nowFn = func() time.Time { return now.Add(900 * time.Millisecond) }
+	b.Tick(ctx)
+	require.True(t, b.Fresh())
+	b.nowFn = func() time.Time { return now.Add(1500 * time.Millisecond) }
+	require.False(t, b.Fresh(), "must not serve past maxStaleness from the leader's verification")
+}
+
+// S3: a follower missing a record for an event closes subscribers instead
+// of delivering a gapped stream.
+func TestCache_GapClosesSubscribers(t *testing.T) {
+	ctx := context.Background()
+	ch := newFakeChain(5)
+	store := NewMemoryStore()
+	a := New(testOpts("a"), store, ch, ch.head, nil)
+	b := New(testOpts("b"), store, ch, ch.head, nil)
+	a.Tick(ctx)
+	b.Tick(ctx)
+	sub := b.Subscribe(8)
+	ch.mine(2)
+	a.Tick(ctx)
+	store.mu.Lock()
+	delete(store.blocks, a.opt.Scope.Key()+"/"+normHash(hashOf(6, "a")))
+	store.mu.Unlock()
+	b.Tick(ctx)
+	_, open := <-sub.C
+	require.False(t, open)
+	_, ok := b.BlockByNumber(6, false)
+	require.False(t, ok)
+	_, ok = b.BlockByNumber(7, false)
+	require.True(t, ok)
 }

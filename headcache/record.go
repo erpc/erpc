@@ -209,21 +209,53 @@ type LogFilter struct {
 	Topics    [][]string          // per position; nil/empty = wildcard
 }
 
+func isHexOfLen(s string, n int) bool {
+	if len(s) != 2+n || (s[:2] != "0x" && s[:2] != "0X") {
+		return false
+	}
+	for _, c := range s[2:] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func parseAddr(v interface{}) (string, error) {
+	s, ok := v.(string)
+	if !ok || !isHexOfLen(s, 40) {
+		return "", fmt.Errorf("invalid address")
+	}
+	return normHash(s), nil
+}
+
+func parseTopic(v interface{}) (string, error) {
+	s, ok := v.(string)
+	if !ok || !isHexOfLen(s, 64) {
+		return "", fmt.Errorf("invalid topic")
+	}
+	return normHash(s), nil
+}
+
 // ParseLogFilter parses the address/topics members of a filter object.
 func ParseLogFilter(obj map[string]interface{}) (*LogFilter, error) {
 	f := &LogFilter{}
 	switch a := obj["address"].(type) {
 	case nil:
 	case string:
-		f.Addresses = map[string]struct{}{normHash(a): {}}
+		s, err := parseAddr(a)
+		if err != nil {
+			return nil, err
+		}
+		f.Addresses = map[string]struct{}{s: {}}
 	case []interface{}:
 		f.Addresses = map[string]struct{}{}
 		for _, v := range a {
-			s, ok := v.(string)
-			if !ok {
-				return nil, fmt.Errorf("invalid address")
+			s, err := parseAddr(v)
+			if err != nil {
+				return nil, err
 			}
-			f.Addresses[normHash(s)] = struct{}{}
+			f.Addresses[s] = struct{}{}
 		}
 		if len(f.Addresses) == 0 {
 			f.Addresses = nil
@@ -242,19 +274,21 @@ func ParseLogFilter(obj map[string]interface{}) (*LogFilter, error) {
 			case nil:
 				f.Topics = append(f.Topics, nil)
 			case string:
-				f.Topics = append(f.Topics, []string{normHash(p)})
+				s, err := parseTopic(p)
+				if err != nil {
+					return nil, err
+				}
+				f.Topics = append(f.Topics, []string{s})
 			case []interface{}:
+				// A null alternative is rejected (ambiguous across clients);
+				// the request then goes upstream.
 				var alts []string
 				for _, v := range p {
-					if v == nil {
-						alts = nil
-						break
+					s, err := parseTopic(v)
+					if err != nil {
+						return nil, err
 					}
-					s, ok := v.(string)
-					if !ok {
-						return nil, fmt.Errorf("invalid topic")
-					}
-					alts = append(alts, normHash(s))
+					alts = append(alts, s)
 				}
 				f.Topics = append(f.Topics, alts)
 			default:
@@ -268,6 +302,11 @@ func ParseLogFilter(obj map[string]interface{}) (*LogFilter, error) {
 }
 
 func (f *LogFilter) match(l *rawLog) bool {
+	// geth semantics: a filter with more topic positions than the log has
+	// never matches, even when the extra positions are wildcards.
+	if len(f.Topics) > len(l.Topics) {
+		return false
+	}
 	if len(f.Addresses) > 0 {
 		if _, ok := f.Addresses[normHash(l.Address)]; !ok {
 			return false

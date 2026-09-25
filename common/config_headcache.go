@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// HeadCacheModeLocal is the only coordination mode currently implemented:
+// HeadCacheModeLocal uses per-instance coordination:
 // every eRPC instance follows the chain and hydrates its own window. No
 // cross-instance leadership is claimed; instances may duplicate upstream
 // fetches (bounded by depth and concurrency).
@@ -15,7 +15,7 @@ const HeadCacheModeLocal = "local"
 type EvmHeadCacheConfig struct {
 	// Enabled turns the cache on. Default false.
 	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
-	// Mode selects coordination. Only "local" is supported (default).
+	// Mode selects "local" (default) or Redis-coordinated "shared".
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 	// Depth is how many recent canonical blocks the window holds. Default 128.
 	Depth int64 `yaml:"depth,omitempty" json:"depth,omitempty"`
@@ -30,7 +30,8 @@ type EvmHeadCacheConfig struct {
 	// PollInterval is the fallback tick that re-verifies the tip hash even
 	// when the height has not changed (same-height reorgs). Default 2s.
 	PollInterval Duration `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty" tstype:"Duration"`
-	// FetchTimeout bounds each hydration fetch. Default 10s.
+	// FetchTimeout bounds each hydration fetch, additionally capped by the
+	// whole-tick lease deadline. Default 10s.
 	FetchTimeout Duration `yaml:"fetchTimeout,omitempty" json:"fetchTimeout,omitempty" tstype:"Duration"`
 	// MaxLogsRange caps the block span an eth_getLogs range may have to be
 	// served from the cache. Wider ranges go upstream. Default = Depth.
@@ -39,13 +40,12 @@ type EvmHeadCacheConfig struct {
 	// payload exceeds it. Default 16MB.
 	MaxBlockBytes int64 `yaml:"maxBlockBytes,omitempty" json:"maxBlockBytes,omitempty"`
 	// MaxStaleness disables serving (normal upstream path) when the local
-	// view has not been refreshed from a successful follow step (leader) or a
-	// newly published snapshot (follower) for this long. Measured on the
-	// local clock only, so writer clock skew cannot keep a frozen head alive.
+	// view has not been verified for this long. Followers anchor freshness to
+	// the snapshot's writer timestamp, clamped to local receipt time.
 	// Default 5 * pollInterval.
 	MaxStaleness Duration `yaml:"maxStaleness,omitempty" json:"maxStaleness,omitempty" tstype:"Duration"`
 	// Namespace isolates shared state between deployments. Defaults to
-	// database.sharedState.clusterKey (or "default"). A fingerprint of the
+	// "default". A fingerprint of the
 	// network's upstream set is always appended, so replicas only share data
 	// when they run the same upstream configuration.
 	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
@@ -53,7 +53,9 @@ type EvmHeadCacheConfig struct {
 	// TLS) of the connector config are used.
 	Redis *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
 	// LeaseTTL is the shared-mode leadership lease. It is renewed every
-	// pollInterval, which must be < leaseTTL/2. Default 3 * pollInterval + 1s.
+	// tick. Coordination and all batch work share a deadline of 80% of this
+	// TTL so publication cannot outlive the lease. Must be > 2*pollInterval.
+	// Default 3*pollInterval + 1s.
 	LeaseTTL Duration `yaml:"leaseTtl,omitempty" json:"leaseTtl,omitempty" tstype:"Duration"`
 }
 

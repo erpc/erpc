@@ -97,6 +97,9 @@ type Cache struct {
 	stepMu    sync.Mutex
 	publishCt uint64
 	publishAt time.Time
+	// walk holds walk-back progress across ticks when a reorg is deeper
+	// than one tick's budget (never published until verified).
+	walk *Snapshot
 }
 
 func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context) int64, logger *zerolog.Logger) *Cache {
@@ -214,6 +217,10 @@ func (c *Cache) run(ctx context.Context) {
 func (c *Cache) Tick(ctx context.Context) {
 	c.stepMu.Lock()
 	defer c.stepMu.Unlock()
+	// Include coordination round trips and the entire hydration batch in one
+	// deadline, leaving a margin before the backend lease can expire.
+	ctx, cancel := context.WithTimeout(ctx, c.opt.LeaseTTL*4/5)
+	defer cancel()
 	if c.lease != nil {
 		l, err := c.store.RenewLease(ctx, c.lease, c.opt.LeaseTTL)
 		if err != nil {
@@ -231,6 +238,7 @@ func (c *Cache) Tick(ctx context.Context) {
 			c.lease = l
 			c.Stats.LeaderEpochs.Add(1)
 			c.publishCt = 0
+			c.walk = nil
 			c.logger.Info().Uint64("epoch", l.Epoch).Msg("headcache acquired hydration lease")
 		}
 	}
@@ -303,7 +311,11 @@ func (c *Cache) consume(ctx context.Context) {
 		}
 		recs[h] = r
 	}
-	c.apply(snap, recs)
+	fresh := now
+	if snap.At.Before(fresh) {
+		fresh = snap.At
+	}
+	c.apply(snap, recs, fresh)
 }
 
 // lead follows the chain as lease holder and publishes a snapshot.
@@ -324,10 +336,19 @@ func (c *Cache) lead(ctx context.Context) {
 		}
 	}
 	c.mu.RUnlock()
+	// walk carries an in-progress walk-back from an earlier tick. An empty
+	// walk means the whole previous window was orphaned: rebuild from the tip
+	// and do not re-adopt the stale published snapshot.
+	resetting := false
+	if c.walk != nil {
+		hashes = append([]string(nil), c.walk.Hashes...)
+		head = c.walk.Head
+		resetting = len(hashes) == 0
+	}
 
 	// A new leader (or first tick) adopts the committed snapshot as a
 	// starting point but re-verifies it against upstreams below.
-	if len(hashes) == 0 {
+	if len(hashes) == 0 && !resetting {
 		if s, err := c.store.LoadSnapshot(ctx, c.opt.Scope); err == nil && s.Valid() {
 			hashes = append(hashes, s.Hashes...)
 			head = s.Head
@@ -343,25 +364,47 @@ func (c *Cache) lead(ctx context.Context) {
 
 	// 1) Re-verify the window tip (catches same-height and shortening reorgs)
 	//    and walk back to the common ancestor.
+	verified := len(hashes) == 0
+	mismatched := false
 	for len(hashes) > 0 && budget > 0 {
 		blk, err := c.fetchHeader(ctx, head)
 		budget--
 		if err != nil {
 			return // cannot verify: do not publish (freshness lapses)
 		}
-		b, _, perr := parseBlockHeader(blk)
-		if perr == nil && normHash(b.Hash) == hashes[len(hashes)-1] {
+		b, bn, perr := parseBlockHeader(blk)
+		if perr != nil || bn != head {
+			// null / malformed / lagging upstream: a failed verification,
+			// NOT evidence of a reorg. Freshness lapses if it persists.
+			return
+		}
+		if normHash(b.Hash) == hashes[len(hashes)-1] {
+			verified = true
 			break
 		}
+		mismatched = true
 		hashes = hashes[:len(hashes)-1]
 		head--
 		c.Stats.Reorgs.Add(1)
 	}
+	if mismatched {
+		// The held window is known to contain orphans: stop serving it now,
+		// independent of whether the ancestor is found this tick.
+		c.invalidateLocal()
+	}
+	if !verified && len(hashes) > 0 {
+		// Budget exhausted before reaching the common ancestor. Publishing
+		// the residual would present unverified (possibly orphaned) heights
+		// as canonical; remember progress and keep walking next tick.
+		c.walk = &Snapshot{Head: head, Hashes: hashes}
+		return
+	}
+	c.walk = nil
 	if len(hashes) == 0 {
 		head = -1
-	}
-	if budget == 0 && len(hashes) > 0 && head < tip {
-		// walked back but out of budget; publish what is verified
+		if mismatched || resetting {
+			c.walk = &Snapshot{Head: -1}
+		}
 	}
 
 	// 2) Walk forward in parallel batches, linking sequentially.
@@ -376,17 +419,21 @@ func (c *Cache) lead(ctx context.Context) {
 	end := minI64(tip, start+budget-1)
 	if end >= start {
 		fetched := c.hydrateRange(ctx, start, end)
+		if ctx.Err() != nil {
+			return
+		}
 		for n := start; n <= end; n++ {
 			r := fetched[n-start]
 			if r == nil {
 				break // gap: stop extending; never publish past a hole
 			}
 			if len(hashes) > 0 && r.ParentHash != hashes[len(hashes)-1] {
-				// Reorg discovered while extending: drop our top; next tick
-				// re-verifies and walks back further.
-				hashes = hashes[:len(hashes)-1]
+				// Chain moved between verification and extension. The earlier
+				// verification no longer establishes this prefix as canonical.
+				c.invalidateLocal()
+				c.walk = &Snapshot{Head: r.Number - 2, Hashes: hashes[:len(hashes)-1]}
 				c.Stats.Reorgs.Add(1)
-				break
+				return
 			}
 			hashes = append(hashes, r.Hash)
 			recs[r.Hash] = r
@@ -406,6 +453,9 @@ func (c *Cache) lead(ctx context.Context) {
 		return
 	}
 	newHead = last.Number
+	if ctx.Err() != nil || !time.Now().Before(c.lease.ExpiresAt) {
+		return
+	}
 	c.mu.RLock()
 	unchanged := c.snap != nil && c.snap.Epoch == c.lease.Epoch && c.snap.Head == newHead && equalStrings(c.snap.Hashes, hashes)
 	c.mu.RUnlock()
@@ -425,6 +475,9 @@ func (c *Cache) lead(ctx context.Context) {
 			return
 		}
 	}
+	if ctx.Err() != nil || !time.Now().Before(c.lease.ExpiresAt) {
+		return
+	}
 	c.publishCt++
 	snap := &Snapshot{Epoch: c.lease.Epoch, Seq: c.publishCt, Head: newHead, Hashes: hashes, At: c.nowFn()}
 	if err := c.store.PublishSnapshot(ctx, c.lease, snap); err != nil {
@@ -436,13 +489,14 @@ func (c *Cache) lead(ctx context.Context) {
 	}
 	c.Stats.Published.Add(1)
 	c.publishAt = c.nowFn()
+	c.walk = nil
 	final := make(map[string]*BlockRecord, len(hashes))
 	for _, h := range hashes {
 		if r, ok := recs[h]; ok {
 			final[h] = r
 		}
 	}
-	c.apply(snap, final)
+	c.apply(snap, final, c.nowFn())
 }
 
 func equalStrings(a, b []string) bool {
@@ -528,10 +582,19 @@ func (c *Cache) hydrate(ctx context.Context, n int64) (*BlockRecord, error) {
 }
 
 // apply installs a committed snapshot locally and notifies subscribers.
-func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord) {
+func (c *Cache) invalidateLocal() {
+	c.mu.Lock()
+	c.freshAt = time.Time{}
+	c.mu.Unlock()
+}
+
+// apply installs a committed snapshot. freshAt anchors the staleness window
+// (followers pass the writer's verification time, never a later receipt time).
+func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord, freshAt time.Time) {
 	c.mu.Lock()
 	old := c.snap
 	var ev Event
+	gap := old != nil && snap.Base() > old.Head+1
 	if old != nil {
 		// Heights whose canonical hash changed (or vanished) were orphaned.
 		for n := old.Head; n >= old.Base(); n-- {
@@ -544,6 +607,8 @@ func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord) {
 			}
 			if r := c.records[oh]; r != nil {
 				ev.Removed = append(ev.Removed, r)
+			} else {
+				gap = true
 			}
 		}
 	}
@@ -557,6 +622,8 @@ func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord) {
 		}
 		if r := recs[h]; r != nil {
 			ev.Added = append(ev.Added, r)
+		} else {
+			gap = true
 		}
 	}
 	// Enforce the byte budget by dropping the oldest records (those heights
@@ -574,8 +641,15 @@ func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord) {
 	c.snap = snap
 	c.records = recs
 	c.bytes = total
-	c.freshAt = c.nowFn()
-	if len(ev.Removed) > 0 || len(ev.Added) > 0 {
+	c.freshAt = freshAt
+	if gap {
+		// A record needed for a complete event is missing (expired or
+		// evicted). Never deliver a gapped stream: terminate subscribers so
+		// clients resubscribe.
+		for s := range c.subs {
+			c.closeSubLocked(s)
+		}
+	} else if len(ev.Removed) > 0 || len(ev.Added) > 0 {
 		for s := range c.subs {
 			select {
 			case s.C <- ev:
