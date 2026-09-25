@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func uniquePrefix(t *testing.T) string {
 	return "test:" + t.Name() + ":" + time.Now().Format("150405.000000000")
 }
 
-var sc = Scope{ProjectId: "p1", NetworkId: "evm:1"}
+var sc = Scope{Namespace: "ns1", ProjectId: "p1", NetworkId: "evm:1"}
 
 func snap(l *Lease, seq uint64, head int64, hashes ...string) *Snapshot {
 	return &Snapshot{Epoch: l.Epoch, Seq: seq, Head: head, Hashes: hashes, At: time.Now()}
@@ -165,16 +166,22 @@ func TestRedisStore_SequenceCAS(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, seq := range []uint64{5, 4} {
-		if err := s.PublishSnapshot(ctx, l, snap(l, seq, 9, "0xold")); !errors.Is(err, ErrStaleSequence) {
+		if err := s.PublishSnapshot(ctx, l, snap(l, seq, 9, "0xold")); !errors.Is(err, ErrInvalidSnapshot) {
 			t.Fatalf("seq %d: got %v", seq, err)
 		}
 	}
-	if err := s.PublishSnapshot(ctx, l, snap(l, 7, 11)); err == nil {
+	if err := s.PublishSnapshot(ctx, l, snap(l, 7, 11)); !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatal("empty snapshot must be rejected")
+	}
+	if err := s.PublishSnapshot(ctx, l, snap(l, 8, 11, "0xb", "")); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatal("blank hash must be rejected")
+	}
+	if err := s.PublishSnapshot(ctx, l, snap(l, 9, 0, "0xa", "0xb")); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatal("negative base must be rejected")
 	}
 	bad := snap(l, 6, 11, "0xb")
 	bad.Epoch = l.Epoch + 1
-	if err := s.PublishSnapshot(ctx, l, bad); err == nil {
+	if err := s.PublishSnapshot(ctx, l, bad); !errors.Is(err, ErrLeaseLost) {
 		t.Fatal("epoch mismatch must be rejected")
 	}
 	got, _ := s.LoadSnapshot(ctx, sc)
@@ -205,8 +212,11 @@ func TestRedisStore_BlocksAndIsolation(t *testing.T) {
 		st *RedisStore
 		sc Scope
 	}{
-		{s, Scope{ProjectId: "p2", NetworkId: "evm:1"}},
-		{s, Scope{ProjectId: "p1", NetworkId: "evm:2"}},
+		{s, Scope{Namespace: "ns1", ProjectId: "p2", NetworkId: "evm:1"}},
+		{s, Scope{Namespace: "ns2", ProjectId: "p1", NetworkId: "evm:1"}},
+		{s, Scope{Namespace: "ns1|p1", ProjectId: "q", NetworkId: "evm:1"}},
+		{s, Scope{Namespace: "ns1", ProjectId: "p1/evm:1", NetworkId: "x"}},
+		{s, Scope{Namespace: "ns1", ProjectId: "p1", NetworkId: "evm:2"}},
 		{other, sc},
 	} {
 		if _, err := c.st.GetBlock(ctx, c.sc, "0xh"); !errors.Is(err, ErrNotFound) {
@@ -223,7 +233,7 @@ func TestRedisStore_BlocksAndIsolation(t *testing.T) {
 	if _, err := other.AcquireLease(ctx, sc, "B", time.Minute); err != nil {
 		t.Fatalf("other trust set must be independent: %v", err)
 	}
-	if _, err := s.AcquireLease(ctx, Scope{"p1", "evm:2"}, "B", time.Minute); err != nil {
+	if _, err := s.AcquireLease(ctx, Scope{Namespace: "ns1", ProjectId: "p1", NetworkId: "evm:2"}, "B", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.GetBlock(ctx, Scope{}, "0xh"); err == nil || errors.Is(err, ErrNotFound) {
@@ -315,17 +325,19 @@ func TestRedisStore_UnavailableAndCancel(t *testing.T) {
 
 func TestRedisStore_ClusterHashTag(t *testing.T) {
 	s := NewRedisStore(nil, RedisStoreOptions{Prefix: "x"})
-	keys := []string{s.leaseKey(sc), s.epochKey(sc), s.snapKey(sc), s.snapMetaKey(sc), s.blockKey(sc, "0x1")}
-	slot := func(k string) string {
-		i := len("{")
-		j := 0
-		for j = i; k[j] != '}'; j++ {
-		}
-		return k[i:j]
-	}
+	keys := []string{s.leaseKey(sc), s.epochKey(sc), s.snapKey(sc), s.snapMetaKey(sc), s.blockKey(sc, "0x1"), s.channel(sc)}
+	tag := s.tag(sc)
 	for _, k := range keys {
-		if slot(k) != "x|p1/evm:1" {
-			t.Fatalf("key %s lacks shared hash tag", k)
+		if !strings.HasPrefix(k, tag) || strings.Count(k, "{") != 1 || strings.Count(k, "}") != 1 {
+			t.Fatalf("key %s lacks the single shared hash tag %s", k, tag)
 		}
+	}
+	// Separator-ambiguous scopes must not collide.
+	a := s.tag(Scope{Namespace: "a|b", ProjectId: "c", NetworkId: "d"})
+	b := s.tag(Scope{Namespace: "a", ProjectId: "b|c", NetworkId: "d"})
+	c := s.tag(Scope{Namespace: "a", ProjectId: "b/c", NetworkId: "d"})
+	d := s.tag(Scope{Namespace: "a", ProjectId: "b", NetworkId: "c/d"})
+	if a == b || c == d || NewRedisStore(nil, RedisStoreOptions{Prefix: "y"}).tag(sc) == tag {
+		t.Fatal("hash tag collision")
 	}
 }

@@ -2,6 +2,8 @@ package headcache
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,8 @@ import (
 //     publish succeeds only if the caller's (holder, epoch) matches the live
 //     lease AND (epoch, seq) is strictly greater than the stored one, so a
 //     stale writer can never overwrite a successor's head.
+//
+// The epoch counter has no TTL and is never deleted, so epochs never reset.
 //
 // Any backend failure is reported wrapped in ErrStoreUnavailable (context
 // cancellation/deadline is returned as the context error instead). The store
@@ -56,8 +60,15 @@ func NewRedisStore(client redis.UniversalClient, opts RedisStoreOptions) *RedisS
 
 var _ Store = (*RedisStore)(nil)
 
+// tag derives the cluster hash tag from an unambiguous, length-prefixed
+// encoding of prefix and every Scope field, hashed so that '/', '|', '{' or
+// '}' inside ids can neither collide two scopes nor break the hash tag.
 func (s *RedisStore) tag(scope Scope) string {
-	return "{" + s.prefix + "|" + scope.Key() + "}"
+	h := sha256.New()
+	for _, f := range []string{s.prefix, scope.Namespace, scope.ProjectId, scope.NetworkId} {
+		_, _ = fmt.Fprintf(h, "%d:%s;", len(f), f)
+	}
+	return "{hc:" + hex.EncodeToString(h.Sum(nil)[:16]) + "}"
 }
 
 func (s *RedisStore) blockKey(scope Scope, hash string) string {
@@ -183,11 +194,6 @@ redis.call('PUBLISH', ARGV[6], ARGV[2] .. ':' .. ARGV[3])
 return 1
 `)
 
-// ErrStaleSequence means the snapshot sequence was not strictly greater than
-// the committed one for the same epoch. It wraps ErrLeaseLost's sibling
-// semantics: the caller must not treat its snapshot as committed.
-var ErrStaleSequence = errors.New("headcache: snapshot sequence not increasing")
-
 func (s *RedisStore) AcquireLease(ctx context.Context, scope Scope, holder string, ttl time.Duration) (*Lease, error) {
 	if err := validScope(scope); err != nil {
 		return nil, err
@@ -241,11 +247,11 @@ func (s *RedisStore) PublishSnapshot(ctx context.Context, lease *Lease, snap *Sn
 	if lease == nil || snap == nil {
 		return errors.New("headcache: PublishSnapshot requires lease and snapshot")
 	}
-	if len(snap.Hashes) == 0 {
-		return errors.New("headcache: refusing to publish empty snapshot")
-	}
 	if snap.Epoch != lease.Epoch {
-		return fmt.Errorf("headcache: snapshot epoch %d != lease epoch %d", snap.Epoch, lease.Epoch)
+		return ErrLeaseLost
+	}
+	if !snap.Valid() {
+		return ErrInvalidSnapshot
 	}
 	if !lease.ExpiresAt.IsZero() && time.Now().After(lease.ExpiresAt) {
 		return ErrLeaseLost
@@ -266,7 +272,7 @@ func (s *RedisStore) PublishSnapshot(ctx context.Context, lease *Lease, snap *Sn
 	case 1:
 		return nil
 	case -1:
-		return ErrStaleSequence
+		return ErrInvalidSnapshot
 	default:
 		return ErrLeaseLost
 	}
