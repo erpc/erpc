@@ -65,8 +65,9 @@ type EvmHeadCacheConfig struct {
 	//     the window cannot freeze.
 	//   "max": publish up to the live-discovered head (pre-existing behavior).
 	HeadSource string `yaml:"headSource,omitempty" json:"headSource,omitempty"`
-	// ServedTipMaxAge is how old the served tip may be before it is treated
-	// as stale and live discovery is used uncapped. Default 3*pollInterval.
+	// ServedTipMaxAge is how long the served tip may lag live discovery
+	// (measured from lag onset, reset when served advances or catches up)
+	// before live is used uncapped. Default 3*pollInterval.
 	ServedTipMaxAge Duration `yaml:"servedTipMaxAge,omitempty" json:"servedTipMaxAge,omitempty" tstype:"Duration"`
 }
 

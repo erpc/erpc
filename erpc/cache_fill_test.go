@@ -329,8 +329,17 @@ func TestCacheFill_StaleGenerationMarkerIgnored(t *testing.T) {
 		}
 		return false
 	}, 2*time.Second, 5*time.Millisecond)
-	doneKey := strings.TrimSuffix(inflightKey, ":inflight") + ":done"
-	require.NoError(t, mr.Set(doneKey, fmt.Sprintf(`{"s":"uncached","g":"stale","t":%d}`, time.Now().UnixMilli())))
+	base := strings.TrimSuffix(inflightKey, ":inflight")
+	raw, err := mr.Get(inflightKey)
+	require.NoError(t, err)
+	var cur cacheFillMarker
+	require.NoError(t, json.Unmarshal([]byte(raw), &cur))
+	stale := fmt.Sprintf(`{"s":"uncached","g":"stale","t":%d}`, time.Now().UnixMilli())
+	// An expired older holder writes its own generation record, and a
+	// corrupt/foreign write lands on the current generation's record.
+	require.NoError(t, mr.Set(base+":done:stale", stale))
+	require.NoError(t, mr.Set(base+":done:"+cur.G, stale))
+	require.NoError(t, mr.Set(base+":done", stale))
 
 	st := time.Now()
 	code, _, rb := b.send(body, nil, nil)
@@ -339,4 +348,49 @@ func TestCacheFill_StaleGenerationMarkerIgnored(t *testing.T) {
 	ra := <-done
 	require.Equal(t, 200, ra.code, ra.body)
 	require.Equal(t, int64(1), up.ethCalls.Load(), "waiter must wait for the real generation, not the stale marker (waited %s)", time.Since(st))
+}
+
+// Lock expiry interleaving: A's lock expires while its upstream call is still
+// running, B takes a new generation. A (past its TTL) must not publish a done
+// record, and nothing A writes can end a waiter bound to B's generation.
+func TestCacheFill_ExpiredHolderDoesNotPublish(t *testing.T) {
+	mr := miniredis.RunT(t)
+	up := newFillUpstream()
+	defer up.srv.Close()
+	up.nullReply.Store(true)
+	up.delay.Store(1200)
+	cfgFn := func() *common.CacheFillConfig {
+		c := defaultFill()
+		c.LockTtl = common.Duration(400 * time.Millisecond)
+		c.MaxWait = common.Duration(400 * time.Millisecond)
+		return c
+	}
+	a, b := startFillReplicas(t, up.srv.URL, mr.Addr(), cfgFn)
+	body := fmt.Sprintf(fillCallBody, "07", "0x5")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); _, _, _ = a.send(body, nil, nil) }()
+	time.Sleep(600 * time.Millisecond) // A's lock expired, A still in upstream
+	wg.Add(1)
+	go func() { defer wg.Done(); _, _, _ = b.send(body, nil, nil) }()
+	wg.Wait()
+	gens := map[string]bool{}
+	for _, k := range mr.Keys() {
+		if i := strings.Index(k, ":done:"); i >= 0 && strings.Contains(k, "/cachefill/") {
+			gens[k[i+6:]] = true
+		}
+	}
+	raw, err := mr.Get(func() string {
+		for _, k := range mr.Keys() {
+			if strings.HasSuffix(k, ":inflight") && strings.Contains(k, "/cachefill/") {
+				return k
+			}
+		}
+		return ""
+	}())
+	require.NoError(t, err)
+	var cur cacheFillMarker
+	require.NoError(t, json.Unmarshal([]byte(raw), &cur))
+	require.Len(t, gens, 0, "both holders exceeded lockTtl (1.2s call > 400ms), neither may publish: %v", gens)
+	require.NotEmpty(t, cur.G)
 }

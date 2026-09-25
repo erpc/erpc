@@ -207,7 +207,9 @@ func (n *Network) waitForCacheFill(ctx context.Context, lg *zerolog.Logger, req 
 			return nil
 		case <-ticker.C:
 		}
-		gctx, gcancel := context.WithDeadline(ctx, deadline.Add(cfg.PollInterval.Duration()))
+		// Bound by the remaining wait budget so a slow cache read cannot
+		// extend the wait beyond maxWait.
+		gctx, gcancel := context.WithDeadline(ctx, deadline)
 		resp, err := n.cacheDal.Get(gctx, req)
 		gcancel()
 		if err == nil && resp != nil && !resp.IsObjectNull(ctx) {
@@ -220,7 +222,9 @@ func (n *Network) waitForCacheFill(ctx context.Context, lg *zerolog.Logger, req 
 			}
 		}
 		if gen != "" {
-			if m, ok := readMarker("done"); ok && m.G == gen {
+			// Each generation has its own done record, so an expired holder
+			// can only ever write its own (already abandoned) record.
+			if m, ok := readMarker("done:" + gen); ok && m.G == gen {
 				if m.S == cacheFillUncached {
 					lg.Debug().Str("key", key).Msg("cache fill leader did not store a response, forwarding upstream")
 					n.cacheFillMetric("follower_uncached", start)
@@ -255,7 +259,7 @@ func (f *cacheFillLeader) finish(n *Network, cfg *common.CacheFillConfig) {
 	if time.Since(f.start) < cfg.LockTtl.Duration() {
 		payload, _ := json.Marshal(cacheFillMarker{S: status, G: f.gen, T: time.Now().UnixMilli()})
 		ttl := cfg.MaxWait.Duration() + 2*cfg.PollInterval.Duration()
-		_ = f.connector.Set(ctx, f.key, "done", payload, &ttl)
+		_ = f.connector.Set(ctx, f.key, "done:"+f.gen, payload, &ttl)
 	}
 	_ = f.lock.Unlock(ctx)
 	n.cacheFillMetric(outcome, f.start)
