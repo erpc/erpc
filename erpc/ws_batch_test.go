@@ -12,8 +12,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
-	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/erpc/erpc/util"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
 
