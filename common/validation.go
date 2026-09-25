@@ -69,6 +69,9 @@ func (c *Config) Validate() error {
 }
 
 func (s *ServerConfig) Validate() error {
+	if err := s.WebSocket.Validate(); err != nil {
+		return err
+	}
 	if s.ListenV4 != nil {
 		if *s.ListenV4 {
 			if s.HttpHostV4 == nil {
@@ -1542,6 +1545,9 @@ func (s *StaticResponseConfig) Validate() error {
 func (e *EvmNetworkConfig) Validate() error {
 	if e.FallbackFinalityDepth == 0 {
 		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
+	}
+	if err := e.HeadCache.Validate(); err != nil {
+		return err
 	}
 	if e.FallbackStatePollerDebounce == 0 {
 		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")

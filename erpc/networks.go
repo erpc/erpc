@@ -17,6 +17,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/headcache"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/telemetry"
@@ -50,6 +51,9 @@ type Network struct {
 	policyEngine        *policy.Engine
 	initializer         *util.Initializer
 	architectureHandler common.ArchitectureHandler
+
+	// headCache is the opt-in head-driven block/log cache (nil when disabled).
+	headCache *headcache.Cache
 
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
@@ -1845,6 +1849,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if len(n.cfg.StaticResponses) > 0 {
 		if resp, ok := n.tryServeStaticResponse(ctx, &lg, req, method); ok {
 			forwardSpan.SetAttributes(attribute.Bool("static_response.hit", true))
+			return resp, nil
+		}
+	}
+
+	// Head cache: fully covered block/log reads answered from the verified
+	// canonical window. Misses fall through to the normal path unchanged.
+	if n.headCache != nil {
+		if resp, ok := n.tryServeHeadCache(ctx, req, method); ok {
+			forwardSpan.SetAttributes(attribute.Bool("head_cache.hit", true))
 			return resp, nil
 		}
 	}
