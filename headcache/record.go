@@ -51,8 +51,11 @@ func parseBlockHeader(raw json.RawMessage) (*rawBlock, int64, error) {
 		return nil, 0, err
 	}
 	n, err := parseHexInt(b.Number)
-	if err != nil || n < 0 {
+	if err != nil {
 		return nil, 0, fmt.Errorf("block number: %w", err)
+	}
+	if n < 0 {
+		return nil, 0, fmt.Errorf("negative block number")
 	}
 	if !isHexOfLen(b.Hash, 64) || !isHexOfLen(b.ParentHash, 64) {
 		return nil, 0, fmt.Errorf("block has invalid hash/parentHash")
@@ -280,15 +283,21 @@ func ParseLogFilter(obj map[string]interface{}) (*LogFilter, error) {
 				}
 				f.Topics = append(f.Topics, []string{s})
 			case []interface{}:
-				// A null alternative is rejected (ambiguous across clients);
-				// the request then goes upstream.
 				var alts []string
+				wildcard := false
 				for _, v := range p {
+					if v == nil {
+						wildcard = true
+						continue
+					}
 					s, err := parseTopic(v)
 					if err != nil {
 						return nil, err
 					}
 					alts = append(alts, s)
+				}
+				if wildcard {
+					alts = nil
 				}
 				f.Topics = append(f.Topics, alts)
 			default:

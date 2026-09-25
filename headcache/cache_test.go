@@ -407,6 +407,8 @@ func TestLogFilter_GethSemantics(t *testing.T) {
 		{"null wildcard", map[string]interface{}{"topics": []interface{}{nil}}, false, 4},
 		{"or list", map[string]interface{}{"topics": []interface{}{[]interface{}{topicA, topicB}}}, false, 4},
 		{"empty or list is wildcard", map[string]interface{}{"topics": []interface{}{[]interface{}{}}}, false, 4},
+		{"null alternative is wildcard", map[string]interface{}{"topics": []interface{}{[]interface{}{topicA, nil}}}, false, 4},
+		{"malformed alternative after null", map[string]interface{}{"topics": []interface{}{[]interface{}{nil, "0x12"}}}, true, 0},
 		{"bad address", map[string]interface{}{"address": "not-an-address"}, true, 0},
 		{"short topic", map[string]interface{}{"topics": []interface{}{"0x11"}}, true, 0},
 		{"too many topics", map[string]interface{}{"topics": []interface{}{nil, nil, nil, nil, nil}}, true, 0},
