@@ -35,7 +35,31 @@ type EvmHeadCacheConfig struct {
 	// MaxLogsRange caps the block span an eth_getLogs range may have to be
 	// served from the cache. Wider ranges go upstream. Default = Depth.
 	MaxLogsRange int64 `yaml:"maxLogsRange,omitempty" json:"maxLogsRange,omitempty"`
+	// MaxBlockBytes rejects (never caches) any single block whose block+logs
+	// payload exceeds it. Default 16MB.
+	MaxBlockBytes int64 `yaml:"maxBlockBytes,omitempty" json:"maxBlockBytes,omitempty"`
+	// MaxStaleness disables serving (normal upstream path) when the local
+	// view has not been refreshed from a successful follow step (leader) or a
+	// newly published snapshot (follower) for this long. Measured on the
+	// local clock only, so writer clock skew cannot keep a frozen head alive.
+	// Default 5 * pollInterval.
+	MaxStaleness Duration `yaml:"maxStaleness,omitempty" json:"maxStaleness,omitempty" tstype:"Duration"`
+	// Namespace isolates shared state between deployments. Defaults to
+	// database.sharedState.clusterKey (or "default"). A fingerprint of the
+	// network's upstream set is always appended, so replicas only share data
+	// when they run the same upstream configuration.
+	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	// Redis is required when mode is "shared". Only the URI (and optional
+	// TLS) of the connector config are used.
+	Redis *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
+	// LeaseTTL is the shared-mode leadership lease. It is renewed every
+	// pollInterval, which must be < leaseTTL/2. Default 3 * pollInterval + 1s.
+	LeaseTTL Duration `yaml:"leaseTtl,omitempty" json:"leaseTtl,omitempty" tstype:"Duration"`
 }
+
+// HeadCacheModeShared coordinates replicas through Redis: one lease holder
+// hydrates and publishes epoch-fenced snapshots, every replica serves them.
+const HeadCacheModeShared = "shared"
 
 func (c *EvmHeadCacheConfig) SetDefaults() {
 	if c == nil {
@@ -65,14 +89,30 @@ func (c *EvmHeadCacheConfig) SetDefaults() {
 	if c.MaxLogsRange == 0 {
 		c.MaxLogsRange = c.Depth
 	}
+	if c.MaxBlockBytes == 0 {
+		c.MaxBlockBytes = 16 << 20
+	}
+	if c.MaxStaleness == 0 {
+		c.MaxStaleness = Duration(5 * c.PollInterval.Duration())
+	}
+	if c.LeaseTTL == 0 {
+		c.LeaseTTL = Duration(3*c.PollInterval.Duration() + time.Second)
+	}
 }
 
 func (c *EvmHeadCacheConfig) Validate() error {
 	if c == nil || !c.Enabled {
 		return nil
 	}
-	if c.Mode != HeadCacheModeLocal {
-		return fmt.Errorf("evm.headCache.mode %q is not supported (only %q)", c.Mode, HeadCacheModeLocal)
+	switch c.Mode {
+	case HeadCacheModeLocal:
+	case HeadCacheModeShared:
+		// Shared mode never silently degrades to local hydration.
+		if c.Redis == nil || c.Redis.URI == "" {
+			return fmt.Errorf("evm.headCache.redis.uri is required when mode is %q", HeadCacheModeShared)
+		}
+	default:
+		return fmt.Errorf("evm.headCache.mode %q is not supported (use %q or %q)", c.Mode, HeadCacheModeLocal, HeadCacheModeShared)
 	}
 	if c.Depth < 1 || c.Depth > 4096 {
 		return fmt.Errorf("evm.headCache.depth must be within 1..4096")
@@ -91,6 +131,15 @@ func (c *EvmHeadCacheConfig) Validate() error {
 	}
 	if c.MaxLogsRange < 1 || c.MaxLogsRange > c.Depth {
 		return fmt.Errorf("evm.headCache.maxLogsRange must be within 1..depth")
+	}
+	if c.MaxBlockBytes < 1024 || c.MaxBlockBytes > c.MaxBytes {
+		return fmt.Errorf("evm.headCache.maxBlockBytes must be within 1KB..maxBytes")
+	}
+	if c.MaxStaleness < c.PollInterval {
+		return fmt.Errorf("evm.headCache.maxStaleness must be >= pollInterval")
+	}
+	if c.PollInterval.Duration() >= c.LeaseTTL.Duration()/2 {
+		return fmt.Errorf("evm.headCache.pollInterval must be < leaseTtl/2")
 	}
 	return nil
 }
