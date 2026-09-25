@@ -34,6 +34,7 @@ packages:
       - "errors.go"
       - "json_rpc.go"
       - "request.go"
+      - "upstream_priority.go"
       - "response.go"
       - "duration.go"
       - "defaults.go"
