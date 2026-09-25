@@ -79,7 +79,7 @@ func TestWs_Batch(t *testing.T) {
 			switch string(r.ID) {
 			case "null", "":
 				nulls++
-				require.NotNil(t, r.Error)
+				require.Equal(t, -32600, r.Error.Code, "valid JSON non-request items are Invalid Request")
 			case "2":
 				require.Equal(t, -32601, r.Error.Code)
 			case "3":
@@ -282,4 +282,14 @@ func TestWs_BatchPerItemRateLimit(t *testing.T) {
 	}
 	require.Equal(t, 2, ok)
 	require.Equal(t, 3, limited)
+}
+
+func TestWs_SingleInvalidRequestCodes(t *testing.T) {
+	c, _ := testWsConn(t, 4)
+	for msg, code := range map[string]int{`17`: -32600, `{"foo":1}`: -32600, `"x"`: -32600, `{"jsonrpc"`: -32700} {
+		reply, _ := c.handleOne([]byte(msg))
+		var r wsMsg
+		require.NoError(t, json.Unmarshal(reply, &r))
+		require.Equal(t, code, r.Error.Code, msg)
+	}
 }

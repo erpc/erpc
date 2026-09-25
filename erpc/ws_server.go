@@ -650,8 +650,12 @@ func (c *wsConn) handleOne(trimmed []byte) ([]byte, func()) {
 		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "nested batch is not allowed"), nil
 	}
 	var req wsRequest
+	if !json.Valid(trimmed) {
+		return errorReply(nil, int(common.JsonRpcErrorParseException), "parse error"), nil
+	}
+	// Syntactically valid JSON that is not a request object is -32600.
 	if err := json.Unmarshal(trimmed, &req); err != nil || req.Method == "" {
-		return errorReply(nil, -32700, "invalid json-rpc request"), nil
+		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "invalid request"), nil
 	}
 	if len(req.ID) == 0 {
 		req.ID = json.RawMessage("null")
