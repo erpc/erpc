@@ -165,6 +165,7 @@ func (m *MemoryStore) PublishSnapshot(_ context.Context, lease *Lease, snap *Sna
 	cp := *snap
 	cp.Hashes = append([]string(nil), snap.Hashes...)
 	m.snaps[k] = &cp
+	m.pruneScopeLocked(k, cp.Hashes)
 	for ch := range m.watchers[k] {
 		select {
 		case ch <- struct{}{}:
@@ -173,6 +174,48 @@ func (m *MemoryStore) PublishSnapshot(_ context.Context, lease *Lease, snap *Sna
 	}
 	m.mu.Unlock()
 	return nil
+}
+
+// pruneScopeLocked drops this scope's records that the just-committed
+// snapshot no longer references. Without it the in-process store retained
+// every hydrated block for RecordTTL (default one hour), regardless of the
+// canonical window and MaxBytes. It runs only after fencing and validation
+// accepted the snapshot, and never touches other scopes.
+//
+// This is safe: the leader writes every referenced record before publishing,
+// so nothing the snapshot needs is removed. Delivered events and each Cache's
+// local window hold their own *BlockRecord pointers, so pruning never
+// invalidates them. A follower that races a newer publish finds the old hash
+// missing and treats that height as a cache miss, as it already does for
+// expired records.
+func (m *MemoryStore) pruneScopeLocked(scopeKey string, keep []string) {
+	prefix := scopeKey + "/"
+	live := make(map[string]struct{}, len(keep))
+	for _, h := range keep {
+		live[prefix+h] = struct{}{}
+	}
+	for k := range m.blocks {
+		if len(k) <= len(prefix) || k[:len(prefix)] != prefix {
+			continue
+		}
+		if _, ok := live[k]; !ok {
+			delete(m.blocks, k)
+		}
+	}
+}
+
+// blockCount returns the number of stored records for a scope (tests).
+func (m *MemoryStore) blockCount(scope Scope) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := scope.Key() + "/"
+	n := 0
+	for k := range m.blocks {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *MemoryStore) LoadSnapshot(_ context.Context, scope Scope) (*Snapshot, error) {
