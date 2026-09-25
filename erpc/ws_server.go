@@ -153,11 +153,10 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	networkId := architecture + ":" + chainId
-	nw, err := project.GetNetwork(r.Context(), networkId)
-	if err != nil {
-		wsHttpError(w, http.StatusNotFound, "network not found")
-		return
-	}
+
+	// Origin, credentials and connection caps are all checked before the
+	// network is resolved: GetNetwork may lazily create and hydrate a network
+	// (upstream calls), which unauthenticated clients must never trigger.
 
 	// Browsers do not apply CORS to WebSockets, so the project's allowed
 	// origins are enforced here. Without a CORS config any origin is accepted,
@@ -194,6 +193,12 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.releaseProject(projectId)
+
+	nw, err := project.GetNetwork(r.Context(), networkId)
+	if err != nil {
+		wsHttpError(w, http.StatusNotFound, "network not found")
+		return
+	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Origin already enforced above against project CORS.

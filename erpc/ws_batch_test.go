@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -292,4 +293,66 @@ func TestWs_SingleInvalidRequestCodes(t *testing.T) {
 		require.NoError(t, json.Unmarshal(reply, &r))
 		require.Equal(t, code, r.Error.Code, msg)
 	}
+}
+
+// Unauthorized or disallowed-origin upgrades to a not-yet-created network must
+// not create it: GetNetwork lazily bootstraps networks (upstream preparation,
+// pollers, head cache), which only authorized clients may trigger.
+func TestWs_UnauthorizedUpgradeDoesNotCreateNetwork(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
+		{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Id: "s1", Value: "s3cret"}},
+	}}
+	cfg.Projects[0].CORS = &common.CORSConfig{AllowedOrigins: []string{"https://good.example"}}
+	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	unseenURL := func(q string) string {
+		return strings.Replace(wsURL(base, q), "/evm/123", "/evm/999", 1)
+	}
+	prj, err := e.GetProject("test_project")
+	require.NoError(t, err)
+	created := func() bool {
+		for _, n := range prj.GetNetworks() {
+			if n.networkId == "evm:999" {
+				return true
+			}
+		}
+		return prj.FindNetworkConfig("evm:999") != nil
+	}
+	require.False(t, created())
+	upCalls := func() int64 {
+		var n int64
+		for _, m := range []string{"eth_chainId", "eth_blockNumber", "eth_getBlockByNumber", "eth_syncing"} {
+			n += up.Calls(m)
+		}
+		return n
+	}
+
+	_, resp, err := dialWs(t, unseenURL(""), nil)
+	require.Error(t, err)
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	_, resp, err = dialWs(t, unseenURL("secret=wrong"), nil)
+	require.Error(t, err)
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	_, resp, err = dialWs(t, unseenURL("secret=s3cret"), http.Header{"Origin": {"https://evil.example"}})
+	require.Error(t, err)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	require.False(t, created(), "rejected upgrade must not create or expose the network")
+
+	// An authorized upgrade does reach network resolution (proving the gate,
+	// not an unrelated failure, kept it from being created above).
+	_, _, _ = dialWs(t, unseenURL("secret=s3cret"), http.Header{"Origin": {"https://good.example"}})
+	require.Eventually(t, created, 5*time.Second, 20*time.Millisecond)
+
+	// Authorized success on a configured network is unchanged.
+	before := upCalls()
+	w, _, err := dialWs(t, wsURL(base, "secret=s3cret"), http.Header{"Origin": {"https://good.example"}})
+	require.NoError(t, err)
+	r := w.call("eth_chainId", `[]`)
+	require.Nil(t, r.Error)
+	require.JSONEq(t, `"0x7b"`, string(r.Result))
+	require.GreaterOrEqual(t, upCalls(), before)
 }
