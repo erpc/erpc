@@ -201,7 +201,7 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 	}
 	lg := network.logger.With().Str("component", "headCache").Str("mode", hc.Mode).Logger()
 	f := &networkHeadFetcher{n: network}
-	headFn := func(ctx context.Context) int64 {
+	live := func(ctx context.Context) int64 {
 		// Pollers can be disabled, dormant or behind. Subscription delivery must
 		// advance without a user HTTP read waking a poller. Only the lease holder
 		// calls headFn, and its whole-tick deadline bounds this discovery too.
@@ -219,7 +219,13 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 		}
 		return number
 	}
-	c := headcache.New(opts, store, f, headFn, &lg)
+	// served: publish up to the network's served latest tip (what HTTP
+	// "latest" returns) when known and fresh; live discovery covers cold or
+	// dormant pollers. A lower tip never truncates the window (see
+	// headSourceSelector).
+	sel := newHeadSourceSelector(hc.HeadSource, hc.ServedTipMaxAge.Duration(), network.EvmHighestLatestBlockNumber, live)
+	c := headcache.New(opts, store, f, sel.Head, &lg)
+	c.EnableMetrics(network.projectId, network.Label())
 	network.headCache = c
 	c.Start(nr.appCtx)
 	go network.wireHeadCacheKick(nr.appCtx, &lg)

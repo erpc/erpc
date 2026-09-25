@@ -13,6 +13,8 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/headcache"
+	"github.com/erpc/erpc/telemetry"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/require"
 )
@@ -196,4 +198,26 @@ func TestHeadSource_ColdAndStaleServedTipStayLive(t *testing.T) {
 	mu.Unlock()
 	c.Tick(ctx)
 	require.EqualValues(t, 25, c.Head(), "dormant served tip -> live discovery")
+}
+
+// Wiring: initHeadCache uses the served tip (single upstream => served ==
+// live) and enables metrics before Start.
+func TestHeadSource_IntegrationServedAndMetrics(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
+		Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond),
+	})
+	_, _, _, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	require.Equal(t, common.HeadCacheHeadSourceServed, cfg.Projects[0].Networks[0].Evm.HeadCache.HeadSource)
+	up.Mine(2)
+	waitHead(t, e, 22)
+	prj, _ := e.GetProject("test_project")
+	nw, _ := prj.GetNetwork(t.Context(), "evm:123")
+	require.Eventually(t, func() bool {
+		return promUtil.ToFloat64(telemetry.MetricHeadCacheHead.WithLabelValues("test_project", nw.Label())) == 22 &&
+			promUtil.ToFloat64(telemetry.MetricHeadCacheLeader.WithLabelValues("test_project", nw.Label())) == 1
+	}, 5*time.Second, 50*time.Millisecond)
 }
