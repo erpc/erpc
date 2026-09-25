@@ -519,7 +519,7 @@ type wsRequest struct {
 }
 
 func (c *wsConn) recordClose(reason string) {
-	telemetry.MetricWsClosedTotal.WithLabelValues(c.mProject, c.mNetwork, reason).Inc()
+	telemetry.CounterHandle(telemetry.MetricWsClosedTotal, c.mProject, c.mNetwork, reason).Inc()
 }
 
 func errorReply(id json.RawMessage, code int, msg string) []byte {
@@ -876,7 +876,7 @@ func (c *wsConn) unsubscribe(req *wsRequest) []byte {
 func (c *wsConn) notify(s *wsSub, result json.RawMessage) bool {
 	ok := c.sendStream([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":%s}}`, s.id, result)))
 	if ok {
-		telemetry.MetricWsNotificationsTotal.WithLabelValues(c.mProject, c.mNetwork, s.kind).Inc()
+		telemetry.CounterHandle(telemetry.MetricWsNotificationsTotal, c.mProject, c.mNetwork, s.kind).Inc()
 	}
 	return ok
 }
