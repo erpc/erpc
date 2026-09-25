@@ -168,7 +168,11 @@ func (n *Network) wireHeadCacheKick(ctx context.Context, lg *zerolog.Logger) {
 type networkHeadFetcher struct{ n *Network }
 
 func (f *networkHeadFetcher) call(ctx context.Context, method string, params []interface{}) (json.RawMessage, error) {
-	rq := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest(method, params))
+	jrq := common.NewJsonRpcRequest(method, params)
+	if err := jrq.SetID(1); err != nil {
+		return nil, fmt.Errorf("set head cache request id: %w", err)
+	}
+	rq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	rq.SetDirectives(&common.RequestDirectives{IsInternal: true, SkipCacheRead: "true", RetryEmpty: true})
 	resp, err := f.n.Forward(withHeadCacheBypass(ctx), rq)
 	if err != nil {
