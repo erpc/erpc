@@ -1,0 +1,162 @@
+---
+title: Upstream priority tiers
+description: Send traffic to your cheapest providers first and only pay for expensive ones when the cheap tier actually fails, within the same request.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
+
+<LLMsTxtLink />
+
+# Upstream priority tiers
+
+Give each upstream an integer `routing.priority`. Lower numbers are tried first. While
+your cheap tier is healthy, expensive providers get no traffic. When a cheap upstream
+fails, rate-limits, or cannot serve the request, eRPC moves on to the next tier inside
+the same request, so your caller never sees the error.
+
+## Quick taste
+
+Illustrative: a self-hosted node first, a paid vendor as backup:
+
+<ConfigTabs
+  path="projects[].upstreams[].routing.priority"
+  focusYaml="6-7,11-12"
+  focusTs="6,10"
+  yaml={`projects:
+  - id: main
+    upstreams:
+      - id: own-node
+        endpoint: http://node.internal:8545
+        # tier 0: tried first
+        routing: { priority: 0 }
+      - id: paid-vendor
+        endpoint: https://paid.example.com/KEY
+        # tier 10: used only when tier 0 cannot answer
+        routing: { priority: 10 }`}
+  ts={`projects: [{
+  id: "main",
+  upstreams: [
+    { id: "own-node", endpoint: "http://node.internal:8545",
+      // tier 0: tried first
+      routing: { priority: 0 } },
+    { id: "paid-vendor", endpoint: "https://paid.example.com/KEY",
+      // tier 10: used only when tier 0 cannot answer
+      routing: { priority: 10 } },
+  ],
+}]`}
+/>
+
+## Agent reference
+
+<PromptExample
+	n={1}
+	title="cheap providers first, paid as fallback"
+	defaultOpen
+	prompt={`Set up my eRPC config so my free/self-hosted upstreams serve all traffic and my
+paid providers are only used when the cheap ones fail, in the same request. Make sure
+hedging does not silently send extra traffic to the paid tier. Reference:
+https://docs.erpc.cloud/config/projects/upstream-priority.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="audit paid-tier leakage"
+	prompt={`Audit my eRPC config for anything that could send traffic to my expensive
+upstream tier while the cheap tier is healthy (custom selection policies, consensus,
+retries). Reference: https://docs.erpc.cloud/config/projects/upstream-priority.llms.txt`}
+/>
+
+<AISection
+	title="Upstream priority — full agent reference"
+	hint="Semantics, ordering, hedge/consensus/policy interaction, edge cases, source links."
+>
+
+### How it works
+
+1. The selection policy runs as usual (cordon, health excludes, lag, sorting, sticky
+   primary) and produces the eligible list. Method eligibility (`ignoreMethods` /
+   `allowMethods`) is applied next.
+2. `common.SortUpstreamsByPriority` then **stable-sorts** that list by ascending
+   priority (<SourceLink file="erpc/networks.go" lines="1959" />). Inside a tier the
+   policy's own order (score, sticky primary) is kept. Across tiers, priority always
+   wins over score. Nothing is removed: every eligible tier stays in the request's list.
+3. The upstream sweep walks the list in order. Retryable failures (429, 5xx, timeouts,
+   missing data, empty results) move to the next upstream, so a cheap-tier failure falls
+   through to the next tier in the same request. Block-availability skips work the same way.
+4. Deterministic errors (execution reverts, client errors) stop the sweep, so they never
+   escalate to a paid tier.
+
+The same sort is applied to the `eth_query*` pipe-through path
+(<SourceLink file="erpc/query_executor.go" lines="229" />).
+
+### Config schema
+
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `upstreams[].routing.priority` | `int` (optional) | unset, treated as `0` (<SourceLink file="common/config.go" lines="956-966" />) | Lower is tried first. Must be `>= 0`, negative values fail validation (<SourceLink file="common/validation.go" lines="1043-1045" />). Unset and explicit `0` are the same tier. |
+| `upstreamDefaults.routing.priority` | `int` | unset | Inherited only when an upstream has no `routing` block at all (all-or-nothing `routing` inheritance). |
+
+No price or dollar model exists: tiers are purely the integers you configure.
+
+### Interaction with other features
+
+- **No priorities configured / all equal:** the sort is a no-op and returns the exact
+  policy slice, so ordering is byte-identical to before.
+- **Default selection policy:** its `preferTag('!tier:fallback', …)` step removes the
+  `tier:fallback` group whenever a primary survives. When upstreams carry more than one
+  distinct priority, that step is skipped so paid tiers are not dropped until the next
+  policy tick. Health excludes still apply (an unhealthy upstream in any tier is
+  removed, and the `whenEmpty` safety net still restores the full set).
+- **Custom `selectionPolicy.evalFunc`:** Go enforces tier order on whatever the policy
+  returns, but it cannot re-add upstreams your policy filtered out. If your policy uses
+  `preferTag`, `pickTop`, `take`, etc. to drop tiers, same-request failover to those
+  tiers is gone. `u.priority` (integer, `0` when unset) is exposed to the eval function
+  for tier-aware custom logic.
+- **Hedge:** hedge legs are restricted to the request's cheapest tier
+  (`common.HedgeTierFilter`, <SourceLink file="erpc/networks.go" lines="2209-2213" />).
+  With a single cheap upstream a hedge has nowhere to go and simply does not fire an
+  extra call. This also neutralizes the zero-config default project's `hedge.maxCount: 2`.
+  Only sequential failover after a real failure crosses tiers.
+- **Retry:** each network retry re-sweeps the whole list (cheap first again). Total
+  upstream calls are bounded by `retry.maxAttempts × number of eligible upstreams`. Use
+  `maxAttempts` as the single budget knob.
+- **Consensus:** participants are drawn in list order, so tier 0 is used first, but an
+  explicitly configured `maxParticipants` larger than the cheapest tier will include
+  paid upstreams. That is explicit opt-in, nothing escalates implicitly. `requiredParticipants`
+  may reorder the list afterwards.
+- **Shadow upstreams / probes:** unaffected. Use `routing.probe: off` on paid upstreams
+  if probe traffic to excluded paid upstreams is a cost concern.
+- **Rate-limit budgets, cordon, auth, `use-upstream` directive:** unchanged, applied as before.
+
+### Edge cases & gotchas
+
+1. A paid upstream that scores faster is still tried after every cheap upstream (priority beats score). Test: `TestNetwork_PriorityTiers/HealthyCheapExcludesPaid_PriorityBeatsOrder`.
+2. A cheap upstream returning 429 falls through to paid in the same request. Test: `…/CheapFailureFallsBackSameRequest`.
+3. An execution revert on the cheap tier is returned without calling paid. Test: `…/RevertDoesNotEscalate`.
+4. A cheap upstream that ignores the method is skipped straight to paid. Test: `…/UnavailableCheapSkipped`.
+5. Hedging never calls the paid tier while the cheap tier is merely slow. Test: `…/HedgeDoesNotCrossIntoPaidTier`.
+6. Within-tier load is not round-robined: the policy's best upstream in tier 0 takes the traffic.
+7. The engine's cached slice is never mutated; the sort copies.
+
+### Observability
+
+No new metrics. Use `erpc_upstream_request_total` / `erpc_upstream_attempt_outcome_total`
+by `upstream` to confirm paid-tier traffic only appears alongside cheap-tier failures.
+The `upstreams.sorted` trace attribute (detailed tracing) shows the final tiered order.
+
+### Source code entry points
+
+- `common/upstream_priority.go`: `SortUpstreamsByPriority`, `HasPriorityTiers`, `HedgeTierFilter`, hedge-leg context marker.
+- `common/request.go`: `NextUpstreamMatching`.
+- `erpc/networks.go`: call site after method filtering; hedge-leg filter in the sweep.
+- `erpc/network_executor.go`: tags hedge legs.
+- `internal/policy/default_policy.js`: priority-aware tier-split skip. `internal/policy/eval.go`: `u.priority`.
+- Tests: `erpc/networks_priority_test.go`, `common/upstream_priority_test.go`, `internal/policy/stdlib/priority_test.go`.
+
+### Related pages
+
+- [Selection & scoring](/config/projects/selection-policies)
+- [Hedge](/config/failsafe/hedge)
+- [Retry](/config/failsafe/retry)
+
+</AISection>

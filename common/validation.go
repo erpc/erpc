@@ -1040,6 +1040,9 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return err
 		}
 	}
+	if u.Routing != nil && u.Routing.Priority != nil && *u.Routing.Priority < 0 {
+		return fmt.Errorf("upstream.*.routing.priority must be >= 0 (lower is tried first), got %d", *u.Routing.Priority)
+	}
 	switch u.RateLimitCountMode {
 	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
 	default:
@@ -1543,11 +1546,11 @@ func (s *StaticResponseConfig) Validate() error {
 }
 
 func (e *EvmNetworkConfig) Validate() error {
-	if e.FallbackFinalityDepth == 0 {
-		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
-	}
 	if err := e.HeadCache.Validate(); err != nil {
 		return err
+	}
+	if e.FallbackFinalityDepth == 0 {
+		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
 	}
 	if e.FallbackStatePollerDebounce == 0 {
 		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")

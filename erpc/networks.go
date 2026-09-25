@@ -1953,6 +1953,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
 		upsList = eligible
 	}
+	// Explicit routing.priority tiers: stable-sort lower tiers first,
+	// keeping the policy's order inside each tier and every tier in the
+	// list (same-request failover). No-op without distinct priorities.
+	upsList = common.SortUpstreamsByPriority(upsList)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
 		ids := make([]string, len(upsList))
@@ -2202,6 +2206,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			maxLoopIterations = 1
 		}
 		attempted := make(map[string]struct{}, maxLoopIterations)
+		// Hedge legs must not spill into a more expensive priority tier.
+		var accept func(common.Upstream) bool
+		if common.IsHedgeLeg(execSpanCtx) {
+			accept = common.HedgeTierFilter(effectiveReq.Upstreams())
+		}
 
 		for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
 			loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
@@ -2221,7 +2230,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				return nil, cause
 			}
 
-			u, selErr := effectiveReq.NextUpstream()
+			u, selErr := effectiveReq.NextUpstreamMatching(accept)
 			if selErr != nil {
 				loopSpan.SetAttributes(
 					attribute.Bool("upstreams_exhausted", true),

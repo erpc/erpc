@@ -839,6 +839,17 @@ export interface UpstreamRoutingConfig {
    * `"off"` for pay-per-call vendors where shadow traffic eats quota.
    */
   probe?: ProbeMode | "on" | "off";
+  /**
+   * Priority is an explicit integer cost tier. Lower numbers are tried
+   * first; nil means 0. When a network's upstreams carry more than one
+   * distinct priority, the forwarding list is stably sorted by tier
+   * (policy/score order is kept inside a tier) and every eligible tier
+   * stays in the list, so a failure on a cheap tier falls through to a
+   * more expensive tier within the SAME request. Hedges never cross
+   * into a higher tier than the request's first tier. Negative values
+   * are rejected. See docs/pages/config/projects/upstream-priority.mdx.
+   */
+  priority?: number /* int */;
 }
 /**
  * ProbeMode is the per-upstream `routing.probe` enum.

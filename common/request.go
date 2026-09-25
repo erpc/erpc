@@ -1407,6 +1407,13 @@ func (r *NormalizedRequest) simplifyAgentName(userAgent string) string {
 }
 
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
+	return r.NextUpstreamMatching(nil)
+}
+
+// NextUpstreamMatching is NextUpstream restricted to upstreams accepted
+// by `accept` (nil accepts all). Used to keep hedge legs inside the
+// cheapest routing.priority tier (see HedgeTierFilter).
+func (r *NormalizedRequest) NextUpstreamMatching(accept func(Upstream) bool) (Upstream, error) {
 	if r == nil {
 		return nil, fmt.Errorf("unexpected uninitialized request")
 	}
@@ -1438,6 +1445,10 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		r.UpstreamIdx++ // Guaranteed increment for next caller
 
 		upstream := r.upstreamList[idx]
+
+		if accept != nil && !accept(upstream) {
+			continue
+		}
 
 		// If a UseUpstream selector is provided, only consider matching
 		// upstreams. The selector matches the upstream id OR any of its tags

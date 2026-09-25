@@ -45,8 +45,11 @@
     // back to the raw set rather than failing closed.
     .whenEmpty(() => upstreams)
     // Tier split: prefer non-fallback; fall back to tier:fallback if no
-    // primary survives.
-    .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
+    // primary survives. Skipped when upstreams configure more than one
+    // routing.priority: the request path then orders by priority tier
+    // and must keep every tier in the list for same-request failover.
+    .unless(() => new Set(upstreams.map(u => u.priority || 0)).size > 1,
+      (us) => us.preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' }))
     // Rank survivors by p70 latency.
     .sortByScore(PREFER_FASTEST)
     // Hold the primary stable across ticks unless a meaningfully better

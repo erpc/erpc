@@ -330,6 +330,10 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 		var tags []string
 		if cfg := u.Config(); cfg != nil {
 			_ = obj.Set("type", string(cfg.Type))
+			// priority — routing.priority cost tier (nil → 0). The Go
+			// request path enforces tier order after the policy runs;
+			// exposed here so custom policies can reason about tiers.
+			_ = obj.Set("priority", cfg.EffectivePriority())
 			if len(cfg.Tags) > 0 {
 				tags = append(tags, cfg.Tags...)
 			}
