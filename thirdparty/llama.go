@@ -82,7 +82,7 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest,
 		details["data"] = err.Data
 	}
 
-	if strings.Contains(msg, "code: 1015") {
+	if strings.Contains(msg, "code: 1015") || isCloudflare1015Body(code, err.Data) {
 		return common.NewErrEndpointCapacityExceeded(
 			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),
 		)
@@ -90,6 +90,18 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest,
 
 	// Other errors can be properly handled by generic error handling
 	return nil
+}
+
+// isCloudflare1015Body reports a non-JSON Cloudflare rate-limit page
+// ("error code: 1015"). Such bodies fail JSON parsing, so the raw body is only
+// available as the parse exception's data. Any other unparseable body keeps its
+// generic classification.
+func isCloudflare1015Body(code int, data interface{}) bool {
+	if code != int(common.JsonRpcErrorParseException) {
+		return false
+	}
+	s, ok := data.(string)
+	return ok && strings.HasPrefix(strings.TrimSpace(s), "error code: 1015")
 }
 
 func (v *LlamaVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
