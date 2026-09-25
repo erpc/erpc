@@ -308,7 +308,7 @@ func TestRedisStore_UnavailableAndCancel(t *testing.T) {
 	if _, err := d.LoadSnapshot(ctx, sc); !errors.Is(err, ErrStoreUnavailable) {
 		t.Fatalf("load: %v", err)
 	}
-	if err := d.PublishSnapshot(ctx, &Lease{Scope: sc, Holder: "A", Epoch: 1}, &Snapshot{Epoch: 1, Seq: 1, Head: 1, Hashes: []string{"0x1"}}); !errors.Is(err, ErrStoreUnavailable) {
+	if err := d.PublishSnapshot(ctx, &Lease{Scope: sc, Holder: "A", Epoch: 1}, &Snapshot{Epoch: 1, Seq: 1, Head: 1, Hashes: []string{"0x1"}, At: time.Now()}); !errors.Is(err, ErrStoreUnavailable) {
 		t.Fatalf("publish: %v", err)
 	}
 	if _, _, err := d.WatchSnapshots(ctx, sc); !errors.Is(err, ErrStoreUnavailable) {
@@ -339,5 +339,56 @@ func TestRedisStore_ClusterHashTag(t *testing.T) {
 	d := s.tag(Scope{Namespace: "a", ProjectId: "b", NetworkId: "c/d"})
 	if a == b || c == d || NewRedisStore(nil, RedisStoreOptions{Prefix: "y"}).tag(sc) == tag {
 		t.Fatal("hash tag collision")
+	}
+}
+
+func TestRedisStore_FutureDatedPublisherRejected(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	s := NewRedisStore(env.client, RedisStoreOptions{Prefix: uniquePrefix(t)})
+	l, err := s.AcquireLease(ctx, sc, "A", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fut := snap(l, 1, 10, "0xa")
+	fut.At = time.Now().Add(MaxSnapshotFutureSkew + time.Minute)
+	if err := s.PublishSnapshot(ctx, l, fut); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("future-dated snapshot must be rejected, got %v", err)
+	}
+	zero := snap(l, 2, 10, "0xa")
+	zero.At = time.Time{}
+	if err := s.PublishSnapshot(ctx, l, zero); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("zero At must be rejected, got %v", err)
+	}
+	if _, err := s.LoadSnapshot(ctx, sc); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rejected publications must not commit, got %v", err)
+	}
+	// Within tolerance is accepted.
+	ok := snap(l, 3, 10, "0xa")
+	ok.At = time.Now().Add(time.Second)
+	if err := s.PublishSnapshot(ctx, l, ok); err != nil {
+		t.Fatalf("small skew must be accepted: %v", err)
+	}
+	// Rejected seq regressions are errors, never silent success.
+	if err := s.PublishSnapshot(ctx, l, snap(l, 3, 11, "0xb")); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("same seq must fail: %v", err)
+	}
+}
+
+func TestRedisStore_InvalidInputIsNotUnavailable(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	s := NewRedisStore(env.client, RedisStoreOptions{Prefix: uniquePrefix(t)})
+	errs := []error{}
+	_, e := s.AcquireLease(ctx, Scope{ProjectId: "p", NetworkId: "n"}, "A", time.Second)
+	errs = append(errs, e)
+	_, e = s.AcquireLease(ctx, sc, "", time.Second)
+	errs = append(errs, e)
+	errs = append(errs, s.PutBlock(ctx, sc, &BlockRecord{Hash: "0x"}, 0))
+	errs = append(errs, s.PublishSnapshot(ctx, nil, nil))
+	for i, err := range errs {
+		if !errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrStoreUnavailable) {
+			t.Fatalf("case %d: want ErrInvalidRequest, got %v", i, err)
+		}
 	}
 }

@@ -80,9 +80,19 @@ func (s *RedisStore) snapKey(scope Scope) string     { return s.tag(scope) + ":s
 func (s *RedisStore) snapMetaKey(scope Scope) string { return s.tag(scope) + ":snapmeta" }
 func (s *RedisStore) channel(scope Scope) string     { return s.tag(scope) + ":ch" }
 
+// MaxSnapshotFutureSkew is the tolerance for Snapshot.At ahead of the Redis
+// server clock (TIME). Publications beyond it are rejected with
+// ErrInvalidSnapshot so a skewed writer cannot mint snapshots that readers'
+// freshness checks would treat as fresh for too long.
+const MaxSnapshotFutureSkew = 5 * time.Second
+
+// ErrInvalidRequest marks caller input errors (bad scope, missing holder,
+// non-positive TTL). It is never ErrStoreUnavailable.
+var ErrInvalidRequest = errors.New("headcache: invalid request")
+
 func validScope(scope Scope) error {
-	if scope.ProjectId == "" || scope.NetworkId == "" {
-		return fmt.Errorf("headcache: scope requires projectId and networkId (got %q)", scope.Key())
+	if scope.Namespace == "" || scope.ProjectId == "" || scope.NetworkId == "" {
+		return fmt.Errorf("%w: scope requires namespace, projectId and networkId (got %q)", ErrInvalidRequest, scope.Key())
 	}
 	return nil
 }
@@ -109,10 +119,10 @@ func (s *RedisStore) PutBlock(ctx context.Context, scope Scope, rec *BlockRecord
 		return err
 	}
 	if rec == nil || rec.Hash == "" {
-		return errors.New("headcache: PutBlock requires a record with a hash")
+		return fmt.Errorf("%w: PutBlock requires a record with a hash", ErrInvalidRequest)
 	}
 	if ttl <= 0 {
-		return errors.New("headcache: PutBlock requires a positive ttl (storage must be bounded)")
+		return fmt.Errorf("%w: PutBlock requires a positive ttl (storage must be bounded)", ErrInvalidRequest)
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
@@ -167,8 +177,13 @@ return 0
 `)
 
 // KEYS: lease, epoch, snap, snapmeta. ARGV: holder, epoch, seq, json, ttlMs, channel.
-// Returns 1 ok, 0 lease lost, -1 stale sequence.
+// ARGV[7]: snapshot At (unix ms), ARGV[8]: max future skew (ms).
+// Returns 1 ok, 0 lease lost, -1 stale sequence, -2 At in the future per
+// Redis server TIME (the writer's clock is never authoritative).
 var publishScript = redis.NewScript(`
+local t = redis.call('TIME')
+local nowMs = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+if tonumber(ARGV[7]) > nowMs + tonumber(ARGV[8]) then return -2 end
 local h = redis.call('HMGET', KEYS[1], 'holder', 'epoch')
 if h[1] ~= ARGV[1] or h[2] ~= ARGV[2] then return 0 end
 if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
@@ -199,7 +214,7 @@ func (s *RedisStore) AcquireLease(ctx context.Context, scope Scope, holder strin
 		return nil, err
 	}
 	if holder == "" || ttl <= 0 {
-		return nil, errors.New("headcache: AcquireLease requires holder and positive ttl")
+		return nil, fmt.Errorf("%w: AcquireLease requires holder and positive ttl", ErrInvalidRequest)
 	}
 	start := time.Now()
 	res, err := acquireScript.Run(ctx, s.client,
@@ -217,7 +232,7 @@ func (s *RedisStore) AcquireLease(ctx context.Context, scope Scope, holder strin
 
 func (s *RedisStore) RenewLease(ctx context.Context, lease *Lease, ttl time.Duration) (*Lease, error) {
 	if lease == nil || ttl <= 0 {
-		return nil, errors.New("headcache: RenewLease requires lease and positive ttl")
+		return nil, fmt.Errorf("%w: RenewLease requires lease and positive ttl", ErrInvalidRequest)
 	}
 	start := time.Now()
 	res, err := renewScript.Run(ctx, s.client,
@@ -245,13 +260,16 @@ func (s *RedisStore) ReleaseLease(ctx context.Context, lease *Lease) error {
 
 func (s *RedisStore) PublishSnapshot(ctx context.Context, lease *Lease, snap *Snapshot) error {
 	if lease == nil || snap == nil {
-		return errors.New("headcache: PublishSnapshot requires lease and snapshot")
+		return fmt.Errorf("%w: PublishSnapshot requires lease and snapshot", ErrInvalidRequest)
 	}
 	if snap.Epoch != lease.Epoch {
 		return ErrLeaseLost
 	}
 	if !snap.Valid() {
 		return ErrInvalidSnapshot
+	}
+	if snap.At.IsZero() || snap.At.UnixMilli() <= 0 {
+		return fmt.Errorf("%w: missing or malformed At", ErrInvalidSnapshot)
 	}
 	if !lease.ExpiresAt.IsZero() && time.Now().After(lease.ExpiresAt) {
 		return ErrLeaseLost
@@ -264,7 +282,8 @@ func (s *RedisStore) PublishSnapshot(ctx context.Context, lease *Lease, snap *Sn
 	res, err := publishScript.Run(ctx, s.client,
 		[]string{s.leaseKey(sc), s.epochKey(sc), s.snapKey(sc), s.snapMetaKey(sc)},
 		lease.Holder, strconv.FormatUint(lease.Epoch, 10), strconv.FormatUint(snap.Seq, 10),
-		data, s.snapshotTTL.Milliseconds(), s.channel(sc)).Int64()
+		data, s.snapshotTTL.Milliseconds(), s.channel(sc),
+		snap.At.UnixMilli(), MaxSnapshotFutureSkew.Milliseconds()).Int64()
 	if err != nil {
 		return wrapErr(ctx, "PublishSnapshot", err)
 	}
@@ -272,7 +291,9 @@ func (s *RedisStore) PublishSnapshot(ctx context.Context, lease *Lease, snap *Sn
 	case 1:
 		return nil
 	case -1:
-		return ErrInvalidSnapshot
+		return fmt.Errorf("%w: seq %d does not advance committed seq in epoch %d", ErrInvalidSnapshot, snap.Seq, snap.Epoch)
+	case -2:
+		return fmt.Errorf("%w: At %s is more than %s ahead of redis server time", ErrInvalidSnapshot, snap.At.UTC().Format(time.RFC3339Nano), MaxSnapshotFutureSkew)
 	default:
 		return ErrLeaseLost
 	}
