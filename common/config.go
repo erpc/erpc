@@ -2282,6 +2282,9 @@ type NetworkConfig struct {
 	// Integrity overrides the project-wide data-integrity configuration for this
 	// network. Merges over the project block (network wins).
 	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
+	// CacheFill coordinates cacheable read misses across replicas through the
+	// shared-state connector. Nil or disabled changes nothing.
+	CacheFill *CacheFillConfig `yaml:"cacheFill,omitempty" json:"cacheFill,omitempty"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2622,6 +2625,10 @@ type EvmNetworkConfig struct {
 	// eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
 	// feeds WebSocket subscriptions. Nil or disabled changes nothing.
 	HeadCache *EvmHeadCacheConfig `yaml:"headCache,omitempty" json:"headCache,omitempty"`
+
+	// HeadPolling selects whether every replica polls upstream head numbers
+	// ("all", default) or one lease holder per network does ("lease").
+	HeadPolling *EvmHeadPollingConfig `yaml:"headPolling,omitempty" json:"headPolling,omitempty"`
 
 	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
 	// key so existing configs keep loading; SetDefaults warns and ignores it. The old

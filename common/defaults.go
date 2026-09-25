@@ -2116,6 +2116,7 @@ func (j *JsonRpcUpstreamConfig) SetDefaults() error {
 }
 
 func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) error {
+	n.CacheFill.SetDefaults()
 	if defaults != nil {
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
@@ -2569,6 +2570,7 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 
 func (e *EvmNetworkConfig) SetDefaults() error {
 	e.HeadCache.SetDefaults()
+	e.HeadPolling.SetDefaults()
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}

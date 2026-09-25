@@ -1477,6 +1477,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Architecture == ArchitectureSvm && n.Svm == nil {
 		return fmt.Errorf("network.*.svm is required for svm networks")
 	}
+	if err := n.CacheFill.Validate(); err != nil {
+		return err
+	}
 	if n.Evm != nil {
 		if err := n.Evm.Validate(); err != nil {
 			return err
@@ -1547,6 +1550,9 @@ func (s *StaticResponseConfig) Validate() error {
 
 func (e *EvmNetworkConfig) Validate() error {
 	if err := e.HeadCache.Validate(); err != nil {
+		return err
+	}
+	if err := e.HeadPolling.Validate(); err != nil {
 		return err
 	}
 	if e.FallbackFinalityDepth == 0 {
