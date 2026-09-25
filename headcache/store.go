@@ -34,16 +34,23 @@ var (
 	// ErrStoreUnavailable means the backend is unreachable. Callers must fail
 	// safe: bypass the cache and use the normal upstream path.
 	ErrStoreUnavailable = errors.New("headcache: store unavailable")
+	// ErrInvalidSnapshot means a publication was structurally invalid (empty
+	// window, blank hash) or did not advance Seq within the same epoch.
+	ErrInvalidSnapshot = errors.New("headcache: invalid snapshot")
 )
 
-// Scope isolates all state per project and network. Every backend key MUST
-// include both fields.
+// Scope isolates all state. Namespace identifies the deployment and the trust
+// configuration that produced the data (cluster key plus a fingerprint of the
+// network's upstream/trust config), so deployments with different configs never
+// share records even for the same project/network. Every backend key MUST be
+// derived from Key().
 type Scope struct {
+	Namespace string
 	ProjectId string
 	NetworkId string
 }
 
-func (s Scope) Key() string { return s.ProjectId + "/" + s.NetworkId }
+func (s Scope) Key() string { return s.Namespace + "|" + s.ProjectId + "/" + s.NetworkId }
 
 // BlockRecord is one fully hydrated block. It is only ever constructed from a
 // complete, self-consistent fetch: the full block and every log of that block,
@@ -73,6 +80,19 @@ type Snapshot struct {
 }
 
 func (s *Snapshot) Base() int64 { return s.Head - int64(len(s.Hashes)) + 1 }
+
+// Valid reports structural validity (non-empty window, no blank hashes).
+func (s *Snapshot) Valid() bool {
+	if s == nil || len(s.Hashes) == 0 || s.Base() < 0 {
+		return false
+	}
+	for _, h := range s.Hashes {
+		if h == "" {
+			return false
+		}
+	}
+	return true
+}
 
 // HashAt returns the canonical hash at height n, or "" when outside the window.
 func (s *Snapshot) HashAt(n int64) string {
@@ -111,6 +131,9 @@ type Store interface {
 	// PublishSnapshot atomically replaces the canonical snapshot iff the lease
 	// epoch is the current epoch for the scope (and the lease is unexpired),
 	// else ErrLeaseLost. snap.Epoch is set by the caller to lease.Epoch.
+	// Structurally invalid snapshots (!Valid) and a Seq that does not exceed
+	// the stored Seq of the same epoch are rejected with ErrInvalidSnapshot.
+	// Epoch counters never reset.
 	PublishSnapshot(ctx context.Context, lease *Lease, snap *Snapshot) error
 	// LoadSnapshot returns the latest committed snapshot or ErrNotFound.
 	LoadSnapshot(ctx context.Context, scope Scope) (*Snapshot, error)
