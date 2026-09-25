@@ -77,7 +77,7 @@ retries). Reference: https://docs.erpc.cloud/config/projects/upstream-priority.l
    primary) and produces the eligible list. Method eligibility (`ignoreMethods` /
    `allowMethods`) is applied next.
 2. `common.SortUpstreamsByPriority` then **stable-sorts** that list by ascending
-   priority (<SourceLink file="erpc/networks.go" lines="1959" />). Inside a tier the
+   priority (<SourceLink file="common/upstream_priority.go" lines="43-53" />, called from <SourceLink file="erpc/networks.go" lines="1981" />). Inside a tier the
    policy's own order (score, sticky primary) is kept. Across tiers, priority always
    wins over score. Nothing is removed: every eligible tier stays in the request's list.
 3. The upstream sweep walks the list in order. Retryable failures (429, 5xx, timeouts,
@@ -113,7 +113,7 @@ No price or dollar model exists: tiers are purely the integers you configure.
   tiers is gone. `u.priority` (integer, `0` when unset) is exposed to the eval function
   for tier-aware custom logic.
 - **Hedge:** hedge legs are restricted to the request's cheapest tier
-  (`common.HedgeTierFilter`, <SourceLink file="erpc/networks.go" lines="2209-2213" />).
+  (`common.HedgeTierFilter`, <SourceLink file="common/upstream_priority.go" lines="77-88" />, applied in the sweep at <SourceLink file="erpc/networks.go" lines="2231-2235" />).
   With a single cheap upstream a hedge has nowhere to go and simply does not fire an
   extra call. This also neutralizes the zero-config default project's `hedge.maxCount: 2`.
   Only sequential failover after a real failure crosses tiers.
