@@ -153,6 +153,9 @@ type WebSocketServerConfig struct {
 	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
 	// MaxConnections bounds concurrent WS connections per server. Default 1024.
 	MaxConnections int `yaml:"maxConnections,omitempty" json:"maxConnections,omitempty"`
+	// MaxConnectionsPerProject bounds concurrent WS connections per project so
+	// one tenant cannot exhaust MaxConnections. 0 = only the global cap.
+	MaxConnectionsPerProject int `yaml:"maxConnectionsPerProject,omitempty" json:"maxConnectionsPerProject,omitempty"`
 	// MaxSubscriptionsPerConnection. Default 32.
 	MaxSubscriptionsPerConnection int `yaml:"maxSubscriptionsPerConnection,omitempty" json:"maxSubscriptionsPerConnection,omitempty"`
 	// SendQueueSize bounds queued outbound messages per connection. A client
@@ -192,6 +195,9 @@ func (c *WebSocketServerConfig) Validate() error {
 	}
 	if c.MaxConnections < 1 || c.MaxSubscriptionsPerConnection < 1 || c.SendQueueSize < 1 || c.MaxMessageBytes < 1024 || c.WriteTimeout <= 0 {
 		return fmt.Errorf("server.webSocket limits must be positive (maxMessageBytes >= 1024)")
+	}
+	if c.MaxConnectionsPerProject < 0 || c.MaxConnectionsPerProject > c.MaxConnections {
+		return fmt.Errorf("server.webSocket.maxConnectionsPerProject must be within 0..maxConnections")
 	}
 	return nil
 }

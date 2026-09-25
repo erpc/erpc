@@ -461,3 +461,32 @@ func TestWs_PingAndReauthClosesExpiredJwt(t *testing.T) {
 	}
 	require.Nil(t, long.call("eth_chainId", `[]`).Error)
 }
+
+func TestWs_PerProjectCap(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true, MaxConnections: 10, MaxConnectionsPerProject: 1})
+	other := headCacheTestConfig(up.URL(), nil).Projects[0]
+	other.Id = "other"
+	cfg.Projects = append(cfg.Projects, other)
+	_, _, base, shutdown, _ := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	a, _, err := dialWs(t, wsURL(base, ""), nil)
+	require.NoError(t, err)
+	_, resp, err := dialWs(t, wsURL(base, ""), nil)
+	require.Error(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	// Another project is unaffected.
+	_, _, err = dialWs(t, strings.Replace(wsURL(base, ""), "/test_project/", "/other/", 1), nil)
+	require.NoError(t, err)
+	// Slot released on close.
+	_ = a.c.Close(websocket.StatusNormalClosure, "")
+	require.Eventually(t, func() bool {
+		c, _, err := dialWs(t, wsURL(base, ""), nil)
+		if err != nil {
+			return false
+		}
+		_ = c.c.CloseNow()
+		return true
+	}, 5*time.Second, 50*time.Millisecond)
+}

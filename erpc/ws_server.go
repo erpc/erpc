@@ -57,13 +57,16 @@ type wsServer struct {
 	s     *HttpServer
 	cfg   *common.WebSocketServerConfig
 	conns atomic.Int64
+
+	mu         sync.Mutex
+	perProject map[string]int
 }
 
 func newWsServer(s *HttpServer, cfg *common.WebSocketServerConfig) *wsServer {
 	if cfg == nil || !cfg.Enabled {
 		return nil
 	}
-	return &wsServer{s: s, cfg: cfg}
+	return &wsServer{s: s, cfg: cfg, perProject: map[string]int{}}
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {
@@ -160,6 +163,11 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.conns.Add(-1)
+	if !ws.acquireProject(projectId) {
+		wsHttpError(w, http.StatusServiceUnavailable, "too many websocket connections for this project")
+		return
+	}
+	defer ws.releaseProject(projectId)
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Origin already enforced above against project CORS.
@@ -184,6 +192,30 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		subs:      map[string]*wsSub{},
 	}
 	c.run()
+}
+
+func (ws *wsServer) acquireProject(id string) bool {
+	if ws.cfg.MaxConnectionsPerProject <= 0 {
+		return true
+	}
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if ws.perProject[id] >= ws.cfg.MaxConnectionsPerProject {
+		return false
+	}
+	ws.perProject[id]++
+	return true
+}
+
+func (ws *wsServer) releaseProject(id string) {
+	if ws.cfg.MaxConnectionsPerProject <= 0 {
+		return
+	}
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if ws.perProject[id]--; ws.perProject[id] <= 0 {
+		delete(ws.perProject, id)
+	}
 }
 
 func (ws *wsServer) resolveAlias(r *http.Request) (string, string, string) {
@@ -374,7 +406,11 @@ func (c *wsConn) pingLoop() {
 			}
 			// Re-check the upgrade credentials so revoked keys and expired
 			// JWTs stop streaming within one ping interval.
-			if _, err := c.ws.authenticate(c.ctx, c.project, c.req, "eth_subscribe", nil); err != nil && c.ctx.Err() == nil {
+			// A rate-limit rejection means the credentials were valid (the
+			// limit is applied after a strategy succeeds), so it must not
+			// close a healthy stream.
+			if _, err := c.ws.authenticate(c.ctx, c.project, c.req, "eth_subscribe", nil); err != nil && c.ctx.Err() == nil &&
+				!common.HasErrorCode(err, common.ErrCodeAuthRateLimitRuleExceeded) {
 				c.closeWith(websocket.StatusPolicyViolation, "unauthorized")
 				return
 			}
