@@ -223,6 +223,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].jsonRpc.batchMaxSize` | int | `0` | Max requests per batch. `0` with `supportsBatch: true` fires instantly on first queued request — use a value ≥ 2 to actually coalesce. |
 | `upstreams[*].jsonRpc.batchMaxWait` | Duration | `0` | `time.AfterFunc(0, ...)` fires immediately; set a non-zero value (e.g. `10ms`) to coalesce. |
 | `upstreams[*].jsonRpc.enableGzip` | `*bool` | nil (false) | Compresses outbound request body. Client always sends `Accept-Encoding: gzip` and decompresses responses regardless. |
+| `upstreams[*].jsonRpc.maxResponseBytes` | `*int64` | nil (disabled); `0` also disables | Maximum decoded bytes read from one upstream JSON-RPC HTTP response. A positive value applies to the whole batch response when batching is enabled. Inherits from `upstreamDefaults.jsonRpc.maxResponseBytes` when unset. <SourceLink file="common/defaults.go" lines="1844-1861" /> |
 | `upstreams[*].jsonRpc.headers` | `map[string]string` | nil | Static headers on every outbound request. Applied via `Header.Set` (overwrites defaults for matching keys). |
 | `upstreams[*].jsonRpc.proxyPool` | string | `""` | References `proxyPools[].id`. Error at startup if pool not found. |
 | `upstreams[*].grpc.headers` | `map[string]string` | nil | Applied as gRPC metadata on every outbound request. |
@@ -271,7 +272,37 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 - **`routing`**: all-or-nothing — same rule.
 - **EVM sub-fields** (`statePollerInterval`, `statePollerDebounce`, `maxAvailableRecentBlocks`, auto-splitting thresholds, `integrity`): per-field merge when both sides are non-nil.
 - **SVM sub-fields** (`chain`, `cluster`, `checkGenesisHash`): an upstream with no `svm` block inherits `upstreamDefaults.svm` **wholesale** (copied, not pointer-shared); one with a partial block fills only its empty fields. This is the field set that lets a homogeneous pool declare `chain`/`cluster` once instead of repeating it per upstream.
-- **`jsonRpc`**: shallow-copied from defaults only when the upstream has no `jsonRpc` block at all; even `jsonRpc: {}` blocks inheritance.
+- **`jsonRpc`**: shallow-copied from defaults only when the upstream has no `jsonRpc` block at all. `maxResponseBytes` is the exception: it inherits when unset inside an existing block, and an explicit `0` disables an inherited limit.
+
+To cap decoded upstream responses at 8 MiB across a project, while allowing one
+upstream to return larger trace results:
+
+<ConfigTabs
+  path="projects[].upstreamDefaults.jsonRpc"
+  focusYaml="5,10"
+  focusTs="4,9"
+  yaml={`projects:
+  - id: main
+    upstreamDefaults:
+      jsonRpc:
+        maxResponseBytes: 8388608
+    upstreams:
+      - endpoint: https://rpc.example.org
+      - endpoint: https://archive.example.org
+        jsonRpc:
+          maxResponseBytes: 0`}
+  ts={`projects: [{
+  id: "main",
+  upstreamDefaults: {
+    jsonRpc: { maxResponseBytes: 8388608 },
+  },
+  upstreams: [
+    { endpoint: "https://rpc.example.org" },
+    { endpoint: "https://archive.example.org",
+      jsonRpc: { maxResponseBytes: 0 } },
+  ],
+}]`}
+/>
 
 **Block-availability bound kinds and probe types** (for `earliestBlockPlus` bounds):
 
@@ -914,18 +945,28 @@ SVM upstream gets its own slot/health poller automatically:
     breaker-driven cordons, a failing `getHealth` or a shred-insert lag above 100 slots
     removes an SVM upstream from selection until it recovers. See
     [SVM slot tracking & health](/reference/svm/slot-tracking).
+25. **Response limits count decoded bytes.** A gzip response can exceed the limit
+    even when its compressed `Content-Length` is small. Missing, chunked, or incorrect
+    lengths do not bypass the reader limit. Exactly-at-limit responses are accepted.
+    On overflow, eRPC closes the body, returns `ErrUpstreamResponseTooLarge`, does not
+    retry that same upstream, and can try another upstream. An oversized batch fails
+    every request in that batch. The local limit does not feed upstream health failure
+    scoring or the `eth_getLogs` range-splitting trigger. The limit also applies to
+    bootstrap probes such as `eth_chainId`; choose a value above their response size.
+    This bounds input bytes per attempt, not total Go heap or process RSS.
+    <SourceLink file="clients/http_json_rpc_client.go" lines="759-789" />
 
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name | Every attempt including hedges |
-| `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name | Attempt errors except skipped/missing-data/cancelled |
+| `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name | Attempt errors except skipped/missing-data/cancelled; `ErrUpstreamResponseTooLarge` is reported here |
 | `erpc_upstream_request_skipped_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | `ErrUpstreamRequestSkipped` returned |
 | `erpc_upstream_request_missing_data_error_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | `ErrCodeEndpointMissingData` response |
 | `erpc_upstream_request_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Successful but emptyish result |
 | `erpc_upstream_response_size_bytes` | histogram | project, network, category, finality | Decoded result size of successful responses (buckets 4 KiB … 100 MiB) |
-| `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Once per attempt at classification |
+| `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Once per attempt at classification; local response cap uses `response_too_large` |
 | `erpc_upstream_selection_total` | counter | project, network, upstream, category, reason, finality | Once per attempt start; reason = primary/retry/hedge |
 | `erpc_upstream_breaker_state_change_total` | counter | project, upstream, transition | Breaker state transition |
 | `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category, reason | 1 on cordon, 0 on uncordon |

@@ -1252,12 +1252,13 @@ func (c *RateLimitAutoTuneConfig) Copy() *RateLimitAutoTuneConfig {
 }
 
 type JsonRpcUpstreamConfig struct {
-	SupportsBatch *bool             `yaml:"supportsBatch,omitempty" json:"supportsBatch"`
-	BatchMaxSize  int               `yaml:"batchMaxSize,omitempty" json:"batchMaxSize"`
-	BatchMaxWait  Duration          `yaml:"batchMaxWait,omitempty" json:"batchMaxWait" tstype:"Duration"`
-	EnableGzip    *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
-	Headers       map[string]string `yaml:"headers,omitempty" json:"headers"`
-	ProxyPool     string            `yaml:"proxyPool,omitempty" json:"proxyPool"`
+	SupportsBatch    *bool             `yaml:"supportsBatch,omitempty" json:"supportsBatch"`
+	BatchMaxSize     int               `yaml:"batchMaxSize,omitempty" json:"batchMaxSize"`
+	BatchMaxWait     Duration          `yaml:"batchMaxWait,omitempty" json:"batchMaxWait" tstype:"Duration"`
+	EnableGzip       *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	MaxResponseBytes *int64            `yaml:"maxResponseBytes,omitempty" json:"maxResponseBytes"`
+	Headers          map[string]string `yaml:"headers,omitempty" json:"headers"`
+	ProxyPool        string            `yaml:"proxyPool,omitempty" json:"proxyPool"`
 }
 
 func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {

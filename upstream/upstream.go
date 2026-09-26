@@ -67,6 +67,8 @@ func classifyUpstreamOutcome(resp *common.NormalizedResponse, err error) common.
 			return common.UpstreamOutcomeTransportError
 		case common.HasErrorCode(err, common.ErrCodeEndpointServerSideException):
 			return common.UpstreamOutcomeServerError
+		case common.HasErrorCode(err, common.ErrCodeUpstreamResponseTooLarge):
+			return common.UpstreamOutcomeResponseTooLarge
 		case common.HasErrorCode(err, common.ErrCodeEndpointClientSideException):
 			return common.UpstreamOutcomeClientError
 		}
@@ -856,7 +858,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
 					}
-					if !hedgeAttempt {
+					if !hedgeAttempt && !common.HasErrorCode(errCall, common.ErrCodeUpstreamResponseTooLarge) {
 						u.metricsTracker.RecordUpstreamFailure(
 							u,
 							method,
