@@ -506,14 +506,16 @@ func (c *wsConn) sendStream(msg []byte) bool {
 }
 
 // send enqueues an RPC reply without blocking. A full queue disconnects the client.
-func (c *wsConn) send(msg []byte) {
+func (c *wsConn) send(msg []byte) bool {
 	if c.ctx.Err() != nil {
-		return
+		return false
 	}
 	select {
 	case c.out <- msg:
+		return true
 	default:
 		c.closeWith(websocket.StatusPolicyViolation, wsCloseSlowConsumer)
+		return false
 	}
 }
 
@@ -543,11 +545,12 @@ func resultReply(id json.RawMessage, result interface{}) []byte {
 
 func (c *wsConn) handleMessage(data []byte) {
 	reply, after := c.handleOne(bytes.TrimSpace(data))
+	delivered := false
 	if reply != nil {
-		c.send(reply)
+		delivered = c.send(reply)
 	}
 	if after != nil {
-		after()
+		after(delivered)
 	}
 }
 
@@ -574,18 +577,16 @@ func (c *wsConn) dispatchBatch(data []byte, acquire func() bool, release func())
 		return true
 	}
 	replies := make([][]byte, len(items))
-	afters := make([]func(), len(items))
+	afters := make([]func(bool), len(items))
 	var iwg sync.WaitGroup
 	for i, item := range items {
 		if !acquire() {
-			// Wait for already-started items so they don't outlive cleanup,
-			// then run their hooks: a subscribe item reserved a pump in c.wg
-			// and the pump (which exits on ctx.Done) must run to release it,
-			// or cleanup's c.wg.Wait would hang forever.
+			// No reply was delivered. Release reserved subscriptions without
+			// starting pumps for IDs the client never received.
 			iwg.Wait()
 			for _, a := range afters {
 				if a != nil {
-					a()
+					a(false)
 				}
 			}
 			return false
@@ -629,14 +630,21 @@ func (c *wsConn) dispatchBatch(data []byte, acquire func() bool, release func())
 			n++
 		}
 		buf.WriteByte(']')
+		delivered := false
 		if buf.Len() > wsMaxBatchResponseBytes {
 			c.send(errorReply(nil, int(common.JsonRpcErrorCapacityExceeded), fmt.Sprintf("batch response too large (max %d bytes)", wsMaxBatchResponseBytes)))
+			for _, a := range afters {
+				if a != nil {
+					a(false)
+				}
+			}
+			return
 		} else if n > 0 {
-			c.send(buf.Bytes())
+			delivered = c.send(buf.Bytes())
 		}
 		for _, a := range afters {
 			if a != nil {
-				a()
+				a(delivered)
 			}
 		}
 	}()
@@ -658,7 +666,7 @@ func isJsonRpcNotification(item []byte) bool {
 // handleOne processes one request object and returns its reply (nil when
 // nothing should be sent) and an optional hook to run once the reply is
 // enqueued (used to start subscription pumps).
-func (c *wsConn) handleOne(trimmed []byte) ([]byte, func()) {
+func (c *wsConn) handleOne(trimmed []byte) ([]byte, func(bool)) {
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "nested batch is not allowed"), nil
 	}
@@ -808,7 +816,7 @@ func newSubscriptionId() string {
 	return "0x" + hex.EncodeToString(b[:])
 }
 
-func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, req *wsRequest) ([]byte, func()) {
+func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, req *wsRequest) ([]byte, func(bool)) {
 	var params []json.RawMessage
 	if err := json.Unmarshal(req.Params, &params); err != nil || len(params) == 0 {
 		return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), "eth_subscribe requires a subscription type"), nil
@@ -869,7 +877,21 @@ func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, re
 
 	// The caller enqueues the id reply before starting the pump so no
 	// notification can precede it.
-	return resultReply(req.ID, s.id), func() { go c.pump(s) }
+	return resultReply(req.ID, s.id), func(delivered bool) {
+		if delivered {
+			go c.pump(s)
+			return
+		}
+		c.mu.Lock()
+		if c.subs[s.id] == s {
+			delete(c.subs, s.id)
+			telemetry.MetricWsSubscriptions.WithLabelValues(c.mProject, c.mNetwork, s.kind).Dec()
+		}
+		c.mu.Unlock()
+		s.unsubscribed.Store(true)
+		s.sub.Close()
+		c.wg.Done()
+	}
 }
 
 func (c *wsConn) unsubscribe(req *wsRequest) []byte {

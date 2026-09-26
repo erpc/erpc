@@ -257,6 +257,45 @@ func TestWs_BatchResponseSizeCap(t *testing.T) {
 	c.wg.Wait()
 }
 
+func TestWs_BatchOverflowAbortsSubscriptions(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{
+		Enabled: true, MaxConnections: 1, MaxSubscriptionsPerConnection: 10,
+	})
+	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	old := wsMaxBatchResponseBytes
+	wsMaxBatchResponseBytes = 64
+	defer func() { wsMaxBatchResponseBytes = old }()
+	baseline := promUtil.ToFloat64(telemetry.MetricWsSubscriptions.WithLabelValues("test_project", "evm:123", "newHeads"))
+	c := dialRaw(t, base)
+	var r wsMsg
+	require.NoError(t, json.Unmarshal(wsRaw(t, c, `[{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]},{"jsonrpc":"2.0","id":2,"method":"eth_subscribe","params":["newHeads"]}]`), &r))
+	require.Equal(t, int(common.JsonRpcErrorCapacityExceeded), r.Error.Code)
+	require.Eventually(t, func() bool {
+		return subCount(t, e) == 0 && promUtil.ToFloat64(telemetry.MetricWsSubscriptions.WithLabelValues("test_project", "evm:123", "newHeads")) == baseline
+	}, 5*time.Second, 20*time.Millisecond, "overflow must release subscribers and their pumps")
+	// The same connection must remain usable after aborting the reserved pumps.
+	// A successful subscribe here also proves the subscription cap was freed.
+	wsMaxBatchResponseBytes = old
+	var subscribed wsMsg
+	require.NoError(t, json.Unmarshal(wsRaw(t, c, `{"jsonrpc":"2.0","id":3,"method":"eth_subscribe","params":["newHeads"]}`), &subscribed))
+	require.Nil(t, subscribed.Error)
+	require.NotEmpty(t, subscribed.Result)
+	_ = c.CloseNow()
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		next, _, err := websocket.Dial(ctx, wsURL(base, ""), nil)
+		if err == nil {
+			_ = next.CloseNow()
+		}
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "connection slot must be reusable")
+}
+
 // Each batch item consumes project rate-limit budget on its own.
 func TestWs_BatchPerItemRateLimit(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
@@ -360,9 +399,8 @@ func TestWs_UnauthorizedUpgradeDoesNotCreateNetwork(t *testing.T) {
 	require.GreaterOrEqual(t, upCalls(), before)
 }
 
-// Regression: a batch aborted mid-dispatch (connection closing) must still
-// start pumps reserved by already-handled subscribe items, or cleanup's
-// wg.Wait hangs forever and leaks connection slots.
+// Regression: a batch aborted mid-dispatch must release reserved subscriptions
+// without starting pumps for IDs never delivered to the client.
 func TestWs_BatchAbortAfterSubscribeDoesNotHangCleanup(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
@@ -397,6 +435,14 @@ func TestWs_BatchAbortAfterSubscribeDoesNotHangCleanup(t *testing.T) {
 	}
 	batch := `[{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]},{"jsonrpc":"2.0","id":2,"method":"eth_chainId"}]`
 	require.False(t, c.dispatchBatch([]byte(batch), acquire, func() {}))
+	require.Empty(t, c.subs, "aborted batch must not retain undisclosed subscriptions")
+	reservedDone := make(chan struct{})
+	go func() { c.wg.Wait(); close(reservedDone) }()
+	select {
+	case <-reservedDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("aborted batch retained a reserved pump")
+	}
 
 	done := make(chan struct{})
 	go func() { c.cleanup(); close(done) }()
