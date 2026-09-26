@@ -1077,6 +1077,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		excluded := 0
 		nodeTypeMismatch := 0
 		tooLarge := 0
+		responseTooLarge := 0
 		validation := 0
 
 		for _, e := range joinedErr.Unwrap() {
@@ -1125,6 +1126,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 				continue
 			} else if HasErrorCode(e, ErrCodeUpstreamRequestSkipped) {
 				skips++
+				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamResponseTooLarge) {
+				responseTooLarge++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge, ErrCodeGetLogsExceededMaxAllowedRange, ErrCodeGetLogsExceededMaxAllowedAddresses, ErrCodeGetLogsExceededMaxAllowedTopics) {
 				tooLarge++
@@ -1176,6 +1180,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if tooLarge > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream too large complaints", tooLarge))
+		}
+		if responseTooLarge > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream responses exceeded local size limit", responseTooLarge))
 		}
 		if auth > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream unauthorized", auth))
@@ -2309,6 +2316,25 @@ func (e *ErrEndpointRequestTooLarge) ErrorStatusCode() int {
 	return http.StatusRequestEntityTooLarge
 }
 
+type ErrUpstreamResponseTooLarge struct{ BaseError }
+
+const ErrCodeUpstreamResponseTooLarge ErrorCode = "ErrUpstreamResponseTooLarge"
+
+func NewErrUpstreamResponseTooLarge(observedBytes uint64, maxAllowedBytes int64) error {
+	return &ErrUpstreamResponseTooLarge{BaseError{
+		Code:    ErrCodeUpstreamResponseTooLarge,
+		Message: "upstream response exceeded configured size limit",
+		Details: map[string]interface{}{
+			"observedBytes":   observedBytes,
+			"maxAllowedBytes": maxAllowedBytes,
+		},
+	}}
+}
+
+func (e *ErrUpstreamResponseTooLarge) ErrorStatusCode() int {
+	return http.StatusBadGateway
+}
+
 //
 // JSON-RPC
 //
@@ -2680,6 +2706,7 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// Request too-large -> No Retry
 		ErrCodeEndpointUnauthorized,
 		ErrCodeEndpointRequestTooLarge,
+		ErrCodeUpstreamResponseTooLarge,
 
 		// Validation failures should NOT be retried on the SAME upstream,
 		// but the error itself is retryable by the network (so we can try another upstream).

@@ -1411,6 +1411,9 @@ func (p *PunishMisbehaviorConfig) Validate() error {
 }
 
 func (j *JsonRpcUpstreamConfig) Validate(c *Config) error {
+	if j.MaxResponseBytes != nil && *j.MaxResponseBytes < 0 {
+		return fmt.Errorf("jsonRpc.maxResponseBytes must be non-negative")
+	}
 	if j.SupportsBatch != nil && *j.SupportsBatch {
 		if j.BatchMaxWait == 0 {
 			return fmt.Errorf("jsonRpc.batchMaxWait is required and must be greater than 0")

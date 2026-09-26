@@ -1843,13 +1843,16 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
-			SupportsBatch: defaults.JsonRpc.SupportsBatch,
-			BatchMaxSize:  defaults.JsonRpc.BatchMaxSize,
-			BatchMaxWait:  defaults.JsonRpc.BatchMaxWait,
-			EnableGzip:    defaults.JsonRpc.EnableGzip,
-			ProxyPool:     defaults.JsonRpc.ProxyPool,
-			Headers:       defaults.JsonRpc.Headers,
+			SupportsBatch:    defaults.JsonRpc.SupportsBatch,
+			BatchMaxSize:     defaults.JsonRpc.BatchMaxSize,
+			BatchMaxWait:     defaults.JsonRpc.BatchMaxWait,
+			EnableGzip:       defaults.JsonRpc.EnableGzip,
+			MaxResponseBytes: defaults.JsonRpc.MaxResponseBytes,
+			ProxyPool:        defaults.JsonRpc.ProxyPool,
+			Headers:          defaults.JsonRpc.Headers,
 		}
+	} else if u.JsonRpc != nil && defaults.JsonRpc != nil && u.JsonRpc.MaxResponseBytes == nil {
+		u.JsonRpc.MaxResponseBytes = defaults.JsonRpc.MaxResponseBytes
 	}
 	if u.Grpc == nil && defaults.Grpc != nil {
 		u.Grpc = defaults.Grpc.Copy()
