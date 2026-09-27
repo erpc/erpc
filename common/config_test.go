@@ -1256,3 +1256,81 @@ func TestConnectorConfig_Validate_AcceptsHedgeQuantile(t *testing.T) {
 	assert.NoError(t, cfg.Validate(),
 		"connector-level failsafe must accept a circuit breaker and hedge quantile")
 }
+
+func TestRateLimitRuleConfig_ValidateCountMode(t *testing.T) {
+	base := func(mode RateLimitCountMode, maxCount uint32) *RateLimitRuleConfig {
+		return &RateLimitRuleConfig{Method: "*", MaxCount: maxCount, Period: RateLimitPeriodSecond, CountMode: mode}
+	}
+
+	assert.NoError(t, base("", 0).Validate())
+	assert.NoError(t, base(RateLimitCountModeRequest, 0).Validate())
+	assert.NoError(t, base(RateLimitCountModeCredit, 10).Validate())
+
+	err := base("credits", 10).Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "countMode")
+
+	// A credit rule with no ceiling would reject every priced method.
+	err = base(RateLimitCountModeCredit, 0).Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "maxCount")
+}
+
+func TestRateLimitBudgetConfig_ValidateCreditUnits(t *testing.T) {
+	budget := func(units map[string]int64) *RateLimitBudgetConfig {
+		return &RateLimitBudgetConfig{
+			Id:          "b",
+			CreditUnits: units,
+			Rules:       []*RateLimitRuleConfig{{Method: "*", MaxCount: 10, Period: RateLimitPeriodSecond}},
+		}
+	}
+
+	assert.NoError(t, budget(map[string]int64{"*": 20, "eth_chainId": 0}).Validate())
+
+	err := budget(map[string]int64{"eth_call": -1}).Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "creditUnits")
+}
+
+// An upstream pricing calls from its vendor table must not also point at a
+// budget that prices them itself: two cost sources, one counter.
+func TestUpstreamConfig_ValidateCreditSourceConflict(t *testing.T) {
+	withBudget := func(b *RateLimitBudgetConfig) *Config {
+		return &Config{RateLimiters: &RateLimiterConfig{Budgets: []*RateLimitBudgetConfig{b}}}
+	}
+	upstream := func() *UpstreamConfig {
+		return &UpstreamConfig{
+			Endpoint:           "http://localhost",
+			RateLimitBudget:    "b",
+			RateLimitCountMode: RateLimitCountModeCredit,
+		}
+	}
+	plainRule := []*RateLimitRuleConfig{{Method: "*", MaxCount: 10, Period: RateLimitPeriodSecond}}
+
+	// A plain budget is fine.
+	assert.NoError(t, upstream().Validate(withBudget(&RateLimitBudgetConfig{Id: "b", Rules: plainRule}), false))
+
+	// Budget-level creditUnits competes with the vendor table.
+	err := upstream().Validate(withBudget(&RateLimitBudgetConfig{
+		Id: "b", Rules: plainRule, CreditUnits: map[string]int64{"*": 20},
+	}), false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "creditUnits")
+
+	// So does a rule declaring its own countMode.
+	err = upstream().Validate(withBudget(&RateLimitBudgetConfig{
+		Id:    "b",
+		Rules: []*RateLimitRuleConfig{{Method: "*", MaxCount: 10, Period: RateLimitPeriodSecond, CountMode: RateLimitCountModeCredit}},
+	}), false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "countMode")
+
+	// A request-mode upstream may point at a credit budget: no conflict.
+	reqUpstream := upstream()
+	reqUpstream.RateLimitCountMode = RateLimitCountModeRequest
+	assert.NoError(t, reqUpstream.Validate(withBudget(&RateLimitBudgetConfig{
+		Id:          "b",
+		CreditUnits: map[string]int64{"*": 20},
+		Rules:       []*RateLimitRuleConfig{{Method: "*", MaxCount: 10, Period: RateLimitPeriodSecond, CountMode: RateLimitCountModeCredit}},
+	}), false))
+}

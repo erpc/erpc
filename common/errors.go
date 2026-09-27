@@ -2720,6 +2720,7 @@ func IsClientError(err error) bool {
 		ErrCodeGetLogsExceededMaxAllowedRange,
 		ErrCodeGetLogsExceededMaxAllowedAddresses,
 		ErrCodeGetLogsExceededMaxAllowedTopics,
+		ErrCodeGetLogsExceededMaxAllowedResponseSize,
 	))
 }
 
@@ -2913,6 +2914,32 @@ func (e *ErrConsensusLowParticipants) SummarizeParticipants() string {
 		}
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+type ErrGetLogsExceededMaxAllowedResponseSize struct{ BaseError }
+
+const ErrCodeGetLogsExceededMaxAllowedResponseSize ErrorCode = "ErrGetLogsExceededMaxAllowedResponseSize"
+
+// NewErrGetLogsExceededMaxAllowedResponseSize reports that a MERGED eth_getLogs response
+// crossed the network's GetLogsMaxResponseBytes budget. Deliberately its own code rather
+// than ErrEndpointRequestTooLarge: the too-large code is what networkPostForward_eth_getLogs
+// treats as a cue to split and merge, so raising it here would feed the very path this
+// budget exists to bound.
+var NewErrGetLogsExceededMaxAllowedResponseSize = func(responseBytes int64, maxAllowedBytes int64) error {
+	return &ErrGetLogsExceededMaxAllowedResponseSize{
+		BaseError{
+			Code:    ErrCodeGetLogsExceededMaxAllowedResponseSize,
+			Message: "getLogs response exceeded max allowed size; narrow the block range, addresses or topics",
+			Details: map[string]interface{}{
+				"responseBytes":   responseBytes,
+				"maxAllowedBytes": maxAllowedBytes,
+			},
+		},
+	}
+}
+
+func (e *ErrGetLogsExceededMaxAllowedResponseSize) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
 }
 
 type ErrGetLogsExceededMaxAllowedRange struct{ BaseError }

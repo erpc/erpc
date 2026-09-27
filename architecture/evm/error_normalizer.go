@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	bdscommon "github.com/blockchain-data-standards/manifesto/common"
@@ -16,6 +17,9 @@ import (
 func init() {
 	_ = (&bdscommon.ErrorDetails{}).ProtoReflect().Descriptor()
 }
+
+// reth prints a revert as Debug text in the message and sends no "data" field.
+var rethRevertError = regexp.MustCompile(`RevertError \{ output: (?:Some\((0x[0-9a-fA-F]*)\)|None) \}`)
 
 func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
 	if (jr != nil && jr.Error != nil) || r.StatusCode > 299 {
@@ -265,7 +269,12 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//----------------------------------------------------------------
 		// "EVM reverts and execution" errors
 		//----------------------------------------------------------------
-		if strings.Contains(msg, "reverted") ||
+		rethRevert := rethRevertError.FindStringSubmatch(msg)
+		if len(rethRevert) > 1 && rethRevert[1] != "" && details["data"] == nil {
+			details["data"] = rethRevert[1]
+		}
+		if rethRevert != nil ||
+			strings.Contains(msg, "reverted") ||
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||
 			strings.Contains(msg, "VM Exception") ||
@@ -439,8 +448,11 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// failures, so they should not be retried across upstreams by default.
 		//----------------------------------------------------------------
 
+		// Monad reports the same condition as "reserve balance violation" from
+		// eth_call and eth_fillTransaction (it replaced "insufficient balance").
 		if strings.Contains(msg, "insufficient funds") ||
-			strings.Contains(msg, "insufficient balance") {
+			strings.Contains(msg, "insufficient balance") ||
+			strings.Contains(msg, "reserve balance violation") {
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),

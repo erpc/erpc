@@ -89,6 +89,30 @@ func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
 		"block at the head must be dispatched (served from upstream), not short-circuited")
 }
 
+func TestForward_FutureBlock_MixedStaticCapDispatchesWithinAvailableRange(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "live", chainID: 123, latestBlock: 900},
+		{id: "archive", chainID: 123, latestBlock: 1_200, upperExactBlock: 1_000},
+	})
+	mockGetBlockByNumberNonNull("live", "archive")
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x3b6",false]}`))
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f")
+}
+
 // The short-circuit is gated on served-tip being enabled for the latest axis
 // (so the head is trustworthy). With served-tip disabled it must stay off.
 func TestForward_FutureBlock_ServedTipDisabled_Dispatches(t *testing.T) {

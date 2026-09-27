@@ -671,23 +671,17 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				var networkId string
 
 				if architecture == "" || chainId == "" {
-					if bodyBytes := nq.Body(); len(bodyBytes) > 0 {
-						var req map[string]interface{}
-						if err := common.SonicCfg.Unmarshal(bodyBytes, &req); err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-						if networkIdFromBody, ok := req["networkId"].(string); ok {
-							networkId = networkIdFromBody
-							// SplitN limit 2 so three-part SVM IDs (svm:<chain>:<cluster>)
-							// keep the chain:cluster tail intact as chainId; it is
-							// reassembled as architecture+":"+chainId below.
-							parts := strings.SplitN(networkId, ":", 2)
-							if len(parts) == 2 {
-								architecture = parts[0]
-								chainId = parts[1]
-							}
+					// Read the hint off the envelope nq.Validate() already parsed above,
+					// rather than decoding the body again into a map here.
+					if networkIdFromBody := nq.NetworkIdHint(); networkIdFromBody != "" {
+						networkId = networkIdFromBody
+						// SplitN limit 2 so three-part SVM IDs (svm:<chain>:<cluster>)
+						// keep the chain:cluster tail intact as chainId; it is
+						// reassembled as architecture+":"+chainId below.
+						parts := strings.SplitN(networkId, ":", 2)
+						if len(parts) == 2 {
+							architecture = parts[0]
+							chainId = parts[1]
 						}
 					}
 				} else {
@@ -1749,15 +1743,10 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	if !isSvmRequest && nq != nil {
 		isSvmRequest = strings.HasPrefix(nq.NetworkId(), "svm:")
 		// Body-routed requests have no URL architecture hint and auth still runs
-		// before network resolution. Capture networkId before JsonRpcRequest()
-		// consumes nq.Body(), without moving network lookup ahead of authentication.
+		// before network resolution, so fall back to the envelope's own hint
+		// without moving network lookup ahead of authentication.
 		if !isSvmRequest && nq.Network() == nil && (len(architectureHint) == 0 || architectureHint[0] == "") {
-			var envelope struct {
-				NetworkID string `json:"networkId"`
-			}
-			if common.SonicCfg.Unmarshal(nq.Body(), &envelope) == nil {
-				isSvmRequest = strings.HasPrefix(envelope.NetworkID, "svm:")
-			}
+			isSvmRequest = strings.HasPrefix(nq.NetworkIdHint(), "svm:")
 		}
 	}
 	if nq != nil {

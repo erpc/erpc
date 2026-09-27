@@ -88,6 +88,9 @@ export {
   RateLimitPeriodWeek,
   RateLimitPeriodMonth,
   RateLimitPeriodYear,
+  // Rate limiter count modes
+  RateLimitCountModeRequest,
+  RateLimitCountModeCredit,
 } from "./generated";
 // Short-name re-exports for selection-policy evalScope / stickyPrimary
 // scope (CAPITAL_SNAKE_CASE matching the JS ambient globals installed

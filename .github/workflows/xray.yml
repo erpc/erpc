@@ -70,13 +70,21 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
         run: |
           set -euo pipefail
           case "$PR_NUMBER" in
             ''|*[!0-9]*) echo "invalid PR number" >&2; exit 1 ;;
           esac
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-          gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          PR_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")
+          CURRENT_HEAD=$(printf '%s' "$PR_JSON" | jq -r .head.sha)
+          if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
+            echo "head SHA changed since validation" >&2
+            exit 1
+          fi
+          gh api "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" \
             -H "Accept: application/vnd.github.diff" \
             > "${RUNNER_TEMP}/pr.diff"
           git config user.email "xray@erpc.invalid"

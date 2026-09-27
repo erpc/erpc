@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
 )
 
@@ -223,10 +222,14 @@ type NormalizedRequest struct {
 	body           []byte
 	ForwardHeaders http.Header
 
-	method                      string
 	directives                  *RequestDirectives
 	allowClientDirectiveMatcher MatcherFunc
 	jsonRpcRequest              atomic.Pointer[JsonRpcRequest]
+	// parseMu serializes the one parse of body into jsonRpcRequest. Hedge and
+	// consensus fan-out share a request, so without it two goroutines can both
+	// miss the cache and read body while a third releases it.
+	parseMu     sync.Mutex
+	bodyCleared atomic.Bool
 
 	// Upstream selection fields - protected by upstreamMutex
 	upstreamMutex    sync.Mutex
@@ -237,19 +240,19 @@ type NormalizedRequest struct {
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
-	lastValidResponse      atomic.Pointer[NormalizedResponse]
-	integrityCaught        atomic.Bool  // an integrity check rejected a response during this request
+	lastValidResponse         atomic.Pointer[NormalizedResponse]
+	integrityCaught           atomic.Bool  // an integrity check rejected a response during this request
 	integrityRejectedCheck    atomic.Value // id of the last check that rejected (the "why")
 	integrityRejectedFinality atomic.Value // finality of the last rejected block (for saved/failed metric)
 	// integrityFallback holds the newest FALLBACK-ELIGIBLE original: a response
 	// a recordOnly verdict flagged, escalated to a rejection only so the
 	// failsafe could hunt a validated replacement. If the hunt exhausts,
 	// project.Forward serves this instead of an error.
-	integrityFallback atomic.Pointer[IntegrityFallback]
-	integrityOverheadNs       atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
-	lastUpstream           atomic.Value
-	evmBlockRef            atomic.Value
-	evmBlockNumber         atomic.Value
+	integrityFallback   atomic.Pointer[IntegrityFallback]
+	integrityOverheadNs atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
+	lastUpstream        atomic.Value
+	evmBlockRef         atomic.Value
+	evmBlockNumber      atomic.Value
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -873,16 +876,29 @@ func (r *NormalizedRequest) RLockWithTrace(ctx context.Context) {
 	r.RLock()
 }
 
-// Extract and prepare the request for forwarding.
-func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequest, error) {
+// resolveJsonRpc returns this request's parsed envelope, parsing the raw body
+// on first call and caching the result for every later caller. It is the only
+// place NormalizedRequest turns a body into a JsonRpcRequest, so the method
+// erpc authenticates, rate-limits, and caches on is by construction the method
+// it sends upstream.
+//
+// It leaves the raw body in place; JsonRpcRequest is the caller that decides
+// the body is no longer needed.
+func (r *NormalizedRequest) resolveJsonRpc(ctx ...context.Context) (*JsonRpcRequest, error) {
+	// Fast path: every caller after the first reads the published envelope
+	// without touching the lock.
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		return jrq, nil
+	}
+
 	if len(ctx) > 0 {
 		_, span := StartDetailSpan(ctx[0], "Request.ResolveJsonRpc")
 		defer span.End()
 	}
 
-	if r == nil {
-		return nil, nil
-	}
+	r.parseMu.Lock()
+	defer r.parseMu.Unlock()
+
 	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
 		return jrq, nil
 	}
@@ -892,43 +908,88 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 		return nil, NewErrJsonRpcRequestUnmarshal(err, r.body)
 	}
 
-	method := rpcReq.Method
-	if method == "" {
+	if rpcReq.Method == "" {
 		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
+	// Publish last: callers compare this pointer and mutate what it points at
+	// (params rewrites, cache-hash memoization), so one request must hand out
+	// one envelope.
 	r.jsonRpcRequest.Store(rpcReq)
-	// Safe to drop the raw body after successful parse to reduce retention of ReadAll buffers.
-	r.body = nil
 
 	return rpcReq, nil
 }
 
+// Extract and prepare the request for forwarding.
+func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequest, error) {
+	if r == nil {
+		return nil, nil
+	}
+
+	rpcReq, err := r.resolveJsonRpc(ctx...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Safe to drop the raw body after successful parse to reduce retention of
+	// ReadAll buffers. Take parseMu so the release cannot land while another
+	// goroutine is still parsing that same body, and CAS so fan-out callers
+	// write it once rather than once per attempt.
+	if r.bodyCleared.CompareAndSwap(false, true) {
+		r.parseMu.Lock()
+		r.body = nil
+		r.parseMu.Unlock()
+	}
+
+	return rpcReq, nil
+}
+
+// Method returns the method erpc authenticates, rate-limits, routes, and meters
+// on. It reads the shared envelope rather than peeking at the raw body, so it
+// reports the same method the upstream is asked to run. The envelope is the
+// only cache: a second copy on the request would be a plain field read and
+// written by every hedge and consensus goroutine at once.
 func (r *NormalizedRequest) Method() (string, error) {
 	if r == nil {
 		return "", nil
 	}
 
-	if r.method != "" {
-		return r.method, nil
-	}
-
 	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
-		r.method = jrq.Method
 		return jrq.Method, nil
 	}
 
 	if len(r.body) > 0 {
-		method, err := sonic.Get(r.body, "method")
+		// resolveJsonRpc rather than JsonRpcRequest: this runs before routing,
+		// which still reads the raw body.
+		jrq, err := r.resolveJsonRpc()
 		if err != nil {
-			return "", NewErrJsonRpcRequestUnmarshal(err, r.body)
+			return "", err
 		}
-		m, err := method.String()
-		r.method = m
-		return m, err
+		return jrq.Method, nil
 	}
 
 	return "", NewErrJsonRpcRequestUnresolvableMethod(r.body)
+}
+
+// NetworkIdHint returns the "networkId" member carried in the request body,
+// which routes a request that gave no /<architecture>/<chainId> path segments.
+// Empty when the body omitted it or could not be parsed — an unparseable body
+// is reported by Validate, well before routing asks.
+func (r *NormalizedRequest) NetworkIdHint() string {
+	if r == nil {
+		return ""
+	}
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		return jrq.NetworkIdHint()
+	}
+	if len(r.body) == 0 {
+		return ""
+	}
+	jrq, err := r.resolveJsonRpc()
+	if err != nil {
+		return ""
+	}
+	return jrq.NetworkIdHint()
 }
 
 func (r *NormalizedRequest) Body() []byte {

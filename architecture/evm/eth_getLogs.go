@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -708,6 +709,23 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 		concurrency = cfg.Evm.GetLogsSplitConcurrency
 	}
 	semaphore := make(chan struct{}, concurrency)
+
+	// Bound the MERGED response, not the pieces. Splitting exists to get past an
+	// upstream's per-request limits, so past this point nothing else bounds what one
+	// client request can make the proxy hold: the halves are fetched concurrently and
+	// merged whole. Cancel the rest of the fan-out the moment the running total crosses
+	// the budget, so the in-flight sub-requests do not materialise either — checking only
+	// after wg.Wait() would let every one of them land first, which is the failure this
+	// budget exists to prevent. Zero keeps the historical unbounded behaviour.
+	var maxResponseBytes int64
+	if cfg := n.Config(); cfg != nil && cfg.Evm != nil {
+		maxResponseBytes = cfg.Evm.GetLogsMaxResponseBytes
+	}
+	var totalBytes atomic.Int64
+	var sizeExceeded atomic.Bool
+	subCtx, cancelSubRequests := context.WithCancel(ctx)
+	defer cancelSubRequests()
+
 	for idx, sr := range subRequests {
 		wg.Add(1)
 		// Acquire semaphore token (blocks if at capacity)
@@ -748,7 +766,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
 			sbnrq.CopyHttpContextFrom(r)
 
-			rs, re := n.Forward(ctx, sbnrq)
+			rs, re := n.Forward(subCtx, sbnrq)
 			if re != nil {
 				mu.Lock()
 				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
@@ -805,6 +823,20 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 				return
 			}
 
+			// Check the budget BEFORE Clone(): the clone is a second copy of the
+			// same bytes, so a piece that already blows the budget must not be
+			// duplicated on its way to being discarded.
+			if maxResponseBytes > 0 {
+				if sz, szErr := jrr.Size(ctx); szErr == nil && sz > 0 {
+					if totalBytes.Add(int64(sz)) > maxResponseBytes {
+						sizeExceeded.Store(true)
+						cancelSubRequests()
+						rs.Release()
+						return
+					}
+				}
+			}
+
 			mu.Lock()
 			telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitSuccess,
 				n.ProjectId(),
@@ -826,6 +858,12 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 		}(sr, idx)
 	}
 	wg.Wait()
+
+	// Ahead of len(errs): cancelling the fan-out makes the remaining sub-requests fail
+	// with context.Canceled, and the client needs the reason, not the consequence.
+	if sizeExceeded.Load() {
+		return nil, false, common.NewErrGetLogsExceededMaxAllowedResponseSize(totalBytes.Load(), maxResponseBytes)
+	}
 
 	if len(errs) > 0 {
 		return nil, false, errors.Join(errs...)

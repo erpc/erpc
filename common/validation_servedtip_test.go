@@ -65,6 +65,33 @@ func TestEvmNetworkConfig_Validate_ServedTip(t *testing.T) {
 		require.NoError(t, e.Validate())
 	})
 
+	t.Run("guaranteedFor accepts id and tag selectors", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{
+			EnabledFor:    []string{"latest"},
+			GuaranteedFor: []string{"type:internal", "int*", "!type:external"},
+		}
+		require.NoError(t, e.Validate())
+	})
+
+	t.Run("guaranteedFor rejects an invalid selector", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{
+			EnabledFor:    []string{"latest"},
+			GuaranteedFor: []string{"(type:internal"},
+		}
+		err := e.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "guaranteedFor")
+	})
+
+	t.Run("empty guaranteedFor is the default", func(t *testing.T) {
+		e := baseValidEvmNetworkConfig()
+		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}}
+		require.NoError(t, e.Validate())
+		assert.Empty(t, e.ServedTip.GuaranteedFor)
+	})
+
 	t.Run("zero trajectoryWindow disables the referee", func(t *testing.T) {
 		e := baseValidEvmNetworkConfig()
 		e.ServedTip = &EvmServedTipConfig{EnabledFor: []string{"latest"}, TrajectoryWindow: Duration(0).Ptr()}

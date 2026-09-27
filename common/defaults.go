@@ -1595,6 +1595,21 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		}
 
 		return settings, nil
+	case "spectrum", "evm+spectrum":
+		// Spectrum keys span two path segments: spectrum://<team>/<key>
+		settings := VendorSettings{
+			"apiKey": endpoint.Host + strings.TrimSuffix(endpoint.Path, "/"),
+		}
+		params, err := url.ParseQuery(endpoint.RawQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse spectrum query parameters: %w", err)
+		}
+		for _, key := range []string{"host", "plan", "nodeType"} {
+			if value := params.Get(key); value != "" {
+				settings[key] = value
+			}
+		}
+		return settings, nil
 	case "onfinality", "evm+onfinality":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
@@ -2198,6 +2213,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
+			}
+			if n.Evm.GetLogsMaxResponseBytes == 0 && defaults.Evm.GetLogsMaxResponseBytes != 0 {
+				n.Evm.GetLogsMaxResponseBytes = defaults.Evm.GetLogsMaxResponseBytes
 			}
 			if n.Evm.TraceFilterSplitOnError == nil && defaults.Evm.TraceFilterSplitOnError != nil {
 				n.Evm.TraceFilterSplitOnError = defaults.Evm.TraceFilterSplitOnError

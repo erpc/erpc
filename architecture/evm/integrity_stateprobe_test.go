@@ -134,6 +134,17 @@ func TestStateProber(t *testing.T) {
 		assert.True(t, remembered, "unsupported must be remembered, not rediscovered every block")
 	})
 
+	t.Run("getProof ignored by the upstream's own config: latched without a forward, context still proves", func(t *testing.T) {
+		pn := newProbeNetwork(t)
+		pn.upstream.Config().IgnoreMethods = []string{"eth_getProof"}
+		pn.execContext, pn.proofErr = head, "must not be forwarded"
+		p, _ := proberFor(pn, head, stateRoot)
+		p.probeAll(head)
+		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
+		_, remembered := p.proofUnsupported.Load("u1")
+		assert.True(t, remembered, "an ignored method is remembered as unsupported, not re-asked every block")
+	})
+
 	t.Run("no verified header at the height: nothing advances (no anchor, no proof)", func(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head, trieNode
@@ -182,10 +193,10 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 
 	// The tip eRPC advertises: the majority order statistic over CLAIMED heads
 	// (all live and within a block of each other).
-	tips := make([]ServedTipInput, 0, len(fleet))
+	tips := make([]common.ServedTipInput, 0, len(fleet))
 	ups := make([]common.Upstream, 0, len(fleet))
 	for _, f := range fleet {
-		tips = append(tips, ServedTipInput{UpstreamID: f.id, BlockNumber: head})
+		tips = append(tips, common.ServedTipInput{UpstreamID: f.id, BlockNumber: head})
 		u := &cadenceLaggedUpstream{
 			FakeUpstream: common.NewFakeUpstream(f.id).(*common.FakeUpstream),
 			claimed:      head,
@@ -195,7 +206,7 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 		}
 		ups = append(ups, u)
 	}
-	tip := PickServedTip(tips).Tip
+	tip := common.PickServedTip(tips).Tip
 	require.Equal(t, head, tip, "sanity: a healthy fleet's majority tip is the head")
 
 	// The precondition, asserted so the fixture cannot rot into triviality: the

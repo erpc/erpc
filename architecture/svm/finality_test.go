@@ -13,9 +13,14 @@ import (
 // paths touch. EVM accessors don't need to be implemented anymore — they're
 // behind common.EvmNetwork, which this type deliberately does not satisfy.
 type fakeNetwork struct {
-	cfg                      *common.NetworkConfig
-	latestSlot               int64
-	finalizedSlot            int64
+	cfg           *common.NetworkConfig
+	latestSlot    int64
+	finalizedSlot int64
+	// finalizedSlotMax is the leading upstream's root. Left at 0 it mirrors
+	// finalizedSlot, so a single-upstream pool (where majority == max) is
+	// expressed by setting finalizedSlot alone; set both to pin the skew a
+	// rejection gate must respect.
+	finalizedSlotMax         int64
 	indexedSlot              int64
 	enforceBlockAvailability *bool
 }
@@ -29,6 +34,12 @@ func (f *fakeNetwork) Logger() *zerolog.Logger                       { l := zero
 func (f *fakeNetwork) GetMethodMetrics(string) common.TrackedMetrics { return nil }
 func (f *fakeNetwork) SvmHighestLatestSlot(context.Context) int64    { return f.latestSlot }
 func (f *fakeNetwork) SvmHighestFinalizedSlot(context.Context) int64 { return f.finalizedSlot }
+func (f *fakeNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 {
+	if f.finalizedSlotMax != 0 {
+		return f.finalizedSlotMax
+	}
+	return f.finalizedSlot
+}
 func (f *fakeNetwork) SvmHighestIndexedSlot(context.Context) int64   { return f.indexedSlot }
 func (f *fakeNetwork) SvmEnforceBlockAvailability() bool {
 	if f.enforceBlockAvailability == nil {
@@ -255,12 +266,123 @@ func TestIsFinalizedCommitment_IsNotGetFinality(t *testing.T) {
 		t.Error("explicit confirmed must not report a finalized commitment")
 	}
 
-	// Injection skipped (legacy encoding-string form) → no default reaches the
-	// upstream, so routing must not assume finalized either.
-	if IsFinalizedCommitment(ctx, net, newReq("getBlock", `[100, "base64"]`)) {
-		t.Error("injection-skipped request must not report a finalized commitment")
+	// Injection skipped (legacy encoding-string form): erpc pins nothing, but
+	// the NODE still evaluates at its finalized default, and routing must
+	// compare against the counter the node uses. Cacheability stays stricter —
+	// see TestFinality_UnpinnedCommitment_CacheStaysStrictRoutingFollowsNode.
+	if !IsFinalizedCommitment(ctx, net, newReq("getBlock", `[100, "base64"]`)) {
+		t.Error("injection-skipped request still evaluates at the node's finalized default")
 	}
 	if IsFinalizedCommitment(ctx, net, nil) {
 		t.Error("nil request must not report a finalized commitment")
+	}
+}
+
+// TestEffectiveCommitment pins the predicate every SERVING decision reads: the
+// commitment the node will actually evaluate the request at, which is the
+// pinned level when there is one and Solana's documented default otherwise
+// (https://solana.com/docs/rpc/http/getblock — "Default: finalized").
+//
+// The unpinned rows are the whole point. resolveCommitment answers "" there
+// because it plans INJECTION, and reading that "" as "unknown" is what left
+// implicit-commitment getBlock traffic bounded by the indexed frontier alone —
+// forwarded into the ~60-slot band above the finalized root that every upstream
+// rejects with -32004.
+func TestEffectiveCommitment(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	unpinned := &common.NetworkConfig{Architecture: common.ArchitectureSvm}
+	pinnedConfirmed := &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}
+	pinnedProcessed := &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "processed"},
+	}
+
+	for _, tc := range []struct {
+		name   string
+		cfg    *common.NetworkConfig
+		method string
+		params string
+		want   string
+	}{
+		// Caller value wins over everything.
+		{"explicit confirmed beats pinned default", pinnedConfirmed, "getBlock", `[100, {"commitment":"finalized"}]`, "finalized"},
+		{"explicit processed on getSlot", unpinned, "getSlot", `[{"commitment":"processed"}]`, "processed"},
+		{"explicit uppercase is lowered", unpinned, "getBlock", `[100, {"commitment":"CONFIRMED"}]`, "confirmed"},
+
+		// Pinned network default applies when the caller says nothing.
+		{"pinned confirmed", pinnedConfirmed, "getBlock", `[100]`, "confirmed"},
+		{"pinned processed clamps for getBlock", pinnedProcessed, "getBlock", `[100]`, "confirmed"},
+		{"pinned processed stays on getSlot", pinnedProcessed, "getSlot", `[]`, "processed"},
+
+		// Nothing pinned → the node's own default, per method shape.
+		{"unpinned bare slot", unpinned, "getBlock", `[100]`, "finalized"},
+		{"unpinned empty options object", unpinned, "getBlock", `[100, {}]`, "finalized"},
+		{"unpinned legacy encoding string", unpinned, "getBlock", `[100, "base64"]`, "finalized"},
+		{"unpinned getConfirmedBlock alias", unpinned, "getConfirmedBlock", `[100]`, "finalized"},
+		{"unpinned getSlot", unpinned, "getSlot", `[]`, "finalized"},
+		{"unpinned getTransaction", unpinned, "getTransaction", `["sig"]`, "finalized"},
+		{"unpinned getBlocks with no start slot", unpinned, "getBlocks", `[]`, "finalized"},
+		{"nil config", nil, "getBlock", `[100]`, "finalized"},
+
+		// Methods with no commitment dimension report nothing — there is no
+		// level to apply, which is different from an unknown one.
+		{"no-param method", unpinned, "getHealth", `[]`, ""},
+		{"write method carries preflightCommitment", unpinned, "sendTransaction", `["tx"]`, ""},
+		{"getSignatureStatuses config has no commitment", unpinned, "getSignatureStatuses", `[["sig"]]`, ""},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			net := &fakeNetwork{cfg: tc.cfg}
+			if got := effectiveCommitment(ctx, net, newReq(tc.method, tc.params)); got != tc.want {
+				t.Fatalf("effectiveCommitment(%s, %s) = %q, want %q", tc.method, tc.params, got, tc.want)
+			}
+		})
+	}
+
+	if got := effectiveCommitment(ctx, &fakeNetwork{cfg: unpinned}, nil); got != "" {
+		t.Fatalf("nil request: got %q, want \"\"", got)
+	}
+}
+
+// TestFinality_UnpinnedCommitment_CacheStaysStrictRoutingFollowsNode pins the
+// one deliberate asymmetry between the two predicates.
+//
+// Routing follows the node: an unpinned getBlock is evaluated at the finalized
+// root, so FilterByMinContextSlot must compare the upstream's FinalizedSlot.
+// Comparing its processed tip instead keeps upstreams whose root still trails
+// minContextSlot — a guaranteed -32016 round-trip.
+//
+// Cacheability does NOT follow it. `finality: finalized` is the zero value an
+// unset-TTL policy matches, so a wrong promotion pins a value forever while a
+// wrong demotion costs one re-fetch. Nothing in an unpinned request forces the
+// promotion, so it stays Unfinalized; an operator who wants it sets
+// svm.commitment.
+func TestFinality_UnpinnedCommitment_CacheStaysStrictRoutingFollowsNode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
+
+	for _, params := range []string{`[100]`, `[100, {}]`, `[100, "base64"]`} {
+		req := newReq("getBlock", params)
+		if !IsFinalizedCommitment(ctx, net, req) {
+			t.Errorf("getBlock%s routing: expected finalized (node default)", params)
+		}
+		if got := GetFinality(ctx, net, req, nil); got != common.DataFinalityStateUnfinalized {
+			t.Errorf("getBlock%s cacheability: expected Unfinalized, got %v", params, got)
+		}
+	}
+
+	// Pinning it is what promotes the cache classification.
+	pinned := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "finalized"},
+	}}
+	if got := GetFinality(ctx, pinned, newReq("getBlock", `[100]`), nil); got != common.DataFinalityStateFinalized {
+		t.Errorf("pinned finalized getBlock: expected Finalized, got %v", got)
 	}
 }
