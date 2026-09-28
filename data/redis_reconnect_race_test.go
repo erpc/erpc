@@ -14,6 +14,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+func init() { util.ConfigureTestLogger() }
+
 // Regression: real connector connectTask writer, real
 // initializer state transitions, concurrent public borrowed-client getter.
 func TestRedisConnector_ClientReconnectRace(t *testing.T) {
