@@ -23,60 +23,43 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// WebSocket JSON-RPC endpoint.
+// WebSocket subscription endpoint.
 //
 // Served on the same paths as HTTP (/<project>/<architecture>/<chainId>, or
 // aliased) when the client sends an Upgrade request and server.webSocket is
-// enabled. A connection is bound to one project+network:
+// enabled. The upgrade is rejected (HTTP 503) unless the network has a
+// Redis-backed head cache: notifications are rendered only from cached
+// canonical block/log events and never trigger upstream calls.
 //
-//   - Ordinary JSON-RPC calls go through the exact same pipeline as HTTP
-//     (method allow/ignore lists, per-message consumer auth, project and
-//     network rate limits, project.Forward).
-//   - eth_subscribe("newHeads") and eth_subscribe("logs", {address, topics})
-//     are served from the network's head cache. Reorgs are emitted as the
-//     orphaned logs with "removed":true (highest block first) followed by the
-//     new canonical logs. When the network has no head cache, eth_subscribe
-//     fails with a JSON-RPC error; eRPC never proxies upstream WebSockets.
-//   - eth_unsubscribe only sees subscription ids created on the same
-//     connection.
+// Contract (subscriptions only):
+//   - eth_subscribe("newHeads") and eth_subscribe("logs", {address, topics}).
+//     Reorgs emit orphaned logs with "removed":true (highest block first)
+//     followed by the new canonical logs. The subscription id reply always
+//     precedes its notifications.
+//   - eth_unsubscribe only sees ids created on the same connection.
+//   - Any other method gets -32601 and batch frames get -32600; ordinary
+//     JSON-RPC calls belong on HTTP.
 //
-// Bounds: server.webSocket.maxConnections (HTTP 503 at upgrade),
-// maxSubscriptionsPerConnection, maxMessageBytes (inbound frame, 1009 close),
+// Frames are handled sequentially per connection. Bounds:
+// server.webSocket.maxConnections / maxConnectionsPerProject (HTTP 503 at
+// upgrade), maxSubscriptionsPerConnection, maxMessageBytes (1009 close),
 // sendQueueSize (a client that falls this far behind, or whose head cache
-// subscription overflows, is closed with 1008), writeTimeout per frame.
+// subscription overflows or skips heights, is closed with 1008),
+// writeTimeout per frame. Credentials are re-checked every pingInterval.
 // Connections close with 1001 when the server shuts down.
 
 const (
 	wsCloseSlowConsumer = "slow consumer"
-	// Fallbacks for configs that bypassed SetDefaults (validation rejects
-	// non-positive values). Ping never becomes disabled: re-auth rides on it.
-	wsDefaultInflight     = 16
+	// Fallback for configs that bypassed SetDefaults. Ping never becomes
+	// disabled: re-auth rides on it.
 	wsDefaultPingInterval = 30 * time.Second
-	wsDefaultMaxBatchSize = 100
 )
-
-// wsMaxBatchResponseBytes bounds one batch reply frame (var for tests).
-var wsMaxBatchResponseBytes = 32 << 20
-
-func (ws *wsServer) inflight() int {
-	if ws.cfg.MaxInflightPerConnection > 0 {
-		return ws.cfg.MaxInflightPerConnection
-	}
-	return wsDefaultInflight
-}
 
 func (ws *wsServer) pingInterval() time.Duration {
 	if d := ws.cfg.PingInterval.Duration(); d > 0 {
 		return d
 	}
 	return wsDefaultPingInterval
-}
-
-func (ws *wsServer) maxBatchSize() int {
-	if ws.cfg.MaxBatchSize > 0 {
-		return ws.cfg.MaxBatchSize
-	}
-	return wsDefaultMaxBatchSize
 }
 
 type wsServer struct {
@@ -197,6 +180,10 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 	nw, err := project.GetNetwork(r.Context(), networkId)
 	if err != nil {
 		wsHttpError(w, http.StatusNotFound, "network not found")
+		return
+	}
+	if nw.HeadCache() == nil {
+		wsHttpError(w, http.StatusServiceUnavailable, "websocket subscriptions require evm.headCache for this network")
 		return
 	}
 
@@ -337,14 +324,6 @@ func (c *wsConn) run() {
 	go c.writeLoop(writerDone)
 	go c.pingLoop()
 
-	sem := make(chan struct{}, c.ws.inflight())
-	acquire := func() bool {
-		select {
-		case sem <- struct{}{}:
-		case <-c.ctx.Done():
-		}
-		return c.ctx.Err() == nil
-	}
 	for {
 		// Not c.ctx: coder/websocket tears the connection down without a
 		// close frame when a Read context is cancelled, which would hide
@@ -359,32 +338,20 @@ func (c *wsConn) run() {
 			}
 			break
 		}
-		if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '[' {
-			// Each batch item takes its own inflight slot, acquired here so a
-			// batch cannot exceed the per-connection concurrency bound.
-			if !c.dispatchBatch(trimmed, acquire, func() { <-sem }) {
-				break
-			}
-			continue
-		}
-		if !acquire() {
-			break
-		}
-		c.wg.Add(1)
-		go func(data []byte) {
-			defer c.wg.Done()
-			defer func() { <-sem }()
-			defer func() {
-				if rec := recover(); rec != nil {
-					telemetry.MetricUnexpectedPanicTotal.WithLabelValues("ws-message", c.networkId, common.ErrorFingerprint(rec)).Inc()
-					c.lg.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).Msg("unexpected panic handling websocket message")
-					c.closeWith(websocket.StatusInternalError, "internal error")
-				}
-			}()
-			c.handleMessage(data)
-		}(data)
+		c.safeHandle(data)
 	}
 	<-writerDone
+}
+
+func (c *wsConn) safeHandle(data []byte) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues("ws-message", c.networkId, common.ErrorFingerprint(rec)).Inc()
+			c.lg.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).Msg("unexpected panic handling websocket message")
+			c.closeWith(websocket.StatusInternalError, "internal error")
+		}
+	}()
+	c.handleMessage(data)
 }
 
 func (c *wsConn) cleanup() {
@@ -543,6 +510,8 @@ func resultReply(id json.RawMessage, result interface{}) []byte {
 	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":%s}`, id, rb))
 }
 
+// handleMessage processes one frame. The reply is enqueued before any
+// subscription pump starts so the id always precedes its notifications.
 func (c *wsConn) handleMessage(data []byte) {
 	reply, after := c.handleOne(bytes.TrimSpace(data))
 	delivered := false
@@ -554,126 +523,17 @@ func (c *wsConn) handleMessage(data []byte) {
 	}
 }
 
-// dispatchBatch runs a JSON-RPC batch. Items run concurrently, each holding
-// one inflight slot and passing through the same per-item pipeline as a
-// single message (auth, method lists, rate limits, directives, subscription
-// caps). Replies are sent as one array; items without an "id" member are
-// notifications and get no entry, and an all-notification batch gets no
-// reply. Subscription pumps start only after the array is enqueued so the
-// subscription id always precedes its notifications. Returns false when the
-// connection is closing.
-func (c *wsConn) dispatchBatch(data []byte, acquire func() bool, release func()) bool {
-	var items []json.RawMessage
-	if err := json.Unmarshal(data, &items); err != nil {
-		c.send(errorReply(nil, int(common.JsonRpcErrorParseException), "invalid json"))
-		return true
-	}
-	if len(items) == 0 {
-		c.send(errorReply(nil, int(common.JsonRpcErrorClientSideException), "empty batch"))
-		return true
-	}
-	if max := c.ws.maxBatchSize(); len(items) > max {
-		c.send(errorReply(nil, int(common.JsonRpcErrorClientSideException), fmt.Sprintf("batch too large (max %d)", max)))
-		return true
-	}
-	replies := make([][]byte, len(items))
-	afters := make([]func(bool), len(items))
-	var iwg sync.WaitGroup
-	for i, item := range items {
-		if !acquire() {
-			// No reply was delivered. Release reserved subscriptions without
-			// starting pumps for IDs the client never received.
-			iwg.Wait()
-			for _, a := range afters {
-				if a != nil {
-					a(false)
-				}
-			}
-			return false
-		}
-		iwg.Add(1)
-		c.wg.Add(1)
-		go func(i int, item []byte) {
-			defer c.wg.Done()
-			defer iwg.Done()
-			defer release()
-			defer func() {
-				if rec := recover(); rec != nil {
-					telemetry.MetricUnexpectedPanicTotal.WithLabelValues("ws-message", c.networkId, common.ErrorFingerprint(rec)).Inc()
-					c.lg.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).Msg("unexpected panic handling websocket batch item")
-					c.closeWith(websocket.StatusInternalError, "internal error")
-				}
-			}()
-			item = bytes.TrimSpace(item)
-			reply, after := c.handleOne(item)
-			if isJsonRpcNotification(item) {
-				reply = nil
-			}
-			replies[i], afters[i] = reply, after
-		}(i, item)
-	}
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
-		iwg.Wait()
-		var buf bytes.Buffer
-		buf.WriteByte('[')
-		n := 0
-		for _, r := range replies {
-			if r == nil {
-				continue
-			}
-			if n > 0 {
-				buf.WriteByte(',')
-			}
-			buf.Write(r)
-			n++
-		}
-		buf.WriteByte(']')
-		delivered := false
-		if buf.Len() > wsMaxBatchResponseBytes {
-			c.send(errorReply(nil, int(common.JsonRpcErrorCapacityExceeded), fmt.Sprintf("batch response too large (max %d bytes)", wsMaxBatchResponseBytes)))
-			for _, a := range afters {
-				if a != nil {
-					a(false)
-				}
-			}
-			return
-		} else if n > 0 {
-			delivered = c.send(buf.Bytes())
-		}
-		for _, a := range afters {
-			if a != nil {
-				a(delivered)
-			}
-		}
-	}()
-	return true
-}
-
-// isJsonRpcNotification reports a well-formed request object with no "id"
-// member. Malformed items always get an error entry.
-func isJsonRpcNotification(item []byte) bool {
-	var m map[string]json.RawMessage
-	if json.Unmarshal(item, &m) != nil {
-		return false
-	}
-	_, hasId := m["id"]
-	method, hasMethod := m["method"]
-	return !hasId && hasMethod && len(method) > 2
-}
-
-// handleOne processes one request object and returns its reply (nil when
-// nothing should be sent) and an optional hook to run once the reply is
-// enqueued (used to start subscription pumps).
+// handleOne serves the subscription-only contract: eth_subscribe and
+// eth_unsubscribe. Batches and every other method are rejected; ordinary
+// JSON-RPC calls belong on HTTP.
 func (c *wsConn) handleOne(trimmed []byte) ([]byte, func(bool)) {
 	if len(trimmed) > 0 && trimmed[0] == '[' {
-		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "nested batch is not allowed"), nil
+		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "batch requests are not supported over websocket"), nil
 	}
-	var req wsRequest
 	if !json.Valid(trimmed) {
 		return errorReply(nil, int(common.JsonRpcErrorParseException), "parse error"), nil
 	}
+	var req wsRequest
 	// Syntactically valid JSON that is not a request object is -32600.
 	if err := json.Unmarshal(trimmed, &req); err != nil || req.Method == "" {
 		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "invalid request"), nil
@@ -681,59 +541,29 @@ func (c *wsConn) handleOne(trimmed []byte) ([]byte, func(bool)) {
 	if len(req.ID) == 0 {
 		req.ID = json.RawMessage("null")
 	}
-
-	startedAt := time.Now()
+	if req.Method != "eth_subscribe" && req.Method != "eth_unsubscribe" {
+		return errorReply(req.ID, int(common.JsonRpcErrorUnsupportedException), fmt.Sprintf("method not supported over websocket: %s (use HTTP)", req.Method)), nil
+	}
 	nq := common.NewNormalizedRequest(trimmed)
-	nq.ForwardHeaders = make(http.Header)
 	nq.SetClientIP(c.clientIP)
-	ctx := common.StartRequestSpan(c.ctx, nq)
-
-	res, err := c.admit(ctx, nq, req.Method)
-	if err == nil {
-		switch req.Method {
-		case "eth_subscribe":
-			reply, after := c.subscribe(ctx, nq, &req)
-			common.EndRequestSpan(ctx, nil, nil)
-			return reply, after
-		case "eth_unsubscribe":
-			reply := c.unsubscribe(&req)
-			common.EndRequestSpan(ctx, nil, nil)
-			return reply, nil
-		}
-		fres, ferr := c.project.Forward(ctx, c.networkId, nq)
-		if ferr != nil {
-			if fres != nil {
-				go fres.Release()
-			}
-			body := processErrorBody(c.lg, &startedAt, nq, ferr, c.ws.s.serverCfg.IncludeErrorDetails)
-			common.EndRequestSpan(ctx, nil, ferr)
-			return c.render(body), nil
-		}
-		common.EndRequestSpan(ctx, fres, nil)
-		return c.render(fres), nil
+	if err := c.admit(c.ctx, nq, req.Method); errors.Is(err, errWsMethodDenied) {
+		return errorReply(req.ID, int(common.JsonRpcErrorUnsupportedException), "method not supported: "+req.Method), nil
+	} else if err != nil {
+		now := time.Now()
+		return c.render(processErrorBody(c.lg, &now, nq, err, c.ws.s.serverCfg.IncludeErrorDetails, common.NetworkArchitecture(c.network.Architecture()))), nil
 	}
-	if errors.Is(err, errSkipForward) {
-		common.EndRequestSpan(ctx, nil, nil)
-		return c.render(res), nil
+	if req.Method == "eth_unsubscribe" {
+		return c.unsubscribe(&req), nil
 	}
-	body := processErrorBody(c.lg, &startedAt, nq, err, c.ws.s.serverCfg.IncludeErrorDetails, common.NetworkArchitecture(c.network.Architecture()))
-	common.EndRequestSpan(ctx, nil, err)
-	return c.render(body), nil
+	return c.subscribe(c.ctx, nq, &req)
 }
 
 func (c *wsConn) render(v interface{}) []byte {
 	var buf bytes.Buffer
 	var err error
-	switch r := v.(type) {
-	case *common.NormalizedResponse:
-		if r == nil {
-			return nil
-		}
-		_, err = r.WriteTo(&buf)
-		go r.Release()
-	case *HttpJsonRpcErrorResponse:
+	if r, ok := v.(*HttpJsonRpcErrorResponse); ok {
 		_, err = writeJsonRpcError(&buf, r)
-	default:
+	} else {
 		err = common.SonicCfg.NewEncoder(&buf).Encode(v)
 	}
 	if err != nil {
@@ -743,27 +573,13 @@ func (c *wsConn) render(v interface{}) []byte {
 	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
-// admit applies the same gating as HTTP: validation, forward headers,
-// ignore/allow methods, per-message consumer auth, trusted user header and
-// request enrichment. Returning (res, err) mirrors Forward so errors share
-// a single serialization path.
-func (c *wsConn) admit(ctx context.Context, nq *common.NormalizedRequest, method string) (interface{}, error) {
+// admit applies the HTTP gates relevant to subscriptions: validation,
+// ignore/allow methods and per-message consumer auth.
+func (c *wsConn) admit(ctx context.Context, nq *common.NormalizedRequest, method string) error {
 	if err := nq.Validate(); err != nil {
-		return nil, err
+		return err
 	}
 	pc := c.project.Config
-	headers := c.req.Header
-	for _, matchKey := range pc.ForwardHeaders {
-		for key, values := range headers {
-			if ok, err := common.WildcardMatch(matchKey, key); err != nil {
-				return nil, err
-			} else if ok {
-				for _, v := range values {
-					nq.ForwardHeaders.Add(matchKey, v)
-				}
-			}
-		}
-	}
 	handle := true
 	for _, m := range pc.IgnoreMethods {
 		if ok, _ := common.WildcardMatch(m, method); ok {
@@ -778,37 +594,21 @@ func (c *wsConn) admit(ctx context.Context, nq *common.NormalizedRequest, method
 		}
 	}
 	if !handle {
-		return &HttpJsonRpcErrorResponse{
-			Jsonrpc: "2.0",
-			Id:      nq.ID(),
-			Error: map[string]interface{}{
-				"code":    int(common.JsonRpcErrorUnsupportedException),
-				"message": fmt.Sprintf("method not supported: %s", method),
-			},
-			Request: nq,
-		}, errSkipForward
+		return errWsMethodDenied
 	}
 	user, err := c.ws.authenticate(ctx, c.project, c.req, method, nq)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	nq.SetUser(user)
 	if pc.TrustUserIdHeader && nq.User() == nil {
-		nq.SetUserFromTrustedHeader(headers.Get(common.HeaderUserId))
+		nq.SetUserFromTrustedHeader(c.req.Header.Get(common.HeaderUserId))
 	}
 	nq.SetNetwork(c.network)
-	nq.ApplyDirectiveDefaults(c.network.Config().DirectiveDefaults)
-	uaMode := common.UserAgentTrackingModeSimplified
-	if pc.UserAgentMode != "" {
-		uaMode = pc.UserAgentMode
-	}
-	nq.SetAllowClientDirectiveMatcher(c.project.clientDirectiveMatcherFor(nq.User()))
-	nq.EnrichFromHttp(headers, c.req.URL.Query(), uaMode)
-	return nil, nil
+	return nil
 }
 
-// errSkipForward carries a pre-built response through the error path.
-var errSkipForward = errors.New("ws: response prepared without forwarding")
+var errWsMethodDenied = errors.New("ws: method denied by project method lists")
 
 func newSubscriptionId() string {
 	var b [16]byte

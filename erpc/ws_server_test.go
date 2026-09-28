@@ -147,7 +147,7 @@ func subCount(t *testing.T, e *ERPC) int {
 	return nw.HeadCache().SubscriberCount()
 }
 
-func TestWs_SubscriptionsReorgAndRpc(t *testing.T) {
+func TestWs_SubscriptionsReorg(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
 	_, _, base, shutdown, e := createServerTestFixtures(wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
@@ -156,11 +156,6 @@ func TestWs_SubscriptionsReorgAndRpc(t *testing.T) {
 
 	w, _, err := dialWs(t, wsURL(base, ""), nil)
 	require.NoError(t, err)
-
-	// Ordinary RPC over WS goes through the normal forward path.
-	r := w.call("eth_getBlockByNumber", `["0x13",false]`)
-	require.Nil(t, r.Error)
-	require.Contains(t, string(r.Result), up.HashAt(19))
 
 	heads := w.call("eth_subscribe", `["newHeads"]`)
 	require.Nil(t, heads.Error)
@@ -246,7 +241,7 @@ func TestWs_AuthOriginAndDisabled(t *testing.T) {
 
 	w2, _, err := dialWs(t, wsURL(base, ""), http.Header{"X-ERPC-Secret-Token": {"s3cret"}})
 	require.NoError(t, err)
-	require.Nil(t, w2.call("eth_getBlockByNumber", `["0x13",false]`).Error)
+	require.Nil(t, w2.call("eth_subscribe", `["newHeads"]`).Error)
 }
 
 func TestWs_DisabledAndNoHeadCache(t *testing.T) {
@@ -263,16 +258,15 @@ func TestWs_DisabledAndNoHeadCache(t *testing.T) {
 	}
 	shutdown()
 
-	// WS enabled but no head cache: RPC works, subscriptions return an error.
+	// WS enabled but no head cache for the network: the upgrade is refused
+	// before accepting, so no connection can fall back to upstream calls.
 	cfg2 := headCacheTestConfig(up.URL(), nil)
+	cfg2.Server.WebSocket = &common.WebSocketServerConfig{Enabled: true}
 	_, _, base2, shutdown2, _ := createServerTestFixtures(cfg2, t)
 	defer shutdown2()
-	w, _, err := dialWs(t, wsURL(base2, ""), nil)
-	require.NoError(t, err)
-	r := w.call("eth_subscribe", `["newHeads"]`)
-	require.NotNil(t, r.Error)
-	require.Contains(t, r.Error.Message, "head cache")
-	require.Nil(t, w.call("eth_getBlockByNumber", `["0x13",false]`).Error)
+	_, resp, err = dialWs(t, wsURL(base2, ""), nil)
+	require.Error(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
 func TestWs_Caps(t *testing.T) {
@@ -299,7 +293,7 @@ func TestWs_Caps(t *testing.T) {
 	require.Contains(t, over.Error.Message, "too many subscriptions")
 
 	// Oversized frame closes the connection with 1009.
-	big := `{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":["` + strings.Repeat("a", 2048) + `"]}`
+	big := `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{"address":"` + strings.Repeat("a", 2048) + `"}]}`
 	require.NoError(t, b.c.Write(context.Background(), websocket.MessageText, []byte(big)))
 	select {
 	case err := <-b.done:
@@ -457,14 +451,14 @@ func TestWs_PingAndReauthClosesExpiredJwt(t *testing.T) {
 	case <-time.After(8 * time.Second):
 		t.Fatal("expired JWT kept streaming")
 	}
-	require.Nil(t, long.call("eth_chainId", `[]`).Error)
+	require.Nil(t, long.call("eth_subscribe", `["newHeads"]`).Error)
 }
 
 func TestWs_PerProjectCap(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
 	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true, MaxConnections: 10, MaxConnectionsPerProject: 1})
-	other := headCacheTestConfig(up.URL(), nil).Projects[0]
+	other := wsHeadCacheCfg(up, nil).Projects[0]
 	other.Id = "other"
 	cfg.Projects = append(cfg.Projects, other)
 	_, _, base, shutdown, _ := createServerTestFixtures(cfg, t)
