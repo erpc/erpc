@@ -346,6 +346,53 @@ func TestExtractJsonRpcError_MempoolPolicyRejections(t *testing.T) {
 	}
 }
 
+// A TX_REPLAY_ATTACK rejection of an already-accepted transaction normalizes
+// to an "already known" nonce exception; other "replay attack" wording does not.
+func TestExtractJsonRpcError_ReplayAttackIdempotency(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		message      string
+		alreadyKnown bool
+	}{
+		{
+			name:         "observed errmsg token",
+			message:      "errcode: 113, errmsg: TX_REPLAY_ATTACK",
+			alreadyKnown: true,
+		},
+		{
+			name:    "other replay attack wording",
+			message: "replay attack detected",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(
+				int(common.JsonRpcErrorServerSideException),
+				tc.message,
+				"",
+			)
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nil, jr, nil)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			var ne *common.ErrEndpointNonceException
+			isAlreadyKnown := errors.As(err, &ne) &&
+				ne.Details["nonceExceptionReason"] == string(common.NonceExceptionReasonAlreadyKnown)
+			if isAlreadyKnown != tc.alreadyKnown {
+				t.Fatalf("expected alreadyKnown=%v, got %T: %v", tc.alreadyKnown, err, err)
+			}
+		})
+	}
+}
+
 // TestExtractJsonRpcError_RethRevertError covers reth's Debug-formatted revert,
 // returned as -32603 with the revert bytes only in the message (seen on HyperEVM
 // nodes for eth_estimateGas pinned to a block number or "pending"). It is an

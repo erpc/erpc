@@ -7,6 +7,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testNetwork is a simple test implementation of common.Network interface for this file
@@ -193,4 +194,149 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		assert.NotNil(t, result)
 		assert.True(t, result.IsResultEmptyish())
 	})
+}
+
+// tipFetchNetwork serves any concrete block number from Forward so the tip
+// re-fetch in enforceHighestBlock can succeed.
+type tipFetchNetwork struct {
+	testNetwork
+	finalizedTip int64
+}
+
+func (n *tipFetchNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+	return n.finalizedTip
+}
+
+func (n *tipFetchNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	rqj, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	jrr, err := common.NewJsonRpcResponse(rqj.ID, map[string]interface{}{"number": rqj.Params[0]}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
+}
+
+// A cached response carries no upstream. When it lags the tip, enforcement
+// must re-fetch the tip instead of dereferencing the missing upstream.
+func TestEnforceHighestBlock_CachedResponseWithoutUpstream(t *testing.T) {
+	cases := []struct {
+		tag           string
+		latestTip     int64
+		finalizedTip  int64
+		cachedNumber  string
+		expectedBlock int64
+	}{
+		{tag: "latest", latestTip: 0x101, cachedNumber: "0x100", expectedBlock: 0x101},
+		{tag: "finalized", latestTip: 0x200, finalizedTip: 0x101, cachedNumber: "0x100", expectedBlock: 0x101},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.tag, func(t *testing.T) {
+			network := &tipFetchNetwork{
+				testNetwork:  testNetwork{highestLatest: tc.latestTip},
+				finalizedTip: tc.finalizedTip,
+			}
+			req := common.NewNormalizedRequestFromJsonRpcRequest(
+				common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{tc.tag, false}),
+			)
+			req.SetDirectives(&common.RequestDirectives{EnforceHighestBlock: true})
+			jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"number": tc.cachedNumber}, nil)
+			assert.NoError(t, err)
+			cached := common.NewNormalizedResponse().WithRequest(req).WithFromCache(true).WithJsonRpcResponse(jrr)
+			assert.Nil(t, cached.Upstream())
+
+			var out *common.NormalizedResponse
+			assert.NotPanics(t, func() {
+				out, err = enforceHighestBlock(context.Background(), network, req, cached, nil)
+			})
+			assert.NoError(t, err)
+			assert.NotNil(t, out)
+			_, bn, err := ExtractBlockReferenceFromResponse(context.Background(), out)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedBlock, bn)
+		})
+	}
+}
+
+// refetchNetwork scopes the latest tip to the request's use-upstream selector
+// (as Network does), answers every tip re-fetch with null and records the
+// selector each re-fetch was forwarded with.
+type refetchNetwork struct {
+	testNetwork
+	scopedTip int64
+	forwarded []string
+}
+
+func (n *refetchNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+	if req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req.Directives().UseUpstream != "" {
+		return n.scopedTip
+	}
+	return n.highestLatest
+}
+
+func (n *refetchNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	n.forwarded = append(n.forwarded, req.Directives().UseUpstream)
+	jrr, err := common.NewJsonRpcResponse(1, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
+}
+
+func latestBlockResponse(t *testing.T, useUpstream string, number string, fromCache bool) (*common.NormalizedRequest, *common.NormalizedResponse) {
+	req := common.NewNormalizedRequestFromJsonRpcRequest(
+		common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"latest", false}),
+	)
+	req.SetDirectives(&common.RequestDirectives{EnforceHighestBlock: true, UseUpstream: useUpstream})
+	jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"number": number, "hash": "0x01"}, nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithFromCache(fromCache).WithJsonRpcResponse(jrr)
+	if !fromCache {
+		resp.SetUpstream(common.NewFakeUpstream("rpc1"))
+	}
+	return req, resp
+}
+
+// When the tip re-fetch misses, the stale-but-valid block is served rather
+// than an error, after a single re-fetch.
+func TestEnforceHighestBlock_LatestRefetchMissFailsOpen(t *testing.T) {
+	for _, fromCache := range []bool{false, true} {
+		network := &refetchNetwork{testNetwork: testNetwork{highestLatest: 100}}
+		req, resp := latestBlockResponse(t, "", "0x63", fromCache)
+
+		out, err := enforceHighestBlock(context.Background(), network, req, resp, nil)
+		require.NoError(t, err)
+		_, bn, err := ExtractBlockReferenceFromResponse(context.Background(), out)
+		require.NoError(t, err)
+		assert.Equal(t, int64(99), bn)
+
+		// The stale responder is excluded; a cache hit has none to exclude.
+		want := "!rpc1"
+		if fromCache {
+			want = ""
+		}
+		assert.Equal(t, []string{want}, network.forwarded, "fromCache=%v", fromCache)
+	}
+}
+
+// A use-upstream-scoped request is enforced against its group's tip, and the
+// re-fetch keeps the caller's selector.
+func TestEnforceHighestBlock_KeepsUseUpstreamScope(t *testing.T) {
+	for _, fromCache := range []bool{false, true} {
+		network := &refetchNetwork{testNetwork: testNetwork{highestLatest: 2000}, scopedTip: 1000}
+
+		req, resp := latestBlockResponse(t, "slow*", "0x3e8", fromCache)
+		out, err := enforceHighestBlock(context.Background(), network, req, resp, nil)
+		require.NoError(t, err)
+		assert.Same(t, resp, out)
+		assert.Empty(t, network.forwarded, "fromCache=%v: at the group tip", fromCache)
+
+		req, resp = latestBlockResponse(t, "slow*", "0x3e7", fromCache)
+		_, err = enforceHighestBlock(context.Background(), network, req, resp, nil)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"slow*"}, network.forwarded, "fromCache=%v", fromCache)
+	}
 }
