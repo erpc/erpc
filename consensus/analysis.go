@@ -440,20 +440,44 @@ func isAgreedUponError(err error) bool {
 }
 
 // errorToConsensusHash generates a comparable hash from an error.
+//
+// Missing-data errors hash by verdict, not by number. A provider's JSON-RPC code
+// for "I do not have this" reports its own storage layout, not the chain: agave
+// answers a permanently absent slot with -32007 when check_blockstore_root
+// settles it locally and -32009 when check_bigtable_result had to ask long-term
+// storage, and answers a block it cannot serve with -32001 when its ledger was
+// pruned below the slot and -32004 when the slot is above its rooted tip. Two
+// honest upstreams therefore landed in different groups and disputed under
+// returnError, which is the one outcome neither of them claimed.
+//
+// EVM is unaffected in practice: every EVM missing-data site already normalizes
+// to JsonRpcErrorMissingData, so those responses shared a group before this and
+// share one now.
 func errorToConsensusHash(err error) string {
 	if err == nil {
 		return ""
 	}
+	hash := "error:generic"
 	var jre *common.ErrJsonRpcExceptionInternal
-	if errors.As(err, &jre) {
-		return fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
-	}
-	if se, ok := err.(common.StandardError); ok {
-		if base := se.Base(); base != nil {
-			return string(base.Code)
+	switch {
+	case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
+		hash = "missingdata"
+	case errors.As(err, &jre):
+		hash = fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
+	default:
+		if se, ok := err.(common.StandardError); ok {
+			if base := se.Base(); base != nil {
+				hash = string(base.Code)
+			}
 		}
 	}
-	return "error:generic"
+	// "Skipped for good" and "not indexed yet" are different claims about the
+	// chain, and only a dispute between them reaches the wait-and-retry that can
+	// settle it, so permanence stays part of the key.
+	if common.IsPermanentlyMissingData(err) {
+		hash += ":permanent"
+	}
+	return hash
 }
 
 // resultToJsonRpcResponse safely converts a result to a JsonRpcResponse.
