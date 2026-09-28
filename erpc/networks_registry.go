@@ -175,6 +175,17 @@ func NewNetwork(
 		nwCfg.Architecture = common.ArchitectureEvm
 	}
 
+	// Keyed per project since each project has its own upstreams; tolerates
+	// the same rollback as upstream state pollers.
+	if upstreamsRegistry != nil {
+		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
+			network.latestBlockShared = ssr.GetCounterInt64(
+				fmt.Sprintf("network/%s/%s/latestBlock", projectId, netId),
+				evm.DefaultToleratedBlockHeadRollback,
+			)
+		}
+	}
+
 	// Wire the architecture handler so per-network hooks dispatch correctly.
 	// prepareNetwork also sets this; keeping it here means tests that construct
 	// networks via NewNetwork directly get the same behavior as production.
