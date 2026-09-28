@@ -841,6 +841,96 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	connector.AssertExpectations(t)
 }
 
+// The background refresh gets at least the caller's context deadline rather
+// than being capped at fallbackTimeout.
+func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
+	// refreshFn deliberately returns an error so applyRefreshResult short-circuits
+	// before scheduleBackgroundPushCurrent, avoiding a background Publish goroutine
+	// that would race across t.Run boundaries.
+	refreshErr := errors.New("intentional")
+	makeCounter := func(t *testing.T, registry *sharedStateRegistry, key string) *counterInt64 {
+		t.Helper()
+		c := &counterInt64{
+			registry:         registry,
+			key:              key,
+			ignoreRollbackOf: 1024,
+		}
+		c.value.Store(5)
+		c.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+		return c
+	}
+
+	t.Run("ctx deadline longer than fallback is honored", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 500 * time.Millisecond
+		registry.updateMaxWait = 5 * time.Second
+
+		counter := makeCounter(t, registry, "test-ctx-deadline")
+
+		const callerDeadline = 4 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+		defer cancel()
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.Greater(t, fnTimeout, registry.fallbackTimeout,
+			"fn timeout should honor caller ctx deadline when longer than fallbackTimeout")
+		assert.LessOrEqual(t, fnTimeout, callerDeadline)
+	})
+
+	t.Run("no ctx deadline falls back to fallbackTimeout", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 500 * time.Millisecond
+
+		counter := makeCounter(t, registry, "test-no-deadline")
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(context.Background(), time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.LessOrEqual(t, fnTimeout, registry.fallbackTimeout,
+			"fn timeout should be bounded by fallbackTimeout when caller has no deadline")
+	})
+
+	t.Run("ctx deadline shorter than fallback uses fallback", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 2 * time.Second
+		registry.updateMaxWait = 5 * time.Second
+
+		counter := makeCounter(t, registry, "test-short-deadline")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.Greater(t, fnTimeout, 500*time.Millisecond,
+			"fn timeout should use fallbackTimeout when caller deadline is shorter")
+	})
+}
+
 func TestCounterInt64_ReaderStarvation(t *testing.T) {
 	t.Run("GetValue NOT blocked by long-running TryUpdateIfStale", func(t *testing.T) {
 		counter := &counterInt64{
@@ -1743,6 +1833,53 @@ func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
 	})
 }
 
+func TestCounterInt64_TryUpdate_NoRemoteWriteWithoutAdvance(t *testing.T) {
+	registry, connector, ctx := setupTest("no-advance")
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(100)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+
+	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 100))
+	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 99))
+	time.Sleep(50 * time.Millisecond)
+	connector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	connector.AssertNotCalled(t, "PublishCounterInt64", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// A lagging instance advancing its local value must not overwrite a higher
+// remote value just because its local timestamp is newer.
+func TestCounterInt64_BackgroundPush_DoesNotRegressHigherRemote(t *testing.T) {
+	registry, connector, ctx := setupTest("no-regress")
+
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil)
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(`{"v":105,"t":1,"b":"other-instance"}`), nil)
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(100)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+
+	counter.TryUpdate(ctx, 101)
+	assert.Eventually(t, func() bool { return counter.GetValue() == 105 }, time.Second, 10*time.Millisecond,
+		"local counter should adopt the higher remote value")
+	connector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
 // TestCounterInt64_ZeroIsNotAHeadObservation covers the case where a shared head
 // counter is asked to move to zero.
 //
@@ -1861,4 +1998,40 @@ func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
 		assert.True(t, updated, "earliest-block counters legitimately move to 0")
 		assert.Equal(t, int64(0), counter.GetValue())
 	})
+}
+
+// A refresh that outlives updateMaxWait finishes in the background. When the
+// caller's deadline extends fnTimeout past fallbackTimeout, a result that
+// arrives after fallbackTimeout must still be applied.
+func TestCounterInt64_TryUpdateIfStale_AsyncResultWithinExtendedTimeoutIsApplied(t *testing.T) {
+	registry, connector, _ := setupTest("my-dev")
+	registry.fallbackTimeout = 200 * time.Millisecond
+	registry.updateMaxWait = 20 * time.Millisecond
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test-async-extended", mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "my-dev/test-async-extended", mock.Anything).Return(nil, errors.New("not acquired")).Maybe()
+
+	counter := &counterInt64{registry: registry, key: "my-dev/test-async-extended", ignoreRollbackOf: 1024}
+	counter.value.Store(5)
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	refreshFn := func(fnCtx context.Context) (int64, error) {
+		select {
+		case <-time.After(2 * time.Second):
+			return 42, nil
+		case <-fnCtx.Done():
+			return 0, fnCtx.Err()
+		}
+	}
+
+	value, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+	if !assert.NoError(t, err) {
+		return
+	}
+	assert.Equal(t, int64(5), value, "foreground returns the current value once updateMaxWait passes")
+
+	assert.Eventually(t, func() bool { return counter.GetValue() == 42 }, 4*time.Second, 20*time.Millisecond,
+		"result delivered after fallbackTimeout but within the caller's deadline must be applied")
 }
