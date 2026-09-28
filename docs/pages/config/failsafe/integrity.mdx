@@ -137,10 +137,10 @@ request-aware: a `use-upstream` selector scopes it to the targeted subset. <Sour
 
 **Highest-block enforcement — `eth_getBlockByNumber[latest/finalized]`.** Reads
 `dirs.EnforceHighestBlock`. If the returned block is behind the network-known highest,
-eRPC re-requests that block (`SkipCacheRead=true`) — excluding the upstream that answered
-(`UseUpstream=!<id>`) unless the request already carries a `use-upstream` selector, which
-is kept; `pickHighestBlock` keeps the higher of the two — protecting against a corrupted
-state pointer. Cache hits are enforced the same way, so a cached block behind the tip is
+eRPC re-requests that block (`SkipCacheRead=true`), keeping the request's own
+`use-upstream` selector if any; the upstream that answered is not excluded, since on fast
+chains it is often the only one that already has the tip block. `pickHighestBlock` keeps
+the higher of the two — protecting against a corrupted state pointer. Cache hits are enforced the same way, so a cached block behind the tip is
 re-fetched rather than served. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="111-283" />
 
 **Stale-tip cache write guard.** Under `enforceHighestBlock`, a realtime-finality

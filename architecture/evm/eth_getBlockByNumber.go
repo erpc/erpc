@@ -182,7 +182,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			}
 		}
 
-		nnr, err := forwardGetBlockByNumber(ctx, network, nq, nr, respBlockNumber, highestBlockNumber, itx)
+		nnr, err := forwardGetBlockByNumber(ctx, network, nq, highestBlockNumber, itx)
 		// This is needed in case highest block number is corrupted somehow and for example
 		// it is requesting a very high non-existent block number.
 		return pickHighestBlock(ctx, nnr, nr, err)
@@ -210,7 +210,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 				).Inc()
 			}
 		}
-		nnr, err := forwardGetBlockByNumber(ctx, network, nq, nr, respBlockNumber, highestBlockNumber, itx)
+		nnr, err := forwardGetBlockByNumber(ctx, network, nq, highestBlockNumber, itx)
 		return pickHighestBlock(ctx, nnr, nr, err)
 	default:
 		return nr, re
@@ -273,15 +273,13 @@ func enforceNonNullBlock(ctx context.Context, nq *common.NormalizedRequest, nr *
 	)
 }
 
-// forwardGetBlockByNumber re-fetches blockNumber for original. Without a
-// caller use-upstream selector, the stale responder is excluded since it
-// likely lacks the block.
+// forwardGetBlockByNumber re-fetches blockNumber for original, keeping the
+// caller's directives (including any use-upstream selector) and skipping the
+// cache.
 func forwardGetBlockByNumber(
 	ctx context.Context,
 	network common.Network,
 	original *common.NormalizedRequest,
-	stale *common.NormalizedResponse,
-	staleBlockNumber int64,
 	blockNumber int64,
 	includeTx bool,
 ) (*common.NormalizedResponse, error) {
@@ -293,11 +291,11 @@ func forwardGetBlockByNumber(
 		return nil, err
 	}
 	newReq := common.NewNormalizedRequestFromJsonRpcRequest(request)
+	// The upstream that answered stale is not excluded: on fast chains it is
+	// often the one whose own feed just delivered the tip, i.e. the only one
+	// that already has the block.
 	dr := original.Directives().Clone()
 	dr.SkipCacheRead = "true"
-	if dr.UseUpstream == "" && staleBlockNumber > 0 && !stale.FromCache() {
-		dr.UseUpstream = fmt.Sprintf("!%s", stale.UpstreamId())
-	}
 	newReq.SetDirectives(dr)
 	newReq.SetNetwork(network)
 	newReq.CopyHttpContextFrom(original)
