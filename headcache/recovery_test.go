@@ -115,3 +115,27 @@ func TestCache_WindowJumpClosesSubscription(t *testing.T) {
 	cache.Tick(context.Background())
 	require.True(t, sub.closed.Load(), "coalesced snapshots cannot silently skip heads")
 }
+
+// The store borrows a connector-owned client: Stop releases the lease but must
+// never close the client, and a nil client (connector reconnecting) fails
+// closed as ErrStoreUnavailable instead of panicking.
+func TestCache_StopNeverClosesBorrowedClient(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	defer client.Close()
+	var current redis.UniversalClient = client
+	store := NewRedisStoreFunc(func() redis.UniversalClient { return current }, RedisStoreOptions{})
+	chain := newFakeChain(4)
+	cache := New(testOpts("leader"), store, chain, chain.head, nil)
+	cache.Start(context.Background())
+	require.Eventually(t, func() bool { return cache.Head() > 0 }, 5*time.Second, 10*time.Millisecond)
+	cache.Stop()
+	require.NoError(t, client.Ping(context.Background()).Err(), "Stop must not close the borrowed client")
+	lease, err := store.AcquireLease(context.Background(), testOpts("leader").Scope, "other", time.Second)
+	require.NoError(t, err, "Stop released the lease")
+	require.NotNil(t, lease)
+
+	current = nil
+	_, err = store.LoadSnapshot(context.Background(), testOpts("leader").Scope)
+	require.ErrorIs(t, err, ErrStoreUnavailable)
+}
