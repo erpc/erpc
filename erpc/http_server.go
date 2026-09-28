@@ -23,8 +23,10 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/gorilla/websocket"
 	"github.com/klauspost/compress/gzip"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -53,6 +55,9 @@ type HttpServer struct {
 	trustedForwarderIPs     map[string]struct{}
 	trustedIPHeaders        []string
 	resolvedResponseHeaders map[string]string
+	subscriptionManager     *SubscriptionManager
+	activeWsConns           sync.Map // connId -> *WsConnection
+	reqMaxTimeout           time.Duration
 }
 
 func NewHttpServer(
@@ -61,6 +66,7 @@ func NewHttpServer(
 	cfg *common.ServerConfig,
 	healthCheckCfg *common.HealthCheckConfig,
 	adminCfg *common.AdminConfig,
+	indexerCfg *common.IndexerConfig,
 	erpc *ERPC,
 ) (*HttpServer, error) {
 	reqMaxTimeout := 150 * time.Second
@@ -85,15 +91,25 @@ func NewHttpServer(
 
 	gzipPool := util.NewGzipReaderPool()
 
+	subMgrLogger := logger.With().Str("component", "subscriptions").Logger()
+	indexerLogger := logger.With().Str("component", "indexer").Logger()
+	indexerOpts := indexer.Options{}
+	if indexerCfg != nil {
+		indexerOpts.DedupWindowSize = indexerCfg.DedupWindowSize
+	}
+	idx := indexer.New(&indexerLogger, indexerOpts)
+
 	srv := &HttpServer{
-		logger:         logger,
-		appCtx:         ctx,
-		serverCfg:      cfg,
-		healthCheckCfg: healthCheckCfg,
-		adminCfg:       adminCfg,
-		erpc:           erpc,
-		draining:       &draining,
-		gzipPool:       gzipPool,
+		logger:              logger,
+		appCtx:              ctx,
+		serverCfg:           cfg,
+		healthCheckCfg:      healthCheckCfg,
+		adminCfg:            adminCfg,
+		erpc:                erpc,
+		draining:            &draining,
+		gzipPool:            gzipPool,
+		subscriptionManager: NewSubscriptionManager(&subMgrLogger, idx),
+		reqMaxTimeout:       reqMaxTimeout,
 	}
 
 	if cfg != nil {
@@ -228,11 +244,17 @@ func NewHttpServer(
 		if srv.serverV6 != nil {
 			srv.serverV6.SetKeepAlivesEnabled(false)
 		}
+		// Hijacked WebSocket connections are not affected by the above, so
+		// close them now: clients reconnect elsewhere while in-flight
+		// requests get the grace window to finish.
+		var grace time.Duration
+		if srv.serverCfg.WaitBeforeShutdown != nil {
+			grace = srv.serverCfg.WaitBeforeShutdown.Duration()
+		}
+		go srv.shutdownWebSockets(logger, grace)
 		// wait for readiness probe to mark the pod NotReady
 		// ideally (period_seconds * failure_threshold) + safety margin (1s)
-		if srv.serverCfg.WaitBeforeShutdown != nil {
-			time.Sleep(srv.serverCfg.WaitBeforeShutdown.Duration())
-		}
+		time.Sleep(grace)
 		if err := srv.Shutdown(logger); err != nil {
 			logger.Error().Msgf("http server forced to shutdown: %s", err)
 		} else {
@@ -369,6 +391,27 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 		}
 
+		// A WebSocket connection serves the one network in its URL.
+		if isWebSocketUpgradeRequest(r) {
+			if architecture == "" || chainId == "" {
+				handleErrorResponse(
+					httpCtx,
+					&lg,
+					&startedAt,
+					nil,
+					common.NewErrInvalidUrlPath("websocket connections must target a network, for example /<project>/<architecture>/<chainId>", r.URL.Path),
+					w,
+					encoder,
+					writeFatalError,
+					&common.TRUE,
+					s.executionHeadersMode(),
+				)
+				return
+			}
+			s.handleWebSocket(w, r, &lg, project, architecture, chainId)
+			return
+		}
+
 		// Handle gzipped request bodies
 		var bodyReader io.Reader = r.Body
 		if r.Header.Get("Content-Encoding") == "gzip" {
@@ -498,63 +541,26 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
-				if project != nil {
-					for _, matchKey := range project.Config.ForwardHeaders {
-						for key, values := range headers {
-							matches, err := common.WildcardMatch(matchKey, key)
-							if err != nil {
-								responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
-								common.EndRequestSpan(requestCtx, nil, responses[index])
-								return
-							}
-							if matches {
-								for _, value := range values {
-									nq.ForwardHeaders.Add(matchKey, value)
-								}
-							}
-						}
-					}
+				if err := applyForwardHeaders(project, nq, headers); err != nil {
+					responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
+					common.EndRequestSpan(requestCtx, nil, responses[index])
+					return
 				}
 
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
 
-				shouldHandleMethod := true
-
-				if project != nil && project.Config.IgnoreMethods != nil {
-					for _, m := range project.Config.IgnoreMethods {
-						match, err := common.WildcardMatch(m, method)
-						if err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-						if match {
-							shouldHandleMethod = false
-							break
-						}
-					}
-				}
-
-				if project != nil && project.Config.AllowMethods != nil {
-					for _, m := range project.Config.AllowMethods {
-						match, err := common.WildcardMatch(m, method)
-						if err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-						if match {
-							shouldHandleMethod = true
-							break
-						}
-					}
+				shouldHandleMethod, err := isMethodAllowed(project, method)
+				if err != nil {
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
 				}
 
 				if !shouldHandleMethod {
 					jsonrpcVersion := "2.0"
 					var reqId interface{}
-					if jrr, err := nq.JsonRpcRequest(); err != nil {
+					if jrr, _ := nq.JsonRpcRequest(); jrr != nil {
 						jsonrpcVersion = jrr.JSONRPC
 						reqId = jrr.ID
 					}
@@ -573,7 +579,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 
 				var ap *auth.AuthPayload
-				var err error
 
 				if project != nil {
 					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
@@ -704,16 +709,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 				nq.SetNetwork(nw)
 
-				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
-				// Configure how to store User-Agent (raw vs simplified) based on project config
-				uaMode := common.UserAgentTrackingModeSimplified
-				if project != nil {
-					if project.Config.UserAgentMode != "" {
-						uaMode = project.Config.UserAgentMode
-					}
-					nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
-				}
-				nq.EnrichFromHttp(headers, queryArgs, uaMode)
+				applyRequestDirectives(project, nw, nq, headers, queryArgs)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
@@ -1059,7 +1055,7 @@ func (s *HttpServer) parseUrlPath(
 		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm' or 'svm')", ps)
 	}
 
-	if !isPost && !isOptions {
+	if !isPost && !isOptions && !isWebSocketUpgradeRequest(r) {
 		isHealthCheck = true
 	}
 
@@ -2004,6 +2000,8 @@ func (s *HttpServer) createTLSConfig() (*tls.Config, error) {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http servers...")
 
+	s.shutdownWebSockets(logger, 0)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -2045,6 +2043,36 @@ func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	}
 
 	return lastErr
+}
+
+// shutdownWebSockets refuses new WebSocket connections and closes the active
+// ones with GoingAway, giving their in-flight requests up to grace to
+// finish, then waits for subscription cleanup to complete.
+func (s *HttpServer) shutdownWebSockets(logger *zerolog.Logger, grace time.Duration) {
+	s.draining.Store(true)
+
+	var conns []*WsConnection
+	s.activeWsConns.Range(func(_, value interface{}) bool {
+		wsc := value.(*WsConnection)
+		wsc.stop(websocket.CloseGoingAway, "server shutting down", grace)
+		conns = append(conns, wsc)
+		return true
+	})
+	if len(conns) == 0 {
+		return
+	}
+
+	logger.Info().Int("connections", len(conns)).Msg("closing active WebSocket connections...")
+	timeout := time.After(grace + 10*time.Second)
+	for _, wsc := range conns {
+		select {
+		case <-wsc.done:
+		case <-timeout:
+			logger.Warn().Int("connections", len(conns)).Msg("timed out waiting for WebSocket connections to close")
+			return
+		}
+	}
+	logger.Info().Int("connections", len(conns)).Msg("all WebSocket connections closed")
 }
 
 // conditionalGzipWriter wraps ResponseWriter and decides whether to compress
@@ -2176,6 +2204,14 @@ func gzipHandler(next http.Handler) http.Handler {
 	var gzPool = util.NewGzipWriterPool()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A WebSocket handshake has no body to compress and must reach the
+		// upgrader with a ResponseWriter that can be hijacked, which the
+		// gzip writer cannot.
+		if isWebSocketUpgradeRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// The response representation depends on Accept-Encoding, so caches
 		// must be told regardless of whether this response ends up compressed.
 		w.Header().Set("Vary", "Accept-Encoding")
@@ -2324,6 +2360,74 @@ func stripAddrDecorations(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// applyForwardHeaders copies the request headers matching the project's
+// forwardHeaders patterns onto nq.
+func applyForwardHeaders(project *PreparedProject, nq *common.NormalizedRequest, headers http.Header) error {
+	if project == nil {
+		return nil
+	}
+	for _, matchKey := range project.Config.ForwardHeaders {
+		for key, values := range headers {
+			matches, err := common.WildcardMatch(matchKey, key)
+			if err != nil {
+				return err
+			}
+			if matches {
+				for _, value := range values {
+					nq.ForwardHeaders.Add(matchKey, value)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// isMethodAllowed applies the project's ignoreMethods / allowMethods
+// (allowMethods wins).
+func isMethodAllowed(project *PreparedProject, method string) (bool, error) {
+	if project == nil {
+		return true, nil
+	}
+	allowed := true
+	for _, m := range project.Config.IgnoreMethods {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			allowed = false
+			break
+		}
+	}
+	for _, m := range project.Config.AllowMethods {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			allowed = true
+			break
+		}
+	}
+	return allowed, nil
+}
+
+// applyRequestDirectives applies network directive defaults and then the
+// client's own directives from headers/query, subject to the project's
+// allowClientDirectives for the resolved user.
+func applyRequestDirectives(project *PreparedProject, nw *Network, nq *common.NormalizedRequest, headers http.Header, queryArgs map[string][]string) {
+	nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
+	// Configure how to store User-Agent (raw vs simplified) based on project config
+	uaMode := common.UserAgentTrackingModeSimplified
+	if project != nil {
+		if project.Config.UserAgentMode != "" {
+			uaMode = project.Config.UserAgentMode
+		}
+		nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
+	}
+	nq.EnrichFromHttp(headers, queryArgs, uaMode)
 }
 
 // isAdminMethodBlocked returns true when the admin config's DenyMethods/AllowMethods
