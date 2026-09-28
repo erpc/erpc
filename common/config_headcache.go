@@ -146,11 +146,6 @@ type WebSocketServerConfig struct {
 	MaxMessageBytes int64 `yaml:"maxMessageBytes,omitempty" json:"maxMessageBytes,omitempty"`
 	// WriteTimeout bounds each outbound write. Default 10s.
 	WriteTimeout Duration `yaml:"writeTimeout,omitempty" json:"writeTimeout,omitempty" tstype:"Duration"`
-	// Deprecated: no longer read by the WS server once the thin subscription
-	// server lands; retained only until that change is committed.
-	MaxInflightPerConnection int `yaml:"maxInflightPerConnection,omitempty" json:"maxInflightPerConnection,omitempty"`
-	// Deprecated: see MaxInflightPerConnection.
-	MaxBatchSize int `yaml:"maxBatchSize,omitempty" json:"maxBatchSize,omitempty"`
 	// PingInterval is the keepalive ping period. Default 30s.
 	PingInterval Duration `yaml:"pingInterval,omitempty" json:"pingInterval,omitempty" tstype:"Duration"`
 }
