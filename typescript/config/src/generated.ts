@@ -845,17 +845,6 @@ export interface UpstreamRoutingConfig {
    * `"off"` for pay-per-call vendors where shadow traffic eats quota.
    */
   probe?: ProbeMode | "on" | "off";
-  /**
-   * Priority is an explicit integer cost tier. Lower numbers are tried
-   * first; nil means 0. When a network's upstreams carry more than one
-   * distinct priority, the forwarding list is stably sorted by tier
-   * (policy/score order is kept inside a tier) and every eligible tier
-   * stays in the list, so a failure on a cheap tier falls through to a
-   * more expensive tier within the SAME request. Hedges never cross
-   * into a higher tier than the request's first tier. Negative values
-   * are rejected. See docs/pages/config/projects/upstream-priority.mdx.
-   */
-  priority?: number /* int */;
 }
 /**
  * ProbeMode is the per-upstream `routing.probe` enum.
@@ -1373,11 +1362,6 @@ export interface NetworkConfig {
    * network. Merges over the project block (network wins).
    */
   integrity?: IntegrityConfig;
-  /**
-   * CacheFill coordinates cacheable read misses across replicas through the
-   * shared-state connector. Nil or disabled changes nothing.
-   */
-  cacheFill?: CacheFillConfig;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1643,18 +1627,13 @@ export interface EvmNetworkConfig {
    */
   safeBlockSource?: string;
   /**
-   * HeadCache opts into the head-driven full-block/log cache: a local,
+   * HeadCache opts into the head-driven full-block/log cache: a Redis-shared,
    * parent-hash-verified window of recent canonical blocks (with their
    * logs) hydrated from upstreams as the head advances. It serves
    * eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
    * feeds WebSocket subscriptions. Nil or disabled changes nothing.
    */
   headCache?: EvmHeadCacheConfig;
-  /**
-   * HeadPolling selects whether every replica polls upstream head numbers
-   * ("all", default) or one lease holder per network does ("lease").
-   */
-  headPolling?: EvmHeadPollingConfig;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -2088,76 +2067,8 @@ export interface RateLimitStoreConfig {
 }
 
 //////////
-// source: config_coordination.go
-
-/**
- * CacheFillConfig coordinates cacheable read misses across replicas through
- * the shared-state connector. Default off. It only reduces duplicate upstream
- * reads for responses a cache policy actually stores; it is not exactly-once.
- */
-export interface CacheFillConfig {
-  enabled?: boolean;
-  /**
-   * LockTtl is how long the filling replica holds the lock. Default 30s.
-   */
-  lockTtl?: Duration;
-  /**
-   * MaxWait bounds how long a replica waits for another replica's fill
-   * before calling upstream itself. Default 5s.
-   */
-  maxWait?: Duration;
-  /**
-   * PollInterval is how often a waiting replica re-reads the cache. Default 50ms.
-   */
-  pollInterval?: Duration;
-  /**
-   * LockAcquireTimeout bounds lock acquisition. Slower means "shared state
-   * unavailable" and the request proceeds upstream immediately. Default 100ms.
-   */
-  lockAcquireTimeout?: Duration;
-}
-export const HeadPollingModeAll = "all";
-export const HeadPollingModeLease = "lease";
-/**
- * EvmHeadPollingConfig selects who polls upstream latest/finalized block
- * numbers. "all" (default) keeps every replica polling. "lease" lets one
- * replica per network poll while others reuse the shared per-upstream
- * counters, polling themselves whenever that shared state is older than
- * StaleAfter.
- */
-export interface EvmHeadPollingConfig {
-  mode?: string;
-  /**
-   * LeaseTtl is the lease length, renewed every LeaseTtl/3. Default 10s.
-   */
-  leaseTtl?: Duration;
-  /**
-   * StaleAfter: a non-holder polls anyway when the upstream's shared
-   * counter has not been updated for this long. 0 = 3x the upstream's
-   * statePollerInterval.
-   */
-  staleAfter?: Duration;
-}
-/**
- * HeadPollLease tells a state poller whether this replica currently holds
- * the network's head polling lease. Nil means "always poll".
- */
-export type HeadPollLease = any;
-/**
- * HeadPollLeaseAware is implemented by state pollers that honor a lease.
- */
-export type HeadPollLeaseAware = any;
-
-//////////
 // source: config_headcache.go
 
-/**
- * HeadCacheModeLocal uses per-instance coordination:
- * every eRPC instance follows the chain and hydrates its own window. No
- * cross-instance leadership is claimed; instances may duplicate upstream
- * fetches (bounded by depth and concurrency).
- */
-export const HeadCacheModeLocal = "local";
 /**
  * EvmHeadCacheConfig configures the head-driven full-block/log cache.
  */
@@ -2167,9 +2078,12 @@ export interface EvmHeadCacheConfig {
    */
   enabled?: boolean;
   /**
-   * Mode selects "local" (default) or Redis-coordinated "shared".
+   * ConnectorId names a redis-driver connector declared under
+   * database.evmJsonRpcCache.connectors. Its Redis client holds the shared
+   * canonical window: one lease holder hydrates and publishes epoch-fenced
+   * snapshots, every replica serves them. Required.
    */
-  mode?: string;
+  connectorId?: string;
   /**
    * Depth is how many recent canonical blocks the window holds. Default 128.
    */
@@ -2223,41 +2137,13 @@ export interface EvmHeadCacheConfig {
    */
   namespace?: string;
   /**
-   * Redis is required when mode is "shared". Only the URI (and optional
-   * TLS) of the connector config are used.
-   */
-  redis?: RedisConnectorConfig;
-  /**
-   * LeaseTTL is the shared-mode leadership lease. It is renewed every
+   * LeaseTTL is the hydration leadership lease. It is renewed every
    * tick. Coordination and all batch work share a deadline of 80% of this
    * TTL so publication cannot outlive the lease. Must be > 2*pollInterval.
    * Default 3*pollInterval + 1s.
    */
   leaseTtl?: Duration;
-  /**
-   * HeadSource selects which tip the window publishes up to:
-   *   "served" (default): cap at the network's served latest tip when it is
-   *     known and fresh, so subscribers never see blocks that HTTP `latest`
-   *     would not yet return. When the served tip is unknown (cold pollers)
-   *     or stale (dormant pollers), live eth_blockNumber discovery is used so
-   *     the window cannot freeze.
-   *   "max": publish up to the live-discovered head (pre-existing behavior).
-   */
-  headSource?: string;
-  /**
-   * ServedTipMaxAge is how long the served tip may lag live discovery
-   * (measured from lag onset, reset when served advances or catches up)
-   * before live is used uncapped. Default 3*pollInterval.
-   */
-  servedTipMaxAge?: Duration;
 }
-export const HeadCacheHeadSourceServed = "served";
-export const HeadCacheHeadSourceMax = "max";
-/**
- * HeadCacheModeShared coordinates replicas through Redis: one lease holder
- * hydrates and publishes epoch-fenced snapshots, every replica serves them.
- */
-export const HeadCacheModeShared = "shared";
 /**
  * WebSocketServerConfig configures the JSON-RPC WebSocket endpoint. It is
  * served on the same port/paths as HTTP (/<project>/evm/<chainId>) when a
@@ -2293,18 +2179,9 @@ export interface WebSocketServerConfig {
    */
   writeTimeout?: Duration;
   /**
-   * MaxInflightPerConnection bounds concurrently handled requests per
-   * connection. Default 16.
-   */
-  maxInflightPerConnection?: number /* int */;
-  /**
    * PingInterval is the keepalive ping period. Default 30s.
    */
   pingInterval?: Duration;
-  /**
-   * MaxBatchSize caps JSON-RPC batch length over WS. Default 100.
-   */
-  maxBatchSize?: number /* int */;
 }
 
 //////////

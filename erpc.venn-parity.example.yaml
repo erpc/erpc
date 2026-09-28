@@ -1,23 +1,20 @@
 # Venn-parity example: an indexer-facing eRPC fleet with several replicas.
 #
-# Every feature below is opt-in and default-off. This file turns them on together:
-#   - routing.priority tiers: cheap upstreams first, paid ones only when the cheap
-#     tier fails inside the same request. Priorities are configured integers,
-#     not automatic price discovery.
-#   - evm.headCache (mode: shared): one replica per network holds a Redis lease,
-#     hydrates recent canonical blocks + logs, and every replica serves them.
-#   - server.webSocket: eth_subscribe newHeads/logs fed by the head cache, plus
-#     ordinary JSON-RPC over the same connection.
-#   - cacheFill: replicas coordinate cacheable read misses through shared state,
-#     so a concurrent miss usually reaches the upstream once. Not exactly-once.
-#   - evm.headPolling (mode: lease): one replica polls upstream head numbers,
-#     others reuse the shared counters and poll again when those go stale.
+# Two required components:
+#   - evm.headCache: one replica per network holds a Redis lease, hydrates recent
+#     canonical blocks + logs, and every replica serves them. It reuses a Redis
+#     connector from database.evmJsonRpcCache.connectors (connectorId).
+#   - server.webSocket: eth_subscribe newHeads/logs fed by the head cache.
+#     Only eth_subscribe / eth_unsubscribe are accepted over WS.
+# Optional, existing config only:
+#   - selectionPolicy.evalFunc sorts cheap upstreams first, and the network
+#     failsafe has no hedge, so a paid upstream is used only on retry.
 #
 # Validated by the Go config loader (common/venn_parity_example_test.go). It does
 # not claim any provider-cost saving. Measure with the metrics listed in the docs.
 #
 # Environment variables (expanded by the loader):
-#   REDIS_URL           redis://host:6379/0 shared by shared state, cache and head cache
+#   REDIS_URL           redis://host:6379/0 used by the cache and head cache
 #   CHEAP_RPC_URL       self-hosted / flat-rate node
 #   CHEAP2_RPC_URL      second cheap node
 #   PAID_RPC_URL        metered vendor used only as fallback
@@ -34,13 +31,6 @@ server:
     maxSubscriptionsPerConnection: 32
     # A client that falls this far behind is disconnected (1008), never buffered unbounded.
     sendQueueSize: 256
-    maxMessageBytes: 1048576
-    writeTimeout: 10s
-    # Concurrent requests per connection. Every batch item takes one slot.
-    maxInflightPerConnection: 16
-    # JSON-RPC batches over WS are accepted up to this many items.
-    maxBatchSize: 100
-    pingInterval: 30s
 
 metrics:
   enabled: true
@@ -48,41 +38,19 @@ metrics:
   port: 4001
 
 database:
-  # Shared block-height counters so every replica routes from the same view.
-  sharedState:
-    # Unique per deployment. Two fleets on one Redis must not share this key.
-    clusterKey: venn-parity-example
-    connector:
-      id: shared-state-redis
-      driver: redis
-      redis:
-        uri: ${REDIS_URL}
-  # Exact-request cache shared by all replicas.
   evmJsonRpcCache:
     connectors:
+      # Also referenced by evm.headCache.connectorId below.
       - id: redis-cache
         driver: redis
         redis:
           uri: ${REDIS_URL}
     policies:
-      # Finalized data is reorg-immune.
       - connector: redis-cache
         network: "*"
         method: "*"
         finality: finalized
         ttl: 0
-      # Recent data: keep TTLs to a few block times. Reorged entries are not
-      # purged from this cache, they expire by TTL.
-      - connector: redis-cache
-        network: "*"
-        method: "*"
-        finality: unfinalized
-        ttl: 30s
-      - connector: redis-cache
-        network: "*"
-        method: "*"
-        finality: realtime
-        ttl: 2s
 
 projects:
   - id: main
@@ -92,37 +60,21 @@ projects:
           chainId: 1
           headCache:
             enabled: true
-            # shared: one Redis-leased hydrator per network, every replica serves.
-            # local would hydrate once per replica.
-            mode: shared
-            redis:
-              uri: ${REDIS_URL}
-            # Recent canonical blocks kept. Memory is per network per replica
-            # (followers hold the window too). Size pod limits for the number of
-            # enabled networks: maxBytes x networks, plus Go overhead.
+            # Must name a redis connector in database.evmJsonRpcCache.connectors.
+            connectorId: redis-cache
+            # Memory is per network per replica. Size pod limits for
+            # maxBytes x enabled networks, plus Go overhead.
             depth: 128
             maxBytes: 268435456
-            pollInterval: 2s
-            # served (default): never publish past the network's served tip when it
-            # is known and fresh. Falls back to live discovery when it is not.
-            headSource: served
-          # One replica per network polls upstream latest/finalized numbers.
-          # Fails open: stale shared counters make every replica poll again.
-          headPolling:
-            mode: lease
-            leaseTtl: 10s
-        # Coordinate cacheable misses across replicas (requires the cache
-        # policies above and a non-memory shared-state connector). Waits are
-        # bounded by maxWait; lock problems forward upstream immediately.
-        cacheFill:
-          enabled: true
-          lockTtl: 30s
-          maxWait: 5s
-          pollInterval: 50ms
-          lockAcquireTimeout: 100ms
-        # Hedging off: a hedge is a speculative extra paid call. Priority tiers
-        # already keep hedges in the cheapest tier, but indexers rarely need them.
-        # No consensus policy either: consensus fans every read out to several upstreams.
+        # Optional: cheap upstreams first, paid last. Existing selection policy.
+        selectionPolicy:
+          evalFunc: |
+            (upstreams, ctx) =>
+              upstreams
+                .removeCordoned()
+                .sortBy(u => u.id === 'paid' ? 1 : 0)
+        # No hedge: a hedge is a speculative extra paid call. The retry reaches
+        # the next upstream (paid) only after the cheap one fails.
         failsafe:
           - matchMethod: "*"
             timeout:
@@ -136,18 +88,11 @@ projects:
         endpoint: ${CHEAP_RPC_URL}
         evm:
           chainId: 1
-        routing:
-          priority: 0
       - id: cheap-2
         endpoint: ${CHEAP2_RPC_URL}
         evm:
           chainId: 1
-        routing:
-          priority: 0
       - id: paid
         endpoint: ${PAID_RPC_URL}
         evm:
           chainId: 1
-        routing:
-          # Tried only after every eligible priority-0 upstream failed for this request.
-          priority: 10
