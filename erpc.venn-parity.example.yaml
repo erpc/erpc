@@ -8,7 +8,10 @@
 #     Only eth_subscribe / eth_unsubscribe are accepted over WS.
 # Optional, existing config only:
 #   - selectionPolicy.evalFunc sorts cheap upstreams first, and the network
-#     failsafe has no hedge, so a paid upstream is used only on retry.
+#     failsafe has no hedge, so client requests are forwarded to paid only on
+#     retry after a cheap upstream fails. This does not cover background
+#     traffic: state pollers (eth_blockNumber, finalized, syncing) and
+#     selection probes still call paid on their own schedule.
 #
 # Validated by the Go config loader (common/venn_parity_example_test.go). It does
 # not claim any provider-cost saving. Measure with the metrics listed in the docs.
@@ -73,12 +76,17 @@ projects:
               upstreams
                 .removeCordoned()
                 .sortBy(u => u.id === 'paid' ? 1 : 0)
-        # No hedge: a hedge is a speculative extra paid call. The retry reaches
-        # the next upstream (paid) only after the cheap one fails.
+        # For client forwarding, retry reaches the next upstream (paid) only
+        # after a cheap one fails. A failed eval (script error, timeout) keeps
+        # the previous order. If the policy has never evaluated successfully
+        # (cold start), requests fall back to the upstreams list order, so keep
+        # paid listed last below.
         failsafe:
           - matchMethod: "*"
             timeout:
               duration: 30s
+            # Explicitly off: a hedge is a speculative extra (possibly paid) call.
+            hedge: null
             retry:
               maxAttempts: 2
               delay: 100ms
