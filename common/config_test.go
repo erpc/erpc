@@ -49,6 +49,30 @@ logLevel: DEBUG
 	}
 }
 
+// Configs that still set the ignored indexer.canonicalChainDepth must load
+// under strict decoding.
+func TestLoadConfig_DeprecatedIndexerCanonicalChainDepthAccepted(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WriteString(`
+logLevel: error
+indexer:
+  canonicalChainDepth: 256
+  dedupWindowSize: 1024
+`)
+
+	loaded, err := LoadConfig(fs, cfg.Name(), &DefaultOptions{})
+	if err != nil {
+		t.Fatalf("config setting the deprecated field must still load: %v", err)
+	}
+	if loaded.Indexer == nil || loaded.Indexer.DedupWindowSize != 1024 {
+		t.Fatalf("indexer block must still parse, got %+v", loaded.Indexer)
+	}
+}
+
 // TestLoadConfig_LegacyFieldsAccepted pins the back-compat contract:
 // a prod-shape YAML carrying legacy `routing.scoreMultipliers` on
 // upstreams + `scoreMetricsWindowSize` at the project level loads
@@ -659,6 +683,22 @@ failsafe:
 		assert.Equal(t, 2*time.Second, config.Failsafe[0].Timeout.Duration.Resolve(nil))
 		assert.Equal(t, 3, config.Failsafe[0].Retry.MaxAttempts)
 	})
+
+	t.Run("old single object format keeps failover", func(t *testing.T) {
+		yamlData := `
+architecture: evm
+failsafe:
+  timeout:
+    duration: 2s
+failover:
+  onDefaultsExhausted: true
+`
+		var config NetworkConfig
+		err := yaml.Unmarshal([]byte(yamlData), &config)
+		assert.NoError(t, err)
+		assert.Len(t, config.Failsafe, 1)
+		assert.True(t, config.Failover.Enabled())
+	})
 }
 
 func TestNetworkDefaultsFailsafeBackwardCompatibility(t *testing.T) {
@@ -696,6 +736,22 @@ failsafe:
 		assert.Len(t, defaults.Failsafe, 1)
 		assert.Equal(t, "*", defaults.Failsafe[0].MatchMethod) // Should default to "*"
 		assert.Equal(t, 2*time.Second, defaults.Failsafe[0].Timeout.Duration.Resolve(nil))
+	})
+
+	t.Run("old single object format keeps failover", func(t *testing.T) {
+		yamlData := `
+rateLimitBudget: "test"
+failsafe:
+  timeout:
+    duration: 2s
+failover:
+  onDefaultsExhausted: true
+`
+		var defaults NetworkDefaults
+		err := yaml.Unmarshal([]byte(yamlData), &defaults)
+		assert.NoError(t, err)
+		assert.Len(t, defaults.Failsafe, 1)
+		assert.True(t, defaults.Failover.Enabled())
 	})
 }
 
@@ -1210,6 +1266,35 @@ projects:
 		assert.Equal(t, "eth_*", network.Failsafe[1].MatchMethod)
 		assert.Equal(t, 5, network.Failsafe[1].Retry.MaxAttempts)
 	})
+}
+
+func TestNetworkConfig_SetDefaults_FailoverInheritsFromDefaults(t *testing.T) {
+	enabled := true
+	defaults := &NetworkDefaults{
+		Failover: &FailoverConfig{OnDefaultsExhausted: &enabled},
+	}
+	n := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+	err := n.SetDefaults(nil, defaults)
+	assert.NoError(t, err)
+	assert.NotNil(t, n.Failover)
+	assert.True(t, n.Failover.Enabled())
+}
+
+func TestFailoverConfig_Enabled(t *testing.T) {
+	var nilCfg *FailoverConfig
+	assert.False(t, nilCfg.Enabled())
+	assert.False(t, (&FailoverConfig{}).Enabled())
+	disabled, enabled := false, true
+	assert.False(t, (&FailoverConfig{OnDefaultsExhausted: &disabled}).Enabled())
+	assert.True(t, (&FailoverConfig{OnDefaultsExhausted: &enabled}).Enabled())
+}
+
+func TestNetworkConfig_SetDefaults_StripSubscribeFromBlockZeroInheritsFromDefaults(t *testing.T) {
+	strip := true
+	defaults := &NetworkDefaults{Evm: &EvmNetworkConfig{StripSubscribeFromBlockZero: &strip}}
+	n := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+	assert.NoError(t, n.SetDefaults(nil, defaults))
+	assert.Equal(t, &strip, n.Evm.StripSubscribeFromBlockZero)
 }
 
 func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {

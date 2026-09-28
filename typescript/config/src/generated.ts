@@ -222,8 +222,24 @@ export interface Config {
   projects?: (ProjectConfig | undefined)[];
   rateLimiters?: RateLimiterConfig;
   metrics?: MetricsConfig;
+  indexer?: IndexerConfig;
   proxyPools?: (ProxyPoolConfig | undefined)[];
   tracing?: TracingConfig;
+}
+/**
+ * IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
+ */
+export interface IndexerConfig {
+  /**
+   * Deprecated: ignored; the indexer no longer tracks a canonical chain.
+   * Kept so configs that still set it load under strict decoding.
+   */
+  canonicalChainDepth?: number /* int */;
+  /**
+   * DedupWindowSize is the per-filter seen-set capacity for log and
+   * pending-tx fan-out across upstreams. 0 uses the default (8192).
+   */
+  dedupWindowSize?: number /* int */;
 }
 export interface ServerConfig {
   listenV4?: boolean;
@@ -253,6 +269,7 @@ export interface ServerConfig {
   trustedIPForwarders?: string[];
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
+  webSocket?: WebSocketServerConfig;
   /**
    * ExecutionHeaders controls the per-request diagnostic headers
    * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
@@ -269,6 +286,26 @@ export interface ServerConfig {
    * CreditUnitsProvider and UpstreamConfig.CreditUnits.
    */
   costHeaders?: boolean;
+}
+export interface WebSocketServerConfig {
+  readBufferSize?: number /* int */;
+  writeBufferSize?: number /* int */;
+  maxMessageSize?: number /* int64 */;
+  pingInterval?: Duration;
+  maxSubscriptionsPerConnection?: number /* int */;
+  /**
+   * MaxConcurrentRequestsPerConnection bounds the messages a connection has
+   * in flight; further frames wait (backpressure) instead of being rejected.
+   * A batch is one message; its requests run concurrently, as over HTTP.
+   */
+  maxConcurrentRequestsPerConnection?: number /* int */;
+  /**
+   * SubscriptionBufferSize is the number of notifications queued per
+   * subscription for a client that is behind. On overflow newHeads and
+   * newPendingTransactions drop their oldest entry; logs close the
+   * connection instead (1013), so the client knows it missed data.
+   */
+  subscriptionBufferSize?: number /* int */;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -716,6 +753,19 @@ export interface NetworkDefaults {
   svm?: TsSvmNetworkConfigForDefaults;
   multiplexing?: boolean;
   cacheKeySuffix?: string;
+  failover?: FailoverConfig;
+}
+/**
+ * FailoverConfig controls per-request escalation to fallback-tier upstreams,
+ * independent of the selection policy.
+ */
+export interface FailoverConfig {
+  /**
+   * OnDefaultsExhausted tries upstreams not tagged `tier:fallback` first and
+   * advances to the fallback tier within the same request only once every
+   * other upstream failed with an error retryable toward the network.
+   */
+  onDefaultsExhausted?: boolean;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -735,6 +785,11 @@ export interface ProviderConfig {
   upstreamIdTemplate?: string;
   overrides?: { [key: string]: UpstreamConfig | undefined};
 }
+/**
+ * TagTierFallback marks an upstream as part of the fallback tier, used only
+ * when the other upstreams are unavailable.
+ */
+export const TagTierFallback = "tier:fallback";
 /**
  * RateLimitCountMode selects the accounting unit an upstream's rate-limit
  * budget charges per call.
@@ -1371,6 +1426,7 @@ export interface NetworkConfig {
   methods?: MethodsConfig;
   multiplexing?: boolean;
   staticResponses?: (StaticResponseConfig | undefined)[];
+  failover?: FailoverConfig;
   /**
    * Integrity overrides the project-wide data-integrity configuration for this
    * network. Merges over the project block (network wins).
@@ -1603,6 +1659,13 @@ export interface EvmNetworkConfig {
    * Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
    */
   markEmptyAsErrorMethods?: string[];
+  /**
+   * StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
+   * logs filters before forwarding upstream. fromBlock has no meaning for a
+   * live subscription, and backends that prune history reject it.
+   * DEFAULT: false.
+   */
+  stripSubscribeFromBlockZero?: boolean;
   /**
    * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
    * the debounce interval for block polling. A value of 0.7 means debounce = 70% of

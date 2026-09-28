@@ -240,6 +240,10 @@ type NormalizedRequest struct {
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
+	// escalatedToFallbacks makes the per-request fallback escape happen at
+	// most once across retries and hedges.
+	escalatedToFallbacks atomic.Bool
+
 	lastValidResponse         atomic.Pointer[NormalizedResponse]
 	integrityCaught           atomic.Bool  // an integrity check rejected a response during this request
 	integrityRejectedCheck    atomic.Value // id of the last check that rejected (the "why")
@@ -1284,6 +1288,15 @@ func (r *NormalizedRequest) Upstreams() []Upstream {
 	out := make([]Upstream, len(r.upstreamList))
 	copy(out, r.upstreamList)
 	return out
+}
+
+// MarkEscalatedToFallbacks reports true only for the first caller, so a
+// request escalates to the fallback tier at most once.
+func (r *NormalizedRequest) MarkEscalatedToFallbacks() bool {
+	if r == nil {
+		return false
+	}
+	return r.escalatedToFallbacks.CompareAndSwap(false, true)
 }
 
 // UserId returns the user ID from the user object, or "n/a" if not available
