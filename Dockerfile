@@ -35,12 +35,15 @@ RUN go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/e
 
 # Global typescript related image
 FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS ts-core
-RUN npm install -g pnpm
+# Install the pnpm version pinned by `packageManager`; a newer major tries to
+# self-switch through a binary that is not built for musl.
+COPY package.json /tmp/pnpm-pin/package.json
+RUN npm install -g "pnpm@$(node -p "require('/tmp/pnpm-pin/package.json').packageManager.split('@').pop()")" \
+    && rm -rf /tmp/pnpm-pin
 
 # Stage where we will install dev dependencies + compile sdk
 FROM ts-core AS ts-dev
 RUN mkdir -p /temp/dev/typescript
-RUN npm install -g pnpm
 
 # Copy only the TypeScript package files
 COPY typescript/config /temp/dev/typescript/config
