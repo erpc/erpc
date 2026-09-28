@@ -212,7 +212,7 @@ needs no configuration — it already excludes unhealthy upstreams and honors th
 
 ## Multi-replica indexer example
 
-`erpc.venn-parity.example.yaml` in the repo root is a config for several replicas serving indexers. It turns on every opt-in coordination feature together: Redis shared state and cache, a shared [head cache](/config/database/head-cache), [WebSocket](/config/websocket) subscriptions and batches, [cache fill](/config/projects/cache-fill), leased [head polling](/config/projects/head-polling), and integer [priority tiers](/config/projects/upstream-priority). Hedging and consensus are off. It loads through the Go config loader with its env vars set (`REDIS_URL`, `CHEAP_RPC_URL`, `CHEAP2_RPC_URL`, `PAID_RPC_URL`). Size memory for `headCache.maxBytes` per network per replica. It makes no provider-cost claims, so measure with the metrics on each page.
+`erpc.venn-parity.example.yaml` in the repo root is a config for several replicas serving indexers. It needs two components: a Redis-backed [head cache](/config/database/head-cache) (`evm.headCache` referencing a connector in `database.evmJsonRpcCache.connectors`) and [WebSocket](/config/websocket) `eth_subscribe` for `newHeads`/`logs`. Optionally it shows existing config for cheap-first routing: a [selection policy](/config/projects/selection-policies) `evalFunc` that sorts cheap upstreams first, with hedging explicitly off. It makes no provider-cost claims, so measure with the metrics on each page.
 
 ## Complete example — all sections
 
