@@ -440,14 +440,11 @@ func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) {
 			return
 		}
 		poller.SuggestLatestBlock(blockNumber)
-		if poller.LatestBlock() < blockNumber {
-			return
-		}
-		for _, c := range h.nw.tipCandidateUpstreams(ctx, "*") {
-			if c.Id() == upstreamID {
-				h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
-				break
-			}
+		// Every source's heads reach clients (whichever delivers first), so
+		// every source feeds the floor — once its poller accepted the head,
+		// which excludes jumps still pending chain-id verification.
+		if poller.LatestBlock() >= blockNumber {
+			h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
 		}
 		return
 	}
