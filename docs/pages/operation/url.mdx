@@ -41,6 +41,16 @@ Illustrative, not a tuned production config — map a dedicated domain to a sing
 }`}
 />
 
+## WebSocket
+
+You can also connect via WebSocket using the same URL path with a `ws://` or `wss://` scheme:
+
+```
+ws://localhost:4000/main/evm/1
+```
+
+WebSocket connections support all JSON-RPC methods, batch requests, and real-time subscriptions (`eth_subscribe`). Read more in the [WebSocket](/operation/websocket) page.
+
 ## Agent reference
 
 Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
