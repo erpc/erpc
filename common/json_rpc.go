@@ -1216,6 +1216,10 @@ type JsonRpcRequest struct {
 	// UnmarshalJSON. Empty when the request was constructed programmatically.
 	idRaw []byte
 
+	// idAbsent records that the request had no "id" member: a notification
+	// (JSON-RPC 2.0 §4.1). "id": null is a request, not a notification.
+	idAbsent bool
+
 	// networkId holds the optional top-level "networkId" member, the body-side
 	// equivalent of the /<architecture>/<chainId> path segments. It is captured
 	// by the envelope parse so routing reads it from the same result as
@@ -1288,6 +1292,14 @@ func (r *JsonRpcRequest) RLockWithTrace(ctx context.Context) {
 	r.RLock()
 }
 
+// IsNotification reports whether the request had no "id" member, making it
+// a JSON-RPC 2.0 notification that must not be answered.
+func (r *JsonRpcRequest) IsNotification() bool {
+	r.RLock()
+	defer r.RUnlock()
+	return r.idAbsent
+}
+
 func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	r.RLock()
 	defer r.RUnlock()
@@ -1302,10 +1314,11 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	}
 
 	clone := &JsonRpcRequest{
-		JSONRPC: r.JSONRPC,
-		ID:      r.ID,
-		Method:  r.Method,
-		Params:  clonedParams,
+		JSONRPC:  r.JSONRPC,
+		ID:       r.ID,
+		Method:   r.Method,
+		Params:   clonedParams,
+		idAbsent: r.idAbsent,
 	}
 	// Carry idRaw forward so the cloned request still round-trips its id
 	// byte-for-byte through normalizeResponse. Without this, the clone falls
@@ -1403,6 +1416,7 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	}
 	r.Method = aux.Method.value
 	r.networkId, _ = aux.NetworkID.(string)
+	r.idAbsent = aux.ID == nil
 
 	if aux.ID != nil {
 		var id interface{}
