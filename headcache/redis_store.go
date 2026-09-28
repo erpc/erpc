@@ -42,7 +42,7 @@ import (
 // cancellation/deadline is returned as the context error instead). The store
 // never fabricates a lease or snapshot when Redis is unreachable.
 type RedisStore struct {
-	client      redis.UniversalClient
+	clientFn    func() redis.UniversalClient
 	prefix      string
 	snapshotTTL time.Duration
 }
@@ -59,10 +59,24 @@ type RedisStoreOptions struct {
 }
 
 func NewRedisStore(client redis.UniversalClient, opts RedisStoreOptions) *RedisStore {
+	return NewRedisStoreFunc(func() redis.UniversalClient { return client }, opts)
+}
+
+// NewRedisStoreFunc resolves the client per operation (a shared connector may
+// reconnect and swap its client). A nil client reports ErrStoreUnavailable.
+func NewRedisStoreFunc(clientFn func() redis.UniversalClient, opts RedisStoreOptions) *RedisStore {
 	if opts.Prefix == "" {
 		opts.Prefix = "erpc:headcache"
 	}
-	return &RedisStore{client: client, prefix: opts.Prefix, snapshotTTL: opts.SnapshotTTL}
+	return &RedisStore{clientFn: clientFn, prefix: opts.Prefix, snapshotTTL: opts.SnapshotTTL}
+}
+
+// client returns the current client or ErrStoreUnavailable.
+func (s *RedisStore) client() (redis.UniversalClient, error) {
+	if c := s.clientFn(); c != nil {
+		return c, nil
+	}
+	return nil, fmt.Errorf("%w: redis client not connected", ErrStoreUnavailable)
 }
 
 var _ Store = (*RedisStore)(nil)
@@ -137,14 +151,22 @@ func (s *RedisStore) PutBlock(ctx context.Context, scope Scope, rec *BlockRecord
 	}
 	// Records are content-addressed; overwriting with identical content just
 	// refreshes the TTL.
-	return wrapErr(ctx, "PutBlock", s.client.Set(ctx, s.blockKey(scope, rec.Hash), data, ttl).Err())
+	rc, cerr := s.client()
+	if cerr != nil {
+		return cerr
+	}
+	return wrapErr(ctx, "PutBlock", rc.Set(ctx, s.blockKey(scope, rec.Hash), data, ttl).Err())
 }
 
 func (s *RedisStore) GetBlock(ctx context.Context, scope Scope, hash string) (*BlockRecord, error) {
 	if err := validScope(scope); err != nil {
 		return nil, err
 	}
-	data, err := s.client.Get(ctx, s.blockKey(scope, hash)).Bytes()
+	rc, cerr := s.client()
+	if cerr != nil {
+		return nil, cerr
+	}
+	data, err := rc.Get(ctx, s.blockKey(scope, hash)).Bytes()
 	if err != nil {
 		return nil, wrapErr(ctx, "GetBlock", err)
 	}
@@ -255,7 +277,11 @@ const maxPrunePerPublish = 512
 // the put, gap truncation) are not in any prev snapshot and still expire only
 // via RecordTTL. That is at most MaxPerTick records per failed tick.
 func (s *RedisStore) pruneCandidates(ctx context.Context, scope Scope, next *Snapshot) []string {
-	data, err := s.client.Get(ctx, s.snapKey(scope)).Bytes()
+	rc, cerr := s.client()
+	if cerr != nil {
+		return nil
+	}
+	data, err := rc.Get(ctx, s.snapKey(scope)).Bytes()
 	if err != nil {
 		return nil
 	}
@@ -287,8 +313,12 @@ func (s *RedisStore) AcquireLease(ctx context.Context, scope Scope, holder strin
 	if holder == "" || ttl <= 0 {
 		return nil, fmt.Errorf("%w: AcquireLease requires holder and positive ttl", ErrInvalidRequest)
 	}
+	rc, cerr := s.client()
+	if cerr != nil {
+		return nil, cerr
+	}
 	start := time.Now()
-	res, err := acquireScript.Run(ctx, s.client,
+	res, err := acquireScript.Run(ctx, rc,
 		[]string{s.leaseKey(scope), s.epochKey(scope), s.snapMetaKey(scope), s.snapKey(scope)},
 		holder, ttl.Milliseconds()).Int64()
 	if err != nil {
@@ -306,8 +336,12 @@ func (s *RedisStore) RenewLease(ctx context.Context, lease *Lease, ttl time.Dura
 	if lease == nil || ttl <= 0 {
 		return nil, fmt.Errorf("%w: RenewLease requires lease and positive ttl", ErrInvalidRequest)
 	}
+	rc, cerr := s.client()
+	if cerr != nil {
+		return nil, cerr
+	}
 	start := time.Now()
-	res, err := renewScript.Run(ctx, s.client,
+	res, err := renewScript.Run(ctx, rc,
 		[]string{s.leaseKey(lease.Scope), s.epochKey(lease.Scope)},
 		lease.Holder, strconv.FormatUint(lease.Epoch, 10), ttl.Milliseconds()).Int64()
 	if err != nil {
@@ -325,7 +359,11 @@ func (s *RedisStore) ReleaseLease(ctx context.Context, lease *Lease) error {
 	if lease == nil {
 		return nil
 	}
-	_, err := releaseScript.Run(ctx, s.client, []string{s.leaseKey(lease.Scope)},
+	rc, cerr := s.client()
+	if cerr != nil {
+		return cerr
+	}
+	_, err := releaseScript.Run(ctx, rc, []string{s.leaseKey(lease.Scope)},
 		lease.Holder, strconv.FormatUint(lease.Epoch, 10)).Result()
 	return wrapErr(ctx, "ReleaseLease", err)
 }
@@ -353,7 +391,11 @@ func (s *RedisStore) PublishSnapshot(ctx context.Context, lease *Lease, snap *Sn
 	sc := lease.Scope
 	keys := append([]string{s.leaseKey(sc), s.epochKey(sc), s.snapKey(sc), s.snapMetaKey(sc)},
 		s.pruneCandidates(ctx, sc, snap)...)
-	res, err := publishScript.Run(ctx, s.client, keys,
+	rc, cerr := s.client()
+	if cerr != nil {
+		return cerr
+	}
+	res, err := publishScript.Run(ctx, rc, keys,
 		lease.Holder, strconv.FormatUint(lease.Epoch, 10), strconv.FormatUint(snap.Seq, 10),
 		data, s.snapshotTTL.Milliseconds(), s.channel(sc),
 		snap.At.UnixMilli(), MaxSnapshotFutureSkew.Milliseconds()).Int64()
@@ -376,7 +418,11 @@ func (s *RedisStore) LoadSnapshot(ctx context.Context, scope Scope) (*Snapshot, 
 	if err := validScope(scope); err != nil {
 		return nil, err
 	}
-	data, err := s.client.Get(ctx, s.snapKey(scope)).Bytes()
+	rc, cerr := s.client()
+	if cerr != nil {
+		return nil, cerr
+	}
+	data, err := rc.Get(ctx, s.snapKey(scope)).Bytes()
 	if err != nil {
 		return nil, wrapErr(ctx, "LoadSnapshot", err)
 	}
@@ -396,7 +442,11 @@ func (s *RedisStore) WatchSnapshots(ctx context.Context, scope Scope) (<-chan st
 	if err := validScope(scope); err != nil {
 		return nil, nil, err
 	}
-	ps := s.client.Subscribe(ctx, s.channel(scope))
+	rc, cerr := s.client()
+	if cerr != nil {
+		return nil, nil, cerr
+	}
+	ps := rc.Subscribe(ctx, s.channel(scope))
 	if _, err := ps.Receive(ctx); err != nil {
 		_ = ps.Close()
 		return nil, nil, wrapErr(ctx, "WatchSnapshots", err)

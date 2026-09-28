@@ -619,11 +619,7 @@ func (e *networkExecutor) runHedge(
 	var fireCount atomic.Int32
 	wrapInner := func(hctx context.Context) (*common.NormalizedResponse, error) {
 		idx := fireCount.Add(1)
-		if idx > 1 {
-			// Hedge legs are tagged so the sweep can keep them inside
-			// the cheapest routing.priority tier (see HedgeTierFilter).
-			hctx = common.WithHedgeLeg(hctx)
-		}
+		_ = idx // hedge tag could be carried via a typed context value
 		return inner(hctx, req)
 	}
 	keep := func(r *common.NormalizedResponse, err error) bool {

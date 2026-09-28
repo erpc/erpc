@@ -106,6 +106,16 @@ func NewRedisConnector(
 	return connector, nil
 }
 
+// Client returns the current Redis client, or nil while not connected. The
+// client can be replaced on reconnect, so callers must re-fetch it per
+// operation and must never Close it (the connector owns its lifecycle).
+func (r *RedisConnector) Client() redis.UniversalClient {
+	if r.checkReady() != nil {
+		return nil
+	}
+	return r.client
+}
+
 func (r *RedisConnector) Id() string {
 	return r.id
 }
@@ -643,21 +653,6 @@ type redisLock struct {
 
 func (l *redisLock) IsNil() bool {
 	return l == nil || l.mutex == nil
-}
-
-// Extend renews the lock's expiry (by the TTL it was acquired with) only if
-// this holder still owns it. Returns an error when ownership was lost.
-func (l *redisLock) Extend(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, l.connector.setTimeout)
-	defer cancel()
-	ok, err := l.mutex.ExtendContext(ctx)
-	if err != nil {
-		return fmt.Errorf("error extending lock: %w", err)
-	}
-	if !ok {
-		return errors.New("failed to extend lock")
-	}
-	return nil
 }
 
 func (l *redisLock) Unlock(ctx context.Context) error {

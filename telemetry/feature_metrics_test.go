@@ -11,8 +11,6 @@ import (
 )
 
 var featureFamilies = []string{
-	"erpc_cache_fill_total", "erpc_cache_fill_wait_seconds",
-	"erpc_head_poll_lease_held", "erpc_head_poll_skipped_total",
 	"erpc_head_cache_requests_total", "erpc_head_cache_fetches_total",
 	"erpc_head_cache_reorgs_total", "erpc_head_cache_snapshots_published_total",
 	"erpc_head_cache_leader_acquisitions_total", "erpc_head_cache_leader",
@@ -30,16 +28,11 @@ func TestFeatureMetrics_RegisteredAndScraped(t *testing.T) {
 	if err := Configure(&Options{}); err != nil {
 		t.Fatal(err)
 	}
-	CounterHandle(MetricCacheFillTotal, "p", "evm:1", "leader").Inc()
-	ObserverHandle(MetricCacheFillWaitSeconds, "p", "evm:1", "follower_hit").Observe(0.02)
-	MetricHeadPollLeaseHeld.WithLabelValues("p", "evm:1").Set(1)
-	CounterHandle(MetricHeadPollSkippedTotal, "p", "evm:1").Inc()
 	MetricWsConnections.WithLabelValues("p", "evm:1").Inc()
 	MetricWsSubscriptions.WithLabelValues("p", "evm:1", "newHeads").Inc()
 	CounterHandle(MetricWsNotificationsTotal, "p", "evm:1", "newHeads").Inc()
 	CounterHandle(MetricWsClosedTotal, "p", "evm:1", "client").Inc()
 	t.Cleanup(func() {
-		MetricHeadPollLeaseHeld.Reset()
 		MetricWsConnections.Reset()
 		MetricWsSubscriptions.Reset()
 	})
@@ -54,10 +47,6 @@ func TestFeatureMetrics_RegisteredAndScraped(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	body := string(b)
 	for _, l := range []string{
-		`erpc_cache_fill_total{network="evm:1",outcome="leader",project="p"} 1`,
-		`erpc_cache_fill_wait_seconds_count{network="evm:1",outcome="follower_hit",project="p"} 1`,
-		`erpc_head_poll_lease_held{network="evm:1",project="p"} 1`,
-		`erpc_head_poll_skipped_total{network="evm:1",project="p"} 1`,
 		`erpc_ws_connections{network="evm:1",project="p"} 1`,
 		`erpc_ws_subscriptions{kind="newHeads",network="evm:1",project="p"} 1`,
 		`erpc_ws_notifications_total{kind="newHeads",network="evm:1",project="p"} 1`,

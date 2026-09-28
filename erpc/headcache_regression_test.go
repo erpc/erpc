@@ -1,62 +1,16 @@
 package erpc
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
 func init() { util.ConfigureTestLogger() }
-
-func TestHeadCache_RedisRegistryLifecycleAndTLSIdentity(t *testing.T) {
-	server := miniredis.RunT(t)
-	ctxA, cancelA := context.WithCancel(context.Background())
-	defer cancelA()
-	ctxB, cancelB := context.WithCancel(context.Background())
-	defer cancelB()
-	a, b := &NetworksRegistry{appCtx: ctxA}, &NetworksRegistry{appCtx: ctxB}
-	cfg := &common.RedisConnectorConfig{URI: "redis://" + server.Addr(), ConnPoolSize: 3}
-	first, err := a.headCacheRedisClient(cfg)
-	require.NoError(t, err)
-	reused, err := a.headCacheRedisClient(cfg)
-	require.NoError(t, err)
-	require.Same(t, first, reused)
-	separate, err := b.headCacheRedisClient(cfg)
-	require.NoError(t, err)
-	require.NotSame(t, first, separate, "applications cannot share another context's client")
-
-	tlsCfg := *cfg
-	tlsCfg.TLS = &common.TLSConfig{Enabled: true, InsecureSkipVerify: true}
-	secure, err := a.headCacheRedisClient(&tlsCfg)
-	require.NoError(t, err)
-	require.NotSame(t, first, secure)
-	require.NotNil(t, secure.(*redis.Client).Options().TLSConfig)
-	strictCfg := tlsCfg
-	strictCfg.TLS = &common.TLSConfig{Enabled: true}
-	strict, err := a.headCacheRedisClient(&strictCfg)
-	require.NoError(t, err)
-	require.NotSame(t, secure, strict, "TLS verification policy is connection identity")
-	require.False(t, strict.(*redis.Client).Options().TLSConfig.InsecureSkipVerify)
-
-	require.NoError(t, first.Ping(context.Background()).Err())
-	cancelA()
-	require.Eventually(t, func() bool {
-		a.headCacheRedis.mu.Lock()
-		defer a.headCacheRedis.mu.Unlock()
-		return len(a.headCacheRedis.clients) == 0
-	}, time.Second, time.Millisecond)
-	require.ErrorIs(t, first.Ping(context.Background()).Err(), redis.ErrClosed)
-	require.NoError(t, separate.Ping(context.Background()).Err())
-	_, err = a.headCacheRedisClient(cfg)
-	require.ErrorIs(t, err, context.Canceled)
-}
 
 func TestHeadCache_FingerprintIncludesProviderAndDefaultTrust(t *testing.T) {
 	network := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 1}}

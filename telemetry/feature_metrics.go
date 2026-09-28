@@ -2,38 +2,10 @@ package telemetry
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// Metrics for the opt-in shared block cache, distributed cache fill, leased
-// head polling and WebSocket subscriptions. All label values are bounded by
+// Metrics for the opt-in shared block cache and WebSocket subscriptions. All label values are bounded by
 // deployment topology (project, Network.Label()) or by a small code-defined set
 // (outcome, kind, reason, op). Never pass endpoints, client or request ids.
 var (
-	// Distributed cache fill (singleflight across instances).
-	MetricCacheFillTotal = DefineLabeledCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "cache_fill_total",
-		Help:      "Distributed cache-fill coordination outcomes (e.g. leader, follower_hit, follower_timeout, error, bypass).",
-	}, []string{"project", "network", "outcome"})
-
-	MetricCacheFillWaitSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "cache_fill_wait_seconds",
-		Help:      "Time a follower waited on another instance's cache fill, by outcome.",
-		Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
-	}, []string{"project", "network", "outcome"})
-
-	// Leased upstream head polling.
-	MetricHeadPollLeaseHeld = DefineGauge(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "head_poll_lease_held",
-		Help:      "1 when this instance holds the distributed head-poll lease for the network, else 0.",
-	}, []string{"project", "network"})
-
-	MetricHeadPollSkippedTotal = DefineLabeledCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "head_poll_skipped_total",
-		Help:      "Upstream head polls skipped because another instance holds the poll lease.",
-	}, []string{"project", "network"})
-
 	// Shared head cache (headcache package).
 	MetricHeadCacheRequestsTotal = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

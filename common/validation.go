@@ -1040,9 +1040,6 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return err
 		}
 	}
-	if u.Routing != nil && u.Routing.Priority != nil && *u.Routing.Priority < 0 {
-		return fmt.Errorf("upstream.*.routing.priority must be >= 0 (lower is tried first), got %d", *u.Routing.Priority)
-	}
 	switch u.RateLimitCountMode {
 	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
 	default:
@@ -1477,11 +1474,13 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Architecture == ArchitectureSvm && n.Svm == nil {
 		return fmt.Errorf("network.*.svm is required for svm networks")
 	}
-	if err := n.CacheFill.Validate(); err != nil {
-		return err
-	}
 	if n.Evm != nil {
 		if err := n.Evm.Validate(); err != nil {
+			return err
+		}
+	}
+	if n.Evm != nil && n.Evm.HeadCache != nil && n.Evm.HeadCache.Enabled {
+		if err := n.Evm.HeadCache.ValidateConnector(c); err != nil {
 			return err
 		}
 	}
@@ -1550,9 +1549,6 @@ func (s *StaticResponseConfig) Validate() error {
 
 func (e *EvmNetworkConfig) Validate() error {
 	if err := e.HeadCache.Validate(); err != nil {
-		return err
-	}
-	if err := e.HeadPolling.Validate(); err != nil {
 		return err
 	}
 	if e.FallbackFinalityDepth == 0 {

@@ -1,5 +1,7 @@
 package headcache
 
+// Test-only in-memory Store fake. Production is Redis-only.
+
 import (
 	"context"
 	"sync"

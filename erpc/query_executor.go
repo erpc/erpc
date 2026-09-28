@@ -226,7 +226,6 @@ func (qe *EvmQueryExecutor) tryQueryUpstreams(
 			upstreams = append(upstreams, u)
 		}
 	}
-	upstreams = common.SortUpstreamsByPriority(upstreams)
 	if len(upstreams) == 0 {
 		qe.logger.Debug().Str("method", method).Msgf("no upstreams available for query method")
 		return false, nil

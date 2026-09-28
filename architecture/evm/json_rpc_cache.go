@@ -8,7 +8,6 @@ import (
 	"io"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -21,8 +20,9 @@ import (
 )
 
 type EvmJsonRpcCache struct {
-	projectId string
-	policies  []*data.CachePolicy
+	projectId  string
+	policies   []*data.CachePolicy
+	connectors map[string]data.Connector
 	logger    *zerolog.Logger
 
 	// Compression settings
@@ -70,8 +70,9 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}
 
 	cache := &EvmJsonRpcCache{
-		policies: policies,
-		logger:   logger,
+		policies:   policies,
+		connectors: connectors,
+		logger:     logger,
 	}
 
 	// Initialize compression if configured
@@ -141,6 +142,7 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 	return &EvmJsonRpcCache{
 		logger:               &lg,
 		policies:             c.policies,
+		connectors:           c.connectors,
 		projectId:            projectId,
 		compressionEnabled:   c.compressionEnabled,
 		compressionThreshold: c.compressionThreshold,
@@ -148,6 +150,15 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 		encoderPool:          c.encoderPool,
 		decoderPool:          c.decoderPool,
 	}
+}
+
+// Connector returns the configured cache connector with the given id, or nil.
+// Other features (the head cache) reuse its client instead of opening their own.
+func (c *EvmJsonRpcCache) Connector(id string) data.Connector {
+	if c == nil {
+		return nil
+	}
+	return c.connectors[id]
 }
 
 func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
@@ -629,45 +640,6 @@ drain:
 }
 
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
-	_, err := c.SetReport(ctx, req, resp)
-	return err
-}
-
-// SetReport is Set that also reports whether at least one connector actually
-// persisted the entry. A nil error with stored=false means no policy matched,
-// the response was not cacheable, or no block reference could be resolved.
-func (c *EvmJsonRpcCache) SetReport(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (bool, error) {
-	var storedCount atomic.Int32
-	err := c.set(ctx, req, resp, &storedCount)
-	return storedCount.Load() > 0, err
-}
-
-// FillEligible reports whether a request is a cacheable read whose cache key
-// is stable across the forward: at least one GET policy matches and its block
-// reference is concrete (a number, a hash, or "*" for block-independent
-// lookups). Tag-based references ("latest", "finalized", ...) and requests
-// without a resolvable reference (unknown methods, writes) are not eligible.
-func (c *EvmJsonRpcCache) FillEligible(ctx context.Context, req *common.NormalizedRequest) bool {
-	rpcReq, err := req.JsonRpcRequest(ctx)
-	if err != nil {
-		return false
-	}
-	policies, err := c.findGetPolicies(req.NetworkId(), rpcReq.Method, rpcReq.Params, req.Finality(ctx))
-	if err != nil || len(policies) == 0 {
-		return false
-	}
-	blockRef, _, err := ExtractBlockReferenceFromRequest(ctx, req)
-	if err != nil || blockRef == "" {
-		return false
-	}
-	if blockRef == "*" || strings.HasPrefix(blockRef, "0x") {
-		return true
-	}
-	ch := blockRef[0]
-	return ch >= '0' && ch <= '9'
-}
-
-func (c *EvmJsonRpcCache) set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse, storedCount *atomic.Int32) error {
 	upsId := "n/a"
 	if resp != nil && resp.Upstream() != nil {
 		upsId = resp.Upstream().Id()
@@ -910,7 +882,6 @@ func (c *EvmJsonRpcCache) set(ctx context.Context, req *common.NormalizedRequest
 					common.ErrorSummary(err),
 				).Observe(time.Since(start).Seconds())
 			} else {
-				storedCount.Add(1)
 				telemetry.MetricCacheSetSuccessTotal.WithLabelValues(
 					c.projectId,
 					req.NetworkLabel(),

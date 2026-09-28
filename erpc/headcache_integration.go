@@ -10,12 +10,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/headcache"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 )
 
@@ -29,64 +28,6 @@ func withHeadCacheBypass(ctx context.Context) context.Context {
 
 // HeadCache returns the network's head cache, or nil when disabled.
 func (n *Network) HeadCache() *headcache.Cache { return n.headCache }
-
-// Connections belong to one registry/application context, never a process-global
-// map. TLS identity and verification settings are part of connection identity.
-type headCacheRedisPool struct {
-	mu      sync.Mutex
-	clients map[[32]byte]redis.UniversalClient
-}
-
-func (nr *NetworksRegistry) headCacheRedisClient(cfg *common.RedisConnectorConfig) (redis.UniversalClient, error) {
-	p := &nr.headCacheRedis
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if err := nr.appCtx.Err(); err != nil {
-		return nil, fmt.Errorf("head cache Redis context: %w", err)
-	}
-	if p.clients == nil {
-		p.clients = make(map[[32]byte]redis.UniversalClient)
-		context.AfterFunc(nr.appCtx, func() {
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			for key, client := range p.clients {
-				_ = client.Close()
-				delete(p.clients, key)
-			}
-		})
-	}
-	// Do not use RedisConnectorConfig.MarshalJSON: it redacts credentials.
-	identity, err := json.Marshal(struct {
-		URI  string
-		TLS  *common.TLSConfig
-		Pool int
-	}{strings.TrimSpace(cfg.URI), cfg.TLS, cfg.ConnPoolSize})
-	if err != nil {
-		return nil, fmt.Errorf("head cache Redis identity: %w", err)
-	}
-	key := sha256.Sum256(identity)
-	if c, ok := p.clients[key]; ok {
-		return c, nil
-	}
-	opts, err := redis.ParseURL(strings.TrimSpace(cfg.URI))
-	if err != nil {
-		return nil, fmt.Errorf("evm.headCache.redis.uri: %w", err)
-	}
-	if cfg.TLS != nil && cfg.TLS.Enabled {
-		t, err := common.CreateTLSConfig(cfg.TLS)
-		if err != nil {
-			return nil, err
-		}
-		opts.TLSConfig = t
-	}
-	if cfg.ConnPoolSize > 0 {
-		opts.PoolSize = cfg.ConnPoolSize
-	}
-	opts.ContextTimeoutEnabled = true
-	c := redis.NewClient(opts)
-	p.clients[key] = c
-	return c, nil
-}
 
 // headCacheFingerprint hashes the complete configured hydration trust set.
 // Alias types deliberately bypass the display serializers' redaction: secrets
@@ -150,7 +91,7 @@ func headCacheFingerprint(prj *common.ProjectConfig, nw *common.NetworkConfig) (
 
 // initHeadCache builds and starts the head cache for an EVM network when
 // evm.headCache.enabled is set. Errors are returned so misconfiguration is
-// loud (shared mode never silently becomes local).
+// loud (there is no local fallback).
 func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.NetworkConfig) error {
 	if nwCfg.Evm == nil || nwCfg.Evm.HeadCache == nil || !nwCfg.Evm.HeadCache.Enabled {
 		return nil
@@ -171,16 +112,9 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 		return err
 	}
 	ns += ":" + fingerprint
-	var store headcache.Store
-	switch hc.Mode {
-	case common.HeadCacheModeShared:
-		client, err := nr.headCacheRedisClient(hc.Redis)
-		if err != nil {
-			return err
-		}
-		store = headcache.NewRedisStore(client, headcache.RedisStoreOptions{SnapshotTTL: 2 * hc.MaxStaleness.Duration()})
-	default:
-		store = headcache.NewMemoryStore()
+	store, err := nr.headCacheStore(hc)
+	if err != nil {
+		return err
 	}
 	host, _ := os.Hostname()
 	holder := fmt.Sprintf("%s/%d/%d", host, os.Getpid(), time.Now().UnixNano())
@@ -199,7 +133,7 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 		MaxLogsRange: hc.MaxLogsRange,
 		RecordTTL:    time.Duration(hc.Depth+16) * 30 * time.Second,
 	}
-	lg := network.logger.With().Str("component", "headCache").Str("mode", hc.Mode).Logger()
+	lg := network.logger.With().Str("component", "headCache").Logger()
 	f := &networkHeadFetcher{n: network}
 	live := func(ctx context.Context) int64 {
 		// Pollers can be disabled, dormant or behind. Subscription delivery must
@@ -219,12 +153,10 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 		}
 		return number
 	}
-	// served: publish up to the network's served latest tip (what HTTP
-	// "latest" returns) when known and fresh; live discovery covers cold or
-	// dormant pollers. A lower tip never truncates the window (see
-	// headSourceSelector).
-	sel := newHeadSourceSelector(hc.HeadSource, hc.ServedTipMaxAge.Duration(), network.EvmHighestLatestBlockNumber, live)
-	c := headcache.New(opts, store, f, sel.Head, &lg)
+	// The seeder publishes up to the live eth_blockNumber tip it has itself
+	// verified (hash/parent linkage per tick), which can briefly differ from
+	// the network's served HTTP "latest".
+	c := headcache.New(opts, store, f, live, &lg)
 	c.EnableMetrics(network.projectId, network.Label())
 	network.headCache = c
 	c.Start(nr.appCtx)
@@ -438,4 +370,26 @@ func validHeadCacheHash(s string) bool {
 	}
 	_, err := hex.DecodeString(s[2:])
 	return err == nil
+}
+
+// headCacheStore builds the Redis store on the referenced evmJsonRpcCache
+// connector's client. The connector owns the client (reconnect, Close); the
+// store re-resolves it per operation and never closes it.
+func (nr *NetworksRegistry) headCacheStore(hc *common.EvmHeadCacheConfig) (*headcache.RedisStore, error) {
+	var conn data.Connector
+	if nr.evmJsonRpcCache != nil {
+		conn = nr.evmJsonRpcCache.Connector(hc.ConnectorId)
+	}
+	for {
+		u, ok := conn.(interface{ Unwrap() data.Connector })
+		if !ok {
+			break
+		}
+		conn = u.Unwrap()
+	}
+	rc, ok := conn.(*data.RedisConnector)
+	if !ok || rc == nil {
+		return nil, fmt.Errorf("evm.headCache.connectorId %q is not an initialized redis connector in database.evmJsonRpcCache", hc.ConnectorId)
+	}
+	return headcache.NewRedisStoreFunc(rc.Client, headcache.RedisStoreOptions{SnapshotTTL: 2 * hc.MaxStaleness.Duration()}), nil
 }

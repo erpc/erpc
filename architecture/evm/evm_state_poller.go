@@ -126,70 +126,6 @@ type EvmStatePoller struct {
 	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
 	earliestInitialDetectionDone map[common.EvmAvailabilityProbeType]bool // tracks if THIS instance did initial detection
 	earliestMu                   sync.RWMutex
-
-	// Optional head polling lease (evm.headPolling.mode=lease). While another
-	// replica holds it and this upstream's shared counter is fresh, latest and
-	// finalized polls reuse the shared value instead of calling the upstream.
-	headPollLease      common.HeadPollLease
-	headPollStaleAfter time.Duration
-	headPollOnSkip     func()
-}
-
-var _ common.HeadPollLeaseAware = (*EvmStatePoller)(nil)
-
-// SetHeadPollLease installs (or with nil lease removes) the head polling lease.
-// staleAfter <= 0 means 3x the upstream's statePollerInterval.
-func (e *EvmStatePoller) SetHeadPollLease(lease common.HeadPollLease, staleAfter time.Duration, onSkip func()) {
-	if staleAfter <= 0 {
-		if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil {
-			staleAfter = 3 * cfg.Evm.StatePollerInterval.Duration()
-		}
-		if staleAfter <= 0 {
-			staleAfter = 3 * time.Second
-		}
-	}
-	e.stateMu.Lock()
-	e.headPollLease = lease
-	e.headPollStaleAfter = staleAfter
-	e.headPollOnSkip = onSkip
-	e.stateMu.Unlock()
-}
-
-// skipHeadPoll reports whether a latest/finalized poll should be skipped
-// because another replica holds the lease and the shared counter was observed
-// recently. Skipping never touches the counter or its freshness timestamp.
-func (e *EvmStatePoller) skipHeadPoll(counter data.CounterInt64SharedVariable) bool {
-	e.stateMu.RLock()
-	lease, staleAfter, onSkip := e.headPollLease, e.headPollStaleAfter, e.headPollOnSkip
-	e.stateMu.RUnlock()
-	if lease == nil || lease.Held() || counter.IsStale(staleAfter) {
-		return false
-	}
-	if onSkip != nil {
-		onSkip()
-	}
-	return true
-}
-
-// headPollLeaseActive reports whether leased polling is configured, in which
-// case a successful observation must propagate freshness even at equal height.
-func (e *EvmStatePoller) headPollLeaseActive() bool {
-	e.stateMu.RLock()
-	defer e.stateMu.RUnlock()
-	return e.headPollLease != nil
-}
-
-// markObserved records a genuine successful upstream observation so that
-// followers see fresh shared state even when the chain did not advance.
-func (e *EvmStatePoller) markObserved(counter data.CounterInt64SharedVariable, v int64) {
-	if !e.headPollLeaseActive() {
-		return
-	}
-	if oc, ok := counter.(data.ObservedCounter); ok {
-		// Runs after TryUpdateIfStale applies v; the equal-value push is what
-		// carries the fresh UpdatedAt to other replicas.
-		go oc.MarkObserved(e.appCtx, v)
-	}
 }
 
 // sharedCounterKey builds a shared-state counter key namespaced by the counter
@@ -532,10 +468,6 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	)
 	defer span.End()
 
-	if e.skipHeadPoll(e.latestBlockShared) {
-		return e.latestBlockShared.GetValue(), nil
-	}
-
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		if e.logger.GetLevel() <= zerolog.TraceLevel {
 			e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
@@ -590,7 +522,6 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		// Directly update tracker with the correct timestamp for this locally-fetched block
 		// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
 		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
-		e.markObserved(e.latestBlockShared, blockNum)
 
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
@@ -830,10 +761,6 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 
 	dbi := e.resolveDebounce(cfg)
 
-	if e.skipHeadPoll(e.finalizedBlockShared) {
-		return e.finalizedBlockShared.GetValue(), nil
-	}
-
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
 		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
@@ -888,7 +815,6 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			Msg("fetched finalized block")
 
 		e.tracker.SetFinalizedBlockNumber(e.upstream, blockNum)
-		e.markObserved(e.finalizedBlockShared, blockNum)
 
 		return blockNum, nil
 	})

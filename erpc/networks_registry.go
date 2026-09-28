@@ -33,7 +33,6 @@ type NetworksRegistry struct {
 	aliasMu              *sync.RWMutex
 	initializer          *util.Initializer
 	logger               *zerolog.Logger
-	headCacheRedis       headCacheRedisPool
 }
 
 type aliasEntry struct {
@@ -332,22 +331,6 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 	}
 	if err := nr.initHeadCache(network, nwCfg); err != nil {
 		return nil, fmt.Errorf("head cache for %s: %w", nwCfg.NetworkId(), err)
-	}
-	if err := nr.initHeadPollLease(network, nwCfg); err != nil {
-		return nil, fmt.Errorf("head poll lease for %s: %w", nwCfg.NetworkId(), err)
-	}
-	if nwCfg.CacheFill != nil && nwCfg.CacheFill.Enabled {
-		nwCfg.CacheFill.SetDefaults()
-		if err := nwCfg.CacheFill.Validate(); err != nil {
-			return nil, err
-		}
-		nr.project.cfgMu.RLock()
-		fp, err := headCacheFingerprint(nr.project.Config, nwCfg)
-		nr.project.cfgMu.RUnlock()
-		if err != nil {
-			return nil, err
-		}
-		network.cacheFillScope = fp
 	}
 	// Register alias for lazy-created networks to support alias-based routing
 	if nwCfg.Alias != "" {

@@ -206,6 +206,9 @@ func pickCacheExecutor(executors []*cacheExecutor, ctx context.Context) *cacheEx
 
 // ----- Connector interface implementation -----
 
+// Unwrap returns the wrapped connector.
+func (f *FailsafeConnector) Unwrap() Connector { return f.wrapped }
+
 func (f *FailsafeConnector) Id() string {
 	return f.wrapped.Id()
 }

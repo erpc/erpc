@@ -5,18 +5,15 @@ import (
 	"time"
 )
 
-// HeadCacheModeLocal uses per-instance coordination:
-// every eRPC instance follows the chain and hydrates its own window. No
-// cross-instance leadership is claimed; instances may duplicate upstream
-// fetches (bounded by depth and concurrency).
-const HeadCacheModeLocal = "local"
-
 // EvmHeadCacheConfig configures the head-driven full-block/log cache.
 type EvmHeadCacheConfig struct {
 	// Enabled turns the cache on. Default false.
 	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
-	// Mode selects "local" (default) or Redis-coordinated "shared".
-	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// ConnectorId names a redis-driver connector declared under
+	// database.evmJsonRpcCache.connectors. Its Redis client holds the shared
+	// canonical window: one lease holder hydrates and publishes epoch-fenced
+	// snapshots, every replica serves them. Required.
+	ConnectorId string `yaml:"connectorId,omitempty" json:"connectorId,omitempty"`
 	// Depth is how many recent canonical blocks the window holds. Default 128.
 	Depth int64 `yaml:"depth,omitempty" json:"depth,omitempty"`
 	// MaxBytes bounds the total serialized size (blocks + logs) held. When the
@@ -49,43 +46,16 @@ type EvmHeadCacheConfig struct {
 	// network's upstream set is always appended, so replicas only share data
 	// when they run the same upstream configuration.
 	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
-	// Redis is required when mode is "shared". Only the URI (and optional
-	// TLS) of the connector config are used.
-	Redis *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
-	// LeaseTTL is the shared-mode leadership lease. It is renewed every
+	// LeaseTTL is the hydration leadership lease. It is renewed every
 	// tick. Coordination and all batch work share a deadline of 80% of this
 	// TTL so publication cannot outlive the lease. Must be > 2*pollInterval.
 	// Default 3*pollInterval + 1s.
 	LeaseTTL Duration `yaml:"leaseTtl,omitempty" json:"leaseTtl,omitempty" tstype:"Duration"`
-	// HeadSource selects which tip the window publishes up to:
-	//   "served" (default): cap at the network's served latest tip when it is
-	//     known and fresh, so subscribers never see blocks that HTTP `latest`
-	//     would not yet return. When the served tip is unknown (cold pollers)
-	//     or stale (dormant pollers), live eth_blockNumber discovery is used so
-	//     the window cannot freeze.
-	//   "max": publish up to the live-discovered head (pre-existing behavior).
-	HeadSource string `yaml:"headSource,omitempty" json:"headSource,omitempty"`
-	// ServedTipMaxAge is how long the served tip may lag live discovery
-	// (measured from lag onset, reset when served advances or catches up)
-	// before live is used uncapped. Default 3*pollInterval.
-	ServedTipMaxAge Duration `yaml:"servedTipMaxAge,omitempty" json:"servedTipMaxAge,omitempty" tstype:"Duration"`
 }
-
-const (
-	HeadCacheHeadSourceServed = "served"
-	HeadCacheHeadSourceMax    = "max"
-)
-
-// HeadCacheModeShared coordinates replicas through Redis: one lease holder
-// hydrates and publishes epoch-fenced snapshots, every replica serves them.
-const HeadCacheModeShared = "shared"
 
 func (c *EvmHeadCacheConfig) SetDefaults() {
 	if c == nil {
 		return
-	}
-	if c.Mode == "" {
-		c.Mode = HeadCacheModeLocal
 	}
 	if c.Depth == 0 {
 		c.Depth = 128
@@ -117,27 +87,14 @@ func (c *EvmHeadCacheConfig) SetDefaults() {
 	if c.LeaseTTL == 0 {
 		c.LeaseTTL = Duration(3*c.PollInterval.Duration() + time.Second)
 	}
-	if c.HeadSource == "" {
-		c.HeadSource = HeadCacheHeadSourceServed
-	}
-	if c.ServedTipMaxAge == 0 {
-		c.ServedTipMaxAge = Duration(3 * c.PollInterval.Duration())
-	}
 }
 
 func (c *EvmHeadCacheConfig) Validate() error {
 	if c == nil || !c.Enabled {
 		return nil
 	}
-	switch c.Mode {
-	case HeadCacheModeLocal:
-	case HeadCacheModeShared:
-		// Shared mode never silently degrades to local hydration.
-		if c.Redis == nil || c.Redis.URI == "" {
-			return fmt.Errorf("evm.headCache.redis.uri is required when mode is %q", HeadCacheModeShared)
-		}
-	default:
-		return fmt.Errorf("evm.headCache.mode %q is not supported (use %q or %q)", c.Mode, HeadCacheModeLocal, HeadCacheModeShared)
+	if c.ConnectorId == "" {
+		return fmt.Errorf("evm.headCache.connectorId is required (a redis connector under database.evmJsonRpcCache.connectors)")
 	}
 	if c.Depth < 1 || c.Depth > 4096 {
 		return fmt.Errorf("evm.headCache.depth must be within 1..4096")
@@ -166,12 +123,6 @@ func (c *EvmHeadCacheConfig) Validate() error {
 	if c.PollInterval.Duration() >= c.LeaseTTL.Duration()/2 {
 		return fmt.Errorf("evm.headCache.pollInterval must be < leaseTtl/2")
 	}
-	if c.HeadSource != HeadCacheHeadSourceServed && c.HeadSource != HeadCacheHeadSourceMax {
-		return fmt.Errorf("evm.headCache.headSource %q is not supported (use %q or %q)", c.HeadSource, HeadCacheHeadSourceServed, HeadCacheHeadSourceMax)
-	}
-	if c.ServedTipMaxAge < 0 {
-		return fmt.Errorf("evm.headCache.servedTipMaxAge must be >= 0")
-	}
 	return nil
 }
 
@@ -195,13 +146,13 @@ type WebSocketServerConfig struct {
 	MaxMessageBytes int64 `yaml:"maxMessageBytes,omitempty" json:"maxMessageBytes,omitempty"`
 	// WriteTimeout bounds each outbound write. Default 10s.
 	WriteTimeout Duration `yaml:"writeTimeout,omitempty" json:"writeTimeout,omitempty" tstype:"Duration"`
-	// MaxInflightPerConnection bounds concurrently handled requests per
-	// connection. Default 16.
+	// Deprecated: no longer read by the WS server once the thin subscription
+	// server lands; retained only until that change is committed.
 	MaxInflightPerConnection int `yaml:"maxInflightPerConnection,omitempty" json:"maxInflightPerConnection,omitempty"`
+	// Deprecated: see MaxInflightPerConnection.
+	MaxBatchSize int `yaml:"maxBatchSize,omitempty" json:"maxBatchSize,omitempty"`
 	// PingInterval is the keepalive ping period. Default 30s.
 	PingInterval Duration `yaml:"pingInterval,omitempty" json:"pingInterval,omitempty" tstype:"Duration"`
-	// MaxBatchSize caps JSON-RPC batch length over WS. Default 100.
-	MaxBatchSize int `yaml:"maxBatchSize,omitempty" json:"maxBatchSize,omitempty"`
 }
 
 func (c *WebSocketServerConfig) SetDefaults() {
@@ -223,14 +174,8 @@ func (c *WebSocketServerConfig) SetDefaults() {
 	if c.WriteTimeout == 0 {
 		c.WriteTimeout = Duration(10 * time.Second)
 	}
-	if c.MaxInflightPerConnection == 0 {
-		c.MaxInflightPerConnection = 16
-	}
 	if c.PingInterval == 0 {
 		c.PingInterval = Duration(30 * time.Second)
-	}
-	if c.MaxBatchSize == 0 {
-		c.MaxBatchSize = 100
 	}
 }
 
@@ -244,8 +189,25 @@ func (c *WebSocketServerConfig) Validate() error {
 	if c.MaxConnectionsPerProject < 0 || c.MaxConnectionsPerProject > c.MaxConnections {
 		return fmt.Errorf("server.webSocket.maxConnectionsPerProject must be within 0..maxConnections")
 	}
-	if c.MaxInflightPerConnection < 1 || c.PingInterval <= 0 || c.MaxBatchSize < 1 {
-		return fmt.Errorf("server.webSocket maxInflightPerConnection, pingInterval and maxBatchSize must be positive")
+	if c.PingInterval <= 0 {
+		return fmt.Errorf("server.webSocket.pingInterval must be positive")
 	}
 	return nil
+}
+
+// ValidateConnector checks that ConnectorId references a redis connector in
+// database.evmJsonRpcCache.connectors.
+func (c *EvmHeadCacheConfig) ValidateConnector(cfg *Config) error {
+	if cfg != nil && cfg.Database != nil && cfg.Database.EvmJsonRpcCache != nil {
+		for _, conn := range cfg.Database.EvmJsonRpcCache.Connectors {
+			if conn == nil || conn.Id != c.ConnectorId {
+				continue
+			}
+			if conn.Driver != DriverRedis || conn.Redis == nil {
+				return fmt.Errorf("evm.headCache.connectorId %q must reference a redis connector, got driver %q", c.ConnectorId, conn.Driver)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("evm.headCache.connectorId %q not found in database.evmJsonRpcCache.connectors", c.ConnectorId)
 }

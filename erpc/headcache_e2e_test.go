@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,8 +21,32 @@ type rpcResp struct {
 	Error  json.RawMessage `json:"error"`
 }
 
+var (
+	headCacheTestRedisOnce sync.Once
+	headCacheTestRedisAddr string
+)
+
+// headCacheTestRedis returns a process-wide Redis address for head cache
+// tests (HEADCACHE_TEST_REDIS_ADDR or an in-process miniredis). Scopes are
+// isolated by the per-test upstream fingerprint and namespace.
+func headCacheTestRedis() string {
+	headCacheTestRedisOnce.Do(func() {
+		headCacheTestRedisAddr = os.Getenv("HEADCACHE_TEST_REDIS_ADDR")
+		if headCacheTestRedisAddr == "" {
+			mr, err := miniredis.Run()
+			if err != nil {
+				panic(err)
+			}
+			headCacheTestRedisAddr = mr.Addr()
+		}
+	})
+	return headCacheTestRedisAddr
+}
+
+// headCacheTestConfig wires an enabled head cache to a redis connector under
+// database.evmJsonRpcCache (the only supported store).
 func headCacheTestConfig(upstreamURL string, hc *common.EvmHeadCacheConfig) *common.Config {
-	return &common.Config{
+	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true), WebSocket: &common.WebSocketServerConfig{Enabled: true}},
 		Projects: []*common.ProjectConfig{{
 			Id: "test_project",
@@ -38,6 +63,21 @@ func headCacheTestConfig(upstreamURL string, hc *common.EvmHeadCacheConfig) *com
 		}},
 		RateLimiters: &common.RateLimiterConfig{},
 	}
+	if hc != nil && hc.Enabled {
+		if hc.ConnectorId == "" {
+			hc.ConnectorId = "headcache-redis"
+		}
+		if hc.Namespace == "" {
+			hc.Namespace = fmt.Sprintf("t-%d", time.Now().UnixNano())
+		}
+		cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{
+			Connectors: []*common.ConnectorConfig{{
+				Id: hc.ConnectorId, Driver: common.DriverRedis,
+				Redis: &common.RedisConnectorConfig{URI: "redis://" + headCacheTestRedis()},
+			}},
+		}}
+	}
+	return cfg
 }
 
 func doRpc(t *testing.T, send func(string, map[string]string, map[string]string) (int, map[string]string, string), method string, params string) rpcResp {
@@ -140,19 +180,13 @@ func TestHttp_HeadCache_DisabledPreservesBehavior(t *testing.T) {
 // Redis: exactly one hydrates, both serve the committed window, and the
 // follower takes over hydration when the leader stops.
 func TestHttp_HeadCache_SharedRedisTwoReplicas(t *testing.T) {
-	addr := os.Getenv("HEADCACHE_TEST_REDIS_ADDR")
-	if addr == "" {
-		mr := miniredis.RunT(t)
-		addr = mr.Addr()
-	}
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
 	mk := func() *common.Config {
 		return headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
-			Enabled: true, Mode: common.HeadCacheModeShared, Depth: 16,
+			Enabled: true, Depth: 16,
 			Namespace:    fmt.Sprintf("e2e-%d", time.Now().UnixNano()),
 			PollInterval: common.Duration(100 * time.Millisecond),
-			Redis:        &common.RedisConnectorConfig{URI: "redis://" + addr},
 		})
 	}
 	cfgA, cfgB := mk(), mk()

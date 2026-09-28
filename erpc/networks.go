@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -53,11 +54,6 @@ type Network struct {
 
 	// headCache is the opt-in head-driven block/log cache (nil when disabled).
 	headCache *headcache.Cache
-
-	// cacheFillScope is the upstream trust-set fingerprint mixed into
-	// cache-fill lock keys so replicas with different upstream configs never
-	// coordinate (set only when cacheFill is enabled).
-	cacheFillScope string
 
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
@@ -1914,24 +1910,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
-	// Cross-replica cache fill (opt-in). Only the local multiplexer leader
-	// gets here, so each replica takes at most one lock per key.
-	var fill *cacheFillLeader
-	if n.cacheFillConfig() != nil {
-		var filled *common.NormalizedResponse
-		filled, fill = n.coordinateCacheFill(ctx, &lg, req)
-		if filled != nil {
-			if mlx != nil {
-				mlx.Close(ctx, filled, nil)
-			}
-			forwardSpan.SetAttributes(attribute.Bool("cache.hit", true), attribute.Bool("cache_fill.hit", true))
-			return filled, nil
-		}
-		if fill != nil {
-			defer fill.finish(n, n.cfg.CacheFill)
-		}
-	}
-
 	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
 	var upsList []common.Upstream
 	if n.policyEngine != nil {
@@ -1975,10 +1953,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
 		upsList = eligible
 	}
-	// Explicit routing.priority tiers: stable-sort lower tiers first,
-	// keeping the policy's order inside each tier and every tier in the
-	// list (same-request failover). No-op without distinct priorities.
-	upsList = common.SortUpstreamsByPriority(upsList)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
 		ids := make([]string, len(upsList))
@@ -2228,11 +2202,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			maxLoopIterations = 1
 		}
 		attempted := make(map[string]struct{}, maxLoopIterations)
-		// Hedge legs must not spill into a more expensive priority tier.
-		var accept func(common.Upstream) bool
-		if common.IsHedgeLeg(execSpanCtx) {
-			accept = common.HedgeTierFilter(effectiveReq.Upstreams())
-		}
 
 		for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
 			loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
@@ -2252,7 +2221,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				return nil, cause
 			}
 
-			u, selErr := effectiveReq.NextUpstreamMatching(accept)
+			u, selErr := effectiveReq.NextUpstream()
 			if selErr != nil {
 				loopSpan.SetAttributes(
 					attribute.Bool("upstreams_exhausted", true),
@@ -2531,19 +2500,30 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			_, _ = resp.JsonRpcResponse(ctx)
 			resp.AddRef()
 
-			if fill != nil {
-				// Cache-fill leader: persist synchronously so waiting replicas
-				// find the entry before the lock is released.
-				// storeInCache already logs serr. A partial failure (one
-				// connector failed, another persisted) is still "stored":
-				// waiters can read the entry from the connector that has it.
-				stored, _ := n.storeInCache(&lg, method, req, resp, forwardSpan.SpanContext())
-				fill.stored = stored
-			} else {
-				go func(resp *common.NormalizedResponse, spanCtx trace.SpanContext) {
-					_, _ = n.storeInCache(&lg, method, req, resp, spanCtx)
-				}(resp, forwardSpan.SpanContext())
-			}
+			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
+				defer (func() {
+					if rec := recover(); rec != nil {
+						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+							"cache-set",
+							fmt.Sprintf("network:%s method:%s", n.networkId, method),
+							common.ErrorFingerprint(rec),
+						).Inc()
+						lg.Error().
+							Interface("panic", rec).
+							Str("stack", string(debug.Stack())).
+							Msgf("unexpected panic on cache-set")
+					}
+				})()
+				defer resp.DoneRef()
+
+				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
+				defer timeoutCtxCancel()
+				tracedCtx := trace.ContextWithSpanContext(timeoutCtx, forwardSpan.SpanContext())
+				err := n.cacheDal.Set(tracedCtx, req, resp)
+				if err != nil {
+					lg.Warn().Err(err).Msgf("could not store response in cache")
+				}
+			})(resp, forwardSpan)
 		}
 
 		// Per-request execution counters + full upstream-attempt trace.

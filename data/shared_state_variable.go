@@ -427,22 +427,6 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	return c.value.Load()
 }
 
-// ObservedCounter is implemented by counters that can record a genuine
-// upstream observation. Unlike TryUpdate, an observation equal to the current
-// value still propagates freshness to other instances, so a healthy chain
-// stuck at the same height is not mistaken for an unobserved upstream.
-type ObservedCounter interface {
-	MarkObserved(ctx context.Context, value int64) int64
-}
-
-func (c *counterInt64) MarkObserved(ctx context.Context, value int64) int64 {
-	c.processNewValue(UpdateSourceTryUpdate, value)
-	// processNewValue refreshes the local timestamp for equal and newer
-	// values; push so followers observe the fresh UpdatedAt as well.
-	c.scheduleBackgroundPushCurrent()
-	return c.value.Load()
-}
-
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
 	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale",
 		trace.WithAttributes(
