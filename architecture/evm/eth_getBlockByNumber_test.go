@@ -313,12 +313,9 @@ func TestEnforceHighestBlock_LatestRefetchMissFailsOpen(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(99), bn)
 
-		// The stale responder is excluded; a cache hit has none to exclude.
-		want := "!rpc1"
-		if fromCache {
-			want = ""
-		}
-		assert.Equal(t, []string{want}, network.forwarded, "fromCache=%v", fromCache)
+		// A single re-fetch that keeps the request's (empty) selector: the
+		// stale responder may be the only upstream that has the tip block.
+		assert.Equal(t, []string{""}, network.forwarded, "fromCache=%v", fromCache)
 	}
 }
 
