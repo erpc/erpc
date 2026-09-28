@@ -57,7 +57,7 @@ Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/conf
 | `sendQueueSize` | `256` | Outbound messages queued per connection, and the head cache event queue per subscription. Notifications wait up to `writeTimeout` for space, so a large block reaches a client that keeps reading. A client stalled longer, or a head cache queue overflow, closes with 1008. |
 | `maxMessageBytes` | `1MB` (min 1024) | Inbound frame limit. Larger frames close with 1009. |
 | `writeTimeout` | `10s` | Per outbound frame. A timeout closes with 1008. |
-| `pingInterval` | `30s` | Keepalive ping and credential re-check period. A zero or negative value falls back to `30s`, so pings cannot be disabled. |
+| `pingInterval` | `30s` | Keepalive ping and credential re-check period. `0` (unset) uses the `30s` default and a negative value fails config validation, so pings cannot be disabled. |
 
 ## Behavior
 
