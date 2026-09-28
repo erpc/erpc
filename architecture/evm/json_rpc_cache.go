@@ -23,7 +23,7 @@ type EvmJsonRpcCache struct {
 	projectId  string
 	policies   []*data.CachePolicy
 	connectors map[string]data.Connector
-	logger    *zerolog.Logger
+	logger     *zerolog.Logger
 
 	// Compression settings
 	compressionEnabled   bool
