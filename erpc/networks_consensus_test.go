@@ -697,6 +697,7 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
+				Delay:       common.Duration(50 * time.Millisecond),
 			},
 			mockResponses: []mockResponse{
 				{status: 200, body: jsonRpcError(-32603, "internal server error")},

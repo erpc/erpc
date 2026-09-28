@@ -666,7 +666,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		attribute.String("network.id", ntwId),
 	)
 
-	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, req)
+	// Key "latest"/"finalized" by the response's block (see ResolveCacheBlockRef).
+	blockRef, blockNumber, err := ResolveCacheBlockRef(ctx, req, resp)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return err
@@ -1085,7 +1086,8 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	rpcReq.RLockWithTrace(ctx)
 	defer rpcReq.RUnlock()
 
-	blockRef, _, err := ExtractBlockReferenceFromRequest(ctx, req)
+	// Key "latest"/"finalized" by the network's current tip (see ResolveCacheBlockRef).
+	blockRef, _, err := ResolveCacheBlockRef(ctx, req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1207,7 +1209,7 @@ func shouldCacheResponse(
 	// Never cache an empty result for a not-yet-produced (future) block: the block
 	// will exist later, so a cached null would be served as a wrong answer until the
 	// TTL expires. This holds regardless of the policy's empty behavior.
-	if isEmpty && resp != nil && emptyResultBeyondConfidence(ctx, resp.Request()) {
+	if isEmpty && resp != nil && EmptyResultBeyondConfidence(ctx, resp.Request()) {
 		lg.Debug().Msg("skip caching empty result for a not-yet-produced (future) block")
 		return false, nil
 	}

@@ -460,17 +460,27 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// (e.g. Redis lock acquisition) can block normal request flow.
 	span.SetAttributes(attribute.Bool("foreground_remote_io_disabled", true))
 
-	// Execute the refresh function (e.g., RPC call to get latest block) in background
+	// Execute the refresh function (e.g., RPC call to get latest block) in background.
+	// fallbackTimeout is sized for remote storage ops; honor a longer caller
+	// deadline since the refresh itself can legitimately take longer. The
+	// parent stays appCtx so the fetch survives foreground cancellation.
+	fnTimeout := c.registry.fallbackTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > fnTimeout {
+			fnTimeout = remaining
+		}
+	}
+
 	resultCh := make(chan refreshResult, 1)
 	go func() {
-		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, fnTimeout)
 		defer fnCancel()
 
 		// Create a span for the actual RPC/refresh call - this is usually what takes time
 		_, fnSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.ExecuteRefresh",
 			trace.WithAttributes(
 				attribute.String("key", c.key),
-				attribute.Int64("timeout_ms", c.registry.fallbackTimeout.Milliseconds()),
+				attribute.Int64("timeout_ms", fnTimeout.Milliseconds()),
 			),
 		)
 		value, err := executeNewValueFn(fnCtx)
@@ -728,6 +738,13 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 					_ = c.processNewState(UpdateSourceRemoteCheck, remote)
 					c.updateMu.Unlock()
 					local = c.localState()
+				}
+
+				// Remote ahead by no more than ignoreRollbackOf means we are
+				// lagging: adopt it instead of overwriting it with a lower value.
+				if remoteOk && remote.Value > local.Value && remote.Value-local.Value <= c.ignoreRollbackOf {
+					c.processNewValue(UpdateSourceRemoteCheck, remote.Value)
+					return
 				}
 
 				// If our local state is newer (or remote missing), push it to remote.

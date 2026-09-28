@@ -222,8 +222,26 @@ export interface Config {
   projects?: (ProjectConfig | undefined)[];
   rateLimiters?: RateLimiterConfig;
   metrics?: MetricsConfig;
+  indexer?: IndexerConfig;
   proxyPools?: (ProxyPoolConfig | undefined)[];
   tracing?: TracingConfig;
+}
+/**
+ * IndexerConfig tunes the transport-neutral event-stream indexer that
+ * powers `eth_subscribe` fan-out. Most deployments can leave this unset.
+ */
+export interface IndexerConfig {
+  /**
+   * Deprecated: ignored; the indexer no longer tracks a canonical chain.
+   * Kept so configs that still set it load under strict decoding.
+   */
+  canonicalChainDepth?: number /* int */;
+  /**
+   * DedupWindowSize is the per-filter seen-set capacity for log /
+   * pending-tx fan-out across sibling upstreams. 0 uses the internal
+   * default (8192).
+   */
+  dedupWindowSize?: number /* int */;
 }
 export interface ServerConfig {
   listenV4?: boolean;
@@ -253,6 +271,7 @@ export interface ServerConfig {
   trustedIPForwarders?: string[];
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
+  webSocket?: WebSocketServerConfig;
   /**
    * ExecutionHeaders controls the per-request diagnostic headers
    * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
@@ -269,6 +288,25 @@ export interface ServerConfig {
    * CreditUnitsProvider and UpstreamConfig.CreditUnits.
    */
   costHeaders?: boolean;
+}
+export interface WebSocketServerConfig {
+  readBufferSize?: number /* int */;
+  writeBufferSize?: number /* int */;
+  maxMessageSize?: number /* int64 */;
+  pingInterval?: Duration;
+  maxSubscriptionsPerConnection?: number /* int */;
+  /**
+   * MaxConcurrentRequestsPerConnection bounds the requests a connection has
+   * in flight; further frames wait (backpressure) instead of being rejected.
+   */
+  maxConcurrentRequestsPerConnection?: number /* int */;
+  /**
+   * SubscriptionBufferSize is the number of notifications queued per
+   * subscription for a client that is behind. On overflow newHeads and
+   * newPendingTransactions drop their oldest entry; logs close the
+   * connection instead (1013), so the client knows it missed data.
+   */
+  subscriptionBufferSize?: number /* int */;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -709,6 +747,22 @@ export interface NetworkDefaults {
   evm?: TsEvmNetworkConfigForDefaults;
   svm?: TsSvmNetworkConfigForDefaults;
   multiplexing?: boolean;
+  failover?: FailoverConfig;
+}
+/**
+ * FailoverConfig controls within-request escalation to fallback-tier
+ * upstreams. Independent of SelectionPolicy (which re-evaluates tiers
+ * periodically across requests) — Failover operates per-request only.
+ */
+export interface FailoverConfig {
+  /**
+   * OnDefaultsExhausted, when true, causes the network request loop to
+   * try upstreams not tagged `tier:fallback` first and only advance to the
+   * `tier:fallback` ones if every other upstream failed with an error that
+   * is retryable toward the network within the same request. Deterministic
+   * client errors still short-circuit without advancing.
+   */
+  onDefaultsExhausted?: boolean;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -728,6 +782,13 @@ export interface ProviderConfig {
   upstreamIdTemplate?: string;
   overrides?: { [key: string]: UpstreamConfig | undefined};
 }
+/**
+ * TagTierFallback marks an upstream as part of the fallback tier (via the
+ * `tier:fallback` tag convention): used only when all non-fallback upstreams
+ * are unavailable. Referenced by the default selection policy and by
+ * failover.onDefaultsExhausted.
+ */
+export const TagTierFallback = "tier:fallback";
 /**
  * RateLimitCountMode selects the accounting unit an upstream's rate-limit
  * budget charges per call.
@@ -1351,6 +1412,7 @@ export interface NetworkConfig {
   methods?: MethodsConfig;
   multiplexing?: boolean;
   staticResponses?: (StaticResponseConfig | undefined)[];
+  failover?: FailoverConfig;
   /**
    * Integrity overrides the project-wide data-integrity configuration for this
    * network. Merges over the project block (network wins).
@@ -1577,6 +1639,19 @@ export interface EvmNetworkConfig {
    * Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
    */
   markEmptyAsErrorMethods?: string[];
+  /**
+   * StripSubscribeFromBlockZero, when true, removes `fromBlock: "0x0"` from
+   * eth_subscribe logs filters before forwarding to upstream WebSockets.
+   * Some clients include `fromBlock: "0x0"` in the filter as a
+   * "from genesis" marker. eth_subscribe is a live-stream RPC — fromBlock
+   * has no standardised meaning there — and on backends that prune
+   * historical data the subscription fails outright. Enabling this flag
+   * for such networks drops the field so the live stream succeeds;
+   * historical logs remain retrievable via eth_getLogs. Only a string
+   * fromBlock that parses to zero is stripped — other values pass through
+   * unchanged. DEFAULT: false.
+   */
+  stripSubscribeFromBlockZero?: boolean;
   /**
    * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
    * the debounce interval for block polling. A value of 0.7 means debounce = 70% of

@@ -53,11 +53,14 @@ func (p *GzipReaderPool) Put(zr *gzip.Reader) {
 	p.pool.Put(zr)
 }
 
-// pooledGzipReadCloser wraps a gzip.Reader so that closing it returns it to the pool.
+// pooledGzipReadCloser wraps a gzip.Reader so that closing it returns it to the
+// pool and closes the source. gzip.Reader.Close does not close its source, so
+// an HTTP response body would otherwise keep its stream open.
 type pooledGzipReadCloser struct {
-	zr   *gzip.Reader
-	pool *GzipReaderPool
-	once sync.Once
+	zr     *gzip.Reader
+	pool   *GzipReaderPool
+	source io.Closer
+	once   sync.Once
 }
 
 func (pgrc *pooledGzipReadCloser) Read(b []byte) (int, error) { return pgrc.zr.Read(b) }
@@ -68,16 +71,23 @@ func (pgrc *pooledGzipReadCloser) Close() error {
 		// Close underlying gzip reader first, then return to pool exactly once.
 		err = pgrc.zr.Close()
 		pgrc.pool.Put(pgrc.zr)
+		if pgrc.source != nil {
+			if cerr := pgrc.source.Close(); cerr != nil && err == nil {
+				err = cerr
+			}
+		}
 		// Clear references to avoid accidental reuse and help GC
 		pgrc.zr = nil
 		pgrc.pool = nil
+		pgrc.source = nil
 	})
 	return err
 }
 
 // WrapGzipReader returns an io.ReadCloser wrapper that will return the gzip.Reader to pool on Close.
-func (p *GzipReaderPool) WrapGzipReader(zr *gzip.Reader) io.ReadCloser {
-	return &pooledGzipReadCloser{zr: zr, pool: p}
+// A non-nil source is closed too; pass nil when the caller closes it.
+func (p *GzipReaderPool) WrapGzipReader(zr *gzip.Reader, source io.Closer) io.ReadCloser {
+	return &pooledGzipReadCloser{zr: zr, pool: p, source: source}
 }
 
 // GzipWriterPool wraps a sync.Pool for gzip.Writer with helpers to reset writers
