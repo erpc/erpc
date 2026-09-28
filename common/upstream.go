@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"maps"
+	"slices"
 
 	"github.com/rs/zerolog"
 )
@@ -60,19 +62,19 @@ type Upstream interface {
 }
 
 // UniqueUpstreamKey returns a unique hash for an upstream.
-// It is used to identify the upstream uniquely in shared-state storage.
-// Sometimes ID might not be enough for example if user changes the endpoint to a completely different network.
+// It is used to identify the upstream uniquely in shared-state storage and the
+// client cache, so it is derived from static config only (the network id is
+// unknown until registration) with headers in sorted order.
 func UniqueUpstreamKey(up Upstream) string {
 	sha := sha256.New()
 	cfg := up.Config()
 
 	sha.Write([]byte(cfg.Id))
 	sha.Write([]byte(cfg.Endpoint))
-	sha.Write([]byte(up.NetworkId()))
-	if cfg.JsonRpc != nil && cfg.JsonRpc.Headers != nil {
-		for k, v := range cfg.JsonRpc.Headers {
+	if cfg.JsonRpc != nil {
+		for _, k := range slices.Sorted(maps.Keys(cfg.JsonRpc.Headers)) {
 			sha.Write([]byte(k))
-			sha.Write([]byte(v))
+			sha.Write([]byte(cfg.JsonRpc.Headers[k]))
 		}
 	}
 
