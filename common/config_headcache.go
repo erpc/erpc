@@ -34,7 +34,7 @@ type EvmHeadCacheConfig struct {
 	// served from the cache. Wider ranges go upstream. Default = Depth.
 	MaxLogsRange int64 `yaml:"maxLogsRange,omitempty" json:"maxLogsRange,omitempty"`
 	// MaxBlockBytes rejects (never caches) any single block whose block+logs
-	// payload exceeds it. Default 16MB.
+	// payload exceeds it. Default min(16MB, maxBytes).
 	MaxBlockBytes int64 `yaml:"maxBlockBytes,omitempty" json:"maxBlockBytes,omitempty"`
 	// MaxStaleness disables serving (normal upstream path) when the local
 	// view has not been verified for this long. Followers anchor freshness to
@@ -79,7 +79,7 @@ func (c *EvmHeadCacheConfig) SetDefaults() {
 		c.MaxLogsRange = c.Depth
 	}
 	if c.MaxBlockBytes == 0 {
-		c.MaxBlockBytes = 16 << 20
+		c.MaxBlockBytes = min(int64(16<<20), c.MaxBytes)
 	}
 	if c.MaxStaleness == 0 {
 		c.MaxStaleness = Duration(5 * c.PollInterval.Duration())
