@@ -123,10 +123,9 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 		"process-local high-water mark must cover the delivered WS tip")
 }
 
-// Only a head from an upstream the selection policy keeps eligible lifts
-// "latest": a fallback-tier (cordoned) or unknown source still feeds its own
-// poller, but must not advertise a block no eligible upstream reports.
-func TestNetworkHandle_SuggestLatestBlock_OnlyTipCandidatesLiftLatest(t *testing.T) {
+// Clients receive heads from whichever source delivers first, so a head from
+// a cordoned fallback lifts "latest" too; an unknown source does not.
+func TestNetworkHandle_SuggestLatestBlock_EveryKnownSourceLiftsLatest(t *testing.T) {
 	defer util.ResetGock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -145,17 +144,14 @@ func TestNetworkHandle_SuggestLatestBlock_OnlyTipCandidatesLiftLatest(t *testing
 	require.NotNil(t, fallback)
 
 	handle := &networkHandle{nw: network}
-	handle.SuggestLatestBlock("ws:fallback-1", 1010)
 	handle.SuggestLatestBlock("ws:unknown", 1020)
-
-	assert.Equal(t, int64(1010), fallback.EvmStatePoller().LatestBlock(),
-		"the fallback's own poller still advances")
 	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
-		"a cordoned or unknown source must not lift latest")
+		"an unknown source must not lift latest")
 
-	handle.SuggestLatestBlock("ws:primary-1", 1001)
-	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx),
-		"an eligible upstream's head floors latest")
+	handle.SuggestLatestBlock("ws:fallback-1", 1010)
+	assert.Equal(t, int64(1010), fallback.EvmStatePoller().LatestBlock())
+	assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx),
+		"a head a client can receive from the cordoned fallback floors latest")
 }
 
 // The delivered-head floor is network-wide: a use-upstream-scoped request is
