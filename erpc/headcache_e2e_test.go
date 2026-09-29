@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func init() { util.ConfigureTestLogger() }
+
 type rpcResp struct {
 	Result json.RawMessage `json:"result"`
 	Error  json.RawMessage `json:"error"`
@@ -166,7 +168,8 @@ func TestHttp_HeadCache_DisabledPreservesBehavior(t *testing.T) {
 	cfg := headCacheTestConfig(up.URL(), nil)
 	send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 	defer shutdown()
-	prj, _ := erpcInstance.GetProject("test_project")
+	prj, err := erpcInstance.GetProject("test_project")
+	require.NoError(t, err)
 	nw, err := prj.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
 	require.Nil(t, nw.HeadCache())

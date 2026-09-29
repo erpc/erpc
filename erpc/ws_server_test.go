@@ -142,8 +142,12 @@ func waitHead(t *testing.T, e *ERPC, n int64) {
 }
 
 func subCount(t *testing.T, e *ERPC) int {
-	prj, _ := e.GetProject("test_project")
-	nw, _ := prj.GetNetwork(t.Context(), "evm:123")
+	t.Helper()
+	prj, err := e.GetProject("test_project")
+	require.NoError(t, err)
+	nw, err := prj.GetNetwork(t.Context(), "evm:123")
+	require.NoError(t, err)
+	require.NotNil(t, nw.HeadCache())
 	return nw.HeadCache().SubscriberCount()
 }
 
