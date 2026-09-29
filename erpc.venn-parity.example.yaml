@@ -1,16 +1,18 @@
 # Venn-parity example: an indexer-facing eRPC fleet with several replicas.
 #
 # Two required components:
-#   - evm.headCache: every replica independently verifies its recent canonical
-#     window and reuses immutable block/log payloads stored in Redis. It uses a
-#     redis connector from database.evmJsonRpcCache.connectors (connectorId).
-#   - server.webSocket: eth_subscribe newHeads/logs fed by the head cache.
+#   - evm.headCache: a token-fenced Redis lease selects one refresher per trust,
+#     namespace, project and network scope. It publishes a canonical snapshot;
+#     followers validate the snapshot and immutable block/log payloads.
+#   - server.webSocket: eth_subscribe newHeads/logs fed by the shared head cache.
 #     Only eth_subscribe / eth_unsubscribe are accepted over WS.
-# Validated by the Go config loader (common/venn_parity_example_test.go). It does
-# not make provider-cost claims. Measure with the metrics listed in the docs.
+# Head-cache polling/hydration is centralized while Redis is healthy. Independent
+# EVM state pollers/probes and ordinary HTTP misses can still call upstream per
+# replica. This example does not claim zero fleet-wide provider calls.
+# Validated by the Go config loader (common/venn_parity_example_test.go).
 #
 # Environment variables (expanded by the loader):
-#   REDIS_URL           redis://host:6379/0 used by the cache and shared head-cache payloads
+#   REDIS_URL           redis://host:6379/0 used by the cache and shared head-cache state
 #   RPC_URL             EVM upstream endpoint
 
 logLevel: info
@@ -34,7 +36,7 @@ metrics:
 database:
   evmJsonRpcCache:
     connectors:
-      # Also referenced by evm.headCache.connectorId below for shared payloads.
+      # Also referenced by evm.headCache.connectorId for payloads, leases and snapshots.
       - id: redis-cache
         driver: redis
         redis:
@@ -56,7 +58,7 @@ projects:
             enabled: true
             # Must name a redis connector in database.evmJsonRpcCache.connectors.
             connectorId: redis-cache
-            # Each replica verifies its own canonical head; Redis reuses block/log payloads.
+            # The lease holder verifies the shared canonical head; followers use its snapshot.
             depth: 128
             maxBytes: 268435456
 

@@ -1,6 +1,6 @@
 ---
 title: Head cache
-description: Verify a recent canonical window per replica, reuse immutable block and log payloads through Redis, and serve covered block and log reads locally.
+description: A lease holder per head-cache scope polls upstream and hydrates a canonical window, publishes a fenced Redis snapshot, and serves covered block and log reads from verified immutable payloads.
 ---
 
 import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
@@ -9,20 +9,16 @@ import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
 
 # Head cache
 
-Most traffic reads the last few blocks: `eth_getBlockByNumber`, `eth_getBlockByHash`
-and `eth_getLogs` with many different filters. With the head cache enabled, each
-replica verifies its own recent canonical window and serves covered reads from
-memory. Redis shares immutable, hash-addressed block and log payloads between
-replicas. Each replica may still make its own verification and hydration requests,
-especially on a cold cache or when its upstream view differs.
+With the head cache enabled, one lease holder per trust fingerprint, namespace,
+project and network polls upstream and hydrates the canonical window. It publishes
+a fenced Redis snapshot for followers, who serve covered reads from immutable,
+hash-addressed payloads without head-cache polling upstream while Redis is healthy.
+Independent EVM state pollers and probes still run per replica and can call upstream.
 
-The cache reuses a Redis connector you already declare for the
-[EVM JSON-RPC cache](/config/database/evm-json-rpc-cache). Redis stores payloads,
-not a shared canonical head; a replica serves a payload only after its own head
-verification confirms the block is canonical locally. Each replica hydrates backward
-from its latest head and can publish a complete verified suffix before the configured
-depth is full. HTTP requests use the cache only when their entire requested block or
-log range is covered; other requests use the normal upstream path.
+HTTP requests use the cache only when their entire requested block or log range is
+covered. If Redis or the shared state is unavailable, stale or incomplete, the cache
+does not serve a hit; ordinary HTTP follows normal forwarding. The cache reuses a
+Redis connector declared for the [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache).
 
 Disabled by default. When disabled, behavior is unchanged.
 
@@ -57,43 +53,43 @@ Defaults from `EvmHeadCacheConfig.SetDefaults` (<SourceLink file="common/config_
 | Field | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Opt-in. |
-| `connectorId` | — (required) | Id of a `driver: redis` connector in `database.evmJsonRpcCache.connectors`. Validated at config load (`ValidateConnector`); a missing or non-redis connector fails setup. The head cache uses this connector's `Get`/`Set` operations and leaves Redis client lifecycle, reconnects and configured failsafes to the connector. |
+| `connectorId` | — (required) | Id of a `driver: redis` connector in `database.evmJsonRpcCache.connectors`. Validated at config load (`ValidateConnector`); a missing or non-redis connector fails setup. Payload `Get`/`Set` and snapshot reads use the configured connector wrapper and its failsafes. Lease operations and token-fenced snapshot publication use the underlying Redis client; the connector owns that client's lifecycle and reconnects. |
 | `depth` | `128` (1..4096) | Canonical blocks retained. |
 | `maxBytes` | `256MB` | Total retained block+log bytes; oldest blocks dropped first (become misses). |
 | `maxBlockBytes` | `min(16MB, maxBytes)` | A block whose block+logs payload exceeds this is never cached. |
 | `maxPerTick` | `16` | Maximum number of missing block records fetched from upstream per refresh tick; cold prefill can span multiple polls. |
-| `concurrency` | `4` (1..64) | Maximum simultaneous header, Redis-read, and block/log hydration jobs per network. |
-| `pollInterval` | `2s` | Each replica discovers the latest height with `eth_blockNumber` and re-verifies its local tip header each tick. |
+| `concurrency` | `4` (1..64) | Maximum simultaneous header, Redis-read, and block/log hydration jobs per network on the lease holder. |
+| `pollInterval` | `2s` | Head-cache lease holder discovers the latest height and refreshes the canonical snapshot at this interval. Followers check Redis for the shared snapshot; they do not poll upstream for the head cache while the fleet store is healthy. Independent EVM state pollers/probes still run per replica. |
 | `fetchTimeout` | `10s` | Timeout for each hydration or verification fetch. |
 | `maxLogsRange` | `depth` | Widest `eth_getLogs` range served from cache. |
-| `maxStaleness` | `5 × pollInterval` | Maximum time since this replica's last successful head verification before it bypasses the cache and uses upstreams. |
+| `maxStaleness` | `5 × pollInterval` | Maximum age of the shared canonical snapshot. Once stale, it cannot authorize an HTTP cache hit and WebSocket subscriptions close. |
 | `namespace` | `default` | Deployment isolation prefix. A SHA-256 fingerprint includes upstream configurations, provider settings/overrides, upstream and network defaults, integrity and effective network forwarding configuration. Secrets contribute to the digest but are never emitted in it. |
 
 ## What is served
 
 - `eth_getBlockByNumber` with an explicit hex number and boolean flag (`true` = full txs, `false` = tx hashes derived from the same record). Tags (`latest`, `finalized`, ...) always go through the normal path.
-- `eth_getBlockByHash`, only when the hash is canonical in the current window.
-- `eth_getLogs` with `blockHash`, or with hex `fromBlock`/`toBlock` where **every** block of the range is held in this replica's verified window and the span is <= `maxLogsRange`. Only `address`, `topics`, `blockHash`, `fromBlock`, `toBlock` members are accepted (`blockHash` together with `fromBlock`/`toBlock` goes upstream); addresses must be 20-byte and topics 32-byte hex, and topic matching follows geth (a filter with more topic positions than a log never matches it). Anything else goes upstream.
+- `eth_getBlockByHash`, only when the hash is canonical in the current shared snapshot and its immutable payload is present.
+- `eth_getLogs` with `blockHash`, or with hex `fromBlock`/`toBlock` where **every** block of the range is covered by the current shared snapshot and its payloads, and the span is <= `maxLogsRange`. Only `address`, `topics`, `blockHash`, `fromBlock`, `toBlock` members are accepted (`blockHash` together with `fromBlock`/`toBlock` goes upstream); addresses must be 20-byte and topics 32-byte hex, and topic matching follows geth (a filter with more topic positions than a log never matches it). Anything else goes upstream.
 - Requests with `useUpstream`, an integrity selector, `skipCacheRead`, or internal requests bypass the head cache (they may target a different trust set).
 
 ## Edge cases & gotchas
 
-1. **No partial or unverified answers.** The replica may publish a complete contiguous newest suffix while cold-filling, or above an oversized/unusable block. HTTP cache reads still require a fresh local canonical view and complete coverage for the requested block or entire log range. Any requested block that is missing, expired, evicted or oversized is a miss and the request is forwarded upstream unchanged. An empty log result is returned only when every block in the requested range is covered and none matched. A partially hydrated window never creates a partial HTTP response.
+1. **No partial or unverified answers.** The lease holder may publish a complete contiguous newest suffix while cold-filling, or above an oversized/unusable block. A shared snapshot's optional `incomplete` marker indicates that older records remain unhydrated; a new lease holder uses it to continue cold-filling after takeover. Capacity-evicted and oversized suffix views are not marked incomplete. Followers serve only when the shared snapshot is fresh and the requested block or entire log range is covered by validated payloads. Any requested block that is missing, expired, evicted or oversized is a miss; HTTP follows normal forwarding. An empty log result is returned only when every block in the requested range is covered and none matched. Partial windows never create partial HTTP responses.
 2. **Record validation.** A block is cached only when: the logs list is non-null, every log's `blockHash`/`blockNumber` match, every `transactionHash` belongs to the block, `logIndex` strictly increases, no log is `removed`, and the bloom recomputed from the logs equals the block's `logsBloom` (catches an upstream returning `[]` for a block it has not indexed).
-3. **Reorgs.** Each replica checks its live tip. When the tip changes or does not match the verified window, it fetches headers across the configured window in parallel and verifies every parent-hash link before using the window. A changed canonical window invalidates the previous view; a failed, null or malformed header does not establish a new view. A reorg beyond the retained window requires rebuilding the window. Replicas may temporarily disagree when their upstream views lag.
-4. **Cross-replica payload reuse.** Redis contains immutable block/log records keyed by network scope and block hash. A cached Redis record is not proof of canonicality: each replica independently verifies its local chain and uses only records matching that verified window. There is no fleet-wide leader, canonical snapshot or pub/sub. Replicas can duplicate cold fills and verification calls; this trades some provider traffic for simpler coordination and avoids a shared mutable head.
-5. **Redis loss.** Misses or errors from `data.Connector.Get` do not count as canonicality checks and never authorize unverified serving. The replica fetches missing payloads from upstream when available; `data.Connector.Set` failures are best-effort. Already-held records remain eligible only while the replica's own verified view is fresh. Missing/non-Redis connector configuration fails setup; a runtime unavailable connector operation uses the miss-and-fetch behavior.
-6. **Hydration traffic** goes through the normal network path (selection policy, failsafe) as internal JSON-RPC requests with explicit IDs. Hydration responses are not written into the ordinary [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache), so orphaned head data is not left behind there. Each replica independently discovers and verifies its head and may fetch missing full blocks/logs.
+3. **Reorgs.** The lease holder discovers its live tip and verifies the configured window, including every parent-hash link, before publishing a changed canonical snapshot. A failed, null or malformed header does not establish a new view. Reorgs invalidate the previous view; a reorg beyond the retained window requires rebuilding it. Followers consume the published canonical snapshot and validate its records rather than checking headers independently against upstream.
+4. **Fleet coordination and trust scope.** A token-fenced Redis lease selects one head-cache refresher per scope: trust fingerprint, configured namespace, project and network. The holder verifies the canonical window, hydrates missing records and publishes a snapshot only after all referenced immutable payloads are present. Followers validate the snapshot and hash-addressed payloads from Redis and do not make head-cache-origin upstream calls while Redis and the snapshot remain healthy. The trust fingerprint covers upstream/provider configuration and effective network forwarding settings; changing that identity creates a separate scope. This does not stop independent EVM state pollers, probes, or ordinary HTTP misses from reaching upstreams on each replica.
+5. **Redis loss or stale/incomplete state.** With fleet coordination, Redis errors, a missing or stale snapshot, or any missing/invalid payload invalidate the local view. HTTP cache reads miss and proceed through the normal forwarding path; no partial result is served. A lease holder may repopulate the shared state after Redis recovers. Redis payload records alone never authorize a hit without a valid snapshot.
+6. **Hydration traffic** goes through the normal network path (selection policy, failsafe) as internal JSON-RPC requests with explicit IDs while a replica holds the fleet lease. Hydration responses are not written into the ordinary [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache). Followers do not hydrate from upstream while using a healthy shared snapshot. Independent state pollers and probes remain per replica.
 7. A block whose full-block response omits `logsBloom` or whose log fields are non-standard is not cached. The cache can serve a complete newer suffix above a block rejected for exceeding `maxBlockBytes`; requests that cross or target the missing block go upstream, and WebSocket subscriptions close if the missing height creates an event gap.
 8. **Subscription gaps fail closed.** Missing added/removed records or skipped heights close subscriptions rather than emit a partial event. Clients must reconnect/resubscribe and recover their own missed range.
-9. **Connector lifecycle.** The head cache uses the outer configured connector's `Get`/`Set` methods, so configured failsafes and connector reconnect behavior apply. The connector owns its Redis client lifecycle; the head cache does not access or close the raw client. If a runtime `Get` is unavailable, its error is treated as a miss and upstream is used when available; a cache hit still requires local verified coverage.
+9. **Connector lifecycle.** Payload `Get`/`Set` and snapshot reads use the configured connector wrapper. The head cache accesses the underlying Redis client only for lease operations and token-fenced snapshot publication; the connector owns its lifecycle and the head cache does not close it. Redis errors invalidate cache eligibility rather than triggering follower-side upstream hydration; HTTP requests continue through normal forwarding and WebSocket subscriptions close.
 10. **Exact input semantics.** Addresses require 20-byte hex and topics/hashes require 32-byte hex. A trailing wildcard topic still requires that topic position to exist. Invalid filters, mixed blockHash/range selectors, unknown members and directed requests bypass local answers.
 11. **Memory sizing.** `maxBytes` applies per enabled network per replica, not to the whole process. The default `256MB` is 256 MiB (`256 << 20`): 32 enabled networks can retain about 8 GiB of cached data per replica alone. Budget separately for Go/object overhead, in-flight hydration and serialization, other caches, and Redis storage. Tune `maxBytes`, `depth` and container/pod memory limits for the enabled network count.
 12. **Fork compatibility.** Configs written for the unmerged fork branch must replace `mode`/`redis` with `connectorId` and drop `headSource`/`servedTipMaxAge`. Those keys no longer exist.
-13. **Store retention.** Redis payloads expire by TTL and may outlive a replica's local canonical window. `depth` and `maxBytes` bound local cache use, not total fleet Redis storage. Set Redis `maxmemory` and an eviction policy appropriate for the deployment.
+13. **Store retention.** Redis payloads expire by TTL and may outlive a replica's local canonical window. The lease holder refreshes each current payload at half its TTL, rather than rewriting unchanged records every poll. `depth` and `maxBytes` bound local cache use, not total fleet Redis storage. Set Redis `maxmemory` and an eviction policy appropriate for the deployment.
 
 ## Observability
 
-Cache hits are marked `fromCache` and set `head_cache.hit=true` on the `Network.Forward` span. This cache does not expose dedicated metrics. Consider provider cost per replica: head verification is local to each replica, while Redis only reuses immutable payloads.
+Cache hits are marked `fromCache` and set `head_cache.hit=true` on the `Network.Forward` span. This cache does not expose dedicated metrics. With Redis fleet coordination, one lease holder performs head-cache polling and hydration per scope; independent EVM state pollers/probes still run per replica, and ordinary HTTP misses can still reach upstream.
 
 </AISection>
