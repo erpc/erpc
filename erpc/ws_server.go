@@ -539,6 +539,9 @@ func (c *wsConn) handleOne(trimmed []byte) ([]byte, func(bool)) {
 		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "invalid request"), nil
 	}
 	if len(req.ID) == 0 {
+		if req.JSONRPC == "2.0" {
+			return nil, nil
+		}
 		req.ID = json.RawMessage("null")
 	}
 	if req.Method != "eth_subscribe" && req.Method != "eth_unsubscribe" {

@@ -228,6 +228,44 @@ func TestCache_IncompleteLogsNeverCached(t *testing.T) {
 	require.Greater(t, c.Stats.Rejected.Load(), int64(0))
 }
 
+func TestCache_EvictedAddedBlockClosesSubscriberWithoutNotification(t *testing.T) {
+	ctx := context.Background()
+	ch := newFakeChain(1)
+	o := testOpts("a")
+	o.Depth = 4
+	c := New(o, NewMemoryStore(), ch, ch.head, nil)
+	c.Tick(ctx)
+	sub := c.Subscribe(8)
+	defer sub.Close()
+	ch.mine(2)
+
+	// A budget that fits one new record but not both makes the oldest newly
+	// added block fall out while retaining the new tip block.
+	var sizes []int64
+	for n := int64(2); n <= 3; n++ {
+		block, err := ch.BlockByNumber(ctx, n)
+		require.NoError(t, err)
+		parsed, _, err := parseBlockHeader(block)
+		require.NoError(t, err)
+		logs, err := ch.LogsByBlockHash(ctx, parsed.Hash)
+		require.NoError(t, err)
+		rec, err := buildRecord(block, logs, 0)
+		require.NoError(t, err)
+		sizes = append(sizes, rec.Size())
+	}
+	c.opt.MaxBytes = max(sizes[0], sizes[1])
+
+	c.Tick(ctx)
+
+	_, open := <-sub.C
+	require.False(t, open, "subscriber must close rather than receive an event for an evicted block")
+	require.Zero(t, c.SubscriberCount())
+	_, ok := c.BlockByNumber(2, false)
+	require.False(t, ok, "oldest newly added block should be evicted by the byte budget")
+	_, ok = c.BlockByNumber(3, false)
+	require.True(t, ok, "new tip block should remain within the budget")
+}
+
 func TestCache_StalenessDisablesServing(t *testing.T) {
 	ctx := context.Background()
 	ch := newFakeChain(5)

@@ -73,13 +73,14 @@ Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/conf
 ## Edge cases & gotchas
 
 1. **No silent gaps.** Every head cache event is checked for continuity. Missing heights (evicted records, a window reset, recovery after staleness), a subscription queue overflow, or a stopped head cache close the connection with 1008 (`subscription gap: resubscribe` / `slow consumer`). Clients should reconnect, resubscribe and backfill with `eth_getLogs` over HTTP (`TestWs_GapDetection`, `TestWs_SlowConsumerDisconnected`).
-2. **Stale head cache.** When the head cache stops serving (see its `maxStaleness`), no events are produced.
-3. **Shutdown.** Connections are hijacked, so `http.Server.Shutdown` does not wait for them. They close with 1001 when the application context ends. New upgrades during draining get 503.
-4. `maxConnections` and `maxConnectionsPerProject` are per process, not per client IP or fleet. Front eRPC with a per-client connection limit at the load balancer.
-5. Only `newHeads` and `logs` are supported. `newPendingTransactions`, `syncing` and unknown kinds return `-32601`.
-6. **Keepalive and re-auth.** Every `pingInterval` the server pings (a missing pong within `writeTimeout` closes with 1008) and re-checks the upgrade credentials through consumer auth, consuming one auth rate-limit permit when the strategy has a `rateLimitBudget`. A revoked key or expired JWT stops streaming within about one `pingInterval`, closing with 1008 `unauthorized`.
-7. **Server timeouts.** Upgraded connections are hijacked, so they outlive `server.writeTimeout` (`TestWs_OutlivesHTTPWriteTimeout`).
-8. **Fork compatibility.** Configs written for the unmerged fork branch must drop `server.webSocket.maxInflightPerConnection` and `maxBatchSize`. Those keys no longer exist.
+2. **Id-less requests.** A JSON-RPC 2.0 `eth_subscribe` or `eth_unsubscribe` without an `id` is treated as a notification: it gets no reply and does not create or remove a subscription (`TestWs_IdlessNotificationsHaveNoSubscriptionEffects`).
+3. **Stale head cache.** When the head cache stops serving (see its `maxStaleness`), no events are produced.
+4. **Shutdown.** Connections are hijacked, so `http.Server.Shutdown` does not wait for them. They close with 1001 when the application context ends. New upgrades during draining get 503.
+5. `maxConnections` and `maxConnectionsPerProject` are per process, not per client IP or fleet. Front eRPC with a per-client connection limit at the load balancer.
+6. Only `newHeads` and `logs` are supported. `newPendingTransactions`, `syncing` and unknown kinds return `-32601`.
+7. **Keepalive and re-auth.** Every `pingInterval` the server pings (a missing pong within `writeTimeout` closes with 1008) and re-checks the upgrade credentials through consumer auth, consuming one auth rate-limit permit when the strategy has a `rateLimitBudget`. A revoked key or expired JWT stops streaming within about one `pingInterval`, closing with 1008 `unauthorized`.
+8. **Server timeouts.** Upgraded connections are hijacked, so they outlive `server.writeTimeout` (`TestWs_OutlivesHTTPWriteTimeout`).
+9. **Fork compatibility.** Configs written for the unmerged fork branch must drop `server.webSocket.maxInflightPerConnection` and `maxBatchSize`. Those keys no longer exist.
 
 ## Observability
 

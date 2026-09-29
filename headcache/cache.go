@@ -652,6 +652,20 @@ func (c *Cache) invalidateLocal() {
 func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord, freshAt time.Time) {
 	c.mu.Lock()
 	old := c.snap
+	// Enforce the byte budget before building events. A newly added record
+	// evicted here is a missing event record, so subscribers must be closed
+	// rather than notified about data this cache cannot serve.
+	var total int64
+	for _, r := range recs {
+		total += r.Size()
+	}
+	for n := snap.Base(); total > c.opt.MaxBytes && n <= snap.Head; n++ {
+		if r := recs[snap.HashAt(n)]; r != nil {
+			total -= r.Size()
+			delete(recs, r.Hash)
+		}
+	}
+
 	var ev Event
 	gap := old != nil && snap.Base() > old.Head+1
 	if old != nil {
@@ -683,18 +697,6 @@ func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord, freshAt time
 			ev.Added = append(ev.Added, r)
 		} else {
 			gap = true
-		}
-	}
-	// Enforce the byte budget by dropping the oldest records (those heights
-	// become cache misses, never partial answers).
-	var total int64
-	for _, r := range recs {
-		total += r.Size()
-	}
-	for n := snap.Base(); total > c.opt.MaxBytes && n <= snap.Head; n++ {
-		if r := recs[snap.HashAt(n)]; r != nil {
-			total -= r.Size()
-			delete(recs, r.Hash)
 		}
 	}
 	c.snap = snap

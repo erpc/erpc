@@ -94,6 +94,52 @@ func TestWs_SingleInvalidRequestCodes(t *testing.T) {
 	}
 }
 
+func TestWs_IdlessNotificationsHaveNoSubscriptionEffects(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	_, _, base, shutdown, e := createServerTestFixtures(wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	w, _, err := dialWs(t, wsURL(base, ""), nil)
+	require.NoError(t, err)
+
+	write := func(msg string) {
+		t.Helper()
+		require.NoError(t, w.c.Write(context.Background(), websocket.MessageText, []byte(msg)))
+	}
+	assertSilent := func() {
+		t.Helper()
+		select {
+		case m, ok := <-w.msgs:
+			if !ok {
+				t.Fatal("connection closed while waiting for notification silence")
+			}
+			t.Fatalf("unexpected websocket response: %+v", m)
+		case err := <-w.done:
+			t.Fatalf("connection closed while waiting for notification silence: %v", err)
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+
+	write(`{"jsonrpc":"2.0","method":"eth_subscribe","params":["newHeads"]}`)
+	assertSilent()
+	// This reply is a barrier after the id-less frame has been handled.
+	require.Equal(t, -32601, w.call("eth_chainId", `[]`).Error.Code)
+	require.Equal(t, 0, subCount(t, e))
+
+	subReply := w.call("eth_subscribe", `["newHeads"]`)
+	require.Nil(t, subReply.Error)
+	var subID string
+	require.NoError(t, json.Unmarshal(subReply.Result, &subID))
+	require.Equal(t, 1, subCount(t, e))
+	write(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_unsubscribe","params":[%q]}`, subID))
+	assertSilent()
+	require.Equal(t, -32601, w.call("eth_chainId", `[]`).Error.Code)
+	require.Equal(t, 1, subCount(t, e), "id-less unsubscribe must not remove the subscription")
+	require.Equal(t, "true", string(w.call("eth_unsubscribe", fmt.Sprintf(`[%q]`, subID)).Result))
+	require.Eventually(t, func() bool { return subCount(t, e) == 0 }, 5*time.Second, 20*time.Millisecond)
+}
+
 func TestWs_ConfigFallbacks(t *testing.T) {
 	ws := &wsServer{cfg: &common.WebSocketServerConfig{}}
 	require.Equal(t, 30*time.Second, ws.pingInterval(), "ping (and re-auth) must never be disabled")
