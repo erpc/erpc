@@ -1270,9 +1270,9 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 						"error": fmt.Sprintf("<error extracting consensus response: %v>", err),
 					})
 				}
-			} else if consensusGroup.FirstError != nil {
+			} else if consensusGroup.RepresentativeError != nil {
 				consensusBody, _ = common.SonicCfg.Marshal(map[string]interface{}{
-					"error": fmt.Sprintf("<consensus error: %v>", consensusGroup.FirstError),
+					"error": fmt.Sprintf("<consensus error: %v>", consensusGroup.RepresentativeError),
 				})
 			}
 

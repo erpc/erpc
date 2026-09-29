@@ -527,11 +527,11 @@ func TestRace_TwoParticipants_OneInfraError_CorrectlyLowParticipants(t *testing.
 		CachedResponseType: ResponseTypeInfrastructureError,
 	}
 	analysis.groups["error:generic"] = &responseGroup{
-		Hash:         "error:generic",
-		Results:      []*execResult{infraResult},
-		Count:        1,
-		ResponseType: ResponseTypeInfrastructureError,
-		FirstError:   infraResult.Err,
+		Hash:                "error:generic",
+		Results:             []*execResult{infraResult},
+		Count:               1,
+		ResponseType:        ResponseTypeInfrastructureError,
+		RepresentativeError: infraResult.Err,
 	}
 
 	require.Equal(t, 1, analysis.validParticipants,

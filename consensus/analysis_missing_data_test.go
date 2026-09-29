@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -35,39 +36,30 @@ func svmError(t *testing.T, upstreamID string, code int, msg string) error {
 	return err
 }
 
-// decide runs two participant errors through classification, grouping and the
-// winner rules under 2-of-2 returnError — the configuration Solana networks use.
-func decide(t *testing.T, errs ...error) *slotResult {
+// participant is one upstream's answer, attributed, as the analyzer receives it.
+func participant(t *testing.T, upstreamID string, code int, msg string) *execResult {
+	t.Helper()
+	return &execResult{
+		Err:      svmError(t, upstreamID, code, msg),
+		Upstream: &svmStubUpstream{id: upstreamID},
+	}
+}
+
+// decide runs participants through the real analysis and winner rules under
+// 2-of-2 returnError — the configuration Solana networks use. Index mirrors
+// arrival position, which is what the analyzer assigns.
+func decide(t *testing.T, parts ...*execResult) *slotResult {
 	t.Helper()
 	cfg := &config{
-		maxParticipants:    len(errs),
-		agreementThreshold: len(errs),
+		maxParticipants:    len(parts),
+		agreementThreshold: len(parts),
 		disputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
 	}
-	analysis := &consensusAnalysis{
-		config:            cfg,
-		groups:            make(map[string]*responseGroup),
-		totalParticipants: len(errs),
-		method:            "getBlock",
-	}
-	for i, err := range errs {
-		r := &execResult{Err: err, Index: i}
-		classifyAndHashResponse(r, nil, cfg)
-		if r.CachedResponseType != ResponseTypeInfrastructureError {
-			analysis.validParticipants++
-		}
-		group, ok := analysis.groups[r.CachedHash]
-		if !ok {
-			group = &responseGroup{Hash: r.CachedHash, ResponseType: r.CachedResponseType, ResponseSize: r.CachedResponseSize}
-			analysis.groups[r.CachedHash] = group
-		}
-		group.Count++
-		group.Results = append(group.Results, r)
-		if group.FirstError == nil {
-			group.FirstError = err
-		}
+	for i, p := range parts {
+		p.Index = i
 	}
 	lg := zerolog.Nop()
+	analysis := newConsensusAnalysis(&lg, context.Background(), cfg, parts)
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
 	winner := e.determineWinner(&lg, analysis)
 	require.NotNil(t, winner)
@@ -119,18 +111,18 @@ var missingDataFamilies = []struct {
 func TestMissingData_SameVerdictDifferentCodes_Agree(t *testing.T) {
 	for _, fam := range missingDataFamilies {
 		t.Run(fam.name, func(t *testing.T) {
-			errs := make([]error, len(fam.inputs))
+			parts := make([]*execResult, len(fam.inputs))
 			for i, in := range fam.inputs {
-				errs[i] = svmError(t, "upstream-"+in.label, in.code, in.msg)
-				require.True(t, common.HasErrorCode(errs[i], common.ErrCodeEndpointMissingData),
+				parts[i] = participant(t, "upstream-"+in.label, in.code, in.msg)
+				require.True(t, common.HasErrorCode(parts[i].Err, common.ErrCodeEndpointMissingData),
 					"%s must classify as missing data", in.label)
-				require.Equal(t, fam.permanent, common.IsPermanentlyMissingData(errs[i]),
+				require.Equal(t, fam.permanent, common.IsPermanentlyMissingData(parts[i].Err),
 					"%s must be in the %s family", in.label, fam.name)
 			}
 			for i, a := range fam.inputs {
 				for j := i + 1; j < len(fam.inputs); j++ {
 					b := fam.inputs[j]
-					winner := decide(t, errs[i], errs[j])
+					winner := decide(t, parts[i], parts[j])
 					require.NotNil(t, winner.Error, "%s vs %s", a.label, b.label)
 					assert.False(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusDispute),
 						"%s vs %s: the same verdict must agree, not dispute", a.label, b.label)
@@ -147,8 +139,8 @@ func TestMissingData_SameVerdictDifferentCodes_Agree(t *testing.T) {
 // they must dispute rather than hand the caller whichever arrived first.
 func TestMissingData_PermanentVsTransient_StillDispute(t *testing.T) {
 	winner := decide(t,
-		svmError(t, "upstream-a", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
-		svmError(t, "upstream-b", -32004, "Block not available for slot 500281501"),
+		participant(t, "upstream-a", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
+		participant(t, "upstream-b", -32004, "Block not available for slot 500281501"),
 	)
 	require.NotNil(t, winner.Error)
 	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusDispute),
@@ -168,4 +160,31 @@ func TestMissingData_WireCodesStayNative(t *testing.T) {
 				"%s must reach the client with its own code", in.label)
 		}
 	}
+}
+
+// A verdict group can hold members whose codes differ, so the error the caller
+// receives must not depend on which upstream answered first. It is the member
+// with the lowest upstream id, whatever order the analyzer drained them in.
+func TestMissingData_ReturnedErrorIsOrderIndependent(t *testing.T) {
+	const slot = "Slot 500281501 was skipped, or missing"
+	codeOf := func(t *testing.T, parts ...*execResult) common.JsonRpcErrorNumber {
+		t.Helper()
+		winner := decide(t, parts...)
+		require.NotNil(t, winner.Error)
+		var jre *common.ErrJsonRpcExceptionInternal
+		require.ErrorAs(t, winner.Error, &jre)
+		return jre.NormalizedCode()
+	}
+	alchemy := func() *execResult {
+		return participant(t, "alchemy-svm", -32007, slot+" due to ledger jump to recent snapshot")
+	}
+	quicknode := func() *execResult {
+		return participant(t, "quicknode-svm", -32009, slot+" in long-term storage")
+	}
+
+	first := codeOf(t, alchemy(), quicknode())
+	second := codeOf(t, quicknode(), alchemy())
+	assert.Equal(t, first, second, "arrival order must not change the code the client sees")
+	assert.Equal(t, common.JsonRpcErrorNumber(-32007), first,
+		"the lowest upstream id (alchemy-svm) must supply the group's error")
 }
