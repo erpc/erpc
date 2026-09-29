@@ -471,9 +471,9 @@ func errorToConsensusHash(err error) string {
 			}
 		}
 	}
-	// "Skipped for good" and "not indexed yet" are different claims about the
-	// chain, and only a dispute between them reaches the wait-and-retry that can
-	// settle it, so permanence stays part of the key.
+	// "Skipped for good" and "not indexed yet" are opposite claims about whether
+	// asking again can help. One group would hand the caller whichever arrived
+	// first, so permanence stays part of the key and the two dispute instead.
 	if common.IsPermanentlyMissingData(err) {
 		hash += ":permanent"
 	}

@@ -142,9 +142,9 @@ func TestMissingData_SameVerdictDifferentCodes_Agree(t *testing.T) {
 	}
 }
 
-// Permanence is a real disagreement about the chain, not a naming difference:
-// "skipped for good" against "not indexed yet" must stay a dispute, because the
-// dispute is what routes the request into the wait-and-retry that settles it.
+// Permanence is a real disagreement, not a naming difference: "skipped for
+// good" and "not indexed yet" disagree on whether asking again can help, so
+// they must dispute rather than hand the caller whichever arrived first.
 func TestMissingData_PermanentVsTransient_StillDispute(t *testing.T) {
 	winner := decide(t,
 		svmError(t, "upstream-a", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
