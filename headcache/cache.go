@@ -303,12 +303,19 @@ func (c *Cache) fleetTick(ctx context.Context) error {
 
 func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 	snap, err := c.fleet.ReadSnapshot(ctx, c.opt.Scope)
-	if err != nil || snap == nil || len(snap.Hashes) == 0 || c.nowFn().Sub(snap.At) > c.opt.MaxStaleness || snap.At.After(c.nowFn().Add(maxFutureSkew)) {
+	if err != nil || snap == nil || len(snap.Hashes) == 0 || c.nowFn().Sub(snap.At) > c.opt.MaxStaleness {
 		c.invalidateAndClose()
 		if err != nil {
 			return fmt.Errorf("read head cache snapshot: %w", err)
 		}
 		return errors.New("missing or stale head cache snapshot")
+	}
+	if snap.At.After(c.nowFn().Add(maxFutureSkew)) {
+		c.invalidateAndClose()
+		return errors.New("head cache snapshot timestamp is too far in the future")
+	}
+	if snap.At.After(c.nowFn()) {
+		snap.At = c.nowFn()
 	}
 	if snap.Base() < 0 || snap.Head < 0 || int64(len(snap.Hashes)) > c.opt.Depth {
 		c.invalidateAndClose()

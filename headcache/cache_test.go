@@ -421,6 +421,25 @@ func TestCache_FleetFollowerAcceptsUppercasePayloadHeaderHashes(t *testing.T) {
 	leader.Stop()
 }
 
+func TestCache_FleetFollowerClampsSmallFutureSnapshotSkew(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	leader := New(testOpts(), store, newFakeChain(5), func(context.Context) int64 { return 5 }, nil)
+	leader.Tick(context.Background())
+	now := time.Now()
+	store.muFleet.Lock()
+	store.snap.At = now.Add(2 * time.Second)
+	store.muFleet.Unlock()
+
+	follower := New(testOpts(), store, newFakeChain(5), nil, nil)
+	follower.nowFn = func() time.Time { return now }
+	follower.Tick(context.Background())
+	require.True(t, follower.Fresh())
+	follower.nowFn = func() time.Time { return now.Add(testOpts().MaxStaleness + time.Second) }
+	require.False(t, follower.Fresh(), "future skew must not extend local staleness")
+	leader.Stop()
+}
+
 func TestCache_SameHeightAndDeepReorgEvents(t *testing.T) {
 	ch := newFakeChain(10)
 	c := New(testOpts(), newMapStore(), ch, ch.head, nil)

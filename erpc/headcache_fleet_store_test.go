@@ -18,6 +18,30 @@ import (
 
 func init() { util.ConfigureTestLogger() }
 
+func TestHeadCacheFingerprintIncludesCachePolicy(t *testing.T) {
+	project := &common.ProjectConfig{}
+	network := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{HeadCache: &common.EvmHeadCacheConfig{
+			Enabled: true, Depth: 64, MaxBytes: 1024, MaxBlockBytes: 512,
+		}},
+	}
+	fingerprint := func() string {
+		hash, err := headCacheFingerprint(project, network)
+		require.NoError(t, err)
+		return hash
+	}
+	base := fingerprint()
+	network.Evm.HeadCache.Depth++
+	require.NotEqual(t, base, fingerprint(), "different cache depths must use distinct fleet scopes")
+	network.Evm.HeadCache.Depth--
+	network.Evm.HeadCache.MaxBytes++
+	require.NotEqual(t, base, fingerprint(), "different cache capacities must use distinct fleet scopes")
+	network.Evm.HeadCache.MaxBytes--
+	network.Evm.HeadCache.MaxBlockBytes++
+	require.NotEqual(t, base, fingerprint(), "different maximum block sizes must use distinct fleet scopes")
+}
+
 func TestHeadCacheFleetStoreLeaseFencingAndPartition(t *testing.T) {
 	mr := miniredis.RunT(t)
 	ctx := context.Background()

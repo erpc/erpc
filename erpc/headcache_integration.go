@@ -66,14 +66,6 @@ func headCacheFingerprint(prj *common.ProjectConfig, nw *common.NetworkConfig) (
 	}
 	sort.Strings(upstreams)
 	sort.Strings(providers)
-	// Cache sizing/storage is not part of upstream trust. Keep the effective
-	// network's selectors, integrity, failsafe and other forwarding settings.
-	network := *nw
-	if nw.Evm != nil {
-		evm := *nw.Evm
-		evm.HeadCache = nil
-		network.Evm = &evm
-	}
 	b, err := json.Marshal(struct {
 		NetworkID        string
 		Upstreams        []string
@@ -82,7 +74,7 @@ func headCacheFingerprint(prj *common.ProjectConfig, nw *common.NetworkConfig) (
 		NetworkDefaults  *common.NetworkDefaults
 		Integrity        *common.IntegrityConfig
 		Network          *common.NetworkConfig
-	}{nw.NetworkId(), upstreams, providers, (*upstreamTrust)(prj.UpstreamDefaults), prj.NetworkDefaults, prj.Integrity, &network})
+	}{nw.NetworkId(), upstreams, providers, (*upstreamTrust)(prj.UpstreamDefaults), prj.NetworkDefaults, prj.Integrity, nw})
 	if err != nil {
 		return "", fmt.Errorf("head cache trust fingerprint: %w", err)
 	}
