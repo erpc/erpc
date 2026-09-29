@@ -12,9 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
-	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
@@ -288,7 +286,7 @@ func TestWs_UndeliveredSubscribeReplyReleases(t *testing.T) {
 }
 
 // Public path: a client pipelines many subscribes and disconnects abruptly.
-// Connection slots, subscriptions and gauges must all be released.
+// Connection slots and head-cache subscriptions must be released.
 func TestWs_DisconnectReleasesResources(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
@@ -298,14 +296,6 @@ func TestWs_DisconnectReleasesResources(t *testing.T) {
 	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
 	defer shutdown()
 	waitHead(t, e, 20)
-	conns := func() float64 {
-		return promUtil.ToFloat64(telemetry.MetricWsConnections.WithLabelValues("test_project", "evm:123"))
-	}
-	subs := func() float64 {
-		return promUtil.ToFloat64(telemetry.MetricWsSubscriptions.WithLabelValues("test_project", "evm:123", "newHeads"))
-	}
-	conns0, subs0 := conns(), subs()
-
 	for round := 0; round < 3; round++ {
 		var c *websocket.Conn
 		require.Eventually(t, func() bool {
@@ -323,6 +313,6 @@ func TestWs_DisconnectReleasesResources(t *testing.T) {
 		_ = c.CloseNow()
 	}
 	require.Eventually(t, func() bool {
-		return subCount(t, e) == 0 && conns() == conns0 && subs() == subs0
-	}, 10*time.Second, 20*time.Millisecond, "subs=%d conns=%v subsGauge=%v", subCount(t, e), conns(), subs())
+		return subCount(t, e) == 0
+	}, 10*time.Second, 20*time.Millisecond, "head-cache subscriptions must be released")
 }

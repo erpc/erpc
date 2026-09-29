@@ -87,14 +87,7 @@ Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/conf
 
 ## Observability
 
-| Metric | Type | Labels | Meaning |
-|---|---|---|---|
-| `erpc_ws_connections` | gauge | `project`, `network` | Open connections. |
-| `erpc_ws_subscriptions` | gauge | `project`, `network`, `kind` | Active subscriptions (`newHeads`, `logs`). |
-| `erpc_ws_notifications_total` | counter | `project`, `network`, `kind` | `eth_subscription` notifications sent. |
-| `erpc_ws_connections_closed_total` | counter | `project`, `network`, `reason` | Closed connections: `client`, `slow_consumer`, `shutdown`, `error`. |
-
-Defined in <SourceLink file="telemetry/feature_metrics.go" /> and emitted from <SourceLink file="erpc/ws_server.go" />. Panics are counted in `erpc_unexpected_panic_total` with scope `ws-handler` / `ws-message`. No upstream requests are made from a WebSocket connection.
+Panics are counted in `erpc_unexpected_panic_total` with scope `ws-handler` / `ws-message`. No upstream requests are made from a WebSocket connection.
 
 Tests: `TestWs_UnsupportedContract`, `TestWs_SingleInvalidRequestCodes`, `TestWs_DisabledAndNoHeadCache`, `TestWs_Caps`, `TestWs_PerProjectCap`, `TestWs_SubscriptionsReorg`, `TestWs_GapDetection`, `TestWs_PingAndReauthClosesExpiredJwt`, `TestWs_ConfigFallbacks`.
 

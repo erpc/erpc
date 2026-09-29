@@ -208,11 +208,7 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		lg:        &lg,
 		out:       make(chan []byte, ws.cfg.SendQueueSize),
 		subs:      map[string]*wsSub{},
-		mProject:  projectId,
-		mNetwork:  nw.Label(),
 	}
-	telemetry.MetricWsConnections.WithLabelValues(c.mProject, c.mNetwork).Inc()
-	defer telemetry.MetricWsConnections.WithLabelValues(c.mProject, c.mNetwork).Dec()
 	c.run()
 }
 
@@ -291,12 +287,9 @@ type wsConn struct {
 	req       *http.Request
 	clientIP  string
 	lg        *zerolog.Logger
-	// metric labels (empty in unit tests that build a bare wsConn)
-	mProject, mNetwork string
-
-	ctx    context.Context
-	cancel context.CancelCauseFunc
-	out    chan []byte
+	ctx       context.Context
+	cancel    context.CancelCauseFunc
+	out       chan []byte
 
 	mu   sync.Mutex
 	subs map[string]*wsSub
@@ -358,7 +351,6 @@ func (c *wsConn) cleanup() {
 	c.cancel(nil)
 	c.mu.Lock()
 	for id, s := range c.subs {
-		telemetry.MetricWsSubscriptions.WithLabelValues(c.mProject, c.mNetwork, s.kind).Dec()
 		s.unsubscribed.Store(true)
 		s.sub.Close()
 		delete(c.subs, id)
@@ -379,24 +371,14 @@ func (c *wsConn) writeLoop(done chan struct{}) {
 			switch {
 			case errors.As(cause, &ce):
 				code, reason = ce.code, ce.reason
-				if c.ws.s.appCtx.Err() != nil {
-					c.recordClose("shutdown")
-				} else if strings.Contains(reason, wsCloseSlowConsumer) || reason == "write timeout" {
-					c.recordClose("slow_consumer")
-				} else {
-					c.recordClose("error")
-				}
 			case websocket.CloseStatus(cause) != -1:
 				// Peer closed; the library echoes the close frame.
-				c.recordClose("client")
 				_ = c.conn.CloseNow()
 				return
 			case c.ws.s.appCtx.Err() != nil:
 				code, reason = websocket.StatusGoingAway, "server shutting down"
-				c.recordClose("shutdown")
 			default:
 				// Read failed without a close frame (dropped TCP etc).
-				c.recordClose("client")
 			}
 			go func() {
 				time.Sleep(wt)
@@ -491,10 +473,6 @@ type wsRequest struct {
 	ID      json.RawMessage `json:"id"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params"`
-}
-
-func (c *wsConn) recordClose(reason string) {
-	telemetry.CounterHandle(telemetry.MetricWsClosedTotal, c.mProject, c.mNetwork, reason).Inc()
 }
 
 func errorReply(id json.RawMessage, code int, msg string) []byte {
@@ -676,8 +654,6 @@ func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, re
 	// cannot finish before the deferred start runs.
 	c.wg.Add(1)
 	c.mu.Unlock()
-	telemetry.MetricWsSubscriptions.WithLabelValues(c.mProject, c.mNetwork, kind).Inc()
-
 	// The caller enqueues the id reply before starting the pump so no
 	// notification can precede it.
 	return resultReply(req.ID, s.id), func(delivered bool) {
@@ -688,7 +664,6 @@ func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, re
 		c.mu.Lock()
 		if c.subs[s.id] == s {
 			delete(c.subs, s.id)
-			telemetry.MetricWsSubscriptions.WithLabelValues(c.mProject, c.mNetwork, s.kind).Dec()
 		}
 		c.mu.Unlock()
 		s.unsubscribed.Store(true)
@@ -709,7 +684,6 @@ func (c *wsConn) unsubscribe(req *wsRequest) []byte {
 	}
 	c.mu.Unlock()
 	if ok {
-		telemetry.MetricWsSubscriptions.WithLabelValues(c.mProject, c.mNetwork, s.kind).Dec()
 		s.unsubscribed.Store(true)
 		s.sub.Close()
 	}
@@ -717,11 +691,7 @@ func (c *wsConn) unsubscribe(req *wsRequest) []byte {
 }
 
 func (c *wsConn) notify(s *wsSub, result json.RawMessage) bool {
-	ok := c.sendStream([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":%s}}`, s.id, result)))
-	if ok {
-		telemetry.CounterHandle(telemetry.MetricWsNotificationsTotal, c.mProject, c.mNetwork, s.kind).Inc()
-	}
-	return ok
+	return c.sendStream([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":%s}}`, s.id, result)))
 }
 
 func (c *wsConn) pump(s *wsSub) {
