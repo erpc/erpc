@@ -70,9 +70,11 @@ func dialWs(t *testing.T, url string, hdr http.Header) (*wsClient, *http.Respons
 				return
 			}
 			var m wsMsg
-			if json.Unmarshal(data, &m) == nil {
-				w.msgs <- m
+			if err := json.Unmarshal(data, &m); err != nil {
+				w.t.Errorf("invalid websocket response JSON %q: %v", data, err)
+				continue
 			}
+			w.msgs <- m
 		}
 	}()
 	t.Cleanup(func() { _ = c.CloseNow() })
