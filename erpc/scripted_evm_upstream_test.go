@@ -34,6 +34,7 @@ type scriptedEvmUpstream struct {
 	blockCalls        sync.Map // eth_getBlockByNumber calls per explicit number
 	fullBlockCalls    atomic.Int64
 	headerCalls       atomic.Int64
+	latestBlockCalls  atomic.Int64
 	blockHashLogCalls atomic.Int64
 	rangeLogCalls     atomic.Int64
 	failBlockNumber   atomic.Bool
@@ -94,6 +95,7 @@ func (u *scriptedEvmUpstream) BlockCalls(n int64) int64 {
 func (u *scriptedEvmUpstream) RangeLogCalls() int64      { return u.rangeLogCalls.Load() }
 func (u *scriptedEvmUpstream) FullBlockCalls() int64     { return u.fullBlockCalls.Load() }
 func (u *scriptedEvmUpstream) HeaderCalls() int64        { return u.headerCalls.Load() }
+func (u *scriptedEvmUpstream) LatestBlockCalls() int64   { return u.latestBlockCalls.Load() }
 func (u *scriptedEvmUpstream) BlockHashLogCalls() int64  { return u.blockHashLogCalls.Load() }
 func (u *scriptedEvmUpstream) FailBlockNumber(fail bool) { u.failBlockNumber.Store(fail) }
 func (u *scriptedEvmUpstream) SetFullBlockDelay(delay time.Duration) {
@@ -244,6 +246,8 @@ func (u *scriptedEvmUpstream) handle(raw []byte) json.RawMessage {
 			} else {
 				u.headerCalls.Add(1)
 			}
+		} else if ref == "latest" {
+			u.latestBlockCalls.Add(1)
 		}
 		result = u.blockLocked(n, full)
 	case "eth_getBlockByHash":
