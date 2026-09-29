@@ -212,7 +212,7 @@ needs no configuration — it already excludes unhealthy upstreams and honors th
 
 ## Multi-replica indexer example
 
-`erpc.venn-parity.example.yaml` in the repo root is a config for several replicas serving indexers. It needs two components: a Redis-backed [head cache](/config/database/head-cache) (`evm.headCache` referencing a connector in `database.evmJsonRpcCache.connectors`) and [WebSocket](/config/websocket) `eth_subscribe` for `newHeads`/`logs`. Optionally it shows existing config for cheap-first routing: a [selection policy](/config/projects/selection-policies) `evalFunc` that sorts cheap upstreams first, with hedging explicitly off. It makes no provider-cost claims, so measure with the metrics on each page.
+`erpc.venn-parity.example.yaml` in the repo root is a config for several replicas serving indexers. It demonstrates a Redis-backed [head cache](/config/database/head-cache) (`evm.headCache` referencing a connector in `database.evmJsonRpcCache.connectors`) and [WebSocket](/config/websocket) `eth_subscribe` for `newHeads`/`logs`.
 
 ## Complete example — all sections
 
