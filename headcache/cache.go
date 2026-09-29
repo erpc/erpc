@@ -62,6 +62,7 @@ type Stats struct {
 type Cache struct {
 	opt     Options
 	store   Store
+	fleet   FleetStore
 	fetcher Fetcher
 	headFn  func(context.Context) int64
 	logger  *zerolog.Logger
@@ -85,6 +86,8 @@ type Cache struct {
 	cancel     context.CancelFunc
 	done       chan struct{}
 	stepMu     sync.Mutex
+	lease      Lease
+	sharedAt   map[string]time.Time
 }
 
 func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context) int64, logger *zerolog.Logger) *Cache {
@@ -113,9 +116,11 @@ func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context)
 		l := zerolog.Nop()
 		logger = &l
 	}
-	return &Cache{opt: opt, store: store, fetcher: fetcher, headFn: headFn, logger: logger,
+	c := &Cache{opt: opt, store: store, fetcher: fetcher, headFn: headFn, logger: logger,
 		records: map[string]*BlockRecord{}, pending: map[string]*BlockRecord{}, subs: map[*Subscription]struct{}{}, nowFn: time.Now,
-		windowHead: -1, kick: make(chan struct{}, 1), done: make(chan struct{}), blocked: map[string]bool{}}
+		windowHead: -1, kick: make(chan struct{}, 1), done: make(chan struct{}), blocked: map[string]bool{}, sharedAt: map[string]time.Time{}}
+	c.fleet, _ = store.(FleetStore)
+	return c
 }
 
 // Kick requests an early verification pass.
@@ -139,6 +144,7 @@ func (c *Cache) Stop() {
 			c.cancel()
 			<-c.done
 		}
+		c.releaseLeaseBounded()
 		c.mu.Lock()
 		for s := range c.subs {
 			c.closeSubLocked(s, "stop")
@@ -149,6 +155,7 @@ func (c *Cache) Stop() {
 
 func (c *Cache) run(ctx context.Context) {
 	defer close(c.done)
+	defer c.releaseLeaseBounded()
 	t := time.NewTicker(c.opt.PollInterval)
 	defer t.Stop()
 	for {
@@ -173,10 +180,212 @@ func (c *Cache) Tick(ctx context.Context) {
 		ctx, cancel = context.WithTimeout(ctx, c.opt.FetchTimeout)
 		defer cancel()
 	}
-	if err := c.refresh(ctx); err != nil {
+	var err error
+	if c.fleet != nil {
+		err = c.fleetTick(ctx)
+	} else {
+		err = c.refresh(ctx)
+	}
+	if err != nil {
 		c.logger.Debug().Err(err).Msg("head cache refresh failed")
 	}
 	c.expireSubscribers()
+}
+
+func (c *Cache) leaseTTL() time.Duration {
+	ttl := 3 * c.opt.PollInterval
+	if fetch := c.opt.FetchTimeout + c.opt.PollInterval; ttl <= fetch {
+		ttl = 2 * fetch
+	}
+	return ttl
+}
+
+func (c *Cache) snapshotTTL() time.Duration {
+	if c.opt.MaxStaleness > 0 {
+		return c.opt.MaxStaleness
+	}
+	return 2 * c.opt.PollInterval
+}
+
+func (c *Cache) releaseLease(ctx context.Context) {
+	lease := c.lease
+	c.lease = nil
+	if lease != nil {
+		if err := lease.Release(ctx); err != nil {
+			c.logger.Debug().Err(err).Msg("failed to release head cache fleet lease")
+		}
+	}
+}
+
+func (c *Cache) releaseLeaseBounded() {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	c.releaseLease(ctx)
+}
+
+func (c *Cache) fleetTick(ctx context.Context) error {
+	if c.lease == nil {
+		lease, err := c.fleet.Acquire(ctx, c.opt.Scope, c.leaseTTL())
+		if err != nil {
+			c.invalidateAndClose()
+			return fmt.Errorf("acquire head cache lease: %w", err)
+		}
+		if lease == nil {
+			return c.readFleetSnapshot(ctx)
+		}
+		c.lease = lease
+		c.sharedAt = map[string]time.Time{}
+	} else {
+		ok, err := c.lease.Renew(ctx, c.leaseTTL())
+		if err != nil || !ok {
+			c.lease = nil
+			c.sharedAt = map[string]time.Time{}
+			c.invalidateAndClose()
+			if err != nil {
+				return fmt.Errorf("renew head cache lease: %w", err)
+			}
+			return c.readFleetSnapshot(ctx)
+		}
+	}
+	if err := c.refresh(ctx); err != nil {
+		return err
+	}
+	if !c.Fresh() {
+		return nil
+	}
+	// A leader may publish only a complete locally validated snapshot whose
+	// payloads are all present in the shared store.
+	snap, records := c.localView()
+	if snap == nil || !completeWindow(snap, records) {
+		return nil
+	}
+	current := make(map[string]struct{}, len(snap.Hashes))
+	for _, h := range snap.Hashes {
+		current[h] = struct{}{}
+		r := records[h]
+		last := c.sharedAt[h]
+		refreshAfter := c.opt.RecordTTL / 2
+		if refreshAfter <= 0 || c.nowFn().Sub(last) >= refreshAfter {
+			if err := c.store.PutBlock(ctx, c.opt.Scope, r, c.opt.RecordTTL); err != nil {
+				delete(c.sharedAt, h)
+				c.invalidateAndClose()
+				return fmt.Errorf("repair shared head cache payload %s: %w", h, err)
+			}
+			c.sharedAt[h] = c.nowFn()
+		}
+	}
+	for h := range c.sharedAt {
+		if _, ok := current[h]; !ok {
+			delete(c.sharedAt, h)
+		}
+	}
+	ok, err := c.lease.Renew(ctx, c.leaseTTL())
+	if err != nil || !ok {
+		c.lease = nil
+		c.sharedAt = map[string]time.Time{}
+		c.invalidateAndClose()
+		if err != nil {
+			return fmt.Errorf("renew head cache lease before publish: %w", err)
+		}
+		return nil
+	}
+	ok, err = c.lease.Publish(ctx, snap, c.snapshotTTL())
+	if err != nil || !ok {
+		c.lease = nil
+		c.sharedAt = map[string]time.Time{}
+		c.invalidateAndClose()
+		if err != nil {
+			return fmt.Errorf("publish head cache snapshot: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Cache) readFleetSnapshot(ctx context.Context) error {
+	snap, err := c.fleet.ReadSnapshot(ctx, c.opt.Scope)
+	if err != nil || snap == nil || len(snap.Hashes) == 0 || c.nowFn().Sub(snap.At) > c.opt.MaxStaleness || snap.At.After(c.nowFn().Add(maxFutureSkew)) {
+		c.invalidateAndClose()
+		if err != nil {
+			return fmt.Errorf("read head cache snapshot: %w", err)
+		}
+		return errors.New("missing or stale head cache snapshot")
+	}
+	if snap.Base() < 0 || snap.Head < 0 || int64(len(snap.Hashes)) > c.opt.Depth {
+		c.invalidateAndClose()
+		return errors.New("invalid head cache snapshot range")
+	}
+	old, oldRecords := c.localView()
+	records := make(map[string]*BlockRecord, len(snap.Hashes))
+	for i, hash := range snap.Hashes {
+		if !isHexOfLen(hash, 64) {
+			c.invalidateAndClose()
+			return errors.New("invalid hash in head cache snapshot")
+		}
+		n := snap.Base() + int64(i)
+		var expected *rawBlock
+		if r := oldRecords[normHash(hash)]; r != nil {
+			expected, _, _ = parseBlockHeader(r.Block)
+			if expected != nil {
+				expected.Hash, expected.ParentHash = normHash(expected.Hash), normHash(expected.ParentHash)
+			}
+		}
+		r := oldRecords[normHash(hash)]
+		var e error
+		if r == nil {
+			r, e = c.store.GetBlock(ctx, c.opt.Scope, hash)
+		}
+		if e != nil || r == nil {
+			c.invalidateAndClose()
+			if e != nil {
+				return fmt.Errorf("read snapshot payload %s: %w", hash, e)
+			}
+			return fmt.Errorf("missing snapshot payload %s", hash)
+		}
+		if expected == nil {
+			b, got, parseErr := parseBlockHeader(r.Block)
+			if parseErr != nil || b == nil || got != n || normHash(b.Hash) != normHash(hash) {
+				c.invalidateAndClose()
+				return fmt.Errorf("inconsistent snapshot payload %s", hash)
+			}
+			b.Hash, b.ParentHash = normHash(b.Hash), normHash(b.ParentHash)
+			expected = b
+		}
+		verified, e := validateRecord(r, n, expected, c.opt.MaxBlockSize)
+		if e != nil {
+			c.invalidateAndClose()
+			return fmt.Errorf("validate snapshot payload %s: %w", hash, e)
+		}
+		if i > 0 && verified.ParentHash != normHash(snap.Hashes[i-1]) {
+			c.invalidateAndClose()
+			return errors.New("non-contiguous head cache snapshot payloads")
+		}
+		records[verified.Hash] = verified
+	}
+	gap := false
+	if old != nil {
+		common := int64(-1)
+		for n := maxI64(old.Base(), snap.Base()); n <= minI64(old.Head, snap.Head); n++ {
+			if old.HashAt(n) == snap.HashAt(n) {
+				common = n
+			}
+		}
+		gap = common < 0 || snap.Base() > old.Head+1
+		if !gap && common >= 0 && common < old.Head {
+			c.Stats.Reorgs.Add(1)
+		}
+	}
+	c.incomplete = snap.Incomplete
+	c.install(&Snapshot{Head: snap.Head, Hashes: append([]string(nil), snap.Hashes...), At: snap.At, Incomplete: snap.Incomplete}, records, gap)
+	return nil
+}
+
+func (c *Cache) invalidateAndClose() {
+	c.invalidate()
+	c.mu.Lock()
+	for s := range c.subs {
+		c.closeSubLocked(s, "gap")
+	}
+	c.mu.Unlock()
 }
 
 type header struct {
@@ -357,7 +566,7 @@ func (c *Cache) refresh(ctx context.Context) error {
 		}
 	}
 	c.incomplete = incomplete
-	c.install(&Snapshot{Head: tip, Hashes: pubHashes, At: c.nowFn()}, recs, gap)
+	c.install(&Snapshot{Head: tip, Hashes: pubHashes, At: c.nowFn(), Incomplete: incomplete}, recs, gap)
 	c.pending = map[string]*BlockRecord{}
 	return nil
 }
@@ -476,7 +685,7 @@ func (c *Cache) loadRecord(ctx context.Context, n int64, expected *rawBlock) (*B
 		return nil, fmt.Errorf("hydrated block %d identity differs from verified header", n)
 	}
 	c.Stats.Hydrated.Add(1)
-	if c.store != nil {
+	if c.store != nil && c.fleet == nil {
 		if err := c.store.PutBlock(ctx, c.opt.Scope, rec, c.opt.RecordTTL); err != nil {
 			c.logger.Debug().Err(err).Int64("number", n).Msg("failed to share head cache record")
 		}

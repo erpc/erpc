@@ -146,12 +146,73 @@ func (c *fakeChain) reorg(from int64, fork string) {
 type mapStore struct {
 	mu      sync.Mutex
 	records map[string]*BlockRecord
+	puts    int
+}
+
+type fakeFleetStore struct {
+	*mapStore
+	muFleet  sync.Mutex
+	leader   bool
+	snap     *Snapshot
+	acquires int
+	releases int
+}
+
+func newFakeFleetStore() *fakeFleetStore { return &fakeFleetStore{mapStore: newMapStore()} }
+func (s *fakeFleetStore) Acquire(_ context.Context, _ Scope, _ time.Duration) (Lease, error) {
+	s.muFleet.Lock()
+	defer s.muFleet.Unlock()
+	s.acquires++
+	if !s.leader {
+		return nil, nil
+	}
+	s.leader = false
+	return &fakeFleetLease{store: s}, nil
+}
+func (s *fakeFleetStore) ReadSnapshot(_ context.Context, _ Scope) (*Snapshot, error) {
+	s.muFleet.Lock()
+	defer s.muFleet.Unlock()
+	if s.snap == nil {
+		return nil, ErrNotFound
+	}
+	out := *s.snap
+	out.Hashes = append([]string(nil), s.snap.Hashes...)
+	return &out, nil
+}
+
+type fakeFleetLease struct {
+	store    *fakeFleetStore
+	released bool
+}
+
+func (l *fakeFleetLease) Renew(context.Context, time.Duration) (bool, error) { return !l.released, nil }
+func (l *fakeFleetLease) Publish(_ context.Context, snap *Snapshot, _ time.Duration) (bool, error) {
+	if l.released {
+		return false, nil
+	}
+	l.store.muFleet.Lock()
+	defer l.store.muFleet.Unlock()
+	out := *snap
+	out.Hashes = append([]string(nil), snap.Hashes...)
+	l.store.snap = &out
+	return true, nil
+}
+func (l *fakeFleetLease) Release(context.Context) error {
+	if !l.released {
+		l.released = true
+		l.store.muFleet.Lock()
+		l.store.releases++
+		l.store.leader = true
+		l.store.muFleet.Unlock()
+	}
+	return nil
 }
 
 func newMapStore() *mapStore { return &mapStore{records: map[string]*BlockRecord{}} }
 func (s *mapStore) PutBlock(_ context.Context, _ Scope, r *BlockRecord, _ time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.puts++
 	b, _ := json.Marshal(r)
 	copy := &BlockRecord{}
 	_ = json.Unmarshal(b, copy)
@@ -214,6 +275,150 @@ func TestCache_SharedPayloadReuseAndCorruptionFallback(t *testing.T) {
 	block, ok := c.BlockByNumber(5, true)
 	require.True(t, ok)
 	require.Contains(t, string(block), hashOf(5, "a"))
+}
+
+func TestCache_FleetLeaderFollowerAndFailover(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	chain := newFakeChain(5)
+	leader := New(testOpts(), store, chain, chain.head, nil)
+	leader.Tick(context.Background())
+	require.True(t, leader.Fresh())
+	require.NotNil(t, store.snap)
+	require.Positive(t, chain.headCalls)
+	_, err := store.GetBlock(context.Background(), testOpts().Scope, hashOf(5, "a"))
+	require.NoError(t, err)
+
+	followerChain := newFakeChain(5)
+	follower := New(testOpts(), store, followerChain, followerChain.head, nil)
+	follower.Tick(context.Background())
+	require.True(t, follower.Fresh())
+	require.Equal(t, int64(5), follower.Head())
+	require.Zero(t, followerChain.headCalls, "follower does not query upstream headers")
+	require.Zero(t, followerChain.bodyCalls, "follower does not fetch upstream payloads")
+
+	sub := leader.Subscribe(2)
+	leader.Stop()
+	require.Equal(t, 1, store.releases)
+	follower.Tick(context.Background())
+	require.True(t, follower.Fresh(), "the follower can acquire and refresh after leader release")
+	require.Positive(t, followerChain.headCalls)
+	_, open := <-sub.C
+	require.False(t, open)
+}
+
+func TestCache_FleetLeaderDoesNotRewriteUnchangedPayloadsEveryTick(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	chain := newFakeChain(5)
+	c := New(testOpts(), store, chain, chain.head, nil)
+	c.Tick(context.Background())
+	store.mu.Lock()
+	initialWrites := store.puts
+	store.mu.Unlock()
+	require.Equal(t, len(c.snap.Hashes), initialWrites, "takeover writes each payload once")
+	c.Tick(context.Background())
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Equal(t, initialWrites, store.puts, "unchanged payloads are not rewritten on each tick")
+}
+
+func TestCache_FleetTakeoverContinuesIncompleteColdFill(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	chain := newFakeChain(5)
+	opts := testOpts()
+	opts.Depth, opts.MaxLogsRange, opts.MaxPerTick = 6, 6, 2
+	leader := New(opts, store, chain, chain.head, nil)
+	leader.Tick(context.Background())
+	require.True(t, store.snap.Incomplete)
+	require.Len(t, store.snap.Hashes, 2)
+
+	follower := New(opts, store, chain, chain.head, nil)
+	follower.Tick(context.Background())
+	require.True(t, follower.incomplete)
+	before := chain.bodyCalls
+	leader.Stop()
+	follower.Tick(context.Background())
+	require.True(t, follower.Fresh())
+	require.True(t, follower.incomplete)
+	require.Len(t, follower.snap.Hashes, 4, "promoted follower hydrates the next older chunk")
+	require.Equal(t, before+2, chain.bodyCalls)
+}
+
+func TestCache_FleetFollowerFailsClosedForStaleOrMissingPayload(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing=%v", missing), func(t *testing.T) {
+			store := newFakeFleetStore()
+			store.leader = true
+			leader := New(testOpts(), store, newFakeChain(5), func(context.Context) int64 { return 5 }, nil)
+			leader.Tick(context.Background())
+			leader.Stop()
+			store.muFleet.Lock()
+			store.leader = false
+			store.muFleet.Unlock()
+			if missing {
+				store.mu.Lock()
+				delete(store.records, normHash(hashOf(5, "a")))
+				store.mu.Unlock()
+			} else {
+				store.muFleet.Lock()
+				store.snap.At = time.Now().Add(-time.Hour)
+				store.muFleet.Unlock()
+			}
+			follower := New(testOpts(), store, newFakeChain(5), func(context.Context) int64 { return 5 }, nil)
+			sub := follower.Subscribe(1)
+			follower.Tick(context.Background())
+			require.False(t, follower.Fresh())
+			require.Equal(t, int64(-1), follower.Head())
+			_, open := <-sub.C
+			require.False(t, open)
+		})
+	}
+}
+
+func TestCache_FleetFollowerDeliversShallowReorg(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	chain := newFakeChain(5)
+	leader := New(testOpts(), store, chain, chain.head, nil)
+	leader.Tick(context.Background())
+	follower := New(testOpts(), store, newFakeChain(5), nil, nil)
+	follower.Tick(context.Background())
+	sub := follower.Subscribe(2)
+
+	chain.reorg(5, "fork")
+	leader.Tick(context.Background())
+	follower.Tick(context.Background())
+	ev := <-sub.C
+	require.Len(t, ev.Removed, 1)
+	require.Equal(t, hashOf(5, "a"), ev.Removed[0].Hash)
+	require.Len(t, ev.Added, 1)
+	require.Equal(t, hashOf(5, "fork"), ev.Added[0].Hash)
+	leader.Stop()
+}
+
+func TestCache_FleetFollowerAcceptsUppercasePayloadHeaderHashes(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	leader := New(testOpts(), store, newFakeChain(5), func(context.Context) int64 { return 5 }, nil)
+	leader.Tick(context.Background())
+
+	rec, err := store.GetBlock(context.Background(), testOpts().Scope, hashOf(5, "a"))
+	require.NoError(t, err)
+	var block map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Block, &block))
+	block["hash"] = strings.ToUpper(block["hash"].(string))
+	block["parentHash"] = strings.ToUpper(block["parentHash"].(string))
+	rec.Block, err = json.Marshal(block)
+	require.NoError(t, err)
+	require.NoError(t, store.PutBlock(context.Background(), testOpts().Scope, rec, time.Hour))
+
+	follower := New(testOpts(), store, newFakeChain(5), nil, nil)
+	follower.Tick(context.Background())
+	require.True(t, follower.Fresh())
+	require.Equal(t, int64(5), follower.Head())
+	leader.Stop()
 }
 
 func TestCache_SameHeightAndDeepReorgEvents(t *testing.T) {

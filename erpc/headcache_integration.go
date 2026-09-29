@@ -2,9 +2,11 @@ package erpc
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/headcache"
+	"github.com/redis/go-redis/v9"
 )
 
 type headCacheBypassKey struct{}
@@ -332,7 +335,10 @@ func validHeadCacheHash(s string) bool {
 
 type headCacheConnectorStore struct {
 	connector data.Connector
+	redis     *data.RedisConnector
 }
+
+var _ headcache.FleetStore = (*headCacheConnectorStore)(nil)
 
 func (s *headCacheConnectorStore) partition(scope headcache.Scope) (string, error) {
 	identity, err := json.Marshal(struct {
@@ -382,6 +388,144 @@ func (s *headCacheConnectorStore) PutBlock(ctx context.Context, scope headcache.
 	return s.connector.Set(ctx, partition, key, value, &ttl)
 }
 
+func (s *headCacheConnectorStore) redisClient() (redis.UniversalClient, error) {
+	if s.redis == nil {
+		return nil, fmt.Errorf("head cache Redis connector is unavailable")
+	}
+	client := s.redis.Client()
+	if client == nil {
+		return nil, headcache.ErrStoreUnavailable
+	}
+	return client, nil
+}
+
+func (s *headCacheConnectorStore) fleetKeys(scope headcache.Scope) (string, string, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return "", "", err
+	}
+	return partition + ":fleet-lock", partition + ":fleet-snapshot", nil
+}
+
+func (s *headCacheConnectorStore) Acquire(ctx context.Context, scope headcache.Scope, ttl time.Duration) (headcache.Lease, error) {
+	if ttl < time.Millisecond {
+		return nil, fmt.Errorf("head cache fleet lease TTL must be positive")
+	}
+	client, err := s.redisClient()
+	if err != nil {
+		return nil, err
+	}
+	lockKey, snapshotKey, err := s.fleetKeys(scope)
+	if err != nil {
+		return nil, err
+	}
+	var token [32]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return nil, fmt.Errorf("generate head cache fleet lease token: %w", err)
+	}
+	value := hex.EncodeToString(token[:])
+	acquired, err := client.SetNX(ctx, lockKey, value, ttl).Result()
+	if err != nil {
+		return nil, fmt.Errorf("acquire head cache fleet lease: %w", err)
+	}
+	if !acquired {
+		return nil, nil
+	}
+	return &headCacheRedisLease{redis: s.redis, lockKey: lockKey, snapshotKey: snapshotKey, token: value}, nil
+}
+
+func (s *headCacheConnectorStore) ReadSnapshot(ctx context.Context, scope headcache.Scope) (*headcache.Snapshot, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return nil, err
+	}
+	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, "fleet-snapshot", nil)
+	if err != nil {
+		var notFound *common.ErrRecordNotFound
+		if errors.As(err, &notFound) {
+			return nil, headcache.ErrNotFound
+		}
+		return nil, err
+	}
+	if len(value) == 0 {
+		return nil, headcache.ErrNotFound
+	}
+	var snapshot headcache.Snapshot
+	if err := json.Unmarshal(value, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode head cache fleet snapshot: %w", err)
+	}
+	return &snapshot, nil
+}
+
+type headCacheRedisLease struct {
+	redis       *data.RedisConnector
+	lockKey     string
+	snapshotKey string
+	token       string
+}
+
+func (l *headCacheRedisLease) client() (redis.UniversalClient, error) {
+	if l.redis == nil {
+		return nil, headcache.ErrStoreUnavailable
+	}
+	client := l.redis.Client()
+	if client == nil {
+		return nil, headcache.ErrStoreUnavailable
+	}
+	return client, nil
+}
+
+func (l *headCacheRedisLease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
+	if ttl < time.Millisecond {
+		return false, fmt.Errorf("head cache fleet lease TTL must be positive")
+	}
+	const script = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) else return 0 end`
+	client, err := l.client()
+	if err != nil {
+		return false, err
+	}
+	n, err := client.Eval(ctx, script, []string{l.lockKey}, l.token, ttl.Milliseconds()).Int()
+	if err != nil {
+		return false, fmt.Errorf("renew head cache fleet lease: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (l *headCacheRedisLease) Publish(ctx context.Context, snapshot *headcache.Snapshot, ttl time.Duration) (bool, error) {
+	if snapshot == nil {
+		return false, fmt.Errorf("cannot publish nil head cache fleet snapshot")
+	}
+	if ttl < time.Millisecond {
+		return false, fmt.Errorf("head cache fleet snapshot TTL must be positive")
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return false, fmt.Errorf("encode head cache fleet snapshot: %w", err)
+	}
+	const script = `if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3]); return 1 else return 0 end`
+	client, err := l.client()
+	if err != nil {
+		return false, err
+	}
+	n, err := client.Eval(ctx, script, []string{l.lockKey, l.snapshotKey}, l.token, payload, ttl.Milliseconds()).Int()
+	if err != nil {
+		return false, fmt.Errorf("publish head cache fleet snapshot: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (l *headCacheRedisLease) Release(ctx context.Context) error {
+	const script = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`
+	client, err := l.client()
+	if err != nil {
+		return err
+	}
+	if _, err := client.Eval(ctx, script, []string{l.lockKey}, l.token).Result(); err != nil {
+		return fmt.Errorf("release head cache fleet lease: %w", err)
+	}
+	return nil
+}
+
 // headCacheStore builds the Redis store on the referenced evmJsonRpcCache
 // connector. Keep the configured wrapper for its failsafe behavior, but verify
 // that it ultimately uses Redis before sharing head-cache payloads.
@@ -402,5 +546,5 @@ func (nr *NetworksRegistry) headCacheStore(hc *common.EvmHeadCacheConfig) (headc
 	if !ok || rc == nil {
 		return nil, fmt.Errorf("evm.headCache.connectorId %q is not an initialized redis connector in database.evmJsonRpcCache", hc.ConnectorId)
 	}
-	return &headCacheConnectorStore{connector: conn}, nil
+	return &headCacheConnectorStore{connector: conn, redis: rc}, nil
 }
