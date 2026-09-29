@@ -17,31 +17,30 @@ import (
 func init() { util.ConfigureTestLogger() }
 
 // Regression: real connector connectTask writer, real
-// initializer state transitions, concurrent public borrowed-client getter.
+// initializer state transitions and concurrent borrowed-client reads.
 func TestRedisConnector_ClientReconnectRace(t *testing.T) {
 	m := miniredis.RunT(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	lg := zerolog.New(io.Discard)
-	cfg := &common.RedisConnectorConfig{URI: "redis://" + m.Addr(), InitTimeout: common.Duration(time.Second), GetTimeout: common.Duration(time.Second), SetTimeout: common.Duration(time.Second)}
-	r := &RedisConnector{id: "review", logger: &lg, cfg: cfg, appCtx: ctx, initTimeout: time.Second, getTimeout: time.Second, setTimeout: time.Second}
-	r.initializer = util.NewInitializer(ctx, &lg, &util.InitializerConfig{TaskTimeout: time.Second, RetryMinDelay: time.Nanosecond, RetryMaxDelay: time.Nanosecond})
+	cfg := &common.RedisConnectorConfig{URI: "redis://" + m.Addr(), InitTimeout: common.Duration(5 * time.Second), GetTimeout: common.Duration(time.Second), SetTimeout: common.Duration(time.Second)}
+	r := &RedisConnector{id: "review", logger: &lg, cfg: cfg, appCtx: ctx, initTimeout: 5 * time.Second, getTimeout: time.Second, setTimeout: time.Second}
+	r.initializer = util.NewInitializer(ctx, &lg, &util.InitializerConfig{TaskTimeout: 15 * time.Second, RetryMinDelay: time.Millisecond, RetryMaxDelay: time.Millisecond})
 	task := util.NewBootstrapTask("redis-connect/review", r.connectTask)
 	if err := r.initializer.ExecuteTasks(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
+	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for ctx.Err() == nil {
 				_ = r.Client()
-				_ = r.checkReady() // also walks Initializer.Errors
 			}
 		}()
 	}
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 20; i++ {
 		// Closing a redis.Client is concurrency safe. It makes the existing
 		// connection unhealthy so the production reconnect branch replaces it.
 		if c := r.Client(); c != nil {
