@@ -548,6 +548,18 @@ func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) 
 		trim++
 	}
 	if c.opt.MaxBytes > 0 && total > c.opt.MaxBytes {
+		c.freshAt = time.Time{}
+		for s := range c.subs {
+			c.closeSubLocked(s, "gap")
+		}
+		c.mu.Unlock()
+		return
+	}
+	if trim == len(snap.Hashes) {
+		c.freshAt = time.Time{}
+		for s := range c.subs {
+			c.closeSubLocked(s, "gap")
+		}
 		c.mu.Unlock()
 		return
 	}

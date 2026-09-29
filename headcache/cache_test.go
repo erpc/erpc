@@ -304,6 +304,27 @@ func TestCache_ConstrainedMemoryDoesNotRefillEvictedRecords(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestCache_MaxBytesBelowRecordSizeDoesNotPublishEmptyView(t *testing.T) {
+	ch := newFakeChain(0)
+	block, _ := ch.BlockByNumber(context.Background(), 0)
+	logs, _ := ch.LogsByBlockHash(context.Background(), hashOf(0, "a"))
+	rec, err := buildRecord(block, logs, 0)
+	require.NoError(t, err)
+	maxBytes := int64(len(rec.Block) + len(rec.Logs))
+	require.Less(t, maxBytes, rec.Size())
+	o := testOpts()
+	o.Depth, o.MaxBytes = 1, maxBytes
+	c := New(o, newMapStore(), ch, ch.head, nil)
+	sub := c.Subscribe(1)
+	c.Tick(context.Background())
+	require.False(t, c.Fresh())
+	require.Equal(t, int64(-1), c.Head())
+	require.Nil(t, c.snap, "an empty retained range is not a published view")
+	require.Equal(t, 0, c.SubscriberCount())
+	_, open := <-sub.C
+	require.False(t, open, "subscribers close when the complete range cannot fit")
+}
+
 func TestCache_MixedCaseHydratedHeaderMatchesVerifiedTip(t *testing.T) {
 	ch := newFakeChain(5)
 	ch.mixedCase = true
