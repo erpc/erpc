@@ -110,17 +110,21 @@ explain the thresholds. Reference: https://docs.erpc.cloud/config/failsafe.llms.
 - Circuit breakers are **upstream-scope only**. Placing a `circuitBreaker` block in a network-level `failsafe` entry causes startup failure with `ErrFailsafeConfiguration`. (<SourceLink file="erpc/network_executor.go" lines="68-73" />)
 - Consensus is **network-scope only**. Placing a `consensus` block in an upstream-level `failsafe` entry causes startup failure. (<SourceLink file="upstream/upstream_executor.go" lines="46-53" />)
 
-**Failsafe entry matching (`matchMethod` + `matchFinality`).** Each `failsafe[]` entry is matched top-to-bottom by a 4-tier priority (`SelectExecutor` in `common/match.go`):
+**Failsafe entry matching (`matchMethod` + `matchFinality` + `matchCommitment`).** Upstream-scope entries use a 4-tier priority (`SelectExecutor`-style scan in `upstream/upstream.go`):
 1. Specific method + specific finality (highest priority)
 2. Specific method, any finality
 3. Wildcard method (`"*"`), specific finality
 4. Wildcard method, any finality — catch-all (lowest priority)
 
-Within each tier, the first matching entry in config order wins. (<SourceLink file="common/match.go" lines="18-78" />)
+Within each tier, the first matching entry in config order wins. `matchCommitment` is AND-ed at every tier (empty = wildcard), same as network scope. (<SourceLink file="upstream/upstream.go" />)
+
+**Network-scope** failsafe (including consensus) uses a simpler **first-match-in-config-order** scan on `matchMethod` + `matchFinality` + `matchCommitment` + `matchRequestKind`. Place specific commitment rules before broader ones. (<SourceLink file="erpc/networks.go" />)
 
 **`matchFinality` valid values.** `finalized`, `unfinalized`, `realtime`, `unknown`. A value like `"latest"` is not a valid finality token and silently never matches any request.
 
-**Defaults merge algorithm.** When a network has its own `failsafe` array AND `networkDefaults.failsafe` is also set, each entry in the network array is matched against the defaults array using the same `WildcardMatch + MatchFinalities` algorithm. When a match is found, unset sub-fields (retry, hedge, timeout, etc.) inherit from the matched default entry. A catch-all default (`matchMethod: "*"`) acts as a universal base for all network-specific entries. If the network has no `failsafe` entries but the defaults do, the entire defaults array is cloned. (<SourceLink file="common/defaults.go" lines="1793-1832" />)
+**`matchCommitment` valid values (SVM).** `none`, `processed`, `confirmed`, `finalized`. Empty = wildcard (backward compatible). Matches the caller's *requested* commitment captured before network-default injection — not Solana's effective default and not `matchFinality`. `none` means the original request omitted commitment; unsupported request values are `unknown` and do not match `none`. Exact match only (no hierarchy).
+
+**Defaults merge algorithm.** When a network has its own `failsafe` array AND `networkDefaults.failsafe` is also set, each entry in the network array is matched against the defaults array using the same `WildcardMatch + MatchFinalities + MatchCommitments` algorithm. When a match is found, unset sub-fields (retry, hedge, timeout, etc.) inherit from the matched default entry. A catch-all default (`matchMethod: "*"`) acts as a universal base for all network-specific entries. If the network has no `failsafe` entries but the defaults do, the entire defaults array is cloned. (<SourceLink file="common/defaults.go" lines="1793-1832" />)
 
 **Network-scope timeout is lifecycle-scoped, not per-attempt.** A 500ms network timeout with `maxAttempts: 3` has a 500ms total budget shared across all 3 retry rounds. There is no per-attempt timeout at the network scope.
 
@@ -233,13 +237,15 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 ### Edge cases & gotchas
 
 1. `matchFinality: ["latest"]` silently never matches. Valid values: `finalized`, `unfinalized`, `realtime`, `unknown`.
-2. Stacking upstream retry (`maxAttempts: 3`) with network retry (`maxAttempts: 3`) can produce up to 9 upstream calls per request.
-3. Write methods are excluded from hedging, and the excluded set is per-architecture. **EVM**: `eth_sendTransaction` and the filter-creation methods; `eth_sendRawTransaction` is intentionally NOT excluded — it supports idempotent broadcast. **SVM**: `sendTransaction`, `sendRawTransaction`, and `requestAirdrop` are all excluded from hedging *and* from retry — so unlike EVM, an SVM raw-transaction broadcast is never hedged. `simulateTransaction` is read-only and stays hedgeable. See [the SVM write-method guard](/reference/errors#svm-write-method-guard).
-4. `emptyResultMaxAttempts` is a shared counter across all network retry rounds, not per-round. With the default value of 2, one original attempt plus one empty-type retry fires — at most 1 empty-type retry across the entire request lifetime.
-5. Consensus `ignoreFields` is a set-replacement, not a merge. Setting any entry replaces the entire built-in default map (which suppresses `blockTimestamp` disagreements for `eth_getLogs` and receipts methods).
-6. The circuit breaker's rolling window must fill to `failureThresholdCapacity` (default 80) before it can trip — early-startup behavior is Closed regardless of error rate.
-7. `ErrFailsafeConfiguration` is startup-only — any scope mismatch (circuit breaker at network, consensus at upstream) aborts before any request is served.
-8. Failsafe defaults merge uses **wildcard method matching**, not exact match. A default entry with `matchMethod: "eth_*"` will provide defaults for any network entry whose method starts with `eth_`. A catch-all `matchMethod: "*"` is required to cover all entries uniformly.
+2. `matchCommitment: ["recent"]` fails config validation. Valid values: `none`, `processed`, `confirmed`, `finalized`. Request-side unsupported values become `unknown` and never match `none`.
+3. Stacking upstream retry (`maxAttempts: 3`) with network retry (`maxAttempts: 3`) can produce up to 9 upstream calls per request.
+4. Write methods are excluded from hedging, and the excluded set is per-architecture. **EVM**: `eth_sendTransaction` and the filter-creation methods; `eth_sendRawTransaction` is intentionally NOT excluded — it supports idempotent broadcast. **SVM**: `sendTransaction`, `sendRawTransaction`, and `requestAirdrop` are all excluded from hedging *and* from retry — so unlike EVM, an SVM raw-transaction broadcast is never hedged. `simulateTransaction` is read-only and stays hedgeable. See [the SVM write-method guard](/reference/errors#svm-write-method-guard).
+5. `emptyResultMaxAttempts` is a shared counter across all network retry rounds, not per-round. With the default value of 2, one original attempt plus one empty-type retry fires — at most 1 empty-type retry across the entire request lifetime.
+6. Consensus `ignoreFields` is a set-replacement, not a merge. Setting any entry replaces the entire built-in default map (which suppresses `blockTimestamp` disagreements for `eth_getLogs` and receipts methods).
+7. The circuit breaker's rolling window must fill to `failureThresholdCapacity` (default 80) before it can trip — early-startup behavior is Closed regardless of error rate.
+8. `ErrFailsafeConfiguration` is startup-only — any scope mismatch (circuit breaker at network, consensus at upstream) aborts before any request is served.
+9. Failsafe defaults merge uses **wildcard method matching**, not exact match. A default entry with `matchMethod: "eth_*"` will provide defaults for any network entry whose method starts with `eth_`. A catch-all `matchMethod: "*"` is required to cover all entries uniformly.
+10. On network-scope failsafe, put specific `matchCommitment` rules *before* a catch-all with omitted `matchCommitment`, or the catch-all wins first.
 
 ### Observability
 

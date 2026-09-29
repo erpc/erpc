@@ -298,6 +298,7 @@ Commitment injection emits no metrics of its own — it is a params rewrite. Its
 ### Source code entry points
 
 - [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `resolveCommitment`, `effectiveCommitment`, `solanaDefaultCommitment`, `commitmentOptionsIndex`, `atLeastConfirmedMethods`, `clampCommitmentForMethod`, `writeCommitmentField`, `networkPreForward_injectCommitment`, `networkPreForward_injectWriteCommitment`, `projectPreForward_getGenesisHash`.
+- [`architecture/svm/commitment_request.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/commitment_request.go) — `ExtractRequestedCommitment` / `CaptureRequestedCommitment` for failsafe `matchCommitment` (caller-requested level, before injection).
 - [`architecture/svm/finality.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/finality.go) — `GetFinality`, `IsFinalizedCommitment`, and the moving-head rationale.
 - [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByMinContextSlot`, `MinContextSlotOf`, `isAtOrAheadOfSlot`.
 - <SourceLink file="common/config.go" lines="2336-2342" label="common/config.go — SvmNetworkConfig.Commitment" />
@@ -307,7 +308,8 @@ Commitment injection emits no metrics of its own — it is a params rewrite. Its
 - [SVM slot tracking & health](/reference/svm/slot-tracking) — the state poller, `getSlot` correction, ingestion lag, and cordoning.
 - [SVM JSON-RPC cache](/config/database/svm-json-rpc-cache) — the finality classification tables and cache-key derivation.
 - [Networks](/config/projects/networks) — declaring an SVM network and the full `svm.*` schema.
-- [Consensus](/config/failsafe/consensus) — how `matchFinality` gates a consensus policy.
+- [Consensus](/config/failsafe/consensus) — how `matchFinality` and `matchCommitment` gate a consensus policy.
+- [Matchers](/config/matcher) — `matchCommitment` semantics vs `matchFinality`.
 - [Error taxonomy](/reference/errors#svm-solana-error-contract) — `-32016` and the rest of the SVM error contract.
 
 </AISection>

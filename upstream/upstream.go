@@ -506,10 +506,25 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamE
 	method, _ := req.Method()
 	finality := req.Finality(context.Background())
 
+	reqCommitment, hasCommitment := req.RequestedCommitment()
+	if !hasCommitment {
+		if u.config != nil && u.config.Type == common.UpstreamTypeSvm {
+			reqCommitment = svm.ExtractRequestedCommitment(context.Background(), req)
+			req.SetRequestedCommitment(reqCommitment)
+		} else {
+			reqCommitment = common.CommitmentNone
+		}
+	}
+	// matchCommitment is AND-ed at every tier (empty = wildcard).
+	commitmentOK := func(fe *upstreamExecutor) bool {
+		mc := fe.MatchCommitment()
+		return len(mc) == 0 || slices.Contains(mc, reqCommitment)
+	}
+
 	// 4-tier priority: method+finality > method > finality > catch-all.
 	for _, fe := range u.failsafeExecutors {
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
-		if mp != "*" && len(fl) > 0 {
+		if mp != "*" && len(fl) > 0 && commitmentOK(fe) {
 			if matched, _ := common.WildcardMatch(mp, method); matched && slices.Contains(fl, finality) {
 				return fe
 			}
@@ -517,7 +532,7 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamE
 	}
 	for _, fe := range u.failsafeExecutors {
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
-		if mp != "*" && len(fl) == 0 {
+		if mp != "*" && len(fl) == 0 && commitmentOK(fe) {
 			if matched, _ := common.WildcardMatch(mp, method); matched {
 				return fe
 			}
@@ -525,7 +540,7 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamE
 	}
 	for _, fe := range u.failsafeExecutors {
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
-		if mp == "*" && len(fl) > 0 {
+		if mp == "*" && len(fl) > 0 && commitmentOK(fe) {
 			if slices.Contains(fl, finality) {
 				return fe
 			}
@@ -533,7 +548,7 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamE
 	}
 	for _, fe := range u.failsafeExecutors {
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
-		if mp == "*" && len(fl) == 0 {
+		if mp == "*" && len(fl) == 0 && commitmentOK(fe) {
 			return fe
 		}
 	}

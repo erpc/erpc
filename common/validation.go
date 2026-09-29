@@ -1205,6 +1205,14 @@ func (f *FailsafeConfig) Validate() error {
 		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
 	}
 
+	for _, c := range f.MatchCommitment {
+		switch c {
+		case CommitmentNone, CommitmentProcessed, CommitmentConfirmed, CommitmentFinalized:
+		default:
+			return fmt.Errorf("failsafe.matchCommitment '%s' is invalid, must be one of: none | processed | confirmed | finalized", c)
+		}
+	}
+
 	if f.Timeout != nil {
 		if err := f.Timeout.Validate(); err != nil {
 			return err

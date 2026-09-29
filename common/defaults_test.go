@@ -346,6 +346,43 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		assert.EqualValues(t, 5, upstream.Failsafe[0].Retry.MaxAttempts)
 	})
 
+	t.Run("UpstreamFailsafeMatchesDefaultByMatchCommitment", func(t *testing.T) {
+		upstream := &UpstreamConfig{
+			Endpoint: "http://rpc1.localhost",
+			Failsafe: []*FailsafeConfig{
+				{
+					MatchMethod:     "*",
+					MatchCommitment: []CommitmentLevel{CommitmentFinalized},
+					Timeout: &TimeoutPolicyConfig{
+						Duration: NewStaticDuration(10 * time.Second),
+					},
+				},
+			},
+		}
+
+		defaults := &UpstreamConfig{
+			Failsafe: []*FailsafeConfig{
+				{
+					MatchMethod:     "*",
+					MatchCommitment: []CommitmentLevel{CommitmentConfirmed},
+					Retry:           &RetryPolicyConfig{MaxAttempts: 2},
+				},
+				{
+					MatchMethod:     "*",
+					MatchCommitment: []CommitmentLevel{CommitmentFinalized},
+					Retry:           &RetryPolicyConfig{MaxAttempts: 7},
+				},
+			},
+		}
+
+		err := upstream.SetDefaults(defaults)
+		assert.NoError(t, err)
+		require.Len(t, upstream.Failsafe, 1)
+		require.NotNil(t, upstream.Failsafe[0].Retry)
+		assert.EqualValues(t, 7, upstream.Failsafe[0].Retry.MaxAttempts)
+		assert.Equal(t, []CommitmentLevel{CommitmentFinalized}, upstream.Failsafe[0].MatchCommitment)
+	})
+
 	t.Run("UpstreamFailsafeNoDefaults_SystemDefaultsApplied", func(t *testing.T) {
 		// No defaults provided, system defaults should apply
 		upstream := &UpstreamConfig{
@@ -685,6 +722,48 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 		// Default retry should be applied since user didn't define it
 		assert.NotNil(t, network.Failsafe[0].Retry)
 		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
+	})
+
+	t.Run("UserFailsafeMatchesDefaultByMatchCommitment", func(t *testing.T) {
+		// Two defaults differ only by matchCommitment; the network entry with
+		// matchCommitment: [finalized] must inherit from the matching default.
+		network := &NetworkConfig{
+			Failsafe: []*FailsafeConfig{
+				{
+					MatchMethod:     "*",
+					MatchCommitment: []CommitmentLevel{CommitmentFinalized},
+					Timeout: &TimeoutPolicyConfig{
+						Duration: NewStaticDuration(10 * time.Second),
+					},
+				},
+			},
+		}
+
+		defaults := &NetworkDefaults{
+			Failsafe: []*FailsafeConfig{
+				{
+					MatchMethod:     "*",
+					MatchCommitment: []CommitmentLevel{CommitmentConfirmed},
+					Retry: &RetryPolicyConfig{
+						MaxAttempts: 2,
+					},
+				},
+				{
+					MatchMethod:     "*",
+					MatchCommitment: []CommitmentLevel{CommitmentFinalized},
+					Retry: &RetryPolicyConfig{
+						MaxAttempts: 7,
+					},
+				},
+			},
+		}
+
+		err := network.SetDefaults(nil, defaults)
+		assert.NoError(t, err)
+		require.Len(t, network.Failsafe, 1)
+		require.NotNil(t, network.Failsafe[0].Retry)
+		assert.EqualValues(t, 7, network.Failsafe[0].Retry.MaxAttempts)
+		assert.Equal(t, []CommitmentLevel{CommitmentFinalized}, network.Failsafe[0].MatchCommitment)
 	})
 
 	t.Run("UserFailsafeNoMethodDefaultHasMethod_NoMatch", func(t *testing.T) {

@@ -1006,6 +1006,16 @@ export interface FailsafeConfig {
     matchMethod?: string;
     matchFinality?: DataFinalityState[];
     /**
+     * MatchCommitment scopes this policy by the caller's explicitly requested
+     * Solana commitment (processed|confirmed|finalized|none). Empty = wildcard
+     * (backward compatible). Multiple values are OR-ed; combined with other
+     * matchers via AND. Matching is exact — confirmed does not match processed.
+     * "none" means the original request omitted commitment (distinct from an
+     * injected/effective default). Unknown/malformed request values never match
+     * "none". See architecture/svm ExtractRequestedCommitment.
+     */
+    matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
+    /**
      * MatchRequestKind scopes this policy by who issued the request:
      * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
      * the integrity module's canonical corroboration), or ""/"*" for both.
