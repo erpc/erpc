@@ -1990,7 +1990,6 @@ export declare const MetricActionDrop: MetricCustomizationAction;
 /**
  * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
  * selecting metric families, and what to do with them.
- *
  * Overlapping subjects resolve by specificity, not by list order: an exact
  * family name beats a prefix, a longer prefix beats a shorter one, and equally
  * specific subjects break to the one written later. So "drop consensus_*, keep
@@ -2064,9 +2063,9 @@ export interface EvmHeadCacheConfig {
     enabled?: boolean;
     /**
      * ConnectorId names a redis-driver connector declared under
-     * database.evmJsonRpcCache.connectors. Its Redis client holds the shared
-     * canonical window: one lease holder hydrates and publishes epoch-fenced
-     * snapshots, every replica serves them. Required.
+     * database.evmJsonRpcCache.connectors. Replicas share immutable,
+     * hash-addressed block/log payloads; each replica verifies its own head.
+     * Required.
      */
     connectorId?: string;
     /**
@@ -2079,12 +2078,13 @@ export interface EvmHeadCacheConfig {
      */
     maxBytes?: number;
     /**
-     * MaxPerTick bounds how many blocks a single follow step hydrates, so a
-     * cold start or a long outage converges steadily. Default 16.
+     * MaxPerTick bounds how many missing block records a single refresh fetches
+     * from upstream. Cold starts and long outages converge over multiple ticks.
      */
     maxPerTick?: number;
     /**
-     * Concurrency bounds in-flight upstream fetches per network. Default 4.
+     * Concurrency bounds simultaneous header, Redis-read and block/log hydration
+     * jobs per network. Default 4.
      */
     concurrency?: number;
     /**
@@ -2093,8 +2093,7 @@ export interface EvmHeadCacheConfig {
      */
     pollInterval?: Duration;
     /**
-     * FetchTimeout bounds each hydration fetch, additionally capped by the
-     * whole-tick lease deadline. Default 10s.
+     * FetchTimeout bounds each hydration fetch. Default 10s.
      */
     fetchTimeout?: Duration;
     /**
@@ -2104,30 +2103,19 @@ export interface EvmHeadCacheConfig {
     maxLogsRange?: number;
     /**
      * MaxBlockBytes rejects (never caches) any single block whose block+logs
-     * payload exceeds it. Default 16MB.
+     * payload exceeds it. Default min(16MB, maxBytes).
      */
     maxBlockBytes?: number;
     /**
-     * MaxStaleness disables serving (normal upstream path) when the local
-     * view has not been verified for this long. Followers anchor freshness to
-     * the snapshot's writer timestamp, clamped to local receipt time.
-     * Default 5 * pollInterval.
+     * MaxStaleness disables serving (normal upstream path) when this replica's
+     * view has not been verified for this long. Default 5 * pollInterval.
      */
     maxStaleness?: Duration;
     /**
-     * Namespace isolates shared state between deployments. Defaults to
-     * "default". A fingerprint of the
-     * network's upstream set is always appended, so replicas only share data
-     * when they run the same upstream configuration.
+     * Namespace isolates shared payloads between deployments. Defaults to
+     * "default". A fingerprint of the network's upstream set is always appended.
      */
     namespace?: string;
-    /**
-     * LeaseTTL is the hydration leadership lease. It is renewed every
-     * tick. Coordination and all batch work share a deadline of 80% of this
-     * TTL so publication cannot outlive the lease. Must be > 2*pollInterval.
-     * Default 3*pollInterval + 1s.
-     */
-    leaseTtl?: Duration;
 }
 /**
  * WebSocketServerConfig configures the JSON-RPC WebSocket endpoint. It is

@@ -1,16 +1,16 @@
 # Venn-parity example: an indexer-facing eRPC fleet with several replicas.
 #
 # Two required components:
-#   - evm.headCache: one replica per network holds a Redis lease, hydrates recent
-#     canonical blocks + logs, and every replica serves them. It reuses a Redis
-#     connector from database.evmJsonRpcCache.connectors (connectorId).
+#   - evm.headCache: every replica independently verifies its recent canonical
+#     window and reuses immutable block/log payloads stored in Redis. It uses a
+#     redis connector from database.evmJsonRpcCache.connectors (connectorId).
 #   - server.webSocket: eth_subscribe newHeads/logs fed by the head cache.
 #     Only eth_subscribe / eth_unsubscribe are accepted over WS.
 # Validated by the Go config loader (common/venn_parity_example_test.go). It does
 # not make provider-cost claims. Measure with the metrics listed in the docs.
 #
 # Environment variables (expanded by the loader):
-#   REDIS_URL           redis://host:6379/0 used by the cache and head cache
+#   REDIS_URL           redis://host:6379/0 used by the cache and shared head-cache payloads
 #   RPC_URL             EVM upstream endpoint
 
 logLevel: info
@@ -34,7 +34,7 @@ metrics:
 database:
   evmJsonRpcCache:
     connectors:
-      # Also referenced by evm.headCache.connectorId below.
+      # Also referenced by evm.headCache.connectorId below for shared payloads.
       - id: redis-cache
         driver: redis
         redis:
@@ -56,8 +56,7 @@ projects:
             enabled: true
             # Must name a redis connector in database.evmJsonRpcCache.connectors.
             connectorId: redis-cache
-            # Memory is per network per replica. Size pod limits for
-            # maxBytes x enabled networks, plus Go overhead.
+            # Each replica verifies its own canonical head; Redis reuses block/log payloads.
             depth: 128
             maxBytes: 268435456
 

@@ -1,6 +1,6 @@
 ---
 title: WebSocket
-description: Serve eth_subscribe (newHeads, logs) over WebSocket on the same URL as HTTP, fed by the Redis head cache so every subscriber shares one hydration of each block.
+description: Serve eth_subscribe (newHeads, logs) over WebSocket on the same URL as HTTP, fed by each replica's locally verified head cache.
 ---
 
 import { LLMsTxtLink, AISection, SourceLink } from "../../components";
@@ -11,9 +11,11 @@ import { LLMsTxtLink, AISection, SourceLink } from "../../components";
 
 Clients can open a WebSocket on the same URL they already use for HTTP
 (`ws://host:4000/<project>/evm/<chainId>`) to subscribe to `newHeads` and
-`logs`. Events come from the network's [head cache](/config/database/head-cache),
-so a thousand subscribers cost the same provider traffic as one, and reorgs
-arrive as `removed: true` logs. Ordinary JSON-RPC calls stay on HTTP.
+`logs`. Events come from the network's [head cache](/config/database/head-cache).
+Subscribers on one replica share its head tracking and hydration. Replicas verify
+their heads independently and can reuse immutable block/log payloads from Redis,
+so fleet-wide provider traffic may be duplicated. Reorgs arrive as `removed: true`
+logs. Ordinary JSON-RPC calls stay on HTTP.
 
 Disabled by default.
 
@@ -46,7 +48,7 @@ projects:
 
 ## Config schema (`server.webSocket`)
 
-Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/config_headcache.go" lines="153-175" />), called from <SourceLink file="common/defaults.go" lines="793" />.
+Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/config_headcache.go" lines="138-160" />), called from <SourceLink file="common/defaults.go" lines="793" />.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -62,19 +64,19 @@ Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/conf
 ## Behavior
 
 - **Contract.** Only `eth_subscribe` and `eth_unsubscribe` are accepted. Any other method gets `-32601` (use HTTP). A batch (top-level JSON array) gets a single `-32600`. Unparsable JSON gets `-32700`, and valid JSON that is not a request object gets `-32600`. Frames are handled sequentially per connection.
-- **Head cache required.** The upgrade gets HTTP 503 unless the network has an enabled head cache (`evm.headCache` with a Redis `connectorId`). Notifications are rendered only from cached canonical events and never trigger upstream calls. eRPC never proxies upstream WebSockets.
+- **Head cache required.** The upgrade gets HTTP 503 unless the network has an enabled head cache (`evm.headCache` with a Redis `connectorId`). Notifications come from the replica's locally verified canonical events. eRPC never proxies upstream WebSockets.
 - **Routing.** Same path and domain aliasing as HTTP. A connection is bound to one project and network.
 - **Auth.** Credentials (`?secret=`, `X-ERPC-Secret-Token`, `Authorization`) are taken from the upgrade request. They are checked at upgrade (401 on failure) and again for every message through the project's consumer auth. `ignoreMethods`/`allowMethods` apply.
 - **Origin.** Browsers do not apply CORS to WebSockets. When the project has `cors.allowedOrigins`, an upgrade with a non-matching `Origin` gets 403.
 - **Subscriptions.** `newHeads` emits header fields (no `transactions`, `uncles`, `size`, `totalDifficulty`, `withdrawals`) per new canonical block, ascending. `logs` accepts `address` (string or array) and `topics` (up to 4 positions, `null` wildcard, nested arrays for OR). On a reorg, orphaned matching logs are sent first with `removed: true` (highest block first), then the new canonical logs. The subscription id reply always precedes its notifications. Setup consumes project rate-limit budget for `eth_subscribe`.
-- **Tip.** The head cache publishes the seeder's verified live `eth_blockNumber` tip, so `newHeads` may briefly run ahead of or behind the HTTP served `latest`.
+- **Tip.** Each replica verifies its own head, so `newHeads` may briefly differ from HTTP `latest` or another replica's notifications when upstream views lag.
 - **Unsubscribe.** `eth_unsubscribe` returns `false` for ids that were not created on the same connection.
 
 ## Edge cases & gotchas
 
-1. **No silent gaps.** Every head cache event is checked for continuity. Missing heights (evicted records, a window reset, recovery after staleness), a subscription queue overflow, or a stopped head cache close the connection with 1008 (`subscription gap: resubscribe` / `slow consumer`). Clients should reconnect, resubscribe and backfill with `eth_getLogs` over HTTP (`TestWs_GapDetection`, `TestWs_SlowConsumerDisconnected`).
+1. **No silent gaps.** Every head-cache event is checked for continuity. If a missing height cannot be backfilled from the locally verified window, or if a subscription queue overflows, the connection closes with 1008 rather than silently skipping notifications. Clients should reconnect, resubscribe and recover missed logs with `eth_getLogs` over HTTP.
 2. **Id-less requests.** A JSON-RPC 2.0 `eth_subscribe` or `eth_unsubscribe` without an `id` is treated as a notification: it gets no reply and does not create or remove a subscription (`TestWs_IdlessNotificationsHaveNoSubscriptionEffects`).
-3. **Stale head cache.** When the head cache stops serving (see its `maxStaleness`), no events are produced.
+3. **Stale head cache.** When this replica's head cache stops serving (see its `maxStaleness`), no events are produced.
 4. **Shutdown.** Connections are hijacked, so `http.Server.Shutdown` does not wait for them. They close with 1001 when the application context ends. New upgrades during draining get 503.
 5. `maxConnections` and `maxConnectionsPerProject` are per process, not per client IP or fleet. Front eRPC with a per-client connection limit at the load balancer.
 6. Only `newHeads` and `logs` are supported. `newPendingTransactions`, `syncing` and unknown kinds return `-32601`.

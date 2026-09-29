@@ -1,6 +1,6 @@
 ---
 title: Head cache
-description: Hydrate each new block (with all its logs) once, verify it against the chain, and answer block and log reads for the recent window without touching providers.
+description: Verify a recent canonical window per replica, reuse immutable block and log payloads through Redis, and serve covered block and log reads locally.
 ---
 
 import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
@@ -10,15 +10,19 @@ import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
 # Head cache
 
 Most traffic reads the last few blocks: `eth_getBlockByNumber`, `eth_getBlockByHash`
-and `eth_getLogs` with many different filters. With the head cache enabled, eRPC
-follows the chain head, fetches every new block **once** (full transactions plus the
-complete log list of the block), verifies it links to its parent, and then answers
-those reads from memory for the recent window. Different log filters over the same
-blocks cost zero extra provider calls.
+and `eth_getLogs` with many different filters. With the head cache enabled, each
+replica verifies its own recent canonical window and serves covered reads from
+memory. Redis shares immutable, hash-addressed block and log payloads between
+replicas. Each replica may still make its own verification and hydration requests,
+especially on a cold cache or when its upstream view differs.
 
-Replicas coordinate through Redis: one replica holds a fenced lease and hydrates,
-every replica serves the published window. The cache reuses a Redis connector you
-already declare for the [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache).
+The cache reuses a Redis connector you already declare for the
+[EVM JSON-RPC cache](/config/database/evm-json-rpc-cache). Redis stores payloads,
+not a shared canonical head; a replica serves a payload only after its own head
+verification confirms the block is canonical locally. Each replica hydrates backward
+from its latest head and can publish a complete verified suffix before the configured
+depth is full. HTTP requests use the cache only when their entire requested block or
+log range is covered; other requests use the normal upstream path.
 
 Disabled by default. When disabled, behavior is unchanged.
 
@@ -48,73 +52,48 @@ projects:
 
 ## Config schema (`projects[].networks[].evm.headCache`)
 
-Defaults from `EvmHeadCacheConfig.SetDefaults` (<SourceLink file="common/config_headcache.go" lines="56-90" />), called by `EvmNetworkConfig.SetDefaults` (<SourceLink file="common/defaults.go" lines="2571" />).
+Defaults from `EvmHeadCacheConfig.SetDefaults` (<SourceLink file="common/config_headcache.go" lines="46-77" />), called by `EvmNetworkConfig.SetDefaults` (<SourceLink file="common/defaults.go" lines="2571" />).
 
 | Field | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Opt-in. |
-| `connectorId` | — (required) | Id of a `driver: redis` connector in `database.evmJsonRpcCache.connectors`. Validated at config load (`ValidateConnector`); a missing or non-redis connector fails startup. The client is borrowed from the connector and never closed by the head cache (`TestCache_StopNeverClosesBorrowedClient`). Redis >= 6.2. |
+| `connectorId` | — (required) | Id of a `driver: redis` connector in `database.evmJsonRpcCache.connectors`. Validated at config load (`ValidateConnector`); a missing or non-redis connector fails setup. The head cache uses this connector's `Get`/`Set` operations and leaves Redis client lifecycle, reconnects and configured failsafes to the connector. |
 | `depth` | `128` (1..4096) | Canonical blocks retained. |
 | `maxBytes` | `256MB` | Total retained block+log bytes; oldest blocks dropped first (become misses). |
-| `maxBlockBytes` | `16MB` | A block whose block+logs payload exceeds this is never cached. |
-| `maxPerTick` | `16` | Blocks fetched (including re-verification) per follow step. |
-| `concurrency` | `4` (1..64) | Parallel hydration fetches. |
-| `pollInterval` | `2s` | Leader discovers the latest height with `eth_blockNumber` and re-verifies the cached tip's compact header each tick. Head advances seen by state pollers can trigger an immediate tick. Followers read Redis, not upstreams. |
-| `fetchTimeout` | `10s` | Per hydration call; additionally capped by the whole-tick deadline (`0.8 × leaseTtl`). |
+| `maxBlockBytes` | `min(16MB, maxBytes)` | A block whose block+logs payload exceeds this is never cached. |
+| `maxPerTick` | `16` | Maximum number of missing block records fetched from upstream per refresh tick; cold prefill can span multiple polls. |
+| `concurrency` | `4` (1..64) | Maximum simultaneous header, Redis-read, and block/log hydration jobs per network. |
+| `pollInterval` | `2s` | Each replica discovers the latest height with `eth_blockNumber` and re-verifies its local tip header each tick. |
+| `fetchTimeout` | `10s` | Timeout for each hydration or verification fetch. |
 | `maxLogsRange` | `depth` | Widest `eth_getLogs` range served from cache. |
-| `maxStaleness` | `5 × pollInterval` | Leader freshness starts at successful verification. Follower freshness starts at `min(snapshot.At, receipt time)`, not at delayed receipt. Past that deadline the cache stops serving and reads go upstream. |
-| `leaseTtl` | `3 × pollInterval + 1s` | Hydration lease, renewed every tick; `pollInterval` must be `< leaseTtl/2`. Each tick (renew + verify + hydrate + publish) runs under a `0.8 × leaseTtl` deadline so a slow upstream cancels work before the lease can lapse. |
+| `maxStaleness` | `5 × pollInterval` | Maximum time since this replica's last successful head verification before it bypasses the cache and uses upstreams. |
 | `namespace` | `default` | Deployment isolation prefix. A SHA-256 fingerprint includes upstream configurations, provider settings/overrides, upstream and network defaults, integrity and effective network forwarding configuration. Secrets contribute to the digest but are never emitted in it. |
 
 ## What is served
 
 - `eth_getBlockByNumber` with an explicit hex number and boolean flag (`true` = full txs, `false` = tx hashes derived from the same record). Tags (`latest`, `finalized`, ...) always go through the normal path.
 - `eth_getBlockByHash`, only when the hash is canonical in the current window.
-- `eth_getLogs` with `blockHash`, or with hex `fromBlock`/`toBlock` where **every** block of the range is held and the span is <= `maxLogsRange`. Only `address`, `topics`, `blockHash`, `fromBlock`, `toBlock` members are accepted (`blockHash` together with `fromBlock`/`toBlock` goes upstream); addresses must be 20-byte and topics 32-byte hex, and topic matching follows geth (a filter with more topic positions than a log never matches it). Anything else goes upstream.
+- `eth_getLogs` with `blockHash`, or with hex `fromBlock`/`toBlock` where **every** block of the range is held in this replica's verified window and the span is <= `maxLogsRange`. Only `address`, `topics`, `blockHash`, `fromBlock`, `toBlock` members are accepted (`blockHash` together with `fromBlock`/`toBlock` goes upstream); addresses must be 20-byte and topics 32-byte hex, and topic matching follows geth (a filter with more topic positions than a log never matches it). Anything else goes upstream.
 - Requests with `useUpstream`, an integrity selector, `skipCacheRead`, or internal requests bypass the head cache (they may target a different trust set).
 
 ## Edge cases & gotchas
 
-1. **No partial answers.** A range with any missing, expired, evicted or oversized block is a miss and is forwarded upstream unchanged. Empty results are only returned when every block was held and none matched.
+1. **No partial or unverified answers.** The replica may publish a complete contiguous newest suffix while cold-filling, or above an oversized/unusable block. HTTP cache reads still require a fresh local canonical view and complete coverage for the requested block or entire log range. Any requested block that is missing, expired, evicted or oversized is a miss and the request is forwarded upstream unchanged. An empty log result is returned only when every block in the requested range is covered and none matched. A partially hydrated window never creates a partial HTTP response.
 2. **Record validation.** A block is cached only when: the logs list is non-null, every log's `blockHash`/`blockNumber` match, every `transactionHash` belongs to the block, `logIndex` strictly increases, no log is `removed`, and the bloom recomputed from the logs equals the block's `logsBloom` (catches an upstream returning `[]` for a block it has not indexed).
-3. **Reorgs.** Each tick re-fetches the window tip as a compact header (`eth_getBlockByNumber(n,false)`); on hash mismatch the leader stops serving immediately and walks back (at most `maxPerTick` fetches per tick, progress kept across ticks) until the stored hash matches. Nothing is published until the ancestor is confirmed; then it extends forward requiring `parentHash` links. A `null` or malformed tip (lagging upstream) is a failed verification, not a reorg. Reorgs deeper than `depth` rebuild the window from the tip. The published tip is the leader's verified live `eth_blockNumber`, which may briefly differ from the HTTP served `latest`.
-4. **Coordination.** Records are immutable and hash-addressed; snapshots are published with an epoch-checked compare-and-set, and a leader whose lease was superseded gets `ErrLeaseLost` and stops. Records are written before the snapshot referencing them. Followers poll `LoadSnapshot` every tick (pub/sub is only a latency hint) and reject snapshots older than `maxStaleness` or dated more than 5s in the future. A follower's staleness window is anchored to the snapshot's writer timestamp (never extended by late receipt). If an event needs an evicted or otherwise missing block record, the cache closes subscribers rather than emitting an incomplete WebSocket event (`TestCache_EvictedAddedBlockClosesSubscriberWithoutNotification`).
-5. **Redis loss and complete resets.** Reads never block on Redis. When Redis is unreachable, no snapshot is refreshed and after `maxStaleness` every replica serves from upstream. A newly acquired lease re-persists retained records before publishing, including after Redis restarts empty. Complete data loss also loses Redis epoch counters: a follower rejects regressed ordering while its old view is trusted. Only after that view expires may it adopt a newer-timestamp, complete authoritative snapshot with reset ordering, closing existing subscriptions because continuity is uncertain (`TestCache_RedisEmptyRestartRecoversCompleteWindow`). No claim of durable monotonic epochs survives total Redis data loss.
-6. **Leadership is not derived from shared counters** (`database.sharedState`); it uses its own fenced lease.
-7. **Hydration traffic** goes through the normal network path (selection policy, failsafe) as internal JSON-RPC requests with explicit IDs. Hydration responses are not written into the ordinary [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache), so orphaned head data is not left behind there. Only the lease holder hydrates, once per fleet. A stable head costs one height discovery plus one compact verification per leader tick, not full-block/log hydration. Snapshot notifications do not trigger the leader's own hydration loop. Heartbeats are published at most once per `maxStaleness / 3` on unchanged heads (`TestCache_StartLoopNoSelfSpin`). Discovery is autonomous even if upstream state pollers are disabled or stale.
-8. Chains whose `eth_getBlockByNumber(n,true)` omits `logsBloom` or returns non-standard log fields will not be cached (all misses).
-9. **Lease work is bounded as a whole.** Coordination, discovery, verification, all hydration batches, and publication share the 80%-of-lease deadline. A configured `fetchTimeout` longer than that budget is capped by its parent context. Slow calls may prevent a tick from publishing rather than extending leadership implicitly (`TestCache_WholeTickDeadlinePreventsLatePublish`).
-10. **Subscription gaps fail closed.** Missing added/removed records or a snapshot jump that skips unobserved heights closes subscriptions, never emits a partial event. Clients must reconnect/resubscribe and recover their own missed range (`TestCache_GapClosesSubscribers`, `TestCache_WindowJumpClosesSubscription`).
-11. **Redis connection lifecycle.** The head cache borrows the client of the referenced cache connector per operation and never closes it. A nil client fails closed (no serving) (`TestCache_StopNeverClosesBorrowedClient`).
-12. **Exact input semantics.** Addresses require 20-byte hex and topics/hashes require 32-byte hex. A trailing wildcard topic still requires that topic position to exist. Invalid filters, mixed blockHash/range selectors, unknown members and directed requests bypass local answers (`TestHttp_HeadCache_MalformedFiltersBypassAndTopicPositionsMatchGeth`).
-13. **Memory sizing.** `maxBytes` applies per enabled network per replica, including followers, not to the whole process. The default `256MB` is 256 MiB (`256 << 20`): 32 enabled networks can retain about 8 GiB of cached data per replica alone. Budget separately for Go/object overhead, in-flight hydration and serialization, other caches, and Redis storage. Tune `maxBytes`, `depth`, concurrency and container/pod memory limits for the enabled network count rather than assuming existing limits are sufficient.
-14. **Fork compatibility.** Configs written for the unmerged fork branch must replace `mode`/`redis` with `connectorId` and drop `headSource`/`servedTipMaxAge`. Those keys no longer exist.
-15. **Store retention.** Block records are written with a TTL of `(depth + 16) × 30s`. After each successful publish, the store deletes the records that the previous committed snapshot referenced and the new one does not.
-    - **Redis:** before publishing, the leader reads the previous snapshot (one extra `GET`) and lists up to 512 superseded keys. They are deleted inside the same fenced publish script, only after the lease and sequence checks pass, so a rejected publish deletes nothing. Keys beyond the cap (for example the first publish after a long outage) and a failed pre-read fall back to the TTL.
-    - Records that never entered a committed snapshot are still bounded only by the TTL: those from a rejected publish, a lease lost after the write, or a gap truncation. That is at most `maxPerTick` per failed tick.
-    - `depth` and `maxBytes` do not strictly bound Redis usage. Set Redis `maxmemory` and an eviction policy.
-    - Tests: `TestRedisStore_RetentionBoundedOnFastChain`, `TestRedisStore_PruneKeepsNewSnapshotRefsABA`, `TestRedisStore_RejectedPublishDoesNotPrune`, `TestRedisStore_PruneIsScopeLocal`, `TestRedisStore_HeartbeatPublishIsNoOpPrune`, `TestRedisStore_PruneCandidatesCapped`.
+3. **Reorgs.** Each replica checks its live tip. When the tip changes or does not match the verified window, it fetches headers across the configured window in parallel and verifies every parent-hash link before using the window. A changed canonical window invalidates the previous view; a failed, null or malformed header does not establish a new view. A reorg beyond the retained window requires rebuilding the window. Replicas may temporarily disagree when their upstream views lag.
+4. **Cross-replica payload reuse.** Redis contains immutable block/log records keyed by network scope and block hash. A cached Redis record is not proof of canonicality: each replica independently verifies its local chain and uses only records matching that verified window. There is no fleet-wide leader, canonical snapshot or pub/sub. Replicas can duplicate cold fills and verification calls; this trades some provider traffic for simpler coordination and avoids a shared mutable head.
+5. **Redis loss.** Misses or errors from `data.Connector.Get` do not count as canonicality checks and never authorize unverified serving. The replica fetches missing payloads from upstream when available; `data.Connector.Set` failures are best-effort. Already-held records remain eligible only while the replica's own verified view is fresh. Missing/non-Redis connector configuration fails setup; a runtime unavailable connector operation uses the miss-and-fetch behavior.
+6. **Hydration traffic** goes through the normal network path (selection policy, failsafe) as internal JSON-RPC requests with explicit IDs. Hydration responses are not written into the ordinary [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache), so orphaned head data is not left behind there. Each replica independently discovers and verifies its head and may fetch missing full blocks/logs.
+7. A block whose full-block response omits `logsBloom` or whose log fields are non-standard is not cached. The cache can serve a complete newer suffix above a block rejected for exceeding `maxBlockBytes`; requests that cross or target the missing block go upstream, and WebSocket subscriptions close if the missing height creates an event gap.
+8. **Subscription gaps fail closed.** Missing added/removed records or skipped heights close subscriptions rather than emit a partial event. Clients must reconnect/resubscribe and recover their own missed range.
+9. **Connector lifecycle.** The head cache uses the outer configured connector's `Get`/`Set` methods, so configured failsafes and connector reconnect behavior apply. The connector owns its Redis client lifecycle; the head cache does not access or close the raw client. If a runtime `Get` is unavailable, its error is treated as a miss and upstream is used when available; a cache hit still requires local verified coverage.
+10. **Exact input semantics.** Addresses require 20-byte hex and topics/hashes require 32-byte hex. A trailing wildcard topic still requires that topic position to exist. Invalid filters, mixed blockHash/range selectors, unknown members and directed requests bypass local answers.
+11. **Memory sizing.** `maxBytes` applies per enabled network per replica, not to the whole process. The default `256MB` is 256 MiB (`256 << 20`): 32 enabled networks can retain about 8 GiB of cached data per replica alone. Budget separately for Go/object overhead, in-flight hydration and serialization, other caches, and Redis storage. Tune `maxBytes`, `depth` and container/pod memory limits for the enabled network count.
+12. **Fork compatibility.** Configs written for the unmerged fork branch must replace `mode`/`redis` with `connectorId` and drop `headSource`/`servedTipMaxAge`. Those keys no longer exist.
+13. **Store retention.** Redis payloads expire by TTL and may outlive a replica's local canonical window. `depth` and `maxBytes` bound local cache use, not total fleet Redis storage. Set Redis `maxmemory` and an eviction policy appropriate for the deployment.
 
 ## Observability
 
-Hits carry the `head_cache.hit=true` attribute on the `Network.Forward` span and are marked `fromCache`. Lease acquisition/loss is logged under `component=headCache`.
-
-All series carry `project` and `network` (the network label). Defined in <SourceLink file="telemetry/feature_metrics.go" />, emitted from <SourceLink file="headcache/metrics.go" />.
-
-| Metric | Type | Extra labels | Meaning |
-|---|---|---|---|
-| `erpc_head_cache_requests_total` | counter | `result` = `hit`, `miss` | Head cache lookups for eligible reads. |
-| `erpc_head_cache_fetches_total` | counter | `result` = `ok`, `rejected` | Blocks hydrated by this replica. `rejected` failed record validation or `maxBlockBytes`. |
-| `erpc_head_cache_reorgs_total` | counter | | Hash mismatches detected by the leader. |
-| `erpc_head_cache_snapshots_published_total` | counter | | Snapshots published while leader. |
-| `erpc_head_cache_leader_acquisitions_total` | counter | | Times this replica acquired the hydration lease. |
-| `erpc_head_cache_subscriber_closed_total` | counter | `reason` = `unsubscribe`, `slow_consumer`, `gap`, `reset`, `stop` | Subscriptions ended. |
-| `erpc_head_cache_leader` | gauge | | 1 while this replica holds the hydration lease. |
-| `erpc_head_cache_head_block` | gauge | | Head of the snapshot held by this replica. |
-| `erpc_head_cache_bytes` | gauge | | Bytes of block records held in memory. |
-| `erpc_head_cache_snapshot_timestamp_seconds` | gauge | | Leader publish time of the held snapshot. Freshness is `time() - value`. |
-| `erpc_head_cache_subscribers` | gauge | | Active in-process subscriptions. |
-
-Gauges are removed when the network's head cache stops. Tests: `headcache/metrics_test.go`, `telemetry/feature_metrics_test.go`. `Cache.Stats` still exposes the in-process atomic counters. Count leader discovery and compact verification separately from full block/log hydration when assessing upstream cost.
+Cache hits are marked `fromCache` and set `head_cache.hit=true` on the `Network.Forward` span. This cache does not expose dedicated metrics. Consider provider cost per replica: head verification is local to each replica, while Redis only reuses immutable payloads.
 
 </AISection>

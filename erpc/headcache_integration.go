@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/headcache"
-	"github.com/rs/zerolog"
 )
 
 type headCacheBypassKey struct{}
@@ -116,11 +114,8 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 	if err != nil {
 		return err
 	}
-	host, _ := os.Hostname()
-	holder := fmt.Sprintf("%s/%d/%d", host, os.Getpid(), time.Now().UnixNano())
 	opts := headcache.Options{
 		Scope:        headcache.Scope{Namespace: ns, ProjectId: network.projectId, NetworkId: network.networkId},
-		Holder:       holder,
 		Depth:        hc.Depth,
 		MaxBytes:     hc.MaxBytes,
 		MaxBlockSize: hc.MaxBlockBytes,
@@ -129,74 +124,37 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 		PollInterval: hc.PollInterval.Duration(),
 		FetchTimeout: hc.FetchTimeout.Duration(),
 		MaxStaleness: hc.MaxStaleness.Duration(),
-		LeaseTTL:     hc.LeaseTTL.Duration(),
 		MaxLogsRange: hc.MaxLogsRange,
 		RecordTTL:    time.Duration(hc.Depth+16) * 30 * time.Second,
 	}
 	lg := network.logger.With().Str("component", "headCache").Logger()
 	f := &networkHeadFetcher{n: network}
 	live := func(ctx context.Context) int64 {
-		// Pollers can be disabled, dormant or behind. Subscription delivery must
-		// advance without a user HTTP read waking a poller. Only the lease holder
-		// calls headFn, and its whole-tick deadline bounds this discovery too.
+		// Each replica discovers and verifies its own live tip, regardless of
+		// the state poller's current height.
 		raw, err := f.call(ctx, "eth_blockNumber", []interface{}{})
 		if err != nil {
-			return 0
+			return -1
 		}
 		var quantity string
 		if err := json.Unmarshal(raw, &quantity); err != nil {
-			return 0
+			return -1
 		}
 		number, err := parseExplicitBlockNumber(quantity)
 		if err != nil {
-			return 0
+			return -1
 		}
 		return number
 	}
-	// The seeder publishes up to the live eth_blockNumber tip it has itself
-	// verified (hash/parent linkage per tick), which can briefly differ from
-	// the network's served HTTP "latest".
 	c := headcache.New(opts, store, f, live, &lg)
-	c.EnableMetrics(network.projectId, network.Label())
 	network.headCache = c
 	c.Start(nr.appCtx)
-	go network.wireHeadCacheKick(nr.appCtx, &lg)
 	lg.Info().Str("namespace", ns).Int64("depth", hc.Depth).Msg("head cache started")
 	return nil
 }
 
-// wireHeadCacheKick subscribes the cache to upstream head advances once the
-// upstreams are registered. The periodic poll covers the time before that.
-func (n *Network) wireHeadCacheKick(ctx context.Context, lg *zerolog.Logger) {
-	t := time.NewTicker(500 * time.Millisecond)
-	defer t.Stop()
-	for {
-		ups := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-		wired := 0
-		for _, up := range ups {
-			sp := up.EvmStatePoller()
-			if sp == nil || sp.IsObjectNull() {
-				continue
-			}
-			if reg, ok := sp.(interface{ OnLatestBlock(func(int64)) }); ok {
-				reg.OnLatestBlock(func(int64) { n.headCache.Kick() })
-				wired++
-			}
-		}
-		if wired > 0 {
-			lg.Debug().Int("upstreams", wired).Msg("head cache wired to head advances")
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
-}
-
 // networkHeadFetcher hydrates through the network's normal forwarding path
-// (routing, failsafe, priority) while bypassing both caches.
+// (routing and failsafe) while bypassing both caches.
 type networkHeadFetcher struct{ n *Network }
 
 func (f *networkHeadFetcher) call(ctx context.Context, method string, params []interface{}) (json.RawMessage, error) {
@@ -372,24 +330,77 @@ func validHeadCacheHash(s string) bool {
 	return err == nil
 }
 
+type headCacheConnectorStore struct {
+	connector data.Connector
+}
+
+func (s *headCacheConnectorStore) partition(scope headcache.Scope) (string, error) {
+	identity, err := json.Marshal(struct {
+		Namespace string
+		ProjectID string
+		NetworkID string
+	}{scope.Namespace, scope.ProjectId, scope.NetworkId})
+	if err != nil {
+		return "", fmt.Errorf("marshal head cache scope: %w", err)
+	}
+	h := sha256.Sum256(identity)
+	return "headcache:v1:" + hex.EncodeToString(h[:]), nil
+}
+
+func (s *headCacheConnectorStore) GetBlock(ctx context.Context, scope headcache.Scope, hash string) (*headcache.BlockRecord, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return nil, err
+	}
+	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, strings.ToLower(hash), nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) == 0 {
+		return nil, headcache.ErrNotFound
+	}
+	var record headcache.BlockRecord
+	if err := json.Unmarshal(value, &record); err != nil {
+		return nil, fmt.Errorf("decode head cache record: %w", err)
+	}
+	return &record, nil
+}
+
+func (s *headCacheConnectorStore) PutBlock(ctx context.Context, scope headcache.Scope, record *headcache.BlockRecord, ttl time.Duration) error {
+	if record == nil {
+		return fmt.Errorf("cannot store nil head cache record")
+	}
+	partition, err := s.partition(scope)
+	if err != nil {
+		return err
+	}
+	value, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("encode head cache record: %w", err)
+	}
+	key := strings.ToLower(record.Hash)
+	return s.connector.Set(ctx, partition, key, value, &ttl)
+}
+
 // headCacheStore builds the Redis store on the referenced evmJsonRpcCache
-// connector's client. The connector owns the client (reconnect, Close); the
-// store re-resolves it per operation and never closes it.
-func (nr *NetworksRegistry) headCacheStore(hc *common.EvmHeadCacheConfig) (*headcache.RedisStore, error) {
+// connector. Keep the configured wrapper for its failsafe behavior, but verify
+// that it ultimately uses Redis before sharing head-cache payloads.
+func (nr *NetworksRegistry) headCacheStore(hc *common.EvmHeadCacheConfig) (headcache.Store, error) {
 	var conn data.Connector
 	if nr.evmJsonRpcCache != nil {
 		conn = nr.evmJsonRpcCache.Connector(hc.ConnectorId)
 	}
+	resolved := conn
 	for {
-		u, ok := conn.(interface{ Unwrap() data.Connector })
+		u, ok := resolved.(interface{ Unwrap() data.Connector })
 		if !ok {
 			break
 		}
-		conn = u.Unwrap()
+		resolved = u.Unwrap()
 	}
-	rc, ok := conn.(*data.RedisConnector)
+	rc, ok := resolved.(*data.RedisConnector)
 	if !ok || rc == nil {
 		return nil, fmt.Errorf("evm.headCache.connectorId %q is not an initialized redis connector in database.evmJsonRpcCache", hc.ConnectorId)
 	}
-	return headcache.NewRedisStoreFunc(rc.Client, headcache.RedisStoreOptions{SnapshotTTL: 2 * hc.MaxStaleness.Duration()}), nil
+	return &headCacheConnectorStore{connector: conn}, nil
 }

@@ -10,25 +10,25 @@ type EvmHeadCacheConfig struct {
 	// Enabled turns the cache on. Default false.
 	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
 	// ConnectorId names a redis-driver connector declared under
-	// database.evmJsonRpcCache.connectors. Its Redis client holds the shared
-	// canonical window: one lease holder hydrates and publishes epoch-fenced
-	// snapshots, every replica serves them. Required.
+	// database.evmJsonRpcCache.connectors. Replicas share immutable,
+	// hash-addressed block/log payloads; each replica verifies its own head.
+	// Required.
 	ConnectorId string `yaml:"connectorId,omitempty" json:"connectorId,omitempty"`
 	// Depth is how many recent canonical blocks the window holds. Default 128.
 	Depth int64 `yaml:"depth,omitempty" json:"depth,omitempty"`
 	// MaxBytes bounds the total serialized size (blocks + logs) held. When the
 	// window would exceed it, the oldest blocks are evicted. Default 256MB.
 	MaxBytes int64 `yaml:"maxBytes,omitempty" json:"maxBytes,omitempty"`
-	// MaxPerTick bounds how many blocks a single follow step hydrates, so a
-	// cold start or a long outage converges steadily. Default 16.
+	// MaxPerTick bounds how many missing block records a single refresh fetches
+	// from upstream. Cold starts and long outages converge over multiple ticks.
 	MaxPerTick int64 `yaml:"maxPerTick,omitempty" json:"maxPerTick,omitempty"`
-	// Concurrency bounds in-flight upstream fetches per network. Default 4.
+	// Concurrency bounds simultaneous header, Redis-read and block/log hydration
+	// jobs per network. Default 4.
 	Concurrency int `yaml:"concurrency,omitempty" json:"concurrency,omitempty"`
 	// PollInterval is the fallback tick that re-verifies the tip hash even
 	// when the height has not changed (same-height reorgs). Default 2s.
 	PollInterval Duration `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty" tstype:"Duration"`
-	// FetchTimeout bounds each hydration fetch, additionally capped by the
-	// whole-tick lease deadline. Default 10s.
+	// FetchTimeout bounds each hydration fetch. Default 10s.
 	FetchTimeout Duration `yaml:"fetchTimeout,omitempty" json:"fetchTimeout,omitempty" tstype:"Duration"`
 	// MaxLogsRange caps the block span an eth_getLogs range may have to be
 	// served from the cache. Wider ranges go upstream. Default = Depth.
@@ -36,21 +36,12 @@ type EvmHeadCacheConfig struct {
 	// MaxBlockBytes rejects (never caches) any single block whose block+logs
 	// payload exceeds it. Default min(16MB, maxBytes).
 	MaxBlockBytes int64 `yaml:"maxBlockBytes,omitempty" json:"maxBlockBytes,omitempty"`
-	// MaxStaleness disables serving (normal upstream path) when the local
-	// view has not been verified for this long. Followers anchor freshness to
-	// the snapshot's writer timestamp, clamped to local receipt time.
-	// Default 5 * pollInterval.
+	// MaxStaleness disables serving (normal upstream path) when this replica's
+	// view has not been verified for this long. Default 5 * pollInterval.
 	MaxStaleness Duration `yaml:"maxStaleness,omitempty" json:"maxStaleness,omitempty" tstype:"Duration"`
-	// Namespace isolates shared state between deployments. Defaults to
-	// "default". A fingerprint of the
-	// network's upstream set is always appended, so replicas only share data
-	// when they run the same upstream configuration.
+	// Namespace isolates shared payloads between deployments. Defaults to
+	// "default". A fingerprint of the network's upstream set is always appended.
 	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
-	// LeaseTTL is the hydration leadership lease. It is renewed every
-	// tick. Coordination and all batch work share a deadline of 80% of this
-	// TTL so publication cannot outlive the lease. Must be > 2*pollInterval.
-	// Default 3*pollInterval + 1s.
-	LeaseTTL Duration `yaml:"leaseTtl,omitempty" json:"leaseTtl,omitempty" tstype:"Duration"`
 }
 
 func (c *EvmHeadCacheConfig) SetDefaults() {
@@ -84,9 +75,6 @@ func (c *EvmHeadCacheConfig) SetDefaults() {
 	if c.MaxStaleness == 0 {
 		c.MaxStaleness = Duration(5 * c.PollInterval.Duration())
 	}
-	if c.LeaseTTL == 0 {
-		c.LeaseTTL = Duration(3*c.PollInterval.Duration() + time.Second)
-	}
 }
 
 func (c *EvmHeadCacheConfig) Validate() error {
@@ -119,9 +107,6 @@ func (c *EvmHeadCacheConfig) Validate() error {
 	}
 	if c.MaxStaleness < c.PollInterval {
 		return fmt.Errorf("evm.headCache.maxStaleness must be >= pollInterval")
-	}
-	if c.PollInterval.Duration() >= c.LeaseTTL.Duration()/2 {
-		return fmt.Errorf("evm.headCache.pollInterval must be < leaseTtl/2")
 	}
 	return nil
 }
