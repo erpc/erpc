@@ -195,8 +195,8 @@ func TestHttp_HeadCache_DisabledPreservesBehavior(t *testing.T) {
 	require.Greater(t, up.BlockCalls(19), before)
 }
 
-// Two replicas verify their own canonical headers while sharing immutable block
-// and log payloads through Redis.
+// The lease holder verifies headers and shares its snapshot and immutable
+// block/log payloads. The follower reads them without hydrating upstream.
 func TestHttp_HeadCache_SharedRedisTwoReplicas(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
