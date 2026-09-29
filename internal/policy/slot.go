@@ -223,38 +223,21 @@ func (s *Slot) tickOnce() {
 		evalErr error
 	)
 	stepLogEnabled := s.engine.stepLogEnabled.Load()
-	// The eval goroutine writes only its own result variables; they are read
-	// after <-done (close happens-before receive). The timeout branch must not
-	// write evalErr concurrently with the goroutine: that was a data race, and
-	// the late goroutine write could also replace the timeout error with a
-	// success, publishing an eval that exceeded evalTimeout.
-	var (
-		gotRes *EvalResult
-		gotErr error
-	)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		gotRes, gotErr = runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
+		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
 	}()
 
-	timedOut := false
 	if timeout > 0 {
 		select {
 		case <-done:
 		case <-time.After(timeout):
-			timedOut = true
+			evalErr = fmt.Errorf("%w after %s", ErrEvalTimeout, timeout)
 			<-done // let the goroutine finish — sobek doesn't support interrupt mid-call cleanly
 		}
 	} else {
 		<-done
-	}
-	if timedOut {
-		// Documented semantics: a timed-out eval is a tick error and the
-		// previous cache is retained, even if the eval later completed.
-		evalErr = fmt.Errorf("%w after %s", ErrEvalTimeout, timeout)
-	} else {
-		evalRes, evalErr = gotRes, gotErr
 	}
 
 	decision := &Decision{

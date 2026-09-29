@@ -461,9 +461,8 @@ func (i *Initializer) Errors() error {
 	var errs []error
 	i.tasks.Range(func(key, value interface{}) bool {
 		t := value.(*BootstrapTask)
-		// Load once: the task error can be cleared concurrently between reads.
-		if te := t.Error(); te != nil {
-			errs = append(errs, te.Err)
+		if t.Error() != nil {
+			errs = append(errs, t.Error().Err)
 		}
 		return true
 	})

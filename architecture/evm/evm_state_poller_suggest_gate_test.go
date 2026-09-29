@@ -215,29 +215,12 @@ func TestSuggestLatestBlock_UnpinnedChainIdSkipsGate(t *testing.T) {
 
 // --- SuggestFinalizedBlock ---
 
-// waitFinalizedSuggestionDone waits until an in-flight SuggestFinalizedBlock
-// goroutine has released finalizedUpdateInProgress. The value becomes visible
-// before the goroutine exits, and a suggestion arriving while it still holds
-// the lock is dropped by design, so a test issuing back-to-back suggestions
-// must wait for completion or its second suggestion can silently vanish.
-func waitFinalizedSuggestionDone(t *testing.T, p *EvmStatePoller) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		if p.finalizedUpdateInProgress.TryLock() {
-			p.finalizedUpdateInProgress.Unlock()
-			return true
-		}
-		return false
-	}, 2*time.Second, time.Millisecond)
-}
-
 func TestSuggestFinalizedBlock_MajorJumpMatchingApplies(t *testing.T) {
 	up := newSuggestGateUpstream(123, "123", nil)
 	p := newGateTestPoller(t, up)
 
 	p.SuggestFinalizedBlock(1000)
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 1000 }, 2*time.Second, 10*time.Millisecond)
-	waitFinalizedSuggestionDone(t, p)
 
 	p.SuggestFinalizedBlock(1000 + gateTolerance + 1000) // MAJOR
 	require.Eventually(t, func() bool {
@@ -252,7 +235,6 @@ func TestSuggestFinalizedBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *tes
 
 	p.SuggestFinalizedBlock(1000)
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 1000 }, 2*time.Second, 10*time.Millisecond)
-	waitFinalizedSuggestionDone(t, p)
 
 	p.SuggestFinalizedBlock(5_000_000) // MAJOR wrong-chain height
 	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
