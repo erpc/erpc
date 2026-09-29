@@ -50,8 +50,8 @@ func (s *Snapshot) HashAt(n int64) string {
 	return s.Hashes[n-s.Base()]
 }
 
-// Store shares only immutable block payloads. Canonicality is verified locally
-// by each Cache and is never inferred from Redis contents.
+// Store shares immutable block payloads, which do not establish canonicality
+// without upstream verification or a verified FleetStore snapshot.
 type Store interface {
 	PutBlock(ctx context.Context, scope Scope, rec *BlockRecord, ttl time.Duration) error
 	GetBlock(ctx context.Context, scope Scope, hash string) (*BlockRecord, error)

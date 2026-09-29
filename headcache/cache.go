@@ -169,9 +169,8 @@ func (c *Cache) run(ctx context.Context) {
 	}
 }
 
-// Tick refreshes this replica's verified canonical view. It never reads a
-// shared canonical pointer: Redis supplies payloads only, and upstream headers
-// determine which hashes are canonical.
+// Tick refreshes the local view from upstream when leading, or from the
+// lease holder's verified snapshot when following.
 func (c *Cache) Tick(ctx context.Context) {
 	c.stepMu.Lock()
 	defer c.stepMu.Unlock()
