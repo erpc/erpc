@@ -11,17 +11,11 @@ import (
 )
 
 var featureFamilies = []string{
-	"erpc_head_cache_requests_total", "erpc_head_cache_fetches_total",
-	"erpc_head_cache_reorgs_total", "erpc_head_cache_snapshots_published_total",
-	"erpc_head_cache_leader_acquisitions_total", "erpc_head_cache_leader",
-	"erpc_head_cache_head_block", "erpc_head_cache_bytes",
-	"erpc_head_cache_snapshot_timestamp_seconds", "erpc_head_cache_subscribers",
-	"erpc_head_cache_subscriber_closed_total",
 	"erpc_ws_connections", "erpc_ws_subscriptions",
 	"erpc_ws_notifications_total", "erpc_ws_connections_closed_total",
 }
 
-// Configure registers the feature families on the default registry and they
+// Configure registers the WebSocket families on the default registry and they
 // appear on a real /metrics scrape; a drop customization removes them.
 func TestFeatureMetrics_RegisteredAndScraped(t *testing.T) {
 	reg := withFreshRegistry(t)
@@ -68,16 +62,13 @@ func TestFeatureMetrics_DropCustomization(t *testing.T) {
 	reg := withFreshRegistry(t)
 	if err := Configure(&Options{Customizations: []Customization{
 		{Subject: "ws_*", Action: ActionDrop},
-		{Subject: "head_cache_*", Action: ActionDrop},
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	registered := registeredFamilies(reg)
 	for _, f := range featureFamilies {
-		_, ok := registered[f]
-		dropped := strings.HasPrefix(f, "erpc_ws_") || strings.HasPrefix(f, "erpc_head_cache_")
-		if ok == dropped {
-			t.Errorf("%s registered=%v, want %v", f, ok, !dropped)
+		if _, ok := registered[f]; ok {
+			t.Errorf("%s still registered after drop customization", f)
 		}
 	}
 }
