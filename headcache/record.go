@@ -3,6 +3,7 @@ package headcache
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
+
+var errRecordTooLarge = errors.New("headcache: block exceeds maxBlockBytes")
 
 // rawBlock is the subset of block fields hydration validates.
 type rawBlock struct {
@@ -97,7 +100,7 @@ func txHashesOf(b *rawBlock) (map[string]struct{}, bool, error) {
 // partial or mismatched data is never cached.
 func buildRecord(blockRaw, logsRaw json.RawMessage, maxBlockBytes int64) (*BlockRecord, error) {
 	if maxBlockBytes > 0 && int64(len(blockRaw)+len(logsRaw)) > maxBlockBytes {
-		return nil, fmt.Errorf("block exceeds maxBlockBytes")
+		return nil, errRecordTooLarge
 	}
 	b, n, err := parseBlockHeader(blockRaw)
 	if err != nil {

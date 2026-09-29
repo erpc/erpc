@@ -12,23 +12,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Fetcher performs hydration reads against upstreams. Implementations must
-// bypass this cache (otherwise the follower would read its own output).
+// Fetcher reads from the configured upstream path with both cache layers bypassed.
 type Fetcher interface {
-	// BlockByNumber returns eth_getBlockByNumber(n, true) raw result.
-	BlockByNumber(ctx context.Context, n int64) (json.RawMessage, error)
-	// LogsByBlockHash returns eth_getLogs({blockHash}) raw result.
-	LogsByBlockHash(ctx context.Context, hash string) (json.RawMessage, error)
-	// HeaderByNumber returns a compact block (eth_getBlockByNumber(n, false))
-	// used only to re-verify canonical hashes; full transactions are fetched
-	// only for blocks being hydrated.
-	HeaderByNumber(ctx context.Context, n int64) (json.RawMessage, error)
+	BlockByNumber(context.Context, int64) (json.RawMessage, error)
+	LogsByBlockHash(context.Context, string) (json.RawMessage, error)
+	HeaderByNumber(context.Context, int64) (json.RawMessage, error)
 }
 
-// Options configure a Cache.
 type Options struct {
 	Scope        Scope
-	Holder       string // unique per process
 	Depth        int64
 	MaxBytes     int64
 	MaxBlockSize int64
@@ -37,43 +29,36 @@ type Options struct {
 	PollInterval time.Duration
 	FetchTimeout time.Duration
 	MaxStaleness time.Duration
-	LeaseTTL     time.Duration
 	MaxLogsRange int64
 	RecordTTL    time.Duration
 }
 
-// Event is delivered to subscribers after each committed canonical change.
-// Removed blocks (orphaned by a reorg, highest first) precede Added blocks
-// (new canonical, ascending).
 type Event struct {
 	Removed []*BlockRecord
 	Added   []*BlockRecord
 }
 
-// Subscription receives Events. C is closed when the subscriber falls behind
-// (queue full), when the cache stops, or on Close.
 type Subscription struct {
 	C      chan Event
 	c      *Cache
 	closed atomic.Bool
 }
 
-func (s *Subscription) Close() { s.c.unsubscribe(s) }
-
-// Stats exposes counters (tests/metrics).
-type Stats struct {
-	Hydrated     atomic.Int64 // records fetched from upstream by this process
-	Published    atomic.Int64 // snapshots published by this process
-	Hits         atomic.Int64
-	Misses       atomic.Int64
-	Reorgs       atomic.Int64
-	LeaderEpochs atomic.Int64
-	Rejected     atomic.Int64 // hydrated blocks rejected by validation
+func (s *Subscription) Close() {
+	if s != nil && s.c != nil {
+		s.c.unsubscribe(s)
+	}
 }
 
-// Cache is one network's head cache. A process runs one Cache per network;
-// it hydrates when it holds the lease and consumes published snapshots
-// otherwise. Reads never block on upstreams.
+type Stats struct {
+	Hydrated  atomic.Int64
+	Published atomic.Int64
+	Hits      atomic.Int64
+	Misses    atomic.Int64
+	Reorgs    atomic.Int64
+	Rejected  atomic.Int64
+}
+
 type Cache struct {
 	opt     Options
 	store   Store
@@ -81,34 +66,45 @@ type Cache struct {
 	headFn  func(context.Context) int64
 	logger  *zerolog.Logger
 	Stats   Stats
-	metrics *metrics // nil unless EnableMetrics
 
-	mu        sync.RWMutex
-	snap      *Snapshot
-	records   map[string]*BlockRecord // hashes of snap only
-	bytes     int64
-	freshAt   time.Time
-	subs      map[*Subscription]struct{}
-	lease     *Lease
-	nowFn     func() time.Time
-	kick      chan struct{}
-	stopOnce  sync.Once
-	cancel    context.CancelFunc
-	done      chan struct{}
-	stepMu    sync.Mutex
-	publishCt uint64
-	publishAt time.Time
-	// walk holds walk-back progress across ticks when a reorg is deeper
-	// than one tick's budget (never published until verified).
-	walk *Snapshot
+	mu         sync.RWMutex
+	snap       *Snapshot
+	records    map[string]*BlockRecord
+	pending    map[string]*BlockRecord
+	blocked    map[string]bool
+	incomplete bool
+	windowHead int64
+	window     []*header
+	bytes      int64
+	freshAt    time.Time
+	subs       map[*Subscription]struct{}
+	nowFn      func() time.Time
+	kick       chan struct{}
+	start      sync.Once
+	stop       sync.Once
+	cancel     context.CancelFunc
+	done       chan struct{}
+	stepMu     sync.Mutex
 }
 
 func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context) int64, logger *zerolog.Logger) *Cache {
-	if opt.Concurrency < 1 {
-		opt.Concurrency = 1
+	if opt.Depth < 1 {
+		opt.Depth = 1
 	}
 	if opt.MaxPerTick < 1 {
-		opt.MaxPerTick = 1
+		opt.MaxPerTick = minI64(16, opt.Depth)
+	}
+	if opt.Concurrency < 1 {
+		opt.Concurrency = 4
+	}
+	if opt.MaxLogsRange < 1 {
+		opt.MaxLogsRange = opt.Depth
+	}
+	if opt.PollInterval <= 0 {
+		opt.PollInterval = time.Second
+	}
+	if opt.MaxStaleness <= 0 {
+		opt.MaxStaleness = 2 * opt.PollInterval
 	}
 	if opt.RecordTTL <= 0 {
 		opt.RecordTTL = time.Hour
@@ -117,17 +113,12 @@ func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context)
 		l := zerolog.Nop()
 		logger = &l
 	}
-	return &Cache{
-		opt: opt, store: store, fetcher: fetcher, headFn: headFn, logger: logger,
-		records: map[string]*BlockRecord{},
-		subs:    map[*Subscription]struct{}{},
-		nowFn:   time.Now,
-		kick:    make(chan struct{}, 1),
-		done:    make(chan struct{}),
-	}
+	return &Cache{opt: opt, store: store, fetcher: fetcher, headFn: headFn, logger: logger,
+		records: map[string]*BlockRecord{}, pending: map[string]*BlockRecord{}, subs: map[*Subscription]struct{}{}, nowFn: time.Now,
+		windowHead: -1, kick: make(chan struct{}, 1), done: make(chan struct{}), blocked: map[string]bool{}}
 }
 
-// Kick requests a prompt follow step (e.g. on a head advance).
+// Kick requests an early verification pass.
 func (c *Cache) Kick() {
 	select {
 	case c.kick <- struct{}{}:
@@ -135,14 +126,15 @@ func (c *Cache) Kick() {
 	}
 }
 
-// Start runs the follow loop until ctx is done or Stop is called.
 func (c *Cache) Start(ctx context.Context) {
-	ctx, c.cancel = context.WithCancel(ctx)
-	go c.run(ctx)
+	c.start.Do(func() {
+		ctx, c.cancel = context.WithCancel(ctx)
+		go c.run(ctx)
+	})
 }
 
 func (c *Cache) Stop() {
-	c.stopOnce.Do(func() {
+	c.stop.Do(func() {
 		if c.cancel != nil {
 			c.cancel()
 			<-c.done
@@ -152,578 +144,474 @@ func (c *Cache) Stop() {
 			c.closeSubLocked(s, "stop")
 		}
 		c.mu.Unlock()
-		c.metrics.stop()
 	})
 }
 
 func (c *Cache) run(ctx context.Context) {
 	defer close(c.done)
-	defer c.releaseLease()
-	var watch <-chan struct{}
-	var stopWatch func()
-	defer func() {
-		if stopWatch != nil {
-			stopWatch()
-		}
-	}()
 	t := time.NewTicker(c.opt.PollInterval)
 	defer t.Stop()
-	tick := true
 	for {
-		if watch == nil {
-			if w, stop, err := c.store.WatchSnapshots(ctx, c.opt.Scope); err == nil {
-				watch, stopWatch = w, stop
-			}
-		}
-		if tick {
-			c.Tick(ctx)
-		}
-		tick = true
+		c.Tick(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		case <-c.kick:
-		case _, ok := <-watch:
-			if ok {
-				// Snapshot notices only matter to followers. The leader's own
-				// publications also arrive here and must never trigger more
-				// lead work (that would spin fetch+publish without pause).
-				if c.isLeader() {
-					tick = false
-					continue
-				}
-				c.stepMu.Lock()
-				if c.lease == nil {
-					c.consume(ctx)
-				}
-				c.stepMu.Unlock()
-				tick = false
-				continue
-			}
-			if !ok {
-				// Subscription lost: resubscribe next iteration; the ticker
-				// keeps LoadSnapshot polling meanwhile.
-				watch = nil
-				if stopWatch != nil {
-					stopWatch()
-					stopWatch = nil
-				}
-			}
 		}
 	}
 }
 
-// Tick performs one coordination step: renew/acquire the lease, then either
-// follow the chain (leader) or load the latest snapshot (follower).
+// Tick refreshes this replica's verified canonical view. It never reads a
+// shared canonical pointer: Redis supplies payloads only, and upstream headers
+// determine which hashes are canonical.
 func (c *Cache) Tick(ctx context.Context) {
 	c.stepMu.Lock()
 	defer c.stepMu.Unlock()
-	// Include coordination round trips and the entire hydration batch in one
-	// deadline, leaving a margin before the backend lease can expire.
-	ctx, cancel := context.WithTimeout(ctx, c.opt.LeaseTTL*4/5)
-	defer cancel()
-	if c.lease != nil {
-		l, err := c.store.RenewLease(ctx, c.lease, c.opt.LeaseTTL)
-		if err != nil {
-			if errors.Is(err, ErrLeaseLost) {
-				c.logger.Warn().Msg("headcache lease lost, stopping hydration")
-			}
-			c.lease = nil
-		} else {
-			c.lease = l
-		}
+	if c.opt.FetchTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.opt.FetchTimeout)
+		defer cancel()
 	}
-	if c.lease == nil {
-		l, err := c.store.AcquireLease(ctx, c.opt.Scope, c.opt.Holder, c.opt.LeaseTTL)
-		if err == nil {
-			c.lease = l
-			c.Stats.LeaderEpochs.Add(1)
-			c.metrics.acquired()
-			c.publishCt = 0
-			c.walk = nil
-			c.logger.Info().Uint64("epoch", l.Epoch).Msg("headcache acquired hydration lease")
-		}
+	if err := c.refresh(ctx); err != nil {
+		c.logger.Debug().Err(err).Msg("head cache refresh failed")
 	}
-	if c.lease != nil {
-		c.lead(ctx)
-	} else {
-		c.consume(ctx)
-	}
-	// lead may drop the lease (publish rejected), so report after the step.
-	c.metrics.leader(c.lease != nil)
+	c.expireSubscribers()
 }
 
-func (c *Cache) isLeader() bool {
-	c.stepMu.Lock()
-	defer c.stepMu.Unlock()
-	return c.lease != nil
+type header struct {
+	raw json.RawMessage
+	b   *rawBlock
+	n   int64
 }
 
-func (c *Cache) releaseLease() {
-	c.stepMu.Lock()
-	defer c.stepMu.Unlock()
-	if c.lease != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		_ = c.store.ReleaseLease(ctx, c.lease)
-		cancel()
-		c.lease = nil
+func (c *Cache) getHeader(ctx context.Context, n int64) (*header, error) {
+	raw, err := c.fetcher.HeaderByNumber(ctx, n)
+	if err != nil {
+		return nil, fmt.Errorf("fetch header %d: %w", n, err)
 	}
-	c.metrics.leader(false)
+	b, got, err := parseBlockHeader(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid header at %d: %w", n, err)
+	}
+	if got != n {
+		return nil, fmt.Errorf("invalid header at %d: returned block %d", n, got)
+	}
+	b.Hash = normHash(b.Hash)
+	b.ParentHash = normHash(b.ParentHash)
+	return &header{b: b, n: got}, nil
 }
 
-// consume adopts the latest committed snapshot (follower role).
-func (c *Cache) consume(ctx context.Context) {
-	snap, err := c.store.LoadSnapshot(ctx, c.opt.Scope)
-	if err != nil || !snap.Valid() {
-		return
+func (c *Cache) refresh(ctx context.Context) error {
+	if c.fetcher == nil || c.headFn == nil {
+		return errors.New("head cache fetcher or head function is nil")
 	}
-	c.mu.RLock()
-	cur := c.snap
-	trusted := c.viewLocked() != nil
-	c.mu.RUnlock()
-	// Age guard on the writer timestamp: a snapshot older than MaxStaleness
-	// (dead leader) or dated in the future beyond a small skew is not adopted.
-	now := c.nowFn()
-	if age := now.Sub(snap.At); age > c.opt.MaxStaleness || age < -maxFutureSkew {
-		return
-	}
-	if cur != nil && cur.Epoch == snap.Epoch && cur.Seq == snap.Seq && !snap.At.After(cur.At) {
-		return // unchanged: freshness is NOT extended
-	}
-	reset := cur != nil && (snap.Epoch < cur.Epoch || (snap.Epoch == cur.Epoch && snap.Seq <= cur.Seq))
-	if reset && (trusted || !snap.At.After(cur.At)) {
-		return // never regress a trusted view or replay older verification
-	}
-	recs := make(map[string]*BlockRecord, len(snap.Hashes))
-	c.mu.RLock()
-	for _, h := range snap.Hashes {
-		if r, ok := c.records[h]; ok && !reset {
-			recs[h] = r
-		}
-	}
-	c.mu.RUnlock()
-	for i, h := range snap.Hashes {
-		if _, ok := recs[h]; ok {
-			continue
-		}
-		r, err := c.store.GetBlock(ctx, c.opt.Scope, h)
-		if err != nil {
-			if reset || errors.Is(err, ErrStoreUnavailable) {
-				return
-			}
-			continue // missing/expired record => height is a cache miss
-		}
-		if r == nil || r.Hash != h || r.Number != snap.Base()+int64(i) {
-			if reset {
-				return
-			}
-			continue
-		}
-		recs[h] = r
-	}
-	if reset {
-		// Empty Redis restarts can reset epoch counters. Only after the old
-		// view expired and a newer, complete authoritative snapshot was read
-		// may we reset local ordering. Event continuity cannot be guaranteed.
-		c.mu.Lock()
-		for sub := range c.subs {
-			c.closeSubLocked(sub, "reset")
-		}
-		c.snap = nil
-		c.records = map[string]*BlockRecord{}
-		c.freshAt = time.Time{}
-		c.metrics.snapshot(nil, 0)
-		c.mu.Unlock()
-	}
-	fresh := now
-	if snap.At.Before(fresh) {
-		fresh = snap.At
-	}
-	c.apply(snap, recs, fresh)
-}
-
-// lead follows the chain as lease holder and publishes a snapshot.
-func (c *Cache) lead(ctx context.Context) {
 	tip := c.headFn(ctx)
-	if tip <= 0 {
-		return
+	if tip < 0 {
+		return errors.New("head cache has no live tip")
 	}
+	old, oldRecords := c.localView()
+	top, err := c.getHeader(ctx, tip)
+	if err != nil {
+		return err
+	}
+	base := tip - c.opt.Depth + 1
+	if base < 0 {
+		base = 0
+	}
+	// A matching tip proves that the previously verified header window is still
+	// canonical. This is the steady-state one-header verification path.
 	c.mu.RLock()
-	var hashes []string
-	var head int64 = -1
-	recs := make(map[string]*BlockRecord, len(c.records))
-	if c.snap != nil {
-		hashes = append(hashes, c.snap.Hashes...)
-		head = c.snap.Head
-		for k, v := range c.records {
-			recs[k] = v
-		}
-	}
+	windowHead := c.windowHead
+	window := append([]*header(nil), c.window...)
 	c.mu.RUnlock()
-	// walk carries an in-progress walk-back from an earlier tick. An empty
-	// walk means the whole previous window was orphaned: rebuild from the tip
-	// and do not re-adopt the stale published snapshot.
-	resetting := false
-	if c.walk != nil {
-		hashes = append([]string(nil), c.walk.Hashes...)
-		head = c.walk.Head
-		resetting = len(hashes) == 0
+	if old != nil && tip == old.Head && top.b.Hash == old.HashAt(tip) && !c.incomplete && completeWindow(old, oldRecords) {
+		c.refreshTime(old)
+		return nil
 	}
-
-	// A new leader (or first tick) adopts the committed snapshot as a
-	// starting point but re-verifies it against upstreams below.
-	if len(hashes) == 0 && !resetting {
-		if s, err := c.store.LoadSnapshot(ctx, c.opt.Scope); err == nil && s.Valid() {
-			hashes = append(hashes, s.Hashes...)
-			head = s.Head
-			for _, h := range hashes {
-				if r, err := c.store.GetBlock(ctx, c.opt.Scope, h); err == nil {
-					recs[h] = r
-				}
-			}
-		}
+	if old != nil && tip < old.Head && tip >= old.Base() && top.b.Hash == old.HashAt(tip) {
+		return nil
 	}
-	budget := c.opt.MaxPerTick
-	var newRecs []*BlockRecord
-
-	// 1) Re-verify the window tip (catches same-height and shortening reorgs)
-	//    and walk back to the common ancestor.
-	verified := len(hashes) == 0
-	mismatched := false
-	for len(hashes) > 0 && budget > 0 {
-		blk, err := c.fetchHeader(ctx, head)
-		budget--
+	if windowHead != tip || len(window) != int(tip-base+1) || window[len(window)-1].b.Hash != top.b.Hash {
+		window, err = c.fetchWindow(ctx, base, tip, top)
 		if err != nil {
-			return // cannot verify: do not publish (freshness lapses)
+			return err
 		}
-		b, bn, perr := parseBlockHeader(blk)
-		if perr != nil || bn != head {
-			// null / malformed / lagging upstream: a failed verification,
-			// NOT evidence of a reorg. Freshness lapses if it persists.
-			return
-		}
-		if normHash(b.Hash) == hashes[len(hashes)-1] {
-			verified = true
-			break
-		}
-		mismatched = true
-		c.invalidateLocal()
-		hashes = hashes[:len(hashes)-1]
-		head--
-		c.Stats.Reorgs.Add(1)
-		c.metrics.reorg()
-	}
-	if mismatched {
-		// The held window is known to contain orphans: stop serving it now,
-		// independent of whether the ancestor is found this tick.
-		c.invalidateLocal()
-	}
-	if !verified && len(hashes) > 0 {
-		// Budget exhausted before reaching the common ancestor. Publishing
-		// the residual would present unverified (possibly orphaned) heights
-		// as canonical; remember progress and keep walking next tick.
-		c.walk = &Snapshot{Head: head, Hashes: hashes}
-		return
-	}
-	c.walk = nil
-	if len(hashes) == 0 {
-		head = -1
-		if mismatched || resetting {
-			c.walk = &Snapshot{Head: -1}
-		}
+		c.mu.Lock()
+		c.windowHead, c.window = tip, window
+		c.blocked = map[string]bool{}
+		c.mu.Unlock()
 	}
 
-	// 2) Walk forward in parallel batches, linking sequentially.
-	start := head + 1
-	if head < 0 || tip-head > c.opt.Depth {
-		start = tip - minI64(budget, c.opt.Depth) + 1
-		if start < 0 {
-			start = 0
-		}
-		hashes = nil
+	hashes := make([]string, len(window))
+	for i, h := range window {
+		hashes[i] = h.b.Hash
 	}
-	end := minI64(tip, start+budget-1)
-	if end >= start {
-		fetched := c.hydrateRange(ctx, start, end)
-		if ctx.Err() != nil {
+	common := int64(-1)
+	if old != nil {
+		for n := maxI64(base, old.Base()); n <= minI64(tip, old.Head); n++ {
+			if old.HashAt(n) == hashes[n-base] {
+				common = n
+			}
+		}
+	}
+	gap := old != nil && common < 0
+	if old != nil && common >= 0 && common < old.Head {
+		c.Stats.Reorgs.Add(1)
+		c.invalidate()
+	}
+	if gap {
+		c.invalidate()
+	}
+
+	loaded := make([]*BlockRecord, len(window))
+	missing := make([]int, 0)
+	for i, h := range window {
+		if c.blocked[h.b.Hash] {
+			continue
+		}
+		if r := oldRecords[h.b.Hash]; r != nil {
+			loaded[i] = r
+			continue
+		}
+		if r := c.pending[h.b.Hash]; r != nil {
+			loaded[i] = r
+			continue
+		}
+		missing = append(missing, i)
+	}
+	c.parallel(ctx, len(missing), func(j int) {
+		i := missing[j]
+		if c.store == nil {
 			return
 		}
-		for n := start; n <= end; n++ {
-			r := fetched[n-start]
-			if r == nil {
-				break // gap: stop extending; never publish past a hole
-			}
-			if len(hashes) > 0 && r.ParentHash != hashes[len(hashes)-1] {
-				// Chain moved between verification and extension. The earlier
-				// verification no longer establishes this prefix as canonical.
-				c.invalidateLocal()
-				c.walk = nil // restart from committed records, not unpersisted additions
-				c.Stats.Reorgs.Add(1)
-				c.metrics.reorg()
-				return
-			}
-			hashes = append(hashes, r.Hash)
-			recs[r.Hash] = r
-			newRecs = append(newRecs, r)
-		}
-	}
-	if len(hashes) == 0 {
-		return
-	}
-	if int64(len(hashes)) > c.opt.Depth {
-		hashes = hashes[int64(len(hashes))-c.opt.Depth:]
-	}
-	newHead := start - 1 + int64(0)
-	// head of chain = base + len - 1; recompute from the last record.
-	last := recs[hashes[len(hashes)-1]]
-	if last == nil {
-		return
-	}
-	newHead = last.Number
-	if ctx.Err() != nil || !time.Now().Before(c.lease.ExpiresAt) {
-		return
-	}
-	c.mu.RLock()
-	unchanged := c.snap != nil && c.snap.Epoch == c.lease.Epoch && c.snap.Head == newHead && equalStrings(c.snap.Hashes, hashes)
-	c.mu.RUnlock()
-	if c.publishCt > 0 && unchanged && c.nowFn().Sub(c.publishAt) < c.opt.MaxStaleness/3 {
-		// Verified, nothing new: refresh local freshness only. A heartbeat
-		// republish still happens every maxStaleness/3 so followers keep
-		// serving while the chain is quiet.
-		c.mu.Lock()
-		c.freshAt = c.nowFn()
-		c.mu.Unlock()
-		return
-	}
-	// Every referenced record must exist in the store before publication
-	// (publish-after-hydrate).
-	if c.publishCt == 0 {
-		// A reacquired lease may follow total store loss. Re-persist the
-		// retained window once per lease, not on every heartbeat. Missing
-		// evicted records shorten the window rather than creating holes.
-		newRecs = nil
-		first := 0
-		for i, hash := range hashes {
-			r := recs[hash]
-			if r == nil {
-				var err error
-				r, err = c.store.GetBlock(ctx, c.opt.Scope, hash)
-				if err != nil && !errors.Is(err, ErrNotFound) {
-					return
-				}
-			}
-			if r == nil {
-				first = i + 1
-				newRecs = nil
-				continue
-			}
-			recs[hash] = r
-			newRecs = append(newRecs, r)
-		}
-		hashes = hashes[first:]
-		if len(hashes) == 0 {
+		r, e := c.store.GetBlock(ctx, c.opt.Scope, window[i].b.Hash)
+		if e != nil {
 			return
 		}
-	}
-	for _, r := range newRecs {
-		if err := c.store.PutBlock(ctx, c.opt.Scope, r, c.opt.RecordTTL); err != nil {
-			return
+		if r, e = validateRecord(r, window[i].n, window[i].b, c.opt.MaxBlockSize); e == nil {
+			loaded[i] = r
+		}
+	})
+	missing = missing[:0]
+	for i, r := range loaded {
+		if r == nil {
+			missing = append(missing, i)
 		}
 	}
-	if ctx.Err() != nil || !time.Now().Before(c.lease.ExpiresAt) {
-		return
+	// Hydrate from the tip backwards so every published subset is a contiguous
+	// suffix. Older blocks can be filled over later ticks.
+	if int64(len(missing)) > c.opt.MaxPerTick {
+		missing = missing[len(missing)-int(c.opt.MaxPerTick):]
 	}
-	c.publishCt++
-	snap := &Snapshot{Epoch: c.lease.Epoch, Seq: c.publishCt, Head: newHead, Hashes: hashes, At: c.nowFn()}
-	if err := c.store.PublishSnapshot(ctx, c.lease, snap); err != nil {
-		if errors.Is(err, ErrLeaseLost) {
-			c.logger.Warn().Msg("headcache publish rejected: lease lost")
-			c.lease = nil
+	newRecords := make([]*BlockRecord, len(missing))
+	loadErrors := make([]error, len(missing))
+	c.parallel(ctx, len(missing), func(j int) {
+		i := missing[j]
+		r, e := c.loadRecord(ctx, window[i].n, window[i].b)
+		loadErrors[j] = e
+		if e == nil {
+			newRecords[j] = r
 		}
-		return
-	}
-	c.Stats.Published.Add(1)
-	c.metrics.published()
-	c.publishAt = c.nowFn()
-	c.walk = nil
-	final := make(map[string]*BlockRecord, len(hashes))
-	for _, h := range hashes {
-		if r, ok := recs[h]; ok {
-			final[h] = r
+	})
+	for j, r := range newRecords {
+		if r != nil {
+			i := missing[j]
+			loaded[i] = r
+			c.pending[r.Hash] = r
 		}
 	}
-	c.apply(snap, final, c.nowFn())
+	for j, r := range newRecords {
+		if r == nil && errors.Is(loadErrors[j], errRecordTooLarge) {
+			i := missing[j]
+			// A block over maxBlockBytes is a permanent hole for this head.
+			// The suffix above it remains complete and useful.
+			c.blocked[window[i].b.Hash] = true
+		}
+	}
+	suffix := len(window)
+	for suffix > 0 && loaded[suffix-1] != nil {
+		suffix--
+	}
+	if suffix == len(window) {
+		return nil
+	}
+	blockedBelow := false
+	for i, h := range window {
+		if c.blocked[h.b.Hash] && i < suffix {
+			blockedBelow = true
+		}
+	}
+	incomplete := suffix > 0 && !blockedBelow
+	if suffix > 0 {
+		gap = true
+	}
+	pubHashes := append([]string(nil), hashes[suffix:]...)
+	recs := make(map[string]*BlockRecord, len(pubHashes))
+	for i := suffix; i < len(window); i++ {
+		recs[window[i].b.Hash] = loaded[i]
+	}
+	for h := range c.pending {
+		if recs[h] == nil {
+			delete(c.pending, h)
+		}
+	}
+	c.incomplete = incomplete
+	c.install(&Snapshot{Head: tip, Hashes: pubHashes, At: c.nowFn()}, recs, gap)
+	c.pending = map[string]*BlockRecord{}
+	return nil
 }
 
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
+func completeWindow(s *Snapshot, records map[string]*BlockRecord) bool {
+	for _, h := range s.Hashes {
+		if records[h] == nil {
 			return false
 		}
 	}
 	return true
 }
 
-func minI64(a, b int64) int64 {
-	if a < b {
-		return a
+func (c *Cache) fetchWindow(ctx context.Context, base, tip int64, top *header) ([]*header, error) {
+	window := make([]*header, tip-base+1)
+	window[tip-base] = top
+	failures := make([]error, len(window)-1)
+	c.parallel(ctx, len(window)-1, func(j int) {
+		n := base + int64(j)
+		h, err := c.getHeader(ctx, n)
+		if err != nil {
+			failures[j] = err
+			return
+		}
+		window[j] = h
+	})
+	for _, err := range failures {
+		if err != nil {
+			return nil, err
+		}
 	}
-	return b
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for i := 1; i < len(window); i++ {
+		if window[i].b.ParentHash != window[i-1].b.Hash {
+			return nil, fmt.Errorf("header parent mismatch at %d", window[i].n)
+		}
+	}
+	return window, nil
 }
 
-func (c *Cache) fetchHeader(ctx context.Context, n int64) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.opt.FetchTimeout)
-	defer cancel()
-	return c.fetcher.HeaderByNumber(ctx, n)
+func (c *Cache) parallel(ctx context.Context, n int, fn func(int)) {
+	workers := c.opt.Concurrency
+	if workers > n {
+		workers = n
+	}
+	if workers < 1 {
+		return
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if ctx.Err() == nil {
+					fn(i)
+				}
+			}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+}
+
+func (c *Cache) localView() (*Snapshot, map[string]*BlockRecord) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.snap == nil {
+		return nil, nil
+	}
+	s := *c.snap
+	s.Hashes = append([]string(nil), c.snap.Hashes...)
+	r := make(map[string]*BlockRecord, len(c.records))
+	for k, v := range c.records {
+		r[k] = v
+	}
+	return &s, r
+}
+
+func (c *Cache) loadRecord(ctx context.Context, n int64, expected *rawBlock) (*BlockRecord, error) {
+	block, err := c.fetchBlock(ctx, n)
+	if err != nil {
+		return nil, err
+	}
+	b, got, err := parseBlockHeader(block)
+	if b != nil {
+		b.Hash, b.ParentHash = normHash(b.Hash), normHash(b.ParentHash)
+	}
+	if err != nil {
+		c.Stats.Rejected.Add(1)
+		return nil, fmt.Errorf("parse hydrated block %d: %w", n, err)
+	}
+	if got != n || b.Hash != expected.Hash || b.ParentHash != expected.ParentHash {
+		c.Stats.Rejected.Add(1)
+		return nil, fmt.Errorf("hydrated block %d does not match verified header", n)
+	}
+	logsCtx, cancel := c.fetchContext(ctx)
+	logs, err := c.fetcher.LogsByBlockHash(logsCtx, b.Hash)
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("fetch logs for block %d: %w", n, err)
+	}
+	rec, err := buildRecord(block, logs, c.opt.MaxBlockSize)
+	if err != nil {
+		c.Stats.Rejected.Add(1)
+		return nil, fmt.Errorf("invalid hydrated block %d: %w", n, err)
+	}
+	if rec.Number != n || rec.Hash != expected.Hash || rec.ParentHash != expected.ParentHash {
+		c.Stats.Rejected.Add(1)
+		return nil, fmt.Errorf("hydrated block %d identity differs from verified header", n)
+	}
+	c.Stats.Hydrated.Add(1)
+	if c.store != nil {
+		if err := c.store.PutBlock(ctx, c.opt.Scope, rec, c.opt.RecordTTL); err != nil {
+			c.logger.Debug().Err(err).Int64("number", n).Msg("failed to share head cache record")
+		}
+	}
+	return rec, nil
+}
+
+func validateRecord(rec *BlockRecord, n int64, expected *rawBlock, maxBytes int64) (*BlockRecord, error) {
+	if rec == nil {
+		return nil, errors.New("nil record")
+	}
+	verified, err := buildRecord(rec.Block, rec.Logs, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if rec.Number != verified.Number || normHash(rec.Hash) != verified.Hash || normHash(rec.ParentHash) != verified.ParentHash {
+		return nil, errors.New("record metadata does not match its payload")
+	}
+	if verified.Number != n || verified.Hash != expected.Hash || verified.ParentHash != expected.ParentHash {
+		return nil, errors.New("record does not match locally verified header")
+	}
+	return verified, nil
+}
+
+func (c *Cache) fetchContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.opt.FetchTimeout > 0 {
+		return context.WithTimeout(ctx, c.opt.FetchTimeout)
+	}
+	return context.WithCancel(ctx)
 }
 
 func (c *Cache) fetchBlock(ctx context.Context, n int64) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.opt.FetchTimeout)
+	fctx, cancel := c.fetchContext(ctx)
 	defer cancel()
-	return c.fetcher.BlockByNumber(ctx, n)
+	block, err := c.fetcher.BlockByNumber(fctx, n)
+	if err != nil {
+		return nil, fmt.Errorf("fetch block %d: %w", n, err)
+	}
+	return block, nil
 }
 
-// hydrateRange fetches blocks [from..to] with bounded concurrency. A nil entry
-// means that block could not be fully and consistently hydrated.
-func (c *Cache) hydrateRange(ctx context.Context, from, to int64) []*BlockRecord {
-	out := make([]*BlockRecord, to-from+1)
-	sem := make(chan struct{}, c.opt.Concurrency)
-	var wg sync.WaitGroup
-	for n := from; n <= to; n++ {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(n int64) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			r, err := c.hydrate(ctx, n)
-			if err != nil {
-				c.logger.Debug().Err(err).Int64("block", n).Msg("headcache hydration failed")
-				return
-			}
-			out[n-from] = r
-		}(n)
+func (c *Cache) refreshTime(snap *Snapshot) {
+	c.mu.Lock()
+	if c.snap != nil && c.snap.Head == snap.Head && completeWindow(c.snap, c.records) {
+		c.freshAt = c.nowFn()
+		c.snap.At = c.freshAt
 	}
-	wg.Wait()
-	return out
+	c.mu.Unlock()
 }
 
-func (c *Cache) hydrate(ctx context.Context, n int64) (*BlockRecord, error) {
-	blk, err := c.fetchBlock(ctx, n)
-	if err != nil {
-		return nil, err
-	}
-	b, bn, err := parseBlockHeader(blk)
-	if err != nil {
-		return nil, err
-	}
-	if bn != n {
-		return nil, fmt.Errorf("block number mismatch")
-	}
-	lctx, cancel := context.WithTimeout(ctx, c.opt.FetchTimeout)
-	logs, err := c.fetcher.LogsByBlockHash(lctx, b.Hash)
-	cancel()
-	if err != nil {
-		return nil, err
-	}
-	r, err := buildRecord(blk, logs, c.opt.MaxBlockSize)
-	if err != nil {
-		c.Stats.Rejected.Add(1)
-		c.metrics.fetch(false)
-		return nil, err
-	}
-	c.Stats.Hydrated.Add(1)
-	c.metrics.fetch(true)
-	return r, nil
-}
-
-// apply installs a committed snapshot locally and notifies subscribers.
-func (c *Cache) invalidateLocal() {
+func (c *Cache) invalidate() {
 	c.mu.Lock()
 	c.freshAt = time.Time{}
 	c.mu.Unlock()
 }
 
-// apply installs a committed snapshot. freshAt anchors the staleness window
-// (followers pass the writer's verification time, never a later receipt time).
-func (c *Cache) apply(snap *Snapshot, recs map[string]*BlockRecord, freshAt time.Time) {
+func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) {
 	c.mu.Lock()
 	old := c.snap
-	// Enforce the byte budget before building events. A newly added record
-	// evicted here is a missing event record, so subscribers must be closed
-	// rather than notified about data this cache cannot serve.
 	var total int64
 	for _, r := range recs {
 		total += r.Size()
 	}
-	for n := snap.Base(); total > c.opt.MaxBytes && n <= snap.Head; n++ {
-		if r := recs[snap.HashAt(n)]; r != nil {
-			total -= r.Size()
-			delete(recs, r.Hash)
-		}
+	trim := 0
+	for c.opt.MaxBytes > 0 && total > c.opt.MaxBytes && trim < len(snap.Hashes) {
+		h := snap.Hashes[trim]
+		total -= recs[h].Size()
+		delete(recs, h)
+		trim++
 	}
-
+	if c.opt.MaxBytes > 0 && total > c.opt.MaxBytes {
+		c.mu.Unlock()
+		return
+	}
+	snap.Hashes = snap.Hashes[trim:]
 	var ev Event
-	gap := old != nil && snap.Base() > old.Head+1
 	if old != nil {
-		// Heights whose canonical hash changed (or vanished) were orphaned.
 		for n := old.Head; n >= old.Base(); n-- {
-			oh := old.HashAt(n)
-			if snap.HashAt(n) == oh {
+			if snap.HashAt(n) == old.HashAt(n) || n < snap.Base() {
 				continue
 			}
-			if n < snap.Base() {
-				continue // just scrolled out of the window, not orphaned
-			}
-			if r := c.records[oh]; r != nil {
+			if r := c.records[old.HashAt(n)]; r != nil {
 				ev.Removed = append(ev.Removed, r)
 			} else {
 				gap = true
 			}
 		}
+		for n := snap.Base(); n <= snap.Head; n++ {
+			if old.HashAt(n) == snap.HashAt(n) || n < old.Base() {
+				continue
+			}
+			if r := recs[snap.HashAt(n)]; r != nil {
+				ev.Added = append(ev.Added, r)
+			} else {
+				gap = true
+			}
+		}
+	} else {
+		for n := snap.Base(); n <= snap.Head; n++ {
+			if r := recs[snap.HashAt(n)]; r != nil {
+				ev.Added = append(ev.Added, r)
+			}
+		}
 	}
-	for n := snap.Base(); n <= snap.Head; n++ {
-		h := snap.HashAt(n)
-		if old != nil && old.HashAt(n) == h {
-			continue
-		}
-		if old != nil && n < old.Base() {
-			continue // backfill below the old window is not "new head"
-		}
-		if r := recs[h]; r != nil {
-			ev.Added = append(ev.Added, r)
-		} else {
-			gap = true
-		}
+	if old != nil && snap.Base() > old.Head+1 {
+		gap = true
 	}
-	c.snap = snap
-	c.records = recs
-	c.bytes = total
-	c.freshAt = freshAt
-	c.metrics.snapshot(snap, total)
+	c.snap, c.records, c.bytes, c.freshAt = snap, recs, total, snap.At
+	c.Stats.Published.Add(1)
 	if gap {
-		// A record needed for a complete event is missing (expired or
-		// evicted). Never deliver a gapped stream: terminate subscribers so
-		// clients resubscribe.
 		for s := range c.subs {
 			c.closeSubLocked(s, "gap")
 		}
-	} else if len(ev.Removed) > 0 || len(ev.Added) > 0 {
+	} else if len(ev.Removed)+len(ev.Added) > 0 {
 		for s := range c.subs {
 			select {
 			case s.C <- ev:
 			default:
-				c.closeSubLocked(s, "slow_consumer") // slow consumer: drop, never buffer unbounded
+				c.closeSubLocked(s, "slow_consumer")
 			}
 		}
 	}
 	c.mu.Unlock()
 }
 
-// Subscribe registers for canonical-change events with a bounded queue.
+func (c *Cache) expireSubscribers() {
+	c.mu.Lock()
+	if c.snap != nil && c.nowFn().Sub(c.freshAt) > c.opt.MaxStaleness {
+		for s := range c.subs {
+			c.closeSubLocked(s, "stale")
+		}
+	}
+	c.mu.Unlock()
+}
+
 func (c *Cache) Subscribe(queue int) *Subscription {
 	if queue < 1 {
 		queue = 1
@@ -731,7 +619,6 @@ func (c *Cache) Subscribe(queue int) *Subscription {
 	s := &Subscription{C: make(chan Event, queue), c: c}
 	c.mu.Lock()
 	c.subs[s] = struct{}{}
-	c.metrics.subscribers(len(c.subs))
 	c.mu.Unlock()
 	return s
 }
@@ -745,22 +632,18 @@ func (c *Cache) unsubscribe(s *Subscription) {
 func (c *Cache) closeSubLocked(s *Subscription, reason string) {
 	if _, ok := c.subs[s]; ok {
 		delete(c.subs, s)
-		c.metrics.subClosed(reason)
-		c.metrics.subscribers(len(c.subs))
 	}
 	if s.closed.CompareAndSwap(false, true) {
 		close(s.C)
 	}
 }
 
-// SubscriberCount (tests).
 func (c *Cache) SubscriberCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.subs)
 }
 
-// view returns the snapshot and records when fresh, else nil.
 func (c *Cache) viewLocked() *Snapshot {
 	if c.snap == nil || c.nowFn().Sub(c.freshAt) > c.opt.MaxStaleness {
 		return nil
@@ -768,14 +651,12 @@ func (c *Cache) viewLocked() *Snapshot {
 	return c.snap
 }
 
-// Fresh reports whether the cache currently serves.
 func (c *Cache) Fresh() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.viewLocked() != nil
 }
 
-// Head returns the served head or -1.
 func (c *Cache) Head() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -791,10 +672,8 @@ func (c *Cache) hit(ok bool) {
 	} else {
 		c.Stats.Misses.Add(1)
 	}
-	c.metrics.request(ok)
 }
 
-// BlockByNumber serves a canonical block within the window.
 func (c *Cache) BlockByNumber(n int64, full bool) (json.RawMessage, bool) {
 	c.mu.RLock()
 	s := c.viewLocked()
@@ -812,7 +691,6 @@ func (c *Cache) BlockByNumber(n int64, full bool) (json.RawMessage, bool) {
 	return out, err == nil
 }
 
-// BlockByHash serves a block only if it is canonical in the current window.
 func (c *Cache) BlockByHash(hash string, full bool) (json.RawMessage, bool) {
 	c.mu.RLock()
 	s := c.viewLocked()
@@ -832,17 +710,18 @@ func (c *Cache) BlockByHash(hash string, full bool) (json.RawMessage, bool) {
 	return out, err == nil
 }
 
-// LogsRange serves eth_getLogs for [from..to] only if every block is held.
 func (c *Cache) LogsRange(from, to int64, f *LogFilter) ([]json.RawMessage, bool) {
-	if from > to || to-from+1 > c.opt.MaxLogsRange {
+	if from < 0 || to < from || to-from >= c.opt.MaxLogsRange {
 		c.hit(false)
 		return nil, false
 	}
+	count := to - from + 1
 	c.mu.RLock()
 	s := c.viewLocked()
-	recs := make([]*BlockRecord, 0, to-from+1)
+	recs := make([]*BlockRecord, 0, count)
 	if s != nil {
-		for n := from; n <= to; n++ {
+		for i := int64(0); i < count; i++ {
+			n := from + i
 			r := c.records[s.HashAt(n)]
 			if r == nil {
 				recs = nil
@@ -852,24 +731,23 @@ func (c *Cache) LogsRange(from, to int64, f *LogFilter) ([]json.RawMessage, bool
 		}
 	}
 	c.mu.RUnlock()
-	if len(recs) != int(to-from+1) {
+	if int64(len(recs)) != count {
 		c.hit(false)
 		return nil, false
 	}
 	out := []json.RawMessage{}
 	for _, r := range recs {
-		l, err := r.FilterLogs(f, false)
+		logs, err := r.FilterLogs(f, false)
 		if err != nil {
 			c.hit(false)
 			return nil, false
 		}
-		out = append(out, l...)
+		out = append(out, logs...)
 	}
 	c.hit(true)
 	return out, true
 }
 
-// LogsByHash serves eth_getLogs({blockHash}) for a canonical window block.
 func (c *Cache) LogsByHash(hash string, f *LogFilter) ([]json.RawMessage, bool) {
 	c.mu.RLock()
 	s := c.viewLocked()
@@ -884,11 +762,23 @@ func (c *Cache) LogsByHash(hash string, f *LogFilter) ([]json.RawMessage, bool) 
 		c.hit(false)
 		return nil, false
 	}
-	l, err := r.FilterLogs(f, false)
+	logs, err := r.FilterLogs(f, false)
 	c.hit(err == nil)
-	return l, err == nil
+	return logs, err == nil
 }
 
-// maxFutureSkew bounds how far in the future a snapshot's writer timestamp
-// may be before readers treat it as invalid.
 const maxFutureSkew = 5 * time.Second
+
+func maxI64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minI64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}

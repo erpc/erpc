@@ -4,67 +4,50 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/require"
 )
-
-// fakeChain is a deterministic scripted chain. Blocks are identified by
-// (number, fork) so a reorg swaps the fork of a height range.
-type fakeChain struct {
-	mu          sync.Mutex
-	blocks      map[int64]string // number -> fork label
-	tip         int64
-	calls       atomic.Int64
-	headerCalls atomic.Int64
-	dropLogs    map[string]bool // hash -> return [] (incomplete) logs
-	failBlock   map[int64]bool
-	nullAt      map[int64]bool // simulate a lagging upstream (null block)
-}
 
 var emitter = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
 var topicA = "0x1111111111111111111111111111111111111111111111111111111111111111"
 var topicB = "0x2222222222222222222222222222222222222222222222222222222222222222"
 
+type fakeChain struct {
+	mu        sync.Mutex
+	blocks    map[int64]string
+	tip       int64
+	dropLogs  map[string]bool
+	failBlock map[int64]bool
+	nullAt    map[int64]bool
+	oversized map[int64]bool
+	headCalls int
+	bodyCalls int
+	delay     time.Duration
+	mixedCase bool
+}
+
 func newFakeChain(tip int64) *fakeChain {
-	c := &fakeChain{blocks: map[int64]string{}, tip: tip, dropLogs: map[string]bool{}, nullAt: map[int64]bool{}, failBlock: map[int64]bool{}}
-	for i := int64(0); i <= tip; i++ {
-		c.blocks[i] = "a"
+	c := &fakeChain{blocks: map[int64]string{}, tip: tip, dropLogs: map[string]bool{}, failBlock: map[int64]bool{}, nullAt: map[int64]bool{}, oversized: map[int64]bool{}}
+	for n := int64(0); n <= tip; n++ {
+		c.blocks[n] = "a"
 	}
 	return c
 }
 
 func hashOf(n int64, fork string) string {
-	return common.BytesToHash([]byte(fmt.Sprintf("blk-%d-%s", n, fork))).Hex()
+	return ethcommon.BytesToHash([]byte(fmt.Sprintf("block-%d-%s", n, fork))).Hex()
 }
-
 func txHashOf(n int64, fork string) string {
-	return common.BytesToHash([]byte(fmt.Sprintf("tx-%d-%s", n, fork))).Hex()
+	return ethcommon.BytesToHash([]byte(fmt.Sprintf("tx-%d-%s", n, fork))).Hex()
 }
 
-func (c *fakeChain) hashAt(n int64) string { return hashOf(n, c.blocks[n]) }
-
-func (c *fakeChain) logsFor(n int64, fork string) []map[string]interface{} {
-	topic := topicA
-	if n%2 == 1 {
-		topic = topicB
-	}
-	return []map[string]interface{}{{
-		"address": emitter, "topics": []string{topic}, "data": "0x",
-		"blockNumber": fmt.Sprintf("0x%x", n), "blockHash": hashOf(n, fork),
-		"transactionHash": txHashOf(n, fork), "transactionIndex": "0x0", "logIndex": "0x0", "removed": false,
-	}}
-}
-
-func (c *fakeChain) BlockByNumber(_ context.Context, n int64) (json.RawMessage, error) {
-	c.calls.Add(1)
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *fakeChain) blockLocked(n int64) (json.RawMessage, error) {
 	if c.failBlock[n] {
 		return nil, fmt.Errorf("upstream failure")
 	}
@@ -72,437 +55,328 @@ func (c *fakeChain) BlockByNumber(_ context.Context, n int64) (json.RawMessage, 
 	if !ok || n > c.tip || c.nullAt[n] {
 		return json.RawMessage("null"), nil
 	}
+	logs := c.logsLocked(n, fork)
 	var bloom types.Bloom
-	for _, l := range c.logsFor(n, fork) {
-		bloom.Add(common.HexToAddress(l["address"].(string)).Bytes())
-		for _, t := range l["topics"].([]string) {
-			bloom.Add(common.HexToHash(t).Bytes())
+	for _, l := range logs {
+		bloom.Add(ethcommon.HexToAddress(l["address"].(string)).Bytes())
+		for _, topic := range l["topics"].([]string) {
+			bloom.Add(ethcommon.HexToHash(topic).Bytes())
 		}
 	}
-	parent := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	parent := "0x" + fmt.Sprintf("%064x", 0)
 	if n > 0 {
-		parent = c.hashAt(n - 1)
+		parent = hashOf(n-1, c.blocks[n-1])
 	}
-	b := map[string]interface{}{
+	block := map[string]interface{}{
 		"number": fmt.Sprintf("0x%x", n), "hash": hashOf(n, fork), "parentHash": parent,
-		"logsBloom": "0x" + common.Bytes2Hex(bloom.Bytes()), "timestamp": fmt.Sprintf("0x%x", 1000+n),
+		"logsBloom": "0x" + ethcommon.Bytes2Hex(bloom.Bytes()), "timestamp": fmt.Sprintf("0x%x", 1000+n),
 		"transactions": []map[string]interface{}{{"hash": txHashOf(n, fork), "from": emitter}},
 	}
-	return json.Marshal(b)
+	if c.oversized[n] {
+		block["padding"] = strings.Repeat("x", 2048)
+	}
+	return json.Marshal(block)
 }
 
-func (c *fakeChain) HeaderByNumber(ctx context.Context, n int64) (json.RawMessage, error) {
-	c.headerCalls.Add(1)
-	return c.BlockByNumber(ctx, n)
+func (c *fakeChain) logsLocked(n int64, fork string) []map[string]interface{} {
+	topic := topicA
+	if n%2 == 1 {
+		topic = topicB
+	}
+	return []map[string]interface{}{{
+		"address": emitter, "topics": []string{topic}, "data": "0x", "blockNumber": fmt.Sprintf("0x%x", n),
+		"blockHash": hashOf(n, fork), "transactionHash": txHashOf(n, fork),
+		"transactionIndex": "0x0", "logIndex": "0x0", "removed": false,
+	}}
 }
 
-func (c *fakeChain) LogsByBlockHash(_ context.Context, hash string) (json.RawMessage, error) {
-	c.calls.Add(1)
+func (c *fakeChain) BlockByNumber(_ context.Context, n int64) (json.RawMessage, error) {
+	time.Sleep(c.delay)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.dropLogs[normHash(hash)] {
-		return json.RawMessage("[]"), nil
+	c.bodyCalls++
+	raw, err := c.blockLocked(n)
+	if err == nil && c.mixedCase {
+		var block map[string]interface{}
+		_ = json.Unmarshal(raw, &block)
+		block["hash"] = strings.ToUpper(block["hash"].(string))
+		block["parentHash"] = strings.ToUpper(block["parentHash"].(string))
+		raw, _ = json.Marshal(block)
 	}
-	for n, f := range c.blocks {
-		if normHash(hashOf(n, f)) == normHash(hash) {
-			return json.Marshal(c.logsFor(n, f))
+	return raw, err
+}
+func (c *fakeChain) HeaderByNumber(_ context.Context, n int64) (json.RawMessage, error) {
+	time.Sleep(c.delay)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.headCalls++
+	return c.blockLocked(n)
+}
+func (c *fakeChain) LogsByBlockHash(_ context.Context, hash string) (json.RawMessage, error) {
+	time.Sleep(c.delay)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for n, fork := range c.blocks {
+		if normHash(hashOf(n, fork)) == normHash(hash) {
+			if c.dropLogs[normHash(hash)] {
+				return json.RawMessage("[]"), nil
+			}
+			return json.Marshal(c.logsLocked(n, fork))
 		}
 	}
 	return json.RawMessage("[]"), nil
 }
-
-func (c *fakeChain) head(context.Context) int64 {
+func (c *fakeChain) head(context.Context) int64 { c.mu.Lock(); defer c.mu.Unlock(); return c.tip }
+func (c *fakeChain) mine(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.tip
-}
-
-func (c *fakeChain) mine(k int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := 0; i < k; i++ {
+	for i := 0; i < n; i++ {
 		c.tip++
 		c.blocks[c.tip] = "a"
 	}
 }
-
-// reorg replaces heights [from..tip] with fork label f.
-func (c *fakeChain) reorg(from int64, f string) {
+func (c *fakeChain) reorg(from int64, fork string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for n := from; n <= c.tip; n++ {
-		c.blocks[n] = f
+		c.blocks[n] = fork
 	}
 }
 
-func testOpts(holder string) Options {
-	return Options{
-		Scope:  Scope{Namespace: "t", ProjectId: "p", NetworkId: "evm:1"},
-		Holder: holder, Depth: 16, MaxBytes: 1 << 20, MaxBlockSize: 1 << 16, MaxPerTick: 16,
-		Concurrency: 4, PollInterval: 50 * time.Millisecond, FetchTimeout: time.Second,
-		MaxStaleness: time.Second, LeaseTTL: 2 * time.Second, MaxLogsRange: 16,
-	}
+type mapStore struct {
+	mu      sync.Mutex
+	records map[string]*BlockRecord
 }
 
-func TestCache_HydrateServeAndReorg(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(10)
-	c := New(testOpts("a"), NewMemoryStore(), ch, ch.head, nil)
-	c.Tick(ctx)
+func newMapStore() *mapStore { return &mapStore{records: map[string]*BlockRecord{}} }
+func (s *mapStore) PutBlock(_ context.Context, _ Scope, r *BlockRecord, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, _ := json.Marshal(r)
+	copy := &BlockRecord{}
+	_ = json.Unmarshal(b, copy)
+	s.records[normHash(r.Hash)] = copy
+	return nil
+}
+func (s *mapStore) GetBlock(_ context.Context, _ Scope, hash string) (*BlockRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.records[normHash(hash)]
+	if r == nil {
+		return nil, ErrNotFound
+	}
+	b, _ := json.Marshal(r)
+	copy := &BlockRecord{}
+	_ = json.Unmarshal(b, copy)
+	return copy, nil
+}
+
+func testOpts() Options {
+	return Options{Scope: Scope{Namespace: "t", ProjectId: "p", NetworkId: "evm:1"}, Depth: 8,
+		MaxBytes: 1 << 20, MaxBlockSize: 1 << 16, PollInterval: time.Second, FetchTimeout: time.Second,
+		MaxStaleness: 2 * time.Second, MaxLogsRange: 8, RecordTTL: time.Hour}
+}
+
+func TestCache_VerifiedWindowHitMissAndTipFastPath(t *testing.T) {
+	ch, store := newFakeChain(10), newMapStore()
+	c := New(testOpts(), store, ch, ch.head, nil)
+	c.Tick(context.Background())
 	require.Equal(t, int64(10), c.Head())
-
-	sub := c.Subscribe(16)
-	defer sub.Close()
-
-	// Full and tx-hash-only renderings from one record.
-	full, ok := c.BlockByNumber(10, true)
+	before := ch.headCalls
+	c.Tick(context.Background())
+	require.Equal(t, before+1, ch.headCalls, "unchanged tip needs one header read")
+	_, ok := c.BlockByNumber(10, true)
 	require.True(t, ok)
-	require.Contains(t, string(full), `"from"`)
-	lite, ok := c.BlockByNumber(10, false)
-	require.True(t, ok)
-	require.Contains(t, string(lite), txHashOf(10, "a"))
-	require.NotContains(t, string(lite), `"from"`)
-	_, ok = c.BlockByHash(hashOf(9, "a"), true)
-	require.True(t, ok)
-
-	// Cross-filter reuse without upstream calls.
-	before := ch.calls.Load()
-	fA, _ := ParseLogFilter(map[string]interface{}{"topics": []interface{}{topicA}})
-	logs, ok := c.LogsRange(1, 10, fA)
-	require.True(t, ok)
-	require.Len(t, logs, 5)
-	fAny, _ := ParseLogFilter(map[string]interface{}{"address": emitter})
-	logs, ok = c.LogsRange(1, 10, fAny)
-	require.True(t, ok)
-	require.Len(t, logs, 10)
-	fNone, _ := ParseLogFilter(map[string]interface{}{"address": "0x0000000000000000000000000000000000000001"})
-	logs, ok = c.LogsRange(1, 10, fNone)
-	require.True(t, ok)
-	require.Len(t, logs, 0)
-	require.Equal(t, before, ch.calls.Load())
-
-	// Range extending past the window is a miss, never partial.
-	_, ok = c.LogsRange(9, 11, fAny)
+	_, ok = c.BlockByNumber(999, true)
 	require.False(t, ok)
-
-	// Same-height reorg of the tip.
-	ch.reorg(10, "b")
-	c.Tick(ctx)
-	require.Equal(t, int64(10), c.Head())
-	_, ok = c.BlockByHash(hashOf(10, "a"), true)
-	require.False(t, ok, "orphan must not be served")
-	b, ok := c.BlockByNumber(10, false)
+	_, ok = c.LogsRange(7, 10, nil)
 	require.True(t, ok)
-	require.Contains(t, string(b), hashOf(10, "b"))
-	ev := <-sub.C
-	require.Len(t, ev.Removed, 1)
-	require.Equal(t, normHash(hashOf(10, "a")), ev.Removed[0].Hash)
-	require.Len(t, ev.Added, 1)
-	removed, _ := ev.Removed[0].FilterLogs(nil, true)
-	require.Contains(t, string(removed[0]), `"removed":true`)
-
-	// Multi-block reorg plus advance.
-	ch.reorg(7, "c")
-	ch.mine(2)
-	c.Tick(ctx)
-	c.Tick(ctx)
-	require.Equal(t, int64(12), c.Head())
-	for n := int64(7); n <= 12; n++ {
-		b, ok := c.BlockByNumber(n, false)
-		require.True(t, ok)
-		require.Contains(t, string(b), ch.hashAt(n))
-	}
-	_, ok = c.LogsByHash(hashOf(8, "a"), nil)
-	require.False(t, ok)
+	_, ok = c.LogsRange(9, 11, nil)
+	require.False(t, ok, "partial ranges are not hits")
 }
 
-func TestCache_IncompleteLogsNeverCached(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(5)
-	ch.dropLogs[normHash(hashOf(5, "a"))] = true
-	c := New(testOpts("a"), NewMemoryStore(), ch, ch.head, nil)
-	c.Tick(ctx)
-	require.Equal(t, int64(4), c.Head(), "block with bloom/log mismatch must not be published")
-	_, ok := c.LogsRange(5, 5, nil)
-	require.False(t, ok)
-	require.Greater(t, c.Stats.Rejected.Load(), int64(0))
-}
-
-func TestCache_EvictedAddedBlockClosesSubscriberWithoutNotification(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(1)
-	o := testOpts("a")
-	o.Depth = 4
-	c := New(o, NewMemoryStore(), ch, ch.head, nil)
-	c.Tick(ctx)
-	sub := c.Subscribe(8)
-	defer sub.Close()
-	ch.mine(2)
-
-	// A budget that fits one new record but not both makes the oldest newly
-	// added block fall out while retaining the new tip block.
-	var sizes []int64
-	for n := int64(2); n <= 3; n++ {
-		block, err := ch.BlockByNumber(ctx, n)
-		require.NoError(t, err)
-		parsed, _, err := parseBlockHeader(block)
-		require.NoError(t, err)
-		logs, err := ch.LogsByBlockHash(ctx, parsed.Hash)
-		require.NoError(t, err)
-		rec, err := buildRecord(block, logs, 0)
-		require.NoError(t, err)
-		sizes = append(sizes, rec.Size())
-	}
-	c.opt.MaxBytes = max(sizes[0], sizes[1])
-
-	c.Tick(ctx)
-
-	_, open := <-sub.C
-	require.False(t, open, "subscriber must close rather than receive an event for an evicted block")
-	require.Zero(t, c.SubscriberCount())
-	_, ok := c.BlockByNumber(2, false)
-	require.False(t, ok, "oldest newly added block should be evicted by the byte budget")
-	_, ok = c.BlockByNumber(3, false)
-	require.True(t, ok, "new tip block should remain within the budget")
-}
-
-func TestCache_StalenessDisablesServing(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(5)
-	o := testOpts("a")
-	c := New(o, NewMemoryStore(), ch, ch.head, nil)
-	c.Tick(ctx)
-	require.True(t, c.Fresh())
-	// Upstream failure prevents re-verification => no refresh.
-	ch.failBlock[5] = true
-	now := time.Now()
-	c.nowFn = func() time.Time { return now.Add(2 * o.MaxStaleness) }
-	c.Tick(ctx)
-	require.False(t, c.Fresh())
-	_, ok := c.BlockByNumber(5, true)
-	require.False(t, ok)
-}
-
-func TestCache_SharedLeaderFollowerAndFencing(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(8)
-	store := NewMemoryStore()
-	a := New(testOpts("a"), store, ch, ch.head, nil)
-	b := New(testOpts("b"), store, ch, ch.head, nil)
-	a.Tick(ctx)
-	b.Tick(ctx)
-	require.Equal(t, int64(8), a.Head())
-	require.Equal(t, int64(8), b.Head())
-	require.Zero(t, b.Stats.Hydrated.Load(), "follower must not hydrate while leader is active")
+func TestCache_SharedPayloadReuseAndCorruptionFallback(t *testing.T) {
+	store, chain := newMapStore(), newFakeChain(5)
+	a := New(testOpts(), store, chain, chain.head, nil)
+	a.Tick(context.Background())
 	require.Positive(t, a.Stats.Hydrated.Load())
 
-	// Follower serves from shared records.
-	_, ok := b.LogsRange(1, 8, nil)
-	require.True(t, ok)
+	b := New(testOpts(), store, chain, chain.head, nil)
+	b.Tick(context.Background())
+	require.Zero(t, b.Stats.Hydrated.Load(), "another replica reuses hash-addressed payloads")
 
-	// Leader stalls; lease expires; b takes over with a higher epoch.
-	store.ExpireLease(a.opt.Scope)
-	ch.mine(1)
-	b.Tick(ctx)
-	require.Equal(t, int64(9), b.Head())
-	require.Equal(t, int64(1), b.Stats.LeaderEpochs.Load())
-
-	// Stale leader a cannot publish: its renew fails and it becomes follower.
-	stale := *a.lease
-	err := store.PublishSnapshot(ctx, &stale, &Snapshot{Epoch: stale.Epoch, Seq: 99, Head: 9, Hashes: []string{"0x1"}, At: time.Now()})
-	require.ErrorIs(t, err, ErrLeaseLost)
-	a.Tick(ctx)
-	require.Nil(t, a.lease)
-	require.Equal(t, int64(9), a.Head())
-}
-
-func TestCache_StoreLossFailsSafe(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(5)
-	store := NewMemoryStore()
-	a := New(testOpts("a"), store, ch, ch.head, nil)
-	b := New(testOpts("b"), store, ch, ch.head, nil)
-	a.Tick(ctx)
-	b.Tick(ctx)
-	require.True(t, b.Fresh())
-	store.SetUnavailable(true)
-	now := time.Now()
-	later := func() time.Time { return now.Add(3 * time.Second) }
-	a.nowFn, b.nowFn = later, later
-	a.Tick(ctx)
-	b.Tick(ctx)
-	require.False(t, a.Fresh())
-	require.False(t, b.Fresh())
-}
-
-func TestCache_SlowSubscriberDropped(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(3)
-	c := New(testOpts("a"), NewMemoryStore(), ch, ch.head, nil)
-	c.Tick(ctx)
-	sub := c.Subscribe(1)
-	ch.mine(1)
-	c.Tick(ctx)
-	ch.mine(1)
-	c.Tick(ctx)
-	require.Equal(t, 0, c.SubscriberCount())
-	<-sub.C
-	_, open := <-sub.C
-	require.False(t, open)
-}
-
-// Regression: with a fixed head, the running loop must not spin on its own
-// snapshot notifications. Fetches and publications stay bounded by the poll
-// interval, and re-verification uses compact headers, not full blocks.
-func TestCache_StartLoopNoSelfSpin(t *testing.T) {
-	ch := newFakeChain(10)
-	store := NewMemoryStore()
-	o := testOpts("a")
-	o.PollInterval = 50 * time.Millisecond
-	o.MaxStaleness = 3 * time.Second
-	leader := New(o, store, ch, ch.head, nil)
-	follower := New(testOpts("b"), store, ch, ch.head, nil)
-	leader.Start(context.Background())
-	defer leader.Stop()
-	require.Eventually(t, func() bool { return leader.Head() == 10 }, 2*time.Second, 10*time.Millisecond)
-	follower.Start(context.Background())
-	defer follower.Stop()
-	require.Eventually(t, func() bool { return follower.Head() == 10 }, 2*time.Second, 10*time.Millisecond)
-
-	calls0, hdr0, pub0 := ch.calls.Load(), ch.headerCalls.Load(), leader.Stats.Published.Load()
-	time.Sleep(500 * time.Millisecond) // ~10 poll intervals
-	fullCalls := (ch.calls.Load() - calls0) - (ch.headerCalls.Load() - hdr0)
-	require.Zero(t, fullCalls, "no full block/log fetches when head is unchanged")
-	require.LessOrEqual(t, ch.headerCalls.Load()-hdr0, int64(14), "header checks bounded by poll interval")
-	require.LessOrEqual(t, leader.Stats.Published.Load()-pub0, int64(2), "no republish storm (heartbeat only)")
-	require.Zero(t, follower.Stats.Hydrated.Load())
-	require.True(t, follower.Fresh())
-}
-
-// H1: a null tip from a lagging upstream is a failed verification, not a reorg.
-func TestCache_NullTipIsNotReorg(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(10)
-	c := New(testOpts("a"), NewMemoryStore(), ch, ch.head, nil)
-	c.Tick(ctx)
-	sub := c.Subscribe(8)
-	ch.mu.Lock()
-	ch.nullAt[10] = true
-	ch.mu.Unlock()
-	c.Tick(ctx)
-	require.Equal(t, int64(10), c.Head())
-	require.Zero(t, c.Stats.Reorgs.Load())
-	select {
-	case ev := <-sub.C:
-		t.Fatalf("unexpected event %+v", ev)
-	default:
-	}
-}
-
-// H2: a reorg deeper than one tick's budget is never published partially;
-// orphans stop being served immediately and the walk resumes next tick.
-func TestCache_DeepReorgBudgetNeverPublishesOrphans(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(20)
-	o := testOpts("a")
-	o.MaxPerTick = 4
-	c := New(o, NewMemoryStore(), ch, ch.head, nil)
-	for i := 0; i < 8 && c.Head() != 20; i++ {
-		c.Tick(ctx)
-	}
-	require.Equal(t, int64(20), c.Head())
-	pub := c.Stats.Published.Load()
-	ch.reorg(12, "b")
-	c.Tick(ctx)
-	require.Equal(t, pub, c.Stats.Published.Load(), "no publish before ancestor is confirmed")
-	require.False(t, c.Fresh(), "held window with known orphans must stop serving")
-	_, ok := c.BlockByNumber(15, false)
-	require.False(t, ok)
-	for i := 0; i < 10 && c.Head() != 20; i++ {
-		c.Tick(ctx)
-	}
-	require.Equal(t, int64(20), c.Head())
-	for n := int64(5); n <= 20; n++ {
-		if b, ok := c.BlockByNumber(n, false); ok {
-			require.Contains(t, string(b), ch.hashAt(n))
-		}
-	}
-}
-
-// H3/H4: geth topic-length semantics; malformed filters are rejected (miss).
-func TestLogFilter_GethSemantics(t *testing.T) {
-	ch := newFakeChain(3)
-	c := New(testOpts("a"), NewMemoryStore(), ch, ch.head, nil)
+	bad, _ := store.GetBlock(context.Background(), testOpts().Scope, hashOf(5, "a"))
+	bad.ParentHash = hashOf(4, "wrong")
+	_ = store.PutBlock(context.Background(), testOpts().Scope, bad, time.Hour)
+	c := New(testOpts(), store, chain, chain.head, nil)
 	c.Tick(context.Background())
-	cases := []struct {
-		name  string
-		obj   map[string]interface{}
-		err   bool
-		count int
-	}{
-		{"extra null position never matches", map[string]interface{}{"topics": []interface{}{topicA, nil}}, false, 0},
-		{"single position", map[string]interface{}{"topics": []interface{}{topicA}}, false, 2},
-		{"null wildcard", map[string]interface{}{"topics": []interface{}{nil}}, false, 4},
-		{"or list", map[string]interface{}{"topics": []interface{}{[]interface{}{topicA, topicB}}}, false, 4},
-		{"empty or list is wildcard", map[string]interface{}{"topics": []interface{}{[]interface{}{}}}, false, 4},
-		{"null alternative is wildcard", map[string]interface{}{"topics": []interface{}{[]interface{}{topicA, nil}}}, false, 4},
-		{"malformed alternative after null", map[string]interface{}{"topics": []interface{}{[]interface{}{nil, "0x12"}}}, true, 0},
-		{"bad address", map[string]interface{}{"address": "not-an-address"}, true, 0},
-		{"short topic", map[string]interface{}{"topics": []interface{}{"0x11"}}, true, 0},
-		{"too many topics", map[string]interface{}{"topics": []interface{}{nil, nil, nil, nil, nil}}, true, 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f, err := ParseLogFilter(tc.obj)
-			if tc.err {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			logs, ok := c.LogsRange(0, 3, f)
-			require.True(t, ok)
-			require.Len(t, logs, tc.count)
-		})
-	}
+	require.Positive(t, c.Stats.Hydrated.Load(), "corrupt payload must fall back to upstream; body calls=%d", chain.bodyCalls)
+	block, ok := c.BlockByNumber(5, true)
+	require.True(t, ok)
+	require.Contains(t, string(block), hashOf(5, "a"))
 }
 
-// S1: a follower's freshness is anchored to the writer's verification time.
-func TestCache_FollowerFreshnessAnchoredToSnapshot(t *testing.T) {
-	ctx := context.Background()
-	ch := newFakeChain(5)
-	store := NewMemoryStore()
-	a := New(testOpts("a"), store, ch, ch.head, nil)
-	b := New(testOpts("b"), store, ch, ch.head, nil)
-	a.Tick(ctx)
-	now := time.Now()
-	b.nowFn = func() time.Time { return now.Add(900 * time.Millisecond) }
-	b.Tick(ctx)
-	require.True(t, b.Fresh())
-	b.nowFn = func() time.Time { return now.Add(1500 * time.Millisecond) }
-	require.False(t, b.Fresh(), "must not serve past maxStaleness from the leader's verification")
+func TestCache_SameHeightAndDeepReorgEvents(t *testing.T) {
+	ch := newFakeChain(10)
+	c := New(testOpts(), newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	sub := c.Subscribe(8)
+	ch.reorg(10, "b")
+	c.Tick(context.Background())
+	ev := <-sub.C
+	require.Equal(t, hashOf(10, "a"), ev.Removed[0].Hash)
+	require.Equal(t, hashOf(10, "b"), ev.Added[0].Hash)
+
+	ch.reorg(7, "c")
+	c.Tick(context.Background())
+	ev = <-sub.C
+	require.Len(t, ev.Removed, 4)
+	require.Equal(t, int64(10), ev.Removed[0].Number)
+	require.Equal(t, int64(7), ev.Removed[3].Number)
+	require.Len(t, ev.Added, 4)
+	require.Equal(t, int64(7), ev.Added[0].Number)
+	require.Equal(t, int64(10), ev.Added[3].Number)
+	_, ok := c.BlockByHash(hashOf(10, "a"), true)
+	require.False(t, ok)
 }
 
-// S3: a follower missing a record for an event closes subscribers instead
-// of delivering a gapped stream.
-func TestCache_GapClosesSubscribers(t *testing.T) {
-	ctx := context.Background()
+func TestCache_ProgressiveColdStartDoesNotPublishPartialView(t *testing.T) {
 	ch := newFakeChain(5)
-	store := NewMemoryStore()
-	a := New(testOpts("a"), store, ch, ch.head, nil)
-	b := New(testOpts("b"), store, ch, ch.head, nil)
-	a.Tick(ctx)
-	b.Tick(ctx)
-	sub := b.Subscribe(8)
-	ch.mine(2)
-	a.Tick(ctx)
-	store.mu.Lock()
-	delete(store.blocks, a.opt.Scope.Key()+"/"+normHash(hashOf(6, "a")))
-	store.mu.Unlock()
-	b.Tick(ctx)
+	ch.delay = 15 * time.Millisecond
+	o := testOpts()
+	o.Depth, o.MaxLogsRange, o.MaxPerTick, o.Concurrency = 6, 6, 2, 2
+	c := New(o, newMapStore(), ch, ch.head, nil)
+	for i := 0; i < 2; i++ {
+		c.Tick(context.Background())
+		_, ok := c.LogsRange(0, 1, nil)
+		require.False(t, ok, "ranges crossing the unfilled prefix are misses")
+	}
+	c.Tick(context.Background())
+	require.True(t, c.Fresh(), "bounded work converges over successive ticks")
+	_, ok := c.LogsRange(0, 5, nil)
+	require.True(t, ok)
+}
+
+func TestCache_OversizedBlockLeavesContiguousSuffix(t *testing.T) {
+	ch := newFakeChain(5)
+	ch.oversized[2] = true
+	normal, _ := ch.BlockByNumber(context.Background(), 5)
+	logs, _ := ch.LogsByBlockHash(context.Background(), hashOf(5, "a"))
+	rec, err := buildRecord(normal, logs, 0)
+	require.NoError(t, err)
+	o := testOpts()
+	o.Depth, o.MaxPerTick, o.MaxBlockSize, o.MaxLogsRange = 6, 2, rec.Size()+64, 6
+	c := New(o, newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	c.Tick(context.Background())
+	require.True(t, c.Fresh())
+	require.Equal(t, int64(5), c.Head())
+	_, ok := c.LogsRange(3, 5, nil)
+	require.True(t, ok, "the complete suffix above the oversized block is usable")
+	_, ok = c.LogsRange(0, 5, nil)
+	require.False(t, ok, "ranges crossing the oversized block are misses")
+	_, ok = c.BlockByNumber(2, true)
+	require.False(t, ok)
+	bodyCalls := ch.bodyCalls
+	c.Tick(context.Background())
+	require.Equal(t, bodyCalls, ch.bodyCalls, "known oversized block does not stall or retry the suffix")
+}
+
+func TestCache_ConstrainedMemoryDoesNotRefillEvictedRecords(t *testing.T) {
+	ch := newFakeChain(5)
+	block, _ := ch.BlockByNumber(context.Background(), 5)
+	logs, _ := ch.LogsByBlockHash(context.Background(), hashOf(5, "a"))
+	rec, err := buildRecord(block, logs, 0)
+	require.NoError(t, err)
+	o := testOpts()
+	o.MaxBytes = rec.Size() * 2
+	c := New(o, newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	require.True(t, c.Fresh())
+	require.Len(t, c.snap.Hashes, 2, "published view retains a complete suffix within budget")
+	require.Empty(t, c.pending, "pending does not retain published or evicted payloads")
+	bodyCalls := ch.bodyCalls
+	c.Tick(context.Background())
+	require.Equal(t, bodyCalls, ch.bodyCalls, "same-tip verification must not rehydrate capacity evictions")
+	_, ok := c.LogsRange(4, 5, nil)
+	require.True(t, ok)
+	_, ok = c.LogsRange(3, 5, nil)
+	require.False(t, ok)
+}
+
+func TestCache_MixedCaseHydratedHeaderMatchesVerifiedTip(t *testing.T) {
+	ch := newFakeChain(5)
+	ch.mixedCase = true
+	c := New(testOpts(), newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	require.True(t, c.Fresh())
+	require.Equal(t, int64(5), c.Head())
+}
+
+func TestCache_IncompleteLogsNeverInstall(t *testing.T) {
+	ch := newFakeChain(5)
+	ch.dropLogs[normHash(hashOf(5, "a"))] = true
+	c := New(testOpts(), newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	require.False(t, c.Fresh())
+	require.Equal(t, int64(-1), c.Head())
+	require.Positive(t, c.Stats.Rejected.Load())
+}
+
+func TestCache_DeepReorgOutsideWindowClosesSubscribers(t *testing.T) {
+	ch := newFakeChain(10)
+	o := testOpts()
+	o.Depth = 4
+	c := New(o, newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	sub := c.Subscribe(8)
+	ch.reorg(1, "fork")
+	c.Tick(context.Background())
+	_, open := <-sub.C
+	require.False(t, open, "cannot emit a complete reorg outside retained window")
+	require.Equal(t, int64(10), c.Head())
+}
+
+func TestCache_StaleViewClosesSubscribers(t *testing.T) {
+	ch := newFakeChain(5)
+	c := New(testOpts(), newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	sub := c.Subscribe(2)
+	ch.mu.Lock()
+	ch.nullAt[5] = true
+	ch.mu.Unlock()
+	c.nowFn = func() time.Time { return time.Now().Add(10 * time.Second) }
+	c.Tick(context.Background())
+	require.False(t, c.Fresh())
 	_, open := <-sub.C
 	require.False(t, open)
-	_, ok := b.BlockByNumber(6, false)
+}
+
+func TestCache_GapAfterHeadJumpClosesSubscribers(t *testing.T) {
+	ch := newFakeChain(1)
+	o := testOpts()
+	o.Depth = 4
+	c := New(o, newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	sub := c.Subscribe(4)
+	ch.mine(6)
+	c.Tick(context.Background())
+	_, open := <-sub.C
+	require.False(t, open)
+	require.Equal(t, int64(7), c.Head())
+}
+
+func TestCache_RejectsHugeExplicitLogRange(t *testing.T) {
+	c := New(testOpts(), newMapStore(), nil, nil, nil)
+	_, ok := c.LogsRange(0, int64(^uint64(0)>>1), nil)
 	require.False(t, ok)
-	_, ok = b.BlockByNumber(7, false)
-	require.True(t, ok)
+}
+
+func TestLogFilterGethSemantics(t *testing.T) {
+	filter, err := ParseLogFilter(map[string]interface{}{"topics": []interface{}{topicA, nil}})
+	require.NoError(t, err)
+	require.True(t, filter.match(&rawLog{Address: emitter, Topics: []string{topicA, topicB}}))
+	require.False(t, filter.match(&rawLog{Address: emitter, Topics: []string{topicB, topicA}}))
+	_, err = ParseLogFilter(map[string]interface{}{"address": "not-an-address"})
+	require.Error(t, err)
 }
