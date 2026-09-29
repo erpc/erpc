@@ -336,12 +336,11 @@ func TestCache_FleetTakeoverContinuesIncompleteColdFill(t *testing.T) {
 
 	follower := New(opts, store, chain, chain.head, nil)
 	follower.Tick(context.Background())
-	require.True(t, follower.incomplete)
 	before := chain.bodyCalls
 	leader.Stop()
 	follower.Tick(context.Background())
 	require.True(t, follower.Fresh())
-	require.True(t, follower.incomplete)
+	require.True(t, store.snap.Incomplete)
 	require.Len(t, follower.snap.Hashes, 4, "promoted follower hydrates the next older chunk")
 	require.Equal(t, before+2, chain.bodyCalls)
 }

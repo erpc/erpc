@@ -73,7 +73,6 @@ type Cache struct {
 	records    map[string]*BlockRecord
 	pending    map[string]*BlockRecord
 	blocked    map[string]bool
-	incomplete bool
 	windowHead int64
 	window     []*header
 	bytes      int64
@@ -147,7 +146,7 @@ func (c *Cache) Stop() {
 		c.releaseLeaseBounded()
 		c.mu.Lock()
 		for s := range c.subs {
-			c.closeSubLocked(s, "stop")
+			c.closeSubLocked(s)
 		}
 		c.mu.Unlock()
 	})
@@ -380,7 +379,6 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 			c.Stats.Reorgs.Add(1)
 		}
 	}
-	c.incomplete = snap.Incomplete
 	c.install(&Snapshot{Head: snap.Head, Hashes: append([]string(nil), snap.Hashes...), At: snap.At, Incomplete: snap.Incomplete}, records, gap)
 	return nil
 }
@@ -389,7 +387,7 @@ func (c *Cache) invalidateAndClose() {
 	c.invalidate()
 	c.mu.Lock()
 	for s := range c.subs {
-		c.closeSubLocked(s, "gap")
+		c.closeSubLocked(s)
 	}
 	c.mu.Unlock()
 }
@@ -440,7 +438,7 @@ func (c *Cache) refresh(ctx context.Context) error {
 	windowHead := c.windowHead
 	window := append([]*header(nil), c.window...)
 	c.mu.RUnlock()
-	if old != nil && tip == old.Head && top.b.Hash == old.HashAt(tip) && !c.incomplete && completeWindow(old, oldRecords) {
+	if old != nil && tip == old.Head && top.b.Hash == old.HashAt(tip) && !old.Incomplete && completeWindow(old, oldRecords) {
 		c.refreshTime(old)
 		return nil
 	}
@@ -571,7 +569,6 @@ func (c *Cache) refresh(ctx context.Context) error {
 			delete(c.pending, h)
 		}
 	}
-	c.incomplete = incomplete
 	c.install(&Snapshot{Head: tip, Hashes: pubHashes, At: c.nowFn(), Incomplete: incomplete}, recs, gap)
 	c.pending = map[string]*BlockRecord{}
 	return nil
@@ -765,7 +762,7 @@ func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) 
 	if c.opt.MaxBytes > 0 && total > c.opt.MaxBytes {
 		c.freshAt = time.Time{}
 		for s := range c.subs {
-			c.closeSubLocked(s, "gap")
+			c.closeSubLocked(s)
 		}
 		c.mu.Unlock()
 		return
@@ -773,7 +770,7 @@ func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) 
 	if trim == len(snap.Hashes) {
 		c.freshAt = time.Time{}
 		for s := range c.subs {
-			c.closeSubLocked(s, "gap")
+			c.closeSubLocked(s)
 		}
 		c.mu.Unlock()
 		return
@@ -815,14 +812,14 @@ func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) 
 	c.Stats.Published.Add(1)
 	if gap {
 		for s := range c.subs {
-			c.closeSubLocked(s, "gap")
+			c.closeSubLocked(s)
 		}
 	} else if len(ev.Removed)+len(ev.Added) > 0 {
 		for s := range c.subs {
 			select {
 			case s.C <- ev:
 			default:
-				c.closeSubLocked(s, "slow_consumer")
+				c.closeSubLocked(s)
 			}
 		}
 	}
@@ -833,7 +830,7 @@ func (c *Cache) expireSubscribers() {
 	c.mu.Lock()
 	if c.snap != nil && c.nowFn().Sub(c.freshAt) > c.opt.MaxStaleness {
 		for s := range c.subs {
-			c.closeSubLocked(s, "stale")
+			c.closeSubLocked(s)
 		}
 	}
 	c.mu.Unlock()
@@ -852,11 +849,11 @@ func (c *Cache) Subscribe(queue int) *Subscription {
 
 func (c *Cache) unsubscribe(s *Subscription) {
 	c.mu.Lock()
-	c.closeSubLocked(s, "unsubscribe")
+	c.closeSubLocked(s)
 	c.mu.Unlock()
 }
 
-func (c *Cache) closeSubLocked(s *Subscription, reason string) {
+func (c *Cache) closeSubLocked(s *Subscription) {
 	if _, ok := c.subs[s]; ok {
 		delete(c.subs, s)
 	}

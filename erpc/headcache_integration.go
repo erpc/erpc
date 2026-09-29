@@ -125,8 +125,8 @@ func (nr *NetworksRegistry) initHeadCache(network *Network, nwCfg *common.Networ
 	lg := network.logger.With().Str("component", "headCache").Logger()
 	f := &networkHeadFetcher{n: network}
 	live := func(ctx context.Context) int64 {
-		// Each replica discovers and verifies its own live tip, regardless of
-		// the state poller's current height.
+		// The lease holder discovers and verifies the live tip independently
+		// of the state poller's height.
 		raw, err := f.call(ctx, "eth_blockNumber", []interface{}{})
 		if err != nil {
 			return -1
