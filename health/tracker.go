@@ -62,6 +62,12 @@ type NetworkMetadata struct {
 	headMu    sync.Mutex
 	reporters []common.Upstream
 
+	// On upstream entries only. When each head was last observed, and how
+	// often the upstream's state poller re-observes it. See alignedBlocksBehind.
+	latestObs     headObservation
+	finalizedObs  headObservation
+	headRefreshMs atomic.Int64
+
 	// Dynamic block time via EMA on on-chain block timestamps.
 	// Uses block.timestamp (integer seconds) normalized by block count gap.
 	// For fast chains where consecutive blocks share the same timestamp,
@@ -1225,6 +1231,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 	net string,
 	networkValue int64,
 	getUpstreamValue func(*NetworkMetadata) int64,
+	getObservation func(*NetworkMetadata) *headObservation,
 	setLag func(*TrackedMetrics, int64),
 	getGauge func(string, string, string, string) prometheus.Gauge,
 	lg *zerolog.Logger,
@@ -1233,6 +1240,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 	t.mu.RLock()
 	relevantKeys := t.upstreamsByNetwork[net]
 	t.mu.RUnlock()
+	nowMs := time.Now().UnixMilli()
 
 	if len(relevantKeys) == 0 {
 		// Fallback only if index not ready - this should be rare
@@ -1254,7 +1262,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 					Msg("ignoring lag tracking for non-positive value")
 				return true
 			}
-			lag := blocksBehind(networkValue, upsValue)
+			lag := alignedBlocksBehind(upsMeta, getObservation(upsMeta), networkValue, upsValue, nowMs)
 			setLag(tm, lag)
 			if k.finality != common.DataFinalityStateAll {
 				setLag(t.getUpsMetrics(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}), lag)
@@ -1281,7 +1289,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 						Msg("ignoring lag tracking for non-positive value")
 					continue
 				}
-				lag := blocksBehind(networkValue, upsValue)
+				lag := alignedBlocksBehind(upsMeta, getObservation(upsMeta), networkValue, upsValue, nowMs)
 				setLag(tm, lag)
 				// Block-head/finalization lag is a per-upstream property, but the
 				// (ups,method) dedup index stores a single, arbitrary-finality key
@@ -1365,6 +1373,91 @@ func blocksBehind(networkHead, upstreamHead int64) int64 {
 		return 0
 	}
 	return networkHead - upstreamHead
+}
+
+// headObservation is when one of an upstream's heads (latest or finalized) was
+// last observed, by a poll, a response it served or a shared-counter update,
+// and what the network head was at that moment.
+type headObservation struct {
+	atMs        atomic.Int64
+	networkHead atomic.Int64
+}
+
+func (o *headObservation) record(nowMs, networkHead int64) {
+	o.atMs.Store(nowMs)
+	o.networkHead.Store(networkHead)
+}
+
+// headObservationWindow is how many state-poller intervals a head observation
+// stays current. A single failed poll leaves a gap of two intervals plus the
+// difference in poll latency; the third interval absorbs that latency. Two
+// failed polls in a row count the time since the last observation as lag.
+const headObservationWindow = 3
+
+// alignedBlocksBehind is how far an upstream's head trails the network head as
+// it stood when that upstream head was last observed.
+//
+// An upstream that serves no traffic is re-observed only by its state poller,
+// so between polls its stored head is old, not behind. Counting every block
+// the network produced since the last poll as lag turns the poll interval into
+// lag (a 30s interval over 1s blocks is 30 blocks, well past a 16-block
+// exclusion gate), and an excluded upstream gets no traffic to refresh it. A
+// node that has really stopped is caught by its next observation, which is
+// measured against the network head of that moment.
+//
+// The alignment holds only while the observation is current. An upstream with
+// no known poll interval, or one not observed for headObservationWindow
+// intervals (its polls are failing), is measured against the current network
+// head. The current network head also caps the reference, so a network head
+// re-derived lower lowers every lag at once.
+func alignedBlocksBehind(upsMeta *NetworkMetadata, obs *headObservation, networkHead, upstreamHead, nowMs int64) int64 {
+	ref := networkHead
+	if seen := obs.networkHead.Load(); seen > 0 && seen < ref {
+		if refreshMs := upsMeta.headRefreshMs.Load(); refreshMs > 0 && nowMs-obs.atMs.Load() <= headObservationWindow*refreshMs {
+			ref = seen
+		}
+	}
+	return blocksBehind(ref, upstreamHead)
+}
+
+// SetHeadRefreshInterval records how often upstream's state poller re-observes
+// its heads, so the time between polls is not charged as lag (see
+// alignedBlocksBehind). Without it, the upstream is always measured against
+// the current network head.
+func (t *Tracker) SetHeadRefreshInterval(upstream common.Upstream, interval time.Duration) {
+	t.getMetadata(metadataKey{upstream, upstream.NetworkId()}).headRefreshMs.Store(interval.Milliseconds())
+}
+
+// ConfirmLatestBlockNumber records that upstream just reported a latest block
+// no newer than the head the tracker holds for it, so that head is current as
+// of now. Such reports do not reach SetLatestBlockNumber; without this, an
+// upstream that keeps answering from a stalled head would be measured against
+// the network head of its last advance until its next poll. Lock-free for the
+// request path; the lag it implies is published on the next network head
+// change.
+func (t *Tracker) ConfirmLatestBlockNumber(upstream common.Upstream) {
+	net := upstream.NetworkId()
+	confirmHead(
+		&t.getMetadata(metadataKey{upstream, net}).latestObs,
+		t.getMetadata(metadataKey{nil, net}).evmLatestBlockNumber.Load(),
+	)
+}
+
+// ConfirmFinalizedBlockNumber is ConfirmLatestBlockNumber for the finalized head.
+func (t *Tracker) ConfirmFinalizedBlockNumber(upstream common.Upstream) {
+	net := upstream.NetworkId()
+	confirmHead(
+		&t.getMetadata(metadataKey{upstream, net}).finalizedObs,
+		t.getMetadata(metadataKey{nil, net}).evmFinalizedBlockNumber.Load(),
+	)
+}
+
+// confirmHead re-stamps an existing observation with the current time and
+// network head. An upstream that was never observed has nothing to confirm.
+func confirmHead(obs *headObservation, networkHead int64) {
+	if networkHead > 0 && obs.atMs.Load() > 0 {
+		obs.record(time.Now().UnixMilli(), networkHead)
+	}
 }
 
 // corroboratedNetworkHead derives the network head for one axis from every
@@ -1451,6 +1544,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		lg.Warn().Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
 		return
 	}
+	upsMeta.latestObs.record(time.Now().UnixMilli(), ntwBn)
 	needsGlobalUpdate := ntwBn != oldNtwVal
 	if needsGlobalUpdate {
 		ntwMeta.evmLatestBlockNumber.Store(ntwBn)
@@ -1500,6 +1594,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			net,
 			ntwBn,
 			func(meta *NetworkMetadata) int64 { return meta.evmLatestBlockNumber.Load() },
+			func(meta *NetworkMetadata) *headObservation { return &meta.latestObs },
 			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
 			t.getHeadLagGauge,
 			&lg,
@@ -1669,6 +1764,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 		lg.Warn().Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
 		return
 	}
+	upsMeta.finalizedObs.record(time.Now().UnixMilli(), ntwVal)
 	needsGlobalUpdate := ntwVal != oldNtwVal
 	if needsGlobalUpdate {
 		ntwMeta.evmFinalizedBlockNumber.Store(ntwVal)
@@ -1696,6 +1792,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 			net,
 			ntwVal,
 			func(meta *NetworkMetadata) int64 { return meta.evmFinalizedBlockNumber.Load() },
+			func(meta *NetworkMetadata) *headObservation { return &meta.finalizedObs },
 			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
 			t.getFinalizationLagGauge,
 			&lg,

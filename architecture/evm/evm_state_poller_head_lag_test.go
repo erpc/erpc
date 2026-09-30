@@ -1,0 +1,248 @@
+package evm
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/health"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/require"
+)
+
+// These tests drive real state pollers and one real tracker against a
+// simulated chain that produces one block per step, one second apart. Each
+// step stands for one second of wall-clock time; a 30s statePollerInterval is
+// therefore one poll every 30 steps. "Serving traffic" is modelled the way
+// the network does it: every response hands the upstream's head to
+// SuggestLatestBlock.
+
+const (
+	simPollEvery = 30 // steps between polls: 30s interval over 1s blocks
+	simLagGate   = 16 // the default policy's blockNumberLagAbove threshold
+)
+
+type simChain struct {
+	head atomic.Int64
+}
+
+// simNodeUpstream answers eth_getBlockByNumber with its node's head: the
+// chain head, or the block it froze at.
+type simNodeUpstream struct {
+	cfg      *common.UpstreamConfig
+	logger   zerolog.Logger
+	chain    *simChain
+	frozenAt atomic.Int64
+}
+
+func (u *simNodeUpstream) nodeHead() int64 {
+	if f := u.frozenAt.Load(); f > 0 {
+		return f
+	}
+	return u.chain.head.Load()
+}
+
+func (u *simNodeUpstream) freeze() { u.frozenAt.Store(u.chain.head.Load()) }
+
+func (u *simNodeUpstream) Id() string                     { return u.cfg.Id }
+func (u *simNodeUpstream) VendorName() string             { return "test" }
+func (u *simNodeUpstream) NetworkId() string              { return "evm:123" }
+func (u *simNodeUpstream) NetworkLabel() string           { return "evm:123" }
+func (u *simNodeUpstream) Config() *common.UpstreamConfig { return u.cfg }
+func (u *simNodeUpstream) Logger() *zerolog.Logger        { return &u.logger }
+func (u *simNodeUpstream) Vendor() common.Vendor          { return nil }
+func (u *simNodeUpstream) Tracker() common.HealthTracker  { return nil }
+func (u *simNodeUpstream) Cordon(string, string)          {}
+func (u *simNodeUpstream) Uncordon(string, string)        {}
+func (u *simNodeUpstream) IgnoreMethod(string)            {}
+func (u *simNodeUpstream) ShouldHandleMethod(string) (bool, error) {
+	return true, nil
+}
+
+func (u *simNodeUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, _, _ bool) (*common.NormalizedResponse, error) {
+	jrq, err := nq.JsonRpcRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var result interface{}
+	switch jrq.Method {
+	case "eth_syncing":
+		result = false
+	case "eth_getBlockByNumber":
+		n := u.nodeHead()
+		if bytes.Contains(nq.Body(), []byte(`"finalized"`)) {
+			n -= 10
+		}
+		result = map[string]interface{}{
+			"number":    fmt.Sprintf("0x%x", n),
+			"timestamp": fmt.Sprintf("0x%x", 1_700_000_000+n),
+		}
+	default:
+		return nil, errors.New("sim upstream: unsupported method " + jrq.Method)
+	}
+	jrr, err := common.NewJsonRpcResponse(nq.ID(), result, nil)
+	if err != nil {
+		return nil, err
+	}
+	return common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr), nil
+}
+
+var _ common.Upstream = (*simNodeUpstream)(nil)
+
+type simNetwork struct {
+	chain   *simChain
+	tracker *health.Tracker
+	ups     []*simNodeUpstream
+	pollers []*EvmStatePoller
+}
+
+// newSimNetwork bootstraps one real state poller per upstream (30s interval)
+// against a shared tracker, all starting at the same head.
+func newSimNetwork(t *testing.T, ids ...string) *simNetwork {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	logger := zerolog.Nop()
+	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+	})
+	require.NoError(t, err)
+
+	n := &simNetwork{chain: &simChain{}, tracker: health.NewTracker(&logger, "test", time.Minute)}
+	n.chain.head.Store(1_000_000)
+	for _, id := range ids {
+		up := &simNodeUpstream{
+			logger: logger,
+			chain:  n.chain,
+			cfg: &common.UpstreamConfig{
+				Id:   id,
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					ChainId:             123,
+					StatePollerInterval: common.Duration(simPollEvery * time.Second),
+					// Steps run faster than real time; a tiny debounce lets
+					// every simulated poll reach the upstream.
+					StatePollerDebounce: common.Duration(time.Millisecond),
+				},
+			},
+		}
+		p := NewEvmStatePoller("test", ctx, &logger, up, n.tracker, ssr)
+		require.NoError(t, p.Bootstrap(ctx))
+		n.ups = append(n.ups, up)
+		n.pollers = append(n.pollers, p)
+	}
+	return n
+}
+
+// serve hands upstream i's current head to its poller, as a response would.
+func (n *simNetwork) serve(i int) { n.pollers[i].SuggestLatestBlock(n.ups[i].nodeHead()) }
+
+func (n *simNetwork) poll(t *testing.T, i int) {
+	t.Helper()
+	time.Sleep(2 * time.Millisecond) // past the 1ms debounce
+	_, err := n.pollers[i].PollLatestBlockNumber(context.Background())
+	require.NoError(t, err)
+}
+
+// lag is the block-head lag a network-scope selection policy reads.
+func (n *simNetwork) lag(i int) int64 {
+	return n.tracker.GetUpstreamMethodMetrics(n.ups[i], "*", common.DataFinalityStateAll).BlockHeadLag.Load()
+}
+
+// A healthy upstream that serves no traffic is only re-observed by its poller.
+// Between polls its stored head is old, not behind: with 1s blocks and a 30s
+// interval the network moves ~29 blocks past it before each poll, which is
+// well over the default 16-block exclusion gate.
+func TestStatePoller_HealthyPolledUpstreamIsNotLaggingBetweenPolls(t *testing.T) {
+	n := newSimNetwork(t, "served-a", "served-b", "polled")
+
+	var maxLag int64
+	for step := 1; step <= 4*simPollEvery; step++ {
+		n.chain.head.Add(1)
+		n.serve(0)
+		n.serve(1)
+		if step%simPollEvery == 0 {
+			n.poll(t, 2)
+		}
+		maxLag = max(maxLag, n.lag(2))
+	}
+
+	require.Zero(t, maxLag,
+		"the polled upstream's node never trails the chain; the age of its last poll must not be reported as lag")
+}
+
+// A polled upstream whose node stops advancing must still cross the lag gate,
+// at the latest on the first poll after its real lag crosses it, and stay
+// flagged from then on.
+func TestStatePoller_FrozenPolledUpstreamCrossesLagGateWithinOnePollInterval(t *testing.T) {
+	n := newSimNetwork(t, "served-a", "served-b", "polled")
+
+	const freezeStep = 35
+	crossedAt, flaggedAt := 0, 0
+	for step := 1; step <= 4*simPollEvery; step++ {
+		n.chain.head.Add(1)
+		if step == freezeStep {
+			n.ups[2].freeze()
+		}
+		n.serve(0)
+		n.serve(1)
+		if step%simPollEvery == 0 {
+			n.poll(t, 2)
+		}
+		if step < freezeStep {
+			continue
+		}
+		if crossedAt == 0 && n.chain.head.Load()-n.ups[2].nodeHead() > simLagGate {
+			crossedAt = step
+		}
+		if flaggedAt == 0 && n.lag(2) > simLagGate {
+			flaggedAt = step
+		}
+		if flaggedAt > 0 {
+			require.Greater(t, n.lag(2), int64(simLagGate), "step %d: once flagged, a frozen upstream stays flagged", step)
+		}
+	}
+
+	require.NotZero(t, crossedAt)
+	require.NotZero(t, flaggedAt, "a frozen upstream must be reported as lagging")
+	require.LessOrEqual(t, flaggedAt-crossedAt, simPollEvery,
+		"a frozen upstream must be flagged within one poll interval of its real lag crossing the gate")
+}
+
+// An upstream that keeps serving traffic while its head stays put is observed
+// on every response, not just every poll: its lag must track the chain as
+// closely as when every block was counted against it.
+func TestStatePoller_FrozenServedUpstreamCrossesLagGateWithoutWaitingForPoll(t *testing.T) {
+	n := newSimNetwork(t, "served-frozen", "served-b", "served-c")
+
+	crossedAt, flaggedAt := 0, 0
+	for step := 1; step <= 2*simPollEvery; step++ {
+		n.chain.head.Add(1)
+		if step == 5 {
+			n.ups[0].freeze()
+		}
+		n.serve(0)
+		n.serve(1)
+		n.serve(2)
+		if crossedAt == 0 && n.chain.head.Load()-n.ups[0].nodeHead() > simLagGate {
+			crossedAt = step
+		}
+		if flaggedAt == 0 && n.lag(0) > simLagGate {
+			flaggedAt = step
+		}
+	}
+
+	require.NotZero(t, crossedAt)
+	require.NotZero(t, flaggedAt, "a frozen upstream that keeps answering must be reported as lagging")
+	require.LessOrEqual(t, flaggedAt-crossedAt, 1,
+		"responses re-observe the frozen head; lag must not wait for the next poll")
+}

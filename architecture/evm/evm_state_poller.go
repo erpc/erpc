@@ -195,6 +195,9 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
 		return nil
 	}
+	// Between polls, this upstream's heads are as fresh as its last poll or
+	// its last served response. The tracker must not count that age as lag.
+	e.tracker.SetHeadRefreshInterval(e.upstream, interval.Duration())
 
 	if cfg.Evm != nil {
 		if cfg.Evm.StatePollerDebounce != 0 {
@@ -540,6 +543,9 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	//   deduped publish-first background push.
 	currentValue := e.latestBlockShared.GetValue()
 	if blockNumber <= currentValue {
+		if blockNumber > 0 {
+			e.tracker.ConfirmLatestBlockNumber(e.upstream)
+		}
 		e.logger.Trace().
 			Int64("blockNumber", blockNumber).
 			Int64("currentValue", currentValue).
@@ -838,6 +844,9 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 		// Check if this update is still relevant (not older than current value)
 		currentValue := e.finalizedBlockShared.GetValue()
 		if blockNumber <= currentValue {
+			if blockNumber > 0 {
+				e.tracker.ConfirmFinalizedBlockNumber(e.upstream)
+			}
 			e.logger.Trace().
 				Int64("blockNumber", blockNumber).
 				Int64("currentValue", currentValue).
