@@ -444,6 +444,17 @@ func errorToConsensusHash(err error) string {
 	if err == nil {
 		return ""
 	}
+	// Permanent missing-data errors already share ErrEndpointMissingData, but
+	// vendors emit different JSON-RPC codes for the same skipped/absent
+	// condition (e.g. Solana Alchemy -32007 vs QuickNode -32009). Hashing by
+	// NormalizedCode() disputes them under returnError. Collapse permanent
+	// missing-data into one class; leave transient missing-data (tip lag, etc.)
+	// on the wire-code hash. Do not rewrite NormalizedCode() — the original
+	// error still reaches the client when this group wins.
+	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) &&
+		common.IsPermanentlyMissingData(err) {
+		return "ErrEndpointMissingData:permanent"
+	}
 	var jre *common.ErrJsonRpcExceptionInternal
 	if errors.As(err, &jre) {
 		return fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
