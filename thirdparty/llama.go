@@ -82,7 +82,9 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest,
 		details["data"] = err.Data
 	}
 
-	if strings.Contains(msg, "code: 1015") {
+	// A non-JSON response stores the original body in Data on the single-request path.
+	data, _ := err.Data.(string)
+	if strings.Contains(msg, "code: 1015") || strings.Contains(data, "code: 1015") {
 		return common.NewErrEndpointCapacityExceeded(
 			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),
 		)
