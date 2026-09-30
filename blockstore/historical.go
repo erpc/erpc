@@ -242,6 +242,10 @@ func (h *Historical) warmBlock(ctx context.Context, n int64, provided json.RawMe
 	if !ok || n < 0 || n > finalized || h.fetcher == nil {
 		return nil
 	}
+	// Already indexed and valid: skip upstream work.
+	if _, hit := h.ReadBlockByNumber(ctx, n); hit {
+		return nil
+	}
 	block := provided
 	if len(block) == 0 {
 		var err error
@@ -285,6 +289,10 @@ func (h *Historical) WarmLogs(ctx context.Context, n int64) error {
 func (h *Historical) warmLogs(ctx context.Context, n int64) error {
 	finalized, ok := h.finalHeight(ctx)
 	if !ok || n < 0 || n > finalized || h.fetcher == nil {
+		return nil
+	}
+	// Already indexed and valid: skip upstream work.
+	if _, hit := h.readLogsByNumber(ctx, n); hit {
 		return nil
 	}
 	header, err := h.fetcher.HeaderByNumber(ctx, n)

@@ -323,3 +323,37 @@ func TestHistorical_WarmsCoalesceByHeightAndPayloadKind(t *testing.T) {
 	require.Equal(t, 1, bodyCalls, "block warmers coalesce per height")
 	require.Equal(t, 3, headerCalls, "logs warmers fetch initial and rechecked headers once")
 }
+
+func TestHistorical_RewarmOfStoredEntriesSkipsUpstream(t *testing.T) {
+	ctx := context.Background()
+	chain := newFakeChain(5)
+	store := newHistoricalTestStore()
+	h := newHistoricalForTest(t, chain, store, 5, 5)
+	for n := int64(1); n <= 3; n++ {
+		require.NoError(t, h.WarmLogs(ctx, n))
+		require.NoError(t, h.WarmBlock(ctx, n))
+	}
+	chain.mu.Lock()
+	body, head := chain.bodyCalls, chain.headCalls
+	chain.mu.Unlock()
+	for n := int64(1); n <= 3; n++ {
+		require.NoError(t, h.WarmLogs(ctx, n))
+		require.NoError(t, h.WarmBlock(ctx, n))
+	}
+	chain.mu.Lock()
+	require.Equal(t, body, chain.bodyCalls, "stored blocks are not refetched")
+	require.Equal(t, head, chain.headCalls, "stored logs are not refetched")
+	chain.mu.Unlock()
+	require.Equal(t, 3, store.logsPuts)
+	require.Equal(t, 3, store.blockPuts)
+
+	// A corrupt stored entry is not a hit, so warming repairs it.
+	store.mu.Lock()
+	key := historicalHashKey(h.scope, hashOf(2, "a"))
+	store.logs[key] = historicalLogsPayload{header: store.logs[key].header, logs: json.RawMessage(`[]`)}
+	store.mu.Unlock()
+	require.NoError(t, h.WarmLogs(ctx, 2))
+	require.Equal(t, 4, store.logsPuts)
+	_, hit := h.ReadLogsRange(ctx, 1, 3)
+	require.True(t, hit)
+}
