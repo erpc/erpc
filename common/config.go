@@ -1316,8 +1316,13 @@ func (c *GrpcUpstreamConfig) Copy() *GrpcUpstreamConfig {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId             int64    `yaml:"chainId" json:"chainId"`
-	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	ChainId int64 `yaml:"chainId" json:"chainId"`
+	// StatePollerInterval is how often the background state poller refreshes
+	// latest/finalized/syncing. A scalar (e.g. 10s) is a fixed interval; the
+	// object form { blockTimeMultiplier, fallback, min, max } scales it with the
+	// network's observed block time, re-resolved on every tick. See
+	// BlockTimeAdaptiveDuration.
+	StatePollerInterval *BlockTimeAdaptiveDuration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration | BlockTimeAdaptiveDuration"`
 	// StatePollerDebounce overrides the debounce interval for the state poller.
 	// When 0 (default), the interval is dynamically inferred from the chain's
 	// observed block time, falling back to the network-level
@@ -1465,6 +1470,7 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	copied := &EvmUpstreamConfig{}
 	*copied = *c
 
+	copied.StatePollerInterval = c.StatePollerInterval.Copy()
 	// Deep copy pointer fields to avoid shared state
 	if c.BlockAvailability != nil {
 		copied.BlockAvailability = c.BlockAvailability.Copy()

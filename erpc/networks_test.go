@@ -8552,8 +8552,8 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(50 * time.Millisecond), // Fast polling for test
-				StatePollerDebounce: common.Duration(1 * time.Millisecond),  // Small debounce for test
+				StatePollerInterval: common.FixedDuration(50 * time.Millisecond), // Fast polling for test
+				StatePollerDebounce: common.Duration(1 * time.Millisecond),       // Small debounce for test
 			},
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.FALSE,
@@ -10556,7 +10556,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			VendorName: "vendorA",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(pollerInterval),
+				StatePollerInterval: common.FixedDuration(pollerInterval),
 				StatePollerDebounce: common.Duration(pollerDebounce),
 			},
 			Failsafe: []*common.FailsafeConfig{fsCfg},
@@ -10747,8 +10747,8 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			VendorName: "vendorA",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we'll drive it manually
-				StatePollerDebounce: common.Duration(5000 * time.Millisecond), // TryUpdateIfStale → 1 s default
+				StatePollerInterval: common.FixedDuration(5000 * time.Millisecond), // we'll drive it manually
+				StatePollerDebounce: common.Duration(5000 * time.Millisecond),      // TryUpdateIfStale → 1 s default
 			},
 		}
 
@@ -10932,7 +10932,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			VendorName: "vendorA",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(50 * time.Millisecond),
+				StatePollerInterval: common.FixedDuration(50 * time.Millisecond),
 				StatePollerDebounce: common.Duration(0), // no debounce needed
 			},
 		}

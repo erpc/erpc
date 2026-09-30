@@ -1072,8 +1072,14 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 		}
 	}
 
-	if e.StatePollerInterval == 0 {
+	if e.StatePollerInterval.IsZero() {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")
+	}
+	if err := e.StatePollerInterval.validate("upstream.*.evm.statePollerInterval"); err != nil {
+		return err
+	}
+	if e.StatePollerInterval.BlockTimeMultiplier == 0 && e.StatePollerInterval.Fallback <= 0 {
+		return fmt.Errorf("upstream.*.evm.statePollerInterval requires blockTimeMultiplier > 0 or fallback > 0")
 	}
 	// NodeType deprecated; keep syntax validation for back-compat only
 	if e.NodeType != "" {

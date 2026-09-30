@@ -56,7 +56,7 @@ func newBootstrapTestRegistry(t *testing.T) (*UpstreamsRegistry, *common.Upstrea
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 			// Long interval so ticker goroutines exist but never fire in-test.
-			StatePollerInterval: common.Duration(time.Hour),
+			StatePollerInterval: common.FixedDuration(time.Hour),
 		},
 	}
 

@@ -52,6 +52,12 @@ var _ common.Upstream = (*fakePollerUpstream)(nil)
 
 func newTestStatePoller(t *testing.T, interval, debounce time.Duration) (*EvmStatePoller, *fakePollerUpstream, context.Context) {
 	t.Helper()
+	poller, up, _, ctx := newTestStatePollerWithInterval(t, common.FixedDuration(interval), debounce)
+	return poller, up, ctx
+}
+
+func newTestStatePollerWithInterval(t *testing.T, interval *common.BlockTimeAdaptiveDuration, debounce time.Duration) (*EvmStatePoller, *fakePollerUpstream, *health.Tracker, context.Context) {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -64,7 +70,7 @@ func newTestStatePoller(t *testing.T, interval, debounce time.Duration) (*EvmSta
 			Type: common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(interval),
+				StatePollerInterval: interval,
 				StatePollerDebounce: common.Duration(debounce),
 			},
 		},
@@ -83,7 +89,19 @@ func newTestStatePoller(t *testing.T, interval, debounce time.Duration) (*EvmSta
 
 	tracker := health.NewTracker(&logger, "test", 2*time.Second)
 	poller := NewEvmStatePoller("test", ctx, &logger, up, tracker, ssr)
-	return poller, up, ctx
+	return poller, up, tracker, ctx
+}
+
+// seedBlockTime feeds the tracker enough head observations for its block-time
+// estimate to settle at blockTime (whole seconds only: timestamps are seconds).
+func seedBlockTime(t *testing.T, tracker *health.Tracker, up common.Upstream, blockTime time.Duration) {
+	t.Helper()
+	secs := int64(blockTime / time.Second)
+	require.Positive(t, secs)
+	for i := int64(1); i <= 5; i++ {
+		tracker.SetLatestBlockNumber(up, 1000+i, 1_700_000_000+i*secs)
+	}
+	require.Equal(t, blockTime, tracker.GetNetworkBlockTime(up.NetworkId()))
 }
 
 // countGoroutinesStable samples runtime.NumGoroutine after letting transient
@@ -172,4 +190,77 @@ func TestEvmStatePoller_BootstrapWithZeroIntervalStartsNothing(t *testing.T) {
 	assert.LessOrEqual(t, after-before, 0, "interval=0 must not start any poll loop")
 	assert.Equal(t, int64(0), up.forwards.Load(), "interval=0 must not poll the upstream")
 	assert.False(t, poller.Enabled)
+}
+
+func TestEvmStatePoller_ResolvePollInterval(t *testing.T) {
+	scaled := &common.BlockTimeAdaptiveDuration{
+		BlockTimeMultiplier: 2,
+		Min:                 common.Duration(5 * time.Second),
+		Max:                 common.Duration(20 * time.Second),
+		Fallback:            common.Duration(10 * time.Second),
+	}
+
+	t.Run("FixedIgnoresBlockTime", func(t *testing.T) {
+		poller, up, tracker, _ := newTestStatePollerWithInterval(t, common.FixedDuration(7*time.Second), 0)
+		seedBlockTime(t, tracker, up, 12*time.Second)
+		assert.Equal(t, 7*time.Second, poller.resolvePollInterval(up.cfg.Evm.StatePollerInterval))
+	})
+
+	t.Run("FallbackUntilBlockTimeKnown", func(t *testing.T) {
+		poller, _, _, _ := newTestStatePollerWithInterval(t, scaled, 0)
+		assert.Equal(t, 10*time.Second, poller.resolvePollInterval(scaled))
+	})
+
+	t.Run("DefaultWithoutFallback", func(t *testing.T) {
+		noFallback := &common.BlockTimeAdaptiveDuration{BlockTimeMultiplier: 2}
+		poller, _, _, _ := newTestStatePollerWithInterval(t, noFallback, 0)
+		assert.Equal(t, common.DefaultEvmStatePollerInterval, poller.resolvePollInterval(noFallback))
+	})
+
+	for _, tc := range []struct {
+		blockTime time.Duration
+		want      time.Duration
+	}{
+		{1 * time.Second, 5 * time.Second},   // 2s raised to min
+		{4 * time.Second, 8 * time.Second},   // within bounds
+		{12 * time.Second, 20 * time.Second}, // 24s capped at max
+	} {
+		t.Run("ScalesWithBlockTime/"+tc.blockTime.String(), func(t *testing.T) {
+			poller, up, tracker, _ := newTestStatePollerWithInterval(t, scaled, 0)
+			seedBlockTime(t, tracker, up, tc.blockTime)
+			assert.Equal(t, tc.want, poller.resolvePollInterval(scaled))
+		})
+	}
+}
+
+// TestEvmStatePoller_IntervalFollowsBlockTime drives the real poll loop: with a
+// block-time-scaled interval the loop polls at the scaled cadence once block
+// time is known, and at the (here very long) fallback while it is not.
+func TestEvmStatePoller_IntervalFollowsBlockTime(t *testing.T) {
+	// 1s block time * 0.05 = 50ms interval; fallback 1h never fires in-test.
+	interval := &common.BlockTimeAdaptiveDuration{
+		BlockTimeMultiplier: 0.05,
+		Fallback:            common.Duration(time.Hour),
+	}
+
+	t.Run("KnownBlockTime", func(t *testing.T) {
+		poller, up, tracker, ctx := newTestStatePollerWithInterval(t, interval, time.Millisecond)
+		seedBlockTime(t, tracker, up, time.Second)
+		_ = poller.Bootstrap(ctx)
+
+		base := up.forwards.Load()
+		time.Sleep(600 * time.Millisecond)
+		assert.GreaterOrEqual(t, up.forwards.Load()-base, int64(5),
+			"expected the loop to poll every ~50ms once block time is known")
+	})
+
+	t.Run("UnknownBlockTimeUsesFallback", func(t *testing.T) {
+		poller, up, _, ctx := newTestStatePollerWithInterval(t, interval, time.Millisecond)
+		_ = poller.Bootstrap(ctx)
+
+		base := up.forwards.Load()
+		time.Sleep(300 * time.Millisecond)
+		assert.Equal(t, int64(0), up.forwards.Load()-base,
+			"without a block-time estimate the 1h fallback must apply")
+	})
 }

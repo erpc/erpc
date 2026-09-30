@@ -16,6 +16,7 @@ import (
 //	ttl: 2s                                        # fixed
 //	ttl: { blockTimeMultiplier: 1 }                # blockTime * 1 (caller default until known)
 //	ttl: { blockTimeMultiplier: 1, fallback: 2s }  # with explicit cold-start fallback
+//	ttl: { blockTimeMultiplier: 2, min: 1s, max: 10s }  # derived value clamped to [min, max]
 //
 // See Resolve for how the value is computed.
 type BlockTimeAdaptiveDuration struct {
@@ -25,6 +26,16 @@ type BlockTimeAdaptiveDuration struct {
 	// BlockTimeMultiplier, when > 0, derives the value from the network's
 	// estimated block time (blockTime * multiplier).
 	BlockTimeMultiplier float64 `yaml:"blockTimeMultiplier,omitempty" json:"blockTimeMultiplier,omitempty"`
+	// Min, when > 0, is the lower bound for the block-time-derived value.
+	Min Duration `yaml:"min,omitempty" json:"min,omitempty" tstype:"Duration"`
+	// Max, when > 0, is the upper bound for the block-time-derived value.
+	Max Duration `yaml:"max,omitempty" json:"max,omitempty" tstype:"Duration"`
+}
+
+// IsZero reports whether no field is set (nil, or a scalar zero), i.e. the
+// caller's default should apply.
+func (d *BlockTimeAdaptiveDuration) IsZero() bool {
+	return d == nil || *d == BlockTimeAdaptiveDuration{}
 }
 
 // FixedDuration returns the fixed/fallback component, or 0 when unset. Used by
@@ -45,7 +56,14 @@ func (d *BlockTimeAdaptiveDuration) Resolve(blockTime, coldStartDefault time.Dur
 	}
 	if d.BlockTimeMultiplier > 0 {
 		if blockTime > 0 {
-			return time.Duration(float64(blockTime) * d.BlockTimeMultiplier)
+			v := time.Duration(float64(blockTime) * d.BlockTimeMultiplier)
+			if mn := d.Min.Duration(); mn > 0 && v < mn {
+				v = mn
+			}
+			if mx := d.Max.Duration(); mx > 0 && v > mx {
+				v = mx
+			}
+			return v
 		}
 		if f := d.Fallback.Duration(); f > 0 {
 			return f
@@ -70,6 +88,15 @@ func (d *BlockTimeAdaptiveDuration) validate(field string) error {
 	if d.BlockTimeMultiplier < 0 {
 		return fmt.Errorf("%s.blockTimeMultiplier must be >= 0", field)
 	}
+	if d.Fallback < 0 || d.Min < 0 || d.Max < 0 {
+		return fmt.Errorf("%s: fallback, min and max must be >= 0", field)
+	}
+	if d.Min > 0 && d.Max > 0 && d.Min > d.Max {
+		return fmt.Errorf("%s.min (%s) must be <= max (%s)", field, d.Min, d.Max)
+	}
+	if (d.Min > 0 || d.Max > 0) && d.BlockTimeMultiplier == 0 {
+		return fmt.Errorf("%s: min/max only apply with blockTimeMultiplier > 0", field)
+	}
 	return nil
 }
 
@@ -79,9 +106,9 @@ func (d *BlockTimeAdaptiveDuration) validate(field string) error {
 func rejectUnknownBlockTimeKeys[V any](obj map[string]V) error {
 	for k := range obj {
 		switch k {
-		case "fallback", "blockTimeMultiplier":
+		case "fallback", "blockTimeMultiplier", "min", "max":
 		default:
-			return fmt.Errorf("unknown field %q for block-time duration (allowed: fallback, blockTimeMultiplier)", k)
+			return fmt.Errorf("unknown field %q for block-time duration (allowed: fallback, blockTimeMultiplier, min, max)", k)
 		}
 	}
 	return nil
@@ -134,12 +161,16 @@ func (d *BlockTimeAdaptiveDuration) UnmarshalJSON(raw []byte) error {
 				return err
 			}
 		}
-		if rawFallback, ok := obj["fallback"]; ok {
-			f, err := parseJSONDuration(rawFallback)
+		for key, dst := range map[string]*Duration{"fallback": &d.Fallback, "min": &d.Min, "max": &d.Max} {
+			rawDur, ok := obj[key]
+			if !ok {
+				continue
+			}
+			v, err := parseJSONDuration(rawDur)
 			if err != nil {
 				return err
 			}
-			d.Fallback = f
+			*dst = v
 		}
 		return nil
 	}
@@ -150,6 +181,28 @@ func (d *BlockTimeAdaptiveDuration) UnmarshalJSON(raw []byte) error {
 	d.Fallback = dur
 	d.BlockTimeMultiplier = 0
 	return nil
+}
+
+// isFixed reports whether only the fixed component is set, so marshaling can
+// emit the scalar shorthand and round-trip the way the value was written.
+func (d BlockTimeAdaptiveDuration) isFixed() bool {
+	return d.BlockTimeMultiplier == 0 && d.Min == 0 && d.Max == 0
+}
+
+func (d BlockTimeAdaptiveDuration) MarshalYAML() (interface{}, error) {
+	if d.isFixed() {
+		return d.Fallback.MarshalYAML()
+	}
+	type alias BlockTimeAdaptiveDuration
+	return alias(d), nil
+}
+
+func (d BlockTimeAdaptiveDuration) MarshalJSON() ([]byte, error) {
+	if d.isFixed() {
+		return d.Fallback.MarshalJSON()
+	}
+	type alias BlockTimeAdaptiveDuration
+	return SonicCfg.Marshal(alias(d))
 }
 
 // FixedDuration builds a BlockTimeAdaptiveDuration with only a fixed value.

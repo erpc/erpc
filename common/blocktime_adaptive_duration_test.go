@@ -154,3 +154,134 @@ func TestBlockTimeAdaptiveDuration_Resolve(t *testing.T) {
 		assert.Zero(t, (&BlockTimeAdaptiveDuration{}).Resolve(12*time.Second, coldDefault))
 	})
 }
+
+func TestBlockTimeAdaptiveDuration_MinMax(t *testing.T) {
+	t.Run("ParseYAML", func(t *testing.T) {
+		var d BlockTimeAdaptiveDuration
+		require.NoError(t, yaml.Unmarshal([]byte("blockTimeMultiplier: 2\nmin: 5s\nmax: 20s\nfallback: 10s\n"), &d))
+		assert.Equal(t, BlockTimeAdaptiveDuration{
+			BlockTimeMultiplier: 2,
+			Min:                 Duration(5 * time.Second),
+			Max:                 Duration(20 * time.Second),
+			Fallback:            Duration(10 * time.Second),
+		}, d)
+	})
+
+	t.Run("ParseJSON", func(t *testing.T) {
+		var d BlockTimeAdaptiveDuration
+		require.NoError(t, SonicCfg.Unmarshal([]byte(`{"blockTimeMultiplier":2,"min":"5s","max":20000,"fallback":"10s"}`), &d))
+		assert.Equal(t, 5*time.Second, d.Min.Duration())
+		assert.Equal(t, 20*time.Second, d.Max.Duration())
+		assert.Equal(t, 10*time.Second, d.Fallback.Duration())
+	})
+
+	t.Run("ResolveClamps", func(t *testing.T) {
+		d := &BlockTimeAdaptiveDuration{
+			BlockTimeMultiplier: 2,
+			Min:                 Duration(5 * time.Second),
+			Max:                 Duration(20 * time.Second),
+			Fallback:            Duration(10 * time.Second),
+		}
+		assert.Equal(t, 5*time.Second, d.Resolve(250*time.Millisecond, 0), "below min is raised to min")
+		assert.Equal(t, 8*time.Second, d.Resolve(4*time.Second, 0), "within bounds is unchanged")
+		assert.Equal(t, 20*time.Second, d.Resolve(12*time.Second, 0), "above max is capped at max")
+		assert.Equal(t, 10*time.Second, d.Resolve(0, 0), "fallback until block time is known")
+	})
+
+	t.Run("OneSidedBound", func(t *testing.T) {
+		d := &BlockTimeAdaptiveDuration{BlockTimeMultiplier: 2, Max: Duration(20 * time.Second)}
+		assert.Equal(t, 500*time.Millisecond, d.Resolve(250*time.Millisecond, 0))
+		assert.Equal(t, 20*time.Second, d.Resolve(time.Minute, 0))
+	})
+
+	t.Run("MarshalRoundTrip", func(t *testing.T) {
+		fixed, err := SonicCfg.Marshal(FixedDuration(10 * time.Second))
+		require.NoError(t, err)
+		assert.JSONEq(t, `"10s"`, string(fixed))
+
+		obj := &BlockTimeAdaptiveDuration{BlockTimeMultiplier: 2, Min: Duration(5 * time.Second), Max: Duration(20 * time.Second)}
+		raw, err := SonicCfg.Marshal(obj)
+		require.NoError(t, err)
+		var back BlockTimeAdaptiveDuration
+		require.NoError(t, SonicCfg.Unmarshal(raw, &back))
+		assert.Equal(t, *obj, back)
+
+		y, err := yaml.Marshal(obj)
+		require.NoError(t, err)
+		var backY BlockTimeAdaptiveDuration
+		require.NoError(t, yaml.Unmarshal(y, &backY))
+		assert.Equal(t, *obj, backY)
+	})
+}
+
+func TestEvmUpstreamConfig_StatePollerInterval(t *testing.T) {
+	t.Run("ScalarParsesAsFixed", func(t *testing.T) {
+		var e EvmUpstreamConfig
+		require.NoError(t, yaml.Unmarshal([]byte("statePollerInterval: 10s\n"), &e))
+		require.NoError(t, e.SetDefaults(nil))
+		assert.Equal(t, FixedDuration(10*time.Second), e.StatePollerInterval)
+	})
+
+	t.Run("ObjectParses", func(t *testing.T) {
+		var e EvmUpstreamConfig
+		require.NoError(t, yaml.Unmarshal([]byte("statePollerInterval:\n  blockTimeMultiplier: 2\n  min: 5s\n  max: 20s\n  fallback: 10s\n"), &e))
+		require.NoError(t, e.SetDefaults(nil))
+		assert.Equal(t, 2.0, e.StatePollerInterval.BlockTimeMultiplier)
+		assert.Equal(t, 20*time.Second, e.StatePollerInterval.Max.Duration())
+	})
+
+	t.Run("UnsetOrZeroGetsDefault", func(t *testing.T) {
+		for _, src := range []string{"chainId: 1\n", "statePollerInterval: 0\n"} {
+			var e EvmUpstreamConfig
+			require.NoError(t, yaml.Unmarshal([]byte(src), &e))
+			require.NoError(t, e.SetDefaults(nil))
+			assert.Equal(t, FixedDuration(DefaultEvmStatePollerInterval), e.StatePollerInterval, src)
+		}
+	})
+
+	t.Run("InheritsFromUpstreamDefaultsWithoutSharing", func(t *testing.T) {
+		defaults := &UpstreamConfig{Evm: &EvmUpstreamConfig{
+			StatePollerInterval: &BlockTimeAdaptiveDuration{BlockTimeMultiplier: 2, Max: Duration(20 * time.Second)},
+		}}
+		withEvm := &UpstreamConfig{Evm: &EvmUpstreamConfig{ChainId: 1}}
+		withoutEvm := &UpstreamConfig{}
+		for _, u := range []*UpstreamConfig{withEvm, withoutEvm} {
+			require.NoError(t, u.ApplyDefaults(defaults))
+			require.NotNil(t, u.Evm)
+			assert.Equal(t, *defaults.Evm.StatePollerInterval, *u.Evm.StatePollerInterval)
+			assert.NotSame(t, defaults.Evm.StatePollerInterval, u.Evm.StatePollerInterval)
+		}
+
+		explicit := &UpstreamConfig{Evm: &EvmUpstreamConfig{StatePollerInterval: FixedDuration(5 * time.Second)}}
+		require.NoError(t, explicit.ApplyDefaults(defaults))
+		assert.Equal(t, FixedDuration(5*time.Second), explicit.Evm.StatePollerInterval)
+	})
+
+	t.Run("Validation", func(t *testing.T) {
+		up := &UpstreamConfig{Endpoint: "http://localhost:8545"}
+		cases := []struct {
+			name    string
+			v       *BlockTimeAdaptiveDuration
+			wantErr string
+		}{
+			{"Scalar", FixedDuration(10 * time.Second), ""},
+			{"Object", &BlockTimeAdaptiveDuration{BlockTimeMultiplier: 2, Min: Duration(5 * time.Second), Max: Duration(20 * time.Second), Fallback: Duration(10 * time.Second)}, ""},
+			{"MultiplierOnly", &BlockTimeAdaptiveDuration{BlockTimeMultiplier: 2}, ""},
+			{"Missing", nil, "is required"},
+			{"NegativeMultiplier", &BlockTimeAdaptiveDuration{BlockTimeMultiplier: -1, Fallback: Duration(time.Second)}, "blockTimeMultiplier must be >= 0"},
+			{"MinAboveMax", &BlockTimeAdaptiveDuration{BlockTimeMultiplier: 2, Min: Duration(30 * time.Second), Max: Duration(20 * time.Second)}, "must be <= max"},
+			{"BoundsWithoutMultiplier", &BlockTimeAdaptiveDuration{Fallback: Duration(10 * time.Second), Max: Duration(20 * time.Second)}, "only apply with blockTimeMultiplier"},
+			{"NegativeScalar", FixedDuration(-time.Second), "must be >= 0"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				err := (&EvmUpstreamConfig{StatePollerInterval: tc.v}).Validate(up)
+				if tc.wantErr == "" {
+					require.NoError(t, err)
+				} else {
+					require.ErrorContains(t, err, tc.wantErr)
+				}
+			})
+		}
+	})
+}

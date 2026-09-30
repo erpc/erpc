@@ -4837,7 +4837,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 							},
 						},
 						Evm: &common.EvmUpstreamConfig{
-							StatePollerInterval: common.Duration(100 * time.Millisecond),
+							StatePollerInterval: common.FixedDuration(100 * time.Millisecond),
 						},
 					},
 					Providers: []*common.ProviderConfig{
@@ -4945,7 +4945,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 							},
 						},
 						Evm: &common.EvmUpstreamConfig{
-							StatePollerInterval: common.Duration(100 * time.Millisecond),
+							StatePollerInterval: common.FixedDuration(100 * time.Millisecond),
 						},
 					},
 					Providers: []*common.ProviderConfig{
@@ -5564,7 +5564,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -5573,7 +5573,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -5582,7 +5582,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -5663,7 +5663,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -5735,7 +5735,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -5744,7 +5744,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -5753,7 +5753,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -5841,7 +5841,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -5850,7 +5850,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -5859,7 +5859,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -5957,7 +5957,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -5966,7 +5966,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -6045,7 +6045,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -6054,7 +6054,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -6149,7 +6149,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(1000 * time.Second),
+								StatePollerInterval: common.FixedDuration(1000 * time.Second),
 							},
 						},
 						{
@@ -6158,7 +6158,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(1000 * time.Second),
+								StatePollerInterval: common.FixedDuration(1000 * time.Second),
 							},
 						},
 					},
@@ -6341,7 +6341,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(1000 * time.Second),
+								StatePollerInterval: common.FixedDuration(1000 * time.Second),
 							},
 						},
 						{
@@ -6350,7 +6350,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(1000 * time.Second),
+								StatePollerInterval: common.FixedDuration(1000 * time.Second),
 							},
 						},
 					},
@@ -6520,7 +6520,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -6596,7 +6596,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -6669,7 +6669,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -6758,7 +6758,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -6888,7 +6888,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(30 * time.Second),
+								StatePollerInterval: common.FixedDuration(30 * time.Second),
 								StatePollerDebounce: common.Duration(10 * time.Second),
 							},
 						},
@@ -6898,7 +6898,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(30 * time.Second),
+								StatePollerInterval: common.FixedDuration(30 * time.Second),
 								StatePollerDebounce: common.Duration(10 * time.Second),
 							},
 						},
@@ -6908,7 +6908,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -6979,7 +6979,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(30 * time.Second),
+								StatePollerInterval: common.FixedDuration(30 * time.Second),
 								StatePollerDebounce: common.Duration(10 * time.Second),
 							},
 						},
@@ -6989,7 +6989,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(30 * time.Second),
+								StatePollerInterval: common.FixedDuration(30 * time.Second),
 								StatePollerDebounce: common.Duration(10 * time.Second),
 							},
 						},
@@ -6999,7 +6999,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -7077,7 +7077,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -7086,7 +7086,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -7289,7 +7289,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -7421,7 +7421,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -7430,7 +7430,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -7439,7 +7439,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -7568,7 +7568,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},
@@ -7700,7 +7700,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -7709,7 +7709,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 						{
@@ -7718,7 +7718,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								StatePollerInterval: common.FixedDuration(10 * time.Second),
 							},
 						},
 					},

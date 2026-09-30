@@ -155,7 +155,7 @@ func bniConfig(withCache bool, integrity *common.EvmIntegrityConfig) *common.Con
 						Type:     common.UpstreamTypeEvm,
 						Evm: &common.EvmUpstreamConfig{
 							ChainId:             123,
-							StatePollerInterval: common.Duration(10 * time.Second),
+							StatePollerInterval: common.FixedDuration(10 * time.Second),
 						},
 					},
 					{
@@ -164,7 +164,7 @@ func bniConfig(withCache bool, integrity *common.EvmIntegrityConfig) *common.Con
 						Type:     common.UpstreamTypeEvm,
 						Evm: &common.EvmUpstreamConfig{
 							ChainId:             123,
-							StatePollerInterval: common.Duration(10 * time.Second),
+							StatePollerInterval: common.FixedDuration(10 * time.Second),
 						},
 					},
 					{
@@ -173,7 +173,7 @@ func bniConfig(withCache bool, integrity *common.EvmIntegrityConfig) *common.Con
 						Type:     common.UpstreamTypeEvm,
 						Evm: &common.EvmUpstreamConfig{
 							ChainId:             123,
-							StatePollerInterval: common.Duration(10 * time.Second),
+							StatePollerInterval: common.FixedDuration(10 * time.Second),
 						},
 					},
 				},

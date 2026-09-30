@@ -109,7 +109,7 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(1 * time.Minute),
+				StatePollerInterval: common.FixedDuration(1 * time.Minute),
 			},
 		}, clr, rlr, vr, &logger, mt, ssr)
 		if err != nil {
@@ -2734,7 +2734,7 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 		Type:     common.UpstreamTypeEvm,
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             chainId,
-			StatePollerInterval: common.Duration(1 * time.Minute),
+			StatePollerInterval: common.FixedDuration(1 * time.Minute),
 		},
 	}, clr, rlr, vr, &logger, mt, ssr)
 	require.NoError(t, err)
@@ -3358,7 +3358,7 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(1 * time.Minute),
+				StatePollerInterval: common.FixedDuration(1 * time.Minute),
 			},
 		}, clr, rlr, vr, &logger, mt, ssr)
 		if err != nil {

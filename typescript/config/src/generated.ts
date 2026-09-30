@@ -179,6 +179,7 @@ export const SvmChainSolana = "solana";
  * 	ttl: 2s                                        # fixed
  * 	ttl: { blockTimeMultiplier: 1 }                # blockTime * 1 (caller default until known)
  * 	ttl: { blockTimeMultiplier: 1, fallback: 2s }  # with explicit cold-start fallback
+ * 	ttl: { blockTimeMultiplier: 2, min: 1s, max: 10s }  # derived value clamped to [min, max]
  * See Resolve for how the value is computed.
  */
 export interface BlockTimeAdaptiveDuration {
@@ -192,6 +193,14 @@ export interface BlockTimeAdaptiveDuration {
    * estimated block time (blockTime * multiplier).
    */
   blockTimeMultiplier?: number /* float64 */;
+  /**
+   * Min, when > 0, is the lower bound for the block-time-derived value.
+   */
+  min?: Duration;
+  /**
+   * Max, when > 0, is the upper bound for the block-time-derived value.
+   */
+  max?: Duration;
 }
 
 //////////
@@ -958,7 +967,14 @@ export interface GrpcUpstreamConfig {
 }
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
-  statePollerInterval?: Duration;
+  /**
+   * StatePollerInterval is how often the background state poller refreshes
+   * latest/finalized/syncing. A scalar (e.g. 10s) is a fixed interval; the
+   * object form { blockTimeMultiplier, fallback, min, max } scales it with the
+   * network's observed block time, re-resolved on every tick. See
+   * BlockTimeAdaptiveDuration.
+   */
+  statePollerInterval?: Duration | BlockTimeAdaptiveDuration;
   /**
    * StatePollerDebounce overrides the debounce interval for the state poller.
    * When 0 (default), the interval is dynamically inferred from the chain's

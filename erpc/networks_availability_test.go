@@ -44,7 +44,7 @@ func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
@@ -110,7 +110,7 @@ func TestNetworkAvailability_LowerLatestMinus_Skip(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(10)},
@@ -184,7 +184,7 @@ func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{EarliestBlockPlus: i64(2)},
@@ -272,7 +272,7 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(10)},
@@ -362,7 +362,7 @@ func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
@@ -459,7 +459,7 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{EarliestBlockPlus: i64(2)},
@@ -551,7 +551,7 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{EarliestBlockPlus: i64(2), UpdateRate: common.Duration(200 * time.Millisecond)},
@@ -633,7 +633,7 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{EarliestBlockPlus: i64(1), Probe: common.EvmProbeEventLogs},
@@ -702,7 +702,7 @@ func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Upper: &common.EvmAvailabilityBoundConfig{EarliestBlockPlus: i64(0)},
@@ -807,7 +807,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideMethod(t *
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
@@ -887,7 +887,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideNetwork(t 
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
@@ -962,7 +962,7 @@ func TestNetworkAvailability_Enforce_ConfiguredBounds_Override_DefaultFalse(t *t
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
@@ -1030,7 +1030,7 @@ func TestNetworkAvailability_Enforce_MergedDefaults_DoNotMaskConfiguredBounds(t 
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
@@ -1113,7 +1113,7 @@ func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
@@ -1174,7 +1174,7 @@ func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			// Upper = latest: an explicit "serve only blocks up to the head" bound.
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
@@ -1246,7 +1246,7 @@ func TestCheckUpstreamBlockAvailability_SmallDistance_IsRetryable(t *testing.T) 
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			// Upper = latest: a block just ahead of the head is above this bound but
 			// within MaxRetryableBlockDistance, so the skip is retryable.
@@ -1343,7 +1343,7 @@ func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			// Upper = latest, so a block beyond the head is rejected and the error
 			// carries the upstream's latest/finalized for diagnostics.
@@ -1430,7 +1430,7 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			// Upper = latest makes a block just ahead of the head a retryable skip,
 			// which is the condition this test exercises for the no-spin guarantee.
@@ -1580,7 +1580,7 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(120 * time.Second),
+			StatePollerInterval: common.FixedDuration(120 * time.Second),
 			StatePollerDebounce: common.Duration(1 * time.Nanosecond), // Near-zero debounce so every PollLatestBlockNumber fires (0 is overridden to 5s by defaults)
 			// Upper = latest turns "block just ahead of the head" into a retryable skip.
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
@@ -1715,7 +1715,7 @@ func TestHandleBlockSkip_NonRetryableDoesNotTriggerRefresh(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(120 * time.Second),
+			StatePollerInterval: common.FixedDuration(120 * time.Second),
 			StatePollerDebounce: common.Duration(1 * time.Nanosecond),
 			// Upper = latest; a block far beyond the head is a non-retryable skip.
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{

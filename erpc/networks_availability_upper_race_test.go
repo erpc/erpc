@@ -122,7 +122,7 @@ func setupLowerOnlyRaceNetwork(t *testing.T, ctx context.Context, fixtures []low
 			Endpoint: endpoint,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 				StatePollerDebounce: common.Duration(250 * time.Millisecond), // mirrors the issue config
 				BlockAvailability: &common.EvmBlockAvailabilityConfig{
 					// ONLY a lower bound — no upper bound, like the issue config.
@@ -302,8 +302,8 @@ func setupDirectAvailabilityNetwork(t *testing.T, ctx context.Context, upEvm *co
 	t.Helper()
 
 	upEvm.ChainId = 123
-	if upEvm.StatePollerInterval == 0 {
-		upEvm.StatePollerInterval = common.Duration(200 * time.Millisecond)
+	if upEvm.StatePollerInterval.IsZero() {
+		upEvm.StatePollerInterval = common.FixedDuration(200 * time.Millisecond)
 	}
 	if upEvm.StatePollerDebounce == 0 {
 		upEvm.StatePollerDebounce = common.Duration(50 * time.Millisecond)

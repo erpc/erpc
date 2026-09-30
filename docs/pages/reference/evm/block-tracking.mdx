@@ -92,7 +92,7 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 
 ### How it works
 
-Each upstream gets its own `EvmStatePoller` background goroutine. On each tick of `statePollerInterval` (default 30 s), three concurrent goroutines fetch the latest block, finalized block, and syncing state. A synchronous `Poll()` runs once at bootstrap time to seed the upstream before any request traffic arrives.
+Each upstream gets its own `EvmStatePoller` background goroutine. On each tick of `statePollerInterval` (default 30 s), three concurrent goroutines fetch the latest block, finalized block, and syncing state. A synchronous `Poll()` runs once at bootstrap time to seed the upstream before any request traffic arrives. The next tick is scheduled after every tick, so a block-time-scaled `statePollerInterval` (object form, see below) follows the network's current block-time estimate.
 
 **Routing the `safe` tag.** On op-stack chains, `safe` is node-relative because each verifier chooses its own L1 confirmation depth. If providers in one pool use different depths, they can honestly return different blocks for the same tag. Set `evm.safeBlockSource` to an upstream id/tag selector when one pool should define that answer:
 
@@ -160,7 +160,7 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `upstreams[*].evm.statePollerInterval` | Duration | `30s` | How often `Poll()` fires. **`0` disables the poller entirely**: no background goroutine, no initial synchronous poll. Consequences: `LatestBlock()` returns 0, `FinalizedBlock()` returns 0, `SyncingState()` returns `Unknown`, block-availability checks fail-open, `IsBlockFinalized` returns `ErrFinalizedBlockUnavailable` immediately. Intentional opt-out for chains where polling is expensive. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="147-160" /> |
+| `upstreams[*].evm.statePollerInterval` | Duration \| `{ blockTimeMultiplier, fallback, min, max }` | `30s` | How often `Poll()` fires. A scalar is a fixed interval. The object form computes `clamp(blockTime × blockTimeMultiplier, min, max)` from the network's EMA block time, re-resolved on every tick; until the EMA is warm it uses `fallback` (or `30s` without one). `min`/`max` are optional and require `blockTimeMultiplier > 0`; `min` must be ≤ `max`. **`0` disables the poller entirely**: no background goroutine, no initial synchronous poll. Consequences: `LatestBlock()` returns 0, `FinalizedBlock()` returns 0, `SyncingState()` returns `Unknown`, block-availability checks fail-open, `IsBlockFinalized` returns `ErrFinalizedBlockUnavailable` immediately. Intentional opt-out for chains where polling is expensive. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="191-270" /> |
 | `upstreams[*].evm.statePollerDebounce` | Duration | `0` (defer to dynamic/fallback) | Hard per-upstream override for the debounce window. When non-zero, short-circuits the entire `resolveDebounce` algorithm — EMA path and `fallbackStatePollerDebounce` are both bypassed. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="360-363" /> |
 | `upstreams[*].evm.blockAvailability.lower.updateRate` | Duration | `0` (freeze after first detection) | Re-detection cadence for `earliestBlockPlus`-based lower bounds. `0` means the binary-search result is never refreshed within a process lifetime. **Ignored for `latestBlockMinus` and `exactBlock` bounds.** The scheduler goroutine is NOT restarted on config hot-reload. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="694-700" /> |
 | `upstreams[*].evm.blockAvailability.upper.updateRate` | Duration | `0` (freeze after first detection) | Same semantics as `lower.updateRate`. The minimum non-zero rate across lower and upper bounds for the same probe governs the scheduler goroutine. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="694-700" /> |
@@ -270,7 +270,27 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 }]`}
 />
 
-**5. Disable the poller for a static archive upstream.** When an archive node is used only for historical queries and tracking chain head is unnecessary or costly:
+**5. Scale the poll interval with block time.** One `upstreamDefaults` value that polls fast chains often and slow chains rarely, instead of one interval per chain. With the values below, a 2 s chain polls every 5 s (4 s raised to `min`), a 6 s chain every 12 s, and a 12 s chain every 20 s (24 s capped at `max`). `fallback` applies until the block-time estimate is warm.
+
+<ConfigTabs
+  path="upstreamDefaults.evm"
+  yaml={`upstreamDefaults:
+  evm:
+    statePollerInterval:
+      blockTimeMultiplier: 2
+      min: 5s
+      max: 20s
+      fallback: 10s`}
+  ts={`upstreamDefaults: {
+  evm: {
+    statePollerInterval: { blockTimeMultiplier: 2, min: "5s", max: "20s", fallback: "10s" },
+  },
+}`}
+/>
+
+Keep `max` below any seconds-based lag gate in your selection policy (the default policy uses `blockSecondsLagAbove(30)`), and keep `blockTimeMultiplier` below any block-count gate (default `blockNumberLagAbove(16)`). Between polls an upstream's recorded head only advances through request traffic, so a poll interval at or above the gate can make a healthy but idle upstream look lagged and get it excluded.
+
+**6. Disable the poller for a static archive upstream.** When an archive node is used only for historical queries and tracking chain head is unnecessary or costly:
 
 <ConfigTabs
   path="upstreams[].evm"

@@ -112,7 +112,7 @@ func setupRealPollLagNetwork(t *testing.T, ctx context.Context, fixtures []realP
 				ChainId: 123,
 				// No background polling — tests drive PollLatestBlockNumber
 				// explicitly for determinism.
-				StatePollerInterval: common.Duration(time.Hour),
+				StatePollerInterval: common.FixedDuration(time.Hour),
 				// Tiny (non-zero) debounce so each explicit re-poll actually
 				// re-fetches instead of returning the cached value. A zero
 				// debounce would fall through resolveDebounce to a ~block-time

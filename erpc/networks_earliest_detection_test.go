@@ -40,7 +40,7 @@ func TestEarliestDetection_FailOpenWhenNoEarliestConfigured(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(100 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(100 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			// No BlockAvailability config - should default to unbounded (fail-open)
 		},
@@ -113,7 +113,7 @@ func TestEarliestDetection_BlocksRequestAfterSuccessfulDetection(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(100 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(100 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				// Lower bound = earliest + 10, so if earliest=100, lower=110
@@ -232,7 +232,7 @@ func TestEarliestDetection_InitialDetectionAlwaysRunsOnBootstrap(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(100 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(100 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{EarliestBlockPlus: i64(0)},
@@ -322,7 +322,7 @@ func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(100 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(100 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{
@@ -412,7 +412,7 @@ func TestEarliestDetection_InvalidRangeTriggersFailOpen(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(5 * time.Second), // Slow so detection doesn't complete
+			StatePollerInterval: common.FixedDuration(5 * time.Second), // Slow so detection doesn't complete
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(10)},
@@ -514,7 +514,7 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(100 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(100 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{

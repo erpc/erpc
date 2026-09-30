@@ -1772,7 +1772,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		u.Evm = &EvmUpstreamConfig{
 			ChainId:             defaults.Evm.ChainId,
 			NodeType:            defaults.Evm.NodeType,
-			StatePollerInterval: defaults.Evm.StatePollerInterval,
+			StatePollerInterval: defaults.Evm.StatePollerInterval.Copy(),
 			StatePollerDebounce: defaults.Evm.StatePollerDebounce,
 			// Carried here rather than left to SetDefaults: by the time SetDefaults
 			// runs, MaxAvailableRecentBlocks has already been copied onto this
@@ -1789,8 +1789,8 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			return fmt.Errorf("failed to set defaults for evm upstream: %w", err)
 		}
 	} else if u.Evm != nil && defaults.Evm != nil {
-		if u.Evm.StatePollerInterval == 0 && defaults.Evm.StatePollerInterval != 0 {
-			u.Evm.StatePollerInterval = defaults.Evm.StatePollerInterval
+		if u.Evm.StatePollerInterval.IsZero() && !defaults.Evm.StatePollerInterval.IsZero() {
+			u.Evm.StatePollerInterval = defaults.Evm.StatePollerInterval.Copy()
 		}
 		if u.Evm.StatePollerDebounce == 0 && defaults.Evm.StatePollerDebounce != 0 {
 			u.Evm.StatePollerDebounce = defaults.Evm.StatePollerDebounce
@@ -2023,11 +2023,11 @@ func maxRecentBlocksFor(defaults *EvmUpstreamConfig) int64 {
 }
 
 func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
-	if e.StatePollerInterval == 0 {
-		if defaults != nil && defaults.StatePollerInterval != 0 {
-			e.StatePollerInterval = defaults.StatePollerInterval
+	if e.StatePollerInterval.IsZero() {
+		if defaults != nil && !defaults.StatePollerInterval.IsZero() {
+			e.StatePollerInterval = defaults.StatePollerInterval.Copy()
 		} else {
-			e.StatePollerInterval = Duration(30 * time.Second)
+			e.StatePollerInterval = FixedDuration(DefaultEvmStatePollerInterval)
 		}
 	}
 	if e.StatePollerDebounce == 0 && defaults != nil && defaults.StatePollerDebounce != 0 {
@@ -2379,6 +2379,10 @@ func migrateLegacyIntegrityChecks(n *NetworkConfig) {
 }
 
 const DefaultEvmFinalityDepth = 1024
+
+// DefaultEvmStatePollerInterval applies when statePollerInterval is unset, and
+// as the cold-start value for a block-time-scaled interval without a fallback.
+const DefaultEvmStatePollerInterval = 30 * time.Second
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
 const DefaultBlockUnavailableDelayMultiplier = 1.0

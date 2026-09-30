@@ -190,20 +190,18 @@ func NewEvmStatePoller(
 
 func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	cfg := e.upstream.Config()
-	interval := cfg.Evm.StatePollerInterval
-	if interval == 0 {
+	if cfg.Evm == nil || cfg.Evm.StatePollerInterval.IsZero() {
 		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
 		return nil
 	}
+	interval := cfg.Evm.StatePollerInterval
 
-	if cfg.Evm != nil {
-		if cfg.Evm.StatePollerDebounce != 0 {
-			// Guarded by stateMu: live poll goroutines read this via
-			// resolveDebounce while Bootstrap may run again concurrently.
-			e.stateMu.Lock()
-			e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
-			e.stateMu.Unlock()
-		}
+	if cfg.Evm.StatePollerDebounce != 0 {
+		// Guarded by stateMu: live poll goroutines read this via
+		// resolveDebounce while Bootstrap may run again concurrently.
+		e.stateMu.Lock()
+		e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
+		e.stateMu.Unlock()
 	}
 
 	e.logger.Debug().Msgf("bootstrapping evm state poller to track upstream latest/finalized blocks and syncing states")
@@ -217,14 +215,19 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	e.Enabled = true
 
 	go (func() {
-		ticker := time.NewTicker(interval.Duration())
-		defer ticker.Stop()
+		// A timer re-armed every iteration (rather than a fixed ticker) so a
+		// block-time-scaled interval follows the network's observed block time.
+		// Re-armed before polling so a slow poll does not stretch the period.
+		timer := time.NewTimer(e.resolvePollInterval(interval))
+		defer timer.Stop()
 		for {
 			select {
 			case <-e.appCtx.Done():
 				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
 				return
-			case <-ticker.C:
+			case <-timer.C:
+				timer.Reset(e.resolvePollInterval(interval))
+
 				// Calculate timeout based on shared state config:
 				// 1. Wait for distributed lock (up to lockTtl)
 				// 2. Buffer for operations (fetch block, update remote)
@@ -416,6 +419,21 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// resolvePollInterval returns the delay until the next background poll. A
+// fixed interval is returned as-is; a block-time-scaled one uses the network's
+// current block-time estimate, its fallback until that estimate exists, and
+// the default interval when it has no fallback.
+func (e *EvmStatePoller) resolvePollInterval(interval *common.BlockTimeAdaptiveDuration) time.Duration {
+	var blockTime time.Duration
+	if interval.BlockTimeMultiplier > 0 {
+		blockTime = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+	}
+	if d := interval.Resolve(blockTime, common.DefaultEvmStatePollerInterval); d > 0 {
+		return d
+	}
+	return common.DefaultEvmStatePollerInterval
 }
 
 // resolveDebounce returns the debounce interval for poll methods.

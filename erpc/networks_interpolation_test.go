@@ -34,7 +34,7 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 		},
 	}
@@ -1935,7 +1935,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 				StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			},
 		},
@@ -1945,7 +1945,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 				StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			},
 		},
@@ -1955,7 +1955,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 			Endpoint: "http://rpc3.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 				StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			},
 		},
@@ -2063,7 +2063,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 				StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			},
 		},
@@ -2073,7 +2073,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerInterval: common.FixedDuration(200 * time.Millisecond),
 				StatePollerDebounce: common.Duration(50 * time.Millisecond),
 			},
 		},
