@@ -7,12 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The shipped example must keep loading and validating its Redis-backed head
-// cache and subscription WebSocket configuration.
-func TestVennParityExampleConfigLoads(t *testing.T) {
+// The shipped example must load with Redis-backed head-cache and WebSocket configuration.
+func TestHeadCacheExampleConfigLoads(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("RPC_URL", "http://rpc.invalid:8545")
-	cfg, err := LoadConfig(afero.NewOsFs(), "../erpc.venn-parity.example.yaml", &DefaultOptions{})
+	cfg, err := LoadConfig(afero.NewOsFs(), "../erpc.headcache.example.yaml", &DefaultOptions{})
 	require.NoError(t, err)
 	require.NotEmpty(t, cfg.Projects)
 	nw := cfg.Projects[0].Networks[0]

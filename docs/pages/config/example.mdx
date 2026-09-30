@@ -210,9 +210,9 @@ and metrics from request one. The [default selection policy](/config/projects/se
 needs no configuration — it already excludes unhealthy upstreams and honors the
 `tier:fallback` tag.
 
-## Multi-replica indexer example
+## Head-cache and WebSocket example
 
-`erpc.venn-parity.example.yaml` in the repo root is a config for several replicas serving indexers. It demonstrates a Redis-backed [head cache](/config/database/head-cache) (`evm.headCache` referencing a connector in `database.evmJsonRpcCache.connectors`) and [WebSocket](/config/websocket) `eth_subscribe` for `newHeads`/`logs`.
+`erpc.headcache.example.yaml` in the repo root is a minimal config demonstrating a Redis-backed [head cache](/config/database/head-cache), cold prefill, and [WebSocket](/config/websocket) subscriptions. Set `REDIS_URL` and `RPC_URL` before starting eRPC.
 
 ## Complete example — all sections
 
