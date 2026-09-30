@@ -12,7 +12,7 @@ import (
 
 func init() { util.ConfigureTestLogger() }
 
-func TestHeadCache_FingerprintIncludesProviderAndDefaultTrust(t *testing.T) {
+func TestBlockStore_FingerprintIncludesProviderAndDefaultTrust(t *testing.T) {
 	network := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 1}}
 	project := &common.ProjectConfig{
 		Upstreams:        []*common.UpstreamConfig{{Id: "one", Endpoint: "https://rpc.invalid/key-a"}, {Id: "two", Endpoint: "https://rpc.invalid/key-b"}},
@@ -21,7 +21,7 @@ func TestHeadCache_FingerprintIncludesProviderAndDefaultTrust(t *testing.T) {
 		UpstreamDefaults: &common.UpstreamConfig{Id: "defaults", Endpoint: "https://default.invalid/key-a"},
 	}
 	fingerprint := func() string {
-		hash, err := headCacheFingerprint(project, network)
+		hash, err := blockStoreFingerprint(project, network)
 		require.NoError(t, err)
 		require.Len(t, hash, 64)
 		require.NotContains(t, hash, "secret")
@@ -49,17 +49,17 @@ func TestHeadCache_FingerprintIncludesProviderAndDefaultTrust(t *testing.T) {
 	require.NotEqual(t, previous, fingerprint())
 }
 
-func TestHttp_HeadCache_MalformedFiltersBypassAndTopicPositionsMatchGeth(t *testing.T) {
+func TestHttp_BlockStore_MalformedFiltersBypassAndTopicPositionsMatchGeth(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond)})
+	cfg := blockStoreTestConfig(up.URL(), &common.EvmBlockStoreConfig{Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond)})
 	send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	defer shutdown()
 	project, err := instance.GetProject("test_project")
 	require.NoError(t, err)
 	network, err := project.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return network.HeadCache().Head() == 20 }, 10*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return network.BlockStore().Head() == 20 }, 10*time.Second, 20*time.Millisecond)
 
 	// A wildcard position still requires that position to exist in the log.
 	before := up.RangeLogCalls()
@@ -78,7 +78,7 @@ func TestHttp_HeadCache_MalformedFiltersBypassAndTopicPositionsMatchGeth(t *test
 	} {
 		t.Run(filter, func(t *testing.T) {
 			request := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[` + filter + `]}`))
-			_, hit := network.tryServeHeadCache(t.Context(), request, "eth_getLogs")
+			_, hit := network.tryServeBlockStore(t.Context(), request, "eth_getLogs")
 			require.False(t, hit, "invalid filter must reach normal upstream validation")
 		})
 	}

@@ -635,21 +635,21 @@ var (
 		Help:      "Total number of requests received for a network.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
-	MetricHeadCacheFresh = DefineGauge(prometheus.GaugeOpts{
+	MetricBlockStoreFresh = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
-		Name:      "head_cache_fresh",
+		Name:      "blockstore_fresh",
 		Help:      "Whether this process has a fresh verified head-cache view (1) or not (0).",
 	}, []string{"project", "network"})
 
-	MetricHeadCacheRefreshTotal = DefineCounter(prometheus.CounterOpts{
+	MetricBlockStoreRefreshTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "head_cache_refresh_total",
+		Name:      "blockstore_refresh_total",
 		Help:      "Head-cache refresh attempts by outcome: fresh, stale, or error.",
 	}, []string{"project", "network", "outcome"})
 
-	MetricHeadCacheHitsTotal = DefineCounter(prometheus.CounterOpts{
+	MetricBlockStoreHitsTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "head_cache_hits_total",
+		Name:      "blockstore_hits_total",
 		Help:      "HTTP block and log requests served from the verified head cache.",
 	}, []string{"project", "network", "category"})
 

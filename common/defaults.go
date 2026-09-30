@@ -2568,7 +2568,7 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 }
 
 func (e *EvmNetworkConfig) SetDefaults() error {
-	e.HeadCache.SetDefaults()
+	e.BlockStore.SetDefaults()
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}

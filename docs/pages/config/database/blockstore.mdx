@@ -1,25 +1,29 @@
 ---
-title: Head cache
-description: A lease holder per head-cache scope polls upstream and hydrates a canonical window, publishes a fenced Redis snapshot, and serves covered block and log reads from verified immutable payloads.
+title: Blockstore
+description: Cache recent verified blocks for HTTP and WebSocket, and optionally reuse finalized historical blocks and logs.
 ---
 
 import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
 
 <LLMsTxtLink />
 
-# Head cache
+# Blockstore
 
-With the head cache enabled, one lease holder per trust fingerprint, namespace,
+With the live blockstore enabled, one lease holder per trust fingerprint, namespace,
 project and network polls upstream and hydrates the canonical window. It publishes
 a fenced Redis snapshot for followers, who serve covered reads from immutable,
-hash-addressed payloads without head-cache polling upstream while Redis is healthy.
+hash-addressed payloads without blockstore polling upstream while Redis is healthy.
 Independent EVM state pollers and probes still run per replica and can call upstream.
 
-HTTP requests use the cache only when their entire requested block or log range is
-covered. If Redis or the shared state is unavailable or stale, cache reads miss;
-ordinary HTTP follows normal forwarding. A published cold-fill suffix can serve
-requests fully within that suffix. The cache reuses a
-Redis connector declared for the [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache).
+Historical caching is an independent opt-in for finalized data outside that moving
+window. It stores full blocks separately from complete, unfiltered per-block logs,
+with a finalized height-to-hash index guarding canonical reads. Historical entries
+expire after their configured TTL. A historical `eth_getLogs` range is served only
+when every block in the whole range is available; otherwise the request falls back
+to normal upstream forwarding. This does not change the live window or its
+single-refresher fleet coordination.
+
+The cache reuses a Redis connector declared for the [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache).
 
 Disabled by default. When disabled, behavior is unchanged.
 
@@ -39,17 +43,20 @@ projects:
       - architecture: evm
         evm:
           chainId: 1
-          headCache:
+          blockStore:
             enabled: true
             # a redis connector from database.evmJsonRpcCache.connectors
             connectorId: redis-cache
+            historical:
+              enabled: true
+              ttl: 1h
 ```
 
 <AISection>
 
-## Config schema (`projects[].networks[].evm.headCache`)
+## Config schema (`projects[].networks[].evm.blockStore`)
 
-Defaults from `EvmHeadCacheConfig.SetDefaults` (<SourceLink file="common/config_headcache.go" lines="46-77" />), called by `EvmNetworkConfig.SetDefaults` (<SourceLink file="common/defaults.go" lines="2571" />).
+Defaults from `EvmBlockStoreConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="57-98" />), called by `EvmNetworkConfig.SetDefaults` (<SourceLink file="common/defaults.go" lines="2570-2572" />).
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -62,9 +69,14 @@ Defaults from `EvmHeadCacheConfig.SetDefaults` (<SourceLink file="common/config_
 | `concurrency` | `4` (1..64) | Maximum simultaneous header, Redis-read, and block/log hydration jobs per network on the lease holder. |
 | `pollInterval` | `2s` | Head-cache lease holder discovers the latest height and refreshes the canonical snapshot at this interval. Followers check Redis for the shared snapshot; they do not poll upstream for the head cache while the fleet store is healthy. Independent EVM state pollers/probes still run per replica. |
 | `fetchTimeout` | `10s` | Timeout for each hydration or verification fetch. |
-| `maxLogsRange` | `depth` | Widest `eth_getLogs` range served from cache. |
+| `maxLogsRange` | `depth` | Widest `eth_getLogs` range served from live or historical blockstore data. |
 | `maxStaleness` | `5 × pollInterval` | Maximum age of the shared canonical snapshot. Once stale, it cannot authorize an HTTP cache hit and WebSocket subscriptions close. |
-| `namespace` | `default` | Deployment isolation prefix. The effective namespace is combined with a SHA-256 fingerprint of upstream configurations, provider settings/overrides, upstream and network defaults, integrity, effective network forwarding configuration, and effective head-cache settings such as `depth` and `maxBytes`. Secrets contribute to the digest but are never emitted in it. Different head-cache settings use separate lease and snapshot scopes. |
+| `namespace` | `default` | Deployment isolation prefix. The effective namespace is combined with a SHA-256 fingerprint of the network's upstream set and effective cache settings. |
+| `historical.enabled` | `false` | Opt in to an independent cache for finalized historical data outside the live window. Full-block payloads and complete per-block logs are separate entries. |
+| `historical.ttl` | `1h` | TTL for historical block/log payloads and finalized height-to-hash index entries. Must be positive when historical caching is enabled. |
+
+Historical block entries contain full transactions and do not include logs. Historical log entries contain a header and the complete unfiltered logs for that block. The finalized height-to-hash index is checked before either entry can be served, so stored data alone does not authorize a non-canonical answer. Historical ranges use the existing `blockStore.maxLogsRange` limit, not a second historical range knob. An `eth_getLogs` range is an all-or-miss read: one missing/expired/incomplete block causes a normal upstream fallback for the entire request.
+
 
 ## What is served
 
@@ -88,9 +100,12 @@ Defaults from `EvmHeadCacheConfig.SetDefaults` (<SourceLink file="common/config_
 11. **Memory sizing.** `maxBytes` applies per enabled network per replica, not to the whole process. The default `256MB` is 256 MiB (`256 << 20`): 32 enabled networks can retain about 8 GiB of cached data per replica alone. Budget separately for Go/object overhead, in-flight hydration and serialization, other caches, and Redis storage. Tune `maxBytes`, `depth` and container/pod memory limits for the enabled network count.
 12. **Fork compatibility.** Configs written for the unmerged fork branch must replace `mode`/`redis` with `connectorId` and drop `headSource`/`servedTipMaxAge`. Those keys no longer exist.
 13. **Store retention.** Redis payloads expire by TTL and may outlive a replica's local canonical window. The lease holder refreshes each current payload at half its TTL, rather than rewriting unchanged records every poll. `depth` and `maxBytes` bound local cache use, not total fleet Redis storage. Set Redis `maxmemory` and an eviction policy appropriate for the deployment.
+14. **Historical data is independent of the moving live window.** `historical.enabled` defaults to false. When enabled, full-block payloads and complete per-block logs are stored independently, along with a finalized height-to-hash index. Reads are constrained to the current corroborated finalized height and indexed canonical hash. Unknown finality, an absent index entry, or an unavailable payload is a miss and follows ordinary cache/upstream fallthrough. Entries expire after `historical.ttl`. Historical log-range reads require every block's complete logs and return no partial answer; a miss or a range wider than existing `blockStore.maxLogsRange` falls back to the normal whole-range upstream path. Historical storage does not replace or alter live-window hydration, freshness, or fleet lease behavior.
+15. **Historical traffic remains distinct from live fleet behavior.** The historical cache uses the same configured Redis connector but a separate namespace. It does not make followers into live-window refreshers and does not suppress normal HTTP upstream forwarding when historical data is absent or invalid.
+
 
 ## Observability
 
-`erpc_head_cache_fresh{project,network}` is 1 when this process currently has a fresh verified head-cache view, and 0 when it has no view or the view is stale. It is set after each refresh tick and cleared on stop. `erpc_head_cache_refresh_total{project,network,outcome}` counts refresh ticks exactly once, with `outcome` equal to `fresh` when a fresh view exists, `stale` when no fresh view exists without a refresh error, or `error` when the refresh returned an error. `erpc_head_cache_hits_total{project,network,category}` counts requests served from the head cache. `category` is one of `eth_getBlockByNumber`, `eth_getBlockByHash`, or `eth_getLogs`. These are per-process metrics; a fleet may therefore expose one freshness series per replica and network. Cache hits are marked `fromCache` and set `head_cache.hit=true` on the `Network.Forward` span. A `HeadCache.Tick` detail span records refresh errors when detailed tracing is enabled. With Redis fleet coordination, one lease holder performs head-cache polling and hydration per scope; independent EVM state pollers/probes still run per replica, and ordinary HTTP misses can still reach upstream.
+`erpc_blockstore_fresh{project,network}` is 1 when this process currently has a fresh verified live-window view, and 0 when it has no view or the view is stale. It is set after each refresh tick and cleared on stop. `erpc_blockstore_refresh_total{project,network,outcome}` counts live-window refresh ticks exactly once, with `outcome` equal to `fresh` when a fresh view exists, `stale` when no fresh view exists without a refresh error, or `error` when the refresh returned an error. `erpc_blockstore_hits_total{project,network,category}` counts requests served from the blockstore, live or historical. `category` is one of `eth_getBlockByNumber`, `eth_getBlockByHash`, or `eth_getLogs`. These are per-process metrics; a fleet may therefore expose one freshness series per replica and network. Cache hits are marked `fromCache` and set `blockstore.hit=true` on the `Network.Forward` span. A `BlockStore.Tick` detail span records refresh errors when detailed tracing is enabled. Historical hits use the same hit counter; misses and normal upstream fallbacks do not increment it or change the live freshness/refresh metrics. With Redis fleet coordination, one lease holder performs live-window polling and hydration per scope; independent EVM state pollers/probes still run per replica, and ordinary HTTP misses can still reach upstream.
 
 </AISection>

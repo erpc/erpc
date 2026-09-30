@@ -329,7 +329,7 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 			network.cacheDal = nr.svmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
 	}
-	if err := nr.initHeadCache(network, nwCfg); err != nil {
+	if err := nr.initBlockStore(network, nwCfg); err != nil {
 		return nil, fmt.Errorf("head cache for %s: %w", nwCfg.NetworkId(), err)
 	}
 	// Register alias for lazy-created networks to support alias-based routing

@@ -1479,8 +1479,8 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return err
 		}
 	}
-	if n.Evm != nil && n.Evm.HeadCache != nil && n.Evm.HeadCache.Enabled {
-		if err := n.Evm.HeadCache.ValidateConnector(c); err != nil {
+	if n.Evm != nil && n.Evm.BlockStore != nil && (n.Evm.BlockStore.Enabled || n.Evm.BlockStore.Historical.Enabled) {
+		if err := n.Evm.BlockStore.ValidateConnector(c); err != nil {
 			return err
 		}
 	}
@@ -1548,7 +1548,7 @@ func (s *StaticResponseConfig) Validate() error {
 }
 
 func (e *EvmNetworkConfig) Validate() error {
-	if err := e.HeadCache.Validate(); err != nil {
+	if err := e.BlockStore.Validate(); err != nil {
 		return err
 	}
 	if e.FallbackFinalityDepth == 0 {

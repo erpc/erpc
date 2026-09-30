@@ -2598,12 +2598,12 @@ type EvmNetworkConfig struct {
 	// provider-defined routing. This does not affect eth_query* or gRPC Query.
 	SafeBlockSource string `yaml:"safeBlockSource,omitempty" json:"safeBlockSource,omitempty"`
 
-	// HeadCache opts into the head-driven full-block/log cache: a Redis-shared,
+	// BlockStore opts into the head-driven full-block/log cache: a Redis-shared,
 	// parent-hash-verified window of recent canonical blocks (with their
 	// logs) hydrated from upstreams as the head advances. It serves
 	// eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
 	// feeds WebSocket subscriptions. Nil or disabled changes nothing.
-	HeadCache *EvmHeadCacheConfig `yaml:"headCache,omitempty" json:"headCache,omitempty"`
+	BlockStore *EvmBlockStoreConfig `yaml:"blockStore,omitempty" json:"blockStore,omitempty"`
 
 	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
 	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
@@ -3036,8 +3036,8 @@ type MetricsConfig struct {
 type MetricCustomizationAction string
 
 const (
-	MetricActionKeep MetricCustomizationAction = telemetry.ActionKeep
-	MetricActionDrop MetricCustomizationAction = telemetry.ActionDrop
+	MetricActionKeep MetricCustomizationAction = "keep"
+	MetricActionDrop MetricCustomizationAction = "drop"
 )
 
 // MetricsCustomizationConfig is one entry of metrics.customizations: a subject

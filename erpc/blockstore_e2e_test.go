@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/erpc/erpc/blockstore"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/headcache"
 	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/require"
 )
@@ -24,37 +24,37 @@ type rpcResp struct {
 }
 
 var (
-	headCacheTestRedisOnce sync.Once
-	headCacheTestRedisAddr string
+	blockStoreTestRedisOnce sync.Once
+	blockStoreTestRedisAddr string
 )
 
-// headCacheTestRedis returns a process-wide Redis address for head cache
-// tests (HEADCACHE_TEST_REDIS_ADDR or an in-process miniredis). Scopes are
+// blockStoreTestRedis returns a process-wide Redis address for head cache
+// tests (BLOCKSTORE_TEST_REDIS_ADDR or an in-process miniredis). Scopes are
 // isolated by the per-test upstream fingerprint and namespace.
-func headCacheTestRedis() string {
-	headCacheTestRedisOnce.Do(func() {
-		headCacheTestRedisAddr = os.Getenv("HEADCACHE_TEST_REDIS_ADDR")
-		if headCacheTestRedisAddr == "" {
+func blockStoreTestRedis() string {
+	blockStoreTestRedisOnce.Do(func() {
+		blockStoreTestRedisAddr = os.Getenv("BLOCKSTORE_TEST_REDIS_ADDR")
+		if blockStoreTestRedisAddr == "" {
 			mr, err := miniredis.Run()
 			if err != nil {
 				panic(err)
 			}
-			headCacheTestRedisAddr = mr.Addr()
+			blockStoreTestRedisAddr = mr.Addr()
 		}
 	})
-	return headCacheTestRedisAddr
+	return blockStoreTestRedisAddr
 }
 
-// headCacheTestConfig wires an enabled head cache to a redis connector under
+// blockStoreTestConfig wires an enabled head cache to a redis connector under
 // database.evmJsonRpcCache (the only supported store).
-func headCacheTestConfig(upstreamURL string, hc *common.EvmHeadCacheConfig) *common.Config {
+func blockStoreTestConfig(upstreamURL string, hc *common.EvmBlockStoreConfig) *common.Config {
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true), WebSocket: &common.WebSocketServerConfig{Enabled: true}},
 		Projects: []*common.ProjectConfig{{
 			Id: "test_project",
 			Networks: []*common.NetworkConfig{{
 				Architecture: common.ArchitectureEvm,
-				Evm:          &common.EvmNetworkConfig{ChainId: 123, HeadCache: hc},
+				Evm:          &common.EvmNetworkConfig{ChainId: 123, BlockStore: hc},
 			}},
 			Upstreams: []*common.UpstreamConfig{{
 				Id:       "scripted",
@@ -67,7 +67,7 @@ func headCacheTestConfig(upstreamURL string, hc *common.EvmHeadCacheConfig) *com
 	}
 	if hc != nil && hc.Enabled {
 		if hc.ConnectorId == "" {
-			hc.ConnectorId = "headcache-redis"
+			hc.ConnectorId = "blockstore-redis"
 		}
 		if hc.Namespace == "" {
 			hc.Namespace = fmt.Sprintf("t-%d", time.Now().UnixNano())
@@ -75,7 +75,7 @@ func headCacheTestConfig(upstreamURL string, hc *common.EvmHeadCacheConfig) *com
 		cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{
 			Connectors: []*common.ConnectorConfig{{
 				Id: hc.ConnectorId, Driver: common.DriverRedis,
-				Redis: &common.RedisConnectorConfig{URI: "redis://" + headCacheTestRedis()},
+				Redis: &common.RedisConnectorConfig{URI: "redis://" + blockStoreTestRedis()},
 			}},
 		}}
 	}
@@ -92,10 +92,10 @@ func doRpc(t *testing.T, send func(string, map[string]string, map[string]string)
 	return r
 }
 
-func TestHttp_HeadCache_ServesReusesAndHandlesReorg(t *testing.T) {
+func TestHttp_BlockStore_ServesReusesAndHandlesReorg(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
+	cfg := blockStoreTestConfig(up.URL(), &common.EvmBlockStoreConfig{
 		Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond),
 	})
 	send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
@@ -105,7 +105,7 @@ func TestHttp_HeadCache_ServesReusesAndHandlesReorg(t *testing.T) {
 	require.NoError(t, err)
 	nw, err := prj.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	hc := nw.HeadCache()
+	hc := nw.BlockStore()
 	require.NotNil(t, hc)
 	require.Eventually(t, func() bool {
 		_, blockReady := hc.BlockByNumber(19, true)
@@ -178,17 +178,17 @@ func TestHttp_HeadCache_ServesReusesAndHandlesReorg(t *testing.T) {
 	require.Contains(t, strings.ToLower(string(logs.Result)), strings.ToLower(up.HashAt(19)))
 }
 
-func TestHttp_HeadCache_DisabledPreservesBehavior(t *testing.T) {
+func TestHttp_BlockStore_DisabledPreservesBehavior(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := headCacheTestConfig(up.URL(), nil)
+	cfg := blockStoreTestConfig(up.URL(), nil)
 	send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 	defer shutdown()
 	prj, err := erpcInstance.GetProject("test_project")
 	require.NoError(t, err)
 	nw, err := prj.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	require.Nil(t, nw.HeadCache())
+	require.Nil(t, nw.BlockStore())
 	before := up.BlockCalls(19)
 	r := doRpc(t, send, "eth_getBlockByNumber", `["0x13",false]`)
 	require.Contains(t, string(r.Result), up.HashAt(19))
@@ -197,11 +197,11 @@ func TestHttp_HeadCache_DisabledPreservesBehavior(t *testing.T) {
 
 // The lease holder verifies headers and shares its snapshot and immutable
 // block/log payloads. The follower reads them without hydrating upstream.
-func TestHttp_HeadCache_SharedRedisTwoReplicas(t *testing.T) {
+func TestHttp_BlockStore_SharedRedisTwoReplicas(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
 	mk := func() *common.Config {
-		cfg := headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
+		cfg := blockStoreTestConfig(up.URL(), &common.EvmBlockStoreConfig{
 			Enabled: true, Depth: 16,
 			Namespace:    fmt.Sprintf("e2e-%d", time.Now().UnixNano()),
 			PollInterval: common.Duration(100 * time.Millisecond),
@@ -210,7 +210,7 @@ func TestHttp_HeadCache_SharedRedisTwoReplicas(t *testing.T) {
 		return cfg
 	}
 	cfgA, cfgB := mk(), mk()
-	cfgB.Projects[0].Networks[0].Evm.HeadCache.Namespace = cfgA.Projects[0].Networks[0].Evm.HeadCache.Namespace
+	cfgB.Projects[0].Networks[0].Evm.BlockStore.Namespace = cfgA.Projects[0].Networks[0].Evm.BlockStore.Namespace
 	sendA, _, _, shutdownA, eA := createServerTestFixtures(cfgA, t)
 	aStopped := false
 	defer func() {
@@ -226,7 +226,7 @@ func TestHttp_HeadCache_SharedRedisTwoReplicas(t *testing.T) {
 		require.NoError(t, err)
 		return n
 	}
-	ca := get(eA).HeadCache()
+	ca := get(eA).BlockStore()
 	require.Eventually(t, func() bool {
 		_, logsReady := ca.LogsRange(5, 20, nil)
 		return ca.Head() == 20 && logsReady
@@ -239,7 +239,7 @@ func TestHttp_HeadCache_SharedRedisTwoReplicas(t *testing.T) {
 	latestBlocksBeforeB := up.LatestBlockCalls()
 	sendB, _, baseB, shutdownB, eB := createServerTestFixtures(cfgB, t)
 	defer shutdownB()
-	cb := get(eB).HeadCache()
+	cb := get(eB).BlockStore()
 	require.Eventually(t, func() bool {
 		_, logsReady := cb.LogsRange(5, 20, nil)
 		return cb.Head() == 20 && logsReady
@@ -295,26 +295,26 @@ func TestHttp_HeadCache_SharedRedisTwoReplicas(t *testing.T) {
 	require.False(t, orphanCanonical, "the orphan hash must not remain in the takeover view")
 }
 
-func TestHttp_HeadCache_ConnectorTTLScopeAndCorruption(t *testing.T) {
+func TestHttp_BlockStore_ConnectorTTLScopeAndCorruption(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 2)
 	defer up.Close()
-	hcCfg := &common.EvmHeadCacheConfig{Enabled: true, Depth: 2}
-	cfg := headCacheTestConfig(up.URL(), hcCfg)
+	hcCfg := &common.EvmBlockStoreConfig{Enabled: true, Depth: 2}
+	cfg := blockStoreTestConfig(up.URL(), hcCfg)
 	_, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	defer shutdown()
 
 	project, err := instance.GetProject("test_project")
 	require.NoError(t, err)
 	registry := project.networksRegistry
-	store, err := registry.headCacheStore(hcCfg)
+	store, err := registry.blockStoreStore(hcCfg)
 	require.NoError(t, err)
 	connector := registry.evmJsonRpcCache.Connector(hcCfg.ConnectorId)
 	require.NotNil(t, connector)
-	adapter, ok := store.(*headCacheConnectorStore)
+	adapter, ok := store.(*blockStoreConnectorStore)
 	require.True(t, ok)
 
-	scope := headcache.Scope{Namespace: "connector-test", ProjectId: "test_project", NetworkId: "evm:123"}
-	record := &headcache.BlockRecord{
+	scope := blockstore.Scope{Namespace: "connector-test", ProjectId: "test_project", NetworkId: "evm:123"}
+	record := &blockstore.BlockRecord{
 		Number: 1, Hash: "0x" + strings.Repeat("a", 64),
 		ParentHash: "0x" + strings.Repeat("b", 64),
 		Block:      json.RawMessage(`{"number":"0x1"}`), Logs: json.RawMessage(`[]`),
@@ -344,11 +344,11 @@ func TestHttp_HeadCache_ConnectorTTLScopeAndCorruption(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestHttp_HeadCache_BlockNumberFailureDoesNotSeedOrRefresh(t *testing.T) {
+func TestHttp_BlockStore_BlockNumberFailureDoesNotSeedOrRefresh(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
 	up.FailBlockNumber(true)
-	cfg := headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
+	cfg := blockStoreTestConfig(up.URL(), &common.EvmBlockStoreConfig{
 		Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond),
 		MaxStaleness: common.Duration(500 * time.Millisecond),
 	})
@@ -358,7 +358,7 @@ func TestHttp_HeadCache_BlockNumberFailureDoesNotSeedOrRefresh(t *testing.T) {
 	require.NoError(t, err)
 	network, err := project.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	hc := network.HeadCache()
+	hc := network.BlockStore()
 	require.NotNil(t, hc)
 	require.Eventually(t, func() bool { return up.Calls("eth_blockNumber") > 0 }, 5*time.Second, 20*time.Millisecond)
 	require.Equal(t, int64(-1), hc.Head(), "failed discovery must not seed block zero")
@@ -373,12 +373,12 @@ func TestHttp_HeadCache_BlockNumberFailureDoesNotSeedOrRefresh(t *testing.T) {
 	require.Equal(t, int64(-1), hc.Head(), "stale canonical view must stop being served")
 }
 
-func TestHttp_HeadCache_ColdFillCanExceedPollInterval(t *testing.T) {
+func TestHttp_BlockStore_ColdFillCanExceedPollInterval(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 2)
 	defer up.Close()
 	const blockDelay = 80 * time.Millisecond
 	up.SetFullBlockDelay(blockDelay)
-	cfg := headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
+	cfg := blockStoreTestConfig(up.URL(), &common.EvmBlockStoreConfig{
 		Enabled: true, Depth: 2, MaxPerTick: 2, Concurrency: 1,
 		PollInterval: common.Duration(100 * time.Millisecond),
 		FetchTimeout: common.Duration(2 * time.Second),
@@ -390,7 +390,7 @@ func TestHttp_HeadCache_ColdFillCanExceedPollInterval(t *testing.T) {
 	require.NoError(t, err)
 	network, err := project.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	hc := network.HeadCache()
+	hc := network.BlockStore()
 	require.NotNil(t, hc)
 	require.Eventually(t, func() bool {
 		_, ok := hc.BlockByNumber(1, true)

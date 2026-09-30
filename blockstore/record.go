@@ -1,4 +1,4 @@
-package headcache
+package blockstore
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-var errRecordTooLarge = errors.New("headcache: block exceeds maxBlockBytes")
+var errRecordTooLarge = errors.New("blockstore: block exceeds maxBlockBytes")
 
 // rawBlock is the subset of block fields hydration validates.
 type rawBlock struct {
@@ -113,13 +113,27 @@ func buildRecord(blockRaw, logsRaw json.RawMessage, maxBlockBytes int64) (*Block
 	if !full && len(b.Transactions) > 0 {
 		return nil, fmt.Errorf("block fetched without full transactions")
 	}
+	if err := validateCompleteLogs(b, n, txs, logsRaw); err != nil {
+		return nil, err
+	}
+	trimmed := bytes.TrimSpace(logsRaw)
+	return &BlockRecord{
+		Number:     n,
+		Hash:       normHash(b.Hash),
+		ParentHash: normHash(b.ParentHash),
+		Block:      append(json.RawMessage(nil), blockRaw...),
+		Logs:       append(json.RawMessage(nil), trimmed...),
+	}, nil
+}
+
+func validateCompleteLogs(b *rawBlock, n int64, txs map[string]struct{}, logsRaw json.RawMessage) error {
 	var logs []rawLog
 	trimmed := bytes.TrimSpace(logsRaw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return nil, fmt.Errorf("null logs")
+		return fmt.Errorf("null logs")
 	}
 	if err := json.Unmarshal(trimmed, &logs); err != nil {
-		return nil, fmt.Errorf("logs: %w", err)
+		return fmt.Errorf("logs: %w", err)
 	}
 	hash := normHash(b.Hash)
 	var bloom types.Bloom
@@ -127,45 +141,35 @@ func buildRecord(blockRaw, logsRaw json.RawMessage, maxBlockBytes int64) (*Block
 	for i := range logs {
 		l := &logs[i]
 		if normHash(l.BlockHash) != hash {
-			return nil, fmt.Errorf("log %d blockHash mismatch", i)
+			return fmt.Errorf("log %d blockHash mismatch", i)
 		}
 		ln, err := parseHexInt(l.BlockNumber)
 		if err != nil || ln != n {
-			return nil, fmt.Errorf("log %d blockNumber mismatch", i)
+			return fmt.Errorf("log %d blockNumber mismatch", i)
 		}
 		if _, ok := txs[normHash(l.TransactionHash)]; !ok {
-			return nil, fmt.Errorf("log %d transaction not in block", i)
+			return fmt.Errorf("log %d transaction not in block", i)
 		}
 		if l.Removed {
-			return nil, fmt.Errorf("log %d marked removed", i)
+			return fmt.Errorf("log %d marked removed", i)
 		}
 		idx, err := parseHexInt(l.LogIndex)
 		if err != nil || idx <= prevIdx {
-			return nil, fmt.Errorf("log %d logIndex not increasing", i)
+			return fmt.Errorf("log %d logIndex not increasing", i)
 		}
 		prevIdx = idx
 		bloom.Add(common.HexToAddress(l.Address).Bytes())
-		for _, t := range l.Topics {
-			bloom.Add(common.HexToHash(t).Bytes())
+		for _, topic := range l.Topics {
+			bloom.Add(common.HexToHash(topic).Bytes())
 		}
 	}
-	// The logs bloom commits to every (address, topic) of the block's logs. A
-	// mismatch means the log list is incomplete or foreign (e.g. an upstream
-	// returning [] for a block it has not indexed yet).
 	if b.LogsBloom == "" {
-		return nil, fmt.Errorf("block missing logsBloom")
+		return fmt.Errorf("block missing logsBloom")
 	}
-	want := types.BytesToBloom(common.FromHex(b.LogsBloom))
-	if want != bloom {
-		return nil, fmt.Errorf("logsBloom mismatch (logs incomplete)")
+	if types.BytesToBloom(common.FromHex(b.LogsBloom)) != bloom {
+		return fmt.Errorf("logsBloom mismatch (logs incomplete)")
 	}
-	return &BlockRecord{
-		Number:     n,
-		Hash:       hash,
-		ParentHash: normHash(b.ParentHash),
-		Block:      append(json.RawMessage(nil), blockRaw...),
-		Logs:       append(json.RawMessage(nil), trimmed...),
-	}, nil
+	return nil
 }
 
 // BlockJSON renders the block. full=false replaces transactions by hashes.

@@ -1608,13 +1608,13 @@ export interface EvmNetworkConfig {
      */
     safeBlockSource?: string;
     /**
-     * HeadCache opts into the head-driven full-block/log cache: a Redis-shared,
+     * BlockStore opts into the head-driven full-block/log cache: a Redis-shared,
      * parent-hash-verified window of recent canonical blocks (with their
      * logs) hydrated from upstreams as the head advances. It serves
      * eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
      * feeds WebSocket subscriptions. Nil or disabled changes nothing.
      */
-    headCache?: EvmHeadCacheConfig;
+    blockStore?: EvmBlockStoreConfig;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -1926,7 +1926,6 @@ export interface MetricsConfig {
      * families are exposed at all, which of their labels survive, and which
      * buckets a histogram uses. Entries are applied by specificity rather than
      * by list order — see MetricsCustomizationConfig.
-     *
      * 	metrics:
      * 	  customizations:
      * 	    - subject: "consensus_*"
@@ -1940,7 +1939,7 @@ export interface MetricsConfig {
      * 	    - subject: network_request_duration_seconds
      * 	      buckets: [0.05, 0.5, 5]
      */
-    customizations?: MetricsCustomizationConfig[];
+    customizations?: (MetricsCustomizationConfig | undefined)[];
     /**
      * Deprecated: use Customizations with a `labels` list. Kept working so
      * existing configs keep loading; it is desugared onto the same rules as an
@@ -2009,7 +2008,6 @@ export interface MetricsCustomizationConfig {
      * Action drops the matched families from /metrics, or keeps them against a
      * broader drop. Omit it to leave exposure alone and only customize labels or
      * buckets.
-     *
      * A dropped eRPC family is never registered, so it costs no series and no
      * collection time — but that makes it a startup decision, undone only by a
      * restart. Stock collectors are registered outside eRPC and so are filtered
@@ -2021,14 +2019,13 @@ export interface MetricsCustomizationConfig {
      * Labels projects the matched families' label sets. Same precedence rules as
      * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
      * drops the group and spares the one label.
-     *
      * Dropping a label collapses every series that differed only in it. Counter
      * sums stay correct, but the dimension stops being queryable — check what
      * reads it (billing or attribution pipelines, dashboards) first. Gauges have
      * no projection, because collapsing gauge series would report whichever
      * writer wrote last rather than a coarser number.
      */
-    labels?: MetricLabelCustomizationConfig[];
+    labels?: (MetricLabelCustomizationConfig | undefined)[];
     /**
      * Buckets replaces the bucket boundaries of the matched histograms,
      * overriding both metrics.histogramBuckets and what the metric declares in
@@ -2054,9 +2051,9 @@ export interface RateLimitStoreConfig {
     nearLimitRatio?: number;
 }
 /**
- * EvmHeadCacheConfig configures the head-driven full-block/log cache.
+ * EvmBlockStoreConfig configures the head-driven full-block/log cache.
  */
-export interface EvmHeadCacheConfig {
+export interface EvmBlockStoreConfig {
     /**
      * Enabled turns the cache on. Default false.
      */
@@ -2116,6 +2113,23 @@ export interface EvmHeadCacheConfig {
      * "default". A fingerprint of the network's upstream set is always appended.
      */
     namespace?: string;
+    /**
+     * Historical configures the independent cache for finalized blocks and complete logs.
+     */
+    historical?: EvmBlockStoreHistoricalConfig;
+}
+/**
+ * EvmBlockStoreHistoricalConfig configures the independent finalized-block and complete-log cache.
+ */
+export interface EvmBlockStoreHistoricalConfig {
+    /**
+     * Enabled opts into storing finalized full blocks independently of the live window. Default false.
+     */
+    enabled?: boolean;
+    /**
+     * TTL is how long historical records remain eligible for reuse. Default 1h.
+     */
+    ttl?: Duration;
 }
 /**
  * WebSocketServerConfig configures the JSON-RPC WebSocket endpoint. It is

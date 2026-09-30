@@ -46,7 +46,7 @@ func dialRaw(t *testing.T, base string) *websocket.Conn {
 func TestWs_UnsupportedContract(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true})
 	cfg.Projects[0].IgnoreMethods = []string{"eth_unsubscribe"}
 	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
 	defer shutdown()
@@ -95,7 +95,7 @@ func TestWs_SingleInvalidRequestCodes(t *testing.T) {
 func TestWs_IdlessNotificationsHaveNoSubscriptionEffects(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	_, _, base, shutdown, e := createServerTestFixtures(wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
+	_, _, base, shutdown, e := createServerTestFixtures(wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
 	defer shutdown()
 	waitHead(t, e, 20)
 	w, _, err := dialWs(t, wsURL(base, ""), nil)
@@ -149,7 +149,7 @@ func TestWs_ConfigFallbacks(t *testing.T) {
 func TestWs_OutlivesHTTPWriteTimeout(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true})
 	cfg.Server.WriteTimeout = common.Duration(time.Second).Ptr()
 	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
 	defer shutdown()
@@ -170,7 +170,7 @@ func TestWs_OutlivesHTTPWriteTimeout(t *testing.T) {
 func TestWs_SubscribeRateLimit(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true, MaxSubscriptionsPerConnection: 10})
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true, MaxSubscriptionsPerConnection: 10})
 	cfg.RateLimiters = &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{{
 		Id: "ws-subs", Rules: []*common.RateLimitRuleConfig{{Method: "eth_subscribe", MaxCount: 2, Period: common.RateLimitPeriodMinute}},
 	}}}
@@ -199,7 +199,7 @@ func TestWs_SubscribeRateLimit(t *testing.T) {
 func TestWs_UnauthorizedUpgradeDoesNotCreateNetwork(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true})
 	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 		{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Id: "s1", Value: "s3cret"}},
 	}}
@@ -252,7 +252,7 @@ func TestWs_UnauthorizedUpgradeDoesNotCreateNetwork(t *testing.T) {
 func TestWs_UndeliveredSubscribeReplyReleases(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true})
 	_, _, _, shutdown, e := createServerTestFixtures(cfg, t)
 	defer shutdown()
 	waitHead(t, e, 20)
@@ -290,7 +290,7 @@ func TestWs_UndeliveredSubscribeReplyReleases(t *testing.T) {
 func TestWs_DisconnectReleasesResources(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{
 		Enabled: true, MaxConnections: 1, MaxSubscriptionsPerConnection: 50,
 	})
 	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)

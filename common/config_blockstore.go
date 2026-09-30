@@ -5,13 +5,13 @@ import (
 	"time"
 )
 
-// EvmHeadCacheConfig configures the head-driven full-block/log cache.
-type EvmHeadCacheConfig struct {
+// EvmBlockStoreConfig configures the head-driven full-block/log cache.
+type EvmBlockStoreConfig struct {
 	// Enabled turns the cache on. Default false.
 	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
 	// ConnectorId names a redis-driver connector declared under
-	// database.evmJsonRpcCache.connectors. Replicas share immutable,
-	// hash-addressed block/log payloads; each replica verifies its own head.
+	// database.evmJsonRpcCache.connectors. Fleet mode elects one lease holder to
+	// verify and publish a canonical snapshot; followers consume that snapshot.
 	// Required.
 	ConnectorId string `yaml:"connectorId,omitempty" json:"connectorId,omitempty"`
 	// Depth is how many recent canonical blocks the window holds. Default 128.
@@ -42,12 +42,23 @@ type EvmHeadCacheConfig struct {
 	// Namespace isolates shared payloads between deployments. Defaults to
 	// "default". A fingerprint of the network's upstream set is always appended.
 	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	// Historical configures the independent cache for finalized blocks and complete logs.
+	Historical EvmBlockStoreHistoricalConfig `yaml:"historical,omitempty" json:"historical,omitempty"`
 }
 
-func (c *EvmHeadCacheConfig) SetDefaults() {
+// EvmBlockStoreHistoricalConfig configures the independent finalized-block and complete-log cache.
+type EvmBlockStoreHistoricalConfig struct {
+	// Enabled opts into storing finalized full blocks independently of the live window. Default false.
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
+	// TTL is how long historical records remain eligible for reuse. Default 1h.
+	TTL Duration `yaml:"ttl,omitempty" json:"ttl,omitempty" tstype:"Duration"`
+}
+
+func (c *EvmBlockStoreConfig) SetDefaults() {
 	if c == nil {
 		return
 	}
+	c.Historical.SetDefaults()
 	if c.Depth == 0 {
 		c.Depth = 128
 	}
@@ -77,36 +88,64 @@ func (c *EvmHeadCacheConfig) SetDefaults() {
 	}
 }
 
-func (c *EvmHeadCacheConfig) Validate() error {
-	if c == nil || !c.Enabled {
+func (c *EvmBlockStoreHistoricalConfig) SetDefaults() {
+	if c == nil {
+		return
+	}
+	if c.TTL == 0 {
+		c.TTL = Duration(time.Hour)
+	}
+}
+
+func (c *EvmBlockStoreConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if err := c.Historical.Validate(); err != nil {
+		return err
+	}
+	if !c.Enabled && !c.Historical.Enabled {
 		return nil
 	}
 	if c.ConnectorId == "" {
-		return fmt.Errorf("evm.headCache.connectorId is required (a redis connector under database.evmJsonRpcCache.connectors)")
+		return fmt.Errorf("evm.blockStore.connectorId is required (a redis connector under database.evmJsonRpcCache.connectors)")
+	}
+	if !c.Enabled {
+		return nil
 	}
 	if c.Depth < 1 || c.Depth > 4096 {
-		return fmt.Errorf("evm.headCache.depth must be within 1..4096")
+		return fmt.Errorf("evm.blockStore.depth must be within 1..4096")
 	}
 	if c.MaxBytes < 1<<20 {
-		return fmt.Errorf("evm.headCache.maxBytes must be at least 1MB")
+		return fmt.Errorf("evm.blockStore.maxBytes must be at least 1MB")
 	}
 	if c.MaxPerTick < 1 || c.MaxPerTick > c.Depth {
-		return fmt.Errorf("evm.headCache.maxPerTick must be within 1..depth")
+		return fmt.Errorf("evm.blockStore.maxPerTick must be within 1..depth")
 	}
 	if c.Concurrency < 1 || c.Concurrency > 64 {
-		return fmt.Errorf("evm.headCache.concurrency must be within 1..64")
+		return fmt.Errorf("evm.blockStore.concurrency must be within 1..64")
 	}
 	if c.PollInterval <= 0 || c.FetchTimeout <= 0 {
-		return fmt.Errorf("evm.headCache.pollInterval and fetchTimeout must be positive")
+		return fmt.Errorf("evm.blockStore.pollInterval and fetchTimeout must be positive")
 	}
 	if c.MaxLogsRange < 1 || c.MaxLogsRange > c.Depth {
-		return fmt.Errorf("evm.headCache.maxLogsRange must be within 1..depth")
+		return fmt.Errorf("evm.blockStore.maxLogsRange must be within 1..depth")
 	}
 	if c.MaxBlockBytes < 1024 || c.MaxBlockBytes > c.MaxBytes {
-		return fmt.Errorf("evm.headCache.maxBlockBytes must be within 1KB..maxBytes")
+		return fmt.Errorf("evm.blockStore.maxBlockBytes must be within 1KB..maxBytes")
 	}
 	if c.MaxStaleness < c.PollInterval {
-		return fmt.Errorf("evm.headCache.maxStaleness must be >= pollInterval")
+		return fmt.Errorf("evm.blockStore.maxStaleness must be >= pollInterval")
+	}
+	return nil
+}
+
+func (c *EvmBlockStoreHistoricalConfig) Validate() error {
+	if c == nil || !c.Enabled {
+		return nil
+	}
+	if c.TTL <= 0 {
+		return fmt.Errorf("evm.blockStore.historical.ttl must be positive")
 	}
 	return nil
 }
@@ -177,17 +216,17 @@ func (c *WebSocketServerConfig) Validate() error {
 
 // ValidateConnector checks that ConnectorId references a redis connector in
 // database.evmJsonRpcCache.connectors.
-func (c *EvmHeadCacheConfig) ValidateConnector(cfg *Config) error {
+func (c *EvmBlockStoreConfig) ValidateConnector(cfg *Config) error {
 	if cfg != nil && cfg.Database != nil && cfg.Database.EvmJsonRpcCache != nil {
 		for _, conn := range cfg.Database.EvmJsonRpcCache.Connectors {
 			if conn == nil || conn.Id != c.ConnectorId {
 				continue
 			}
 			if conn.Driver != DriverRedis || conn.Redis == nil {
-				return fmt.Errorf("evm.headCache.connectorId %q must reference a redis connector, got driver %q", c.ConnectorId, conn.Driver)
+				return fmt.Errorf("evm.blockStore.connectorId %q must reference a redis connector, got driver %q", c.ConnectorId, conn.Driver)
 			}
 			return nil
 		}
 	}
-	return fmt.Errorf("evm.headCache.connectorId %q not found in database.evmJsonRpcCache.connectors", c.ConnectorId)
+	return fmt.Errorf("evm.blockStore.connectorId %q not found in database.evmJsonRpcCache.connectors", c.ConnectorId)
 }

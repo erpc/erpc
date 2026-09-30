@@ -1,4 +1,4 @@
-package headcache
+package blockstore
 
 import (
 	"context"
@@ -259,7 +259,7 @@ func TestCache_VerifiedWindowHitMissAndTipFastPath(t *testing.T) {
 }
 
 func TestCache_TickMetricsTrackFreshnessAndErrorOutcome(t *testing.T) {
-	project, network := "headcache-metrics-test", "evm:headcache-metrics-test"
+	project, network := "blockstore-metrics-test", "evm:blockstore-metrics-test"
 	opts := testOpts()
 	opts.Scope.ProjectId, opts.Scope.NetworkId = project, network
 	chain := newFakeChain(5)
@@ -267,10 +267,10 @@ func TestCache_TickMetricsTrackFreshnessAndErrorOutcome(t *testing.T) {
 	cache := New(opts, newMapStore(), chain, func(context.Context) int64 { return liveTip }, nil)
 
 	labels := []string{project, network}
-	fresh := telemetry.MetricHeadCacheFresh.WithLabelValues(labels...)
-	refreshFresh := telemetry.MetricHeadCacheRefreshTotal.WithLabelValues(project, network, "fresh")
-	refreshStale := telemetry.MetricHeadCacheRefreshTotal.WithLabelValues(project, network, "stale")
-	refreshError := telemetry.MetricHeadCacheRefreshTotal.WithLabelValues(project, network, "error")
+	fresh := telemetry.MetricBlockStoreFresh.WithLabelValues(labels...)
+	refreshFresh := telemetry.MetricBlockStoreRefreshTotal.WithLabelValues(project, network, "fresh")
+	refreshStale := telemetry.MetricBlockStoreRefreshTotal.WithLabelValues(project, network, "stale")
+	refreshError := telemetry.MetricBlockStoreRefreshTotal.WithLabelValues(project, network, "error")
 	initialFresh, initialStale, initialError := testutil.ToFloat64(refreshFresh), testutil.ToFloat64(refreshStale), testutil.ToFloat64(refreshError)
 
 	cache.Tick(context.Background())

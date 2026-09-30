@@ -1,4 +1,4 @@
-package headcache
+package blockstore
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	ErrNotFound         = errors.New("headcache: not found")
-	ErrStoreUnavailable = errors.New("headcache: store unavailable")
+	ErrNotFound         = errors.New("blockstore: not found")
+	ErrStoreUnavailable = errors.New("blockstore: store unavailable")
 )
 
 type Scope struct {

@@ -17,8 +17,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/erpc/erpc/auth"
+	"github.com/erpc/erpc/blockstore"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/headcache"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -190,8 +190,8 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serverSpan.SetAttributes(attribute.String("project.id", projectId), attribute.String("network.id", networkId))
-	if nw.HeadCache() == nil {
-		reject(http.StatusServiceUnavailable, "websocket subscriptions require evm.headCache for this network")
+	if nw.BlockStore() == nil {
+		reject(http.StatusServiceUnavailable, "websocket subscriptions require evm.blockStore for this network")
 		return
 	}
 
@@ -283,10 +283,10 @@ func (ws *wsServer) authenticate(ctx context.Context, project *PreparedProject, 
 
 type wsSub struct {
 	id     string
-	sub    *headcache.Subscription
+	sub    *blockstore.Subscription
 	logs   bool
 	kind   string
-	filter *headcache.LogFilter
+	filter *blockstore.LogFilter
 	// unsubscribed distinguishes client eth_unsubscribe from overflow closes.
 	unsubscribed atomic.Bool
 	// last is the highest block number emitted (0 = nothing yet); used to
@@ -677,7 +677,7 @@ func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, re
 				return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), "logs filter must be an object"), nil
 			}
 		}
-		f, err := headcache.ParseLogFilter(obj)
+		f, err := blockstore.ParseLogFilter(obj)
 		if err != nil {
 			return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), err.Error()), nil
 		}
@@ -686,7 +686,7 @@ func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, re
 		return errorReply(req.ID, int(common.JsonRpcErrorUnsupportedException), fmt.Sprintf("unsupported subscription type %q (supported: newHeads, logs)", kind)), nil
 	}
 
-	hc := c.network.HeadCache()
+	hc := c.network.BlockStore()
 	if hc == nil {
 		return errorReply(req.ID, int(common.JsonRpcErrorUnsupportedException), "subscriptions unavailable: head cache is not enabled for this network"), nil
 	}
@@ -787,7 +787,7 @@ var errWsGap = errors.New("head discontinuity")
 // Added must be contiguous and start right after the last emitted block, or
 // right at the lowest Removed block for a reorg rewind. The first event of a
 // subscription establishes the baseline.
-func checkContinuity(last int64, ev headcache.Event) error {
+func checkContinuity(last int64, ev blockstore.Event) error {
 	for i := 1; i < len(ev.Added); i++ {
 		if ev.Added[i].Number != ev.Added[i-1].Number+1 {
 			return errWsGap
@@ -815,7 +815,7 @@ func checkContinuity(last int64, ev headcache.Event) error {
 	return nil
 }
 
-func (c *wsConn) emit(s *wsSub, ev headcache.Event) error {
+func (c *wsConn) emit(s *wsSub, ev blockstore.Event) error {
 	if err := checkContinuity(s.last, ev); err != nil {
 		return err
 	}

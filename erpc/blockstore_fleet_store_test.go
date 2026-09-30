@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/erpc/erpc/blockstore"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
-	"github.com/erpc/erpc/headcache"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -18,41 +18,41 @@ import (
 
 func init() { util.ConfigureTestLogger() }
 
-func TestHeadCacheFingerprintIncludesCachePolicy(t *testing.T) {
+func TestBlockStoreFingerprintIncludesCachePolicy(t *testing.T) {
 	project := &common.ProjectConfig{}
 	network := &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
-		Evm: &common.EvmNetworkConfig{HeadCache: &common.EvmHeadCacheConfig{
+		Evm: &common.EvmNetworkConfig{BlockStore: &common.EvmBlockStoreConfig{
 			Enabled: true, Depth: 64, MaxBytes: 1024, MaxBlockBytes: 512,
 		}},
 	}
 	fingerprint := func() string {
-		hash, err := headCacheFingerprint(project, network)
+		hash, err := blockStoreFingerprint(project, network)
 		require.NoError(t, err)
 		return hash
 	}
 	base := fingerprint()
-	network.Evm.HeadCache.Depth++
+	network.Evm.BlockStore.Depth++
 	require.NotEqual(t, base, fingerprint(), "different cache depths must use distinct fleet scopes")
-	network.Evm.HeadCache.Depth--
-	network.Evm.HeadCache.MaxBytes++
+	network.Evm.BlockStore.Depth--
+	network.Evm.BlockStore.MaxBytes++
 	require.NotEqual(t, base, fingerprint(), "different cache capacities must use distinct fleet scopes")
-	network.Evm.HeadCache.MaxBytes--
-	network.Evm.HeadCache.MaxBlockBytes++
+	network.Evm.BlockStore.MaxBytes--
+	network.Evm.BlockStore.MaxBlockBytes++
 	require.NotEqual(t, base, fingerprint(), "different maximum block sizes must use distinct fleet scopes")
 }
 
-func TestHeadCacheFleetStoreLeaseFencingAndPartition(t *testing.T) {
+func TestBlockStoreFleetStoreLeaseFencingAndPartition(t *testing.T) {
 	mr := miniredis.RunT(t)
 	ctx := context.Background()
 	cfg := &common.RedisConnectorConfig{URI: "redis://" + mr.Addr()}
 	require.NoError(t, cfg.SetDefaults())
 	logger := zerolog.New(io.Discard)
-	rc, err := data.NewRedisConnector(ctx, &logger, "headcache-fleet-test", cfg)
+	rc, err := data.NewRedisConnector(ctx, &logger, "blockstore-fleet-test", cfg)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return rc.Client() != nil }, 3*time.Second, 10*time.Millisecond)
-	store := &headCacheConnectorStore{connector: rc, redis: rc}
-	scope := headcache.Scope{Namespace: "test", ProjectId: "project", NetworkId: "evm:1"}
+	store := &blockStoreConnectorStore{connector: rc, redis: rc}
+	scope := blockstore.Scope{Namespace: "test", ProjectId: "project", NetworkId: "evm:1"}
 
 	_, err = store.Acquire(ctx, scope, time.Nanosecond)
 	require.Error(t, err)
@@ -75,11 +75,11 @@ func TestHeadCacheFleetStoreLeaseFencingAndPartition(t *testing.T) {
 		return err
 	}())
 	require.Error(t, func() error {
-		_, err := first.Publish(ctx, &headcache.Snapshot{Head: 1, Hashes: []string{"x"}, At: time.Now()}, time.Nanosecond)
+		_, err := first.Publish(ctx, &blockstore.Snapshot{Head: 1, Hashes: []string{"x"}, At: time.Now()}, time.Nanosecond)
 		return err
 	}())
 
-	snap := &headcache.Snapshot{Head: 2, Hashes: []string{"a", "b", "c"}, At: time.Now(), Incomplete: true}
+	snap := &blockstore.Snapshot{Head: 2, Hashes: []string{"a", "b", "c"}, At: time.Now(), Incomplete: true}
 	published, err := first.Publish(ctx, snap, 3*time.Second)
 	require.NoError(t, err)
 	require.True(t, published)
@@ -104,7 +104,7 @@ func TestHeadCacheFleetStoreLeaseFencingAndPartition(t *testing.T) {
 	takeover, err := store.Acquire(ctx, scope, time.Second)
 	require.NoError(t, err)
 	require.NotNil(t, takeover)
-	staleWrite, err := first.Publish(ctx, &headcache.Snapshot{Head: 9, Hashes: []string{"x"}, At: time.Now()}, time.Minute)
+	staleWrite, err := first.Publish(ctx, &blockstore.Snapshot{Head: 9, Hashes: []string{"x"}, At: time.Now()}, time.Minute)
 	require.NoError(t, err)
 	require.False(t, staleWrite)
 	staleRenew, err := first.Renew(ctx, time.Second)
@@ -115,20 +115,20 @@ func TestHeadCacheFleetStoreLeaseFencingAndPartition(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, stillHeld)
 
-	newSnap := &headcache.Snapshot{Head: 4, Hashes: []string{"d"}, At: time.Now()}
+	newSnap := &blockstore.Snapshot{Head: 4, Hashes: []string{"d"}, At: time.Now()}
 	ok, err := takeover.Publish(ctx, newSnap, time.Second)
 	require.NoError(t, err)
 	require.True(t, ok)
 	value, err := rc.Get(ctx, data.ConnectorMainIndex, store.mustPartition(t, scope), "fleet-snapshot", nil)
 	require.NoError(t, err)
-	var decoded headcache.Snapshot
+	var decoded blockstore.Snapshot
 	require.NoError(t, json.Unmarshal(value, &decoded))
 	require.Equal(t, int64(4), decoded.Head)
 	require.NoError(t, takeover.Release(ctx))
 	require.NoError(t, other.Release(ctx))
 }
 
-func (s *headCacheConnectorStore) mustPartition(t *testing.T, scope headcache.Scope) string {
+func (s *blockStoreConnectorStore) mustPartition(t *testing.T, scope blockstore.Scope) string {
 	t.Helper()
 	partition, err := s.partition(scope)
 	require.NoError(t, err)

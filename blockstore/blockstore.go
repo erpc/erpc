@@ -1,4 +1,4 @@
-package headcache
+package blockstore
 
 import (
 	"context"
@@ -151,7 +151,7 @@ func (c *Cache) Stop() {
 			c.closeSubLocked(s)
 		}
 		c.mu.Unlock()
-		telemetry.MetricHeadCacheFresh.WithLabelValues(c.opt.Scope.ProjectId, c.opt.Scope.NetworkId).Set(0)
+		telemetry.MetricBlockStoreFresh.WithLabelValues(c.opt.Scope.ProjectId, c.opt.Scope.NetworkId).Set(0)
 	})
 }
 
@@ -176,7 +176,7 @@ func (c *Cache) run(ctx context.Context) {
 func (c *Cache) Tick(ctx context.Context) {
 	c.stepMu.Lock()
 	defer c.stepMu.Unlock()
-	ctx, span := common.StartDetailSpan(ctx, "HeadCache.Tick")
+	ctx, span := common.StartDetailSpan(ctx, "BlockStore.Tick")
 	defer span.End()
 	if c.opt.FetchTimeout > 0 {
 		var cancel context.CancelFunc
@@ -191,7 +191,7 @@ func (c *Cache) Tick(ctx context.Context) {
 	}
 	fresh := c.Fresh()
 	labels := []string{c.opt.Scope.ProjectId, c.opt.Scope.NetworkId}
-	telemetry.MetricHeadCacheFresh.WithLabelValues(labels...).Set(boolFloat64(fresh))
+	telemetry.MetricBlockStoreFresh.WithLabelValues(labels...).Set(boolFloat64(fresh))
 	outcome := "stale"
 	if err != nil {
 		outcome = "error"
@@ -200,7 +200,7 @@ func (c *Cache) Tick(ctx context.Context) {
 	} else if fresh {
 		outcome = "fresh"
 	}
-	telemetry.MetricHeadCacheRefreshTotal.WithLabelValues(labels[0], labels[1], outcome).Inc()
+	telemetry.MetricBlockStoreRefreshTotal.WithLabelValues(labels[0], labels[1], outcome).Inc()
 	c.expireSubscribers()
 }
 

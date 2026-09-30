@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/erpc/erpc/blockstore"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/headcache"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/golang-jwt/jwt/v4"
@@ -128,8 +128,8 @@ func (w *wsClient) next(sub string) json.RawMessage {
 	}
 }
 
-func wsHeadCacheCfg(up *scriptedEvmUpstream, ws *common.WebSocketServerConfig) *common.Config {
-	cfg := headCacheTestConfig(up.URL(), &common.EvmHeadCacheConfig{
+func wsBlockStoreCfg(up *scriptedEvmUpstream, ws *common.WebSocketServerConfig) *common.Config {
+	cfg := blockStoreTestConfig(up.URL(), &common.EvmBlockStoreConfig{
 		Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond),
 	})
 	cfg.Server.WebSocket = ws
@@ -141,8 +141,8 @@ func waitHead(t *testing.T, e *ERPC, n int64) {
 	require.NoError(t, err)
 	nw, err := prj.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	require.NotNil(t, nw.HeadCache())
-	require.Eventually(t, func() bool { return nw.HeadCache().Head() == n }, 10*time.Second, 50*time.Millisecond)
+	require.NotNil(t, nw.BlockStore())
+	require.Eventually(t, func() bool { return nw.BlockStore().Head() == n }, 10*time.Second, 50*time.Millisecond)
 }
 
 func subCount(t *testing.T, e *ERPC) int {
@@ -151,14 +151,14 @@ func subCount(t *testing.T, e *ERPC) int {
 	require.NoError(t, err)
 	nw, err := prj.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	require.NotNil(t, nw.HeadCache())
-	return nw.HeadCache().SubscriberCount()
+	require.NotNil(t, nw.BlockStore())
+	return nw.BlockStore().SubscriberCount()
 }
 
 func TestWs_SubscriptionsReorg(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	_, _, base, shutdown, e := createServerTestFixtures(wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
+	_, _, base, shutdown, e := createServerTestFixtures(wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
 	defer shutdown()
 	waitHead(t, e, 20)
 
@@ -221,7 +221,7 @@ func TestWs_SubscriptionsReorg(t *testing.T) {
 func TestWs_AuthOriginAndDisabled(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true, PingInterval: common.Duration(200 * time.Millisecond)})
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true, PingInterval: common.Duration(200 * time.Millisecond)})
 	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 		{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Id: "s1", Value: "s3cret"}},
 	}}
@@ -252,12 +252,12 @@ func TestWs_AuthOriginAndDisabled(t *testing.T) {
 	require.Nil(t, w2.call("eth_subscribe", `["newHeads"]`).Error)
 }
 
-func TestWs_DisabledAndNoHeadCache(t *testing.T) {
+func TestWs_DisabledAndNoBlockStore(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
 
 	// WS disabled: an Upgrade request is handled as plain HTTP (no 101).
-	cfg := wsHeadCacheCfg(up, nil)
+	cfg := wsBlockStoreCfg(up, nil)
 	_, _, base, shutdown, _ := createServerTestFixtures(cfg, t)
 	_, resp, err := dialWs(t, wsURL(base, ""), nil)
 	require.Error(t, err)
@@ -268,7 +268,7 @@ func TestWs_DisabledAndNoHeadCache(t *testing.T) {
 
 	// WS enabled but no head cache for the network: the upgrade is refused
 	// before accepting, so no connection can fall back to upstream calls.
-	cfg2 := headCacheTestConfig(up.URL(), nil)
+	cfg2 := blockStoreTestConfig(up.URL(), nil)
 	cfg2.Server.WebSocket = &common.WebSocketServerConfig{Enabled: true}
 	_, _, base2, shutdown2, _ := createServerTestFixtures(cfg2, t)
 	defer shutdown2()
@@ -280,7 +280,7 @@ func TestWs_DisabledAndNoHeadCache(t *testing.T) {
 func TestWs_ConnectionMetricsTrackLifecycleAndBoundCloseReason(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	_, _, base, shutdown, e := createServerTestFixtures(wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
+	_, _, base, shutdown, e := createServerTestFixtures(wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
 	defer shutdown()
 	waitHead(t, e, 20)
 
@@ -303,7 +303,7 @@ func TestWs_ConnectionMetricsTrackLifecycleAndBoundCloseReason(t *testing.T) {
 func TestWs_Caps(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{
 		Enabled: true, MaxConnections: 2, MaxSubscriptionsPerConnection: 1, MaxMessageBytes: 1024,
 	})
 	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
@@ -372,7 +372,7 @@ func testWsConn(t *testing.T, queue int) (*wsConn, context.CancelCauseFunc) {
 	}, cancel
 }
 
-func manyLogsRecord(n int64, logs int) *headcache.BlockRecord {
+func manyLogsRecord(n int64, logs int) *blockstore.BlockRecord {
 	var b strings.Builder
 	b.WriteByte('[')
 	for i := 0; i < logs; i++ {
@@ -383,7 +383,7 @@ func manyLogsRecord(n int64, logs int) *headcache.BlockRecord {
 			scriptedEmitter, scriptedTopicEven, n, n, i)
 	}
 	b.WriteByte(']')
-	return &headcache.BlockRecord{Number: n, Hash: fmt.Sprintf("0xh%d", n), Block: []byte(`{}`), Logs: []byte(b.String())}
+	return &blockstore.BlockRecord{Number: n, Hash: fmt.Sprintf("0xh%d", n), Block: []byte(`{}`), Logs: []byte(b.String())}
 }
 
 func TestWs_BusyBlockDeliveredToReadingClient(t *testing.T) {
@@ -402,7 +402,7 @@ func TestWs_BusyBlockDeliveredToReadingClient(t *testing.T) {
 		}
 	}()
 	s := &wsSub{id: "0x1", logs: true}
-	require.NoError(t, c.emit(s, headcache.Event{Added: []*headcache.BlockRecord{manyLogsRecord(10, 1000)}}))
+	require.NoError(t, c.emit(s, blockstore.Event{Added: []*blockstore.BlockRecord{manyLogsRecord(10, 1000)}}))
 	<-done
 	require.NoError(t, c.ctx.Err(), "a reading client must not be disconnected")
 	require.Equal(t, 1000, got)
@@ -412,16 +412,16 @@ func TestWs_StreamStalledClientDisconnected(t *testing.T) {
 	c, _ := testWsConn(t, 4)
 	c.ws.cfg.WriteTimeout = common.Duration(100 * time.Millisecond)
 	s := &wsSub{id: "0x1", logs: true}
-	require.NoError(t, c.emit(s, headcache.Event{Added: []*headcache.BlockRecord{manyLogsRecord(10, 50)}}))
+	require.NoError(t, c.emit(s, blockstore.Event{Added: []*blockstore.BlockRecord{manyLogsRecord(10, 50)}}))
 	var ce *wsCloseErr
 	require.ErrorAs(t, context.Cause(c.ctx), &ce)
 	require.Equal(t, websocket.StatusPolicyViolation, ce.code)
 }
 
 func TestWs_GapDetection(t *testing.T) {
-	rec := func(n int64) *headcache.BlockRecord { return &headcache.BlockRecord{Number: n} }
-	ev := func(rem []int64, add ...int64) headcache.Event {
-		e := headcache.Event{}
+	rec := func(n int64) *blockstore.BlockRecord { return &blockstore.BlockRecord{Number: n} }
+	ev := func(rem []int64, add ...int64) blockstore.Event {
+		e := blockstore.Event{}
 		for _, n := range rem {
 			e.Removed = append(e.Removed, rec(n))
 		}
@@ -443,15 +443,15 @@ func TestWs_GapDetection(t *testing.T) {
 	// emit closes via pump on gap; emit itself reports it without sending.
 	c, _ := testWsConn(t, 16)
 	s := &wsSub{id: "0x1"}
-	require.NoError(t, c.emit(s, headcache.Event{Added: []*headcache.BlockRecord{manyLogsRecord(5, 0)}}))
-	require.ErrorIs(t, c.emit(s, headcache.Event{Added: []*headcache.BlockRecord{manyLogsRecord(7, 0)}}), errWsGap)
+	require.NoError(t, c.emit(s, blockstore.Event{Added: []*blockstore.BlockRecord{manyLogsRecord(5, 0)}}))
+	require.ErrorIs(t, c.emit(s, blockstore.Event{Added: []*blockstore.BlockRecord{manyLogsRecord(7, 0)}}), errWsGap)
 }
 
 func TestWs_PingAndReauthClosesExpiredJwt(t *testing.T) {
 	const key = "ws-test-hmac"
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true, PingInterval: common.Duration(200 * time.Millisecond)})
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true, PingInterval: common.Duration(200 * time.Millisecond)})
 	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 		{Type: common.AuthTypeJwt, Jwt: &common.JwtStrategyConfig{
 			VerificationKeys: map[string]string{"default": key}, AllowedAlgorithms: []string{"HS256"},
@@ -488,8 +488,8 @@ func TestWs_PingAndReauthClosesExpiredJwt(t *testing.T) {
 func TestWs_PerProjectCap(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
-	cfg := wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true, MaxConnections: 10, MaxConnectionsPerProject: 1})
-	other := wsHeadCacheCfg(up, nil).Projects[0]
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true, MaxConnections: 10, MaxConnectionsPerProject: 1})
+	other := wsBlockStoreCfg(up, nil).Projects[0]
 	other.Id = "other"
 	cfg.Projects = append(cfg.Projects, other)
 	_, _, base, shutdown, _ := createServerTestFixtures(cfg, t)

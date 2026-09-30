@@ -19,7 +19,7 @@ projects:
       - architecture: evm
         evm:
           chainId: 1
-          headCache:
+          blockStore:
             enabled: true
             connectorId: redis-cache
             # The verified window is prefetched gradually when first started.
