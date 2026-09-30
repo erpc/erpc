@@ -1849,6 +1849,8 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			EnableGzip:    defaults.JsonRpc.EnableGzip,
 			ProxyPool:     defaults.JsonRpc.ProxyPool,
 			Headers:       defaults.JsonRpc.Headers,
+
+			MaxResponseBytes: defaults.JsonRpc.MaxResponseBytes,
 		}
 	}
 	if u.Grpc == nil && defaults.Grpc != nil {

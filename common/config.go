@@ -1261,6 +1261,16 @@ type JsonRpcUpstreamConfig struct {
 	EnableGzip    *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	Headers       map[string]string `yaml:"headers,omitempty" json:"headers"`
 	ProxyPool     string            `yaml:"proxyPool,omitempty" json:"proxyPool"`
+	// MaxResponseBytes caps the decoded size of one HTTP response body read from
+	// this upstream. The body is read into memory whole before it is parsed, so an
+	// upstream that answers a block-level trace with hundreds of MB can take the
+	// process past its memory limit. Over the cap the body is dropped mid-read and
+	// the call fails with the error jsonrpsee servers such as reth return for their
+	// own cap (-32008 "Response is too big"), so clients that already fall back on
+	// that error (e.g. tracing per transaction) do so here too.
+	//
+	// Zero (the default) leaves responses unbounded.
+	MaxResponseBytes int64 `yaml:"maxResponseBytes,omitempty" json:"maxResponseBytes"`
 }
 
 func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {

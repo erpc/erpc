@@ -225,6 +225,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].jsonRpc.enableGzip` | `*bool` | nil (false) | Compresses outbound request body. Client always sends `Accept-Encoding: gzip` and decompresses responses regardless. |
 | `upstreams[*].jsonRpc.headers` | `map[string]string` | nil | Static headers on every outbound request. Applied via `Header.Set` (overwrites defaults for matching keys). |
 | `upstreams[*].jsonRpc.proxyPool` | string | `""` | References `proxyPools[].id`. Error at startup if pool not found. |
+| `upstreams[*].jsonRpc.maxResponseBytes` | int64 | `0` (unbounded) | Caps the decoded size of one response body. Over the cap the body is dropped mid-read (or not read at all when `Content-Length` already exceeds it) and the call fails with `-32008 "Response is too big"`, the error reth returns for its own cap. For a batch, the cap applies to the whole batch body and every request in it gets the error. |
 | `upstreams[*].grpc.headers` | `map[string]string` | nil | Applied as gRPC metadata on every outbound request. |
 | `upstreams[*].shadow.enabled` | bool | `false` | Registers into `networkShadowUpstreams`; never serves real traffic; receives async mirrored traffic post-response. |
 | `upstreams[*].shadow.sampleRate` | `*float64` | nil → effective `1.0` | Probability a real response triggers a mirror to this upstream. |

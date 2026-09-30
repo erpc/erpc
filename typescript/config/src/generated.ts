@@ -930,6 +930,17 @@ export interface JsonRpcUpstreamConfig {
   enableGzip?: boolean;
   headers?: { [key: string]: string};
   proxyPool?: string;
+  /**
+   * MaxResponseBytes caps the decoded size of one HTTP response body read from
+   * this upstream. The body is read into memory whole before it is parsed, so an
+   * upstream that answers a block-level trace with hundreds of MB can take the
+   * process past its memory limit. Over the cap the body is dropped mid-read and
+   * the call fails with the error jsonrpsee servers such as reth return for their
+   * own cap (-32008 "Response is too big"), so clients that already fall back on
+   * that error (e.g. tracing per transaction) do so here too.
+   * Zero (the default) leaves responses unbounded.
+   */
+  maxResponseBytes?: number /* int64 */;
 }
 /**
  * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
