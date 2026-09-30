@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/telemetry"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -254,6 +256,41 @@ func TestCache_VerifiedWindowHitMissAndTipFastPath(t *testing.T) {
 	require.True(t, ok)
 	_, ok = c.LogsRange(9, 11, nil)
 	require.False(t, ok, "partial ranges are not hits")
+}
+
+func TestCache_TickMetricsTrackFreshnessAndErrorOutcome(t *testing.T) {
+	project, network := "headcache-metrics-test", "evm:headcache-metrics-test"
+	opts := testOpts()
+	opts.Scope.ProjectId, opts.Scope.NetworkId = project, network
+	chain := newFakeChain(5)
+	liveTip := int64(5)
+	cache := New(opts, newMapStore(), chain, func(context.Context) int64 { return liveTip }, nil)
+
+	labels := []string{project, network}
+	fresh := telemetry.MetricHeadCacheFresh.WithLabelValues(labels...)
+	refreshFresh := telemetry.MetricHeadCacheRefreshTotal.WithLabelValues(project, network, "fresh")
+	refreshStale := telemetry.MetricHeadCacheRefreshTotal.WithLabelValues(project, network, "stale")
+	refreshError := telemetry.MetricHeadCacheRefreshTotal.WithLabelValues(project, network, "error")
+	initialFresh, initialStale, initialError := testutil.ToFloat64(refreshFresh), testutil.ToFloat64(refreshStale), testutil.ToFloat64(refreshError)
+
+	cache.Tick(context.Background())
+	require.True(t, cache.Fresh())
+	require.Equal(t, float64(1), testutil.ToFloat64(fresh))
+	require.Equal(t, initialFresh+1, testutil.ToFloat64(refreshFresh))
+	require.Equal(t, initialStale, testutil.ToFloat64(refreshStale))
+	require.Equal(t, initialError, testutil.ToFloat64(refreshError))
+
+	liveTip = -1
+	cache.nowFn = func() time.Time { return time.Now().Add(10 * opts.MaxStaleness) }
+	cache.Tick(context.Background())
+	require.False(t, cache.Fresh())
+	require.Equal(t, float64(0), testutil.ToFloat64(fresh))
+	require.Equal(t, initialError+1, testutil.ToFloat64(refreshError))
+	require.Equal(t, initialFresh+1, testutil.ToFloat64(refreshFresh))
+	require.Equal(t, initialStale, testutil.ToFloat64(refreshStale))
+
+	cache.Stop()
+	require.Equal(t, float64(0), testutil.ToFloat64(fresh))
 }
 
 func TestCache_SharedPayloadReuseAndCorruptionFallback(t *testing.T) {

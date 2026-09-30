@@ -16,6 +16,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/headcache"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -304,6 +305,7 @@ func (n *Network) tryServeHeadCache(ctx context.Context, req *common.NormalizedR
 	}
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	resp.SetFromCache(true)
+	telemetry.CounterHandle(telemetry.MetricHeadCacheHitsTotal, n.projectId, n.networkId, method).Inc()
 	return resp, true
 }
 

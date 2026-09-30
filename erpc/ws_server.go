@@ -21,6 +21,7 @@ import (
 	"github.com/erpc/erpc/headcache"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // WebSocket subscription endpoint.
@@ -108,6 +109,12 @@ func wsHttpError(w http.ResponseWriter, status int, msg string) {
 
 func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 	s := ws.s
+	traceCtx, serverSpan := common.StartHTTPServerSpan(r.Context(), r)
+	defer serverSpan.End()
+	reject := func(status int, msg string) {
+		common.SetTraceSpanError(serverSpan, errors.New(msg))
+		wsHttpError(w, status, msg)
+	}
 	defer func() {
 		if rec := recover(); rec != nil {
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues("ws-handler", "", common.ErrorFingerprint(rec)).Inc()
@@ -115,7 +122,7 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	if s.draining != nil && s.draining.Load() {
-		wsHttpError(w, http.StatusServiceUnavailable, "server is shutting down")
+		reject(http.StatusServiceUnavailable, "server is shutting down")
 		return
 	}
 
@@ -127,12 +134,12 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		isHealth = false
 	}
 	if err != nil || isAdmin || isHealth || projectId == "" || architecture == "" || chainId == "" {
-		wsHttpError(w, http.StatusBadRequest, "websocket requires /<project>/<architecture>/<chainId>")
+		reject(http.StatusBadRequest, "websocket requires /<project>/<architecture>/<chainId>")
 		return
 	}
 	project, err := s.erpc.GetProject(projectId)
 	if err != nil || project == nil {
-		wsHttpError(w, http.StatusNotFound, "project not found")
+		reject(http.StatusNotFound, "project not found")
 		return
 	}
 	networkId := architecture + ":" + chainId
@@ -153,37 +160,38 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !allowed {
-			wsHttpError(w, http.StatusForbidden, "origin not allowed")
+			reject(http.StatusForbidden, "origin not allowed")
 			return
 		}
 	}
 
 	// Credentials are checked at upgrade so unauthenticated clients never get
 	// a connection. Each message is authenticated again with its own method.
-	if _, err := ws.authenticate(r.Context(), project, r, "eth_subscribe", nil); err != nil {
-		wsHttpError(w, http.StatusUnauthorized, "unauthorized")
+	if _, err := ws.authenticate(traceCtx, project, r, "eth_subscribe", nil); err != nil {
+		reject(http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	if n := ws.conns.Add(1); n > int64(ws.cfg.MaxConnections) {
 		ws.conns.Add(-1)
-		wsHttpError(w, http.StatusServiceUnavailable, "too many websocket connections")
+		reject(http.StatusServiceUnavailable, "too many websocket connections")
 		return
 	}
 	defer ws.conns.Add(-1)
 	if !ws.acquireProject(projectId) {
-		wsHttpError(w, http.StatusServiceUnavailable, "too many websocket connections for this project")
+		reject(http.StatusServiceUnavailable, "too many websocket connections for this project")
 		return
 	}
 	defer ws.releaseProject(projectId)
 
-	nw, err := project.GetNetwork(r.Context(), networkId)
+	nw, err := project.GetNetwork(traceCtx, networkId)
 	if err != nil {
-		wsHttpError(w, http.StatusNotFound, "network not found")
+		reject(http.StatusNotFound, "network not found")
 		return
 	}
+	serverSpan.SetAttributes(attribute.String("project.id", projectId), attribute.String("network.id", networkId))
 	if nw.HeadCache() == nil {
-		wsHttpError(w, http.StatusServiceUnavailable, "websocket subscriptions require evm.headCache for this network")
+		reject(http.StatusServiceUnavailable, "websocket subscriptions require evm.headCache for this network")
 		return
 	}
 
@@ -192,9 +200,17 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
+		common.SetTraceSpanError(serverSpan, err)
 		return
 	}
 	conn.SetReadLimit(ws.cfg.MaxMessageBytes)
+	telemetry.MetricWebSocketConnections.WithLabelValues(projectId, networkId).Inc()
+	closeReason := "other"
+	defer func() {
+		serverSpan.SetAttributes(attribute.String("websocket.close_reason", closeReason))
+		telemetry.MetricWebSocketConnections.WithLabelValues(projectId, networkId).Dec()
+		telemetry.MetricWebSocketClosuresTotal.WithLabelValues(projectId, networkId, closeReason).Inc()
+	}()
 
 	lg := s.logger.With().Str("component", "ws").Str("projectId", projectId).Str("networkId", networkId).Logger()
 	c := &wsConn{
@@ -209,7 +225,7 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 		out:       make(chan []byte, ws.cfg.SendQueueSize),
 		subs:      map[string]*wsSub{},
 	}
-	c.run()
+	closeReason = c.run()
 }
 
 func (ws *wsServer) acquireProject(id string) bool {
@@ -307,7 +323,7 @@ func (c *wsConn) closeWith(code websocket.StatusCode, reason string) {
 	c.cancel(&wsCloseErr{code: code, reason: reason})
 }
 
-func (c *wsConn) run() {
+func (c *wsConn) run() string {
 	// Tied to the application context, not the request: hijacked
 	// connections are not tracked by http.Server.Shutdown.
 	c.ctx, c.cancel = context.WithCancelCause(c.ws.s.appCtx)
@@ -334,6 +350,47 @@ func (c *wsConn) run() {
 		c.safeHandle(data)
 	}
 	<-writerDone
+	return websocketCloseReason(context.Cause(c.ctx), c.ws.s.appCtx)
+}
+
+func websocketCloseReason(cause error, appCtx context.Context) string {
+	if appCtx != nil && appCtx.Err() != nil {
+		return "shutdown"
+	}
+	var closeErr *wsCloseErr
+	if errors.As(cause, &closeErr) {
+		switch closeErr.reason {
+		case "unauthorized":
+			return "unauthorized"
+		case "write timeout":
+			return "write_timeout"
+		case "ping timeout":
+			return "ping_timeout"
+		case wsCloseSlowConsumer:
+			return "slow_consumer"
+		case "subscription gap: resubscribe":
+			return "gap"
+		case "subscription closed: " + wsCloseSlowConsumer + " or head cache stopped":
+			return "subscription_closed"
+		case "message too big":
+			return "message_too_big"
+		case "failed to render subscription event", "internal error":
+			return "internal_error"
+		}
+		switch closeErr.code {
+		case websocket.StatusGoingAway:
+			return "shutdown"
+		case websocket.StatusMessageTooBig:
+			return "message_too_big"
+		case websocket.StatusInternalError:
+			return "internal_error"
+		}
+		return "other"
+	}
+	if cause != nil && websocket.CloseStatus(cause) >= 0 {
+		return "peer"
+	}
+	return "other"
 }
 
 func (c *wsConn) safeHandle(data []byte) {

@@ -87,8 +87,10 @@ Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/conf
 
 ## Observability
 
-Panics are counted in `erpc_unexpected_panic_total` with scope `ws-handler` / `ws-message`. No upstream requests are made from a WebSocket connection.
+`erpc_websocket_connections{project,network}` is the current number of accepted WebSocket connections on this process. `erpc_websocket_closures_total{project,network,reason}` counts accepted connections when they close. `reason` is bounded to `peer`, `shutdown`, `unauthorized`, `write_timeout`, `ping_timeout`, `slow_consumer`, `gap`, `subscription_closed`, `message_too_big`, `internal_error`, or `other`. `subscription_closed` deliberately combines head-cache subscription closure causes that the API does not distinguish. Client-supplied close text and subscription IDs are not labels. These are per-process metrics, like the connection limits.
 
-Tests: `TestWs_UnsupportedContract`, `TestWs_SingleInvalidRequestCodes`, `TestWs_DisabledAndNoHeadCache`, `TestWs_Caps`, `TestWs_PerProjectCap`, `TestWs_SubscriptionsReorg`, `TestWs_GapDetection`, `TestWs_PingAndReauthClosesExpiredJwt`, `TestWs_ConfigFallbacks`.
+Each upgrade starts the standard `Http.ReceivedRequest` server span. It includes project and network attributes once resolved, adds the normalized `websocket.close_reason` attribute when the connection ends, and remains open for the connection lifetime. Upgrade authentication and network resolution use its trace context. The long-lived connection cancellation context is tied to application shutdown, not the HTTP request context. Panics are counted in `erpc_unexpected_panic_total` with scope `ws-handler` / `ws-message`. No upstream requests are made from a WebSocket connection.
+
+Tests: `TestWs_UnsupportedContract`, `TestWs_SingleInvalidRequestCodes`, `TestWs_DisabledAndNoHeadCache`, `TestWs_ConnectionMetricsTrackLifecycleAndBoundCloseReason`, `TestWs_Caps`, `TestWs_PerProjectCap`, `TestWs_SubscriptionsReorg`, `TestWs_GapDetection`, `TestWs_PingAndReauthClosesExpiredJwt`, `TestWs_ConfigFallbacks`.
 
 </AISection>

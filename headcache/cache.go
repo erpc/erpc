@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -149,6 +151,7 @@ func (c *Cache) Stop() {
 			c.closeSubLocked(s)
 		}
 		c.mu.Unlock()
+		telemetry.MetricHeadCacheFresh.WithLabelValues(c.opt.Scope.ProjectId, c.opt.Scope.NetworkId).Set(0)
 	})
 }
 
@@ -173,6 +176,8 @@ func (c *Cache) run(ctx context.Context) {
 func (c *Cache) Tick(ctx context.Context) {
 	c.stepMu.Lock()
 	defer c.stepMu.Unlock()
+	ctx, span := common.StartDetailSpan(ctx, "HeadCache.Tick")
+	defer span.End()
 	if c.opt.FetchTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.opt.FetchTimeout)
@@ -184,10 +189,26 @@ func (c *Cache) Tick(ctx context.Context) {
 	} else {
 		err = c.refresh(ctx)
 	}
+	fresh := c.Fresh()
+	labels := []string{c.opt.Scope.ProjectId, c.opt.Scope.NetworkId}
+	telemetry.MetricHeadCacheFresh.WithLabelValues(labels...).Set(boolFloat64(fresh))
+	outcome := "stale"
 	if err != nil {
+		outcome = "error"
 		c.logger.Debug().Err(err).Msg("head cache refresh failed")
+		common.SetTraceSpanError(span, err)
+	} else if fresh {
+		outcome = "fresh"
 	}
+	telemetry.MetricHeadCacheRefreshTotal.WithLabelValues(labels[0], labels[1], outcome).Inc()
 	c.expireSubscribers()
+}
+
+func boolFloat64(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (c *Cache) leaseTTL() time.Duration {

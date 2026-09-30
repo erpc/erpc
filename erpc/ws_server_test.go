@@ -12,8 +12,10 @@ import (
 	"github.com/coder/websocket"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/headcache"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -273,6 +275,29 @@ func TestWs_DisabledAndNoHeadCache(t *testing.T) {
 	_, resp, err = dialWs(t, wsURL(base2, ""), nil)
 	require.Error(t, err)
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestWs_ConnectionMetricsTrackLifecycleAndBoundCloseReason(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	_, _, base, shutdown, e := createServerTestFixtures(wsHeadCacheCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
+	defer shutdown()
+	waitHead(t, e, 20)
+
+	const project, network = "test_project", "evm:123"
+	connections := telemetry.MetricWebSocketConnections.WithLabelValues(project, network)
+	peerClosures := telemetry.MetricWebSocketClosuresTotal.WithLabelValues(project, network, "peer")
+	initialConnections := testutil.ToFloat64(connections)
+	initialPeerClosures := testutil.ToFloat64(peerClosures)
+	w, _, err := dialWs(t, wsURL(base, ""), nil)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return testutil.ToFloat64(connections) == initialConnections+1 }, 5*time.Second, 10*time.Millisecond)
+
+	// The peer-provided text is intentionally untrusted and must not become a metric label.
+	require.NoError(t, w.c.Close(websocket.StatusNormalClosure, "client supplied close detail"))
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(connections) == initialConnections && testutil.ToFloat64(peerClosures) == initialPeerClosures+1
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestWs_Caps(t *testing.T) {
