@@ -467,8 +467,9 @@ func (c *Cache) refresh(ctx context.Context) error {
 		return nil
 	}
 	if windowHead != tip || len(window) != int(tip-base+1) || window[len(window)-1].b.Hash != top.b.Hash {
-		window, err = c.fetchWindow(ctx, base, tip, top)
-		if err != nil {
+		if extended, ok := c.extendWindow(ctx, window, windowHead, base, tip, top); ok {
+			window = extended
+		} else if window, err = c.fetchWindow(ctx, base, tip, top); err != nil {
 			return err
 		}
 		c.mu.Lock()
@@ -602,6 +603,48 @@ func completeWindow(s *Snapshot, records map[string]*BlockRecord) bool {
 		}
 	}
 	return true
+}
+
+// extendWindow appends headers above a verified window when they link to its
+// last hash. Parent links transitively re-prove the retained headers, so only
+// new heights are fetched. Any doubt falls back to a full window fetch.
+func (c *Cache) extendWindow(ctx context.Context, window []*header, windowHead, base, tip int64, top *header) ([]*header, bool) {
+	if len(window) == 0 || windowHead >= tip || tip-windowHead > c.opt.Depth {
+		return nil, false
+	}
+	oldBase := windowHead - int64(len(window)) + 1
+	if oldBase > base || window[len(window)-1].n != windowHead {
+		return nil, false
+	}
+	added := make([]*header, tip-windowHead)
+	added[len(added)-1] = top
+	failed := false
+	var mu sync.Mutex
+	c.parallel(ctx, len(added)-1, func(j int) {
+		h, err := c.getHeader(ctx, windowHead+1+int64(j))
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			failed = true
+			return
+		}
+		added[j] = h
+	})
+	if failed || ctx.Err() != nil {
+		return nil, false
+	}
+	prev := window[len(window)-1]
+	for _, h := range added {
+		if h == nil || h.b.ParentHash != prev.b.Hash {
+			return nil, false
+		}
+		prev = h
+	}
+	out := append(append(make([]*header, 0, tip-base+1), window[base-oldBase:]...), added...)
+	if int64(len(out)) != tip-base+1 {
+		return nil, false
+	}
+	return out, true
 }
 
 func (c *Cache) fetchWindow(ctx context.Context, base, tip int64, top *header) ([]*header, error) {

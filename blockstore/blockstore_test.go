@@ -661,3 +661,50 @@ func TestLogFilterGethSemantics(t *testing.T) {
 	_, err = ParseLogFilter(map[string]interface{}{"address": "not-an-address"})
 	require.Error(t, err)
 }
+
+func TestCache_TipAdvanceExtendsVerifiedWindowIncrementally(t *testing.T) {
+	ch := newFakeChain(10)
+	c := New(testOpts(), newMapStore(), ch, ch.head, nil)
+	c.Tick(context.Background())
+	require.True(t, c.Fresh())
+
+	ch.mine(1)
+	ch.mu.Lock()
+	before := ch.headCalls
+	ch.mu.Unlock()
+	c.Tick(context.Background())
+	ch.mu.Lock()
+	require.Equal(t, before+1, ch.headCalls, "a linked one-block advance fetches only the new tip header")
+	ch.mu.Unlock()
+	require.Equal(t, int64(11), c.Head())
+	_, ok := c.LogsRange(4, 11, nil)
+	require.True(t, ok, "extended window stays complete across the full depth")
+
+	ch.mine(3)
+	ch.mu.Lock()
+	before = ch.headCalls
+	ch.mu.Unlock()
+	c.Tick(context.Background())
+	ch.mu.Lock()
+	require.Equal(t, before+3, ch.headCalls, "a linked multi-block advance fetches only new headers")
+	ch.mu.Unlock()
+	require.Equal(t, int64(14), c.Head())
+
+	// A reorg below the new tip breaks the parent link and falls back to a full refetch.
+	sub := c.Subscribe(8)
+	ch.reorg(13, "b")
+	ch.mine(1)
+	ch.mu.Lock()
+	before = ch.headCalls
+	ch.mu.Unlock()
+	c.Tick(context.Background())
+	ch.mu.Lock()
+	require.Greater(t, ch.headCalls-before, 2, "unlinked advance refetches the window")
+	ch.mu.Unlock()
+	ev := <-sub.C
+	require.Equal(t, hashOf(14, "a"), ev.Removed[0].Hash)
+	_, ok = c.BlockByHash(hashOf(13, "b"), true)
+	require.True(t, ok)
+	_, ok = c.BlockByHash(hashOf(13, "a"), true)
+	require.False(t, ok)
+}
