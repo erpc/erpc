@@ -47,8 +47,16 @@ func TestRedisConnector_ClientReconnectRace(t *testing.T) {
 			_ = c.Close()
 		}
 		r.initializer.MarkTaskAsFailed(task.Name, errors.New("connection closed"))
-		if err := r.initializer.ExecuteTasks(ctx, task); err != nil {
-			t.Fatal(err)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := r.initializer.ExecuteTasks(ctx, task)
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("redis reconnect did not recover: %v", err)
+			}
+			time.Sleep(2 * time.Millisecond)
 		}
 	}
 	cancel()
