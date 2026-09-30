@@ -403,6 +403,11 @@ type GrpcConnectorConfig struct {
 	// connection, at the cost of more open connections per server. When unset
 	// (0) a built-in default is used.
 	PoolSize int `yaml:"poolSize,omitempty" json:"poolSize"`
+
+	// HealthCheckService is a grpc.health.v1 service name. When set, each
+	// connection watches it on every resolved address and sends requests only
+	// to addresses reporting SERVING. Empty (default) disables health checking.
+	HealthCheckService string `yaml:"healthCheckService,omitempty" json:"healthCheckService"`
 }
 
 type MemoryConnectorConfig struct {
@@ -1289,6 +1294,9 @@ type GrpcUpstreamConfig struct {
 	// upstream, selected round-robin per request. See GrpcConnectorConfig.PoolSize.
 	// When unset (0) a built-in default is used.
 	PoolSize int `yaml:"poolSize,omitempty" json:"poolSize"`
+
+	// HealthCheckService: see GrpcConnectorConfig.HealthCheckService.
+	HealthCheckService string `yaml:"healthCheckService,omitempty" json:"healthCheckService"`
 }
 
 func (c *GrpcUpstreamConfig) Copy() *GrpcUpstreamConfig {
