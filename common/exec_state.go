@@ -129,6 +129,11 @@ type ExecState struct {
 	ConsensusDisputes atomic.Int32
 	// ConsensusLowParticipants counts low-participant events.
 	ConsensusLowParticipants atomic.Int32
+	// consensusPolicy is the name of the consensus acceptance grade the
+	// round was served under (empty when consensus is off or ungraded).
+	// A pointer swap rather than a counter: it is written once by the
+	// analyzer and read by the response-header path on another goroutine.
+	consensusPolicy atomic.Pointer[string]
 
 	StartedAt time.Time
 
@@ -257,6 +262,10 @@ type ExecStateSnapshot struct {
 	ConsensusSlots           int
 	ConsensusDisputes        int
 	ConsensusLowParticipants int
+	// ConsensusPolicy is the consensus acceptance grade the round was
+	// served under; empty when consensus is off or no grades are
+	// configured.
+	ConsensusPolicy string
 
 	StartedAt time.Time
 }
@@ -301,8 +310,29 @@ func (s *ExecState) Snapshot() ExecStateSnapshot {
 		ConsensusSlots:           int(s.ConsensusSlots.Load()),
 		ConsensusDisputes:        int(s.ConsensusDisputes.Load()),
 		ConsensusLowParticipants: int(s.ConsensusLowParticipants.Load()),
+		ConsensusPolicy:          s.ConsensusPolicy(),
 		StartedAt:                s.StartedAt,
 	}
+}
+
+// SetConsensusPolicy records the acceptance grade the consensus round
+// resolved under. Last write wins; consensus resolves a request once.
+func (s *ExecState) SetConsensusPolicy(name string) {
+	if s == nil || name == "" {
+		return
+	}
+	s.consensusPolicy.Store(&name)
+}
+
+// ConsensusPolicy returns the recorded acceptance grade, or "" if none.
+func (s *ExecState) ConsensusPolicy() string {
+	if s == nil {
+		return ""
+	}
+	if p := s.consensusPolicy.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // Apply sets the standard execution.* attributes on a span. Callers
