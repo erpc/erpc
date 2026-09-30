@@ -546,6 +546,7 @@ func (c *chainView) resolveHeaderKind(ctx context.Context, method, blockRef stri
 		`{"jsonrpc":"2.0","id":1,"method":"%s","params":["%s",false]}`, method, blockRef)))
 	req.SetDirectives(c.fetchDirectives(fresh))
 	req.SetNetwork(c.network)
+	req.SetInternalCaller(common.InternalCallerIntegrity)
 
 	resp, err := c.network.Forward(ctx, req)
 	var h *integrity.Header
@@ -612,6 +613,7 @@ func (c *chainView) resolveReceipts(ctx context.Context, blockHash string) ([]in
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["%s"]}`, blockHash)))
 	req.SetDirectives(c.fetchDirectives(false))
 	req.SetNetwork(c.network)
+	req.SetInternalCaller(common.InternalCallerIntegrity)
 
 	resp, err := c.network.Forward(ctx, req)
 	var receipts []integrity.Receipt

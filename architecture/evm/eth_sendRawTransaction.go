@@ -35,14 +35,17 @@ func isIdempotentBroadcastDisabled(n common.Network) bool {
 	return !*cfg.Evm.IdempotentTransactionBroadcast
 }
 
-// buildGetTransactionByHashRequest constructs a fresh internal eth_getTransactionByHash
-// request used by both the per-upstream and network-level postForward verification paths.
-func buildGetTransactionByHashRequest(txHash string) *common.NormalizedRequest {
-	return common.NewNormalizedRequest([]byte(fmt.Sprintf(
+// buildGetTransactionByHashRequest constructs a fresh eth_getTransactionByHash
+// request used by both the per-upstream and network-level postForward verification
+// paths. It carries the broadcast's caller so the probe is attributed to them.
+func buildGetTransactionByHashRequest(parent *common.NormalizedRequest, txHash string) *common.NormalizedRequest {
+	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":%d,"method":"eth_getTransactionByHash","params":[%q]}`,
 		util.RandomID(),
 		txHash,
 	)))
+	req.CopyHttpContextFrom(parent)
+	return req
 }
 
 // upstreamPostForward_eth_sendRawTransaction handles idempotency for eth_sendRawTransaction.
@@ -210,7 +213,7 @@ func verifyAndHandleNonceTooLow(
 
 	// Create a request for eth_getTransactionByHash
 	// Use a new random ID since this is an internal verification request
-	getTxReq := buildGetTransactionByHashRequest(txHash)
+	getTxReq := buildGetTransactionByHashRequest(rq, txHash)
 
 	lg.Debug().Str("txHash", txHash).Str("upstream", u.Id()).Msg("sending eth_getTransactionByHash to verify tx exists")
 
@@ -345,7 +348,7 @@ func networkPostForward_eth_sendRawTransaction(
 	// before the function returns.
 	verifyCtx, cancelVerify := context.WithTimeout(context.WithoutCancel(ctx), networkPostForwardVerifyTimeout)
 	defer cancelVerify()
-	getTxReq := buildGetTransactionByHashRequest(txHash)
+	getTxReq := buildGetTransactionByHashRequest(nq, txHash)
 	verifyResp, verifyErr := n.Forward(verifyCtx, getTxReq)
 	if verifyResp != nil {
 		defer verifyResp.Release()

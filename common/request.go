@@ -340,6 +340,16 @@ func (r *NormalizedRequest) SetUser(user *User) {
 	r.user.Store(user)
 }
 
+// SetInternalCaller attributes a request erpc originates itself to caller, as
+// both its user and its agent name.
+func (r *NormalizedRequest) SetInternalCaller(caller InternalCaller) {
+	if r == nil || caller.user == nil {
+		return
+	}
+	r.user.Store(caller.user)
+	r.agentName.Store(caller.user.Id)
+}
+
 // SetUserFromTrustedHeader assigns the request's user identity from a value
 // supplied by a trusted upstream (the [HeaderUserId] header), for deployments
 // that authenticate callers in front of erpc and want per-user metrics/logs

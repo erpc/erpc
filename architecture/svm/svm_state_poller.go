@@ -470,6 +470,7 @@ func (e *SvmStatePoller) fetchSlot(ctx context.Context, payload []byte) (int64, 
 
 func (e *SvmStatePoller) call(ctx context.Context, payload []byte) (*common.NormalizedResponse, error) {
 	req := common.NewNormalizedRequest(payload)
+	req.SetInternalCaller(common.InternalCallerStatePoller)
 	return e.upstream.Forward(ctx, req, true, false)
 }
 

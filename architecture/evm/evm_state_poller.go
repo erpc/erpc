@@ -1290,6 +1290,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
+	pr.SetInternalCaller(common.InternalCallerStatePoller)
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
@@ -1343,6 +1344,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
+	pr.SetInternalCaller(common.InternalCallerStatePoller)
 
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {
@@ -1483,6 +1485,7 @@ func (e *EvmStatePoller) checkBlockHeaderProbe(ctx context.Context, block int64)
 			util.RandomID(), hex,
 		),
 	))
+	pr.SetInternalCaller(common.InternalCallerStatePoller)
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
@@ -1513,6 +1516,7 @@ func (e *EvmStatePoller) fetchBlockHashByNumber(ctx context.Context, block int64
 			util.RandomID(), hex,
 		),
 	))
+	pr.SetInternalCaller(common.InternalCallerStatePoller)
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
@@ -1550,6 +1554,7 @@ func (e *EvmStatePoller) checkEventLogsProbe(ctx context.Context, block int64) (
 			util.RandomID(), hash,
 		),
 	))
+	pr.SetInternalCaller(common.InternalCallerStatePoller)
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
@@ -1620,6 +1625,7 @@ func (e *EvmStatePoller) checkCallStateProbe(ctx context.Context, block int64) (
 			util.RandomID(), canary.To, canary.Data, hex,
 		),
 	))
+	pr.SetInternalCaller(common.InternalCallerStatePoller)
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
@@ -1652,6 +1658,7 @@ func (e *EvmStatePoller) checkBalanceStateProbe(ctx context.Context, block int64
 			util.RandomID(), hex,
 		),
 	))
+	pr.SetInternalCaller(common.InternalCallerStatePoller)
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
@@ -1702,6 +1709,7 @@ func (e *EvmStatePoller) checkTraceDataProbe(ctx context.Context, block int64) (
 		defer cancel()
 
 		pr := common.NewNormalizedRequest([]byte(methodPayload))
+		pr.SetInternalCaller(common.InternalCallerStatePoller)
 		resp, err := e.upstream.Forward(cctx, pr, true, false)
 		if resp != nil {
 			defer resp.Release()

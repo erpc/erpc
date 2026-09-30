@@ -99,6 +99,34 @@ func TestNetworkPostForward_eth_sendRawTransaction(t *testing.T) {
 		n.AssertExpectations(t)
 	})
 
+	t.Run("verification_probe_is_attributed_to_the_caller", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:8453").Maybe()
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}}).Maybe()
+
+		// The probe is vendor spend caused by this caller's broadcast; without
+		// their identity it is exported as user "n/a".
+		txObject := []byte(`{"hash":"` + sendRawTxFixtureHash + `"}`)
+		n.On("Forward", mock.Anything, mock.MatchedBy(func(r *common.NormalizedRequest) bool {
+			m, _ := r.Method()
+			return m == "eth_getTransactionByHash" && r.UserId() == "project_abc_edge_prod"
+		})).Return(
+			common.NewNormalizedResponse().WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte(`1`), txObject, nil),
+			),
+			nil,
+		).Once()
+
+		req := makeSendRawTxRequest(t)
+		req.SetUser(&common.User{Id: "project_abc_edge_prod"})
+		_, err := networkPostForward_eth_sendRawTransaction(
+			context.Background(), n, req, nil, makeExhaustedError(),
+		)
+
+		require.NoError(t, err)
+		n.AssertExpectations(t)
+	})
+
 	t.Run("exhausted_and_tx_not_in_network_returns_original_error", func(t *testing.T) {
 		n := new(mockNetwork)
 		n.On("Id").Return("evm:8453").Maybe()

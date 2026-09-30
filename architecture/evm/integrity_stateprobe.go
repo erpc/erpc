@@ -334,6 +334,7 @@ func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body str
 		SkipCacheRead: "true",
 	})
 	req.SetNetwork(p.network)
+	req.SetInternalCaller(common.InternalCallerIntegrity)
 	resp, err := p.network.Forward(ctx, req)
 	if err != nil {
 		return "", err

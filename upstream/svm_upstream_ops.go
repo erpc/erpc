@@ -64,6 +64,7 @@ func (u *Upstream) svmVerifyGenesisHash(ctx context.Context) error {
 
 func (u *Upstream) svmFetchGenesisHash(ctx context.Context) (string, error) {
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getGenesisHash","params":[]}`))
+	req.SetInternalCaller(common.InternalCallerDetection)
 	resp, err := u.Forward(ctx, req, true, false)
 	if resp != nil {
 		defer resp.Release()
