@@ -107,14 +107,17 @@ func (e *JsonRpcErrorExtractor) Extract(
 		}
 	}
 
-	// wireCode is the JSON-RPC "code" the client ends up seeing (it becomes
-	// ErrJsonRpcExceptionInternal.NormalizedCode, which buildErrorResponseBody
-	// writes as error.code). It is a faithful passthrough of the upstream's own
-	// code, because Solana clients dispatch on the exact number: @solana/kit
-	// maps -32002/-32005/-32016/… to named error classes and reads error.data
-	// alongside, so rewriting the number to an eRPC code silently breaks them.
-	// eRPC's routing verdict lives entirely in the OUTER StandardError class
-	// (retryable / capacity / client-vs-server), never in this number.
+	// wireCode is the JSON-RPC "code" the client ends up seeing. It is a
+	// faithful passthrough of the upstream's own code, because Solana clients
+	// dispatch on the exact number: @solana/kit maps -32002/-32005/-32016/… to
+	// named error classes and reads error.data alongside, so rewriting the
+	// number to an eRPC code silently breaks them. Outside the missing-data
+	// family that number also serves as NormalizedCode: agave assigns it per
+	// condition, so every node returns the same code for the same fact and it
+	// is already canonical. The missing-data family sets WireCode separately
+	// (see newMissingDataError). eRPC's routing verdict lives entirely in the
+	// OUTER StandardError class (retryable / capacity / client-vs-server),
+	// never in this number.
 	//
 	// Consequence — the eRPC/Solana code collision: common.JsonRpcErrorNumber
 	// reuses -32005 for CapacityExceeded and -32016 for Unauthorized, while
@@ -220,11 +223,8 @@ func (e *JsonRpcErrorExtractor) Extract(
 
 	// --- Missing data (retryable across upstreams) ----------------------------
 	//
-	// The raw Solana code is preserved on the wire (JsonRpcErrorNumber(code))
-	// so callers receive -32004/-32008/-32014/… instead of a normalized
-	// -32014 — normalizing everything to JsonRpcErrorMissingData sent
-	// Solana clients into an infinite BlockNotAvailableException retry loop for
-	// unindexed finalized slots.
+	// Normalized to JsonRpcErrorMissingData for eRPC's own comparisons; the raw
+	// Solana code stays on the wire (see newMissingDataError).
 	//
 	// Another upstream can genuinely have this data:
 	//   -32001: pruned from this node's local ledger; bigtable-backed nodes have it.
@@ -237,10 +237,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 	//   -32014: block status not computed yet on this node.
 	case svmCodeBlockCleanedUp, svmCodeBlockNotAvailable, svmCodeNoSnapshot,
 		svmCodeKeyExcludedFromIndex, svmCodeTxHistoryNotAvailable, svmCodeBlockStatusNotAvail:
-		return common.NewErrEndpointMissingData(
-			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorMissingData), msg, nil, details),
-			upstream,
-		)
+		return common.NewErrEndpointMissingData(newMissingDataError(code, msg, details), upstream)
 
 	// --- Skipped slot (sweep providers once, but do NOT wait-and-retry) -------
 	//
@@ -427,6 +424,19 @@ func isRateLimitMessage(lowerMsg string) bool {
 	return false
 }
 
+// newMissingDataError normalizes a "this node lacks the data" reply to
+// JsonRpcErrorMissingData while the client keeps the upstream's own code.
+// The same absent slot is -32007 from a node answering out of its local
+// blockstore and -32009 from one answering out of long-term storage, so the
+// raw code names the node's storage tier, not a chain fact, and eRPC must not
+// compare on it. The raw code still has to reach the client: a normalized
+// -32014 sent Solana clients into an infinite BlockNotAvailableException
+// retry loop for unindexed finalized slots.
+func newMissingDataError(code int, msg string, details map[string]interface{}) *common.ErrJsonRpcExceptionInternal {
+	return common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorMissingData, msg, nil, details).
+		WithWireCode(common.JsonRpcErrorNumber(code))
+}
+
 // newSweptSkipMissingData builds a MissingData error for a slot the node reports
 // as skipped, lost to a ledger jump (-32007), or absent from its long-term
 // storage (-32009). It stays retryable across
@@ -436,10 +446,7 @@ func isRateLimitMessage(lowerMsg string) bool {
 // network layer must not run a time-delayed re-sweep. The raw code reaches the
 // caller.
 func newSweptSkipMissingData(code int, msg string, details map[string]interface{}, upstream common.Upstream) error {
-	err := common.NewErrEndpointMissingData(
-		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
-		upstream,
-	)
+	err := common.NewErrEndpointMissingData(newMissingDataError(code, msg, details), upstream)
 	if me, ok := err.(*common.ErrEndpointMissingData); ok {
 		me.WithPermanentMissingData(true)
 	}

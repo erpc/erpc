@@ -444,16 +444,22 @@ func errorToConsensusHash(err error) string {
 	if err == nil {
 		return ""
 	}
+	hash := "error:generic"
 	var jre *common.ErrJsonRpcExceptionInternal
 	if errors.As(err, &jre) {
-		return fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
-	}
-	if se, ok := err.(common.StandardError); ok {
+		hash = fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
+	} else if se, ok := err.(common.StandardError); ok {
 		if base := se.Base(); base != nil {
-			return string(base.Code)
+			hash = string(base.Code)
 		}
 	}
-	return "error:generic"
+	// "Skipped for good" and "not indexed yet" are different claims about the
+	// chain even when they share a code, and only a dispute between them
+	// reaches the wait-and-retry that can settle it.
+	if common.IsPermanentlyMissingData(err) {
+		hash += ":permanent"
+	}
+	return hash
 }
 
 // resultToJsonRpcResponse safely converts a result to a JsonRpcResponse.

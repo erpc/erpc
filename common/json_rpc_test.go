@@ -749,7 +749,8 @@ func TestJsonRpcRequest_CloneDeepCopy(t *testing.T) {
 func missingDataCause(t *testing.T, code int, retryableTowardNetwork, permanent bool) error {
 	t.Helper()
 	err := NewErrEndpointMissingData(
-		NewErrJsonRpcExceptionInternal(code, JsonRpcErrorNumber(code), fmt.Sprintf("slot unavailable (%d)", code), nil, nil),
+		NewErrJsonRpcExceptionInternal(code, JsonRpcErrorMissingData, fmt.Sprintf("slot unavailable (%d)", code), nil, nil).
+			WithWireCode(JsonRpcErrorNumber(code)),
 		nil,
 	)
 	me, ok := err.(*ErrEndpointMissingData)
@@ -769,7 +770,7 @@ func clientWireCode(t *testing.T, err error) JsonRpcErrorNumber {
 	t.Helper()
 	jre := &ErrJsonRpcExceptionInternal{}
 	require.True(t, errors.As(err, &jre), "no json-rpc exception in chain: %v", err)
-	return jre.NormalizedCode()
+	return jre.WireCode()
 }
 
 func newExhausted(t *testing.T, order []string, causes map[string]error) error {

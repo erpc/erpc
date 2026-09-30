@@ -55,10 +55,9 @@ func ErrorSummary(err interface{}) string {
 					ErrCodeUpstreamRequestSkipped,
 				) {
 					if causeSE, ok := cause.(StandardError); ok {
-						cd := causeSE.Base().Code
 						// For json-rpc errors let's include their numeric code
-						if cd == ErrCodeJsonRpcExceptionInternal {
-							s += "/" + fmt.Sprintf("%d", causeSE.DeepSearch("normalizedCode"))
+						if jre, ok := cause.(*ErrJsonRpcExceptionInternal); ok {
+							s += "/" + fmt.Sprintf("%d", jre.WireCode())
 						} else {
 							s += "/" + string(causeSE.Base().Code)
 						}
@@ -2371,14 +2370,40 @@ var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonR
 }
 
 func (e *ErrJsonRpcExceptionInternal) CodeChain() string {
-	return fmt.Sprintf("%d <- %s", e.NormalizedCode(), e.BaseError.CodeChain())
+	return fmt.Sprintf("%d <- %s", e.WireCode(), e.BaseError.CodeChain())
 }
 
+// NormalizedCode is eRPC's own code for what this error means. Compare on it
+// (consensus grouping, status mapping, routing); never emit it as-is when
+// WireCode differs.
 func (e *ErrJsonRpcExceptionInternal) NormalizedCode() JsonRpcErrorNumber {
 	if code, ok := e.Details["normalizedCode"]; ok {
 		return code.(JsonRpcErrorNumber)
 	}
 	return 0
+}
+
+// WithWireCode pins the JSON-RPC error.code the client receives when it must
+// differ from NormalizedCode: chains whose clients dispatch on the upstream's
+// exact number keep that number on the wire while eRPC compares on its own.
+// A zero code is ignored, matching NewErrJsonRpcExceptionInternal.
+func (e *ErrJsonRpcExceptionInternal) WithWireCode(code JsonRpcErrorNumber) *ErrJsonRpcExceptionInternal {
+	if e != nil && code != 0 {
+		if e.Details == nil {
+			e.Details = map[string]interface{}{}
+		}
+		e.Details["wireCode"] = code
+	}
+	return e
+}
+
+// WireCode is the JSON-RPC error.code written to the client, and the one
+// logs, traces, and metrics report. Defaults to NormalizedCode.
+func (e *ErrJsonRpcExceptionInternal) WireCode() JsonRpcErrorNumber {
+	if code, ok := e.Details["wireCode"]; ok {
+		return code.(JsonRpcErrorNumber)
+	}
+	return e.NormalizedCode()
 }
 
 func (e *ErrJsonRpcExceptionInternal) OriginalCode() int {

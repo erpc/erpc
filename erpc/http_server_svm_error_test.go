@@ -1,9 +1,11 @@
 package erpc
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -100,6 +102,45 @@ func TestBuildErrorResponseBody_SvmRateLimitWireCodes(t *testing.T) {
 			require.Equal(t, tc.wantMessage, errObject["message"])
 			require.ErrorIs(t, response.Cause, tc.err)
 			require.Truef(t, common.HasErrorCode(response.Cause, tc.wantCause), "response cause lost %s: %v", tc.wantCause, response.Cause)
+		})
+	}
+}
+
+// A missing-data error normalizes to -32014 for eRPC's own comparisons; the
+// client must still get the code the upstream sent when the normalizer set one.
+func TestBuildErrorResponseBody_MissingDataWireCode(t *testing.T) {
+	up := common.NewFakeUpstream("svm-1")
+	up.Config().Type = common.UpstreamTypeSvm
+	svmSkipped := svm.NewJsonRpcErrorExtractor().Extract(
+		&http.Response{StatusCode: 200, Header: http.Header{}}, nil,
+		common.MustNewJsonRpcResponse(1, nil, common.NewErrJsonRpcExceptionExternal(-32007, "Slot 500281501 was skipped", "")),
+		up,
+	)
+	require.Error(t, svmSkipped)
+	evmMissing := common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(-32000, common.JsonRpcErrorMissingData, "header not found", nil, nil),
+		nil,
+	)
+
+	for _, tc := range []struct {
+		name      string
+		networkID string
+		err       error
+		wantCode  common.JsonRpcErrorNumber
+	}{
+		{name: "svm skipped slot keeps the upstream code", networkID: "svm:mainnet-beta", err: svmSkipped, wantCode: -32007},
+		{name: "evm missing data emits the normalized code", networkID: "evm:1", err: evmMissing, wantCode: common.JsonRpcErrorMissingData},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[]}`))
+			req.SetNetwork(&Network{networkId: tc.networkID})
+
+			body := buildErrorResponseBody(req, tc.err, tc.err, nil)
+			response, ok := body.(*HttpJsonRpcErrorResponse)
+			require.Truef(t, ok, "expected HttpJsonRpcErrorResponse, got %T", body)
+			errObject, ok := response.Error.(map[string]interface{})
+			require.Truef(t, ok, "expected JSON-RPC error object, got %T", response.Error)
+			assert.EqualValues(t, tc.wantCode, errObject["code"])
 		})
 	}
 }

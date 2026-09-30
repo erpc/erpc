@@ -171,6 +171,7 @@ Concretely, for every design and review in this repo:
 ### JSON-RPC Error Handling
 - `ErrJsonRpcExceptionInternal` contains normalized codes that should be used for comparison
 - Access normalized code with `err.NormalizedCode()` method
+- `err.WireCode()` is the code the client receives; it defaults to the normalized code. A normalizer sets it with `WithWireCode` when clients dispatch on the upstream's exact number (SVM missing-data codes). Never compare on it.
 - Common normalized codes:
   - `JsonRpcErrorEvmReverted` (3) - EVM execution reverted
   - `JsonRpcErrorCallException` (-32000) - Call exception

@@ -1760,7 +1760,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		message := jre.Message
-		wireCode := jre.NormalizedCode()
+		wireCode := jre.WireCode()
 		// eRPC's generic capacity code is -32005, but Solana assigns -32005 to
 		// NodeUnhealthy. Local admission limits (auth/project/network/upstream
 		// budgets) never came from a Solana node, so expose them in Solana's
