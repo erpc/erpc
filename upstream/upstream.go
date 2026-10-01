@@ -947,6 +947,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 			if isSuccess {
 				u.recordRequestSuccess(method)
+				// Only requests the network routed here serve a client; internal
+				// callers (state poller, probes, shadow traffic) bypass method
+				// exclusion. A served answer makes this upstream's lag count
+				// every block since its last head observation.
+				if !byPassMethodExclusion {
+					u.metricsTracker.RecordUpstreamServed(u)
+				}
 			}
 
 			return nrs, nil

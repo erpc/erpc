@@ -62,11 +62,13 @@ type NetworkMetadata struct {
 	headMu    sync.Mutex
 	reporters []common.Upstream
 
-	// On upstream entries only. When each head was last observed, and how
-	// often the upstream's state poller re-observes it. See alignedBlocksBehind.
+	// On upstream entries only. When each head was last observed, how often
+	// the upstream's state poller re-observes it, and when the upstream last
+	// answered a request routed to it. See alignedBlocksBehind.
 	latestObs     headObservation
 	finalizedObs  headObservation
 	headRefreshMs atomic.Int64
+	lastServedMs  atomic.Int64
 
 	// Dynamic block time via EMA on on-chain block timestamps.
 	// Uses block.timestamp (integer seconds) normalized by block count gap.
@@ -1405,19 +1407,36 @@ const headObservationWindow = 3
 // node that has really stopped is caught by its next observation, which is
 // measured against the network head of that moment.
 //
-// The alignment holds only while the observation is current. An upstream with
-// no known poll interval, or one not observed for headObservationWindow
-// intervals (its polls are failing), is measured against the current network
-// head. The current network head also caps the reference, so a network head
-// re-derived lower lowers every lag at once.
+// The alignment holds only while the upstream is idle and the observation is
+// current. An upstream that answered a routed request since its last head
+// observation is measured against the current network head: if its node has
+// stopped, those answers are stale state, and the age of the observation is
+// the bound on how stale. So is an upstream with no known poll interval, or
+// one not observed for headObservationWindow intervals (its polls are
+// failing). The current network head also caps the reference, so a network
+// head re-derived lower lowers every lag at once.
 func alignedBlocksBehind(upsMeta *NetworkMetadata, obs *headObservation, networkHead, upstreamHead, nowMs int64) int64 {
 	ref := networkHead
 	if seen := obs.networkHead.Load(); seen > 0 && seen < ref {
-		if refreshMs := upsMeta.headRefreshMs.Load(); refreshMs > 0 && nowMs-obs.atMs.Load() <= headObservationWindow*refreshMs {
+		at := obs.atMs.Load()
+		if refreshMs := upsMeta.headRefreshMs.Load(); refreshMs > 0 && nowMs-at <= headObservationWindow*refreshMs && upsMeta.lastServedMs.Load() <= at {
 			ref = seen
 		}
 	}
 	return blocksBehind(ref, upstreamHead)
+}
+
+// RecordUpstreamServed records that upstream just answered a request the
+// network routed to it. Until its next head observation, its lag counts every
+// block since that observation (see alignedBlocksBehind). Internal calls such
+// as state polls and probes do not count: they serve no client. Lock-free for
+// the request path; the lag it implies is published on the next network head
+// change.
+func (t *Tracker) RecordUpstreamServed(upstream common.Upstream) {
+	m := t.getMetadata(metadataKey{upstream, upstream.NetworkId()})
+	if nowMs := time.Now().UnixMilli(); nowMs > m.lastServedMs.Load() {
+		m.lastServedMs.Store(nowMs)
+	}
 }
 
 // SetHeadRefreshInterval records how often upstream's state poller re-observes
@@ -1430,11 +1449,11 @@ func (t *Tracker) SetHeadRefreshInterval(upstream common.Upstream, interval time
 
 // ConfirmLatestBlockNumber records that upstream just reported a latest block
 // no newer than the head the tracker holds for it, so that head is current as
-// of now. Such reports do not reach SetLatestBlockNumber; without this, an
-// upstream that keeps answering from a stalled head would be measured against
-// the network head of its last advance until its next poll. Lock-free for the
-// request path; the lag it implies is published on the next network head
-// change.
+// of now. Such reports do not reach SetLatestBlockNumber. The response that
+// carried the report has already marked the upstream as served; the re-stamp
+// makes it a fresh observation, so once the upstream goes idle its lag counts
+// from this report, not from its last head advance. Lock-free for the request
+// path; the lag it implies is published on the next network head change.
 func (t *Tracker) ConfirmLatestBlockNumber(upstream common.Upstream) {
 	net := upstream.NetworkId()
 	confirmHead(
