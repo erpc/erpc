@@ -149,7 +149,7 @@ func NewGrpcBdsClient(
 		}
 	}
 
-	target, useTLS := pickTargetForBDS(parsedUrl)
+	target, methodPrefix, useTLS := pickTargetForBDS(parsedUrl)
 
 	// Determine whether to use TLS based on port or URL scheme.
 	var transportCredentials credentials.TransportCredentials
@@ -168,7 +168,7 @@ func NewGrpcBdsClient(
 
 	serviceConfig := bdsServiceConfig(healthCheckService)
 
-	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load())
+	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, methodPrefix, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load())
 	if err != nil {
 		return nil, err
 	}
