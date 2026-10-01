@@ -120,6 +120,9 @@ type bdsPool struct {
 	target        string
 	creds         credentials.TransportCredentials
 	serviceConfig string
+	// methodPrefix is prepended to every call's method (see
+	// methodPrefixInterceptors); "" for a server at the root path.
+	methodPrefix string
 
 	// poolMu protects every read/write of p.conns. Pick takes RLock so
 	// the hot path stays cheap; replaceConn and Shutdown take Lock when
@@ -153,7 +156,7 @@ type bdsPool struct {
 func newBdsPool(
 	appCtx context.Context,
 	logger *zerolog.Logger,
-	projectId, upstreamId, target string,
+	projectId, upstreamId, target, methodPrefix string,
 	creds credentials.TransportCredentials,
 	serviceConfig string,
 	poolSize int,
@@ -169,6 +172,7 @@ func newBdsPool(
 		target:        target,
 		creds:         creds,
 		serviceConfig: serviceConfig,
+		methodPrefix:  methodPrefix,
 		conns:         make([]*bdsConn, poolSize),
 		projectId:     projectId,
 		upstreamId:    upstreamId,
@@ -356,7 +360,7 @@ func (p *bdsPool) Size() int {
 }
 
 func (p *bdsPool) dial() (*bdsConn, error) {
-	conn, err := grpc.NewClient(p.target,
+	opts := []grpc.DialOption{
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithTransportCredentials(p.creds),
 		grpc.WithChainUnaryInterceptor(grpcResponseMetadataInterceptor()),
@@ -379,7 +383,8 @@ func (p *bdsPool) dial() (*bdsConn, error) {
 				MaxDelay:   1 * time.Second,
 			},
 		}),
-	)
+	}
+	conn, err := grpc.NewClient(p.target, append(opts, methodPrefixInterceptors(p.methodPrefix)...)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial gRPC server at %s: %w", p.target, err)
 	}
@@ -519,18 +524,43 @@ func callBoundedT[T any](ctx context.Context, fn func(context.Context) (T, error
 	return util.BoundedCallT(ctx, fn)
 }
 
-// pickTargetForBDS extracts the host:port + TLS choice from an upstream URL.
-func pickTargetForBDS(parsedUrl *url.URL) (target string, useTLS bool) {
+// pickTargetForBDS extracts the host:port, the method path prefix, and the TLS
+// choice from an upstream URL.
+//
+// pathPrefix is the URL path without its trailing slash ("" for none). A
+// server mounted below a path selector — `grpcs://edge.goldsky.com/boost`
+// serves `/boost/bds.evm.RPCQueryService/...` — needs every call's method
+// prefixed with it; gRPC itself has no notion of a base path.
+func pickTargetForBDS(parsedUrl *url.URL) (target, pathPrefix string, useTLS bool) {
 	target = parsedUrl.Host
 	if parsedUrl.Port() == "" {
 		target = fmt.Sprintf("%s:50051", parsedUrl.Hostname())
 	}
 	target = fmt.Sprintf("dns:///%s", target)
+	pathPrefix = strings.TrimRight(parsedUrl.Path, "/")
 
 	if portNum, err := strconv.Atoi(parsedUrl.Port()); err == nil && portNum == 443 {
 		useTLS = true
 	} else if strings.HasPrefix(parsedUrl.Scheme, "grpcs") || strings.Contains(parsedUrl.Scheme, "tls") {
 		useTLS = true
 	}
-	return target, useTLS
+	return target, pathPrefix, useTLS
+}
+
+// methodPrefixInterceptors rewrite every unary and streaming call's full
+// method name to prefix + method, so `/bds.evm.RPCQueryService/ChainId`
+// reaches `/boost/bds.evm.RPCQueryService/ChainId`. Nil for an empty prefix:
+// the common case adds nothing to the call path.
+func methodPrefixInterceptors(prefix string) []grpc.DialOption {
+	if prefix == "" {
+		return nil
+	}
+	return []grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			return invoker(ctx, prefix+method, req, reply, cc, opts...)
+		}),
+		grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			return streamer(ctx, desc, cc, prefix+method, opts...)
+		}),
+	}
 }
