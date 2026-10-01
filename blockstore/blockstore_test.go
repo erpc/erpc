@@ -708,3 +708,46 @@ func TestCache_TipAdvanceExtendsVerifiedWindowIncrementally(t *testing.T) {
 	_, ok = c.BlockByHash(hashOf(13, "a"), true)
 	require.False(t, ok)
 }
+
+func TestCache_TipRegressionStopsServingAboveVerifiedTip(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	ch := newFakeChain(10)
+	c := New(testOpts(), store, ch, ch.head, nil)
+	c.Tick(context.Background())
+	require.Equal(t, int64(10), c.Head())
+	sub := c.Subscribe(8)
+
+	ch.mu.Lock()
+	ch.tip = 8
+	ch.mu.Unlock()
+	c.Tick(context.Background())
+	require.True(t, c.Fresh(), "the prefix up to the matching tip stays verified")
+	require.Equal(t, int64(8), c.Head())
+	_, ok := c.BlockByNumber(9, true)
+	require.False(t, ok, "blocks above the live tip are not served")
+	_, ok = c.BlockByHash(hashOf(10, "a"), true)
+	require.False(t, ok)
+	_, ok = c.LogsRange(7, 9, nil)
+	require.False(t, ok)
+	_, ok = c.LogsRange(3, 8, nil)
+	require.True(t, ok)
+	require.Equal(t, int64(8), store.snap.Head, "followers receive the trimmed snapshot")
+	ev := <-sub.C
+	require.Len(t, ev.Removed, 2)
+	require.Empty(t, ev.Added)
+
+	ch.mu.Lock()
+	ch.tip = 10
+	body := ch.bodyCalls
+	ch.mu.Unlock()
+	c.Tick(context.Background())
+	require.Equal(t, int64(10), c.Head())
+	ch.mu.Lock()
+	require.Equal(t, body, ch.bodyCalls, "recovered blocks reload from the shared store")
+	ch.mu.Unlock()
+	ev = <-sub.C
+	require.Len(t, ev.Added, 2)
+	_, ok = c.BlockByNumber(10, true)
+	require.True(t, ok)
+}

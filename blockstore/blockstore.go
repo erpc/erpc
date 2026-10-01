@@ -349,13 +349,13 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 		}
 		n := snap.Base() + int64(i)
 		var expected *rawBlock
-		if r := oldRecords[normHash(hash)]; r != nil {
+		r := oldRecords[normHash(hash)]
+		if r != nil {
 			expected, _, _ = parseBlockHeader(r.Block)
 			if expected != nil {
 				expected.Hash, expected.ParentHash = normHash(expected.Hash), normHash(expected.ParentHash)
 			}
 		}
-		r := oldRecords[normHash(hash)]
 		var e error
 		if r == nil {
 			r, e = c.store.GetBlock(ctx, c.opt.Scope, hash)
@@ -464,6 +464,16 @@ func (c *Cache) refresh(ctx context.Context) error {
 		return nil
 	}
 	if old != nil && tip < old.Head && tip >= old.Base() && top.b.Hash == old.HashAt(tip) {
+		// The live tip matches a retained header, which re-proves the prefix up
+		// to it. Blocks above it are no longer known canonical, so stop serving them.
+		hashes := append([]string(nil), old.Hashes[:tip-old.Base()+1]...)
+		recs := make(map[string]*BlockRecord, len(hashes))
+		for _, h := range hashes {
+			if r := oldRecords[h]; r != nil {
+				recs[h] = r
+			}
+		}
+		c.install(&Snapshot{Head: tip, Hashes: hashes, At: c.nowFn(), Incomplete: old.Incomplete}, recs, false)
 		return nil
 	}
 	if windowHead != tip || len(window) != int(tip-base+1) || window[len(window)-1].b.Hash != top.b.Hash {
