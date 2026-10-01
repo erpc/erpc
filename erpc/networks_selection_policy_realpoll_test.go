@@ -347,3 +347,45 @@ func TestNetworkPolicy_RealPoll_StuckUpstreamServingCallsCrossesLagGateWithoutPo
 	_, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
 	assert.Contains(t, excluded, "stuck", "lag 17 > blockNumberLagAbove(16) must exclude it before its next poll")
 }
+
+// TestNetworkPolicy_RealPoll_InternalProbeKeepsIdleUpstreamAligned covers the
+// integrity state probe: it sends eth_call through the network to every
+// upstream every few seconds. Those calls answer no client, so they must not
+// end an idle upstream's aligned lag; otherwise a healthy upstream on a fast
+// chain counts every block since its last poll as lag again.
+func TestNetworkPolicy_RealPoll_InternalProbeKeepsIdleUpstreamAligned(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
+		{id: "healthy-a", latest: 1000},
+		{id: "healthy-b", latest: 1000},
+		{id: "probed", latest: 1000},
+	})
+	require.EqualValues(t, 0, blockHeadLagOf(t, network, "probed"))
+	mockClean(t, upstreamHostFromID("probed"), "eth_call", "0x01")
+
+	time.Sleep(2 * time.Millisecond)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
+	req.SetDirectives(&common.RequestDirectives{IsInternal: true, UseUpstream: "probed", SkipCacheRead: "true"})
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	resp.Release()
+	require.Equal(t, 1, gockHits(upstreamHostFromID("probed")), "the probe must reach the probed upstream")
+
+	healthyA, healthyB := upstreamByID(t, network, "healthy-a"), upstreamByID(t, network, "healthy-b")
+	for n := int64(1001); n <= 1000+17; n++ {
+		network.metricsTracker.SetLatestBlockNumber(healthyA, n, 0)
+		network.metricsTracker.SetLatestBlockNumber(healthyB, n, 0)
+	}
+	require.EqualValues(t, 0, blockHeadLagOf(t, network, "probed"),
+		"an internal probe answers no client and must not end the idle upstream's aligned lag")
+
+	policy.TickForTest(network.policyEngine, network.networkId, "*")
+	_, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
+	assert.NotContains(t, excluded, "probed", "a healthy idle upstream that was only probed must stay in rotation")
+}

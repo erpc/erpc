@@ -947,11 +947,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 			if isSuccess {
 				u.recordRequestSuccess(method)
-				// Only requests the network routed here serve a client; internal
-				// callers (state poller, probes, shadow traffic) bypass method
-				// exclusion. A served answer makes this upstream's lag count
-				// every block since its last head observation.
-				if !byPassMethodExclusion {
+				// Only client requests count as served. Direct internal callers
+				// (state poller, policy prober, shadow traffic) bypass method
+				// exclusion; internal requests routed through the network
+				// (integrity state probe, chainview fetches) carry IsInternal.
+				// A served answer makes this upstream's lag count every block
+				// since its last head observation.
+				if !byPassMethodExclusion && !nrq.IsInternal() {
 					u.metricsTracker.RecordUpstreamServed(u)
 				}
 			}
