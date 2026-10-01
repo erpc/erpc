@@ -1044,6 +1044,14 @@ export interface FailsafeConfig {
   matchMethod?: string;
   matchFinality?: DataFinalityState[];
   /**
+   * MatchCommitment scopes a network-scope policy by the Solana commitment
+   * erpc pins on the wire: the caller's value, else the svm.commitment default
+   * that injection writes, else "none". Empty = any. Values are OR-ed and
+   * exact (confirmed does not match processed). Non-SVM requests are "none".
+   * Rejected at upstream scope.
+   */
+  matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
+  /**
    * MatchRequestKind scopes this policy by who issued the request:
    * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
    * the integrity module's canonical corroboration), or ""/"*" for both.

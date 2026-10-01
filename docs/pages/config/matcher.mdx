@@ -178,6 +178,7 @@ connector `failsafeForGets[]`/`failsafeForSets[]`)
 |---|---|---|---|
 | `matchMethod` | string | `"*"` (set by `SetDefaults` when empty) | `WildcardMatch` against the request's JSON-RPC method. Empty is rejected by `Validate()`. During defaults inheritance, a default's `matchMethod` is glob-matched against the entry's `matchMethod` to select which default to apply. Source: <SourceLink file="common/config.go" lines="1280" />, <SourceLink file="common/defaults.go" lines="2131-2137" /> |
 | `matchFinality` | []DataFinalityState | `[]` (empty = any finality) | Exact set-membership check at dispatch time: `slices.Contains(list, finality)`. Empty list = catch-all finality tier. No wildcard inside the list — each element must be an exact finality name. Source: <SourceLink file="common/config.go" lines="1281" />, <SourceLink file="common/match.go" lines="38-41" /> |
+| `matchCommitment` | []string | `[]` (empty = any commitment) | Network scope only: first-match filter, AND-ed with method/finality/kind. Upstream-scope entries that set it fail startup. Values `none`\|`processed`\|`confirmed`\|`finalized`, OR-ed, exact match (`confirmed` does not match `processed`). Compares the commitment erpc pins on the wire: the caller's value, else the `svm.commitment` default injection writes, else `none`. Non-SVM requests are `none`. Source: <SourceLink file="common/config.go" />, <SourceLink file="architecture/svm/hooks.go" />, <SourceLink file="erpc/networks.go" /> |
 
 **Cache policies** — `database.evmJsonRpcCache.policies[]`
 

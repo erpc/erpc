@@ -1401,3 +1401,74 @@ func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, user))
 	})
 }
+
+func TestGetFailsafeExecutor_MatchCommitment(t *testing.T) {
+	ctx := context.Background()
+
+	// Consensus-style rule on [finalized, confirmed], then a catch-all.
+	newNetwork := func(t *testing.T, arch common.NetworkArchitecture, defaultCommitment string) *Network {
+		t.Helper()
+		cfg := &common.NetworkConfig{Architecture: arch}
+		if arch == common.ArchitectureSvm {
+			cfg.Svm = &common.SvmNetworkConfig{Cluster: "mainnet-beta", Commitment: defaultCommitment}
+		}
+		rule, err := NewNetworkExecutor(&common.FailsafeConfig{
+			MatchMethod:     "*",
+			MatchCommitment: []string{"finalized", "confirmed"},
+		}, &log.Logger, nil, nil)
+		require.NoError(t, err)
+		catchAll, err := NewNetworkExecutor(nil, &log.Logger, nil, nil)
+		require.NoError(t, err)
+		return &Network{cfg: cfg, failsafeExecutors: []*networkExecutor{rule, catchAll}}
+	}
+	matchesRule := func(n *Network, body string) bool {
+		req := common.NewNormalizedRequest([]byte(body))
+		req.SetNetwork(n)
+		return len(n.getFailsafeExecutor(ctx, req).MatchCommitment()) > 0
+	}
+
+	cases := []struct {
+		name              string
+		defaultCommitment string
+		body              string
+		want              bool
+	}{
+		{"explicit confirmed", "", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"confirmed"}]}`, true},
+		{"explicit processed", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"processed"}]}`, false},
+		// Injection makes this byte-identical to an explicit confirmed request,
+		// so it must take the same rule.
+		{"omitted takes the injected default", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, true},
+		{"omitted takes a processed default", "processed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, false},
+		// getBlock rejects processed, so injection writes confirmed.
+		{"omitted takes the clamped default", "processed", `{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100]}`, true},
+		// Nothing is injected, so the bytes differ from an explicit finalized request.
+		{"omitted without a default is none", "", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, false},
+		{"unknown value matches no level", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"recent"}]}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newNetwork(t, common.ArchitectureSvm, tc.defaultCommitment)
+			assert.Equal(t, tc.want, matchesRule(n, tc.body))
+		})
+	}
+
+	t.Run("same rule before and after injection", func(t *testing.T) {
+		n := newNetwork(t, common.ArchitectureSvm, "confirmed")
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pk"]}`))
+		req.SetNetwork(n)
+		before := n.getFailsafeExecutor(ctx, req)
+		h, err := common.GetArchitectureHandler(common.ArchitectureSvm)
+		require.NoError(t, err)
+		_, _, err = h.HandleProjectPreForward(ctx, n, req)
+		require.NoError(t, err)
+		jrq, err := req.JsonRpcRequest(ctx)
+		require.NoError(t, err)
+		require.Len(t, jrq.Params, 2, "injection must append the options object")
+		assert.Same(t, before, n.getFailsafeExecutor(ctx, req))
+	})
+
+	t.Run("non-SVM requests are none", func(t *testing.T) {
+		n := newNetwork(t, common.ArchitectureEvm, "")
+		assert.False(t, matchesRule(n, `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"finalized"]}`))
+	})
+}

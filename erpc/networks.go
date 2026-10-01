@@ -1774,6 +1774,14 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		kind = "internal"
 	}
 
+	// matchCommitment compares the commitment erpc pins on the wire, so a rule
+	// is a function of the bytes the multiplexer and cache key on. Non-SVM
+	// requests carry no commitment.
+	commitment := "none"
+	if n.cfg.Architecture == common.ArchitectureSvm {
+		commitment = svm.FailsafeCommitment(ctx, n, req)
+	}
+
 	// Iterate through executors in config order and return the first match.
 	// This respects the user-defined priority order in the config file.
 	for _, fe := range n.failsafeExecutors {
@@ -1786,10 +1794,13 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		fl := fe.MatchFinality()
 		finalityMatches := len(fl) == 0 || slices.Contains(fl, finality)
 
+		mc := fe.MatchCommitment()
+		commitmentMatches := len(mc) == 0 || slices.Contains(mc, commitment)
+
 		mk := fe.MatchRequestKind()
 		kindMatches := mk == "*" || mk == "" || mk == kind
 
-		if methodMatches && finalityMatches && kindMatches {
+		if methodMatches && finalityMatches && commitmentMatches && kindMatches {
 			return fe
 		}
 	}

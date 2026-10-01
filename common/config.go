@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"time"
 
 	"strings"
@@ -1494,6 +1495,12 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 type FailsafeConfig struct {
 	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
 	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	// MatchCommitment scopes a network-scope policy by the Solana commitment
+	// erpc pins on the wire: the caller's value, else the svm.commitment default
+	// that injection writes, else "none". Empty = any. Values are OR-ed and
+	// exact (confirmed does not match processed). Non-SVM requests are "none".
+	// Rejected at upstream scope.
+	MatchCommitment []string `yaml:"matchCommitment,omitempty" json:"matchCommitment" tstype:"('none' | 'processed' | 'confirmed' | 'finalized')[]"`
 	// MatchRequestKind scopes this policy by who issued the request:
 	// "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
 	// the integrity module's canonical corroboration), or ""/"*" for both.
@@ -1539,6 +1546,10 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	if c.MatchFinality != nil {
 		copied.MatchFinality = make([]DataFinalityState, len(c.MatchFinality))
 		copy(copied.MatchFinality, c.MatchFinality)
+	}
+
+	if c.MatchCommitment != nil {
+		copied.MatchCommitment = slices.Clone(c.MatchCommitment)
 	}
 
 	if c.Retry != nil {
