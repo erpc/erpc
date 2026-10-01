@@ -383,8 +383,17 @@ func effectiveCommitment(ctx context.Context, n common.Network, r *common.Normal
 // value the injected params carry, so it agrees with svm.RequestKey — the
 // multiplexer and cache key — and gives the same answer before and after
 // injection. A value the node does not know (e.g. "recent") is returned as is
-// and matches no rule token.
+// and matches no rule token. Write methods are "none": their commitment field
+// governs a preflight or simulation, not the read, and an explicit value would
+// otherwise match while the injected default would not.
 func FailsafeCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) string {
+	method, err := r.Method()
+	if err != nil {
+		return "none"
+	}
+	if _, readPath := commitmentOptionsIndex[method]; !readPath {
+		return "none"
+	}
 	if commitment, _, _ := resolveCommitment(ctx, n, r); commitment != "" {
 		return commitment
 	}

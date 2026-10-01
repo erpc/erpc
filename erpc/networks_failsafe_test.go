@@ -1444,6 +1444,11 @@ func TestGetFailsafeExecutor_MatchCommitment(t *testing.T) {
 		// Nothing is injected, so the bytes differ from an explicit finalized request.
 		{"omitted without a default is none", "", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, false},
 		{"unknown value matches no level", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"recent"}]}`, false},
+		// Write methods are none whether the commitment is explicit or injected.
+		{"explicit simulateTransaction is none", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"simulateTransaction","params":["tx",{"commitment":"confirmed"}]}`, false},
+		{"injected simulateTransaction is none", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"simulateTransaction","params":["tx",{}]}`, false},
+		{"explicit requestAirdrop is none", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"requestAirdrop","params":["pk",1,{"commitment":"confirmed"}]}`, false},
+		{"sendTransaction preflight is none", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["tx",{"preflightCommitment":"confirmed"}]}`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
