@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"time"
 
 	"strings"
@@ -1483,14 +1484,12 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 type FailsafeConfig struct {
 	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
 	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
-	// MatchCommitment scopes this policy by the caller's explicitly requested
-	// Solana commitment (processed|confirmed|finalized|none). Empty = wildcard
-	// (backward compatible). Multiple values are OR-ed; combined with other
-	// matchers via AND. Matching is exact — confirmed does not match processed.
-	// "none" means the original request omitted commitment (distinct from an
-	// injected/effective default). Unknown/malformed request values never match
-	// "none". See architecture/svm ExtractRequestedCommitment.
-	MatchCommitment []CommitmentLevel `yaml:"matchCommitment,omitempty" json:"matchCommitment" tstype:"('none' | 'processed' | 'confirmed' | 'finalized')[]"`
+	// MatchCommitment scopes a network-scope policy by the Solana commitment
+	// erpc pins on the wire: the caller's value, else the svm.commitment default
+	// that injection writes, else "none". Empty = any. Values are OR-ed and
+	// exact (confirmed does not match processed). Non-SVM requests are "none".
+	// Rejected at upstream scope.
+	MatchCommitment []string `yaml:"matchCommitment,omitempty" json:"matchCommitment" tstype:"('none' | 'processed' | 'confirmed' | 'finalized')[]"`
 	// MatchRequestKind scopes this policy by who issued the request:
 	// "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
 	// the integrity module's canonical corroboration), or ""/"*" for both.
@@ -1539,8 +1538,7 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	}
 
 	if c.MatchCommitment != nil {
-		copied.MatchCommitment = make([]CommitmentLevel, len(c.MatchCommitment))
-		copy(copied.MatchCommitment, c.MatchCommitment)
+		copied.MatchCommitment = slices.Clone(c.MatchCommitment)
 	}
 
 	if c.Retry != nil {

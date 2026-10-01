@@ -259,11 +259,6 @@ type NormalizedRequest struct {
 
 	finality atomic.Value // Cached finality state
 
-	// requestedCommitment is the caller's explicit Solana commitment captured
-	// before network-default injection (architecture/svm). Absent when unset
-	// (EVM, or SVM path that skipped project pre-forward).
-	requestedCommitment atomic.Value // CommitmentLevel
-
 	user atomic.Value
 
 	// Cached agent information to avoid recalculation
@@ -1207,29 +1202,6 @@ func (r *NormalizedRequest) Finality(ctx context.Context) DataFinalityState {
 	}
 
 	return DataFinalityStateUnknown
-}
-
-// SetRequestedCommitment memoizes the caller's explicit Solana commitment
-// (captured before default injection). Safe to call once; later calls overwrite.
-func (r *NormalizedRequest) SetRequestedCommitment(c CommitmentLevel) {
-	if r == nil {
-		return
-	}
-	r.requestedCommitment.Store(c)
-}
-
-// RequestedCommitment returns the memoized caller commitment and whether it
-// was set. When unset, callers should treat matching as CommitmentNone for
-// non-SVM traffic, or extract lazily for SVM tests that skip project pre-forward.
-func (r *NormalizedRequest) RequestedCommitment() (CommitmentLevel, bool) {
-	if r == nil {
-		return CommitmentNone, false
-	}
-	v := r.requestedCommitment.Load()
-	if v == nil {
-		return CommitmentNone, false
-	}
-	return v.(CommitmentLevel), true
 }
 
 // CopyHttpContextFrom copies HTTP context (headers and query parameters) from another request

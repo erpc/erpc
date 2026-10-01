@@ -44,10 +44,11 @@ projects:
           cluster: mainnet-beta
         failsafe:
           # Specific commitment rules first — network failsafe is first-match-wins.
-          # matchCommitment filters on the caller's requested commitment (before
-          # svm.commitment injection). Omitted matchCommitment = wildcard.
+          # matchCommitment compares the commitment on the wire: the caller's
+          # value, else the svm.commitment default injection writes. With
+          # commitment: confirmed above, omitted requests match "confirmed".
           # - matchMethod: "getBalance|getAccountInfo|getTokenAccountBalance"
-          #   matchCommitment: [confirmed, processed]
+          #   matchCommitment: [finalized, confirmed]
           #   consensus:
           #     maxParticipants: 3
           #     agreementThreshold: 2

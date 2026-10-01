@@ -1006,13 +1006,11 @@ export interface FailsafeConfig {
     matchMethod?: string;
     matchFinality?: DataFinalityState[];
     /**
-     * MatchCommitment scopes this policy by the caller's explicitly requested
-     * Solana commitment (processed|confirmed|finalized|none). Empty = wildcard
-     * (backward compatible). Multiple values are OR-ed; combined with other
-     * matchers via AND. Matching is exact — confirmed does not match processed.
-     * "none" means the original request omitted commitment (distinct from an
-     * injected/effective default). Unknown/malformed request values never match
-     * "none". See architecture/svm ExtractRequestedCommitment.
+     * MatchCommitment scopes a network-scope policy by the Solana commitment
+     * erpc pins on the wire: the caller's value, else the svm.commitment default
+     * that injection writes, else "none". Empty = any. Values are OR-ed and
+     * exact (confirmed does not match processed). Non-SVM requests are "none".
+     * Rejected at upstream scope.
      */
     matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
     /**

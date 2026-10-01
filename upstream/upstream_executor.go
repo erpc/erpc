@@ -27,9 +27,8 @@ type upstreamExecutor struct {
 	breaker *failsafe.Breaker
 
 	// Cached fields from cfg for hot-path access.
-	method      string
-	finalities  []common.DataFinalityState
-	commitments []common.CommitmentLevel
+	method     string
+	finalities []common.DataFinalityState
 
 	// emptyResultAccept is the method list for hedge cancellation.
 	emptyResultAccept []string
@@ -53,13 +52,20 @@ func NewUpstreamExecutor(cfg *common.UpstreamFailsafeConfig, logger *zerolog.Log
 			},
 		)
 	}
+	if len(cfg.MatchCommitment) > 0 {
+		return nil, common.NewErrFailsafeConfiguration(
+			errors.New("matchCommitment is only supported for network-level failsafe"),
+			map[string]interface{}{
+				"matchCommitment": cfg.MatchCommitment,
+			},
+		)
+	}
 
 	e := &upstreamExecutor{
-		cfg:         cfg,
-		logger:      logger,
-		method:      cfg.MatchMethod,
-		finalities:  cfg.MatchFinality,
-		commitments: cfg.MatchCommitment,
+		cfg:        cfg,
+		logger:     logger,
+		method:     cfg.MatchMethod,
+		finalities: cfg.MatchFinality,
 	}
 	if e.method == "" {
 		e.method = "*"
@@ -83,9 +89,6 @@ func (e *upstreamExecutor) MatchMethod() string { return e.method }
 
 // MatchFinality returns the configured finality filter (or nil).
 func (e *upstreamExecutor) MatchFinality() []common.DataFinalityState { return e.finalities }
-
-// MatchCommitment returns the configured commitment filter (nil/empty = any).
-func (e *upstreamExecutor) MatchCommitment() []common.CommitmentLevel { return e.commitments }
 
 // Timeout exposes the configured TimeoutFunc (nil when no timeout).
 func (e *upstreamExecutor) Timeout() common.TimeoutFunc { return e.timeout }

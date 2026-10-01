@@ -377,6 +377,20 @@ func effectiveCommitment(ctx context.Context, n common.Network, r *common.Normal
 	return solanaDefaultCommitment
 }
 
+// FailsafeCommitment is the level a network failsafe `matchCommitment` rule
+// compares: the caller's commitment, else the svm.commitment default that
+// injection writes (clamped per method), else "none". It reads the same pinned
+// value the injected params carry, so it agrees with svm.RequestKey — the
+// multiplexer and cache key — and gives the same answer before and after
+// injection. A value the node does not know (e.g. "recent") is returned as is
+// and matches no rule token.
+func FailsafeCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) string {
+	if commitment, _, _ := resolveCommitment(ctx, n, r); commitment != "" {
+		return commitment
+	}
+	return "none"
+}
+
 // writeCommitmentTarget locates the commitment field on a write method's config
 // object: which param index the object lives at, and the field name that
 // carries the commitment level.

@@ -1207,7 +1207,7 @@ func (f *FailsafeConfig) Validate() error {
 
 	for _, c := range f.MatchCommitment {
 		switch c {
-		case CommitmentNone, CommitmentProcessed, CommitmentConfirmed, CommitmentFinalized:
+		case "none", "processed", "confirmed", "finalized":
 		default:
 			return fmt.Errorf("failsafe.matchCommitment '%s' is invalid, must be one of: none | processed | confirmed | finalized", c)
 		}

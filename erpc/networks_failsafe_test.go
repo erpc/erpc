@@ -1403,196 +1403,72 @@ func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 }
 
 func TestGetFailsafeExecutor_MatchCommitment(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	ctx := context.Background()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	newReq := func(network *Network, commitment common.CommitmentLevel) *common.NormalizedRequest {
-		req := common.NewNormalizedRequest([]byte(
-			`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"0x100"]}`,
-		))
-		req.SetNetwork(network)
-		req.SetRequestedCommitment(commitment)
-		return req
+	// Consensus-style rule on [finalized, confirmed], then a catch-all.
+	newNetwork := func(t *testing.T, arch common.NetworkArchitecture, defaultCommitment string) *Network {
+		t.Helper()
+		cfg := &common.NetworkConfig{Architecture: arch}
+		if arch == common.ArchitectureSvm {
+			cfg.Svm = &common.SvmNetworkConfig{Cluster: "mainnet-beta", Commitment: defaultCommitment}
+		}
+		rule, err := NewNetworkExecutor(&common.FailsafeConfig{
+			MatchMethod:     "*",
+			MatchCommitment: []string{"finalized", "confirmed"},
+		}, &log.Logger, nil, nil)
+		require.NoError(t, err)
+		catchAll, err := NewNetworkExecutor(nil, &log.Logger, nil, nil)
+		require.NoError(t, err)
+		return &Network{cfg: cfg, failsafeExecutors: []*networkExecutor{rule, catchAll}}
+	}
+	matchesRule := func(n *Network, body string) bool {
+		req := common.NewNormalizedRequest([]byte(body))
+		req.SetNetwork(n)
+		return len(n.getFailsafeExecutor(ctx, req).MatchCommitment()) > 0
 	}
 
-	t.Run("omitted matcher is wildcard", func(t *testing.T) {
-		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{
-				MatchMethod: "*",
-				Retry:       &common.RetryPolicyConfig{MaxAttempts: 2},
-			},
+	cases := []struct {
+		name              string
+		defaultCommitment string
+		body              string
+		want              bool
+	}{
+		{"explicit confirmed", "", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"confirmed"}]}`, true},
+		{"explicit processed", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"processed"}]}`, false},
+		// Injection makes this byte-identical to an explicit confirmed request,
+		// so it must take the same rule.
+		{"omitted takes the injected default", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, true},
+		{"omitted takes a processed default", "processed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, false},
+		// getBlock rejects processed, so injection writes confirmed.
+		{"omitted takes the clamped default", "processed", `{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100]}`, true},
+		// Nothing is injected, so the bytes differ from an explicit finalized request.
+		{"omitted without a default is none", "", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, false},
+		{"unknown value matches no level", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"recent"}]}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newNetwork(t, common.ArchitectureSvm, tc.defaultCommitment)
+			assert.Equal(t, tc.want, matchesRule(n, tc.body))
 		})
-		for _, c := range []common.CommitmentLevel{
-			common.CommitmentNone, common.CommitmentProcessed,
-			common.CommitmentConfirmed, common.CommitmentFinalized, common.CommitmentUnknown,
-		} {
-			ex := network.getFailsafeExecutor(ctx, newReq(network, c))
-			require.NotNil(t, ex, "commitment %s", c)
-			assert.Equal(t, "*", ex.MatchMethod())
-		}
+	}
+
+	t.Run("same rule before and after injection", func(t *testing.T) {
+		n := newNetwork(t, common.ArchitectureSvm, "confirmed")
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pk"]}`))
+		req.SetNetwork(n)
+		before := n.getFailsafeExecutor(ctx, req)
+		h, err := common.GetArchitectureHandler(common.ArchitectureSvm)
+		require.NoError(t, err)
+		_, _, err = h.HandleProjectPreForward(ctx, n, req)
+		require.NoError(t, err)
+		jrq, err := req.JsonRpcRequest(ctx)
+		require.NoError(t, err)
+		require.Len(t, jrq.Params, 2, "injection must append the options object")
+		assert.Same(t, before, n.getFailsafeExecutor(ctx, req))
 	})
 
-	t.Run("exact match each level", func(t *testing.T) {
-		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{
-				MatchMethod:     "*",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentProcessed},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 1},
-			},
-			{
-				MatchMethod:     "*",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentConfirmed},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 2},
-			},
-			{
-				MatchMethod:     "*",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentFinalized},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 3},
-			},
-			{
-				MatchMethod:     "*",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentNone},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 4},
-			},
-			{
-				MatchMethod: "*",
-				Retry:       &common.RetryPolicyConfig{MaxAttempts: 9},
-			},
-		})
-
-		cases := []struct {
-			c    common.CommitmentLevel
-			want int
-		}{
-			{common.CommitmentProcessed, 1},
-			{common.CommitmentConfirmed, 2},
-			{common.CommitmentFinalized, 3},
-			{common.CommitmentNone, 4},
-		}
-		for _, tc := range cases {
-			ex := network.getFailsafeExecutor(ctx, newReq(network, tc.c))
-			require.NotNil(t, ex)
-			require.NotNil(t, ex.cfg.Retry)
-			assert.Equal(t, tc.want, ex.cfg.Retry.MaxAttempts, "commitment %s", tc.c)
-		}
-	})
-
-	t.Run("confirmed does not match processed", func(t *testing.T) {
-		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{
-				MatchMethod:     "*",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentProcessed},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 1},
-			},
-			{
-				MatchMethod: "*",
-				Retry:       &common.RetryPolicyConfig{MaxAttempts: 9},
-			},
-		})
-		ex := network.getFailsafeExecutor(ctx, newReq(network, common.CommitmentConfirmed))
-		require.NotNil(t, ex)
-		assert.Equal(t, 9, ex.cfg.Retry.MaxAttempts)
-	})
-
-	t.Run("unknown does not match none", func(t *testing.T) {
-		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{
-				MatchMethod:     "*",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentNone},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 1},
-			},
-			{
-				MatchMethod: "*",
-				Retry:       &common.RetryPolicyConfig{MaxAttempts: 9},
-			},
-		})
-		ex := network.getFailsafeExecutor(ctx, newReq(network, common.CommitmentUnknown))
-		require.NotNil(t, ex)
-		assert.Equal(t, 9, ex.cfg.Retry.MaxAttempts)
-	})
-
-	t.Run("OR within matchCommitment list", func(t *testing.T) {
-		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{
-				MatchMethod: "*",
-				MatchCommitment: []common.CommitmentLevel{
-					common.CommitmentConfirmed, common.CommitmentFinalized,
-				},
-				Retry: &common.RetryPolicyConfig{MaxAttempts: 2},
-			},
-		})
-		ex := network.getFailsafeExecutor(ctx, newReq(network, common.CommitmentFinalized))
-		require.NotNil(t, ex)
-		assert.Equal(t, 2, ex.cfg.Retry.MaxAttempts)
-
-		ex = network.getFailsafeExecutor(ctx, newReq(network, common.CommitmentProcessed))
-		require.NotNil(t, ex)
-		// Falls through to the synthetic catch-all (no MatchCommitment / no Retry).
-		assert.Empty(t, ex.MatchCommitment())
-		assert.Nil(t, ex.cfg)
-	})
-
-	t.Run("AND with matchMethod", func(t *testing.T) {
-		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{
-				MatchMethod:     "eth_getBalance",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentFinalized},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 1},
-			},
-			{
-				MatchMethod:     "eth_call",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentFinalized},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 2},
-			},
-		})
-		ex := network.getFailsafeExecutor(ctx, newReq(network, common.CommitmentFinalized))
-		require.NotNil(t, ex)
-		assert.Equal(t, "eth_call", ex.MatchMethod())
-		assert.Equal(t, 2, ex.cfg.Retry.MaxAttempts)
-	})
-
-	t.Run("AND with matchFinality", func(t *testing.T) {
-		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{
-				MatchMethod:     "*",
-				MatchFinality:   []common.DataFinalityState{common.DataFinalityStateRealtime},
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentFinalized},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 1},
-			},
-			{
-				MatchMethod:     "*",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentFinalized},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 2},
-			},
-		})
-		// eth_call with block number is not realtime → first rule misses finality, second wins.
-		ex := network.getFailsafeExecutor(ctx, newReq(network, common.CommitmentFinalized))
-		require.NotNil(t, ex)
-		assert.Equal(t, 2, ex.cfg.Retry.MaxAttempts)
-	})
-
-	t.Run("specific commitment precedes broader rule", func(t *testing.T) {
-		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{
-				MatchMethod:     "*",
-				MatchCommitment: []common.CommitmentLevel{common.CommitmentFinalized},
-				Retry:           &common.RetryPolicyConfig{MaxAttempts: 1},
-			},
-			{
-				MatchMethod: "*",
-				Retry:       &common.RetryPolicyConfig{MaxAttempts: 9},
-			},
-		})
-		ex := network.getFailsafeExecutor(ctx, newReq(network, common.CommitmentFinalized))
-		require.NotNil(t, ex)
-		assert.Equal(t, 1, ex.cfg.Retry.MaxAttempts)
-
-		ex = network.getFailsafeExecutor(ctx, newReq(network, common.CommitmentNone))
-		require.NotNil(t, ex)
-		assert.Equal(t, 9, ex.cfg.Retry.MaxAttempts)
+	t.Run("non-SVM requests are none", func(t *testing.T) {
+		n := newNetwork(t, common.ArchitectureEvm, "")
+		assert.False(t, matchesRule(n, `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"finalized"]}`))
 	})
 }

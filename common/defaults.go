@@ -1931,9 +1931,8 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 
 					// Match finality (empty array means any finality)
 					finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
-					commitmentMatch := MatchCommitments(dfs.MatchCommitment, fs.MatchCommitment)
 
-					if methodMatch && finalityMatch && commitmentMatch {
+					if methodMatch && finalityMatch {
 						defaultFs = dfs
 						break
 					}
@@ -2146,9 +2145,8 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 
 						// Match finality (empty array means any finality)
 						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
-						commitmentMatch := MatchCommitments(dfs.MatchCommitment, fs.MatchCommitment)
 
-						if methodMatch && finalityMatch && commitmentMatch {
+						if methodMatch && finalityMatch {
 							defaultFs = dfs
 							break
 						}

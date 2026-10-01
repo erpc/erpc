@@ -33,7 +33,7 @@ type networkExecutor struct {
 
 	method      string
 	finalities  []common.DataFinalityState
-	commitments []common.CommitmentLevel
+	commitments []string
 	requestKind string // "*" (any) | "user" | "internal"
 
 	emptyResultAccept []string
@@ -110,7 +110,7 @@ func (e *networkExecutor) MatchMethod() string { return e.method }
 func (e *networkExecutor) MatchFinality() []common.DataFinalityState { return e.finalities }
 
 // MatchCommitment returns the configured commitment filter (nil/empty = any).
-func (e *networkExecutor) MatchCommitment() []common.CommitmentLevel { return e.commitments }
+func (e *networkExecutor) MatchCommitment() []string { return e.commitments }
 
 // MatchRequestKind returns the configured request-kind filter ("*"/"user"/"internal").
 func (e *networkExecutor) MatchRequestKind() string { return e.requestKind }

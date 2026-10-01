@@ -28,10 +28,6 @@ func (h *SvmArchitectureHandler) HandleProjectPreForward(ctx context.Context, ne
 		}
 	}
 
-	// Capture the caller's explicit commitment BEFORE injection rewrites
-	// params — matchCommitment must distinguish omitted vs injected default.
-	CaptureRequestedCommitment(ctx, req)
-
 	// Commitment injection runs here — at the project layer, BEFORE the
 	// network-layer cache read — rather than in HandleNetworkPreForward. It
 	// mutates params and invalidates the memoized CacheHash, so running it after

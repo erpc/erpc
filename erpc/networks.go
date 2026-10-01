@@ -1774,17 +1774,12 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		kind = "internal"
 	}
 
-	reqCommitment, hasCommitment := req.RequestedCommitment()
-	if !hasCommitment {
-		if n.cfg != nil && n.cfg.Architecture == common.ArchitectureSvm {
-			// Lazy capture for SVM callers that skip project pre-forward (unit
-			// tests). Production always captures before injection in
-			// HandleProjectPreForward — do not rely on this path after inject.
-			reqCommitment = svm.ExtractRequestedCommitment(ctx, req)
-			req.SetRequestedCommitment(reqCommitment)
-		} else {
-			reqCommitment = common.CommitmentNone
-		}
+	// matchCommitment compares the commitment erpc pins on the wire, so a rule
+	// is a function of the bytes the multiplexer and cache key on. Non-SVM
+	// requests carry no commitment.
+	commitment := "none"
+	if n.cfg.Architecture == common.ArchitectureSvm {
+		commitment = svm.FailsafeCommitment(ctx, n, req)
 	}
 
 	// Iterate through executors in config order and return the first match.
@@ -1800,7 +1795,7 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		finalityMatches := len(fl) == 0 || slices.Contains(fl, finality)
 
 		mc := fe.MatchCommitment()
-		commitmentMatches := len(mc) == 0 || slices.Contains(mc, reqCommitment)
+		commitmentMatches := len(mc) == 0 || slices.Contains(mc, commitment)
 
 		mk := fe.MatchRequestKind()
 		kindMatches := mk == "*" || mk == "" || mk == kind
