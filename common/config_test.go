@@ -1229,6 +1229,25 @@ func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "rateLimitCountMode")
 }
 
+// Upstream registration is asynchronous, so a consensus block at upstream
+// scope must fail config load. Otherwise the executor's rejection is only a
+// log line and the upstream silently drops out of the pool.
+func TestUpstreamConfig_ValidateRejectsConsensus(t *testing.T) {
+	cfg := &Config{}
+	ups := &UpstreamConfig{
+		Id:       "up1",
+		Endpoint: "http://localhost",
+		Failsafe: []*FailsafeConfig{{MatchMethod: "*", Consensus: &ConsensusPolicyConfig{MaxParticipants: 2, AgreementThreshold: 2}}},
+	}
+	err := ups.Validate(cfg, false)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "consensus")
+	}
+
+	ups.Failsafe[0].Consensus = nil
+	assert.NoError(t, ups.Validate(cfg, false))
+}
+
 // Hedge quantile is scope-generic: connector-level failsafe accepts the
 // same Duration|AdaptiveDuration shape as timeout.duration, resolved at
 // runtime against the connector's own latency window.
