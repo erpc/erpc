@@ -535,6 +535,8 @@ Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it i
 
 29. **There is no metric for SVM shred-insert (ingestion) lag.** It gates cordoning and appears in the cordon WARN log (`shredInsertSlotLag`), but no gauge exposes it. Monitor `erpc_upstream_cordoned` and read the `reason` label instead.
 
+30. **eRPC's own requests carry a fixed `user` and `agent_name`.** The state poller, integrity probes and upstream detection label their upstream attempts `erpc-state-poller`, `erpc-integrity` and `erpc-detection`, on both `user` and `agent_name`. `user="n/a"` therefore means a client request that reached eRPC without an identity, not eRPC itself. The `eth_sendRawTransaction` verification probe carries the broadcasting caller. (<SourceLink file="common/user.go" />)
+
 **Metrics server log lines** (useful when diagnosing startup failures):
 - `"starting metrics server on port: %d"` — Info, <SourceLink file="erpc/init.go" lines="184" />
 - `"error starting metrics server: %s"` — Error, <SourceLink file="erpc/init.go" lines="200" />
