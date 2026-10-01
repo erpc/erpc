@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1380,14 +1381,39 @@ func blocksBehind(networkHead, upstreamHead int64) int64 {
 // headObservation is when one of an upstream's heads (latest or finalized) was
 // last observed, by a poll, a response it served or a shared-counter update,
 // and what the network head was at that moment.
+//
+// The two fields form one value: a reader must not pair a new time with an old
+// network head, which would understate the lag. seq is a sequence lock, odd
+// while a write is in progress; writers come from pollers and from responses
+// on the request path, so they claim it with a CAS rather than a mutex.
 type headObservation struct {
+	seq         atomic.Uint64
 	atMs        atomic.Int64
 	networkHead atomic.Int64
 }
 
 func (o *headObservation) record(nowMs, networkHead int64) {
-	o.atMs.Store(nowMs)
-	o.networkHead.Store(networkHead)
+	for {
+		if s := o.seq.Load(); s&1 == 0 && o.seq.CompareAndSwap(s, s+1) {
+			o.atMs.Store(nowMs)
+			o.networkHead.Store(networkHead)
+			o.seq.Store(s + 2)
+			return
+		}
+		runtime.Gosched()
+	}
+}
+
+func (o *headObservation) load() (atMs, networkHead int64) {
+	for {
+		if s := o.seq.Load(); s&1 == 0 {
+			atMs, networkHead = o.atMs.Load(), o.networkHead.Load()
+			if o.seq.Load() == s {
+				return atMs, networkHead
+			}
+		}
+		runtime.Gosched()
+	}
 }
 
 // headObservationWindow is how many state-poller intervals a head observation
@@ -1417,8 +1443,7 @@ const headObservationWindow = 3
 // head re-derived lower lowers every lag at once.
 func alignedBlocksBehind(upsMeta *NetworkMetadata, obs *headObservation, networkHead, upstreamHead, nowMs int64) int64 {
 	ref := networkHead
-	if seen := obs.networkHead.Load(); seen > 0 && seen < ref {
-		at := obs.atMs.Load()
+	if at, seen := obs.load(); seen > 0 && seen < ref {
 		if refreshMs := upsMeta.headRefreshMs.Load(); refreshMs > 0 && nowMs-at <= headObservationWindow*refreshMs && upsMeta.lastServedMs.Load() <= at {
 			ref = seen
 		}
