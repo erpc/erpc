@@ -1248,6 +1248,36 @@ func TestUpstreamConfig_ValidateRejectsConsensus(t *testing.T) {
 	assert.NoError(t, ups.Validate(cfg, false))
 }
 
+// Provider-generated upstreams inherit upstreamDefaults only when no override
+// matches, after config load, inside a background bootstrap task. Consensus
+// on the defaults object must fail validation too, or those upstreams drop
+// out with only a log line.
+func TestProjectConfig_ValidateRejectsConsensusInUpstreamDefaults(t *testing.T) {
+	cfg := &Config{}
+	prj := &ProjectConfig{
+		Id: "main",
+		Providers: []*ProviderConfig{{
+			Id:                 "alchemy",
+			Vendor:             "alchemy",
+			UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+		}},
+		UpstreamDefaults: &UpstreamConfig{
+			Failsafe: []*FailsafeConfig{{
+				MatchMethod: "*",
+				Consensus:   &ConsensusPolicyConfig{MaxParticipants: 2, AgreementThreshold: 2},
+			}},
+		},
+	}
+	err := prj.Validate(cfg)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "upstreamDefaults")
+		assert.Contains(t, err.Error(), "consensus")
+	}
+
+	prj.UpstreamDefaults.Failsafe[0].Consensus = nil
+	assert.NoError(t, prj.Validate(cfg))
+}
+
 // Hedge quantile is scope-generic: connector-level failsafe accepts the
 // same Duration|AdaptiveDuration shape as timeout.duration, resolved at
 // runtime against the connector's own latency window.
