@@ -1020,6 +1020,9 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			if err := fs.Validate(); err != nil {
 				return err
 			}
+			if len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("upstream '%s': failsafe.matchCommitment is only supported for network-level failsafe", u.Id)
+			}
 		}
 	}
 	if u.JsonRpc != nil {

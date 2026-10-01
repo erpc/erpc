@@ -109,7 +109,7 @@ explain the thresholds. Reference: https://docs.erpc.cloud/config/failsafe.llms.
 **Scope restrictions.**
 - Circuit breakers are **upstream-scope only**. Placing a `circuitBreaker` block in a network-level `failsafe` entry causes startup failure with `ErrFailsafeConfiguration`. (<SourceLink file="erpc/network_executor.go" lines="68-73" />)
 - Consensus is **network-scope only**. Placing a `consensus` block in an upstream-level `failsafe` entry causes startup failure. (<SourceLink file="upstream/upstream_executor.go" lines="46-53" />)
-- `matchCommitment` is **network-scope only**. Setting it on an upstream-level `failsafe` entry causes startup failure with `ErrFailsafeConfiguration`.
+- `matchCommitment` is **network-scope only**. Setting it on an upstream-level `failsafe` entry fails config validation at startup.
 
 **Failsafe entry matching (`matchMethod` + `matchFinality`).** Upstream-scope entries use a 4-tier priority (`SelectExecutor`-style scan in `upstream/upstream.go`):
 1. Specific method + specific finality (highest priority)
