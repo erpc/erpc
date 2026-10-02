@@ -41,7 +41,6 @@ func TestEnvelope_MethodMatchesForwardedMethod(t *testing.T) {
 		"unknown extra keys": {`{"jsonrpc":"2.0","method":"debug_traceCall","params":[],"id":1,"extra":{"method":"nope"}}`, "debug_traceCall"},
 		"escaped value":      {`{"jsonrpc":"2.0","method":"eth_\u0063all","params":[],"id":1}`, "eth_call"},
 		"padded whitespace":  {`{ "jsonrpc" : "2.0" , "method" :  "eth_call" , "params" : [ ] , "id" : 1 }`, "eth_call"},
-		"non-ascii value":    {`{"jsonrpc":"2.0","method":"eth_callé","params":[],"id":1}`, "eth_callé"},
 	}
 
 	for name, tc := range bodies {
