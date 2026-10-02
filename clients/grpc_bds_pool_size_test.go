@@ -23,6 +23,7 @@ func newTestPool(t *testing.T, poolSize int) *bdsPool {
 		"test-project",
 		"n/a",
 		"dns:///127.0.0.1:50051",
+		"",
 		insecure.NewCredentials(),
 		"{}",
 		poolSize,
