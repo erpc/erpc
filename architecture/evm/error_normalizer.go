@@ -484,12 +484,19 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//----------------------------------------------------------------
 		// "Transaction rejected" or "out of gas" errors
 		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors.
+		// "gas required exceeds allowance (N)" and "… less than block base fee"
+		// judge the caller's own gas or fee cap, and every node gives the same
+		// verdict. Left to the server-side fallback, one client sending bad caps
+		// was retried on every upstream and opened healthy upstreams' breakers
+		// (erpc#1175). reth already words the first as "out of gas: …".
 		//----------------------------------------------------------------
 
 		if code == common.JsonRpcErrorTransactionRejected ||
 			strings.Contains(msg, "out of gas") ||
 			strings.Contains(msg, "gas too low") ||
-			strings.Contains(msg, "IntrinsicGas") {
+			strings.Contains(msg, "IntrinsicGas") ||
+			strings.Contains(msg, "gas required exceeds allowance") ||
+			strings.Contains(msg, "less than block base fee") {
 
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
@@ -573,6 +580,10 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// Note: do not move this check above "Not found" errors, as we want to
 		// avoid premature detection when message is only "not found" (e.g. from Tenderly)
 
+		// "tracers are disabled": Chainstack's -32612 "Custom tracers are disabled
+		// by default" for debug_trace* with a JS or custom tracer. Another
+		// upstream may serve the same tracer, so it fails over like any other
+		// unsupported feature instead of counting as a server fault.
 		if r.StatusCode == 415 || r.StatusCode == 405 ||
 			code == common.JsonRpcErrorUnsupportedException || // By HTTP status code or explicit JSON-RPC error code
 			code == -32004 || code == -32001 || // direct codes from upstream
@@ -580,7 +591,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "not supported") ||
 			strings.Contains(msg, "method is not whitelisted") ||
 			strings.Contains(msg, "not allowed to access method") ||
-			strings.Contains(msg, "is not included in your current plan") {
+			strings.Contains(msg, "is not included in your current plan") ||
+			strings.Contains(msg, "tracers are disabled") {
 			method := ""
 			if nr != nil && nr.Request() != nil {
 				method, _ = nr.Request().Method()
