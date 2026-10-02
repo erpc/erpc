@@ -12,8 +12,10 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -498,143 +500,224 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 	})
 }
 
-func TestHttpServer_IntegritySelectorDoesNotShareCachedResponse(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	setupBniPollerMocks()
+const integritySelectorReceiptBody = `{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`
 
-	const offToken = "integrity-off-token"
-	const defaultToken = "integrity-default-token"
-	cfg := bniConfig(true, nil)
-	project := cfg.Projects[0]
-	project.AllowClientDirectives = util.StringPtr("")
-	project.Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
-		{Type: common.AuthTypeSecret, AllowClientDirectives: util.StringPtr("integrity"), Secret: &common.SecretStrategyConfig{Id: "off", Value: offToken}},
-		{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Id: "default", Value: defaultToken}},
-	}}
-	project.Integrity = &common.IntegrityConfig{
-		IntegritySettings: common.IntegritySettings{Level: "intrinsic"},
-		HeaderMode:        common.IntegrityHeaderModeFull,
-	}
-	cachePolicy := cfg.Database.EvmJsonRpcCache.Policies[0]
-	cachePolicy.Method = "eth_getTransactionReceipt"
-	cachePolicy.Finality = common.DataFinalityStateFinalized
-
-	// The first upstream returns an integrity-invalid receipt. The second returns
-	// a valid receipt so the default-integrity request has a distinct result.
-	for _, h := range []struct {
-		host string
-		body string
-	}{
-		{"http://rpc1.localhost", strings.ReplaceAll(receiptBody(underflowedIdx...), `"blockNumber":"0xe57e13"`, `"blockNumber":"0x5"`)},
-		{"http://rpc2.localhost", strings.ReplaceAll(receiptBody(canonicalIdx...), `"blockNumber":"0xe57e13"`, `"blockNumber":"0x5"`)},
-	} {
-		gock.New(h.host).Post("/").Persist().
-			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt")
-			}).Reply(200).JSON([]byte(h.body))
-	}
-
-	send, network, shutdown := bniBoot(t, cfg)
-	defer shutdown()
-	const body = `{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`
-
-	status, _, offBody := send(body, map[string]string{
-		"X-ERPC-Secret-Token": offToken,
-		"X-ERPC-Integrity":    "off",
-	}, nil)
-	require.Equal(t, http.StatusOK, status, offBody)
-	assert.Contains(t, offBody, "0xffffffff", "the strategy-granted off selector should permit the invalid upstream receipt")
-
-	status, _, defaultBody := send(body, map[string]string{"X-ERPC-Secret-Token": defaultToken}, nil)
-	require.Equal(t, http.StatusOK, status, defaultBody)
-	assert.Contains(t, defaultBody, `"logIndex":"0x0"`,
-		"the default-integrity caller must fetch and validate its own result, not consume the prior caller's unchecked cache entry")
-	probe := common.NewNormalizedRequest([]byte(body))
-	probe.SetNetwork(network)
-	require.Eventually(t, func() bool {
-		response, err := network.cacheDal.Get(context.Background(), probe)
-		if err != nil || response == nil {
-			return false
-		}
-		defer response.Release()
-		result, err := response.JsonRpcResponse()
-		return err == nil && result != nil && strings.Contains(result.GetResultString(), `"logIndex":"0x0"`)
-	}, 2*time.Second, 10*time.Millisecond, "the default response must be cached before testing selector cache-read isolation")
-	status, headers, offBody := send(body, map[string]string{
-		"X-ERPC-Secret-Token": offToken,
-		"X-ERPC-Integrity":    "off",
-	}, nil)
-	require.Equal(t, http.StatusOK, status, offBody)
-	assert.Equal(t, "MISS", headers["X-Erpc-Cache"], "explicit selectors must not consume default-profile cache entries")
+// integritySelectorCases are the selector-resolution outcomes: only an integrity
+// config with headerMode profiles/full honors the selector; otherwise it is ignored.
+var integritySelectorCases = []struct {
+	name      string
+	integrity *common.IntegrityConfig
+	honored   bool
+}{
+	{
+		name: "HonoredByFullHeaderMode",
+		integrity: &common.IntegrityConfig{
+			IntegritySettings: common.IntegritySettings{Level: "intrinsic"},
+			HeaderMode:        common.IntegrityHeaderModeFull,
+		},
+		honored: true,
+	},
+	{
+		name: "IgnoredByHeaderModeOff",
+		integrity: &common.IntegrityConfig{
+			IntegritySettings: common.IntegritySettings{Level: "intrinsic"},
+			HeaderMode:        common.IntegrityHeaderModeOff,
+		},
+	},
+	{name: "IgnoredWithoutIntegrityConfig"},
 }
 
-func TestHttpServer_IntegritySelectorDoesNotMultiplexWithDefault(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	setupBniPollerMocks()
-
-	const offToken = "integrity-off-token"
-	const defaultToken = "integrity-default-token"
-	cfg := bniConfig(false, nil)
-	cfg.Projects[0].Networks[0].Failsafe = []*common.FailsafeConfig{{
-		Hedge: &common.HedgePolicyConfig{Delay: common.NewStaticDuration(5 * time.Second)},
-	}}
-	project := cfg.Projects[0]
+// integritySelectorProject grants the "off" secret the integrity directive so the
+// selector reaches the network; the "default" secret sends none.
+func integritySelectorProject(project *common.ProjectConfig, offToken, defaultToken string, integrity *common.IntegrityConfig) {
 	project.AllowClientDirectives = util.StringPtr("")
 	project.Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 		{Type: common.AuthTypeSecret, AllowClientDirectives: util.StringPtr("integrity"), Secret: &common.SecretStrategyConfig{Id: "off", Value: offToken}},
 		{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Id: "default", Value: defaultToken}},
 	}}
-	project.Integrity = &common.IntegrityConfig{
-		IntegritySettings: common.IntegritySettings{Level: "intrinsic"},
-		HeaderMode:        common.IntegrityHeaderModeFull,
-	}
+	project.Integrity = integrity
+}
 
-	firstReceiptStarted := make(chan struct{}, 1)
-	gock.New("http://rpc1.localhost").Post("/").Persist().
-		Filter(func(r *http.Request) bool {
-			if !strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") {
-				return false
+func TestHttpServer_IntegritySelectorCacheSharing(t *testing.T) {
+	for _, tc := range integritySelectorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+
+			const offToken = "integrity-off-token"
+			const defaultToken = "integrity-default-token"
+			cfg := bniConfig(true, nil)
+			integritySelectorProject(cfg.Projects[0], offToken, defaultToken, tc.integrity)
+			cachePolicy := cfg.Database.EvmJsonRpcCache.Policies[0]
+			cachePolicy.Method = "eth_getTransactionReceipt"
+			cachePolicy.Finality = common.DataFinalityStateFinalized
+
+			// The first upstream returns an integrity-invalid receipt. The second returns
+			// a valid receipt so the default-integrity request has a distinct result.
+			for _, h := range []struct {
+				host string
+				body string
+			}{
+				{"http://rpc1.localhost", strings.ReplaceAll(receiptBody(underflowedIdx...), `"blockNumber":"0xe57e13"`, `"blockNumber":"0x5"`)},
+				{"http://rpc2.localhost", strings.ReplaceAll(receiptBody(canonicalIdx...), `"blockNumber":"0xe57e13"`, `"blockNumber":"0x5"`)},
+			} {
+				gock.New(h.host).Post("/").Persist().
+					Filter(func(r *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt")
+					}).Reply(200).JSON([]byte(h.body))
 			}
+
+			send, network, shutdown := bniBoot(t, cfg)
+			defer shutdown()
+			if tc.integrity == nil {
+				require.Nil(t, network.Config().Integrity, "case requires no effective integrity config")
+			}
+			sendOff := func() (int, map[string]string, string) {
+				return send(integritySelectorReceiptBody, map[string]string{
+					"X-ERPC-Secret-Token": offToken,
+					"X-ERPC-Integrity":    "off",
+				}, nil)
+			}
+			cachedResult := func() string {
+				probe := common.NewNormalizedRequest([]byte(integritySelectorReceiptBody))
+				probe.SetNetwork(network)
+				response, err := network.cacheDal.Get(context.Background(), probe)
+				if err != nil || response == nil {
+					return ""
+				}
+				defer response.Release()
+				result, err := response.JsonRpcResponse()
+				if err != nil || result == nil {
+					return ""
+				}
+				return result.GetResultString()
+			}
+
+			status, _, offBody := sendOff()
+			require.Equal(t, http.StatusOK, status, offBody)
+			if !tc.honored {
+				// The ignored selector resolves to the default integrity, so its response is shared.
+				require.Eventually(t, func() bool { return cachedResult() != "" }, 2*time.Second, 10*time.Millisecond,
+					"an ignored selector must write the shared cache")
+				status, headers, defaultBody := send(integritySelectorReceiptBody, map[string]string{"X-ERPC-Secret-Token": defaultToken}, nil)
+				require.Equal(t, http.StatusOK, status, defaultBody)
+				assert.Equal(t, "HIT", headers["X-Erpc-Cache"], "the default caller must read the entry written under an ignored selector")
+				status, headers, offBody = sendOff()
+				require.Equal(t, http.StatusOK, status, offBody)
+				assert.Equal(t, "HIT", headers["X-Erpc-Cache"], "an ignored selector must read the shared cache")
+				return
+			}
+			assert.Contains(t, offBody, "0xffffffff", "the strategy-granted off selector should permit the invalid upstream receipt")
+
+			status, _, defaultBody := send(integritySelectorReceiptBody, map[string]string{"X-ERPC-Secret-Token": defaultToken}, nil)
+			require.Equal(t, http.StatusOK, status, defaultBody)
+			assert.Contains(t, defaultBody, `"logIndex":"0x0"`,
+				"the default-integrity caller must fetch and validate its own result, not consume the prior caller's unchecked cache entry")
+			require.Eventually(t, func() bool {
+				return strings.Contains(cachedResult(), `"logIndex":"0x0"`)
+			}, 2*time.Second, 10*time.Millisecond, "the default response must be cached before testing selector cache-read isolation")
+			status, headers, offBody := sendOff()
+			require.Equal(t, http.StatusOK, status, offBody)
+			assert.Equal(t, "MISS", headers["X-Erpc-Cache"], "explicit selectors must not consume default-profile cache entries")
+		})
+	}
+}
+
+// sumMultiplexedRequests sums every follower series of the multiplex counter, which
+// test servers do not register with the default registry.
+func sumMultiplexedRequests(t *testing.T) float64 {
+	t.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	require.NoError(t, reg.Register(telemetry.MetricNetworkMultiplexedRequests))
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	var sum float64
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			sum += m.GetCounter().GetValue()
+		}
+	}
+	return sum
+}
+
+func TestHttpServer_IntegritySelectorMultiplexing(t *testing.T) {
+	for _, tc := range integritySelectorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			setupBniPollerMocks()
+
+			const offToken = "integrity-off-token"
+			const defaultToken = "integrity-default-token"
+			cfg := bniConfig(false, nil)
+			cfg.Projects[0].Networks[0].Failsafe = []*common.FailsafeConfig{{
+				Hedge: &common.HedgePolicyConfig{Delay: common.NewStaticDuration(5 * time.Second)},
+			}}
+			integritySelectorProject(cfg.Projects[0], offToken, defaultToken, tc.integrity)
+
+			firstReceiptStarted := make(chan struct{}, 1)
+			gock.New("http://rpc1.localhost").Post("/").Persist().
+				Filter(func(r *http.Request) bool {
+					if !strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") {
+						return false
+					}
+					select {
+					case firstReceiptStarted <- struct{}{}:
+					default:
+					}
+					return true
+				}).Reply(200).Delay(300 * time.Millisecond).
+				JSON([]byte(strings.ReplaceAll(receiptBody(underflowedIdx...), `"blockNumber":"0xe57e13"`, `"blockNumber":"0x5"`)))
+			gock.New("http://rpc2.localhost").Post("/").Persist().
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt")
+				}).Reply(200).
+				JSON([]byte(strings.ReplaceAll(receiptBody(canonicalIdx...), `"blockNumber":"0xe57e13"`, `"blockNumber":"0x5"`)))
+
+			send, network, shutdown := bniBoot(t, cfg)
+			defer shutdown()
+			if tc.integrity == nil {
+				require.Nil(t, network.Config().Integrity, "case requires no effective integrity config")
+			}
+			type offResult struct {
+				status int
+				body   string
+			}
+			offDone := make(chan offResult, 1)
+			go func() {
+				status, _, response := send(integritySelectorReceiptBody, map[string]string{
+					"X-ERPC-Secret-Token": offToken,
+					"X-ERPC-Integrity":    "off",
+				}, nil)
+				offDone <- offResult{status, response}
+			}()
 			select {
-			case firstReceiptStarted <- struct{}{}:
-			default:
+			case <-firstReceiptStarted:
+			case <-time.After(2 * time.Second):
+				t.Fatal("off-selector request did not reach the upstream")
 			}
-			return true
-		}).Reply(200).Delay(300 * time.Millisecond).
-		JSON([]byte(strings.ReplaceAll(receiptBody(underflowedIdx...), `"blockNumber":"0xe57e13"`, `"blockNumber":"0x5"`)))
-	gock.New("http://rpc2.localhost").Post("/").Persist().
-		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt")
-		}).Reply(200).
-		JSON([]byte(strings.ReplaceAll(receiptBody(canonicalIdx...), `"blockNumber":"0xe57e13"`, `"blockNumber":"0x5"`)))
 
-	send, _, shutdown := bniBoot(t, cfg)
-	defer shutdown()
-	const body = `{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`
-	offDone := make(chan string, 1)
-	go func() {
-		status, _, response := send(body, map[string]string{
-			"X-ERPC-Secret-Token": offToken,
-			"X-ERPC-Integrity":    "off",
-		}, nil)
-		offDone <- fmt.Sprintf("status=%d body=%s", status, response)
-	}()
-	select {
-	case <-firstReceiptStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("off-selector request did not reach the upstream")
-	}
-
-	status, _, defaultBody := send(body, map[string]string{"X-ERPC-Secret-Token": defaultToken}, nil)
-	require.Equal(t, http.StatusOK, status, defaultBody)
-	assert.Contains(t, defaultBody, `"logIndex":"0x0"`,
-		"default-integrity request must not follow an in-flight response produced under integrity=off")
-	select {
-	case offResponse := <-offDone:
-		assert.Contains(t, offResponse, "0xffffffff")
-	case <-time.After(2 * time.Second):
-		t.Fatal("off-selector request did not complete")
+			multiplexedBefore := sumMultiplexedRequests(t)
+			status, _, defaultBody := send(integritySelectorReceiptBody, map[string]string{"X-ERPC-Secret-Token": defaultToken}, nil)
+			require.Equal(t, http.StatusOK, status, defaultBody)
+			multiplexed := sumMultiplexedRequests(t) - multiplexedBefore
+			var off offResult
+			select {
+			case off = <-offDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("off-selector request did not complete")
+			}
+			require.Equal(t, http.StatusOK, off.status, off.body)
+			if !tc.honored {
+				assert.Equal(t, float64(1), multiplexed, "the default caller must follow the in-flight request when its selector is ignored")
+				assert.JSONEq(t, off.body, defaultBody, "an ignored selector must share the in-flight response")
+				return
+			}
+			assert.Zero(t, multiplexed, "an honored selector must not lead a shared in-flight request")
+			assert.Contains(t, defaultBody, `"logIndex":"0x0"`,
+				"default-integrity request must not follow an in-flight response produced under integrity=off")
+			assert.Contains(t, off.body, "0xffffffff")
+		})
 	}
 }

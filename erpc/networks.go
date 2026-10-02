@@ -1814,8 +1814,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	method, _ := req.Method()
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
-	// An explicit selector may change this request's checks, so its result must not be shared with requests using another integrity setting.
-	allowSharedResponse := !hasExplicitIntegritySelector(req)
+	// An honored selector may change this request's checks, so its result must not be shared with requests using another integrity setting.
+	allowSharedResponse := !n.honorsIntegritySelector(req)
 
 	// Start a span for network forwarding
 	ctx, forwardSpan := common.StartSpan(ctx, "Network.Forward",
@@ -3113,12 +3113,20 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 	return eligible
 }
 
-func hasExplicitIntegritySelector(req *common.NormalizedRequest) bool {
-	if req == nil {
+// honorsIntegritySelector mirrors evm.resolveRequestSettings: a selector only applies with an integrity config whose headerMode is profiles or full.
+func (n *Network) honorsIntegritySelector(req *common.NormalizedRequest) bool {
+	if req == nil || n.cfg == nil || n.cfg.Integrity == nil {
 		return false
 	}
 	dirs := req.Directives()
-	return dirs != nil && strings.TrimSpace(dirs.IntegritySelector) != ""
+	if dirs == nil || strings.TrimSpace(dirs.IntegritySelector) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(n.cfg.Integrity.HeaderMode)) {
+	case common.IntegrityHeaderModeProfiles, common.IntegrityHeaderModeFull:
+		return true
+	}
+	return false
 }
 
 // multiplexKey derives the in-flight dedup identity for a request.
