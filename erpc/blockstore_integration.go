@@ -546,7 +546,14 @@ func (s *blockStoreConnectorStore) GetBlock(ctx context.Context, scope blockstor
 	}
 	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, strings.ToLower(hash), nil)
 	if err != nil {
-		return nil, err
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return nil, fmt.Errorf("get head cache record: %w: %w", blockstore.ErrNotFound, err)
+		}
+		var serverErr redis.Error
+		if errors.As(err, &serverErr) {
+			return nil, fmt.Errorf("get head cache record: %w", err)
+		}
+		return nil, fmt.Errorf("get head cache record: %w: %w", blockstore.ErrStoreUnavailable, err)
 	}
 	if len(value) == 0 {
 		return nil, blockstore.ErrNotFound

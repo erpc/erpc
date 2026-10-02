@@ -348,17 +348,19 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 			return errors.New("invalid hash in head cache snapshot")
 		}
 		n := snap.Base() + int64(i)
-		var expected *rawBlock
-		r := oldRecords[normHash(hash)]
-		if r != nil {
-			expected, _, _ = parseBlockHeader(r.Block)
-			if expected != nil {
-				expected.Hash, expected.ParentHash = normHash(expected.Hash), normHash(expected.ParentHash)
-			}
+		norm := normHash(hash)
+		snap.Hashes[i] = norm
+		// Installed records were fully validated and are immutable, so a record
+		// already in the local view that matches this snapshot position is reused.
+		if r := oldRecords[norm]; r != nil && r.Number == n && r.Hash == norm && (i == 0 || r.ParentHash == normHash(snap.Hashes[i-1])) {
+			records[norm] = r
+			continue
 		}
-		var e error
-		if r == nil {
-			r, e = c.store.GetBlock(ctx, c.opt.Scope, hash)
+		r, e := c.store.GetBlock(ctx, c.opt.Scope, norm)
+		if e != nil && errors.Is(e, ErrStoreUnavailable) && c.sameBranchAdvance(old, snap) {
+			// The store could not be reached. The still-fresh local view is on the
+			// same branch as this snapshot, so keep it until it expires on its own.
+			return fmt.Errorf("read snapshot payload %s: %w", hash, e)
 		}
 		if e != nil || r == nil {
 			c.invalidateAndClose()
@@ -367,16 +369,13 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 			}
 			return fmt.Errorf("missing snapshot payload %s", hash)
 		}
-		if expected == nil {
-			b, got, parseErr := parseBlockHeader(r.Block)
-			if parseErr != nil || b == nil || got != n || normHash(b.Hash) != normHash(hash) {
-				c.invalidateAndClose()
-				return fmt.Errorf("inconsistent snapshot payload %s", hash)
-			}
-			b.Hash, b.ParentHash = normHash(b.Hash), normHash(b.ParentHash)
-			expected = b
+		b, got, parseErr := parseBlockHeader(r.Block)
+		if parseErr != nil || b == nil || got != n || normHash(b.Hash) != norm {
+			c.invalidateAndClose()
+			return fmt.Errorf("inconsistent snapshot payload %s", hash)
 		}
-		verified, e := validateRecord(r, n, expected, c.opt.MaxBlockSize)
+		b.Hash, b.ParentHash = normHash(b.Hash), normHash(b.ParentHash)
+		verified, e := validateRecord(r, n, b, c.opt.MaxBlockSize)
 		if e != nil {
 			c.invalidateAndClose()
 			return fmt.Errorf("validate snapshot payload %s: %w", hash, e)
@@ -402,6 +401,25 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 	}
 	c.install(&Snapshot{Head: snap.Head, Hashes: append([]string(nil), snap.Hashes...), At: snap.At, Incomplete: snap.Incomplete}, records, gap)
 	return nil
+}
+
+// sameBranchAdvance reports whether the local view is still fresh and the
+// snapshot only extends or backfills it: they overlap and agree on every
+// overlapping height, and the snapshot is not behind the view.
+func (c *Cache) sameBranchAdvance(old, snap *Snapshot) bool {
+	if old == nil || !c.Fresh() || snap.Head < old.Head {
+		return false
+	}
+	lo, hi := maxI64(old.Base(), snap.Base()), minI64(old.Head, snap.Head)
+	if lo > hi {
+		return false
+	}
+	for n := lo; n <= hi; n++ {
+		if normHash(old.HashAt(n)) != normHash(snap.HashAt(n)) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Cache) invalidateAndClose() {

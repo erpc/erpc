@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -296,10 +297,12 @@ func TestHttp_BlockStore_SharedRedisTwoReplicas(t *testing.T) {
 }
 
 func TestHttp_BlockStore_ConnectorTTLScopeAndCorruption(t *testing.T) {
+	mr := miniredis.RunT(t)
 	up := newScriptedEvmUpstream(123, 2)
 	defer up.Close()
 	hcCfg := &common.EvmBlockStoreConfig{Enabled: true, Depth: 2}
 	cfg := blockStoreTestConfig(up.URL(), hcCfg)
+	cfg.Database.EvmJsonRpcCache.Connectors[0].Redis.URI = "redis://" + mr.Addr()
 	_, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	defer shutdown()
 
@@ -330,18 +333,32 @@ func TestHttp_BlockStore_ConnectorTTLScopeAndCorruption(t *testing.T) {
 	otherScope.Namespace = "different-scope"
 	got, err = store.GetBlock(ctx, otherScope, record.Hash)
 	require.Nil(t, got)
-	require.Error(t, err)
+	require.ErrorIs(t, err, blockstore.ErrNotFound)
 
 	partition, err := adapter.partition(scope)
 	require.NoError(t, err)
 	require.NoError(t, connector.Set(ctx, partition, strings.ToLower(record.Hash), []byte("{"), &ttl))
 	_, err = store.GetBlock(ctx, scope, record.Hash)
 	require.ErrorContains(t, err, "decode head cache record")
+	require.NotErrorIs(t, err, blockstore.ErrStoreUnavailable, "corrupt payloads must not be treated as transient read failures")
+	key := partition + ":" + strings.ToLower(record.Hash)
+	require.NoError(t, adapter.redis.Client().Del(ctx, key).Err())
+	require.NoError(t, adapter.redis.Client().LPush(ctx, key, "wrong type").Err())
+	_, err = store.GetBlock(ctx, scope, record.Hash)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, blockstore.ErrStoreUnavailable, "Redis server errors must stay fail-closed")
+	require.NoError(t, connector.Set(ctx, partition, strings.ToLower(record.Hash), []byte("{"), &ttl))
 
-	time.Sleep(ttl + 50*time.Millisecond)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = store.GetBlock(canceled, scope, record.Hash)
+	require.ErrorIs(t, err, blockstore.ErrStoreUnavailable)
+	require.ErrorIs(t, err, context.Canceled, "the connector error must remain available to callers")
+
+	mr.FastForward(ttl + 50*time.Millisecond)
 	got, err = store.GetBlock(ctx, scope, record.Hash)
 	require.Nil(t, got)
-	require.Error(t, err)
+	require.ErrorIs(t, err, blockstore.ErrNotFound)
 }
 
 func TestHttp_BlockStore_BlockNumberFailureDoesNotSeedOrRefresh(t *testing.T) {

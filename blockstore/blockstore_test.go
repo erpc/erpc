@@ -445,7 +445,7 @@ func TestCache_FleetFollowerDeliversShallowReorg(t *testing.T) {
 	leader.Stop()
 }
 
-func TestCache_FleetFollowerAcceptsUppercasePayloadHeaderHashes(t *testing.T) {
+func TestCache_FleetFollowerAcceptsUppercaseSnapshotAndPayloadHashes(t *testing.T) {
 	store := newFakeFleetStore()
 	store.leader = true
 	leader := New(testOpts(), store, newFakeChain(5), func(context.Context) int64 { return 5 }, nil)
@@ -461,10 +461,19 @@ func TestCache_FleetFollowerAcceptsUppercasePayloadHeaderHashes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.PutBlock(context.Background(), testOpts().Scope, rec, time.Hour))
 
+	store.muFleet.Lock()
+	for i, hash := range store.snap.Hashes {
+		store.snap.Hashes[i] = strings.ToUpper(hash)
+	}
+	store.muFleet.Unlock()
 	follower := New(testOpts(), store, newFakeChain(5), nil, nil)
 	follower.Tick(context.Background())
 	require.True(t, follower.Fresh())
 	require.Equal(t, int64(5), follower.Head())
+	_, ok := follower.BlockByNumber(5, true)
+	require.True(t, ok)
+	_, ok = follower.LogsRange(4, 5, nil)
+	require.True(t, ok)
 	leader.Stop()
 }
 
@@ -900,4 +909,109 @@ func TestCache_PartialViewSubscriberContinuity(t *testing.T) {
 			require.False(t, tc.open, "subscriber closed")
 		})
 	}
+}
+
+type payloadErrStore struct {
+	*fakeFleetStore
+	mu  sync.Mutex
+	err error
+}
+
+func (s *payloadErrStore) setErr(err error) { s.mu.Lock(); s.err = err; s.mu.Unlock() }
+func (s *payloadErrStore) GetBlock(ctx context.Context, scope Scope, hash string) (*BlockRecord, error) {
+	s.mu.Lock()
+	err := s.err
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return s.fakeFleetStore.GetBlock(ctx, scope, hash)
+}
+
+func TestCache_FleetFollowerPayloadReadErrorOnAdvance(t *testing.T) {
+	unavailable := fmt.Errorf("redis timeout: %w", ErrStoreUnavailable)
+	for _, tc := range []struct {
+		name   string
+		err    error
+		reorg  bool
+		retain bool
+	}{
+		{"unavailable store on same-branch advance keeps view", unavailable, false, true},
+		{"unavailable store on conflicting snapshot fails closed", unavailable, true, false},
+		{"unclassified read error fails closed", fmt.Errorf("boom"), false, false},
+		{"not found fails closed", ErrNotFound, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &payloadErrStore{fakeFleetStore: newFakeFleetStore()}
+			store.leader = true
+			chain := newFakeChain(5)
+			leader := New(testOpts(), store, chain, chain.head, nil)
+			leader.Tick(context.Background())
+			defer leader.Stop()
+			follower := New(testOpts(), store, chain, nil, nil)
+			follower.Tick(context.Background())
+			require.Equal(t, int64(5), follower.Head())
+			sub := follower.Subscribe(4)
+
+			if tc.reorg {
+				chain.reorg(5, "fork")
+			} else {
+				chain.mine(1)
+			}
+			leader.Tick(context.Background())
+			store.setErr(tc.err)
+			follower.Tick(context.Background())
+
+			if !tc.retain {
+				require.False(t, follower.Fresh())
+				_, open := <-sub.C
+				require.False(t, open)
+				return
+			}
+			require.Equal(t, int64(5), follower.Head(), "previous validated view keeps serving")
+			select {
+			case _, open := <-sub.C:
+				require.True(t, open, "subscription stays open")
+				t.Fatal("no event expected for an unadvanced view")
+			default:
+			}
+			now := time.Now()
+			follower.nowFn = func() time.Time { return now.Add(testOpts().MaxStaleness + time.Second) }
+			require.False(t, follower.Fresh(), "the failed attempt must not extend freshness")
+			follower.nowFn = time.Now
+
+			store.setErr(nil)
+			follower.Tick(context.Background())
+			require.Equal(t, int64(6), follower.Head())
+			ev := <-sub.C
+			require.Len(t, ev.Added, 1)
+			require.Equal(t, hashOf(6, "a"), ev.Added[0].Hash)
+		})
+	}
+}
+
+func TestCache_FleetFollowerUnchangedSnapshotExpiresAtLeaderTimestamp(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	chain := newFakeChain(5)
+	leader := New(testOpts(), store, chain, chain.head, nil)
+	leader.Tick(context.Background())
+	leader.Stop()
+	store.muFleet.Lock()
+	store.leader = false
+	store.snap.At = time.Now()
+	at := store.snap.At
+	store.muFleet.Unlock()
+
+	follower := New(testOpts(), store, chain, nil, nil)
+	for _, d := range []time.Duration{0, time.Second, 1500 * time.Millisecond} {
+		follower.nowFn = func() time.Time { return at.Add(d) }
+		follower.Tick(context.Background())
+		require.True(t, follower.Fresh())
+	}
+	max := testOpts().MaxStaleness
+	follower.nowFn = func() time.Time { return at.Add(max) }
+	require.True(t, follower.Fresh(), "fresh through leader timestamp + MaxStaleness")
+	follower.nowFn = func() time.Time { return at.Add(max + time.Nanosecond) }
+	require.False(t, follower.Fresh(), "re-reading an unchanged snapshot must not extend freshness")
 }
