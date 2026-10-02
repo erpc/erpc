@@ -67,7 +67,11 @@ func parseBlockHeader(raw json.RawMessage) (*rawBlock, int64, error) {
 }
 
 // txHashesOf returns the transaction hashes of a full (or hash-only) block.
+// A missing or null transactions field is rejected: only [] proves an empty block.
 func txHashesOf(b *rawBlock) (map[string]struct{}, bool, error) {
+	if b.Transactions == nil {
+		return nil, false, fmt.Errorf("block missing transactions array")
+	}
 	out := make(map[string]struct{}, len(b.Transactions))
 	full := true
 	for _, t := range b.Transactions {

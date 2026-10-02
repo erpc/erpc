@@ -32,10 +32,12 @@ type fakeChain struct {
 	bodyCalls int
 	delay     time.Duration
 	mixedCase bool
+	// logless blocks have no logs and the given raw "transactions" value; "" omits the field.
+	logless map[int64]string
 }
 
 func newFakeChain(tip int64) *fakeChain {
-	c := &fakeChain{blocks: map[int64]string{}, tip: tip, dropLogs: map[string]bool{}, failBlock: map[int64]bool{}, nullAt: map[int64]bool{}, oversized: map[int64]bool{}}
+	c := &fakeChain{blocks: map[int64]string{}, tip: tip, dropLogs: map[string]bool{}, failBlock: map[int64]bool{}, nullAt: map[int64]bool{}, oversized: map[int64]bool{}, logless: map[int64]string{}}
 	for n := int64(0); n <= tip; n++ {
 		c.blocks[n] = "a"
 	}
@@ -77,10 +79,19 @@ func (c *fakeChain) blockLocked(n int64) (json.RawMessage, error) {
 	if c.oversized[n] {
 		block["padding"] = strings.Repeat("x", 2048)
 	}
+	if txs, ok := c.logless[n]; ok {
+		delete(block, "transactions")
+		if txs != "" {
+			block["transactions"] = json.RawMessage(txs)
+		}
+	}
 	return json.Marshal(block)
 }
 
 func (c *fakeChain) logsLocked(n int64, fork string) []map[string]interface{} {
+	if _, ok := c.logless[n]; ok {
+		return []map[string]interface{}{}
+	}
 	topic := topicA
 	if n%2 == 1 {
 		topic = topicB
@@ -602,6 +613,45 @@ func TestCache_IncompleteLogsNeverInstall(t *testing.T) {
 	require.False(t, c.Fresh())
 	require.Equal(t, int64(-1), c.Head())
 	require.Positive(t, c.Stats.Rejected.Load())
+}
+
+func TestCache_BlockWithoutTransactionsArrayNeverServes(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		txs   string
+		serve bool
+	}{
+		"omitted":     {txs: "", serve: false},
+		"null":        {txs: "null", serve: false},
+		"empty block": {txs: "[]", serve: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			chain := newFakeChain(5)
+			chain.logless[5] = tc.txs
+			store := newFakeFleetStore()
+			store.leader = true
+			leader := New(testOpts(), store, chain, chain.head, nil)
+			leader.Tick(ctx)
+			_, ok := leader.BlockByNumber(5, true)
+			require.Equal(t, tc.serve, ok)
+			if tc.serve {
+				return
+			}
+			require.Positive(t, leader.Stats.Rejected.Load())
+			require.Nil(t, store.snap, "a writer must not publish the block")
+
+			// A follower must also reject such a payload written by an older replica.
+			raw, err := chain.BlockByNumber(ctx, 5)
+			require.NoError(t, err)
+			hash := normHash(hashOf(5, "a"))
+			require.NoError(t, store.PutBlock(ctx, testOpts().Scope, &BlockRecord{Number: 5, Hash: hash, ParentHash: normHash(hashOf(4, "a")), Block: raw, Logs: json.RawMessage("[]")}, time.Hour))
+			store.snap = &Snapshot{Head: 5, Hashes: []string{hash}, At: time.Now()}
+			follower := New(testOpts(), store, chain, chain.head, nil)
+			follower.Tick(ctx)
+			_, ok = follower.BlockByNumber(5, true)
+			require.False(t, ok)
+		})
+	}
 }
 
 func TestCache_DeepReorgOutsideWindowClosesSubscribers(t *testing.T) {
