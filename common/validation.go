@@ -758,6 +758,16 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	} else if len(p.Providers) == 0 {
 		return fmt.Errorf("project.*.upstreams or project.*.providers is required, add at least one of them")
 	}
+	// Provider-generated upstreams copy upstreamDefaults only when no override
+	// matches, and that copy runs in a background bootstrap task. The
+	// executor's rejection is then only a log line and the upstream drops out.
+	if p.UpstreamDefaults != nil {
+		for _, fs := range p.UpstreamDefaults.Failsafe {
+			if fs != nil && fs.Consensus != nil {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
+			}
+		}
+	}
 	if p.NetworkDefaults != nil {
 		if err := p.NetworkDefaults.Validate(); err != nil {
 			return err
@@ -1024,6 +1034,11 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		for _, fs := range u.Failsafe {
 			if err := fs.Validate(); err != nil {
 				return err
+			}
+			// Upstreams register in the background, so the executor's own
+			// rejection only logs and erpc keeps serving without the upstream.
+			if fs.Consensus != nil {
+				return fmt.Errorf("upstream '%s': failsafe.consensus is only supported for network-level failsafe", u.Id)
 			}
 		}
 	}
