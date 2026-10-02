@@ -1814,6 +1814,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	method, _ := req.Method()
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
+	// An explicit selector may change this request's checks, so its result must not be shared with requests using another integrity setting.
+	allowSharedResponse := !hasExplicitIntegritySelector(req)
 
 	// Start a span for network forwarding
 	ctx, forwardSpan := common.StartSpan(ctx, "Network.Forward",
@@ -1873,7 +1875,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
+	var mlx *Multiplexer
+	var resp *common.NormalizedResponse
+	var err error
+	if allowSharedResponse {
+		mlx, resp, err = n.handleMultiplexing(ctx, &lg, req, startTime)
+	}
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer (follower path)
 		forwardSpan.SetAttributes(
@@ -1893,7 +1900,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
+	if n.cacheDal != nil && allowSharedResponse && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
@@ -2497,7 +2504,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if n.cacheDal != nil && !cacheWriteBypassed(ctx) {
+		if n.cacheDal != nil && allowSharedResponse && !cacheWriteBypassed(ctx) {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)
@@ -3104,6 +3111,14 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 		return nil
 	}
 	return eligible
+}
+
+func hasExplicitIntegritySelector(req *common.NormalizedRequest) bool {
+	if req == nil {
+		return false
+	}
+	dirs := req.Directives()
+	return dirs != nil && strings.TrimSpace(dirs.IntegritySelector) != ""
 }
 
 // multiplexKey derives the in-flight dedup identity for a request.
