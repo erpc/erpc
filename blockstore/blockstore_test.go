@@ -767,11 +767,15 @@ func TestCache_TipRegressionStopsServingAboveVerifiedTip(t *testing.T) {
 	c.Tick(context.Background())
 	require.Equal(t, int64(10), c.Head())
 	sub := c.Subscribe(8)
+	follower := New(testOpts(), store, ch, ch.head, nil)
+	follower.Tick(context.Background())
+	followerSub := follower.Subscribe(8)
 
 	ch.mu.Lock()
 	ch.tip = 8
 	ch.mu.Unlock()
 	c.Tick(context.Background())
+	follower.Tick(context.Background())
 	require.True(t, c.Fresh(), "the prefix up to the matching tip stays verified")
 	require.Equal(t, int64(8), c.Head())
 	_, ok := c.BlockByNumber(9, true)
@@ -783,21 +787,117 @@ func TestCache_TipRegressionStopsServingAboveVerifiedTip(t *testing.T) {
 	_, ok = c.LogsRange(3, 8, nil)
 	require.True(t, ok)
 	require.Equal(t, int64(8), store.snap.Head, "followers receive the trimmed snapshot")
-	ev := <-sub.C
-	require.Len(t, ev.Removed, 2)
-	require.Empty(t, ev.Added)
+	require.Equal(t, int64(8), follower.Head())
+	for _, stream := range []*Subscription{sub, followerSub} {
+		_, open := <-stream.C
+		require.False(t, open, "a lagging observation must not fabricate removed logs")
+	}
 
 	ch.mu.Lock()
 	ch.tip = 10
 	body := ch.bodyCalls
 	ch.mu.Unlock()
 	c.Tick(context.Background())
+	follower.Tick(context.Background())
 	require.Equal(t, int64(10), c.Head())
+	require.Equal(t, int64(10), follower.Head())
 	ch.mu.Lock()
 	require.Equal(t, body, ch.bodyCalls, "recovered blocks reload from the shared store")
 	ch.mu.Unlock()
-	ev = <-sub.C
-	require.Len(t, ev.Added, 2)
 	_, ok = c.BlockByNumber(10, true)
 	require.True(t, ok)
+}
+
+// Partial views (cold fill, permanent holes, byte trims) must keep
+// subscribers open exactly when the published events still extend what they
+// were sent, and close them when a changed height cannot be emitted.
+func TestCache_PartialViewSubscriberContinuity(t *testing.T) {
+	recordSize := func(ch *fakeChain, n int64) int64 {
+		block, _ := ch.BlockByNumber(context.Background(), n)
+		logs, _ := ch.LogsByBlockHash(context.Background(), hashOf(n, "a"))
+		rec, err := buildRecord(block, logs, 0)
+		require.NoError(t, err)
+		return rec.Size()
+	}
+	cases := []struct {
+		name   string
+		tip    int64
+		opts   func(*fakeChain, *Options)
+		warm   int
+		change func(*fakeChain)
+		open   bool
+		added  []int64
+	}{
+		{
+			name: "cold fill tip advance", tip: 10, warm: 1,
+			opts:   func(_ *fakeChain, o *Options) { o.Depth, o.MaxLogsRange, o.MaxPerTick = 8, 8, 2 },
+			change: func(ch *fakeChain) { ch.mine(1) },
+			open:   true, added: []int64{11},
+		},
+		{
+			name: "cold fill same-tip backfill", tip: 10, warm: 1,
+			opts:   func(_ *fakeChain, o *Options) { o.Depth, o.MaxLogsRange, o.MaxPerTick = 8, 8, 2 },
+			change: func(*fakeChain) {},
+			open:   true,
+		},
+		{
+			name: "new head above oversized hole", tip: 5, warm: 1,
+			opts: func(ch *fakeChain, o *Options) {
+				ch.oversized[2] = true
+				o.Depth, o.MaxLogsRange, o.MaxPerTick, o.MaxBlockSize = 6, 6, 6, 1500
+			},
+			change: func(ch *fakeChain) { ch.mine(1) },
+			open:   true, added: []int64{6},
+		},
+		{
+			name: "reorg below published cold-fill suffix", tip: 10, warm: 4,
+			opts: func(_ *fakeChain, o *Options) { o.Depth, o.MaxLogsRange, o.MaxPerTick = 8, 8, 2 },
+			change: func(ch *fakeChain) {
+				ch.reorg(8, "x")
+				ch.mine(1)
+			},
+		},
+		{
+			name: "byte trim hides lowest reorged height", tip: 10, warm: 1,
+			opts: func(ch *fakeChain, o *Options) {
+				o.Depth, o.MaxLogsRange = 4, 4
+				o.MaxBytes = 4*recordSize(ch, 10) + 100
+			},
+			change: func(ch *fakeChain) {
+				ch.oversized[10] = true
+				ch.reorg(8, "x")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := newFakeChain(tc.tip)
+			o := testOpts()
+			tc.opts(ch, &o)
+			c := New(o, newMapStore(), ch, ch.head, nil)
+			for i := 0; i < tc.warm; i++ {
+				c.Tick(context.Background())
+			}
+			require.True(t, c.Fresh())
+			sub := c.Subscribe(8)
+			tc.change(ch)
+			c.Tick(context.Background())
+			var added []int64
+			open := true
+			for open {
+				select {
+				case ev, ok := <-sub.C:
+					open = ok
+					for _, r := range ev.Added {
+						added = append(added, r.Number)
+					}
+				default:
+					require.Equal(t, tc.open, open)
+					require.Equal(t, tc.added, added)
+					return
+				}
+			}
+			require.False(t, tc.open, "subscriber closed")
+		})
+	}
 }

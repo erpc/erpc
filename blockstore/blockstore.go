@@ -588,9 +588,6 @@ func (c *Cache) refresh(ctx context.Context) error {
 		}
 	}
 	incomplete := suffix > 0 && !blockedBelow
-	if suffix > 0 {
-		gap = true
-	}
 	pubHashes := append([]string(nil), hashes[suffix:]...)
 	recs := make(map[string]*BlockRecord, len(pubHashes))
 	for i := suffix; i < len(window); i++ {
@@ -850,6 +847,17 @@ func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) 
 		return
 	}
 	snap.Hashes = snap.Hashes[trim:]
+	if old != nil && snap.Head < old.Head && snap.HashAt(snap.Head) == old.HashAt(snap.Head) {
+		// A lower matching tip may be a lagging observation, not a reorg.
+		gap = true
+	}
+	if old != nil && snap.Base() > old.Base() && snap.Base() <= old.Head+1 {
+		// Trimming must not hide the first changed block of a reorg.
+		first := recs[snap.Hashes[0]]
+		if first == nil || first.ParentHash != old.HashAt(snap.Base()-1) {
+			gap = true
+		}
+	}
 	var ev Event
 	if old != nil {
 		for n := old.Head; n >= old.Base(); n-- {

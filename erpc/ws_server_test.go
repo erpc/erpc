@@ -418,6 +418,36 @@ func TestWs_StreamStalledClientDisconnected(t *testing.T) {
 	require.Equal(t, websocket.StatusPolicyViolation, ce.code)
 }
 
+func TestWs_ColdFillKeepsSubscriptionOpen(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true})
+	// One record per 100ms tick: the 16-block window takes ~1.6s to fill.
+	cfg.Projects[0].Networks[0].Evm.BlockStore.MaxPerTick = 1
+	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	waitHead(t, e, 20)
+
+	w, _, err := dialWs(t, wsURL(base, ""), nil)
+	require.NoError(t, err)
+	var id string
+	require.NoError(t, json.Unmarshal(w.call("eth_subscribe", `["newHeads"]`).Result, &id))
+
+	// Backfill below the delivered range and new heads above it are both
+	// continuous; neither may close the stream while the window fills.
+	for n := 21; n <= 24; n++ {
+		up.Mine(1)
+		require.Contains(t, string(w.next(id)), fmt.Sprintf(`"number":"0x%x"`, n))
+		time.Sleep(500 * time.Millisecond)
+	}
+	select {
+	case err := <-w.done:
+		t.Fatalf("subscription closed during cold fill: %v", err)
+	default:
+	}
+	require.Equal(t, 1, subCount(t, e))
+}
+
 func TestWs_GapDetection(t *testing.T) {
 	rec := func(n int64) *blockstore.BlockRecord { return &blockstore.BlockRecord{Number: n} }
 	ev := func(rem []int64, add ...int64) blockstore.Event {
