@@ -209,8 +209,21 @@ func TestWs_SubscriptionsReorg(t *testing.T) {
 	require.NotNil(t, bad.Error)
 	// Geth: subscriptionNotFoundError is -32601.
 	require.Equal(t, -32601, bad.Error.Code)
-	bad = w.call("eth_subscribe", `["logs",{"topics":[1]}]`)
-	require.NotNil(t, bad.Error)
+	// Invalid or unsupported filter members are -32602 and register nothing:
+	// only address and topics are streamed.
+	for _, params := range []string{
+		`["logs",{"topics":[1]}]`,
+		`["logs","notanobject"]`,
+		fmt.Sprintf(`["logs",{"address":%q,"blockHash":%q}]`, scriptedEmitter, "0x"+strings.Repeat("1", 64)),
+		`["logs",{"fromBlock":"latest"}]`,
+		`["logs",{"toBlock":"0x1"}]`,
+		`["logs",{"fromBlock":"0x1","toBlock":"0x2","topics":[]}]`,
+		`["logs",{"someFutureMember":true}]`,
+	} {
+		bad = w.call("eth_subscribe", params)
+		require.NotNil(t, bad.Error, params)
+		require.Equal(t, -32602, bad.Error.Code, params)
+	}
 
 	// Disconnect releases head cache subscriptions.
 	require.Equal(t, 1, subCount(t, e))

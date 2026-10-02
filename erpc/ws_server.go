@@ -41,6 +41,12 @@ import (
 //   - Any other method gets -32601 and batch frames get -32600; ordinary
 //     JSON-RPC calls belong on HTTP.
 //
+// The logs filter accepts only address and topics; any other member
+// (blockHash, fromBlock, toBlock, unknown) is -32602 before registration.
+// A panic in a connection goroutine is recovered, counted in
+// erpc_unexpected_panic_total (scope ws-write/ws-ping/ws-pump/ws-message) and
+// terminates the affected connection ("internal_error" close reason).
+//
 // Frames are handled sequentially per connection. Bounds:
 // server.webSocket.maxConnections / maxConnectionsPerProject (HTTP 503 at
 // upgrade), maxSubscriptionsPerConnection, maxMessageBytes (1009 close),
@@ -396,12 +402,18 @@ func websocketCloseReason(cause error, appCtx context.Context) string {
 func (c *wsConn) safeHandle(data []byte) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			telemetry.MetricUnexpectedPanicTotal.WithLabelValues("ws-message", c.networkId, common.ErrorFingerprint(rec)).Inc()
-			c.lg.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).Msg("unexpected panic handling websocket message")
-			c.closeWith(websocket.StatusInternalError, "internal error")
+			c.recovered("ws-message", rec)
 		}
 	}()
 	c.handleMessage(data)
+}
+
+// recovered records a panic caught in one of the connection's goroutines and
+// marks the connection for internal-error closure. The caller must have called recover().
+func (c *wsConn) recovered(scope string, rec interface{}) {
+	telemetry.MetricUnexpectedPanicTotal.WithLabelValues(scope, c.networkId, common.ErrorFingerprint(rec)).Inc()
+	c.lg.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).Str("scope", scope).Msg("unexpected panic in websocket connection")
+	c.closeWith(websocket.StatusInternalError, "internal error")
 }
 
 func (c *wsConn) cleanup() {
@@ -418,6 +430,14 @@ func (c *wsConn) cleanup() {
 
 func (c *wsConn) writeLoop(done chan struct{}) {
 	defer close(done)
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.recovered("ws-write", rec)
+			// No writer is left to close the connection, and run() is blocked
+			// in Read until it is closed.
+			_ = c.conn.CloseNow()
+		}
+	}()
 	wt := c.ws.cfg.WriteTimeout.Duration()
 	for {
 		select {
@@ -458,6 +478,11 @@ func (c *wsConn) writeLoop(done chan struct{}) {
 // until TCP gives up) and keeps idle connections alive behind LB idle
 // timeouts. Pong handling requires the concurrent reader in run().
 func (c *wsConn) pingLoop() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.recovered("ws-ping", rec)
+		}
+	}()
 	t := time.NewTicker(c.ws.pingInterval())
 	defer t.Stop()
 	for {
@@ -677,6 +702,13 @@ func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, re
 				return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), "logs filter must be an object"), nil
 			}
 		}
+		// Only address and topics are streamed; block-range and blockHash
+		// members belong to eth_getLogs, and unknown members are not guessed at.
+		for k := range obj {
+			if k != "address" && k != "topics" {
+				return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), fmt.Sprintf("unsupported logs filter member %q (supported: address, topics)", k)), nil
+			}
+		}
 		f, err := blockstore.ParseLogFilter(obj)
 		if err != nil {
 			return errorReply(req.ID, int(common.JsonRpcErrorInvalidArgument), err.Error()), nil
@@ -754,6 +786,11 @@ func (c *wsConn) notify(s *wsSub, result json.RawMessage) bool {
 func (c *wsConn) pump(s *wsSub) {
 	defer c.wg.Done()
 	defer s.sub.Close()
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.recovered("ws-pump", rec)
+		}
+	}()
 	for {
 		select {
 		case <-c.ctx.Done():
