@@ -1219,12 +1219,17 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 // Block Number & Lag Tracking
 // --------------------------------------------
 
-// updateNetworkLagMetrics updates lag metrics for all upstreams in a network
+// lowerNetworkLagMetrics caps every upstream's lag in a network at its
+// distance from a network head that was re-derived lower. Lag is recorded when
+// an upstream's own head is observed (see SetLatestBlockNumber); a lower head
+// can only shrink it, and an upstream observed after the head it was measured
+// against keeps its smaller lag.
 // This is a DRY helper to avoid code duplication between SetLatestBlockNumber and SetFinalizedBlockNumber
-func (t *Tracker) updateNetworkLagMetrics(
+func (t *Tracker) lowerNetworkLagMetrics(
 	net string,
 	networkValue int64,
 	getUpstreamValue func(*NetworkMetadata) int64,
+	getLag func(*TrackedMetrics) int64,
 	setLag func(*TrackedMetrics, int64),
 	getGauge func(string, string, string, string) prometheus.Gauge,
 	lg *zerolog.Logger,
@@ -1254,12 +1259,13 @@ func (t *Tracker) updateNetworkLagMetrics(
 					Msg("ignoring lag tracking for non-positive value")
 				return true
 			}
-			lag := blocksBehind(networkValue, upsValue)
+			wildcard := t.loadOrStoreUpsMetrics(upstreamKey{k.ups, "*", common.DataFinalityStateAll})
+			lag := min(blocksBehind(networkValue, upsValue), getLag(wildcard))
 			setLag(tm, lag)
 			if k.finality != common.DataFinalityStateAll {
 				setLag(t.getUpsMetrics(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}), lag)
 			}
-			setLag(t.loadOrStoreUpsMetrics(upstreamKey{k.ups, "*", common.DataFinalityStateAll}), lag)
+			setLag(wildcard, lag)
 			gauge := getGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
 			gauge.Set(float64(lag))
 			return true
@@ -1281,7 +1287,8 @@ func (t *Tracker) updateNetworkLagMetrics(
 						Msg("ignoring lag tracking for non-positive value")
 					continue
 				}
-				lag := blocksBehind(networkValue, upsValue)
+				wildcard := t.loadOrStoreUpsMetrics(upstreamKey{k.ups, "*", common.DataFinalityStateAll})
+				lag := min(blocksBehind(networkValue, upsValue), getLag(wildcard))
 				setLag(tm, lag)
 				// Block-head/finalization lag is a per-upstream property, but the
 				// (ups,method) dedup index stores a single, arbitrary-finality key
@@ -1293,15 +1300,9 @@ func (t *Tracker) updateNetworkLagMetrics(
 				if k.finality != common.DataFinalityStateAll {
 					setLag(t.getUpsMetrics(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}), lag)
 				}
-				// Also mirror onto the {*, All} wildcard-method aggregate. Policies
-				// with evalScope:network evaluate at method="*" and read this bucket
-				// directly. SetLatestBlockNumber writes it for the upstream whose
-				// poller fires, but never for peer upstreams processed here — so a
-				// CB-open upstream whose poller is stale or absent would read lag=0
-				// and bypass blockNumberLagAbove silently. Write it unconditionally
-				// so the predicate fires regardless of whether the upstream's own
-				// poller last wrote to it.
-				setLag(t.loadOrStoreUpsMetrics(upstreamKey{k.ups, "*", common.DataFinalityStateAll}), lag)
+				// Also mirror onto the {*, All} wildcard-method aggregate, which
+				// policies with evalScope:network read directly.
+				setLag(wildcard, lag)
 				gauge := getGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
 				gauge.Set(float64(lag))
 			}
@@ -1348,12 +1349,12 @@ func (t *Tracker) updateSingleUpstreamLag(
 				}
 				// Also mirror onto the {method, All} rollup — the indexed key may be
 				// a per-finality slot rather than the {method, All} one (see
-				// updateNetworkLagMetrics) — so per-method-grain reads see the lag.
+				// lowerNetworkLagMetrics) — so per-method-grain reads see the lag.
 				if k.finality != common.DataFinalityStateAll {
 					setLag(t.getUpsMetrics(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}), lag)
 				}
 				// Mirror onto the {*, All} wildcard-method aggregate for evalScope:network
-				// policies (same reasoning as in updateNetworkLagMetrics above).
+				// policies (same reasoning as in lowerNetworkLagMetrics above).
 				setLag(t.loadOrStoreUpsMetrics(upstreamKey{k.ups, "*", common.DataFinalityStateAll}), lag)
 			}
 		}
@@ -1488,31 +1489,39 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		}
 	}
 
-	// 3) Recompute block head lag for this upstream
-	upsLag := blocksBehind(ntwBn, upsMeta.evmLatestBlockNumber.Load())
-	gLag := t.getHeadLagGauge(t.projectId, vendor, netLabel, id)
-	gLag.Set(float64(upsLag))
-
-	// 4) Update the TrackedMetrics.BlockHeadLag fields for Upstream(s)
-	if needsGlobalUpdate {
-		// Recompute for every upstream in the network
-		t.updateNetworkLagMetrics(
+	// 3) A network head re-derived lower can only shrink peers' lag.
+	if ntwBn < oldNtwVal {
+		t.lowerNetworkLagMetrics(
 			net,
 			ntwBn,
 			func(meta *NetworkMetadata) int64 { return meta.evmLatestBlockNumber.Load() },
+			func(tm *TrackedMetrics) int64 { return tm.BlockHeadLag.Load() },
 			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
 			t.getHeadLagGauge,
 			&lg,
 		)
-	} else {
-		// Only update items for this single upstream
-		t.updateSingleUpstreamLag(
-			id,
-			net,
-			upsLag,
-			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
-		)
 	}
+
+	// 4) Record this upstream's lag. Lag is recorded only here, when the
+	// upstream's own head is observed (a poll, a response, a shared-counter
+	// update), against the network head of that moment; a network head that
+	// moves on does not touch the lag of upstreams it did not observe. An
+	// upstream that serves no traffic is observed only by its state poller,
+	// so between polls its head is old, not behind: counting every block
+	// since its last poll would turn the poll interval into lag (30s over 1s
+	// blocks is 30 blocks, past a 16-block gate), and an excluded upstream
+	// gets no traffic to refresh it. A stalled node is caught by its next
+	// poll, and a failed poll records the last known head against the
+	// current network head.
+	upsLag := blocksBehind(ntwBn, upsMeta.evmLatestBlockNumber.Load())
+	gLag := t.getHeadLagGauge(t.projectId, vendor, netLabel, id)
+	gLag.Set(float64(upsLag))
+	t.updateSingleUpstreamLag(
+		id,
+		net,
+		upsLag,
+		func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
+	)
 
 	// The dedup index (`upstreamsByNetwork`) is not guaranteed to carry the
 	// {*, All} wildcard aggregate for this upstream — it dedups per (id,
@@ -1682,33 +1691,29 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 		}
 	}
 
-	// Recompute finalization lag for this upstream
-	upsLag := blocksBehind(ntwVal, upsMeta.evmFinalizedBlockNumber.Load())
-
-	// Update Prometheus for this upstream
-	gLag := t.getFinalizationLagGauge(t.projectId, vendor, netLabel, id)
-	gLag.Set(float64(upsLag))
-
-	// Update the finalization lag across the network if needed
-	if needsGlobalUpdate {
-		// Recompute for every upstream in the network
-		t.updateNetworkLagMetrics(
+	// Same rules as block-head lag in SetLatestBlockNumber: recorded only when
+	// this upstream's finalized head is observed; a lower network head only
+	// shrinks peers' lag.
+	if ntwVal < oldNtwVal {
+		t.lowerNetworkLagMetrics(
 			net,
 			ntwVal,
 			func(meta *NetworkMetadata) int64 { return meta.evmFinalizedBlockNumber.Load() },
+			func(tm *TrackedMetrics) int64 { return tm.FinalizationLag.Load() },
 			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
 			t.getFinalizationLagGauge,
 			&lg,
 		)
-	} else {
-		// Only update finalization lag for this single upstream
-		t.updateSingleUpstreamLag(
-			id,
-			net,
-			upsLag,
-			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
-		)
 	}
+	upsLag := blocksBehind(ntwVal, upsMeta.evmFinalizedBlockNumber.Load())
+	gLag := t.getFinalizationLagGauge(t.projectId, vendor, netLabel, id)
+	gLag.Set(float64(upsLag))
+	t.updateSingleUpstreamLag(
+		id,
+		net,
+		upsLag,
+		func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
+	)
 
 	// Same {*, All} wildcard-aggregate guarantee as SetLatestBlockNumber (see
 	// the comment there): the dedup index may not carry the "*" rollup, so

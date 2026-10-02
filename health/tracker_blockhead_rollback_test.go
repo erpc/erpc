@@ -119,6 +119,7 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		tracker.SetLatestBlockNumber(upsC, 32_000_050, 0)
 		// upsA delivers a bogus sample far ahead of the real chain.
 		tracker.SetLatestBlockNumber(upsA, 100_000_000, 0)
+		tracker.SetLatestBlockNumber(upsB, 32_000_000, 0) // upsB's next poll records its lag
 
 		assert.Equal(t, int64(100_000_000), upstreamLatest(tracker, upsA))
 		assert.Equal(t, int64(32_000_050), networkLatest(tracker, net),
@@ -213,6 +214,7 @@ func TestTrackerFinalizedBlockRollbackTolerance(t *testing.T) {
 		tracker.SetFinalizedBlockNumber(upsB, 31_000_000)
 		tracker.SetFinalizedBlockNumber(upsC, 31_000_005)
 		tracker.SetFinalizedBlockNumber(upsA, 99_000_000) // bogus
+		tracker.SetFinalizedBlockNumber(upsB, 31_000_000) // upsB's next poll records its lag
 
 		assert.Equal(t, int64(31_000_005), networkFinalized(tracker, net))
 		assert.Equal(t, int64(5), finalizationLag(tracker, upsB))

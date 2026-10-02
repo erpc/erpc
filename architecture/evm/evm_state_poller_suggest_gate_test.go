@@ -222,8 +222,10 @@ func TestSuggestFinalizedBlock_MajorJumpMatchingApplies(t *testing.T) {
 	p.SuggestFinalizedBlock(1000)
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 1000 }, 2*time.Second, 10*time.Millisecond)
 
-	p.SuggestFinalizedBlock(1000 + gateTolerance + 1000) // MAJOR
+	// Suggestions are best-effort: one arriving while the previous one still
+	// holds finalizedUpdateInProgress is dropped, as live traffic repeats them.
 	require.Eventually(t, func() bool {
+		p.SuggestFinalizedBlock(1000 + gateTolerance + 1000) // MAJOR
 		return p.FinalizedBlock() == 1000+gateTolerance+1000
 	}, 2*time.Second, 10*time.Millisecond, "verified major finalized jump must be applied")
 	require.False(t, up.isCordoned())
@@ -236,8 +238,10 @@ func TestSuggestFinalizedBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *tes
 	p.SuggestFinalizedBlock(1000)
 	require.Eventually(t, func() bool { return p.FinalizedBlock() == 1000 }, 2*time.Second, 10*time.Millisecond)
 
-	p.SuggestFinalizedBlock(5_000_000) // MAJOR wrong-chain height
-	require.Eventually(t, up.isCordoned, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		p.SuggestFinalizedBlock(5_000_000) // MAJOR wrong-chain height; see MajorJumpMatchingApplies
+		return up.isCordoned()
+	}, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, int64(1000), p.FinalizedBlock(), "bogus major finalized jump must not enter the shared counter")
 }
 

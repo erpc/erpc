@@ -164,11 +164,12 @@ func NewSvmStatePoller(
 	}
 
 	// Counter callbacks, mirroring EvmStatePoller (evm_state_poller.go:157-171).
-	// OnValue is the ONLY tracker feed for slots: it fires once per ACCEPTED
-	// value whatever the source — this poller's fetch, a live-traffic
-	// context.slot suggestion, or cross-instance propagation of the shared
-	// counter — and stays silent when the counter rejects a lower slot, so the
-	// tracker can never be fed a slot the counter itself refused.
+	// OnValue feeds the tracker once per ACCEPTED value whatever the source —
+	// this poller's fetch, a live-traffic context.slot suggestion, or
+	// cross-instance propagation of the shared counter — and stays silent when
+	// the counter rejects a lower slot, so the tracker is never fed a slot the
+	// counter itself refused. Polls that do not advance the counter re-feed its
+	// value (recordPolledLatestSlot).
 	if tracker != nil {
 		latestShared.OnValue(func(value int64) {
 			// Processed-slot lag drives score-based upstream selection on every
@@ -383,6 +384,11 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 
 	wg.Wait()
 
+	// Every poll observes the counters' slots, whether this tick fetched them,
+	// repeated them, failed, or was skipped by the traffic gate.
+	e.recordPolledLatestSlot()
+	e.recordPolledFinalizedSlot()
+
 	// Safe to read LatestSlot() now — the processed-slot goroutine has joined
 	// (and on a skipped tick the shared value is traffic-fed and current).
 	if shredSlot > 0 {
@@ -577,6 +583,32 @@ func (e *SvmStatePoller) suggestLatestSlot(slot int64) {
 	// Tracker feed lives in the counter's OnValue callback (NewSvmStatePoller):
 	// it also covers traffic-fed and cross-instance updates, and skips values
 	// the counter rejected.
+}
+
+// recordPolledLatestSlot hands the tracker this upstream's accepted slot after
+// every poll, whether the poll advanced it, repeated it or failed. The tracker
+// records lag only when an upstream's head is observed, and OnValue fires only
+// when the counter advances: without this, a node stuck at one slot, or one
+// whose polls fail, would keep the lag of its last advance while the network
+// moves on. It feeds the counter's value, never the polled one, so the tracker
+// still sees only slots the counter accepted.
+func (e *SvmStatePoller) recordPolledLatestSlot() {
+	if e.tracker == nil {
+		return
+	}
+	if slot := e.LatestSlot(); slot > 0 {
+		e.tracker.SetLatestBlockNumber(e.upstream, slot, 0)
+	}
+}
+
+// recordPolledFinalizedSlot is recordPolledLatestSlot for the finalized slot.
+func (e *SvmStatePoller) recordPolledFinalizedSlot() {
+	if e.tracker == nil {
+		return
+	}
+	if slot := e.FinalizedSlot(); slot > 0 {
+		e.tracker.SetFinalizedBlockNumber(e.upstream, slot)
+	}
 }
 
 // SuggestFinalizedSlot is the finalized-commitment sibling of
