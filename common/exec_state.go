@@ -19,6 +19,7 @@ const (
 	UpstreamOutcomeEmpty            UpstreamAttemptOutcome = "empty"
 	UpstreamOutcomeTransportError   UpstreamAttemptOutcome = "transport_error"
 	UpstreamOutcomeServerError      UpstreamAttemptOutcome = "server_error"
+	UpstreamOutcomeResponseTooLarge UpstreamAttemptOutcome = "response_too_large"
 	UpstreamOutcomeClientError      UpstreamAttemptOutcome = "client_error"
 	UpstreamOutcomeRateLimited      UpstreamAttemptOutcome = "rate_limited"
 	UpstreamOutcomeMissingData      UpstreamAttemptOutcome = "missing_data"

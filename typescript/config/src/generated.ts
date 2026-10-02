@@ -934,6 +934,7 @@ export interface JsonRpcUpstreamConfig {
   batchMaxSize?: number /* int */;
   batchMaxWait?: Duration;
   enableGzip?: boolean;
+  maxResponseBytes?: number /* int64 */;
   headers?: { [key: string]: string};
   proxyPool?: string;
 }
