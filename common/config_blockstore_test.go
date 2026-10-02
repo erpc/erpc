@@ -40,6 +40,25 @@ func TestEvmBlockStoreHistoricalConfig_DefaultsAndValidation(t *testing.T) {
 	require.ErrorContains(t, store.Validate(), "historical.ttl")
 	store.Historical.TTL = Duration(-time.Second)
 	require.ErrorContains(t, store.Validate(), "historical.ttl")
+
+	for _, tc := range []struct {
+		name string
+		set  func(*EvmBlockStoreConfig)
+	}{
+		{"depth", func(c *EvmBlockStoreConfig) { c.Depth = -1 }},
+		{"maxBytes", func(c *EvmBlockStoreConfig) { c.MaxBytes = -1 }},
+		{"concurrency", func(c *EvmBlockStoreConfig) { c.Concurrency = -1 }},
+		{"fetchTimeout", func(c *EvmBlockStoreConfig) { c.FetchTimeout = -1 }},
+		{"maxLogsRange", func(c *EvmBlockStoreConfig) { c.MaxLogsRange = -1 }},
+		{"maxBlockBytes", func(c *EvmBlockStoreConfig) { c.MaxBlockBytes = -1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &EvmBlockStoreConfig{ConnectorId: "redis", Historical: EvmBlockStoreHistoricalConfig{Enabled: true}}
+			c.SetDefaults()
+			tc.set(c)
+			require.ErrorContains(t, c.Validate(), tc.name)
+		})
+	}
 }
 
 func TestNetworkConfig_ValidatesConnectorForHistoricalOnlyBlockStore(t *testing.T) {

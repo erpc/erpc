@@ -94,16 +94,8 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 		return nil
 	}
 	hc.SetDefaults()
-	if hc.Enabled {
-		if err := hc.Validate(); err != nil {
-			return err
-		}
-	}
-	if historicalEnabled {
-		if hc.ConnectorId == "" {
-			return fmt.Errorf("evm.blockStore.connectorId is required when historical storage is enabled")
-		}
-		hc.Historical.SetDefaults()
+	if err := hc.Validate(); err != nil {
+		return err
 	}
 	ns := hc.Namespace
 	if ns == "" {

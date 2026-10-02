@@ -110,29 +110,32 @@ func (c *EvmBlockStoreConfig) Validate() error {
 	if c.ConnectorId == "" {
 		return fmt.Errorf("evm.blockStore.connectorId is required (a redis connector under database.evmJsonRpcCache.connectors)")
 	}
-	if !c.Enabled {
-		return nil
-	}
 	if c.Depth < 1 || c.Depth > 4096 {
 		return fmt.Errorf("evm.blockStore.depth must be within 1..4096")
 	}
 	if c.MaxBytes < 1<<20 {
 		return fmt.Errorf("evm.blockStore.maxBytes must be at least 1MB")
 	}
-	if c.MaxPerTick < 1 || c.MaxPerTick > c.Depth {
-		return fmt.Errorf("evm.blockStore.maxPerTick must be within 1..depth")
-	}
 	if c.Concurrency < 1 || c.Concurrency > 64 {
 		return fmt.Errorf("evm.blockStore.concurrency must be within 1..64")
 	}
-	if c.PollInterval <= 0 || c.FetchTimeout <= 0 {
-		return fmt.Errorf("evm.blockStore.pollInterval and fetchTimeout must be positive")
+	if c.FetchTimeout <= 0 {
+		return fmt.Errorf("evm.blockStore.fetchTimeout must be positive")
 	}
 	if c.MaxLogsRange < 1 || c.MaxLogsRange > c.Depth {
 		return fmt.Errorf("evm.blockStore.maxLogsRange must be within 1..depth")
 	}
 	if c.MaxBlockBytes < 1024 || c.MaxBlockBytes > c.MaxBytes {
 		return fmt.Errorf("evm.blockStore.maxBlockBytes must be within 1KB..maxBytes")
+	}
+	if !c.Enabled {
+		return nil
+	}
+	if c.MaxPerTick < 1 || c.MaxPerTick > c.Depth {
+		return fmt.Errorf("evm.blockStore.maxPerTick must be within 1..depth")
+	}
+	if c.PollInterval <= 0 {
+		return fmt.Errorf("evm.blockStore.pollInterval must be positive")
 	}
 	if c.MaxStaleness < c.PollInterval {
 		return fmt.Errorf("evm.blockStore.maxStaleness must be >= pollInterval")
