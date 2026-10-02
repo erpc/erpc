@@ -790,6 +790,7 @@ func (c *TracingConfig) SetDefaults() error {
 }
 
 func (s *ServerConfig) SetDefaults() error {
+	s.WebSocket.SetDefaults()
 	if s.ListenV4 == nil {
 		if !util.IsTest() || os.Getenv("FORCE_TEST_LISTEN_V4") == "true" {
 			s.ListenV4 = util.BoolPtr(true)
@@ -2570,6 +2571,7 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 }
 
 func (e *EvmNetworkConfig) SetDefaults() error {
+	e.BlockStore.SetDefaults()
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}

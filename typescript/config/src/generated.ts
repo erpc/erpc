@@ -254,6 +254,12 @@ export interface ServerConfig {
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
   /**
+   * WebSocket opts into the JSON-RPC WebSocket endpoint (eth_subscribe
+   * newHeads/logs reconstructed from HTTP upstreams). Nil or disabled keeps
+   * the server HTTP-only. See WebSocketServerConfig.
+   */
+  webSocket?: WebSocketServerConfig;
+  /**
    * ExecutionHeaders controls the per-request diagnostic headers
    * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
    * eRPC routed and resolved each request. Defaults to "all" — set
@@ -1632,6 +1638,14 @@ export interface EvmNetworkConfig {
    * provider-defined routing. This does not affect eth_query* or gRPC Query.
    */
   safeBlockSource?: string;
+  /**
+   * BlockStore opts into the head-driven full-block/log cache: a Redis-shared,
+   * parent-hash-verified window of recent canonical blocks (with their
+   * logs) hydrated from upstreams as the head advances. It serves
+   * eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
+   * feeds WebSocket subscriptions. Nil or disabled changes nothing.
+   */
+  blockStore?: EvmBlockStoreConfig;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -1939,7 +1953,6 @@ export interface MetricsConfig {
    * families are exposed at all, which of their labels survive, and which
    * buckets a histogram uses. Entries are applied by specificity rather than
    * by list order — see MetricsCustomizationConfig.
-   *
    * 	metrics:
    * 	  customizations:
    * 	    - subject: "consensus_*"
@@ -1953,7 +1966,7 @@ export interface MetricsConfig {
    * 	    - subject: network_request_duration_seconds
    * 	      buckets: [0.05, 0.5, 5]
    */
-  customizations?: MetricsCustomizationConfig[];
+  customizations?: (MetricsCustomizationConfig | undefined)[];
   /**
    * Deprecated: use Customizations with a `labels` list. Kept working so
    * existing configs keep loading; it is desugared onto the same rules as an
@@ -1999,7 +2012,6 @@ export const MetricActionDrop: MetricCustomizationAction = "drop";
 /**
  * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
  * selecting metric families, and what to do with them.
- *
  * Overlapping subjects resolve by specificity, not by list order: an exact
  * family name beats a prefix, a longer prefix beats a shorter one, and equally
  * specific subjects break to the one written later. So "drop consensus_*, keep
@@ -2019,7 +2031,6 @@ export interface MetricsCustomizationConfig {
    * Action drops the matched families from /metrics, or keeps them against a
    * broader drop. Omit it to leave exposure alone and only customize labels or
    * buckets.
-   *
    * A dropped eRPC family is never registered, so it costs no series and no
    * collection time — but that makes it a startup decision, undone only by a
    * restart. Stock collectors are registered outside eRPC and so are filtered
@@ -2031,20 +2042,19 @@ export interface MetricsCustomizationConfig {
    * Labels projects the matched families' label sets. Same precedence rules as
    * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
    * drops the group and spares the one label.
-   *
    * Dropping a label collapses every series that differed only in it. Counter
    * sums stay correct, but the dimension stops being queryable — check what
    * reads it (billing or attribution pipelines, dashboards) first. Gauges have
    * no projection, because collapsing gauge series would report whichever
    * writer wrote last rather than a coarser number.
    */
-  labels?: MetricLabelCustomizationConfig[];
+  labels?: (MetricLabelCustomizationConfig | undefined)[];
   /**
    * Buckets replaces the bucket boundaries of the matched histograms,
    * overriding both metrics.histogramBuckets and what the metric declares in
    * code. Must be strictly increasing.
    */
-  buckets?: number[];
+  buckets?: number /* float64 */[];
 }
 /**
  * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
@@ -2062,6 +2072,130 @@ export interface RateLimitStoreConfig {
   redis?: RedisConnectorConfig;
   cacheKeyPrefix?: string;
   nearLimitRatio?: number /* float32 */;
+}
+
+//////////
+// source: config_blockstore.go
+
+/**
+ * EvmBlockStoreConfig configures the head-driven full-block/log cache.
+ */
+export interface EvmBlockStoreConfig {
+  /**
+   * Enabled turns the cache on. Default false.
+   */
+  enabled?: boolean;
+  /**
+   * ConnectorId names a redis-driver connector declared under
+   * database.evmJsonRpcCache.connectors. Replicas share immutable,
+   * hash-addressed block/log payloads; each replica verifies its own head.
+   * Required.
+   */
+  connectorId?: string;
+  /**
+   * Depth is how many recent canonical blocks the window holds. Default 128.
+   */
+  depth?: number /* int64 */;
+  /**
+   * MaxBytes bounds the total serialized size (blocks + logs) held. When the
+   * window would exceed it, the oldest blocks are evicted. Default 256MB.
+   */
+  maxBytes?: number /* int64 */;
+  /**
+   * MaxPerTick bounds how many missing block records a single refresh fetches
+   * from upstream. Cold starts and long outages converge over multiple ticks.
+   */
+  maxPerTick?: number /* int64 */;
+  /**
+   * Concurrency bounds simultaneous header, Redis-read and block/log hydration
+   * jobs per network. Default 4.
+   */
+  concurrency?: number /* int */;
+  /**
+   * PollInterval is the fallback tick that re-verifies the tip hash even
+   * when the height has not changed (same-height reorgs). Default 2s.
+   */
+  pollInterval?: Duration;
+  /**
+   * FetchTimeout bounds each hydration fetch. Default 10s.
+   */
+  fetchTimeout?: Duration;
+  /**
+   * MaxLogsRange caps the block span an eth_getLogs range may have to be
+   * served from the cache. Wider ranges go upstream. Default = Depth.
+   */
+  maxLogsRange?: number /* int64 */;
+  /**
+   * MaxBlockBytes rejects (never caches) any single block whose block+logs
+   * payload exceeds it. Default min(16MB, maxBytes).
+   */
+  maxBlockBytes?: number /* int64 */;
+  /**
+   * MaxStaleness disables serving (normal upstream path) when this replica's
+   * view has not been verified for this long. Default 5 * pollInterval.
+   */
+  maxStaleness?: Duration;
+  /**
+   * Namespace isolates shared payloads between deployments. Defaults to
+   * "default". A fingerprint of the network's upstream set is always appended.
+   */
+  namespace?: string;
+  /**
+   * Historical configures the independent cache for finalized blocks and complete logs.
+   */
+  historical?: EvmBlockStoreHistoricalConfig;
+}
+/**
+ * EvmBlockStoreHistoricalConfig configures the independent finalized-block and complete-log cache.
+ */
+export interface EvmBlockStoreHistoricalConfig {
+  /**
+   * Enabled opts into storing finalized full blocks independently of the live window. Default false.
+   */
+  enabled?: boolean;
+  /**
+   * TTL is how long historical records remain eligible for reuse. Default 1h.
+   */
+  ttl?: Duration;
+}
+/**
+ * WebSocketServerConfig configures the JSON-RPC WebSocket endpoint. It is
+ * served on the same port/paths as HTTP (/<project>/evm/<chainId>) when a
+ * client sends an Upgrade request.
+ */
+export interface WebSocketServerConfig {
+  enabled?: boolean;
+  /**
+   * MaxConnections bounds concurrent WS connections per server. Default 1024.
+   */
+  maxConnections?: number /* int */;
+  /**
+   * MaxConnectionsPerProject bounds concurrent WS connections per project so
+   * one tenant cannot exhaust MaxConnections. 0 = only the global cap.
+   */
+  maxConnectionsPerProject?: number /* int */;
+  /**
+   * MaxSubscriptionsPerConnection. Default 32.
+   */
+  maxSubscriptionsPerConnection?: number /* int */;
+  /**
+   * SendQueueSize bounds queued outbound messages per connection. A client
+   * that falls this far behind is disconnected (policy violation) rather
+   * than buffered without bound. Default 256.
+   */
+  sendQueueSize?: number /* int */;
+  /**
+   * MaxMessageBytes caps inbound frame size. Default 1MB.
+   */
+  maxMessageBytes?: number /* int64 */;
+  /**
+   * WriteTimeout bounds each outbound write. Default 10s.
+   */
+  writeTimeout?: Duration;
+  /**
+   * PingInterval is the keepalive ping period. Default 30s.
+   */
+  pingInterval?: Duration;
 }
 
 //////////

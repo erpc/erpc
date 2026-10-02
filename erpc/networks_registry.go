@@ -329,6 +329,9 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 			network.cacheDal = nr.svmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
 	}
+	if err := nr.initBlockStore(network, nwCfg); err != nil {
+		return nil, fmt.Errorf("head cache for %s: %w", nwCfg.NetworkId(), err)
+	}
 	// Register alias for lazy-created networks to support alias-based routing
 	if nwCfg.Alias != "" {
 		// SplitN limit 2: three-part SVM IDs (svm:<chain>:<cluster>) keep the

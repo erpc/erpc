@@ -20,13 +20,37 @@ type MockConnector struct {
 
 var _ Connector = (*MockConnector)(nil)
 
+// mockCtx is passed to testify instead of the raw context. testify formats
+// every argument with %v while matching (Arguments.Diff), and a request
+// context can carry values (e.g. *common.NormalizedRequest) that other
+// goroutines mutate concurrently, so printing it is a data race. The wrapper
+// is still a context.Context and prints a fixed string; expectations match
+// the context with mock.Anything, so matching is unchanged.
+type mockCtx struct{ context.Context }
+
+func (mockCtx) String() string { return "context.Context" }
+
+// mockMeta hides a live metadata value (the cache passes the in-flight
+// *common.NormalizedRequest) from testify's %v formatting for the same reason.
+// nil stays nil so expectations written with a literal nil still match.
+type mockMeta struct{ v interface{} }
+
+func (mockMeta) String() string { return "metadata" }
+
+func mockMetadata(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+	return mockMeta{v}
+}
+
 func (m *MockConnector) Id() string {
 	return m.id
 }
 
 // Get mocks the Get method of the Connector interface
 func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {
-	args := m.Called(ctx, index, partitionKey, rangeKey, metadata)
+	args := m.Called(mockCtx{ctx}, index, partitionKey, rangeKey, mockMetadata(metadata))
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -35,19 +59,19 @@ func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 
 // Set mocks the Set method of the Connector interface
 func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
-	args := m.Called(ctx, partitionKey, rangeKey, value, ttl)
+	args := m.Called(mockCtx{ctx}, partitionKey, rangeKey, value, ttl)
 	return args.Error(0)
 }
 
 // Delete mocks the Delete method of the Connector interface
 func (m *MockConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
-	args := m.Called(ctx, partitionKey, rangeKey)
+	args := m.Called(mockCtx{ctx}, partitionKey, rangeKey)
 	return args.Error(0)
 }
 
 // List mocks the List method of the Connector interface
 func (m *MockConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {
-	args := m.Called(ctx, index, limit, paginationToken)
+	args := m.Called(mockCtx{ctx}, index, limit, paginationToken)
 	if args.Get(0) == nil {
 		return nil, args.String(1), args.Error(2)
 	}
@@ -56,7 +80,7 @@ func (m *MockConnector) List(ctx context.Context, index string, limit int, pagin
 
 // Lock mocks the Lock method of the Connector interface
 func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
-	args := m.Called(ctx, key, ttl)
+	args := m.Called(mockCtx{ctx}, key, ttl)
 	var a0 DistributedLock = nil
 	a0, _ = args.Get(0).(DistributedLock)
 	a1 := args.Error(1)
@@ -65,7 +89,7 @@ func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration)
 
 // WatchCounterInt64 mocks the WatchCounterInt64 method of the Connector interface
 func (m *MockConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
-	args := m.Called(ctx, key)
+	args := m.Called(mockCtx{ctx}, key)
 	var a0 <-chan CounterInt64State = nil
 	a0, _ = args.Get(0).(chan CounterInt64State)
 	a1, _ := args.Get(1).(func())
@@ -75,7 +99,7 @@ func (m *MockConnector) WatchCounterInt64(ctx context.Context, key string) (<-ch
 
 // PublishCounterInt64 mocks the PublishCounterInt64 method of the Connector interface
 func (m *MockConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
-	args := m.Called(ctx, key, value)
+	args := m.Called(mockCtx{ctx}, key, value)
 	return args.Error(0)
 }
 

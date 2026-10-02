@@ -16,6 +16,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
+	"github.com/erpc/erpc/blockstore"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/internal/policy"
@@ -50,6 +51,12 @@ type Network struct {
 	policyEngine        *policy.Engine
 	initializer         *util.Initializer
 	architectureHandler common.ArchitectureHandler
+
+	// blockStore is the opt-in head-driven block/log cache (nil when disabled).
+	blockStore *blockstore.Cache
+	// historicalBlockStore holds finalized payloads outside the live window.
+	historicalBlockStore *blockstore.Historical
+	historicalWarmSem    chan struct{}
 
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
@@ -1807,6 +1814,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	method, _ := req.Method()
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
+	// An honored selector may change this request's checks, so its result must not be shared with requests using another integrity setting.
+	allowSharedResponse := !n.honorsIntegritySelector(req)
 
 	// Start a span for network forwarding
 	ctx, forwardSpan := common.StartSpan(ctx, "Network.Forward",
@@ -1849,6 +1858,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
+	// Head cache: fully covered block/log reads answered from the verified
+	// canonical window. Misses fall through to the normal path unchanged.
+	if n.blockStore != nil || n.historicalBlockStore != nil {
+		if resp, ok := n.tryServeBlockStore(ctx, req, method); ok {
+			forwardSpan.SetAttributes(attribute.Bool("blockstore.hit", true))
+			return resp, nil
+		}
+	}
+
 	// Route safe-tagged requests before multiplexing and cache lookup.
 	if n.cfg.Architecture == common.ArchitectureEvm {
 		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
@@ -1857,7 +1875,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
+	var mlx *Multiplexer
+	var resp *common.NormalizedResponse
+	var err error
+	if allowSharedResponse {
+		mlx, resp, err = n.handleMultiplexing(ctx, &lg, req, startTime)
+	}
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer (follower path)
 		forwardSpan.SetAttributes(
@@ -1877,7 +1900,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
+	if n.cacheDal != nil && allowSharedResponse && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
@@ -2481,7 +2504,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if n.cacheDal != nil {
+		if n.cacheDal != nil && allowSharedResponse && !cacheWriteBypassed(ctx) {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)
@@ -2527,6 +2550,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		lg.Trace().Msgf("response is empty")
 	}
 
+	if execErr == nil && resp != nil {
+		n.warmHistoricalAsync(ctx, req, method, resp)
+	}
 	if execErr == nil && !isEmpty {
 		n.enrichStatePoller(ctx, method, req, resp)
 
@@ -3085,6 +3111,22 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 		return nil
 	}
 	return eligible
+}
+
+// honorsIntegritySelector mirrors evm.resolveRequestSettings: a selector only applies with an integrity config whose headerMode is profiles or full.
+func (n *Network) honorsIntegritySelector(req *common.NormalizedRequest) bool {
+	if req == nil || n.cfg == nil || n.cfg.Integrity == nil {
+		return false
+	}
+	dirs := req.Directives()
+	if dirs == nil || strings.TrimSpace(dirs.IntegritySelector) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(n.cfg.Integrity.HeaderMode)) {
+	case common.IntegrityHeaderModeProfiles, common.IntegrityHeaderModeFull:
+		return true
+	}
+	return false
 }
 
 // multiplexKey derives the in-flight dedup identity for a request.

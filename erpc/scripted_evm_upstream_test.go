@@ -1,0 +1,302 @@
+package erpc
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+)
+
+// scriptedEvmUpstream is a deterministic local JSON-RPC EVM node used by the
+// head cache / WebSocket end-to-end tests. It serves a scripted chain where
+// every block has one transaction emitting one log; reorgs swap a fork label
+// for a height range, changing hashes, parent links, tx hashes and logs.
+//
+// Limits (honest fixture scope): no real EVM execution, no receipts/traces,
+// no uncles/withdrawals; only the methods eRPC's poller and the head cache
+// use are implemented. Unknown methods return -32601.
+type scriptedEvmUpstream struct {
+	mu                sync.Mutex
+	chainId           int64
+	tip               int64
+	forks             map[int64]string
+	srv               *httptest.Server
+	calls             sync.Map // method -> *atomic.Int64
+	blockCalls        sync.Map // eth_getBlockByNumber calls per explicit number
+	fullBlockCalls    atomic.Int64
+	headerCalls       atomic.Int64
+	latestBlockCalls  atomic.Int64
+	blockHashLogCalls atomic.Int64
+	rangeLogCalls     atomic.Int64
+	failBlockNumber   atomic.Bool
+	fullBlockDelay    atomic.Int64
+}
+
+var scriptedEmitter = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+var scriptedTopicEven = "0x1111111111111111111111111111111111111111111111111111111111111111"
+var scriptedTopicOdd = "0x2222222222222222222222222222222222222222222222222222222222222222"
+
+func newScriptedEvmUpstream(chainId, tip int64) *scriptedEvmUpstream {
+	u := &scriptedEvmUpstream{chainId: chainId, tip: tip, forks: map[int64]string{}}
+	for i := int64(0); i <= tip; i++ {
+		u.forks[i] = "a"
+	}
+	u.srv = httptest.NewServer(http.HandlerFunc(u.serve))
+	return u
+}
+
+func (u *scriptedEvmUpstream) Close()      { u.srv.Close() }
+func (u *scriptedEvmUpstream) URL() string { return u.srv.URL }
+
+func (u *scriptedEvmUpstream) Mine(k int) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for i := 0; i < k; i++ {
+		u.tip++
+		u.forks[u.tip] = "a"
+	}
+}
+
+func (u *scriptedEvmUpstream) Reorg(from int64, fork string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for n := from; n <= u.tip; n++ {
+		u.forks[n] = fork
+	}
+}
+
+func (u *scriptedEvmUpstream) Calls(method string) int64 {
+	v, ok := u.calls.Load(method)
+	if !ok {
+		return 0
+	}
+	return v.(*atomic.Int64).Load()
+}
+
+// BlockCalls counts eth_getBlockByNumber calls for an explicit height.
+func (u *scriptedEvmUpstream) BlockCalls(n int64) int64 {
+	v, ok := u.blockCalls.Load(n)
+	if !ok {
+		return 0
+	}
+	return v.(*atomic.Int64).Load()
+}
+
+// RangeLogCalls counts eth_getLogs calls that used fromBlock/toBlock.
+func (u *scriptedEvmUpstream) RangeLogCalls() int64      { return u.rangeLogCalls.Load() }
+func (u *scriptedEvmUpstream) FullBlockCalls() int64     { return u.fullBlockCalls.Load() }
+func (u *scriptedEvmUpstream) HeaderCalls() int64        { return u.headerCalls.Load() }
+func (u *scriptedEvmUpstream) LatestBlockCalls() int64   { return u.latestBlockCalls.Load() }
+func (u *scriptedEvmUpstream) BlockHashLogCalls() int64  { return u.blockHashLogCalls.Load() }
+func (u *scriptedEvmUpstream) FailBlockNumber(fail bool) { u.failBlockNumber.Store(fail) }
+func (u *scriptedEvmUpstream) SetFullBlockDelay(delay time.Duration) {
+	u.fullBlockDelay.Store(int64(delay))
+}
+
+func (u *scriptedEvmUpstream) HashAt(n int64) string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return scriptedHash(n, u.forks[n])
+}
+
+func scriptedHash(n int64, fork string) string {
+	return ethcommon.BytesToHash([]byte(fmt.Sprintf("blk-%d-%s", n, fork))).Hex()
+}
+func scriptedTx(n int64, fork string) string {
+	return ethcommon.BytesToHash([]byte(fmt.Sprintf("tx-%d-%s", n, fork))).Hex()
+}
+
+func (u *scriptedEvmUpstream) logLocked(n int64) map[string]interface{} {
+	f := u.forks[n]
+	topic := scriptedTopicEven
+	if n%2 == 1 {
+		topic = scriptedTopicOdd
+	}
+	return map[string]interface{}{
+		"address": scriptedEmitter, "topics": []string{topic}, "data": "0x",
+		"blockNumber": fmt.Sprintf("0x%x", n), "blockHash": scriptedHash(n, f),
+		"transactionHash": scriptedTx(n, f), "transactionIndex": "0x0", "logIndex": "0x0", "removed": false,
+	}
+}
+
+func (u *scriptedEvmUpstream) blockLocked(n int64, full bool) interface{} {
+	f, ok := u.forks[n]
+	if !ok || n > u.tip || n < 0 {
+		return nil
+	}
+	l := u.logLocked(n)
+	var bloom types.Bloom
+	bloom.Add(ethcommon.HexToAddress(scriptedEmitter).Bytes())
+	for _, t := range l["topics"].([]string) {
+		bloom.Add(ethcommon.HexToHash(t).Bytes())
+	}
+	parent := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	if n > 0 {
+		parent = scriptedHash(n-1, u.forks[n-1])
+	}
+	var txs interface{} = []string{scriptedTx(n, f)}
+	if full {
+		txs = []map[string]interface{}{{
+			"hash": scriptedTx(n, f), "from": scriptedEmitter, "to": scriptedEmitter,
+			"blockHash": scriptedHash(n, f), "blockNumber": fmt.Sprintf("0x%x", n), "transactionIndex": "0x0",
+		}}
+	}
+	return map[string]interface{}{
+		"number": fmt.Sprintf("0x%x", n), "hash": scriptedHash(n, f), "parentHash": parent,
+		"logsBloom": "0x" + ethcommon.Bytes2Hex(bloom.Bytes()), "timestamp": fmt.Sprintf("0x%x", 1_700_000_000+n),
+		"gasLimit": "0x1c9c380", "gasUsed": "0x5208", "miner": scriptedEmitter, "extraData": "0x",
+		"transactions": txs, "uncles": []string{},
+	}
+}
+
+func (u *scriptedEvmUpstream) resolveLocked(ref string) int64 {
+	switch ref {
+	case "latest", "pending", "safe", "finalized", "":
+		if ref == "finalized" || ref == "safe" {
+			if u.tip > 64 {
+				return u.tip - 64
+			}
+			return 0
+		}
+		return u.tip
+	case "earliest":
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimPrefix(ref, "0x"), 16, 64)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+func (u *scriptedEvmUpstream) serve(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	trimmed := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmed, "[") {
+		var reqs []json.RawMessage
+		_ = json.Unmarshal(body, &reqs)
+		out := make([]json.RawMessage, 0, len(reqs))
+		for _, rq := range reqs {
+			out = append(out, u.handle(rq))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(u.handle(body))
+}
+
+func (u *scriptedEvmUpstream) handle(raw []byte) json.RawMessage {
+	var req struct {
+		Id     json.RawMessage   `json:"id"`
+		Method string            `json:"method"`
+		Params []json.RawMessage `json:"params"`
+	}
+	_ = json.Unmarshal(raw, &req)
+	if req.Method == "eth_getBlockByNumber" && len(req.Params) > 1 {
+		var full bool
+		if json.Unmarshal(req.Params[1], &full) == nil && full {
+			time.Sleep(time.Duration(u.fullBlockDelay.Load()))
+		}
+	}
+	c, _ := u.calls.LoadOrStore(req.Method, &atomic.Int64{})
+	c.(*atomic.Int64).Add(1)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	var result interface{}
+	var rpcErr map[string]interface{}
+	switch req.Method {
+	case "eth_chainId":
+		result = fmt.Sprintf("0x%x", u.chainId)
+	case "net_version":
+		result = fmt.Sprintf("%d", u.chainId)
+	case "eth_blockNumber":
+		if u.failBlockNumber.Load() {
+			rpcErr = map[string]interface{}{"code": -32000, "message": "scripted block number failure"}
+		} else {
+			result = fmt.Sprintf("0x%x", u.tip)
+		}
+	case "eth_syncing":
+		result = false
+	case "eth_getBlockByNumber":
+		var ref string
+		var full bool
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params[0], &ref)
+		}
+		if len(req.Params) > 1 {
+			_ = json.Unmarshal(req.Params[1], &full)
+		}
+		n := u.resolveLocked(ref)
+		if strings.HasPrefix(ref, "0x") {
+			bc, _ := u.blockCalls.LoadOrStore(n, &atomic.Int64{})
+			bc.(*atomic.Int64).Add(1)
+			if full {
+				u.fullBlockCalls.Add(1)
+			} else {
+				u.headerCalls.Add(1)
+			}
+		} else if ref == "latest" {
+			u.latestBlockCalls.Add(1)
+		}
+		result = u.blockLocked(n, full)
+	case "eth_getBlockByHash":
+		var h string
+		var full bool
+		_ = json.Unmarshal(req.Params[0], &h)
+		if len(req.Params) > 1 {
+			_ = json.Unmarshal(req.Params[1], &full)
+		}
+		for n, f := range u.forks {
+			if strings.EqualFold(scriptedHash(n, f), h) && n <= u.tip {
+				result = u.blockLocked(n, full)
+			}
+		}
+	case "eth_getLogs":
+		var flt map[string]interface{}
+		_ = json.Unmarshal(req.Params[0], &flt)
+		logs := []interface{}{}
+		if bh, ok := flt["blockHash"].(string); ok {
+			u.blockHashLogCalls.Add(1)
+			for n, f := range u.forks {
+				if strings.EqualFold(scriptedHash(n, f), bh) && n <= u.tip {
+					logs = append(logs, u.logLocked(n))
+				}
+			}
+		} else {
+			u.rangeLogCalls.Add(1)
+			from := u.resolveLocked(fmt.Sprint(flt["fromBlock"]))
+			to := u.resolveLocked(fmt.Sprint(flt["toBlock"]))
+			for n := from; n <= to && n <= u.tip; n++ {
+				l := u.logLocked(n)
+				if topics, ok := flt["topics"].([]interface{}); ok && len(topics) > 0 {
+					if t0, ok := topics[0].(string); ok && !strings.EqualFold(t0, l["topics"].([]string)[0]) {
+						continue
+					}
+				}
+				logs = append(logs, l)
+			}
+		}
+		result = logs
+	default:
+		rpcErr = map[string]interface{}{"code": -32601, "message": "the method " + req.Method + " does not exist/is not available"}
+	}
+	resp := map[string]interface{}{"jsonrpc": "2.0", "id": req.Id}
+	if rpcErr != nil {
+		resp["error"] = rpcErr
+	} else {
+		resp["result"] = result
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
