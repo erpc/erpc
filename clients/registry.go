@@ -99,7 +99,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 					}
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
-				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
+				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" || parsedUrl.Scheme == "grpcs" {
 					grpcPoolSize, grpcHealthCheckService := 0, ""
 					if cfg.Grpc != nil {
 						grpcPoolSize = cfg.Grpc.PoolSize

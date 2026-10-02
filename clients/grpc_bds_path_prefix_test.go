@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -81,4 +82,19 @@ func TestGrpcBdsClient_NoURLPathCallsCanonicalMethod(t *testing.T) {
 
 	require.NoError(t, chainIdWithin(client, 2*time.Second))
 	require.Equal(t, []string{evm.RPCQueryService_ChainId_FullMethodName}, seen())
+}
+
+// grpcs:// is the documented TLS scheme for a BDS upstream, so the registry
+// must build the BDS client for it rather than refuse the scheme.
+func TestClientRegistry_GrpcsSchemeBuildsBdsClient(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ups := common.NewFakeUpstream("bds-tls")
+	ups.Config().Type = common.UpstreamTypeEvm
+	ups.Config().Endpoint = "grpcs://127.0.0.1:1/boost"
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	client, err := NewClientRegistry(&logger, "test-project", nil, nil).CreateClient(ctx, ups)
+	require.NoError(t, err)
+	require.Equal(t, ClientTypeGrpcBds, client.GetType())
 }
