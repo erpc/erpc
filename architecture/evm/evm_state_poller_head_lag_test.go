@@ -40,6 +40,7 @@ type simNodeUpstream struct {
 	chain    *simChain
 	frozenAt atomic.Int64
 	down     atomic.Bool
+	delay    atomic.Int64 // ns each response waits, like a slow endpoint
 }
 
 func (u *simNodeUpstream) nodeHead() int64 {
@@ -72,6 +73,7 @@ func (u *simNodeUpstream) Forward(ctx context.Context, nq *common.NormalizedRequ
 	if u.down.Load() {
 		return nil, errors.New("sim upstream: connection refused")
 	}
+	time.Sleep(time.Duration(u.delay.Load()))
 	jrq, err := nq.JsonRpcRequest(ctx)
 	if err != nil {
 		return nil, err
@@ -325,4 +327,26 @@ func TestStatePoller_TickSkippedByDebounceStillRecordsLag(t *testing.T) {
 
 	require.EqualValues(t, 2*simLagGate, n.lag(2),
 		"a tick that fetches nothing must still measure the last known head against the current network head")
+}
+
+// A fetch slower than the shared counter's foreground wait finishes in the
+// background, and the tick returns before it with the counter's old head. That
+// old head is not an observation: measuring it against the current network
+// head would flag a healthy upstream until the fetch lands.
+func TestStatePoller_SlowFetchDoesNotRecordTheOldHead(t *testing.T) {
+	n := newSimNetwork(t, "served-a", "served-b", "slow")
+	n.ups[2].delay.Store(int64(200 * time.Millisecond))
+
+	for range 2 * simLagGate {
+		n.chain.head.Add(1)
+		n.serve(0)
+		n.serve(1)
+	}
+	n.poll(t, 2)
+	require.Zero(t, n.lag(2), "the tick returned before the fetch; its old head must not be recorded")
+
+	require.Eventually(t, func() bool {
+		return n.pollers[2].latestBlockShared.GetValue() == n.chain.head.Load()
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Zero(t, n.lag(2), "the fetch that landed found the node at the tip")
 }
