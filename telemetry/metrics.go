@@ -693,7 +693,7 @@ var (
 	MetricUpstreamAttemptOutcomeTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_attempt_outcome_total",
-		Help:      "Per-(upstream, method, outcome) attempt count. Outcomes: success/empty/transport_error/server_error/client_error/rate_limited/missing_data/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped.",
+		Help:      "Per-(upstream, method, outcome) attempt count. Outcomes: success/empty/transport_error/server_error/client_error/rate_limited/missing_data/unsupported/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped.",
 	}, []string{"project", "network", "upstream", "category", "outcome", "is_hedge", "is_retry", "finality"})
 
 	// MetricUpstreamCreditUnitsTotal accumulates vendor credit-unit cost

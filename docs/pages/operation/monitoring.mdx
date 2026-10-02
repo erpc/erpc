@@ -449,7 +449,7 @@ Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it i
 | Metric | What to check |
 |---|---|
 | `erpc_upstream_selection_total` | Upstream chosen for attempt; `reason` ∈ primary/retry/hedge/consensus_slot/sweep |
-| `erpc_upstream_attempt_outcome_total` | Terminal outcome per attempt; `outcome` ∈ success/empty/transport_error/server_error/client_error/rate_limited/missing_data/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped; `is_hedge`/`is_retry` ∈ `"true"`/`"false"` |
+| `erpc_upstream_attempt_outcome_total` | Terminal outcome per attempt; `outcome` ∈ success/empty/transport_error/server_error/client_error/rate_limited/missing_data/unsupported/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped; `is_hedge`/`is_retry` ∈ `"true"`/`"false"` |
 | `erpc_selection_probe_errors_total` | Probe to excluded upstream errored; `reason` ∈ timeout/throttled/auth/skipped/error |
 | `erpc_selection_probe_skipped_total` | Probe candidate skipped pre-fire; `reason` ∈ write_method/opt_out/sampled_out/max_concurrent/no_method |
 
@@ -597,7 +597,7 @@ Top-20 operational metrics:
 | `erpc_upstream_request_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned an empty/null result |
 | `erpc_upstream_response_size_bytes` | LabeledHistogram | project, network, category, finality | Decoded post-gzip result-body byte count; buckets: 4k, 64k, 1M, 16M, 100M |
 | `erpc_upstream_selection_total` | counter | project, network, upstream, category, reason, finality | Upstream picked for an attempt; `reason` ∈ primary/retry/hedge/consensus_slot/sweep |
-| `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Terminal outcome; `outcome` ∈ success/empty/transport_error/server_error/client_error/rate_limited/missing_data/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped; `is_hedge`/`is_retry` ∈ `"true"`/`"false"` |
+| `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Terminal outcome; `outcome` ∈ success/empty/transport_error/server_error/client_error/rate_limited/missing_data/unsupported/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped; `is_hedge`/`is_retry` ∈ `"true"`/`"false"` |
 | `erpc_rate_limiter_failopen_total` | counter | project, network, user, agent_name, budget, category, reason | Rate limiter failed open; `reason` ∈ admission_full/limit_timeout |
 | `erpc_rate_limiter_budget_max_count` | gauge | budget, method, scope | Budget's configured req/s; `scope` = ScopeString() (comma-joined flags: user/network/ip) |
 | `erpc_rate_limiter_remote_duration_seconds` | LabeledHistogram | budget, result | Remote rate-limit check (e.g. Redis DoLimit) duration; `result` ∈ ok/over_limit/fail_open |
