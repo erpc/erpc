@@ -292,6 +292,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		_, err := e.PollLatestBlockNumber(ctx)
+		e.recordLatestHead()
 		if err != nil {
 			e.logger.Debug().Err(err).Msg("failed to get latest block number in evm state poller")
 			ermu.Lock()
@@ -306,6 +307,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		_, err := e.PollFinalizedBlockNumber(ctx)
+		e.recordFinalizedHead()
 		if err != nil {
 			e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
 			ermu.Lock()
@@ -500,11 +502,9 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 					}
 				}
 				e.stateMu.Unlock()
-				e.recordFailedLatestPoll()
 				return 0, nil
 			} else {
 				e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
-				e.recordFailedLatestPoll()
 				return 0, err
 			}
 		}
@@ -533,19 +533,20 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	})
 }
 
-// recordFailedLatestPoll records the last known head when a poll could not
-// observe a new one. The tracker records lag only when an upstream's head is
-// observed, so without this an upstream whose polls fail (node down, circuit
-// breaker open) would keep the lag of its last good poll while the network
-// moves on.
-func (e *EvmStatePoller) recordFailedLatestPoll() {
+// recordLatestHead records this upstream's last known head on every poll
+// tick. The tracker records lag only when an upstream's head is observed, and
+// a tick can fetch nothing new: the debounce skipped the fetch (block time
+// above the interval, or another pod fetched first), the fetch failed, or the
+// chain-id gate dropped the sample. Without this, such an upstream would keep
+// the lag of its last advance while the network moves on.
+func (e *EvmStatePoller) recordLatestHead() {
 	if last := e.latestBlockShared.GetValue(); last > 0 {
 		e.tracker.SetLatestBlockNumber(e.upstream, last, 0)
 	}
 }
 
-// recordFailedFinalizedPoll is recordFailedLatestPoll for the finalized head.
-func (e *EvmStatePoller) recordFailedFinalizedPoll() {
+// recordFinalizedHead is recordLatestHead for the finalized head.
+func (e *EvmStatePoller) recordFinalizedHead() {
 	if last := e.finalizedBlockShared.GetValue(); last > 0 {
 		e.tracker.SetFinalizedBlockNumber(e.upstream, last)
 	}
@@ -812,11 +813,9 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 					}
 				}
 				e.stateMu.Unlock()
-				e.recordFailedFinalizedPoll()
 				return 0, nil
 			} else {
 				e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
-				e.recordFailedFinalizedPoll()
 				return 0, err
 			}
 		}

@@ -160,7 +160,7 @@ func (n *simNetwork) poll(t *testing.T, i int) {
 	for !n.pollers[i].latestBlockShared.IsStale(time.Millisecond) {
 		time.Sleep(time.Millisecond)
 	}
-	_, err := n.pollers[i].PollLatestBlockNumber(context.Background())
+	err := n.pollers[i].Poll(context.Background())
 	if !n.ups[i].down.Load() {
 		require.NoError(t, err)
 	}
@@ -304,4 +304,25 @@ func TestStatePoller_UpstreamWithFailingPollsCrossesLagGateWithinOnePollInterval
 	require.NotZero(t, flaggedAt, "an upstream whose polls fail must be reported as lagging")
 	require.LessOrEqual(t, flaggedAt-crossedAt, simPollEvery,
 		"failed polls must re-record its last known head within one poll interval")
+}
+
+// A poll tick whose fetch is skipped by the debounce (a block time above the
+// interval, or another pod fetched first) still observes the upstream's last
+// known head, so a frozen upstream is flagged on that tick.
+func TestStatePoller_TickSkippedByDebounceStillRecordsLag(t *testing.T) {
+	n := newSimNetwork(t, "served-a", "served-b", "polled")
+	n.ups[2].freeze()
+	n.pollers[2].stateMu.Lock()
+	n.pollers[2].debounceInterval = time.Hour
+	n.pollers[2].stateMu.Unlock()
+
+	for range 2 * simLagGate {
+		n.chain.head.Add(1)
+		n.serve(0)
+		n.serve(1)
+	}
+	require.NoError(t, n.pollers[2].Poll(context.Background()))
+
+	require.EqualValues(t, 2*simLagGate, n.lag(2),
+		"a tick that fetches nothing must still measure the last known head against the current network head")
 }

@@ -362,7 +362,6 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 			if slot, err := e.fetchSlot(ctx, reqGetSlotProcessed); err == nil && slot > 0 {
 				e.suggestLatestSlot(slot)
 			}
-			e.recordPolledLatestSlot()
 		}()
 
 		go func() {
@@ -371,7 +370,6 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 			if slot, err := e.fetchSlot(ctx, reqGetSlotFinalized); err == nil && slot > 0 {
 				e.suggestFinalizedSlot(slot)
 			}
-			e.recordPolledFinalizedSlot()
 		}()
 	}
 
@@ -385,6 +383,11 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	}()
 
 	wg.Wait()
+
+	// Every poll observes the counters' slots, whether this tick fetched them,
+	// repeated them, failed, or was skipped by the traffic gate.
+	e.recordPolledLatestSlot()
+	e.recordPolledFinalizedSlot()
 
 	// Safe to read LatestSlot() now — the processed-slot goroutine has joined
 	// (and on a skipped tick the shared value is traffic-fed and current).
