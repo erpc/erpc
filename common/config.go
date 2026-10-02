@@ -3167,11 +3167,35 @@ type RateLimitStoreConfig struct {
 
 // CachePartitionKey builds the JSON-RPC cache partition key.
 // Empty suffix keeps {networkId}:{ref}; a set suffix yields {networkId}:{suffix}:{ref}.
+// ':' and '\' inside suffix and ref are backslash-escaped so those segments
+// cannot be re-split into a different pair — an unsuffixed ref "systx:foo"
+// must not share a key with suffix "systx" and ref "foo". Segments without
+// those bytes are unchanged, including ordinary block numbers and the
+// reverse-index wildcard "*".
 func CachePartitionKey(networkId, suffix, ref string) string {
+	ref = escapePartitionSegment(ref)
 	if suffix == "" {
 		return networkId + ":" + ref
 	}
-	return networkId + ":" + suffix + ":" + ref
+	return networkId + ":" + escapePartitionSegment(suffix) + ":" + ref
+}
+
+// escapePartitionSegment backslash-escapes ':' and '\'. Other bytes are copied
+// unchanged so historical keys stay put.
+func escapePartitionSegment(s string) string {
+	if !strings.ContainsAny(s, `:\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 1)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\', ':':
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func (c *NetworkConfig) NetworkId() string {
