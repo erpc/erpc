@@ -284,13 +284,8 @@ func upstreamPreForward_trace_filter(ctx context.Context, n common.Network, u co
 	}
 
 	ncfg := n.Config()
-	// Reuse the same config as eth_getLogs since trace_filter has the same block range semantics
-	if ncfg == nil ||
-		ncfg.Evm == nil ||
-		ncfg.Evm.Integrity == nil ||
-		ncfg.Evm.Integrity.EnforceGetLogsBlockRange == nil ||
-		!*ncfg.Evm.Integrity.EnforceGetLogsBlockRange {
-		// If integrity check for block range is disabled, skip this hook.
+	// Same gate as eth_getLogs (directiveDefaults, then deprecated Integrity).
+	if !enforceGetLogsBlockRangeEnabled(ncfg, nrq) {
 		return false, nil, nil
 	}
 
