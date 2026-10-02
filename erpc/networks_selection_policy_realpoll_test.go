@@ -18,7 +18,7 @@
 //     specific-finality representative, reproducing the starvation setup),
 //   - lets the REAL EvmStatePoller fetch each upstream's tip over gock-mocked
 //     `eth_getBlockByNumber("latest")` — i.e. lag is computed by the real
-//     poll → tracker.SetLatestBlockNumber → updateNetworkLagMetrics path,
+//     poll → tracker.SetLatestBlockNumber path,
 //   - forces one policy tick and asserts the laggard is excluded end-to-end.
 //
 // Run against a pre-#907 binary, TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded
@@ -251,7 +251,7 @@ func TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded(t *testing.T) {
 	// 1) The real poll → tracker rollup populated the {*, All} bucket the
 	//    policy reads. This is the exact hop #907 fixed; pre-#907 this is 0.
 	require.EqualValues(t, 900, blockHeadLagOf(t, network, "frozen"),
-		"real poll must land lag on the {*, All} rollup (poll→SetLatestBlockNumber→updateNetworkLagMetrics)")
+		"real poll must land lag on the {*, All} rollup (poll→SetLatestBlockNumber)")
 	require.EqualValues(t, 0, blockHeadLagOf(t, network, "healthy-a"))
 
 	// 2) The default selection policy excluded the laggard.
@@ -304,12 +304,13 @@ func TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded(t *testing.T) {
 		"all three within-tolerance upstreams must stay in rotation")
 }
 
-// TestNetworkPolicy_RealPoll_StuckUpstreamServingCallsCrossesLagGateWithoutPoll
+// TestNetworkPolicy_RealPoll_StuckUpstreamServingCallsIsFlaggedAtItsNextPoll
 // covers an upstream whose node stops at a block but keeps answering
-// eth_call. Those answers carry no head, so they never re-observe it; between
-// polls the upstream must still be measured against the moving network head,
-// or it keeps serving stale state until its next poll.
-func TestNetworkPolicy_RealPoll_StuckUpstreamServingCallsCrossesLagGateWithoutPoll(t *testing.T) {
+// eth_call. Lag is recorded when an upstream's head is observed, and eth_call
+// answers carry no head: the stuck upstream keeps its last recorded lag until
+// its next poll, which observes the stale head against the moving network
+// head and excludes it.
+func TestNetworkPolicy_RealPoll_StuckUpstreamServingCallsIsFlaggedAtItsNextPoll(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -324,9 +325,7 @@ func TestNetworkPolicy_RealPoll_StuckUpstreamServingCallsCrossesLagGateWithoutPo
 	require.EqualValues(t, 0, blockHeadLagOf(t, network, "stuck"))
 	mockClean(t, upstreamHostFromID("stuck"), "eth_call", "0x01")
 
-	// The node stops at 1000 right after its poll and keeps serving calls
-	// while the network moves on without it.
-	time.Sleep(2 * time.Millisecond)
+	// The node stops at 1000 and keeps serving calls while the network moves on.
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
 	req.SetDirectives(&common.RequestDirectives{UseUpstream: "stuck"})
 	resp, err := network.Forward(ctx, req)
@@ -340,52 +339,16 @@ func TestNetworkPolicy_RealPoll_StuckUpstreamServingCallsCrossesLagGateWithoutPo
 		network.metricsTracker.SetLatestBlockNumber(healthyA, n, 0)
 		network.metricsTracker.SetLatestBlockNumber(healthyB, n, 0)
 	}
-	require.EqualValues(t, 17, blockHeadLagOf(t, network, "stuck"),
-		"an upstream serving from a stuck head must be measured against the current network head, not its last poll")
+	require.EqualValues(t, 0, blockHeadLagOf(t, network, "stuck"),
+		"between polls the stuck upstream keeps the lag of its last observation")
 
-	policy.TickForTest(network.policyEngine, network.networkId, "*")
-	_, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
-	assert.Contains(t, excluded, "stuck", "lag 17 > blockNumberLagAbove(16) must exclude it before its next poll")
-}
-
-// TestNetworkPolicy_RealPoll_InternalProbeKeepsIdleUpstreamAligned covers the
-// integrity state probe: it sends eth_call through the network to every
-// upstream every few seconds. Those calls answer no client, so they must not
-// end an idle upstream's aligned lag; otherwise a healthy upstream on a fast
-// chain counts every block since its last poll as lag again.
-func TestNetworkPolicy_RealPoll_InternalProbeKeepsIdleUpstreamAligned(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
-		{id: "healthy-a", latest: 1000},
-		{id: "healthy-b", latest: 1000},
-		{id: "probed", latest: 1000},
-	})
-	require.EqualValues(t, 0, blockHeadLagOf(t, network, "probed"))
-	mockClean(t, upstreamHostFromID("probed"), "eth_call", "0x01")
-
-	time.Sleep(2 * time.Millisecond)
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
-	req.SetDirectives(&common.RequestDirectives{IsInternal: true, UseUpstream: "probed", SkipCacheRead: "true"})
-	resp, err := network.Forward(ctx, req)
+	time.Sleep(time.Millisecond) // past the debounce
+	_, err = upstreamByID(t, network, "stuck").(*upstream.Upstream).EvmStatePoller().PollLatestBlockNumber(ctx)
 	require.NoError(t, err)
-	require.NotNil(t, resp)
-	resp.Release()
-	require.Equal(t, 1, gockHits(upstreamHostFromID("probed")), "the probe must reach the probed upstream")
-
-	healthyA, healthyB := upstreamByID(t, network, "healthy-a"), upstreamByID(t, network, "healthy-b")
-	for n := int64(1001); n <= 1000+17; n++ {
-		network.metricsTracker.SetLatestBlockNumber(healthyA, n, 0)
-		network.metricsTracker.SetLatestBlockNumber(healthyB, n, 0)
-	}
-	require.EqualValues(t, 0, blockHeadLagOf(t, network, "probed"),
-		"an internal probe answers no client and must not end the idle upstream's aligned lag")
+	require.EqualValues(t, 17, blockHeadLagOf(t, network, "stuck"),
+		"its next poll observes the stuck head against the current network head")
 
 	policy.TickForTest(network.policyEngine, network.networkId, "*")
 	_, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
-	assert.NotContains(t, excluded, "probed", "a healthy idle upstream that was only probed must stay in rotation")
+	assert.Contains(t, excluded, "stuck", "lag 17 > blockNumberLagAbove(16) must exclude it")
 }

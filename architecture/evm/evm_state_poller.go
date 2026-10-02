@@ -195,9 +195,6 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
 		return nil
 	}
-	// Between polls, this upstream's heads are as fresh as its last poll or
-	// its last served response. The tracker must not count that age as lag.
-	e.tracker.SetHeadRefreshInterval(e.upstream, interval.Duration())
 
 	if cfg.Evm != nil {
 		if cfg.Evm.StatePollerDebounce != 0 {
@@ -503,9 +500,11 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 					}
 				}
 				e.stateMu.Unlock()
+				e.recordFailedLatestPoll()
 				return 0, nil
 			} else {
 				e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
+				e.recordFailedLatestPoll()
 				return 0, err
 			}
 		}
@@ -534,6 +533,24 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	})
 }
 
+// recordFailedLatestPoll records the last known head when a poll could not
+// observe a new one. The tracker records lag only when an upstream's head is
+// observed, so without this an upstream whose polls fail (node down, circuit
+// breaker open) would keep the lag of its last good poll while the network
+// moves on.
+func (e *EvmStatePoller) recordFailedLatestPoll() {
+	if last := e.latestBlockShared.GetValue(); last > 0 {
+		e.tracker.SetLatestBlockNumber(e.upstream, last, 0)
+	}
+}
+
+// recordFailedFinalizedPoll is recordFailedLatestPoll for the finalized head.
+func (e *EvmStatePoller) recordFailedFinalizedPoll() {
+	if last := e.finalizedBlockShared.GetValue(); last > 0 {
+		e.tracker.SetFinalizedBlockNumber(e.upstream, last)
+	}
+}
+
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	// Best-effort, non-blocking update.
 	//
@@ -543,9 +560,6 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	//   deduped publish-first background push.
 	currentValue := e.latestBlockShared.GetValue()
 	if blockNumber <= currentValue {
-		if blockNumber > 0 {
-			e.tracker.ConfirmLatestBlockNumber(e.upstream)
-		}
 		e.logger.Trace().
 			Int64("blockNumber", blockNumber).
 			Int64("currentValue", currentValue).
@@ -798,9 +812,11 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 					}
 				}
 				e.stateMu.Unlock()
+				e.recordFailedFinalizedPoll()
 				return 0, nil
 			} else {
 				e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
+				e.recordFailedFinalizedPoll()
 				return 0, err
 			}
 		}
@@ -844,9 +860,6 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 		// Check if this update is still relevant (not older than current value)
 		currentValue := e.finalizedBlockShared.GetValue()
 		if blockNumber <= currentValue {
-			if blockNumber > 0 {
-				e.tracker.ConfirmFinalizedBlockNumber(e.upstream)
-			}
 			e.logger.Trace().
 				Int64("blockNumber", blockNumber).
 				Int64("currentValue", currentValue).

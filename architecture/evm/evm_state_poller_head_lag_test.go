@@ -39,6 +39,7 @@ type simNodeUpstream struct {
 	logger   zerolog.Logger
 	chain    *simChain
 	frozenAt atomic.Int64
+	down     atomic.Bool
 }
 
 func (u *simNodeUpstream) nodeHead() int64 {
@@ -49,6 +50,8 @@ func (u *simNodeUpstream) nodeHead() int64 {
 }
 
 func (u *simNodeUpstream) freeze() { u.frozenAt.Store(u.chain.head.Load()) }
+
+func (u *simNodeUpstream) goDown() { u.down.Store(true) }
 
 func (u *simNodeUpstream) Id() string                     { return u.cfg.Id }
 func (u *simNodeUpstream) VendorName() string             { return "test" }
@@ -66,6 +69,9 @@ func (u *simNodeUpstream) ShouldHandleMethod(string) (bool, error) {
 }
 
 func (u *simNodeUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, _, _ bool) (*common.NormalizedResponse, error) {
+	if u.down.Load() {
+		return nil, errors.New("sim upstream: connection refused")
+	}
 	jrq, err := nq.JsonRpcRequest(ctx)
 	if err != nil {
 		return nil, err
@@ -148,9 +154,16 @@ func (n *simNetwork) serve(i int) { n.pollers[i].SuggestLatestBlock(n.ups[i].nod
 
 func (n *simNetwork) poll(t *testing.T, i int) {
 	t.Helper()
-	time.Sleep(2 * time.Millisecond) // past the 1ms debounce
+	// Past the 1ms debounce. Steps run faster than real time, and every
+	// accepted update stamps the counter strictly later than the previous
+	// one, so a served upstream's stamp can run ahead of the clock.
+	for !n.pollers[i].latestBlockShared.IsStale(time.Millisecond) {
+		time.Sleep(time.Millisecond)
+	}
 	_, err := n.pollers[i].PollLatestBlockNumber(context.Background())
-	require.NoError(t, err)
+	if !n.ups[i].down.Load() {
+		require.NoError(t, err)
+	}
 }
 
 // lag is the block-head lag a network-scope selection policy reads.
@@ -218,21 +231,29 @@ func TestStatePoller_FrozenPolledUpstreamCrossesLagGateWithinOnePollInterval(t *
 		"a frozen upstream must be flagged within one poll interval of its real lag crossing the gate")
 }
 
-// An upstream that keeps serving traffic while its head stays put is observed
-// on every response, not just every poll: its lag must track the chain as
-// closely as when every block was counted against it.
-func TestStatePoller_FrozenServedUpstreamCrossesLagGateWithoutWaitingForPoll(t *testing.T) {
+// An upstream that keeps serving traffic while its head stays put reports no
+// new head, so nothing re-records its lag between polls. Its next poll
+// observes the stale head, at the latest one poll interval after its real lag
+// crosses the gate.
+func TestStatePoller_FrozenServedUpstreamCrossesLagGateWithinOnePollInterval(t *testing.T) {
 	n := newSimNetwork(t, "served-frozen", "served-b", "served-c")
 
+	const freezeStep = 35
 	crossedAt, flaggedAt := 0, 0
-	for step := 1; step <= 2*simPollEvery; step++ {
+	for step := 1; step <= 4*simPollEvery; step++ {
 		n.chain.head.Add(1)
-		if step == 5 {
+		if step == freezeStep {
 			n.ups[0].freeze()
 		}
 		n.serve(0)
 		n.serve(1)
 		n.serve(2)
+		if step%simPollEvery == 0 {
+			n.poll(t, 0)
+		}
+		if step < freezeStep {
+			continue
+		}
 		if crossedAt == 0 && n.chain.head.Load()-n.ups[0].nodeHead() > simLagGate {
 			crossedAt = step
 		}
@@ -243,6 +264,44 @@ func TestStatePoller_FrozenServedUpstreamCrossesLagGateWithoutWaitingForPoll(t *
 
 	require.NotZero(t, crossedAt)
 	require.NotZero(t, flaggedAt, "a frozen upstream that keeps answering must be reported as lagging")
-	require.LessOrEqual(t, flaggedAt-crossedAt, 1,
-		"responses re-observe the frozen head; lag must not wait for the next poll")
+	require.LessOrEqual(t, flaggedAt-crossedAt, simPollEvery,
+		"a frozen upstream must be flagged within one poll interval of its real lag crossing the gate")
+}
+
+// An upstream whose polls fail (node down, circuit breaker open) observes no
+// new head. Each failed poll records its last known head against the current
+// network head, so it is flagged within one poll interval of that head
+// falling past the gate, instead of keeping the lag of its last good poll.
+func TestStatePoller_UpstreamWithFailingPollsCrossesLagGateWithinOnePollInterval(t *testing.T) {
+	n := newSimNetwork(t, "served-a", "served-b", "polled")
+
+	const downStep = 35
+	var lastKnown int64
+	crossedAt, flaggedAt := 0, 0
+	for step := 1; step <= 4*simPollEvery; step++ {
+		n.chain.head.Add(1)
+		if step == downStep {
+			lastKnown = n.ups[2].nodeHead()
+			n.ups[2].goDown()
+		}
+		n.serve(0)
+		n.serve(1)
+		if step%simPollEvery == 0 {
+			n.poll(t, 2)
+		}
+		if step < downStep {
+			continue
+		}
+		if crossedAt == 0 && n.chain.head.Load()-lastKnown > simLagGate {
+			crossedAt = step
+		}
+		if flaggedAt == 0 && n.lag(2) > simLagGate {
+			flaggedAt = step
+		}
+	}
+
+	require.NotZero(t, crossedAt)
+	require.NotZero(t, flaggedAt, "an upstream whose polls fail must be reported as lagging")
+	require.LessOrEqual(t, flaggedAt-crossedAt, simPollEvery,
+		"failed polls must re-record its last known head within one poll interval")
 }
