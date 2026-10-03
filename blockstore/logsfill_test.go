@@ -383,3 +383,209 @@ func TestMemoryLogsFillStore_TTLAndEviction(t *testing.T) {
 	_, err = s.GetBlockLogs(t.Context(), other, 7)
 	require.ErrorIs(t, err, ErrNotFound, "scopes are isolated")
 }
+
+// lfLockStore is an lfStore shared by several LogsFillers (one per simulated
+// replica) that also implements LogsFillLocker like the Redis store does.
+type lfLockStore struct {
+	*lfStore
+	lmu       sync.Mutex
+	locks     map[string]string
+	nextToken int
+	tryCalls  atomic.Int64
+	lockErr   error
+	heldErr   error
+}
+
+func newLfLockStore() *lfLockStore {
+	return &lfLockStore{lfStore: newLfStore(), locks: map[string]string{}}
+}
+
+func lfLockKey(from, to int64) string { return fmt.Sprintf("%d-%d", from, to) }
+
+func (s *lfLockStore) TryLockFill(_ context.Context, _ Scope, from, to int64, _ time.Duration) (func(context.Context), bool, error) {
+	s.tryCalls.Add(1)
+	s.lmu.Lock()
+	defer s.lmu.Unlock()
+	if s.lockErr != nil {
+		return nil, false, s.lockErr
+	}
+	key := lfLockKey(from, to)
+	if _, held := s.locks[key]; held {
+		return nil, false, nil
+	}
+	s.nextToken++
+	token := fmt.Sprint(s.nextToken)
+	s.locks[key] = token
+	return func(context.Context) {
+		s.lmu.Lock()
+		defer s.lmu.Unlock()
+		if s.locks[key] == token {
+			delete(s.locks, key)
+		}
+	}, true, nil
+}
+
+func (s *lfLockStore) FillLocked(_ context.Context, _ Scope, from, to int64) (bool, error) {
+	s.lmu.Lock()
+	defer s.lmu.Unlock()
+	if s.heldErr != nil {
+		return false, s.heldErr
+	}
+	_, held := s.locks[lfLockKey(from, to)]
+	return held, nil
+}
+
+// hold takes the range lock as an external peer would; the returned func
+// releases it.
+func (s *lfLockStore) hold(t *testing.T, from, to int64) func() {
+	t.Helper()
+	release, ok, err := s.TryLockFill(t.Context(), Scope{}, from, to, time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	return func() { release(context.Background()) }
+}
+
+func newPeerFiller(store LogsFillStore, f *lfFetcher, latest, finalized int64, peerWait time.Duration) *LogsFiller {
+	lf := newTestFiller(store, f, latest, finalized)
+	lf.opt.PeerWait = peerWait
+	return lf
+}
+
+func TestLogsFill_PeerReplicasShareOneFetch(t *testing.T) {
+	store := newLfLockStore()
+	fetch := chainFetcher(t, lfChainLogs())
+	fetch.gate = make(chan struct{})
+	replicas := []*LogsFiller{
+		newPeerFiller(store, fetch, 200, 150, 5*time.Second),
+		newPeerFiller(store, fetch, 200, 150, 5*time.Second),
+	}
+	filters := []string{`{}`, fmt.Sprintf(`{"address":%q}`, lfAddrA), fmt.Sprintf(`{"topics":[%q]}`, lfTopicX)}
+	want := [][]string{
+		{"100:0", "100:1", "102:0", "102:1", "103:0"},
+		{"100:0", "102:0", "102:1"},
+		{"100:0", "102:1", "103:0"},
+	}
+	const n = 24
+	var wg sync.WaitGroup
+	results := make([]LogsFillResult, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = replicas[i%2].Serve(context.Background(), 100, 103, 0, mustFilter(t, filters[i%len(filters)]))
+		}(i)
+	}
+	require.Eventually(t, func() bool { return fetch.calls.Load() == 1 }, time.Second, time.Millisecond)
+	time.Sleep(150 * time.Millisecond) // the other replica is now waiting on the lock
+	close(fetch.gate)
+	wg.Wait()
+
+	require.EqualValues(t, 1, fetch.calls.Load(), "one upstream fetch across both replicas")
+	var fills, peerHits int
+	for i, r := range results {
+		require.True(t, r.OK, "request %d: %s", i, r.Reason)
+		require.Equal(t, want[i%len(filters)], logIDs(t, r.Logs), "request %d", i)
+		switch {
+		case r.Outcome == LogsFillFill:
+			fills++
+		case r.Outcome == LogsFillHit && r.Reason == LogsFillReasonPeerFill:
+			peerHits++
+		}
+	}
+	require.Equal(t, n/2, fills, "the lock holder's replica serves its callers from its own fill")
+	require.Equal(t, n/2, peerHits, "the waiting replica serves from the peer's stored entries")
+	ok, err := store.FillLocked(t.Context(), Scope{}, 100, 103)
+	require.NoError(t, err)
+	require.False(t, ok, "the lock is released after the fill")
+}
+
+func TestLogsFill_PeerNeverCompletesFallsBackAfterPeerWait(t *testing.T) {
+	store := newLfLockStore()
+	defer store.hold(t, 100, 103)()
+	fetch := chainFetcher(t, lfChainLogs())
+	const peerWait = 300 * time.Millisecond
+	f := newPeerFiller(store, fetch, 200, 150, peerWait)
+
+	start := time.Now()
+	res := f.Serve(t.Context(), 100, 103, 0, nil)
+	elapsed := time.Since(start)
+
+	require.True(t, res.OK)
+	require.Equal(t, LogsFillFill, res.Outcome)
+	require.Equal(t, LogsFillReasonPeerTimeout, res.Reason)
+	require.EqualValues(t, 1, fetch.calls.Load(), "the waiter fetches itself")
+	require.GreaterOrEqual(t, elapsed, peerWait)
+	require.Less(t, elapsed, peerWait+250*time.Millisecond, "latency is bounded by peerWait")
+}
+
+func TestLogsFill_PeerLeavesTipUnstoredWaiterDoesNotWaitOut(t *testing.T) {
+	// latest=200, guard=2: the peer's fill of 195..200 deliberately leaves
+	// the empty heights 199 and 200 unstored.
+	store := newLfLockStore()
+	logs := []map[string]interface{}{lfLog(196, 0, lfAddrA)}
+	peerFetch := chainFetcher(t, logs)
+	peerFetch.gate = make(chan struct{})
+	const peerWait = 5 * time.Second
+	peer := newPeerFiller(store, peerFetch, 200, 190, peerWait)
+	waiterFetch := chainFetcher(t, logs)
+	waiter := newPeerFiller(store, waiterFetch, 200, 190, peerWait)
+
+	peerDone := make(chan LogsFillResult, 1)
+	go func() { peerDone <- peer.Serve(context.Background(), 195, 200, 0, nil) }()
+	require.Eventually(t, func() bool { return peerFetch.calls.Load() == 1 }, time.Second, time.Millisecond)
+
+	start := time.Now()
+	waiterDone := make(chan LogsFillResult, 1)
+	go func() { waiterDone <- waiter.Serve(context.Background(), 195, 200, 0, nil) }()
+	time.Sleep(100 * time.Millisecond)
+	close(peerFetch.gate)
+
+	require.True(t, (<-peerDone).OK)
+	res := <-waiterDone
+	elapsed := time.Since(start)
+	require.False(t, store.has(200), "the peer left the empty tip unstored")
+	require.True(t, res.OK)
+	require.Equal(t, LogsFillFill, res.Outcome)
+	require.Equal(t, LogsFillReasonPeerIncomplete, res.Reason)
+	require.Equal(t, []string{"196:0"}, logIDs(t, res.Logs))
+	require.EqualValues(t, 1, waiterFetch.calls.Load(), "missing heights are fetched locally")
+	require.Less(t, elapsed, time.Second, "the waiter stops when the peer releases, not at peerWait")
+}
+
+func TestLogsFill_LockErrorsFailOpen(t *testing.T) {
+	t.Run("acquire error", func(t *testing.T) {
+		store := newLfLockStore()
+		store.lockErr = errors.New("redis down")
+		fetch := chainFetcher(t, lfChainLogs())
+		f := newPeerFiller(store, fetch, 200, 150, time.Second)
+		res := f.Serve(t.Context(), 100, 103, 0, nil)
+		require.True(t, res.OK)
+		require.Equal(t, LogsFillFill, res.Outcome)
+		require.Equal(t, LogsFillReasonLockError, res.Reason)
+		require.EqualValues(t, 1, fetch.calls.Load())
+	})
+	t.Run("poll error while waiting", func(t *testing.T) {
+		store := newLfLockStore()
+		defer store.hold(t, 100, 103)()
+		store.heldErr = errors.New("redis down")
+		fetch := chainFetcher(t, lfChainLogs())
+		f := newPeerFiller(store, fetch, 200, 150, 5*time.Second)
+		start := time.Now()
+		res := f.Serve(t.Context(), 100, 103, 0, nil)
+		require.True(t, res.OK)
+		require.Equal(t, LogsFillReasonLockError, res.Reason)
+		require.EqualValues(t, 1, fetch.calls.Load())
+		require.Less(t, time.Since(start), time.Second, "a poll error does not wait out peerWait")
+	})
+}
+
+func TestLogsFill_PeerWaitZeroDisablesLocking(t *testing.T) {
+	store := newLfLockStore()
+	fetch := chainFetcher(t, lfChainLogs())
+	f := newPeerFiller(store, fetch, 200, 150, 0)
+	res := f.Serve(t.Context(), 100, 103, 0, nil)
+	require.True(t, res.OK)
+	require.Equal(t, LogsFillFill, res.Outcome)
+	require.Empty(t, res.Reason)
+	require.Zero(t, store.tryCalls.Load(), "no lock with peerWait=0")
+}

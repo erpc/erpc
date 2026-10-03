@@ -73,6 +73,11 @@ type EvmBlockStoreLogsFillConfig struct {
 	// MemoryMaxBytes bounds the in-memory store used when no connectorId is
 	// configured. Default 64MB.
 	MemoryMaxBytes int64 `yaml:"memoryMaxBytes,omitempty" json:"memoryMaxBytes,omitempty"`
+	// PeerWait (connectorId only) is the longest a miss waits for another
+	// replica already filling the same range (a short Redis lock per range)
+	// before fetching itself. Waiters stop as soon as the peer finishes.
+	// 0 disables cross-replica coalescing. Default 1.5s.
+	PeerWait *Duration `yaml:"peerWait,omitempty" json:"peerWait,omitempty" tstype:"Duration"`
 }
 
 func (c *EvmBlockStoreLogsFillConfig) SetDefaults() {
@@ -90,6 +95,14 @@ func (c *EvmBlockStoreLogsFillConfig) SetDefaults() {
 	}
 	if c.MemoryMaxBytes == 0 {
 		c.MemoryMaxBytes = 64 << 20
+	}
+	if c.PeerWait == nil {
+		// Caps a waiter's added latency when a peer replica's fill is slow
+		// or stuck. A small unfiltered eth_getLogs normally completes well
+		// inside it and waiters return as soon as the peer releases its
+		// lock, so it is paid in full only when the peer misbehaves. It
+		// stays far below typical client timeouts.
+		c.PeerWait = Duration(1500 * time.Millisecond).Ptr()
 	}
 }
 
@@ -111,6 +124,9 @@ func (c *EvmBlockStoreLogsFillConfig) Validate() error {
 	}
 	if c.MemoryMaxBytes < 1<<20 {
 		return fmt.Errorf("evm.blockStore.logsFill.memoryMaxBytes must be at least 1MB")
+	}
+	if c.PeerWait != nil && (*c.PeerWait < 0 || *c.PeerWait > Duration(time.Minute)) {
+		return fmt.Errorf("evm.blockStore.logsFill.peerWait must be within 0..1m")
 	}
 	return nil
 }

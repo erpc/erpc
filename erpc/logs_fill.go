@@ -2,6 +2,8 @@ package erpc
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,12 +23,18 @@ import (
 func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockStoreConfig, scope blockstore.Scope) error {
 	lf := hc.LogsFill
 	var store blockstore.LogsFillStore
+	// Cross-replica fill locking needs the shared store; the in-memory store
+	// is per replica and keeps the singleflight-only behavior.
+	var peerWait time.Duration
 	if hc.ConnectorId != "" {
 		s, err := nr.blockStoreStore(hc)
 		if err != nil {
 			return err
 		}
 		store = s.(*blockStoreConnectorStore)
+		if lf.PeerWait != nil {
+			peerWait = lf.PeerWait.Duration()
+		}
 	} else {
 		store = blockstore.NewMemoryLogsFillStore(lf.MemoryMaxBytes)
 	}
@@ -47,6 +55,7 @@ func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockSt
 		EmptyTipGuard:  lf.EmptyTipGuard,
 		FetchTimeout:   hc.FetchTimeout.Duration(),
 		MaxEntryBytes:  hc.MaxBlockBytes,
+		PeerWait:       peerWait,
 	}, store, fetch, network.EvmHighestLatestBlockNumber, network.EvmHighestFinalizedBlockNumber)
 	return nil
 }
@@ -260,4 +269,66 @@ func (s *blockStoreConnectorStore) PutBlockLogs(ctx context.Context, scope block
 		return fmt.Errorf("encode logs fill entry: %w", err)
 	}
 	return s.connector.Set(ctx, partition, logsFillRangeKey(entry.Number), value, &ttl)
+}
+
+var _ blockstore.LogsFillLocker = (*blockStoreConnectorStore)(nil)
+
+func (s *blockStoreConnectorStore) logsFillLockKey(scope blockstore.Scope, from, to int64) (string, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s:fill-lock/%d-%d", partition, from, to), nil
+}
+
+// TryLockFill takes a token-fenced SET NX PX lock on one fill range. release
+// deletes it only while the token still matches, so an expired lock that a
+// peer has since re-acquired is never removed.
+func (s *blockStoreConnectorStore) TryLockFill(ctx context.Context, scope blockstore.Scope, from, to int64, ttl time.Duration) (func(context.Context), bool, error) {
+	if ttl < time.Millisecond {
+		return nil, false, fmt.Errorf("logs fill lock TTL must be positive")
+	}
+	client, err := s.redisClient()
+	if err != nil {
+		return nil, false, err
+	}
+	key, err := s.logsFillLockKey(scope, from, to)
+	if err != nil {
+		return nil, false, err
+	}
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return nil, false, fmt.Errorf("generate logs fill lock token: %w", err)
+	}
+	token := hex.EncodeToString(raw[:])
+	acquired, err := client.SetNX(ctx, key, token, ttl).Result()
+	if err != nil {
+		return nil, false, fmt.Errorf("acquire logs fill lock: %w", err)
+	}
+	if !acquired {
+		return nil, false, nil
+	}
+	release := func(ctx context.Context) {
+		const script = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`
+		// Best effort: on failure the lock expires after ttl and waiters
+		// fall back at peerWait.
+		_ = client.Eval(ctx, script, []string{key}, token).Err()
+	}
+	return release, true, nil
+}
+
+func (s *blockStoreConnectorStore) FillLocked(ctx context.Context, scope blockstore.Scope, from, to int64) (bool, error) {
+	client, err := s.redisClient()
+	if err != nil {
+		return false, err
+	}
+	key, err := s.logsFillLockKey(scope, from, to)
+	if err != nil {
+		return false, err
+	}
+	n, err := client.Exists(ctx, key).Result()
+	if err != nil {
+		return false, fmt.Errorf("check logs fill lock: %w", err)
+	}
+	return n > 0, nil
 }

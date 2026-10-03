@@ -2176,6 +2176,13 @@ export interface EvmBlockStoreLogsFillConfig {
    * configured. Default 64MB.
    */
   memoryMaxBytes?: number /* int64 */;
+  /**
+   * PeerWait (connectorId only) is the longest a miss waits for another
+   * replica already filling the same range (a short Redis lock per range)
+   * before fetching itself. Waiters stop as soon as the peer finishes.
+   * 0 disables cross-replica coalescing. Default 1.5s.
+   */
+  peerWait?: Duration;
 }
 /**
  * EvmBlockStoreHistoricalConfig configures the independent finalized-block and complete-log cache.

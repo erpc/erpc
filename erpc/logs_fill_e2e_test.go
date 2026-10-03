@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/blockstore"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
@@ -186,4 +187,64 @@ func TestHttp_LogsFill_ConcurrentRequestsCoalesce(t *testing.T) {
 		}
 		require.Equal(t, want, c, "request %d", i)
 	}
+}
+
+// Two eRPC instances ("replicas") with the same config share one Redis and one
+// upstream. Concurrent misses for one range on both make exactly one
+// unfiltered upstream call: the fill lock holder fetches, the other replica
+// waits for it and serves the stored entries.
+func TestHttp_LogsFill_ReplicasShareOneUpstreamCallViaRedis(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 120)
+	t.Cleanup(up.Close)
+	up.unfilteredLogDelay.Store(int64(300 * time.Millisecond))
+	ns := fmt.Sprintf("logsfill-peer-%d", time.Now().UnixNano())
+	newReplica := func() *logsFillFixture {
+		hc := &common.EvmBlockStoreConfig{
+			Namespace:   ns,
+			ConnectorId: "logsfill-redis",
+			LogsFill:    common.EvmBlockStoreLogsFillConfig{Enabled: true, UnfinalizedTTL: common.Duration(time.Minute)},
+		}
+		cfg := blockStoreTestConfig(up.URL(), hc)
+		cfg.Server.WebSocket = nil
+		cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{Connectors: []*common.ConnectorConfig{{
+			Id: hc.ConnectorId, Driver: common.DriverRedis,
+			Redis: &common.RedisConnectorConfig{URI: "redis://" + blockStoreTestRedis()},
+		}}}}
+		send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
+		t.Cleanup(shutdown)
+		project, err := instance.GetProject("test_project")
+		require.NoError(t, err)
+		network, err := project.GetNetwork(t.Context(), "evm:123")
+		require.NoError(t, err)
+		require.NotNil(t, network.logsFiller)
+		require.Eventually(t, func() bool {
+			return network.EvmHighestLatestBlockNumber(t.Context()) >= 120
+		}, 10*time.Second, 20*time.Millisecond)
+		return &logsFillFixture{up: up, send: send, network: network}
+	}
+	replicas := []*logsFillFixture{newReplica(), newReplica()}
+
+	before := up.UnfilteredLogCalls()
+	peerHits := logsFillCounter("hit", blockstore.LogsFillReasonPeerFill)
+	filters := []string{"", fmt.Sprintf(`,"address":%q`, scriptedEmitter), fmt.Sprintf(`,"topics":[%q]`, scriptedTopicOdd)}
+	const n = 12
+	var wg sync.WaitGroup
+	counts := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			counts[i] = len(replicas[i%2].getLogs(t, 70, 75, filters[i%len(filters)]))
+		}(i)
+	}
+	wg.Wait()
+	require.Equal(t, before+1, up.UnfilteredLogCalls(), "one upstream call across both replicas")
+	for i, c := range counts {
+		want := 6
+		if i%len(filters) == 2 {
+			want = 3
+		}
+		require.Equal(t, want, c, "request %d", i)
+	}
+	require.Greater(t, logsFillCounter("hit", blockstore.LogsFillReasonPeerFill), peerHits, "the waiting replica served the peer's fill")
 }

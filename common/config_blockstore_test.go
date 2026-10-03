@@ -78,7 +78,13 @@ func TestEvmBlockStoreLogsFillConfig_DefaultsAndValidation(t *testing.T) {
 	require.Equal(t, Duration(0), store.LogsFill.UnfinalizedTTL, "0 = derived from block time")
 	require.Equal(t, int64(2), store.LogsFill.EmptyTipGuard)
 	require.Equal(t, int64(64<<20), store.LogsFill.MemoryMaxBytes)
+	require.Equal(t, Duration(1500*time.Millisecond).Ptr(), store.LogsFill.PeerWait)
 	require.NoError(t, store.Validate())
+
+	disabled := &EvmBlockStoreConfig{LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true, PeerWait: Duration(0).Ptr()}}
+	disabled.SetDefaults()
+	require.Equal(t, Duration(0), *disabled.LogsFill.PeerWait, "explicit 0 disables cross-replica locking")
+	require.NoError(t, disabled.Validate())
 
 	standalone := &EvmBlockStoreConfig{LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true}}
 	standalone.SetDefaults()
@@ -97,6 +103,8 @@ func TestEvmBlockStoreLogsFillConfig_DefaultsAndValidation(t *testing.T) {
 		{"unfinalizedTtl", func(c *EvmBlockStoreLogsFillConfig) { c.UnfinalizedTTL = -1 }},
 		{"emptyTipGuard", func(c *EvmBlockStoreLogsFillConfig) { c.EmptyTipGuard = -1 }},
 		{"memoryMaxBytes", func(c *EvmBlockStoreLogsFillConfig) { c.MemoryMaxBytes = 1024 }},
+		{"peerWait", func(c *EvmBlockStoreLogsFillConfig) { c.PeerWait = Duration(-1).Ptr() }},
+		{"peerWait", func(c *EvmBlockStoreLogsFillConfig) { c.PeerWait = Duration(2 * time.Minute).Ptr() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := &EvmBlockStoreConfig{LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true}}

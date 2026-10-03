@@ -50,7 +50,38 @@ type LogsFillOptions struct {
 	FetchTimeout time.Duration
 	// MaxEntryBytes skips storing a single height whose logs exceed it.
 	MaxEntryBytes int64
+	// PeerWait bounds how long a miss waits for another replica that holds
+	// the fill lock for the same range. 0 disables cross-replica locking.
+	// Only used when the store implements LogsFillLocker.
+	PeerWait time.Duration
 }
+
+// LogsFillLocker is optionally implemented by a shared LogsFillStore to let
+// replicas coalesce fills of the same range. The lock holder stores its
+// entries before releasing, so "lock no longer held" doubles as the peer's
+// completion signal (successful, failed or expired alike).
+type LogsFillLocker interface {
+	// TryLockFill acquires the range's fill lock for ttl. ok=false means
+	// another holder has it. release is non-nil only when ok.
+	TryLockFill(ctx context.Context, scope Scope, from, to int64, ttl time.Duration) (release func(context.Context), ok bool, err error)
+	// FillLocked reports whether some holder currently has the range's lock.
+	FillLocked(ctx context.Context, scope Scope, from, to int64) (bool, error)
+}
+
+// Poll interval while waiting for a peer replica's fill.
+const logsFillPeerPoll = 50 * time.Millisecond
+
+// Maximum fill lock TTL: a crashed holder blocks peers for at most
+// min(FetchTimeout, this), and waiters never wait longer than that anyway.
+const logsFillMaxLockTTL = 10 * time.Second
+
+// Reasons attached to fills and hits under cross-replica coordination.
+const (
+	LogsFillReasonPeerFill       = "peer_fill"
+	LogsFillReasonPeerTimeout    = "peer_timeout"
+	LogsFillReasonPeerIncomplete = "peer_incomplete"
+	LogsFillReasonLockError      = "lock_error"
+)
 
 // Outcome labels for LogsFiller.Serve.
 const (
@@ -140,9 +171,7 @@ func (f *LogsFiller) Serve(ctx context.Context, from, to, maxRange int64, filter
 	ch := f.sf.DoChan(key, func() (interface{}, error) {
 		// Detach from the first caller so its cancellation cannot fail
 		// coalesced followers; bound the shared work instead.
-		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), f.opt.FetchTimeout)
-		defer cancel()
-		return f.fill(fctx, from, to, latest)
+		return f.coordinatedFill(context.WithoutCancel(ctx), from, to, latest)
 	})
 	select {
 	case <-ctx.Done():
@@ -159,12 +188,98 @@ func (f *LogsFiller) Serve(ctx context.Context, from, to, maxRange int64, filter
 			}
 			return LogsFillResult{Outcome: LogsFillFallback, Reason: reason}
 		}
-		logs, err := filterBlockLogs(res.Val.([]*BlockLogs), filter)
+		fr := res.Val.(fillResult)
+		logs, err := filterBlockLogs(fr.entries, filter)
 		if err != nil {
 			return LogsFillResult{Outcome: LogsFillFallback, Reason: "parse_error"}
 		}
-		return LogsFillResult{Logs: logs, OK: true, Outcome: LogsFillFill}
+		if fr.peer {
+			return LogsFillResult{Logs: logs, OK: true, Outcome: LogsFillHit, Reason: LogsFillReasonPeerFill}
+		}
+		return LogsFillResult{Logs: logs, OK: true, Outcome: LogsFillFill, Reason: fr.reason}
 	}
+}
+
+type fillResult struct {
+	entries []*BlockLogs
+	// peer: entries were stored by another replica's fill.
+	peer   bool
+	reason string
+}
+
+// coordinatedFill runs one replica's fill of [from,to]. With a shared
+// LogsFillLocker it first takes the range's fill lock; if another replica
+// holds it, it waits up to PeerWait for that replica to release (it stores
+// before releasing) and serves the stored entries. Any lock error, wait
+// timeout or incomplete peer result falls back to an unlocked local fill, so
+// correctness and latency never depend on the peer.
+func (f *LogsFiller) coordinatedFill(ctx context.Context, from, to, latest int64) (fillResult, error) {
+	locker, _ := f.store.(LogsFillLocker)
+	if locker == nil || f.opt.PeerWait <= 0 {
+		return f.localFill(ctx, from, to, latest, "")
+	}
+	lockTTL := min(f.opt.FetchTimeout, logsFillMaxLockTTL)
+	lctx, cancel := context.WithTimeout(ctx, lockTTL)
+	release, ok, err := locker.TryLockFill(lctx, f.opt.Scope, from, to, lockTTL)
+	cancel()
+	if err != nil {
+		return f.localFill(ctx, from, to, latest, LogsFillReasonLockError)
+	}
+	if ok {
+		defer func() {
+			rctx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			release(rctx)
+		}()
+		// A peer may have finished between our lookup and the lock.
+		if entries, ok := f.lookup(ctx, from, to); ok {
+			return fillResult{entries: entries, peer: true}, nil
+		}
+		return f.localFill(ctx, from, to, latest, "")
+	}
+	reason := f.waitForPeer(ctx, locker, from, to, min(f.opt.PeerWait, lockTTL))
+	if entries, ok := f.lookup(ctx, from, to); ok {
+		return fillResult{entries: entries, peer: true}, nil
+	}
+	return f.localFill(ctx, from, to, latest, reason)
+}
+
+// waitForPeer polls the range's lock until it is released or wait elapses and
+// returns the fallback reason to use if the stored entries turn out
+// incomplete.
+func (f *LogsFiller) waitForPeer(ctx context.Context, locker LogsFillLocker, from, to int64, wait time.Duration) string {
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	tick := time.NewTicker(logsFillPeerPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			return LogsFillReasonPeerTimeout
+		case <-tick.C:
+		}
+		pctx, cancel := context.WithTimeout(ctx, wait)
+		held, err := locker.FillLocked(pctx, f.opt.Scope, from, to)
+		cancel()
+		if err != nil {
+			return LogsFillReasonLockError
+		}
+		if !held {
+			// The peer stored what it could (the empty-tip guard, size and
+			// TTL rules may leave heights unstored) and released.
+			return LogsFillReasonPeerIncomplete
+		}
+	}
+}
+
+func (f *LogsFiller) localFill(ctx context.Context, from, to, latest int64, reason string) (fillResult, error) {
+	fctx, cancel := context.WithTimeout(ctx, f.opt.FetchTimeout)
+	defer cancel()
+	entries, err := f.fill(fctx, from, to, latest)
+	if err != nil {
+		return fillResult{}, err
+	}
+	return fillResult{entries: entries, reason: reason}, nil
 }
 
 // lookup returns entries for every height in [from,to], or false on any miss
