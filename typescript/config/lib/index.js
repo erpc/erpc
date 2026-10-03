@@ -57,8 +57,6 @@ __export(index_exports, {
   NETWORK_METHOD: () => NETWORK_METHOD,
   NETWORK_METHOD_FINALITY: () => NETWORK_METHOD_FINALITY,
   REALTIME: () => REALTIME,
-  RateLimitCountModeCredit: () => RateLimitCountModeCredit,
-  RateLimitCountModeRequest: () => RateLimitCountModeRequest,
   RateLimitPeriodDay: () => RateLimitPeriodDay,
   RateLimitPeriodHour: () => RateLimitPeriodHour,
   RateLimitPeriodMinute: () => RateLimitPeriodMinute,
@@ -85,8 +83,6 @@ var EvmSyncingStateUnknown = 0;
 var EvmSyncingStateSyncing = 1;
 var EvmSyncingStateNotSyncing = 2;
 var UpstreamTypeSvm = "svm";
-var RateLimitCountModeRequest = "request";
-var RateLimitCountModeCredit = "credit";
 var ConsensusLowParticipantsBehaviorReturnError = "returnError";
 var ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult = "acceptMostCommonValidResult";
 var ConsensusLowParticipantsBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
@@ -175,8 +171,6 @@ var createConfig = (cfg) => {
   NETWORK_METHOD,
   NETWORK_METHOD_FINALITY,
   REALTIME,
-  RateLimitCountModeCredit,
-  RateLimitCountModeRequest,
   RateLimitPeriodDay,
   RateLimitPeriodHour,
   RateLimitPeriodMinute,

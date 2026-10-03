@@ -210,10 +210,6 @@ and metrics from request one. The [default selection policy](/config/projects/se
 needs no configuration — it already excludes unhealthy upstreams and honors the
 `tier:fallback` tag.
 
-## Head-cache and WebSocket example
-
-`erpc.blockstore.example.yaml` in the repo root is a minimal config demonstrating a Redis-backed [head cache](/config/database/blockstore), cold prefill, and [WebSocket](/config/websocket) subscriptions. Set `REDIS_URL` and `RPC_URL` before starting eRPC.
-
 ## Complete example — all sections
 
 The annotated example below mirrors `erpc.dist.yaml` and `erpc.dist.ts` from the repo root. Read the inline comments for the reasoning behind each value; detailed field references live in the per-section docs linked at the bottom.

@@ -354,7 +354,7 @@ Static map of 31 chains. URL: `https://{netName}.infura.io/v3/{apiKey}`. Error m
 
 #### llama
 
-Static map of 6 chains (eth, arbitrum, base, binance, optimism, polygon). URL: `https://{netName}.llamarpc.com/{apiKey}`. OwnsUpstream matches `.llamarpc.com` domain only (no `llama://` scheme check — shorthand still works because conversion runs first). Cloudflare rate-limit text (`code: 1015`) in a JSON-RPC error message or a plaintext response body → `ErrEndpointCapacityExceeded` for this vendor. Other malformed responses retain the normal error fallback.
+Static map of 6 chains (eth, arbitrum, base, binance, optimism, polygon). URL: `https://{netName}.llamarpc.com/{apiKey}`. OwnsUpstream matches `.llamarpc.com` domain only (no `llama://` scheme check — shorthand still works because conversion runs first). Cloudflare rate-limit message (`code: 1015`) → `ErrEndpointCapacityExceeded`.
 
 | key | required | default |
 |---|---|---|

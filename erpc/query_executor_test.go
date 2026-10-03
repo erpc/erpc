@@ -336,11 +336,9 @@ func newTestUpstreamsRegistry(t *testing.T, networkID, method string, upstreams 
 		networkID: upstreams,
 	})
 	// Also populate the atomic snapshot so GetNetworkUpstreams' fast path works.
-	// Store into the field in place: copying a sync.Map trips go vet copylocks.
-	field := reflect.ValueOf(registry).Elem().FieldByName("networkUpstreamsAtomic")
-	require.True(t, field.IsValid(), "field networkUpstreamsAtomic must exist")
-	atomicMap := (*sync.Map)(unsafe.Pointer(field.UnsafeAddr()))
+	atomicMap := &sync.Map{}
 	atomicMap.Store(networkID, upstreams)
+	setUnexportedField(t, registry, "networkUpstreamsAtomic", *atomicMap)
 	return registry
 }
 
