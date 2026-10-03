@@ -44,6 +44,75 @@ type EvmBlockStoreConfig struct {
 	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
 	// Historical configures the independent cache for finalized blocks and complete logs.
 	Historical EvmBlockStoreHistoricalConfig `yaml:"historical,omitempty" json:"historical,omitempty"`
+	// LogsFill configures the standalone small-range eth_getLogs fill. It works
+	// without the live window (enabled) or historical cache.
+	LogsFill EvmBlockStoreLogsFillConfig `yaml:"logsFill,omitempty" json:"logsFill,omitempty"`
+}
+
+// EvmBlockStoreLogsFillConfig configures the small-range eth_getLogs fill: an
+// explicit-range request of at most MaxRange blocks is answered by locally
+// filtering per-block log lists that one unfiltered upstream eth_getLogs
+// filled. Stored in the blockStore connectorId (redis) when set, otherwise in a
+// bounded per-network in-memory cache.
+type EvmBlockStoreLogsFillConfig struct {
+	// Enabled opts into the fill. Default false.
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
+	// MaxRange is the widest (toBlock-fromBlock+1) range handled. Wider
+	// ranges take the normal path. Default 10.
+	MaxRange int64 `yaml:"maxRange,omitempty" json:"maxRange,omitempty"`
+	// FinalizedTTL is the lifetime of per-block entries at or below the
+	// network's finalized height. Default 1h.
+	FinalizedTTL Duration `yaml:"finalizedTtl,omitempty" json:"finalizedTtl,omitempty" tstype:"Duration"`
+	// UnfinalizedTTL is the lifetime of per-block entries above the finalized
+	// height. 0 (default) = one network block time clamped to 2s..12s, or 2s
+	// while the block time is unknown.
+	UnfinalizedTTL Duration `yaml:"unfinalizedTtl,omitempty" json:"unfinalizedTtl,omitempty" tstype:"Duration"`
+	// EmptyTipGuard: an unfinalized height with no logs is stored only when it
+	// is at least this many blocks below the network's latest head. Default 2.
+	EmptyTipGuard int64 `yaml:"emptyTipGuard,omitempty" json:"emptyTipGuard,omitempty"`
+	// MemoryMaxBytes bounds the in-memory store used when no connectorId is
+	// configured. Default 64MB.
+	MemoryMaxBytes int64 `yaml:"memoryMaxBytes,omitempty" json:"memoryMaxBytes,omitempty"`
+}
+
+func (c *EvmBlockStoreLogsFillConfig) SetDefaults() {
+	if c == nil {
+		return
+	}
+	if c.MaxRange == 0 {
+		c.MaxRange = 10
+	}
+	if c.FinalizedTTL == 0 {
+		c.FinalizedTTL = Duration(time.Hour)
+	}
+	if c.EmptyTipGuard == 0 {
+		c.EmptyTipGuard = 2
+	}
+	if c.MemoryMaxBytes == 0 {
+		c.MemoryMaxBytes = 64 << 20
+	}
+}
+
+func (c *EvmBlockStoreLogsFillConfig) Validate() error {
+	if c == nil || !c.Enabled {
+		return nil
+	}
+	if c.MaxRange < 1 || c.MaxRange > 1000 {
+		return fmt.Errorf("evm.blockStore.logsFill.maxRange must be within 1..1000")
+	}
+	if c.FinalizedTTL <= 0 {
+		return fmt.Errorf("evm.blockStore.logsFill.finalizedTtl must be positive")
+	}
+	if c.UnfinalizedTTL < 0 {
+		return fmt.Errorf("evm.blockStore.logsFill.unfinalizedTtl must not be negative")
+	}
+	if c.EmptyTipGuard < 1 {
+		return fmt.Errorf("evm.blockStore.logsFill.emptyTipGuard must be at least 1")
+	}
+	if c.MemoryMaxBytes < 1<<20 {
+		return fmt.Errorf("evm.blockStore.logsFill.memoryMaxBytes must be at least 1MB")
+	}
+	return nil
 }
 
 // EvmBlockStoreHistoricalConfig configures the independent finalized-block and complete-log cache.
@@ -59,6 +128,7 @@ func (c *EvmBlockStoreConfig) SetDefaults() {
 		return
 	}
 	c.Historical.SetDefaults()
+	c.LogsFill.SetDefaults()
 	if c.Depth == 0 {
 		c.Depth = 128
 	}
@@ -103,6 +173,12 @@ func (c *EvmBlockStoreConfig) Validate() error {
 	}
 	if err := c.Historical.Validate(); err != nil {
 		return err
+	}
+	if err := c.LogsFill.Validate(); err != nil {
+		return err
+	}
+	if c.LogsFill.Enabled && c.FetchTimeout <= 0 {
+		return fmt.Errorf("evm.blockStore.fetchTimeout must be positive")
 	}
 	if !c.Enabled && !c.Historical.Enabled {
 		return nil
@@ -215,6 +291,16 @@ func (c *WebSocketServerConfig) Validate() error {
 		return fmt.Errorf("server.webSocket.pingInterval must be positive")
 	}
 	return nil
+}
+
+// NeedsConnector reports whether ConnectorId must resolve to a redis
+// connector: the live window and historical cache require one; the logs fill
+// uses it only when set (otherwise it falls back to process memory).
+func (c *EvmBlockStoreConfig) NeedsConnector() bool {
+	if c == nil {
+		return false
+	}
+	return c.Enabled || c.Historical.Enabled || (c.LogsFill.Enabled && c.ConnectorId != "")
 }
 
 // ValidateConnector checks that ConnectorId references a redis connector in

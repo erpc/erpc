@@ -2075,8 +2075,8 @@ export interface EvmBlockStoreConfig {
   enabled?: boolean;
   /**
    * ConnectorId names a redis-driver connector declared under
-   * database.evmJsonRpcCache.connectors. Replicas share immutable,
-   * hash-addressed block/log payloads; each replica verifies its own head.
+   * database.evmJsonRpcCache.connectors. Fleet mode elects one lease holder to
+   * verify and publish a canonical snapshot; followers consume that snapshot.
    * Required.
    */
   connectorId?: string;
@@ -2132,6 +2132,50 @@ export interface EvmBlockStoreConfig {
    * Historical configures the independent cache for finalized blocks and complete logs.
    */
   historical?: EvmBlockStoreHistoricalConfig;
+  /**
+   * LogsFill configures the standalone small-range eth_getLogs fill. It works
+   * without the live window (enabled) or historical cache.
+   */
+  logsFill?: EvmBlockStoreLogsFillConfig;
+}
+/**
+ * EvmBlockStoreLogsFillConfig configures the small-range eth_getLogs fill: an
+ * explicit-range request of at most MaxRange blocks is answered by locally
+ * filtering per-block log lists that one unfiltered upstream eth_getLogs
+ * filled. Stored in the blockStore connectorId (redis) when set, otherwise in a
+ * bounded per-network in-memory cache.
+ */
+export interface EvmBlockStoreLogsFillConfig {
+  /**
+   * Enabled opts into the fill. Default false.
+   */
+  enabled?: boolean;
+  /**
+   * MaxRange is the widest (toBlock-fromBlock+1) range handled. Wider
+   * ranges take the normal path. Default 10.
+   */
+  maxRange?: number /* int64 */;
+  /**
+   * FinalizedTTL is the lifetime of per-block entries at or below the
+   * network's finalized height. Default 1h.
+   */
+  finalizedTtl?: Duration;
+  /**
+   * UnfinalizedTTL is the lifetime of per-block entries above the finalized
+   * height. 0 (default) = one network block time clamped to 2s..12s, or 2s
+   * while the block time is unknown.
+   */
+  unfinalizedTtl?: Duration;
+  /**
+   * EmptyTipGuard: an unfinalized height with no logs is stored only when it
+   * is at least this many blocks below the network's latest head. Default 2.
+   */
+  emptyTipGuard?: number /* int64 */;
+  /**
+   * MemoryMaxBytes bounds the in-memory store used when no connectorId is
+   * configured. Default 64MB.
+   */
+  memoryMaxBytes?: number /* int64 */;
 }
 /**
  * EvmBlockStoreHistoricalConfig configures the independent finalized-block and complete-log cache.

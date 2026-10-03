@@ -90,7 +90,7 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 	}
 	hc := nwCfg.Evm.BlockStore
 	historicalEnabled := hc.Historical.Enabled
-	if !hc.Enabled && !historicalEnabled {
+	if !hc.Enabled && !historicalEnabled && !hc.LogsFill.Enabled {
 		return nil
 	}
 	hc.SetDefaults()
@@ -108,6 +108,15 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 		return err
 	}
 	ns += ":" + fingerprint
+	if hc.LogsFill.Enabled {
+		scope := blockstore.Scope{Namespace: ns, ProjectId: network.projectId, NetworkId: network.networkId}
+		if err := nr.initLogsFill(network, hc, scope); err != nil {
+			return err
+		}
+	}
+	if !hc.Enabled && !historicalEnabled {
+		return nil
+	}
 	store, err := nr.blockStoreStore(hc)
 	if err != nil {
 		return err

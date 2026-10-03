@@ -39,6 +39,22 @@ type scriptedEvmUpstream struct {
 	rangeLogCalls     atomic.Int64
 	failBlockNumber   atomic.Bool
 	fullBlockDelay    atomic.Int64
+	// Logs-fill knobs: unfiltered range calls (no address/topics) are
+	// counted separately, can be delayed, failed, or marked removed.
+	unfilteredLogCalls atomic.Int64
+	unfilteredLogDelay atomic.Int64
+	failUnfilteredLogs atomic.Bool
+	removedUnfiltered  atomic.Bool
+	emptyLogHeights    map[int64]bool
+}
+
+func (u *scriptedEvmUpstream) UnfilteredLogCalls() int64 { return u.unfilteredLogCalls.Load() }
+func (u *scriptedEvmUpstream) SetEmptyLogs(heights ...int64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, h := range heights {
+		u.emptyLogHeights[h] = true
+	}
 }
 
 var scriptedEmitter = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
@@ -46,7 +62,7 @@ var scriptedTopicEven = "0x11111111111111111111111111111111111111111111111111111
 var scriptedTopicOdd = "0x2222222222222222222222222222222222222222222222222222222222222222"
 
 func newScriptedEvmUpstream(chainId, tip int64) *scriptedEvmUpstream {
-	u := &scriptedEvmUpstream{chainId: chainId, tip: tip, forks: map[int64]string{}}
+	u := &scriptedEvmUpstream{chainId: chainId, tip: tip, forks: map[int64]string{}, emptyLogHeights: map[int64]bool{}}
 	for i := int64(0); i <= tip; i++ {
 		u.forks[i] = "a"
 	}
@@ -211,6 +227,24 @@ func (u *scriptedEvmUpstream) handle(raw []byte) json.RawMessage {
 	}
 	c, _ := u.calls.LoadOrStore(req.Method, &atomic.Int64{})
 	c.(*atomic.Int64).Add(1)
+	unfiltered := false
+	if req.Method == "eth_getLogs" && len(req.Params) > 0 {
+		var flt map[string]interface{}
+		_ = json.Unmarshal(req.Params[0], &flt)
+		_, hasAddr := flt["address"]
+		_, hasTopics := flt["topics"]
+		_, hasHash := flt["blockHash"]
+		if !hasAddr && !hasTopics && !hasHash {
+			unfiltered = true
+			u.unfilteredLogCalls.Add(1)
+			time.Sleep(time.Duration(u.unfilteredLogDelay.Load()))
+			if u.failUnfilteredLogs.Load() {
+				b, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": req.Id,
+					"error": map[string]interface{}{"code": -32000, "message": "scripted unfiltered logs failure"}})
+				return b
+			}
+		}
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	var result interface{}
@@ -278,7 +312,13 @@ func (u *scriptedEvmUpstream) handle(raw []byte) json.RawMessage {
 			from := u.resolveLocked(fmt.Sprint(flt["fromBlock"]))
 			to := u.resolveLocked(fmt.Sprint(flt["toBlock"]))
 			for n := from; n <= to && n <= u.tip; n++ {
+				if u.emptyLogHeights[n] {
+					continue
+				}
 				l := u.logLocked(n)
+				if unfiltered && u.removedUnfiltered.Load() {
+					l["removed"] = true
+				}
 				if topics, ok := flt["topics"].([]interface{}); ok && len(topics) > 0 {
 					if t0, ok := topics[0].(string); ok && !strings.EqualFold(t0, l["topics"].([]string)[0]) {
 						continue

@@ -57,6 +57,9 @@ type Network struct {
 	// historicalBlockStore holds finalized payloads outside the live window.
 	historicalBlockStore *blockstore.Historical
 	historicalWarmSem    chan struct{}
+	// logsFiller answers small explicit-range eth_getLogs from per-block
+	// logs filled by one unfiltered upstream call (nil when disabled).
+	logsFiller *blockstore.LogsFiller
 
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
@@ -1863,6 +1866,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if n.blockStore != nil || n.historicalBlockStore != nil {
 		if resp, ok := n.tryServeBlockStore(ctx, req, method); ok {
 			forwardSpan.SetAttributes(attribute.Bool("blockstore.hit", true))
+			return resp, nil
+		}
+	}
+	if n.logsFiller != nil && method == "eth_getLogs" {
+		if resp, ok := n.tryServeLogsFill(ctx, req); ok {
+			forwardSpan.SetAttributes(attribute.Bool("blockstore.logs_fill", true))
 			return resp, nil
 		}
 	}

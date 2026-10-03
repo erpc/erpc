@@ -1,0 +1,263 @@
+package erpc
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/erpc/erpc/blockstore"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
+)
+
+// initLogsFill builds the standalone small-range eth_getLogs fill. It shares
+// the blockstore connector (redis) when connectorId is set, otherwise it uses
+// a bounded per-network in-memory store. It does not require the live window
+// or the historical cache.
+func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockStoreConfig, scope blockstore.Scope) error {
+	lf := hc.LogsFill
+	var store blockstore.LogsFillStore
+	if hc.ConnectorId != "" {
+		s, err := nr.blockStoreStore(hc)
+		if err != nil {
+			return err
+		}
+		store = s.(*blockStoreConnectorStore)
+	} else {
+		store = blockstore.NewMemoryLogsFillStore(lf.MemoryMaxBytes)
+	}
+	unfinalizedTTL := func() time.Duration {
+		if lf.UnfinalizedTTL > 0 {
+			return lf.UnfinalizedTTL.Duration()
+		}
+		return logsFillUnfinalizedTTL(network.EvmBlockTime())
+	}
+	fetch := func(ctx context.Context, from, to int64) (json.RawMessage, error) {
+		return network.fetchUnfilteredLogs(ctx, from, to)
+	}
+	network.logsFiller = blockstore.NewLogsFiller(blockstore.LogsFillOptions{
+		Scope:          scope,
+		MaxRange:       lf.MaxRange,
+		FinalizedTTL:   lf.FinalizedTTL.Duration(),
+		UnfinalizedTTL: unfinalizedTTL,
+		EmptyTipGuard:  lf.EmptyTipGuard,
+		FetchTimeout:   hc.FetchTimeout.Duration(),
+		MaxEntryBytes:  hc.MaxBlockBytes,
+	}, store, fetch, network.EvmHighestLatestBlockNumber, network.EvmHighestFinalizedBlockNumber)
+	return nil
+}
+
+// logsFillUnfinalizedTTL keeps an unfinalized entry for about one block: long
+// enough for every poller of the same recent range to share one fill, short
+// enough that a reorged height is wrong for at most one block interval. 2s
+// floor (sub-second chains still coalesce a polling burst), 12s ceiling (an
+// unknown or inflated block-time estimate cannot keep head data for minutes).
+func logsFillUnfinalizedTTL(blockTime time.Duration) time.Duration {
+	const floor, ceiling = 2 * time.Second, 12 * time.Second
+	return min(max(blockTime, floor), ceiling)
+}
+
+// fetchUnfilteredLogs performs one eth_getLogs{fromBlock,toBlock} through the
+// network's normal path (selection, failsafe, retries, integrity) while
+// bypassing the blockstore, the logs fill itself, and ordinary cache reads and
+// writes.
+func (n *Network) fetchUnfilteredLogs(ctx context.Context, from, to int64) (json.RawMessage, error) {
+	jrq := common.NewJsonRpcRequest("eth_getLogs", []interface{}{map[string]interface{}{
+		"fromBlock": fmt.Sprintf("0x%x", from),
+		"toBlock":   fmt.Sprintf("0x%x", to),
+	}})
+	if err := jrq.SetID(1); err != nil {
+		return nil, fmt.Errorf("set logs fill request id: %w", err)
+	}
+	rq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+	rq.ApplyDirectiveDefaults(n.cfg.DirectiveDefaults)
+	dirs := rq.Directives().Clone()
+	dirs.SkipCacheRead = "true"
+	rq.SetDirectives(dirs)
+	resp, err := n.Forward(withCacheWriteBypass(withBlockStoreBypass(ctx)), rq)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("empty logs fill response")
+	}
+	defer resp.Release()
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if jrr.Error != nil {
+		return nil, jrr.Error
+	}
+	return append(json.RawMessage(nil), jrr.GetResultBytes()...), nil
+}
+
+func (n *Network) logsFillMetric(outcome, reason string) {
+	telemetry.CounterHandle(telemetry.MetricBlockStoreLogsFillTotal, n.projectId, n.networkId, outcome, reason).Inc()
+}
+
+// tryServeLogsFill answers eth_getLogs with explicit hex fromBlock/toBlock
+// within logsFill.maxRange and at or below the network head. ok=false means
+// the caller forwards the original request unchanged.
+func (n *Network) tryServeLogsFill(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, bool) {
+	f := n.logsFiller
+	if f == nil || ctx.Value(blockStoreBypassKey{}) != nil {
+		return nil, false
+	}
+	if d := req.Directives(); d != nil && (d.IsInternal || d.UseUpstream != "" || d.IntegritySelector != "" || req.ShouldSkipCacheRead("")) {
+		n.logsFillMetric(blockstore.LogsFillSkipped, "directive")
+		return nil, false
+	}
+	if req.ParentRequestId() != nil || req.IsCompositeRequest() {
+		return nil, false
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return nil, false
+	}
+	jrq.RLock()
+	params := append([]interface{}(nil), jrq.Params...)
+	jrq.RUnlock()
+	from, to, filter, reason := parseLogsFillParams(params)
+	if reason != "" {
+		n.logsFillMetric(blockstore.LogsFillSkipped, reason)
+		return nil, false
+	}
+	// Never answer locally what the network would reject, and never make the
+	// unfiltered call wider than the upstream auto-splitting threshold.
+	maxRange := int64(0)
+	if n.upstreamsRegistry != nil {
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			if u == nil || u.Config() == nil || u.Config().Evm == nil {
+				continue
+			}
+			if th := u.Config().Evm.GetLogsAutoSplittingRangeThreshold; th > 0 && (maxRange == 0 || th < maxRange) {
+				maxRange = th
+			}
+		}
+	}
+	if evm := n.cfg.Evm; evm != nil {
+		if lim := evm.GetLogsMaxAllowedRange; lim > 0 && (maxRange == 0 || lim < maxRange) {
+			maxRange = lim
+		}
+		obj := params[0].(map[string]interface{})
+		if lim := evm.GetLogsMaxAllowedAddresses; lim > 0 {
+			if addrs, ok := obj["address"].([]interface{}); ok && int64(len(addrs)) > lim {
+				n.logsFillMetric(blockstore.LogsFillSkipped, "limit")
+				return nil, false
+			}
+		}
+		if lim := evm.GetLogsMaxAllowedTopics; lim > 0 {
+			if tps, ok := obj["topics"].([]interface{}); ok && len(tps) > 0 {
+				if t0, ok := tps[0].([]interface{}); ok && int64(len(t0)) > lim {
+					n.logsFillMetric(blockstore.LogsFillSkipped, "limit")
+					return nil, false
+				}
+			}
+		}
+	}
+
+	res := f.Serve(ctx, from, to, maxRange, filter)
+	reasonLabel := res.Reason
+	if reasonLabel == "" {
+		reasonLabel = "ok"
+	}
+	n.logsFillMetric(res.Outcome, reasonLabel)
+	if !res.OK {
+		return nil, false
+	}
+	jrr, err := common.NewJsonRpcResponse(req.ID(), res.Logs, nil)
+	if err != nil {
+		n.logsFillMetric(blockstore.LogsFillFallback, "encode_error")
+		return nil, false
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	resp.SetFromCache(res.Outcome == blockstore.LogsFillHit)
+	return resp, true
+}
+
+// parseLogsFillParams accepts exactly one filter object with hex
+// fromBlock/toBlock and optional address/topics. Any other shape returns a
+// skip reason.
+func parseLogsFillParams(params []interface{}) (int64, int64, *blockstore.LogFilter, string) {
+	if len(params) != 1 {
+		return 0, 0, nil, "params"
+	}
+	obj, ok := params[0].(map[string]interface{})
+	if !ok {
+		return 0, 0, nil, "params"
+	}
+	for k := range obj {
+		switch k {
+		case "address", "topics", "fromBlock", "toBlock":
+		default:
+			return 0, 0, nil, "params"
+		}
+	}
+	fs, ok1 := obj["fromBlock"].(string)
+	ts, ok2 := obj["toBlock"].(string)
+	if !ok1 || !ok2 {
+		return 0, 0, nil, "not_explicit_range"
+	}
+	from, e1 := parseExplicitBlockNumber(fs)
+	to, e2 := parseExplicitBlockNumber(ts)
+	if e1 != nil || e2 != nil {
+		return 0, 0, nil, "not_explicit_range"
+	}
+	if to < from {
+		return 0, 0, nil, "invalid_range"
+	}
+	filter, err := blockstore.ParseLogFilter(obj)
+	if err != nil {
+		return 0, 0, nil, "filter"
+	}
+	return from, to, filter, ""
+}
+
+var _ blockstore.LogsFillStore = (*blockStoreConnectorStore)(nil)
+
+func logsFillRangeKey(height int64) string { return "logs/" + strconv.FormatInt(height, 10) }
+
+func (s *blockStoreConnectorStore) GetBlockLogs(ctx context.Context, scope blockstore.Scope, height int64) (*blockstore.BlockLogs, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return nil, err
+	}
+	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, logsFillRangeKey(height), nil)
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return nil, fmt.Errorf("get logs fill entry: %w: %w", blockstore.ErrNotFound, err)
+		}
+		return nil, fmt.Errorf("get logs fill entry: %w: %w", blockstore.ErrStoreUnavailable, err)
+	}
+	if len(value) == 0 {
+		return nil, blockstore.ErrNotFound
+	}
+	var entry blockstore.BlockLogs
+	if err := json.Unmarshal(value, &entry); err != nil {
+		return nil, fmt.Errorf("decode logs fill entry: %w", err)
+	}
+	if entry.Number != height || entry.Logs == nil {
+		return nil, errors.New("logs fill entry does not match its height")
+	}
+	return &entry, nil
+}
+
+func (s *blockStoreConnectorStore) PutBlockLogs(ctx context.Context, scope blockstore.Scope, entry *blockstore.BlockLogs, ttl time.Duration) error {
+	if entry == nil {
+		return fmt.Errorf("cannot store nil logs fill entry")
+	}
+	partition, err := s.partition(scope)
+	if err != nil {
+		return err
+	}
+	value, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("encode logs fill entry: %w", err)
+	}
+	return s.connector.Set(ctx, partition, logsFillRangeKey(entry.Number), value, &ttl)
+}

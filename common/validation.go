@@ -1479,7 +1479,7 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return err
 		}
 	}
-	if n.Evm != nil && n.Evm.BlockStore != nil && (n.Evm.BlockStore.Enabled || n.Evm.BlockStore.Historical.Enabled) {
+	if n.Evm != nil && n.Evm.BlockStore != nil && n.Evm.BlockStore.NeedsConnector() {
 		if err := n.Evm.BlockStore.ValidateConnector(c); err != nil {
 			return err
 		}

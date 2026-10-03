@@ -68,3 +68,43 @@ func TestNetworkConfig_ValidatesConnectorForHistoricalOnlyBlockStore(t *testing.
 	require.NoError(t, network.Evm.SetDefaults())
 	require.ErrorContains(t, network.Validate(&Config{}), "not found")
 }
+
+func TestEvmBlockStoreLogsFillConfig_DefaultsAndValidation(t *testing.T) {
+	store := &EvmBlockStoreConfig{}
+	store.SetDefaults()
+	require.False(t, store.LogsFill.Enabled, "logs fill is opt-in")
+	require.Equal(t, int64(10), store.LogsFill.MaxRange)
+	require.Equal(t, Duration(time.Hour), store.LogsFill.FinalizedTTL)
+	require.Equal(t, Duration(0), store.LogsFill.UnfinalizedTTL, "0 = derived from block time")
+	require.Equal(t, int64(2), store.LogsFill.EmptyTipGuard)
+	require.Equal(t, int64(64<<20), store.LogsFill.MemoryMaxBytes)
+	require.NoError(t, store.Validate())
+
+	standalone := &EvmBlockStoreConfig{LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true}}
+	standalone.SetDefaults()
+	require.NoError(t, standalone.Validate(), "logs fill alone needs no connector, live window or historical cache")
+	require.False(t, standalone.NeedsConnector(), "without connectorId it uses process memory")
+	standalone.ConnectorId = "redis"
+	require.True(t, standalone.NeedsConnector(), "a configured connectorId must resolve to redis")
+
+	for _, tc := range []struct {
+		name string
+		set  func(*EvmBlockStoreLogsFillConfig)
+	}{
+		{"maxRange", func(c *EvmBlockStoreLogsFillConfig) { c.MaxRange = -1 }},
+		{"maxRange", func(c *EvmBlockStoreLogsFillConfig) { c.MaxRange = 1001 }},
+		{"finalizedTtl", func(c *EvmBlockStoreLogsFillConfig) { c.FinalizedTTL = -1 }},
+		{"unfinalizedTtl", func(c *EvmBlockStoreLogsFillConfig) { c.UnfinalizedTTL = -1 }},
+		{"emptyTipGuard", func(c *EvmBlockStoreLogsFillConfig) { c.EmptyTipGuard = -1 }},
+		{"memoryMaxBytes", func(c *EvmBlockStoreLogsFillConfig) { c.MemoryMaxBytes = 1024 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &EvmBlockStoreConfig{LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true}}
+			c.SetDefaults()
+			tc.set(&c.LogsFill)
+			require.ErrorContains(t, c.Validate(), "logsFill."+tc.name)
+			c.LogsFill.Enabled = false
+			require.NoError(t, c.Validate(), "disabled logs fill is not validated")
+		})
+	}
+}

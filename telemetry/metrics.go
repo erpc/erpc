@@ -653,6 +653,12 @@ var (
 		Help:      "HTTP block and log requests served from the verified head cache.",
 	}, []string{"project", "network", "category"})
 
+	MetricBlockStoreLogsFillTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_logs_fill_total",
+		Help:      "Small-range eth_getLogs handled by the blockstore logs fill, by outcome (hit, fill, fallback, skipped) and reason.",
+	}, []string{"project", "network", "outcome", "reason"})
+
 	MetricWebSocketConnections = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "websocket_connections",
