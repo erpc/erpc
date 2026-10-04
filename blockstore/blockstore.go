@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 )
 
 // Fetcher reads from the configured upstream path with both cache layers bypassed.
@@ -22,10 +23,15 @@ type Fetcher interface {
 }
 
 type Options struct {
-	Scope        Scope
-	Depth        int64
+	Scope Scope
+	Depth int64
+	// MaxBytes bounds the process-local cache of on-demand block bodies and
+	// log lists. Window headers are not counted.
 	MaxBytes     int64
 	MaxBlockSize int64
+	// MaxPerTick bounds how many older headers one tick backfills while the
+	// window is shorter than Depth (cold start). Forward extension always
+	// fetches every new height.
 	MaxPerTick   int64
 	Concurrency  int
 	PollInterval time.Duration
@@ -33,8 +39,13 @@ type Options struct {
 	MaxStaleness time.Duration
 	MaxLogsRange int64
 	RecordTTL    time.Duration
+	// PeerWait bounds how long an on-demand miss waits for another replica
+	// that holds the fill lock for the same payload. 0 disables the lock.
+	PeerWait time.Duration
 }
 
+// Event reports a canonical window change. Records carry the window header
+// as Block and the block's logs when they were already cached (nil otherwise).
 type Event struct {
 	Removed []*BlockRecord
 	Added   []*BlockRecord
@@ -43,6 +54,7 @@ type Event struct {
 type Subscription struct {
 	C      chan Event
 	c      *Cache
+	logs   bool
 	closed atomic.Bool
 }
 
@@ -53,6 +65,7 @@ func (s *Subscription) Close() {
 }
 
 type Stats struct {
+	// Hydrated counts on-demand body/log payloads fetched from upstream.
 	Hydrated  atomic.Int64
 	Published atomic.Int64
 	Hits      atomic.Int64
@@ -60,6 +73,13 @@ type Stats struct {
 	Reorgs    atomic.Int64
 	Rejected  atomic.Int64
 }
+
+// Fetch reasons for erpc_blockstore_fetch_total.
+const (
+	FetchReasonBackground   = "background"
+	FetchReasonMiss         = "miss"
+	FetchReasonSubscription = "subscription"
+)
 
 type Cache struct {
 	opt     Options
@@ -70,16 +90,21 @@ type Cache struct {
 	logger  *zerolog.Logger
 	Stats   Stats
 
-	mu         sync.RWMutex
-	snap       *Snapshot
-	records    map[string]*BlockRecord
-	pending    map[string]*BlockRecord
-	blocked    map[string]bool
+	mu sync.RWMutex
+	// snap and headers are the served view: the canonical hashes and their
+	// verified headers.
+	snap    *Snapshot
+	headers map[string]*header
+	// bodies and logs are on-demand payloads for hashes in the served view.
+	bodies       map[string]json.RawMessage
+	logs         map[string]json.RawMessage
+	payloadBytes int64
+	// window is the refresher's verified header chain ending at windowHead.
 	windowHead int64
 	window     []*header
-	bytes      int64
 	freshAt    time.Time
 	subs       map[*Subscription]struct{}
+	logsSubs   int
 	nowFn      func() time.Time
 	kick       chan struct{}
 	start      sync.Once
@@ -89,6 +114,10 @@ type Cache struct {
 	stepMu     sync.Mutex
 	lease      Lease
 	sharedAt   map[string]time.Time
+	// suspect is set when an on-demand fetch returned a different hash than
+	// the window holds; the next tick re-verifies the tip even if unchanged.
+	suspect atomic.Bool
+	sf      singleflight.Group
 	// leaderFailures counts consecutive leader ticks that failed to refresh or
 	// publish; at maxLeaderFailures the leader steps down (see fleetTick).
 	leaderFailures int
@@ -128,8 +157,9 @@ func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context)
 		logger = &l
 	}
 	c := &Cache{opt: opt, store: store, fetcher: fetcher, headFn: headFn, logger: logger,
-		records: map[string]*BlockRecord{}, pending: map[string]*BlockRecord{}, subs: map[*Subscription]struct{}{}, nowFn: time.Now,
-		windowHead: -1, kick: make(chan struct{}, 1), done: make(chan struct{}), blocked: map[string]bool{}, sharedAt: map[string]time.Time{}}
+		headers: map[string]*header{}, bodies: map[string]json.RawMessage{}, logs: map[string]json.RawMessage{},
+		subs: map[*Subscription]struct{}{}, nowFn: time.Now,
+		windowHead: -1, kick: make(chan struct{}, 1), done: make(chan struct{}), sharedAt: map[string]time.Time{}}
 	c.fleet, _ = store.(FleetStore)
 	return c
 }
@@ -181,8 +211,8 @@ func (c *Cache) run(ctx context.Context) {
 	}
 }
 
-// Tick refreshes the local view from upstream when leading, or from the
-// lease holder's verified snapshot when following.
+// Tick refreshes the local view from upstream headers when leading, or from
+// the lease holder's verified snapshot when following.
 func (c *Cache) Tick(ctx context.Context) {
 	c.stepMu.Lock()
 	defer c.stepMu.Unlock()
@@ -198,11 +228,6 @@ func (c *Cache) Tick(ctx context.Context) {
 		err = c.fleetTick(ctx)
 	} else {
 		err = c.refresh(ctx)
-	}
-	// An unhydrated tip is a stale tick, as before; it is surfaced as an error
-	// only so fleetTick can count it toward leader step-down.
-	if errors.Is(err, errNoPublishableView) {
-		err = nil
 	}
 	fresh := c.Fresh()
 	labels := []string{c.opt.Scope.ProjectId, c.opt.Scope.NetworkId}
@@ -224,6 +249,10 @@ func boolFloat64(value bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+func (c *Cache) fetchMetric(kind PayloadKind, reason string) {
+	telemetry.MetricBlockStoreFetchTotal.WithLabelValues(c.opt.Scope.ProjectId, c.opt.Scope.NetworkId, string(kind), reason).Inc()
 }
 
 func (c *Cache) leaseTTL() time.Duration {
@@ -315,23 +344,23 @@ func (c *Cache) fleetTickOnce(ctx context.Context) error {
 	if !c.Fresh() {
 		return nil
 	}
-	// A leader may publish only a complete locally validated snapshot whose
+	// A leader publishes only a locally verified header window whose header
 	// payloads are all present in the shared store.
-	snap, records := c.localView()
-	if snap == nil || !completeWindow(snap, records) {
+	snap, headers := c.localView()
+	if snap == nil {
 		return nil
 	}
 	current := make(map[string]struct{}, len(snap.Hashes))
 	for _, h := range snap.Hashes {
 		current[h] = struct{}{}
-		r := records[h]
+		hd := headers[h]
 		last := c.sharedAt[h]
 		refreshAfter := c.opt.RecordTTL / 2
 		if refreshAfter <= 0 || c.nowFn().Sub(last) >= refreshAfter {
-			if err := c.store.PutBlock(ctx, c.opt.Scope, r, c.opt.RecordTTL); err != nil {
+			if err := c.store.PutPayload(ctx, c.opt.Scope, PayloadHeader, h, hd.raw, c.opt.RecordTTL); err != nil {
 				delete(c.sharedAt, h)
 				c.invalidateAndClose()
-				return fmt.Errorf("repair shared head cache payload %s: %w", h, err)
+				return fmt.Errorf("share head cache header %s: %w", h, err)
 			}
 			c.sharedAt[h] = c.nowFn()
 		}
@@ -394,8 +423,9 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 		c.invalidateAndClose()
 		return errors.New("invalid head cache snapshot range")
 	}
-	old, oldRecords := c.localView()
-	records := make(map[string]*BlockRecord, len(snap.Hashes))
+	old, oldHeaders := c.localView()
+	headers := make(map[string]*header, len(snap.Hashes))
+	chain := make([]*header, len(snap.Hashes))
 	for i, hash := range snap.Hashes {
 		if !isHexOfLen(hash, 64) {
 			c.invalidateAndClose()
@@ -404,41 +434,35 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 		n := snap.Base() + int64(i)
 		norm := normHash(hash)
 		snap.Hashes[i] = norm
-		// Installed records were fully validated and are immutable, so a record
-		// already in the local view that matches this snapshot position is reused.
-		if r := oldRecords[norm]; r != nil && r.Number == n && r.Hash == norm && (i == 0 || r.ParentHash == normHash(snap.Hashes[i-1])) {
-			records[norm] = r
+		// Installed headers were validated and are immutable, so a header
+		// already in the local view at this snapshot position is reused.
+		if h := oldHeaders[norm]; h != nil && h.n == n && (i == 0 || h.b.ParentHash == normHash(snap.Hashes[i-1])) {
+			headers[norm], chain[i] = h, h
 			continue
 		}
-		r, e := c.store.GetBlock(ctx, c.opt.Scope, norm)
+		raw, e := c.store.GetPayload(ctx, c.opt.Scope, PayloadHeader, norm)
 		if e != nil && errors.Is(e, ErrStoreUnavailable) && c.sameBranchAdvance(old, snap) {
 			// The store could not be reached. The still-fresh local view is on the
 			// same branch as this snapshot, so keep it until it expires on its own.
-			return fmt.Errorf("read snapshot payload %s: %w", hash, e)
+			return fmt.Errorf("read snapshot header %s: %w", hash, e)
 		}
-		if e != nil || r == nil {
+		if e != nil || len(raw) == 0 {
 			c.invalidateAndClose()
 			if e != nil {
-				return fmt.Errorf("read snapshot payload %s: %w", hash, e)
+				return fmt.Errorf("read snapshot header %s: %w", hash, e)
 			}
-			return fmt.Errorf("missing snapshot payload %s", hash)
+			return fmt.Errorf("missing snapshot header %s", hash)
 		}
-		b, got, parseErr := parseBlockHeader(r.Block)
-		if parseErr != nil || b == nil || got != n || normHash(b.Hash) != norm {
+		h, e := parseHeader(raw, n)
+		if e != nil || h.b.Hash != norm {
 			c.invalidateAndClose()
-			return fmt.Errorf("inconsistent snapshot payload %s", hash)
+			return fmt.Errorf("inconsistent snapshot header %s", hash)
 		}
-		b.Hash, b.ParentHash = normHash(b.Hash), normHash(b.ParentHash)
-		verified, e := validateRecord(r, n, b, c.opt.MaxBlockSize)
-		if e != nil {
+		if i > 0 && h.b.ParentHash != normHash(snap.Hashes[i-1]) {
 			c.invalidateAndClose()
-			return fmt.Errorf("validate snapshot payload %s: %w", hash, e)
+			return errors.New("non-contiguous head cache snapshot headers")
 		}
-		if i > 0 && verified.ParentHash != normHash(snap.Hashes[i-1]) {
-			c.invalidateAndClose()
-			return errors.New("non-contiguous head cache snapshot payloads")
-		}
-		records[verified.Hash] = verified
+		headers[norm], chain[i] = h, h
 	}
 	gap := false
 	if old != nil {
@@ -453,7 +477,12 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 			c.Stats.Reorgs.Add(1)
 		}
 	}
-	c.install(&Snapshot{Head: snap.Head, Hashes: append([]string(nil), snap.Hashes...), At: snap.At, Incomplete: snap.Incomplete}, records, gap)
+	c.mu.Lock()
+	// A follower keeps the verified chain so that, if promoted, it extends
+	// from the published window instead of re-fetching it.
+	c.window, c.windowHead = chain, snap.Head
+	c.mu.Unlock()
+	c.install(&Snapshot{Head: snap.Head, Hashes: append([]string(nil), snap.Hashes...), At: snap.At, Incomplete: snap.Incomplete}, headers, gap)
 	return nil
 }
 
@@ -485,29 +514,87 @@ func (c *Cache) invalidateAndClose() {
 	c.mu.Unlock()
 }
 
+// header is one verified eth_getBlockByNumber(n, false) result.
 type header struct {
 	raw json.RawMessage
 	b   *rawBlock
 	n   int64
 }
 
+// parseHeader validates a hash-only block header at height n.
+func parseHeader(raw json.RawMessage, n int64) (*header, error) {
+	b, got, err := parseBlockHeader(raw)
+	if err != nil {
+		return nil, err
+	}
+	if got != n {
+		return nil, fmt.Errorf("returned block %d", got)
+	}
+	_, full, err := txHashesOf(b)
+	if err != nil {
+		return nil, err
+	}
+	if full && len(b.Transactions) > 0 {
+		return nil, errors.New("header carries full transactions")
+	}
+	b.Hash, b.ParentHash = normHash(b.Hash), normHash(b.ParentHash)
+	return &header{raw: append(json.RawMessage(nil), raw...), b: b, n: n}, nil
+}
+
 func (c *Cache) getHeader(ctx context.Context, n int64) (*header, error) {
+	c.fetchMetric(PayloadHeader, FetchReasonBackground)
 	raw, err := c.fetcher.HeaderByNumber(ctx, n)
 	if err != nil {
 		return nil, fmt.Errorf("fetch header %d: %w", n, err)
 	}
-	b, got, err := parseBlockHeader(raw)
+	h, err := parseHeader(raw, n)
 	if err != nil {
+		c.Stats.Rejected.Add(1)
 		return nil, fmt.Errorf("invalid header at %d: %w", n, err)
 	}
-	if got != n {
-		return nil, fmt.Errorf("invalid header at %d: returned block %d", n, got)
-	}
-	b.Hash = normHash(b.Hash)
-	b.ParentHash = normHash(b.ParentHash)
-	return &header{b: b, n: got}, nil
+	return h, nil
 }
 
+// getHeaders fetches heights [from, to] in parallel.
+func (c *Cache) getHeaders(ctx context.Context, from, to int64) ([]*header, error) {
+	if to < from {
+		return nil, nil
+	}
+	out := make([]*header, to-from+1)
+	errs := make([]error, len(out))
+	c.parallel(ctx, len(out), func(i int) {
+		out[i], errs[i] = c.getHeader(ctx, from+int64(i))
+	})
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, h := range out {
+		if h == nil {
+			return nil, errors.New("header fetch did not complete")
+		}
+	}
+	return out, nil
+}
+
+func linked(hs []*header) bool {
+	for i := 1; i < len(hs); i++ {
+		if hs[i].b.ParentHash != hs[i-1].b.Hash {
+			return false
+		}
+	}
+	return true
+}
+
+// refresh advances the verified header window. Steady state costs one header
+// per new block: the tip comes from headFn (an in-memory value in eRPC), new
+// heights are fetched and linked by parent hash onto the retained window, and
+// a broken link walks back one header at a time until it rejoins. No block
+// bodies or logs are fetched here.
 func (c *Cache) refresh(ctx context.Context) error {
 	if c.fetcher == nil || c.headFn == nil {
 		return errors.New("head cache fetcher or head function is nil")
@@ -516,260 +603,149 @@ func (c *Cache) refresh(ctx context.Context) error {
 	if tip < 0 {
 		return errors.New("head cache has no live tip")
 	}
-	old, oldRecords := c.localView()
-	top, err := c.getHeader(ctx, tip)
-	if err != nil {
-		return err
-	}
-	base := tip - c.opt.Depth + 1
-	if base < 0 {
-		base = 0
-	}
-	// A matching tip proves that the previously verified header window is still
-	// canonical. This is the steady-state one-header verification path.
+	old, _ := c.localView()
 	c.mu.RLock()
 	windowHead := c.windowHead
 	window := append([]*header(nil), c.window...)
 	c.mu.RUnlock()
-	if old != nil && tip == old.Head && top.b.Hash == old.HashAt(tip) && !old.Incomplete && completeWindow(old, oldRecords) {
-		c.refreshTime(old)
-		return nil
+	if len(window) == 0 || window[len(window)-1].n != windowHead {
+		window, windowHead = nil, -1
 	}
-	if old != nil && tip < old.Head && tip >= old.Base() && top.b.Hash == old.HashAt(tip) {
-		// The live tip matches a retained header, which re-proves the prefix up
-		// to it. Blocks above it are no longer known canonical, so stop serving them.
-		hashes := append([]string(nil), old.Hashes[:tip-old.Base()+1]...)
-		recs := make(map[string]*BlockRecord, len(hashes))
-		for _, h := range hashes {
-			if r := oldRecords[h]; r != nil {
-				recs[h] = r
+	suspect := c.suspect.Swap(false)
+	var err error
+	switch {
+	case len(window) == 0 || tip-windowHead > c.opt.Depth || tip < window[0].n:
+		var top *header
+		if top, err = c.getHeader(ctx, tip); err == nil {
+			window = []*header{top}
+		}
+	case tip > windowHead:
+		var added []*header
+		if added, err = c.getHeaders(ctx, windowHead+1, tip); err == nil {
+			if !linked(added) {
+				err = fmt.Errorf("new headers %d..%d: %w", windowHead+1, tip, errUnlinked)
+			} else {
+				window = append(window, added...)
+				window, err = c.walkBack(ctx, window, len(window)-len(added))
 			}
 		}
-		c.install(&Snapshot{Head: tip, Hashes: hashes, At: c.nowFn(), Incomplete: old.Incomplete}, recs, false)
-		return nil
-	}
-	if windowHead != tip || len(window) != int(tip-base+1) || window[len(window)-1].b.Hash != top.b.Hash {
-		if extended, ok := c.extendWindow(ctx, window, windowHead, base, tip, top); ok {
-			window = extended
-		} else if window, err = c.fetchWindow(ctx, base, tip, top); err != nil {
-			return err
+	case tip == windowHead && !suspect:
+		if old != nil && old.Head == tip && !old.Incomplete {
+			c.refreshTime(old)
+			return nil
 		}
-		c.mu.Lock()
-		c.windowHead, c.window = tip, window
-		c.blocked = map[string]bool{}
-		c.mu.Unlock()
+	default:
+		// Same-height re-verification after a suspected reorg, or a lower
+		// observed tip inside the window: one header proves or refutes it.
+		var top *header
+		if top, err = c.getHeader(ctx, tip); err == nil {
+			i := int(tip - window[0].n)
+			if window[i].b.Hash == top.b.Hash {
+				window = window[:i+1]
+			} else {
+				window = append(window[:i], top)
+				window, err = c.walkBack(ctx, window, i)
+			}
+		}
 	}
+	if err != nil {
+		if suspect {
+			c.suspect.Store(true)
+		}
+		if errors.Is(err, errUnlinked) {
+			// Upstream answers disagree with the retained chain in a way one
+			// walk-back cannot repair: rebuild from the tip next tick.
+			c.mu.Lock()
+			c.window, c.windowHead = nil, -1
+			c.mu.Unlock()
+		}
+		return err
+	}
+	if n := int64(len(window)); n > c.opt.Depth {
+		window = window[n-c.opt.Depth:]
+	}
+	if window, err = c.backfill(ctx, window); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.window, c.windowHead = window, tip
+	c.mu.Unlock()
 
 	hashes := make([]string, len(window))
+	headers := make(map[string]*header, len(window))
 	for i, h := range window {
 		hashes[i] = h.b.Hash
+		headers[h.b.Hash] = h
 	}
-	common := int64(-1)
+	snap := &Snapshot{Head: tip, Hashes: hashes, At: c.nowFn(), Incomplete: int64(len(window)) < c.opt.Depth && window[0].n > 0}
+	gap := false
 	if old != nil {
-		for n := maxI64(base, old.Base()); n <= minI64(tip, old.Head); n++ {
-			if old.HashAt(n) == hashes[n-base] {
+		common := int64(-1)
+		for n := maxI64(snap.Base(), old.Base()); n <= minI64(tip, old.Head); n++ {
+			if old.HashAt(n) == snap.HashAt(n) {
 				common = n
 			}
 		}
-	}
-	gap := old != nil && common < 0
-	if old != nil && common >= 0 && common < old.Head {
-		c.Stats.Reorgs.Add(1)
-		c.invalidate()
-	}
-	if gap {
-		c.invalidate()
-	}
-
-	loaded := make([]*BlockRecord, len(window))
-	missing := make([]int, 0)
-	for i, h := range window {
-		if c.blocked[h.b.Hash] {
-			continue
-		}
-		if r := oldRecords[h.b.Hash]; r != nil {
-			loaded[i] = r
-			continue
-		}
-		if r := c.pending[h.b.Hash]; r != nil {
-			loaded[i] = r
-			continue
-		}
-		missing = append(missing, i)
-	}
-	c.parallel(ctx, len(missing), func(j int) {
-		i := missing[j]
-		if c.store == nil {
-			return
-		}
-		r, e := c.store.GetBlock(ctx, c.opt.Scope, window[i].b.Hash)
-		if e != nil {
-			return
-		}
-		if r, e = validateRecord(r, window[i].n, window[i].b, c.opt.MaxBlockSize); e == nil {
-			loaded[i] = r
-		}
-	})
-	missing = missing[:0]
-	for i, r := range loaded {
-		if r == nil {
-			missing = append(missing, i)
+		gap = common < 0
+		if common >= 0 && common < old.Head && snap.HashAt(old.Head) != old.HashAt(old.Head) {
+			c.Stats.Reorgs.Add(1)
 		}
 	}
-	// Hydrate from the tip backwards so every published subset is a contiguous
-	// suffix. Older blocks can be filled over later ticks.
-	if int64(len(missing)) > c.opt.MaxPerTick {
-		missing = missing[len(missing)-int(c.opt.MaxPerTick):]
-	}
-	newRecords := make([]*BlockRecord, len(missing))
-	loadErrors := make([]error, len(missing))
-	c.parallel(ctx, len(missing), func(j int) {
-		i := missing[j]
-		r, e := c.loadRecord(ctx, window[i].n, window[i].b)
-		loadErrors[j] = e
-		if e == nil {
-			newRecords[j] = r
-		}
-	})
-	for j, r := range newRecords {
-		if r != nil {
-			i := missing[j]
-			loaded[i] = r
-			c.pending[r.Hash] = r
-		}
-	}
-	for j, r := range newRecords {
-		if r == nil && errors.Is(loadErrors[j], errRecordTooLarge) {
-			i := missing[j]
-			// A block over maxBlockBytes is a permanent hole for this head.
-			// The suffix above it remains complete and useful.
-			c.blocked[window[i].b.Hash] = true
-		}
-	}
-	suffix := len(window)
-	for suffix > 0 && loaded[suffix-1] != nil {
-		suffix--
-	}
-	if suffix == len(window) {
-		// The tip did not hydrate. Keep pending only for heights still in this
-		// window, so records cannot accumulate while the tip keeps failing.
-		inWindow := make(map[string]struct{}, len(window))
-		for _, h := range window {
-			inWindow[h.b.Hash] = struct{}{}
-		}
-		for h := range c.pending {
-			if _, ok := inWindow[h]; !ok {
-				delete(c.pending, h)
-			}
-		}
-		return errNoPublishableView
-	}
-	blockedBelow := false
-	for i, h := range window {
-		if c.blocked[h.b.Hash] && i < suffix {
-			blockedBelow = true
-		}
-	}
-	incomplete := suffix > 0 && !blockedBelow
-	pubHashes := append([]string(nil), hashes[suffix:]...)
-	recs := make(map[string]*BlockRecord, len(pubHashes))
-	for i := suffix; i < len(window); i++ {
-		recs[window[i].b.Hash] = loaded[i]
-	}
-	for h := range c.pending {
-		if recs[h] == nil {
-			delete(c.pending, h)
-		}
-	}
-	c.install(&Snapshot{Head: tip, Hashes: pubHashes, At: c.nowFn(), Incomplete: incomplete}, recs, gap)
-	c.pending = map[string]*BlockRecord{}
+	c.install(snap, headers, gap)
 	return nil
 }
 
-// errNoPublishableView means a refresh found the canonical window but could not
-// hydrate its tip, so there is nothing to serve or publish. It is not a hard
-// failure (older heights keep filling), but a lease holder that never gets
-// past it publishes nothing, so fleetTick counts it toward stepping down.
-var errNoPublishableView = errors.New("head cache tip block could not be hydrated")
+var errUnlinked = errors.New("headers do not link by parent hash")
 
-func completeWindow(s *Snapshot, records map[string]*BlockRecord) bool {
-	for _, h := range s.Hashes {
-		if records[h] == nil {
-			return false
+// walkBack repairs window[i-1..] after a parent mismatch at window[i] by
+// re-fetching retained headers downward until one links. If the whole
+// retained window is replaced, the result is a fresh window with no proven
+// link to the previous one (install reports a gap).
+func (c *Cache) walkBack(ctx context.Context, window []*header, i int) ([]*header, error) {
+	for ; i > 0; i-- {
+		if window[i].b.ParentHash == window[i-1].b.Hash {
+			if !linked(window[i:]) {
+				return nil, fmt.Errorf("walked-back headers: %w", errUnlinked)
+			}
+			return window, nil
 		}
-	}
-	return true
-}
-
-// extendWindow appends headers above a verified window when they link to its
-// last hash. Parent links transitively re-prove the retained headers, so only
-// new heights are fetched. Any doubt falls back to a full window fetch.
-func (c *Cache) extendWindow(ctx context.Context, window []*header, windowHead, base, tip int64, top *header) ([]*header, bool) {
-	if len(window) == 0 || windowHead >= tip || tip-windowHead > c.opt.Depth {
-		return nil, false
-	}
-	oldBase := windowHead - int64(len(window)) + 1
-	if oldBase > base || window[len(window)-1].n != windowHead {
-		return nil, false
-	}
-	added := make([]*header, tip-windowHead)
-	added[len(added)-1] = top
-	failed := false
-	var mu sync.Mutex
-	c.parallel(ctx, len(added)-1, func(j int) {
-		h, err := c.getHeader(ctx, windowHead+1+int64(j))
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			failed = true
-			return
-		}
-		added[j] = h
-	})
-	if failed || ctx.Err() != nil {
-		return nil, false
-	}
-	prev := window[len(window)-1]
-	for _, h := range added {
-		if h == nil || h.b.ParentHash != prev.b.Hash {
-			return nil, false
-		}
-		prev = h
-	}
-	out := append(append(make([]*header, 0, tip-base+1), window[base-oldBase:]...), added...)
-	if int64(len(out)) != tip-base+1 {
-		return nil, false
-	}
-	return out, true
-}
-
-func (c *Cache) fetchWindow(ctx context.Context, base, tip int64, top *header) ([]*header, error) {
-	window := make([]*header, tip-base+1)
-	window[tip-base] = top
-	failures := make([]error, len(window)-1)
-	c.parallel(ctx, len(window)-1, func(j int) {
-		n := base + int64(j)
-		h, err := c.getHeader(ctx, n)
-		if err != nil {
-			failures[j] = err
-			return
-		}
-		window[j] = h
-	})
-	for _, err := range failures {
+		h, err := c.getHeader(ctx, window[i-1].n)
 		if err != nil {
 			return nil, err
 		}
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	for i := 1; i < len(window); i++ {
-		if window[i].b.ParentHash != window[i-1].b.Hash {
-			return nil, fmt.Errorf("header parent mismatch at %d", window[i].n)
+		if h.b.Hash == window[i-1].b.Hash {
+			return nil, fmt.Errorf("header %d hash %s vs retained parent: %w", window[i].n, window[i].b.Hash, errUnlinked)
 		}
+		window[i-1] = h
+	}
+	if !linked(window) {
+		return nil, fmt.Errorf("walked-back headers: %w", errUnlinked)
 	}
 	return window, nil
+}
+
+// backfill prepends up to MaxPerTick older headers while the window is
+// shorter than Depth (cold start or recovery).
+func (c *Cache) backfill(ctx context.Context, window []*header) ([]*header, error) {
+	missing := c.opt.Depth - int64(len(window))
+	if missing <= 0 || window[0].n == 0 {
+		return window, nil
+	}
+	n := minI64(minI64(missing, c.opt.MaxPerTick), window[0].n)
+	older, err := c.getHeaders(ctx, window[0].n-n, window[0].n-1)
+	if err != nil {
+		return nil, err
+	}
+	out := append(older, window...)
+	if !linked(out) {
+		// The retained bottom no longer links to the chain below it: a
+		// reorg reached it. Rebuild from the tip on the next tick.
+		c.mu.Lock()
+		c.window, c.windowHead = nil, -1
+		c.mu.Unlock()
+		return nil, fmt.Errorf("backfilled headers below %d do not link", window[0].n)
+	}
+	return out, nil
 }
 
 func (c *Cache) parallel(ctx context.Context, n int, fn func(int)) {
@@ -800,7 +776,7 @@ func (c *Cache) parallel(ctx context.Context, n int, fn func(int)) {
 	wg.Wait()
 }
 
-func (c *Cache) localView() (*Snapshot, map[string]*BlockRecord) {
+func (c *Cache) localView() (*Snapshot, map[string]*header) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.snap == nil {
@@ -808,69 +784,11 @@ func (c *Cache) localView() (*Snapshot, map[string]*BlockRecord) {
 	}
 	s := *c.snap
 	s.Hashes = append([]string(nil), c.snap.Hashes...)
-	r := make(map[string]*BlockRecord, len(c.records))
-	for k, v := range c.records {
-		r[k] = v
+	h := make(map[string]*header, len(c.headers))
+	for k, v := range c.headers {
+		h[k] = v
 	}
-	return &s, r
-}
-
-func (c *Cache) loadRecord(ctx context.Context, n int64, expected *rawBlock) (*BlockRecord, error) {
-	block, err := c.fetchBlock(ctx, n)
-	if err != nil {
-		return nil, err
-	}
-	b, got, err := parseBlockHeader(block)
-	if b != nil {
-		b.Hash, b.ParentHash = normHash(b.Hash), normHash(b.ParentHash)
-	}
-	if err != nil {
-		c.Stats.Rejected.Add(1)
-		return nil, fmt.Errorf("parse hydrated block %d: %w", n, err)
-	}
-	if got != n || b.Hash != expected.Hash || b.ParentHash != expected.ParentHash {
-		c.Stats.Rejected.Add(1)
-		return nil, fmt.Errorf("hydrated block %d does not match verified header", n)
-	}
-	logsCtx, cancel := c.fetchContext(ctx)
-	logs, err := c.fetcher.LogsByBlockHash(logsCtx, b.Hash)
-	cancel()
-	if err != nil {
-		return nil, fmt.Errorf("fetch logs for block %d: %w", n, err)
-	}
-	rec, err := buildRecord(block, logs, c.opt.MaxBlockSize)
-	if err != nil {
-		c.Stats.Rejected.Add(1)
-		return nil, fmt.Errorf("invalid hydrated block %d: %w", n, err)
-	}
-	if rec.Number != n || rec.Hash != expected.Hash || rec.ParentHash != expected.ParentHash {
-		c.Stats.Rejected.Add(1)
-		return nil, fmt.Errorf("hydrated block %d identity differs from verified header", n)
-	}
-	c.Stats.Hydrated.Add(1)
-	if c.store != nil && c.fleet == nil {
-		if err := c.store.PutBlock(ctx, c.opt.Scope, rec, c.opt.RecordTTL); err != nil {
-			c.logger.Debug().Err(err).Int64("number", n).Msg("failed to share head cache record")
-		}
-	}
-	return rec, nil
-}
-
-func validateRecord(rec *BlockRecord, n int64, expected *rawBlock, maxBytes int64) (*BlockRecord, error) {
-	if rec == nil {
-		return nil, errors.New("nil record")
-	}
-	verified, err := buildRecord(rec.Block, rec.Logs, maxBytes)
-	if err != nil {
-		return nil, err
-	}
-	if rec.Number != verified.Number || normHash(rec.Hash) != verified.Hash || normHash(rec.ParentHash) != verified.ParentHash {
-		return nil, errors.New("record metadata does not match its payload")
-	}
-	if verified.Number != n || verified.Hash != expected.Hash || verified.ParentHash != expected.ParentHash {
-		return nil, errors.New("record does not match locally verified header")
-	}
-	return verified, nil
+	return &s, h
 }
 
 func (c *Cache) fetchContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -880,19 +798,9 @@ func (c *Cache) fetchContext(ctx context.Context) (context.Context, context.Canc
 	return context.WithCancel(ctx)
 }
 
-func (c *Cache) fetchBlock(ctx context.Context, n int64) (json.RawMessage, error) {
-	fctx, cancel := c.fetchContext(ctx)
-	defer cancel()
-	block, err := c.fetcher.BlockByNumber(fctx, n)
-	if err != nil {
-		return nil, fmt.Errorf("fetch block %d: %w", n, err)
-	}
-	return block, nil
-}
-
 func (c *Cache) refreshTime(snap *Snapshot) {
 	c.mu.Lock()
-	if c.snap != nil && c.snap.Head == snap.Head && completeWindow(c.snap, c.records) {
+	if c.snap != nil && c.snap.Head == snap.Head {
 		c.freshAt = c.nowFn()
 		c.snap.At = c.freshAt
 	}
@@ -905,45 +813,22 @@ func (c *Cache) invalidate() {
 	c.mu.Unlock()
 }
 
-func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) {
+// recordLocked builds the event record of a window header with its cached logs.
+func (c *Cache) recordLocked(h *header) *BlockRecord {
+	return &BlockRecord{Number: h.n, Hash: h.b.Hash, ParentHash: h.b.ParentHash, Block: h.raw, Logs: c.logs[h.b.Hash]}
+}
+
+func (c *Cache) install(snap *Snapshot, headers map[string]*header, gap bool) {
 	c.mu.Lock()
 	old := c.snap
-	var total int64
-	for _, r := range recs {
-		total += r.Size()
-	}
-	trim := 0
-	for c.opt.MaxBytes > 0 && total > c.opt.MaxBytes && trim < len(snap.Hashes) {
-		h := snap.Hashes[trim]
-		total -= recs[h].Size()
-		delete(recs, h)
-		trim++
-	}
-	if c.opt.MaxBytes > 0 && total > c.opt.MaxBytes {
-		c.freshAt = time.Time{}
-		for s := range c.subs {
-			c.closeSubLocked(s)
-		}
-		c.mu.Unlock()
-		return
-	}
-	if trim == len(snap.Hashes) {
-		c.freshAt = time.Time{}
-		for s := range c.subs {
-			c.closeSubLocked(s)
-		}
-		c.mu.Unlock()
-		return
-	}
-	snap.Hashes = snap.Hashes[trim:]
 	if old != nil && snap.Head < old.Head && snap.HashAt(snap.Head) == old.HashAt(snap.Head) {
 		// A lower matching tip may be a lagging observation, not a reorg.
 		gap = true
 	}
 	if old != nil && snap.Base() > old.Base() && snap.Base() <= old.Head+1 {
-		// Trimming must not hide the first changed block of a reorg.
-		first := recs[snap.Hashes[0]]
-		if first == nil || first.ParentHash != old.HashAt(snap.Base()-1) {
+		// The window base moved: the lowest new header must link to the
+		// previous view, or a reorg below the new base is hidden.
+		if first := headers[snap.Hashes[0]]; first == nil || first.b.ParentHash != old.HashAt(snap.Base()-1) {
 			gap = true
 		}
 	}
@@ -953,8 +838,8 @@ func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) 
 			if snap.HashAt(n) == old.HashAt(n) || n < snap.Base() {
 				continue
 			}
-			if r := c.records[old.HashAt(n)]; r != nil {
-				ev.Removed = append(ev.Removed, r)
+			if h := c.headers[old.HashAt(n)]; h != nil {
+				ev.Removed = append(ev.Removed, c.recordLocked(h))
 			} else {
 				gap = true
 			}
@@ -963,23 +848,37 @@ func (c *Cache) install(snap *Snapshot, recs map[string]*BlockRecord, gap bool) 
 			if old.HashAt(n) == snap.HashAt(n) || n < old.Base() {
 				continue
 			}
-			if r := recs[snap.HashAt(n)]; r != nil {
-				ev.Added = append(ev.Added, r)
+			if h := headers[snap.HashAt(n)]; h != nil {
+				ev.Added = append(ev.Added, c.recordLocked(h))
 			} else {
 				gap = true
 			}
 		}
 	} else {
 		for n := snap.Base(); n <= snap.Head; n++ {
-			if r := recs[snap.HashAt(n)]; r != nil {
-				ev.Added = append(ev.Added, r)
+			if h := headers[snap.HashAt(n)]; h != nil {
+				ev.Added = append(ev.Added, c.recordLocked(h))
 			}
 		}
 	}
 	if old != nil && snap.Base() > old.Head+1 {
 		gap = true
 	}
-	c.snap, c.records, c.bytes, c.freshAt = snap, recs, total, snap.At
+	c.snap, c.headers, c.freshAt = snap, headers, snap.At
+	// Payloads of hashes that left the view are dropped; they stay in the
+	// shared store and are re-validated if the hash returns.
+	for h, raw := range c.bodies {
+		if headers[h] == nil {
+			delete(c.bodies, h)
+			c.payloadBytes -= int64(len(raw))
+		}
+	}
+	for h, raw := range c.logs {
+		if headers[h] == nil {
+			delete(c.logs, h)
+			c.payloadBytes -= int64(len(raw))
+		}
+	}
 	c.Stats.Published.Add(1)
 	if gap {
 		for s := range c.subs {
@@ -1007,13 +906,24 @@ func (c *Cache) expireSubscribers() {
 	c.mu.Unlock()
 }
 
-func (c *Cache) Subscribe(queue int) *Subscription {
+// Subscribe registers a newHeads-style subscriber: events carry headers only
+// and never cause a body or logs fetch.
+func (c *Cache) Subscribe(queue int) *Subscription { return c.subscribe(queue, false) }
+
+// SubscribeLogs registers a logs subscriber. While at least one exists, the
+// logs of each new block are fetched once (see EventLogs).
+func (c *Cache) SubscribeLogs(queue int) *Subscription { return c.subscribe(queue, true) }
+
+func (c *Cache) subscribe(queue int, logs bool) *Subscription {
 	if queue < 1 {
 		queue = 1
 	}
-	s := &Subscription{C: make(chan Event, queue), c: c}
+	s := &Subscription{C: make(chan Event, queue), c: c, logs: logs}
 	c.mu.Lock()
 	c.subs[s] = struct{}{}
+	if logs {
+		c.logsSubs++
+	}
 	c.mu.Unlock()
 	return s
 }
@@ -1027,6 +937,9 @@ func (c *Cache) unsubscribe(s *Subscription) {
 func (c *Cache) closeSubLocked(s *Subscription) {
 	if _, ok := c.subs[s]; ok {
 		delete(c.subs, s)
+		if s.logs {
+			c.logsSubs--
+		}
 	}
 	if s.closed.CompareAndSwap(false, true) {
 		close(s.C)
@@ -1037,6 +950,13 @@ func (c *Cache) SubscriberCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.subs)
+}
+
+// LogsSubscriberCount is the number of open logs subscriptions.
+func (c *Cache) LogsSubscriberCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.logsSubs
 }
 
 func (c *Cache) viewLocked() *Snapshot {
@@ -1077,99 +997,6 @@ func (c *Cache) hit(ok bool) {
 	} else {
 		c.Stats.Misses.Add(1)
 	}
-}
-
-func (c *Cache) BlockByNumber(n int64, full bool) (json.RawMessage, bool) {
-	c.mu.RLock()
-	s := c.viewLocked()
-	var r *BlockRecord
-	if s != nil {
-		r = c.records[s.HashAt(n)]
-	}
-	c.mu.RUnlock()
-	if r == nil {
-		c.hit(false)
-		return nil, false
-	}
-	out, err := r.BlockJSON(full)
-	c.hit(err == nil)
-	return out, err == nil
-}
-
-func (c *Cache) BlockByHash(hash string, full bool) (json.RawMessage, bool) {
-	c.mu.RLock()
-	s := c.viewLocked()
-	var r *BlockRecord
-	if s != nil {
-		if rr := c.records[normHash(hash)]; rr != nil && s.HashAt(rr.Number) == rr.Hash {
-			r = rr
-		}
-	}
-	c.mu.RUnlock()
-	if r == nil {
-		c.hit(false)
-		return nil, false
-	}
-	out, err := r.BlockJSON(full)
-	c.hit(err == nil)
-	return out, err == nil
-}
-
-func (c *Cache) LogsRange(from, to int64, f *LogFilter) ([]json.RawMessage, bool) {
-	if from < 0 || to < from || to-from >= c.opt.MaxLogsRange {
-		c.hit(false)
-		return nil, false
-	}
-	count := to - from + 1
-	c.mu.RLock()
-	s := c.viewLocked()
-	recs := make([]*BlockRecord, 0, count)
-	if s != nil {
-		for i := int64(0); i < count; i++ {
-			n := from + i
-			r := c.records[s.HashAt(n)]
-			if r == nil {
-				recs = nil
-				break
-			}
-			recs = append(recs, r)
-		}
-	}
-	c.mu.RUnlock()
-	if int64(len(recs)) != count {
-		c.hit(false)
-		return nil, false
-	}
-	out := []json.RawMessage{}
-	for _, r := range recs {
-		logs, err := r.FilterLogs(f, false)
-		if err != nil {
-			c.hit(false)
-			return nil, false
-		}
-		out = append(out, logs...)
-	}
-	c.hit(true)
-	return out, true
-}
-
-func (c *Cache) LogsByHash(hash string, f *LogFilter) ([]json.RawMessage, bool) {
-	c.mu.RLock()
-	s := c.viewLocked()
-	var r *BlockRecord
-	if s != nil {
-		if rr := c.records[normHash(hash)]; rr != nil && s.HashAt(rr.Number) == rr.Hash {
-			r = rr
-		}
-	}
-	c.mu.RUnlock()
-	if r == nil {
-		c.hit(false)
-		return nil, false
-	}
-	logs, err := r.FilterLogs(f, false)
-	c.hit(err == nil)
-	return logs, err == nil
 }
 
 const maxFutureSkew = 5 * time.Second

@@ -64,6 +64,9 @@ type LogsFillOptions struct {
 	// Concurrency bounds simultaneous per-height store reads and writes for
 	// one request (evm.blockStore.concurrency). Default 4.
 	Concurrency int
+	// OnFill, when set, receives the per-height entries of every successful
+	// upstream fill (the live window adopts them as its logs).
+	OnFill func(ctx context.Context, entries []*BlockLogs)
 }
 
 // LogsFillLocker is optionally implemented by a shared LogsFillStore to let
@@ -399,6 +402,9 @@ func (f *LogsFiller) fill(ctx context.Context, from, to, latest int64) ([]*Block
 			_ = f.store.PutBlockLogs(ctx, f.opt.Scope, entries[i], ttl)
 		}
 	})
+	if f.opt.OnFill != nil {
+		f.opt.OnFill(ctx, entries)
+	}
 	return entries, nil
 }
 

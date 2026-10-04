@@ -136,7 +136,9 @@ func historicalHashOnlyHeader(t *testing.T, raw json.RawMessage) json.RawMessage
 	var fields map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(raw, &fields))
 	var txs []map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(fields["transactions"], &txs))
+	if json.Unmarshal(fields["transactions"], &txs) != nil {
+		return raw // already hash-only
+	}
 	hashes := make([]string, 0, len(txs))
 	for _, tx := range txs {
 		var hash string

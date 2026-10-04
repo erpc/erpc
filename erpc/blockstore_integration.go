@@ -185,26 +185,17 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 			MaxStaleness: hc.MaxStaleness.Duration(),
 			MaxLogsRange: hc.MaxLogsRange,
 			RecordTTL:    time.Duration(hc.Depth+16) * 30 * time.Second,
+			PeerWait:     blockStorePeerWait(hc),
 		}
 		lg := network.logger.With().Str("component", "blockStore").Logger()
 		f := &networkHeadFetcher{n: network}
-		live := func(ctx context.Context) int64 {
-			raw, err := f.call(ctx, "eth_blockNumber", []interface{}{})
-			if err != nil {
-				return -1
-			}
-			var quantity string
-			if err := json.Unmarshal(raw, &quantity); err != nil {
-				return -1
-			}
-			number, err := parseExplicitBlockNumber(quantity)
-			if err != nil {
-				return -1
-			}
-			return number
-		}
+		pollInterval := hc.PollInterval.Duration()
+		live := network.blockStoreHead(f, func() time.Duration {
+			return max(3*network.EvmBlockTime(), 2*pollInterval)
+		})
 		c := blockstore.New(opts, store, f, live, &lg)
 		network.blockStore = c
+		network.watchBlockStoreHead(nr.appCtx, c)
 		c.Start(nr.appCtx)
 		lg.Info().Str("namespace", ns).Int64("depth", hc.Depth).Msg("blockstore started")
 	}
@@ -226,6 +217,71 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 		network.historicalWarmSem = make(chan struct{}, max(1, hc.Concurrency))
 	}
 	return nil
+}
+
+// blockStorePeerWait is how long an on-demand payload miss waits for another
+// replica already fetching it. It reuses logsFill.peerWait (same mechanism,
+// same tradeoff); SetDefaults has already filled it.
+func blockStorePeerWait(hc *common.EvmBlockStoreConfig) time.Duration {
+	if hc.LogsFill.PeerWait == nil {
+		return 0
+	}
+	return hc.LogsFill.PeerWait.Duration()
+}
+
+// blockStoreHead returns the live tip for the refresh. It prefers the
+// network's in-memory latest block (state pollers plus response enrichment,
+// no upstream call). Only when that is unknown, or has not advanced for
+// about three block times (slow pollers and no client traffic), does it make
+// one eth_blockNumber through the network; that response also feeds the
+// pollers' in-memory value.
+func (n *Network) blockStoreHead(f *networkHeadFetcher, fallbackAfter func() time.Duration) func(context.Context) int64 {
+	var lastTip int64
+	var lastMove time.Time
+	return func(ctx context.Context) int64 {
+		tip := n.EvmHighestLatestBlockNumber(ctx)
+		now := time.Now()
+		if tip > lastTip {
+			lastTip, lastMove = tip, now
+		}
+		if tip > 0 && now.Sub(lastMove) < fallbackAfter() {
+			return tip
+		}
+		raw, err := f.call(ctx, "eth_blockNumber", []interface{}{})
+		if err != nil {
+			return -1
+		}
+		var quantity string
+		if err := json.Unmarshal(raw, &quantity); err != nil {
+			return -1
+		}
+		number, err := parseExplicitBlockNumber(quantity)
+		if err != nil {
+			return -1
+		}
+		if number >= lastTip {
+			lastTip, lastMove = number, now
+		}
+		return number
+	}
+}
+
+// watchBlockStoreHead kicks an early refresh whenever an upstream's in-memory
+// latest block advances, so new heads are picked up without waiting for the
+// next poll tick.
+func (n *Network) watchBlockStoreHead(ctx context.Context, c *blockstore.Cache) {
+	if n.upstreamsRegistry == nil {
+		return
+	}
+	for _, up := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		sp := up.EvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		if reg, ok := sp.(interface{ OnLatestBlock(func(int64)) }); ok {
+			reg.OnLatestBlock(func(int64) { c.Kick() })
+		}
+	}
 }
 
 // networkHeadFetcher hydrates through the network's normal forwarding path
@@ -435,7 +491,7 @@ func (n *Network) tryServeBlockStore(ctx context.Context, req *common.Normalized
 				return nil, false
 			}
 			if c != nil {
-				raw, ok = c.BlockByHash(ref, full)
+				raw, ok = c.BlockByHash(ctx, ref, full)
 			}
 			if !ok && n.historicalBlockStore != nil {
 				if rec, hit := n.historicalBlockStore.ReadBlockByHash(ctx, ref); hit {
@@ -452,7 +508,7 @@ func (n *Network) tryServeBlockStore(ctx context.Context, req *common.Normalized
 				return nil, false
 			}
 			if c != nil {
-				raw, ok = c.BlockByNumber(num, full)
+				raw, ok = c.BlockByNumber(ctx, num, full)
 			}
 			if !ok && n.historicalBlockStore != nil {
 				if rec, hit := n.historicalBlockStore.ReadBlockByNumber(ctx, num); hit {
@@ -499,7 +555,7 @@ func (n *Network) tryServeBlockStore(ctx context.Context, req *common.Normalized
 				return nil, false
 			}
 			if c != nil {
-				logs, ok = c.LogsByHash(bh, filter)
+				logs, ok = c.LogsByHash(ctx, bh, filter)
 			} else {
 				ok = false
 			}
@@ -529,7 +585,16 @@ func (n *Network) tryServeBlockStore(ctx context.Context, req *common.Normalized
 				return nil, false
 			}
 			if c != nil {
-				logs, ok = c.LogsRange(from, to, filter)
+				// With logsFill enabled, a range it can take whose window logs
+				// are not all cached yet goes to logsFill: one unfiltered range
+				// call whose per-height result the window adopts (AdoptLogs)
+				// instead of one blockHash call per height here. Wider ranges
+				// fetch missing heights by hash.
+				if n.logsFiller != nil && to-from+1 <= n.logsFiller.MaxRange() {
+					logs, ok = c.LogsRangeCached(ctx, from, to, filter)
+				} else {
+					logs, ok = c.LogsRange(ctx, from, to, filter)
+				}
 			} else {
 				ok = false
 			}
@@ -608,46 +673,42 @@ func (s *blockStoreConnectorStore) partition(scope blockstore.Scope) (string, er
 	return "blockstore:v1:" + hex.EncodeToString(h[:]), nil
 }
 
-func (s *blockStoreConnectorStore) GetBlock(ctx context.Context, scope blockstore.Scope, hash string) (*blockstore.BlockRecord, error) {
+// payloadKey keys an immutable payload by kind and lowercase block hash.
+func payloadKey(kind blockstore.PayloadKind, hash string) string {
+	return string(kind) + "/" + strings.ToLower(hash)
+}
+
+func (s *blockStoreConnectorStore) GetPayload(ctx context.Context, scope blockstore.Scope, kind blockstore.PayloadKind, hash string) (json.RawMessage, error) {
 	partition, err := s.partition(scope)
 	if err != nil {
 		return nil, err
 	}
-	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, strings.ToLower(hash), nil)
+	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, payloadKey(kind, hash), nil)
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-			return nil, fmt.Errorf("get head cache record: %w: %w", blockstore.ErrNotFound, err)
+			return nil, fmt.Errorf("get head cache %s: %w: %w", kind, blockstore.ErrNotFound, err)
 		}
 		var serverErr redis.Error
 		if errors.As(err, &serverErr) {
-			return nil, fmt.Errorf("get head cache record: %w", err)
+			return nil, fmt.Errorf("get head cache %s: %w", kind, err)
 		}
-		return nil, fmt.Errorf("get head cache record: %w: %w", blockstore.ErrStoreUnavailable, err)
+		return nil, fmt.Errorf("get head cache %s: %w: %w", kind, blockstore.ErrStoreUnavailable, err)
 	}
 	if len(value) == 0 {
 		return nil, blockstore.ErrNotFound
 	}
-	var record blockstore.BlockRecord
-	if err := json.Unmarshal(value, &record); err != nil {
-		return nil, fmt.Errorf("decode head cache record: %w", err)
-	}
-	return &record, nil
+	return json.RawMessage(value), nil
 }
 
-func (s *blockStoreConnectorStore) PutBlock(ctx context.Context, scope blockstore.Scope, record *blockstore.BlockRecord, ttl time.Duration) error {
-	if record == nil {
-		return fmt.Errorf("cannot store nil head cache record")
+func (s *blockStoreConnectorStore) PutPayload(ctx context.Context, scope blockstore.Scope, kind blockstore.PayloadKind, hash string, raw json.RawMessage, ttl time.Duration) error {
+	if len(raw) == 0 {
+		return fmt.Errorf("cannot store empty head cache %s", kind)
 	}
 	partition, err := s.partition(scope)
 	if err != nil {
 		return err
 	}
-	value, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("encode head cache record: %w", err)
-	}
-	key := strings.ToLower(record.Hash)
-	return s.connector.Set(ctx, partition, key, value, &ttl)
+	return s.connector.Set(ctx, partition, payloadKey(kind, hash), raw, &ttl)
 }
 
 func (s *blockStoreConnectorStore) redisClient() (redis.UniversalClient, error) {

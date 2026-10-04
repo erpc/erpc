@@ -334,3 +334,37 @@ func TestHttp_LogsFill_ReplicasShareOneUpstreamCallViaRedis(t *testing.T) {
 	}
 	require.Greater(t, logsFillCounter("hit", blockstore.LogsFillReasonPeerFill), peerHits, "the waiting replica served the peer's fill")
 }
+
+// With both the live window and logsFill on, they share one per-block logs
+// store: a small range that misses the window is filled by logsFill's one
+// unfiltered range call, whose per-height lists the window adopts as its
+// logs, so the window, later ranges, blockHash reads and logs subscriptions
+// make no further logs calls for those blocks.
+func TestHttp_LogsFill_LiveWindowAdoptsFill(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := blockStoreTestConfig(up.URL(), &common.EvmBlockStoreConfig{
+		Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond),
+		LogsFill: common.EvmBlockStoreLogsFillConfig{Enabled: true, UnfinalizedTTL: common.Duration(time.Minute)},
+	})
+	send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	hc := blockStoreOf(t, instance)
+	require.Eventually(t, func() bool { return hc.Head() == 20 && hc.CanonicalHash(5) != "" }, 10*time.Second, 20*time.Millisecond)
+
+	first := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x10","toBlock":"0x13"}]`)
+	require.Equal(t, int64(1), up.UnfilteredLogCalls(), "the miss is filled by one unfiltered range call")
+	require.Zero(t, up.BlockHashLogCalls(), "the window does not fetch per-block logs for the same range")
+
+	again := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x10","toBlock":"0x13","topics":[%q]}]`, scriptedTopicEven))
+	var even []map[string]interface{}
+	require.NoError(t, json.Unmarshal(again.Result, &even))
+	require.Len(t, even, 2)
+	byHash := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"blockHash":%q}]`, up.HashAt(17)))
+	require.Contains(t, string(first.Result), strings.TrimSuffix(strings.TrimPrefix(string(byHash.Result), "["), "]"))
+	logs, ok := hc.LogsRange(t.Context(), 16, 19, nil)
+	require.True(t, ok)
+	require.Len(t, logs, 4)
+	require.Equal(t, int64(1), up.UnfilteredLogCalls())
+	require.Zero(t, up.BlockHashLogCalls(), "adopted lists serve window reads with no upstream call")
+}

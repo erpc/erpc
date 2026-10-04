@@ -653,6 +653,12 @@ var (
 		Help:      "HTTP block and log requests served from the verified head cache.",
 	}, []string{"project", "network", "category"})
 
+	MetricBlockStoreFetchTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_fetch_total",
+		Help:      "Upstream fetches made by the live blockstore, by payload kind (header, block, logs) and reason (background, miss, subscription).",
+	}, []string{"project", "network", "kind", "reason"})
+
 	MetricBlockStoreLogsFillTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "blockstore_logs_fill_total",

@@ -93,6 +93,20 @@ func doRpc(t *testing.T, send func(string, map[string]string, map[string]string)
 	return r
 }
 
+func blockStoreOf(t *testing.T, e *ERPC) *blockstore.Cache {
+	t.Helper()
+	prj, err := e.GetProject("test_project")
+	require.NoError(t, err)
+	nw, err := prj.GetNetwork(t.Context(), "evm:123")
+	require.NoError(t, err)
+	hc := nw.BlockStore()
+	require.NotNil(t, hc)
+	return hc
+}
+
+// The background refresh fetches headers only; the first client read of a
+// block body or logs fetches it once, and every later read (any filter, full
+// or hash-only) is served from the cache.
 func TestHttp_BlockStore_ServesReusesAndHandlesReorg(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
@@ -101,42 +115,46 @@ func TestHttp_BlockStore_ServesReusesAndHandlesReorg(t *testing.T) {
 	})
 	send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 	defer shutdown()
+	hc := blockStoreOf(t, erpcInstance)
+	require.Eventually(t, func() bool { return hc.Head() == 20 && hc.CanonicalHash(5) != "" },
+		10*time.Second, 50*time.Millisecond, "the header window must cover the full depth")
+	require.Zero(t, up.FullBlockCalls(), "the background never fetches block bodies")
+	require.Zero(t, up.BlockHashLogCalls(), "the background never fetches logs")
 
-	prj, err := erpcInstance.GetProject("test_project")
-	require.NoError(t, err)
-	nw, err := prj.GetNetwork(t.Context(), "evm:123")
-	require.NoError(t, err)
-	hc := nw.BlockStore()
-	require.NotNil(t, hc)
-	require.Eventually(t, func() bool {
-		_, blockReady := hc.BlockByNumber(19, true)
-		_, logsReady := hc.LogsRange(8, 19, nil)
-		return hc.Head() == 20 && blockReady && logsReady
-	}, 10*time.Second, 50*time.Millisecond, "cache must hydrate the block and log range before HTTP cache-hit assertions")
-
-	// One hydrated block answers full, hash-only and by-hash queries without upstream calls.
-	before := up.BlockCalls(19) + up.Calls("eth_getBlockByHash") + up.RangeLogCalls()
-	full := doRpc(t, send, "eth_getBlockByNumber", `["0x13",true]`)
-	require.Contains(t, string(full.Result), `"from"`)
+	// Hash-only reads are served from the verified header with no upstream call.
+	headerCalls := up.HeaderCalls()
 	lite := doRpc(t, send, "eth_getBlockByNumber", `["0x13",false]`)
 	require.Contains(t, string(lite.Result), scriptedTx(19, "a"))
 	require.NotContains(t, string(lite.Result), `"from"`)
 	byHash := doRpc(t, send, "eth_getBlockByHash", fmt.Sprintf(`[%q,false]`, up.HashAt(19)))
 	require.JSONEq(t, string(lite.Result), string(byHash.Result))
+	require.Zero(t, up.FullBlockCalls())
+	require.LessOrEqual(t, up.HeaderCalls()-headerCalls, int64(2), "only background header polling, not the reads")
 
-	// Different filters over the same range reuse hydrated logs.
+	// A full block is fetched once, then served from the cache.
+	full := doRpc(t, send, "eth_getBlockByNumber", `["0x13",true]`)
+	require.Contains(t, string(full.Result), `"from"`)
+	require.Equal(t, int64(1), up.FullBlockCalls())
+	again := doRpc(t, send, "eth_getBlockByHash", fmt.Sprintf(`[%q,true]`, up.HashAt(19)))
+	require.JSONEq(t, string(full.Result), string(again.Result))
+	require.Equal(t, int64(1), up.FullBlockCalls(), "the second read is a cache hit")
+	require.Zero(t, up.Calls("eth_getBlockByHash"))
+
+	// Logs over window heights: one blockHash fetch per height, then any
+	// filter is served locally.
 	even := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0x13","topics":[%q]}]`, scriptedTopicEven))
 	var evenLogs []map[string]interface{}
 	require.NoError(t, json.Unmarshal(even.Result, &evenLogs))
 	require.Len(t, evenLogs, 6)
+	require.Equal(t, int64(12), up.BlockHashLogCalls(), "one logs fetch per block hash")
 	all := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0x13","address":%q}]`, scriptedEmitter))
 	var allLogs []map[string]interface{}
 	require.NoError(t, json.Unmarshal(all.Result, &allLogs))
 	require.Len(t, allLogs, 12)
 	none := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x8","toBlock":"0x13","address":"0x0000000000000000000000000000000000000001"}]`)
 	require.JSONEq(t, `[]`, string(none.Result))
-	after := up.BlockCalls(19) + up.Calls("eth_getBlockByHash") + up.RangeLogCalls()
-	require.Equal(t, before, after, "client reads must be served from the head cache")
+	require.Equal(t, int64(12), up.BlockHashLogCalls(), "later filters reuse cached logs")
+	require.Zero(t, up.RangeLogCalls())
 
 	// Range reaching below the window falls through to upstream (never partial).
 	logsBefore := up.RangeLogCalls()
@@ -152,31 +170,22 @@ func TestHttp_BlockStore_ServesReusesAndHandlesReorg(t *testing.T) {
 	require.Equal(t, 200, code)
 	require.Greater(t, up.BlockCalls(19), dirBefore)
 
-	// Same-height reorg: numeric mapping follows the new chain, and orphan
-	// hashes stop being served from the cache.
+	// Reorg at 19 (seen once 21 does not link): numeric reads follow the new
+	// chain and payloads cached for the orphan are never served.
 	orphan := up.HashAt(19)
 	up.Reorg(19, "b")
-	var reorgVisible bool
-	require.Eventually(t, func() bool {
-		code, _, body := send(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x13",false]}`, nil, nil)
-		if code != 200 {
-			return false
-		}
-		var response rpcResp
-		if err := json.Unmarshal([]byte(body), &response); err != nil || response.Error != nil {
-			return false
-		}
-		reorgVisible = strings.Contains(string(response.Result), up.HashAt(19)) && hc.Head() == 20
-		return reorgVisible
-	}, 10*time.Second, 50*time.Millisecond)
-	require.True(t, reorgVisible, "reorg should become visible through HTTP")
-	r := doRpc(t, send, "eth_getBlockByNumber", `["0x13",false]`)
+	up.Mine(1)
+	require.Eventually(t, func() bool { return hc.CanonicalHash(19) == strings.ToLower(up.HashAt(19)) },
+		10*time.Second, 20*time.Millisecond, "header walk-back must replace the orphan hash")
+	r := doRpc(t, send, "eth_getBlockByNumber", `["0x13",true]`)
 	require.Contains(t, string(r.Result), up.HashAt(19))
-	_, ok := hc.BlockByHash(orphan, false)
+	require.NotContains(t, string(r.Result), orphan)
+	_, ok := hc.BlockByHash(t.Context(), orphan, false)
 	require.False(t, ok)
 	logs := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x12","toBlock":"0x14"}]`)
 	require.NotContains(t, strings.ToLower(string(logs.Result)), strings.ToLower(orphan))
 	require.Contains(t, strings.ToLower(string(logs.Result)), strings.ToLower(up.HashAt(19)))
+	require.Zero(t, up.Calls("eth_getBlockByHash"))
 }
 
 // The getLogs serve branch runs before the network pre-forward hook, so it must
@@ -199,7 +208,7 @@ func TestHttp_BlockStore_GetLogsHonorsNetworkHardLimits(t *testing.T) {
 	hc := nw.BlockStore()
 	require.NotNil(t, hc)
 	require.Eventually(t, func() bool {
-		_, ok := hc.LogsRange(8, 19, nil)
+		_, ok := hc.LogsRange(t.Context(), 8, 19, nil)
 		return hc.Head() == 20 && ok
 	}, 10*time.Second, 50*time.Millisecond)
 
@@ -243,8 +252,9 @@ func TestHttp_BlockStore_DisabledPreservesBehavior(t *testing.T) {
 	require.Greater(t, up.BlockCalls(19), before)
 }
 
-// The lease holder verifies headers and shares its snapshot and immutable
-// block/log payloads. The follower reads them without hydrating upstream.
+// The lease holder verifies headers and shares its snapshot and header
+// payloads. The follower reads them without upstream calls; a body or logs
+// payload fetched by one replica on a miss is reused by the other.
 func TestHttp_BlockStore_SharedRedisTwoReplicas(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
@@ -266,51 +276,32 @@ func TestHttp_BlockStore_SharedRedisTwoReplicas(t *testing.T) {
 			shutdownA()
 		}
 	}()
+	ca := blockStoreOf(t, eA)
+	require.Eventually(t, func() bool { return ca.Head() == 20 && ca.CanonicalHash(5) != "" },
+		10*time.Second, 50*time.Millisecond, "replica A must verify its complete header window before replica B starts")
 
-	get := func(e *ERPC) *Network {
-		p, err := e.GetProject("test_project")
-		require.NoError(t, err)
-		n, err := p.GetNetwork(t.Context(), "evm:123")
-		require.NoError(t, err)
-		return n
-	}
-	ca := get(eA).BlockStore()
-	require.Eventually(t, func() bool {
-		_, logsReady := ca.LogsRange(5, 20, nil)
-		return ca.Head() == 20 && logsReady
-	}, 10*time.Second, 50*time.Millisecond, "replica A must hydrate its complete window before replica B starts")
-	require.Positive(t, ca.Stats.Hydrated.Load())
-
-	fullBeforeB, logsByHashBeforeB, rangeLogsBeforeB := up.FullBlockCalls(), up.BlockHashLogCalls(), up.RangeLogCalls()
-	headersBeforeB := up.HeaderCalls()
-	blockNumbersBeforeB := up.Calls("eth_blockNumber")
-	latestBlocksBeforeB := up.LatestBlockCalls()
 	sendB, _, baseB, shutdownB, eB := createServerTestFixtures(cfgB, t)
 	defer shutdownB()
-	cb := get(eB).BlockStore()
-	require.Eventually(t, func() bool {
-		_, logsReady := cb.LogsRange(5, 20, nil)
-		return cb.Head() == 20 && logsReady
-	}, 10*time.Second, 50*time.Millisecond, "replica B must reuse the complete shared payload window")
-	require.Zero(t, cb.Stats.Hydrated.Load(), "replica B should reuse Redis payloads")
-	require.Equal(t, fullBeforeB, up.FullBlockCalls(), "replica B must not re-fetch full blocks")
-	require.Equal(t, logsByHashBeforeB, up.BlockHashLogCalls(), "replica B must not re-fetch block logs")
-	require.Equal(t, rangeLogsBeforeB, up.RangeLogCalls(), "replica B must not re-fetch range logs")
-	t.Logf("follower bootstrap RPC counts: eth_blockNumber=%d, latest-block queries=%d (independent EVM state-poller probes), explicit headers=%d (leader may poll), full blocks=%d, block-hash logs=%d, range logs=%d",
-		up.Calls("eth_blockNumber")-blockNumbersBeforeB, up.LatestBlockCalls()-latestBlocksBeforeB,
-		up.HeaderCalls()-headersBeforeB,
-		up.FullBlockCalls()-fullBeforeB, up.BlockHashLogCalls()-logsByHashBeforeB,
-		up.RangeLogCalls()-rangeLogsBeforeB)
+	cb := blockStoreOf(t, eB)
+	require.Eventually(t, func() bool { return cb.Head() == 20 && cb.CanonicalHash(5) != "" },
+		10*time.Second, 50*time.Millisecond, "replica B must install the shared header window")
 	require.Equal(t, ca.Head(), cb.Head())
+	require.Zero(t, up.FullBlockCalls()+up.BlockHashLogCalls()+up.RangeLogCalls(), "no bodies or logs without client reads")
 
-	// HTTP on the follower is served from its local view and shared payloads.
-	before := up.FullBlockCalls() + up.BlockHashLogCalls() + up.RangeLogCalls()
-	header := doRpc(t, sendB, "eth_getBlockByNumber", `["0x13",false]`)
-	require.Contains(t, string(header.Result), up.HashAt(19))
+	// A miss on A fetches once; B serves the same payloads from Redis.
 	ra := doRpc(t, sendA, "eth_getLogs", `[{"fromBlock":"0xa","toBlock":"0x12"}]`)
+	fa := doRpc(t, sendA, "eth_getBlockByNumber", `["0x13",true]`)
+	require.Equal(t, int64(9), up.BlockHashLogCalls())
+	require.Equal(t, int64(1), up.FullBlockCalls())
 	rb := doRpc(t, sendB, "eth_getLogs", `[{"fromBlock":"0xa","toBlock":"0x12"}]`)
+	fb := doRpc(t, sendB, "eth_getBlockByNumber", `["0x13",true]`)
+	header := doRpc(t, sendB, "eth_getBlockByNumber", `["0x13",false]`)
 	require.JSONEq(t, string(ra.Result), string(rb.Result))
-	require.Equal(t, before, up.FullBlockCalls()+up.BlockHashLogCalls()+up.RangeLogCalls(), "both replicas serve payloads from cache")
+	require.JSONEq(t, string(fa.Result), string(fb.Result))
+	require.Contains(t, string(header.Result), up.HashAt(19))
+	require.Equal(t, int64(9), up.BlockHashLogCalls(), "replica B reuses shared logs")
+	require.Equal(t, int64(1), up.FullBlockCalls(), "replica B reuses the shared block")
+	require.Zero(t, cb.Stats.Hydrated.Load(), "replica B fetched nothing from upstream")
 
 	// A WebSocket connected to the follower receives events from its local view.
 	w, _, err := dialWs(t, wsURL(baseB, ""), nil)
@@ -327,19 +318,20 @@ func TestHttp_BlockStore_SharedRedisTwoReplicas(t *testing.T) {
 	require.Contains(t, string(w.next(headSubID)), `"number":"0x15"`)
 
 	// The follower takes leadership after A stops, then detects and serves a
-	// same-height reorg from its new leader refresh.
+	// reorg from its own header refresh.
 	shutdownA()
 	aStopped = true
 	orphan := up.HashAt(19)
 	up.Reorg(19, "b")
+	up.Mine(1)
 	newHash := up.HashAt(19)
 	require.Eventually(t, func() bool {
-		block, ok := cb.BlockByNumber(19, false)
+		block, ok := cb.BlockByNumber(t.Context(), 19, false)
 		return ok && strings.Contains(string(block), newHash)
-	}, 10*time.Second, 20*time.Millisecond, "the takeover leader should refresh the same-height reorg")
-	reorgHTTP := doRpc(t, sendB, "eth_getBlockByNumber", `["0x13",false]`)
+	}, 10*time.Second, 20*time.Millisecond, "the takeover leader should walk back the reorg")
+	reorgHTTP := doRpc(t, sendB, "eth_getBlockByNumber", `["0x13",true]`)
 	require.Contains(t, string(reorgHTTP.Result), newHash)
-	_, orphanCanonical := cb.BlockByHash(orphan, false)
+	_, orphanCanonical := cb.BlockByHash(t.Context(), orphan, false)
 	require.False(t, orphanCanonical, "the orphan hash must not remain in the takeover view")
 }
 
@@ -364,51 +356,65 @@ func TestHttp_BlockStore_ConnectorTTLScopeAndCorruption(t *testing.T) {
 	require.True(t, ok)
 
 	scope := blockstore.Scope{Namespace: "connector-test", ProjectId: "test_project", NetworkId: "evm:123"}
-	record := &blockstore.BlockRecord{
-		Number: 1, Hash: "0x" + strings.Repeat("a", 64),
-		ParentHash: "0x" + strings.Repeat("b", 64),
-		Block:      json.RawMessage(`{"number":"0x1"}`), Logs: json.RawMessage(`[]`),
-	}
+	hash := "0x" + strings.Repeat("A", 64)
+	payload := json.RawMessage(`{"number":"0x1"}`)
 	ttl := 150 * time.Millisecond
 	ctx := t.Context()
-	require.NoError(t, store.PutBlock(ctx, scope, record, ttl))
-	got, err := store.GetBlock(ctx, scope, record.Hash)
+	require.NoError(t, store.PutPayload(ctx, scope, blockstore.PayloadBlock, hash, payload, ttl))
+	got, err := store.GetPayload(ctx, scope, blockstore.PayloadBlock, strings.ToLower(hash))
 	require.NoError(t, err)
-	require.Equal(t, record, got)
+	require.JSONEq(t, string(payload), string(got))
+	_, err = store.GetPayload(ctx, scope, blockstore.PayloadLogs, hash)
+	require.ErrorIs(t, err, blockstore.ErrNotFound, "payload kinds are keyed separately")
 
 	otherScope := scope
 	otherScope.Namespace = "different-scope"
-	got, err = store.GetBlock(ctx, otherScope, record.Hash)
+	got, err = store.GetPayload(ctx, otherScope, blockstore.PayloadBlock, hash)
 	require.Nil(t, got)
 	require.ErrorIs(t, err, blockstore.ErrNotFound)
 
 	partition, err := adapter.partition(scope)
 	require.NoError(t, err)
-	require.NoError(t, connector.Set(ctx, partition, strings.ToLower(record.Hash), []byte("{"), &ttl))
-	_, err = store.GetBlock(ctx, scope, record.Hash)
-	require.ErrorContains(t, err, "decode head cache record")
-	require.NotErrorIs(t, err, blockstore.ErrStoreUnavailable, "corrupt payloads must not be treated as transient read failures")
-	key := partition + ":" + strings.ToLower(record.Hash)
+	key := partition + ":" + payloadKey(blockstore.PayloadBlock, hash)
 	require.NoError(t, adapter.redis.Client().Del(ctx, key).Err())
 	require.NoError(t, adapter.redis.Client().LPush(ctx, key, "wrong type").Err())
-	_, err = store.GetBlock(ctx, scope, record.Hash)
+	_, err = store.GetPayload(ctx, scope, blockstore.PayloadBlock, hash)
 	require.Error(t, err)
 	require.NotErrorIs(t, err, blockstore.ErrStoreUnavailable, "Redis server errors must stay fail-closed")
-	require.NoError(t, connector.Set(ctx, partition, strings.ToLower(record.Hash), []byte("{"), &ttl))
+	require.NoError(t, connector.Set(ctx, partition, payloadKey(blockstore.PayloadBlock, hash), payload, &ttl))
 
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	_, err = store.GetBlock(canceled, scope, record.Hash)
+	_, err = store.GetPayload(canceled, scope, blockstore.PayloadBlock, hash)
 	require.ErrorIs(t, err, blockstore.ErrStoreUnavailable)
 	require.ErrorIs(t, err, context.Canceled, "the connector error must remain available to callers")
 
 	mr.FastForward(ttl + 50*time.Millisecond)
-	got, err = store.GetBlock(ctx, scope, record.Hash)
+	got, err = store.GetPayload(ctx, scope, blockstore.PayloadBlock, hash)
 	require.Nil(t, got)
 	require.ErrorIs(t, err, blockstore.ErrNotFound)
+
+	// The payload fill lock is token-fenced and exclusive per key.
+	release, ok, err := adapter.TryLock(ctx, scope, "block/"+hash, time.Second)
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, ok, err = adapter.TryLock(ctx, scope, "block/"+hash, time.Second)
+	require.NoError(t, err)
+	require.False(t, ok)
+	held, err := adapter.Locked(ctx, scope, "block/"+hash)
+	require.NoError(t, err)
+	require.True(t, held)
+	release(ctx)
+	held, err = adapter.Locked(ctx, scope, "block/"+hash)
+	require.NoError(t, err)
+	require.False(t, held)
 }
 
-func TestHttp_BlockStore_BlockNumberFailureDoesNotSeedOrRefresh(t *testing.T) {
+// The refresh takes its tip from the network's in-memory latest block (state
+// pollers), so it does not depend on eth_blockNumber: with eth_blockNumber
+// failing upstream the window still tracks the chain. eth_blockNumber is only
+// a fallback while that value is unknown or has not moved for a while.
+func TestHttp_BlockStore_HeadComesFromStatePoller(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
 	up.FailBlockNumber(true)
@@ -418,26 +424,16 @@ func TestHttp_BlockStore_BlockNumberFailureDoesNotSeedOrRefresh(t *testing.T) {
 	})
 	_, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	defer shutdown()
-	project, err := instance.GetProject("test_project")
-	require.NoError(t, err)
-	network, err := project.GetNetwork(t.Context(), "evm:123")
-	require.NoError(t, err)
-	hc := network.BlockStore()
-	require.NotNil(t, hc)
-	require.Eventually(t, func() bool { return up.Calls("eth_blockNumber") > 0 }, 5*time.Second, 20*time.Millisecond)
-	require.Equal(t, int64(-1), hc.Head(), "failed discovery must not seed block zero")
-	require.Zero(t, hc.Stats.Hydrated.Load())
-
-	up.FailBlockNumber(false)
+	hc := blockStoreOf(t, instance)
 	require.Eventually(t, func() bool { return hc.Head() == 20 }, 5*time.Second, 20*time.Millisecond)
-	up.FailBlockNumber(true)
-	hc.Kick()
-	require.Eventually(t, func() bool { return !hc.Fresh() }, 3*time.Second, 20*time.Millisecond,
-		"failed discovery must not refresh the previous view's freshness")
-	require.Equal(t, int64(-1), hc.Head(), "stale canonical view must stop being served")
+	up.Mine(2)
+	require.Eventually(t, func() bool { return hc.Head() == 22 }, 5*time.Second, 20*time.Millisecond,
+		"with eth_blockNumber failing upstream, the head still advances from the state pollers")
+	require.Zero(t, hc.Stats.Hydrated.Load())
+	require.Zero(t, up.FullBlockCalls()+up.BlockHashLogCalls())
 }
 
-func TestHttp_BlockStore_ColdFillCanExceedPollInterval(t *testing.T) {
+func TestHttp_BlockStore_SlowBodyFetchIsOnDemand(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 2)
 	defer up.Close()
 	const blockDelay = 80 * time.Millisecond
@@ -447,31 +443,29 @@ func TestHttp_BlockStore_ColdFillCanExceedPollInterval(t *testing.T) {
 		PollInterval: common.Duration(100 * time.Millisecond),
 		FetchTimeout: common.Duration(2 * time.Second),
 	})
-	started := time.Now()
 	send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	defer shutdown()
-	project, err := instance.GetProject("test_project")
-	require.NoError(t, err)
-	network, err := project.GetNetwork(t.Context(), "evm:123")
-	require.NoError(t, err)
-	hc := network.BlockStore()
-	require.NotNil(t, hc)
-	require.Eventually(t, func() bool {
-		_, ok := hc.BlockByNumber(1, true)
-		return hc.Head() == 2 && ok
-	}, 5*time.Second, 20*time.Millisecond, "cold fill must publish the complete configured window")
-	require.GreaterOrEqual(t, time.Since(started), 2*blockDelay, "cold fill must complete despite taking longer than one poll interval")
-	require.Equal(t, int64(2), hc.Stats.Hydrated.Load())
-	require.Equal(t, int64(2), up.FullBlockCalls())
-	require.Equal(t, int64(2), up.BlockHashLogCalls())
+	hc := blockStoreOf(t, instance)
+	require.Eventually(t, func() bool { return hc.Head() == 2 && hc.CanonicalHash(1) != "" },
+		5*time.Second, 20*time.Millisecond, "the window must cover the configured depth")
+	require.Zero(t, hc.Stats.Hydrated.Load())
+	require.Zero(t, up.FullBlockCalls())
+	require.Zero(t, up.BlockHashLogCalls())
 
-	hitsBefore := hc.Stats.Hits.Load()
-	blocksBefore, logsBefore := up.FullBlockCalls(), up.BlockHashLogCalls()
+	started := time.Now()
 	block := doRpc(t, send, "eth_getBlockByNumber", `["0x1",true]`)
 	require.Contains(t, string(block.Result), `"transactions"`)
+	require.GreaterOrEqual(t, time.Since(started), blockDelay, "a body miss waits for its one upstream fetch")
 	logs := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x1","toBlock":"0x2"}]`)
 	require.JSONEq(t, `[{"address":"`+scriptedEmitter+`","topics":["`+scriptedTopicOdd+`"],"data":"0x","blockNumber":"0x1","blockHash":"`+up.HashAt(1)+`","transactionHash":"`+scriptedTx(1, "a")+`","transactionIndex":"0x0","logIndex":"0x0","removed":false},{"address":"`+scriptedEmitter+`","topics":["`+scriptedTopicEven+`"],"data":"0x","blockNumber":"0x2","blockHash":"`+up.HashAt(2)+`","transactionHash":"`+scriptedTx(2, "a")+`","transactionIndex":"0x0","logIndex":"0x0","removed":false}]`, string(logs.Result))
-	require.Equal(t, blocksBefore, up.FullBlockCalls(), "cached block response must not hit upstream")
-	require.Equal(t, logsBefore, up.BlockHashLogCalls(), "cached log range must not hit upstream")
+	require.Equal(t, int64(1), up.FullBlockCalls())
+	require.Equal(t, int64(2), up.BlockHashLogCalls())
+	require.Equal(t, int64(3), hc.Stats.Hydrated.Load())
+
+	hitsBefore := hc.Stats.Hits.Load()
+	doRpc(t, send, "eth_getBlockByNumber", `["0x1",true]`)
+	doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x1","toBlock":"0x2"}]`)
+	require.Equal(t, int64(1), up.FullBlockCalls(), "cached block response must not hit upstream")
+	require.Equal(t, int64(2), up.BlockHashLogCalls(), "cached log range must not hit upstream")
 	require.Equal(t, hitsBefore+2, hc.Stats.Hits.Load(), "complete block and log reads must be cache hits")
 }

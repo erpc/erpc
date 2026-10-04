@@ -20,7 +20,10 @@ type Scope struct {
 
 func (s Scope) Key() string { return s.Namespace + "|" + s.ProjectId + "/" + s.NetworkId }
 
-// BlockRecord contains one validated full block and its complete log list.
+// BlockRecord is one block as delivered to subscribers and the historical
+// cache: Block is the block JSON (a hash-only header for live-window events,
+// a full block for historical reads) and Logs its complete log list, or nil
+// when the logs were never fetched.
 type BlockRecord struct {
 	Number     int64           `json:"n"`
 	Hash       string          `json:"h"`
@@ -34,6 +37,7 @@ func (r *BlockRecord) Size() int64 {
 }
 
 // Snapshot is a header-verified canonical window shared with fleet followers.
+// Incomplete marks a window that has not yet been backfilled to full depth.
 type Snapshot struct {
 	Head       int64     `json:"head"`
 	Hashes     []string  `json:"hashes"`
@@ -50,11 +54,24 @@ func (s *Snapshot) HashAt(n int64) string {
 	return s.Hashes[n-s.Base()]
 }
 
-// Store shares immutable block payloads, which do not establish canonicality
-// without upstream verification or a verified FleetStore snapshot.
+// PayloadKind names one hash-addressed, immutable payload of a block.
+type PayloadKind string
+
+const (
+	// PayloadHeader is eth_getBlockByNumber(n, false): the window header.
+	PayloadHeader PayloadKind = "header"
+	// PayloadBlock is eth_getBlockByNumber(n, true): the full block body.
+	PayloadBlock PayloadKind = "block"
+	// PayloadLogs is the complete unfiltered log list of the block.
+	PayloadLogs PayloadKind = "logs"
+)
+
+// Store shares immutable payloads keyed by block hash. A payload never
+// establishes canonicality on its own: it is served only for a hash in a
+// verified window, and is validated against that window's header on read.
 type Store interface {
-	PutBlock(ctx context.Context, scope Scope, rec *BlockRecord, ttl time.Duration) error
-	GetBlock(ctx context.Context, scope Scope, hash string) (*BlockRecord, error)
+	PutPayload(ctx context.Context, scope Scope, kind PayloadKind, hash string, raw json.RawMessage, ttl time.Duration) error
+	GetPayload(ctx context.Context, scope Scope, kind PayloadKind, hash string) (json.RawMessage, error)
 }
 
 // FleetStore optionally coordinates one refresher across cache replicas.
@@ -70,4 +87,15 @@ type Lease interface {
 	Renew(ctx context.Context, ttl time.Duration) (bool, error)
 	Publish(ctx context.Context, snap *Snapshot, ttl time.Duration) (bool, error)
 	Release(ctx context.Context) error
+}
+
+// FillLocker is optionally implemented by a shared store to let replicas
+// coalesce one upstream fill per key. The holder stores its result before
+// releasing, so "lock no longer held" doubles as the completion signal.
+type FillLocker interface {
+	// TryLock acquires key for ttl. ok=false means another holder has it.
+	// release is non-nil only when ok.
+	TryLock(ctx context.Context, scope Scope, key string, ttl time.Duration) (release func(context.Context), ok bool, err error)
+	// Locked reports whether some holder currently has key.
+	Locked(ctx context.Context, scope Scope, key string) (bool, error)
 }

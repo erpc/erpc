@@ -57,6 +57,13 @@ func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockSt
 		MaxEntryBytes:  hc.MaxBlockBytes,
 		PeerWait:       peerWait,
 		Concurrency:    hc.Concurrency,
+		// The live window (when enabled) adopts each fill's per-height
+		// lists as its logs, so the same blocks are never fetched twice.
+		OnFill: func(ctx context.Context, entries []*blockstore.BlockLogs) {
+			if c := network.blockStore; c != nil {
+				c.AdoptLogs(ctx, entries)
+			}
+		},
 	}, store, fetch, network.EvmHighestLatestBlockNumber, network.EvmHighestFinalizedBlockNumber)
 	return nil
 }
@@ -266,37 +273,49 @@ func (s *blockStoreConnectorStore) PutBlockLogs(ctx context.Context, scope block
 
 var _ blockstore.LogsFillLocker = (*blockStoreConnectorStore)(nil)
 
-func (s *blockStoreConnectorStore) logsFillLockKey(scope blockstore.Scope, from, to int64) (string, error) {
+var _ blockstore.FillLocker = (*blockStoreConnectorStore)(nil)
+
+func (s *blockStoreConnectorStore) fillLockKey(scope blockstore.Scope, key string) (string, error) {
 	partition, err := s.partition(scope)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s:fill-lock/%d-%d", partition, from, to), nil
+	return partition + ":fill-lock/" + key, nil
 }
 
-// TryLockFill takes a token-fenced SET NX PX lock on one fill range. release
-// deletes it only while the token still matches, so an expired lock that a
-// peer has since re-acquired is never removed.
+// TryLockFill takes a token-fenced SET NX PX lock on one fill range.
 func (s *blockStoreConnectorStore) TryLockFill(ctx context.Context, scope blockstore.Scope, from, to int64, ttl time.Duration) (func(context.Context), bool, error) {
+	return s.TryLock(ctx, scope, fmt.Sprintf("%d-%d", from, to), ttl)
+}
+
+func (s *blockStoreConnectorStore) FillLocked(ctx context.Context, scope blockstore.Scope, from, to int64) (bool, error) {
+	return s.Locked(ctx, scope, fmt.Sprintf("%d-%d", from, to))
+}
+
+// TryLock takes a token-fenced SET NX PX lock on <partition>:fill-lock/<key>.
+// release deletes it only while the token still matches, so an expired lock
+// that a peer has since re-acquired is never removed. Shared by the logs fill
+// (key "<from>-<to>") and live-window payload fills (key "<kind>/<hash>").
+func (s *blockStoreConnectorStore) TryLock(ctx context.Context, scope blockstore.Scope, lockKey string, ttl time.Duration) (func(context.Context), bool, error) {
 	if ttl < time.Millisecond {
-		return nil, false, fmt.Errorf("logs fill lock TTL must be positive")
+		return nil, false, fmt.Errorf("fill lock TTL must be positive")
 	}
 	client, err := s.redisClient()
 	if err != nil {
 		return nil, false, err
 	}
-	key, err := s.logsFillLockKey(scope, from, to)
+	key, err := s.fillLockKey(scope, lockKey)
 	if err != nil {
 		return nil, false, err
 	}
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return nil, false, fmt.Errorf("generate logs fill lock token: %w", err)
+		return nil, false, fmt.Errorf("generate fill lock token: %w", err)
 	}
 	token := hex.EncodeToString(raw[:])
 	acquired, err := client.SetNX(ctx, key, token, ttl).Result()
 	if err != nil {
-		return nil, false, fmt.Errorf("acquire logs fill lock: %w", err)
+		return nil, false, fmt.Errorf("acquire fill lock: %w", err)
 	}
 	if !acquired {
 		return nil, false, nil
@@ -310,18 +329,19 @@ func (s *blockStoreConnectorStore) TryLockFill(ctx context.Context, scope blocks
 	return release, true, nil
 }
 
-func (s *blockStoreConnectorStore) FillLocked(ctx context.Context, scope blockstore.Scope, from, to int64) (bool, error) {
+// Locked reports whether some holder currently has the fill lock for key.
+func (s *blockStoreConnectorStore) Locked(ctx context.Context, scope blockstore.Scope, lockKey string) (bool, error) {
 	client, err := s.redisClient()
 	if err != nil {
 		return false, err
 	}
-	key, err := s.logsFillLockKey(scope, from, to)
+	key, err := s.fillLockKey(scope, lockKey)
 	if err != nil {
 		return false, err
 	}
 	n, err := client.Exists(ctx, key).Result()
 	if err != nil {
-		return false, fmt.Errorf("check logs fill lock: %w", err)
+		return false, fmt.Errorf("check fill lock: %w", err)
 	}
 	return n > 0, nil
 }

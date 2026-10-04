@@ -747,7 +747,13 @@ func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, re
 		c.mu.Unlock()
 		return errorReply(req.ID, int(common.JsonRpcErrorCapacityExceeded), fmt.Sprintf("too many subscriptions on this connection (max %d)", c.ws.cfg.MaxSubscriptionsPerConnection)), nil
 	}
-	s.sub = hc.Subscribe(c.ws.cfg.SendQueueSize)
+	// Only logs subscriptions make the head cache fetch per-block logs;
+	// newHeads is rendered from the verified headers alone.
+	if s.logs {
+		s.sub = hc.SubscribeLogs(c.ws.cfg.SendQueueSize)
+	} else {
+		s.sub = hc.Subscribe(c.ws.cfg.SendQueueSize)
+	}
 	c.subs[s.id] = s
 	// Reserve the pump in the wait group while still registered so cleanup
 	// cannot finish before the deferred start runs.
@@ -879,7 +885,7 @@ func (c *wsConn) emit(s *wsSub, ev blockstore.Event) error {
 	}
 	if !s.logs {
 		for _, rec := range ev.Added {
-			h, err := rec.HeaderJSON()
+			h, err := blockstore.HeaderJSON(rec.Block)
 			if err != nil {
 				return err
 			}
@@ -889,7 +895,23 @@ func (c *wsConn) emit(s *wsSub, ev blockstore.Event) error {
 		}
 		return nil
 	}
+	if c.network != nil && c.network.BlockStore() != nil {
+		hc := c.network.BlockStore()
+		// Logs are fetched once per new block hash, shared by every logs
+		// subscriber (and HTTP reads) through the head cache. A removed
+		// block's logs come from that cache; see EventLogs.
+		full, ok := hc.EventLogs(c.ctx, ev)
+		if !ok {
+			return errWsGap
+		}
+		ev = full
+	}
 	for _, rec := range ev.Removed {
+		if rec.Logs == nil {
+			// Never fetched while it was canonical, so no logs subscriber
+			// was sent its logs: there is nothing to retract.
+			continue
+		}
 		logs, err := rec.FilterLogs(s.filter, true)
 		if err != nil {
 			return err

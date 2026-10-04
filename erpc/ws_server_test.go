@@ -534,7 +534,7 @@ func TestWs_ColdFillKeepsSubscriptionOpen(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
 	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true})
-	// One record per 100ms tick: the 16-block window takes ~1.6s to fill.
+	// One backfilled header per 100ms tick: the 16-block window takes ~1.6s to fill.
 	cfg.Projects[0].Networks[0].Evm.BlockStore.MaxPerTick = 1
 	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
 	defer shutdown()
@@ -709,4 +709,53 @@ func TestWs_PerProjectCap(t *testing.T) {
 		_ = c.c.CloseNow()
 		return true
 	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// newHeads needs only headers; per-block logs are fetched only while a logs
+// subscription exists, once per block regardless of how many subscribe.
+func TestWs_LogsFetchedOnlyForLogsSubscribers(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	_, _, base, shutdown, e := createServerTestFixtures(wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true}), t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	hc := blockStoreOf(t, e)
+
+	w, _, err := dialWs(t, wsURL(base, ""), nil)
+	require.NoError(t, err)
+	var headsID string
+	require.NoError(t, json.Unmarshal(w.call("eth_subscribe", `["newHeads"]`).Result, &headsID))
+	for n := 21; n <= 23; n++ {
+		up.Mine(1)
+		require.Contains(t, string(w.next(headsID)), fmt.Sprintf(`"number":"0x%x"`, n))
+	}
+	require.Zero(t, up.BlockHashLogCalls(), "newHeads subscribers fetch no logs")
+	require.Zero(t, up.FullBlockCalls(), "newHeads subscribers fetch no block bodies")
+	require.Zero(t, hc.LogsSubscriberCount())
+
+	// Two logs subscriptions (different filters): one logs fetch per block.
+	var allID, evenID string
+	require.NoError(t, json.Unmarshal(w.call("eth_subscribe", `["logs",{}]`).Result, &allID))
+	require.NoError(t, json.Unmarshal(w.call("eth_subscribe", fmt.Sprintf(`["logs",{"topics":[%q]}]`, scriptedTopicEven)).Result, &evenID))
+	require.Equal(t, 2, hc.LogsSubscriberCount())
+	for n := 24; n <= 27; n++ {
+		up.Mine(1)
+		require.Contains(t, string(w.next(headsID)), fmt.Sprintf(`"number":"0x%x"`, n))
+		require.Contains(t, string(w.next(allID)), fmt.Sprintf(`"blockNumber":"0x%x"`, n))
+		if n%2 == 0 {
+			require.Contains(t, string(w.next(evenID)), fmt.Sprintf(`"blockNumber":"0x%x"`, n))
+		}
+	}
+	require.Equal(t, int64(4), up.BlockHashLogCalls(), "one logs fetch per new block, shared by both subscriptions")
+	require.Zero(t, up.FullBlockCalls())
+
+	// After unsubscribing, logs fetching stops.
+	require.Equal(t, "true", string(w.call("eth_unsubscribe", fmt.Sprintf(`[%q]`, allID)).Result))
+	require.Equal(t, "true", string(w.call("eth_unsubscribe", fmt.Sprintf(`[%q]`, evenID)).Result))
+	require.Eventually(t, func() bool { return hc.LogsSubscriberCount() == 0 }, 5*time.Second, 20*time.Millisecond)
+	for n := 28; n <= 30; n++ {
+		up.Mine(1)
+		require.Contains(t, string(w.next(headsID)), fmt.Sprintf(`"number":"0x%x"`, n))
+	}
+	require.Equal(t, int64(4), up.BlockHashLogCalls(), "no logs subscribers, no logs fetches")
 }

@@ -99,37 +99,6 @@ func txHashesOf(b *rawBlock) (map[string]struct{}, bool, error) {
 	return out, full, nil
 }
 
-// buildRecord validates a full block plus the complete log list for that block
-// and returns an immutable record. Any inconsistency rejects the whole block:
-// partial or mismatched data is never cached.
-func buildRecord(blockRaw, logsRaw json.RawMessage, maxBlockBytes int64) (*BlockRecord, error) {
-	if maxBlockBytes > 0 && int64(len(blockRaw)+len(logsRaw)) > maxBlockBytes {
-		return nil, errRecordTooLarge
-	}
-	b, n, err := parseBlockHeader(blockRaw)
-	if err != nil {
-		return nil, err
-	}
-	txs, full, err := txHashesOf(b)
-	if err != nil {
-		return nil, err
-	}
-	if !full && len(b.Transactions) > 0 {
-		return nil, fmt.Errorf("block fetched without full transactions")
-	}
-	if err := validateCompleteLogs(b, n, txs, logsRaw); err != nil {
-		return nil, err
-	}
-	trimmed := bytes.TrimSpace(logsRaw)
-	return &BlockRecord{
-		Number:     n,
-		Hash:       normHash(b.Hash),
-		ParentHash: normHash(b.ParentHash),
-		Block:      append(json.RawMessage(nil), blockRaw...),
-		Logs:       append(json.RawMessage(nil), trimmed...),
-	}, nil
-}
-
 func validateCompleteLogs(b *rawBlock, n int64, txs map[string]struct{}, logsRaw json.RawMessage) error {
 	var logs []rawLog
 	trimmed := bytes.TrimSpace(logsRaw)
@@ -201,19 +170,6 @@ func (r *BlockRecord) BlockJSON(full bool) (json.RawMessage, error) {
 	}
 	hb, _ := json.Marshal(hashes)
 	m["transactions"] = hb
-	return json.Marshal(m)
-}
-
-// HeaderJSON renders the block as a newHeads notification payload (header
-// fields only).
-func (r *BlockRecord) HeaderJSON() (json.RawMessage, error) {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(r.Block, &m); err != nil {
-		return nil, err
-	}
-	for _, k := range []string{"transactions", "uncles", "size", "totalDifficulty", "withdrawals"} {
-		delete(m, k)
-	}
 	return json.Marshal(m)
 }
 
