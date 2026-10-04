@@ -814,6 +814,9 @@ func (c *wsConn) pump(s *wsSub) {
 				}
 				return
 			}
+			if s.unsubscribed.Load() {
+				return
+			}
 			if err := c.emit(s, ev); errors.Is(err, errWsGap) {
 				// Missing heights (evicted records, window reset, recovery
 				// after staleness): the client must resync, never skip.
@@ -863,6 +866,9 @@ func checkContinuity(last int64, ev blockstore.Event) error {
 }
 
 func (c *wsConn) emit(s *wsSub, ev blockstore.Event) error {
+	if s.unsubscribed.Load() {
+		return nil
+	}
 	if err := checkContinuity(s.last, ev); err != nil {
 		return err
 	}

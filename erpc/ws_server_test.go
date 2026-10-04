@@ -424,6 +424,33 @@ func TestWs_BusyBlockDeliveredToReadingClient(t *testing.T) {
 	require.Equal(t, 1000, got)
 }
 
+func TestWs_UnsubscribeDiscardsBufferedEvents(t *testing.T) {
+	c, _ := testWsConn(t, 4)
+	s := &wsSub{id: "0x1", sub: &blockstore.Subscription{C: make(chan blockstore.Event, 2)}}
+	c.subs = map[string]*wsSub{s.id: s}
+	s.sub.C <- blockstore.Event{Added: []*blockstore.BlockRecord{manyLogsRecord(10, 0)}}
+	s.sub.C <- blockstore.Event{Added: []*blockstore.BlockRecord{manyLogsRecord(11, 0)}}
+
+	reply := c.unsubscribe(&wsRequest{ID: json.RawMessage(`1`), Params: json.RawMessage(`["0x1"]`)})
+	require.Contains(t, string(reply), `"result":true`)
+	require.True(t, c.send(reply))
+	c.wg.Add(1)
+	go c.pump(s)
+	done := make(chan struct{})
+	go func() { c.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("subscription pump did not stop after unsubscribe")
+	}
+	require.Equal(t, reply, <-c.out)
+	select {
+	case notification := <-c.out:
+		t.Fatalf("notification delivered after unsubscribe reply: %s", notification)
+	default:
+	}
+}
+
 func TestWs_StreamStalledClientDisconnected(t *testing.T) {
 	c, _ := testWsConn(t, 4)
 	c.ws.cfg.WriteTimeout = common.Duration(100 * time.Millisecond)
