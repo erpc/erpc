@@ -115,6 +115,7 @@ func TestHttp_BlockStore_ClientBlockAdoptedAndSharedAcrossReplicas(t *testing.T)
 	require.Contains(t, string(first.Result), up.HashAt(20))
 	require.Equal(t, int64(1), up.FullBlockCalls())
 	headers := up.HeaderCalls()
+	require.Zero(t, headers, "no header fetched by the store, before or for this read")
 	require.Eventually(t, func() bool {
 		_, ok := ca.BlockByNumber(t.Context(), 20, true)
 		return ok
@@ -134,6 +135,7 @@ func TestHttp_BlockStore_ClientBlockAdoptedAndSharedAcrossReplicas(t *testing.T)
 	require.Greater(t, ca.Stats.Hits.Load(), hitsA)
 	require.GreaterOrEqual(t, cb.Stats.Hits.Load(), hitsB+2)
 	require.Zero(t, cb.Stats.Hydrated.Load(), "replica B fetched nothing")
+	require.Zero(t, ca.Stats.Hydrated.Load(), "replica A adopted the client's block instead of fetching it")
 }
 
 // A client's unfiltered getLogs for a block is adopted (with its header,
@@ -214,4 +216,35 @@ func TestHttp_BlockStore_FollowingOnlyWhileSubscribed(t *testing.T) {
 	}
 	time.Sleep(500 * time.Millisecond)
 	require.Equal(t, stopped, up.HeaderCalls(), "no header fetches after the last subscriber left")
+}
+
+// A client read showing a different hash at a held height is a reorg: the
+// stale header and its body are dropped and never served again.
+func TestHttp_BlockStore_AdoptedReorgDropsStaleEntries(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	send, _, _, shutdown, instance := createServerTestFixtures(pullTestConfig(up, fmt.Sprintf("reorg-%d", time.Now().UnixNano())), t)
+	defer shutdown()
+	nw := instanceNetwork(t, instance)
+	require.Eventually(t, func() bool { return nw.EvmHighestLatestBlockNumber(t.Context()) == 20 }, 10*time.Second, 20*time.Millisecond)
+	hc := blockStoreOf(t, instance)
+
+	orphan := up.HashAt(20)
+	doRpc(t, send, "eth_getBlockByNumber", `["0x14",true]`)
+	require.Eventually(t, func() bool {
+		_, ok := hc.BlockByHash(t.Context(), orphan, true)
+		return ok
+	}, 5*time.Second, 20*time.Millisecond)
+
+	up.Reorg(20, "b")
+	// A client read of the tip (tags take the normal path) observes the new hash.
+	r := doRpc(t, send, "eth_getBlockByNumber", `["latest",false]`)
+	require.Contains(t, string(r.Result), up.HashAt(20))
+	require.Eventually(t, func() bool { return hc.CanonicalHash(20) == up.HashAt(20) }, 5*time.Second, 20*time.Millisecond,
+		"the fresh observation replaces the held hash")
+	_, ok := hc.BlockByHash(t.Context(), orphan, true)
+	require.False(t, ok, "the orphan is never served again")
+	full := doRpc(t, send, "eth_getBlockByNumber", `["0x14",true]`)
+	require.Contains(t, string(full.Result), up.HashAt(20))
+	require.NotContains(t, string(full.Result), orphan)
 }
