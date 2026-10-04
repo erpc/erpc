@@ -54,6 +54,9 @@ type LogsFillOptions struct {
 	// the fill lock for the same range. 0 disables cross-replica locking.
 	// Only used when the store implements LogsFillLocker.
 	PeerWait time.Duration
+	// Concurrency bounds simultaneous per-height store reads and writes for
+	// one request (evm.blockStore.concurrency). Default 4.
+	Concurrency int
 }
 
 // LogsFillLocker is optionally implemented by a shared LogsFillStore to let
@@ -117,6 +120,9 @@ func NewLogsFiller(opt LogsFillOptions, store LogsFillStore, fetch RangeLogsFetc
 	}
 	if opt.FetchTimeout <= 0 {
 		opt.FetchTimeout = 10 * time.Second
+	}
+	if opt.Concurrency < 1 {
+		opt.Concurrency = 4
 	}
 	opt.Scope.Namespace += ":logsfill"
 	return &LogsFiller{opt: opt, store: store, fetch: fetch, latest: latest, finalized: finalized}
@@ -287,24 +293,42 @@ func (f *LogsFiller) localFill(ctx context.Context, from, to, latest int64, reas
 func (f *LogsFiller) lookup(ctx context.Context, from, to int64) ([]*BlockLogs, bool) {
 	n := int(to - from + 1)
 	out := make([]*BlockLogs, n)
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			e, err := f.store.GetBlockLogs(ctx, f.opt.Scope, from+int64(i))
-			if err == nil && e != nil && e.Number == from+int64(i) {
-				out[i] = e
-			}
-		}(i)
-	}
-	wg.Wait()
+	f.parallel(n, func(i int) {
+		e, err := f.store.GetBlockLogs(ctx, f.opt.Scope, from+int64(i))
+		if err == nil && e != nil && e.Number == from+int64(i) {
+			out[i] = e
+		}
+	})
 	for _, e := range out {
 		if e == nil {
 			return nil, false
 		}
 	}
 	return out, true
+}
+
+// parallel runs fn(0..n-1) on at most opt.Concurrency workers.
+func (f *LogsFiller) parallel(n int, fn func(int)) {
+	workers := min(f.opt.Concurrency, n)
+	if workers < 1 {
+		return
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				fn(i)
+			}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 var errRemovedLogs = errors.New("logs fill response contains removed logs")
@@ -329,19 +353,11 @@ func (f *LogsFiller) fill(ctx context.Context, from, to, latest int64) ([]*Block
 		return nil, errRemovedLogs
 	}
 	finalized := f.finalized(ctx)
-	var wg sync.WaitGroup
-	for _, e := range entries {
-		ttl, ok := f.entryTTL(e, latest, finalized)
-		if !ok {
-			continue
+	f.parallel(len(entries), func(i int) {
+		if ttl, ok := f.entryTTL(entries[i], latest, finalized); ok {
+			_ = f.store.PutBlockLogs(ctx, f.opt.Scope, entries[i], ttl)
 		}
-		wg.Add(1)
-		go func(e *BlockLogs, ttl time.Duration) {
-			defer wg.Done()
-			_ = f.store.PutBlockLogs(ctx, f.opt.Scope, e, ttl)
-		}(e, ttl)
-	}
-	wg.Wait()
+	})
 	return entries, nil
 }
 

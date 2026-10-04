@@ -56,6 +56,7 @@ func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockSt
 		FetchTimeout:   hc.FetchTimeout.Duration(),
 		MaxEntryBytes:  hc.MaxBlockBytes,
 		PeerWait:       peerWait,
+		Concurrency:    hc.Concurrency,
 	}, store, fetch, network.EvmHighestLatestBlockNumber, network.EvmHighestFinalizedBlockNumber)
 	return nil
 }
@@ -117,7 +118,9 @@ func (n *Network) tryServeLogsFill(ctx context.Context, req *common.NormalizedRe
 	if f == nil || ctx.Value(blockStoreBypassKey{}) != nil {
 		return nil, false
 	}
-	if d := req.Directives(); d != nil && (d.IsInternal || d.UseUpstream != "" || d.IntegritySelector != "" || req.ShouldSkipCacheRead("")) {
+	// Any skipCacheRead value bypasses, including connector-ID patterns, matching
+	// tryServeBlockStore: ShouldSkipCacheRead("") only honors the literal "true".
+	if d := req.Directives(); d != nil && (d.IsInternal || d.UseUpstream != "" || d.IntegritySelector != "" || d.SkipCacheRead != "") {
 		n.logsFillMetric(blockstore.LogsFillSkipped, "directive")
 		return nil, false
 	}

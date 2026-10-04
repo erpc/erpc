@@ -352,6 +352,49 @@ func TestLogsFill_StoreErrorIsMiss(t *testing.T) {
 	require.EqualValues(t, 1, fetch.calls.Load())
 }
 
+// gaugeStore records the peak number of in-flight store calls.
+type gaugeStore struct {
+	*lfStore
+	cur, peak atomic.Int64
+}
+
+func (g *gaugeStore) track() func() {
+	n := g.cur.Add(1)
+	for p := g.peak.Load(); n > p && !g.peak.CompareAndSwap(p, n); p = g.peak.Load() {
+	}
+	time.Sleep(2 * time.Millisecond)
+	return func() { g.cur.Add(-1) }
+}
+
+func (g *gaugeStore) GetBlockLogs(ctx context.Context, sc Scope, h int64) (*BlockLogs, error) {
+	defer g.track()()
+	return g.lfStore.GetBlockLogs(ctx, sc, h)
+}
+
+func (g *gaugeStore) PutBlockLogs(ctx context.Context, sc Scope, e *BlockLogs, ttl time.Duration) error {
+	defer g.track()()
+	return g.lfStore.PutBlockLogs(ctx, sc, e, ttl)
+}
+
+func TestLogsFill_StoreFanoutBoundedByConcurrency(t *testing.T) {
+	store := &gaugeStore{lfStore: newLfStore()}
+	fetch := chainFetcher(t, lfChainLogs())
+	f := NewLogsFiller(LogsFillOptions{
+		Scope: Scope{Namespace: "t"}, MaxRange: 1000, FinalizedTTL: time.Hour,
+		EmptyTipGuard: 1, Concurrency: 3,
+	}, store, fetch.fetch,
+		func(context.Context) int64 { return 2000 },
+		func(context.Context) int64 { return 1500 })
+	res := f.Serve(t.Context(), 100, 299, 0, nil) // miss: 200 GETs, then 200 PUTs
+	require.True(t, res.OK)
+	require.EqualValues(t, 200, store.puts.Load())
+	res = f.Serve(t.Context(), 100, 299, 0, nil) // hit: 200 GETs
+	require.True(t, res.OK)
+	require.Equal(t, LogsFillHit, res.Outcome)
+	require.LessOrEqual(t, store.peak.Load(), int64(3), "per-height store calls exceed Concurrency")
+	require.Greater(t, store.peak.Load(), int64(1), "store calls still run in parallel")
+}
+
 func TestMemoryLogsFillStore_TTLAndEviction(t *testing.T) {
 	s := NewMemoryLogsFillStore(400)
 	now := time.Unix(1000, 0)

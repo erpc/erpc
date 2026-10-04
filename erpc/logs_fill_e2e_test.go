@@ -111,6 +111,21 @@ func TestHttp_LogsFill_DifferentFiltersShareOneUpstreamCall(t *testing.T) {
 func TestHttp_LogsFill_SkipsAndFallbacks(t *testing.T) {
 	f := newLogsFillFixture(t, 120, false)
 
+	t.Run("any skipCacheRead value bypasses the fill, including connector patterns", func(t *testing.T) {
+		addr := fmt.Sprintf(`,"address":%q`, scriptedEmitter)
+		f.getLogs(t, 60, 62, addr) // warm the fill for this range
+		for _, skip := range []string{"true", "*", "logsfill-*"} {
+			req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
+				`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x3c","toBlock":"0x3e"%s}]}`, addr)))
+			req.SetDirectives(&common.RequestDirectives{SkipCacheRead: skip})
+			skipped := logsFillCounter("skipped", "directive")
+			resp, ok := f.network.tryServeLogsFill(t.Context(), req)
+			require.False(t, ok, "skipCacheRead=%q must not be answered from the fill", skip)
+			require.Nil(t, resp)
+			require.Equal(t, skipped+1, logsFillCounter("skipped", "directive"), skip)
+		}
+	})
+
 	t.Run("above head goes upstream unchanged", func(t *testing.T) {
 		unfiltered := f.up.UnfilteredLogCalls()
 		skipped := logsFillCounter("skipped", "above_head")
