@@ -330,7 +330,7 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		}
 	}
 	if err := nr.initBlockStore(network, nwCfg); err != nil {
-		return nil, fmt.Errorf("block store for %s: %w", nwCfg.NetworkId(), err)
+		return nil, fmt.Errorf("head cache for %s: %w", nwCfg.NetworkId(), err)
 	}
 	// Register alias for lazy-created networks to support alias-based routing
 	if nwCfg.Alias != "" {

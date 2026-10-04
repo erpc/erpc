@@ -135,6 +135,8 @@ func NewLogsFiller(opt LogsFillOptions, store LogsFillStore, fetch RangeLogsFetc
 	return &LogsFiller{opt: opt, store: store, fetch: fetch, latest: latest, finalized: finalized}
 }
 
+func (f *LogsFiller) MaxRange() int64 { return f.opt.MaxRange }
+
 // coherent reports whether stored entries can be served together. Finalized
 // heights cannot reorg, so any mix of their entries is consistent. Unfinalized
 // heights must all come from one upstream response (same Fill): entries from
