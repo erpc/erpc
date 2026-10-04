@@ -828,7 +828,7 @@ func TestCache_DeepReorgOutsideWindowClosesSubscribers(t *testing.T) {
 	require.Equal(t, hashOf(8, "fork"), c.CanonicalHash(8))
 }
 
-func TestCache_TipRegressionStopsServingAboveVerifiedTip(t *testing.T) {
+func TestCache_TipRegressionRetainsVerifiedView(t *testing.T) {
 	store := newFakeFleetStore()
 	store.leader = true
 	ch := newFakeChain(10)
@@ -845,21 +845,18 @@ func TestCache_TipRegressionStopsServingAboveVerifiedTip(t *testing.T) {
 	ch.mu.Unlock()
 	c.Tick(ctxb())
 	follower.Tick(ctxb())
-	require.True(t, c.Fresh(), "the prefix up to the matching tip stays verified")
-	require.Equal(t, int64(8), c.Head())
+	require.True(t, c.Fresh(), "a lagging poller does not invalidate verified headers")
+	require.Equal(t, int64(10), c.Head())
 	_, ok := c.BlockByNumber(ctxb(), 9, false)
-	require.False(t, ok, "blocks above the live tip are not served")
+	require.True(t, ok, "already verified heights stay available")
 	_, ok = c.BlockByHash(ctxb(), hashOf(10, "a"), false)
-	require.False(t, ok)
-	_, ok = c.LogsRange(ctxb(), 7, 9, nil)
-	require.False(t, ok)
-	_, ok = c.LogsRange(ctxb(), 3, 8, nil)
 	require.True(t, ok)
-	require.Equal(t, int64(8), store.snap.Head, "followers receive the trimmed snapshot")
-	require.Equal(t, int64(8), follower.Head())
+	require.Equal(t, int64(10), store.snap.Head, "followers retain the untrimmed snapshot")
+	require.Equal(t, int64(10), follower.Head())
 	for _, stream := range []*Subscription{sub, followerSub} {
-		_, open := drain(stream)
-		require.False(t, open, "a lagging observation must not fabricate removed logs")
+		events, open := drain(stream)
+		require.True(t, open, "a lagging observation must not interrupt subscriptions")
+		require.Empty(t, events, "a lagging observation must not fabricate removed logs")
 	}
 
 	ch.mu.Lock()

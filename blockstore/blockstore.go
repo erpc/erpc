@@ -264,10 +264,12 @@ func (c *Cache) leaseTTL() time.Duration {
 }
 
 func (c *Cache) snapshotTTL() time.Duration {
-	if c.opt.MaxStaleness > 0 {
+	// Keep recovery metadata as long as the headers. Serving freshness is
+	// checked independently against Snapshot.At, including on followers.
+	if c.opt.MaxStaleness > c.opt.RecordTTL {
 		return c.opt.MaxStaleness
 	}
-	return 2 * c.opt.PollInterval
+	return c.opt.RecordTTL
 }
 
 func (c *Cache) releaseLease(ctx context.Context) {
@@ -322,6 +324,12 @@ func (c *Cache) fleetTickOnce(ctx context.Context) error {
 		}
 		c.lease = lease
 		c.sharedAt = map[string]time.Time{}
+		// Acquisition can precede the first follower tick. Reuse the last
+		// published, validated headers instead of cold-filling them upstream.
+		// Missing/expired snapshots are normal on a genuine cold start.
+		if err := c.loadFleetSnapshot(ctx, true); err != nil {
+			c.logger.Debug().Err(err).Msg("head cache takeover snapshot unavailable")
+		}
 	} else {
 		ok, err := c.lease.Renew(ctx, c.leaseTTL())
 		if err != nil || !ok {
@@ -401,6 +409,12 @@ func (c *Cache) fleetTickOnce(ctx context.Context) error {
 }
 
 func (c *Cache) readFleetSnapshot(ctx context.Context) error {
+	return c.loadFleetSnapshot(ctx, false)
+}
+
+// Recovery may reuse stale headers, but never installs them as a fresh served
+// view. Only a successful refresh can publish a fresh snapshot after takeover.
+func (c *Cache) loadFleetSnapshot(ctx context.Context, recovery bool) error {
 	snap, err := c.fleet.ReadSnapshot(ctx, c.opt.Scope)
 	if err != nil {
 		if !c.Fresh() {
@@ -408,7 +422,7 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 		}
 		return fmt.Errorf("read head cache snapshot: %w", err)
 	}
-	if snap == nil || len(snap.Hashes) == 0 || c.nowFn().Sub(snap.At) > c.opt.MaxStaleness {
+	if snap == nil || len(snap.Hashes) == 0 || (!recovery && c.nowFn().Sub(snap.At) > c.opt.MaxStaleness) {
 		c.invalidateAndClose()
 		return errors.New("missing or stale head cache snapshot")
 	}
@@ -424,6 +438,14 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 		return errors.New("invalid head cache snapshot range")
 	}
 	old, oldHeaders := c.localView()
+	if recovery {
+		c.mu.RLock()
+		hasNewerWindow := len(c.window) > 0 && c.windowHead > snap.Head
+		c.mu.RUnlock()
+		if hasNewerWindow {
+			return nil
+		}
+	}
 	headers := make(map[string]*header, len(snap.Hashes))
 	chain := make([]*header, len(snap.Hashes))
 	for i, hash := range snap.Hashes {
@@ -482,6 +504,9 @@ func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 	// from the published window instead of re-fetching it.
 	c.window, c.windowHead = chain, snap.Head
 	c.mu.Unlock()
+	if recovery && c.nowFn().Sub(snap.At) > c.opt.MaxStaleness {
+		return nil
+	}
 	c.install(&Snapshot{Head: snap.Head, Hashes: append([]string(nil), snap.Hashes...), At: snap.At, Incomplete: snap.Incomplete}, headers, gap)
 	return nil
 }
@@ -611,17 +636,30 @@ func (c *Cache) refresh(ctx context.Context) error {
 	if len(window) == 0 || window[len(window)-1].n != windowHead {
 		window, windowHead = nil, -1
 	}
+	if len(window) > 0 && tip < windowHead {
+		// A poller can observe a lagging upstream. A lower number alone is
+		// not evidence of a reorg, and must not discard verified headers.
+		// Do not renew freshness or consume a pending reorg verification.
+		return nil
+	}
 	suspect := c.suspect.Swap(false)
 	var err error
 	switch {
-	case len(window) == 0 || tip-windowHead > c.opt.Depth || tip < window[0].n:
+	case len(window) == 0 || tip-windowHead > c.opt.Depth:
 		var top *header
 		if top, err = c.getHeader(ctx, tip); err == nil {
 			window = []*header{top}
 		}
 	case tip > windowHead:
 		var added []*header
-		if added, err = c.getHeaders(ctx, windowHead+1, tip); err == nil {
+		// Probe the advertised tip first. If it is not available yet, retry
+		// only that height next tick, not the whole forward range.
+		var top *header
+		if top, err = c.getHeader(ctx, tip); err == nil {
+			added, err = c.getHeaders(ctx, windowHead+1, tip-1)
+		}
+		if err == nil {
+			added = append(added, top)
 			if !linked(added) {
 				err = fmt.Errorf("new headers %d..%d: %w", windowHead+1, tip, errUnlinked)
 			} else {
@@ -635,8 +673,7 @@ func (c *Cache) refresh(ctx context.Context) error {
 			return nil
 		}
 	default:
-		// Same-height re-verification after a suspected reorg, or a lower
-		// observed tip inside the window: one header proves or refutes it.
+		// Same-height re-verification after an independently suspected reorg.
 		var top *header
 		if top, err = c.getHeader(ctx, tip); err == nil {
 			i := int(tip - window[0].n)
