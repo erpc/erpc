@@ -14,6 +14,7 @@ import (
 type HistoricalStore interface {
 	GetFinalizedHash(context.Context, Scope, int64) (string, error)
 	PutFinalizedHash(context.Context, Scope, int64, string, time.Duration) error
+	DeleteFinalizedHash(context.Context, Scope, int64) error
 	GetHistoricalBlock(context.Context, Scope, string) (json.RawMessage, error)
 	PutHistoricalBlock(context.Context, Scope, string, json.RawMessage, time.Duration) error
 	GetHistoricalLogs(context.Context, Scope, string) (json.RawMessage, json.RawMessage, error)
@@ -25,6 +26,7 @@ type HistoricalOptions struct {
 	TTL          time.Duration
 	MaxBlockSize int64
 	MaxLogsRange int64
+	LiveHash     func(int64) string
 }
 
 type historicalKind uint8
@@ -48,6 +50,7 @@ type Historical struct {
 	maxBlockSize    int64
 	ttl             time.Duration
 	maxLogsRange    int64
+	liveHash        func(int64) string
 
 	mu       sync.Mutex
 	inflight map[historicalFillKey]*historicalFill
@@ -68,7 +71,7 @@ func NewHistorical(opt HistoricalOptions, store HistoricalStore, fetcher Fetcher
 	}
 	opt.Scope.Namespace += ":historical"
 	return &Historical{scope: opt.Scope, store: store, fetcher: fetcher, finalizedHeight: finalized,
-		maxBlockSize: opt.MaxBlockSize, ttl: opt.TTL, maxLogsRange: opt.MaxLogsRange,
+		maxBlockSize: opt.MaxBlockSize, ttl: opt.TTL, maxLogsRange: opt.MaxLogsRange, liveHash: opt.LiveHash,
 		inflight: make(map[historicalFillKey]*historicalFill)}
 }
 
@@ -90,8 +93,8 @@ func (h *Historical) ReadBlockByNumber(ctx context.Context, n int64) (*BlockReco
 	if !ok || n > finalized {
 		return nil, false
 	}
-	hash, err := h.store.GetFinalizedHash(ctx, h.scope, n)
-	if err != nil || hash == "" {
+	hash, ok := h.indexedHash(ctx, n)
+	if !ok {
 		return nil, false
 	}
 	block, err := h.store.GetHistoricalBlock(ctx, h.scope, hash)
@@ -129,8 +132,8 @@ func (h *Historical) ReadBlockByHash(ctx context.Context, hash string) (*BlockRe
 	if err != nil || n > finalized || normHash(b.Hash) != normHash(hash) {
 		return nil, false
 	}
-	indexed, err := h.store.GetFinalizedHash(ctx, h.scope, n)
-	if err != nil || normHash(indexed) != normHash(hash) {
+	indexed, ok := h.indexedHash(ctx, n)
+	if !ok || normHash(indexed) != normHash(hash) {
 		return nil, false
 	}
 	if _, full, err := txHashesOf(b); b.Transactions == nil || err != nil || !full {
@@ -181,16 +184,16 @@ func (h *Historical) ReadLogsByHash(ctx context.Context, hash string) (*BlockRec
 	if !hit {
 		return nil, false
 	}
-	indexed, err := h.store.GetFinalizedHash(ctx, h.scope, rec.Number)
-	if err != nil || normHash(indexed) != normHash(hash) {
+	indexed, ok := h.indexedHash(ctx, rec.Number)
+	if !ok || normHash(indexed) != normHash(hash) {
 		return nil, false
 	}
 	return rec, true
 }
 
 func (h *Historical) readLogsByNumber(ctx context.Context, n int64) (*BlockRecord, bool) {
-	hash, err := h.store.GetFinalizedHash(ctx, h.scope, n)
-	if err != nil || hash == "" {
+	hash, ok := h.indexedHash(ctx, n)
+	if !ok {
 		return nil, false
 	}
 	header, logs, err := h.store.GetHistoricalLogs(ctx, h.scope, hash)
@@ -202,6 +205,20 @@ func (h *Historical) readLogsByNumber(ctx context.Context, n int64) (*BlockRecor
 		return nil, false
 	}
 	return rec, true
+}
+
+func (h *Historical) indexedHash(ctx context.Context, n int64) (string, bool) {
+	hash, err := h.store.GetFinalizedHash(ctx, h.scope, n)
+	if err != nil || hash == "" {
+		return "", false
+	}
+	if h.liveHash != nil {
+		if live := h.liveHash(n); live != "" && normHash(live) != normHash(hash) {
+			_ = h.store.DeleteFinalizedHash(ctx, h.scope, n)
+			return "", false
+		}
+	}
+	return hash, true
 }
 
 func (h *Historical) validateLogs(header, logs json.RawMessage, hash string, finalized int64) (*BlockRecord, bool) {

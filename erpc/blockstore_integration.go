@@ -215,8 +215,13 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 		}
 		historicalStore := &blockStoreHistoricalStore{connector: connectorStore.connector}
 		f := &networkHeadFetcher{n: network}
+		var liveHash func(int64) string
+		if network.blockStore != nil {
+			liveHash = network.blockStore.CanonicalHash
+		}
 		network.historicalBlockStore = blockstore.NewHistorical(blockstore.HistoricalOptions{
 			Scope: scope, TTL: hc.Historical.TTL.Duration(), MaxBlockSize: hc.MaxBlockBytes, MaxLogsRange: hc.MaxLogsRange,
+			LiveHash: liveHash,
 		}, historicalStore, f, network.EvmHighestFinalizedBlockNumber)
 		network.historicalWarmSem = make(chan struct{}, max(1, hc.Concurrency))
 	}

@@ -159,6 +159,14 @@ func (s *blockStoreHistoricalStore) PutFinalizedHash(ctx context.Context, scope 
 	return s.connector.Set(ctx, partition, historicalKey("finalized", fmt.Sprint(height)), value, &ttl)
 }
 
+func (s *blockStoreHistoricalStore) DeleteFinalizedHash(ctx context.Context, scope blockstore.Scope, height int64) error {
+	partition, err := s.historicalPartition(scope)
+	if err != nil {
+		return err
+	}
+	return s.connector.Delete(ctx, partition, historicalKey("finalized", fmt.Sprint(height)))
+}
+
 func historicalKey(kind, key string) string {
 	h := sha256.Sum256([]byte(key))
 	return kind + ":" + hex.EncodeToString(h[:])

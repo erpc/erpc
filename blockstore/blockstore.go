@@ -1061,6 +1061,16 @@ func (c *Cache) Head() int64 {
 	return -1
 }
 
+// CanonicalHash returns the verified live-window hash, or empty outside the window.
+func (c *Cache) CanonicalHash(n int64) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if s := c.viewLocked(); s != nil {
+		return s.HashAt(n)
+	}
+	return ""
+}
+
 func (c *Cache) hit(ok bool) {
 	if ok {
 		c.Stats.Hits.Add(1)

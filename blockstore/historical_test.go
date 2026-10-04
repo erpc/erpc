@@ -53,6 +53,12 @@ func (s *historicalTestStore) PutFinalizedHash(_ context.Context, scope Scope, n
 	s.index[historicalHeightKey(scope, n)] = hash
 	return nil
 }
+func (s *historicalTestStore) DeleteFinalizedHash(_ context.Context, scope Scope, n int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.index, historicalHeightKey(scope, n))
+	return nil
+}
 func (s *historicalTestStore) GetHistoricalBlock(_ context.Context, scope Scope, hash string) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -89,6 +95,40 @@ func (s *historicalTestStore) PutHistoricalLogs(_ context.Context, scope Scope, 
 func newHistoricalForTest(t *testing.T, chain *fakeChain, store *historicalTestStore, finalized int64, maxRange int64) *Historical {
 	t.Helper()
 	return NewHistorical(HistoricalOptions{Scope: Scope{Namespace: "test", ProjectId: "p", NetworkId: "evm:1"}, MaxBlockSize: 1 << 16, MaxLogsRange: maxRange}, store, chain, func(context.Context) int64 { return finalized })
+}
+
+func TestHistorical_LiveCanonicalHashInvalidatesStaleIndex(t *testing.T) {
+	ctx := context.Background()
+	chain := newFakeChain(4)
+	store := newHistoricalTestStore()
+	h := newHistoricalForTest(t, chain, store, 4, 4)
+	block, err := chain.BlockByNumber(ctx, 1)
+	require.NoError(t, err)
+	header, err := chain.HeaderByNumber(ctx, 1)
+	require.NoError(t, err)
+	parsed, _, err := parseBlockHeader(block)
+	require.NoError(t, err)
+	logs, err := chain.LogsByBlockHash(ctx, parsed.Hash)
+	require.NoError(t, err)
+	require.NoError(t, store.PutHistoricalBlock(ctx, h.scope, parsed.Hash, block, time.Hour))
+	require.NoError(t, store.PutHistoricalLogs(ctx, h.scope, parsed.Hash, header, logs, time.Hour))
+	require.NoError(t, store.PutFinalizedHash(ctx, h.scope, 1, parsed.Hash, time.Hour))
+	require.NotEqual(t, normHash(parsed.Hash), "0xreorg")
+	h.liveHash = func(n int64) string {
+		if n == 1 {
+			return "0xreorg"
+		}
+		return ""
+	}
+	_, hit := h.ReadBlockByNumber(ctx, 1)
+	require.False(t, hit, "historical block must not survive a conflicting live canonical hash")
+	_, err = store.GetFinalizedHash(ctx, h.scope, 1)
+	require.ErrorIs(t, err, ErrNotFound, "stale height index must be removed")
+	require.NoError(t, store.PutFinalizedHash(ctx, h.scope, 1, parsed.Hash, time.Hour))
+	_, hit = h.ReadLogsRange(ctx, 1, 1)
+	require.False(t, hit, "historical logs must not survive a conflicting live canonical hash")
+	_, err = store.GetFinalizedHash(ctx, h.scope, 1)
+	require.ErrorIs(t, err, ErrNotFound, "logs read must also remove the stale height index")
 }
 
 func historicalHashOnlyHeader(t *testing.T, raw json.RawMessage) json.RawMessage {
