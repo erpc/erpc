@@ -45,11 +45,11 @@ func (c *Cache) viewHeader(n int64, hash string) *header {
 	return c.headers[s.HashAt(n)]
 }
 
-// stillCanonical reports whether h is still in the served view.
+// stillCanonical reports whether h is still held (followed or adopted view).
 func (c *Cache) stillCanonical(h *header) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.snap != nil && c.snap.HashAt(h.n) == h.b.Hash
+	return c.heldLocked(h.n, h.b.Hash)
 }
 
 func (c *Cache) localPayload(kind PayloadKind, hash string) json.RawMessage {
@@ -70,7 +70,7 @@ func (c *Cache) keepPayload(kind PayloadKind, h *header, raw json.RawMessage) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.snap == nil || c.snap.HashAt(h.n) != h.b.Hash {
+	if !c.heldLocked(h.n, h.b.Hash) {
 		return
 	}
 	m := c.logs
@@ -87,11 +87,7 @@ func (c *Cache) keepPayload(kind PayloadKind, h *header, raw json.RawMessage) {
 		victim, victimN := "", int64(-1)
 		for _, mm := range []map[string]json.RawMessage{c.bodies, c.logs} {
 			for k := range mm {
-				hd := c.headers[k]
-				n := int64(-1)
-				if hd != nil {
-					n = hd.n
-				}
+				n := c.heightOfLocked(k)
 				if victimMap == nil || n < victimN {
 					victimMap, victim, victimN = mm, k, n
 				}
@@ -302,12 +298,12 @@ func (c *Cache) BlockByNumber(ctx context.Context, n int64, full bool) (json.Raw
 		c.hit(false)
 		return nil, false
 	}
-	return c.block(ctx, c.viewHeader(n, ""), full)
+	return c.block(ctx, c.lookupHeader(ctx, n, "", true), full)
 }
 
 // BlockByHash serves eth_getBlockByHash for a hash that is canonical in the window.
 func (c *Cache) BlockByHash(ctx context.Context, hash string, full bool) (json.RawMessage, bool) {
-	return c.block(ctx, c.viewHeader(-1, hash), full)
+	return c.block(ctx, c.lookupHeader(ctx, -1, hash, true), full)
 }
 
 func (c *Cache) block(ctx context.Context, h *header, full bool) (json.RawMessage, bool) {
@@ -324,7 +320,7 @@ func (c *Cache) block(ctx context.Context, h *header, full bool) (json.RawMessag
 
 // LogsByHash serves eth_getLogs{blockHash} for a canonical window hash.
 func (c *Cache) LogsByHash(ctx context.Context, hash string, f *LogFilter) ([]json.RawMessage, bool) {
-	h := c.viewHeader(-1, hash)
+	h := c.lookupHeader(ctx, -1, hash, true)
 	if h == nil {
 		c.hit(false)
 		return nil, false
@@ -357,19 +353,16 @@ func (c *Cache) logsRange(ctx context.Context, from, to int64, f *LogFilter, fet
 		return nil, false
 	}
 	hs := make([]*header, 0, to-from+1)
-	c.mu.RLock()
-	if s := c.viewLocked(); s != nil {
-		for n := from; n <= to; n++ {
-			h := c.headers[s.HashAt(n)]
-			if h == nil {
-				hs = nil
-				break
-			}
-			hs = append(hs, h)
+	for n := from; n <= to; n++ {
+		h := c.lookupHeader(ctx, n, "", fetch)
+		if h == nil {
+			break
 		}
+		hs = append(hs, h)
 	}
-	c.mu.RUnlock()
-	if int64(len(hs)) != to-from+1 {
+	// Every height must be held and the range one parent-linked chain, so
+	// headers from the followed and adopted views can never mix branches.
+	if int64(len(hs)) != to-from+1 || !linked(hs) {
 		c.hit(false)
 		return nil, false
 	}
@@ -408,27 +401,34 @@ func (c *Cache) logsRange(ctx context.Context, from, to int64, f *LogFilter, fet
 // a non-empty list must carry that header's hash, and every list must pass
 // the same completeness and bloom checks as a direct fetch.
 func (c *Cache) AdoptLogs(ctx context.Context, entries []*BlockLogs) {
+	now := c.nowFn()
+	c.mu.Lock()
+	for _, e := range entries {
+		if e != nil && e.Hash != "" {
+			c.observeHashLocked(e.Number, e.Hash, now, false)
+		}
+	}
+	c.mu.Unlock()
+	latest := c.latestKnown(ctx)
+	fetched := 0
 	for _, e := range entries {
 		if e == nil {
 			continue
 		}
-		h := c.viewHeader(e.Number, "")
+		h := c.lookupHeader(ctx, e.Number, "", false)
+		if h == nil && e.Hash != "" && c.inPullRange(e.Number, latest) && fetched < c.maxLogsAdoptHeaders() {
+			// Validating a filled list needs its header: fetch only that one
+			// header (through the response cache), never the logs again.
+			fetched++
+			h = c.fetchAdoptHeader(ctx, e.Number)
+		}
 		if h == nil || (e.Hash != "" && normHash(e.Hash) != h.b.Hash) {
 			continue
 		}
 		if c.localPayload(PayloadLogs, h.b.Hash) != nil {
 			continue
 		}
-		if c.validatePayload(PayloadLogs, h, e.Logs) != nil {
-			continue
-		}
-		raw := append(json.RawMessage(nil), e.Logs...)
-		if c.store != nil {
-			if err := c.store.PutPayload(ctx, c.opt.Scope, PayloadLogs, h.b.Hash, raw, c.opt.RecordTTL); err != nil {
-				c.logger.Debug().Err(err).Int64("number", h.n).Msg("failed to share adopted head cache logs")
-			}
-		}
-		c.keepPayload(PayloadLogs, h, raw)
+		c.adoptPayload(ctx, PayloadLogs, h, e.Logs)
 	}
 }
 

@@ -89,6 +89,23 @@ type Lease interface {
 	Release(ctx context.Context) error
 }
 
+// PresenceStore is optionally implemented by a fleet store so that the
+// header-following leader on any replica knows whether a WebSocket subscriber
+// exists anywhere in the fleet. Replicas holding subscribers renew the mark
+// every tick; it expires on its own when the last one leaves.
+type PresenceStore interface {
+	MarkPresence(ctx context.Context, scope Scope, ttl time.Duration) error
+	HasPresence(ctx context.Context, scope Scope) (bool, error)
+}
+
+// CanonicalIndex optionally shares which hash a replica last observed from
+// upstream at a height, and when, so another replica can adopt that header
+// (stored as a PayloadHeader) without an upstream call of its own.
+type CanonicalIndex interface {
+	PutCanonical(ctx context.Context, scope Scope, n int64, hash string, at time.Time, ttl time.Duration) error
+	GetCanonical(ctx context.Context, scope Scope, n int64) (hash string, at time.Time, err error)
+}
+
 // FillLocker is optionally implemented by a shared store to let replicas
 // coalesce one upstream fill per key. The holder stores its result before
 // releasing, so "lock no longer held" doubles as the completion signal.

@@ -345,10 +345,12 @@ func (l *failingFleetLease) Publish(ctx context.Context, snap *Snapshot, ttl tim
 	return l.Lease.Publish(ctx, snap, ttl)
 }
 
+// testOpts exercises the header-following machinery directly (AlwaysFollow);
+// pull-model tests use pullOpts.
 func testOpts() Options {
 	return Options{Scope: Scope{Namespace: "t", ProjectId: "p", NetworkId: "evm:1"}, Depth: 8, MaxPerTick: 8,
 		MaxBytes: 1 << 20, MaxBlockSize: 1 << 16, PollInterval: time.Second, FetchTimeout: time.Second,
-		MaxStaleness: 2 * time.Second, MaxLogsRange: 8, RecordTTL: time.Hour}
+		MaxStaleness: 2 * time.Second, MaxLogsRange: 8, RecordTTL: time.Hour, AlwaysFollow: true}
 }
 
 func ctxb() context.Context { return context.Background() }
@@ -1187,7 +1189,13 @@ func TestCache_FleetFollowerFailsClosedForStaleOrMissingHeader(t *testing.T) {
 			follower.Tick(ctxb())
 			require.False(t, follower.Fresh())
 			require.Equal(t, int64(-1), follower.Head())
-			_, open := <-sub.C
+			// A subscription that never received an event waits out the
+			// startup grace for following to verify a view, then fails closed.
+			_, open := drain(sub)
+			require.True(t, open)
+			follower.nowFn = func() time.Time { return time.Now().Add(follower.subscribeGrace() + time.Second) }
+			follower.Tick(ctxb())
+			_, open = <-sub.C
 			require.False(t, open)
 		})
 	}

@@ -656,8 +656,14 @@ var (
 	MetricBlockStoreFetchTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "blockstore_fetch_total",
-		Help:      "Upstream fetches made by the live blockstore, by payload kind (header, block, logs) and reason (background, miss, subscription).",
+		Help:      "Upstream fetches made by the live blockstore, by payload kind (header, block, logs) and reason (miss, link, subscription; background only with always-on following).",
 	}, []string{"project", "network", "kind", "reason"})
+
+	MetricBlockStoreAdoptTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_adopt_total",
+		Help:      "Headers, block bodies and log lists the live blockstore adopted from responses served to clients (no fetch of its own), by kind.",
+	}, []string{"project", "network", "kind"})
 
 	MetricBlockStoreLogsFillTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

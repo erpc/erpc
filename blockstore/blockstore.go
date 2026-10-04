@@ -42,6 +42,13 @@ type Options struct {
 	// PeerWait bounds how long an on-demand miss waits for another replica
 	// that holds the fill lock for the same payload. 0 disables the lock.
 	PeerWait time.Duration
+	// Latest is the network's in-memory latest block number (no upstream
+	// call). It bounds which heights adopted from client responses are held.
+	Latest func(context.Context) int64
+	// AlwaysFollow keeps header following on without any subscriber. By
+	// default the window follows the chain only while a WebSocket subscriber
+	// exists anywhere in the fleet; otherwise it is built from client reads.
+	AlwaysFollow bool
 }
 
 // Event reports a canonical window change. Records carry the window header
@@ -56,6 +63,12 @@ type Subscription struct {
 	c      *Cache
 	logs   bool
 	closed atomic.Bool
+	// primed is set once the subscription was sent an event. Until then it
+	// has no continuity to lose, so staleness or a gap does not close it: it
+	// starts at the next contiguous event once following is verified, unless
+	// following has not produced a verified view within subscribeGrace.
+	primed bool
+	since  time.Time
 }
 
 func (s *Subscription) Close() {
@@ -74,7 +87,10 @@ type Stats struct {
 	Rejected  atomic.Int64
 }
 
-// Fetch reasons for erpc_blockstore_fetch_total.
+// Fetch reasons for erpc_blockstore_fetch_total. "background" is used only
+// with Options.AlwaysFollow; subscriber-driven header following is
+// "subscription"; on-demand payloads are "miss"; on-demand single headers that
+// link adopted data are "link" (see pull.go).
 const (
 	FetchReasonBackground   = "background"
 	FetchReasonMiss         = "miss"
@@ -121,6 +137,16 @@ type Cache struct {
 	// leaderFailures counts consecutive leader ticks that failed to refresh or
 	// publish; at maxLeaderFailures the leader steps down (see fleetTick).
 	leaderFailures int
+
+	// Pull view: headers adopted from client responses (see pull.go).
+	pull        map[int64]*pullEntry
+	pullHashes  map[string]int64
+	pullTop     int64
+	canon       CanonicalIndex
+	sharedCanon map[string]time.Time
+	presence    PresenceStore
+	// following is whether the last tick followed headers.
+	following bool
 }
 
 // maxLeaderFailures is how many consecutive failed leader ticks are tolerated
@@ -159,8 +185,11 @@ func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context)
 	c := &Cache{opt: opt, store: store, fetcher: fetcher, headFn: headFn, logger: logger,
 		headers: map[string]*header{}, bodies: map[string]json.RawMessage{}, logs: map[string]json.RawMessage{},
 		subs: map[*Subscription]struct{}{}, nowFn: time.Now,
-		windowHead: -1, kick: make(chan struct{}, 1), done: make(chan struct{}), sharedAt: map[string]time.Time{}}
+		windowHead: -1, kick: make(chan struct{}, 1), done: make(chan struct{}), sharedAt: map[string]time.Time{},
+		pull: map[int64]*pullEntry{}, pullHashes: map[string]int64{}, pullTop: -1, sharedCanon: map[string]time.Time{}}
 	c.fleet, _ = store.(FleetStore)
+	c.canon, _ = store.(CanonicalIndex)
+	c.presence, _ = store.(PresenceStore)
 	return c
 }
 
@@ -224,10 +253,15 @@ func (c *Cache) Tick(ctx context.Context) {
 		defer cancel()
 	}
 	var err error
-	if c.fleet != nil {
-		err = c.fleetTick(ctx)
+	if !c.shouldFollow(ctx) {
+		c.stopFollowing()
 	} else {
-		err = c.refresh(ctx)
+		c.following = true
+		if c.fleet != nil {
+			err = c.fleetTick(ctx)
+		} else {
+			err = c.refresh(ctx)
+		}
 	}
 	fresh := c.Fresh()
 	labels := []string{c.opt.Scope.ProjectId, c.opt.Scope.NetworkId}
@@ -242,6 +276,61 @@ func (c *Cache) Tick(ctx context.Context) {
 	}
 	telemetry.MetricBlockStoreRefreshTotal.WithLabelValues(labels[0], labels[1], outcome).Inc()
 	c.expireSubscribers()
+}
+
+// shouldFollow reports whether this tick follows headers: always with
+// Options.AlwaysFollow, otherwise only while a subscriber exists locally or,
+// through the shared presence mark, on another replica. A replica holding
+// subscribers renews the mark every tick.
+func (c *Cache) shouldFollow(ctx context.Context) bool {
+	if c.opt.AlwaysFollow {
+		return true
+	}
+	if c.SubscriberCount() > 0 {
+		if c.presence != nil {
+			if err := c.presence.MarkPresence(ctx, c.opt.Scope, c.presenceTTL()); err != nil {
+				c.logger.Debug().Err(err).Msg("failed to mark blockstore subscriber presence")
+			}
+		}
+		return true
+	}
+	if c.presence == nil {
+		return false
+	}
+	ok, err := c.presence.HasPresence(ctx, c.opt.Scope)
+	if err != nil {
+		// Fail toward following while it already runs, so a Redis blip does
+		// not break remote subscribers; never start following on an error.
+		return c.following
+	}
+	return ok
+}
+
+// presenceTTL bounds how long following continues fleet-wide after the last
+// subscriber leaves (or its replica dies). A replica holding subscribers
+// renews it every tick (PollInterval).
+func (c *Cache) presenceTTL() time.Duration { return 3 * c.opt.PollInterval }
+
+// stopFollowing ends header following: the lease is released so no replica
+// keeps fetching, and the verified window is kept so a later subscriber
+// resumes from it (or from the published snapshot) when still within depth.
+func (c *Cache) stopFollowing() {
+	if !c.following {
+		return
+	}
+	c.following = false
+	if c.lease != nil {
+		c.releaseLeaseBounded()
+	}
+	c.sharedAt = map[string]time.Time{}
+	c.leaderFailures = 0
+}
+
+func (c *Cache) followReason() string {
+	if c.opt.AlwaysFollow {
+		return FetchReasonBackground
+	}
+	return FetchReasonSubscription
 }
 
 func boolFloat64(value bool) float64 {
@@ -533,9 +622,7 @@ func (c *Cache) sameBranchAdvance(old, snap *Snapshot) bool {
 func (c *Cache) invalidateAndClose() {
 	c.invalidate()
 	c.mu.Lock()
-	for s := range c.subs {
-		c.closeSubLocked(s)
-	}
+	c.closePrimedLocked()
 	c.mu.Unlock()
 }
 
@@ -566,8 +653,8 @@ func parseHeader(raw json.RawMessage, n int64) (*header, error) {
 	return &header{raw: append(json.RawMessage(nil), raw...), b: b, n: n}, nil
 }
 
-func (c *Cache) getHeader(ctx context.Context, n int64) (*header, error) {
-	c.fetchMetric(PayloadHeader, FetchReasonBackground)
+func (c *Cache) getHeader(ctx context.Context, n int64, reason string) (*header, error) {
+	c.fetchMetric(PayloadHeader, reason)
 	raw, err := c.fetcher.HeaderByNumber(ctx, n)
 	if err != nil {
 		return nil, fmt.Errorf("fetch header %d: %w", n, err)
@@ -588,7 +675,7 @@ func (c *Cache) getHeaders(ctx context.Context, from, to int64) ([]*header, erro
 	out := make([]*header, to-from+1)
 	errs := make([]error, len(out))
 	c.parallel(ctx, len(out), func(i int) {
-		out[i], errs[i] = c.getHeader(ctx, from+int64(i))
+		out[i], errs[i] = c.getHeader(ctx, from+int64(i), c.followReason())
 	})
 	for _, err := range errs {
 		if err != nil {
@@ -636,6 +723,11 @@ func (c *Cache) refresh(ctx context.Context) error {
 	if len(window) == 0 || window[len(window)-1].n != windowHead {
 		window, windowHead = nil, -1
 	}
+	if seed, seedHead := c.seedWindowFromPull(); seedHead > windowHead && seedHead <= tip {
+		// Following (re)starts above the retained window: extend the headers
+		// clients already fetched instead of refetching them.
+		window, windowHead = seed, seedHead
+	}
 	if len(window) > 0 && tip < windowHead {
 		// A poller can observe a lagging upstream. A lower number alone is
 		// not evidence of a reorg, and must not discard verified headers.
@@ -647,7 +739,7 @@ func (c *Cache) refresh(ctx context.Context) error {
 	switch {
 	case len(window) == 0 || tip-windowHead > c.opt.Depth:
 		var top *header
-		if top, err = c.getHeader(ctx, tip); err == nil {
+		if top, err = c.getHeader(ctx, tip, c.followReason()); err == nil {
 			window = []*header{top}
 		}
 	case tip > windowHead:
@@ -655,7 +747,7 @@ func (c *Cache) refresh(ctx context.Context) error {
 		// Probe the advertised tip first. If it is not available yet, retry
 		// only that height next tick, not the whole forward range.
 		var top *header
-		if top, err = c.getHeader(ctx, tip); err == nil {
+		if top, err = c.getHeader(ctx, tip, c.followReason()); err == nil {
 			added, err = c.getHeaders(ctx, windowHead+1, tip-1)
 		}
 		if err == nil {
@@ -675,7 +767,7 @@ func (c *Cache) refresh(ctx context.Context) error {
 	default:
 		// Same-height re-verification after an independently suspected reorg.
 		var top *header
-		if top, err = c.getHeader(ctx, tip); err == nil {
+		if top, err = c.getHeader(ctx, tip, c.followReason()); err == nil {
 			i := int(tip - window[0].n)
 			if window[i].b.Hash == top.b.Hash {
 				window = window[:i+1]
@@ -746,7 +838,7 @@ func (c *Cache) walkBack(ctx context.Context, window []*header, i int) ([]*heade
 			}
 			return window, nil
 		}
-		h, err := c.getHeader(ctx, window[i-1].n)
+		h, err := c.getHeader(ctx, window[i-1].n, c.followReason())
 		if err != nil {
 			return nil, err
 		}
@@ -858,6 +950,7 @@ func (c *Cache) recordLocked(h *header) *BlockRecord {
 func (c *Cache) install(snap *Snapshot, headers map[string]*header, gap bool) {
 	c.mu.Lock()
 	old := c.snap
+	restart := old == nil || c.nowFn().Sub(c.freshAt) > c.opt.MaxStaleness
 	if old != nil && snap.Head < old.Head && snap.HashAt(snap.Head) == old.HashAt(snap.Head) {
 		// A lower matching tip may be a lagging observation, not a reorg.
 		gap = true
@@ -904,27 +997,25 @@ func (c *Cache) install(snap *Snapshot, headers map[string]*header, gap bool) {
 	c.snap, c.headers, c.freshAt = snap, headers, snap.At
 	// Payloads of hashes that left the view are dropped; they stay in the
 	// shared store and are re-validated if the hash returns.
-	for h, raw := range c.bodies {
-		if headers[h] == nil {
-			delete(c.bodies, h)
-			c.payloadBytes -= int64(len(raw))
-		}
+	for h := range c.bodies {
+		c.dropPayloadsLocked(h)
 	}
-	for h, raw := range c.logs {
-		if headers[h] == nil {
-			delete(c.logs, h)
-			c.payloadBytes -= int64(len(raw))
-		}
+	for h := range c.logs {
+		c.dropPayloadsLocked(h)
 	}
 	c.Stats.Published.Add(1)
-	if gap {
-		for s := range c.subs {
-			c.closeSubLocked(s)
-		}
+	if restart {
+		// The previous view was missing or stale: subscribers have no
+		// verified baseline to continue from. Primed ones were already
+		// closed; unprimed ones start at the next contiguous event.
+		c.closePrimedLocked()
+	} else if gap {
+		c.closePrimedLocked()
 	} else if len(ev.Removed)+len(ev.Added) > 0 {
 		for s := range c.subs {
 			select {
 			case s.C <- ev:
+				s.primed = true
 			default:
 				c.closeSubLocked(s)
 			}
@@ -936,11 +1027,24 @@ func (c *Cache) install(snap *Snapshot, headers map[string]*header, gap bool) {
 func (c *Cache) expireSubscribers() {
 	c.mu.Lock()
 	if c.snap != nil && c.nowFn().Sub(c.freshAt) > c.opt.MaxStaleness {
-		for s := range c.subs {
+		c.closePrimedLocked()
+	}
+	c.mu.Unlock()
+}
+
+// subscribeGrace is how long a subscription that has not received its first
+// event waits for header following to (re)start and verify a view.
+func (c *Cache) subscribeGrace() time.Duration { return c.leaseTTL() + c.opt.MaxStaleness }
+
+// closePrimedLocked closes subscriptions that were sent events and so lost
+// continuity, and unprimed ones whose grace for a first event has elapsed.
+func (c *Cache) closePrimedLocked() {
+	now := c.nowFn()
+	for s := range c.subs {
+		if s.primed || now.Sub(s.since) > c.subscribeGrace() {
 			c.closeSubLocked(s)
 		}
 	}
-	c.mu.Unlock()
 }
 
 // Subscribe registers a newHeads-style subscriber: events carry headers only
@@ -955,13 +1059,18 @@ func (c *Cache) subscribe(queue int, logs bool) *Subscription {
 	if queue < 1 {
 		queue = 1
 	}
-	s := &Subscription{C: make(chan Event, queue), c: c, logs: logs}
+	s := &Subscription{C: make(chan Event, queue), c: c, logs: logs, since: c.nowFn()}
 	c.mu.Lock()
+	// On a fresh followed view the subscriber's baseline is the current head;
+	// otherwise (following not running yet) it starts at its first event.
+	s.primed = c.viewLocked() != nil
 	c.subs[s] = struct{}{}
 	if logs {
 		c.logsSubs++
 	}
 	c.mu.Unlock()
+	// Start following (and mark fleet presence) without waiting a poll.
+	c.Kick()
 	return s
 }
 
@@ -1018,12 +1127,18 @@ func (c *Cache) Head() int64 {
 	return -1
 }
 
-// CanonicalHash returns the verified live-window hash, or empty outside the window.
+// CanonicalHash returns the verified hash at n from the followed window or
+// fresh adopted headers, or empty when n is not held.
 func (c *Cache) CanonicalHash(n int64) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if s := c.viewLocked(); s != nil {
-		return s.HashAt(n)
+		if h := s.HashAt(n); h != "" {
+			return h
+		}
+	}
+	if h := c.pullFreshLocked(n, ""); h != nil {
+		return h.b.Hash
 	}
 	return ""
 }
