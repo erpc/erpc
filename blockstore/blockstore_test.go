@@ -1090,6 +1090,58 @@ type payloadErrStore struct {
 	err error
 }
 
+type fleetReadErrStore struct {
+	*fakeFleetStore
+	acquireErr bool
+	readErr    bool
+}
+
+func (s *fleetReadErrStore) Acquire(ctx context.Context, scope Scope, ttl time.Duration) (Lease, error) {
+	if s.acquireErr {
+		return nil, fmt.Errorf("transient acquire failure")
+	}
+	return s.fakeFleetStore.Acquire(ctx, scope, ttl)
+}
+
+func (s *fleetReadErrStore) ReadSnapshot(ctx context.Context, scope Scope) (*Snapshot, error) {
+	if s.readErr {
+		return nil, fmt.Errorf("transient snapshot failure")
+	}
+	return s.fakeFleetStore.ReadSnapshot(ctx, scope)
+}
+
+func TestCache_FleetErrorsRetainFreshFollowerView(t *testing.T) {
+	for _, path := range []string{"acquire", "snapshot"} {
+		t.Run(path, func(t *testing.T) {
+			store := &fleetReadErrStore{fakeFleetStore: newFakeFleetStore()}
+			store.leader = true
+			chain := newFakeChain(5)
+			leader := New(testOpts(), store, chain, chain.head, nil)
+			leader.Tick(t.Context())
+			defer leader.Stop()
+			follower := New(testOpts(), store, chain, nil, nil)
+			follower.Tick(t.Context())
+			require.EqualValues(t, 5, follower.Head())
+			originalFreshAt := follower.freshAt
+			sub := follower.Subscribe(4)
+			store.acquireErr = path == "acquire"
+			store.readErr = path == "snapshot"
+			follower.Tick(t.Context())
+			require.True(t, follower.Fresh())
+			require.Equal(t, originalFreshAt, follower.freshAt, "errors must not extend freshness")
+			require.EqualValues(t, 5, follower.Head())
+			require.Equal(t, 1, follower.SubscriberCount(), "subscriber remains open")
+			now := originalFreshAt.Add(testOpts().MaxStaleness + time.Second)
+			follower.nowFn = func() time.Time { return now }
+			follower.Tick(t.Context())
+			require.False(t, follower.Fresh())
+			require.Equal(t, 0, follower.SubscriberCount())
+			_, open := <-sub.C
+			require.False(t, open)
+		})
+	}
+}
+
 func (s *payloadErrStore) setErr(err error) { s.mu.Lock(); s.err = err; s.mu.Unlock() }
 func (s *payloadErrStore) GetBlock(ctx context.Context, scope Scope, hash string) (*BlockRecord, error) {
 	s.mu.Lock()

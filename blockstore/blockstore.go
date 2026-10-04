@@ -283,7 +283,9 @@ func (c *Cache) fleetTickOnce(ctx context.Context) error {
 	if c.lease == nil {
 		lease, err := c.fleet.Acquire(ctx, c.opt.Scope, c.leaseTTL())
 		if err != nil {
-			c.invalidateAndClose()
+			if !c.Fresh() {
+				c.invalidateAndClose()
+			}
 			return fmt.Errorf("acquire head cache lease: %w", err)
 		}
 		if lease == nil {
@@ -371,11 +373,14 @@ func (c *Cache) fleetTickOnce(ctx context.Context) error {
 
 func (c *Cache) readFleetSnapshot(ctx context.Context) error {
 	snap, err := c.fleet.ReadSnapshot(ctx, c.opt.Scope)
-	if err != nil || snap == nil || len(snap.Hashes) == 0 || c.nowFn().Sub(snap.At) > c.opt.MaxStaleness {
-		c.invalidateAndClose()
-		if err != nil {
-			return fmt.Errorf("read head cache snapshot: %w", err)
+	if err != nil {
+		if !c.Fresh() {
+			c.invalidateAndClose()
 		}
+		return fmt.Errorf("read head cache snapshot: %w", err)
+	}
+	if snap == nil || len(snap.Hashes) == 0 || c.nowFn().Sub(snap.At) > c.opt.MaxStaleness {
+		c.invalidateAndClose()
 		return errors.New("missing or stale head cache snapshot")
 	}
 	if snap.At.After(c.nowFn().Add(maxFutureSkew)) {
