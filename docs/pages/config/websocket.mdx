@@ -49,7 +49,7 @@ projects:
 
 ## Config schema (`server.webSocket`)
 
-Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="138-160" />), called from <SourceLink file="common/defaults.go" lines="793" />.
+Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="274-296" />), called from <SourceLink file="common/defaults.go" lines="793" />.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -81,7 +81,7 @@ Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/conf
 4. **Shutdown.** Connections are hijacked, so `http.Server.Shutdown` does not wait for them. They close with 1001 when the application context ends. New upgrades during draining get 503.
 5. `maxConnections` and `maxConnectionsPerProject` are per process, not per client IP or fleet. Front eRPC with a per-client connection limit at the load balancer.
 6. Only `newHeads` and `logs` are supported. `newPendingTransactions`, `syncing` and unknown kinds return `-32601`.
-7. **Keepalive and re-auth.** Every `pingInterval` the server pings (a missing pong within `writeTimeout` closes with 1008) and re-checks the upgrade credentials through consumer auth, consuming one auth rate-limit permit when the strategy has a `rateLimitBudget`. A revoked key or expired JWT stops streaming within about one `pingInterval`, closing with 1008 `unauthorized`.
+7. **Keepalive and re-auth.** Every `pingInterval` the server pings (a missing pong within `max(writeTimeout, pingInterval)`, 30s by default, closes with 1008) and re-checks the upgrade credentials through consumer auth, consuming one auth rate-limit permit when the strategy has a `rateLimitBudget`. A revoked key or expired JWT stops streaming within about one `pingInterval`, closing with 1008 `unauthorized`.
 8. **Server timeouts.** Upgraded connections are hijacked, so they outlive `server.writeTimeout` (`TestWs_OutlivesHTTPWriteTimeout`).
 9. **Fork compatibility.** Configs written for the unmerged fork branch must drop `server.webSocket.maxInflightPerConnection` and `maxBatchSize`. Those keys no longer exist.
 
