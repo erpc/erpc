@@ -199,6 +199,11 @@ func (c *Cache) Tick(ctx context.Context) {
 	} else {
 		err = c.refresh(ctx)
 	}
+	// An unhydrated tip is a stale tick, as before; it is surfaced as an error
+	// only so fleetTick can count it toward leader step-down.
+	if errors.Is(err, errNoPublishableView) {
+		err = nil
+	}
 	fresh := c.Fresh()
 	labels := []string{c.opt.Scope.ProjectId, c.opt.Scope.NetworkId}
 	telemetry.MetricBlockStoreFresh.WithLabelValues(labels...).Set(boolFloat64(fresh))
@@ -629,7 +634,18 @@ func (c *Cache) refresh(ctx context.Context) error {
 		suffix--
 	}
 	if suffix == len(window) {
-		return nil
+		// The tip did not hydrate. Keep pending only for heights still in this
+		// window, so records cannot accumulate while the tip keeps failing.
+		inWindow := make(map[string]struct{}, len(window))
+		for _, h := range window {
+			inWindow[h.b.Hash] = struct{}{}
+		}
+		for h := range c.pending {
+			if _, ok := inWindow[h]; !ok {
+				delete(c.pending, h)
+			}
+		}
+		return errNoPublishableView
 	}
 	blockedBelow := false
 	for i, h := range window {
@@ -652,6 +668,12 @@ func (c *Cache) refresh(ctx context.Context) error {
 	c.pending = map[string]*BlockRecord{}
 	return nil
 }
+
+// errNoPublishableView means a refresh found the canonical window but could not
+// hydrate its tip, so there is nothing to serve or publish. It is not a hard
+// failure (older heights keep filling), but a lease holder that never gets
+// past it publishes nothing, so fleetTick counts it toward stepping down.
+var errNoPublishableView = errors.New("head cache tip block could not be hydrated")
 
 func completeWindow(s *Snapshot, records map[string]*BlockRecord) bool {
 	for _, h := range s.Hashes {

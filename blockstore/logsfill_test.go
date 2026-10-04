@@ -315,6 +315,52 @@ func TestLogsFill_ReorgOverwritesHeight(t *testing.T) {
 	require.Equal(t, normHash(lfHash(100)), got.Hash, "the refilled hash replaces the stale entry")
 }
 
+// A fully covered range whose unfinalized heights came from different fills may
+// straddle a reorg (height 100 from the old fork, 101 from the new). It must be
+// refilled with one fresh call instead of being served as one coherent answer.
+func TestLogsFill_UnfinalizedHitRequiresOneFill(t *testing.T) {
+	store := newLfStore()
+	oldFork := &BlockLogs{Number: 100, Hash: lfHash(1), Logs: lfRaw(t, lfLog(100, 0, lfAddrB)), Fill: "old"}
+	newFork := &BlockLogs{Number: 101, Hash: lfHash(101), Logs: lfRaw(t), Fill: "new"}
+	require.NoError(t, store.PutBlockLogs(t.Context(), Scope{}, oldFork, time.Minute))
+	require.NoError(t, store.PutBlockLogs(t.Context(), Scope{}, newFork, time.Minute))
+	fetch := chainFetcher(t, lfChainLogs())
+	f := newTestFiller(store, fetch, 200, 50) // 100..101 unfinalized
+	res := f.Serve(t.Context(), 100, 101, 0, nil)
+	require.Equal(t, LogsFillFill, res.Outcome, "mixed-fill unfinalized entries are not served as a hit")
+	require.EqualValues(t, 1, fetch.calls.Load())
+	got, _ := store.GetBlockLogs(t.Context(), Scope{}, 100)
+	require.Equal(t, normHash(lfHash(100)), got.Hash, "the refill replaces the stale-fork entry")
+
+	// Now both heights share one fill: a hit, no upstream call.
+	res = f.Serve(t.Context(), 100, 101, 0, nil)
+	require.Equal(t, LogsFillHit, res.Outcome)
+	require.EqualValues(t, 1, fetch.calls.Load())
+
+	// Pre-upgrade entries (no fill id) are a miss while unfinalized, a hit once finalized.
+	legacy := newLfStore()
+	for _, n := range []int64{100, 101} {
+		require.NoError(t, legacy.PutBlockLogs(t.Context(), Scope{}, &BlockLogs{Number: n, Logs: lfRaw(t)}, time.Minute))
+	}
+	fetch2 := chainFetcher(t, lfChainLogs())
+	require.Equal(t, LogsFillFill, newTestFiller(legacy, fetch2, 200, 50).Serve(t.Context(), 100, 101, 0, nil).Outcome)
+	legacyFinal := newLfStore()
+	for _, n := range []int64{100, 101} {
+		require.NoError(t, legacyFinal.PutBlockLogs(t.Context(), Scope{}, &BlockLogs{Number: n, Logs: lfRaw(t)}, time.Minute))
+	}
+	fetch3 := chainFetcher(t, lfChainLogs())
+	require.Equal(t, LogsFillHit, newTestFiller(legacyFinal, fetch3, 200, 150).Serve(t.Context(), 100, 101, 0, nil).Outcome,
+		"finalized heights cannot reorg, so mixed or legacy entries are served")
+	require.Zero(t, fetch3.calls.Load())
+}
+
+func TestLogsFill_NegativeLogIndexRejected(t *testing.T) {
+	bad := lfLog(100, 0, lfAddrA)
+	bad["logIndex"] = "-0x1"
+	_, _, err := SplitRangeLogs(lfRaw(t, bad), 100, 100)
+	require.Error(t, err)
+}
+
 func TestLogsFill_SingleflightCoalesces(t *testing.T) {
 	fetch := chainFetcher(t, lfChainLogs())
 	fetch.gate = make(chan struct{})

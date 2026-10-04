@@ -139,6 +139,34 @@ func TestHttp_LogsFill_UnfilteredFetchIsInternal(t *testing.T) {
 		"the unfiltered fill fetch must be retried by the internal-kind policy (3 attempts), not treated as user traffic")
 }
 
+// The fill's unfiltered fetch and a byte-identical client request must not share
+// one in-flight upstream response through the multiplexer: the internal fetch
+// runs under internal failsafe/integrity rules the client did not ask for.
+func TestHttp_LogsFill_InternalFetchNotMultiplexedWithClients(t *testing.T) {
+	f := newLogsFillFixture(t, 120, false)
+	f.up.unfilteredLogDelay.Store(int64(400 * time.Millisecond))
+	defer f.up.unfilteredLogDelay.Store(0)
+	before := f.up.UnfilteredLogCalls()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		// Triggers the fill: one internal unfiltered call for 0x50..0x52.
+		f.send(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x50","toBlock":"0x52","address":%q}]}`, scriptedEmitter), nil, nil)
+	}()
+	go func() {
+		defer wg.Done()
+		time.Sleep(100 * time.Millisecond) // while the internal fetch is in flight
+		// Same body as the internal fetch (unfiltered, same range). A client
+		// request skips the fill (no filter is fine), so it goes upstream itself.
+		hdr := map[string]string{"X-ERPC-Skip-Cache-Read": "true"}
+		f.send(`{"jsonrpc":"2.0","id":2,"method":"eth_getLogs","params":[{"fromBlock":"0x50","toBlock":"0x52"}]}`, hdr, nil)
+	}()
+	wg.Wait()
+	require.Equal(t, before+2, f.up.UnfilteredLogCalls(),
+		"internal fetch and client request each reach upstream instead of sharing one response")
+}
+
 func TestHttp_LogsFill_SkipsAndFallbacks(t *testing.T) {
 	f := newLogsFillFixture(t, 120, false)
 

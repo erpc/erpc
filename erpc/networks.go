@@ -1887,7 +1887,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	var mlx *Multiplexer
 	var resp *common.NormalizedResponse
 	var err error
-	if allowSharedResponse {
+	if allowSharedResponse && ctx.Value(blockStoreBypassKey{}) == nil {
+		// Blockstore hydration and logs-fill fetches are internal requests with
+		// their own trust rules; never share an in-flight response with client
+		// traffic in either direction (multiplexKey ignores directives).
 		mlx, resp, err = n.handleMultiplexing(ctx, &lg, req, startTime)
 	}
 	if err != nil || resp != nil {

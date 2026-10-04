@@ -27,6 +27,8 @@ type fakeChain struct {
 	tip       int64
 	dropLogs  map[string]bool
 	failBlock map[int64]bool
+	// failBody fails only the full-block fetch (hydration); headers still succeed.
+	failBody  map[int64]bool
 	nullAt    map[int64]bool
 	oversized map[int64]bool
 	headCalls int
@@ -38,7 +40,7 @@ type fakeChain struct {
 }
 
 func newFakeChain(tip int64) *fakeChain {
-	c := &fakeChain{blocks: map[int64]string{}, tip: tip, dropLogs: map[string]bool{}, failBlock: map[int64]bool{}, nullAt: map[int64]bool{}, oversized: map[int64]bool{}, logless: map[int64]string{}}
+	c := &fakeChain{blocks: map[int64]string{}, tip: tip, dropLogs: map[string]bool{}, failBlock: map[int64]bool{}, failBody: map[int64]bool{}, nullAt: map[int64]bool{}, oversized: map[int64]bool{}, logless: map[int64]string{}}
 	for n := int64(0); n <= tip; n++ {
 		c.blocks[n] = "a"
 	}
@@ -109,6 +111,9 @@ func (c *fakeChain) BlockByNumber(_ context.Context, n int64) (json.RawMessage, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bodyCalls++
+	if c.failBody[n] {
+		return nil, fmt.Errorf("upstream body failure")
+	}
 	raw, err := c.blockLocked(n)
 	if err == nil && c.mixedCase {
 		var block map[string]interface{}
@@ -389,6 +394,61 @@ func TestCache_FleetLeaderStepsDownAfterRepeatedRefreshFailures(t *testing.T) {
 	require.NotNil(t, follower.lease, "a healthy replica acquires the released lease")
 	require.True(t, follower.Fresh())
 	require.Equal(t, int64(6), follower.Head())
+}
+
+// A leader whose tip block never hydrates returns no error from refresh but
+// publishes nothing; it must still step down so a healthy replica takes over.
+func TestCache_FleetLeaderStepsDownWhenTipNeverHydrates(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	chain := newFakeChain(5)
+	leader := New(testOpts(), store, chain, chain.head, nil)
+	leader.Tick(context.Background())
+	require.True(t, leader.Fresh())
+
+	// New tip whose body fetch keeps failing; headers still work and Redis is healthy.
+	chain.mine(1)
+	chain.mu.Lock()
+	chain.failBody[6] = true
+	chain.mu.Unlock()
+	for i := 1; i < maxLeaderFailures; i++ {
+		leader.Tick(context.Background())
+		require.NotNil(t, leader.lease, "tick %d keeps the lease", i)
+	}
+	leader.Tick(context.Background())
+	require.Nil(t, leader.lease, "a leader that cannot hydrate its tip steps down")
+	require.Equal(t, 1, store.releases)
+
+	healthy := newFakeChain(6)
+	follower := New(testOpts(), store, healthy, healthy.head, nil)
+	follower.Tick(context.Background())
+	require.NotNil(t, follower.lease)
+	require.True(t, follower.Fresh())
+	require.Equal(t, int64(6), follower.Head())
+}
+
+// While the tip keeps failing, non-tip heights still hydrate into pending
+// (nothing is installed yet). Records for heights that left the moving window
+// must be dropped instead of accumulating.
+func TestCache_PendingPrunedWhileTipFails(t *testing.T) {
+	opts := testOpts()
+	opts.Depth = 4
+	opts.MaxPerTick = 4
+	chain := newFakeChain(4)
+	chain.failBody[4] = true // the tip fails from the very first (cold) tick
+	c := New(opts, nil, chain, chain.head, nil)
+	for i := 0; i < 20; i++ {
+		c.Tick(context.Background())
+		require.False(t, c.Fresh(), "nothing is publishable while the tip fails")
+		require.LessOrEqual(t, len(c.pending), int(opts.Depth), "pending must stay within the window (tick %d)", i)
+		// Only the newest block is ever unavailable, so every older height
+		// hydrates and then falls out of the window as the chain advances.
+		delete(chain.failBody, chain.tip)
+		chain.mine(1)
+		chain.mu.Lock()
+		chain.failBody[chain.tip] = true
+		chain.mu.Unlock()
+	}
 }
 
 func TestCache_FleetLeaderFailureCountResetsOnSuccess(t *testing.T) {

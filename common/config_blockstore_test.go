@@ -7,6 +7,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// An explicit depth below the maxPerTick default must not fail startup on a field
+// the operator never set (LoadConfig runs SetDefaults then Validate).
+func TestEvmBlockStoreConfig_MaxPerTickDefaultClampedToDepth(t *testing.T) {
+	for _, depth := range []int64{1, 8, 15, 16, 128} {
+		c := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "r", Depth: depth}
+		c.SetDefaults()
+		require.Equal(t, min(int64(16), depth), c.MaxPerTick, "depth %d", depth)
+		require.NoError(t, c.Validate(), "depth %d", depth)
+	}
+	explicit := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "r", Depth: 8, MaxPerTick: 16}
+	explicit.SetDefaults()
+	require.ErrorContains(t, explicit.Validate(), "maxPerTick", "an explicit maxPerTick above depth is still rejected")
+}
+
 func TestEvmBlockStoreConfig_MaxBlockBytesDefaultClampedToMaxBytes(t *testing.T) {
 	small := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "r", MaxBytes: 8 << 20}
 	small.SetDefaults()

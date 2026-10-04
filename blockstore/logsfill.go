@@ -3,6 +3,8 @@ package blockstore
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,11 @@ type BlockLogs struct {
 	Number int64           `json:"n"`
 	Hash   string          `json:"h,omitempty"`
 	Logs   json.RawMessage `json:"l"`
+	// Fill identifies the upstream response this entry came from. A hit over
+	// unfinalized heights is served only when they all share one Fill, so a
+	// single answer can never mix pre- and post-reorg data. Entries written
+	// before this field existed have Fill == "" and count as a miss there.
+	Fill string `json:"f,omitempty"`
 }
 
 func (b *BlockLogs) size() int64 { return int64(len(b.Logs) + len(b.Hash) + 32) }
@@ -130,6 +137,36 @@ func NewLogsFiller(opt LogsFillOptions, store LogsFillStore, fetch RangeLogsFetc
 
 func (f *LogsFiller) MaxRange() int64 { return f.opt.MaxRange }
 
+// coherent reports whether stored entries can be served together. Finalized
+// heights cannot reorg, so any mix of their entries is consistent. Unfinalized
+// heights must all come from one upstream response (same Fill): entries from
+// different fills may straddle a reorg, and an empty height carries no block
+// hash to check. Otherwise the range is refilled with one fresh call.
+func (f *LogsFiller) coherent(ctx context.Context, entries []*BlockLogs) bool {
+	finalized := f.finalized(ctx)
+	fill := ""
+	for _, e := range entries {
+		if finalized > 0 && e.Number <= finalized {
+			continue
+		}
+		if e.Fill == "" {
+			return false
+		}
+		if fill == "" {
+			fill = e.Fill
+		} else if e.Fill != fill {
+			return false
+		}
+	}
+	return true
+}
+
+func newFillID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
 // LogsFillResult describes how Serve handled a request. Logs is non-nil
 // (possibly empty) only when OK.
 type LogsFillResult struct {
@@ -166,7 +203,7 @@ func (f *LogsFiller) Serve(ctx context.Context, from, to, maxRange int64, filter
 		return skipped("above_head")
 	}
 
-	if entries, ok := f.lookup(ctx, from, to); ok {
+	if entries, ok := f.lookup(ctx, from, to); ok && f.coherent(ctx, entries) {
 		logs, err := filterBlockLogs(entries, filter)
 		if err == nil {
 			return LogsFillResult{Logs: logs, OK: true, Outcome: LogsFillHit}
@@ -352,6 +389,10 @@ func (f *LogsFiller) fill(ctx context.Context, from, to, latest int64) ([]*Block
 		// the caller forward its original request.
 		return nil, errRemovedLogs
 	}
+	fillID := newFillID()
+	for _, e := range entries {
+		e.Fill = fillID
+	}
 	finalized := f.finalized(ctx)
 	f.parallel(len(entries), func(i int) {
 		if ttl, ok := f.entryTTL(entries[i], latest, finalized); ok {
@@ -415,7 +456,7 @@ func SplitRangeLogs(raw json.RawMessage, from, to int64) ([]*BlockLogs, bool, er
 			return nil, false, fmt.Errorf("log %d invalid blockHash", i)
 		}
 		idx, err := parseHexInt(l.LogIndex)
-		if err != nil {
+		if err != nil || idx < 0 {
 			return nil, false, fmt.Errorf("log %d invalid logIndex", i)
 		}
 		if l.Removed {

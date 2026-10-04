@@ -152,7 +152,9 @@ func (c *EvmBlockStoreConfig) SetDefaults() {
 		c.MaxBytes = 256 << 20
 	}
 	if c.MaxPerTick == 0 {
-		c.MaxPerTick = 16
+		// Validate bounds maxPerTick by depth, so a small explicit depth must not
+		// inherit a default above it (the runtime clamps the same way).
+		c.MaxPerTick = min(16, c.Depth)
 	}
 	if c.Concurrency == 0 {
 		c.Concurrency = 4
