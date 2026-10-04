@@ -285,7 +285,13 @@ func (n *Network) watchBlockStoreHead(ctx context.Context, c *blockstore.Cache) 
 }
 
 // networkHeadFetcher hydrates through the network's normal forwarding path
-// (routing and failsafe) while bypassing both caches.
+// (routing, failsafe and the evmJsonRpcCache, read and write) while bypassing
+// only the block store itself, so a header or payload a client already fetched
+// costs no upstream call, and the store's fetches are reusable by clients.
+// IsInternal only selects internal failsafe policies and skips integrity and
+// breaker accounting; it does not affect the response cache. Empty results
+// are never cached for not-yet-produced heights (and not at all under the
+// default empty=ignore policy), so RetryEmpty stays safe with the cache.
 type networkHeadFetcher struct{ n *Network }
 
 func (f *networkHeadFetcher) call(ctx context.Context, method string, params []interface{}) (json.RawMessage, error) {
@@ -294,8 +300,8 @@ func (f *networkHeadFetcher) call(ctx context.Context, method string, params []i
 		return nil, fmt.Errorf("set head cache request id: %w", err)
 	}
 	rq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
-	rq.SetDirectives(&common.RequestDirectives{IsInternal: true, SkipCacheRead: "true", RetryEmpty: true})
-	resp, err := f.n.Forward(withCacheWriteBypass(withBlockStoreBypass(ctx)), rq)
+	rq.SetDirectives(&common.RequestDirectives{IsInternal: true, RetryEmpty: true})
+	resp, err := f.n.Forward(withBlockStoreBypass(ctx), rq)
 	if err != nil {
 		return nil, err
 	}
