@@ -600,6 +600,61 @@ func TestWs_PingAndReauthClosesExpiredJwt(t *testing.T) {
 	require.Nil(t, long.call("eth_subscribe", `["newHeads"]`).Error)
 }
 
+func TestWs_PingWaitsForReaderAfterSlowFrame(t *testing.T) {
+	const writeTimeout = 50 * time.Millisecond
+	const pingInterval = 300 * time.Millisecond
+	started := make(chan struct{})
+	state := make(chan context.Context, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+		c := &wsConn{conn: conn, ctx: ctx, cancel: cancel, project: &PreparedProject{}, req: r,
+			ws: &wsServer{cfg: &common.WebSocketServerConfig{WriteTimeout: common.Duration(writeTimeout), PingInterval: common.Duration(pingInterval)}, s: &HttpServer{}}}
+		_, _, err = conn.Read(context.Background())
+		if err != nil {
+			return
+		}
+		state <- ctx
+		close(started)
+		go c.pingLoop()
+		// While this frame handler runs, Read cannot consume the pong.
+		time.Sleep(420 * time.Millisecond)
+		if ctx.Err() != nil {
+			return
+		}
+		for ctx.Err() == nil {
+			if _, _, err := conn.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	client, _, err := websocket.Dial(ctx, strings.Replace(server.URL, "http://", "ws://", 1), nil)
+	require.NoError(t, err)
+	defer client.CloseNow()
+	go func() {
+		for {
+			if _, _, err := client.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	require.NoError(t, client.Write(ctx, websocket.MessageText, []byte("frame")))
+	<-started
+	serverCtx := <-state
+	// The first ping fires at 300ms and must survive the extra 120ms of
+	// frame handling, which exceeds WriteTimeout but not PingInterval.
+	time.Sleep(460 * time.Millisecond)
+	require.NoError(t, serverCtx.Err(), "slow frame handling must not trigger a ping timeout")
+}
+
 func TestWs_PerProjectCap(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()

@@ -498,7 +498,9 @@ func (c *wsConn) pingLoop() {
 		case <-c.ctx.Done():
 			return
 		case <-t.C:
-			pctx, cancel := context.WithTimeout(c.ctx, c.ws.cfg.WriteTimeout.Duration())
+			// Ping waits for the reader to consume a pong; frame handling can
+			// occupy that reader longer than an outbound write timeout.
+			pctx, cancel := context.WithTimeout(c.ctx, max(c.ws.cfg.WriteTimeout.Duration(), c.ws.pingInterval()))
 			err := c.conn.Ping(pctx)
 			cancel()
 			if err != nil && c.ctx.Err() == nil {
