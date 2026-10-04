@@ -817,6 +817,7 @@ func TestRecordUpstreamFailure_AllSkipCodesIgnored(t *testing.T) {
 		{"RequestCanceled", common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled"))},
 		{"UpstreamHedgeCancelled", common.NewErrUpstreamHedgeCancelled("ups", fmt.Errorf("context canceled"))},
 		{"BlockUnavailable", common.NewErrUpstreamBlockUnavailable("ups", 1000, 999, 990)},
+
 	}
 
 	for _, tc := range cases {

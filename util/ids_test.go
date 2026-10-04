@@ -40,7 +40,7 @@ func TestIsValidNetworkId_SvmWithChain(t *testing.T) {
 		{"svm:my_chain:my_cluster", true},
 
 		// Rejections.
-		{"svm:", false},              // empty rest
+		{"svm:", false},             // empty rest
 		{"svm:a:", false},            // trailing colon → empty cluster
 		{"svm::mainnet", false},      // empty chain segment
 		{"svm:a:b:c", false},         // three colons not supported
