@@ -466,9 +466,17 @@ func (c *wsConn) writeLoop(done chan struct{}) {
 		case msg := <-c.out:
 			wctx, cancel := context.WithTimeout(c.ctx, wt)
 			err := c.conn.Write(wctx, websocket.MessageText, msg)
+			timedOut := errors.Is(wctx.Err(), context.DeadlineExceeded)
 			cancel()
 			if err != nil {
-				c.closeWith(websocket.StatusPolicyViolation, "write timeout")
+				if timedOut {
+					// A genuinely slow consumer: tell it why (1008).
+					c.closeWith(websocket.StatusPolicyViolation, "write timeout")
+				} else {
+					// Peer reset/close or another transport error: ordinary
+					// churn, not a slow consumer, so it is not labeled write_timeout.
+					c.cancel(err)
+				}
 			}
 		}
 	}

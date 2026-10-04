@@ -233,6 +233,68 @@ func TestHistorical_ReadLogsRangeIsBoundedAndAllOrMiss(t *testing.T) {
 	require.Nil(t, got, "partial logs must not escape")
 }
 
+// caseSensitiveHistoricalStore keys payloads by the exact string it is given,
+// like the Redis store (which sha256-hashes the key), so any read/write
+// normalization mismatch surfaces as a miss.
+type caseSensitiveHistoricalStore struct{ *historicalTestStore }
+
+func (s caseSensitiveHistoricalStore) GetHistoricalBlock(_ context.Context, scope Scope, hash string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b := s.blocks[historicalScopeKey(scope, hash)]; b != nil {
+		return append(json.RawMessage(nil), b...), nil
+	}
+	return nil, ErrNotFound
+}
+func (s caseSensitiveHistoricalStore) PutHistoricalBlock(_ context.Context, scope Scope, hash string, block json.RawMessage, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blocks[historicalScopeKey(scope, hash)] = append(json.RawMessage(nil), block...)
+	s.blockPuts++
+	return nil
+}
+func (s caseSensitiveHistoricalStore) GetHistoricalLogs(_ context.Context, scope Scope, hash string) (json.RawMessage, json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.logs[historicalScopeKey(scope, hash)]
+	if !ok {
+		return nil, nil, ErrNotFound
+	}
+	return append(json.RawMessage(nil), p.header...), append(json.RawMessage(nil), p.logs...), nil
+}
+func (s caseSensitiveHistoricalStore) PutHistoricalLogs(_ context.Context, scope Scope, hash string, header, logs json.RawMessage, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logs[historicalScopeKey(scope, hash)] = historicalLogsPayload{header: append(json.RawMessage(nil), header...), logs: append(json.RawMessage(nil), logs...)}
+	s.logsPuts++
+	return nil
+}
+
+func TestHistorical_HashKeysAreCaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	chain := newFakeChain(3)
+	chain.mixedCase = true // upstream returns upper-case block hashes
+	store := caseSensitiveHistoricalStore{newHistoricalTestStore()}
+	h := NewHistorical(HistoricalOptions{Scope: Scope{Namespace: "test", ProjectId: "p", NetworkId: "evm:1"}, MaxBlockSize: 1 << 16, MaxLogsRange: 3}, store, chain, func(context.Context) int64 { return 3 })
+
+	require.NoError(t, h.WarmBlock(ctx, 1))
+	require.NoError(t, h.WarmLogs(ctx, 1))
+	lower := hashOf(1, "a")
+	upper := strings.ToUpper(lower)
+	mixed := "0x" + strings.ToUpper(lower[2:4]) + lower[4:]
+
+	_, hit := h.ReadBlockByNumber(ctx, 1)
+	require.True(t, hit, "by-number read finds a payload stored under an upper-case upstream hash")
+	for _, q := range []string{lower, upper, mixed} {
+		_, hit = h.ReadBlockByHash(ctx, q)
+		require.True(t, hit, "block by hash %q", q)
+		_, hit = h.ReadLogsByHash(ctx, q)
+		require.True(t, hit, "logs by hash %q", q)
+	}
+	_, hit = h.ReadLogsRange(ctx, 1, 1)
+	require.True(t, hit, "range read follows the normalized index to the payload")
+}
+
 func TestHistorical_WarmPathsAreIndependentAndRecheckCanonicality(t *testing.T) {
 	ctx := context.Background()
 	chain := newFakeChain(3)

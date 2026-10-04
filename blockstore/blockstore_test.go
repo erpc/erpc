@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -353,6 +354,66 @@ func TestCache_FleetLeaderFollowerAndFailover(t *testing.T) {
 	require.Positive(t, followerChain.headCalls)
 	_, open := <-sub.C
 	require.False(t, open)
+}
+
+func TestCache_FleetLeaderStepsDownAfterRepeatedRefreshFailures(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	chain := newFakeChain(5)
+	var broken atomic.Bool
+	head := func(ctx context.Context) int64 {
+		if broken.Load() {
+			return -1 // upstream path down while the shared store stays healthy
+		}
+		return chain.head(ctx)
+	}
+	leader := New(testOpts(), store, chain, head, nil)
+	leader.Tick(context.Background())
+	require.True(t, leader.Fresh())
+	require.NotNil(t, leader.lease)
+
+	broken.Store(true)
+	for i := 1; i < maxLeaderFailures; i++ {
+		leader.Tick(context.Background())
+		require.NotNil(t, leader.lease, "a transient failure (%d) keeps the lease", i)
+		require.Zero(t, store.releases)
+	}
+	leader.Tick(context.Background())
+	require.Nil(t, leader.lease, "the sick leader releases after %d consecutive failures", maxLeaderFailures)
+	require.Equal(t, 1, store.releases)
+
+	// A healthy replica can now take over and publish.
+	followerChain := newFakeChain(6)
+	follower := New(testOpts(), store, followerChain, followerChain.head, nil)
+	follower.Tick(context.Background())
+	require.NotNil(t, follower.lease, "a healthy replica acquires the released lease")
+	require.True(t, follower.Fresh())
+	require.Equal(t, int64(6), follower.Head())
+}
+
+func TestCache_FleetLeaderFailureCountResetsOnSuccess(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	chain := newFakeChain(5)
+	var broken atomic.Bool
+	head := func(ctx context.Context) int64 {
+		if broken.Load() {
+			return -1
+		}
+		return chain.head(ctx)
+	}
+	c := New(testOpts(), store, chain, head, nil)
+	c.Tick(context.Background())
+	for round := 0; round < 3; round++ {
+		broken.Store(true)
+		for i := 1; i < maxLeaderFailures; i++ {
+			c.Tick(context.Background())
+		}
+		broken.Store(false)
+		c.Tick(context.Background())
+		require.NotNil(t, c.lease, "interleaved successes reset the count (round %d)", round)
+	}
+	require.Zero(t, store.releases)
 }
 
 func TestCache_FleetLeaderDoesNotRewriteUnchangedPayloadsEveryTick(t *testing.T) {

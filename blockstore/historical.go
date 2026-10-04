@@ -121,7 +121,7 @@ func (h *Historical) ReadBlockByHash(ctx context.Context, hash string) (*BlockRe
 	if !ok {
 		return nil, false
 	}
-	block, err := h.store.GetHistoricalBlock(ctx, h.scope, hash)
+	block, err := h.store.GetHistoricalBlock(ctx, h.scope, normHash(hash))
 	if err != nil || len(block) == 0 {
 		return nil, false
 	}
@@ -173,7 +173,7 @@ func (h *Historical) ReadLogsByHash(ctx context.Context, hash string) (*BlockRec
 	if !ok {
 		return nil, false
 	}
-	header, logs, err := h.store.GetHistoricalLogs(ctx, h.scope, hash)
+	header, logs, err := h.store.GetHistoricalLogs(ctx, h.scope, normHash(hash))
 	if err != nil {
 		return nil, false
 	}
@@ -270,7 +270,7 @@ func (h *Historical) warmBlock(ctx context.Context, n int64, provided json.RawMe
 	if err := h.recheckCanonical(ctx, n, b.Hash); err != nil {
 		return err
 	}
-	if err := h.store.PutHistoricalBlock(ctx, h.scope, b.Hash, append(json.RawMessage(nil), block...), h.ttl); err != nil {
+	if err := h.store.PutHistoricalBlock(ctx, h.scope, normHash(b.Hash), append(json.RawMessage(nil), block...), h.ttl); err != nil {
 		return fmt.Errorf("store historical block %d: %w", n, err)
 	}
 	if err := h.store.PutFinalizedHash(ctx, h.scope, n, normHash(b.Hash), h.ttl); err != nil {
@@ -316,7 +316,7 @@ func (h *Historical) warmLogs(ctx context.Context, n int64) error {
 	if err := h.recheckCanonical(ctx, n, b.Hash); err != nil {
 		return err
 	}
-	if err := h.store.PutHistoricalLogs(ctx, h.scope, b.Hash, append(json.RawMessage(nil), header...), append(json.RawMessage(nil), logs...), h.ttl); err != nil {
+	if err := h.store.PutHistoricalLogs(ctx, h.scope, normHash(b.Hash), append(json.RawMessage(nil), header...), append(json.RawMessage(nil), logs...), h.ttl); err != nil {
 		return fmt.Errorf("store historical logs %d: %w", n, err)
 	}
 	if err := h.store.PutFinalizedHash(ctx, h.scope, n, normHash(b.Hash), h.ttl); err != nil {

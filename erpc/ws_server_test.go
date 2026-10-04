@@ -3,8 +3,10 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -429,6 +432,75 @@ func TestWs_StreamStalledClientDisconnected(t *testing.T) {
 	var ce *wsCloseErr
 	require.ErrorAs(t, context.Cause(c.ctx), &ce)
 	require.Equal(t, websocket.StatusPolicyViolation, ce.code)
+}
+
+// wsLoopbackConn returns a server-side *websocket.Conn wired to a real client
+// over an httptest server, plus the client end.
+func wsLoopbackConn(t *testing.T) (server, client *websocket.Conn) {
+	t.Helper()
+	srvCh := make(chan *websocket.Conn, 1)
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept: %v", err)
+			return
+		}
+		srvCh <- c
+		<-r.Context().Done()
+	}))
+	t.Cleanup(hs.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cl, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(hs.URL, "http"), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cl.CloseNow() })
+	return <-srvCh, cl
+}
+
+func TestWs_WriteLoopLabelsOnlyRealTimeouts(t *testing.T) {
+	// writeLoop's shutdown path reads the server app context and logger.
+	wire := func(c *wsConn) {
+		lg := zerolog.Nop()
+		c.lg = &lg
+		c.ws.s = &HttpServer{appCtx: context.Background()}
+	}
+	t.Run("peer gone is not a write timeout", func(t *testing.T) {
+		srv, cl := wsLoopbackConn(t)
+		c, _ := testWsConn(t, 4)
+		c.conn = srv
+		wire(c)
+		require.NoError(t, cl.CloseNow()) // abrupt peer loss
+		_ = srv.CloseNow()                // writes now fail immediately, well before the deadline
+		done := make(chan struct{})
+		go c.writeLoop(done)
+		c.out <- []byte(`{"jsonrpc":"2.0"}`)
+		require.Eventually(t, func() bool { return c.ctx.Err() != nil }, 5*time.Second, 10*time.Millisecond)
+		<-done
+		require.NotEqual(t, "write_timeout", websocketCloseReason(context.Cause(c.ctx), context.Background()))
+		var ce *wsCloseErr
+		require.False(t, errors.As(context.Cause(c.ctx), &ce), "a transport error is not reported as a policy close")
+	})
+	t.Run("stalled reader is a write timeout", func(t *testing.T) {
+		srv, _ := wsLoopbackConn(t) // client never reads
+		c, _ := testWsConn(t, 64)
+		c.conn = srv
+		wire(c)
+		c.ws.cfg.WriteTimeout = common.Duration(100 * time.Millisecond)
+		done := make(chan struct{})
+		go c.writeLoop(done)
+		big := []byte(`"` + strings.Repeat("x", 1<<20) + `"`)
+		go func() {
+			for c.ctx.Err() == nil {
+				select {
+				case c.out <- big:
+				case <-c.ctx.Done():
+				}
+			}
+		}()
+		require.Eventually(t, func() bool { return c.ctx.Err() != nil }, 10*time.Second, 10*time.Millisecond)
+		<-done
+		require.Equal(t, "write_timeout", websocketCloseReason(context.Cause(c.ctx), context.Background()))
+	})
 }
 
 func TestWs_ColdFillKeepsSubscriptionOpen(t *testing.T) {

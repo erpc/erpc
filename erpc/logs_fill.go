@@ -84,10 +84,10 @@ func (n *Network) fetchUnfilteredLogs(ctx context.Context, from, to int64) (json
 		return nil, fmt.Errorf("set logs fill request id: %w", err)
 	}
 	rq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
-	rq.ApplyDirectiveDefaults(n.cfg.DirectiveDefaults)
-	dirs := rq.Directives().Clone()
-	dirs.SkipCacheRead = "true"
-	rq.SetDirectives(dirs)
+	// Same directives as networkHeadFetcher.call: an internal hydration fetch that
+	// `matchRequestKind: internal` failsafe policies match and the integrity
+	// pipeline skips (erpc re-serves this data itself), always reaching upstreams.
+	rq.SetDirectives(&common.RequestDirectives{IsInternal: true, SkipCacheRead: "true", RetryEmpty: true})
 	resp, err := n.Forward(withCacheWriteBypass(withBlockStoreBypass(ctx)), rq)
 	if err != nil {
 		return nil, err
@@ -155,21 +155,12 @@ func (n *Network) tryServeLogsFill(ctx context.Context, req *common.NormalizedRe
 		if lim := evm.GetLogsMaxAllowedRange; lim > 0 && (maxRange == 0 || lim < maxRange) {
 			maxRange = lim
 		}
-		obj := params[0].(map[string]interface{})
-		if lim := evm.GetLogsMaxAllowedAddresses; lim > 0 {
-			if addrs, ok := obj["address"].([]interface{}); ok && int64(len(addrs)) > lim {
-				n.logsFillMetric(blockstore.LogsFillSkipped, "limit")
-				return nil, false
-			}
-		}
-		if lim := evm.GetLogsMaxAllowedTopics; lim > 0 {
-			if tps, ok := obj["topics"].([]interface{}); ok && len(tps) > 0 {
-				if t0, ok := tps[0].([]interface{}); ok && int64(len(t0)) > lim {
-					n.logsFillMetric(blockstore.LogsFillSkipped, "limit")
-					return nil, false
-				}
-			}
-		}
+	}
+	// Range is already enforced through maxRange (as "range_too_large");
+	// addresses and topics share the network's exact counting.
+	if n.exceedsGetLogsLimits(params[0].(map[string]interface{}), from, from) {
+		n.logsFillMetric(blockstore.LogsFillSkipped, "limit")
+		return nil, false
 	}
 
 	res := f.Serve(ctx, from, to, maxRange, filter)

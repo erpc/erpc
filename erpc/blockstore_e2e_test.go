@@ -179,6 +179,53 @@ func TestHttp_BlockStore_ServesReusesAndHandlesReorg(t *testing.T) {
 	require.Contains(t, strings.ToLower(string(logs.Result)), strings.ToLower(up.HashAt(19)))
 }
 
+// The getLogs serve branch runs before the network pre-forward hook, so it must
+// enforce the same hard limits itself rather than answer what the network rejects.
+func TestHttp_BlockStore_GetLogsHonorsNetworkHardLimits(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := blockStoreTestConfig(up.URL(), &common.EvmBlockStoreConfig{
+		Enabled: true, Depth: 16, PollInterval: common.Duration(100 * time.Millisecond),
+	})
+	cfg.Projects[0].Networks[0].Evm.GetLogsMaxAllowedRange = 4
+	cfg.Projects[0].Networks[0].Evm.GetLogsMaxAllowedAddresses = 1
+	cfg.Projects[0].Networks[0].Evm.GetLogsMaxAllowedTopics = 1
+	send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	prj, err := erpcInstance.GetProject("test_project")
+	require.NoError(t, err)
+	nw, err := prj.GetNetwork(t.Context(), "evm:123")
+	require.NoError(t, err)
+	hc := nw.BlockStore()
+	require.NotNil(t, hc)
+	require.Eventually(t, func() bool {
+		_, ok := hc.LogsRange(8, 19, nil)
+		return hc.Head() == 20 && ok
+	}, 10*time.Second, 50*time.Millisecond)
+
+	rejectCode := func(params string) string {
+		_, _, body := send(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":%s}`, params), nil, nil)
+		var r struct {
+			Error *struct {
+				Data map[string]interface{} `json:"data"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &r), body)
+		require.NotNil(t, r.Error, "must be rejected, not served from the head cache: %s", body)
+		return body
+	}
+	other := "0x0000000000000000000000000000000000000002"
+	require.Contains(t, rejectCode(`[{"fromBlock":"0x8","toBlock":"0x13"}]`), "ErrGetLogsExceededMaxAllowedRange")
+	require.Contains(t, rejectCode(fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0x9","address":[%q,%q]}]`, scriptedEmitter, other)), "ErrGetLogsExceededMaxAllowedAddresses")
+	require.Contains(t, rejectCode(fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0x9","topics":[[%q,%q]]}]`, scriptedTopicEven, scriptedTopicOdd)), "ErrGetLogsExceededMaxAllowedTopics")
+
+	// Within every limit, the head cache still answers without an upstream call.
+	before := up.RangeLogCalls()
+	ok := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0xb","address":[%q],"topics":[%q]}]`, scriptedEmitter, scriptedTopicEven))
+	require.NotEqual(t, "null", string(ok.Result))
+	require.Equal(t, before, up.RangeLogCalls(), "an in-limit range is still served from the head cache")
+}
+
 func TestHttp_BlockStore_DisabledPreservesBehavior(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()

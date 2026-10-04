@@ -108,6 +108,37 @@ func TestHttp_LogsFill_DifferentFiltersShareOneUpstreamCall(t *testing.T) {
 	}
 }
 
+// The fill's own upstream fetch is an internal hydration request, like the head
+// fetcher's: `matchRequestKind: internal` failsafe policies must apply to it.
+func TestHttp_LogsFill_UnfilteredFetchIsInternal(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 120)
+	t.Cleanup(up.Close)
+	hc := &common.EvmBlockStoreConfig{
+		Namespace: fmt.Sprintf("logsfill-%d", time.Now().UnixNano()),
+		LogsFill:  common.EvmBlockStoreLogsFillConfig{Enabled: true, UnfinalizedTTL: common.Duration(time.Minute)},
+	}
+	cfg := blockStoreTestConfig(up.URL(), hc)
+	cfg.Server.WebSocket = nil
+	// Only internal requests retry; user requests get a single attempt.
+	cfg.Projects[0].Networks[0].Failsafe = []*common.FailsafeConfig{
+		{MatchMethod: "*", MatchRequestKind: "internal", Retry: &common.RetryPolicyConfig{MaxAttempts: 3}},
+		{MatchMethod: "*", MatchRequestKind: "user", Retry: &common.RetryPolicyConfig{MaxAttempts: 1}},
+	}
+	send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
+	t.Cleanup(shutdown)
+	project, err := instance.GetProject("test_project")
+	require.NoError(t, err)
+	network, err := project.GetNetwork(t.Context(), "evm:123")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return network.EvmHighestLatestBlockNumber(t.Context()) >= 120 }, 10*time.Second, 20*time.Millisecond)
+
+	up.failUnfilteredLogs.Store(true)
+	before := up.UnfilteredLogCalls()
+	_, _, _ = send(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x46","toBlock":"0x48","address":%q}]}`, scriptedEmitter), nil, nil)
+	require.Equal(t, before+3, up.UnfilteredLogCalls(),
+		"the unfiltered fill fetch must be retried by the internal-kind policy (3 attempts), not treated as user traffic")
+}
+
 func TestHttp_LogsFill_SkipsAndFallbacks(t *testing.T) {
 	f := newLogsFillFixture(t, 120, false)
 

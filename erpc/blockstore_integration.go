@@ -36,6 +36,42 @@ func blockStoreDirected(d *common.RequestDirectives) bool {
 	return d.IsInternal || d.UseUpstream != "" || d.IntegritySelector != "" || skip
 }
 
+// exceedsGetLogsLimits reports whether the network's eth_getLogs hard limits
+// (getLogsMaxAllowedRange/Addresses/Topics) would reject this filter. Counting
+// mirrors networkPreForward_eth_getLogs (architecture/evm/eth_getLogs.go):
+// addresses only when given as an array, topics as the topic0 OR-list length
+// (or 1 for a single topic0). A local cache must never answer what the
+// network would reject, so callers fall through to the normal path, which
+// returns the configured error.
+func (n *Network) exceedsGetLogsLimits(filter map[string]interface{}, from, to int64) bool {
+	if n.cfg == nil || n.cfg.Evm == nil {
+		return false
+	}
+	evm := n.cfg.Evm
+	if lim := evm.GetLogsMaxAllowedRange; lim > 0 && to >= from && to-from+1 > lim {
+		return true
+	}
+	if lim := evm.GetLogsMaxAllowedAddresses; lim > 0 {
+		if addrs, ok := filter["address"].([]interface{}); ok && int64(len(addrs)) > lim {
+			return true
+		}
+	}
+	if lim := evm.GetLogsMaxAllowedTopics; lim > 0 {
+		if tps, ok := filter["topics"].([]interface{}); ok && len(tps) > 0 {
+			count := int64(0)
+			if t0, ok := tps[0].([]interface{}); ok {
+				count = int64(len(t0))
+			} else if tps[0] != nil {
+				count = 1
+			}
+			if count > lim {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // withBlockStoreBypass marks a context whose Forward must not be served from
 // the head cache (hydration reads must reach upstreams).
 func withBlockStoreBypass(ctx context.Context) context.Context {
@@ -480,6 +516,11 @@ func (n *Network) tryServeBlockStore(ctx context.Context, req *common.Normalized
 			from, e1 := parseExplicitBlockNumber(fs)
 			to, e2 := parseExplicitBlockNumber(ts)
 			if e1 != nil || e2 != nil {
+				return nil, false
+			}
+			// Hard limits run in the network pre-forward hook, after this serve
+			// path; check them here so a configured rejection is never bypassed.
+			if n.exceedsGetLogsLimits(obj, from, to) {
 				return nil, false
 			}
 			if c != nil {

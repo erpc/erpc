@@ -89,7 +89,17 @@ type Cache struct {
 	stepMu     sync.Mutex
 	lease      Lease
 	sharedAt   map[string]time.Time
+	// leaderFailures counts consecutive leader ticks that failed to refresh or
+	// publish; at maxLeaderFailures the leader steps down (see fleetTick).
+	leaderFailures int
 }
+
+// maxLeaderFailures is how many consecutive failed leader ticks are tolerated
+// before the lease is released. Renewal alone succeeds while Redis is healthy,
+// so without this a replica whose upstream path is broken would keep the lease
+// forever, publish nothing, and fail the cache closed on every follower once
+// MaxStaleness passed, even though healthy replicas could take over.
+const maxLeaderFailures = 3
 
 func New(opt Options, store Store, fetcher Fetcher, headFn func(context.Context) int64, logger *zerolog.Logger) *Cache {
 	if opt.Depth < 1 {
@@ -243,6 +253,28 @@ func (c *Cache) releaseLeaseBounded() {
 }
 
 func (c *Cache) fleetTick(ctx context.Context) error {
+	err := c.fleetTickOnce(ctx)
+	if c.lease == nil {
+		// Following, or the lease was just lost: nothing to count.
+		c.leaderFailures = 0
+		return err
+	}
+	if err == nil {
+		c.leaderFailures = 0
+		return nil
+	}
+	c.leaderFailures++
+	if c.leaderFailures >= maxLeaderFailures {
+		c.logger.Warn().Err(err).Int("consecutiveFailures", c.leaderFailures).
+			Msg("head cache leader stepping down after repeated refresh/publish failures")
+		c.releaseLeaseBounded()
+		c.sharedAt = map[string]time.Time{}
+		c.leaderFailures = 0
+	}
+	return err
+}
+
+func (c *Cache) fleetTickOnce(ctx context.Context) error {
 	if c.lease == nil {
 		lease, err := c.fleet.Acquire(ctx, c.opt.Scope, c.leaseTTL())
 		if err != nil {
