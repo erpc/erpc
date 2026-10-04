@@ -540,6 +540,27 @@ func newPeerFiller(store LogsFillStore, f *lfFetcher, latest, finalized int64, p
 	return lf
 }
 
+func TestLogsFill_MixedPeerEntriesAreRefilled(t *testing.T) {
+	for _, waiting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("waiting=%t", waiting), func(t *testing.T) {
+			store := newLfLockStore()
+			fetch := chainFetcher(t, lfChainLogs())
+			f := newPeerFiller(store, fetch, 200, 50, 300*time.Millisecond)
+			// The first lookup misses; the peer then supplies a complete but
+			// incoherent range before our post-lock lookup.
+			store.m[100] = &BlockLogs{Number: 100, Fill: "one", Logs: lfRaw(t, lfLog(100, 0, lfAddrA, lfTopicX))}
+			store.m[101] = &BlockLogs{Number: 101, Fill: "two", Logs: lfRaw(t)}
+			if waiting {
+				defer store.hold(t, 100, 101)()
+			}
+			res := f.Serve(t.Context(), 100, 101, 0, nil)
+			require.True(t, res.OK)
+			require.Equal(t, LogsFillFill, res.Outcome)
+			require.EqualValues(t, 1, fetch.calls.Load(), "mixed fills must be fetched as one range")
+		})
+	}
+}
+
 func TestLogsFill_PeerReplicasShareOneFetch(t *testing.T) {
 	store := newLfLockStore()
 	fetch := chainFetcher(t, lfChainLogs())

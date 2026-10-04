@@ -275,13 +275,13 @@ func (f *LogsFiller) coordinatedFill(ctx context.Context, from, to, latest int64
 			release(rctx)
 		}()
 		// A peer may have finished between our lookup and the lock.
-		if entries, ok := f.lookup(ctx, from, to); ok {
+		if entries, ok := f.lookup(ctx, from, to); ok && f.coherent(ctx, entries) {
 			return fillResult{entries: entries, peer: true}, nil
 		}
 		return f.localFill(ctx, from, to, latest, "")
 	}
 	reason := f.waitForPeer(ctx, locker, from, to, min(f.opt.PeerWait, lockTTL))
-	if entries, ok := f.lookup(ctx, from, to); ok {
+	if entries, ok := f.lookup(ctx, from, to); ok && f.coherent(ctx, entries) {
 		return fillResult{entries: entries, peer: true}, nil
 	}
 	return f.localFill(ctx, from, to, latest, reason)
