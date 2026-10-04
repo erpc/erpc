@@ -254,6 +254,12 @@ export interface ServerConfig {
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
   /**
+   * WebSocket opts into the JSON-RPC WebSocket endpoint (eth_subscribe
+   * newHeads/logs reconstructed from HTTP upstreams). Nil or disabled keeps
+   * the server HTTP-only. See WebSocketServerConfig.
+   */
+  webSocket?: WebSocketServerConfig;
+  /**
    * ExecutionHeaders controls the per-request diagnostic headers
    * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
    * eRPC routed and resolved each request. Defaults to "all" — set
@@ -1621,11 +1627,11 @@ export interface EvmNetworkConfig {
    */
   safeBlockSource?: string;
   /**
-   * BlockStore opts into the on-demand per-height eth_getLogs cache: small
-   * explicit-range eth_getLogs are answered by filtering per-height log
-   * lists filled by one unfiltered upstream call, stored in Redis
-   * (connectorId) or a bounded in-memory store. Nil or disabled changes
-   * nothing.
+   * BlockStore opts into the head-driven full-block/log cache: a Redis-shared,
+   * parent-hash-verified window of recent canonical blocks (with their
+   * logs) hydrated from upstreams as the head advances. It serves
+   * eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
+   * feeds WebSocket subscriptions. Nil or disabled changes nothing.
    */
   blockStore?: EvmBlockStoreConfig;
 }
@@ -2064,41 +2070,102 @@ export interface RateLimitStoreConfig {
 // source: config_blockstore.go
 
 /**
- * EvmBlockStoreConfig configures the block store: an on-demand, per-height
- * eth_getLogs cache. An explicit-range eth_getLogs of at most MaxRange blocks
- * is answered by locally filtering per-height log lists that one unfiltered
- * upstream eth_getLogs filled. Entries live in the connectorId (redis) when
- * set, otherwise in a bounded per-replica in-memory store.
+ * EvmBlockStoreConfig configures the head-driven full-block/log cache.
  */
 export interface EvmBlockStoreConfig {
   /**
-   * Enabled opts into the block store. Default false.
+   * Enabled turns the cache on. Default false.
    */
   enabled?: boolean;
   /**
-   * ConnectorId optionally names a redis-driver connector declared under
-   * database.evmJsonRpcCache.connectors. Replicas then share entries and
-   * coalesce fills of the same range through a short Redis lock. Empty
-   * keeps a bounded per-replica in-memory store.
+   * ConnectorId names a redis-driver connector declared under
+   * database.evmJsonRpcCache.connectors. Fleet mode elects one lease holder to
+   * verify and publish a canonical snapshot; followers consume that snapshot.
+   * Required.
    */
   connectorId?: string;
   /**
-   * Namespace isolates shared entries between deployments. Defaults to
+   * Depth is how many recent canonical blocks the window holds. Default 128.
+   */
+  depth?: number /* int64 */;
+  /**
+   * MaxBytes bounds the total serialized size (blocks + logs) held. When the
+   * window would exceed it, the oldest blocks are evicted. Default 256MB.
+   */
+  maxBytes?: number /* int64 */;
+  /**
+   * MaxPerTick bounds how many missing block records a single refresh fetches
+   * from upstream. Cold starts and long outages converge over multiple ticks.
+   */
+  maxPerTick?: number /* int64 */;
+  /**
+   * Concurrency bounds simultaneous header, Redis-read and block/log hydration
+   * jobs per network. Default 4.
+   */
+  concurrency?: number /* int */;
+  /**
+   * PollInterval is the fallback tick that re-verifies the tip hash even
+   * when the height has not changed (same-height reorgs). Default 2s.
+   */
+  pollInterval?: Duration;
+  /**
+   * FetchTimeout bounds each hydration fetch. Default 10s.
+   */
+  fetchTimeout?: Duration;
+  /**
+   * MaxLogsRange caps the block span an eth_getLogs range may have to be
+   * served from the cache. Wider ranges go upstream. Default = Depth.
+   */
+  maxLogsRange?: number /* int64 */;
+  /**
+   * MaxBlockBytes rejects (never caches) any single block whose block+logs
+   * payload exceeds it. Default min(16MB, maxBytes).
+   */
+  maxBlockBytes?: number /* int64 */;
+  /**
+   * MaxStaleness disables serving (normal upstream path) when this replica's
+   * view has not been verified for this long. Default 5 * pollInterval.
+   */
+  maxStaleness?: Duration;
+  /**
+   * Namespace isolates shared payloads between deployments. Defaults to
    * "default". A fingerprint of the network's upstream set is always appended.
    */
   namespace?: string;
+  /**
+   * Historical configures the independent cache for finalized blocks and complete logs.
+   */
+  historical?: EvmBlockStoreHistoricalConfig;
+  /**
+   * LogsFill configures the standalone small-range eth_getLogs fill. It works
+   * without the live window (enabled) or historical cache.
+   */
+  logsFill?: EvmBlockStoreLogsFillConfig;
+}
+/**
+ * EvmBlockStoreLogsFillConfig configures the small-range eth_getLogs fill: an
+ * explicit-range request of at most MaxRange blocks is answered by locally
+ * filtering per-block log lists that one unfiltered upstream eth_getLogs
+ * filled. Stored in the blockStore connectorId (redis) when set, otherwise in a
+ * bounded per-network in-memory cache.
+ */
+export interface EvmBlockStoreLogsFillConfig {
+  /**
+   * Enabled opts into the fill. Default false.
+   */
+  enabled?: boolean;
   /**
    * MaxRange is the widest (toBlock-fromBlock+1) range handled. Wider
    * ranges take the normal path. Default 10.
    */
   maxRange?: number /* int64 */;
   /**
-   * FinalizedTTL is the lifetime of per-height entries at or below the
+   * FinalizedTTL is the lifetime of per-block entries at or below the
    * network's finalized height. Default 1h.
    */
   finalizedTtl?: Duration;
   /**
-   * UnfinalizedTTL is the lifetime of per-height entries above the finalized
+   * UnfinalizedTTL is the lifetime of per-block entries above the finalized
    * height. 0 (default) = one network block time clamped to 2s..12s, or 2s
    * while the block time is unknown.
    */
@@ -2120,11 +2187,58 @@ export interface EvmBlockStoreConfig {
    * 0 disables cross-replica coalescing. Default 1.5s.
    */
   peerWait?: Duration;
+}
+/**
+ * EvmBlockStoreHistoricalConfig configures the independent finalized-block and complete-log cache.
+ */
+export interface EvmBlockStoreHistoricalConfig {
   /**
-   * Concurrency bounds simultaneous per-height store reads and writes for
-   * one request. Default 4.
+   * Enabled opts into storing finalized full blocks independently of the live window. Default false.
    */
-  concurrency?: number /* int */;
+  enabled?: boolean;
+  /**
+   * TTL is how long historical records remain eligible for reuse. Default 1h.
+   */
+  ttl?: Duration;
+}
+/**
+ * WebSocketServerConfig configures the JSON-RPC WebSocket endpoint. It is
+ * served on the same port/paths as HTTP (/<project>/evm/<chainId>) when a
+ * client sends an Upgrade request.
+ */
+export interface WebSocketServerConfig {
+  enabled?: boolean;
+  /**
+   * MaxConnections bounds concurrent WS connections per server. Default 1024.
+   */
+  maxConnections?: number /* int */;
+  /**
+   * MaxConnectionsPerProject bounds concurrent WS connections per project so
+   * one tenant cannot exhaust MaxConnections. 0 = only the global cap.
+   */
+  maxConnectionsPerProject?: number /* int */;
+  /**
+   * MaxSubscriptionsPerConnection. Default 32.
+   */
+  maxSubscriptionsPerConnection?: number /* int */;
+  /**
+   * SendQueueSize bounds queued outbound messages per connection. A client
+   * that falls this far behind is disconnected (policy violation) rather
+   * than buffered without bound. Default 256.
+   */
+  sendQueueSize?: number /* int */;
+  /**
+   * MaxMessageBytes caps inbound frame size. Default 1MB.
+   */
+  maxMessageBytes?: number /* int64 */;
+  /**
+   * WriteTimeout bounds each outbound write. Default 10s.
+   */
+  writeTimeout?: Duration;
+  /**
+   * PingInterval is the keepalive ping period. Default 30s.
+   */
+  pingInterval?: Duration;
 }
 
 //////////
