@@ -69,9 +69,6 @@ func (c *Config) Validate() error {
 }
 
 func (s *ServerConfig) Validate() error {
-	if err := s.WebSocket.Validate(); err != nil {
-		return err
-	}
 	if s.ListenV4 != nil {
 		if *s.ListenV4 {
 			if s.HttpHostV4 == nil {

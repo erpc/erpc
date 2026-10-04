@@ -153,7 +153,7 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 }
 
 // Connector returns the configured cache connector with the given id, or nil.
-// Other features (the head cache) reuse its client instead of opening their own.
+// Other features (the block store) reuse its client instead of opening their own.
 func (c *EvmJsonRpcCache) Connector(id string) data.Connector {
 	if c == nil {
 		return nil

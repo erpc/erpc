@@ -16,12 +16,20 @@ import (
 	"github.com/erpc/erpc/telemetry"
 )
 
-// initLogsFill builds the standalone small-range eth_getLogs fill. It shares
-// the blockstore connector (redis) when connectorId is set, otherwise it uses
-// a bounded per-network in-memory store. It does not require the live window
-// or the historical cache.
+// Bounds that were tunable while the block store also held full blocks; the
+// logs cache keeps their former defaults as fixed limits.
+const (
+	// logsFillFetchTimeout bounds one coalesced fill (upstream call + store
+	// writes) and caps the cross-replica fill lock TTL.
+	logsFillFetchTimeout = 10 * time.Second
+	// logsFillMaxEntryBytes skips storing a single height whose logs exceed it.
+	logsFillMaxEntryBytes = 16 << 20
+)
+
+// initLogsFill builds the block store's per-height eth_getLogs cache. It uses
+// the connectorId (redis) when set, otherwise a bounded per-network in-memory
+// store.
 func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockStoreConfig, scope blockstore.Scope) error {
-	lf := hc.LogsFill
 	var store blockstore.LogsFillStore
 	// Cross-replica fill locking needs the shared store; the in-memory store
 	// is per replica and keeps the singleflight-only behavior.
@@ -31,16 +39,16 @@ func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockSt
 		if err != nil {
 			return err
 		}
-		store = s.(*blockStoreConnectorStore)
-		if lf.PeerWait != nil {
-			peerWait = lf.PeerWait.Duration()
+		store = s
+		if hc.PeerWait != nil {
+			peerWait = hc.PeerWait.Duration()
 		}
 	} else {
-		store = blockstore.NewMemoryLogsFillStore(lf.MemoryMaxBytes)
+		store = blockstore.NewMemoryLogsFillStore(hc.MemoryMaxBytes)
 	}
 	unfinalizedTTL := func() time.Duration {
-		if lf.UnfinalizedTTL > 0 {
-			return lf.UnfinalizedTTL.Duration()
+		if hc.UnfinalizedTTL > 0 {
+			return hc.UnfinalizedTTL.Duration()
 		}
 		return logsFillUnfinalizedTTL(network.EvmBlockTime())
 	}
@@ -49,12 +57,12 @@ func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockSt
 	}
 	network.logsFiller = blockstore.NewLogsFiller(blockstore.LogsFillOptions{
 		Scope:          scope,
-		MaxRange:       lf.MaxRange,
-		FinalizedTTL:   lf.FinalizedTTL.Duration(),
+		MaxRange:       hc.MaxRange,
+		FinalizedTTL:   hc.FinalizedTTL.Duration(),
 		UnfinalizedTTL: unfinalizedTTL,
-		EmptyTipGuard:  lf.EmptyTipGuard,
-		FetchTimeout:   hc.FetchTimeout.Duration(),
-		MaxEntryBytes:  hc.MaxBlockBytes,
+		EmptyTipGuard:  hc.EmptyTipGuard,
+		FetchTimeout:   logsFillFetchTimeout,
+		MaxEntryBytes:  logsFillMaxEntryBytes,
 		PeerWait:       peerWait,
 		Concurrency:    hc.Concurrency,
 	}, store, fetch, network.EvmHighestLatestBlockNumber, network.EvmHighestFinalizedBlockNumber)
@@ -73,8 +81,8 @@ func logsFillUnfinalizedTTL(blockTime time.Duration) time.Duration {
 
 // fetchUnfilteredLogs performs one eth_getLogs{fromBlock,toBlock} through the
 // network's normal path (selection, failsafe, retries, integrity) while
-// bypassing the blockstore, the logs fill itself, and ordinary cache reads and
-// writes.
+// bypassing the block store itself, multiplexing with client requests, and
+// ordinary cache reads and writes.
 func (n *Network) fetchUnfilteredLogs(ctx context.Context, from, to int64) (json.RawMessage, error) {
 	jrq := common.NewJsonRpcRequest("eth_getLogs", []interface{}{map[string]interface{}{
 		"fromBlock": fmt.Sprintf("0x%x", from),
@@ -84,11 +92,11 @@ func (n *Network) fetchUnfilteredLogs(ctx context.Context, from, to int64) (json
 		return nil, fmt.Errorf("set logs fill request id: %w", err)
 	}
 	rq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
-	// Same directives as networkHeadFetcher.call: an internal hydration fetch that
-	// `matchRequestKind: internal` failsafe policies match and the integrity
-	// pipeline skips (erpc re-serves this data itself), always reaching upstreams.
+	// An internal fill fetch: `matchRequestKind: internal` failsafe policies
+	// match it, the integrity pipeline skips it (erpc re-serves this data
+	// itself), and it always reaches upstreams.
 	rq.SetDirectives(&common.RequestDirectives{IsInternal: true, SkipCacheRead: "true", RetryEmpty: true})
-	resp, err := n.Forward(withCacheWriteBypass(withBlockStoreBypass(ctx)), rq)
+	resp, err := n.Forward(withBlockStoreBypass(ctx), rq)
 	if err != nil {
 		return nil, err
 	}
@@ -111,14 +119,14 @@ func (n *Network) logsFillMetric(outcome, reason string) {
 }
 
 // tryServeLogsFill answers eth_getLogs with explicit hex fromBlock/toBlock
-// within logsFill.maxRange and at or below the network head. ok=false means
+// within evm.blockStore.maxRange and at or below the network head. ok=false means
 // the caller forwards the original request unchanged.
 func (n *Network) tryServeLogsFill(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, bool) {
 	f := n.logsFiller
 	if f == nil || ctx.Value(blockStoreBypassKey{}) != nil {
 		return nil, false
 	}
-	// Same gate as tryServeBlockStore: connector-ID patterns bypass, "false" does not.
+	// Connector-ID skipCacheRead patterns bypass, "false" does not.
 	if blockStoreDirected(req.Directives()) {
 		n.logsFillMetric(blockstore.LogsFillSkipped, "directive")
 		return nil, false

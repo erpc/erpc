@@ -635,41 +635,11 @@ var (
 		Help:      "Total number of requests received for a network.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
-	MetricBlockStoreFresh = DefineGauge(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "blockstore_fresh",
-		Help:      "Whether this process has a fresh verified head-cache view (1) or not (0).",
-	}, []string{"project", "network"})
-
-	MetricBlockStoreRefreshTotal = DefineCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "blockstore_refresh_total",
-		Help:      "Head-cache refresh attempts by outcome: fresh, stale, or error.",
-	}, []string{"project", "network", "outcome"})
-
-	MetricBlockStoreHitsTotal = DefineCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "blockstore_hits_total",
-		Help:      "HTTP block and log requests served from the verified head cache.",
-	}, []string{"project", "network", "category"})
-
 	MetricBlockStoreLogsFillTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "blockstore_logs_fill_total",
-		Help:      "Small-range eth_getLogs handled by the blockstore logs fill, by outcome (hit, fill, fallback, skipped) and reason.",
+		Help:      "Small-range eth_getLogs handled by the block store, by outcome (hit, fill, fallback, skipped) and reason.",
 	}, []string{"project", "network", "outcome", "reason"})
-
-	MetricWebSocketConnections = DefineGauge(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "websocket_connections",
-		Help:      "Current accepted WebSocket connections.",
-	}, []string{"project", "network"})
-
-	MetricWebSocketClosuresTotal = DefineCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "websocket_closures_total",
-		Help:      "Accepted WebSocket connections closed by bounded cause.",
-	}, []string{"project", "network", "reason"})
 
 	MetricNetworkMultiplexedRequests = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

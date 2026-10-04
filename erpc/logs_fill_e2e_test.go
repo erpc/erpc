@@ -3,11 +3,13 @@ package erpc
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/erpc/erpc/blockstore"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -18,40 +20,102 @@ import (
 
 func init() { util.ConfigureTestLogger() }
 
+type rpcResp struct {
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+}
+
+var (
+	blockStoreTestRedisOnce sync.Once
+	blockStoreTestRedisAddr string
+)
+
+// blockStoreTestRedis returns a process-wide Redis address for block store
+// tests (BLOCKSTORE_TEST_REDIS_ADDR or an in-process miniredis). Scopes are
+// isolated by the per-test upstream fingerprint and namespace.
+func blockStoreTestRedis() string {
+	blockStoreTestRedisOnce.Do(func() {
+		blockStoreTestRedisAddr = os.Getenv("BLOCKSTORE_TEST_REDIS_ADDR")
+		if blockStoreTestRedisAddr == "" {
+			mr, err := miniredis.Run()
+			if err != nil {
+				panic(err)
+			}
+			blockStoreTestRedisAddr = mr.Addr()
+		}
+	})
+	return blockStoreTestRedisAddr
+}
+
+// blockStoreTestConfig runs one EVM network on the scripted upstream with the
+// given block store config. withRedis adds the shared Redis connector under
+// database.evmJsonRpcCache and points connectorId at it; otherwise the
+// in-memory store is used.
+func blockStoreTestConfig(upstreamURL string, hc *common.EvmBlockStoreConfig, withRedis bool) *common.Config {
+	cfg := &common.Config{
+		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
+		Projects: []*common.ProjectConfig{{
+			Id: "test_project",
+			Networks: []*common.NetworkConfig{{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123, BlockStore: hc},
+			}},
+			Upstreams: []*common.UpstreamConfig{{
+				Id:       "scripted",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: upstreamURL,
+				Evm:      &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(100 * time.Millisecond)},
+			}},
+		}},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+	if withRedis {
+		hc.ConnectorId = "blockstore-redis"
+		cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{Connectors: []*common.ConnectorConfig{{
+			Id: hc.ConnectorId, Driver: common.DriverRedis,
+			Redis: &common.RedisConnectorConfig{URI: "redis://" + blockStoreTestRedis()},
+		}}}}
+	}
+	return cfg
+}
+
+func doRpc(t *testing.T, send func(string, map[string]string, map[string]string) (int, map[string]string, string), method string, params string) rpcResp {
+	t.Helper()
+	code, _, body := send(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, params), nil, nil)
+	require.Equal(t, 200, code, body)
+	var r rpcResp
+	require.NoError(t, json.Unmarshal([]byte(body), &r), body)
+	require.Empty(t, r.Error, body)
+	return r
+}
+
+// newLogsFillConfig is an enabled block store in its own namespace.
+func newLogsFillConfig(ns string) *common.EvmBlockStoreConfig {
+	if ns == "" {
+		ns = fmt.Sprintf("logsfill-%d", time.Now().UnixNano())
+	}
+	return &common.EvmBlockStoreConfig{Enabled: true, Namespace: ns, UnfinalizedTTL: common.Duration(time.Minute)}
+}
+
 type logsFillFixture struct {
 	up      *scriptedEvmUpstream
 	send    func(string, map[string]string, map[string]string) (int, map[string]string, string)
 	network *Network
 }
 
-// newLogsFillFixture runs a server whose blockStore has ONLY logsFill on:
-// live window and historical cache disabled, no websocket. withRedis selects
-// the shared connector store; otherwise the in-memory store is used.
+// newLogsFillFixture runs a server with the block store enabled. withRedis
+// selects the shared connector store; otherwise the in-memory store is used.
 func newLogsFillFixture(t *testing.T, tip int64, withRedis bool) *logsFillFixture {
 	t.Helper()
 	up := newScriptedEvmUpstream(123, tip)
 	t.Cleanup(up.Close)
-	hc := &common.EvmBlockStoreConfig{
-		Namespace: fmt.Sprintf("logsfill-%d", time.Now().UnixNano()),
-		LogsFill:  common.EvmBlockStoreLogsFillConfig{Enabled: true, UnfinalizedTTL: common.Duration(time.Minute)},
-	}
-	cfg := blockStoreTestConfig(up.URL(), hc)
-	cfg.Server.WebSocket = nil
-	if withRedis {
-		hc.ConnectorId = "logsfill-redis"
-		cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{Connectors: []*common.ConnectorConfig{{
-			Id: hc.ConnectorId, Driver: common.DriverRedis,
-			Redis: &common.RedisConnectorConfig{URI: "redis://" + blockStoreTestRedis()},
-		}}}}
-	}
+	cfg := blockStoreTestConfig(up.URL(), newLogsFillConfig(""), withRedis)
 	send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	t.Cleanup(shutdown)
 	project, err := instance.GetProject("test_project")
 	require.NoError(t, err)
 	network, err := project.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	require.Nil(t, network.BlockStore(), "live window stays disabled")
-	require.Nil(t, network.historicalBlockStore, "historical cache stays disabled")
 	require.NotNil(t, network.logsFiller)
 	require.Eventually(t, func() bool {
 		return network.EvmHighestLatestBlockNumber(t.Context()) >= tip
@@ -108,17 +172,12 @@ func TestHttp_LogsFill_DifferentFiltersShareOneUpstreamCall(t *testing.T) {
 	}
 }
 
-// The fill's own upstream fetch is an internal hydration request, like the head
-// fetcher's: `matchRequestKind: internal` failsafe policies must apply to it.
+// The fill's own upstream fetch is an internal request: `matchRequestKind:
+// internal` failsafe policies must apply to it.
 func TestHttp_LogsFill_UnfilteredFetchIsInternal(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 120)
 	t.Cleanup(up.Close)
-	hc := &common.EvmBlockStoreConfig{
-		Namespace: fmt.Sprintf("logsfill-%d", time.Now().UnixNano()),
-		LogsFill:  common.EvmBlockStoreLogsFillConfig{Enabled: true, UnfinalizedTTL: common.Duration(time.Minute)},
-	}
-	cfg := blockStoreTestConfig(up.URL(), hc)
-	cfg.Server.WebSocket = nil
+	cfg := blockStoreTestConfig(up.URL(), newLogsFillConfig(""), false)
 	// Only internal requests retry; user requests get a single attempt.
 	cfg.Projects[0].Networks[0].Failsafe = []*common.FailsafeConfig{
 		{MatchMethod: "*", MatchRequestKind: "internal", Retry: &common.RetryPolicyConfig{MaxAttempts: 3}},
@@ -285,17 +344,7 @@ func TestHttp_LogsFill_ReplicasShareOneUpstreamCallViaRedis(t *testing.T) {
 	up.unfilteredLogDelay.Store(int64(300 * time.Millisecond))
 	ns := fmt.Sprintf("logsfill-peer-%d", time.Now().UnixNano())
 	newReplica := func() *logsFillFixture {
-		hc := &common.EvmBlockStoreConfig{
-			Namespace:   ns,
-			ConnectorId: "logsfill-redis",
-			LogsFill:    common.EvmBlockStoreLogsFillConfig{Enabled: true, UnfinalizedTTL: common.Duration(time.Minute)},
-		}
-		cfg := blockStoreTestConfig(up.URL(), hc)
-		cfg.Server.WebSocket = nil
-		cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{Connectors: []*common.ConnectorConfig{{
-			Id: hc.ConnectorId, Driver: common.DriverRedis,
-			Redis: &common.RedisConnectorConfig{URI: "redis://" + blockStoreTestRedis()},
-		}}}}
+		cfg := blockStoreTestConfig(up.URL(), newLogsFillConfig(ns), true)
 		send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 		t.Cleanup(shutdown)
 		project, err := instance.GetProject("test_project")
@@ -333,4 +382,70 @@ func TestHttp_LogsFill_ReplicasShareOneUpstreamCallViaRedis(t *testing.T) {
 		require.Equal(t, want, c, "request %d", i)
 	}
 	require.Greater(t, logsFillCounter("hit", blockstore.LogsFillReasonPeerFill), peerHits, "the waiting replica served the peer's fill")
+}
+
+// The block store never answers what the network would reject: requests over
+// getLogsMaxAllowedRange/Addresses/Topics reach the normal path and its error.
+func TestHttp_LogsFill_HonorsNetworkHardLimits(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 120)
+	t.Cleanup(up.Close)
+	cfg := blockStoreTestConfig(up.URL(), newLogsFillConfig(""), false)
+	cfg.Projects[0].Networks[0].Evm.GetLogsMaxAllowedRange = 4
+	cfg.Projects[0].Networks[0].Evm.GetLogsMaxAllowedAddresses = 1
+	cfg.Projects[0].Networks[0].Evm.GetLogsMaxAllowedTopics = 1
+	send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
+	t.Cleanup(shutdown)
+	project, err := instance.GetProject("test_project")
+	require.NoError(t, err)
+	network, err := project.GetNetwork(t.Context(), "evm:123")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return network.EvmHighestLatestBlockNumber(t.Context()) >= 120 }, 10*time.Second, 20*time.Millisecond)
+	f := &logsFillFixture{up: up, send: send, network: network}
+
+	rejectBody := func(params string) string {
+		_, _, body := send(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":%s}`, params), nil, nil)
+		var r struct {
+			Error *struct {
+				Data map[string]interface{} `json:"data"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &r), body)
+		require.NotNil(t, r.Error, "must be rejected, not served from the block store: %s", body)
+		return body
+	}
+	other := "0x0000000000000000000000000000000000000002"
+	calls := up.UnfilteredLogCalls()
+	require.Contains(t, rejectBody(`[{"fromBlock":"0x8","toBlock":"0x10"}]`), "ErrGetLogsExceededMaxAllowedRange")
+	require.Contains(t, rejectBody(fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0x9","address":[%q,%q]}]`, scriptedEmitter, other)), "ErrGetLogsExceededMaxAllowedAddresses")
+	require.Contains(t, rejectBody(fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0x9","topics":[[%q,%q]]}]`, scriptedTopicEven, scriptedTopicOdd)), "ErrGetLogsExceededMaxAllowedTopics")
+	require.Equal(t, calls, up.UnfilteredLogCalls(), "rejected requests never trigger a fill")
+
+	// Within every limit the block store still answers.
+	logs := f.getLogs(t, 8, 11, fmt.Sprintf(`,"address":[%q],"topics":[%q]`, scriptedEmitter, scriptedTopicEven))
+	require.Len(t, logs, 2)
+	require.Equal(t, calls+1, up.UnfilteredLogCalls())
+}
+
+// Malformed filters and non-range shapes are never answered locally: they
+// reach normal upstream validation unchanged.
+func TestHttp_LogsFill_MalformedFiltersBypass(t *testing.T) {
+	f := newLogsFillFixture(t, 120, false)
+	for _, filter := range []string{
+		`{"fromBlock":"0x13","toBlock":"0x13","address":"0x1234"}`,
+		`{"fromBlock":"0x13","toBlock":"0x13","address":["not-an-address"]}`,
+		`{"fromBlock":"0x13","toBlock":"0x13","topics":["0x12"]}`,
+		`{"fromBlock":"0x13","toBlock":"0x13","topics":[["not-hex"]]}`,
+		`{"fromBlock":"0x13","toBlock":"0x13","unknownField":1}`,
+		fmt.Sprintf(`{"blockHash":%q,"toBlock":"0x13"}`, f.up.HashAt(19)),
+		`{"blockHash":null,"fromBlock":"0x13","toBlock":"0x13"}`,
+		`{"blockHash":"0x12"}`,
+		`{"fromBlock":"0x013","toBlock":"0x13"}`,
+		`{"fromBlock":"0x14","toBlock":"0x13"}`,
+	} {
+		t.Run(filter, func(t *testing.T) {
+			request := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[` + filter + `]}`))
+			_, hit := f.network.tryServeLogsFill(t.Context(), request)
+			require.False(t, hit, "invalid filter must reach normal upstream validation")
+		})
+	}
 }

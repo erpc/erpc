@@ -5,9 +5,6 @@ module.exports = {
 	server: {
 		title: "Server",
 	},
-	websocket: {
-		title: "WebSocket",
-	},
 	projects: {
 		title: "Projects",
 	},

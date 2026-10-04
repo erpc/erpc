@@ -17,29 +17,20 @@ import (
 )
 
 // scriptedEvmUpstream is a deterministic local JSON-RPC EVM node used by the
-// head cache / WebSocket end-to-end tests. It serves a scripted chain where
-// every block has one transaction emitting one log; reorgs swap a fork label
-// for a height range, changing hashes, parent links, tx hashes and logs.
+// block store end-to-end tests. It serves a scripted chain where every block
+// has one transaction emitting one log.
 //
 // Limits (honest fixture scope): no real EVM execution, no receipts/traces,
-// no uncles/withdrawals; only the methods eRPC's poller and the head cache
-// use are implemented. Unknown methods return -32601.
+// no uncles/withdrawals; only the methods eRPC's state poller and the block
+// store use are implemented. Unknown methods return -32601.
 type scriptedEvmUpstream struct {
-	mu                sync.Mutex
-	chainId           int64
-	tip               int64
-	forks             map[int64]string
-	srv               *httptest.Server
-	calls             sync.Map // method -> *atomic.Int64
-	blockCalls        sync.Map // eth_getBlockByNumber calls per explicit number
-	fullBlockCalls    atomic.Int64
-	headerCalls       atomic.Int64
-	latestBlockCalls  atomic.Int64
-	blockHashLogCalls atomic.Int64
-	rangeLogCalls     atomic.Int64
-	failBlockNumber   atomic.Bool
-	fullBlockDelay    atomic.Int64
-	// Logs-fill knobs: unfiltered range calls (no address/topics) are
+	mu            sync.Mutex
+	chainId       int64
+	tip           int64
+	forks         map[int64]string
+	srv           *httptest.Server
+	rangeLogCalls atomic.Int64
+	// Block store knobs: unfiltered range calls (no address/topics) are
 	// counted separately, can be delayed, failed, or marked removed.
 	unfilteredLogCalls atomic.Int64
 	unfilteredLogDelay atomic.Int64
@@ -73,50 +64,8 @@ func newScriptedEvmUpstream(chainId, tip int64) *scriptedEvmUpstream {
 func (u *scriptedEvmUpstream) Close()      { u.srv.Close() }
 func (u *scriptedEvmUpstream) URL() string { return u.srv.URL }
 
-func (u *scriptedEvmUpstream) Mine(k int) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	for i := 0; i < k; i++ {
-		u.tip++
-		u.forks[u.tip] = "a"
-	}
-}
-
-func (u *scriptedEvmUpstream) Reorg(from int64, fork string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	for n := from; n <= u.tip; n++ {
-		u.forks[n] = fork
-	}
-}
-
-func (u *scriptedEvmUpstream) Calls(method string) int64 {
-	v, ok := u.calls.Load(method)
-	if !ok {
-		return 0
-	}
-	return v.(*atomic.Int64).Load()
-}
-
-// BlockCalls counts eth_getBlockByNumber calls for an explicit height.
-func (u *scriptedEvmUpstream) BlockCalls(n int64) int64 {
-	v, ok := u.blockCalls.Load(n)
-	if !ok {
-		return 0
-	}
-	return v.(*atomic.Int64).Load()
-}
-
 // RangeLogCalls counts eth_getLogs calls that used fromBlock/toBlock.
-func (u *scriptedEvmUpstream) RangeLogCalls() int64      { return u.rangeLogCalls.Load() }
-func (u *scriptedEvmUpstream) FullBlockCalls() int64     { return u.fullBlockCalls.Load() }
-func (u *scriptedEvmUpstream) HeaderCalls() int64        { return u.headerCalls.Load() }
-func (u *scriptedEvmUpstream) LatestBlockCalls() int64   { return u.latestBlockCalls.Load() }
-func (u *scriptedEvmUpstream) BlockHashLogCalls() int64  { return u.blockHashLogCalls.Load() }
-func (u *scriptedEvmUpstream) FailBlockNumber(fail bool) { u.failBlockNumber.Store(fail) }
-func (u *scriptedEvmUpstream) SetFullBlockDelay(delay time.Duration) {
-	u.fullBlockDelay.Store(int64(delay))
-}
+func (u *scriptedEvmUpstream) RangeLogCalls() int64 { return u.rangeLogCalls.Load() }
 
 func (u *scriptedEvmUpstream) HashAt(n int64) string {
 	u.mu.Lock()
@@ -219,14 +168,6 @@ func (u *scriptedEvmUpstream) handle(raw []byte) json.RawMessage {
 		Params []json.RawMessage `json:"params"`
 	}
 	_ = json.Unmarshal(raw, &req)
-	if req.Method == "eth_getBlockByNumber" && len(req.Params) > 1 {
-		var full bool
-		if json.Unmarshal(req.Params[1], &full) == nil && full {
-			time.Sleep(time.Duration(u.fullBlockDelay.Load()))
-		}
-	}
-	c, _ := u.calls.LoadOrStore(req.Method, &atomic.Int64{})
-	c.(*atomic.Int64).Add(1)
 	unfiltered := false
 	if req.Method == "eth_getLogs" && len(req.Params) > 0 {
 		var flt map[string]interface{}
@@ -255,11 +196,7 @@ func (u *scriptedEvmUpstream) handle(raw []byte) json.RawMessage {
 	case "net_version":
 		result = fmt.Sprintf("%d", u.chainId)
 	case "eth_blockNumber":
-		if u.failBlockNumber.Load() {
-			rpcErr = map[string]interface{}{"code": -32000, "message": "scripted block number failure"}
-		} else {
-			result = fmt.Sprintf("0x%x", u.tip)
-		}
+		result = fmt.Sprintf("0x%x", u.tip)
 	case "eth_syncing":
 		result = false
 	case "eth_getBlockByNumber":
@@ -271,19 +208,7 @@ func (u *scriptedEvmUpstream) handle(raw []byte) json.RawMessage {
 		if len(req.Params) > 1 {
 			_ = json.Unmarshal(req.Params[1], &full)
 		}
-		n := u.resolveLocked(ref)
-		if strings.HasPrefix(ref, "0x") {
-			bc, _ := u.blockCalls.LoadOrStore(n, &atomic.Int64{})
-			bc.(*atomic.Int64).Add(1)
-			if full {
-				u.fullBlockCalls.Add(1)
-			} else {
-				u.headerCalls.Add(1)
-			}
-		} else if ref == "latest" {
-			u.latestBlockCalls.Add(1)
-		}
-		result = u.blockLocked(n, full)
+		result = u.blockLocked(u.resolveLocked(ref), full)
 	case "eth_getBlockByHash":
 		var h string
 		var full bool
@@ -301,7 +226,6 @@ func (u *scriptedEvmUpstream) handle(raw []byte) json.RawMessage {
 		_ = json.Unmarshal(req.Params[0], &flt)
 		logs := []interface{}{}
 		if bh, ok := flt["blockHash"].(string); ok {
-			u.blockHashLogCalls.Add(1)
 			for n, f := range u.forks {
 				if strings.EqualFold(scriptedHash(n, f), bh) && n <= u.tip {
 					logs = append(logs, u.logLocked(n))

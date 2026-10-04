@@ -161,11 +161,6 @@ type ServerConfig struct {
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
 
-	// WebSocket opts into the JSON-RPC WebSocket endpoint (eth_subscribe
-	// newHeads/logs reconstructed from HTTP upstreams). Nil or disabled keeps
-	// the server HTTP-only. See WebSocketServerConfig.
-	WebSocket *WebSocketServerConfig `yaml:"webSocket,omitempty" json:"webSocket,omitempty"`
-
 	// ExecutionHeaders controls the per-request diagnostic headers
 	// (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
 	// eRPC routed and resolved each request. Defaults to "all" — set
@@ -2598,11 +2593,11 @@ type EvmNetworkConfig struct {
 	// provider-defined routing. This does not affect eth_query* or gRPC Query.
 	SafeBlockSource string `yaml:"safeBlockSource,omitempty" json:"safeBlockSource,omitempty"`
 
-	// BlockStore opts into the head-driven full-block/log cache: a Redis-shared,
-	// parent-hash-verified window of recent canonical blocks (with their
-	// logs) hydrated from upstreams as the head advances. It serves
-	// eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
-	// feeds WebSocket subscriptions. Nil or disabled changes nothing.
+	// BlockStore opts into the on-demand per-height eth_getLogs cache: small
+	// explicit-range eth_getLogs are answered by filtering per-height log
+	// lists filled by one unfiltered upstream call, stored in Redis
+	// (connectorId) or a bounded in-memory store. Nil or disabled changes
+	// nothing.
 	BlockStore *EvmBlockStoreConfig `yaml:"blockStore,omitempty" json:"blockStore,omitempty"`
 
 	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
@@ -3036,8 +3031,8 @@ type MetricsConfig struct {
 type MetricCustomizationAction string
 
 const (
-	MetricActionKeep MetricCustomizationAction = "keep"
-	MetricActionDrop MetricCustomizationAction = "drop"
+	MetricActionKeep MetricCustomizationAction = telemetry.ActionKeep
+	MetricActionDrop MetricCustomizationAction = telemetry.ActionDrop
 )
 
 // MetricsCustomizationConfig is one entry of metrics.customizations: a subject

@@ -699,3 +699,16 @@ func TestLogsFill_PeerWaitZeroDisablesLocking(t *testing.T) {
 	require.Empty(t, res.Reason)
 	require.Zero(t, store.tryCalls.Load(), "no lock with peerWait=0")
 }
+
+func TestLogFilterGethSemantics(t *testing.T) {
+	topicA := "0x" + strings.Repeat("1", 64)
+	topicB := "0x" + strings.Repeat("2", 64)
+	emitter := "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+	filter, err := ParseLogFilter(map[string]interface{}{"topics": []interface{}{topicA, nil}})
+	require.NoError(t, err)
+	require.True(t, filter.match(&rawLog{Address: emitter, Topics: []string{topicA, topicB}}))
+	require.False(t, filter.match(&rawLog{Address: emitter, Topics: []string{topicB, topicA}}))
+	require.False(t, filter.match(&rawLog{Address: emitter, Topics: []string{topicA}}), "a wildcard position still requires the topic to exist")
+	_, err = ParseLogFilter(map[string]interface{}{"address": "not-an-address"})
+	require.Error(t, err)
+}
