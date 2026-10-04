@@ -95,13 +95,31 @@ func doRpc(t *testing.T, send func(string, map[string]string, map[string]string)
 
 func blockStoreOf(t *testing.T, e *ERPC) *blockstore.Cache {
 	t.Helper()
+	hc := instanceNetwork(t, e).BlockStore()
+	require.NotNil(t, hc)
+	return hc
+}
+
+func instanceNetwork(t *testing.T, e *ERPC) *Network {
+	t.Helper()
 	prj, err := e.GetProject("test_project")
 	require.NoError(t, err)
 	nw, err := prj.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
-	hc := nw.BlockStore()
-	require.NotNil(t, hc)
-	return hc
+	return nw
+}
+
+// holdSubscriber keeps one drained newHeads subscription open on hc, which is
+// what turns header following on (the store does not follow the chain without
+// subscribers). Tests asserting follower behaviour use it.
+func holdSubscriber(t *testing.T, hc *blockstore.Cache) {
+	t.Helper()
+	sub := hc.Subscribe(1024)
+	go func() {
+		for range sub.C {
+		}
+	}()
+	t.Cleanup(sub.Close)
 }
 
 // The background refresh fetches headers only; the first client read of a
@@ -116,6 +134,7 @@ func TestHttp_BlockStore_ServesReusesAndHandlesReorg(t *testing.T) {
 	send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 	defer shutdown()
 	hc := blockStoreOf(t, erpcInstance)
+	holdSubscriber(t, hc)
 	require.Eventually(t, func() bool { return hc.Head() == 20 && hc.CanonicalHash(5) != "" },
 		10*time.Second, 50*time.Millisecond, "the header window must cover the full depth")
 	require.Zero(t, up.FullBlockCalls(), "the background never fetches block bodies")
@@ -207,6 +226,7 @@ func TestHttp_BlockStore_GetLogsHonorsNetworkHardLimits(t *testing.T) {
 	require.NoError(t, err)
 	hc := nw.BlockStore()
 	require.NotNil(t, hc)
+	holdSubscriber(t, hc)
 	require.Eventually(t, func() bool {
 		_, ok := hc.LogsRange(t.Context(), 8, 19, nil)
 		return hc.Head() == 20 && ok
@@ -277,6 +297,8 @@ func TestHttp_BlockStore_SharedRedisTwoReplicas(t *testing.T) {
 		}
 	}()
 	ca := blockStoreOf(t, eA)
+	// A subscriber on A turns following on fleet-wide (shared presence mark).
+	holdSubscriber(t, ca)
 	require.Eventually(t, func() bool { return ca.Head() == 20 && ca.CanonicalHash(5) != "" },
 		10*time.Second, 50*time.Millisecond, "replica A must verify its complete header window before replica B starts")
 
@@ -425,6 +447,7 @@ func TestHttp_BlockStore_HeadComesFromStatePoller(t *testing.T) {
 	_, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	defer shutdown()
 	hc := blockStoreOf(t, instance)
+	holdSubscriber(t, hc)
 	require.Eventually(t, func() bool { return hc.Head() == 20 }, 5*time.Second, 20*time.Millisecond)
 	up.Mine(2)
 	require.Eventually(t, func() bool { return hc.Head() == 22 }, 5*time.Second, 20*time.Millisecond,
@@ -446,6 +469,7 @@ func TestHttp_BlockStore_SlowBodyFetchIsOnDemand(t *testing.T) {
 	send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	defer shutdown()
 	hc := blockStoreOf(t, instance)
+	holdSubscriber(t, hc)
 	require.Eventually(t, func() bool { return hc.Head() == 2 && hc.CanonicalHash(1) != "" },
 		5*time.Second, 20*time.Millisecond, "the window must cover the configured depth")
 	require.Zero(t, hc.Stats.Hydrated.Load())

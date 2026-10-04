@@ -186,6 +186,7 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 			MaxLogsRange: hc.MaxLogsRange,
 			RecordTTL:    time.Duration(hc.Depth+16) * 30 * time.Second,
 			PeerWait:     blockStorePeerWait(hc),
+			Latest:       network.EvmHighestLatestBlockNumber,
 		}
 		lg := network.logger.With().Str("component", "blockStore").Logger()
 		f := &networkHeadFetcher{n: network}
@@ -195,6 +196,7 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 		})
 		c := blockstore.New(opts, store, f, live, &lg)
 		network.blockStore = c
+		network.blockStoreAdoptSem = make(chan struct{}, blockStoreAdoptLimit)
 		network.watchBlockStoreHead(nr.appCtx, c)
 		c.Start(nr.appCtx)
 		lg.Info().Str("namespace", ns).Int64("depth", hc.Depth).Msg("blockstore started")
@@ -876,4 +878,226 @@ func (nr *NetworksRegistry) blockStoreStore(hc *common.EvmBlockStoreConfig) (blo
 		return nil, fmt.Errorf("evm.blockStore.connectorId %q is not an initialized redis connector in database.evmJsonRpcCache", hc.ConnectorId)
 	}
 	return &blockStoreConnectorStore{connector: conn, redis: rc}, nil
+}
+
+var _ blockstore.PresenceStore = (*blockStoreConnectorStore)(nil)
+var _ blockstore.CanonicalIndex = (*blockStoreConnectorStore)(nil)
+
+func (s *blockStoreConnectorStore) presenceKey(scope blockstore.Scope) (string, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return "", err
+	}
+	return partition + ":ws-presence", nil
+}
+
+// MarkPresence records that this replica holds WebSocket subscribers for the
+// scope until ttl elapses (renewed every tick while it does).
+func (s *blockStoreConnectorStore) MarkPresence(ctx context.Context, scope blockstore.Scope, ttl time.Duration) error {
+	if ttl < time.Millisecond {
+		return fmt.Errorf("blockstore presence TTL must be positive")
+	}
+	client, err := s.redisClient()
+	if err != nil {
+		return err
+	}
+	key, err := s.presenceKey(scope)
+	if err != nil {
+		return err
+	}
+	// The value carries the deadline too, so a reader never trusts a mark
+	// past it even if the key's own expiry is delayed.
+	deadline := strconv.FormatInt(time.Now().Add(ttl).UnixMilli(), 10)
+	if err := client.Set(ctx, key, deadline, ttl).Err(); err != nil {
+		return fmt.Errorf("mark blockstore presence: %w", err)
+	}
+	return nil
+}
+
+// HasPresence reports whether any replica currently holds subscribers.
+func (s *blockStoreConnectorStore) HasPresence(ctx context.Context, scope blockstore.Scope) (bool, error) {
+	client, err := s.redisClient()
+	if err != nil {
+		return false, err
+	}
+	key, err := s.presenceKey(scope)
+	if err != nil {
+		return false, err
+	}
+	value, err := client.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read blockstore presence: %w", err)
+	}
+	deadline, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return false, nil
+	}
+	return time.Now().UnixMilli() < deadline, nil
+}
+
+type blockStoreCanonical struct {
+	Hash string    `json:"h"`
+	At   time.Time `json:"at"`
+}
+
+func canonicalKey(n int64) string { return "canon/" + strconv.FormatInt(n, 10) }
+
+// PutCanonical shares the hash a replica observed upstream at height n.
+func (s *blockStoreConnectorStore) PutCanonical(ctx context.Context, scope blockstore.Scope, n int64, hash string, at time.Time, ttl time.Duration) error {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return err
+	}
+	value, err := json.Marshal(blockStoreCanonical{Hash: strings.ToLower(hash), At: at})
+	if err != nil {
+		return fmt.Errorf("encode blockstore canonical entry: %w", err)
+	}
+	return s.connector.Set(ctx, partition, canonicalKey(n), value, &ttl)
+}
+
+// GetCanonical returns the last hash observed at height n and when.
+func (s *blockStoreConnectorStore) GetCanonical(ctx context.Context, scope blockstore.Scope, n int64) (string, time.Time, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, canonicalKey(n), nil)
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return "", time.Time{}, blockstore.ErrNotFound
+		}
+		return "", time.Time{}, fmt.Errorf("get blockstore canonical entry: %w", err)
+	}
+	var entry blockStoreCanonical
+	if err := json.Unmarshal(value, &entry); err != nil || !validBlockStoreHash(entry.Hash) {
+		return "", time.Time{}, fmt.Errorf("invalid blockstore canonical entry at %d", n)
+	}
+	return entry.Hash, entry.At, nil
+}
+
+// blockStoreAdoptLimit bounds concurrent adoption work per network.
+const blockStoreAdoptLimit = 16
+
+// adoptIntoBlockStore feeds a block or logs response served to a client
+// (from eRPC's cache or an upstream) into the live block store, so later
+// reads of the same block or logs need no upstream call (pull model). It
+// never runs for the store's own fetches or for directed requests.
+func (n *Network) adoptIntoBlockStore(ctx context.Context, req *common.NormalizedRequest, method string, resp *common.NormalizedResponse) {
+	c := n.blockStore
+	if c == nil || n.blockStoreAdoptSem == nil || n.appCtx == nil || resp == nil || ctx.Value(blockStoreBypassKey{}) != nil || cacheWriteBypassed(ctx) {
+		return
+	}
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockByHash", "eth_getLogs":
+	default:
+		return
+	}
+	if blockStoreDirected(req.Directives()) || n.honorsIntegritySelector(req) {
+		return
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return
+	}
+	jrq.RLock()
+	params := append([]interface{}(nil), jrq.Params...)
+	jrq.RUnlock()
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil || jrr.Error != nil {
+		return
+	}
+	result := append(json.RawMessage(nil), jrr.GetResultBytes()...)
+	fromCache := resp.FromCache()
+	var adopt func(context.Context)
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockByHash":
+		if len(params) != 2 {
+			return
+		}
+		ref, ok1 := params[0].(string)
+		full, ok2 := params[1].(bool)
+		if !ok1 || !ok2 {
+			return
+		}
+		canonical := false
+		if method == "eth_getBlockByNumber" {
+			switch ref {
+			case "latest", "safe", "finalized":
+				canonical = true
+			default:
+				if _, err := parseExplicitBlockNumber(ref); err != nil {
+					return
+				}
+				canonical = true
+			}
+		} else {
+			var body struct {
+				Hash string `json:"hash"`
+			}
+			if !validBlockStoreHash(ref) || json.Unmarshal(result, &body) != nil || !strings.EqualFold(body.Hash, ref) {
+				return
+			}
+		}
+		adopt = func(ctx context.Context) { c.AdoptBlock(ctx, result, full, canonical, fromCache) }
+	case "eth_getLogs":
+		if len(params) != 1 {
+			return
+		}
+		obj, ok := params[0].(map[string]interface{})
+		if !ok {
+			return
+		}
+		unfiltered := true
+		for k := range obj {
+			switch k {
+			case "fromBlock", "toBlock", "blockHash":
+			case "address", "topics":
+				unfiltered = false
+			default:
+				return
+			}
+		}
+		if bh, ok := obj["blockHash"].(string); ok {
+			if !validBlockStoreHash(bh) {
+				return
+			}
+			adopt = func(ctx context.Context) {
+				c.ObserveLogs(ctx, result, -1, -1, false, fromCache)
+				if unfiltered && !fromCache {
+					c.AdoptLogsByHash(ctx, bh, result)
+				}
+			}
+			break
+		}
+		from, to := int64(-1), int64(-1)
+		fs, ok1 := obj["fromBlock"].(string)
+		ts, ok2 := obj["toBlock"].(string)
+		if ok1 && ok2 {
+			f, e1 := parseExplicitBlockNumber(fs)
+			t, e2 := parseExplicitBlockNumber(ts)
+			if e1 == nil && e2 == nil && t >= f {
+				from, to = f, t
+			}
+		}
+		adopt = func(ctx context.Context) { c.ObserveLogs(ctx, result, from, to, unfiltered && from >= 0, fromCache) }
+	}
+	select {
+	case n.blockStoreAdoptSem <- struct{}{}:
+	default:
+		return
+	}
+	go func() {
+		defer func() { <-n.blockStoreAdoptSem }()
+		defer func() {
+			if rec := recover(); rec != nil && n.logger != nil {
+				n.logger.Error().Interface("panic", rec).Msg("unexpected panic adopting response into blockstore")
+			}
+		}()
+		actx, cancel := context.WithTimeout(n.appCtx, 30*time.Second)
+		defer cancel()
+		adopt(actx)
+	}()
 }

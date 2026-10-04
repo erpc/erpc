@@ -57,6 +57,8 @@ type Network struct {
 	// historicalBlockStore holds finalized payloads outside the live window.
 	historicalBlockStore *blockstore.Historical
 	historicalWarmSem    chan struct{}
+	// blockStoreAdoptSem bounds concurrent adoption of client responses.
+	blockStoreAdoptSem chan struct{}
 	// logsFiller answers small explicit-range eth_getLogs from per-block
 	// logs filled by one unfiltered upstream call (nil when disabled).
 	logsFiller *blockstore.LogsFiller
@@ -1927,6 +1929,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				mlx.Close(ctx, resp, err)
 			}
 			forwardSpan.SetAttributes(attribute.Bool("cache.hit", true))
+			n.adoptIntoBlockStore(ctx, req, method, resp)
 			return resp, err
 		}
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
@@ -2564,6 +2567,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if execErr == nil && resp != nil {
 		n.warmHistoricalAsync(ctx, req, method, resp)
+		n.adoptIntoBlockStore(ctx, req, method, resp)
 	}
 	if execErr == nil && !isEmpty {
 		n.enrichStatePoller(ctx, method, req, resp)

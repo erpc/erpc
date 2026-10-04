@@ -139,13 +139,23 @@ func wsBlockStoreCfg(up *scriptedEvmUpstream, ws *common.WebSocketServerConfig) 
 	return cfg
 }
 
+// waitHead waits until the network knows head n (state pollers). The block
+// store does not follow headers before a subscriber exists.
 func waitHead(t *testing.T, e *ERPC, n int64) {
 	prj, err := e.GetProject("test_project")
 	require.NoError(t, err)
 	nw, err := prj.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
 	require.NotNil(t, nw.BlockStore())
-	require.Eventually(t, func() bool { return nw.BlockStore().Head() == n }, 10*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return nw.EvmHighestLatestBlockNumber(t.Context()) == n }, 10*time.Second, 50*time.Millisecond)
+}
+
+// waitFollowing waits until a subscriber started header following and the
+// verified window reached head n, so blocks mined afterwards are delivered.
+func waitFollowing(t *testing.T, e *ERPC, n int64) {
+	t.Helper()
+	hc := blockStoreOf(t, e)
+	require.Eventually(t, func() bool { return hc.Head() == n }, 10*time.Second, 20*time.Millisecond)
 }
 
 func subCount(t *testing.T, e *ERPC) int {
@@ -178,6 +188,7 @@ func TestWs_SubscriptionsReorg(t *testing.T) {
 	var evenId string
 	require.NoError(t, json.Unmarshal(even.Result, &evenId))
 	require.NotEqual(t, headsId, evenId)
+	waitFollowing(t, e, 20)
 
 	// New block 21 (odd topic) and 22 (even topic).
 	up.Mine(2)
@@ -544,6 +555,7 @@ func TestWs_ColdFillKeepsSubscriptionOpen(t *testing.T) {
 	require.NoError(t, err)
 	var id string
 	require.NoError(t, json.Unmarshal(w.call("eth_subscribe", `["newHeads"]`).Result, &id))
+	waitFollowing(t, e, 20)
 
 	// Backfill below the delivered range and new heads above it are both
 	// continuous; neither may close the stream while the window fills.
@@ -725,6 +737,7 @@ func TestWs_LogsFetchedOnlyForLogsSubscribers(t *testing.T) {
 	require.NoError(t, err)
 	var headsID string
 	require.NoError(t, json.Unmarshal(w.call("eth_subscribe", `["newHeads"]`).Result, &headsID))
+	waitFollowing(t, e, 20)
 	for n := 21; n <= 23; n++ {
 		up.Mine(1)
 		require.Contains(t, string(w.next(headsID)), fmt.Sprintf(`"number":"0x%x"`, n))

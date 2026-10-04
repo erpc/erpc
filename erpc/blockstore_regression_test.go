@@ -73,6 +73,7 @@ func TestHttp_BlockStore_MalformedFiltersBypassAndTopicPositionsMatchGeth(t *tes
 	require.NoError(t, err)
 	network, err := project.GetNetwork(t.Context(), "evm:123")
 	require.NoError(t, err)
+	holdSubscriber(t, network.BlockStore())
 	require.Eventually(t, func() bool { return network.BlockStore().Head() == 20 }, 10*time.Second, 20*time.Millisecond)
 
 	// A wildcard position still requires that position to exist in the log.

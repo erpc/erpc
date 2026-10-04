@@ -60,9 +60,23 @@ func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockSt
 		// The live window (when enabled) adopts each fill's per-height
 		// lists as its logs, so the same blocks are never fetched twice.
 		OnFill: func(ctx context.Context, entries []*blockstore.BlockLogs) {
-			if c := network.blockStore; c != nil {
-				c.AdoptLogs(ctx, entries)
+			c := network.blockStore
+			if c == nil || network.blockStoreAdoptSem == nil || network.appCtx == nil {
+				return
 			}
+			// Adoption may fetch a missing header to validate the lists:
+			// keep it off the client's response path.
+			select {
+			case network.blockStoreAdoptSem <- struct{}{}:
+			default:
+				return
+			}
+			go func() {
+				defer func() { <-network.blockStoreAdoptSem }()
+				actx, cancel := context.WithTimeout(network.appCtx, 30*time.Second)
+				defer cancel()
+				c.AdoptLogs(actx, entries)
+			}()
 		},
 	}, store, fetch, network.EvmHighestLatestBlockNumber, network.EvmHighestFinalizedBlockNumber)
 	return nil

@@ -350,11 +350,17 @@ func TestHttp_LogsFill_LiveWindowAdoptsFill(t *testing.T) {
 	send, _, _, shutdown, instance := createServerTestFixtures(cfg, t)
 	defer shutdown()
 	hc := blockStoreOf(t, instance)
-	require.Eventually(t, func() bool { return hc.Head() == 20 && hc.CanonicalHash(5) != "" }, 10*time.Second, 20*time.Millisecond)
+	// No subscriber: the window is built from what the fill returned (pull).
+	require.Eventually(t, func() bool { return instanceNetwork(t, instance).EvmHighestLatestBlockNumber(t.Context()) == 20 }, 10*time.Second, 20*time.Millisecond)
 
 	first := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x10","toBlock":"0x13"}]`)
 	require.Equal(t, int64(1), up.UnfilteredLogCalls(), "the miss is filled by one unfiltered range call")
 	require.Zero(t, up.BlockHashLogCalls(), "the window does not fetch per-block logs for the same range")
+	// Adoption runs asynchronously after the response.
+	require.Eventually(t, func() bool {
+		_, ok := hc.LogsRangeCached(t.Context(), 16, 19, nil)
+		return ok
+	}, 5*time.Second, 20*time.Millisecond, "the fill's lists are adopted with their headers")
 
 	again := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x10","toBlock":"0x13","topics":[%q]}]`, scriptedTopicEven))
 	var even []map[string]interface{}

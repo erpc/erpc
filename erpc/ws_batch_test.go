@@ -160,6 +160,7 @@ func TestWs_OutlivesHTTPWriteTimeout(t *testing.T) {
 	require.Nil(t, r.Error)
 	var sub string
 	require.NoError(t, json.Unmarshal(r.Result, &sub))
+	waitFollowing(t, e, 20)
 	time.Sleep(1500 * time.Millisecond)
 	up.Mine(1)
 	require.Contains(t, string(w.next(sub)), `"number":"0x15"`)

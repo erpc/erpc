@@ -55,7 +55,9 @@ func TestBlockStoreRedisHandoverRetainsExpiredServingSnapshot(t *testing.T) {
 	tip := int64(20)
 	head := func(context.Context) int64 { return tip }
 	opts := blockstore.Options{Scope: blockstore.Scope{Namespace: "recovery", ProjectId: "p", NetworkId: "evm:123"},
-		Depth: 8, MaxPerTick: 8, PollInterval: time.Second, MaxStaleness: 2 * time.Second, RecordTTL: time.Hour}
+		Depth: 8, MaxPerTick: 8, PollInterval: time.Second, MaxStaleness: 2 * time.Second, RecordTTL: time.Hour,
+		// Exercises the header-following handover directly (no subscribers).
+		AlwaysFollow: true}
 	a := blockstore.New(opts, store, fetch, head, &logger)
 	defer a.Stop()
 	a.Tick(ctx)
