@@ -156,6 +156,9 @@ func NewHttpServer(
 
 	// Create handler with timeout
 	httpHandler := TimeoutHandler(logger, h, reqMaxTimeout)
+	// WebSocket upgrades bypass the timeout/gzip wrappers (they must hijack
+	// and are long-lived). Nil when server.webSocket is disabled.
+	httpHandler = newWsServer(srv, cfg.WebSocket).wrap(httpHandler)
 	handlerV4 := httpHandler
 	handlerV6 := httpHandler
 

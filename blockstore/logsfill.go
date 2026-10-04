@@ -496,7 +496,7 @@ func SplitRangeLogs(raw json.RawMessage, from, to int64) ([]*BlockLogs, bool, er
 func filterBlockLogs(entries []*BlockLogs, filter *LogFilter) ([]json.RawMessage, error) {
 	out := make([]json.RawMessage, 0)
 	for _, e := range entries {
-		matched, err := filterLogs(e.Logs, filter)
+		matched, err := (&BlockRecord{Logs: e.Logs}).FilterLogs(filter, false)
 		if err != nil {
 			return nil, err
 		}

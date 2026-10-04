@@ -4,217 +4,129 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 )
 
-func TestEvmBlockStoreConfig_DefaultsAndValidation(t *testing.T) {
+// An explicit depth below the maxPerTick default must not fail startup on a field
+// the operator never set (LoadConfig runs SetDefaults then Validate).
+func TestEvmBlockStoreConfig_MaxPerTickDefaultClampedToDepth(t *testing.T) {
+	for _, depth := range []int64{1, 8, 15, 16, 128} {
+		c := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "r", Depth: depth}
+		c.SetDefaults()
+		require.Equal(t, min(int64(16), depth), c.MaxPerTick, "depth %d", depth)
+		require.NoError(t, c.Validate(), "depth %d", depth)
+	}
+	explicit := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "r", Depth: 8, MaxPerTick: 16}
+	explicit.SetDefaults()
+	require.ErrorContains(t, explicit.Validate(), "maxPerTick", "an explicit maxPerTick above depth is still rejected")
+}
+
+func TestEvmBlockStoreConfig_MaxBlockBytesDefaultClampedToMaxBytes(t *testing.T) {
+	small := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "r", MaxBytes: 8 << 20}
+	small.SetDefaults()
+	require.Equal(t, int64(8<<20), small.MaxBlockBytes)
+	require.NoError(t, small.Validate())
+
+	def := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "r"}
+	def.SetDefaults()
+	require.Equal(t, int64(16<<20), def.MaxBlockBytes)
+
+	explicit := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "r", MaxBytes: 8 << 20, MaxBlockBytes: 16 << 20}
+	explicit.SetDefaults()
+	require.Error(t, explicit.Validate(), "explicit oversize is still rejected")
+}
+
+func TestEvmBlockStoreHistoricalConfig_DefaultsAndValidation(t *testing.T) {
 	store := &EvmBlockStoreConfig{}
 	store.SetDefaults()
-	require.False(t, store.Enabled, "the block store is opt-in")
-	require.Equal(t, int64(10), store.MaxRange)
-	require.Equal(t, Duration(time.Hour), store.FinalizedTTL)
-	require.Equal(t, Duration(0), store.UnfinalizedTTL, "0 = derived from block time")
-	require.Equal(t, int64(2), store.EmptyTipGuard)
-	require.Equal(t, int64(64<<20), store.MemoryMaxBytes)
-	require.Equal(t, Duration(1500*time.Millisecond).Ptr(), store.PeerWait)
-	require.Equal(t, 4, store.Concurrency)
-	require.NoError(t, store.Validate())
+	require.False(t, store.Historical.Enabled)
+	require.Equal(t, Duration(time.Hour), store.Historical.TTL)
 
-	noLock := &EvmBlockStoreConfig{Enabled: true, PeerWait: Duration(0).Ptr()}
-	noLock.SetDefaults()
-	require.Equal(t, Duration(0), *noLock.PeerWait, "explicit 0 disables cross-replica locking")
-	require.NoError(t, noLock.Validate())
+	store = &EvmBlockStoreConfig{Historical: EvmBlockStoreHistoricalConfig{Enabled: true}}
+	store.SetDefaults()
+	require.Equal(t, Duration(time.Hour), store.Historical.TTL)
+	require.ErrorContains(t, store.Validate(), "connectorId")
 
-	memory := &EvmBlockStoreConfig{Enabled: true}
-	memory.SetDefaults()
-	require.NoError(t, memory.Validate(), "no connector is required")
-	require.False(t, memory.NeedsConnector(), "without connectorId it uses process memory")
-	memory.ConnectorId = "redis"
-	require.True(t, memory.NeedsConnector(), "a configured connectorId must resolve to redis")
-	memory.Enabled = false
-	require.False(t, memory.NeedsConnector(), "a disabled store never resolves its connector")
+	store.ConnectorId = "redis"
+	require.NoError(t, store.Validate(), "historical-only config should not require live window limits")
+
+	store.Historical.TTL = 0
+	require.ErrorContains(t, store.Validate(), "historical.ttl")
+	store.Historical.TTL = Duration(-time.Second)
+	require.ErrorContains(t, store.Validate(), "historical.ttl")
 
 	for _, tc := range []struct {
 		name string
 		set  func(*EvmBlockStoreConfig)
 	}{
-		{"maxRange", func(c *EvmBlockStoreConfig) { c.MaxRange = -1 }},
-		{"maxRange", func(c *EvmBlockStoreConfig) { c.MaxRange = 1001 }},
-		{"finalizedTtl", func(c *EvmBlockStoreConfig) { c.FinalizedTTL = -1 }},
-		{"unfinalizedTtl", func(c *EvmBlockStoreConfig) { c.UnfinalizedTTL = -1 }},
-		{"emptyTipGuard", func(c *EvmBlockStoreConfig) { c.EmptyTipGuard = -1 }},
-		{"memoryMaxBytes", func(c *EvmBlockStoreConfig) { c.MemoryMaxBytes = 1024 }},
-		{"peerWait", func(c *EvmBlockStoreConfig) { c.PeerWait = Duration(-1).Ptr() }},
-		{"peerWait", func(c *EvmBlockStoreConfig) { c.PeerWait = Duration(2 * time.Minute).Ptr() }},
+		{"depth", func(c *EvmBlockStoreConfig) { c.Depth = -1 }},
+		{"maxBytes", func(c *EvmBlockStoreConfig) { c.MaxBytes = -1 }},
 		{"concurrency", func(c *EvmBlockStoreConfig) { c.Concurrency = -1 }},
-		{"concurrency", func(c *EvmBlockStoreConfig) { c.Concurrency = 65 }},
+		{"fetchTimeout", func(c *EvmBlockStoreConfig) { c.FetchTimeout = -1 }},
+		{"maxLogsRange", func(c *EvmBlockStoreConfig) { c.MaxLogsRange = -1 }},
+		{"maxBlockBytes", func(c *EvmBlockStoreConfig) { c.MaxBlockBytes = -1 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &EvmBlockStoreConfig{Enabled: true}
+			c := &EvmBlockStoreConfig{ConnectorId: "redis", Historical: EvmBlockStoreHistoricalConfig{Enabled: true}}
 			c.SetDefaults()
 			tc.set(c)
-			require.ErrorContains(t, c.Validate(), "evm.blockStore."+tc.name)
-			c.Enabled = false
-			require.NoError(t, c.Validate(), "a disabled block store is not validated")
+			require.ErrorContains(t, c.Validate(), tc.name)
 		})
 	}
 }
 
-func TestNetworkConfig_ValidatesBlockStoreConnector(t *testing.T) {
-	store := &EvmBlockStoreConfig{Enabled: true, ConnectorId: "missing"}
-	network := &NetworkConfig{Architecture: "evm", Evm: &EvmNetworkConfig{ChainId: 1, BlockStore: store}}
+func TestNetworkConfig_ValidatesConnectorForHistoricalOnlyBlockStore(t *testing.T) {
+	store := &EvmBlockStoreConfig{ConnectorId: "missing", Historical: EvmBlockStoreHistoricalConfig{Enabled: true}}
+	store.SetDefaults()
+	network := &NetworkConfig{Architecture: "evm", Evm: &EvmNetworkConfig{BlockStore: store}}
 	require.NoError(t, network.Evm.SetDefaults())
 	require.ErrorContains(t, network.Validate(&Config{}), "not found")
 }
 
-const blockStoreRoundTripYaml = `
-logLevel: error
-database:
-  evmJsonRpcCache:
-    connectors:
-      - id: shared
-        driver: redis
-        redis:
-          uri: redis://localhost:6379
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          blockStore:
-            enabled: true
-            connectorId: shared
-            maxRange: 20
-            finalizedTtl: 30m
-            unfinalizedTtl: 3s
-            emptyTipGuard: 3
-            memoryMaxBytes: 33554432
-            peerWait: 500ms
-            concurrency: 8
-    upstreams:
-      - endpoint: http://rpc1.localhost
-`
+func TestEvmBlockStoreLogsFillConfig_DefaultsAndValidation(t *testing.T) {
+	store := &EvmBlockStoreConfig{}
+	store.SetDefaults()
+	require.False(t, store.LogsFill.Enabled, "logs fill is opt-in")
+	require.Equal(t, int64(10), store.LogsFill.MaxRange)
+	require.Equal(t, Duration(time.Hour), store.LogsFill.FinalizedTTL)
+	require.Equal(t, Duration(0), store.LogsFill.UnfinalizedTTL, "0 = derived from block time")
+	require.Equal(t, int64(2), store.LogsFill.EmptyTipGuard)
+	require.Equal(t, int64(64<<20), store.LogsFill.MemoryMaxBytes)
+	require.Equal(t, Duration(1500*time.Millisecond).Ptr(), store.LogsFill.PeerWait)
+	require.NoError(t, store.Validate())
 
-const blockStoreRoundTripJson = `{
-  "logLevel": "error",
-  "projects": [{
-    "id": "main",
-    "networks": [{
-      "architecture": "evm",
-      "evm": {
-        "chainId": 1,
-        "blockStore": {"enabled": true, "maxRange": 5}
-      }
-    }],
-    "upstreams": [{"endpoint": "http://rpc1.localhost"}]
-  }]
-}`
+	disabled := &EvmBlockStoreConfig{LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true, PeerWait: Duration(0).Ptr()}}
+	disabled.SetDefaults()
+	require.Equal(t, Duration(0), *disabled.LogsFill.PeerWait, "explicit 0 disables cross-replica locking")
+	require.NoError(t, disabled.Validate())
 
-func loadBlockStoreTestConfig(t *testing.T, name, src string) (*Config, error) {
-	t.Helper()
-	fs := afero.NewMemMapFs()
-	require.NoError(t, afero.WriteFile(fs, name, []byte(src), 0o600))
-	return LoadConfig(fs, name, &DefaultOptions{})
-}
+	standalone := &EvmBlockStoreConfig{LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true}}
+	standalone.SetDefaults()
+	require.NoError(t, standalone.Validate(), "logs fill alone needs no connector, live window or historical cache")
+	require.False(t, standalone.NeedsConnector(), "without connectorId it uses process memory")
+	standalone.ConnectorId = "redis"
+	require.True(t, standalone.NeedsConnector(), "a configured connectorId must resolve to redis")
 
-func blockStoreOf(t *testing.T, cfg *Config) *EvmBlockStoreConfig {
-	t.Helper()
-	require.Len(t, cfg.Projects, 1)
-	require.Len(t, cfg.Projects[0].Networks, 1)
-	require.NotNil(t, cfg.Projects[0].Networks[0].Evm)
-	require.NotNil(t, cfg.Projects[0].Networks[0].Evm.BlockStore)
-	return cfg.Projects[0].Networks[0].Evm.BlockStore
-}
-
-// The flat evm.blockStore keys load from YAML and JSON (LoadConfig runs
-// SetDefaults then Validate), and the removed nested logsFill key is rejected
-// by strict decoding rather than silently ignored.
-func TestLoadConfig_BlockStoreFlatKeysRoundTrip(t *testing.T) {
-	t.Run("yaml", func(t *testing.T) {
-		cfg, err := loadBlockStoreTestConfig(t, "erpc.yaml", blockStoreRoundTripYaml)
-		require.NoError(t, err)
-		bs := blockStoreOf(t, cfg)
-		require.True(t, bs.Enabled)
-		require.Equal(t, "shared", bs.ConnectorId)
-		require.Equal(t, int64(20), bs.MaxRange)
-		require.Equal(t, Duration(30*time.Minute), bs.FinalizedTTL)
-		require.Equal(t, Duration(3*time.Second), bs.UnfinalizedTTL)
-		require.Equal(t, int64(3), bs.EmptyTipGuard)
-		require.Equal(t, int64(32<<20), bs.MemoryMaxBytes)
-		require.Equal(t, Duration(500*time.Millisecond), *bs.PeerWait)
-		require.Equal(t, 8, bs.Concurrency)
-	})
-
-	t.Run("json", func(t *testing.T) {
-		cfg, err := loadBlockStoreTestConfig(t, "erpc.json", blockStoreRoundTripJson)
-		require.NoError(t, err)
-		bs := blockStoreOf(t, cfg)
-		require.True(t, bs.Enabled)
-		require.Empty(t, bs.ConnectorId, "no connector = per-replica memory store")
-		require.Equal(t, int64(5), bs.MaxRange)
-		require.Equal(t, Duration(time.Hour), bs.FinalizedTTL, "defaults applied")
-		require.Equal(t, int64(64<<20), bs.MemoryMaxBytes)
-		require.Equal(t, 4, bs.Concurrency)
-	})
-
-	t.Run("nested logsFill is rejected", func(t *testing.T) {
-		src := `
-logLevel: error
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          blockStore:
-            logsFill:
-              enabled: true
-    upstreams:
-      - endpoint: http://rpc1.localhost
-`
-		_, err := loadBlockStoreTestConfig(t, "erpc.yaml", src)
-		require.ErrorContains(t, err, "logsFill")
-	})
-
-	t.Run("removed live-window keys are rejected", func(t *testing.T) {
-		for _, key := range []string{"depth: 128", "historical:\n              enabled: true", "pollInterval: 2s"} {
-			src := `
-logLevel: error
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          blockStore:
-            enabled: true
-            ` + key + `
-    upstreams:
-      - endpoint: http://rpc1.localhost
-`
-			_, err := loadBlockStoreTestConfig(t, "erpc.yaml", src)
-			require.Error(t, err, key)
-		}
-	})
-
-	t.Run("invalid value fails validation", func(t *testing.T) {
-		src := `
-logLevel: error
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          blockStore:
-            enabled: true
-            maxRange: 5000
-    upstreams:
-      - endpoint: http://rpc1.localhost
-`
-		_, err := loadBlockStoreTestConfig(t, "erpc.yaml", src)
-		require.ErrorContains(t, err, "evm.blockStore.maxRange")
-	})
+	for _, tc := range []struct {
+		name string
+		set  func(*EvmBlockStoreLogsFillConfig)
+	}{
+		{"maxRange", func(c *EvmBlockStoreLogsFillConfig) { c.MaxRange = -1 }},
+		{"maxRange", func(c *EvmBlockStoreLogsFillConfig) { c.MaxRange = 1001 }},
+		{"finalizedTtl", func(c *EvmBlockStoreLogsFillConfig) { c.FinalizedTTL = -1 }},
+		{"unfinalizedTtl", func(c *EvmBlockStoreLogsFillConfig) { c.UnfinalizedTTL = -1 }},
+		{"emptyTipGuard", func(c *EvmBlockStoreLogsFillConfig) { c.EmptyTipGuard = -1 }},
+		{"memoryMaxBytes", func(c *EvmBlockStoreLogsFillConfig) { c.MemoryMaxBytes = 1024 }},
+		{"peerWait", func(c *EvmBlockStoreLogsFillConfig) { c.PeerWait = Duration(-1).Ptr() }},
+		{"peerWait", func(c *EvmBlockStoreLogsFillConfig) { c.PeerWait = Duration(2 * time.Minute).Ptr() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &EvmBlockStoreConfig{LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true}}
+			c.SetDefaults()
+			tc.set(&c.LogsFill)
+			require.ErrorContains(t, c.Validate(), "logsFill."+tc.name)
+			c.LogsFill.Enabled = false
+			require.NoError(t, c.Validate(), "disabled logs fill is not validated")
+		})
+	}
 }

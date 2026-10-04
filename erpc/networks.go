@@ -52,9 +52,13 @@ type Network struct {
 	initializer         *util.Initializer
 	architectureHandler common.ArchitectureHandler
 
-	// logsFiller is the block store: it answers small explicit-range
-	// eth_getLogs from per-height logs filled by one unfiltered upstream call
-	// (nil when evm.blockStore is disabled).
+	// blockStore is the opt-in head-driven block/log cache (nil when disabled).
+	blockStore *blockstore.Cache
+	// historicalBlockStore holds finalized payloads outside the live window.
+	historicalBlockStore *blockstore.Historical
+	historicalWarmSem    chan struct{}
+	// logsFiller answers small explicit-range eth_getLogs from per-block
+	// logs filled by one unfiltered upstream call (nil when disabled).
 	logsFiller *blockstore.LogsFiller
 
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
@@ -1813,6 +1817,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	method, _ := req.Method()
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
+	// An honored selector may change this request's checks, so its result must not be shared with requests using another integrity setting.
+	allowSharedResponse := !n.honorsIntegritySelector(req)
 
 	// Start a span for network forwarding
 	ctx, forwardSpan := common.StartSpan(ctx, "Network.Forward",
@@ -1855,8 +1861,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	// Block store: small explicit-range eth_getLogs answered from per-height
-	// logs. Misses fall through to the normal path unchanged.
+	// Head cache: fully covered block/log reads answered from the verified
+	// canonical window. Misses fall through to the normal path unchanged.
+	if n.blockStore != nil || n.historicalBlockStore != nil {
+		if resp, ok := n.tryServeBlockStore(ctx, req, method); ok {
+			forwardSpan.SetAttributes(attribute.Bool("blockstore.hit", true))
+			return resp, nil
+		}
+	}
 	if n.logsFiller != nil && method == "eth_getLogs" {
 		if resp, ok := n.tryServeLogsFill(ctx, req); ok {
 			forwardSpan.SetAttributes(attribute.Bool("blockstore.logs_fill", true))
@@ -1875,10 +1887,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	var mlx *Multiplexer
 	var resp *common.NormalizedResponse
 	var err error
-	if ctx.Value(blockStoreBypassKey{}) == nil {
-		// Block store fill fetches are internal requests with their own trust
-		// rules; never share an in-flight response with client traffic in
-		// either direction (multiplexKey ignores directives).
+	if allowSharedResponse && ctx.Value(blockStoreBypassKey{}) == nil {
+		// Blockstore hydration and logs-fill fetches are internal requests with
+		// their own trust rules; never share an in-flight response with client
+		// traffic in either direction (multiplexKey ignores directives).
 		mlx, resp, err = n.handleMultiplexing(ctx, &lg, req, startTime)
 	}
 	if err != nil || resp != nil {
@@ -1900,7 +1912,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
+	if n.cacheDal != nil && allowSharedResponse && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
@@ -2504,9 +2516,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		// Block store fill fetches may carry unfinalized data a reorg can orphan;
-		// they must not leave copies in the ordinary cache that only expire by TTL.
-		if n.cacheDal != nil && ctx.Value(blockStoreBypassKey{}) == nil {
+		if n.cacheDal != nil && allowSharedResponse && !cacheWriteBypassed(ctx) {
 			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
 			// TODO For other architectures we might need a different approach
 			_, _ = resp.JsonRpcResponse(ctx)
@@ -2552,6 +2562,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		lg.Trace().Msgf("response is empty")
 	}
 
+	if execErr == nil && resp != nil {
+		n.warmHistoricalAsync(ctx, req, method, resp)
+	}
 	if execErr == nil && !isEmpty {
 		n.enrichStatePoller(ctx, method, req, resp)
 
@@ -3110,6 +3123,22 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 		return nil
 	}
 	return eligible
+}
+
+// honorsIntegritySelector mirrors evm.resolveRequestSettings: a selector only applies with an integrity config whose headerMode is profiles or full.
+func (n *Network) honorsIntegritySelector(req *common.NormalizedRequest) bool {
+	if req == nil || n.cfg == nil || n.cfg.Integrity == nil {
+		return false
+	}
+	dirs := req.Directives()
+	if dirs == nil || strings.TrimSpace(dirs.IntegritySelector) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(n.cfg.Integrity.HeaderMode)) {
+	case common.IntegrityHeaderModeProfiles, common.IntegrityHeaderModeFull:
+		return true
+	}
+	return false
 }
 
 // multiplexKey derives the in-flight dedup identity for a request.

@@ -600,6 +600,8 @@ integrity:
    **Diagnostic rule of thumb:** if `erpc_integrity_violation_total{check="…Recompute"}` rejects across *every* upstream of one chain, it's the check, not the data — disable that check for that chain (and consider opening an issue so it can be added to this list).
 7. **Continuity does not run on `eth_getBlockByHash`** (see [Why continuity is by-number only](#why-continuity-is-by-number-only)) — and a by-hash response never moves the pin. Earlier builds checked by-hash lookups too, which produced a large stream of rejects (mostly ending as `integrity_failed` client errors) whenever one upstream kept serving settled orphaned blocks to clients unwinding reorgs: the pin correctly said "not canonical", but since the request named the orphan hash, no upstream could satisfy the pinned fork.
 
+8. **Per-request profiles do not share responses.** A nonempty integrity selector bypasses ordinary JSON-RPC cache reads/writes and in-flight request multiplexing only when the configured integrity module accepts per-request selection (`headerMode: profiles` or `headerMode: full`). Its response is checked under the selected profile without becoming a shared response for default-profile callers. When no integrity module is configured, or `headerMode: off` ignores the selector, ordinary caching and multiplexing remain enabled. Blockstore reads and warming still bypass requests carrying an explicit selector. Requests with no selector retain normal caching and multiplexing.
+
 ### Source code entry points
 
 - [`architecture/evm/integrity/`](https://github.com/erpc/erpc/blob/main/architecture/evm/integrity) — the check engine, catalog, levels, decode, resolver, history.
