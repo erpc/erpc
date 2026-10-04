@@ -22,6 +22,20 @@ import (
 
 type blockStoreBypassKey struct{}
 
+// blockStoreDirected reports whether a request's directives take it outside
+// the default trust set the blockstore and logs fill were built from:
+// internal requests, a specific upstream, an integrity selector, or any
+// skipCacheRead other than an explicit "false". Unlike
+// ShouldSkipCacheRead(""), connector-ID patterns also bypass, because these
+// stores sit in front of every connector; "false" matches its no-skip meaning.
+func blockStoreDirected(d *common.RequestDirectives) bool {
+	if d == nil {
+		return false
+	}
+	skip := d.SkipCacheRead != "" && !strings.EqualFold(d.SkipCacheRead, "false")
+	return d.IsInternal || d.UseUpstream != "" || d.IntegritySelector != "" || skip
+}
+
 // withBlockStoreBypass marks a context whose Forward must not be served from
 // the head cache (hydration reads must reach upstreams).
 func withBlockStoreBypass(ctx context.Context) context.Context {
@@ -219,7 +233,7 @@ func (n *Network) warmHistoricalAsync(ctx context.Context, req *common.Normalize
 	if h == nil || n.historicalWarmSem == nil || n.appCtx == nil || cacheWriteBypassed(ctx) {
 		return
 	}
-	if d := req.Directives(); d != nil && (d.IsInternal || d.UseUpstream != "" || d.IntegritySelector != "" || d.SkipCacheRead != "") {
+	if blockStoreDirected(req.Directives()) {
 		return
 	}
 	jrq, err := req.JsonRpcRequest(ctx)
@@ -346,7 +360,7 @@ func (n *Network) tryServeBlockStore(ctx context.Context, req *common.Normalized
 	}
 	// Directed requests (specific upstreams, integrity profiles, cache
 	// bypass) are outside the default trust set the cache was built from.
-	if d := req.Directives(); d != nil && (d.IsInternal || d.UseUpstream != "" || d.IntegritySelector != "" || d.SkipCacheRead != "") {
+	if blockStoreDirected(req.Directives()) {
 		return nil, false
 	}
 	switch method {

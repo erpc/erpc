@@ -12,6 +12,20 @@ import (
 
 func init() { util.ConfigureTestLogger() }
 
+// One gate serves tryServeBlockStore, warmHistoricalAsync and tryServeLogsFill.
+func TestBlockStoreDirected_SkipCacheReadSemantics(t *testing.T) {
+	require.False(t, blockStoreDirected(nil))
+	for skip, want := range map[string]bool{
+		"": false, "false": false, "FALSE": false, "False": false,
+		"true": true, "*": true, "redis-*": true, "pg-cache": true,
+	} {
+		require.Equal(t, want, blockStoreDirected(&common.RequestDirectives{SkipCacheRead: skip}), "skipCacheRead=%q", skip)
+	}
+	require.True(t, blockStoreDirected(&common.RequestDirectives{SkipCacheRead: "false", UseUpstream: "a"}))
+	require.True(t, blockStoreDirected(&common.RequestDirectives{IsInternal: true}))
+	require.True(t, blockStoreDirected(&common.RequestDirectives{IntegritySelector: "strict"}))
+}
+
 func TestBlockStore_FingerprintIncludesProviderAndDefaultTrust(t *testing.T) {
 	network := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 1}}
 	project := &common.ProjectConfig{

@@ -124,6 +124,18 @@ func TestHttp_LogsFill_SkipsAndFallbacks(t *testing.T) {
 			require.Nil(t, resp)
 			require.Equal(t, skipped+1, logsFillCounter("skipped", "directive"), skip)
 		}
+		// An explicit "false" means do not skip, as in ShouldSkipCacheRead: still served.
+		for _, noSkip := range []string{"false", "FALSE"} {
+			req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
+				`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x3c","toBlock":"0x3e"%s}]}`, addr)))
+			req.SetDirectives(&common.RequestDirectives{SkipCacheRead: noSkip})
+			skipped := logsFillCounter("skipped", "directive")
+			resp, ok := f.network.tryServeLogsFill(t.Context(), req)
+			require.True(t, ok, "skipCacheRead=%q must still be answered from the fill", noSkip)
+			require.NotNil(t, resp)
+			resp.Release()
+			require.Equal(t, skipped, logsFillCounter("skipped", "directive"), noSkip)
+		}
 	})
 
 	t.Run("above head goes upstream unchanged", func(t *testing.T) {
