@@ -204,6 +204,58 @@ type fakeFleetLease struct {
 	released bool
 }
 
+type failingFleetLease struct {
+	Lease
+	failRenewAt int
+	renewals    int
+	failPublish bool
+}
+
+func (l *failingFleetLease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
+	l.renewals++
+	if l.renewals == l.failRenewAt {
+		return false, fmt.Errorf("transient renew failure")
+	}
+	return l.Lease.Renew(ctx, ttl)
+}
+
+func (l *failingFleetLease) Publish(ctx context.Context, snap *Snapshot, ttl time.Duration) (bool, error) {
+	if l.failPublish {
+		return false, fmt.Errorf("transient publish failure")
+	}
+	return l.Lease.Publish(ctx, snap, ttl)
+}
+
+func TestCache_FleetLeaseErrorsReleaseLock(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failRenewAt int
+		failPublish bool
+	}{
+		{"renew", 1, false},
+		{"renew before publish", 2, false},
+		{"publish", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeFleetStore()
+			store.leader = true
+			chain := newFakeChain(5)
+			leader := New(testOpts(), store, chain, chain.head, nil)
+			leader.Tick(t.Context())
+			defer leader.Stop()
+			require.True(t, leader.Fresh())
+			leader.lease = &failingFleetLease{Lease: leader.lease, failRenewAt: tc.failRenewAt, failPublish: tc.failPublish}
+			leader.Tick(t.Context())
+			require.Nil(t, leader.lease)
+			require.Equal(t, 1, store.releases, "release the Redis lease on EVAL failure")
+			other := New(testOpts(), store, chain, chain.head, nil)
+			other.Tick(t.Context())
+			defer other.Stop()
+			require.NotNil(t, other.lease, "another replica can acquire on its next tick")
+		})
+	}
+}
+
 func (l *fakeFleetLease) Renew(context.Context, time.Duration) (bool, error) { return !l.released, nil }
 func (l *fakeFleetLease) Publish(_ context.Context, snap *Snapshot, _ time.Duration) (bool, error) {
 	if l.released {

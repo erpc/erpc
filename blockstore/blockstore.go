@@ -294,7 +294,11 @@ func (c *Cache) fleetTickOnce(ctx context.Context) error {
 	} else {
 		ok, err := c.lease.Renew(ctx, c.leaseTTL())
 		if err != nil || !ok {
-			c.lease = nil
+			if err != nil {
+				c.releaseLeaseBounded()
+			} else {
+				c.lease = nil
+			}
 			c.sharedAt = map[string]time.Time{}
 			c.invalidateAndClose()
 			if err != nil {
@@ -337,7 +341,11 @@ func (c *Cache) fleetTickOnce(ctx context.Context) error {
 	}
 	ok, err := c.lease.Renew(ctx, c.leaseTTL())
 	if err != nil || !ok {
-		c.lease = nil
+		if err != nil {
+			c.releaseLeaseBounded()
+		} else {
+			c.lease = nil
+		}
 		c.sharedAt = map[string]time.Time{}
 		c.invalidateAndClose()
 		if err != nil {
@@ -347,7 +355,11 @@ func (c *Cache) fleetTickOnce(ctx context.Context) error {
 	}
 	ok, err = c.lease.Publish(ctx, snap, c.snapshotTTL())
 	if err != nil || !ok {
-		c.lease = nil
+		if err != nil {
+			c.releaseLeaseBounded()
+		} else {
+			c.lease = nil
+		}
 		c.sharedAt = map[string]time.Time{}
 		c.invalidateAndClose()
 		if err != nil {
