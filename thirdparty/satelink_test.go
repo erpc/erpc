@@ -18,9 +18,9 @@ func TestSatelinkVendor_SupportsNetwork(t *testing.T) {
 		networkId string
 		expected  bool
 	}{
-		{"evm:137", true},        // Polygon mainnet
-		{"evm:1", false},         // Ethereum — not supported
-		{"evm:999999", false},    // unknown
+		{"evm:137", true},     // Polygon mainnet
+		{"evm:1", false},      // Ethereum — not supported
+		{"evm:999999", false}, // unknown
 		{"solana:mainnet", false},
 	}
 

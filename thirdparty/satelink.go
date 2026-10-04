@@ -14,16 +14,16 @@
 //  2. common/defaults.go, buildProviderSettings() — parse the URL scheme:
 //
 //     case "satelink", "evm+satelink":
-//         // satelink://<api_key>@polygon  (authority userinfo = API key)
-//         // satelink://<api_key>          (authority host = API key)
-//         // satelink://free@polygon       ("free" = keyless free tier)
-//         settings := VendorSettings{}
-//         if endpoint.User != nil && endpoint.User.Username() != "" {
-//             settings["apiKey"] = endpoint.User.Username()
-//         } else if endpoint.Host != "" {
-//             settings["apiKey"] = endpoint.Host
-//         }
-//         return settings, nil
+//     // satelink://<api_key>@polygon  (authority userinfo = API key)
+//     // satelink://<api_key>          (authority host = API key)
+//     // satelink://free@polygon       ("free" = keyless free tier)
+//     settings := VendorSettings{}
+//     if endpoint.User != nil && endpoint.User.Username() != "" {
+//     settings["apiKey"] = endpoint.User.Username()
+//     } else if endpoint.Host != "" {
+//     settings["apiKey"] = endpoint.Host
+//     }
+//     return settings, nil
 package thirdparty
 
 import (

@@ -108,11 +108,11 @@ func TestParseBehavior(t *testing.T) {
 		want integrity.Behavior
 		ok   bool
 	}{
-		"hardReject":    {integrity.BehaviorError, true},
+		"hardReject": {integrity.BehaviorError, true},
 		"recordOnly": {integrity.BehaviorRecord, true},
-		"off":       {integrity.BehaviorIgnore, true},
-		"":          {integrity.BehaviorError, false},
-		"nonsense":  {integrity.BehaviorError, false},
+		"off":        {integrity.BehaviorIgnore, true},
+		"":           {integrity.BehaviorError, false},
+		"nonsense":   {integrity.BehaviorError, false},
 	}
 	for in, exp := range cases {
 		got, ok := parseBehavior(in)
