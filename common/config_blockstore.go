@@ -5,7 +5,9 @@ import (
 	"time"
 )
 
-// EvmBlockStoreConfig configures the head-driven full-block/log cache.
+// EvmBlockStoreConfig configures the head-driven block/log cache. The live
+// window verifies only headers in the background; block bodies and logs are
+// fetched on demand.
 type EvmBlockStoreConfig struct {
 	// Enabled turns the cache on. Default false.
 	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
@@ -16,25 +18,30 @@ type EvmBlockStoreConfig struct {
 	ConnectorId string `yaml:"connectorId,omitempty" json:"connectorId,omitempty"`
 	// Depth is how many recent canonical blocks the window holds. Default 128.
 	Depth int64 `yaml:"depth,omitempty" json:"depth,omitempty"`
-	// MaxBytes bounds the total serialized size (blocks + logs) held. When the
-	// window would exceed it, the oldest blocks are evicted. Default 256MB.
+	// MaxBytes bounds the process-local cache of on-demand block bodies and
+	// log lists (headers are not counted). When exceeded, payloads of the
+	// lowest heights are evicted and reloaded from Redis on demand. Default 256MB.
 	MaxBytes int64 `yaml:"maxBytes,omitempty" json:"maxBytes,omitempty"`
-	// MaxPerTick bounds how many missing block records a single refresh fetches
-	// from upstream. Cold starts and long outages converge over multiple ticks.
+	// MaxPerTick bounds how many older headers a single refresh backfills
+	// while the window is shorter than Depth (cold start, recovery). New heads
+	// above the window are always fetched in full. Default min(16, depth).
 	MaxPerTick int64 `yaml:"maxPerTick,omitempty" json:"maxPerTick,omitempty"`
-	// Concurrency bounds simultaneous header, Redis-read and block/log hydration
-	// jobs per network. Default 4.
+	// Concurrency bounds simultaneous header fetches and per-height log
+	// loads of one request per network. Default 4.
 	Concurrency int `yaml:"concurrency,omitempty" json:"concurrency,omitempty"`
-	// PollInterval is the fallback tick that re-verifies the tip hash even
-	// when the height has not changed (same-height reorgs). Default 2s.
+	// PollInterval is how often the lease holder checks the in-memory latest
+	// block and fetches headers for new heights (a state-poller advance also
+	// triggers an early check). An unchanged tip costs no upstream call; a
+	// replaced tip is detected when the next block does not link to it, or
+	// when an on-demand body fetch disagrees with the window. Default 2s.
 	PollInterval Duration `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty" tstype:"Duration"`
-	// FetchTimeout bounds each hydration fetch. Default 10s.
+	// FetchTimeout bounds each header, block or logs fetch. Default 10s.
 	FetchTimeout Duration `yaml:"fetchTimeout,omitempty" json:"fetchTimeout,omitempty" tstype:"Duration"`
 	// MaxLogsRange caps the block span an eth_getLogs range may have to be
 	// served from the cache. Wider ranges go upstream. Default = Depth.
 	MaxLogsRange int64 `yaml:"maxLogsRange,omitempty" json:"maxLogsRange,omitempty"`
-	// MaxBlockBytes rejects (never caches) any single block whose block+logs
-	// payload exceeds it. Default min(16MB, maxBytes).
+	// MaxBlockBytes rejects (never caches) any single block body or log list
+	// larger than it. Default min(16MB, maxBytes).
 	MaxBlockBytes int64 `yaml:"maxBlockBytes,omitempty" json:"maxBlockBytes,omitempty"`
 	// MaxStaleness disables serving (normal upstream path) when this replica's
 	// view has not been verified for this long. Default 5 * pollInterval.

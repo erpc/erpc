@@ -2089,27 +2089,32 @@ export interface EvmBlockStoreConfig {
    */
   depth?: number /* int64 */;
   /**
-   * MaxBytes bounds the total serialized size (blocks + logs) held. When the
-   * window would exceed it, the oldest blocks are evicted. Default 256MB.
+   * MaxBytes bounds the process-local cache of on-demand block bodies and
+   * log lists (headers are not counted). When exceeded, payloads of the
+   * lowest heights are evicted and reloaded from Redis on demand. Default 256MB.
    */
   maxBytes?: number /* int64 */;
   /**
-   * MaxPerTick bounds how many missing block records a single refresh fetches
-   * from upstream. Cold starts and long outages converge over multiple ticks.
+   * MaxPerTick bounds how many older headers a single refresh backfills
+   * while the window is shorter than Depth (cold start, recovery). New heads
+   * above the window are always fetched in full. Default min(16, depth).
    */
   maxPerTick?: number /* int64 */;
   /**
-   * Concurrency bounds simultaneous header, Redis-read and block/log hydration
-   * jobs per network. Default 4.
+   * Concurrency bounds simultaneous header fetches and per-height log
+   * loads of one request per network. Default 4.
    */
   concurrency?: number /* int */;
   /**
-   * PollInterval is the fallback tick that re-verifies the tip hash even
-   * when the height has not changed (same-height reorgs). Default 2s.
+   * PollInterval is how often the lease holder checks the in-memory latest
+   * block and fetches headers for new heights (a state-poller advance also
+   * triggers an early check). An unchanged tip costs no upstream call; a
+   * replaced tip is detected when the next block does not link to it, or
+   * when an on-demand body fetch disagrees with the window. Default 2s.
    */
   pollInterval?: Duration;
   /**
-   * FetchTimeout bounds each hydration fetch. Default 10s.
+   * FetchTimeout bounds each header, block or logs fetch. Default 10s.
    */
   fetchTimeout?: Duration;
   /**
@@ -2118,8 +2123,8 @@ export interface EvmBlockStoreConfig {
    */
   maxLogsRange?: number /* int64 */;
   /**
-   * MaxBlockBytes rejects (never caches) any single block whose block+logs
-   * payload exceeds it. Default min(16MB, maxBytes).
+   * MaxBlockBytes rejects (never caches) any single block body or log list
+   * larger than it. Default min(16MB, maxBytes).
    */
   maxBlockBytes?: number /* int64 */;
   /**
