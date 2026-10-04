@@ -1,69 +1,41 @@
 ---
-title: Blockstore
-description: Cache recent verified blocks for HTTP and WebSocket, and optionally reuse finalized historical blocks and logs.
+title: Block store
+description: Answer many differently-filtered eth_getLogs polls of the same recent blocks with one upstream call.
 ---
 
-import { LLMsTxtLink, AISection, SourceLink } from "../../../components";
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
 
 <LLMsTxtLink />
 
-# Blockstore
+# Block store
 
-With the live blockstore enabled, one lease holder per trust fingerprint, namespace,
-project and network polls upstream and hydrates the canonical window. It publishes
-a fenced Redis snapshot for followers, who serve covered reads from immutable,
-hash-addressed payloads without blockstore polling upstream while Redis is healthy.
-Independent EVM state pollers and probes still run per replica and can call upstream.
+Indexers, bots and dapps often poll the same few recent blocks with `eth_getLogs`, each
+with its own `address`/`topics` filter, and every one of those calls normally reaches a
+provider. With the block store on, eRPC fetches the complete logs of a small block range
+once, keeps them per block, and answers every filter over those blocks locally.
 
-Historical caching is an independent opt-in for finalized data outside that moving
-window. It stores full blocks separately from complete, unfiltered per-block logs,
-with a finalized height-to-hash index guarding canonical reads. Historical entries
-expire after their configured TTL. A historical `eth_getLogs` range is served only
-when every block in the whole range is available; otherwise the request falls back
-to normal upstream forwarding. This does not change the live window or its
-single-refresher fleet coordination.
+- **On demand.** Nothing is polled in the background: a range is fetched only when a
+  client asks for it and it is not already stored.
+- **Safe fallback.** Anything the block store cannot answer exactly (tags, wide ranges,
+  blocks above the head, odd filters, upstream errors) is forwarded unchanged, as if the
+  feature were off.
+- **Shared or local.** Point it at a Redis connector and replicas share entries and
+  coordinate so only one of them fetches a given range. Without a connector each replica
+  keeps a bounded in-memory store.
 
-The cache reuses a Redis connector declared for the [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache).
-
-## Logs fill (small `eth_getLogs` ranges)
-
-`logsFill` is a separate opt-in that cuts upstream `eth_getLogs` calls when many
-clients poll the same recent blocks with different `address`/`topics` filters. For an
-explicit hex `fromBlock`/`toBlock` range of at most `maxRange` blocks (default 10) at or
-below the network head, eRPC makes one unfiltered `eth_getLogs` upstream call for the
-range, stores each block's complete log list (including empty blocks), and filters
-every request locally. Later requests over those blocks, with any filter, need no
-upstream call. A failed or unusable fill falls back to forwarding the original request.
-
-It works without `enabled` or `historical`. With `connectorId` set it shares the Redis
-connector, and replicas coordinate so one of them fetches a given range while the others
-wait briefly (`peerWait`) for its result; otherwise each replica keeps a bounded
-in-memory store.
-
-The tradeoff is response size: an unfiltered range on a busy chain can be much larger
-than any filtered answer, which is why `maxRange` stays small. Recent (unfinalized)
-blocks are kept for only about one block time.
-
-```yaml
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          blockStore:
-            logsFill:
-              enabled: true
-              # widest fromBlock..toBlock span answered from one unfiltered fill
-              maxRange: 10
-```
-
-Disabled by default. When disabled, behavior is unchanged.
+The tradeoff is response size: one unfiltered range on a busy chain can be much larger
+than any filtered answer, which is why the handled range stays small (10 blocks by
+default). Disabled by default; when disabled, behavior is unchanged.
 
 ## Quick taste
 
-```yaml
-database:
+Illustrative: share the block store across replicas through an existing Redis cache connector.
+
+<ConfigTabs
+  path="projects[].networks[].evm.blockStore"
+  focusYaml="14-18"
+  focusTs="13-18"
+  yaml={`database:
   evmJsonRpcCache:
     connectors:
       - id: redis-cache
@@ -78,86 +50,122 @@ projects:
           chainId: 1
           blockStore:
             enabled: true
-            # a redis connector from database.evmJsonRpcCache.connectors
+            # optional: share entries across replicas; omit for per-replica memory
             connectorId: redis-cache
-            historical:
-              enabled: true
-              ttl: 1h
-```
+            # widest fromBlock..toBlock span answered from one unfiltered fetch
+            maxRange: 10`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [{
+      id: "redis-cache",
+      driver: "redis",
+      redis: { uri: "redis://redis:6379" },
+    }],
+  },
+},
+projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: {
+      chainId: 1,
+      blockStore: {
+        enabled: true,
+        // optional: share entries across replicas; omit for per-replica memory
+        connectorId: "redis-cache",
+        // widest fromBlock..toBlock span answered from one unfiltered fetch
+        maxRange: 10,
+      },
+    },
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …): each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="cut duplicate eth_getLogs polling"
+	defaultOpen
+	prompt={`Many of my clients poll eth_getLogs over the same recent blocks with different
+address/topics filters. Reduce the upstream eth_getLogs calls this causes using eRPC's
+block store, sharing entries across my replicas if I already have a Redis cache
+connector. Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/database/blockstore.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="check the block store is helping"
+	prompt={`Tell me which Prometheus queries show whether eRPC's block store is actually
+saving upstream eth_getLogs calls for my networks (hit vs fill vs fallback vs skipped,
+and why requests are skipped), and what to change in my eRPC config if most requests
+are skipped. Reference:
+https://docs.erpc.cloud/config/database/blockstore.llms.txt`}
+/>
 
 <AISection>
 
+## How it works
+
+For an eligible `eth_getLogs` (see edge case 1), `Network.Forward` calls `tryServeLogsFill` before multiplexing and the ordinary JSON-RPC cache (<SourceLink file="erpc/networks.go" lines="1858-1865" />, <SourceLink file="erpc/logs_fill.go" lines="121-191" />). `LogsFiller.Serve` (<SourceLink file="blockstore/logsfill.go" />):
+
+1. Reads one entry per height of `[fromBlock, toBlock]` from the store. Each entry is that block's complete, unfiltered log list (an empty list for blocks without logs) plus the id of the upstream response that produced it.
+2. If every height is present and the entries are coherent (edge case 4), filters them locally and returns (`outcome="hit"`).
+3. Otherwise makes one unfiltered `eth_getLogs{fromBlock,toBlock}` through the normal network path, splits it per height, stores the entries and answers from them (`outcome="fill"`). Concurrent misses of the same range coalesce (edge cases 5 and 6).
+4. On any failure the client's original request is forwarded unchanged (`outcome="fallback"`).
+
 ## Config schema (`projects[].networks[].evm.blockStore`)
 
-Defaults from `EvmBlockStoreConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="57-98" />), called by `EvmNetworkConfig.SetDefaults` (<SourceLink file="common/defaults.go" lines="2570-2572" />).
+Defaults from `EvmBlockStoreConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="50-77" />), called by `EvmNetworkConfig.SetDefaults` (<SourceLink file="common/defaults.go" lines="2570-2570" />). Bounds from `Validate` (<SourceLink file="common/config_blockstore.go" lines="79-108" />), which only runs when `enabled: true`.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | Opt-in. |
-| `connectorId` | — (required) | Id of a `driver: redis` connector in `database.evmJsonRpcCache.connectors`. Validated at config load (`ValidateConnector`); a missing or non-redis connector fails setup. Payload `Get`/`Set` and snapshot reads use the configured connector wrapper and its failsafes. Lease operations and token-fenced snapshot publication use the underlying Redis client; the connector owns that client's lifecycle and reconnects. |
-| `depth` | `128` (1..4096) | Canonical blocks retained. |
-| `maxBytes` | `256MB` | Total retained block+log bytes; oldest blocks dropped first (become misses). |
-| `maxBlockBytes` | `min(16MB, maxBytes)` | A block whose block+logs payload exceeds this is never cached. |
-| `maxPerTick` | `16` | Maximum number of missing block records fetched from upstream per refresh tick; cold prefill can span multiple polls. |
-| `concurrency` | `4` (1..64) | Maximum simultaneous header, Redis-read, and block/log hydration jobs per network on the lease holder. Also bounds the per-height store reads and writes of one `logsFill` request. |
-| `pollInterval` | `2s` | Head-cache lease holder discovers the latest height and refreshes the canonical snapshot at this interval. Followers check Redis for the shared snapshot; they do not poll upstream for the head cache while the fleet store is healthy. Independent EVM state pollers/probes still run per replica. |
-| `fetchTimeout` | `10s` | Timeout for each hydration or verification fetch. |
-| `maxLogsRange` | `depth` | Widest `eth_getLogs` range served from live or historical blockstore data. The network's `evm.getLogsMaxAllowedRange`, `getLogsMaxAllowedAddresses` and `getLogsMaxAllowedTopics` are checked first, so a request the network would reject is never answered from the blockstore. |
-| `maxStaleness` | `5 × pollInterval` | Maximum age of the shared canonical snapshot. Once stale, it cannot authorize an HTTP cache hit and WebSocket subscriptions close. |
-| `namespace` | `default` | Deployment isolation prefix. The effective namespace is combined with a SHA-256 fingerprint of the network's upstream set and effective cache settings. |
-| `historical.enabled` | `false` | Opt in to an independent cache for finalized historical data outside the live window. Full-block payloads and complete per-block logs are separate entries. |
-| `historical.ttl` | `1h` | TTL for historical block/log payloads and finalized height-to-hash index entries. Must be positive when historical caching is enabled. |
-| `logsFill.enabled` | `false` | Opt in to the small-range `eth_getLogs` fill. Independent of `enabled` and `historical.enabled`. Defaults from `EvmBlockStoreLogsFillConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="83-107" />). |
-| `logsFill.maxRange` | `10` (1..1000) | Widest `toBlock - fromBlock + 1` handled. Also capped by `evm.getLogsMaxAllowedRange` and the smallest upstream `getLogsAutoSplittingRangeThreshold`. |
-| `logsFill.finalizedTtl` | `1h` | TTL of per-block entries at or below the network's finalized height. |
-| `logsFill.unfinalizedTtl` | `0` = derived | TTL of per-block entries above the finalized height. `0` uses the network's estimated block time clamped to 2s..12s (2s while unknown). |
-| `logsFill.emptyTipGuard` | `2` (>= 1) | An unfinalized block with no logs is stored only when it is at least this many blocks below the network's latest head. |
-| `logsFill.memoryMaxBytes` | `64MB` (>= 1MB) | Per-network LRU bound when no `connectorId` is set. |
-| `logsFill.peerWait` | `1.5s` (0..1m) | With `connectorId` only: the longest a miss waits for another replica that holds the range's fill lock before fetching itself. `0` disables cross-replica coordination (per-replica singleflight only). Ignored for the in-memory store. |
+| `enabled` | `false` | Opt-in. Disabled leaves every request on the normal path. |
+| `connectorId` | empty | Optional id of a `driver: redis` connector in `database.evmJsonRpcCache.connectors`. Validated at config load (`ValidateConnector`); a missing or non-redis connector fails startup. Empty uses the per-replica in-memory store. |
+| `namespace` | `default` | Isolation prefix for stored entries. The effective scope also includes a SHA-256 fingerprint of the network's upstream/provider set, upstream and network defaults, integrity config and network config, so config changes never read entries written under another trust set. |
+| `maxRange` | `10` (1..1000) | Widest `toBlock - fromBlock + 1` handled. Further capped per request by `evm.getLogsMaxAllowedRange` and the smallest upstream `evm.getLogsAutoSplittingRangeThreshold`. |
+| `finalizedTtl` | `1h` (> 0) | TTL of entries at or below the network's finalized height. |
+| `unfinalizedTtl` | `0` = derived (>= 0) | TTL of entries above the finalized height. `0` uses the network's estimated block time clamped to 2s..12s, or 2s while unknown (<SourceLink file="erpc/logs_fill.go" lines="72-80" />). |
+| `emptyTipGuard` | `2` (>= 1) | An unfinalized height with no logs is stored only when it is at least this many blocks below the network's latest head (sampled before the fetch). |
+| `memoryMaxBytes` | `64MB` (>= 1MB) | Byte bound of the per-network in-memory LRU used when `connectorId` is empty. Ignored with a connector. |
+| `peerWait` | `1.5s` (0..1m) | With `connectorId` only: the longest a miss waits for another replica already filling the same range. `0` disables cross-replica coordination (per-replica coalescing only). |
+| `concurrency` | `4` (1..64) | Bounds simultaneous per-height store reads and writes for one request. |
 
-Historical block entries contain full transactions and do not include logs. Historical log entries contain a header and the complete unfiltered logs for that block. The finalized height-to-hash index is checked before either entry can be served, so stored data alone does not authorize a non-canonical answer. Historical ranges use the existing `blockStore.maxLogsRange` limit, not a second historical range knob. An `eth_getLogs` range is an all-or-miss read: one missing/expired/incomplete block causes a normal upstream fallback for the entire request.
-
-
-## What is served
-
-- `eth_getBlockByNumber` with an explicit hex number and boolean flag (`true` = full txs, `false` = tx hashes derived from the same record). Tags (`latest`, `finalized`, ...) always go through the normal path.
-- `eth_getBlockByHash`, only when the hash is canonical in the current shared snapshot and its immutable payload is present.
-- `eth_getLogs` with `blockHash`, or with hex `fromBlock`/`toBlock` where **every** block of the range is covered by the current shared snapshot and its payloads, and the span is <= `maxLogsRange`. Only `address`, `topics`, `blockHash`, `fromBlock`, `toBlock` members are accepted (`blockHash` together with `fromBlock`/`toBlock` goes upstream); addresses must be 20-byte and topics 32-byte hex, and topic matching follows geth (a filter with more topic positions than a log never matches it). Anything else goes upstream.
-- Requests with `useUpstream`, an integrity selector, `skipCacheRead`, or internal requests bypass the blockstore (they may target a different trust set). Integrity-selector requests also bypass the ordinary JSON-RPC cache and in-flight request multiplexing when the configured integrity module accepts per-request selection (`headerMode: profiles` or `headerMode: full`). Ignored selectors leave ordinary caching and multiplexing enabled.
+Fixed limits (not configurable, <SourceLink file="erpc/logs_fill.go" lines="19-27" />): one fill (upstream call plus store writes) times out after `10s`, and a single height whose log list exceeds `16MB` is answered but not stored.
 
 ## Edge cases & gotchas
 
-1. **No partial or unverified answers.** The lease holder may publish a complete contiguous newest suffix while cold-filling, or above an oversized/unusable block. A shared snapshot's optional `incomplete` marker indicates that older records remain unhydrated; a new lease holder uses it to continue cold-filling after takeover. Capacity-evicted and oversized suffix views are not marked incomplete. Followers serve only when the shared snapshot is fresh and the requested block or entire log range is covered by validated payloads. Any requested block that is missing, expired, evicted or oversized is a miss; HTTP follows normal forwarding. An empty log result is returned only when every block in the requested range is covered and none matched. Partial windows never create partial HTTP responses.
-2. **Record validation.** A block must contain a non-null `transactions` array; `[]` is a valid empty block, but an omitted or null field is rejected on both hydration and follower reads. A block is cached only when the logs list is non-null, log identities match the block and its transactions, log indexes strictly increase, no log is removed, and the bloom recomputed from returned logs matches `logsBloom`. Bloom mismatch rejects the record, including an empty response for a nonzero bloom. Bloom equality is not proof of completeness: omitted logs that contribute no new bloom bits can remain undetected. Complete log responses still depend on the configured upstream trust set.
-3. **Reorgs.** The lease holder discovers its live tip and verifies the configured window, including every parent-hash link, before publishing a changed canonical snapshot. When the tip advances and the new headers chain by parent hash onto the last verified header, only the new heights are fetched; the parent link re-proves the retained headers. Any break in that link or a same-height hash change refetches the whole window. If the live tip drops to a lower height whose hash matches the retained view, the view is trimmed to that tip and published; blocks above it stop being served. Subscriptions close rather than emit removed logs, because a lagging upstream observation cannot establish that those blocks were orphaned. This applies to lease holders and followers. A lower tip with a different hash refetches the whole window. A failed, null or malformed header does not establish a new view. Reorgs invalidate the previous view; a reorg beyond the retained window requires rebuilding it. Followers consume the published canonical snapshot and validate its records rather than checking headers independently against upstream.
-4. **Fleet coordination and trust scope.** A token-fenced Redis lease selects one head-cache refresher per scope: trust fingerprint, configured namespace, project and network. The holder verifies the canonical window, hydrates missing records and publishes a snapshot only after all referenced immutable payloads are present. A holder whose refresh or publish fails on 3 consecutive ticks releases the lease, so a replica with a broken upstream path cannot keep leadership while publishing nothing; a healthy replica takes over on its next tick. Followers validate the snapshot and hash-addressed payloads from Redis and do not make head-cache-origin upstream calls while Redis and the snapshot remain healthy. The fingerprint includes upstream/provider configuration, effective network forwarding settings and effective head-cache settings such as `depth` and `maxBytes`; different settings use separate lease and snapshot scopes. This does not stop independent EVM state pollers, probes, or ordinary HTTP misses from reaching upstreams on each replica.
-5. **Redis loss or stale state.** With fleet coordination, lease/snapshot errors, a missing or stale snapshot, or a missing/invalid payload required to install a snapshot invalidate the local view. A transient payload transport/read timeout may retain the previous fresh view only when the new snapshot overlaps it, agrees at every overlapping height and is not behind it. The failed tick does not extend freshness or emit partial events; retries must succeed before the previous leader timestamp reaches `maxStaleness`. Missing keys, corrupt payloads, Redis server/data errors and conflicting snapshots still fail closed. A valid `incomplete` snapshot serves its complete suffix, while requests outside that suffix miss. HTTP cache misses proceed through normal forwarding. Redis payloads alone never authorize a hit without a valid snapshot.
-6. **Hydration traffic** goes through the normal network path (selection policy, failsafe) as internal JSON-RPC requests with explicit IDs while a replica holds the fleet lease. Hydration responses are not written into the ordinary [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache). Followers do not hydrate from upstream while using a healthy shared snapshot. Independent state pollers and probes remain per replica.
-7. A block whose full-block response omits `logsBloom` or whose log fields are non-standard is not cached. The cache can serve a complete newer suffix above a block rejected for exceeding `maxBlockBytes`; requests that cross or target the missing block go upstream, and WebSocket subscriptions close if the missing height creates an event gap.
-8. **Subscription gaps fail closed.** Cold-filling older records or retaining a suffix above an oversized block does not close a subscription when its next event remains contiguous with the previous view. Missing added/removed records or skipped heights close subscriptions rather than emit a partial event. Clients must reconnect/resubscribe and recover their own missed range.
-9. **Connector lifecycle and follower reuse.** Payload `Get`/`Set` and snapshot reads use the configured connector wrapper. The blockstore accesses the underlying Redis client only for lease operations and token-fenced snapshot publication; the connector owns its lifecycle and the blockstore does not close it. Followers validate newly loaded records, but reuse immutable records already validated in the local view when their height, hash and parent match the accepted snapshot. This avoids repeated full-block/log parsing and bloom reconstruction on unchanged ticks. Freshness is still bounded by the leader's snapshot timestamp, not by the time the follower reads it. Lease/snapshot errors fail closed; the narrow transient payload-read exception is described in edge case 5.
-10. **Exact input semantics.** Addresses require 20-byte hex and topics/hashes require 32-byte hex. A trailing wildcard topic still requires that topic position to exist. Invalid filters, mixed blockHash/range selectors, unknown members and directed requests bypass local answers.
-11. **Memory sizing.** `maxBytes` applies per enabled network per replica, not to the whole process. The default `256MB` is 256 MiB (`256 << 20`): 32 enabled networks can retain about 8 GiB of cached data per replica alone. Budget separately for Go/object overhead, in-flight hydration and serialization, other caches, and Redis storage. Tune `maxBytes`, `depth` and container/pod memory limits for the enabled network count.
-12. **Fork compatibility.** Configs written for the unmerged fork branch must replace `mode`/`redis` with `connectorId` and drop `headSource`/`servedTipMaxAge`. Those keys no longer exist.
-13. **Store retention.** Redis payloads expire by TTL and may outlive a replica's local canonical window. The lease holder refreshes each current payload at half its TTL, rather than rewriting unchanged records every poll. `depth` and `maxBytes` bound local cache use, not total fleet Redis storage. Set Redis `maxmemory` and an eviction policy appropriate for the deployment.
-14. **Historical data is independent of the moving live window.** `historical.enabled` defaults to false. Historical-only configurations still require the Redis connector and validate the shared payload, range, concurrency and fetch-timeout bounds; live-only polling and staleness settings are not required. When enabled, full-block payloads and complete per-block logs are stored independently, along with a finalized height-to-hash index. Reads are constrained to the current corroborated finalized height and indexed canonical hash. If a fresh live window overlaps the indexed height with a different hash, historical reads miss and delete the stale height index, without an upstream read-path call. Unknown finality, an absent index entry, or an unavailable payload is a miss and follows ordinary cache/upstream fallthrough. Entries expire after `historical.ttl`. Historical log-range reads require every block's complete logs and return no partial answer; a miss or a range wider than existing `blockStore.maxLogsRange` falls back to the normal whole-range upstream path. Historical storage does not replace or alter live-window hydration, freshness, or fleet lease behavior.
-15. **Historical traffic remains distinct from live fleet behavior.** The historical cache uses the same configured Redis connector but a separate namespace. It does not make followers into live-window refreshers and does not suppress normal HTTP upstream forwarding when historical data is absent or invalid.
-16. **Historical warming skips stored heights.** Before fetching, a warm reads the finalized height index and payload for that height. A valid stored entry costs Redis reads only and makes no upstream calls, so repeating a warmed request does not repeat upstream work. A missing, expired or invalid entry is refetched and replaced. A range warm that times out keeps the heights it already stored, so the next request resumes instead of starting over.
-
-17. **Logs fill eligibility.** `logsFill` handles only a single filter object with hex `fromBlock`/`toBlock` (`to >= from`), optional `address`/`topics`, no `blockHash`, a span within the effective `maxRange`, and `toBlock` at or below the network's latest head. An unknown head, tags, other members, directed requests (`useUpstream`, integrity selector, any `skipCacheRead` value including connector-ID patterns (an explicit `"false"` does not bypass), internal), split sub-requests, and requests exceeding `getLogsMaxAllowedAddresses`/`getLogsMaxAllowedTopics` take the normal path untouched. Order: live/historical blockstore first, then the logs fill, then the ordinary cache and upstream.
-18. **One upstream call per miss.** If any height in the range is missing, the fill makes one unfiltered `eth_getLogs` for the whole requested range through the normal network path (selection, failsafe, retries) with ordinary cache read and write bypassed. Concurrent fills of the same `(from, to)` coalesce into one call per replica (singleflight); followers are served from the same result. With `connectorId` and `peerWait > 0`, replicas also coalesce across the fleet, see edge case 23. The client's filtered request is never also sent upstream unless the fill fails.
-19. **Fallback never worsens behavior.** An upstream error, a null/non-array result, a log outside the range, two block hashes at one height, a duplicate `logIndex`, or any `removed: true` log stores nothing and forwards the client's original request as if the fill were disabled.
-20. **Reorg safety.** Entries are keyed by height and overwritten by each fill, so a refill after a reorg replaces the old hash. Unfinalized entries live about one block time, so a reorged height can be served stale for at most that long. Heights with logs are self-identifying (they carry `blockHash`); an empty height carries no identity, and a lagging upstream can report a block it has not imported as empty, so unfinalized empty heights within `emptyTipGuard` blocks of the head (sampled before the fetch) are answered but not stored. Finalized heights use `finalizedTtl`.
-21. **Response shape.** Results are the upstream's log objects byte-for-byte, ordered by `(blockNumber, logIndex)` ascending; no match is `[]`, never `null`. Address and topic matching follow geth semantics as in edge case 10.
-22. **Size.** An unfiltered range on a busy chain can be many times larger than any filtered answer, which is why `maxRange` is small. A single height larger than `maxBlockBytes` is answered but not stored.
-23. **Cross-replica fill lock.** With `connectorId` set and `peerWait > 0`, a replica's single fill for `(from, to)` first takes a Redis lock `<partition>:fill-lock/<from>-<to>` (`SET NX PX`, random token, TTL `min(fetchTimeout, 10s)`). The holder re-checks the store (a peer may just have finished), fetches, stores, then releases with a compare-and-delete script that only removes its own token. A replica that finds the lock held polls it every 50ms; releasing is the completion signal because the holder stores before it releases. When the lock disappears it reads the per-block entries: complete entries are served (`outcome="hit"`, `reason="peer_fill"`); any missing height (the peer hit the empty-tip guard, an oversized height, `unfinalizedTtl` expiry, or the peer's fetch failed) triggers an immediate local fetch without the lock, so near-tip waits end with the peer rather than at `peerWait`. If the lock is still held after `peerWait`, or any lock or poll Redis error occurs, the replica fetches locally without the lock. A request never fails because of the lock, and correctness never depends on the peer: a crashed holder costs at most `peerWait` of added latency until its lock expires.
-
+1. **Eligibility.** Only a single filter object with hex `fromBlock`/`toBlock` (no leading zeros, `to >= from`), optional `address`/`topics`, no `blockHash`, no other members, a span within the effective `maxRange`, and `toBlock` at or below the network's latest head is handled (<SourceLink file="erpc/logs_fill.go" lines="193-229" />). Tags (`latest`, `finalized`, …), an unknown head, split sub-requests and composite requests take the normal path untouched. Addresses must be 20-byte and topics 32-byte hex, otherwise the request goes upstream for normal validation (`TestHttp_LogsFill_MalformedFiltersBypass`).
+2. **Network hard limits win.** A request exceeding `getLogsMaxAllowedRange`, `getLogsMaxAllowedAddresses` or `getLogsMaxAllowedTopics` is never answered locally; it reaches the normal path and gets the configured error (`exceedsGetLogsLimits`, <SourceLink file="erpc/blockstore_integration.go" lines="35-69" />, `TestHttp_LogsFill_HonorsNetworkHardLimits`).
+3. **Directed requests bypass.** `useUpstream`, an integrity selector, internal requests, and any `skipCacheRead` value (including connector-ID patterns such as `redis-*`, because the block store sits in front of every connector) skip the block store with `reason="directive"`. An explicit `skipCacheRead: "false"` (any case) means no skip and is still served (`blockStoreDirected`, <SourceLink file="erpc/blockstore_integration.go" lines="21-34" />, `TestBlockStoreDirected_SkipCacheReadSemantics`).
+4. **Reorg coherence.** Entries are keyed by height and overwritten by each fill, so a refill after a reorg replaces the old data. Every entry carries the id of the upstream response that filled it. A hit spanning unfinalized heights is served only when all of them came from one fill; entries from different fills may straddle a reorg (and an empty height carries no block hash to check), so the range is refilled instead. Finalized heights cannot reorg and may mix freely. Unfinalized entries live about one block time, bounding how long a reorged height can be served stale (`TestLogsFill_UnfinalizedHitRequiresOneFill`, `TestLogsFill_MixedPeerEntriesAreRefilled`).
+5. **One upstream call per miss.** The fill is one unfiltered `eth_getLogs` for the whole requested range. Concurrent misses of the same `(from, to)` coalesce into one call per replica (singleflight); a cancelled first caller does not fail the others. The client's filtered request is never also sent upstream unless the fill fails (`TestHttp_LogsFill_ConcurrentRequestsCoalesce`).
+6. **Cross-replica fill lock.** With `connectorId` and `peerWait > 0`, the replica first takes a Redis lock `<partition>:fill-lock/<from>-<to>` (`SET NX PX`, random token, TTL `10s`). The holder re-checks the store (a peer may just have finished), fetches, stores, then releases with a compare-and-delete that only removes its own token. Other replicas poll the lock every 50ms; release is the completion signal because the holder stores before it releases. Complete coherent entries are then served (`outcome="hit"`, `reason="peer_fill"`); any missing height (empty-tip guard, oversized height, expiry, failed peer fetch) triggers an immediate local fetch. A lock still held after `peerWait`, or any Redis lock/poll error, also falls back to a local fetch. A request never fails because of the lock (`TestHttp_LogsFill_ReplicasShareOneUpstreamCallViaRedis`, `TestLogsFill_LockErrorsFailOpen`).
+7. **The fill fetch is internal.** It runs through normal selection, failsafe, retries and integrity with `IsInternal`, `SkipCacheRead` and `RetryEmpty` directives, so `matchRequestKind: internal` failsafe policies apply to it. It is never multiplexed with an identical client request, never served from the block store itself, and never written into the ordinary [EVM JSON-RPC cache](/config/database/evm-json-rpc-cache) (<SourceLink file="erpc/logs_fill.go" lines="82-115" />, `TestHttp_LogsFill_UnfilteredFetchIsInternal`, `TestHttp_LogsFill_InternalFetchNotMultiplexedWithClients`).
+8. **Fallback never worsens behavior.** An upstream error, a null or non-array result, a log outside the range, two block hashes at one height, an invalid, negative or duplicate `logIndex`, or any `removed: true` log stores nothing and forwards the client's original request (`TestHttp_LogsFill_SkipsAndFallbacks`, `TestLogsFill_NegativeLogIndexRejected`).
+9. **Empty tip heights.** A lagging upstream can report a block it has not imported yet as empty. Unfinalized empty heights within `emptyTipGuard` blocks of the head are answered but not stored.
+10. **Response shape.** Results are the upstream's log objects byte-for-byte, ordered by block then `logIndex`; no match is `[]`, never `null`. Topic matching follows geth: a filter with more topic positions than a log never matches it, even when the extra positions are wildcards (`TestLogFilterGethSemantics`). `hit` responses are marked `fromCache`.
+11. **Store errors are misses.** A Redis read error, a corrupt entry or an entry for the wrong height counts as a miss and triggers a fill; Redis write errors are ignored (`TestLogsFill_StoreErrorIsMiss`). Redis keys are `blockstore:v1:<sha256(scope)>:logs/<height>` with TTLs from `finalizedTtl`/`unfinalizedTtl`.
+12. **Memory sizing.** `memoryMaxBytes` applies per enabled network per replica. Set Redis `maxmemory` and an eviction policy appropriate for the deployment when using a connector.
+13. **Migrating from the nested `logsFill` key.** Earlier builds of this feature used `blockStore.logsFill.*` alongside live-window and historical keys (`depth`, `pollInterval`, `historical`, …). Those keys no longer exist: strict config decoding rejects them at load, so move `logsFill.*` fields up one level and set `blockStore.enabled: true` (`TestLoadConfig_BlockStoreFlatKeysRoundTrip`).
 
 ## Observability
 
-`erpc_blockstore_fresh{project,network}` is 1 when this process currently has a fresh verified live-window view, and 0 when it has no view or the view is stale. It is set after each refresh tick and cleared on stop. `erpc_blockstore_refresh_total{project,network,outcome}` counts live-window refresh ticks exactly once, with `outcome` equal to `fresh` when a fresh view exists, `stale` when no fresh view exists without a refresh error, or `error` when the refresh returned an error. `erpc_blockstore_hits_total{project,network,category}` counts requests served from the blockstore, live or historical. `category` is one of `eth_getBlockByNumber`, `eth_getBlockByHash`, or `eth_getLogs`. These are per-process metrics; a fleet may therefore expose one freshness series per replica and network. Cache hits are marked `fromCache` and set `blockstore.hit=true` on the `Network.Forward` span. A `BlockStore.Tick` detail span records refresh errors when detailed tracing is enabled. Historical hits use the same hit counter; misses and normal upstream fallbacks do not increment it or change the live freshness/refresh metrics. With Redis fleet coordination, one lease holder performs live-window polling and hydration per scope; independent EVM state pollers/probes still run per replica, and ordinary HTTP misses can still reach upstream.
+`erpc_blockstore_logs_fill_total{project,network,outcome,reason}` (<SourceLink file="telemetry/metrics.go" />) counts one decision per eligible-method request:
 
+| `outcome` | `reason` | Meaning |
+|---|---|---|
+| `hit` | `ok` | Every height already stored; answered locally. |
+| `hit` | `peer_fill` | Served from another replica's fill after waiting on its lock. |
+| `fill` | `ok` | Served after one unfiltered upstream call. |
+| `fill` | `peer_timeout`, `peer_incomplete`, `lock_error` | Fetched locally after cross-replica coordination: peer still held the lock after `peerWait`, peer released without storing every height, or a Redis lock/poll error. |
+| `fallback` | `fetch_error`, `parse_error`, `removed_logs`, `canceled`, `encode_error` | The fill failed; the original request was forwarded. |
+| `skipped` | `params`, `not_explicit_range`, `invalid_range`, `filter`, `directive`, `limit`, `range_too_large`, `head_unknown`, `above_head` | Not eligible; forwarded unchanged. |
 
-`erpc_blockstore_logs_fill_total{project,network,outcome,reason}` counts logs-fill decisions per request. `outcome` is `hit` (all heights already stored), `fill` (served after one unfiltered upstream call), `fallback` (fill failed: `reason` is `fetch_error`, `parse_error`, `removed_logs`, `canceled` or `encode_error`; the original request is forwarded) or `skipped` (not eligible: `reason` is `params`, `not_explicit_range`, `invalid_range`, `filter`, `directive`, `limit`, `range_too_large`, `head_unknown` or `above_head`). `hit` and `fill` use `reason="ok"` except under the cross-replica lock (edge case 23): `hit` with `reason="peer_fill"` was served from another replica's fill; `fill` with `reason="peer_timeout"` (peer still holding after `peerWait`), `peer_incomplete` (peer released but some heights were not stored) or `lock_error` (Redis lock/poll error, fail-open) fetched locally after that coordination step. Served requests set `blockstore.logs_fill=true` on the `Network.Forward` span; `hit` responses are marked `fromCache`. The internal unfiltered call is a normal `eth_getLogs` in upstream request metrics.
+Served requests set `blockstore.logs_fill=true` on the `Network.Forward` span. The internal unfiltered call appears as a normal `eth_getLogs` in upstream request metrics.
 
 </AISection>
