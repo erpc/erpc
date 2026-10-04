@@ -10,9 +10,10 @@ import { LLMsTxtLink, AISection, SourceLink } from "../../components";
 # WebSocket
 
 Connect to the same URL used for HTTP to subscribe to `newHeads` and `logs`.
-With Redis enabled, one lease holder per head-cache scope polls upstream and
-publishes a canonical snapshot with immutable payloads. Followers stream from that
-snapshot without head-cache polling upstream while Redis is healthy. Reorgs emit
+While at least one subscriber exists anywhere in the fleet, one lease holder per
+head-cache scope follows new block headers and publishes a canonical snapshot with
+immutable payloads; with no subscribers, nothing follows the chain. Followers stream
+from that snapshot without head-cache polling upstream while Redis is healthy. Reorgs emit
 `removed: true` logs. If Redis or shared state is unavailable or stale, active
 subscriptions close; a complete cold-fill suffix can deliver new events, but a gap
 closes the stream. Ordinary HTTP cache misses follow normal routing. Independent
@@ -49,7 +50,7 @@ projects:
 
 ## Config schema (`server.webSocket`)
 
-Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="274-296" />), called from <SourceLink file="common/defaults.go" lines="793" />.
+Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="277-299" />), called from <SourceLink file="common/defaults.go" lines="793" />.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -65,7 +66,7 @@ Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/conf
 ## Behavior
 
 - **Contract.** Only `eth_subscribe` and `eth_unsubscribe` are accepted. Any other method gets `-32601` (use HTTP). A batch (top-level JSON array) gets a single `-32600`. Unparsable JSON gets `-32700`, and valid JSON that is not a request object gets `-32600`. Frames are handled sequentially per connection.
-- **Head cache required.** The upgrade gets HTTP 503 unless the network has an enabled head cache (`evm.blockStore` with a Redis `connectorId`). Notifications come from the shared canonical header window. eRPC never proxies upstream WebSockets. A healthy lease holder polls headers (one per new block); followers do not. `newHeads` is rendered from headers alone and never fetches block bodies or logs. While at least one `logs` subscription is open on a replica, each new block's logs are loaded once (Redis first, else one `eth_getLogs{blockHash}` shared fleet-wide) for all its subscribers; with no `logs` subscribers no logs are fetched.
+- **Head cache required.** The upgrade gets HTTP 503 unless the network has an enabled head cache (`evm.blockStore` with a Redis `connectorId`). Notifications come from the shared canonical header window. eRPC never proxies upstream WebSockets. Header following runs only while a subscription exists somewhere in the fleet: a replica holding subscriptions renews a Redis presence mark every `pollInterval` (TTL `3 × pollInterval`), and while it is present a healthy lease holder fetches one header per new block (through the response cache); followers do not. When the last subscription closes and the mark expires, following stops and no headers are fetched (see the [Blockstore](/config/database/blockstore) page, edge case 27). A first subscription starts following immediately and resumes from the retained window or headers clients already fetched. `newHeads` is rendered from headers alone and never fetches block bodies or logs. While at least one `logs` subscription is open on a replica, each new block's logs are loaded once (Redis first, else one `eth_getLogs{blockHash}` shared fleet-wide) for all its subscribers; with no `logs` subscribers no logs are fetched.
 - **Routing.** Same path and domain aliasing as HTTP. A connection is bound to one project and network.
 - **Auth.** Credentials (`?secret=`, `X-ERPC-Secret-Token`, `Authorization`) are taken from the upgrade request. They are checked at upgrade (401 on failure) and again for every message through the project's consumer auth. `ignoreMethods`/`allowMethods` apply.
 - **Origin.** Browsers do not apply CORS to WebSockets. When the project has `cors.allowedOrigins`, an upgrade with a non-matching `Origin` gets 403.
@@ -84,6 +85,7 @@ Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/conf
 7. **Keepalive and re-auth.** Every `pingInterval` the server pings (a missing pong within `max(writeTimeout, pingInterval)`, 30s by default, closes with 1008) and re-checks the upgrade credentials through consumer auth, consuming one auth rate-limit permit when the strategy has a `rateLimitBudget`. A revoked key or expired JWT stops streaming within about one `pingInterval`, closing with 1008 `unauthorized`.
 8. **Server timeouts.** Upgraded connections are hijacked, so they outlive `server.writeTimeout` (`TestWs_OutlivesHTTPWriteTimeout`).
 9. **Fork compatibility.** Configs written for the unmerged fork branch must drop `server.webSocket.maxInflightPerConnection` and `maxBatchSize`. Those keys no longer exist.
+10. **First subscription on an idle chain.** With no prior subscribers there is no followed view. A new subscription returns its id immediately and receives events from the first verified block onward, once following has started (normally the next tick). If no verified view appears within `leaseTTL + maxStaleness`, the subscription closes like any stale view (`TestPull_FollowingOnlyWithSubscribers`, `TestHttp_BlockStore_FollowingOnlyWhileSubscribed`).
 
 ## Observability
 

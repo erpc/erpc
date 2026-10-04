@@ -5,9 +5,10 @@ import (
 	"time"
 )
 
-// EvmBlockStoreConfig configures the head-driven block/log cache. The live
-// window verifies only headers in the background; block bodies and logs are
-// fetched on demand.
+// EvmBlockStoreConfig configures the block/log cache. The live window is
+// built from block and log responses served to clients (pull); headers are
+// followed in the background only while a WebSocket subscriber exists in the
+// fleet. Block bodies and logs are fetched on demand.
 type EvmBlockStoreConfig struct {
 	// Enabled turns the cache on. Default false.
 	Enabled bool `yaml:"enabled,omitempty" json:"enabled"`
@@ -29,11 +30,13 @@ type EvmBlockStoreConfig struct {
 	// Concurrency bounds simultaneous header fetches and per-height log
 	// loads of one request per network. Default 4.
 	Concurrency int `yaml:"concurrency,omitempty" json:"concurrency,omitempty"`
-	// PollInterval is how often the lease holder checks the in-memory latest
-	// block and fetches headers for new heights (a state-poller advance also
-	// triggers an early check). An unchanged tip costs no upstream call; a
-	// replaced tip is detected when the next block does not link to it, or
-	// when an on-demand body fetch disagrees with the window. Default 2s.
+	// PollInterval is the tick period. While a WebSocket subscriber exists
+	// in the fleet, the lease holder checks the in-memory latest block each
+	// tick and fetches headers for new heights (a state-poller advance also
+	// triggers an early check); without subscribers a tick makes no upstream
+	// call. An unchanged tip costs no upstream call; a replaced tip is
+	// detected when the next block does not link to it, or when an on-demand
+	// body fetch disagrees with the window. Default 2s.
 	PollInterval Duration `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty" tstype:"Duration"`
 	// FetchTimeout bounds each header, block or logs fetch. Default 10s.
 	FetchTimeout Duration `yaml:"fetchTimeout,omitempty" json:"fetchTimeout,omitempty" tstype:"Duration"`
