@@ -403,6 +403,11 @@ type GrpcConnectorConfig struct {
 	// connection, at the cost of more open connections per server. When unset
 	// (0) a built-in default is used.
 	PoolSize int `yaml:"poolSize,omitempty" json:"poolSize"`
+
+	// HealthCheckService is a grpc.health.v1 service name. When set, each
+	// connection watches it on every resolved address and sends requests only
+	// to addresses reporting SERVING. Empty (default) disables health checking.
+	HealthCheckService string `yaml:"healthCheckService,omitempty" json:"healthCheckService"`
 }
 
 type MemoryConnectorConfig struct {
@@ -709,6 +714,7 @@ type NetworkDefaults struct {
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
 	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm" tstype:"TsSvmNetworkConfigForDefaults"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+	CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -742,6 +748,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
 		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
 		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
+		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
 	}
 
 	var old oldNetworkDefaults
@@ -753,6 +760,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 
 	// Convert old format to new format
 	n.RateLimitBudget = old.RateLimitBudget
+	n.CacheKeySuffix = old.CacheKeySuffix
 	n.SelectionPolicy = old.SelectionPolicy
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Evm = old.Evm
@@ -1287,6 +1295,9 @@ type GrpcUpstreamConfig struct {
 	// upstream, selected round-robin per request. See GrpcConnectorConfig.PoolSize.
 	// When unset (0) a built-in default is used.
 	PoolSize int `yaml:"poolSize,omitempty" json:"poolSize"`
+
+	// HealthCheckService: see GrpcConnectorConfig.HealthCheckService.
+	HealthCheckService string `yaml:"healthCheckService,omitempty" json:"healthCheckService"`
 }
 
 func (c *GrpcUpstreamConfig) Copy() *GrpcUpstreamConfig {
@@ -2260,6 +2271,10 @@ type NetworkConfig struct {
 	// Integrity overrides the project-wide data-integrity configuration for this
 	// network. Merges over the project block (network wins).
 	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
+	// CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
+	// key as {networkId}:{suffix}:{blockRef} so two networks that share a
+	// chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+	CacheKeySuffix string `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2330,6 +2345,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		Alias             string                   `yaml:"alias,omitempty"`
 		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
 		StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty"`
+		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
 	}
 
 	var old oldNetworkConfig
@@ -2349,6 +2365,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.Alias = old.Alias
 	n.Methods = old.Methods
 	n.StaticResponses = old.StaticResponses
+	n.CacheKeySuffix = old.CacheKeySuffix
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -3147,6 +3164,39 @@ type RateLimitStoreConfig struct {
 	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
 	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
 	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
+}
+
+// CachePartitionKey builds the JSON-RPC cache partition key.
+// Empty suffix keeps {networkId}:{ref}; a set suffix yields {networkId}:{suffix}:{ref}.
+// ':' and '\' inside suffix and ref are backslash-escaped so those segments
+// cannot be re-split into a different pair — an unsuffixed ref "systx:foo"
+// must not share a key with suffix "systx" and ref "foo". Segments without
+// those bytes are unchanged, including ordinary block numbers and the
+// reverse-index wildcard "*".
+func CachePartitionKey(networkId, suffix, ref string) string {
+	ref = escapePartitionSegment(ref)
+	if suffix == "" {
+		return networkId + ":" + ref
+	}
+	return networkId + ":" + escapePartitionSegment(suffix) + ":" + ref
+}
+
+// escapePartitionSegment backslash-escapes ':' and '\'. Other bytes are copied
+// unchanged so historical keys stay put.
+func escapePartitionSegment(s string) string {
+	if !strings.ContainsAny(s, `:\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 1)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\', ':':
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func (c *NetworkConfig) NetworkId() string {

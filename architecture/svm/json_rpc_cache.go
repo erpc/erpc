@@ -357,7 +357,8 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				connector.Id(), policy.String(), ttlLabel,
 			).Add(float64(len(valueToStore)))
 		}
-		if err := connector.Set(ctx, groupKey, requestKey, valueToStore, ttl); err != nil {
+		setCtx := data.WithReverseIndex(ctx, req.NetworkId(), req.CacheKeySuffix())
+		if err := connector.Set(setCtx, groupKey, requestKey, valueToStore, ttl); err != nil {
 			telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 				c.projectId, req.NetworkLabel(), rpcReq.Method,
 				connector.Id(), policy.String(), ttlLabel,
@@ -450,7 +451,7 @@ func (c *SvmJsonRpcCache) generateKeys(req *common.NormalizedRequest, rpcReq *co
 	// not lock, so the key derivation runs on the whole params slice unlocked. That
 	// mirrors evm.generateKeysForJsonRpcRequest which also takes the caller's
 	// locking for granted.
-	return fmt.Sprintf("%s:%s", req.NetworkId(), slotRef), requestKey, nil
+	return common.CachePartitionKey(req.NetworkId(), req.CacheKeySuffix(), slotRef), requestKey, nil
 }
 
 // svmRequestKey derives the per-request cache key for SVM.

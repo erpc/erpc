@@ -122,8 +122,8 @@ func TestConsensusWithExhaustedParticipants_StillReachesThreshold(t *testing.T) 
 		}
 		group.Count++
 		group.Results = append(group.Results, r)
-		if r.Err != nil && group.FirstError == nil {
-			group.FirstError = r.Err
+		if r.Err != nil && group.RepresentativeError == nil {
+			group.RepresentativeError = r.Err
 		}
 	}
 
