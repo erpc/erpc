@@ -123,9 +123,66 @@ func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics i
 	return jrq, nil
 }
 
-// projectPreForward_eth_getLogs records requested block-range size distribution
-// at the project level before cache and upstream selection.
-// It does not modify the request or short-circuit; always returns (false, nil, nil).
+// getLogsFilterCounts returns the address count and the topic0 count of an
+// eth_getLogs filter, the two dimensions the network hard limits cap. Only
+// topic0 is counted: an array at topics[0] counts its length, a non-nil value
+// counts as 1. The caller must hold the request's read lock.
+func getLogsFilterCounts(filter map[string]interface{}) (addrCount, topicCount int64) {
+	if addrs, ok := filter["address"].([]interface{}); ok {
+		addrCount = int64(len(addrs))
+	}
+	if tps, ok := filter["topics"].([]interface{}); ok && len(tps) > 0 {
+		if t0arr, ok := tps[0].([]interface{}); ok {
+			topicCount = int64(len(t0arr))
+		} else if tps[0] != nil {
+			topicCount = 1
+		}
+	}
+	return addrCount, topicCount
+}
+
+// checkGetLogsHardLimits resolves an eth_getLogs range and enforces the
+// network's hard limits (getLogsMaxAllowedRange/Addresses/Topics). They depend
+// only on network config, never on the selected upstreams, so the project hook
+// can enforce them before the cache read: a request the network will refuse
+// must not cost a cache connector (e.g. one wide Prism scan) first.
+//
+// resolved is false when either bound cannot be resolved to a block number
+// (unresolvable tag, no state yet); no limit is checked then and the request
+// passes through, as it always has.
+func checkGetLogsHardLimits(ctx context.Context, n common.Network, fbStr, tbStr string, addrCount, topicCount int64) (fromBlock, toBlock int64, resolved bool, err error) {
+	_, fromBlock = resolveBlockTagForGetLogs(ctx, n, fbStr)
+	_, toBlock = resolveBlockTagForGetLogs(ctx, n, tbStr)
+	if fromBlock == 0 || toBlock == 0 {
+		return fromBlock, toBlock, false, nil
+	}
+	if fromBlock > toBlock {
+		return fromBlock, toBlock, true, common.NewErrInvalidRequest(
+			errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")"),
+		)
+	}
+	ncfg := n.Config()
+	if ncfg == nil || ncfg.Evm == nil {
+		return fromBlock, toBlock, true, nil
+	}
+	requestRange := toBlock - fromBlock + 1
+	if maxRange := ncfg.Evm.GetLogsMaxAllowedRange; maxRange > 0 && requestRange > maxRange {
+		return fromBlock, toBlock, true, common.NewErrGetLogsExceededMaxAllowedRange(requestRange, maxRange)
+	}
+	if maxAddrs := ncfg.Evm.GetLogsMaxAllowedAddresses; maxAddrs > 0 && addrCount > maxAddrs {
+		return fromBlock, toBlock, true, common.NewErrGetLogsExceededMaxAllowedAddresses(addrCount, maxAddrs)
+	}
+	if maxTopics := ncfg.Evm.GetLogsMaxAllowedTopics; maxTopics > 0 && topicCount > maxTopics {
+		return fromBlock, toBlock, true, common.NewErrGetLogsExceededMaxAllowedTopics(topicCount, maxTopics)
+	}
+	return fromBlock, toBlock, true, nil
+}
+
+// projectPreForward_eth_getLogs runs at the project level, before the
+// multiplexer, the cache read and upstream selection. It records the requested
+// block-range size distribution and refuses requests that break the network's
+// hard limits (see checkGetLogsHardLimits), so an over-cap request never
+// reaches a cache connector. It never modifies the request.
 func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	if nq == nil || n == nil {
 		return false, nil, nil
@@ -152,11 +209,10 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 	// Extract block values (may be hex or tags like "latest")
 	fbStr, _ := filter["fromBlock"].(string)
 	tbStr, _ := filter["toBlock"].(string)
+	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
-	// Resolve block tags to numbers for metrics (hex or tags like "latest", "finalized")
-	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
-	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
+	fromBlock, toBlock, resolved, limitErr := checkGetLogsHardLimits(ctx, n, fbStr, tbStr, addrCount, topicCount)
 
 	if fromBlock > 0 && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
@@ -171,6 +227,11 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 			).
 			Observe(rangeSize)
 	}
+	// Derived sub-requests (splits, eth_query shims) are checked by their parent;
+	// keep them exempt here exactly as networkPreForward_eth_getLogs does.
+	if resolved && limitErr != nil && nq.ParentRequestId() == nil && !nq.IsCompositeRequest() {
+		return true, nil, limitErr
+	}
 	return false, nil, nil
 }
 
@@ -178,6 +239,9 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 // It must be called after upstreams have been selected for the request.
 // It returns (handled=true) when it produced a merged response without contacting an upstream
 // for the top-level request. Sub-requests will flow through normal Network.Forward.
+// The hard limits are re-checked here as a backstop for callers that reach
+// Network.Forward without the project hook; normally projectPreForward_eth_getLogs
+// has already refused an over-cap request before the cache read.
 func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []common.Upstream, nrq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	if nrq == nil || n == nil {
 		return false, nil, nil
@@ -212,55 +276,25 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 
 	fbStr, _ := filter["fromBlock"].(string)
 	tbStr, _ := filter["toBlock"].(string)
-
-	// Capture address/topics counts while under read lock
-	var addrCount, topicCount int64
-	if addrs, ok := filter["address"].([]interface{}); ok {
-		addrCount = int64(len(addrs))
-	}
-	// Only count topic0: if topics[0] is an array, count its length; if topics[0] is non-nil value, count as 1
-	if tps, ok := filter["topics"].([]interface{}); ok && len(tps) > 0 {
-		if t0arr, ok := tps[0].([]interface{}); ok {
-			topicCount = int64(len(t0arr))
-		} else if tps[0] != nil {
-			topicCount = 1
-		}
-	}
+	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
-	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.
-	// If tags cannot be resolved (e.g., "safe", "pending", or no state available),
-	// pass through to upstream without block range validation.
-	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
-	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
-
-	// If either block couldn't be resolved to a number, skip validation and pass to upstream
-	if fromBlock == 0 || toBlock == 0 {
+	// Resolve block tags (like "latest", "finalized") and enforce the hard limits.
+	// If either bound cannot be resolved (e.g., "safe", "pending", or no state
+	// available), pass through to upstream without validation or splitting.
+	fromBlock, toBlock, resolved, err := checkGetLogsHardLimits(ctx, n, fbStr, tbStr, addrCount, topicCount)
+	if !resolved {
 		return false, nil, nil
 	}
-
-	if fromBlock > toBlock {
-		return true, nil, common.NewErrInvalidRequest(
-			errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")"),
-		)
+	if err != nil {
+		return true, nil, err
 	}
 
 	ncfg := n.Config()
 	if ncfg == nil || ncfg.Evm == nil {
 		return false, nil, nil
 	}
-
-	// Enforce network-level hard limits first
 	requestRange := toBlock - fromBlock + 1
-	if maxRange := ncfg.Evm.GetLogsMaxAllowedRange; maxRange > 0 && requestRange > maxRange {
-		return true, nil, common.NewErrGetLogsExceededMaxAllowedRange(requestRange, maxRange)
-	}
-	if maxAddrs := ncfg.Evm.GetLogsMaxAllowedAddresses; maxAddrs > 0 && addrCount > maxAddrs {
-		return true, nil, common.NewErrGetLogsExceededMaxAllowedAddresses(addrCount, maxAddrs)
-	}
-	if maxTopics := ncfg.Evm.GetLogsMaxAllowedTopics; maxTopics > 0 && topicCount > maxTopics {
-		return true, nil, common.NewErrGetLogsExceededMaxAllowedTopics(topicCount, maxTopics)
-	}
 
 	// Compute effective auto-splitting threshold (min across upstreams)
 	effectiveThreshold := int64(0)
