@@ -68,12 +68,23 @@ func parseBlockHeader(raw json.RawMessage) (*rawBlock, int64, error) {
 
 // txHashesOf returns the transaction hashes of a full (or hash-only) block.
 // A missing or null transactions field is rejected: only [] proves an empty block.
+// A repeated hash is rejected too: a canonical block lists each transaction once,
+// and callers compare these sets, so a duplicate would let a body with an extra
+// (or missing) entry match a verified header.
 func txHashesOf(b *rawBlock) (map[string]struct{}, bool, error) {
 	if b.Transactions == nil {
 		return nil, false, fmt.Errorf("block missing transactions array")
 	}
 	out := make(map[string]struct{}, len(b.Transactions))
 	full := true
+	add := func(h string) error {
+		h = normHash(h)
+		if _, dup := out[h]; dup {
+			return fmt.Errorf("duplicate transaction %s", h)
+		}
+		out[h] = struct{}{}
+		return nil
+	}
 	for _, t := range b.Transactions {
 		t = bytes.TrimSpace(t)
 		if len(t) > 0 && t[0] == '"' {
@@ -82,7 +93,9 @@ func txHashesOf(b *rawBlock) (map[string]struct{}, bool, error) {
 			if err := json.Unmarshal(t, &h); err != nil {
 				return nil, false, err
 			}
-			out[normHash(h)] = struct{}{}
+			if err := add(h); err != nil {
+				return nil, false, err
+			}
 			continue
 		}
 		var tx struct {
@@ -94,7 +107,9 @@ func txHashesOf(b *rawBlock) (map[string]struct{}, bool, error) {
 		if tx.Hash == "" {
 			return nil, false, fmt.Errorf("transaction without hash")
 		}
-		out[normHash(tx.Hash)] = struct{}{}
+		if err := add(tx.Hash); err != nil {
+			return nil, false, err
+		}
 	}
 	return out, full, nil
 }
