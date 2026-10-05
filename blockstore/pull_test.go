@@ -397,3 +397,45 @@ func TestPull_FollowingResumesFromAdoptedHeaders(t *testing.T) {
 	head, _, _ = ch.counts()
 	require.Equal(t, 1, head)
 }
+
+// A held entry observed at a finalized height cannot be displaced by newer
+// conflicting evidence (a header, a parent link or a log's blockHash) while
+// its height is still at or below the finalized height: the evidence is
+// rejected, the entry keeps serving, and the window is marked suspect.
+func TestPull_FinalEntryNotDisplacedByConflictingEvidence(t *testing.T) {
+	ch := newFakeChain(20)
+	o := pullOpts()
+	o.Latest = ch.head
+	finalized := int64(16)
+	o.Finalized = func(context.Context) int64 { return finalized }
+	c := New(o, newMapStore(), ch, ch.head, nil)
+	c.AdoptBlock(ctxb(), fullBlock(t, ch, 14), true, true, false)
+	want := hashOf(14, "a")
+	rejected := c.Stats.Rejected.Load()
+
+	ch.blocks[14] = "b"
+	ch.blocks[15] = "b"
+	// Same-height conflict.
+	c.AdoptBlock(ctxb(), fullBlock(t, ch, 14), true, true, false)
+	// Child whose parent hash conflicts with the final entry.
+	c.AdoptBlock(ctxb(), fullBlock(t, ch, 15), true, true, false)
+	// A log's blockHash conflicting at the final height.
+	c.AdoptLogs(ctxb(), []*BlockLogs{{Number: 14, Hash: hashOf(14, "b"), Logs: json.RawMessage(`[]`)}})
+
+	rec, ok := c.BlockByNumber(ctxb(), 14, false)
+	require.True(t, ok, "the finalized entry keeps serving")
+	require.Contains(t, string(rec), normHash(want))
+	require.Equal(t, rejected+3, c.Stats.Rejected.Load())
+	require.True(t, c.suspect.Load(), "conflicting evidence marks the window suspect")
+	head, body, logs := ch.counts()
+	require.Zero(t, head+body+logs, "rejecting costs no upstream call")
+
+	// Once the height is above finalized again (finality regressed), newer
+	// evidence is a normal reorg.
+	finalized = 10
+	ch.blocks[14] = "c"
+	c.AdoptBlock(ctxb(), fullBlock(t, ch, 14), true, true, false)
+	rec, ok = c.BlockByNumber(ctxb(), 14, false)
+	require.True(t, ok)
+	require.Contains(t, string(rec), normHash(hashOf(14, "c")))
+}

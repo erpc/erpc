@@ -224,6 +224,12 @@ func (c *Cache) adoptLocked(h *header, at time.Time, latest, finalized int64, we
 	if weak && (e != nil || parentConflict || childConflict) {
 		return false, false
 	}
+	if (e != nil && c.finalConflictLocked(e, finalized)) ||
+		(parentConflict && c.finalConflictLocked(parent, finalized)) ||
+		(childConflict && c.finalConflictLocked(child, finalized)) {
+		c.rejectFinalConflictLocked(h.n, h.b.Hash)
+		return false, false
+	}
 	if (e != nil && at.Before(e.at)) || (parentConflict && at.Before(parent.at)) || (childConflict && at.Before(child.at)) {
 		return false, false
 	}
@@ -285,9 +291,32 @@ func (c *Cache) observeHashLocked(n int64, hash string, at time.Time, finalized 
 	if at.Before(e.at) {
 		return
 	}
+	if c.finalConflictLocked(e, finalized) {
+		c.rejectFinalConflictLocked(n, hash)
+		return
+	}
 	c.dropPullFromLocked(n)
 	c.unconfirmBelowLocked(n)
 	c.Stats.Reorgs.Add(1)
+}
+
+// finalConflictLocked reports whether held entry e, observed from an upstream
+// at or below the finalized height, must not be displaced by conflicting
+// evidence: its height is still at or below the current finalized height
+// (unknown finality keeps it too). Finalized heights cannot reorg, so the
+// conflicting observation is the suspect one.
+func (c *Cache) finalConflictLocked(e *pullEntry, finalized int64) bool {
+	return e != nil && e.final && (finalized < 0 || e.h.n <= finalized)
+}
+
+// rejectFinalConflictLocked drops evidence that contradicts a finalized held
+// entry and marks the followed window suspect so its tip is re-verified.
+func (c *Cache) rejectFinalConflictLocked(n int64, hash string) {
+	c.Stats.Rejected.Add(1)
+	c.suspect.Store(true)
+	c.Kick()
+	c.logger.Warn().Int64("number", n).Str("hash", hash).
+		Msg("blockstore rejected evidence conflicting with a finalized held block")
 }
 
 // adopt records a header observation and, when it was observed locally from
