@@ -353,6 +353,14 @@ func TestHttp_LogsFill_LiveWindowAdoptsFill(t *testing.T) {
 	// No subscriber: the window is built from what the fill returned (pull).
 	require.Eventually(t, func() bool { return instanceNetwork(t, instance).EvmHighestLatestBlockNumber(t.Context()) == 20 }, 10*time.Second, 20*time.Millisecond)
 
+	// The window validates a fill's lists against headers it already holds
+	// (here, from the client's own block reads); it never fetches one.
+	for n := 16; n <= 19; n++ {
+		doRpc(t, send, "eth_getBlockByNumber", fmt.Sprintf(`["0x%x",false]`, n))
+	}
+	require.Eventually(t, func() bool { return hc.CanonicalHash(16) != "" && hc.CanonicalHash(19) != "" },
+		5*time.Second, 20*time.Millisecond)
+	headers := up.HeaderCalls()
 	first := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x10","toBlock":"0x13"}]`)
 	require.Equal(t, int64(1), up.UnfilteredLogCalls(), "the miss is filled by one unfiltered range call")
 	require.Zero(t, up.BlockHashLogCalls(), "the window does not fetch per-block logs for the same range")
@@ -361,6 +369,7 @@ func TestHttp_LogsFill_LiveWindowAdoptsFill(t *testing.T) {
 		_, ok := hc.LogsRangeCached(t.Context(), 16, 19, nil)
 		return ok
 	}, 5*time.Second, 20*time.Millisecond, "the fill's lists are adopted with their headers")
+	require.Equal(t, headers, up.HeaderCalls(), "adoption fetches no header")
 
 	again := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x10","toBlock":"0x13","topics":[%q]}]`, scriptedTopicEven))
 	var even []map[string]interface{}

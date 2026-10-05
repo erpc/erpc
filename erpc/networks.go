@@ -2566,7 +2566,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if execErr == nil && resp != nil {
-		n.warmHistoricalAsync(ctx, req, method, resp)
+		n.adoptHistoricalAsync(ctx, req, method, resp)
 		n.adoptIntoBlockStore(ctx, req, method, resp)
 	}
 	if execErr == nil && !isEmpty {

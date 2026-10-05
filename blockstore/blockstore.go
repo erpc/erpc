@@ -45,6 +45,10 @@ type Options struct {
 	// Latest is the network's in-memory latest block number (no upstream
 	// call). It bounds which heights adopted from client responses are held.
 	Latest func(context.Context) int64
+	// Finalized is the network's in-memory finalized height (no upstream
+	// call; <= 0 when unknown). A held header observed canonical at or below
+	// it is served without fresh confirmation or parent linkage.
+	Finalized func(context.Context) int64
 	// AlwaysFollow keeps header following on without any subscriber. By
 	// default the window follows the chain only while a WebSocket subscriber
 	// exists anywhere in the fleet; otherwise it is built from client reads.
@@ -89,12 +93,15 @@ type Stats struct {
 
 // Fetch reasons for erpc_blockstore_fetch_total. "background" is used only
 // with Options.AlwaysFollow; subscriber-driven header following is
-// "subscription"; on-demand payloads are "miss"; on-demand single headers that
-// link adopted data are "link" (see pull.go).
+// "subscription"; on-demand payloads are "miss". Adoption from client
+// responses (pull.go) never fetches.
 const (
 	FetchReasonBackground   = "background"
 	FetchReasonMiss         = "miss"
 	FetchReasonSubscription = "subscription"
+	// FetchReasonFill is the logs fill's one unfiltered range call that
+	// answers a client's eth_getLogs miss.
+	FetchReasonFill = "fill"
 )
 
 type Cache struct {

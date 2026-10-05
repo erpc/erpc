@@ -187,6 +187,7 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 			RecordTTL:    time.Duration(hc.Depth+16) * 30 * time.Second,
 			PeerWait:     blockStorePeerWait(hc),
 			Latest:       network.EvmHighestLatestBlockNumber,
+			Finalized:    network.EvmHighestFinalizedBlockNumber,
 		}
 		lg := network.logger.With().Str("component", "blockStore").Logger()
 		f := &networkHeadFetcher{n: network}
@@ -207,15 +208,14 @@ func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.Netwo
 			return fmt.Errorf("historical blockstore requires the initialized Redis connector")
 		}
 		historicalStore := &blockStoreHistoricalStore{connector: connectorStore.connector}
-		f := &networkHeadFetcher{n: network}
 		var liveHash func(int64) string
 		if network.blockStore != nil {
 			liveHash = network.blockStore.CanonicalHash
 		}
 		network.historicalBlockStore = blockstore.NewHistorical(blockstore.HistoricalOptions{
-			Scope: scope, TTL: hc.Historical.TTL.Duration(), MaxBlockSize: hc.MaxBlockBytes, MaxLogsRange: hc.MaxLogsRange,
+			Scope: scope, TTL: hc.Historical.TTL.Duration(), MaxBlockSize: hc.MaxBlockBytes,
 			LiveHash: liveHash,
-		}, historicalStore, f, network.EvmHighestFinalizedBlockNumber)
+		}, historicalStore, network.EvmHighestFinalizedBlockNumber)
 		network.historicalWarmSem = make(chan struct{}, max(1, hc.Concurrency))
 	}
 	return nil
@@ -249,6 +249,9 @@ func (n *Network) blockStoreHead(f *networkHeadFetcher, fallbackAfter func() tim
 		if tip > 0 && now.Sub(lastMove) < fallbackAfter() {
 			return tip
 		}
+		// Only header following (which runs only while subscribers exist)
+		// asks for the tip, so this call is a subscription fetch.
+		telemetry.CounterHandle(telemetry.MetricBlockStoreFetchTotal, n.projectId, n.networkId, "head", blockstore.FetchReasonSubscription).Inc()
 		raw, err := f.call(ctx, "eth_blockNumber", []interface{}{})
 		if err != nil {
 			return -1
@@ -333,12 +336,22 @@ func (f *networkHeadFetcher) LogsByBlockHash(ctx context.Context, hash string) (
 	return f.call(ctx, "eth_getLogs", []interface{}{map[string]interface{}{"blockHash": hash}})
 }
 
-func (n *Network) warmHistoricalAsync(ctx context.Context, req *common.NormalizedRequest, method string, resp *common.NormalizedResponse) {
+// adoptHistoricalAsync stores a block response served to a client in the
+// historical cache when its height is finalized. It never calls upstream:
+// only data already in the response is kept (see blockstore.Historical.Adopt).
+// eth_getLogs responses are not adopted here: finalized logs come from the
+// logs fill's unfiltered range call, the single logs path.
+func (n *Network) adoptHistoricalAsync(ctx context.Context, req *common.NormalizedRequest, method string, resp *common.NormalizedResponse) {
 	h := n.historicalBlockStore
-	if h == nil || n.historicalWarmSem == nil || n.appCtx == nil || cacheWriteBypassed(ctx) {
+	// A response replayed from eRPC's cache may predate a reorg of a height
+	// that was unfinalized when cached: only fresh upstream responses count.
+	if h == nil || n.historicalWarmSem == nil || n.appCtx == nil || resp == nil || resp.FromCache() || cacheWriteBypassed(ctx) || ctx.Value(blockStoreBypassKey{}) != nil {
 		return
 	}
-	if blockStoreDirected(req.Directives()) {
+	if method != "eth_getBlockByNumber" && method != "eth_getBlockByHash" {
+		return
+	}
+	if blockStoreDirected(req.Directives()) || n.honorsIntegritySelector(req) {
 		return
 	}
 	jrq, err := req.JsonRpcRequest(ctx)
@@ -348,97 +361,37 @@ func (n *Network) warmHistoricalAsync(ctx context.Context, req *common.Normalize
 	jrq.RLock()
 	params := append([]interface{}(nil), jrq.Params...)
 	jrq.RUnlock()
-	jrr, err := resp.JsonRpcResponse(ctx)
-	if err != nil || jrr.Error != nil {
+	if len(params) != 2 {
 		return
 	}
-	fill := func(ctx context.Context) error { return nil }
-	switch method {
-	case "eth_getBlockByNumber", "eth_getBlockByHash":
-		if len(params) != 2 {
-			return
-		}
-		full, ok := params[1].(bool)
-		if !ok {
-			return
-		}
-		block := append(json.RawMessage(nil), jrr.GetResultBytes()...)
-		var number string
-		if method == "eth_getBlockByNumber" {
-			ref, ok := params[0].(string)
-			if !ok {
-				return
-			}
-			n, err := parseExplicitBlockNumber(ref)
-			if err != nil {
-				return
-			}
-			number = fmt.Sprintf("0x%x", n)
-		} else {
-			var body struct {
-				Number string `json:"number"`
-				Hash   string `json:"hash"`
-			}
-			if err := json.Unmarshal(block, &body); err != nil {
-				return
-			}
-			requestedHash, ok := params[0].(string)
-			if !ok || !strings.EqualFold(requestedHash, body.Hash) {
-				return
-			}
-			number = body.Number
-		}
-		num, err := parseExplicitBlockNumber(number)
+	ref, ok1 := params[0].(string)
+	if _, ok2 := params[1].(bool); !ok1 || !ok2 {
+		return
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil || jrr.Error != nil {
+		return
+	}
+	block := append(json.RawMessage(nil), jrr.GetResultBytes()...)
+	var body struct {
+		Number string `json:"number"`
+		Hash   string `json:"hash"`
+	}
+	if json.Unmarshal(block, &body) != nil {
+		return
+	}
+	byNumber := false
+	if method == "eth_getBlockByNumber" {
+		want, err := parseExplicitBlockNumber(ref)
 		if err != nil {
 			return
 		}
-		if full {
-			fill = func(ctx context.Context) error { return h.WarmBlockFromResult(ctx, num, block) }
-		} else {
-			fill = func(ctx context.Context) error { return h.WarmBlock(ctx, num) }
-		}
-	case "eth_getLogs":
-		if len(params) != 1 {
+		got, err := parseExplicitBlockNumber(body.Number)
+		if err != nil || got != want {
 			return
 		}
-		obj, ok := params[0].(map[string]interface{})
-		if !ok {
-			return
-		}
-		for key := range obj {
-			if key != "fromBlock" && key != "toBlock" && key != "address" && key != "topics" {
-				return
-			}
-		}
-		if _, err := blockstore.ParseLogFilter(obj); err != nil {
-			return
-		}
-		fs, ok1 := obj["fromBlock"].(string)
-		ts, ok2 := obj["toBlock"].(string)
-		if !ok1 || !ok2 {
-			return
-		}
-		from, e1 := parseExplicitBlockNumber(fs)
-		to, e2 := parseExplicitBlockNumber(ts)
-		if e1 != nil || e2 != nil || to < from {
-			return
-		}
-		limit := int64(0)
-		if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.BlockStore != nil {
-			limit = n.cfg.Evm.BlockStore.MaxLogsRange
-		}
-		if limit > 0 && to-from >= limit {
-			return
-		}
-		fill = func(ctx context.Context) error {
-			for height := from; height <= to; height++ {
-				if err := h.WarmLogs(ctx, height); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-	default:
+		byNumber = true
+	} else if !strings.EqualFold(ref, body.Hash) {
 		return
 	}
 	select {
@@ -448,10 +401,10 @@ func (n *Network) warmHistoricalAsync(ctx context.Context, req *common.Normalize
 	}
 	go func() {
 		defer func() { <-n.historicalWarmSem }()
-		ctx, cancel := context.WithTimeout(n.appCtx, 30*time.Second)
+		actx, cancel := context.WithTimeout(n.appCtx, 30*time.Second)
 		defer cancel()
-		if err := fill(ctx); err != nil && n.logger != nil {
-			n.logger.Debug().Err(err).Str("method", method).Msg("historical blockstore warm failed")
+		if err := h.Adopt(actx, block, byNumber); err != nil && n.logger != nil {
+			n.logger.Debug().Err(err).Str("method", method).Msg("historical blockstore adoption failed")
 		}
 	}()
 }
@@ -567,12 +520,6 @@ func (n *Network) tryServeBlockStore(ctx context.Context, req *common.Normalized
 			} else {
 				ok = false
 			}
-			if !ok && n.historicalBlockStore != nil {
-				if rec, hit := n.historicalBlockStore.ReadLogsByHash(ctx, bh); hit {
-					logs, err = rec.FilterLogs(filter, false)
-					ok = err == nil
-				}
-			}
 			if !ok {
 				return nil, false
 			}
@@ -592,37 +539,14 @@ func (n *Network) tryServeBlockStore(ctx context.Context, req *common.Normalized
 			if n.exceedsGetLogsLimits(obj, from, to) {
 				return nil, false
 			}
+			// Range logs come from one path only: the logs fill's unfiltered
+			// range call (whose per-height lists the window adopts) or the
+			// client's own request. The window answers a range only from
+			// lists it already holds and never fetches per block hash for it.
 			if c != nil {
-				// With logsFill enabled, a range it can take whose window logs
-				// are not all cached yet goes to logsFill: one unfiltered range
-				// call whose per-height result the window adopts (AdoptLogs)
-				// instead of one blockHash call per height here. Wider ranges
-				// fetch missing heights by hash.
-				if n.logsFiller != nil && to-from+1 <= n.logsFiller.MaxRange() {
-					logs, ok = c.LogsRangeCached(ctx, from, to, filter)
-				} else {
-					logs, ok = c.LogsRange(ctx, from, to, filter)
-				}
+				logs, ok = c.LogsRangeCached(ctx, from, to, filter)
 			} else {
 				ok = false
-			}
-			if !ok && n.historicalBlockStore != nil {
-				if records, hit := n.historicalBlockStore.ReadLogsRange(ctx, from, to); hit {
-					logs = make([]json.RawMessage, 0)
-					for _, rec := range records {
-						filtered, e := rec.FilterLogs(filter, false)
-						if e != nil {
-							ok = false
-							logs = nil
-							break
-						}
-						logs = append(logs, filtered...)
-						ok = true
-					}
-					if len(records) == 0 {
-						ok = true
-					}
-				}
 			}
 			if !ok {
 				return nil, false

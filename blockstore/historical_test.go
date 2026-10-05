@@ -15,19 +15,12 @@ import (
 type historicalTestStore struct {
 	mu        sync.Mutex
 	blocks    map[string]json.RawMessage
-	logs      map[string]historicalLogsPayload
 	index     map[string]string
 	blockPuts int
-	logsPuts  int
-}
-
-type historicalLogsPayload struct {
-	header json.RawMessage
-	logs   json.RawMessage
 }
 
 func newHistoricalTestStore() *historicalTestStore {
-	return &historicalTestStore{blocks: make(map[string]json.RawMessage), logs: make(map[string]historicalLogsPayload), index: make(map[string]string)}
+	return &historicalTestStore{blocks: make(map[string]json.RawMessage), index: make(map[string]string)}
 }
 
 func historicalScopeKey(scope Scope, suffix string) string { return scope.Namespace + "/" + suffix }
@@ -75,45 +68,110 @@ func (s *historicalTestStore) PutHistoricalBlock(_ context.Context, scope Scope,
 	s.blockPuts++
 	return nil
 }
-func (s *historicalTestStore) GetHistoricalLogs(_ context.Context, scope Scope, hash string) (json.RawMessage, json.RawMessage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	payload, ok := s.logs[historicalHashKey(scope, hash)]
-	if !ok {
-		return nil, nil, ErrNotFound
-	}
-	return append(json.RawMessage(nil), payload.header...), append(json.RawMessage(nil), payload.logs...), nil
-}
-func (s *historicalTestStore) PutHistoricalLogs(_ context.Context, scope Scope, hash string, header, logs json.RawMessage, _ time.Duration) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.logs[historicalHashKey(scope, hash)] = historicalLogsPayload{header: append(json.RawMessage(nil), header...), logs: append(json.RawMessage(nil), logs...)}
-	s.logsPuts++
-	return nil
+func newHistoricalForTest(store HistoricalStore, finalized *int64) *Historical {
+	return NewHistorical(HistoricalOptions{Scope: Scope{Namespace: "test", ProjectId: "p", NetworkId: "evm:1"}, MaxBlockSize: 1 << 16},
+		store, func(context.Context) int64 { return *finalized })
 }
 
-func newHistoricalForTest(t *testing.T, chain *fakeChain, store *historicalTestStore, finalized int64, maxRange int64) *Historical {
+func chainBlock(t *testing.T, chain *fakeChain, n int64) json.RawMessage {
 	t.Helper()
-	return NewHistorical(HistoricalOptions{Scope: Scope{Namespace: "test", ProjectId: "p", NetworkId: "evm:1"}, MaxBlockSize: 1 << 16, MaxLogsRange: maxRange}, store, chain, func(context.Context) int64 { return finalized })
+	raw, err := chain.BlockByNumber(context.Background(), n)
+	require.NoError(t, err)
+	return raw
+}
+
+// Historical has no fetcher: everything it serves was adopted from a block
+// response a client already received, so it can never cause an upstream call.
+func TestHistorical_AdoptsServedBlocksWithoutFetching(t *testing.T) {
+	ctx := context.Background()
+	chain := newFakeChain(6)
+	store := newHistoricalTestStore()
+	finalized := int64(4)
+	h := newHistoricalForTest(store, &finalized)
+	full := chainBlock(t, chain, 2)
+	before, _, _ := chain.counts()
+
+	require.NoError(t, h.Adopt(ctx, full, true))
+	rec, hit := h.ReadBlockByNumber(ctx, 2)
+	require.True(t, hit)
+	require.JSONEq(t, string(full), string(rec.Block))
+	_, hit = h.ReadBlockByHash(ctx, hashOf(2, "a"))
+	require.True(t, hit)
+
+	// Above the finalized height nothing is stored.
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 5), true))
+	_, hit = h.ReadBlockByNumber(ctx, 5)
+	require.False(t, hit)
+	require.Equal(t, 1, store.blockPuts)
+
+	// Re-adopting a stored block writes nothing again.
+	require.NoError(t, h.Adopt(ctx, full, true))
+	require.Equal(t, 1, store.blockPuts)
+
+	// A hash-only response indexes the height but has no body to serve; a
+	// later full by-hash response for the indexed hash completes it.
+	header := historicalHashOnlyHeader(t, chainBlock(t, chain, 3))
+	require.NoError(t, h.Adopt(ctx, header, true))
+	_, hit = h.ReadBlockByNumber(ctx, 3)
+	require.False(t, hit, "a header is not a full block")
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 3), false))
+	_, hit = h.ReadBlockByNumber(ctx, 3)
+	require.True(t, hit)
+
+	// A by-hash response alone never establishes the canonical hash.
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), false))
+	_, hit = h.ReadBlockByNumber(ctx, 1)
+	require.False(t, hit)
+	_, hit = h.ReadBlockByHash(ctx, hashOf(1, "a"))
+	require.False(t, hit)
+
+	head, body, logs := chain.counts()
+	require.Equal(t, before, head)
+	require.Equal(t, 5, head+body+logs, "only the test's own five chainBlock reads")
+}
+
+func TestHistorical_UnknownFinalityStoresNothing(t *testing.T) {
+	ctx := context.Background()
+	chain := newFakeChain(3)
+	store := newHistoricalTestStore()
+	finalized := int64(0)
+	h := newHistoricalForTest(store, &finalized)
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
+	require.Zero(t, store.blockPuts)
+	require.Empty(t, store.index)
+}
+
+// Conflicting by-number observations of a finalized height fail closed: the
+// index is dropped (a miss) rather than resolved with an upstream recheck.
+func TestHistorical_ConflictingObservationFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	chain := newFakeChain(3)
+	store := newHistoricalTestStore()
+	finalized := int64(3)
+	h := newHistoricalForTest(store, &finalized)
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
+	_, hit := h.ReadBlockByNumber(ctx, 1)
+	require.True(t, hit)
+	chain.reorg(1, "b")
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
+	_, hit = h.ReadBlockByNumber(ctx, 1)
+	require.False(t, hit)
+	_, hit = h.ReadBlockByHash(ctx, hashOf(1, "a"))
+	require.False(t, hit)
+	// The next observation indexes the height again.
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
+	rec, hit := h.ReadBlockByNumber(ctx, 1)
+	require.True(t, hit)
+	require.Equal(t, hashOf(1, "b"), rec.Hash)
 }
 
 func TestHistorical_LiveCanonicalHashInvalidatesStaleIndex(t *testing.T) {
 	ctx := context.Background()
 	chain := newFakeChain(4)
 	store := newHistoricalTestStore()
-	h := newHistoricalForTest(t, chain, store, 4, 4)
-	block, err := chain.BlockByNumber(ctx, 1)
-	require.NoError(t, err)
-	header, err := chain.HeaderByNumber(ctx, 1)
-	require.NoError(t, err)
-	parsed, _, err := parseBlockHeader(block)
-	require.NoError(t, err)
-	logs, err := chain.LogsByBlockHash(ctx, parsed.Hash)
-	require.NoError(t, err)
-	require.NoError(t, store.PutHistoricalBlock(ctx, h.scope, parsed.Hash, block, time.Hour))
-	require.NoError(t, store.PutHistoricalLogs(ctx, h.scope, parsed.Hash, header, logs, time.Hour))
-	require.NoError(t, store.PutFinalizedHash(ctx, h.scope, 1, parsed.Hash, time.Hour))
-	require.NotEqual(t, normHash(parsed.Hash), "0xreorg")
+	finalized := int64(4)
+	h := newHistoricalForTest(store, &finalized)
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
 	h.liveHash = func(n int64) string {
 		if n == 1 {
 			return "0xreorg"
@@ -122,76 +180,36 @@ func TestHistorical_LiveCanonicalHashInvalidatesStaleIndex(t *testing.T) {
 	}
 	_, hit := h.ReadBlockByNumber(ctx, 1)
 	require.False(t, hit, "historical block must not survive a conflicting live canonical hash")
-	_, err = store.GetFinalizedHash(ctx, h.scope, 1)
+	_, err := store.GetFinalizedHash(ctx, h.scope, 1)
 	require.ErrorIs(t, err, ErrNotFound, "stale height index must be removed")
-	require.NoError(t, store.PutFinalizedHash(ctx, h.scope, 1, parsed.Hash, time.Hour))
-	_, hit = h.ReadLogsRange(ctx, 1, 1)
-	require.False(t, hit, "historical logs must not survive a conflicting live canonical hash")
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
 	_, err = store.GetFinalizedHash(ctx, h.scope, 1)
-	require.ErrorIs(t, err, ErrNotFound, "logs read must also remove the stale height index")
+	require.ErrorIs(t, err, ErrNotFound, "a block the live window disagrees with is not indexed")
 }
 
 func historicalHashOnlyHeader(t *testing.T, raw json.RawMessage) json.RawMessage {
 	t.Helper()
-	var fields map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(raw, &fields))
-	var txs []map[string]json.RawMessage
-	if json.Unmarshal(fields["transactions"], &txs) != nil {
-		return raw // already hash-only
-	}
-	hashes := make([]string, 0, len(txs))
-	for _, tx := range txs {
-		var hash string
-		require.NoError(t, json.Unmarshal(tx["hash"], &hash))
-		hashes = append(hashes, hash)
-	}
-	fields["transactions"], _ = json.Marshal(hashes)
-	out, err := json.Marshal(fields)
+	out, err := (&BlockRecord{Block: raw}).BlockJSON(false)
 	require.NoError(t, err)
 	return out
 }
 
-func TestHistorical_ReadsRequireFinalityIndexAndValidatedIndependentPayloads(t *testing.T) {
+func TestHistorical_ReadsValidatePayloads(t *testing.T) {
 	ctx := context.Background()
 	chain := newFakeChain(4)
 	store := newHistoricalTestStore()
-	h := newHistoricalForTest(t, chain, store, 4, 4)
-	unknown := newHistoricalForTest(t, chain, store, 0, 4)
-
-	block, err := chain.BlockByNumber(ctx, 1)
-	require.NoError(t, err)
+	finalized := int64(4)
+	h := newHistoricalForTest(store, &finalized)
+	block := chainBlock(t, chain, 1)
 	parsed, _, err := parseBlockHeader(block)
 	require.NoError(t, err)
 	require.NoError(t, store.PutHistoricalBlock(ctx, h.scope, parsed.Hash, block, time.Hour))
 	_, hit := h.ReadBlockByHash(ctx, parsed.Hash)
 	require.False(t, hit, "payload alone must not establish canonical finality")
-	_, hit = unknown.ReadBlockByNumber(ctx, 1)
-	require.False(t, hit, "unknown finality is not proof of genesis or any height")
 
-	logsOnlyHeader, err := chain.HeaderByNumber(ctx, 1)
-	require.NoError(t, err)
-	logsOnlyHeader = historicalHashOnlyHeader(t, logsOnlyHeader)
-	logs, err := chain.LogsByBlockHash(ctx, parsed.Hash)
-	require.NoError(t, err)
-	require.NoError(t, store.PutHistoricalLogs(ctx, h.scope, parsed.Hash, logsOnlyHeader, logs, time.Hour))
 	require.NoError(t, store.PutFinalizedHash(ctx, h.scope, 1, parsed.Hash, time.Hour))
-	store.mu.Lock()
-	delete(store.blocks, historicalHashKey(h.scope, parsed.Hash))
-	store.mu.Unlock()
-
-	blockRec, hit := h.ReadBlockByNumber(ctx, 1)
-	require.False(t, hit, "logs/index do not substitute for missing full block payload")
-	logsRec, hit := h.ReadLogsByHash(ctx, parsed.Hash)
+	_, hit = h.ReadBlockByNumber(ctx, 1)
 	require.True(t, hit)
-	require.JSONEq(t, string(logsOnlyHeader), string(logsRec.Block), "logs records retain the header for metadata")
-	require.JSONEq(t, string(logs), string(logsRec.Logs))
-	require.Len(t, mustFilterLogs(t, logsRec), 1)
-
-	require.NoError(t, store.PutHistoricalBlock(ctx, h.scope, parsed.Hash, block, time.Hour))
-	blockRec, hit = h.ReadBlockByNumber(ctx, 1)
-	require.True(t, hit)
-	require.JSONEq(t, string(block), string(blockRec.Block))
-	require.Empty(t, blockRec.Logs, "block reads do not require or return logs")
 	var withoutTransactions map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(block, &withoutTransactions))
 	delete(withoutTransactions, "transactions")
@@ -204,75 +222,9 @@ func TestHistorical_ReadsRequireFinalityIndexAndValidatedIndependentPayloads(t *
 	require.NoError(t, store.PutFinalizedHash(ctx, h.scope, 2, parsed.Hash, time.Hour))
 	_, hit = h.ReadBlockByNumber(ctx, 2)
 	require.False(t, hit, "index/payload height mismatch must miss")
-
-	store.mu.Lock()
-	store.logs[historicalHashKey(h.scope, parsed.Hash)] = historicalLogsPayload{header: logsOnlyHeader, logs: json.RawMessage(`[]`)}
-	store.mu.Unlock()
-	_, hit = h.ReadLogsByHash(ctx, parsed.Hash)
-	require.False(t, hit, "empty logs cannot stand in for incomplete data when bloom commits to logs")
-
-	var emptyHeader map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(logsOnlyHeader, &emptyHeader))
-	zeroBloom, err := json.Marshal("0x" + strings.Repeat("0", 512))
-	require.NoError(t, err)
-	emptyHeader["logsBloom"] = zeroBloom
-	emptyHeaderRaw, err := json.Marshal(emptyHeader)
-	require.NoError(t, err)
-	require.NoError(t, store.PutHistoricalLogs(ctx, h.scope, parsed.Hash, emptyHeaderRaw, json.RawMessage(`[]`), time.Hour))
-	emptyRec, hit := h.ReadLogsByHash(ctx, parsed.Hash)
-	require.True(t, hit, "complete empty logs are cacheable")
-	require.Empty(t, mustFilterLogs(t, emptyRec))
-}
-
-func mustFilterLogs(t *testing.T, rec *BlockRecord) []json.RawMessage {
-	t.Helper()
-	logs, err := rec.FilterLogs(nil, false)
-	require.NoError(t, err)
-	return logs
-}
-
-func TestHistorical_ReadLogsRangeIsBoundedAndAllOrMiss(t *testing.T) {
-	ctx := context.Background()
-	chain := newFakeChain(5)
-	store := newHistoricalTestStore()
-	h := newHistoricalForTest(t, chain, store, 5, 3)
-	for n := int64(1); n <= 3; n++ {
-		header, err := chain.HeaderByNumber(ctx, n)
-		require.NoError(t, err)
-		b, _, err := parseBlockHeader(header)
-		require.NoError(t, err)
-		logs, err := chain.LogsByBlockHash(ctx, b.Hash)
-		require.NoError(t, err)
-		require.NoError(t, store.PutHistoricalLogs(ctx, h.scope, b.Hash, header, logs, time.Hour))
-		require.NoError(t, store.PutFinalizedHash(ctx, h.scope, n, b.Hash, time.Hour))
-	}
-	got, hit := h.ReadLogsRange(ctx, 1, 3)
-	require.True(t, hit)
-	require.Len(t, got, 3)
-	got, hit = h.ReadLogsRange(ctx, 1, 4)
-	require.False(t, hit, "range larger than maxLogsRange misses")
-	require.Nil(t, got)
-
-	store.mu.Lock()
-	key := historicalHashKey(h.scope, hashOf(2, "a"))
-	payload := store.logs[key]
-	var headerFields map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(payload.header, &headerFields))
-	brokenParent, err := json.Marshal(hashOf(0, "unrelated"))
-	require.NoError(t, err)
-	headerFields["parentHash"] = brokenParent
-	payload.header, err = json.Marshal(headerFields)
-	require.NoError(t, err)
-	store.logs[key] = payload
-	store.mu.Unlock()
-	got, hit = h.ReadLogsRange(ctx, 1, 3)
-	require.False(t, hit, "a contiguous height index with mismatched parent links is not a canonical range")
-	require.Nil(t, got)
-
-	delete(store.index, historicalHeightKey(h.scope, 2))
-	got, hit = h.ReadLogsRange(ctx, 1, 3)
-	require.False(t, hit, "index gap misses the whole range")
-	require.Nil(t, got, "partial logs must not escape")
+	finalized = 0
+	_, hit = h.ReadBlockByNumber(ctx, 1)
+	require.False(t, hit, "unknown finality is not proof of any height")
 }
 
 // caseSensitiveHistoricalStore keys payloads by the exact string it is given,
@@ -295,169 +247,22 @@ func (s caseSensitiveHistoricalStore) PutHistoricalBlock(_ context.Context, scop
 	s.blockPuts++
 	return nil
 }
-func (s caseSensitiveHistoricalStore) GetHistoricalLogs(_ context.Context, scope Scope, hash string) (json.RawMessage, json.RawMessage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, ok := s.logs[historicalScopeKey(scope, hash)]
-	if !ok {
-		return nil, nil, ErrNotFound
-	}
-	return append(json.RawMessage(nil), p.header...), append(json.RawMessage(nil), p.logs...), nil
-}
-func (s caseSensitiveHistoricalStore) PutHistoricalLogs(_ context.Context, scope Scope, hash string, header, logs json.RawMessage, _ time.Duration) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.logs[historicalScopeKey(scope, hash)] = historicalLogsPayload{header: append(json.RawMessage(nil), header...), logs: append(json.RawMessage(nil), logs...)}
-	s.logsPuts++
-	return nil
-}
 
 func TestHistorical_HashKeysAreCaseInsensitive(t *testing.T) {
 	ctx := context.Background()
 	chain := newFakeChain(3)
 	chain.mixedCase = true // upstream returns upper-case block hashes
 	store := caseSensitiveHistoricalStore{newHistoricalTestStore()}
-	h := NewHistorical(HistoricalOptions{Scope: Scope{Namespace: "test", ProjectId: "p", NetworkId: "evm:1"}, MaxBlockSize: 1 << 16, MaxLogsRange: 3}, store, chain, func(context.Context) int64 { return 3 })
-
-	require.NoError(t, h.WarmBlock(ctx, 1))
-	require.NoError(t, h.WarmLogs(ctx, 1))
+	finalized := int64(3)
+	h := newHistoricalForTest(store, &finalized)
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
 	lower := hashOf(1, "a")
 	upper := strings.ToUpper(lower)
 	mixed := "0x" + strings.ToUpper(lower[2:4]) + lower[4:]
-
 	_, hit := h.ReadBlockByNumber(ctx, 1)
 	require.True(t, hit, "by-number read finds a payload stored under an upper-case upstream hash")
 	for _, q := range []string{lower, upper, mixed} {
 		_, hit = h.ReadBlockByHash(ctx, q)
 		require.True(t, hit, "block by hash %q", q)
-		_, hit = h.ReadLogsByHash(ctx, q)
-		require.True(t, hit, "logs by hash %q", q)
 	}
-	_, hit = h.ReadLogsRange(ctx, 1, 1)
-	require.True(t, hit, "range read follows the normalized index to the payload")
-}
-
-func TestHistorical_WarmPathsAreIndependentAndRecheckCanonicality(t *testing.T) {
-	ctx := context.Background()
-	chain := newFakeChain(3)
-	store := newHistoricalTestStore()
-	h := newHistoricalForTest(t, chain, store, 3, 3)
-	require.NoError(t, h.WarmBlock(ctx, 1))
-	require.Equal(t, 1, store.blockPuts)
-	require.Zero(t, store.logsPuts, "warming a block must not fetch or store logs")
-
-	chain.reorg(1, "new")
-	// A newly fetched header and logs for the current canonical fork are valid.
-	require.NoError(t, h.WarmLogs(ctx, 1))
-	require.Equal(t, 1, store.logsPuts)
-	require.Equal(t, 1, store.blockPuts, "warming logs must not fetch or store a full block")
-	_, hit := h.ReadLogsByHash(ctx, hashOf(1, "new"))
-	require.True(t, hit)
-	_, hit = h.ReadLogsByHash(ctx, hashOf(1, "a"))
-	require.False(t, hit, "old hash is no longer the finalized height index")
-
-	chain.reorg(1, "later")
-	require.Error(t, h.WarmBlockFromResult(ctx, 1, json.RawMessage(`{"number":"0x1","hash":"bad"}`)))
-}
-
-type reorgAfterBodyFetcher struct {
-	*fakeChain
-	number int64
-}
-
-func (f *reorgAfterBodyFetcher) BlockByNumber(ctx context.Context, n int64) (json.RawMessage, error) {
-	block, err := f.fakeChain.BlockByNumber(ctx, n)
-	if err == nil && n == f.number {
-		f.fakeChain.reorg(n, "replacement")
-	}
-	return block, err
-}
-
-func TestHistorical_WarmRejectsSameHeightCanonicalChange(t *testing.T) {
-	chain := newFakeChain(3)
-	fetcher := &reorgAfterBodyFetcher{fakeChain: chain, number: 1}
-	store := newHistoricalTestStore()
-	h := NewHistorical(HistoricalOptions{Scope: Scope{Namespace: "test", ProjectId: "p", NetworkId: "evm:1"}, MaxBlockSize: 1 << 16}, store, fetcher, func(context.Context) int64 { return 3 })
-	require.Error(t, h.WarmBlock(context.Background(), 1))
-	require.Zero(t, store.blockPuts)
-	require.Empty(t, store.index)
-}
-
-func TestHistorical_WarmBlockFromResultAvoidsBodyFetchAndUnknownFinalityDoesNotFill(t *testing.T) {
-	ctx := context.Background()
-	chain := newFakeChain(3)
-	store := newHistoricalTestStore()
-	finalized := int64(0)
-	h := NewHistorical(HistoricalOptions{Scope: Scope{Namespace: "test", ProjectId: "p", NetworkId: "evm:1"}, MaxBlockSize: 1 << 16}, store, chain, func(context.Context) int64 { return finalized })
-	require.NoError(t, h.WarmBlock(ctx, 1))
-	require.Zero(t, store.blockPuts)
-	block, err := chain.BlockByNumber(ctx, 1)
-	require.NoError(t, err)
-	finalized = 3
-	require.NoError(t, h.WarmBlockFromResult(ctx, 1, block))
-	require.Equal(t, 1, store.blockPuts)
-	chain.mu.Lock()
-	calls := chain.bodyCalls
-	chain.mu.Unlock()
-	require.Equal(t, 1, calls, "only the explicit result fetch called BlockByNumber")
-}
-
-func TestHistorical_WarmsCoalesceByHeightAndPayloadKind(t *testing.T) {
-	chain := newFakeChain(3)
-	chain.delay = 15 * time.Millisecond
-	store := newHistoricalTestStore()
-	h := newHistoricalForTest(t, chain, store, 3, 3)
-	var wg sync.WaitGroup
-	errs := make(chan error, 16)
-	for i := 0; i < 8; i++ {
-		wg.Add(2)
-		go func() { defer wg.Done(); errs <- h.WarmBlock(context.Background(), 2) }()
-		go func() { defer wg.Done(); errs <- h.WarmLogs(context.Background(), 2) }()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		require.NoError(t, err)
-	}
-	require.Equal(t, 1, store.blockPuts)
-	require.Equal(t, 1, store.logsPuts)
-	chain.mu.Lock()
-	bodyCalls, headerCalls := chain.bodyCalls, chain.headCalls
-	chain.mu.Unlock()
-	require.Equal(t, 1, bodyCalls, "block warmers coalesce per height")
-	require.Equal(t, 3, headerCalls, "logs warmers fetch initial and rechecked headers once")
-}
-
-func TestHistorical_RewarmOfStoredEntriesSkipsUpstream(t *testing.T) {
-	ctx := context.Background()
-	chain := newFakeChain(5)
-	store := newHistoricalTestStore()
-	h := newHistoricalForTest(t, chain, store, 5, 5)
-	for n := int64(1); n <= 3; n++ {
-		require.NoError(t, h.WarmLogs(ctx, n))
-		require.NoError(t, h.WarmBlock(ctx, n))
-	}
-	chain.mu.Lock()
-	body, head := chain.bodyCalls, chain.headCalls
-	chain.mu.Unlock()
-	for n := int64(1); n <= 3; n++ {
-		require.NoError(t, h.WarmLogs(ctx, n))
-		require.NoError(t, h.WarmBlock(ctx, n))
-	}
-	chain.mu.Lock()
-	require.Equal(t, body, chain.bodyCalls, "stored blocks are not refetched")
-	require.Equal(t, head, chain.headCalls, "stored logs are not refetched")
-	chain.mu.Unlock()
-	require.Equal(t, 3, store.logsPuts)
-	require.Equal(t, 3, store.blockPuts)
-
-	// A corrupt stored entry is not a hit, so warming repairs it.
-	store.mu.Lock()
-	key := historicalHashKey(h.scope, hashOf(2, "a"))
-	store.logs[key] = historicalLogsPayload{header: store.logs[key].header, logs: json.RawMessage(`[]`)}
-	store.mu.Unlock()
-	require.NoError(t, h.WarmLogs(ctx, 2))
-	require.Equal(t, 4, store.logsPuts)
-	_, hit := h.ReadLogsRange(ctx, 1, 3)
-	require.True(t, hit)
 }

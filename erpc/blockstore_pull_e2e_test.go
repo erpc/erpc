@@ -138,8 +138,9 @@ func TestHttp_BlockStore_ClientBlockAdoptedAndSharedAcrossReplicas(t *testing.T)
 	require.Zero(t, ca.Stats.Hydrated.Load(), "replica A adopted the client's block instead of fetching it")
 }
 
-// A client's unfiltered getLogs for a block is adopted (with its header,
-// fetched once on demand); filtered reads of that block are then local.
+// A client's unfiltered getLogs for blocks whose headers the client already
+// read is adopted with no fetch of its own; filtered reads of those blocks
+// are then local.
 func TestHttp_BlockStore_UnfilteredLogsAdoptedFilteredServedLocally(t *testing.T) {
 	up := newScriptedEvmUpstream(123, 20)
 	defer up.Close()
@@ -149,12 +150,18 @@ func TestHttp_BlockStore_UnfilteredLogsAdoptedFilteredServedLocally(t *testing.T
 	require.Eventually(t, func() bool { return nw.EvmHighestLatestBlockNumber(t.Context()) == 20 }, 10*time.Second, 20*time.Millisecond)
 	hc := blockStoreOf(t, instance)
 
+	doRpc(t, send, "eth_getBlockByNumber", `["0x13",false]`)
+	doRpc(t, send, "eth_getBlockByNumber", `["0x14",false]`)
+	require.Eventually(t, func() bool { return hc.CanonicalHash(19) != "" && hc.CanonicalHash(20) != "" },
+		5*time.Second, 20*time.Millisecond, "client headers are adopted")
+	headers := up.HeaderCalls()
 	all := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x13","toBlock":"0x14"}]`)
 	require.Equal(t, int64(1), up.RangeLogCalls())
 	require.Eventually(t, func() bool {
 		_, ok := hc.LogsRangeCached(t.Context(), 19, 20, nil)
 		return ok
 	}, 5*time.Second, 20*time.Millisecond, "the unfiltered result is adopted per block")
+	require.Equal(t, headers, up.HeaderCalls(), "adoption fetches no header")
 
 	upstream := func() int64 {
 		return up.RangeLogCalls() + up.BlockHashLogCalls() + up.HeaderCalls() + up.FullBlockCalls()

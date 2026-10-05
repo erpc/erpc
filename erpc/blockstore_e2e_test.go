@@ -159,21 +159,28 @@ func TestHttp_BlockStore_ServesReusesAndHandlesReorg(t *testing.T) {
 	require.Equal(t, int64(1), up.FullBlockCalls(), "the second read is a cache hit")
 	require.Zero(t, up.Calls("eth_getBlockByHash"))
 
-	// Logs over window heights: one blockHash fetch per height, then any
-	// filter is served locally.
+	// Logs over window heights take one path: the client's own unfiltered
+	// range call (never one blockHash fetch per height). Its per-height lists
+	// are adopted, then any filter is served locally.
+	first := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x8","toBlock":"0x13"}]`)
+	require.Contains(t, string(first.Result), up.HashAt(19))
+	require.Equal(t, int64(1), up.RangeLogCalls())
+	require.Eventually(t, func() bool {
+		_, ok := hc.LogsRangeCached(t.Context(), 8, 19, nil)
+		return ok
+	}, 5*time.Second, 20*time.Millisecond, "the unfiltered range result is adopted per block")
 	even := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0x13","topics":[%q]}]`, scriptedTopicEven))
 	var evenLogs []map[string]interface{}
 	require.NoError(t, json.Unmarshal(even.Result, &evenLogs))
 	require.Len(t, evenLogs, 6)
-	require.Equal(t, int64(12), up.BlockHashLogCalls(), "one logs fetch per block hash")
 	all := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x8","toBlock":"0x13","address":%q}]`, scriptedEmitter))
 	var allLogs []map[string]interface{}
 	require.NoError(t, json.Unmarshal(all.Result, &allLogs))
 	require.Len(t, allLogs, 12)
 	none := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x8","toBlock":"0x13","address":"0x0000000000000000000000000000000000000001"}]`)
 	require.JSONEq(t, `[]`, string(none.Result))
-	require.Equal(t, int64(12), up.BlockHashLogCalls(), "later filters reuse cached logs")
-	require.Zero(t, up.RangeLogCalls())
+	require.Zero(t, up.BlockHashLogCalls(), "no per-block logs fetch")
+	require.Equal(t, int64(1), up.RangeLogCalls(), "later filters reuse adopted logs")
 
 	// Range reaching below the window falls through to upstream (never partial).
 	logsBefore := up.RangeLogCalls()
@@ -310,18 +317,25 @@ func TestHttp_BlockStore_SharedRedisTwoReplicas(t *testing.T) {
 	require.Equal(t, ca.Head(), cb.Head())
 	require.Zero(t, up.FullBlockCalls()+up.BlockHashLogCalls()+up.RangeLogCalls(), "no bodies or logs without client reads")
 
-	// A miss on A fetches once; B serves the same payloads from Redis.
+	// A miss on A goes upstream once (the client's own request) and is
+	// adopted; B serves the same payloads from Redis.
 	ra := doRpc(t, sendA, "eth_getLogs", `[{"fromBlock":"0xa","toBlock":"0x12"}]`)
 	fa := doRpc(t, sendA, "eth_getBlockByNumber", `["0x13",true]`)
-	require.Equal(t, int64(9), up.BlockHashLogCalls())
+	require.Equal(t, int64(1), up.RangeLogCalls())
+	require.Zero(t, up.BlockHashLogCalls())
 	require.Equal(t, int64(1), up.FullBlockCalls())
+	require.Eventually(t, func() bool {
+		_, ok := ca.LogsRangeCached(t.Context(), 10, 18, nil)
+		return ok
+	}, 5*time.Second, 20*time.Millisecond, "A adopts the range result")
 	rb := doRpc(t, sendB, "eth_getLogs", `[{"fromBlock":"0xa","toBlock":"0x12"}]`)
 	fb := doRpc(t, sendB, "eth_getBlockByNumber", `["0x13",true]`)
 	header := doRpc(t, sendB, "eth_getBlockByNumber", `["0x13",false]`)
 	require.JSONEq(t, string(ra.Result), string(rb.Result))
 	require.JSONEq(t, string(fa.Result), string(fb.Result))
 	require.Contains(t, string(header.Result), up.HashAt(19))
-	require.Equal(t, int64(9), up.BlockHashLogCalls(), "replica B reuses shared logs")
+	require.Equal(t, int64(1), up.RangeLogCalls(), "replica B reuses shared logs")
+	require.Zero(t, up.BlockHashLogCalls())
 	require.Equal(t, int64(1), up.FullBlockCalls(), "replica B reuses the shared block")
 	require.Zero(t, cb.Stats.Hydrated.Load(), "replica B fetched nothing from upstream")
 
@@ -483,13 +497,18 @@ func TestHttp_BlockStore_SlowBodyFetchIsOnDemand(t *testing.T) {
 	logs := doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x1","toBlock":"0x2"}]`)
 	require.JSONEq(t, `[{"address":"`+scriptedEmitter+`","topics":["`+scriptedTopicOdd+`"],"data":"0x","blockNumber":"0x1","blockHash":"`+up.HashAt(1)+`","transactionHash":"`+scriptedTx(1, "a")+`","transactionIndex":"0x0","logIndex":"0x0","removed":false},{"address":"`+scriptedEmitter+`","topics":["`+scriptedTopicEven+`"],"data":"0x","blockNumber":"0x2","blockHash":"`+up.HashAt(2)+`","transactionHash":"`+scriptedTx(2, "a")+`","transactionIndex":"0x0","logIndex":"0x0","removed":false}]`, string(logs.Result))
 	require.Equal(t, int64(1), up.FullBlockCalls())
-	require.Equal(t, int64(2), up.BlockHashLogCalls())
-	require.Equal(t, int64(3), hc.Stats.Hydrated.Load())
+	require.Zero(t, up.BlockHashLogCalls(), "a range miss is the client's own range call")
+	require.Equal(t, int64(1), up.RangeLogCalls())
+	require.Equal(t, int64(1), hc.Stats.Hydrated.Load())
+	require.Eventually(t, func() bool {
+		_, ok := hc.LogsRangeCached(t.Context(), 1, 2, nil)
+		return ok
+	}, 5*time.Second, 20*time.Millisecond)
 
 	hitsBefore := hc.Stats.Hits.Load()
 	doRpc(t, send, "eth_getBlockByNumber", `["0x1",true]`)
 	doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x1","toBlock":"0x2"}]`)
 	require.Equal(t, int64(1), up.FullBlockCalls(), "cached block response must not hit upstream")
-	require.Equal(t, int64(2), up.BlockHashLogCalls(), "cached log range must not hit upstream")
+	require.Equal(t, int64(1), up.RangeLogCalls(), "cached log range must not hit upstream")
 	require.Equal(t, hitsBefore+2, hc.Stats.Hits.Load(), "complete block and log reads must be cache hits")
 }

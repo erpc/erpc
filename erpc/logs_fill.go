@@ -64,8 +64,8 @@ func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockSt
 			if c == nil || network.blockStoreAdoptSem == nil || network.appCtx == nil {
 				return
 			}
-			// Adoption may fetch a missing header to validate the lists:
-			// keep it off the client's response path.
+			// Adoption validates against held headers only (no fetch);
+			// keep it off the client's response path anyway.
 			select {
 			case network.blockStoreAdoptSem <- struct{}{}:
 			default:
@@ -109,6 +109,9 @@ func (n *Network) fetchUnfilteredLogs(ctx context.Context, from, to int64) (json
 	// `matchRequestKind: internal` failsafe policies match and the integrity
 	// pipeline skips (erpc re-serves this data itself), always reaching upstreams.
 	rq.SetDirectives(&common.RequestDirectives{IsInternal: true, SkipCacheRead: "true", RetryEmpty: true})
+	// Counted with every other blockstore-initiated upstream request. A fill
+	// answers the client's own eth_getLogs miss in its place.
+	telemetry.CounterHandle(telemetry.MetricBlockStoreFetchTotal, n.projectId, n.networkId, string(blockstore.PayloadLogs), blockstore.FetchReasonFill).Inc()
 	resp, err := n.Forward(withCacheWriteBypass(withBlockStoreBypass(ctx)), rq)
 	if err != nil {
 		return nil, err

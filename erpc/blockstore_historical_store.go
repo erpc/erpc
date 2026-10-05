@@ -28,37 +28,6 @@ func (s *blockStoreHistoricalStore) GetHistoricalBlock(ctx context.Context, scop
 func (s *blockStoreHistoricalStore) PutHistoricalBlock(ctx context.Context, scope blockstore.Scope, key string, payload json.RawMessage, ttl time.Duration) error {
 	return s.putHistoricalPayload(ctx, scope, "block", key, payload, ttl)
 }
-func (s *blockStoreHistoricalStore) GetHistoricalLogs(ctx context.Context, scope blockstore.Scope, key string) (json.RawMessage, json.RawMessage, error) {
-	payload, err := s.getHistoricalPayload(ctx, scope, "logs", key)
-	if err != nil {
-		return nil, nil, err
-	}
-	var pair struct {
-		Header json.RawMessage `json:"header"`
-		Logs   json.RawMessage `json:"logs"`
-	}
-	if err := json.Unmarshal(payload, &pair); err != nil {
-		return nil, nil, fmt.Errorf("decode historical logs: %w", err)
-	}
-	if !json.Valid(pair.Header) || !json.Valid(pair.Logs) {
-		return nil, nil, fmt.Errorf("historical logs payload mismatch")
-	}
-	return pair.Header, pair.Logs, nil
-}
-func (s *blockStoreHistoricalStore) PutHistoricalLogs(ctx context.Context, scope blockstore.Scope, key string, header, logs json.RawMessage, ttl time.Duration) error {
-	if !json.Valid(header) || !json.Valid(logs) {
-		return fmt.Errorf("invalid historical logs payload")
-	}
-	payload, err := json.Marshal(struct {
-		Header json.RawMessage `json:"header"`
-		Logs   json.RawMessage `json:"logs"`
-	}{header, logs})
-	if err != nil {
-		return fmt.Errorf("encode historical logs: %w", err)
-	}
-	return s.putHistoricalPayload(ctx, scope, "logs", key, payload, ttl)
-}
-
 func (s *blockStoreHistoricalStore) getHistoricalPayload(ctx context.Context, scope blockstore.Scope, kind, key string) (json.RawMessage, error) {
 	partition, err := s.historicalPartition(scope)
 	if err != nil {

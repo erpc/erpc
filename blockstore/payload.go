@@ -298,12 +298,12 @@ func (c *Cache) BlockByNumber(ctx context.Context, n int64, full bool) (json.Raw
 		c.hit(false)
 		return nil, false
 	}
-	return c.block(ctx, c.lookupHeader(ctx, n, "", true), full)
+	return c.block(ctx, c.lookupHeader(ctx, n, ""), full)
 }
 
 // BlockByHash serves eth_getBlockByHash for a hash that is canonical in the window.
 func (c *Cache) BlockByHash(ctx context.Context, hash string, full bool) (json.RawMessage, bool) {
-	return c.block(ctx, c.lookupHeader(ctx, -1, hash, true), full)
+	return c.block(ctx, c.lookupHeader(ctx, -1, hash), full)
 }
 
 func (c *Cache) block(ctx context.Context, h *header, full bool) (json.RawMessage, bool) {
@@ -320,7 +320,7 @@ func (c *Cache) block(ctx context.Context, h *header, full bool) (json.RawMessag
 
 // LogsByHash serves eth_getLogs{blockHash} for a canonical window hash.
 func (c *Cache) LogsByHash(ctx context.Context, hash string, f *LogFilter) ([]json.RawMessage, bool) {
-	h := c.lookupHeader(ctx, -1, hash, true)
+	h := c.lookupHeader(ctx, -1, hash)
 	if h == nil {
 		c.hit(false)
 		return nil, false
@@ -354,7 +354,7 @@ func (c *Cache) logsRange(ctx context.Context, from, to int64, f *LogFilter, fet
 	}
 	hs := make([]*header, 0, to-from+1)
 	for n := from; n <= to; n++ {
-		h := c.lookupHeader(ctx, n, "", fetch)
+		h := c.lookupHeader(ctx, n, "")
 		if h == nil {
 			break
 		}
@@ -397,39 +397,21 @@ func (c *Cache) logsRange(ctx context.Context, from, to int64, f *LogFilter, fet
 // AdoptLogs stores per-height log lists filled elsewhere (the logsFill
 // range call) as the window's logs for those heights, so a later window read
 // or logs subscription needs no upstream call of its own. An entry is adopted
-// only for a height in the served view whose verified header it matches:
-// a non-empty list must carry that header's hash, and every list must pass
-// the same completeness and bloom checks as a direct fetch.
+// only for a height whose verified header is held and matches: a non-empty
+// list must carry that header's hash, and every list must pass the same
+// completeness and bloom checks as a direct fetch. A height whose header is
+// not held is skipped; no header is fetched for it.
 func (c *Cache) AdoptLogs(ctx context.Context, entries []*BlockLogs) {
 	now := c.nowFn()
+	finalized := c.finalizedHeight(ctx)
 	c.mu.Lock()
 	for _, e := range entries {
 		if e != nil && e.Hash != "" {
-			c.observeHashLocked(e.Number, e.Hash, now, false)
+			c.observeHashLocked(e.Number, e.Hash, now, finalized, false)
 		}
 	}
 	c.mu.Unlock()
-	latest := c.latestKnown(ctx)
-	fetched := 0
-	for _, e := range entries {
-		if e == nil {
-			continue
-		}
-		h := c.lookupHeader(ctx, e.Number, "", false)
-		if h == nil && e.Hash != "" && c.inPullRange(e.Number, latest) && fetched < c.maxLogsAdoptHeaders() {
-			// Validating a filled list needs its header: fetch only that one
-			// header (through the response cache), never the logs again.
-			fetched++
-			h = c.fetchAdoptHeader(ctx, e.Number)
-		}
-		if h == nil || (e.Hash != "" && normHash(e.Hash) != h.b.Hash) {
-			continue
-		}
-		if c.localPayload(PayloadLogs, h.b.Hash) != nil {
-			continue
-		}
-		c.adoptPayload(ctx, PayloadLogs, h, e.Logs)
-	}
+	c.adoptHeldLogs(ctx, entries)
 }
 
 // EventLogs returns ev with the logs of every record filled, for logs

@@ -34,7 +34,6 @@ func TestBlockStoreHistoricalConnectorPartitionTTLAndKinds(t *testing.T) {
 
 	require.Error(t, store.PutHistoricalBlock(ctx, scope, key, json.RawMessage(`{"number":"0x1"}`), 0))
 	require.NoError(t, store.PutHistoricalBlock(ctx, scope, key, json.RawMessage(`{"number":"0x1"}`), time.Minute))
-	require.NoError(t, store.PutHistoricalLogs(ctx, scope, key, json.RawMessage(`{"hash":"0xabc"}`), json.RawMessage(`[]`), time.Minute))
 	require.NoError(t, store.PutFinalizedHash(ctx, scope, 1, key, time.Minute))
 	finalizedHash, err := store.GetFinalizedHash(ctx, scope, 1)
 	require.NoError(t, err)
@@ -42,10 +41,6 @@ func TestBlockStoreHistoricalConnectorPartitionTTLAndKinds(t *testing.T) {
 	block, err := store.GetHistoricalBlock(ctx, scope, key)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"number":"0x1"}`, string(block))
-	header, logs, err := store.GetHistoricalLogs(ctx, scope, key)
-	require.NoError(t, err)
-	require.JSONEq(t, `{"hash":"0xabc"}`, string(header))
-	require.JSONEq(t, `[]`, string(logs))
 	_, err = store.GetHistoricalBlock(ctx, other, key)
 	require.Error(t, err)
 
@@ -59,8 +54,6 @@ func TestBlockStoreHistoricalConnectorPartitionTTLAndKinds(t *testing.T) {
 	require.Equal(t, time.Minute, m.TTL(blockTTLKey))
 	m.FastForward(61 * time.Second)
 	_, err = store.GetHistoricalBlock(ctx, scope, key)
-	require.Error(t, err)
-	_, _, err = store.GetHistoricalLogs(ctx, scope, key)
 	require.Error(t, err)
 }
 
@@ -87,9 +80,9 @@ func TestBlockStoreHistoricalConnectorCorruptPayloadFailsClosed(t *testing.T) {
 	scope := blockstore.Scope{Namespace: "ns", ProjectId: "p", NetworkId: "n"}
 	partition, err := store.historicalPartition(scope)
 	require.NoError(t, err)
-	bad := []byte(`{"kind":"logs","key":"wrong","payload":{"header":{},"logs":[]}}`)
-	require.NoError(t, connector.Set(context.Background(), partition, historicalKey("logs", "expected"), bad, nil))
-	_, _, err = store.GetHistoricalLogs(context.Background(), scope, "expected")
+	bad := []byte(`{"kind":"block","key":"wrong","payload":{"number":"0x1"}}`)
+	require.NoError(t, connector.Set(context.Background(), partition, historicalKey("block", "expected"), bad, nil))
+	_, err = store.GetHistoricalBlock(context.Background(), scope, "expected")
 	require.Error(t, err)
 	require.NoError(t, connector.Set(context.Background(), partition, historicalKey("finalized", "7"), []byte(`{"kind":"finalized","height":8,"hash":"0xabc"}`), nil))
 	_, err = store.GetFinalizedHash(context.Background(), scope, 7)

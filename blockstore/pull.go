@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/erpc/erpc/telemetry"
@@ -16,27 +15,25 @@ import (
 // and every log a client reads by block range is evidence of the canonical
 // hash at that height at that time. Those headers are adopted here, linked to
 // their neighbours by parent hash, and served while some linked descendant
-// (or the header itself) was observed within MaxStaleness. A conflicting
-// observation at a held height is a reorg: the orphaned entries are dropped
-// and everything below loses its confirmation until relinked.
+// (or the header itself) was observed within MaxStaleness, or at any time once
+// their height is at or below the network's finalized height (finalized
+// heights cannot reorg). A conflicting observation at a held height is a
+// reorg: the orphaned entries are dropped and everything unfinalized below
+// loses its confirmation until it is observed again.
 //
-// Missing links are filled on demand only: when serving a held height whose
-// own chain stops exactly one height below a freshly observed header, that
-// one header is fetched (reason "link") through the cached path.
-
-// FetchReasonLink marks an on-demand header fetch that links a held header
-// to a fresher one, or fetches the header a client's logs need for validation.
-const FetchReasonLink = "link"
+// Adoption never calls upstream. A height whose header is not held, or whose
+// confirmation went stale, is a miss: the client's own request takes the
+// normal path and its response is adopted.
 
 type pullEntry struct {
 	h *header
 	// at is the last time this hash was observed as canonical at h.n.
 	at time.Time
+	// final is set once this hash was observed canonical (strong evidence)
+	// while h.n was at or below the network's finalized height: it can no
+	// longer reorg, so it is served without fresh confirmation or linkage.
+	final bool
 }
-
-// maxLogsAdoptHeaders bounds how many missing headers one unfiltered logs
-// response may fetch to validate and adopt its per-block lists.
-func (c *Cache) maxLogsAdoptHeaders() int { return int(c.opt.MaxPerTick) }
 
 func (c *Cache) adoptMetric(kind PayloadKind) {
 	telemetry.MetricBlockStoreAdoptTotal.WithLabelValues(c.opt.Scope.ProjectId, c.opt.Scope.NetworkId, string(kind)).Inc()
@@ -93,10 +90,22 @@ func (c *Cache) pullFreshLocked(n int64, hash string) *header {
 	if e == nil || (hash != "" && e.h.b.Hash != normHash(hash)) {
 		return nil
 	}
-	if c.nowFn().Sub(c.confirmedLocked(n)) > c.opt.MaxStaleness {
+	if !e.final && c.nowFn().Sub(c.confirmedLocked(n)) > c.opt.MaxStaleness {
 		return nil
 	}
 	return e.h
+}
+
+// finalizedHeight is the network's in-memory finalized height (no upstream
+// call), or -1 when unknown.
+func (c *Cache) finalizedHeight(ctx context.Context) int64 {
+	if c.opt.Finalized == nil {
+		return -1
+	}
+	if f := c.opt.Finalized(ctx); f > 0 {
+		return f
+	}
+	return -1
 }
 
 // heldLocked reports whether hash is held at n in the followed or pulled view.
@@ -184,7 +193,7 @@ func (c *Cache) unconfirmBelowLocked(n int64) {
 // eRPC's cache, which may predate a reorg) never replaces anything and never
 // confirms freshness: it is inserted unconfirmed, only where it conflicts
 // with nothing held, and is served once a fresh linked descendant confirms it.
-func (c *Cache) adoptLocked(h *header, at time.Time, latest int64, weak bool) (held, inserted bool) {
+func (c *Cache) adoptLocked(h *header, at time.Time, latest, finalized int64, weak bool) (held, inserted bool) {
 	top := maxI64(c.pullTop, latest)
 	if !c.inPullRange(h.n, top) {
 		return false, false
@@ -200,11 +209,13 @@ func (c *Cache) adoptLocked(h *header, at time.Time, latest int64, weak bool) (h
 			c.Kick()
 		}
 	}
+	final := !weak && finalized >= 0 && h.n <= finalized
 	e := c.pull[h.n]
 	if e != nil && e.h.b.Hash == h.b.Hash {
 		if at.After(e.at) {
 			e.at = at
 		}
+		e.final = e.final || final
 		return true, false
 	}
 	parent, child := c.pull[h.n-1], c.pull[h.n+1]
@@ -232,7 +243,7 @@ func (c *Cache) adoptLocked(h *header, at time.Time, latest int64, weak bool) (h
 	if reorg {
 		c.Stats.Reorgs.Add(1)
 	}
-	c.pull[h.n] = &pullEntry{h: h, at: at}
+	c.pull[h.n] = &pullEntry{h: h, at: at, final: final}
 	c.pullHashes[h.b.Hash] = h.n
 	if h.n > c.pullTop {
 		c.pullTop = h.n
@@ -249,7 +260,7 @@ func (c *Cache) adoptLocked(h *header, at time.Time, latest int64, weak bool) (h
 // e.g. in a log. A matching held entry is reconfirmed; a different held hash
 // is dropped with its descendants, and everything below loses confirmation.
 // Weak evidence is ignored.
-func (c *Cache) observeHashLocked(n int64, hash string, at time.Time, weak bool) {
+func (c *Cache) observeHashLocked(n int64, hash string, at time.Time, finalized int64, weak bool) {
 	if weak {
 		return
 	}
@@ -268,6 +279,7 @@ func (c *Cache) observeHashLocked(n int64, hash string, at time.Time, weak bool)
 		if at.After(e.at) {
 			e.at = at
 		}
+		e.final = e.final || (finalized >= 0 && n <= finalized)
 		return
 	}
 	if at.Before(e.at) {
@@ -286,8 +298,14 @@ func (c *Cache) adopt(ctx context.Context, h *header, at time.Time, local, weak 
 	if c.opt.Latest != nil {
 		latest = c.opt.Latest(ctx)
 	}
+	// Only a local observation made now proves the hash at a height that is
+	// finalized now; a fleet index entry may predate finalization.
+	finalized := int64(-1)
+	if local {
+		finalized = c.finalizedHeight(ctx)
+	}
 	c.mu.Lock()
-	held, inserted := c.adoptLocked(h, at, latest, weak)
+	held, inserted := c.adoptLocked(h, at, latest, finalized, weak)
 	share := false
 	if held && local && !weak && c.canon != nil {
 		last := c.sharedCanon[h.b.Hash]
@@ -319,10 +337,9 @@ func (c *Cache) adopt(ctx context.Context, h *header, at time.Time, local, weak 
 }
 
 // lookupHeader resolves a verified header for height n (or hash when n < 0):
-// the followed window, then fresh adopted headers, then the fleet's canonical
-// index. With fetch, a stale held header may be relinked by fetching the one
-// header missing between it and a fresher observation.
-func (c *Cache) lookupHeader(ctx context.Context, n int64, hash string, fetch bool) *header {
+// the followed window, then held adopted headers (fresh or finalized), then
+// the fleet's canonical index. It never calls upstream.
+func (c *Cache) lookupHeader(ctx context.Context, n int64, hash string) *header {
 	if h := c.viewHeader(n, hash); h != nil {
 		return h
 	}
@@ -333,14 +350,6 @@ func (c *Cache) lookupHeader(ctx context.Context, n int64, hash string, fetch bo
 		return h
 	}
 	if c.fleetHeader(ctx, n, hash) {
-		c.mu.RLock()
-		h = c.pullFreshLocked(n, hash)
-		c.mu.RUnlock()
-		if h != nil {
-			return h
-		}
-	}
-	if fetch && c.linkFill(ctx, n, hash) {
 		c.mu.RLock()
 		h = c.pullFreshLocked(n, hash)
 		c.mu.RUnlock()
@@ -396,75 +405,6 @@ func (c *Cache) fleetHeader(ctx context.Context, n int64, hash string) bool {
 	return c.adopt(ctx, h, at, false, false)
 }
 
-// linkFill fetches the single header missing between the chain holding n
-// (or hash) and a fresher adopted header right above it.
-func (c *Cache) linkFill(ctx context.Context, n int64, hash string) bool {
-	if c.fetcher == nil {
-		return false
-	}
-	c.mu.RLock()
-	if n < 0 {
-		var ok bool
-		if n, ok = c.pullHashes[normHash(hash)]; !ok {
-			c.mu.RUnlock()
-			return false
-		}
-	}
-	target := int64(-1)
-	if c.pull[n] != nil {
-		k := n
-		for c.pull[k+1] != nil && c.pull[k+1].h.b.ParentHash == c.pull[k].h.b.Hash {
-			k++
-		}
-		if c.pull[k+1] == nil && c.pull[k+2] != nil &&
-			c.nowFn().Sub(c.confirmedLocked(k+2)) <= c.opt.MaxStaleness {
-			target = k + 1
-		}
-	}
-	c.mu.RUnlock()
-	if target < 0 {
-		return false
-	}
-	_, err, _ := c.sf.Do(fmt.Sprintf("link/%d", target), func() (interface{}, error) {
-		fctx, cancel := c.fetchContext(context.WithoutCancel(ctx))
-		defer cancel()
-		h, err := c.getHeader(fctx, target, FetchReasonLink)
-		if err != nil {
-			return nil, err
-		}
-		c.adopt(fctx, h, c.nowFn(), true, false)
-		return nil, nil
-	})
-	return err == nil
-}
-
-// fetchAdoptHeader fetches and adopts the header at n (reason "link").
-func (c *Cache) fetchAdoptHeader(ctx context.Context, n int64) *header {
-	if c.fetcher == nil {
-		return nil
-	}
-	v, err, _ := c.sf.Do(fmt.Sprintf("link/%d", n), func() (interface{}, error) {
-		fctx, cancel := c.fetchContext(context.WithoutCancel(ctx))
-		defer cancel()
-		h, err := c.getHeader(fctx, n, FetchReasonLink)
-		if err != nil {
-			return nil, err
-		}
-		c.adopt(fctx, h, c.nowFn(), true, false)
-		return h, nil
-	})
-	if err != nil {
-		return nil
-	}
-	h := v.(*header)
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if !c.heldLocked(h.n, h.b.Hash) {
-		return nil
-	}
-	return h
-}
-
 // hashOnlyHeader renders a full block as eth_getBlockByNumber(n, false).
 func hashOnlyHeader(raw json.RawMessage) (json.RawMessage, error) {
 	return (&BlockRecord{Block: raw}).BlockJSON(false)
@@ -509,14 +449,14 @@ func (c *Cache) AdoptBlock(ctx context.Context, raw json.RawMessage, full, canon
 		if !held {
 			return
 		}
-		if held := c.lookupHeader(ctx, h.n, "", false); held == nil || held.b.Hash != h.b.Hash {
+		if held := c.lookupHeader(ctx, h.n, ""); held == nil || held.b.Hash != h.b.Hash {
 			return
 		}
 	}
 	if !full {
 		return
 	}
-	held := c.lookupHeader(ctx, h.n, "", false)
+	held := c.lookupHeader(ctx, h.n, "")
 	if held == nil || held.b.Hash != h.b.Hash || c.localPayload(PayloadBlock, h.b.Hash) != nil {
 		return
 	}
@@ -545,9 +485,10 @@ func (c *Cache) adoptPayload(ctx context.Context, kind PayloadKind, h *header, r
 // range. Every log's (blockNumber, blockHash) is canonical evidence. When the
 // request was unfiltered over the explicit range [from, to], each height's
 // list is complete and is adopted as that block's logs once validated against
-// its header; missing headers are fetched on demand (bounded, reason "link").
-// from < 0 means the range is unknown (tags): observation only. fromCache
-// marks weak evidence: it reconfirms but never replaces held hashes.
+// its held header. A height whose header is not held is skipped: adoption
+// never fetches. from < 0 means the range is unknown (tags): observation
+// only. fromCache marks weak evidence: it reconfirms but never replaces held
+// hashes.
 func (c *Cache) ObserveLogs(ctx context.Context, raw json.RawMessage, from, to int64, unfiltered, fromCache bool) {
 	if c == nil {
 		return
@@ -557,6 +498,7 @@ func (c *Cache) ObserveLogs(ctx context.Context, raw json.RawMessage, from, to i
 		return
 	}
 	now := c.nowFn()
+	finalized := c.finalizedHeight(ctx)
 	seen := map[int64]string{}
 	for i := range logs {
 		if logs[i].Removed {
@@ -573,7 +515,7 @@ func (c *Cache) ObserveLogs(ctx context.Context, raw json.RawMessage, from, to i
 	}
 	c.mu.Lock()
 	for n, hash := range seen {
-		c.observeHashLocked(n, hash, now, fromCache)
+		c.observeHashLocked(n, hash, now, finalized, fromCache)
 	}
 	c.mu.Unlock()
 	if !unfiltered || from < 0 || to < from || to-from >= c.opt.MaxLogsRange {
@@ -583,17 +525,17 @@ func (c *Cache) ObserveLogs(ctx context.Context, raw json.RawMessage, from, to i
 	if err != nil || removed {
 		return
 	}
-	latest := c.latestKnown(ctx)
-	fetched := 0
+	c.adoptHeldLogs(ctx, entries)
+}
+
+// adoptHeldLogs adopts complete per-height lists for heights whose header is
+// held, validated against that header. No upstream call.
+func (c *Cache) adoptHeldLogs(ctx context.Context, entries []*BlockLogs) {
 	for _, e := range entries {
-		if !c.inPullRange(e.Number, latest) {
+		if e == nil {
 			continue
 		}
-		h := c.lookupHeader(ctx, e.Number, "", false)
-		if h == nil && e.Hash != "" && fetched < c.maxLogsAdoptHeaders() {
-			fetched++
-			h = c.fetchAdoptHeader(ctx, e.Number)
-		}
+		h := c.lookupHeader(ctx, e.Number, "")
 		if h == nil || (e.Hash != "" && normHash(e.Hash) != h.b.Hash) || c.localPayload(PayloadLogs, h.b.Hash) != nil {
 			continue
 		}
@@ -607,7 +549,7 @@ func (c *Cache) AdoptLogsByHash(ctx context.Context, hash string, raw json.RawMe
 	if c == nil {
 		return
 	}
-	h := c.lookupHeader(ctx, -1, hash, false)
+	h := c.lookupHeader(ctx, -1, hash)
 	if h == nil || c.localPayload(PayloadLogs, h.b.Hash) != nil {
 		return
 	}

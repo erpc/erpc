@@ -77,6 +77,13 @@ func TestHttp_BlockStore_MalformedFiltersBypassAndTopicPositionsMatchGeth(t *tes
 	require.Eventually(t, func() bool { return network.BlockStore().Head() == 20 }, 10*time.Second, 20*time.Millisecond)
 
 	// A wildcard position still requires that position to exist in the log.
+	// The window answers ranges only from adopted lists: prime 0x12 with the
+	// client's own unfiltered call first.
+	doRpc(t, send, "eth_getLogs", `[{"fromBlock":"0x12","toBlock":"0x12"}]`)
+	require.Eventually(t, func() bool {
+		_, ok := network.BlockStore().LogsRangeCached(t.Context(), 18, 18, nil)
+		return ok
+	}, 5*time.Second, 20*time.Millisecond)
 	before := up.RangeLogCalls()
 	result := doRpc(t, send, "eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x12","toBlock":"0x12","topics":[%q,null]}]`, scriptedTopicEven))
 	require.JSONEq(t, "[]", string(result.Result))

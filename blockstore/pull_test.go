@@ -211,21 +211,35 @@ func TestPull_UnfilteredLogsAdoptedFilteredServedLocally(t *testing.T) {
 	require.Zero(t, head+body+logs)
 }
 
-// Adopting unfiltered logs for a height whose header is unknown fetches only
-// that header (reason "link"), never its logs.
-func TestPull_LogsAdoptionFetchesOnlyMissingHeader(t *testing.T) {
+// Adopting unfiltered logs for heights whose headers are unknown fetches
+// nothing: those heights are skipped, and adopted once their header is held.
+func TestPull_LogsAdoptionNeverFetchesHeaders(t *testing.T) {
 	ch := newFakeChain(20)
 	c := newPullCache(ch, newMapStore())
-	before := fetchTotal(PayloadHeader, FetchReasonLink)
-	c.ObserveLogs(ctxb(), rangeLogs(t, ch, 20, 20), 20, 20, true, false)
-	head, _, logs := ch.counts()
-	require.Equal(t, 1, head)
-	require.Zero(t, logs)
-	require.Equal(t, before+1, fetchTotal(PayloadHeader, FetchReasonLink))
-	_, ok := c.LogsByHash(ctxb(), hashOf(20, "a"), nil)
-	require.True(t, ok)
-	_, _, logs = ch.counts()
-	require.Zero(t, logs)
+	c.ObserveLogs(ctxb(), rangeLogs(t, ch, 17, 20), 17, 20, true, false)
+	c.AdoptLogs(ctxb(), mustSplit(t, rangeLogs(t, ch, 17, 20), 17, 20))
+	head, body, logs := ch.counts()
+	require.Zero(t, head+body+logs, "no header, body or logs fetch from adoption")
+	_, ok := c.LogsRangeCached(ctxb(), 17, 20, nil)
+	require.False(t, ok, "unknown headers: nothing adopted")
+
+	for n := int64(17); n <= 20; n++ {
+		c.AdoptBlock(ctxb(), headerOf(t, ch, n), false, true, false)
+	}
+	c.AdoptLogs(ctxb(), mustSplit(t, rangeLogs(t, ch, 17, 20), 17, 20))
+	got, ok := c.LogsRangeCached(ctxb(), 17, 20, &LogFilter{Topics: [][]string{{normHash(topicA)}}})
+	require.True(t, ok, "held headers: complete lists adopted and served filtered")
+	require.Len(t, got, 2)
+	head, body, logs = ch.counts()
+	require.Zero(t, head+body+logs)
+}
+
+func mustSplit(t *testing.T, raw json.RawMessage, from, to int64) []*BlockLogs {
+	t.Helper()
+	entries, removed, err := SplitRangeLogs(raw, from, to)
+	require.NoError(t, err)
+	require.False(t, removed)
+	return entries
 }
 
 // A fresh observation of a different hash at a held height is a reorg: the
@@ -265,21 +279,52 @@ func TestPull_AdoptedReorgDropsStaleEntries(t *testing.T) {
 	require.Empty(t, c.CanonicalHash(19))
 }
 
-// A stale held header is relinked on demand with one header fetch (reason
-// "link") when a fresh observation sits two heights above it.
-func TestPull_LinkFillOnDemand(t *testing.T) {
+// Client full blocks at gapped heights are adopted and served from the store
+// with no "link" header fetches: a stale unfinalized height is a miss (the
+// client's own request takes the normal path), never a fetch.
+func TestPull_GappedBlocksServedWithoutLinkFetches(t *testing.T) {
 	ch := newFakeChain(20)
 	c := newPullCache(ch, newMapStore())
-	c.AdoptBlock(ctxb(), fullBlock(t, ch, 18), true, true, false)
+	heights := []int64{13, 16, 20}
+	for _, n := range heights {
+		c.AdoptBlock(ctxb(), fullBlock(t, ch, n), true, true, false)
+	}
+	for _, n := range heights {
+		full, ok := c.BlockByNumber(ctxb(), n, true)
+		require.True(t, ok, "height %d", n)
+		require.JSONEq(t, string(fullBlock(t, ch, n)), string(full))
+	}
 	base := time.Now()
 	c.nowFn = func() time.Time { return base.Add(3 * time.Second) }
 	c.AdoptBlock(ctxb(), headerOf(t, ch, 20), false, true, false)
-	_, ok := c.BlockByNumber(ctxb(), 18, true)
-	require.True(t, ok, "relinked through one fetched header")
-	head, body, _ := ch.counts()
-	require.Equal(t, 1, head)
-	require.Zero(t, body)
-	require.Equal(t, hashOf(19, "a"), c.CanonicalHash(19))
+	_, ok := c.BlockByNumber(ctxb(), 16, true)
+	require.False(t, ok, "stale and unlinked: a miss, not a link fetch")
+	head, body, logs := ch.counts()
+	require.Zero(t, head+body+logs)
+}
+
+// A header observed (strong evidence) at or below the finalized height cannot
+// reorg: it is served without fresh confirmation or linkage.
+func TestPull_FinalizedHeightsServedWithoutLinkage(t *testing.T) {
+	ch := newFakeChain(20)
+	o := pullOpts()
+	o.Latest = ch.head
+	finalized := int64(16)
+	o.Finalized = func(context.Context) int64 { return finalized }
+	c := New(o, newMapStore(), ch, ch.head, nil)
+	c.AdoptBlock(ctxb(), fullBlock(t, ch, 14), true, true, false)
+	c.AdoptBlock(ctxb(), fullBlock(t, ch, 18), true, true, false)
+	// A cache replay at a finalized height is weak: never final.
+	c.AdoptBlock(ctxb(), fullBlock(t, ch, 15), true, true, true)
+	c.nowFn = func() time.Time { return time.Now().Add(time.Hour) }
+	_, ok := c.BlockByNumber(ctxb(), 14, true)
+	require.True(t, ok, "finalized and observed: served without relinking")
+	_, ok = c.BlockByNumber(ctxb(), 18, false)
+	require.False(t, ok, "unfinalized and stale: a miss")
+	_, ok = c.BlockByNumber(ctxb(), 15, false)
+	require.False(t, ok, "weak evidence is never final")
+	head, body, logs := ch.counts()
+	require.Zero(t, head+body+logs)
 }
 
 // Header following runs only while a subscriber exists somewhere in the
