@@ -2176,7 +2176,7 @@ export interface EvmBlockStoreLogsFillConfig {
    */
   unfinalizedTtl?: Duration;
   /**
-   * EmptyTipGuard: an unfinalized height with no logs is stored only when it
+   * EmptyTipGuard: a height with no logs (even finalized) is stored only when it
    * is at least this many blocks below the network's latest head. Default 2.
    */
   emptyTipGuard?: number /* int64 */;

@@ -77,7 +77,7 @@ type EvmBlockStoreLogsFillConfig struct {
 	// height. 0 (default) = one network block time clamped to 2s..12s, or 2s
 	// while the block time is unknown.
 	UnfinalizedTTL Duration `yaml:"unfinalizedTtl,omitempty" json:"unfinalizedTtl,omitempty" tstype:"Duration"`
-	// EmptyTipGuard: an unfinalized height with no logs is stored only when it
+	// EmptyTipGuard: a height with no logs (even finalized) is stored only when it
 	// is at least this many blocks below the network's latest head. Default 2.
 	EmptyTipGuard int64 `yaml:"emptyTipGuard,omitempty" json:"emptyTipGuard,omitempty"`
 	// MemoryMaxBytes bounds the in-memory store used when no connectorId is

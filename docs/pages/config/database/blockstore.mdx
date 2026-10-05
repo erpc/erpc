@@ -97,7 +97,7 @@ projects:
 
 ## Config schema (`projects[].networks[].evm.blockStore`)
 
-Defaults from `EvmBlockStoreConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="152-187" />), called by `EvmNetworkConfig.SetDefaults` (<SourceLink file="common/defaults.go" lines="2570-2572" />).
+Defaults from `EvmBlockStoreConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="166-201" />), called by `EvmNetworkConfig.SetDefaults` (<SourceLink file="common/defaults.go" lines="2574-2576" />).
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -115,7 +115,7 @@ Defaults from `EvmBlockStoreConfig.SetDefaults` (<SourceLink file="common/config
 | `namespace` | `default` | Deployment isolation prefix. The effective namespace is combined with a SHA-256 fingerprint of the network's upstream set and effective cache settings. |
 | `historical.enabled` | `false` | Opt in to an independent cache for finalized full blocks outside the live window, adopted from block responses already served to clients (no upstream call of its own). |
 | `historical.ttl` | `1h` | TTL for historical block payloads and finalized height-to-hash index entries. Must be positive when historical caching is enabled. |
-| `logsFill.enabled` | `false` | Opt in to the small-range `eth_getLogs` fill. Independent of `enabled` and `historical.enabled`. Defaults from `EvmBlockStoreLogsFillConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="86-110" />). |
+| `logsFill.enabled` | `false` | Opt in to the small-range `eth_getLogs` fill. Independent of `enabled` and `historical.enabled`. Defaults from `EvmBlockStoreLogsFillConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="93-117" />). |
 | `logsFill.maxRange` | `10` (1..1000) | Widest `toBlock - fromBlock + 1` handled. Also capped by `evm.getLogsMaxAllowedRange` and the smallest upstream `getLogsAutoSplittingRangeThreshold`. |
 | `logsFill.finalizedTtl` | `1h` | TTL of per-block entries at or below the network's finalized height. |
 | `logsFill.unfinalizedTtl` | `0` = derived | TTL of per-block entries above the finalized height. `0` uses the network's estimated block time clamped to 2s..12s (2s while unknown). |
