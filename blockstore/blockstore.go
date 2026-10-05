@@ -730,10 +730,11 @@ func (c *Cache) refresh(ctx context.Context) error {
 	if len(window) == 0 || window[len(window)-1].n != windowHead {
 		window, windowHead = nil, -1
 	}
+	seeded := false
 	if seed, seedHead := c.seedWindowFromPull(); seedHead > windowHead && seedHead <= tip {
 		// Following (re)starts above the retained window: extend the headers
 		// clients already fetched instead of refetching them.
-		window, windowHead = seed, seedHead
+		window, windowHead, seeded = seed, seedHead, true
 	}
 	if len(window) > 0 && tip < windowHead {
 		// A poller can observe a lagging upstream. A lower number alone is
@@ -773,6 +774,13 @@ func (c *Cache) refresh(ctx context.Context) error {
 			}
 		}
 	case tip == windowHead && !suspect:
+		if !seeded && !c.Fresh() {
+			// The retained window (an expired view, or headers recovered from
+			// a stale snapshot) is unverified against the current chain. An
+			// unchanged tip proves nothing, so it stays unfresh until the tip
+			// advances and the new header links onto it. Nothing is fetched.
+			return nil
+		}
 		if old != nil && old.Head == tip && !old.Incomplete {
 			c.refreshTime(old)
 			return nil

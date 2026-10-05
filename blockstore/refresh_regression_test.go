@@ -157,3 +157,62 @@ func TestCache_LaggingTipLeaderStepsDownOnceStale(t *testing.T) {
 	after, _, _ := ch.counts()
 	require.Equal(t, before, after, "stepping down costs no upstream call")
 }
+
+// An expired view is not re-stamped fresh by an unchanged tip: nothing proves
+// the retained headers are still canonical. It stays unfresh, fetching
+// nothing, until the tip advances and the new header links onto it.
+func TestCache_ExpiredViewEqualTipStaysUnfresh(t *testing.T) {
+	ch := newFakeChain(20)
+	c := New(testOpts(), newMapStore(), ch, ch.head, nil)
+	defer c.Stop()
+	c.Tick(t.Context())
+	require.True(t, c.Fresh())
+	before, _, _ := ch.counts()
+
+	now := time.Now().Add(testOpts().MaxStaleness + time.Second)
+	c.nowFn = func() time.Time { return now }
+	require.False(t, c.Fresh())
+	for i := 0; i < 3; i++ {
+		c.Tick(t.Context())
+		require.False(t, c.Fresh(), "tick %d: an unchanged tip must not re-verify an expired view", i)
+	}
+	after, _, _ := ch.counts()
+	require.Equal(t, before, after, "no upstream call while the tip is unchanged")
+
+	ch.mine(1)
+	c.Tick(t.Context())
+	require.True(t, c.Fresh(), "the next linked tip restores freshness")
+	require.Equal(t, int64(21), c.Head())
+	after, _, _ = ch.counts()
+	require.Equal(t, before+1, after, "one header for the new tip")
+}
+
+// A takeover leader recovers the window from a stale published snapshot (kept
+// to avoid refetching it) but never serves it as fresh on an unchanged tip.
+func TestCache_RecoveredStaleSnapshotEqualTipNotFresh(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	ch := newFakeChain(20)
+	a := New(testOpts(), store, ch, ch.head, nil)
+	a.Tick(t.Context())
+	a.Stop()
+	require.NotNil(t, store.snap)
+	store.snap.At = time.Now().Add(-testOpts().MaxStaleness - time.Second)
+	before, _, _ := ch.counts()
+
+	b := New(testOpts(), store, ch, ch.head, nil)
+	defer b.Stop()
+	b.Tick(t.Context())
+	require.NotNil(t, b.lease)
+	require.False(t, b.Fresh(), "a stale snapshot is not verified by an unchanged tip")
+	require.Equal(t, int64(-1), b.Head())
+	after, _, _ := ch.counts()
+	require.Equal(t, before, after)
+
+	ch.mine(1)
+	b.Tick(t.Context())
+	require.True(t, b.Fresh())
+	require.Equal(t, int64(21), b.Head())
+	after, _, _ = ch.counts()
+	require.Equal(t, before+1, after, "the recovered window is extended, not refetched")
+}
