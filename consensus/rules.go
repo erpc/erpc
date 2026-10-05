@@ -222,8 +222,8 @@ var consensusRules = []consensusRule{
 				return &slotResult{Result: g.LargestResult}
 			}
 			// If leader only has an error, return that error; otherwise low participants
-			if gAny := a.getLeaderGroupAny(); gAny != nil && gAny.FirstError != nil {
-				return &slotResult{Error: gAny.FirstError}
+			if gAny := a.getLeaderGroupAny(); gAny != nil && gAny.RepresentativeError != nil {
+				return &slotResult{Error: gAny.RepresentativeError}
 			}
 			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
@@ -712,7 +712,7 @@ var consensusRules = []consensusRule{
 				}
 			}
 			if best.ResponseType == ResponseTypeConsensusError {
-				return &slotResult{Error: best.FirstError}
+				return &slotResult{Error: best.RepresentativeError}
 			}
 			return &slotResult{Result: best.LargestResult}
 		},
@@ -738,7 +738,7 @@ var consensusRules = []consensusRule{
 				return &slotResult{Result: bestEmpty.LargestResult}
 			}
 			if bestError := a.getBestError(); bestError != nil {
-				return &slotResult{Error: bestError.FirstError}
+				return &slotResult{Error: bestError.RepresentativeError}
 			}
 			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
@@ -771,7 +771,7 @@ var consensusRules = []consensusRule{
 				}
 			}
 			if bestValid.ResponseType == ResponseTypeConsensusError {
-				return &slotResult{Error: bestValid.FirstError}
+				return &slotResult{Error: bestValid.RepresentativeError}
 			}
 			return &slotResult{Result: bestValid.LargestResult}
 		},
@@ -807,8 +807,8 @@ var consensusRules = []consensusRule{
 		},
 		Action: func(a *consensusAnalysis) *slotResult {
 			best := a.getBestByCount()
-			if best != nil && best.FirstError != nil {
-				return &slotResult{Error: best.FirstError}
+			if best != nil && best.RepresentativeError != nil {
+				return &slotResult{Error: best.RepresentativeError}
 			}
 			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),

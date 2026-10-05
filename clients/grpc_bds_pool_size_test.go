@@ -43,7 +43,7 @@ func newClientWithPoolSize(t *testing.T, poolSize int) *GenericGrpcBdsClient {
 	logger := zerolog.New(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, poolSize)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, poolSize, "")
 	require.NoError(t, err)
 	return client.(*GenericGrpcBdsClient)
 }

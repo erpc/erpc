@@ -34,6 +34,8 @@ import (
 	// Import gzip to register the compressor - enables automatic gzip compression
 	// when clients send "grpc-accept-encoding: gzip" header
 	_ "google.golang.org/grpc/encoding/gzip"
+	// Registers the client health-check function that healthCheckConfig uses.
+	_ "google.golang.org/grpc/health"
 )
 
 type GrpcBdsClient interface {
@@ -102,7 +104,10 @@ func (c *GenericGrpcBdsClient) SetExpectedChainId(chainId uint64) {
 
 // NewGrpcBdsClient builds a BDS gRPC client backed by a round-robin connection
 // pool. poolSize sets the number of connections; <= 0 uses the built-in default
-// (bdsPoolSize).
+// (bdsPoolSize). A non-empty healthCheckService turns on gRPC client health
+// checking for that grpc.health.v1 service name: round_robin then skips any
+// resolved address not reporting SERVING. A server without grpc.health
+// answers UNIMPLEMENTED, which grpc-go treats as healthy.
 func NewGrpcBdsClient(
 	appCtx context.Context,
 	logger *zerolog.Logger,
@@ -110,6 +115,7 @@ func NewGrpcBdsClient(
 	upstream common.Upstream,
 	parsedUrl *url.URL,
 	poolSize int,
+	healthCheckService string,
 ) (GrpcBdsClient, error) {
 	upsId := "n/a"
 	if upstream != nil {
@@ -160,25 +166,7 @@ func NewGrpcBdsClient(
 		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
 	}
 
-	// gRPC service config: round_robin distributes RPCs across all resolved addresses
-	// (no-op for single-target hosts). Transparent retries handle transient failures
-	// (UNAVAILABLE from connection resets, TCP retransmits) without surfacing errors
-	// to callers. WaitForReady queues RPCs during brief reconnects instead of failing
-	// immediately with UNAVAILABLE.
-	serviceConfig := `{
-		"loadBalancingConfig": [{"round_robin":{}}],
-		"methodConfig": [{
-			"name": [{"service": ""}],
-			"waitForReady": true,
-			"retryPolicy": {
-				"maxAttempts": 2,
-				"initialBackoff": "1s",
-				"maxBackoff": "5s",
-				"backoffMultiplier": 2,
-				"retryableStatusCodes": ["UNAVAILABLE"]
-			}
-		}]
-	}`
+	serviceConfig := bdsServiceConfig(healthCheckService)
 
 	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load())
 	if err != nil {
@@ -1643,4 +1631,33 @@ func svmMapGetBlockError(err error) error {
 	default:
 		return fmt.Errorf("gRPC call failed: %w", err)
 	}
+}
+
+// bdsServiceConfig is the pool's gRPC service config: round_robin across every
+// resolved address, transparent retries on UNAVAILABLE, and waitForReady so RPCs
+// queue through brief reconnects instead of failing. healthCheckService, when
+// set, adds client health checking so round_robin uses only SERVING addresses.
+func bdsServiceConfig(healthCheckService string) string {
+	cfg := map[string]any{
+		"loadBalancingConfig": []any{map[string]any{"round_robin": map[string]any{}}},
+		"methodConfig": []any{map[string]any{
+			"name":         []any{map[string]any{"service": ""}},
+			"waitForReady": true,
+			"retryPolicy": map[string]any{
+				"maxAttempts":          2,
+				"initialBackoff":       "1s",
+				"maxBackoff":           "5s",
+				"backoffMultiplier":    2,
+				"retryableStatusCodes": []any{"UNAVAILABLE"},
+			},
+		}},
+	}
+	if healthCheckService != "" {
+		cfg["healthCheckConfig"] = map[string]any{"serviceName": healthCheckService}
+	}
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		panic(fmt.Sprintf("bds service config does not marshal: %v", err))
+	}
+	return string(out)
 }

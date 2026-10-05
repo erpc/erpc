@@ -14,6 +14,40 @@ const (
 	ConnectorReverseIndex = "idx_reverse"
 )
 
+type reverseIndexWildcardCtxKey struct{}
+
+// WithReverseIndexWildcard attaches the reverse-index lookup partition for a
+// cache Set/Delete. Callers that know networkId and cacheKeySuffix must pass
+// CachePartitionKey(networkId, suffix, "*") rather than inferring the
+// wildcard from the opaque concrete key (refs may themselves contain ':').
+func WithReverseIndexWildcard(ctx context.Context, wildcard string) context.Context {
+	if ctx == nil || wildcard == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, reverseIndexWildcardCtxKey{}, wildcard)
+}
+
+// WithReverseIndex is the Set/Delete helper: same wildcard as
+// CachePartitionKey(networkId, suffix, "*"). Delete without this ctx leaves
+// the reverse-index companion in place on Memory/Redis.
+func WithReverseIndex(ctx context.Context, networkId, suffix string) context.Context {
+	return WithReverseIndexWildcard(ctx, common.CachePartitionKey(networkId, suffix, "*"))
+}
+
+// reverseIndexWildcardKey returns the reverse-index wildcard partition.
+// It only uses an explicit value from WithReverseIndexWildcard — never the
+// last colon of partitionKey, which would split colon-containing block tags.
+func reverseIndexWildcardKey(ctx context.Context, _ string) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	w, ok := ctx.Value(reverseIndexWildcardCtxKey{}).(string)
+	if !ok || w == "" {
+		return "", false
+	}
+	return w, true
+}
+
 type DistributedLock interface {
 	Unlock(ctx context.Context) error
 	IsNil() bool

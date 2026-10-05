@@ -505,6 +505,12 @@ export interface GrpcConnectorConfig {
    * (0) a built-in default is used.
    */
   poolSize?: number /* int */;
+  /**
+   * HealthCheckService is a grpc.health.v1 service name. When set, each
+   * connection watches it on every resolved address and sends requests only
+   * to addresses reporting SERVING. Empty (default) disables health checking.
+   */
+  healthCheckService?: string;
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
@@ -709,6 +715,7 @@ export const UserAgentTrackingModeSimplified: UserAgentTrackingMode = "simplifie
 export const UserAgentTrackingModeRaw: UserAgentTrackingMode = "raw";
 export interface NetworkDefaults {
   rateLimitBudget?: string;
+  cacheKeySuffix?: string;
   failsafe?: (FailsafeConfig | undefined)[];
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
@@ -950,6 +957,10 @@ export interface GrpcUpstreamConfig {
    * When unset (0) a built-in default is used.
    */
   poolSize?: number /* int */;
+  /**
+   * HealthCheckService: see GrpcConnectorConfig.HealthCheckService.
+   */
+  healthCheckService?: string;
 }
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
@@ -1354,6 +1365,7 @@ export interface NetworkConfig {
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   alias?: string;
+  cacheKeySuffix?: string;
   methods?: MethodsConfig;
   multiplexing?: boolean;
   staticResponses?: (StaticResponseConfig | undefined)[];
