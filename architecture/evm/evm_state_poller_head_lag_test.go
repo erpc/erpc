@@ -308,25 +308,40 @@ func TestStatePoller_UpstreamWithFailingPollsCrossesLagGateWithinOnePollInterval
 		"failed polls must re-record its last known head within one poll interval")
 }
 
-// A poll tick whose fetch is skipped by the debounce (a block time above the
-// interval, or another pod fetched first) still observes the upstream's last
-// known head, so a frozen upstream is flagged on that tick.
-func TestStatePoller_TickSkippedByDebounceStillRecordsLag(t *testing.T) {
-	n := newSimNetwork(t, "served-a", "served-b", "polled")
-	n.ups[2].freeze()
-	n.pollers[2].stateMu.Lock()
-	n.pollers[2].debounceInterval = time.Hour
-	n.pollers[2].stateMu.Unlock()
+// Skipped fetches still observe the last known heads, including when this pod
+// disabled unsupported polling but shared propagation supplied a head.
+func TestStatePoller_SkippedTickStillRecordsLag(t *testing.T) {
+	for _, unsupported := range []bool{false, true} {
+		name := "debounce"
+		if unsupported {
+			name = "unsupported"
+		}
+		t.Run(name, func(t *testing.T) {
+			n := newSimNetwork(t, "served-a", "served-b", "polled")
+			n.ups[2].freeze()
+			n.pollers[2].stateMu.Lock()
+			n.pollers[2].debounceInterval = time.Hour
+			n.pollers[2].skipLatestBlockCheck = unsupported
+			n.pollers[2].skipFinalizedCheck = unsupported
+			n.pollers[2].stateMu.Unlock()
 
-	for range 2 * simLagGate {
-		n.chain.head.Add(1)
-		n.serve(0)
-		n.serve(1)
+			for range 2 * simLagGate {
+				n.chain.head.Add(1)
+				n.serve(0)
+				n.serve(1)
+			}
+			for _, up := range n.ups[:2] {
+				n.tracker.SetFinalizedBlockNumber(up, n.chain.head.Load()-10)
+			}
+			require.NoError(t, n.pollers[2].Poll(context.Background()))
+
+			require.EqualValues(t, 2*simLagGate, n.lag(2),
+				"a tick that fetches nothing must still measure the last known head against the current network head")
+			require.EqualValues(t, n.chain.head.Load()-10-n.pollers[2].finalizedBlockShared.GetValue(),
+				n.tracker.GetUpstreamMethodMetrics(n.ups[2], "*", common.DataFinalityStateAll).FinalizationLag.Load(),
+				"a skipped finalized poll must still measure the last known finalized head")
+		})
 	}
-	require.NoError(t, n.pollers[2].Poll(context.Background()))
-
-	require.EqualValues(t, 2*simLagGate, n.lag(2),
-		"a tick that fetches nothing must still measure the last known head against the current network head")
 }
 
 // A fetch slower than the shared counter's foreground wait finishes in the
