@@ -300,8 +300,29 @@ func TestLogsFill_UnfinalizedTTLAndEmptyTipGuard(t *testing.T) {
 	f = newTestFiller(finalizedStore, chainFetcher(t, nil), 200, 200)
 	res = f.Serve(t.Context(), 195, 200, 0, nil)
 	require.True(t, res.OK)
-	require.True(t, finalizedStore.has(200), "finalized empty heights are always stored")
-	require.Equal(t, time.Hour, finalizedStore.ttls[200])
+	require.True(t, finalizedStore.has(198), "finalized empty heights past the guard are stored")
+	require.Equal(t, time.Hour, finalizedStore.ttls[198])
+}
+
+// When finalized tracks the head, an empty list at a finalized height within
+// EmptyTipGuard of latest may be a lagging upstream's answer for a block it
+// has not imported: it is served but not cached for finalizedTtl, so the
+// next request re-fills it.
+func TestLogsFill_EmptyFinalizedHeightNearHeadNotStored(t *testing.T) {
+	store := newLfStore()
+	fetch := chainFetcher(t, []map[string]interface{}{lfLog(200, 0, lfAddrA)})
+	f := newTestFiller(store, fetch, 200, 199)
+	res := f.Serve(t.Context(), 197, 200, 0, nil)
+	require.True(t, res.OK)
+	require.True(t, store.has(198), "empty finalized height past the guard is stored")
+	require.Equal(t, time.Hour, store.ttls[198])
+	require.False(t, store.has(199), "empty finalized height within the guard of latest is not stored")
+	require.True(t, store.has(200), "non-empty heights are unchanged")
+
+	res = f.Serve(t.Context(), 199, 199, 0, nil)
+	require.True(t, res.OK)
+	require.Equal(t, LogsFillFill, res.Outcome, "the guarded height is re-filled by the next request")
+	require.EqualValues(t, 2, fetch.calls.Load())
 }
 
 func TestLogsFill_ReorgOverwritesHeight(t *testing.T) {

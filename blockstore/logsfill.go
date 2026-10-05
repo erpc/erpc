@@ -413,14 +413,16 @@ func (f *LogsFiller) entryTTL(e *BlockLogs, latest, finalized int64) (time.Durat
 	if f.opt.MaxEntryBytes > 0 && e.size() > f.opt.MaxEntryBytes {
 		return 0, false
 	}
-	if finalized > 0 && e.Number <= finalized {
-		return f.opt.FinalizedTTL, true
-	}
-	// An unfinalized empty list is the one answer a lagging upstream can
-	// produce for a block it has not imported yet; only trust it once the
-	// network head is EmptyTipGuard blocks past it.
+	// An empty list is the one answer a lagging upstream can produce for a
+	// block it has not imported yet; only trust it once the network head is
+	// EmptyTipGuard blocks past it. This applies at finalized heights too: on
+	// chains whose finalized height tracks the head, a lagging upstream's empty
+	// answer would otherwise be cached for finalizedTtl.
 	if e.Hash == "" && e.Number > latest-f.opt.EmptyTipGuard {
 		return 0, false
+	}
+	if finalized > 0 && e.Number <= finalized {
+		return f.opt.FinalizedTTL, true
 	}
 	ttl := f.opt.UnfinalizedTTL()
 	if ttl <= 0 {
