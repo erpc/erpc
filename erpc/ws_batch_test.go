@@ -317,3 +317,33 @@ func TestWs_DisconnectReleasesResources(t *testing.T) {
 		return subCount(t, e) == 0
 	}, 10*time.Second, 20*time.Millisecond, "head-cache subscriptions must be released")
 }
+
+// A subscribe refused by the per-connection cap must not consume project
+// rate-limit budget: with cap 1 and budget 2, the second subscribe is refused
+// for the cap, and after unsubscribing the remaining permit is still there.
+func TestWs_SubscribeAtCapConsumesNoPermit(t *testing.T) {
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true, MaxSubscriptionsPerConnection: 1})
+	cfg.RateLimiters = &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{{
+		Id: "ws-subs-cap", Rules: []*common.RateLimitRuleConfig{{Method: "eth_subscribe", MaxCount: 2, Period: common.RateLimitPeriodMinute}},
+	}}}
+	cfg.Projects[0].RateLimitBudget = "ws-subs-cap"
+	_, _, base, shutdown, e := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	waitHead(t, e, 20)
+	w, _, err := dialWs(t, wsURL(base, ""), nil)
+	require.NoError(t, err)
+	first := w.call("eth_subscribe", `["newHeads"]`)
+	require.Nil(t, first.Error)
+	for i := 0; i < 3; i++ {
+		r := w.call("eth_subscribe", `["newHeads"]`)
+		require.NotNil(t, r.Error)
+		require.Contains(t, r.Error.Message, "too many subscriptions")
+	}
+	var id string
+	require.NoError(t, json.Unmarshal(first.Result, &id))
+	require.Nil(t, w.call("eth_unsubscribe", fmt.Sprintf(`[%q]`, id)).Error)
+	require.Nil(t, w.call("eth_subscribe", `["newHeads"]`).Error,
+		"the second permit must still be available: cap refusals took none")
+}

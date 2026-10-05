@@ -732,6 +732,18 @@ func (c *wsConn) subscribe(ctx context.Context, nq *common.NormalizedRequest, re
 	if hc == nil {
 		return errorReply(req.ID, int(common.JsonRpcErrorUnsupportedException), "subscriptions unavailable: head cache is not enabled for this network"), nil
 	}
+	// Reject a closed connection or a full subscription table before taking
+	// a rate-limit permit, so a refused subscribe costs no project budget.
+	// Re-checked under the lock below, after the permit.
+	c.mu.Lock()
+	closed, full := c.ctx.Err() != nil, len(c.subs) >= c.ws.cfg.MaxSubscriptionsPerConnection
+	c.mu.Unlock()
+	if closed {
+		return nil, nil
+	}
+	if full {
+		return errorReply(req.ID, int(common.JsonRpcErrorCapacityExceeded), fmt.Sprintf("too many subscriptions on this connection (max %d)", c.ws.cfg.MaxSubscriptionsPerConnection)), nil
+	}
 	// Subscription setup consumes project rate-limit budget like any call.
 	if err := c.project.AcquireRateLimitPermit(ctx, nq); err != nil {
 		now := time.Now()
