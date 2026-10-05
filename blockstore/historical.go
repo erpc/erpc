@@ -3,12 +3,17 @@ package blockstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
 
 // HistoricalStore stores independently addressable finalized full blocks and
-// the finalized height-to-hash index.
+// the finalized height-to-hash index. GetFinalizedHash returns an error
+// wrapping ErrNotFound when nothing is indexed; any other error means the
+// index could not be read. PutFinalizedHash only writes an absent height: it
+// is a no-op when the same hash is indexed and returns ErrIndexConflict when
+// a different one is.
 type HistoricalStore interface {
 	GetFinalizedHash(context.Context, Scope, int64) (string, error)
 	PutFinalizedHash(context.Context, Scope, int64, string, time.Duration) error
@@ -161,6 +166,11 @@ func (h *Historical) Adopt(ctx context.Context, raw json.RawMessage, byNumber bo
 	}
 	indexed, err := h.store.GetFinalizedHash(ctx, h.scope, n)
 	if err != nil {
+		if !errors.Is(err, ErrNotFound) {
+			// The index could not be read: whether a conflicting hash is
+			// indexed is unknown, so adopt nothing (fail closed).
+			return fmt.Errorf("read historical block index %d: %w", n, err)
+		}
 		indexed = ""
 	}
 	if indexed != "" && normHash(indexed) != hash {
@@ -184,6 +194,12 @@ func (h *Historical) Adopt(ctx context.Context, raw json.RawMessage, byNumber bo
 	}
 	if byNumber && indexed == "" {
 		if err := h.store.PutFinalizedHash(ctx, h.scope, n, hash, h.ttl); err != nil {
+			if errors.Is(err, ErrIndexConflict) {
+				// A concurrent adopt indexed a different hash at n after our
+				// read: conflicting observations, fail closed as above.
+				_ = h.store.DeleteFinalizedHash(ctx, h.scope, n)
+				return nil
+			}
 			return fmt.Errorf("store historical block index %d: %w", n, err)
 		}
 	}

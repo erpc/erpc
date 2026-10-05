@@ -10,6 +10,9 @@ import (
 var (
 	ErrNotFound         = errors.New("blockstore: not found")
 	ErrStoreUnavailable = errors.New("blockstore: store unavailable")
+	// ErrIndexConflict is returned by HistoricalStore.PutFinalizedHash when a
+	// different hash is already indexed at the height (writes never replace).
+	ErrIndexConflict = errors.New("blockstore: conflicting finalized index")
 )
 
 type Scope struct {

@@ -5,11 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/blockstore"
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/redis/go-redis/v9"
 )
 
 type blockStoreHistoricalStore struct {
@@ -88,11 +92,18 @@ func (s *blockStoreHistoricalStore) GetFinalizedHash(ctx context.Context, scope 
 	}
 	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, historicalKey("finalized", fmt.Sprint(height)), nil)
 	if err != nil {
-		return "", err
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return "", fmt.Errorf("get historical finalized index: %w: %w", blockstore.ErrNotFound, err)
+		}
+		return "", fmt.Errorf("get historical finalized index: %w", err)
 	}
 	if len(value) == 0 {
 		return "", blockstore.ErrNotFound
 	}
+	return decodeFinalizedIndex(value, height)
+}
+
+func decodeFinalizedIndex(value []byte, height int64) (string, error) {
 	var payload struct {
 		Kind   string `json:"kind"`
 		Height int64  `json:"height"`
@@ -125,7 +136,57 @@ func (s *blockStoreHistoricalStore) PutFinalizedHash(ctx context.Context, scope 
 	if ttl <= 0 {
 		return fmt.Errorf("historical finalized index TTL must be positive")
 	}
-	return s.connector.Set(ctx, partition, historicalKey("finalized", fmt.Sprint(height)), value, &ttl)
+	client, err := s.redisClient()
+	if err != nil {
+		return err
+	}
+	// Same key layout as connector.Set ("<partition>:<rangeKey>"). SET NX so
+	// concurrent adopts never overwrite an indexed hash; a different hash
+	// already there is a conflict the caller fails closed on.
+	key := partition + ":" + historicalKey("finalized", fmt.Sprint(height))
+	set, err := client.SetNX(ctx, key, value, ttl).Result()
+	if err != nil {
+		return fmt.Errorf("store historical finalized index: %w", err)
+	}
+	if set {
+		return nil
+	}
+	current, err := client.Get(ctx, key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		// Expired between SETNX and GET: nothing to conflict with, and the
+		// next by-number observation indexes it.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read back historical finalized index: %w", err)
+	}
+	indexed, err := decodeFinalizedIndex(current, height)
+	if err != nil || !strings.EqualFold(indexed, hash) {
+		return blockstore.ErrIndexConflict
+	}
+	return nil
+}
+
+// redisClient resolves the Redis client behind the connector (unwrapping
+// failsafe wrappers) for the conditional index write.
+func (s *blockStoreHistoricalStore) redisClient() (redis.UniversalClient, error) {
+	resolved := s.connector
+	for {
+		u, ok := resolved.(interface{ Unwrap() data.Connector })
+		if !ok {
+			break
+		}
+		resolved = u.Unwrap()
+	}
+	rc, ok := resolved.(*data.RedisConnector)
+	if !ok || rc == nil {
+		return nil, fmt.Errorf("historical finalized index requires a redis connector")
+	}
+	client := rc.Client()
+	if client == nil {
+		return nil, blockstore.ErrStoreUnavailable
+	}
+	return client, nil
 }
 
 func (s *blockStoreHistoricalStore) DeleteFinalizedHash(ctx context.Context, scope blockstore.Scope, height int64) error {

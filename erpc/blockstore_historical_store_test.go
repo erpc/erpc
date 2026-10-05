@@ -88,3 +88,38 @@ func TestBlockStoreHistoricalConnectorCorruptPayloadFailsClosed(t *testing.T) {
 	_, err = store.GetFinalizedHash(context.Background(), scope, 7)
 	require.Error(t, err)
 }
+
+// The Redis finalized index distinguishes "not indexed" (ErrNotFound) from a
+// failed read, and only ever writes an absent height: an equal hash is a
+// no-op, a different hash is ErrIndexConflict and does not overwrite.
+func TestBlockStoreHistoricalConnectorFinalizedIndexIsConditional(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	lg := zerolog.Nop()
+	config := &common.RedisConnectorConfig{Addr: m.Addr(), InitTimeout: common.Duration(3 * time.Second), GetTimeout: common.Duration(time.Second), SetTimeout: common.Duration(time.Second)}
+	require.NoError(t, config.SetDefaults())
+	connector, err := data.NewRedisConnector(ctx, &lg, "historical-index-test", config)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return connector.Client() != nil }, 3*time.Second, 10*time.Millisecond)
+	store := &blockStoreHistoricalStore{connector: connector}
+	scope := blockstore.Scope{Namespace: "ns:historical", ProjectId: "p", NetworkId: "n"}
+
+	_, err = store.GetFinalizedHash(ctx, scope, 5)
+	require.ErrorIs(t, err, blockstore.ErrNotFound)
+
+	require.NoError(t, store.PutFinalizedHash(ctx, scope, 5, "0xaa", time.Minute))
+	require.NoError(t, store.PutFinalizedHash(ctx, scope, 5, "0xAA", time.Minute), "same hash is a no-op")
+	require.ErrorIs(t, store.PutFinalizedHash(ctx, scope, 5, "0xbb", time.Minute), blockstore.ErrIndexConflict)
+	got, err := store.GetFinalizedHash(ctx, scope, 5)
+	require.NoError(t, err)
+	require.Equal(t, "0xaa", got, "a conflicting write never overwrites")
+
+	m.SetError("ERR simulated transport failure")
+	_, err = store.GetFinalizedHash(ctx, scope, 5)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, blockstore.ErrNotFound, "a failed read is not \"not indexed\"")
+	m.SetError("")
+}

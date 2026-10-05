@@ -43,6 +43,12 @@ func (s *historicalTestStore) GetFinalizedHash(_ context.Context, scope Scope, n
 func (s *historicalTestStore) PutFinalizedHash(_ context.Context, scope Scope, n int64, hash string, _ time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if cur := s.index[historicalHeightKey(scope, n)]; cur != "" {
+		if normHash(cur) != normHash(hash) {
+			return ErrIndexConflict
+		}
+		return nil
+	}
 	s.index[historicalHeightKey(scope, n)] = hash
 	return nil
 }
@@ -265,4 +271,48 @@ func TestHistorical_HashKeysAreCaseInsensitive(t *testing.T) {
 		_, hit = h.ReadBlockByHash(ctx, q)
 		require.True(t, hit, "block by hash %q", q)
 	}
+}
+
+// errIndexStore fails index reads with a transport error.
+type errIndexStore struct{ *historicalTestStore }
+
+func (s errIndexStore) GetFinalizedHash(context.Context, Scope, int64) (string, error) {
+	return "", fmt.Errorf("dial tcp: connection refused")
+}
+
+// An unreadable index is not "nothing indexed": Adopt stores neither the body
+// nor the index, since a conflicting hash might already be indexed.
+func TestHistorical_AdoptFailsClosedOnIndexReadError(t *testing.T) {
+	ctx := context.Background()
+	chain := newFakeChain(4)
+	store := errIndexStore{newHistoricalTestStore()}
+	finalized := int64(4)
+	h := newHistoricalForTest(store, &finalized)
+	require.Error(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
+	require.Empty(t, store.index, "no index written when the index read failed")
+	require.Zero(t, store.blockPuts, "no body written when the index read failed")
+}
+
+// staleReadStore always reads "not indexed", modelling two adopts that both
+// read before either writes.
+type staleReadStore struct{ *historicalTestStore }
+
+func (s staleReadStore) GetFinalizedHash(context.Context, Scope, int64) (string, error) {
+	return "", ErrNotFound
+}
+
+// Concurrent conflicting by-number adopts of one finalized height cannot
+// overwrite each other's index: the loser sees ErrIndexConflict and the
+// height fails closed (unindexed) instead of naming the last writer.
+func TestHistorical_ConcurrentConflictingAdoptsFailClosed(t *testing.T) {
+	ctx := context.Background()
+	chain := newFakeChain(4)
+	base := newHistoricalTestStore()
+	finalized := int64(4)
+	h := newHistoricalForTest(staleReadStore{base}, &finalized)
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
+	chain.blocks[1] = "b"
+	require.NoError(t, h.Adopt(ctx, chainBlock(t, chain, 1), true))
+	_, err := base.GetFinalizedHash(ctx, h.scope, 1)
+	require.ErrorIs(t, err, ErrNotFound, "conflicting adopts leave the height unindexed")
 }
