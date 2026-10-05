@@ -9,8 +9,8 @@ import (
 
 // A body whose transactions array repeats an entry must not validate against
 // a verified header that lists each transaction once (set comparison would
-// accept [A,B,A] for [A,B]), and a header that itself repeats a hash must not
-// let a shorter body through.
+// accept [A,B,A] for [A,B]), and a header that itself repeats a hash must be
+// rejected at parse time so it can never become a verified header.
 func TestValidatePayload_RejectsDuplicatedTransactions(t *testing.T) {
 	const (
 		blockHash  = "0x00000000000000000000000000000000000000000000000000000000000000b1"
@@ -36,8 +36,6 @@ func TestValidatePayload_RejectsDuplicatedTransactions(t *testing.T) {
 	require.Error(t, c.validatePayload(PayloadBlock, hdr, block(full(txA), full(txB), full(txA))),
 		"a body repeating a transaction must not match a header listing it once")
 
-	if dupHdr, err := parseHeader(block(txA, txB, txA), 0x10); err == nil {
-		require.Error(t, c.validatePayload(PayloadBlock, dupHdr, block(full(txA), full(txB))),
-			"a header repeating a hash must not let a shorter body validate")
-	}
+	_, err = parseHeader(block(txA, txB, txA), 0x10)
+	require.Error(t, err, "a header repeating a transaction hash must be rejected, so it can never verify a shorter body")
 }
