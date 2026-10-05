@@ -148,11 +148,15 @@ func Init(
 	// 4) Expose Transports
 	//
 	logger.Info().Msg("initializing transports")
+	// Closed when the HTTP server has finished draining after appCtx is
+	// cancelled; nil (never waited on) when no HTTP server is configured.
+	var httpDrained <-chan struct{}
 	if cfg.Server != nil {
 		httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 		if err != nil {
 			return err
 		}
+		httpDrained = httpServer.drained
 		go func() {
 			if err := httpServer.Start(&logger); err != nil {
 				if err != http.ErrServerClosed {
@@ -214,11 +218,18 @@ func Init(
 		}()
 	}
 
-	// Wait until the context is cancelled, then give the http server some time to finish draining.
+	// Wait until the context is cancelled, then for the http server to finish
+	// draining (waitBeforeShutdown, then Shutdown with its 30s budget) — main
+	// exits as soon as Init returns, which would kill every request still in
+	// flight — and only then give exporters waitAfterShutdown to flush.
 	<-appCtx.Done()
 	logger.Info().Msg("shutting down gracefully...")
+	if httpDrained != nil {
+		<-httpDrained
+	}
 	// Flush buffered integrity forensics before the process goes away; the S3
 	// exporter otherwise loses everything written since its last interval.
+	// Runs after the drain so catches recorded by its last requests are kept.
 	evm.CloseIntegrityExporters()
 	if cfg.Server != nil && cfg.Server.WaitAfterShutdown != nil {
 		time.Sleep(cfg.Server.WaitAfterShutdown.Duration())
