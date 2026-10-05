@@ -12,7 +12,9 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -382,4 +384,37 @@ func TestHttp_LogsFill_LiveWindowAdoptsFill(t *testing.T) {
 	require.Len(t, logs, 4)
 	require.Equal(t, int64(1), up.UnfilteredLogCalls())
 	require.Zero(t, up.BlockHashLogCalls(), "adopted lists serve window reads with no upstream call")
+}
+
+// A panic while adopting a fill into the live window is recovered and counted
+// instead of crashing the process (the adopt goroutine is detached from any
+// request). A zero-value Cache panics on AdoptLogs (nil clock).
+func TestHttp_LogsFill_AdoptPanicIsRecovered(t *testing.T) {
+	f := newLogsFillFixture(t, 120, false)
+	f.network.blockStore = &blockstore.Cache{}
+	f.network.blockStoreAdoptSem = make(chan struct{}, blockStoreAdoptLimit)
+	panics := func() float64 {
+		ch := make(chan prometheus.Metric, 1024)
+		go func() { telemetry.MetricUnexpectedPanicTotal.Collect(ch); close(ch) }()
+		total := 0.0
+		for m := range ch {
+			var pb dto.Metric
+			require.NoError(t, m.Write(&pb))
+			for _, l := range pb.GetLabel() {
+				if l.GetName() == "scope" && l.GetValue() == "blockstore-adopt" {
+					total += pb.GetCounter().GetValue()
+				}
+			}
+		}
+		return total
+	}
+	panicsBefore := panics()
+	before := f.up.UnfilteredLogCalls()
+	logs := f.getLogs(t, 100, 104, "")
+	require.NotEmpty(t, logs)
+	require.Equal(t, before+1, f.up.UnfilteredLogCalls())
+	require.Eventually(t, func() bool { return len(f.network.blockStoreAdoptSem) == 0 }, 5*time.Second, 10*time.Millisecond,
+		"the adopt goroutine must finish (recovered) and release its slot")
+	require.Eventually(t, func() bool { return panics() == panicsBefore+1 }, 5*time.Second, 10*time.Millisecond,
+		"the recovered panic is counted under scope blockstore-adopt")
 }

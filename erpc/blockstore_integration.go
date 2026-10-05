@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1008,6 +1009,16 @@ func (n *Network) adoptIntoBlockStore(ctx context.Context, req *common.Normalize
 		}
 		adopt = func(ctx context.Context) { c.ObserveLogs(ctx, result, from, to, unfiltered && from >= 0, fromCache) }
 	}
+	n.goBlockStoreAdopt("response", adopt)
+}
+
+// goBlockStoreAdopt runs adopt off the caller's path, bounded by
+// blockStoreAdoptSem (dropped when saturated). A panic in adopt is recovered,
+// counted and logged so a bad payload cannot crash the process.
+func (n *Network) goBlockStoreAdopt(source string, adopt func(ctx context.Context)) {
+	if n.blockStoreAdoptSem == nil || n.appCtx == nil {
+		return
+	}
 	select {
 	case n.blockStoreAdoptSem <- struct{}{}:
 	default:
@@ -1016,8 +1027,15 @@ func (n *Network) adoptIntoBlockStore(ctx context.Context, req *common.Normalize
 	go func() {
 		defer func() { <-n.blockStoreAdoptSem }()
 		defer func() {
-			if rec := recover(); rec != nil && n.logger != nil {
-				n.logger.Error().Interface("panic", rec).Msg("unexpected panic adopting response into blockstore")
+			if rec := recover(); rec != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"blockstore-adopt",
+					fmt.Sprintf("network:%s source:%s", n.networkId, source),
+					common.ErrorFingerprint(rec),
+				).Inc()
+				if n.logger != nil {
+					n.logger.Error().Interface("panic", rec).Str("source", source).Str("stack", string(debug.Stack())).Msg("unexpected panic adopting into blockstore")
+				}
 			}
 		}()
 		actx, cancel := context.WithTimeout(n.appCtx, 30*time.Second)
