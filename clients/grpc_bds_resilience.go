@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -527,23 +528,31 @@ func callBoundedT[T any](ctx context.Context, fn func(context.Context) (T, error
 // pickTargetForBDS extracts the host:port, the method path prefix, and the TLS
 // choice from an upstream URL.
 //
+// TLS is on for port 443 or a `grpcs`/`*tls*` scheme. A URL without a port
+// dials 443 when TLS is on and 50051 otherwise, so `grpcs://edge.goldsky.com`
+// reaches the TLS front door rather than a plaintext port.
+//
 // pathPrefix is the URL path without its trailing slash ("" for none). A
 // server mounted below a path selector — `grpcs://edge.goldsky.com/boost`
 // serves `/boost/bds.evm.RPCQueryService/...` — needs every call's method
 // prefixed with it; gRPC itself has no notion of a base path.
 func pickTargetForBDS(parsedUrl *url.URL) (target, pathPrefix string, useTLS bool) {
-	target = parsedUrl.Host
-	if parsedUrl.Port() == "" {
-		target = fmt.Sprintf("%s:50051", parsedUrl.Hostname())
-	}
-	target = fmt.Sprintf("dns:///%s", target)
-	pathPrefix = strings.TrimRight(parsedUrl.Path, "/")
-
 	if portNum, err := strconv.Atoi(parsedUrl.Port()); err == nil && portNum == 443 {
 		useTLS = true
 	} else if strings.HasPrefix(parsedUrl.Scheme, "grpcs") || strings.Contains(parsedUrl.Scheme, "tls") {
 		useTLS = true
 	}
+
+	target = parsedUrl.Host
+	if parsedUrl.Port() == "" {
+		port := "50051"
+		if useTLS {
+			port = "443"
+		}
+		target = net.JoinHostPort(parsedUrl.Hostname(), port)
+	}
+	target = fmt.Sprintf("dns:///%s", target)
+	pathPrefix = strings.TrimRight(parsedUrl.Path, "/")
 	return target, pathPrefix, useTLS
 }
 
