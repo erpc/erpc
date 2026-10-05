@@ -376,7 +376,9 @@ back to `base + min`:
 **3. gRPC connector with bearer-authenticated edge API and a Redis write layer.**
 The gRPC connector is read-only; pair it with Redis for writes. Production configs
 using a public BDS edge gateway attach auth headers per-connector — secrets stay
-in environment variables, not in the config file:
+in environment variables, not in the config file. A gateway that serves many
+chains on one host mounts each chain under a URL path: list one URL per chain,
+and eRPC maps each to its network by calling `ChainId`:
 
 <ConfigTabs
   path="database.evmJsonRpcCache.connectors[]"
@@ -386,12 +388,14 @@ in environment variables, not in the config file:
       - id: bds-edge
         driver: grpc
         grpc:
+          # grpcs:// without a port dials 443; the path mounts every call
           servers:
-            - grpc://bds-edge-api.example.com:443
+            - grpcs://bds-edge-api.example.com/ethereum
+            - grpcs://bds-edge-api.example.com/base
           getTimeout: 400ms
           headers:
             # bearer token loaded from env — never hardcode secrets in config
-            Authorization: "Bearer \${BDS_API_TOKEN}"
+            authorization: "Bearer \${BDS_API_TOKEN}"
         failsafeForGets:
           - matchMethod: "*"
             retry: { maxAttempts: 2, delay: "0" }
@@ -409,10 +413,13 @@ in environment variables, not in the config file:
         id: "bds-edge",
         driver: "grpc",
         grpc: {
-          servers: ["grpc://bds-edge-api.example.com:443"],
+          servers: [
+            "grpcs://bds-edge-api.example.com/ethereum",
+            "grpcs://bds-edge-api.example.com/base",
+          ],
           getTimeout: "400ms",
           // bearer token loaded from env — never hardcode secrets in config
-          headers: { Authorization: "Bearer \${BDS_API_TOKEN}" },
+          headers: { authorization: "Bearer \${BDS_API_TOKEN}" },
         },
         failsafeForGets: [{
           matchMethod: "*",
