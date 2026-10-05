@@ -174,6 +174,10 @@ func (ws *wsServer) serve(w http.ResponseWriter, r *http.Request) {
 	// Credentials are checked at upgrade so unauthenticated clients never get
 	// a connection. Each message is authenticated again with its own method.
 	if _, err := ws.authenticate(traceCtx, project, r, "eth_subscribe", nil); err != nil {
+		if wsAuthTransient(err) {
+			reject(http.StatusServiceUnavailable, "authentication temporarily unavailable")
+			return
+		}
 		reject(http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -285,6 +289,13 @@ func (ws *wsServer) authenticate(ctx context.Context, project *PreparedProject, 
 		nq.SetClientIP(ws.s.resolveRealClientIP(r))
 	}
 	return project.AuthenticateConsumer(ctx, nq, method, ap)
+}
+
+// wsAuthTransient reports whether an authentication failure is an outage of
+// the auth backend (or a timeout) rather than a denial of the credentials.
+// Anything else is treated as a denial (fail closed).
+func wsAuthTransient(err error) bool {
+	return common.HasErrorCode(err, common.ErrCodeAuthUnavailable) || errors.Is(err, context.DeadlineExceeded)
 }
 
 type wsSub struct {
@@ -510,10 +521,15 @@ func (c *wsConn) pingLoop() {
 			// Re-check the upgrade credentials so revoked keys and expired
 			// JWTs stop streaming within one ping interval.
 			// A rate-limit rejection means the credentials were valid (the
-			// limit is applied after a strategy succeeds), so it must not
-			// close a healthy stream.
+			// limit is applied after a strategy succeeds), and a backend
+			// outage (auth database, timeout) is no verdict on them, so
+			// neither closes a healthy stream; the next ping re-checks.
 			if _, err := c.ws.authenticate(c.ctx, c.project, c.req, "eth_subscribe", nil); err != nil && c.ctx.Err() == nil &&
 				!common.HasErrorCode(err, common.ErrCodeAuthRateLimitRuleExceeded) {
+				if wsAuthTransient(err) {
+					c.lg.Warn().Err(err).Msg("websocket re-authentication unavailable; keeping stream open")
+					continue
+				}
 				c.closeWith(websocket.StatusPolicyViolation, "unauthorized")
 				return
 			}

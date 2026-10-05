@@ -565,6 +565,32 @@ func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
 	return http.StatusUnauthorized
 }
 
+type ErrAuthUnavailable struct{ BaseError }
+
+const ErrCodeAuthUnavailable ErrorCode = "ErrAuthUnavailable"
+
+// NewErrAuthUnavailable is an ErrAuthUnauthorized whose cause is an
+// authentication backend failure (database, JWKS, timeout) rather than a
+// verdict on the credentials. It still carries ErrCodeAuthUnauthorized, so
+// request handling is unchanged; long-lived sessions can check
+// ErrCodeAuthUnavailable to tell a transient outage from a denial.
+var NewErrAuthUnavailable = func(strategy string, message string, cause error) error {
+	return &ErrAuthUnauthorized{
+		BaseError{
+			Code:    ErrCodeAuthUnauthorized,
+			Message: message,
+			Cause: &ErrAuthUnavailable{BaseError{
+				Code:    ErrCodeAuthUnavailable,
+				Message: "authentication backend unavailable",
+				Cause:   cause,
+			}},
+			Details: map[string]interface{}{
+				"strategy": strategy,
+			},
+		},
+	}
+}
+
 type ErrAuthRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeAuthRateLimitRuleExceeded ErrorCode = "ErrAuthRateLimitRuleExceeded"

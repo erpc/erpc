@@ -109,8 +109,14 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		return nil, common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
-	// If no strategy matched or succeeded, consider the request unauthorized
-	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
+	// If no strategy matched or succeeded, consider the request unauthorized.
+	// When any strategy could not decide (backend unavailable), the request is
+	// not known to be denied, so keep that distinction for long-lived sessions.
+	joined := errors.Join(errs...)
+	if common.HasErrorCode(joined, common.ErrCodeAuthUnavailable) {
+		return nil, common.NewErrAuthUnavailable("n/a", joined.Error(), joined)
+	}
+	return nil, common.NewErrAuthUnauthorized("n/a", joined.Error())
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies

@@ -203,7 +203,7 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 				s.logger.Error().Str("userId", u.Id).Msg("auth DB error; fail-open enabled, granting emergency user")
 				return &authFetchResult{user: u, err: nil, neg: false, skipCache: true}, nil
 			}
-			return &authFetchResult{user: nil, err: common.NewErrAuthUnauthorized("database", fmt.Sprintf("database query failed: %v", err)), neg: false}, nil
+			return &authFetchResult{user: nil, err: common.NewErrAuthUnavailable("database", fmt.Sprintf("database query failed: %v", err), err), neg: false}, nil
 		}
 
 		// Successful query: the DB is healthy. Clear any stale connectorDown

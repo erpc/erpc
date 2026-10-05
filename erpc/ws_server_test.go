@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/coder/websocket"
 	"github.com/erpc/erpc/blockstore"
 	"github.com/erpc/erpc/common"
@@ -771,4 +772,60 @@ func TestWs_LogsFetchedOnlyForLogsSubscribers(t *testing.T) {
 		require.Contains(t, string(w.next(headsID)), fmt.Sprintf(`"number":"0x%x"`, n))
 	}
 	require.Equal(t, int64(4), up.BlockHashLogCalls(), "no logs subscribers, no logs fetches")
+}
+
+// An auth-backend outage (database errors) is no verdict on the credentials:
+// the upgrade answers 503 instead of 401 and established streams survive the
+// periodic re-auth, while a genuine denial still closes them.
+func TestWs_AuthBackendOutageIsNotDenial(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	require.NoError(t, mr.Set("k1:*", `{"userId":"u1"}`))
+	require.NoError(t, mr.Set("k2:*", `{"userId":"u2"}`))
+	up := newScriptedEvmUpstream(123, 20)
+	defer up.Close()
+	cfg := wsBlockStoreCfg(up, &common.WebSocketServerConfig{Enabled: true, PingInterval: common.Duration(200 * time.Millisecond)})
+	ttl := time.Millisecond
+	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
+		{Type: common.AuthTypeDatabase, Database: &common.DatabaseStrategyConfig{
+			Connector: &common.ConnectorConfig{Id: "ws-auth-db", Driver: common.DriverRedis, Redis: &common.RedisConnectorConfig{URI: "redis://" + mr.Addr()}},
+			Cache:     &common.DatabaseStrategyCacheConfig{TTL: &ttl},
+			Retry:     &common.DatabaseRetryConfig{MaxAttempts: 1},
+		}},
+	}}
+	_, _, base, shutdown, _ := createServerTestFixtures(cfg, t)
+	defer shutdown()
+	hdr := http.Header{"X-ERPC-Secret-Token": {"k1"}}
+
+	var w *wsClient
+	require.Eventually(t, func() bool {
+		w, _, err = dialWs(t, wsURL(base, ""), hdr)
+		return err == nil
+	}, 10*time.Second, 50*time.Millisecond, "valid key must upgrade once the auth db is connected")
+	require.Nil(t, w.call("eth_subscribe", `["newHeads"]`).Error)
+
+	mr.SetError("ERR simulated auth db outage")
+	// A key not in the positive cache, so the upgrade must reach the db.
+	_, resp, err := dialWs(t, wsURL(base, ""), http.Header{"X-ERPC-Secret-Token": {"k2"}})
+	require.Error(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "an auth backend outage is not a 401")
+	select {
+	case err := <-w.done:
+		t.Fatalf("stream closed during an auth backend outage: %v", err)
+	case <-time.After(1500 * time.Millisecond):
+	}
+
+	mr.SetError("")
+	mr.Del("k1:*")
+	select {
+	case err := <-w.done:
+		require.Equal(t, websocket.StatusPolicyViolation, websocket.CloseStatus(err))
+	case <-time.After(8 * time.Second):
+		t.Fatal("revoked key kept streaming")
+	}
+	_, resp, err = dialWs(t, wsURL(base, ""), hdr)
+	require.Error(t, err)
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
