@@ -3,6 +3,7 @@ package blockstore
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/require"
@@ -119,4 +120,40 @@ func TestCache_SteadyStateHeaderBudgetWithJitterAndHandover(t *testing.T) {
 	}
 	require.Equal(t, int64(400), active.Head())
 	assertHeaderBudget(t, ch, 200, 128, 0)
+}
+
+// A leader whose live tip source keeps reporting a height below its verified
+// window publishes nothing. Within MaxStaleness that is free jitter; once the
+// view is stale each tick counts as a failure and the leader steps down after
+// maxLeaderFailures, so a healthy replica can take over. No header is fetched.
+func TestCache_LaggingTipLeaderStepsDownOnceStale(t *testing.T) {
+	store := newFakeFleetStore()
+	store.leader = true
+	ch := newFakeChain(20)
+	tip := int64(20)
+	c := New(testOpts(), store, ch, func(context.Context) int64 { return tip }, nil)
+	defer c.Stop()
+	c.Tick(t.Context())
+	require.NotNil(t, c.lease)
+	require.True(t, c.Fresh())
+	before, _, _ := ch.counts()
+
+	tip = 18
+	for i := 0; i < 2*maxLeaderFailures; i++ {
+		c.Tick(t.Context())
+	}
+	require.NotNil(t, c.lease, "lagging observations within MaxStaleness are free")
+	require.Zero(t, store.releases)
+
+	now := time.Now().Add(testOpts().MaxStaleness + time.Second)
+	c.nowFn = func() time.Time { return now }
+	require.False(t, c.Fresh())
+	for i := 0; i < maxLeaderFailures; i++ {
+		require.NotNil(t, c.lease, "tick %d", i)
+		c.Tick(t.Context())
+	}
+	require.Nil(t, c.lease, "a stale leader that cannot progress steps down")
+	require.Equal(t, 1, store.releases)
+	after, _, _ := ch.counts()
+	require.Equal(t, before, after, "stepping down costs no upstream call")
 }

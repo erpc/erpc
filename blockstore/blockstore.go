@@ -739,6 +739,12 @@ func (c *Cache) refresh(ctx context.Context) error {
 		// A poller can observe a lagging upstream. A lower number alone is
 		// not evidence of a reorg, and must not discard verified headers.
 		// Do not renew freshness or consume a pending reorg verification.
+		// Jitter within MaxStaleness costs nothing; once the served view has
+		// gone stale this tick made no progress, so it counts as a failure
+		// (a leader steps down after maxLeaderFailures, see fleetTick).
+		if !c.Fresh() {
+			return fmt.Errorf("live tip %d behind verified window head %d: %w", tip, windowHead, errNoProgress)
+		}
 		return nil
 	}
 	suspect := c.suspect.Swap(false)
@@ -832,6 +838,10 @@ func (c *Cache) refresh(ctx context.Context) error {
 }
 
 var errUnlinked = errors.New("headers do not link by parent hash")
+
+// errNoProgress is a refresh that could not advance a stale view without
+// fetching anything (the live tip source lags the verified window).
+var errNoProgress = errors.New("head cache made no progress on a stale view")
 
 // walkBack repairs window[i-1..] after a parent mismatch at window[i] by
 // re-fetching retained headers downward until one links. If the whole
