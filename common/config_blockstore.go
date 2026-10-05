@@ -149,6 +149,20 @@ type EvmBlockStoreHistoricalConfig struct {
 	TTL Duration `yaml:"ttl,omitempty" json:"ttl,omitempty" tstype:"Duration"`
 }
 
+// Copy returns a deep copy, so a network inheriting networkDefaults never
+// shares (and races SetDefaults on) the defaults' instance.
+func (c *EvmBlockStoreConfig) Copy() *EvmBlockStoreConfig {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if c.LogsFill.PeerWait != nil {
+		pw := *c.LogsFill.PeerWait
+		cp.LogsFill.PeerWait = &pw
+	}
+	return &cp
+}
+
 func (c *EvmBlockStoreConfig) SetDefaults() {
 	if c == nil {
 		return

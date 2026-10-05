@@ -2224,6 +2224,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				cp := *defaults.Evm.ServedTip
 				n.Evm.ServedTip = &cp
 			}
+			if n.Evm.BlockStore == nil && defaults.Evm.BlockStore != nil {
+				n.Evm.BlockStore = defaults.Evm.BlockStore.Copy()
+			}
 			if n.Evm.SafeBlockSource == "" {
 				n.Evm.SafeBlockSource = defaults.Evm.SafeBlockSource
 			}
@@ -2238,6 +2241,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			// flipping an `svm:`-authored network to architecture=evm.
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
+			n.Evm.BlockStore = defaults.Evm.BlockStore.Copy()
 		}
 		if n.Svm != nil && defaults.Svm != nil {
 			mergeSvmNetworkDefaults(n.Svm, defaults.Svm)
