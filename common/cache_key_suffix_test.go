@@ -14,6 +14,19 @@ func TestCachePartitionKey(t *testing.T) {
 		"empty suffix must keep the historical {networkId}:{ref} key")
 	assert.Equal(t, "evm:998:systx:64321354", CachePartitionKey("evm:998", "systx", "64321354"))
 	assert.Equal(t, "svm:mainnet-beta:systx:*", CachePartitionKey("svm:mainnet-beta", "systx", "*"))
+
+	// A colon inside the ref must not land on another partition's key.
+	assert.NotEqual(t,
+		CachePartitionKey("evm:998", "", "systx:foo"),
+		CachePartitionKey("evm:998", "systx", "foo"),
+	)
+	assert.Equal(t, `evm:998:systx\:foo`, CachePartitionKey("evm:998", "", "systx:foo"))
+	assert.Equal(t, `evm:998:systx:foo\:bar`, CachePartitionKey("evm:998", "systx", "foo:bar"))
+	assert.Equal(t, `evm:998:a\\\:b`, CachePartitionKey("evm:998", "", `a\:b`))
+	assert.NotEqual(t,
+		CachePartitionKey("svm:chain", "", "cluster:1"),
+		CachePartitionKey("svm:chain:cluster", "", "1"),
+	)
 }
 
 func TestCacheKeySuffix_Validation(t *testing.T) {
