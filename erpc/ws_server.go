@@ -309,7 +309,17 @@ type wsSub struct {
 	// last is the highest block number emitted (0 = nothing yet); used to
 	// detect discontinuities so clients never see a silent gap.
 	last int64
+	// delivered maps block hash -> number for blocks whose logs this logs
+	// subscription was sent, so a reorg that cannot retract them (orphan
+	// logs no longer loadable) fails the stream instead of skipping it.
+	delivered map[string]int64
 }
+
+// wsDeliveredRetain is how many heights below the newest emitted block a logs
+// subscription remembers delivered hashes for (default blockStore depth is
+// 128; deeper reorgs are already reported as gaps). The map is pruned only
+// when it reaches twice this size, so per-event cost stays constant.
+const wsDeliveredRetain = 256
 
 type wsConn struct {
 	ws        *wsServer
@@ -935,7 +945,14 @@ func (c *wsConn) emit(s *wsSub, ev blockstore.Event) error {
 		ev = full
 	}
 	for _, rec := range ev.Removed {
+		_, sent := s.delivered[rec.Hash]
+		delete(s.delivered, rec.Hash)
 		if rec.Logs == nil {
+			if sent {
+				// Logs this subscriber received can no longer be reloaded
+				// to retract them: resync rather than leave them standing.
+				return errWsGap
+			}
 			// Never fetched while it was canonical, so no logs subscriber
 			// was sent its logs: there is nothing to retract.
 			continue
@@ -955,9 +972,22 @@ func (c *wsConn) emit(s *wsSub, ev blockstore.Event) error {
 		if err != nil {
 			return err
 		}
+		if len(logs) > 0 {
+			if s.delivered == nil {
+				s.delivered = map[string]int64{}
+			}
+			s.delivered[rec.Hash] = rec.Number
+		}
 		for _, l := range logs {
 			if !c.notify(s, l) {
 				return nil
+			}
+		}
+	}
+	if len(s.delivered) >= 2*wsDeliveredRetain {
+		for h, n := range s.delivered {
+			if n < s.last-wsDeliveredRetain {
+				delete(s.delivered, h)
 			}
 		}
 	}

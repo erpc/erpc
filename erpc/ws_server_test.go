@@ -829,3 +829,29 @@ func TestWs_AuthBackendOutageIsNotDenial(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
+
+// A reorg removing a block whose logs this subscriber was sent must retract
+// them. If they can no longer be loaded (rec.Logs == nil), the stream fails
+// with the gap/resync close instead of leaving delivered logs standing; a
+// removed block whose logs were never sent still needs nothing.
+func TestWs_UnretractableDeliveredLogsFailStream(t *testing.T) {
+	c, _ := testWsConn(t, 64)
+	s := &wsSub{id: "0x1", logs: true}
+	require.NoError(t, c.emit(s, blockstore.Event{Added: []*blockstore.BlockRecord{manyLogsRecord(5, 1), manyLogsRecord(6, 0)}}))
+
+	// 6 had no matching logs: removing it without logs is fine.
+	orphan6 := &blockstore.BlockRecord{Number: 6, Hash: "0xh6"}
+	replacement6 := manyLogsRecord(6, 0)
+	replacement6.Hash = "0xh6b"
+	require.NoError(t, c.emit(s, blockstore.Event{Removed: []*blockstore.BlockRecord{orphan6}, Added: []*blockstore.BlockRecord{replacement6}}))
+
+	// 5's logs were delivered; its orphan logs cannot be reloaded.
+	orphan5 := &blockstore.BlockRecord{Number: 5, Hash: "0xh5"}
+	replacement5 := manyLogsRecord(5, 0)
+	replacement5.Hash = "0xh5b"
+	err := c.emit(s, blockstore.Event{
+		Removed: []*blockstore.BlockRecord{{Number: 6, Hash: "0xh6b"}, orphan5},
+		Added:   []*blockstore.BlockRecord{replacement5, manyLogsRecord(6, 0)},
+	})
+	require.ErrorIs(t, err, errWsGap, "delivered logs that cannot be retracted must fail the stream")
+}
