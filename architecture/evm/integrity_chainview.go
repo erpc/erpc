@@ -206,6 +206,64 @@ func (c *chainView) HeaderAt(number int64) (*integrity.Header, bool) {
 	return h, ok
 }
 
+// HasVerifiedEmptyTraceBlock uses only the followed segment; it never fetches a block.
+func HasVerifiedEmptyTraceBlock(req *common.NormalizedRequest) bool {
+	if req == nil || req.Network() == nil {
+		return false
+	}
+	ctx := context.Background()
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return false
+	}
+	jrq.RLockWithTrace(ctx)
+	var ref string
+	if len(jrq.Params) > 0 {
+		ref, _ = jrq.Params[0].(string)
+	}
+	jrq.RUnlock()
+	if original, ok := req.EvmBlockRef().(string); ok && original != "" && original != "*" && (original[0] < '0' || original[0] > '9') {
+		return false
+	}
+	if len(ref) < 3 || ref[0] != '0' || (ref[1] != 'x' && ref[1] != 'X') {
+		return false
+	}
+	number, err := common.HexToInt64(ref)
+	if err != nil || number < 0 {
+		return false
+	}
+	n := req.Network()
+	groupKey := ""
+	if dirs := req.Directives(); dirs != nil && dirs.UseUpstream != "" {
+		if gn, ok := n.(interface {
+			EvmUpstreamGroupForSelector(context.Context, string) (string, string)
+		}); ok {
+			groupKey, _ = gn.EvmUpstreamGroupForSelector(ctx, dirs.UseUpstream)
+		}
+	}
+	stored, ok := chainViewStore.Load(chainViewKey{network: n, group: groupKey})
+	if !ok {
+		return false
+	}
+	view := stored.(*chainView)
+	view.mu.RLock()
+	defer view.mu.RUnlock()
+	if view.followHead == 0 || number < view.followBase || number > view.followHead {
+		return false
+	}
+	hash := view.canonical[number]
+	header := view.headers[hash]
+	if header == nil || hash == "" || header.Hash != hash || header.RawTransactions == nil || len(header.RawTransactions) != 0 {
+		return false
+	}
+	height, err := common.HexToInt64(header.Number)
+	if err != nil || height != number {
+		return false
+	}
+	gas, err := common.HexToInt64(header.GasUsed)
+	return err == nil && gas == 0
+}
+
 // reconcile resolves a block that does NOT link to the block we hold beneath
 // it, the way an indexer resolves a reorg: walk back along the new block's
 // ancestry until reaching a height where the branch and the followed chain
@@ -690,7 +748,12 @@ func (c *chainView) networkLabel() string {
 	return c.network.Label()
 }
 
-var chainViewStore sync.Map // "networkId\x00groupKey" -> *chainView
+type chainViewKey struct {
+	network common.Network
+	group   string
+}
+
+var chainViewStore sync.Map // chainViewKey -> *chainView
 
 // groupChainView returns the ChainView for a network + node GROUP, deriving the group
 // from the request's use-upstream selector via the SAME mechanism as latest-block
@@ -712,7 +775,7 @@ func groupChainView(ctx context.Context, n common.Network, selector string) *cha
 			}
 		}
 	}
-	storeKey := n.Id() + "\x00" + groupKey
+	storeKey := chainViewKey{network: n, group: groupKey}
 	if v, ok := chainViewStore.Load(storeKey); ok {
 		return v.(*chainView)
 	}

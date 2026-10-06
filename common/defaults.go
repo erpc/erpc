@@ -2802,9 +2802,6 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 			r.EmptyResultAccept = defaults.EmptyResultIgnore
 		}
 	}
-	if r.EmptyResultAccept == nil {
-		r.EmptyResultAccept = DefaultEmptyResultAccept()
-	}
 
 	// "Data not available yet" (empty/missing-data/block-unavailable) retries are all
 	// capped here — default one original + one retry (~one block apart). Separate from

@@ -1,8 +1,10 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -135,6 +137,42 @@ func (e *networkExecutor) EmptyResultAccept() []string {
 		return common.DefaultEmptyResultAccept()
 	}
 	return e.emptyResultAccept
+}
+
+func (e *networkExecutor) acceptsEmptyResult(method string, resp *common.NormalizedResponse) bool {
+	if slices.Contains(e.EmptyResultAccept(), method) {
+		return true
+	}
+	if method != "debug_traceBlockByNumber" ||
+		(e != nil && e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.EmptyResultAccept != nil) {
+		return false
+	}
+	return isEmptyTraceArray(resp) && evm.HasVerifiedEmptyTraceBlock(resp.Request())
+}
+
+func isEmptyTraceArray(resp *common.NormalizedResponse) bool {
+	if resp == nil {
+		return false
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil || jrr == nil {
+		return false
+	}
+	result := jrr.GetResultBytes()
+	if len(result) == 0 {
+		var buf bytes.Buffer
+		if _, err := jrr.WriteResultTo(&buf, false); err != nil {
+			return false
+		}
+		result = buf.Bytes()
+	}
+	result = bytes.Trim(result, " \t\r\n")
+	return len(result) >= 2 && result[0] == '[' && result[len(result)-1] == ']' &&
+		len(bytes.Trim(result[1:len(result)-1], " \t\r\n")) == 0
+}
+
+func isEmptyNetworkResult(method string, resp *common.NormalizedResponse) bool {
+	return resp.IsResultEmptyish() || (method == "debug_traceBlockByNumber" && isEmptyTraceArray(resp))
 }
 
 // HasHedge returns whether hedge is configured.
@@ -504,17 +542,14 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 
 	// RetryEmpty directive on emptyish responses.
 	if rds != nil && rds.RetryEmpty {
-		if resp.IsResultEmptyish() {
+		method, _ := req.Method()
+		if isEmptyNetworkResult(method, resp) {
 			// Respect the shared "data not available yet" cap.
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}
-			// If the method is in the empty-result-accept list, treat empty as valid.
-			method, _ := req.Method()
-			for _, m := range e.emptyResultAccept {
-				if m == method {
-					return ""
-				}
+			if e.acceptsEmptyResult(method, resp) {
+				return ""
 			}
 			return "empty_result"
 		}
@@ -570,7 +605,8 @@ func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *comm
 	// relevant fixed fallback. One mechanism covers both cases; there is no
 	// separate per-policy empty-result multiplier.
 	isBlockUnavailable := err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable)
-	isEmptyResult := (resp != nil && !resp.IsObjectNull() && resp.IsResultEmptyish()) ||
+	method, _ := req.Method()
+	isEmptyResult := (resp != nil && !resp.IsObjectNull() && isEmptyNetworkResult(method, resp)) ||
 		(err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
 	if isBlockUnavailable || isEmptyResult {
 		if e.dynamicBlockUnavailableDelay != nil {
@@ -685,32 +721,10 @@ func (e *networkExecutor) runHedge(
 		if r == nil || r.IsObjectNull(ctx) {
 			return false
 		}
-		// Mirror the upstream-sweep empty-result policy so a fast
-		// {"result": null} from one hedge leg does not cancel siblings
-		// that may still return real data. When the method legitimately
-		// returns empty (eth_getLogs, eth_call, point state reads, …)
-		// the method is in emptyResultAccept and we keep the fast empty
-		// winner — preserving prior behaviour.
-		//
-		// For methods like eth_getBlockByNumber / eth_getTransactionByHash /
-		// eth_getTransactionReceipt, null means "this upstream does not
-		// have it yet" (tip lag, reorg, pruned). Letting that null win
-		// the hedge cancels the in-flight legs that could have returned
-		// the data, then forces the retry layer to redo the whole fan-
-		// out — amplifying latency on the cold path. Reject emptyish
-		// here so the hedge keeps racing for a non-empty sibling; if all
-		// legs finish empty the failsafe hedge falls through to the
-		// last response, matching the pre-existing terminal behaviour.
-		if r.IsResultEmptyish(ctx) {
-			method, _ := req.Method()
-			accepted := false
-			for _, m := range e.emptyResultAccept {
-				if m == method {
-					accepted = true
-					break
-				}
-			}
-			if !accepted {
+		// Reject unavailable empty results without cancelling usable siblings.
+		method, _ := req.Method()
+		if isEmptyNetworkResult(method, r) {
+			if !e.acceptsEmptyResult(method, r) {
 				return false
 			}
 		}
