@@ -499,7 +499,7 @@ func (c *WsJsonRpcClient) readLoop() {
 		if conn == nil {
 			// Always wait before dialing so a peer that accepts and then
 			// immediately drops the connection can't drive a hot loop.
-			wait := backoff/2 + rand.N(backoff/2+1)
+			wait := backoff/2 + rand.N(backoff/2+1) // #nosec G404 -- reconnect jitter, not security-sensitive
 			backoff = min(time.Duration(float64(backoff)*wsReconnectFactor), wsReconnectMax)
 			c.logger.Info().Dur("backoff", wait).Msg("attempting websocket reconnection")
 			select {
