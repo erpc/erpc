@@ -471,6 +471,36 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 		expectError bool
 	}{
 		{
+			name: "genesis_range_still_checks_availability",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x0",
+					"toBlock":   "0x5",
+				})
+				n.On("Id").Return("evm:123")
+				n.On("Config").Return(&common.NetworkConfig{
+					Evm: &common.EvmNetworkConfig{
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:      util.BoolPtr(true),
+						},
+					},
+				})
+				u.On("Id").Return("rpc1").Maybe()
+				stp := new(mockStatePoller)
+				u.On("EvmStatePoller").Return(stp)
+				stp.On("LatestBlock").Return(int64(1000))
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(0)).Return(true, nil)
+
+				return n, u, r
+			},
+			expectSplit: false,
+			expectError: false,
+		},
+		{
 			name: "range_within_limits",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
@@ -1193,6 +1223,42 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		assert.True(t, handled)
 		assert.Nil(t, resp)
 		assert.Error(t, err)
+	})
+
+	t.Run("genesis_range_still_enforces_max_allowed_range", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		// 0x0–0x1ff is 512 blocks. Block 0 must not be treated as unresolved.
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x1ff",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("genesis_block_within_cap_passes", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x0",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
 	})
 
 	t.Run("enforce_max_allowed_range_hard_limit", func(t *testing.T) {
