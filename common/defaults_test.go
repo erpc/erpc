@@ -137,7 +137,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		}
 		network.SetDefaults(nil, nil)
 
-		assert.EqualValues(t, &FailsafeConfig{
+		assert.EqualExportedValues(t, &FailsafeConfig{
 			MatchMethod: "*",
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:            12345,
@@ -420,7 +420,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 
 		// Verify failsafe retry is only applied to the first upstream
 		retry := cfg.Projects[0].Upstreams[0].Failsafe[0].Retry
-		assert.EqualValues(t, &RetryPolicyConfig{
+		assert.EqualExportedValues(t, &RetryPolicyConfig{
 			MaxAttempts:            2,
 			BackoffMaxDelay:        Duration(10 * time.Second),
 			Delay:                  Duration(1 * time.Second),

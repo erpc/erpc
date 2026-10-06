@@ -518,6 +518,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	defer cancel()
 	cfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{Checks: map[string]*common.IntegrityCheckConfig{"traceBlockGasReconciliation": {Enabled: util.BoolPtr(true)}}, Follow: &common.IntegrityFollowConfig{Enabled: util.BoolPtr(true), Interval: common.Duration(20 * time.Millisecond)}}}, Failsafe: []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond)}, Hedge: &common.HedgePolicyConfig{Delay: common.NewStaticDuration(250 * time.Millisecond), MaxCount: 1}}}}
 	ups := []*common.UpstreamConfig{{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}, {Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}}
+	require.NoError(t, cfg.SetDefaults(ups, nil))
 	n := setupTestNetwork(t, ctx, ups, cfg)
 	n.PinUpstreamOrderForTest("rpc1", "rpc2")
 	request := func(ref string) *common.NormalizedRequest {
@@ -582,24 +583,50 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	resp, err = n.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":4,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`)))
 	require.NoError(t, err)
 	resp.Release()
-	for _, accepted := range [][]string{{"debug_traceBlockByNumber"}, {}} {
+	transactions.Store(`[]`)
+	resp, err = n.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":5,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`)))
+	require.NoError(t, err)
+	resp.Release()
+	for _, tc := range []struct {
+		name    string
+		list    []string
+		inherit bool
+		accept  bool
+	}{
+		{"default", nil, false, true},
+		{"inheritedDefault", nil, true, true},
+		{"explicitEmpty", []string{}, false, false},
+		{"inheritedEmpty", []string{}, true, false},
+		{"explicitOther", []string{"eth_call"}, false, false},
+		{"inheritedOther", []string{"eth_call"}, true, false},
+		{"explicitTrace", []string{"debug_traceBlockByNumber"}, false, true},
+		{"inheritedTrace", []string{"debug_traceBlockByNumber"}, true, true},
+	} {
+		policy := &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond), EmptyResultAccept: tc.list}
+		require.NoError(t, policy.SetDefaults(nil))
+		if tc.inherit {
+			child := &common.RetryPolicyConfig{}
+			require.NoError(t, child.SetDefaults(policy.Copy()))
+			policy = child
+		}
+		require.NoError(t, policy.SetDefaults(nil))
 		for _, executor := range n.failsafeExecutors {
 			if executor.cfg == nil || executor.cfg.Retry == nil {
 				continue
 			}
-			executor.cfg.Retry.EmptyResultAccept = accepted
-			executor.emptyResultAccept = accepted
+			executor.cfg.Retry = policy.Copy()
+			executor.emptyResultAccept = policy.EmptyResultAccept
 		}
 		before := traceCalls.Load()
 		resp, err = n.Forward(ctx, request("0x3e8"))
 		require.NoError(t, err)
 		resp.Release()
 		calls := traceCalls.Load() - before
-		if len(accepted) > 0 {
+		if tc.accept {
 			require.Equal(t, int32(1), calls)
 		} else {
 			require.Greater(t, calls, int32(1))
 		}
-		t.Logf("override=%v traceCalls=%d", accepted, calls)
+		t.Logf("policy=%s traceCalls=%d", tc.name, calls)
 	}
 }
