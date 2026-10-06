@@ -142,7 +142,13 @@ func (e *networkExecutor) acceptsEmptyResult(method string, resp *common.Normali
 		(e != nil && e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.EmptyResultAccept != nil) {
 		return false
 	}
-	// An existing block with no transactions has an empty array, not null or an empty object.
+	return isEmptyTraceArray(resp) && evm.HasVerifiedEmptyTraceBlock(resp.Request())
+}
+
+func isEmptyTraceArray(resp *common.NormalizedResponse) bool {
+	if resp == nil {
+		return false
+	}
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil || jrr == nil {
 		return false
@@ -158,6 +164,10 @@ func (e *networkExecutor) acceptsEmptyResult(method string, resp *common.Normali
 	result = bytes.Trim(result, " \t\r\n")
 	return len(result) >= 2 && result[0] == '[' && result[len(result)-1] == ']' &&
 		len(bytes.Trim(result[1:len(result)-1], " \t\r\n")) == 0
+}
+
+func isEmptyNetworkResult(method string, resp *common.NormalizedResponse) bool {
+	return resp.IsResultEmptyish() || (method == "debug_traceBlockByNumber" && isEmptyTraceArray(resp))
 }
 
 // HasHedge returns whether hedge is configured.
@@ -527,12 +537,12 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 
 	// RetryEmpty directive on emptyish responses.
 	if rds != nil && rds.RetryEmpty {
-		if resp.IsResultEmptyish() {
+		method, _ := req.Method()
+		if isEmptyNetworkResult(method, resp) {
 			// Respect the shared "data not available yet" cap.
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}
-			method, _ := req.Method()
 			if e.acceptsEmptyResult(method, resp) {
 				return ""
 			}
@@ -590,7 +600,8 @@ func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *comm
 	// relevant fixed fallback. One mechanism covers both cases; there is no
 	// separate per-policy empty-result multiplier.
 	isBlockUnavailable := err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable)
-	isEmptyResult := (resp != nil && !resp.IsObjectNull() && resp.IsResultEmptyish()) ||
+	method, _ := req.Method()
+	isEmptyResult := (resp != nil && !resp.IsObjectNull() && isEmptyNetworkResult(method, resp)) ||
 		(err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
 	if isBlockUnavailable || isEmptyResult {
 		if e.dynamicBlockUnavailableDelay != nil {
@@ -706,8 +717,8 @@ func (e *networkExecutor) runHedge(
 			return false
 		}
 		// Reject unavailable empty results without cancelling usable siblings.
-		if r.IsResultEmptyish(ctx) {
-			method, _ := req.Method()
+		method, _ := req.Method()
+		if isEmptyNetworkResult(method, r) {
 			if !e.acceptsEmptyResult(method, r) {
 				return false
 			}

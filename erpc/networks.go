@@ -2292,7 +2292,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			//    so trying more upstreams just wastes time on slow ones.
 			//  - Otherwise emptyish results continue to the next upstream.
 			if err == nil && r != nil && !r.IsObjectNull() {
-				emptyish := r.IsResultEmptyish()
+				emptyish := isEmptyNetworkResult(method, r)
 				acceptEmpty := !emptyish ||
 					(!failsafeExecutor.HasConsensus() &&
 						failsafeExecutor.acceptsEmptyResult(method, r))
