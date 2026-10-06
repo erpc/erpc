@@ -13,7 +13,6 @@ import (
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
-	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
@@ -38,7 +37,7 @@ type SubscriptionManager struct {
 	connMu sync.Mutex
 	conns  map[string]*connEntry // connId -> entry
 
-	networks    sync.Map // networkId -> struct{}, once bootstrapped
+	networks    sync.Map // indexerNetworkKey -> struct{}, once bootstrapped
 	bootstrapMu sync.Mutex
 }
 
@@ -123,14 +122,15 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, err
 	}
 
-	kind, filterHash, err := sm.resolveSubscription(ctx, networkId, subType, jrReq.Params)
+	key := indexerNetworkKey(nw)
+	kind, filterHash, err := sm.resolveSubscription(ctx, key, subType, jrReq.Params)
 	if err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, err
 	}
 
-	if err := conn.adapter.AddSubscription(clientSubID, networkId, kind, filterHash, maxSubs); err != nil {
-		sm.releaseFilter(ctx, networkId, kind, filterHash)
+	if err := conn.adapter.AddSubscription(clientSubID, key, kind, filterHash, maxSubs); err != nil {
+		sm.releaseFilter(ctx, key, kind, filterHash)
 		if errors.Is(err, wsclient.ErrLimitExceeded) {
 			err = common.NewErrSubscriptionLimitExceeded(maxSubs)
 		}
@@ -245,12 +245,13 @@ func (sm *SubscriptionManager) releaseFilter(ctx context.Context, networkID stri
 // per WebSocket upstream, once.
 func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network) error {
 	networkID := nw.networkId
-	if _, ok := sm.networks.Load(networkID); ok {
+	key := indexerNetworkKey(nw)
+	if _, ok := sm.networks.Load(key); ok {
 		return nil
 	}
 	sm.bootstrapMu.Lock()
 	defer sm.bootstrapMu.Unlock()
-	if _, ok := sm.networks.Load(networkID); ok {
+	if _, ok := sm.networks.Load(key); ok {
 		return nil
 	}
 
@@ -266,57 +267,69 @@ func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network
 	adapters := make(map[string]*wsupstream.Adapter, len(wsUpstreams))
 	heads := make(map[string]headSource, len(wsUpstreams))
 	for _, up := range wsUpstreams {
-		if adapter := wsupstream.New(up, networkID, sm.logger, adapterOpts); adapter != nil {
+		if adapter := wsupstream.New(up, key, sm.logger, adapterOpts); adapter != nil {
 			adapters[up.Id()] = adapter
 			heads[up.Id()] = adapter
 		}
 	}
 	sm.idx.RegisterNetwork(&networkHandle{nw: nw, heads: heads})
-	sm.idx.RegisterNetworkSelector(networkID, &subIngressSelector{nw: nw})
+	sm.idx.RegisterNetworkSelector(key, &subIngressSelector{nw: nw})
 	for _, up := range wsUpstreams {
 		adapter := adapters[up.Id()]
 		if adapter == nil {
 			continue
 		}
-		if err := sm.idx.AddIngress(ctx, networkID, adapter); err != nil {
+		if err := sm.idx.AddIngress(ctx, key, adapter); err != nil {
 			sm.logger.Warn().Err(err).Str("upstreamId", up.Id()).
 				Msg("failed to register upstream ingress with indexer")
 		}
 	}
-	sm.networks.Store(networkID, struct{}{})
+	sm.networks.Store(key, struct{}{})
 	return nil
 }
 
-// subIngressSelector picks the ingresses of a filter subscribe the way the
-// HTTP path picks upstreams: by score for eth_subscribe, skipping upstreams
-// whose circuit breaker is open. Fallback-tier upstreams form the fallback
-// tier only when the network's failover is enabled, as over HTTP.
+// subIngressSelector picks the ingresses that carry a filter subscription.
+// With failover on, the defaults are the upstreams outside the fallback tier
+// that the selection policy routes to, and the fallback-tier upstreams stand
+// in for them (see indexer.IngressSelector): the same rule newHeads follows
+// (see networkHandle.deliversHeadsFrom). Without failover every WebSocket
+// upstream is a default.
 type subIngressSelector struct {
 	nw *Network
 }
 
 func (s *subIngressSelector) Select(_, _ string, _ []interface{}) (defaults, fallbacks []string) {
-	ups, err := s.nw.upstreamsRegistry.GetSortedUpstreams(context.Background(), s.nw.networkId, MethodEthSubscribe)
-	if err != nil {
-		return nil, nil
-	}
-
+	ctx := context.Background()
 	failoverOn := s.nw.cfg != nil && s.nw.cfg.Failover.Enabled()
-	for _, u := range ups {
-		up, ok := u.(*upstream.Upstream)
-		if !ok {
-			continue
+	eligible := make(map[string]struct{})
+	if failoverOn {
+		for _, u := range s.nw.tipCandidateUpstreams(ctx, "*") {
+			eligible[u.Id()] = struct{}{}
 		}
-		cfg := up.Config()
-		if cfg == nil || !upstream.IsWsEndpoint(cfg.Endpoint) || up.IsDown(MethodEthSubscribe) {
-			continue
-		}
+	}
+	var ws []common.Upstream
+	for _, up := range s.nw.upstreamsRegistry.GetWsUpstreams(ctx, s.nw.networkId) {
+		ws = append(ws, up)
+	}
+	return tierWsIngresses(ws, eligible, failoverOn)
+}
+
+// tierWsIngresses names the ingresses of the WebSocket upstreams ws: with
+// failover on, the eligible ones outside the fallback tier are the defaults
+// and the fallback tier the fallbacks; otherwise all are defaults.
+func tierWsIngresses(ws []common.Upstream, eligible map[string]struct{}, failoverOn bool) (defaults, fallbacks []string) {
+	for _, up := range ws {
 		name := "ws:" + up.Id()
-		if failoverOn && cfg.HasTag(common.TagTierFallback) {
+		switch {
+		case !failoverOn:
+			defaults = append(defaults, name)
+		case isFallbackTier(up):
 			fallbacks = append(fallbacks, name)
-			continue
+		default:
+			if _, ok := eligible[up.Id()]; ok {
+				defaults = append(defaults, name)
+			}
 		}
-		defaults = append(defaults, name)
 	}
 	return defaults, fallbacks
 }
@@ -435,12 +448,20 @@ type headSource interface {
 	HeadsLive() bool
 }
 
-func (h *networkHandle) Id() string { return h.nw.networkId }
+func (h *networkHandle) Id() string { return indexerNetworkKey(h.nw) }
+
+// indexerNetworkKey names nw in the indexer and its adapters. Projects can
+// define the same network, each with its own upstreams, so the key includes
+// the project.
+func indexerNetworkKey(nw *Network) string { return nw.projectId + "/" + nw.networkId }
 
 // SuggestLatestBlock passes a head from the ingress "ws:<upstreamId>" to
-// that upstream's state poller and reports whether clients may receive it
-// (see deliversHeadsFrom). Once the poller has accepted a deliverable head (a
-// major jump is verified asynchronously first), it also advances the
+// that upstream's state poller and reports whether clients may receive it:
+// only once the poller has accepted it (a major jump is verified
+// asynchronously first, so that head is not delivered) and the fallback-tier
+// gate allows it (see deliversHeadsFrom). A head from an upstream with no
+// poller (not bootstrapped, e.g. its chain could not be verified) or one the
+// network doesn't know is not delivered. A delivered head also advances the
 // network's delivered-head floor before clients see it.
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) bool {
 	upstreamID, ok := strings.CutPrefix(sourceId, "ws:")
@@ -455,15 +476,16 @@ func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) b
 		deliver := h.deliversHeadsFrom(ctx, u)
 		poller := u.EvmStatePoller()
 		if poller == nil || poller.IsObjectNull() {
-			return deliver
+			return false
 		}
 		poller.SuggestLatestBlock(blockNumber)
-		if deliver && poller.LatestBlock() >= blockNumber {
-			h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
+		if !deliver || poller.LatestBlock() < blockNumber {
+			return false
 		}
-		return deliver
+		h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
+		return true
 	}
-	return true
+	return false
 }
 
 // deliversHeadsFrom reports whether clients may receive u's heads. With

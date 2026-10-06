@@ -114,6 +114,9 @@ func (i *fakeIngress) EnsureFilter(_ context.Context, _ string, paramsHash strin
 	i.active.Store(true)
 	return i.getErr()
 }
+func (i *fakeIngress) FilterLive(_, _ string) bool {
+	return i.active.Load() && i.getErr() == nil
+}
 func (i *fakeIngress) RemoveFilter(_ context.Context, _, _ string) error {
 	if i.hook != nil {
 		i.hook("remove")
@@ -679,6 +682,124 @@ func TestIndexer_Selector_UnnamedIngressIsExcluded(t *testing.T) {
 	}
 	if b.ensureCalls.Load() != 1 {
 		t.Fatalf("fallback must be tried when every default failed, got %d calls", b.ensureCalls.Load())
+	}
+}
+
+// reconcileNow runs a reconcile of evm:1 synchronously.
+func reconcileNow(t *testing.T, idx *Indexer) {
+	t.Helper()
+	nsRaw, ok := idx.networks.Load("evm:1")
+	if !ok {
+		t.Fatal("evm:1 not registered")
+	}
+	idx.reconcile(context.Background(), nsRaw.(*networkState))
+}
+
+// The fallbacks carry a filter only while no default has it live: they take
+// over when the defaults lose it, and hand it back once one has it again.
+func TestIndexer_Reconcile_FallbackTakesOverAndHandsBack(t *testing.T) {
+	idx := newIndexer(t)
+	a, b, c := registerThreeIngresses(t, idx)
+	idx.RegisterNetworkSelector("evm:1", &fakeSelector{defaults: []string{"a", "b"}, fallbacks: []string{"c"}})
+	if _, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"}); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileNow(t, idx)
+	if c.ensureCalls.Load() != 0 {
+		t.Fatalf("fallback must stay idle while a default is live, got %d calls", c.ensureCalls.Load())
+	}
+
+	a.setErr(errTest("a lost it"))
+	b.setErr(errTest("b lost it"))
+	reconcileNow(t, idx)
+	if c.ensureCalls.Load() != 1 || !c.FilterLive("logs", "") {
+		t.Fatalf("fallback must take over once no default is live, got %d calls", c.ensureCalls.Load())
+	}
+	if a.removeCalls.Load() != 0 || b.removeCalls.Load() != 0 {
+		t.Fatal("defaults keep the filter, to retry it")
+	}
+
+	reconcileNow(t, idx)
+	if c.ensureCalls.Load() != 1 {
+		t.Fatalf("an ingress already carrying the filter must not be asked again, got %d", c.ensureCalls.Load())
+	}
+
+	b.setErr(nil)
+	reconcileNow(t, idx)
+	if c.removeCalls.Load() != 1 || c.active.Load() {
+		t.Fatalf("fallback must hand the filter back once a default is live, removes=%d", c.removeCalls.Load())
+	}
+}
+
+// A default the selector no longer names (e.g. the policy excluded it) gives
+// the filter up; if that leaves no default, the fallbacks take it.
+func TestIndexer_Reconcile_FollowsSelector(t *testing.T) {
+	idx := newIndexer(t)
+	a, b, c := registerThreeIngresses(t, idx)
+	sel := &fakeSelector{defaults: []string{"a", "b"}, fallbacks: []string{"c"}}
+	idx.RegisterNetworkSelector("evm:1", sel)
+	if _, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"}); err != nil {
+		t.Fatal(err)
+	}
+
+	sel.defaults = []string{"b"}
+	reconcileNow(t, idx)
+	if a.removeCalls.Load() != 1 || c.ensureCalls.Load() != 0 {
+		t.Fatalf("a must give the filter up while b still carries it: a.removes=%d c.ensures=%d",
+			a.removeCalls.Load(), c.ensureCalls.Load())
+	}
+
+	sel.defaults = nil
+	reconcileNow(t, idx)
+	if b.removeCalls.Load() != 1 || c.ensureCalls.Load() != 1 {
+		t.Fatalf("with no default left the fallback must carry it: b.removes=%d c.ensures=%d",
+			b.removeCalls.Load(), c.ensureCalls.Load())
+	}
+
+	// Returning defaults take it back; the fallback keeps it until one of
+	// them has it live, so there is no gap.
+	sel.defaults = []string{"a", "b"}
+	reconcileNow(t, idx)
+	if a.ensureCalls.Load() != 2 || b.ensureCalls.Load() != 2 || c.removeCalls.Load() != 0 {
+		t.Fatalf("returning defaults must take it back alongside the fallback: a=%d b=%d c.removes=%d",
+			a.ensureCalls.Load(), b.ensureCalls.Load(), c.removeCalls.Load())
+	}
+	reconcileNow(t, idx)
+	if c.removeCalls.Load() != 1 {
+		t.Fatalf("the fallback must hand back once a default is live, removes=%d", c.removeCalls.Load())
+	}
+}
+
+// Every head triggers the recheck, and a released filter is left alone.
+func TestIndexer_Reconcile_RunsOnHeadsAndSkipsReleased(t *testing.T) {
+	idx := newIndexer(t)
+	a, _, c := registerThreeIngresses(t, idx)
+	idx.RegisterNetworkSelector("evm:1", &fakeSelector{defaults: []string{"a"}, fallbacks: []string{"c"}})
+	h, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.setErr(errTest("a lost it"))
+
+	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:c", Block: BlockRef{Number: 1, Hash: "0x1"}})
+	deadline := time.Now().Add(2 * time.Second)
+	for c.ensureCalls.Load() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("a head must trigger the recheck")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	nsRaw, _ := idx.networks.Load("evm:1")
+	ns := nsRaw.(*networkState)
+	for ns.reconciling.Load() {
+		time.Sleep(time.Millisecond)
+	}
+	idx.ReleaseFilter(context.Background(), "evm:1", "logs", h)
+	reconcileNow(t, idx)
+	if a.ensureCalls.Load() != 1 || c.ensureCalls.Load() != 1 {
+		t.Fatalf("a released filter must not be resubscribed: a=%d c=%d", a.ensureCalls.Load(), c.ensureCalls.Load())
 	}
 }
 

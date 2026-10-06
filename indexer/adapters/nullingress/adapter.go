@@ -60,6 +60,8 @@ func (a *Adapter) RemoveFilter(context.Context, string, string) error {
 	return nil
 }
 
+func (a *Adapter) FilterLive(string, string) bool { return true }
+
 // Push injects an event. It blocks when the buffer is full, so a stalled
 // indexer shows up as a test timeout rather than silent drops.
 func (a *Adapter) Push(ev indexer.StreamEvent) {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -535,4 +536,55 @@ func TestWebSocket_NotificationsGetNoReply(t *testing.T) {
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
 	_, msg, err := conn.ReadMessage()
 	require.Error(t, err, "notifications must not be answered, got %s", msg)
+}
+
+// Two projects can define the same network, each with its own upstreams. A
+// subscription on the second project must be served by that project's
+// upstreams, not by the first project's network that was bootstrapped first.
+func TestWebSocket_ProjectsSharingANetworkUseTheirOwnUpstreams(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+
+	var subscribesA, subscribesB atomic.Int32
+	mockWith := func(count *atomic.Int32, subID string) *httptest.Server {
+		return mockWsUpstream(t, func(conn *websocket.Conn) {
+			standardMockWsHandler(conn, func(method string, id interface{}, _ map[string]interface{}) {
+				result := interface{}("0x1")
+				if method == "eth_subscribe" {
+					count.Add(1)
+					result = subID
+				}
+				mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
+			})
+		})
+	}
+	upA, upB := mockWith(&subscribesA, "0xa"), mockWith(&subscribesB, "0xb")
+	defer upA.Close()
+	defer upB.Close()
+
+	cfg := standardWsConfig("ws" + strings.TrimPrefix(upA.URL, "http"))
+	second := *cfg.Projects[0]
+	second.Id = "test_ws2"
+	second.Upstreams = []*common.UpstreamConfig{
+		{Id: "http-upstream", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Id: "ws-upstream", Type: common.UpstreamTypeEvm, Endpoint: "ws" + strings.TrimPrefix(upB.URL, "http"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+	}
+	cfg.Projects = append(cfg.Projects, &second)
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	subscribe := func(project string) {
+		t.Helper()
+		conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/%s/evm/123", addr, project), nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { conn.Close() })
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		require.Nil(t, resp["error"], "subscribe on %s: %v", project, resp)
+	}
+
+	subscribe("test_ws")
+	require.Eventually(t, func() bool { return subscribesA.Load() > 0 }, 5*time.Second, 20*time.Millisecond)
+	subscribe("test_ws2")
+	assert.Eventually(t, func() bool { return subscribesB.Load() > 0 }, 5*time.Second, 20*time.Millisecond,
+		"the second project's subscription must subscribe on its own upstream")
 }

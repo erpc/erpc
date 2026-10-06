@@ -32,12 +32,15 @@ type EventIngress interface {
 	// RemoveFilter unsubscribes the filter; a no-op if it was never
 	// subscribed. Called when its last client leaves or its subscribe failed.
 	RemoveFilter(ctx context.Context, subType string, paramsHash string) error
+	// FilterLive reports whether the filter is subscribed and live now.
+	FilterLive(subType string, paramsHash string) bool
 }
 
 // IngressSelector chooses which ingresses carry a filter subscription, by
-// Name(). Defaults are tried first and at least one must succeed; fallbacks
-// are tried only if every default failed. Ingresses named in neither are
-// excluded. Without a selector every ingress is a default.
+// Name(). A filter is kept on every default, and on the fallbacks while no
+// default has it live (or, when it is first subscribed, if every default
+// failed). Ingresses named in neither do not carry it. The choice is
+// rechecked on every head. Without a selector every ingress is a default.
 type IngressSelector interface {
 	Select(networkId, subType string, params []interface{}) (defaults, fallbacks []string)
 }

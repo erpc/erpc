@@ -300,3 +300,74 @@ func TestDeliveredHeadFloor_IsScopedPerProject(t *testing.T) {
 	assert.Equal(t, int64(1001), network.latestBlockShared.GetValue())
 	assert.Equal(t, int64(0), sibling.latestBlockShared.GetValue())
 }
+
+// Filter subscriptions follow the same tiers as heads: eligible primaries
+// carry them, the fallback tier stands in, and without failover every
+// WebSocket upstream is a default.
+func TestTierWsIngresses(t *testing.T) {
+	ws := []common.Upstream{
+		common.NewFakeUpstream("p1"),
+		common.NewFakeUpstream("p2"),
+		common.NewFakeUpstream("fb", common.WithTags(common.TagTierFallback)),
+	}
+	eligible := map[string]struct{}{"p1": {}, "fb": {}}
+
+	d, f := tierWsIngresses(ws, eligible, true)
+	assert.Equal(t, []string{"ws:p1"}, d, "an ineligible primary does not carry filters")
+	assert.Equal(t, []string{"ws:fb"}, f)
+
+	d, f = tierWsIngresses(ws, nil, true)
+	assert.Empty(t, d, "no eligible primary: only the fallbacks remain")
+	assert.Equal(t, []string{"ws:fb"}, f)
+
+	d, f = tierWsIngresses(ws, nil, false)
+	assert.Equal(t, []string{"ws:p1", "ws:p2", "ws:fb"}, d)
+	assert.Empty(t, f)
+}
+
+// A head far past the poller's (a major jump) is verified asynchronously
+// before the poller takes it. Until then it must not reach clients: once
+// delivered it would also advance the indexer's head dedup marker, and a
+// head from an endpoint now answering for another chain would suppress
+// every real head below it.
+func TestNetworkHandle_SuggestLatestBlock_WithholdsUnacceptedMajorJump(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, u := setupWsTipNetwork(t, ctx, "rpc2", "http://rpc2.localhost")
+	u.EvmStatePoller().SuggestLatestBlock(1000)
+	require.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
+
+	// From here the endpoint answers for another chain.
+	util.ResetGock()
+	gock.New("http://rpc2.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
+		Reply(200).JSON([]byte(`{"result":"0x1"}`))
+
+	handle := &networkHandle{nw: network}
+	assert.False(t, handle.SuggestLatestBlock("ws:rpc2", 5_000_000), "an unaccepted major jump must not reach clients")
+	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail)
+	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
+	assert.Less(t, network.deliveredLatestBlock.Load(), int64(5_000_000))
+	assert.True(t, handle.SuggestLatestBlock("ws:rpc2", 1001))
+	assert.True(t, handle.SuggestLatestBlock("ws:rpc2", 1002))
+}
+
+// Heads are delivered only once a tip tracker has accepted them, so a head
+// from a source the network can't verify (no such upstream, or one with no
+// tracker) is withheld and leaves the delivered-head floor alone.
+func TestNetworkHandle_SuggestLatestBlock_WithholdsUnverifiableSource(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupWsTipNetwork(t, ctx, "rpc3", "http://rpc3.localhost")
+	handle := &networkHandle{nw: network}
+	floor := network.deliveredLatestBlock.Load()
+
+	assert.False(t, handle.SuggestLatestBlock("ws:not-in-this-network", 5_000_000))
+	assert.Equal(t, floor, network.deliveredLatestBlock.Load())
+}

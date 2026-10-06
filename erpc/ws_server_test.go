@@ -963,7 +963,9 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 								"method":  "eth_subscription",
 								"params": map[string]interface{}{
 									"subscription": upstreamSubId,
-									"result":       map[string]interface{}{"number": "0x999"},
+									// One block past the mocked poller head (256); a
+									// major jump would be held for verification.
+									"result": map[string]interface{}{"number": "0x101"},
 								},
 							})
 						}()

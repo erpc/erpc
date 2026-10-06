@@ -50,6 +50,8 @@ type Adapter struct {
 
 	retryMin time.Duration
 	retryMax time.Duration
+	// attemptTimeout bounds each subscribe attempt and unsubscribe.
+	attemptTimeout time.Duration
 
 	stripSubscribeFromBlockZero bool
 
@@ -61,7 +63,11 @@ type Adapter struct {
 	// resubCancel cancels the resubscribe loop of connection resubEpoch.
 	resubCancel context.CancelFunc
 	resubEpoch  uint64
-	heads       upstreamSub
+	// resubDone is set once that loop has established everything;
+	// resubAgain asks a running loop for another pass before it finishes.
+	resubDone  bool
+	resubAgain bool
+	heads      upstreamSub
 	// filters (by filterKey) survive disconnects to be resubscribed.
 	filters map[string]*filterSub
 }
@@ -110,6 +116,7 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts O
 		},
 		retryMin:                    resubRetryMin,
 		retryMax:                    resubRetryMax,
+		attemptTimeout:              resubAttemptTimeout,
 		stripSubscribeFromBlockZero: opts.StripSubscribeFromBlockZero,
 	}
 }
@@ -130,6 +137,8 @@ func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexe
 	a.nw = nw
 	a.sink = sink
 
+	// One adapter per client: each project has its own clients, an
+	// upstream belongs to one network, and a network is bootstrapped once.
 	cbID := a.Name()
 	a.wsClient.SetOnReconnect(cbID, func() {
 		a.logger.Info().Msg("upstream websocket reconnected, resubscribing")
@@ -143,6 +152,7 @@ func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexe
 		if a.resubCancel != nil {
 			a.resubCancel()
 		}
+		a.resubDone = false
 		a.heads.id = ""
 		for _, sub := range a.filters {
 			sub.id = ""
@@ -160,7 +170,11 @@ func (a *Adapter) startResubscribe() {
 	epoch := a.wsClient.Epoch()
 	a.subsMu.Lock()
 	defer a.subsMu.Unlock()
-	if epoch == 0 || epoch == a.resubEpoch {
+	if epoch == 0 {
+		return
+	}
+	if epoch == a.resubEpoch && !a.resubDone {
+		a.resubAgain = true
 		return
 	}
 	if a.resubCancel != nil {
@@ -168,12 +182,13 @@ func (a *Adapter) startResubscribe() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.resubCancel, a.resubEpoch = cancel, epoch
+	a.resubDone, a.resubAgain = false, false
 	go a.resubscribeWithRetry(ctx)
 }
 
-// EnsureFilter subscribes a filter; a no-op if it is already subscribed. A
-// filter this call added is dropped again on failure, so it isn't
-// resubscribed on every reconnect.
+// EnsureFilter subscribes a filter; a no-op if it is already subscribed. On
+// failure the filter is kept and retried in the background, like every
+// other subscription of this upstream, until RemoveFilter.
 func (a *Adapter) EnsureFilter(ctx context.Context, subType, paramsHash string, params []interface{}) error {
 	key := filterKey(subType, paramsHash)
 
@@ -185,18 +200,28 @@ func (a *Adapter) EnsureFilter(ctx context.Context, subType, paramsHash string, 
 	}
 	a.subsMu.Unlock()
 
+	// Bound the attempt: callers (the indexer's reconcile, client
+	// subscribes) hold locks across it, and a reply the upstream drops
+	// while its connection stays busy would otherwise never time out. A
+	// timed-out filter keeps retrying in the background.
+	ctx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
+	defer cancel()
 	sub.mu.Lock()
-	defer sub.mu.Unlock()
 	err := a.subscribeFilterLocked(ctx, sub)
-	if err != nil && !exists {
-		a.subsMu.Lock()
-		if a.filters[key] == sub {
-			delete(a.filters, key)
-		}
-		a.subsMu.Unlock()
-		a.drop(ctx, &sub.upstreamSub)
+	sub.mu.Unlock()
+	if err != nil {
+		a.startResubscribe()
 	}
 	return err
+}
+
+// FilterLive reports whether the filter's subscription is live on the
+// current connection.
+func (a *Adapter) FilterLive(subType, paramsHash string) bool {
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	sub, ok := a.filters[filterKey(subType, paramsHash)]
+	return ok && sub.id != ""
 }
 
 // RemoveFilter unsubscribes a filter and stops resubscribing it.
@@ -228,7 +253,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 			return
 		}
 		done := true
-		attemptCtx, cancel := context.WithTimeout(ctx, resubAttemptTimeout)
+		attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 		a.heads.mu.Lock()
 		err := a.subscribeLocked(attemptCtx, &a.heads, []interface{}{indexer.SubTypeNewHeads}, a.handleNewHeads)
 		a.heads.mu.Unlock()
@@ -245,7 +270,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		}
 		a.subsMu.Unlock()
 		for _, sub := range filters {
-			attemptCtx, cancel := context.WithTimeout(ctx, resubAttemptTimeout)
+			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			sub.mu.Lock()
 			err := a.subscribeFilterLocked(attemptCtx, sub)
 			sub.mu.Unlock()
@@ -257,6 +282,16 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 			}
 		}
 		if done {
+			a.subsMu.Lock()
+			again := a.resubAgain && ctx.Err() == nil
+			a.resubAgain = false
+			if !again && ctx.Err() == nil {
+				a.resubDone = true
+			}
+			a.subsMu.Unlock()
+			if again {
+				continue
+			}
 			a.logger.Info().Msg("all upstream subscriptions (re)established")
 			return
 		}
@@ -323,7 +358,7 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 		return errNotConnected
 	}
 	if !commit {
-		a.release(context.WithoutCancel(ctx), ws.ID, ws.Epoch)
+		a.release(ctx, ws.ID, ws.Epoch)
 		return nil
 	}
 	a.logger.Info().Str("upstreamSubId", ws.ID).Interface("subType", params[0]).Msg("subscribed upstream")
@@ -344,9 +379,19 @@ func (a *Adapter) drop(ctx context.Context, sub *upstreamSub) {
 
 // release drops a subscription's handler and cancels it upstream. Both are
 // no-ops once its connection is gone, since the subscription died with it.
+// The cancel outlives a caller context that is already done (a timed-out
+// subscribe, a client that disconnected after unsubscribing), but a caller
+// deadline still in the future and shorter than attemptTimeout bounds
+// it, so teardown keeps its budget.
 func (a *Adapter) release(ctx context.Context, id string, epoch uint64) {
 	a.wsClient.UnregisterSubscriptionHandler(id, epoch)
-	ctx, cancel := context.WithTimeout(ctx, resubAttemptTimeout)
+	timeout := a.attemptTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 && remaining < timeout {
+			timeout = remaining
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	_ = a.send(clients.WithWsSubscription(ctx, &clients.WsSubscription{Epoch: epoch}), methodEthUnsubscribe, []interface{}{id})
 }

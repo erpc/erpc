@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/rs/zerolog"
 )
@@ -50,6 +51,9 @@ type networkState struct {
 
 	filterMu sync.RWMutex
 	filters  map[string]*filterState // paramsHash -> state
+
+	// reconciling is set while a reconcile of the filters runs.
+	reconciling atomic.Bool
 }
 
 // filterState is one filter subscription shared by every client with the
@@ -61,6 +65,12 @@ type filterState struct {
 	subscribed bool // guarded by mu
 	refs       int  // guarded by networkState.filterMu
 	dedup      *DedupWindow
+
+	// subType and params are the filter's; on names the ingresses it was
+	// put on and not removed from since. Guarded by mu.
+	subType string
+	params  []interface{}
+	on      map[string]struct{}
 }
 
 // New returns an empty Indexer. Events for networks not registered with
@@ -147,7 +157,8 @@ func (i *Indexer) EnsureFilter(ctx context.Context, networkId, subType string, p
 	if f.subscribed {
 		return paramsHash, nil
 	}
-	if err := i.subscribe(ctx, ns, subType, paramsHash, params); err != nil {
+	f.subType, f.params, f.on = subType, params, make(map[string]struct{})
+	if err := i.subscribe(ctx, ns, f, paramsHash); err != nil {
 		// Ingresses may keep a filter whose subscribe failed (to retry on
 		// reconnect), so remove it everywhere.
 		i.removeFromIngresses(ctx, ns, subType, paramsHash)
@@ -163,30 +174,24 @@ func (i *Indexer) EnsureFilter(ctx context.Context, networkId, subType string, p
 	return paramsHash, nil
 }
 
-// subscribe tries the selector's defaults, then its fallbacks only if every
-// default failed. It fails when no ingress subscribed, including when none
-// was selected.
-func (i *Indexer) subscribe(ctx context.Context, ns *networkState, subType, paramsHash string, params []interface{}) error {
+// subscribe puts a new filter on the selector's defaults, and on its
+// fallbacks if no default took it. It fails when no ingress subscribed,
+// including when none was selected. An ingress that failed keeps retrying
+// the filter until it is removed. The caller holds f.mu.
+func (i *Indexer) subscribe(ctx context.Context, ns *networkState, f *filterState, paramsHash string) error {
 	networkId := ns.handle.Id()
-
-	ns.ingressMu.RLock()
-	ings := make(map[string]EventIngress, len(ns.ingresses))
-	for name, ing := range ns.ingresses {
-		ings[name] = ing
-	}
-	sel := ns.selector
-	ns.ingressMu.RUnlock()
-
-	defaults, fallbacks := partitionIngresses(sel, ings, networkId, subType, params)
+	ings, sel := ns.snapshotIngresses()
+	defaults, fallbacks := partitionIngresses(sel, ings, networkId, f.subType, f.params)
 
 	var errs []error
 	for _, tier := range [][]EventIngress{defaults, fallbacks} {
 		subscribed := false
 		for _, ing := range tier {
-			if err := ing.EnsureFilter(ctx, subType, paramsHash, params); err != nil {
+			f.on[ing.Name()] = struct{}{}
+			if err := ing.EnsureFilter(ctx, f.subType, paramsHash, f.params); err != nil {
 				errs = append(errs, err)
 				i.logger.Warn().Err(err).Str("ingress", ing.Name()).Str("networkId", networkId).
-					Str("subType", subType).Str("paramsHash", paramsHash).
+					Str("subType", f.subType).Str("paramsHash", paramsHash).
 					Msg("ingress EnsureFilter failed")
 				continue
 			}
@@ -197,9 +202,97 @@ func (i *Indexer) subscribe(ctx context.Context, ns *networkState, subType, para
 		}
 	}
 	if len(errs) == 0 {
-		return fmt.Errorf("indexer: no ingress selected for %s filter on network %q", subType, networkId)
+		return fmt.Errorf("indexer: no ingress selected for %s filter on network %q", f.subType, networkId)
 	}
 	return errors.Join(errs...)
+}
+
+// snapshotIngresses copies the network's ingresses and selector.
+func (ns *networkState) snapshotIngresses() (map[string]EventIngress, IngressSelector) {
+	ns.ingressMu.RLock()
+	defer ns.ingressMu.RUnlock()
+	ings := make(map[string]EventIngress, len(ns.ingresses))
+	for name, ing := range ns.ingresses {
+		ings[name] = ing
+	}
+	return ings, ns.selector
+}
+
+// triggerReconcile starts a reconcile of ns's filters unless one is running
+// or there are none. Triggers it skips are covered by the next one.
+func (i *Indexer) triggerReconcile(ns *networkState) {
+	ns.filterMu.RLock()
+	none := len(ns.filters) == 0
+	ns.filterMu.RUnlock()
+	if none || !ns.reconciling.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer ns.reconciling.Store(false)
+		i.reconcile(context.Background(), ns)
+	}()
+}
+
+// reconcile moves every subscribed filter of ns onto the ingresses the
+// selector picks now: all its defaults, plus its fallbacks while no default
+// has the filter live; it is removed from every other ingress it is on.
+func (i *Indexer) reconcile(ctx context.Context, ns *networkState) {
+	ns.filterMu.RLock()
+	filters := make(map[string]*filterState, len(ns.filters))
+	for hash, f := range ns.filters {
+		filters[hash] = f
+	}
+	ns.filterMu.RUnlock()
+	ings, sel := ns.snapshotIngresses()
+
+	for hash, f := range filters {
+		f.mu.Lock()
+		if f.subscribed {
+			i.reconcileFilter(ctx, ns, ings, sel, hash, f)
+		}
+		f.mu.Unlock()
+	}
+}
+
+// reconcileFilter is reconcile for one filter; the caller holds f.mu.
+func (i *Indexer) reconcileFilter(ctx context.Context, ns *networkState, ings map[string]EventIngress, sel IngressSelector, hash string, f *filterState) {
+	defaults, fallbacks := partitionIngresses(sel, ings, ns.handle.Id(), f.subType, f.params)
+	want := make(map[string]EventIngress, len(defaults)+len(fallbacks))
+	covered := false
+	for _, ing := range defaults {
+		want[ing.Name()] = ing
+		covered = covered || ing.FilterLive(f.subType, hash)
+	}
+	if !covered {
+		for _, ing := range fallbacks {
+			want[ing.Name()] = ing
+		}
+	}
+
+	for name, ing := range want {
+		if _, ok := f.on[name]; ok {
+			continue
+		}
+		f.on[name] = struct{}{}
+		if err := ing.EnsureFilter(ctx, f.subType, hash, f.params); err != nil {
+			i.logger.Warn().Err(err).Str("ingress", name).Str("networkId", ns.handle.Id()).
+				Str("subType", f.subType).Str("paramsHash", hash).
+				Msg("ingress EnsureFilter failed, it keeps retrying")
+		}
+	}
+	for name := range f.on {
+		if _, ok := want[name]; ok {
+			continue
+		}
+		delete(f.on, name)
+		if ing := ings[name]; ing != nil {
+			if err := ing.RemoveFilter(ctx, f.subType, hash); err != nil {
+				i.logger.Warn().Err(err).Str("ingress", name).Str("networkId", ns.handle.Id()).
+					Str("subType", f.subType).Str("paramsHash", hash).
+					Msg("ingress RemoveFilter failed")
+			}
+		}
+	}
 }
 
 // partitionIngresses resolves the selector's tiers to registered ingresses,
@@ -264,7 +357,7 @@ func (i *Indexer) ReleaseFilter(ctx context.Context, networkId, subType, paramsH
 		return
 	}
 	i.removeFromIngresses(ctx, ns, subType, paramsHash)
-	f.subscribed = false
+	f.subscribed, f.on = false, nil
 	ns.filterMu.Lock()
 	if f.refs == 0 {
 		delete(ns.filters, paramsHash)
@@ -299,6 +392,11 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 		return
 	}
 	ns := nsRaw.(*networkState)
+
+	// Each head, delivered or not, rechecks where the filters belong.
+	if ev.Kind == KindNewHead {
+		i.triggerReconcile(ns)
+	}
 
 	// Before dedup, so every source's head counts even if another source
 	// already delivered it.
