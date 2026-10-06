@@ -45,8 +45,8 @@ const (
 //   - No-parameter methods (getGenesisHash, getVersion, getHealth, getIdentity,
 //     getInflationRate, getBlockTime, ...): appending an options object yields
 //     an invalid shape (-32602 "No parameters were expected").
-//   - Methods whose config carries no commitment field (getSignatureStatuses,
-//     whose only option is searchTransactionHistory).
+//   - getSignatureStatuses: older validators ignore commitment. Preserve its
+//     processed default instead of injecting a level they cannot honor.
 var commitmentOptionsIndex = map[string]int{
 	// options object is the first/only param
 	"getBlockHeight":            0,
@@ -355,9 +355,8 @@ const solanaDefaultCommitment = "finalized"
 // a slot ~60 above finalized and provoking the very -32004 the guard then
 // short-circuits.
 //
-// Returns "" only for methods with no commitment dimension at all (no-param
-// methods, writes that carry preflightCommitment, getSignatureStatuses) — there
-// is no level to report, not an unknown one.
+// Returns "" for methods with no commitment dimension and unpinned
+// getSignatureStatuses, whose default is processed rather than finalized.
 func effectiveCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) string {
 	if r == nil {
 		return ""
@@ -391,7 +390,7 @@ func FailsafeCommitment(ctx context.Context, n common.Network, r *common.Normali
 	if err != nil {
 		return "none"
 	}
-	if _, readPath := commitmentOptionsIndex[method]; !readPath {
+	if _, readPath := commitmentOptionsIndex[method]; !readPath && method != "getSignatureStatuses" {
 		return "none"
 	}
 	if commitment, _, _ := resolveCommitment(ctx, n, r); commitment != "" {

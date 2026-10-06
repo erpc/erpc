@@ -1500,7 +1500,7 @@ type FailsafeConfig struct {
 	// that injection writes, else "none". Empty = any. Values are OR-ed and
 	// exact (confirmed does not match processed). Non-SVM requests and SVM
 	// write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
-	// Rejected at upstream scope.
+	// Rejected at upstream and connector scopes.
 	MatchCommitment []string `yaml:"matchCommitment,omitempty" json:"matchCommitment" tstype:"('none' | 'processed' | 'confirmed' | 'finalized')[]"`
 	// MatchRequestKind scopes this policy by who issued the request:
 	// "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.

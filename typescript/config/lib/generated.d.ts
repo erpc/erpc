@@ -460,6 +460,12 @@ export interface GrpcConnectorConfig {
      * (0) a built-in default is used.
      */
     poolSize?: number;
+    /**
+     * HealthCheckService is a grpc.health.v1 service name. When set, each
+     * connection watches it on every resolved address and sends requests only
+     * to addresses reporting SERVING. Empty (default) disables health checking.
+     */
+    healthCheckService?: string;
 }
 export interface MemoryConnectorConfig {
     maxItems: number;
@@ -664,13 +670,13 @@ export declare const UserAgentTrackingModeSimplified: UserAgentTrackingMode;
 export declare const UserAgentTrackingModeRaw: UserAgentTrackingMode;
 export interface NetworkDefaults {
     rateLimitBudget?: string;
-    cacheKeySuffix?: string;
     failsafe?: (FailsafeConfig | undefined)[];
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
     svm?: TsSvmNetworkConfigForDefaults;
     multiplexing?: boolean;
+    cacheKeySuffix?: string;
 }
 export interface CORSConfig {
     allowedOrigins: string[];
@@ -918,6 +924,10 @@ export interface GrpcUpstreamConfig {
      * When unset (0) a built-in default is used.
      */
     poolSize?: number;
+    /**
+     * HealthCheckService: see GrpcConnectorConfig.HealthCheckService.
+     */
+    healthCheckService?: string;
 }
 export interface EvmUpstreamConfig {
     chainId: number;
@@ -1010,8 +1020,9 @@ export interface FailsafeConfig {
      * MatchCommitment scopes a network-scope policy by the Solana commitment
      * erpc pins on the wire: the caller's value, else the svm.commitment default
      * that injection writes, else "none". Empty = any. Values are OR-ed and
-     * exact (confirmed does not match processed). Non-SVM requests are "none".
-     * Rejected at upstream scope.
+     * exact (confirmed does not match processed). Non-SVM requests and SVM
+     * write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
+     * Rejected at upstream and connector scopes.
      */
     matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
     /**
@@ -1277,6 +1288,15 @@ export interface RateLimiterConfig {
 export interface RateLimitBudgetConfig {
     id: string;
     rules: RateLimitRuleConfig[];
+    /**
+     * CreditUnits prices methods for this budget's countMode: credit rules. "*"
+     * is the fallback, an unpriced method costs 1, and a method priced 0 is
+     * exempt. An upstream on rateLimitCountMode: credit prices from its vendor
+     * instead and may not combine the two.
+     */
+    creditUnits?: {
+        [key: string]: number;
+    };
 }
 export interface RateLimitRuleConfig {
     method: string;
@@ -1289,6 +1309,13 @@ export interface RateLimitRuleConfig {
     perIP?: boolean;
     perUser?: boolean;
     perNetwork?: boolean;
+    /**
+     * CountMode selects what this rule counts. "request" charges 1 per call and
+     * counts per method. "credit" charges the method's cost from the budget's
+     * creditUnits and pools all methods into one counter, making maxCount a
+     * wallet. Empty inherits the caller's mode.
+     */
+    countMode?: RateLimitCountMode;
 }
 /**
  * RateLimitPeriod enumerates supported periods for rate limiting.
@@ -1322,7 +1349,6 @@ export interface NetworkConfig {
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
     alias?: string;
-    cacheKeySuffix?: string;
     methods?: MethodsConfig;
     multiplexing?: boolean;
     staticResponses?: (StaticResponseConfig | undefined)[];
@@ -1331,6 +1357,12 @@ export interface NetworkConfig {
      * network. Merges over the project block (network wins).
      */
     integrity?: IntegrityConfig;
+    /**
+     * CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
+     * key as {networkId}:{suffix}:{blockRef} so two networks that share a
+     * chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+     */
+    cacheKeySuffix?: string;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1630,6 +1662,16 @@ export interface EvmServedTipConfig {
      */
     guaranteedMethods?: string[];
     /**
+     * GuaranteedFor lists upstream SELECTORS (id or tag glob — the same
+     * vocabulary as use-upstream and consensus.requiredParticipants, e.g.
+     * "type:internal") whose group must be able to serve the advertised tip.
+     * For each selector the tip is clamped down to that group's OWN majority,
+     * exactly as GuaranteedMethods clamps to a method's supporting set. The
+     * clamp is a group MAJORITY, not a group minimum, so one stuck member
+     * cannot pin the network; an empty group constrains nothing.
+     */
+    guaranteedFor?: string[];
+    /**
      * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
      * (the second-highest live head) the majority pick may fall before it is
      * treated as a poisoned ballot rather than as reality. While a pick is below
@@ -1892,41 +1934,46 @@ export interface MetricsConfig {
     errorLabelMode?: LabelMode;
     histogramBuckets?: string;
     /**
-     * HistogramDropLabels removes these labels from every histogram. Counters
-     * and gauges are unaffected. Useful to cap per-instance /metrics response
-     * size when high-cardinality labels (e.g. "user") push a scrape past the
-     * managed scraper's sample/body limits.
+     * Customizations is the single knob for shaping /metrics: which metric
+     * families are exposed at all, which of their labels survive, and which
+     * buckets a histogram uses. Entries are applied by specificity rather than
+     * by list order — see MetricsCustomizationConfig.
+     * 	metrics:
+     * 	  customizations:
+     * 	    - subject: "consensus_*"
+     * 	      action: drop
+     * 	    - subject: upstream_request_total
+     * 	      labels:
+     * 	        - subject: "agent_*"
+     * 	          action: drop
+     * 	        - subject: agent_name
+     * 	          action: keep
+     * 	    - subject: network_request_duration_seconds
+     * 	      buckets: [0.05, 0.5, 5]
+     */
+    customizations?: (MetricsCustomizationConfig | undefined)[];
+    /**
+     * Deprecated: use Customizations with a `labels` list. Kept working so
+     * existing configs keep loading; it is desugared onto the same rules as an
+     * every-histogram label drop.
      */
     histogramDropLabels?: string[];
     /**
-     * HistogramLabelOverrides re-adds labels for specific histograms even if
-     * they appear in HistogramDropLabels. Key is the metric Name (without the
-     * "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
-     * Value is the list of label names to keep for that metric.
+     * Deprecated: use Customizations with an exact `subject` and a `labels` list
+     * keeping what this metric needs.
      */
     histogramLabelOverrides?: {
         [key: string]: string[];
     };
     /**
-     * CounterDropLabels removes these labels from every counter that carries
-     * caller-controlled dimensions (user, agent_name, attempt, composite,
-     * hedge, error). Histograms and gauges are unaffected; use
-     * HistogramDropLabels for the histogram side.
-     * Counters are usually the largest contributor to /metrics size, because a
-     * label like a client-supplied user-agent is unbounded and every tuple ever
-     * seen is re-emitted on every scrape. Dropping a label collapses the series
-     * that differed only in it — sums stay correct, but the dimension stops
-     * being queryable, so check what consumes it (billing/attribution
-     * pipelines, dashboards) before dropping.
+     * Deprecated: use Customizations with a `labels` list. Kept working so
+     * existing configs keep loading; it is desugared onto the same rules as an
+     * every-counter label drop.
      */
     counterDropLabels?: string[];
     /**
-     * CounterLabelOverrides re-adds labels for specific counters even if they
-     * appear in CounterDropLabels. Key is the metric Name (without the "erpc_"
-     * namespace prefix), e.g. "upstream_request_total". Value is the list of
-     * label names to keep for that metric. Use this to drop a label fleet-wide
-     * while preserving it on the one or two counters a downstream pipeline
-     * actually reads.
+     * Deprecated: use Customizations with an exact `subject` and a `labels` list
+     * keeping what this metric needs.
      */
     counterLabelOverrides?: {
         [key: string]: string[];
@@ -1943,6 +1990,68 @@ export interface MetricsConfig {
      * disable eviction entirely.
      */
     counterIdleEvictionAfter?: Duration;
+}
+/**
+ * MetricCustomizationAction is what a customization entry does to what it
+ * selects.
+ */
+export type MetricCustomizationAction = string;
+export declare const MetricActionKeep: MetricCustomizationAction;
+export declare const MetricActionDrop: MetricCustomizationAction;
+/**
+ * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
+ * selecting metric families, and what to do with them.
+ * Overlapping subjects resolve by specificity, not by list order: an exact
+ * family name beats a prefix, a longer prefix beats a shorter one, and equally
+ * specific subjects break to the one written later. So "drop consensus_*, keep
+ * consensus_duration_seconds" means the same thing whichever order it is written
+ * in.
+ */
+export interface MetricsCustomizationConfig {
+    /**
+     * Subject selects metric families: an exact name ("upstream_request_total"),
+     * a prefix ending in "*" ("consensus_*"), or "*" for every family. The
+     * "erpc_" namespace prefix is optional. The Go runtime, process and promhttp
+     * collectors are named in full ("go_goroutines") and are subject to the same
+     * rules, so `subject: "*", action: drop` drops them too.
+     */
+    subject: string;
+    /**
+     * Action drops the matched families from /metrics, or keeps them against a
+     * broader drop. Omit it to leave exposure alone and only customize labels or
+     * buckets.
+     * A dropped eRPC family is never registered, so it costs no series and no
+     * collection time — but that makes it a startup decision, undone only by a
+     * restart. Stock collectors are registered outside eRPC and so are filtered
+     * out of the scrape response instead, which shrinks the page without saving
+     * collection.
+     */
+    action?: 'keep' | 'drop';
+    /**
+     * Labels projects the matched families' label sets. Same precedence rules as
+     * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
+     * drops the group and spares the one label.
+     * Dropping a label collapses every series that differed only in it. Counter
+     * sums stay correct, but the dimension stops being queryable — check what
+     * reads it (billing or attribution pipelines, dashboards) first. Gauges have
+     * no projection, because collapsing gauge series would report whichever
+     * writer wrote last rather than a coarser number.
+     */
+    labels?: (MetricLabelCustomizationConfig | undefined)[];
+    /**
+     * Buckets replaces the bucket boundaries of the matched histograms,
+     * overriding both metrics.histogramBuckets and what the metric declares in
+     * code. Must be strictly increasing.
+     */
+    buckets?: number[];
+}
+/**
+ * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
+ * group of them, on the families its parent customization matched.
+ */
+export interface MetricLabelCustomizationConfig {
+    subject: string;
+    action: 'keep' | 'drop';
 }
 /**
  * RateLimitStoreConfig defines where rate limit counters are stored

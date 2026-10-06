@@ -1435,6 +1435,8 @@ func TestGetFailsafeExecutor_MatchCommitment(t *testing.T) {
 	}{
 		{"explicit confirmed", "", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"confirmed"}]}`, true},
 		{"explicit processed", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"processed"}]}`, false},
+		{"signature statuses explicit finalized", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["sig"],{"commitment":"finalized"}]}`, true},
+		{"signature statuses preserve processed default", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["sig"],{"searchTransactionHistory":true}]}`, false},
 		// Injection makes this byte-identical to an explicit confirmed request,
 		// so it must take the same rule.
 		{"omitted takes the injected default", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, true},

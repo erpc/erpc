@@ -709,13 +709,13 @@ export const UserAgentTrackingModeSimplified: UserAgentTrackingMode = "simplifie
 export const UserAgentTrackingModeRaw: UserAgentTrackingMode = "raw";
 export interface NetworkDefaults {
   rateLimitBudget?: string;
-  cacheKeySuffix?: string;
   failsafe?: (FailsafeConfig | undefined)[];
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
   svm?: TsSvmNetworkConfigForDefaults;
   multiplexing?: boolean;
+  cacheKeySuffix?: string;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -1047,8 +1047,9 @@ export interface FailsafeConfig {
    * MatchCommitment scopes a network-scope policy by the Solana commitment
    * erpc pins on the wire: the caller's value, else the svm.commitment default
    * that injection writes, else "none". Empty = any. Values are OR-ed and
-   * exact (confirmed does not match processed). Non-SVM requests are "none".
-   * Rejected at upstream scope.
+   * exact (confirmed does not match processed). Non-SVM requests and SVM
+   * write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
+   * Rejected at upstream and connector scopes.
    */
   matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
   /**
@@ -1367,7 +1368,6 @@ export interface NetworkConfig {
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   alias?: string;
-  cacheKeySuffix?: string;
   methods?: MethodsConfig;
   multiplexing?: boolean;
   staticResponses?: (StaticResponseConfig | undefined)[];
@@ -1376,6 +1376,12 @@ export interface NetworkConfig {
    * network. Merges over the project block (network wins).
    */
   integrity?: IntegrityConfig;
+  /**
+   * CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
+   * key as {networkId}:{suffix}:{blockRef} so two networks that share a
+   * chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+   */
+  cacheKeySuffix?: string;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1947,7 +1953,6 @@ export interface MetricsConfig {
    * families are exposed at all, which of their labels survive, and which
    * buckets a histogram uses. Entries are applied by specificity rather than
    * by list order — see MetricsCustomizationConfig.
-   *
    * 	metrics:
    * 	  customizations:
    * 	    - subject: "consensus_*"
@@ -1961,7 +1966,7 @@ export interface MetricsConfig {
    * 	    - subject: network_request_duration_seconds
    * 	      buckets: [0.05, 0.5, 5]
    */
-  customizations?: MetricsCustomizationConfig[];
+  customizations?: (MetricsCustomizationConfig | undefined)[];
   /**
    * Deprecated: use Customizations with a `labels` list. Kept working so
    * existing configs keep loading; it is desugared onto the same rules as an
@@ -2007,7 +2012,6 @@ export const MetricActionDrop: MetricCustomizationAction = "drop";
 /**
  * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
  * selecting metric families, and what to do with them.
- *
  * Overlapping subjects resolve by specificity, not by list order: an exact
  * family name beats a prefix, a longer prefix beats a shorter one, and equally
  * specific subjects break to the one written later. So "drop consensus_*, keep
@@ -2027,7 +2031,6 @@ export interface MetricsCustomizationConfig {
    * Action drops the matched families from /metrics, or keeps them against a
    * broader drop. Omit it to leave exposure alone and only customize labels or
    * buckets.
-   *
    * A dropped eRPC family is never registered, so it costs no series and no
    * collection time — but that makes it a startup decision, undone only by a
    * restart. Stock collectors are registered outside eRPC and so are filtered
@@ -2039,20 +2042,19 @@ export interface MetricsCustomizationConfig {
    * Labels projects the matched families' label sets. Same precedence rules as
    * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
    * drops the group and spares the one label.
-   *
    * Dropping a label collapses every series that differed only in it. Counter
    * sums stay correct, but the dimension stops being queryable — check what
    * reads it (billing or attribution pipelines, dashboards) first. Gauges have
    * no projection, because collapsing gauge series would report whichever
    * writer wrote last rather than a coarser number.
    */
-  labels?: MetricLabelCustomizationConfig[];
+  labels?: (MetricLabelCustomizationConfig | undefined)[];
   /**
    * Buckets replaces the bucket boundaries of the matched histograms,
    * overriding both metrics.histogramBuckets and what the metric declares in
    * code. Must be strictly increasing.
    */
-  buckets?: number[];
+  buckets?: number /* float64 */[];
 }
 /**
  * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated

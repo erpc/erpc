@@ -109,7 +109,7 @@ explain the thresholds. Reference: https://docs.erpc.cloud/config/failsafe.llms.
 **Scope restrictions.**
 - Circuit breakers are **upstream-scope only**. Placing a `circuitBreaker` block in a network-level `failsafe` entry causes startup failure with `ErrFailsafeConfiguration`. (<SourceLink file="erpc/network_executor.go" lines="68-73" />)
 - Consensus is **network-scope only**. Placing a `consensus` block in an upstream-level `failsafe` entry fails config validation at startup. (<SourceLink file="common/validation.go" />)
-- `matchCommitment` is **network-scope only**. Setting it on an upstream-level or `upstreamDefaults` `failsafe` entry fails config validation at startup.
+- `matchCommitment` is **network-scope only**. Setting it on upstream, `upstreamDefaults`, or connector failsafe entries fails config validation at startup.
 
 **Failsafe entry matching (`matchMethod` + `matchFinality`).** Upstream-scope entries use a 4-tier priority (`SelectExecutor`-style scan in `upstream/upstream.go`):
 1. Specific method + specific finality (highest priority)
@@ -125,7 +125,9 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 
 **`matchCommitment` valid values.** `none`, `processed`, `confirmed`, `finalized`. Empty = wildcard. On SVM it matches the commitment erpc pins on the wire: the caller's value, else the `svm.commitment` default that injection writes (clamped per method, e.g. `processed` becomes `confirmed` for `getBlock`), else `none`. Because the injected bytes are what the multiplexer and cache key on, two requests that share a key always take the same rule. A caller value outside the four levels (e.g. `recent`) matches no rule. Write methods (`sendTransaction`, `simulateTransaction`, `requestAirdrop`) are always `none`: their commitment field governs a preflight or simulation, not a read. Exact match only (no hierarchy). On non-SVM networks every request evaluates as `none`, so `matchCommitment: [none]` matches all of that traffic and any other level matches nothing.
 
-**Defaults merge algorithm.** When a network has its own `failsafe` array AND `networkDefaults.failsafe` is also set, each entry in the network array is matched against the defaults array using the same `WildcardMatch + MatchFinalities` algorithm. When a match is found, unset sub-fields (retry, hedge, timeout, etc.) inherit from the matched default entry. A catch-all default (`matchMethod: "*"`) acts as a universal base for all network-specific entries. If the network has no `failsafe` entries but the defaults do, the entire defaults array is cloned. (<SourceLink file="common/defaults.go" lines="1793-1832" />)
+`getSignatureStatuses` matches an explicit caller commitment. eRPC does not inject `svm.commitment` for this method because older validators do not honor that field. Omitted commitment matches `none` and preserves the method's processed default. A matching policy does not prove that an upstream supports the requested commitment.
+
+**Defaults merge algorithm.** Each network failsafe entry inherits unset policy fields from the first default that matches method and finality and covers every commitment selected by the network entry. An omitted default `matchCommitment` covers all commitments. A network entry with omitted `matchCommitment` inherits only from an unrestricted default. If the network has no failsafe entries, the entire defaults array is copied. (<SourceLink file="common/defaults.go" />)
 
 **Network-scope timeout is lifecycle-scoped, not per-attempt.** A 500ms network timeout with `maxAttempts: 3` has a 500ms total budget shared across all 3 retry rounds. There is no per-attempt timeout at the network scope.
 
@@ -247,7 +249,7 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 8. Scope mismatches abort startup before any request is served: a circuit breaker at network scope fails with `ErrFailsafeConfiguration`, and consensus at upstream scope fails config validation.
 9. Failsafe defaults merge uses **wildcard method matching**, not exact match. A default entry with `matchMethod: "eth_*"` will provide defaults for any network entry whose method starts with `eth_`. A catch-all `matchMethod: "*"` is required to cover all entries uniformly.
 10. On network-scope failsafe, put specific `matchCommitment` rules *before* a catch-all with omitted `matchCommitment`, or the catch-all wins first.
-11. Defaults merge matches on `matchMethod` + `matchFinality` only, not `matchCommitment`. A `networkDefaults` entry with `matchCommitment: [confirmed]` can lend its retry, hedge and timeout to a network entry with no `matchCommitment`, which then applies them to every commitment. Set those policies on the network entry itself when they must differ by commitment.
+11. Defaults merge matches `matchMethod` + `matchFinality` and requires the default's `matchCommitment` to cover every commitment selected by the network entry. An omitted default matcher covers all commitments. A commitment-specific default cannot supply policies to a network catch-all.
 
 ### Observability
 

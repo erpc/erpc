@@ -135,6 +135,13 @@ func NewCacheExecutor(ctx context.Context, cfg *common.CacheFailsafeConfig, logg
 		)
 	}
 
+	if len(cfg.MatchCommitment) > 0 {
+		return nil, common.NewErrFailsafeConfiguration(
+			errors.New("matchCommitment is not supported for connector-level failsafe"),
+			map[string]interface{}{"policy": "matchCommitment"},
+		)
+	}
+
 	e := &cacheExecutor{
 		cfg:        cfg,
 		logger:     logger,
