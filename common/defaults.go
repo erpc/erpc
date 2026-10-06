@@ -2132,7 +2132,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			} else {
 				// Apply defaults to each failsafe config
 				for i, fs := range n.Failsafe {
-					// Find matching default by method/finality
+					// A default must cover every commitment selected by the network rule.
 					defaultFs := &FailsafeConfig{
 						MatchMethod: "*",
 					}
@@ -2149,7 +2149,17 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 						// Match finality (empty array means any finality)
 						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
 
-						if methodMatch && finalityMatch {
+						commitmentMatch := len(dfs.MatchCommitment) == 0
+						if !commitmentMatch && len(fs.MatchCommitment) > 0 {
+							commitmentMatch = true
+							for _, commitment := range fs.MatchCommitment {
+								if !slices.Contains(dfs.MatchCommitment, commitment) {
+									commitmentMatch = false
+									break
+								}
+							}
+						}
+						if methodMatch && finalityMatch && commitmentMatch {
 							defaultFs = dfs
 							break
 						}

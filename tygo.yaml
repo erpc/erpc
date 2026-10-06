@@ -4,6 +4,8 @@ packages:
     flavor: "yaml"
     type_mappings:
       time.Duration: "number /* time in nanoseconds (time.Duration) */"
+      telemetry.ActionKeep: '"keep"'
+      telemetry.ActionDrop: '"drop"'
       # The following doesn't work, cause tygo only replace types when it's an `ast.SelectorExpr`, and following types are simple `ast.Ident`
       #  waiting for PR: https://github.com/gzuidhof/tygo/pull/74
       # id_ConnectorDriverType: "TsConnectorDriverType"
