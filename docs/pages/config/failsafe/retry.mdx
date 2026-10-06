@@ -152,8 +152,10 @@ The two scopes compose multiplicatively: `network.maxAttempts: 3` × `upstream.m
 3. `ErrUpstreamBlockUnavailable` — retry reason `"block_unavailable"` (unless `emptyResultMaxAttempts` cap reached).
 4. `ErrEndpointMissingData` + `RetryEmpty == false` directive — no retry; otherwise reason `"missing_data"` (unless cap reached).
 5. `IsRetryableTowardNetwork(err) == true` — reason `"retryable_error"`.
-6. `resp.IsResultEmptyish()` + `RetryEmpty == true` directive + method NOT in `emptyResultAccept` — reason `"empty_result"` (unless cap reached).
+6. `resp.IsResultEmptyish()` + `RetryEmpty == true` directive + result not accepted by the empty-result policy — reason `"empty_result"` (unless cap reached).
 7. `RetryPending == true` + tx-lookup method — reason `"pending_tx"` (unless cap reached).
+
+**Empty block traces.** At network scope, `debug_traceBlockByNumber` accepts `[]` by default, including whitespace inside or around the array. Without consensus, the upstream sweep returns this result immediately, and neither retry nor hedge waits for another result. This default does not accept `null`, `{}`, `""`, or an absent result. Setting `retry.emptyResultAccept` explicitly replaces the default: an empty list disables trace acceptance, while a list containing `debug_traceBlockByNumber` accepts all empty shapes for that method. This policy does not validate whether the upstream omitted traces. Source: <SourceLink file="erpc/network_executor.go" lines="137-160" />
 
 **"Data not yet available" unified delay path.** When the retry reason is `block_unavailable`, `empty_result`, or `missing_data`, `computeDelay` takes a special path: it first tries `dynamicBlockUnavailableDelay()` — the per-network EMA block time × `blockUnavailableDelayMultiplier` (default 1.0). If the EMA hasn't warmed yet (returns 0), it falls back to the static `emptyResultDelay` config value. For genuine errors (`retryable_error`, `pending_tx`) it uses the standard `ComputeBackoff` formula.
 
