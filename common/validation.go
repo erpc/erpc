@@ -758,6 +758,21 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	} else if len(p.Providers) == 0 {
 		return fmt.Errorf("project.*.upstreams or project.*.providers is required, add at least one of them")
 	}
+	// Provider-generated upstreams copy upstreamDefaults only when no override
+	// matches, and that copy runs in a background bootstrap task. The
+	// executor's rejection is then only a log line and the upstream drops out.
+	if p.UpstreamDefaults != nil {
+		for _, fs := range p.UpstreamDefaults.Failsafe {
+			if fs != nil && fs.Consensus != nil {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
+			}
+		}
+	}
+	if p.NetworkDefaults != nil {
+		if err := p.NetworkDefaults.Validate(); err != nil {
+			return err
+		}
+	}
 	if p.Networks != nil {
 		existingIds := make(map[string]bool)
 		existingAliases := make(map[string]bool)
@@ -1022,6 +1037,11 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			}
 			if len(fs.MatchCommitment) > 0 {
 				return fmt.Errorf("upstream '%s': failsafe.matchCommitment is only supported for network-level failsafe", u.Id)
+			}
+			// Upstreams register in the background, so the executor's own
+			// rejection only logs and erpc keeps serving without the upstream.
+			if fs.Consensus != nil {
+				return fmt.Errorf("upstream '%s': failsafe.consensus is only supported for network-level failsafe", u.Id)
 			}
 		}
 	}
@@ -1515,6 +1535,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return fmt.Errorf("network.*.alias '%s' must contain only alphanumeric characters, dash, or underscore", n.Alias)
 		}
 	}
+	if err := validateCacheKeySuffix("network.*.cacheKeySuffix", n.CacheKeySuffix); err != nil {
+		return err
+	}
 	for i, sr := range n.StaticResponses {
 		if err := sr.Validate(); err != nil {
 			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
@@ -1522,6 +1545,23 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	}
 	if err := n.Integrity.Validate(); err != nil {
 		return fmt.Errorf("network.*: %w", err)
+	}
+	return nil
+}
+
+func (n *NetworkDefaults) Validate() error {
+	if n == nil {
+		return nil
+	}
+	return validateCacheKeySuffix("networkDefaults.cacheKeySuffix", n.CacheKeySuffix)
+}
+
+func validateCacheKeySuffix(field, suffix string) error {
+	if suffix == "" {
+		return nil
+	}
+	if !util.IsValidIdentifier(suffix) {
+		return fmt.Errorf("%s '%s' must contain only alphanumeric characters, dash, or underscore", field, suffix)
 	}
 	return nil
 }

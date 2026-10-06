@@ -108,8 +108,8 @@ explain the thresholds. Reference: https://docs.erpc.cloud/config/failsafe.llms.
 
 **Scope restrictions.**
 - Circuit breakers are **upstream-scope only**. Placing a `circuitBreaker` block in a network-level `failsafe` entry causes startup failure with `ErrFailsafeConfiguration`. (<SourceLink file="erpc/network_executor.go" lines="68-73" />)
-- Consensus is **network-scope only**. Placing a `consensus` block in an upstream-level `failsafe` entry causes startup failure. (<SourceLink file="upstream/upstream_executor.go" lines="46-53" />)
-- `matchCommitment` is **network-scope only**. Setting it on an upstream-level `failsafe` entry fails config validation at startup.
+- Consensus is **network-scope only**. Placing a `consensus` block in an upstream-level `failsafe` entry fails config validation at startup. (<SourceLink file="common/validation.go" />)
+- `matchCommitment` is **network-scope only**. Setting it on an upstream-level or `upstreamDefaults` `failsafe` entry fails config validation at startup.
 
 **Failsafe entry matching (`matchMethod` + `matchFinality`).** Upstream-scope entries use a 4-tier priority (`SelectExecutor`-style scan in `upstream/upstream.go`):
 1. Specific method + specific finality (highest priority)
@@ -228,7 +228,7 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 ### Best practices
 
 - Place **circuit breakers at upstream scope only**; placing them at network scope causes `ErrFailsafeConfiguration` at startup.
-- Place **consensus at network scope only**; placing it at upstream scope also causes `ErrFailsafeConfiguration` at startup.
+- Place **consensus at network scope only**; placing it at upstream scope fails config validation at startup.
 - Always use a **catch-all defaults entry** (`matchMethod: "*"`) in `networkDefaults.failsafe` so method-specific entries inherit the base policy without repeating every field.
 - The **network-scope timeout** wraps all retries and hedges — always set it shorter than `server.maxTimeout` (default 150s), or it will never fire on its own.
 - Stacking `upstreams[].failsafe[].retry.maxAttempts: 3` with `networks[].failsafe[].retry.maxAttempts: 3` can produce up to 9 upstream calls per request — size budgets accordingly.
@@ -244,7 +244,7 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 5. `emptyResultMaxAttempts` is a shared counter across all network retry rounds, not per-round. With the default value of 2, one original attempt plus one empty-type retry fires — at most 1 empty-type retry across the entire request lifetime.
 6. Consensus `ignoreFields` is a set-replacement, not a merge. Setting any entry replaces the entire built-in default map (which suppresses `blockTimestamp` disagreements for `eth_getLogs` and receipts methods).
 7. The circuit breaker's rolling window must fill to `failureThresholdCapacity` (default 80) before it can trip — early-startup behavior is Closed regardless of error rate.
-8. `ErrFailsafeConfiguration` is startup-only — any scope mismatch (circuit breaker at network, consensus at upstream) aborts before any request is served.
+8. Scope mismatches abort startup before any request is served: a circuit breaker at network scope fails with `ErrFailsafeConfiguration`, and consensus at upstream scope fails config validation.
 9. Failsafe defaults merge uses **wildcard method matching**, not exact match. A default entry with `matchMethod: "eth_*"` will provide defaults for any network entry whose method starts with `eth_`. A catch-all `matchMethod: "*"` is required to cover all entries uniformly.
 10. On network-scope failsafe, put specific `matchCommitment` rules *before* a catch-all with omitted `matchCommitment`, or the catch-all wins first.
 11. Defaults merge matches on `matchMethod` + `matchFinality` only, not `matchCommitment`. A `networkDefaults` entry with `matchCommitment: [confirmed]` can lend its retry, hedge and timeout to a network entry with no `matchCommitment`, which then applies them to every commitment. Set those policies on the network entry itself when they must differ by commitment.
@@ -268,7 +268,7 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 - [`common/defaults.go:L1793-L1832`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1793-L1832) — failsafe entry merge algorithm (network scope)
 - [`common/defaults.go:L1621-L1672`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1621-L1672) — failsafe entry merge algorithm (upstream scope)
 - [`erpc/network_executor.go:L68-L73`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L68-L73) — circuit breaker network-scope rejection at startup
-- [`upstream/upstream_executor.go:L46-L53`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L46-L53) — consensus upstream-scope rejection at startup
+- [`common/validation.go`](https://github.com/erpc/erpc/blob/main/common/validation.go) — consensus upstream-scope rejection at config load (`UpstreamConfig.Validate`)
 - [`common/errors.go:L1573-L1584`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1573-L1584) — `ErrFailsafeConfiguration` type (startup-only)
 
 ### Related pages

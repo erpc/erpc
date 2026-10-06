@@ -455,7 +455,7 @@ is cold:
 10. **`emptyResultIgnore` + `emptyResultAccept` both set → `emptyResultIgnore` silently dropped.** The migration condition is `emptyResultAccept == nil`. If both are present, only `emptyResultAccept` takes effect. Field is not cleared. Source: [`common/defaults.go:L2262`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2262).
 11. **`backoffFactor: 0` or `backoffMaxDelay: 0` are validation errors.** Since `SetDefaults` always fills `1.2` and `3s`, these only surface when explicitly set to `0` in config. Source: [`common/validation.go:L1020-L1027`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1020-L1027).
 12. **Client-side errors (`ErrEndpointClientSideException`, -32600) ARE retryable at network scope.** No `retryableTowardNetwork: false` flag — another upstream might accept the request. Confirmed by `TestIsRetryableTowardNetwork_ClientError`.
-13. **`ErrFailsafeConfiguration` aborts startup, never raised at request time.** Triggers: (a) circuit breaker in a network-scope failsafe entry; (b) consensus in an upstream-scope failsafe entry.
+13. **`ErrFailsafeConfiguration` aborts startup, never raised at request time.** Trigger: circuit breaker in a network-scope failsafe entry. Consensus in an upstream-scope failsafe entry is rejected earlier, by config validation.
 14. **Backoff attempt index is 0-based.** First retry = attempt 0, so `BackoffFactor^0 = 1` — the first retry always uses exactly `Delay`. Only second retry onward grows. Differs from libraries where attempt 0 is the initial request.
 15. **`blockUnavailableDelay` migration does not overwrite user-set `emptyResultDelay`.** If both are set, `blockUnavailableDelay` is discarded (deprecation warning still fires). Source: [`common/defaults.go:L2269`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2269).
 16. **Wrong-empty punishment respects block availability bounds.** When an upstream returns null for a method in `markEmptyAsErrorMethods` but the block is outside its configured `blockAvailability` range, the upstream's `MisbehaviorsTotal` is NOT incremented. Confirmed by `TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds`.
@@ -486,7 +486,7 @@ Source: <SourceLink file="common/exec_state.go" lines="279-285" />
 
 | Error | When produced |
 |---|---|
-| `ErrFailsafeConfiguration` | Startup only — invalid policy placement (circuit breaker at network scope, consensus at upstream scope). Server aborts before serving any request. Source: <SourceLink file="common/errors.go" lines="1573-1584" /> |
+| `ErrFailsafeConfiguration` | Startup only — circuit breaker at network scope. Server aborts before serving any request. (Consensus at upstream scope is rejected earlier, by config validation.) Source: <SourceLink file="common/errors.go" lines="1573-1584" /> |
 | `ErrFailsafeRetryExceeded` | After all retry rounds exhausted; wraps the last error with `ScopeNetwork` or `ScopeUpstream` and `durationMs`. For `eth_sendRawTransaction` with `ErrEndpointExecutionException`, the error is returned unwrapped (not inside `ErrFailsafeRetryExceeded`). Source: <SourceLink file="erpc/network_executor.go" lines="279-283" /> |
 
 **Log messages:**

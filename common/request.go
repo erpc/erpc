@@ -571,6 +571,24 @@ func (r *NormalizedRequest) NetworkId() string {
 	return r.network.Id()
 }
 
+// CacheKeySuffix returns the optional JSON-RPC cache partition-key suffix
+// configured on this request's network, or "" when unset / no network.
+func (r *NormalizedRequest) CacheKeySuffix() string {
+	if r == nil {
+		return ""
+	}
+	r.RLock()
+	defer r.RUnlock()
+	if r.network == nil {
+		return ""
+	}
+	cfg := r.network.Config()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.CacheKeySuffix
+}
+
 // NetworkLabel returns a user-friendly label for the network suitable for metrics.
 // It prefers the network alias when available, otherwise falls back to the canonical ID.
 func (r *NormalizedRequest) NetworkLabel() string {
