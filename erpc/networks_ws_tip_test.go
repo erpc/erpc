@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -152,6 +153,104 @@ func TestNetworkHandle_SuggestLatestBlock_EveryKnownSourceLiftsLatest(t *testing
 	assert.Equal(t, int64(1010), fallback.EvmStatePoller().LatestBlock())
 	assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx),
 		"a head a client can receive from the cordoned fallback floors latest")
+}
+
+type fakeHeadSource bool
+
+func (f fakeHeadSource) HeadsLive() bool { return bool(f) }
+
+// With failover on, a fallback's head reaches clients (and lifts latest) only
+// when no primary the policy routes to is streaming heads itself. The
+// fallback's own poller sees every head regardless.
+func TestNetworkHandle_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
+	setup := func(t *testing.T, ctx context.Context) (*Network, map[string]*upstream.Upstream) {
+		network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
+			primaryLatest:  "0x3e8", // 1000
+			fallbackLatest: "0x3e8",
+			enableFailover: true,
+		})
+		require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
+		byId := make(map[string]*upstream.Upstream, len(ups))
+		for _, u := range ups {
+			byId[u.Id()] = u
+		}
+		return network, byId
+	}
+
+	t.Run("HeldWhileAPrimaryStreams", func(t *testing.T) {
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, ups := setup(t, ctx)
+
+		handle := &networkHandle{nw: network, heads: map[string]headSource{
+			"primary-1":  fakeHeadSource(false),
+			"primary-2":  fakeHeadSource(true),
+			"fallback-1": fakeHeadSource(true),
+		}}
+		assert.False(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
+			"the fallback's poller still sees its head")
+		assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
+			"a held head must not lift latest")
+
+		assert.True(t, handle.SuggestLatestBlock("ws:primary-2", 1001))
+		assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
+	})
+
+	t.Run("DeliveredWhenNoPrimaryStreams", func(t *testing.T) {
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, _ := setup(t, ctx)
+
+		// Primaries connected over HTTP only, or with no live subscription.
+		for _, heads := range []map[string]headSource{
+			{"fallback-1": fakeHeadSource(true)},
+			{"primary-1": fakeHeadSource(false), "fallback-1": fakeHeadSource(true)},
+		} {
+			handle := &networkHandle{nw: network, heads: heads}
+			assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		}
+		assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx))
+	})
+
+	t.Run("DeliveredWhenPolicyExcludesPrimaries", func(t *testing.T) {
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, ups := setup(t, ctx)
+
+		handle := &networkHandle{nw: network, heads: map[string]headSource{
+			"primary-1":  fakeHeadSource(true),
+			"primary-2":  fakeHeadSource(true),
+			"fallback-1": fakeHeadSource(true),
+		}}
+		require.False(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+
+		ups["primary-1"].Cordon("*", "test")
+		ups["primary-2"].Cordon("*", "test")
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1011))
+		assert.Equal(t, int64(1011), network.EvmHighestLatestBlockNumber(ctx))
+	})
+
+	t.Run("DeliveredWithFailoverOff", func(t *testing.T) {
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
+			primaryLatest:  "0x3e8",
+			fallbackLatest: "0x3e8",
+		})
+
+		handle := &networkHandle{nw: network, heads: map[string]headSource{
+			"primary-1":  fakeHeadSource(true),
+			"fallback-1": fakeHeadSource(true),
+		}}
+		assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+	})
 }
 
 // The delivered-head floor is network-wide: a use-upstream-scoped request is

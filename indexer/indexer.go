@@ -303,7 +303,9 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 	// Before dedup, so every source's head counts even if another source
 	// already delivered it.
 	if ev.Kind == KindNewHead && !ev.Block.Zero() && ev.SourceId != "" {
-		ns.handle.SuggestLatestBlock(ev.SourceId, ev.Block.Number)
+		if !ns.handle.SuggestLatestBlock(ev.SourceId, ev.Block.Number) {
+			return
+		}
 	}
 
 	// The upstream's removed flag is trusted as-is.

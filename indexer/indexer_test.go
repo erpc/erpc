@@ -18,7 +18,8 @@ type fakeNetwork struct {
 	id string
 
 	mu          sync.Mutex
-	suggestedBy map[string][]int64 // sourceId -> block nums seen
+	suggestedBy map[string][]int64  // sourceId -> block nums seen
+	held        map[string]struct{} // sourceIds whose heads are not delivered
 }
 
 func newFakeNetwork(id string) *fakeNetwork {
@@ -29,10 +30,12 @@ func newFakeNetwork(id string) *fakeNetwork {
 }
 
 func (n *fakeNetwork) Id() string { return n.id }
-func (n *fakeNetwork) SuggestLatestBlock(sourceId string, block int64) {
+func (n *fakeNetwork) SuggestLatestBlock(sourceId string, block int64) bool {
 	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.suggestedBy[sourceId] = append(n.suggestedBy[sourceId], block)
-	n.mu.Unlock()
+	_, held := n.held[sourceId]
+	return !held
 }
 
 type fakeEgress struct {
@@ -268,6 +271,31 @@ func TestIndexer_NewHead_StalerDroppedKeepsStatePollerFed(t *testing.T) {
 	defer nw.mu.Unlock()
 	if len(nw.suggestedBy["ws:up1"]) != 1 || len(nw.suggestedBy["ws:up2"]) != 1 {
 		t.Fatalf("each source must see its own SuggestLatestBlock, got %v", nw.suggestedBy)
+	}
+}
+
+// A head the network does not deliver is still observed, and does not
+// advance the dedup marker past the heads the other sources deliver.
+func TestIndexer_NewHead_HeldSourceObservedNotDelivered(t *testing.T) {
+	idx := newIndexer(t)
+	nw := newFakeNetwork("evm:1")
+	nw.held = map[string]struct{}{"ws:fb": {}}
+	idx.RegisterNetwork(nw)
+	eg := &fakeEgress{name: "eg1", acceptAllHeads: true}
+	idx.Attach(eg)
+
+	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:fb", Block: BlockRef{Number: 101, Hash: "0xBBB"}})
+	if got := eg.count(); got != 0 {
+		t.Fatalf("held head delivered: got %d", got)
+	}
+	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up1", Block: BlockRef{Number: 101, Hash: "0xBBB"}})
+	if got := eg.count(); got != 1 {
+		t.Fatalf("the delivering source's head must go out: want 1, got %d", got)
+	}
+	nw.mu.Lock()
+	defer nw.mu.Unlock()
+	if len(nw.suggestedBy["ws:fb"]) != 1 {
+		t.Fatalf("held source must still be observed, got %v", nw.suggestedBy)
 	}
 }
 

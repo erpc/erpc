@@ -116,6 +116,14 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts O
 
 func (a *Adapter) Name() string { return "ws:" + a.upstreamID }
 
+// HeadsLive reports whether the newHeads subscription is live on the
+// current connection.
+func (a *Adapter) HeadsLive() bool {
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	return a.heads.id != ""
+}
+
 // Start registers the connection hooks and subscribes newHeads in the
 // background, detached from ctx.
 func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexer.Sink) error {

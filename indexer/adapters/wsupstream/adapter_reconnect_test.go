@@ -26,8 +26,8 @@ import (
 
 type fakeNetworkHandle struct{}
 
-func (fakeNetworkHandle) Id() string                       { return "evm:123" }
-func (fakeNetworkHandle) SuggestLatestBlock(string, int64) {}
+func (fakeNetworkHandle) Id() string                            { return "evm:123" }
+func (fakeNetworkHandle) SuggestLatestBlock(string, int64) bool { return true }
 
 type fakeSink struct {
 	events chan indexer.StreamEvent
@@ -235,10 +235,12 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 		return send(ctx, nq, bypass)
 	}
 
+	require.False(t, a.HeadsLive(), "no heads before the subscribe succeeds")
 	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
 
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
 		"adapter never subscribed newHeads despite the failures stopping after %d", failuresPerEpoch)
+	require.True(t, a.HeadsLive())
 	require.GreaterOrEqual(t, forwardCalls.Load(), int64(failuresPerEpoch+1),
 		"expected the subscribe to be retried through failures")
 

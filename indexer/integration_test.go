@@ -66,13 +66,14 @@ type stubNetwork struct {
 }
 
 func (s *stubNetwork) Id() string { return s.id }
-func (s *stubNetwork) SuggestLatestBlock(sourceID string, block int64) {
+func (s *stubNetwork) SuggestLatestBlock(sourceID string, block int64) bool {
 	s.mu.Lock()
 	if s.suggestions == nil {
 		s.suggestions = make(map[string][]int64)
 	}
 	s.suggestions[sourceID] = append(s.suggestions[sourceID], block)
 	s.mu.Unlock()
+	return true
 }
 
 type recordingEgress struct {

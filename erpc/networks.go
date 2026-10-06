@@ -3647,9 +3647,12 @@ func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.Normal
 // tierUpstreamsByGroup moves fallback-tier upstreams behind the rest,
 // preserving order within each tier.
 func tierUpstreamsByGroup(ups []common.Upstream) []common.Upstream {
-	return stablePartition(ups, func(u common.Upstream) bool {
-		return u.Config() != nil && u.Config().HasTag(common.TagTierFallback)
-	})
+	return stablePartition(ups, isFallbackTier)
+}
+
+// isFallbackTier reports whether u is tagged tier:fallback.
+func isFallbackTier(u common.Upstream) bool {
+	return u.Config() != nil && u.Config().HasTag(common.TagTierFallback)
 }
 
 // partitionUpstreamsByLatestBlock moves upstreams whose polled head is known

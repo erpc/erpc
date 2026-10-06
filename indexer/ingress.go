@@ -11,10 +11,11 @@ type Sink interface {
 // NetworkHandle is the part of a network an ingress may touch.
 type NetworkHandle interface {
 	Id() string
-	// SuggestLatestBlock reports a head observed by source. It is called
-	// before dedup and fan-out, so every source's observation counts and
-	// the network tip moves before clients see the head.
-	SuggestLatestBlock(sourceId string, blockNumber int64)
+	// SuggestLatestBlock reports a head observed by source and whether
+	// clients may receive it. It is called before dedup and fan-out, so
+	// every source's observation counts and the network tip moves before
+	// clients see the head; a head it does not deliver is dropped.
+	SuggestLatestBlock(sourceId string, blockNumber int64) (deliver bool)
 }
 
 // EventIngress turns a transport-specific subscription into StreamEvents

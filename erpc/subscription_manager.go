@@ -259,14 +259,22 @@ func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network
 		return common.NewErrNoWsUpstreamAvailable(networkID)
 	}
 
-	sm.idx.RegisterNetwork(&networkHandle{nw: nw})
-	sm.idx.RegisterNetworkSelector(networkID, &subIngressSelector{nw: nw})
 	var adapterOpts wsupstream.Options
 	if cfg := nw.cfg; cfg != nil && cfg.Evm != nil && cfg.Evm.StripSubscribeFromBlockZero != nil {
 		adapterOpts.StripSubscribeFromBlockZero = *cfg.Evm.StripSubscribeFromBlockZero
 	}
+	adapters := make(map[string]*wsupstream.Adapter, len(wsUpstreams))
+	heads := make(map[string]headSource, len(wsUpstreams))
 	for _, up := range wsUpstreams {
-		adapter := wsupstream.New(up, networkID, sm.logger, adapterOpts)
+		if adapter := wsupstream.New(up, networkID, sm.logger, adapterOpts); adapter != nil {
+			adapters[up.Id()] = adapter
+			heads[up.Id()] = adapter
+		}
+	}
+	sm.idx.RegisterNetwork(&networkHandle{nw: nw, heads: heads})
+	sm.idx.RegisterNetworkSelector(networkID, &subIngressSelector{nw: nw})
+	for _, up := range wsUpstreams {
+		adapter := adapters[up.Id()]
 		if adapter == nil {
 			continue
 		}
@@ -416,38 +424,65 @@ func (sm *SubscriptionManager) recordFailureMetrics(
 // networkHandle adapts *Network to indexer.NetworkHandle.
 type networkHandle struct {
 	nw *Network
+	// heads are the network's WebSocket ingresses by upstream id; fixed once
+	// the network is registered.
+	heads map[string]headSource
+}
+
+// headSource is an ingress that streams newHeads.
+type headSource interface {
+	// HeadsLive reports whether its newHeads subscription is live.
+	HeadsLive() bool
 }
 
 func (h *networkHandle) Id() string { return h.nw.networkId }
 
 // SuggestLatestBlock passes a head from the ingress "ws:<upstreamId>" to
-// that upstream's state poller. Once the poller has accepted it (a major
-// jump is verified asynchronously first), a head from a tip candidate also
-// advances the network's delivered-head floor before clients see it; a
-// fallback-tier or policy-excluded upstream cannot lift "latest".
-func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) {
+// that upstream's state poller and reports whether clients may receive it
+// (see deliversHeadsFrom). Once the poller has accepted a deliverable head (a
+// major jump is verified asynchronously first), it also advances the
+// network's delivered-head floor before clients see it.
+func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) bool {
 	upstreamID, ok := strings.CutPrefix(sourceId, "ws:")
 	if !ok {
-		return
+		return true
 	}
 	ctx := context.Background()
 	for _, u := range h.nw.upstreamsRegistry.GetNetworkUpstreams(ctx, h.nw.networkId) {
 		if u.Id() != upstreamID {
 			continue
 		}
+		deliver := h.deliversHeadsFrom(ctx, u)
 		poller := u.EvmStatePoller()
 		if poller == nil || poller.IsObjectNull() {
-			return
+			return deliver
 		}
 		poller.SuggestLatestBlock(blockNumber)
-		// Every source's heads reach clients (whichever delivers first), so
-		// every source feeds the floor — once its poller accepted the head,
-		// which excludes jumps still pending chain-id verification.
-		if poller.LatestBlock() >= blockNumber {
+		if deliver && poller.LatestBlock() >= blockNumber {
 			h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
 		}
-		return
+		return deliver
 	}
+	return true
+}
+
+// deliversHeadsFrom reports whether clients may receive u's heads. With
+// failover on, a fallback-tier upstream's heads are held back while some
+// upstream outside that tier, which the selection policy routes to, has a
+// live newHeads subscription of its own: clients are not told of a block
+// only a fallback has while the primaries are up. Whether they are up is the
+// policy's verdict, as for reads. Without such a primary (none eligible, or
+// none streaming heads) the fallbacks' heads are delivered.
+func (h *networkHandle) deliversHeadsFrom(ctx context.Context, u common.Upstream) bool {
+	if h.nw.cfg == nil || !h.nw.cfg.Failover.Enabled() || !isFallbackTier(u) {
+		return true
+	}
+	for _, c := range h.nw.tipCandidateUpstreams(ctx, "*") {
+		if s := h.heads[c.Id()]; s != nil && !isFallbackTier(c) && s.HeadsLive() {
+			return false
+		}
+	}
+	return true
 }
 
 var (
