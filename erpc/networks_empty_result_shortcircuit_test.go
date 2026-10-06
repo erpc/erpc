@@ -21,6 +21,66 @@ import (
 // emptyish results and only checked emptyResultAccept at the failsafe-retry
 // level — wasting time on slow/timing-out upstreams.
 func TestEmptyResultAcceptShortCircuit(t *testing.T) {
+	t.Run("TraceBlock_EmptyArrayCancelsHedge_InvalidShapeRotates", func(t *testing.T) {
+		for _, mode := range []string{"hedge", "retry"} {
+			for _, first := range []string{"[]", "[ \t\r\n ]", "{}", `""`, "null", "missing"} {
+				t.Run(mode+"/"+first, func(t *testing.T) {
+					util.ResetGock()
+					defer util.ResetGock()
+					util.SetupMocksForEvmStatePoller()
+					var calls atomic.Int32
+					for i, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+						result := "[]"
+						if i == 0 {
+							result = first
+						}
+						gock.New(host).Post("").Filter(func(r *http.Request) bool {
+							return strings.Contains(util.SafeReadBody(r), "debug_traceBlockByNumber")
+						}).Persist().Reply(200).Map(func(r *http.Response) *http.Response {
+							calls.Add(1)
+							return r
+						}).BodyString(func() string {
+							if result == "missing" {
+								return `{"jsonrpc":"2.0","id":1}`
+							}
+							return `{"jsonrpc":"2.0","id":1,"result":` + result + `}`
+						}())
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					var network *Network
+					if mode == "hedge" {
+						network = setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+							Delay: common.NewStaticDuration(250 * time.Millisecond), MaxCount: 1,
+						})
+					} else {
+						network = setupTestNetworkWithRetryConfig(t, ctx,
+							&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+							&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond)},
+						)
+					}
+					network.PinUpstreamOrderForTest("rpc1", "rpc2")
+					req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"debug_traceBlockByNumber","params":["0x10",{"tracer":"callTracer"}]}`))
+					req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+					start := time.Now()
+					resp, err := network.Forward(ctx, req)
+					require.NoError(t, err)
+					require.NotNil(t, resp)
+					defer resp.Release()
+					jrr, err := resp.JsonRpcResponse()
+					require.NoError(t, err)
+					assert.Equal(t, "[]", strings.Join(strings.Fields(jrr.GetResultString()), ""))
+					wantCalls := int32(2)
+					if strings.HasPrefix(first, "[") {
+						wantCalls = 1
+					}
+					assert.Equal(t, wantCalls, calls.Load())
+					assert.Less(t, time.Since(start), 250*time.Millisecond)
+					t.Logf("mode=%s first=%q calls=%d elapsed=%v", mode, first, calls.Load(), time.Since(start))
+				})
+			}
+		}
+	})
 	t.Run("EthGetLogs_EmptyArray_OnlyFirstUpstreamCalled", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
