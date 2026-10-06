@@ -766,6 +766,9 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			if fs != nil && fs.Consensus != nil {
 				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
 			}
+			if fs != nil && len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.matchCommitment is only supported for network-level failsafe")
+			}
 		}
 	}
 	if p.NetworkDefaults != nil {

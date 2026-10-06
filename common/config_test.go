@@ -1250,9 +1250,9 @@ func TestUpstreamConfig_ValidateRejectsConsensus(t *testing.T) {
 
 // Provider-generated upstreams inherit upstreamDefaults only when no override
 // matches, after config load, inside a background bootstrap task. Consensus
-// on the defaults object must fail validation too, or those upstreams drop
-// out with only a log line.
-func TestProjectConfig_ValidateRejectsConsensusInUpstreamDefaults(t *testing.T) {
+// on the defaults object must fail validation too, and so must matchCommitment,
+// or those upstreams drop out with only a log line.
+func TestProjectConfig_ValidateRejectsNetworkOnlyFailsafeInUpstreamDefaults(t *testing.T) {
 	cfg := &Config{}
 	prj := &ProjectConfig{
 		Id: "main",
@@ -1275,6 +1275,14 @@ func TestProjectConfig_ValidateRejectsConsensusInUpstreamDefaults(t *testing.T) 
 	}
 
 	prj.UpstreamDefaults.Failsafe[0].Consensus = nil
+	prj.UpstreamDefaults.Failsafe[0].MatchCommitment = []string{"confirmed"}
+	err = prj.Validate(cfg)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "upstreamDefaults")
+		assert.Contains(t, err.Error(), "matchCommitment")
+	}
+
+	prj.UpstreamDefaults.Failsafe[0].MatchCommitment = nil
 	assert.NoError(t, prj.Validate(cfg))
 }
 
