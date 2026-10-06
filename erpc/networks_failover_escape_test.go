@@ -169,6 +169,9 @@ func buildFailoverNetwork(
 		networkConfig.Failover = &common.FailoverConfig{OnDefaultsExhausted: util.BoolPtr(true)}
 	}
 	networkConfig.Failsafe = opts.failsafe
+	if opts.network != nil {
+		opts.network(networkConfig)
+	}
 
 	var policyEngine *policy.Engine
 	if !opts.noPolicy {
@@ -208,6 +211,10 @@ type failoverFixtureOpts struct {
 	// mocks registers test-specific mocks ahead of the standard ones, before
 	// any poller starts.
 	mocks func()
+	// configure adjusts the upstream configs before the network is built.
+	configure func(cfgs []*common.UpstreamConfig)
+	// network adjusts the network config before the network is built.
+	network func(cfg *common.NetworkConfig)
 }
 
 func setupFailoverFixture(
@@ -232,7 +239,11 @@ func setupFailoverFixture(
 	mockEthCallReturning("rpc3.localhost", "0x3333")
 	mockEthCallReturning("rpc4.localhost", "0x4444")
 
-	network, upr, mt := buildFailoverNetwork(t, ctx, failoverUpstreamConfigs(), opts)
+	cfgs := failoverUpstreamConfigs()
+	if opts.configure != nil {
+		opts.configure(cfgs)
+	}
+	network, upr, mt := buildFailoverNetwork(t, ctx, cfgs, opts)
 
 	upsList := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(999))
 	require.Len(t, upsList, 4)
