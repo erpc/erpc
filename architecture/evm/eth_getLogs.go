@@ -215,7 +215,14 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
-	fromBlock, toBlock, resolved, limitErr := checkGetLogsHardLimits(ctx, n, fbStr, tbStr, addrCount, topicCount)
+	// Network.Forward binds the request before its own pre-forward, but this
+	// hook runs first, before the cache read. latest/finalized resolution
+	// scopes the tip to the request's use-upstream selector via this context
+	// value. Without it the unscoped tip is used: a range that fits the
+	// selected upstream is rejected, and a range that exceeds it can still
+	// be served from cache.
+	limitCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+	fromBlock, toBlock, resolved, limitErr := checkGetLogsHardLimits(limitCtx, n, fbStr, tbStr, addrCount, topicCount)
 
 	if resolved && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)

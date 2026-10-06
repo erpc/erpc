@@ -1501,6 +1501,55 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 	})
 }
 
+func TestProjectPreForward_eth_getLogs_UseUpstreamTip(t *testing.T) {
+	// Selected upstream tip is 1000; the unscoped tip is 2000. From block 996
+	// to latest is 5 blocks against the selected tip and 1005 against the
+	// unscoped one. Cap is 10.
+	newNet := func(selected int64) *mockNetwork {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		n.On("ProjectId").Return("test")
+		if selected > 0 {
+			n.On("EvmHighestLatestBlockNumber", mock.MatchedBy(func(ctx context.Context) bool {
+				req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+				return ok && req != nil && req.Directives() != nil && req.Directives().UseUpstream == "slow"
+			})).Return(selected)
+		}
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(2000)).Maybe()
+		return n
+	}
+	req := func(useUpstream string) *common.NormalizedRequest {
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x3e4", // 996
+			"toBlock":   "latest",
+		})
+		if useUpstream != "" {
+			r.SetDirectives(&common.RequestDirectives{UseUpstream: useUpstream})
+		}
+		return r
+	}
+
+	t.Run("selected_tip_within_cap", func(t *testing.T) {
+		n := newNet(1000)
+		handled, resp, err := projectPreForward_eth_getLogs(context.Background(), n, req("slow"))
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("unscoped_tip_exceeds_cap", func(t *testing.T) {
+		n := newNet(0)
+		handled, resp, err := projectPreForward_eth_getLogs(context.Background(), n, req(""))
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+}
+
 func createTestRequest(filter interface{}) *common.NormalizedRequest {
 	params := []interface{}{filter}
 	jrq := common.NewJsonRpcRequest("eth_getLogs", params)
