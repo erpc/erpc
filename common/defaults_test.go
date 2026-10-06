@@ -145,7 +145,6 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 				BackoffMaxDelay:        Duration(3 * time.Second),
 				BackoffFactor:          1.2,
 				Jitter:                 Duration(0 * time.Millisecond),
-				EmptyResultAccept:      DefaultEmptyResultAccept(),
 				EmptyResultMaxAttempts: 2,
 			},
 		}, network.Failsafe[0])
@@ -426,7 +425,6 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 			Delay:                  Duration(1 * time.Second),
 			Jitter:                 Duration(500 * time.Millisecond),
 			BackoffFactor:          1.2,
-			EmptyResultAccept:      DefaultEmptyResultAccept(),
 			EmptyResultMaxAttempts: 2,
 		}, retry, "Retry policy should match expected values")
 

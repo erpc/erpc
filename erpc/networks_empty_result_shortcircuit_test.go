@@ -593,6 +593,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		inherit bool
 		accept  bool
 	}{
+		{"replacedDefault", []string{}, false, false},
 		{"default", nil, false, true},
 		{"inheritedDefault", nil, true, true},
 		{"explicitEmpty", []string{}, false, false},
@@ -604,6 +605,11 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	} {
 		policy := &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond), EmptyResultAccept: tc.list}
 		require.NoError(t, policy.SetDefaults(nil))
+		if tc.name == "replacedDefault" {
+			policy = &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond)}
+			require.NoError(t, policy.SetDefaults(nil))
+			policy.EmptyResultAccept = tc.list
+		}
 		if tc.inherit {
 			child := &common.RetryPolicyConfig{}
 			require.NoError(t, child.SetDefaults(policy.Copy()))
@@ -616,6 +622,9 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 			}
 			executor.cfg.Retry = policy.Copy()
 			executor.emptyResultAccept = policy.EmptyResultAccept
+			if executor.emptyResultAccept == nil {
+				executor.emptyResultAccept = common.DefaultEmptyResultAccept()
+			}
 		}
 		before := traceCalls.Load()
 		resp, err = n.Forward(ctx, request("0x3e8"))

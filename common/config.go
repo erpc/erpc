@@ -1573,8 +1573,6 @@ type RetryPolicyConfig struct {
 	// EmptyResultAccept lists methods for which an empty/null result is considered valid
 	// and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
 	EmptyResultAccept []string `yaml:"emptyResultAccept,omitempty" json:"emptyResultAccept"`
-	// Keep provenance across copies and repeated defaulting without adding a wire field.
-	emptyResultAcceptDefault bool
 	// @deprecated: use EmptyResultAccept instead.
 	EmptyResultIgnore []string `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
 	// EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
@@ -1603,10 +1601,6 @@ func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {
 	copied := &RetryPolicyConfig{}
 	*copied = *c
 	return copied
-}
-
-func (c *RetryPolicyConfig) HasExplicitEmptyResultAccept() bool {
-	return c != nil && c.EmptyResultAccept != nil && !c.emptyResultAcceptDefault
 }
 
 type CircuitBreakerPolicyConfig struct {

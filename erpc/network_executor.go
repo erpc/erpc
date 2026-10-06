@@ -139,7 +139,7 @@ func (e *networkExecutor) acceptsEmptyResult(method string, resp *common.Normali
 		return true
 	}
 	if method != "debug_traceBlockByNumber" ||
-		(e != nil && e.cfg != nil && e.cfg.Retry.HasExplicitEmptyResultAccept()) {
+		(e != nil && e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.EmptyResultAccept != nil) {
 		return false
 	}
 	return isEmptyTraceArray(resp) && evm.HasVerifiedEmptyTraceBlock(resp.Request())
