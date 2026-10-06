@@ -241,7 +241,7 @@ func HasVerifiedEmptyTraceBlock(req *common.NormalizedRequest) bool {
 			groupKey, _ = gn.EvmUpstreamGroupForSelector(ctx, dirs.UseUpstream)
 		}
 	}
-	stored, ok := chainViewStore.Load(n.Id() + "\x00" + groupKey)
+	stored, ok := chainViewStore.Load(chainViewKey{network: n, group: groupKey})
 	if !ok {
 		return false
 	}
@@ -748,7 +748,12 @@ func (c *chainView) networkLabel() string {
 	return c.network.Label()
 }
 
-var chainViewStore sync.Map // "networkId\x00groupKey" -> *chainView
+type chainViewKey struct {
+	network common.Network
+	group   string
+}
+
+var chainViewStore sync.Map // chainViewKey -> *chainView
 
 // groupChainView returns the ChainView for a network + node GROUP, deriving the group
 // from the request's use-upstream selector via the SAME mechanism as latest-block
@@ -770,7 +775,7 @@ func groupChainView(ctx context.Context, n common.Network, selector string) *cha
 			}
 		}
 	}
-	storeKey := n.Id() + "\x00" + groupKey
+	storeKey := chainViewKey{network: n, group: groupKey}
 	if v, ok := chainViewStore.Load(storeKey); ok {
 		return v.(*chainView)
 	}
