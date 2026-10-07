@@ -115,3 +115,23 @@ func BenchmarkSplitTxObjectManyKeys(b *testing.B) {
 		})
 	}
 }
+
+// decodeBlockFast's top-level duplicate scan is linear too: a hostile block
+// object with a huge number of members is rejected to the exact path (or
+// decoded) without quadratic CPU, and a case-folded duplicate is still
+// detected past the linear threshold.
+func TestDecodeBlockFast_ManyMembersIsLinear(t *testing.T) {
+	raw := manyKeyTxObject(100000)
+	start := time.Now()
+	decodeBlockFast([]byte(raw))
+	require.Less(t, time.Since(start), 2*time.Second)
+
+	keys := make([]string, 0, 64)
+	for i := 0; i < 60; i++ {
+		keys = append(keys, fmt.Sprintf("key%d", i))
+	}
+	keys = append(keys, "KEY3")
+	h, doc := decodeBlockFast([]byte(objectWithKeys(keys)))
+	require.Nil(t, h)
+	require.Nil(t, doc, "a case-folded duplicate takes the exact path")
+}

@@ -209,6 +209,12 @@ export interface ServerConfig {
         [key: string]: string;
     };
     /**
+     * WebSocket opts into the JSON-RPC WebSocket endpoint (eth_subscribe
+     * newHeads/logs reconstructed from HTTP upstreams). Nil or disabled keeps
+     * the server HTTP-only. See WebSocketServerConfig.
+     */
+    webSocket?: WebSocketServerConfig;
+    /**
      * ExecutionHeaders controls the per-request diagnostic headers
      * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
      * eRPC routed and resolved each request. Defaults to "all" — set
@@ -460,6 +466,12 @@ export interface GrpcConnectorConfig {
      * (0) a built-in default is used.
      */
     poolSize?: number;
+    /**
+     * HealthCheckService is a grpc.health.v1 service name. When set, each
+     * connection watches it on every resolved address and sends requests only
+     * to addresses reporting SERVING. Empty (default) disables health checking.
+     */
+    healthCheckService?: string;
 }
 export interface MemoryConnectorConfig {
     maxItems: number;
@@ -918,6 +930,10 @@ export interface GrpcUpstreamConfig {
      * When unset (0) a built-in default is used.
      */
     poolSize?: number;
+    /**
+     * HealthCheckService: see GrpcConnectorConfig.HealthCheckService.
+     */
+    healthCheckService?: string;
 }
 export interface EvmUpstreamConfig {
     chainId: number;
@@ -1269,6 +1285,15 @@ export interface RateLimiterConfig {
 export interface RateLimitBudgetConfig {
     id: string;
     rules: RateLimitRuleConfig[];
+    /**
+     * CreditUnits prices methods for this budget's countMode: credit rules. "*"
+     * is the fallback, an unpriced method costs 1, and a method priced 0 is
+     * exempt. An upstream on rateLimitCountMode: credit prices from its vendor
+     * instead and may not combine the two.
+     */
+    creditUnits?: {
+        [key: string]: number;
+    };
 }
 export interface RateLimitRuleConfig {
     method: string;
@@ -1281,6 +1306,13 @@ export interface RateLimitRuleConfig {
     perIP?: boolean;
     perUser?: boolean;
     perNetwork?: boolean;
+    /**
+     * CountMode selects what this rule counts. "request" charges 1 per call and
+     * counts per method. "credit" charges the method's cost from the budget's
+     * creditUnits and pools all methods into one counter, making maxCount a
+     * wallet. Empty inherits the caller's mode.
+     */
+    countMode?: RateLimitCountMode;
 }
 /**
  * RateLimitPeriod enumerates supported periods for rate limiting.
@@ -1587,6 +1619,59 @@ export interface EvmNetworkConfig {
      * provider-defined routing. This does not affect eth_query* or gRPC Query.
      */
     safeBlockSource?: string;
+    /**
+     * BlockStore opts into the head-driven full-block/log cache: a Redis-shared,
+     * parent-hash-verified window of recent canonical blocks (with their
+     * logs) hydrated from upstreams as the head advances. It serves
+     * eth_getBlockByNumber/ByHash and eth_getLogs when fully covered and
+     * feeds WebSocket subscriptions. Nil or disabled changes nothing.
+     */
+    blockStore?: EvmBlockStoreConfig;
+    /**
+     * HeadTracker opts into the fleet-wide head tracker: one elected replica
+     * polls eth_getBlockByNumber("latest") once per block and publishes the head
+     * through shared state; every replica serves it as "latest". Nil or
+     * disabled changes nothing. See EvmHeadTrackerConfig.
+     */
+    headTracker?: EvmHeadTrackerConfig;
+}
+/**
+ * EvmHeadTrackerConfig configures the fleet-wide head tracker ("stalker").
+ * Exactly one replica per network (the holder of a shared-state lease) loops
+ * eth_getBlockByNumber("latest") through the network's normal upstream
+ * selection, timed to the network's measured block time, and publishes the
+ * observed head through shared state. Every replica then serves that head as
+ * the network's "latest" (eth_blockNumber, "latest" interpolation, block
+ * store head) without polling any upstream itself. The per-upstream state
+ * pollers keep running at their own (slow) interval for health and finality.
+ */
+export interface EvmHeadTrackerConfig {
+    /**
+     * Enabled turns the tracker on for this network. Default false.
+     */
+    enabled?: boolean;
+    /**
+     * FullBlocks makes the leader poll eth_getBlockByNumber("latest", true)
+     * instead of (…, false). The full block is cached under its number and
+     * hash, and the hashes-only form is derived from it and cached too, so
+     * one upstream call fills both variants. Costs the full-transaction
+     * payload once per block per network (not per replica); worth it on
+     * networks whose clients read full blocks every head. Default false.
+     */
+    fullBlocks?: boolean;
+    /**
+     * Interval overrides the wait between polls. Unset derives it from the
+     * network's measured (EMA) block time, aligned to the expected next
+     * block timestamp plus the observed propagation delay; only on cold start
+     * (block time not yet measured) does it use DefaultHeadTrackerColdInterval.
+     * Accepts a duration or {blockTimeMultiplier, fallback}.
+     */
+    interval?: BlockTimeAdaptiveDuration;
+    /**
+     * LeaseTtl is how long a leader's lease lives without renewal; a follower
+     * takes over at most this long after the leader disappears. Default 5s.
+     */
+    leaseTtl?: Duration;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -1621,6 +1706,16 @@ export interface EvmServedTipConfig {
      * Empty means only the global (all-eligible) majority is computed.
      */
     guaranteedMethods?: string[];
+    /**
+     * GuaranteedFor lists upstream SELECTORS (id or tag glob — the same
+     * vocabulary as use-upstream and consensus.requiredParticipants, e.g.
+     * "type:internal") whose group must be able to serve the advertised tip.
+     * For each selector the tip is clamped down to that group's OWN majority,
+     * exactly as GuaranteedMethods clamps to a method's supporting set. The
+     * clamp is a group MAJORITY, not a group minimum, so one stuck member
+     * cannot pin the network; an empty group constrains nothing.
+     */
+    guaranteedFor?: string[];
     /**
      * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
      * (the second-highest live head) the majority pick may fall before it is
@@ -1884,41 +1979,47 @@ export interface MetricsConfig {
     errorLabelMode?: LabelMode;
     histogramBuckets?: string;
     /**
-     * HistogramDropLabels removes these labels from every histogram. Counters
-     * and gauges are unaffected. Useful to cap per-instance /metrics response
-     * size when high-cardinality labels (e.g. "user") push a scrape past the
-     * managed scraper's sample/body limits.
+     * Customizations is the single knob for shaping /metrics: which metric
+     * families are exposed at all, which of their labels survive, and which
+     * buckets a histogram uses. Entries are applied by specificity rather than
+     * by list order — see MetricsCustomizationConfig.
+     *
+     * 	metrics:
+     * 	  customizations:
+     * 	    - subject: "consensus_*"
+     * 	      action: drop
+     * 	    - subject: upstream_request_total
+     * 	      labels:
+     * 	        - subject: "agent_*"
+     * 	          action: drop
+     * 	        - subject: agent_name
+     * 	          action: keep
+     * 	    - subject: network_request_duration_seconds
+     * 	      buckets: [0.05, 0.5, 5]
+     */
+    customizations?: MetricsCustomizationConfig[];
+    /**
+     * Deprecated: use Customizations with a `labels` list. Kept working so
+     * existing configs keep loading; it is desugared onto the same rules as an
+     * every-histogram label drop.
      */
     histogramDropLabels?: string[];
     /**
-     * HistogramLabelOverrides re-adds labels for specific histograms even if
-     * they appear in HistogramDropLabels. Key is the metric Name (without the
-     * "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
-     * Value is the list of label names to keep for that metric.
+     * Deprecated: use Customizations with an exact `subject` and a `labels` list
+     * keeping what this metric needs.
      */
     histogramLabelOverrides?: {
         [key: string]: string[];
     };
     /**
-     * CounterDropLabels removes these labels from every counter that carries
-     * caller-controlled dimensions (user, agent_name, attempt, composite,
-     * hedge, error). Histograms and gauges are unaffected; use
-     * HistogramDropLabels for the histogram side.
-     * Counters are usually the largest contributor to /metrics size, because a
-     * label like a client-supplied user-agent is unbounded and every tuple ever
-     * seen is re-emitted on every scrape. Dropping a label collapses the series
-     * that differed only in it — sums stay correct, but the dimension stops
-     * being queryable, so check what consumes it (billing/attribution
-     * pipelines, dashboards) before dropping.
+     * Deprecated: use Customizations with a `labels` list. Kept working so
+     * existing configs keep loading; it is desugared onto the same rules as an
+     * every-counter label drop.
      */
     counterDropLabels?: string[];
     /**
-     * CounterLabelOverrides re-adds labels for specific counters even if they
-     * appear in CounterDropLabels. Key is the metric Name (without the "erpc_"
-     * namespace prefix), e.g. "upstream_request_total". Value is the list of
-     * label names to keep for that metric. Use this to drop a label fleet-wide
-     * while preserving it on the one or two counters a downstream pipeline
-     * actually reads.
+     * Deprecated: use Customizations with an exact `subject` and a `labels` list
+     * keeping what this metric needs.
      */
     counterLabelOverrides?: {
         [key: string]: string[];
@@ -1937,6 +2038,71 @@ export interface MetricsConfig {
     counterIdleEvictionAfter?: Duration;
 }
 /**
+ * MetricCustomizationAction is what a customization entry does to what it
+ * selects.
+ */
+export type MetricCustomizationAction = string;
+export declare const MetricActionKeep: MetricCustomizationAction;
+export declare const MetricActionDrop: MetricCustomizationAction;
+/**
+ * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
+ * selecting metric families, and what to do with them.
+ *
+ * Overlapping subjects resolve by specificity, not by list order: an exact
+ * family name beats a prefix, a longer prefix beats a shorter one, and equally
+ * specific subjects break to the one written later. So "drop consensus_*, keep
+ * consensus_duration_seconds" means the same thing whichever order it is written
+ * in.
+ */
+export interface MetricsCustomizationConfig {
+    /**
+     * Subject selects metric families: an exact name ("upstream_request_total"),
+     * a prefix ending in "*" ("consensus_*"), or "*" for every family. The
+     * "erpc_" namespace prefix is optional. The Go runtime, process and promhttp
+     * collectors are named in full ("go_goroutines") and are subject to the same
+     * rules, so `subject: "*", action: drop` drops them too.
+     */
+    subject: string;
+    /**
+     * Action drops the matched families from /metrics, or keeps them against a
+     * broader drop. Omit it to leave exposure alone and only customize labels or
+     * buckets.
+     *
+     * A dropped eRPC family is never registered, so it costs no series and no
+     * collection time — but that makes it a startup decision, undone only by a
+     * restart. Stock collectors are registered outside eRPC and so are filtered
+     * out of the scrape response instead, which shrinks the page without saving
+     * collection.
+     */
+    action?: 'keep' | 'drop';
+    /**
+     * Labels projects the matched families' label sets. Same precedence rules as
+     * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
+     * drops the group and spares the one label.
+     *
+     * Dropping a label collapses every series that differed only in it. Counter
+     * sums stay correct, but the dimension stops being queryable — check what
+     * reads it (billing or attribution pipelines, dashboards) first. Gauges have
+     * no projection, because collapsing gauge series would report whichever
+     * writer wrote last rather than a coarser number.
+     */
+    labels?: MetricLabelCustomizationConfig[];
+    /**
+     * Buckets replaces the bucket boundaries of the matched histograms,
+     * overriding both metrics.histogramBuckets and what the metric declares in
+     * code. Must be strictly increasing.
+     */
+    buckets?: number[];
+}
+/**
+ * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
+ * group of them, on the families its parent customization matched.
+ */
+export interface MetricLabelCustomizationConfig {
+    subject: string;
+    action: 'keep' | 'drop';
+}
+/**
  * RateLimitStoreConfig defines where rate limit counters are stored
  */
 export interface RateLimitStoreConfig {
@@ -1944,6 +2110,187 @@ export interface RateLimitStoreConfig {
     redis?: RedisConnectorConfig;
     cacheKeyPrefix?: string;
     nearLimitRatio?: number;
+}
+/**
+ * EvmBlockStoreConfig configures the block/log cache. The live window is
+ * built from block and log responses served to clients (pull); headers are
+ * followed in the background only while a WebSocket subscriber exists in the
+ * fleet. Block bodies and logs are fetched on demand.
+ */
+export interface EvmBlockStoreConfig {
+    /**
+     * Enabled turns the cache on. Default false.
+     */
+    enabled?: boolean;
+    /**
+     * ConnectorId names a redis-driver connector declared under
+     * database.evmJsonRpcCache.connectors. Fleet mode elects one lease holder to
+     * verify and publish a canonical snapshot; followers consume that snapshot.
+     * Required.
+     */
+    connectorId?: string;
+    /**
+     * Depth is how many recent canonical blocks the window holds. Default 128.
+     */
+    depth?: number;
+    /**
+     * MaxBytes bounds the process-local cache of on-demand block bodies and
+     * log lists (headers are not counted). When exceeded, payloads of the
+     * lowest heights are evicted and reloaded from Redis on demand. Default 256MB.
+     */
+    maxBytes?: number;
+    /**
+     * MaxPerTick bounds how many older headers a single refresh backfills
+     * while the window is shorter than Depth (cold start, recovery). New heads
+     * above the window are always fetched in full. Default min(16, depth).
+     */
+    maxPerTick?: number;
+    /**
+     * Concurrency bounds simultaneous header fetches and per-height log
+     * loads of one request per network. Default 4.
+     */
+    concurrency?: number;
+    /**
+     * PollInterval is the tick period. While a WebSocket subscriber exists
+     * in the fleet, the lease holder checks the in-memory latest block each
+     * tick and fetches headers for new heights (a state-poller advance also
+     * triggers an early check); without subscribers a tick makes no upstream
+     * call. An unchanged tip costs no upstream call; a replaced tip is
+     * detected when the next block does not link to it, or when an on-demand
+     * body fetch disagrees with the window. Default 2s.
+     */
+    pollInterval?: Duration;
+    /**
+     * FetchTimeout bounds each header, block or logs fetch. Default 10s.
+     */
+    fetchTimeout?: Duration;
+    /**
+     * MaxLogsRange caps the block span an eth_getLogs range may have to be
+     * served from the cache. Wider ranges go upstream. Default = Depth.
+     */
+    maxLogsRange?: number;
+    /**
+     * MaxBlockBytes rejects (never caches) any single block body or log list
+     * larger than it. Default min(16MB, maxBytes).
+     */
+    maxBlockBytes?: number;
+    /**
+     * MaxStaleness disables serving (normal upstream path) when this replica's
+     * view has not been verified for this long. Default 5 * pollInterval.
+     */
+    maxStaleness?: Duration;
+    /**
+     * Namespace isolates shared payloads between deployments. Defaults to
+     * "default". A fingerprint of the network's upstream set is always appended.
+     */
+    namespace?: string;
+    /**
+     * Historical configures the independent cache for finalized blocks and complete logs.
+     */
+    historical?: EvmBlockStoreHistoricalConfig;
+    /**
+     * LogsFill configures the standalone small-range eth_getLogs fill. It works
+     * without the live window (enabled) or historical cache.
+     */
+    logsFill?: EvmBlockStoreLogsFillConfig;
+}
+/**
+ * EvmBlockStoreLogsFillConfig configures the small-range eth_getLogs fill: an
+ * explicit-range request of at most MaxRange blocks is answered by locally
+ * filtering per-block log lists that one unfiltered upstream eth_getLogs
+ * filled. Stored in the blockStore connectorId (redis) when set, otherwise in a
+ * bounded per-network in-memory cache.
+ */
+export interface EvmBlockStoreLogsFillConfig {
+    /**
+     * Enabled opts into the fill. Default false.
+     */
+    enabled?: boolean;
+    /**
+     * MaxRange is the widest (toBlock-fromBlock+1) range handled. Wider
+     * ranges take the normal path. Default 10.
+     */
+    maxRange?: number;
+    /**
+     * FinalizedTTL is the lifetime of per-block entries at or below the
+     * network's finalized height. Default 1h.
+     */
+    finalizedTtl?: Duration;
+    /**
+     * UnfinalizedTTL is the lifetime of per-block entries above the finalized
+     * height. 0 (default) = one network block time clamped to 2s..12s, or 2s
+     * while the block time is unknown.
+     */
+    unfinalizedTtl?: Duration;
+    /**
+     * EmptyTipGuard: a height with no logs (even finalized) is stored only when it
+     * is at least this many blocks below the network's latest head. Default 2.
+     */
+    emptyTipGuard?: number;
+    /**
+     * MemoryMaxBytes bounds the in-memory store used when no connectorId is
+     * configured. Default 64MB.
+     */
+    memoryMaxBytes?: number;
+    /**
+     * PeerWait (connectorId only) is the longest a miss waits for another
+     * replica already filling the same range (a short Redis lock per range)
+     * before fetching itself. Waiters stop as soon as the peer finishes.
+     * 0 disables cross-replica coalescing. Default 1.5s.
+     */
+    peerWait?: Duration;
+}
+/**
+ * EvmBlockStoreHistoricalConfig configures the independent finalized-block and complete-log cache.
+ */
+export interface EvmBlockStoreHistoricalConfig {
+    /**
+     * Enabled opts into storing finalized full blocks independently of the live window. Default false.
+     */
+    enabled?: boolean;
+    /**
+     * TTL is how long historical records remain eligible for reuse. Default 1h.
+     */
+    ttl?: Duration;
+}
+/**
+ * WebSocketServerConfig configures the JSON-RPC WebSocket endpoint. It is
+ * served on the same port/paths as HTTP (/<project>/evm/<chainId>) when a
+ * client sends an Upgrade request.
+ */
+export interface WebSocketServerConfig {
+    enabled?: boolean;
+    /**
+     * MaxConnections bounds concurrent WS connections per server. Default 1024.
+     */
+    maxConnections?: number;
+    /**
+     * MaxConnectionsPerProject bounds concurrent WS connections per project so
+     * one tenant cannot exhaust MaxConnections. 0 = only the global cap.
+     */
+    maxConnectionsPerProject?: number;
+    /**
+     * MaxSubscriptionsPerConnection. Default 32.
+     */
+    maxSubscriptionsPerConnection?: number;
+    /**
+     * SendQueueSize bounds queued outbound messages per connection. A client
+     * that falls this far behind is disconnected (policy violation) rather
+     * than buffered without bound. Default 256.
+     */
+    sendQueueSize?: number;
+    /**
+     * MaxMessageBytes caps inbound frame size. Default 1MB.
+     */
+    maxMessageBytes?: number;
+    /**
+     * WriteTimeout bounds each outbound write. Default 10s.
+     */
+    writeTimeout?: Duration;
+    /**
+     * PingInterval is the keepalive ping period. Default 30s.
+     */
+    pingInterval?: Duration;
 }
 /**
  * IntegrityHeaderModeOff ignores per-request integrity headers entirely.

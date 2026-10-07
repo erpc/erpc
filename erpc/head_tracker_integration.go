@@ -346,30 +346,29 @@ func (n *Network) tipTarget(ctx context.Context, req *common.NormalizedRequest, 
 	if tracked <= 0 {
 		return 0
 	}
-	if _, ok := tipCheckMethods[method]; ok {
-		if target, _ := req.EvmBlockNumber().(int64); target > 0 {
-			if target > tracked {
-				return 0
-			}
-			return target
+	_, tip := tipCheckMethods[method]
+	if _, unchecked := headTrackerUncheckedMethods[method]; !unchecked {
+		// Head-relative first, for tip methods too: a range with an open
+		// bound (toBlock omitted) caches only its present bound as the
+		// request's block number, but the node serves it up to its OWN head.
+		ref, bn := n.requestBlockRef(ctx, req, method)
+		if ref.headRelative || ref.none {
+			return tracked
 		}
-	}
-	if _, ok := headTrackerUncheckedMethods[method]; ok {
-		return 0
-	}
-	ref, bn := n.requestBlockRef(ctx, req, method)
-	switch {
-	case ref.headRelative:
-		return tracked
-	case ref.none:
-		return tracked
-	case bn >= tracked:
-		// Interpolated "latest" (or an explicit number) at the head. Above
-		// the tracked head nothing has it yet; the normal paths decide.
-		if bn > tracked {
+		if !tip {
+			// Interpolated "latest" (or an explicit number) at the head.
+			// Above the tracked head nothing has it yet; the normal paths
+			// decide.
+			if bn == tracked {
+				return bn
+			}
 			return 0
 		}
-		return bn
+	}
+	if tip {
+		if target, _ := req.EvmBlockNumber().(int64); target > 0 && target <= tracked {
+			return target
+		}
 	}
 	return 0
 }
@@ -400,6 +399,43 @@ var headTrackerUncheckedMethods = map[string]struct{}{
 	"eth_uninstallFilter":             {},
 	"eth_subscribe":                   {},
 	"eth_unsubscribe":                 {},
+}
+
+// openRange reports whether a range filter (ReqRefs naming fromBlock and
+// toBlock of one object param, as eth_getLogs / trace_filter /
+// arbtrace_filter) omits a bound or sets it to null without a blockHash:
+// the node defaults it to its own latest, so the read is head-relative even
+// when the other bound is a concrete number. Must be called with jrq
+// read-locked.
+func openRange(jrq *common.JsonRpcRequest, refs [][]interface{}) bool {
+	var obj []interface{}
+	hasFrom, hasTo := false, false
+	for _, ref := range refs {
+		if len(ref) != 2 {
+			continue
+		}
+		switch ref[1] {
+		case "fromBlock":
+			hasFrom, obj = true, ref[:1]
+		case "toBlock":
+			hasTo, obj = true, ref[:1]
+		}
+	}
+	if !hasFrom || !hasTo {
+		return false
+	}
+	v, err := jrq.PeekByPath(obj...)
+	if err != nil {
+		return false
+	}
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	if bh, ok := m["blockHash"]; ok && bh != nil {
+		return false
+	}
+	return m["fromBlock"] == nil || m["toBlock"] == nil
 }
 
 // blockRefKind classifies a request's block reference for tipTarget.
@@ -452,18 +488,24 @@ func (n *Network) requestBlockRef(ctx context.Context, req *common.NormalizedReq
 			continue
 		}
 		found = true
-		tag := ""
+		tags := [2]string{}
 		switch x := v.(type) {
 		case string:
-			tag = x
+			tags[0] = x
 		case map[string]interface{}:
-			if t, ok := x["blockTag"].(string); ok {
-				tag = t
+			// EIP-1898 object: {"blockTag": tag} or {"blockNumber": tag}
+			// (geth accepts a tag in either).
+			tags[0], _ = x["blockTag"].(string)
+			tags[1], _ = x["blockNumber"].(string)
+		}
+		for _, tag := range tags {
+			if _, ok := headRelativeBlockTags[strings.ToLower(tag)]; ok {
+				kind.headRelative = true
 			}
 		}
-		if _, ok := headRelativeBlockTags[strings.ToLower(tag)]; ok {
-			kind.headRelative = true
-		}
+	}
+	if openRange(jrq, cfg.ReqRefs) {
+		kind.headRelative = true
 	}
 	if !found && len(cfg.ReqRefs) > 0 {
 		// The block param is optional and omitted: the node uses "latest".

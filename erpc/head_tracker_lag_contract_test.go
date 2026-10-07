@@ -89,6 +89,11 @@ func TestHeadTracker_LagMaskCoversHeadRelativeReads(t *testing.T) {
 		{name: "getBalance pending", body: `{"method":"eth_getBalance","params":[` + addr + `,"pending"]}`, served: "u1"},
 		{name: "getBalance no block param", body: `{"method":"eth_getBalance","params":[` + addr + `]}`, served: "u1"},
 		{name: "gasPrice (realtime, no block param)", body: `{"method":"eth_gasPrice","params":[]}`, served: "u1"},
+		{name: "getLogs open range (toBlock omitted)", body: fmt.Sprintf(`{"method":"eth_getLogs","params":[{"fromBlock":"0x%x"}]}`, base-5), served: "u1"},
+		{name: "getLogs open range (toBlock null)", body: fmt.Sprintf(`{"method":"eth_getLogs","params":[{"fromBlock":"0x%x","toBlock":null}]}`, base-5), served: "u1"},
+		{name: "eth_call EIP-1898 blockNumber latest", body: `{"method":"eth_call","params":[{"to":` + addr + `},{"blockNumber":"latest"}]}`, served: "u1"},
+		{name: "eth_call EIP-1898 blockTag latest", body: `{"method":"eth_call","params":[{"to":` + addr + `},{"blockTag":"latest"}]}`, served: "u1"},
+		{name: "getLogs historical closed range", body: fmt.Sprintf(`{"method":"eth_getLogs","params":[{"fromBlock":"0x%x","toBlock":"0x%x"}]}`, base-5, base-1), served: "u0"},
 		{name: "getBalance historical", body: fmt.Sprintf(`{"method":"eth_getBalance","params":[%s,"0x%x"]}`, addr, base-5), served: "u0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,7 +113,7 @@ func TestHeadTracker_LagMaskCoversHeadRelativeReads(t *testing.T) {
 				delta, _ := callsDelta(before[i], node.snapshot())
 				require.Zero(t, delta["eth_blockNumber"], "u%d: no verification call: u1 is known current, u0 is never chosen", i)
 				if fmt.Sprintf("u%d", i) != tc.served {
-					require.Zero(t, delta["eth_getBalance"]+delta["eth_gasPrice"], "u%d must not serve", i)
+					require.Zero(t, delta["eth_getBalance"]+delta["eth_gasPrice"]+delta["eth_getLogs"]+delta["eth_call"], "u%d must not serve", i)
 				}
 			}
 		})

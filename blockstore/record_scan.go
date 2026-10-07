@@ -9,6 +9,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/ast"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 // Single-scan block parsing. A block result is decoded once with sonic: the
@@ -295,6 +296,14 @@ func (b *rawBlock) validateIdentity() (int64, error) {
 	}
 	if !isHexOfLen(b.Hash, 64) || !isHexOfLen(b.ParentHash, 64) {
 		return 0, fmt.Errorf("block has invalid hash/parentHash")
+	}
+	// A present bloom must be exactly 256 bytes: logs validation compares
+	// it with the bloom rebuilt from the logs, and a header admitted with a
+	// malformed one would make every logs read at this height fail (or,
+	// unguarded, panic in types.BytesToBloom). An absent bloom is admitted;
+	// logs validation reports it per read.
+	if b.LogsBloom != "" && !isHexOfLen(b.LogsBloom, 2*types.BloomByteLength) {
+		return 0, fmt.Errorf("block has invalid logsBloom")
 	}
 	return n, nil
 }

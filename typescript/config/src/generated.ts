@@ -1656,24 +1656,39 @@ export interface EvmNetworkConfig {
 }
 /**
  * EvmHeadTrackerConfig configures the fleet-wide head tracker ("stalker").
+ * Exactly one replica per network (the holder of a shared-state lease) loops
+ * eth_getBlockByNumber("latest") through the network's normal upstream
+ * selection, timed to the network's measured block time, and publishes the
+ * observed head through shared state. Every replica then serves that head as
+ * the network's "latest" (eth_blockNumber, "latest" interpolation, block
+ * store head) without polling any upstream itself. The per-upstream state
+ * pollers keep running at their own (slow) interval for health and finality.
  */
 export interface EvmHeadTrackerConfig {
   /**
    * Enabled turns the tracker on for this network. Default false.
    */
-  enabled: boolean;
+  enabled?: boolean;
   /**
-   * FullBlocks makes the leader poll eth_getBlockByNumber("latest", true) and
-   * derive + cache the hashes-only form from it. Default false.
+   * FullBlocks makes the leader poll eth_getBlockByNumber("latest", true)
+   * instead of (…, false). The full block is cached under its number and
+   * hash, and the hashes-only form is derived from it and cached too, so
+   * one upstream call fills both variants. Costs the full-transaction
+   * payload once per block per network (not per replica); worth it on
+   * networks whose clients read full blocks every head. Default false.
    */
   fullBlocks?: boolean;
   /**
    * Interval overrides the wait between polls. Unset derives it from the
-   * network's measured (EMA) block time.
+   * network's measured (EMA) block time, aligned to the expected next
+   * block timestamp plus the observed propagation delay; only on cold start
+   * (block time not yet measured) does it use DefaultHeadTrackerColdInterval.
+   * Accepts a duration or {blockTimeMultiplier, fallback}.
    */
   interval?: BlockTimeAdaptiveDuration;
   /**
-   * LeaseTtl is how long a leader's lease lives without renewal. Default 5s.
+   * LeaseTtl is how long a leader's lease lives without renewal; a follower
+   * takes over at most this long after the leader disappears. Default 5s.
    */
   leaseTtl?: Duration;
 }
@@ -2112,7 +2127,10 @@ export interface RateLimitStoreConfig {
 // source: config_blockstore.go
 
 /**
- * EvmBlockStoreConfig configures the head-driven full-block/log cache.
+ * EvmBlockStoreConfig configures the block/log cache. The live window is
+ * built from block and log responses served to clients (pull); headers are
+ * followed in the background only while a WebSocket subscriber exists in the
+ * fleet. Block bodies and logs are fetched on demand.
  */
 export interface EvmBlockStoreConfig {
   /**
@@ -2148,11 +2166,13 @@ export interface EvmBlockStoreConfig {
    */
   concurrency?: number /* int */;
   /**
-   * PollInterval is how often the lease holder checks the in-memory latest
-   * block and fetches headers for new heights (a state-poller advance also
-   * triggers an early check). An unchanged tip costs no upstream call; a
-   * replaced tip is detected when the next block does not link to it, or
-   * when an on-demand body fetch disagrees with the window. Default 2s.
+   * PollInterval is the tick period. While a WebSocket subscriber exists
+   * in the fleet, the lease holder checks the in-memory latest block each
+   * tick and fetches headers for new heights (a state-poller advance also
+   * triggers an early check); without subscribers a tick makes no upstream
+   * call. An unchanged tip costs no upstream call; a replaced tip is
+   * detected when the next block does not link to it, or when an on-demand
+   * body fetch disagrees with the window. Default 2s.
    */
   pollInterval?: Duration;
   /**

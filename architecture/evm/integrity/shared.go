@@ -123,11 +123,12 @@ func decodeBlockFast(raw []byte) (*Header, *blockDoc) {
 	forEachPair(s, 0, func(k, v string) { doc.members = append(doc.members, member{k, v}) })
 
 	h := &Header{}
-	for i, m := range doc.members {
-		for _, prev := range doc.members[:i] {
-			if asciiFoldEq(prev.key, m.key) {
-				return nil, nil // duplicate key
-			}
+	// Linear duplicate detection (foldedKeySet, the asciiFoldEq relation):
+	// a hostile object with many members must not cost quadratic time.
+	var seen foldedKeySet
+	for _, m := range doc.members {
+		if !seen.add(m.key) {
+			return nil, nil // duplicate key
 		}
 		if asciiEqualFold(m.key, "transactions") {
 			switch m.val[0] {

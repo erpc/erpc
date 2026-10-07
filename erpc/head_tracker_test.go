@@ -285,6 +285,46 @@ func TestHeadTracker_SameHeightReorgAfterHandoverRewritesBlock(t *testing.T) {
 	require.Equal(t, []string{"0xaa", "0xbb"}, written, "the same block is not rewritten again")
 }
 
+// The handover rewrite (prev == nil at the published height) is gated on
+// the serving upstream's chain id like the first accepted head (S3): an
+// unverified observation never displaces the published block.
+func TestHeadTracker_HandoverRewriteRequiresChainId(t *testing.T) {
+	ssr := newTestSSR(t, t.Context())
+	up := common.NewFakeUpstream("u1")
+	hash, chainOk, verifies := "0xaa", true, 0
+	var written []string
+	ht := newTestTracker(ssr, nil, headTrackerDeps{
+		blockTime: func() time.Duration { return time.Second },
+		poll: func(context.Context, bool) (*headObservation, error) {
+			return &headObservation{Number: 500, Hash: hash, Upstream: up, Timestamp: time.Now().Unix()}, nil
+		},
+		verifyChainId: func(context.Context, common.Upstream) (bool, error) { verifies++; return chainOk, nil },
+		onAccepted:    func(_ context.Context, o *headObservation) { written = append(written, o.Hash) },
+	})
+	ht.leaseDeadlineNs.Store(time.Now().Add(time.Hour).UnixNano())
+	_, err := ht.tick(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []string{"0xaa"}, written)
+
+	// Handover to a replica whose first poll comes from a wrong-chain upstream.
+	ht.prev, chainOk, hash, verifies = nil, false, "0xbb", 0
+	_, err = ht.tick(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, verifies, "one chain-id check per leadership change")
+	require.Equal(t, []string{"0xaa"}, written, "an unverified handover observation is not written")
+	require.Equal(t, int64(500), ht.Head())
+	_, err = ht.tick(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, verifies, "not re-verified every poll")
+
+	// A verified handover observation is written.
+	ht.prev, chainOk, verifies = nil, true, 0
+	_, err = ht.tick(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []string{"0xaa", "0xbb"}, written)
+	require.Equal(t, 1, verifies)
+}
+
 // S3: the first head is verified (chain id), and a poisoned published head
 // is recovered from after headTrackerRecoverAfter consistent polls.
 func TestHeadTracker_BogusFirstHeadAndRecovery(t *testing.T) {

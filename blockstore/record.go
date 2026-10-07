@@ -116,6 +116,12 @@ func validateCompleteLogs(b *rawBlock, n int64, txs map[string]struct{}, logsRaw
 	if b.LogsBloom == "" {
 		return fmt.Errorf("block missing logsBloom")
 	}
+	// Never trust the header's bloom length: types.BytesToBloom panics on
+	// more than 256 bytes (headers are validated at admission, this keeps
+	// any other path from crashing the process).
+	if !isHexOfLen(b.LogsBloom, 2*types.BloomByteLength) {
+		return fmt.Errorf("block has invalid logsBloom")
+	}
 	if types.BytesToBloom(common.FromHex(b.LogsBloom)) != bloom {
 		return fmt.Errorf("logsBloom mismatch (logs incomplete)")
 	}

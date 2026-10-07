@@ -859,7 +859,14 @@ func (t *headTracker) tick(ctx context.Context) (time.Duration, error) {
 			// observed block unconditionally; for the same hash this is an
 			// idempotent overwrite (the block store reconfirms it without a
 			// parse), once per leadership change.
-			if t.deps.onAccepted != nil {
+			//
+			// This is the only write at an already-published height that
+			// no earlier observation of THIS leader vouches for, so like
+			// the first accepted head (S3) it needs the serving upstream's
+			// chain id to match: at most one eth_chainId per leadership
+			// change. On a mismatch nothing is written (prev is still
+			// seeded, so the block is not retried every poll).
+			if t.deps.onAccepted != nil && t.chainIdOk(ctx, obs) {
 				t.deps.onAccepted(ctx, obs)
 			}
 			t.prev, t.prevAt = obs, now
