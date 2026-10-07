@@ -69,6 +69,9 @@ func (c *Config) Validate() error {
 }
 
 func (s *ServerConfig) Validate() error {
+	if err := s.WebSocket.Validate(); err != nil {
+		return err
+	}
 	if s.ListenV4 != nil {
 		if *s.ListenV4 {
 			if s.HttpHostV4 == nil {
@@ -1513,6 +1516,11 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return err
 		}
 	}
+	if n.Evm != nil && n.Evm.BlockStore != nil && n.Evm.BlockStore.NeedsConnector() {
+		if err := n.Evm.BlockStore.ValidateConnector(c); err != nil {
+			return err
+		}
+	}
 	if n.Svm != nil {
 		if err := n.Svm.Validate(); err != nil {
 			return err
@@ -1597,6 +1605,12 @@ func (s *StaticResponseConfig) Validate() error {
 }
 
 func (e *EvmNetworkConfig) Validate() error {
+	if err := e.BlockStore.Validate(); err != nil {
+		return err
+	}
+	if err := e.HeadTracker.Validate(); err != nil {
+		return err
+	}
 	if e.FallbackFinalityDepth == 0 {
 		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
 	}

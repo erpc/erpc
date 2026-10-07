@@ -455,3 +455,41 @@ func TestProber_HighRPSBurst_RespectsCapStrictly(t *testing.T) {
 	assert.Equal(t, int64(cap), got,
 		"high-RPS burst MUST stop at exactly MaxConcurrent=%d goroutines spawned; got %d (the goroutine-runaway bug would show way more)", cap, got)
 }
+
+// recordingUpstream captures the request a probe forwards.
+type recordingUpstream struct {
+	stubProbeUpstream
+	got atomic.Pointer[common.NormalizedRequest]
+}
+
+func (r *recordingUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPass, isHedge bool) (*common.NormalizedResponse, error) {
+	nq.ExecState().UpstreamAttempts.Add(1) // what the upstream executor does
+	r.got.Store(nq)
+	return r.stubProbeUpstream.Forward(ctx, nq, byPass, isHedge)
+}
+
+// A probe forwards an isolated copy: same payload, but its own execution
+// state, so it never inflates the client request's attempt counter (the
+// `attempt` label of erpc_upstream_request_total / X-ERPC-*-Attempts).
+func TestProber_MirrorUsesIsolatedRequest(t *testing.T) {
+	deps := &stubEngine{}
+	dead := &recordingUpstream{stubProbeUpstream: stubProbeUpstream{id: "dead"}}
+	deps.setExcluded("evm:1", []common.Upstream{dead})
+	p, _ := newTestProber(t, deps, &ProbeConfig{SampleRate: 1.0, MaxConcurrent: 4, Timeout: 5 * time.Second})
+	defer p.Stop()
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":7,"method":"eth_getBlockByNumber","params":["0x10",true]}`))
+	req.ExecState().UpstreamAttempts.Add(1) // the client's own first attempt
+	p.Publish(req)
+	require.Equal(t, int64(1), waitForCalls(&dead.stubProbeUpstream, 1, time.Second))
+
+	got := dead.got.Load()
+	require.NotNil(t, got)
+	require.NotSame(t, req, got, "probe forwards a copy")
+	gotJrq, err := got.JsonRpcRequest()
+	require.NoError(t, err)
+	require.Equal(t, "eth_getBlockByNumber", gotJrq.Method)
+	require.Equal(t, []interface{}{"0x10", true}, gotJrq.Params)
+	require.Equal(t, 1, req.ExecState().Snapshot().Attempts, "client attempt counter untouched by the probe")
+	require.Equal(t, 1, got.ExecState().Snapshot().Attempts, "probe counts only its own attempt")
+}

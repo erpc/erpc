@@ -360,6 +360,49 @@ func (r *NormalizedRequest) SetUserFromTrustedHeader(value string) {
 	r.user.Store(&User{Id: value})
 }
 
+// CloneForProbe returns an independent copy of r for a shadow probe: same
+// JSON-RPC payload (deep-copied params), network, directives, block
+// reference, finality and caller identity, but a FRESH execution state,
+// upstream list and attempt log. A probe forwarded with the copy never
+// touches the client request's counters (attempt label, retries, credit
+// units, X-ERPC-* headers) and cannot race the client path on shared
+// fields. Returns nil when the payload cannot be resolved.
+func (r *NormalizedRequest) CloneForProbe(ctx context.Context) *NormalizedRequest {
+	if r == nil {
+		return nil
+	}
+	jrq, err := r.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return nil
+	}
+	c := NewNormalizedRequestFromJsonRpcRequest(jrq.Clone())
+	r.RLock()
+	c.network = r.network
+	c.cacheDal = r.cacheDal
+	if r.directives != nil {
+		d := r.directives.Clone()
+		d.IsInternal = r.directives.IsInternal
+		c.directives = d
+	}
+	r.RUnlock()
+	if v := r.evmBlockRef.Load(); v != nil {
+		c.evmBlockRef.Store(v)
+	}
+	if v := r.evmBlockNumber.Load(); v != nil {
+		c.evmBlockNumber.Store(v)
+	}
+	if v := r.finality.Load(); v != nil {
+		c.finality.Store(v)
+	}
+	if v := r.agentName.Load(); v != nil {
+		c.agentName.Store(v)
+	}
+	if u := r.User(); u != nil {
+		c.user.Store(u)
+	}
+	return c
+}
+
 func (r *NormalizedRequest) User() *User {
 	if r == nil {
 		return nil
@@ -1197,6 +1240,15 @@ func (r *NormalizedRequest) SetParentRequestId(parentId interface{}) {
 		return
 	}
 	r.parentRequestId.Store(parentId)
+}
+
+// SetFinality replaces the memoized finality, for callers that rewrite the
+// request's block reference (e.g. "latest" to a concrete number) after
+// finality was first derived from the tag.
+func (r *NormalizedRequest) SetFinality(f DataFinalityState) {
+	if r != nil {
+		r.finality.Store(f)
+	}
 }
 
 func (r *NormalizedRequest) Finality(ctx context.Context) DataFinalityState {

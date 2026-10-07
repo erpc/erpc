@@ -58,19 +58,9 @@ func init() {
 				return Skipped
 			}
 
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(d.raw, &fields); err != nil {
-				return Skipped // not an object → leave it to schemaConformance
-			}
-			for k := range fields {
-				if _, ok := knownBlockFields[k]; !ok {
-					return Skipped // custom/unknown field → header not fully understood
-				}
-			}
-
-			var gh gethtypes.Header
-			if err := gh.UnmarshalJSON(d.raw); err != nil {
-				return Skipped // missing a required header field → do not false-flag
+			gh, ok := d.referenceHeader()
+			if !ok {
+				return Skipped // not an object, custom field, or missing a required header field
 			}
 			if got := gh.Hash().Hex(); !eqHex(got, h.Hash) {
 				return failf("block hash %s does not match recomputed %s", h.Hash, got)
@@ -94,29 +84,9 @@ func init() {
 			if h == nil || h.TransactionsRoot == "" {
 				return Skipped
 			}
-			var block struct {
-				Transactions []json.RawMessage `json:"transactions"`
-			}
-			if err := json.Unmarshal(d.raw, &block); err != nil || len(block.Transactions) == 0 {
-				return Skipped
-			}
-
-			txs := make(gethtypes.Transactions, 0, len(block.Transactions))
-			for _, rawTx := range block.Transactions {
-				if len(rawTx) == 0 || rawTx[0] == '"' {
-					return Skipped // hashes-only response → cannot recompute
-				}
-				var tx gethtypes.Transaction
-				if tx.UnmarshalJSON(rawTx) != nil {
-					return Skipped
-				}
-				var meta struct {
-					Hash string `json:"hash"`
-				}
-				if json.Unmarshal(rawTx, &meta) != nil || meta.Hash == "" || !eqHex(tx.Hash().Hex(), meta.Hash) {
-					return Skipped // tx not fully modeled → a correct root can't be computed
-				}
-				txs = append(txs, &tx)
+			txs, ok := d.referenceTransactions()
+			if !ok {
+				return Skipped // hash-only list, or a tx the reference decoder can't fully model
 			}
 
 			if got := gethtypes.DeriveSha(txs, trie.NewStackTrie(nil)).Hex(); !eqHex(got, h.TransactionsRoot) {
@@ -215,4 +185,101 @@ func deriveKnownReceiptFields() map[string]struct{} {
 		}
 	}
 	return set
+}
+
+// referenceHeader decodes the block with the reference (geth) header decoder,
+// provided every top-level key is one it understands. ok=false means the
+// recompute must skip: not an object, a custom/unknown field (header not
+// fully understood), or a missing/invalid required header field.
+//
+// On the shared fast path (a valid, plain, duplicate-free document) the key
+// set comes from the shared split and geth decodes a header-only rebuild of
+// the object: the bodies it would only skip over are left out, so the decode
+// is exact while scanning ~1.5KB instead of the whole block.
+func (d *Decoded) referenceHeader() (*gethtypes.Header, bool) {
+	d.Header()
+	var input []byte
+	if doc := d.doc; doc != nil {
+		for _, m := range doc.members {
+			if _, ok := knownBlockFields[m.key]; !ok {
+				return nil, false
+			}
+		}
+		input = doc.rebuildHeaderDoc()
+	} else {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(d.raw, &fields); err != nil {
+			return nil, false
+		}
+		for k := range fields {
+			if _, ok := knownBlockFields[k]; !ok {
+				return nil, false
+			}
+		}
+		input = d.raw
+	}
+	var gh gethtypes.Header
+	if err := gh.UnmarshalJSON(input); err != nil {
+		return nil, false
+	}
+	return &gh, true
+}
+
+// referenceTransactions decodes every block transaction with the reference
+// decoder and proves each one fully modeled (its recomputed hash equals the
+// claimed hash). ok=false (skip) when the list is absent/empty, hash-only, or
+// any tx fails either test.
+//
+// On the shared fast path each transaction is decoded from the shared split
+// (decodeTxSonic's port of geth's decoder, which also yields the claimed
+// hash); otherwise the original per-check decode runs.
+func (d *Decoded) referenceTransactions() (gethtypes.Transactions, bool) {
+	d.Header()
+	if d.doc != nil {
+		raws := d.doc.txs
+		if len(raws) == 0 {
+			return nil, false
+		}
+		split := d.splitTxs()
+		txs := make(gethtypes.Transactions, 0, len(raws))
+		for i, rawTx := range raws {
+			if rawTx[0] == '"' {
+				return nil, false // hashes-only response → cannot recompute
+			}
+			var (
+				tx      *gethtypes.Transaction
+				claimed string
+				err     error
+			)
+			if st := split[i]; st != nil && st.ok {
+				tx, claimed, err = st.decode()
+			} else {
+				tx, claimed, err = decodeTxGeth(rawBytes(rawTx))
+			}
+			if err != nil || claimed == "" || !eqHex(tx.Hash().Hex(), claimed) {
+				return nil, false // tx not fully modeled → a correct root can't be computed
+			}
+			txs = append(txs, tx)
+		}
+		return txs, true
+	}
+
+	var block struct {
+		Transactions []json.RawMessage `json:"transactions"`
+	}
+	if err := json.Unmarshal(d.raw, &block); err != nil || len(block.Transactions) == 0 {
+		return nil, false
+	}
+	txs := make(gethtypes.Transactions, 0, len(block.Transactions))
+	for _, rawTx := range block.Transactions {
+		if len(rawTx) == 0 || rawTx[0] == '"' {
+			return nil, false
+		}
+		tx, claimed, err := decodeTxGeth(rawTx)
+		if err != nil || claimed == "" || !eqHex(tx.Hash().Hex(), claimed) {
+			return nil, false
+		}
+		txs = append(txs, tx)
+	}
+	return txs, true
 }

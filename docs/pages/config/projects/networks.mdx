@@ -194,6 +194,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `evm.integrity.enforceNonNullTaggedBlocks` | `*bool` | `true` (<SourceLink file="common/defaults.go" lines="2124-2126" />) | **Deprecated** — same migration path. |
 | `maxFutureBlockRetryDistance` | `*int64` | `nil` | **Deprecated** — warned about and set to nil in `SetDefaults` (<SourceLink file="common/defaults.go" lines="2080-2083" />). Has no effect; remove from configs. |
 | `servedTip` | `EvmServedTipConfig` | `nil` = max mode | Copied wholesale from `networkDefaults.evm.servedTip` when nil. |
+| `headTracker` | `EvmHeadTrackerConfig` | `nil` = off | Opt-in fleet head tracker: one lease-elected replica polls `latest` once per block and every replica serves it. Fields `enabled`, `fullBlocks`, `interval`, `leaseTtl`. See [Block tracking](/reference/evm/block-tracking). Copied from `networkDefaults.evm.headTracker` when nil. |
 | `servedTip.enabledFor` | `[]string` | `[]` (max mode) | Valid: `latest`, `finalized`, `safe`. Listing a tag switches that axis from max-across-upstreams to cluster-min + monotonic clamp via shared state. |
 | `servedTip.clusterDelta` | `int64` | `0` = auto-derive from EMA block time, clamped `[2, 10]` | Must be ≥ 0. |
 | `servedTip.guaranteedMethods` | `[]string` (glob) | `[]` | Global tip clamped to per-method supporting-set floor (<SourceLink file="erpc/networks.go" lines="643-649" />). |

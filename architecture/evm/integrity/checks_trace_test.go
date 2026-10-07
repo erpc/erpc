@@ -40,7 +40,7 @@ func segmentAt(number int64, gasUsed string, ntx int) context.Context {
 		from: number - 10, to: number + 10,
 		headers: map[int64]*Header{number: {
 			Hash: "0xabc", Number: fmt.Sprintf("0x%x", number),
-			GasUsed: gasUsed, RawTransactions: txs,
+			GasUsed: gasUsed, Transactions: TxList{anys: txs},
 		}},
 	})
 }

@@ -1,0 +1,98 @@
+---
+title: WebSocket
+description: Serve eth_subscribe (newHeads, logs) over WebSocket on the same URL as HTTP, from the head-cache scope's shared canonical snapshot.
+---
+
+import { LLMsTxtLink, AISection, SourceLink } from "../../components";
+
+<LLMsTxtLink />
+
+# WebSocket
+
+Connect to the same URL used for HTTP to subscribe to `newHeads` and `logs`.
+While at least one subscriber exists anywhere in the fleet, one lease holder per
+head-cache scope follows new block headers and publishes a canonical snapshot with
+immutable payloads; with no subscribers, nothing follows the chain. Followers stream
+from that snapshot without head-cache polling upstream while Redis is healthy. Reorgs emit
+`removed: true` logs. If Redis or shared state is unavailable or stale, active
+subscriptions close; a complete cold-fill suffix can deliver new events, but a gap
+closes the stream. Ordinary HTTP cache misses follow normal routing. Independent
+EVM state pollers and probes still run per replica.
+
+Disabled by default.
+
+## Quick taste
+
+```yaml
+server:
+  webSocket:
+    enabled: true
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: redis-cache
+        driver: redis
+        redis:
+          uri: redis://redis:6379
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # the upgrade requires the Redis head cache on this network
+          blockStore:
+            enabled: true
+            connectorId: redis-cache
+```
+
+<AISection>
+
+## Config schema (`server.webSocket`)
+
+Defaults from `WebSocketServerConfig.SetDefaults` (<SourceLink file="common/config_blockstore.go" lines="277-299" />), called from <SourceLink file="common/defaults.go" lines="793" />.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | When false, Upgrade requests are handled as plain HTTP (no 101). |
+| `maxConnections` | `1024` | Concurrent WS connections per process. Beyond it the upgrade gets HTTP 503. |
+| `maxConnectionsPerProject` | `0` (off) | Concurrent WS connections per project (0..`maxConnections`). Beyond it the upgrade gets HTTP 503, and other projects are unaffected. |
+| `maxSubscriptionsPerConnection` | `32` | Further `eth_subscribe` calls return JSON-RPC error `-32005`. |
+| `sendQueueSize` | `256` | Outbound messages queued per connection, and the head cache event queue per subscription. Notifications wait up to `writeTimeout` for space, so a large block reaches a client that keeps reading. A client stalled longer, or a head cache queue overflow, closes with 1008. |
+| `maxMessageBytes` | `1MB` (min 1024) | Inbound frame limit. Larger frames close with 1009. |
+| `writeTimeout` | `10s` | Per outbound frame. A timeout closes with 1008. |
+| `pingInterval` | `30s` | Keepalive ping and credential re-check period. `0` (unset) uses the `30s` default and a negative value fails config validation, so pings cannot be disabled. |
+
+## Behavior
+
+- **Contract.** Only `eth_subscribe` and `eth_unsubscribe` are accepted. Any other method gets `-32601` (use HTTP). A batch (top-level JSON array) gets a single `-32600`. Unparsable JSON gets `-32700`, and valid JSON that is not a request object gets `-32600`. Frames are handled sequentially per connection.
+- **Head cache required.** The upgrade gets HTTP 503 unless the network has an enabled head cache (`evm.blockStore` with a Redis `connectorId`). Notifications come from the shared canonical header window. eRPC never proxies upstream WebSockets. Header following runs only while a subscription exists somewhere in the fleet: a replica holding subscriptions renews a Redis presence mark every `pollInterval` (TTL `3 × pollInterval`), and while it is present a healthy lease holder fetches one header per new block (through the response cache); followers do not. When the last subscription closes and the mark expires, following stops and no headers are fetched (see the [Blockstore](/config/database/blockstore) page, edge case 27). A first subscription starts following immediately and resumes from the retained window or headers clients already fetched. `newHeads` is rendered from headers alone and never fetches block bodies or logs. While at least one `logs` subscription is open on a replica, each new block's logs are loaded once (Redis first, else one `eth_getLogs{blockHash}` shared fleet-wide) for all its subscribers; with no `logs` subscribers no logs are fetched.
+- **Routing.** Same path and domain aliasing as HTTP. A connection is bound to one project and network.
+- **Auth.** Credentials (`?secret=`, `X-ERPC-Secret-Token`, `Authorization`) are taken from the upgrade request. They are checked at upgrade (401 on failure) and again for every message through the project's consumer auth. `ignoreMethods`/`allowMethods` apply.
+- **Origin.** Browsers do not apply CORS to WebSockets. When the project has `cors.allowedOrigins`, an upgrade with a non-matching `Origin` gets 403.
+- **Subscriptions.** `newHeads` emits header fields (no `transactions`, `uncles`, `size`, `totalDifficulty`, `withdrawals`) per new canonical block, ascending. `logs` accepts `address` (string or array) and `topics` (up to 4 positions, `null` wildcard, nested arrays for OR). Other filter members, including `blockHash`, `fromBlock`, `toBlock` and unknown keys, return `-32602` before a subscription is registered; use HTTP `eth_getLogs` for bounded historical queries. On a reorg, orphaned matching logs are sent first with `removed: true` (highest block first), then the new canonical logs. Removed logs come from the cached entry for the orphaned block; a block whose logs were never loaded had no `logs` subscriber to retract them from. The subscription id reply always precedes its notifications. Setup consumes project rate-limit budget for `eth_subscribe`.
+- **Tip.** A shared snapshot supplies the canonical tip to all replicas in its scope. Independent EVM state pollers/probes still run per replica and can make upstream calls.
+- **Unsubscribe.** `eth_unsubscribe` returns `false` for ids that were not created on the same connection.
+
+## Edge cases & gotchas
+
+1. **No silent gaps.** Every head-cache event is checked for continuity. If a missing height cannot be backfilled from the locally verified window, or if a subscription queue overflows, the connection closes with 1008 rather than silently skipping notifications. Clients should reconnect, resubscribe and recover missed logs with `eth_getLogs` over HTTP.
+2. **Id-less requests.** A JSON-RPC 2.0 `eth_subscribe` or `eth_unsubscribe` without an `id` is treated as a notification: it gets no reply and does not create or remove a subscription (`TestWs_IdlessNotificationsHaveNoSubscriptionEffects`).
+3. **Unavailable or stale shared state.** Lease/snapshot errors, a missing or stale snapshot, or a required payload that is missing or invalid close active subscriptions rather than emit partial events. A transient payload transport/read timeout can keep the previous fresh local view and subscriptions only when the new snapshot is not behind it and every overlapping height has the same hash. The failed attempt does not refresh the previous timestamp; a persistent failure closes streams once that view becomes stale. Followers make no background upstream calls. An `incomplete` cold-fill snapshot delivers events from its verified suffix; backfilling older headers does not close a stream whose new events remain contiguous. A `logs` subscription closes if an added block's logs cannot be loaded (fetch error, oversized, or incomplete per bloom check) rather than skip it. Continuity checks include block numbers and parent hashes, so skipped heights and unrenderable reorgs close the stream. A lower observed tip on the same retained branch also closes the stream rather than label possibly canonical logs as removed. Ordinary HTTP misses follow normal forwarding.
+4. **Shutdown.** Connections are hijacked, so `http.Server.Shutdown` does not wait for them. They close with 1001 when the application context ends. New upgrades during draining get 503.
+5. `maxConnections` and `maxConnectionsPerProject` are per process, not per client IP or fleet. Front eRPC with a per-client connection limit at the load balancer.
+6. Only `newHeads` and `logs` are supported. `newPendingTransactions`, `syncing` and unknown kinds return `-32601`.
+7. **Keepalive and re-auth.** Every `pingInterval` the server pings (a missing pong within `max(writeTimeout, pingInterval)`, 30s by default, closes with 1008) and re-checks the upgrade credentials through consumer auth, consuming one auth rate-limit permit when the strategy has a `rateLimitBudget`. A revoked key or expired JWT stops streaming within about one `pingInterval`, closing with 1008 `unauthorized`.
+8. **Server timeouts.** Upgraded connections are hijacked, so they outlive `server.writeTimeout` (`TestWs_OutlivesHTTPWriteTimeout`).
+9. **Fork compatibility.** Configs written for the unmerged fork branch must drop `server.webSocket.maxInflightPerConnection` and `maxBatchSize`. Those keys no longer exist.
+10. **First subscription on an idle chain.** With no prior subscribers there is no followed view. A new subscription returns its id immediately and receives events from the first verified block onward, once following has started (normally the next tick). If no verified view appears within `leaseTTL + maxStaleness`, the subscription closes like any stale view (`TestPull_FollowingOnlyWithSubscribers`, `TestHttp_BlockStore_FollowingOnlyWhileSubscribed`).
+
+## Observability
+
+`erpc_websocket_connections{project,network}` is the current number of accepted WebSocket connections on this process. `erpc_websocket_closures_total{project,network,reason}` counts accepted connections when they close. `reason` is bounded to `peer`, `shutdown`, `unauthorized`, `write_timeout`, `ping_timeout`, `slow_consumer`, `gap`, `subscription_closed`, `message_too_big`, `internal_error`, or `other`. `write_timeout` counts only writes that hit `writeTimeout` (a slow consumer); a write that fails because the peer reset or closed the connection is not counted as one. `subscription_closed` deliberately combines head-cache subscription closure causes that the API does not distinguish. Client-supplied close text and subscription IDs are not labels. These are per-process metrics, like the connection limits.
+
+Each upgrade starts the standard `Http.ReceivedRequest` server span. It includes project and network attributes once resolved, adds the normalized `websocket.close_reason` attribute when the connection ends, and remains open for the connection lifetime. Upgrade authentication and network resolution use its trace context. The long-lived connection cancellation context is tied to application shutdown, not the HTTP request context. Panics are counted in `erpc_unexpected_panic_total` with scopes `ws-handler`, `ws-message`, `ws-write`, `ws-ping` and `ws-pump`; connection-goroutine panics also log their stack and terminate the affected connection with the normalized `internal_error` reason. If the writer itself panics, the socket is closed immediately to unblock the reader, so a 1011 close frame is not guaranteed. A WebSocket connection makes no upstream requests of its own; `logs` subscriptions cause the per-block logs loads described above, counted in `erpc_blockstore_fetch_total{kind="logs",reason="subscription"}`.
+
+Tests: `TestWs_UnsupportedContract`, `TestWs_SingleInvalidRequestCodes`, `TestWs_DisabledAndNoBlockStore`, `TestWs_ConnectionMetricsTrackLifecycleAndBoundCloseReason`, `TestWs_Caps`, `TestWs_PerProjectCap`, `TestWs_SubscriptionsReorg`, `TestWs_LogsFetchedOnlyForLogsSubscribers`, `TestWs_GapDetection`, `TestWs_PingAndReauthClosesExpiredJwt`, `TestWs_ConfigFallbacks`.
+
+</AISection>

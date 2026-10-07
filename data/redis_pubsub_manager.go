@@ -137,13 +137,14 @@ func (m *RedisPubSubManager) reconnectPubSub() error {
 	}
 
 	// Ensure main client is available and healthy
-	if m.connector.client == nil {
+	client := m.connector.currentClient()
+	if client == nil {
 		return fmt.Errorf("redis client not available")
 	}
 
 	// Test main client health before creating pubsub
 	pingCtx, cancel := context.WithTimeout(m.appCtx, 3*time.Second)
-	err := m.connector.client.Ping(pingCtx).Err()
+	err := client.Ping(pingCtx).Err()
 	cancel()
 
 	if err != nil {
@@ -152,7 +153,7 @@ func (m *RedisPubSubManager) reconnectPubSub() error {
 	}
 
 	// Create new pubsub subscription
-	m.pubsub = m.connector.client.PSubscribe(m.appCtx, "counter:*")
+	m.pubsub = client.PSubscribe(m.appCtx, "counter:*")
 
 	// Wait for subscription confirmation with timeout
 	confirmCtx, cancelConfirm := context.WithTimeout(m.appCtx, 10*time.Second)

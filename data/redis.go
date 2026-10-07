@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -52,8 +53,11 @@ func (z *zerologAdapter) Printf(ctx context.Context, format string, v ...interfa
 }
 
 type RedisConnector struct {
-	id            string
-	logger        *zerolog.Logger
+	id     string
+	logger *zerolog.Logger
+	// connMu guards publication of client/redsync, which connectTask
+	// replaces on reconnect while other goroutines read them.
+	connMu        sync.RWMutex
 	client        *redis.Client
 	initializer   *util.Initializer
 	cfg           *common.RedisConnectorConfig
@@ -106,6 +110,33 @@ func NewRedisConnector(
 	return connector, nil
 }
 
+// Client returns the current Redis client, or nil while not connected. The
+// client can be replaced on reconnect, so callers must re-fetch it per
+// operation and must never Close it (the connector owns its lifecycle).
+func (r *RedisConnector) Client() redis.UniversalClient {
+	// Cheap readiness check: does not build the initializer error summary
+	// (checkReady does) on this hot, per-operation path.
+	if r.initializer == nil || r.initializer.State() != util.StateReady {
+		return nil
+	}
+	c, rs := r.conn()
+	if rs == nil {
+		return nil
+	}
+	return c
+}
+
+func (r *RedisConnector) currentClient() *redis.Client { c, _ := r.conn(); return c }
+
+func (r *RedisConnector) currentRedsync() *redsync.Redsync { _, rs := r.conn(); return rs }
+
+// conn returns the currently published client and redsync.
+func (r *RedisConnector) conn() (*redis.Client, *redsync.Redsync) {
+	r.connMu.RLock()
+	defer r.connMu.RUnlock()
+	return r.client, r.redsync
+}
+
 func (r *RedisConnector) Id() string {
 	return r.id
 }
@@ -113,9 +144,9 @@ func (r *RedisConnector) Id() string {
 // connectTask is the function that tries to establish a Redis connection (and pings to verify).
 func (r *RedisConnector) connectTask(ctx context.Context) error {
 	// First, check if existing connection is still healthy
-	if r.client != nil {
+	if existing, _ := r.conn(); existing != nil {
 		healthCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := r.client.Ping(healthCtx).Result()
+		_, err := existing.Ping(healthCtx).Result()
 		cancel()
 
 		if err == nil {
@@ -239,13 +270,16 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		return err
 	}
 
-	if r.client != nil {
-		_ = r.client.Close()
-	}
-	r.client = client
-
 	pool := goredis.NewPool(client)
-	r.redsync = redsync.New(pool)
+	rs := redsync.New(pool)
+	r.connMu.Lock()
+	old := r.client
+	r.client = client
+	r.redsync = rs
+	r.connMu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
 
 	// Handle pubsub manager - create once and let it handle reconnections
 	if r.pubsubManager == nil {
@@ -304,10 +338,11 @@ func (r *RedisConnector) checkReady() error {
 	if state != util.StateReady {
 		return fmt.Errorf("redis is not connected (state: %s), errors: %v", state.String(), r.initializer.Errors())
 	}
-	if r.client == nil {
+	client, rs := r.conn()
+	if client == nil {
 		return fmt.Errorf("redis client not initialized yet")
 	}
-	if r.redsync == nil {
+	if rs == nil {
 		return fmt.Errorf("redsync not initialized yet")
 	}
 	return nil
@@ -346,7 +381,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 		duration = *ttl
 	}
 
-	if err := r.client.Set(ctx, key, value, duration).Err(); err != nil {
+	if err := r.currentClient().Set(ctx, key, value, duration).Err(); err != nil {
 		r.logger.Warn().Err(err).Str("key", key).Msg("failed to SET in Redis")
 		r.markConnectionAsLostIfNecessary(err)
 		common.SetTraceSpanError(span, err)
@@ -362,7 +397,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
 			// Best-effort: log on error but do not fail the primary SET.
-			if err := r.client.Set(ctx, reverseKey, partitionKey, duration).Err(); err != nil {
+			if err := r.currentClient().Set(ctx, reverseKey, partitionKey, duration).Err(); err != nil {
 				r.logger.Warn().Err(err).Str("key", reverseKey).Msg("failed to SET reverse index in Redis")
 			}
 		}
@@ -392,7 +427,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
 		revKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, partitionKey, rangeKey)
 		lookupCtx, lookupCancel := context.WithTimeout(ctx, r.getTimeout)
-		revPartitionKey, revErr := r.client.Get(lookupCtx, revKey).Result()
+		revPartitionKey, revErr := r.currentClient().Get(lookupCtx, revKey).Result()
 		lookupCancel()
 		if revErr != nil {
 			r.logger.Debug().Err(revErr).Str("key", revKey).Msg("failed to GET reverse index in Redis")
@@ -408,7 +443,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 			// This handles the edge case where reverse index points to an expired key
 			resolvedKey := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 			ttlCtx, ttlCancel := context.WithTimeout(ctx, r.getTimeout)
-			ttl, ttlErr := r.client.TTL(ttlCtx, resolvedKey).Result()
+			ttl, ttlErr := r.currentClient().TTL(ttlCtx, resolvedKey).Result()
 			ttlCancel()
 
 			if ttlErr != nil {
@@ -436,7 +471,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	defer cancel()
 
 	r.logger.Trace().Str("key", key).Msg("getting item from Redis")
-	value, err := r.client.Get(ctx, key).Bytes()
+	value, err := r.currentClient().Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		err = common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
 		common.SetTraceSpanError(span, err)
@@ -537,7 +572,7 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 		Int("maxRetries", maxRetries).
 		Msg("calculated lock acquisition strategy")
 
-	mutex := r.redsync.NewMutex(
+	mutex := r.currentRedsync().NewMutex(
 		fmt.Sprintf("lock:%s", lockKey),
 		redsync.WithExpiry(ttl),               // Lock key in Redis expires after ttl
 		redsync.WithRetryDelay(retryInterval), // Wait this long between retries
@@ -623,7 +658,7 @@ func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, va
 		Str("updatedBy", value.UpdatedBy).
 		Msg("publishing counter update to redis")
 
-	err = r.client.Publish(ctx, "counter:"+key, payload).Err()
+	err = r.currentClient().Publish(ctx, "counter:"+key, payload).Err()
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 	}
@@ -690,7 +725,7 @@ func (r *RedisConnector) Delete(ctx context.Context, partitionKey, rangeKey stri
 	defer cancel()
 
 	// Delete main key
-	if err := r.client.Del(ctx, key).Err(); err != nil {
+	if err := r.currentClient().Del(ctx, key).Err(); err != nil {
 		r.logger.Warn().Err(err).Str("key", key).Msg("failed to DELETE in Redis")
 		r.markConnectionAsLostIfNecessary(err)
 		common.SetTraceSpanError(span, err)
@@ -703,7 +738,7 @@ func (r *RedisConnector) Delete(ctx context.Context, partitionKey, rangeKey stri
 		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
 			// Best-effort: log on error but do not fail the primary DELETE
-			if err := r.client.Del(ctx, reverseKey).Err(); err != nil {
+			if err := r.currentClient().Del(ctx, reverseKey).Err(); err != nil {
 				r.logger.Warn().Err(err).Str("key", reverseKey).Msg("failed to DELETE reverse index in Redis")
 			}
 		}
@@ -747,7 +782,7 @@ func (r *RedisConnector) List(ctx context.Context, index string, limit int, pagi
 		pattern = redisReverseIndexPrefix + "#*"
 	}
 
-	keys, nextCursor, err := r.client.Scan(ctx, cursor, pattern, int64(limit)).Result()
+	keys, nextCursor, err := r.currentClient().Scan(ctx, cursor, pattern, int64(limit)).Result()
 	if err != nil {
 		r.logger.Warn().Err(err).Msg("failed to SCAN in Redis")
 		r.markConnectionAsLostIfNecessary(err)
@@ -758,7 +793,7 @@ func (r *RedisConnector) List(ctx context.Context, index string, limit int, pagi
 	results := make([]KeyValuePair, 0, len(keys))
 
 	// Get values for all keys in a pipeline for efficiency
-	pipe := r.client.Pipeline()
+	pipe := r.currentClient().Pipeline()
 	cmds := make([]*redis.StringCmd, len(keys))
 	for i, key := range keys {
 		cmds[i] = pipe.Get(ctx, key)

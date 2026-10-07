@@ -919,7 +919,7 @@ SVM upstream gets its own slot/health poller automatically:
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name | Every attempt including hedges |
+| `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name, is_retry | Every attempt including hedges |
 | `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name | Attempt errors except skipped/missing-data/cancelled |
 | `erpc_upstream_request_skipped_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | `ErrUpstreamRequestSkipped` returned |
 | `erpc_upstream_request_missing_data_error_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | `ErrCodeEndpointMissingData` response |

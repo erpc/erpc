@@ -20,9 +20,10 @@ import (
 )
 
 type EvmJsonRpcCache struct {
-	projectId string
-	policies  []*data.CachePolicy
-	logger    *zerolog.Logger
+	projectId  string
+	policies   []*data.CachePolicy
+	connectors map[string]data.Connector
+	logger     *zerolog.Logger
 
 	// Compression settings
 	compressionEnabled   bool
@@ -69,8 +70,9 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}
 
 	cache := &EvmJsonRpcCache{
-		policies: policies,
-		logger:   logger,
+		policies:   policies,
+		connectors: connectors,
+		logger:     logger,
 	}
 
 	// Initialize compression if configured
@@ -140,6 +142,7 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 	return &EvmJsonRpcCache{
 		logger:               &lg,
 		policies:             c.policies,
+		connectors:           c.connectors,
 		projectId:            projectId,
 		compressionEnabled:   c.compressionEnabled,
 		compressionThreshold: c.compressionThreshold,
@@ -147,6 +150,15 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 		encoderPool:          c.encoderPool,
 		decoderPool:          c.decoderPool,
 	}
+}
+
+// Connector returns the configured cache connector with the given id, or nil.
+// Other features (the head cache) reuse its client instead of opening their own.
+func (c *EvmJsonRpcCache) Connector(id string) data.Connector {
+	if c == nil {
+		return nil
+	}
+	return c.connectors[id]
 }
 
 func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {

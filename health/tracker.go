@@ -75,6 +75,12 @@ type NetworkMetadata struct {
 	evmBlockTimePrevTimestamp int64        // block.timestamp (seconds) of that block
 	evmBlockTimeEmaNs         float64      // current EMA value in nanoseconds
 	evmBlockTimeSamples       int          // number of EMA samples collected
+	// evmBlockTimeHeadTrackerAtNs is when the fleet head tracker last fed
+	// this network's EMA (unix ns). While recent, it is the EMA's ONLY
+	// source: one sample per distinct head with that head's own on-chain
+	// timestamp. The state pollers' corroborated head (a different upstream's
+	// number/timestamp pair, sampled at an unrelated cadence) is ignored then.
+	evmBlockTimeHeadTrackerAtNs atomic.Int64
 }
 
 type Timer struct {
@@ -1042,7 +1048,6 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 		return
 	}
 
-
 	nowMs := time.Now().UnixMilli()
 	for _, k := range t.getUpsKeys(up, method, finality) {
 		tm := t.getUpsMetrics(k)
@@ -1474,7 +1479,9 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			// consecutive blocks share the same integer-second timestamp, samples
 			// are skipped until the timestamp advances; blockGap normalization
 			// recovers sub-second precision.
-			t.updateBlockTimeSample(ntwMeta, netLabel, ntwBn, headTs)
+			if !t.headTrackerFeedsBlockTime(ntwMeta) {
+				t.updateBlockTimeSample(ntwMeta, netLabel, ntwBn, headTs)
+			}
 
 			ntwMeta.evmLatestBlockTimestamp.Store(headTs)
 
@@ -1532,7 +1539,17 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 const (
 	blockTimeEmaAlpha   = 0.1 // smoothing factor; effective window ~19 samples
 	blockTimeMinSamples = 3   // minimum EMA samples before emitting (requires 4 observations total)
+	// blockTimeHeadTrackerHold is how long after the head tracker's last
+	// sample it stays the EMA's exclusive source (covers on-demand chains
+	// whose next head is minutes away; a replica that lost leadership falls
+	// back to the pollers after it).
+	blockTimeHeadTrackerHold = 5 * time.Minute
 )
+
+func (t *Tracker) headTrackerFeedsBlockTime(ntwMeta *NetworkMetadata) bool {
+	at := ntwMeta.evmBlockTimeHeadTrackerAtNs.Load()
+	return at > 0 && time.Since(time.Unix(0, at)) < blockTimeHeadTrackerHold
+}
 
 // updateBlockTimeSample feeds a new block into the EMA using on-chain
 // block.timestamp (integer seconds). For fast chains where consecutive blocks
@@ -1565,8 +1582,9 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 		return
 	}
 
-	// Skip if timestamp hasn't advanced (fast chains where blocks share the same second).
-	// Do NOT advance prev — let blockGap accumulate until the timestamp ticks.
+	// Skip if timestamp hasn't advanced (fast chains where blocks share the
+	// same second; a zero or negative delta carries no rate). Do NOT advance
+	// prev: let blockGap accumulate until the timestamp ticks.
 	timestampDeltaSec := blockTimestamp - prevTimestamp
 	if timestampDeltaSec <= 0 {
 		return
@@ -1610,6 +1628,22 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 	telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
 		t.projectId, netLabel,
 	).Set(float64(time.Duration(blockTimeNs).Milliseconds()))
+}
+
+// ObserveNetworkHead feeds a network-level head observation (block number and
+// its on-chain timestamp, unix seconds) straight into the block-time EMA, as
+// the fleet head tracker does once per block. It touches neither per-upstream
+// heads nor lag: those stay owned by the state pollers. Out-of-order or
+// duplicate samples are rejected by updateBlockTimeSample itself. While it
+// keeps being called, it is the EMA's only input (see
+// evmBlockTimeHeadTrackerAtNs).
+func (t *Tracker) ObserveNetworkHead(networkId, networkLabel string, blockNumber, blockTimestamp int64) {
+	if blockNumber <= 0 || blockTimestamp <= 0 {
+		return
+	}
+	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
+	ntwMeta.evmBlockTimeHeadTrackerAtNs.Store(time.Now().UnixNano())
+	t.updateBlockTimeSample(ntwMeta, networkLabel, blockNumber, blockTimestamp)
 }
 
 // GetNetworkBlockTime returns the EMA-estimated block time for a network.

@@ -790,6 +790,7 @@ func (c *TracingConfig) SetDefaults() error {
 }
 
 func (s *ServerConfig) SetDefaults() error {
+	s.WebSocket.SetDefaults()
 	if s.ListenV4 == nil {
 		if !util.IsTest() || os.Getenv("FORCE_TEST_LISTEN_V4") == "true" {
 			s.ListenV4 = util.BoolPtr(true)
@@ -2236,6 +2237,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				cp := *defaults.Evm.ServedTip
 				n.Evm.ServedTip = &cp
 			}
+			if n.Evm.BlockStore == nil && defaults.Evm.BlockStore != nil {
+				n.Evm.BlockStore = defaults.Evm.BlockStore.Copy()
+			}
+			if n.Evm.HeadTracker == nil && defaults.Evm.HeadTracker != nil {
+				n.Evm.HeadTracker = defaults.Evm.HeadTracker.Copy()
+			}
 			if n.Evm.SafeBlockSource == "" {
 				n.Evm.SafeBlockSource = defaults.Evm.SafeBlockSource
 			}
@@ -2250,6 +2257,8 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			// flipping an `svm:`-authored network to architecture=evm.
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
+			n.Evm.BlockStore = defaults.Evm.BlockStore.Copy()
+			n.Evm.HeadTracker = defaults.Evm.HeadTracker.Copy()
 		}
 		if n.Svm != nil && defaults.Svm != nil {
 			mergeSvmNetworkDefaults(n.Svm, defaults.Svm)
@@ -2580,6 +2589,8 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 }
 
 func (e *EvmNetworkConfig) SetDefaults() error {
+	e.BlockStore.SetDefaults()
+	e.HeadTracker.SetDefaults()
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}

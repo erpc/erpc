@@ -56,8 +56,8 @@ type Tx struct {
 	TransactionIndex string `json:"transactionIndex"`
 }
 
-// Header is the lightweight view of a block header plus its raw transactions
-// (which may be hash strings or full objects, hence []any).
+// Header is the lightweight view of a block header plus its transaction list
+// (hash strings or full objects, see TxList).
 type Header struct {
 	Hash             string `json:"hash"`
 	ParentHash       string `json:"parentHash"`
@@ -78,11 +78,14 @@ type Header struct {
 	// Consecutive-header fields: only meaningful against the PARENT header, so
 	// they are used exclusively by checks that run over a verified contiguous
 	// chain segment (see ChainSegment).
-	Timestamp       string `json:"timestamp"`
-	GasLimit        string `json:"gasLimit"`
-	GasUsed         string `json:"gasUsed"`
-	BaseFeePerGas   string `json:"baseFeePerGas"`
-	RawTransactions []any  `json:"transactions"`
+	Timestamp     string `json:"timestamp"`
+	GasLimit      string `json:"gasLimit"`
+	GasUsed       string `json:"gasUsed"`
+	BaseFeePerGas string `json:"baseFeePerGas"`
+	// Transactions exposes the list's shape (Len, IsObject) for free; reading
+	// an entry's contents is an explicit decode (TxList.Object, or the typed
+	// Decoded.Transactions view).
+	Transactions TxList `json:"transactions"`
 }
 
 // Decoded is a response result decoded once into normalized EVM views. Each
@@ -113,6 +116,16 @@ type Decoded struct {
 
 	headerDone, txsDone, receiptsDone, logsDone bool
 	blockTracesDone, callTraceDone              bool
+
+	// Block-method shared decode (see shared.go). headerErr is the header
+	// decode error, reused by schemaConformance instead of decoding again.
+	// doc is non-nil when the document was proven to be valid JSON in the
+	// plain subset and the header came from the shared fast path; the
+	// recompute checks and the tx views then reuse its split. txs caches the
+	// per-transaction split and decode shared by those consumers.
+	headerErr error
+	doc       *blockDoc
+	split     []*splitTx
 }
 
 func newDecoded(method string, raw []byte) *Decoded {
@@ -187,10 +200,7 @@ func (d *Decoded) Header() *Header {
 	d.headerDone = true
 	switch d.method {
 	case MethodGetBlockByNumber, MethodGetBlockByHash:
-		var h Header
-		if err := common.SonicCfg.Unmarshal(d.raw, &h); err == nil {
-			d.header = &h
-		}
+		d.header, d.doc, d.headerErr = decodeBlockHeader(d.raw)
 	}
 	return d.header
 }
@@ -252,20 +262,7 @@ func (d *Decoded) Transactions() []Tx {
 		if h == nil {
 			return nil
 		}
-		for _, raw := range h.RawTransactions {
-			obj, ok := raw.(map[string]any)
-			if !ok {
-				continue // hash-only entry; nothing to validate at tx level
-			}
-			b, err := common.SonicCfg.Marshal(obj)
-			if err != nil {
-				continue
-			}
-			var t Tx
-			if err := common.SonicCfg.Unmarshal(b, &t); err == nil {
-				d.txs = append(d.txs, t)
-			}
-		}
+		d.txs = d.blockTxViews(h)
 	}
 	return d.txs
 }

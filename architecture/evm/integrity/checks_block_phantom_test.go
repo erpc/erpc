@@ -22,10 +22,10 @@ func TestPhantomTransactionShapes(t *testing.T) {
 	assert.True(t, isPhantomRawTx(hyper), "HyperEVM native/L1 system tx (r=0x1, gasPrice=0)")
 	assert.False(t, isPhantomRawTx(real), "an ordinary transaction is never phantom")
 
-	assert.True(t, allPhantomRawTxs([]any{polygon, hyper}))
-	assert.False(t, allPhantomRawTxs([]any{polygon, real}),
+	assert.True(t, allPhantomRawTxs(anyTxList([]any{polygon, hyper})))
+	assert.False(t, allPhantomRawTxs(anyTxList([]any{polygon, real})),
 		"one real transaction means the trie root must not be empty")
-	assert.False(t, allPhantomRawTxs([]any{"0xhashonly"}),
+	assert.False(t, allPhantomRawTxs(anyTxList([]any{"0xhashonly"})),
 		"a hash-only entry cannot be shown to be phantom")
 }
 

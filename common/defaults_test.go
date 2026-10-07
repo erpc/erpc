@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1993,4 +1994,39 @@ func TestFindDefaultCacheMethodConfigMatchesTableCascade(t *testing.T) {
 	}
 	assert.Greater(t, seen, 20, "sanity: the default tables should be populated")
 	assert.Nil(t, FindDefaultCacheMethodConfig("custom_notADefaultMethod"))
+}
+
+// networkDefaults.evm.blockStore is inherited by networks that declare their
+// own evm block, and every network gets its own deep copy: defaults are never
+// shared by pointer (SetDefaults on one network would race/mutate another).
+func TestSetDefaults_NetworkDefaults_BlockStoreInheritedAsCopy(t *testing.T) {
+	pw := Duration(time.Second)
+	defaults := &NetworkDefaults{Evm: &EvmNetworkConfig{BlockStore: &EvmBlockStoreConfig{
+		Enabled: true, ConnectorId: "redis", Depth: 4,
+		LogsFill: EvmBlockStoreLogsFillConfig{Enabled: true, PeerWait: &pw},
+	}}}
+	own := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+	inherited := &NetworkConfig{Architecture: ArchitectureEvm}
+	other := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 2}}
+	var wg sync.WaitGroup
+	for _, n := range []*NetworkConfig{own, inherited, other} {
+		wg.Add(1)
+		go func(n *NetworkConfig) {
+			defer wg.Done()
+			require.NoError(t, n.SetDefaults(nil, defaults))
+		}(n)
+	}
+	wg.Wait()
+
+	require.NotNil(t, own.Evm.BlockStore, "a network with its own evm block inherits blockStore")
+	require.True(t, own.Evm.BlockStore.Enabled)
+	require.Equal(t, int64(4), own.Evm.BlockStore.Depth)
+	require.NotNil(t, inherited.Evm.BlockStore)
+	require.NotSame(t, defaults.Evm.BlockStore, own.Evm.BlockStore)
+	require.NotSame(t, defaults.Evm.BlockStore, inherited.Evm.BlockStore)
+	require.NotSame(t, own.Evm.BlockStore, other.Evm.BlockStore)
+	require.NotSame(t, own.Evm.BlockStore.LogsFill.PeerWait, other.Evm.BlockStore.LogsFill.PeerWait)
+	require.Zero(t, defaults.Evm.BlockStore.MaxBytes, "the defaults instance is never mutated by SetDefaults")
+	own.Evm.BlockStore.Depth = 99
+	require.Equal(t, int64(4), other.Evm.BlockStore.Depth)
 }

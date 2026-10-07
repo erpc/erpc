@@ -368,7 +368,7 @@ func TestConfigure_LabelRulesApplyBeforeRegistration(t *testing.T) {
 		t.Fatalf("Configure failed: %v", err)
 	}
 
-	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent").Inc()
+	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent", "false").Inc()
 	MetricUpstreamSkippedTotal.WithLabelValues("p", "v", "n", "u", "c", "f", "usr", "agent").Inc()
 
 	labelsOf := scrapedLabels(t, reg)
@@ -406,7 +406,7 @@ func TestConfigure_LegacyLabelKnobsStillApply(t *testing.T) {
 		t.Fatalf("Configure failed: %v", err)
 	}
 
-	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent").Inc()
+	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent", "false").Inc()
 	MetricUpstreamSkippedTotal.WithLabelValues("p", "v", "n", "u", "c", "f", "usr", "agent").Inc()
 	MetricNetworkRequestDuration.WithLabelValues("p", "n", "v", "u", "eth_call", "finalized", "usr").Observe(1)
 
@@ -512,7 +512,7 @@ func TestConfigure_SecondCallLeavesRegisteredFamiliesAlone(t *testing.T) {
 	if err := Configure(&Options{}); err != nil {
 		t.Fatalf("first Configure failed: %v", err)
 	}
-	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent").Inc()
+	MetricUpstreamRequestTotal.WithLabelValues("p", "v", "n", "u", "c", "1", "x", "f", "usr", "agent", "false").Inc()
 
 	// A changed label projection cannot be applied retroactively.
 	err := Configure(&Options{Customizations: []Customization{

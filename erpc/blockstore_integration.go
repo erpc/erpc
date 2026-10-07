@@ -1,0 +1,1049 @@
+package erpc
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"runtime/debug"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/erpc/erpc/blockstore"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/redis/go-redis/v9"
+)
+
+type blockStoreBypassKey struct{}
+
+// blockStoreDirected reports whether a request's directives take it outside
+// the default trust set the blockstore and logs fill were built from:
+// internal requests, a specific upstream, an integrity selector, or any
+// skipCacheRead other than an explicit "false". Unlike
+// ShouldSkipCacheRead(""), connector-ID patterns also bypass, because these
+// stores sit in front of every connector; "false" matches its no-skip meaning.
+func blockStoreDirected(d *common.RequestDirectives) bool {
+	if d == nil {
+		return false
+	}
+	skip := d.SkipCacheRead != "" && !strings.EqualFold(d.SkipCacheRead, "false")
+	return d.IsInternal || d.UseUpstream != "" || d.IntegritySelector != "" || skip
+}
+
+// exceedsGetLogsLimits reports whether the network's eth_getLogs hard limits
+// (getLogsMaxAllowedRange/Addresses/Topics) would reject this filter. Counting
+// mirrors networkPreForward_eth_getLogs (architecture/evm/eth_getLogs.go):
+// addresses only when given as an array, topics as the topic0 OR-list length
+// (or 1 for a single topic0). A local cache must never answer what the
+// network would reject, so callers fall through to the normal path, which
+// returns the configured error.
+func (n *Network) exceedsGetLogsLimits(filter map[string]interface{}, from, to int64) bool {
+	if n.cfg == nil || n.cfg.Evm == nil {
+		return false
+	}
+	evm := n.cfg.Evm
+	if lim := evm.GetLogsMaxAllowedRange; lim > 0 && to >= from && to-from+1 > lim {
+		return true
+	}
+	if lim := evm.GetLogsMaxAllowedAddresses; lim > 0 {
+		if addrs, ok := filter["address"].([]interface{}); ok && int64(len(addrs)) > lim {
+			return true
+		}
+	}
+	if lim := evm.GetLogsMaxAllowedTopics; lim > 0 {
+		if tps, ok := filter["topics"].([]interface{}); ok && len(tps) > 0 {
+			count := int64(0)
+			if t0, ok := tps[0].([]interface{}); ok {
+				count = int64(len(t0))
+			} else if tps[0] != nil {
+				count = 1
+			}
+			if count > lim {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withBlockStoreBypass marks a context whose Forward must not be served from
+// the head cache (hydration reads must reach upstreams).
+func withBlockStoreBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, blockStoreBypassKey{}, true)
+}
+
+// BlockStore returns the network's head cache, or nil when disabled.
+func (n *Network) BlockStore() *blockstore.Cache { return n.blockStore }
+
+// blockStoreFingerprint hashes the complete configured hydration trust set.
+// Alias types deliberately bypass the display serializers' redaction: secrets
+// affect trust identity but only the digest ever leaves this function.
+func blockStoreFingerprint(prj *common.ProjectConfig, nw *common.NetworkConfig) (string, error) {
+	type upstreamTrust common.UpstreamConfig
+	type providerTrust common.ProviderConfig
+	var upstreams, providers []string
+	for _, u := range prj.Upstreams {
+		if u == nil {
+			continue
+		}
+		b, err := json.Marshal((*upstreamTrust)(u))
+		if err != nil {
+			return "", fmt.Errorf("head cache upstream fingerprint: %w", err)
+		}
+		upstreams = append(upstreams, string(b))
+	}
+	for _, p := range prj.Providers {
+		if p == nil {
+			continue
+		}
+		overrides := make(map[string]*upstreamTrust, len(p.Overrides))
+		for key, u := range p.Overrides {
+			overrides[key] = (*upstreamTrust)(u)
+		}
+		b, err := json.Marshal(struct {
+			*providerTrust
+			Overrides map[string]*upstreamTrust `json:"overrides"`
+		}{(*providerTrust)(p), overrides})
+		if err != nil {
+			return "", fmt.Errorf("head cache provider fingerprint: %w", err)
+		}
+		providers = append(providers, string(b))
+	}
+	sort.Strings(upstreams)
+	sort.Strings(providers)
+	b, err := json.Marshal(struct {
+		NetworkID        string
+		Upstreams        []string
+		Providers        []string
+		UpstreamDefaults *upstreamTrust
+		NetworkDefaults  *common.NetworkDefaults
+		Integrity        *common.IntegrityConfig
+		Network          *common.NetworkConfig
+	}{nw.NetworkId(), upstreams, providers, (*upstreamTrust)(prj.UpstreamDefaults), prj.NetworkDefaults, prj.Integrity, nw})
+	if err != nil {
+		return "", fmt.Errorf("head cache trust fingerprint: %w", err)
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:]), nil
+}
+
+// initBlockStore builds and starts the live and/or historical blockstore for an EVM network.
+func (nr *NetworksRegistry) initBlockStore(network *Network, nwCfg *common.NetworkConfig) error {
+	if nwCfg.Evm == nil || nwCfg.Evm.BlockStore == nil {
+		return nil
+	}
+	hc := nwCfg.Evm.BlockStore
+	historicalEnabled := hc.Historical.Enabled
+	if !hc.Enabled && !historicalEnabled && !hc.LogsFill.Enabled {
+		return nil
+	}
+	hc.SetDefaults()
+	if err := hc.Validate(); err != nil {
+		return err
+	}
+	ns := hc.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	nr.project.cfgMu.RLock()
+	fingerprint, err := blockStoreFingerprint(nr.project.Config, nwCfg)
+	nr.project.cfgMu.RUnlock()
+	if err != nil {
+		return err
+	}
+	ns += ":" + fingerprint
+	if hc.LogsFill.Enabled {
+		scope := blockstore.Scope{Namespace: ns, ProjectId: network.projectId, NetworkId: network.networkId}
+		if err := nr.initLogsFill(network, hc, scope); err != nil {
+			return err
+		}
+	}
+	if !hc.Enabled && !historicalEnabled {
+		return nil
+	}
+	store, err := nr.blockStoreStore(hc)
+	if err != nil {
+		return err
+	}
+	scope := blockstore.Scope{Namespace: ns, ProjectId: network.projectId, NetworkId: network.networkId}
+	if hc.Enabled {
+		opts := blockstore.Options{
+			Scope:        scope,
+			Depth:        hc.Depth,
+			MaxBytes:     hc.MaxBytes,
+			MaxBlockSize: hc.MaxBlockBytes,
+			MaxPerTick:   hc.MaxPerTick,
+			Concurrency:  hc.Concurrency,
+			PollInterval: hc.PollInterval.Duration(),
+			FetchTimeout: hc.FetchTimeout.Duration(),
+			MaxStaleness: hc.MaxStaleness.Duration(),
+			MaxLogsRange: hc.MaxLogsRange,
+			RecordTTL:    time.Duration(hc.Depth+16) * 30 * time.Second,
+			PeerWait:     blockStorePeerWait(hc),
+			Latest:       network.EvmHighestLatestBlockNumber,
+			Finalized:    network.EvmHighestFinalizedBlockNumber,
+		}
+		lg := network.logger.With().Str("component", "blockStore").Logger()
+		f := &networkHeadFetcher{n: network}
+		pollInterval := hc.PollInterval.Duration()
+		live := network.blockStoreHead(f, func() time.Duration {
+			return max(3*network.EvmBlockTime(), 2*pollInterval)
+		})
+		c := blockstore.New(opts, store, f, live, &lg)
+		network.blockStore = c
+		network.blockStoreAdoptSem = make(chan struct{}, blockStoreAdoptLimit)
+		network.watchBlockStoreHead(nr.appCtx, c)
+		c.Start(nr.appCtx)
+		lg.Info().Str("namespace", ns).Int64("depth", hc.Depth).Msg("blockstore started")
+	}
+	if historicalEnabled {
+		connectorStore, ok := store.(*blockStoreConnectorStore)
+		if !ok {
+			return fmt.Errorf("historical blockstore requires the initialized Redis connector")
+		}
+		historicalStore := &blockStoreHistoricalStore{connector: connectorStore.connector}
+		var liveHash func(int64) string
+		if network.blockStore != nil {
+			liveHash = network.blockStore.CanonicalHash
+		}
+		network.historicalBlockStore = blockstore.NewHistorical(blockstore.HistoricalOptions{
+			Scope: scope, TTL: hc.Historical.TTL.Duration(), MaxBlockSize: hc.MaxBlockBytes,
+			LiveHash: liveHash,
+		}, historicalStore, network.EvmHighestFinalizedBlockNumber)
+		network.historicalWarmSem = make(chan struct{}, max(1, hc.Concurrency))
+	}
+	return nil
+}
+
+// blockStorePeerWait is how long an on-demand payload miss waits for another
+// replica already fetching it. It reuses logsFill.peerWait (same mechanism,
+// same tradeoff); SetDefaults has already filled it.
+func blockStorePeerWait(hc *common.EvmBlockStoreConfig) time.Duration {
+	if hc.LogsFill.PeerWait == nil {
+		return 0
+	}
+	return hc.LogsFill.PeerWait.Duration()
+}
+
+// blockStoreHead returns the live tip for the refresh. It prefers the
+// network's in-memory latest block (state pollers plus response enrichment,
+// no upstream call). Only when that is unknown, or has not advanced for
+// about three block times (slow pollers and no client traffic), does it make
+// one eth_blockNumber through the network; that response also feeds the
+// pollers' in-memory value.
+func (n *Network) blockStoreHead(f *networkHeadFetcher, fallbackAfter func() time.Duration) func(context.Context) int64 {
+	var lastTip int64
+	var lastMove time.Time
+	return func(ctx context.Context) int64 {
+		tip := n.EvmHighestLatestBlockNumber(ctx)
+		now := time.Now()
+		if tip > lastTip {
+			lastTip, lastMove = tip, now
+		}
+		if tip > 0 && now.Sub(lastMove) < fallbackAfter() {
+			return tip
+		}
+		// Only header following (which runs only while subscribers exist)
+		// asks for the tip, so this call is a subscription fetch.
+		telemetry.CounterHandle(telemetry.MetricBlockStoreFetchTotal, n.projectId, n.networkId, "head", blockstore.FetchReasonSubscription).Inc()
+		raw, err := f.call(ctx, "eth_blockNumber", []interface{}{})
+		if err != nil {
+			return -1
+		}
+		var quantity string
+		if err := json.Unmarshal(raw, &quantity); err != nil {
+			return -1
+		}
+		number, err := parseExplicitBlockNumber(quantity)
+		if err != nil {
+			return -1
+		}
+		if number >= lastTip {
+			lastTip, lastMove = number, now
+		}
+		return number
+	}
+}
+
+// watchBlockStoreHead kicks an early refresh whenever an upstream's in-memory
+// latest block advances, so new heads are picked up without waiting for the
+// next poll tick.
+func (n *Network) watchBlockStoreHead(ctx context.Context, c *blockstore.Cache) {
+	if n.upstreamsRegistry == nil {
+		return
+	}
+	for _, up := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		sp := up.EvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		if reg, ok := sp.(interface{ OnLatestBlock(func(int64)) }); ok {
+			reg.OnLatestBlock(func(int64) { c.Kick() })
+		}
+	}
+}
+
+// networkHeadFetcher hydrates through the network's normal forwarding path
+// (routing, failsafe and the evmJsonRpcCache, read and write) while bypassing
+// only the block store itself, so a header or payload a client already fetched
+// costs no upstream call, and the store's fetches are reusable by clients.
+// IsInternal only selects internal failsafe policies and skips integrity and
+// breaker accounting; it does not affect the response cache. Empty results
+// are never cached for not-yet-produced heights (and not at all under the
+// default empty=ignore policy), so RetryEmpty stays safe with the cache.
+type networkHeadFetcher struct{ n *Network }
+
+func (f *networkHeadFetcher) call(ctx context.Context, method string, params []interface{}) (json.RawMessage, error) {
+	jrq := common.NewJsonRpcRequest(method, params)
+	if err := jrq.SetID(1); err != nil {
+		return nil, fmt.Errorf("set head cache request id: %w", err)
+	}
+	rq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+	rq.SetDirectives(&common.RequestDirectives{IsInternal: true, RetryEmpty: true})
+	resp, err := f.n.Forward(withBlockStoreBypass(ctx), rq)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("empty response")
+	}
+	defer resp.Release()
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if jrr.Error != nil {
+		return nil, jrr.Error
+	}
+	return append(json.RawMessage(nil), jrr.GetResultBytes()...), nil
+}
+
+func (f *networkHeadFetcher) BlockByNumber(ctx context.Context, n int64) (json.RawMessage, error) {
+	return f.call(ctx, "eth_getBlockByNumber", []interface{}{fmt.Sprintf("0x%x", n), true})
+}
+
+func (f *networkHeadFetcher) HeaderByNumber(ctx context.Context, n int64) (json.RawMessage, error) {
+	return f.call(ctx, "eth_getBlockByNumber", []interface{}{fmt.Sprintf("0x%x", n), false})
+}
+
+func (f *networkHeadFetcher) LogsByBlockHash(ctx context.Context, hash string) (json.RawMessage, error) {
+	return f.call(ctx, "eth_getLogs", []interface{}{map[string]interface{}{"blockHash": hash}})
+}
+
+// adoptHistoricalAsync stores a block response served to a client in the
+// historical cache when its height is finalized. It never calls upstream:
+// only data already in the response is kept (see blockstore.Historical.Adopt).
+// eth_getLogs responses are not adopted here: finalized logs come from the
+// logs fill's unfiltered range call, the single logs path.
+func (n *Network) adoptHistoricalAsync(ctx context.Context, req *common.NormalizedRequest, method string, resp *common.NormalizedResponse) {
+	h := n.historicalBlockStore
+	// A response replayed from eRPC's cache may predate a reorg of a height
+	// that was unfinalized when cached: only fresh upstream responses count.
+	if h == nil || n.historicalWarmSem == nil || n.appCtx == nil || resp == nil || resp.FromCache() || cacheWriteBypassed(ctx) || ctx.Value(blockStoreBypassKey{}) != nil {
+		return
+	}
+	if method != "eth_getBlockByNumber" && method != "eth_getBlockByHash" {
+		return
+	}
+	if blockStoreDirected(req.Directives()) || n.honorsIntegritySelector(req) {
+		return
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return
+	}
+	jrq.RLock()
+	params := append([]interface{}(nil), jrq.Params...)
+	jrq.RUnlock()
+	if len(params) != 2 {
+		return
+	}
+	ref, ok1 := params[0].(string)
+	if _, ok2 := params[1].(bool); !ok1 || !ok2 {
+		return
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil || jrr.Error != nil {
+		return
+	}
+	block := append(json.RawMessage(nil), jrr.GetResultBytes()...)
+	var body struct {
+		Number string `json:"number"`
+		Hash   string `json:"hash"`
+	}
+	if json.Unmarshal(block, &body) != nil {
+		return
+	}
+	byNumber := false
+	if method == "eth_getBlockByNumber" {
+		want, err := parseExplicitBlockNumber(ref)
+		if err != nil {
+			return
+		}
+		got, err := parseExplicitBlockNumber(body.Number)
+		if err != nil || got != want {
+			return
+		}
+		byNumber = true
+	} else if !strings.EqualFold(ref, body.Hash) {
+		return
+	}
+	select {
+	case n.historicalWarmSem <- struct{}{}:
+	default:
+		return
+	}
+	go func() {
+		defer func() { <-n.historicalWarmSem }()
+		actx, cancel := context.WithTimeout(n.appCtx, 30*time.Second)
+		defer cancel()
+		if err := h.Adopt(actx, block, byNumber); err != nil && n.logger != nil {
+			n.logger.Debug().Err(err).Str("method", method).Msg("historical blockstore adoption failed")
+		}
+	}()
+}
+
+// tryServeBlockStore answers eth_getBlockByNumber/ByHash and eth_getLogs from
+// the head cache when the request is fully covered. Any doubt is a miss.
+func (n *Network) tryServeBlockStore(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
+	c := n.blockStore
+	if (c == nil && n.historicalBlockStore == nil) || ctx.Value(blockStoreBypassKey{}) != nil {
+		return nil, false
+	}
+	// Directed requests (specific upstreams, integrity profiles, cache
+	// bypass) are outside the default trust set the cache was built from.
+	if blockStoreDirected(req.Directives()) {
+		return nil, false
+	}
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockByHash", "eth_getLogs":
+	default:
+		return nil, false
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return nil, false
+	}
+	jrq.RLock()
+	params := append([]interface{}(nil), jrq.Params...)
+	jrq.RUnlock()
+
+	var result interface{}
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockByHash":
+		if len(params) != 2 {
+			return nil, false
+		}
+		ref, ok1 := params[0].(string)
+		full, ok2 := params[1].(bool)
+		if !ok1 || !ok2 {
+			return nil, false
+		}
+		var raw json.RawMessage
+		var ok bool
+		if method == "eth_getBlockByHash" {
+			if !validBlockStoreHash(ref) {
+				return nil, false
+			}
+			if c != nil {
+				raw, ok = c.BlockByHash(ctx, ref, full)
+			}
+			if !ok && n.historicalBlockStore != nil {
+				if rec, hit := n.historicalBlockStore.ReadBlockByHash(ctx, ref); hit {
+					raw, ok = rec.Block, true
+					if !full {
+						raw, err = rec.BlockJSON(false)
+						ok = err == nil
+					}
+				}
+			}
+		} else {
+			num, err := parseExplicitBlockNumber(ref)
+			if err != nil {
+				return nil, false
+			}
+			if c != nil {
+				raw, ok = c.BlockByNumber(ctx, num, full)
+			}
+			if !ok && n.historicalBlockStore != nil {
+				if rec, hit := n.historicalBlockStore.ReadBlockByNumber(ctx, num); hit {
+					raw, ok = rec.Block, true
+					if !full {
+						raw, err = rec.BlockJSON(false)
+						ok = err == nil
+					}
+				}
+			}
+		}
+		if !ok {
+			return nil, false
+		}
+		result = raw
+	case "eth_getLogs":
+		if len(params) != 1 {
+			return nil, false
+		}
+		obj, ok := params[0].(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		for k := range obj {
+			switch k {
+			case "address", "topics", "blockHash", "fromBlock", "toBlock":
+			default:
+				return nil, false // unknown filter member: let upstream decide
+			}
+		}
+		filter, err := blockstore.ParseLogFilter(obj)
+		if err != nil {
+			return nil, false
+		}
+		var logs []json.RawMessage
+		if rawHash, hasHash := obj["blockHash"]; hasHash {
+			bh, ok := rawHash.(string)
+			if !ok || !validBlockStoreHash(bh) {
+				return nil, false
+			}
+			_, hasFrom := obj["fromBlock"]
+			_, hasTo := obj["toBlock"]
+			if hasFrom || hasTo {
+				return nil, false
+			}
+			if c != nil {
+				logs, ok = c.LogsByHash(ctx, bh, filter)
+			} else {
+				ok = false
+			}
+			if !ok {
+				return nil, false
+			}
+		} else {
+			fs, ok1 := obj["fromBlock"].(string)
+			ts, ok2 := obj["toBlock"].(string)
+			if !ok1 || !ok2 {
+				return nil, false
+			}
+			from, e1 := parseExplicitBlockNumber(fs)
+			to, e2 := parseExplicitBlockNumber(ts)
+			if e1 != nil || e2 != nil {
+				return nil, false
+			}
+			// Hard limits run in the network pre-forward hook, after this serve
+			// path; check them here so a configured rejection is never bypassed.
+			if n.exceedsGetLogsLimits(obj, from, to) {
+				return nil, false
+			}
+			// Range logs come from one path only: the logs fill's unfiltered
+			// range call (whose per-height lists the window adopts) or the
+			// client's own request. The window answers a range only from
+			// lists it already holds and never fetches per block hash for it.
+			if c != nil {
+				logs, ok = c.LogsRangeCached(ctx, from, to, filter)
+			} else {
+				ok = false
+			}
+			if !ok {
+				return nil, false
+			}
+		}
+		if logs == nil {
+			logs = []json.RawMessage{}
+		}
+		result = logs
+	}
+	jrr, err := common.NewJsonRpcResponse(req.ID(), result, nil)
+	if err != nil {
+		return nil, false
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	resp.SetFromCache(true)
+	telemetry.CounterHandle(telemetry.MetricBlockStoreHitsTotal, n.projectId, n.networkId, method).Inc()
+	return resp, true
+}
+
+// parseExplicitBlockNumber accepts only hex block numbers; tags resolve
+// through the normal path (served-tip semantics may differ from our head).
+func parseExplicitBlockNumber(s string) (int64, error) {
+	if !strings.HasPrefix(s, "0x") || len(s) < 3 || (len(s) > 3 && s[2] == '0') {
+		return 0, fmt.Errorf("not an explicit block number")
+	}
+	n, err := strconv.ParseUint(s[2:], 16, 63)
+	return int64(n), err
+}
+
+func validBlockStoreHash(s string) bool {
+	if len(s) != 66 || !strings.HasPrefix(s, "0x") {
+		return false
+	}
+	_, err := hex.DecodeString(s[2:])
+	return err == nil
+}
+
+type blockStoreConnectorStore struct {
+	connector data.Connector
+	redis     *data.RedisConnector
+}
+
+var _ blockstore.FleetStore = (*blockStoreConnectorStore)(nil)
+
+func (s *blockStoreConnectorStore) partition(scope blockstore.Scope) (string, error) {
+	identity, err := json.Marshal(struct {
+		Namespace string
+		ProjectID string
+		NetworkID string
+	}{scope.Namespace, scope.ProjectId, scope.NetworkId})
+	if err != nil {
+		return "", fmt.Errorf("marshal head cache scope: %w", err)
+	}
+	h := sha256.Sum256(identity)
+	return "blockstore:v1:" + hex.EncodeToString(h[:]), nil
+}
+
+// payloadKey keys an immutable payload by kind and lowercase block hash.
+func payloadKey(kind blockstore.PayloadKind, hash string) string {
+	return string(kind) + "/" + strings.ToLower(hash)
+}
+
+func (s *blockStoreConnectorStore) GetPayload(ctx context.Context, scope blockstore.Scope, kind blockstore.PayloadKind, hash string) (json.RawMessage, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return nil, err
+	}
+	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, payloadKey(kind, hash), nil)
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return nil, fmt.Errorf("get head cache %s: %w: %w", kind, blockstore.ErrNotFound, err)
+		}
+		var serverErr redis.Error
+		if errors.As(err, &serverErr) {
+			return nil, fmt.Errorf("get head cache %s: %w", kind, err)
+		}
+		return nil, fmt.Errorf("get head cache %s: %w: %w", kind, blockstore.ErrStoreUnavailable, err)
+	}
+	if len(value) == 0 {
+		return nil, blockstore.ErrNotFound
+	}
+	return json.RawMessage(value), nil
+}
+
+func (s *blockStoreConnectorStore) PutPayload(ctx context.Context, scope blockstore.Scope, kind blockstore.PayloadKind, hash string, raw json.RawMessage, ttl time.Duration) error {
+	if len(raw) == 0 {
+		return fmt.Errorf("cannot store empty head cache %s", kind)
+	}
+	partition, err := s.partition(scope)
+	if err != nil {
+		return err
+	}
+	return s.connector.Set(ctx, partition, payloadKey(kind, hash), raw, &ttl)
+}
+
+func (s *blockStoreConnectorStore) redisClient() (redis.UniversalClient, error) {
+	if s.redis == nil {
+		return nil, fmt.Errorf("head cache Redis connector is unavailable")
+	}
+	client := s.redis.Client()
+	if client == nil {
+		return nil, blockstore.ErrStoreUnavailable
+	}
+	return client, nil
+}
+
+func (s *blockStoreConnectorStore) fleetKeys(scope blockstore.Scope) (string, string, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return "", "", err
+	}
+	return partition + ":fleet-lock", partition + ":fleet-snapshot", nil
+}
+
+func (s *blockStoreConnectorStore) Acquire(ctx context.Context, scope blockstore.Scope, ttl time.Duration) (blockstore.Lease, error) {
+	if ttl < time.Millisecond {
+		return nil, fmt.Errorf("head cache fleet lease TTL must be positive")
+	}
+	client, err := s.redisClient()
+	if err != nil {
+		return nil, err
+	}
+	lockKey, snapshotKey, err := s.fleetKeys(scope)
+	if err != nil {
+		return nil, err
+	}
+	var token [32]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return nil, fmt.Errorf("generate head cache fleet lease token: %w", err)
+	}
+	value := hex.EncodeToString(token[:])
+	acquired, err := client.SetNX(ctx, lockKey, value, ttl).Result()
+	if err != nil {
+		return nil, fmt.Errorf("acquire head cache fleet lease: %w", err)
+	}
+	if !acquired {
+		return nil, nil
+	}
+	return &blockStoreRedisLease{redis: s.redis, lockKey: lockKey, snapshotKey: snapshotKey, token: value}, nil
+}
+
+func (s *blockStoreConnectorStore) ReadSnapshot(ctx context.Context, scope blockstore.Scope) (*blockstore.Snapshot, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return nil, err
+	}
+	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, "fleet-snapshot", nil)
+	if err != nil {
+		var notFound *common.ErrRecordNotFound
+		if errors.As(err, &notFound) {
+			return nil, blockstore.ErrNotFound
+		}
+		return nil, err
+	}
+	if len(value) == 0 {
+		return nil, blockstore.ErrNotFound
+	}
+	var snapshot blockstore.Snapshot
+	if err := json.Unmarshal(value, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode head cache fleet snapshot: %w", err)
+	}
+	return &snapshot, nil
+}
+
+type blockStoreRedisLease struct {
+	redis       *data.RedisConnector
+	lockKey     string
+	snapshotKey string
+	token       string
+}
+
+func (l *blockStoreRedisLease) client() (redis.UniversalClient, error) {
+	if l.redis == nil {
+		return nil, blockstore.ErrStoreUnavailable
+	}
+	client := l.redis.Client()
+	if client == nil {
+		return nil, blockstore.ErrStoreUnavailable
+	}
+	return client, nil
+}
+
+func (l *blockStoreRedisLease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
+	if ttl < time.Millisecond {
+		return false, fmt.Errorf("head cache fleet lease TTL must be positive")
+	}
+	const script = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) else return 0 end`
+	client, err := l.client()
+	if err != nil {
+		return false, err
+	}
+	n, err := client.Eval(ctx, script, []string{l.lockKey}, l.token, ttl.Milliseconds()).Int()
+	if err != nil {
+		return false, fmt.Errorf("renew head cache fleet lease: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (l *blockStoreRedisLease) Publish(ctx context.Context, snapshot *blockstore.Snapshot, ttl time.Duration) (bool, error) {
+	if snapshot == nil {
+		return false, fmt.Errorf("cannot publish nil head cache fleet snapshot")
+	}
+	if ttl < time.Millisecond {
+		return false, fmt.Errorf("head cache fleet snapshot TTL must be positive")
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return false, fmt.Errorf("encode head cache fleet snapshot: %w", err)
+	}
+	const script = `if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3]); return 1 else return 0 end`
+	client, err := l.client()
+	if err != nil {
+		return false, err
+	}
+	n, err := client.Eval(ctx, script, []string{l.lockKey, l.snapshotKey}, l.token, payload, ttl.Milliseconds()).Int()
+	if err != nil {
+		return false, fmt.Errorf("publish head cache fleet snapshot: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (l *blockStoreRedisLease) Release(ctx context.Context) error {
+	const script = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`
+	client, err := l.client()
+	if err != nil {
+		return err
+	}
+	if _, err := client.Eval(ctx, script, []string{l.lockKey}, l.token).Result(); err != nil {
+		return fmt.Errorf("release head cache fleet lease: %w", err)
+	}
+	return nil
+}
+
+// blockStoreStore builds the Redis store on the referenced evmJsonRpcCache
+// connector. Keep the configured wrapper for its failsafe behavior, but verify
+// that it ultimately uses Redis before sharing head-cache payloads.
+func (nr *NetworksRegistry) blockStoreStore(hc *common.EvmBlockStoreConfig) (blockstore.Store, error) {
+	var conn data.Connector
+	if nr.evmJsonRpcCache != nil {
+		conn = nr.evmJsonRpcCache.Connector(hc.ConnectorId)
+	}
+	resolved := conn
+	for {
+		u, ok := resolved.(interface{ Unwrap() data.Connector })
+		if !ok {
+			break
+		}
+		resolved = u.Unwrap()
+	}
+	rc, ok := resolved.(*data.RedisConnector)
+	if !ok || rc == nil {
+		return nil, fmt.Errorf("evm.blockStore.connectorId %q is not an initialized redis connector in database.evmJsonRpcCache", hc.ConnectorId)
+	}
+	return &blockStoreConnectorStore{connector: conn, redis: rc}, nil
+}
+
+var _ blockstore.PresenceStore = (*blockStoreConnectorStore)(nil)
+var _ blockstore.CanonicalIndex = (*blockStoreConnectorStore)(nil)
+
+func (s *blockStoreConnectorStore) presenceKey(scope blockstore.Scope) (string, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return "", err
+	}
+	return partition + ":ws-presence", nil
+}
+
+// MarkPresence records that this replica holds WebSocket subscribers for the
+// scope until ttl elapses (renewed every tick while it does).
+func (s *blockStoreConnectorStore) MarkPresence(ctx context.Context, scope blockstore.Scope, ttl time.Duration) error {
+	if ttl < time.Millisecond {
+		return fmt.Errorf("blockstore presence TTL must be positive")
+	}
+	client, err := s.redisClient()
+	if err != nil {
+		return err
+	}
+	key, err := s.presenceKey(scope)
+	if err != nil {
+		return err
+	}
+	// The value carries the deadline too, so a reader never trusts a mark
+	// past it even if the key's own expiry is delayed.
+	deadline := strconv.FormatInt(time.Now().Add(ttl).UnixMilli(), 10)
+	if err := client.Set(ctx, key, deadline, ttl).Err(); err != nil {
+		return fmt.Errorf("mark blockstore presence: %w", err)
+	}
+	return nil
+}
+
+// HasPresence reports whether any replica currently holds subscribers.
+func (s *blockStoreConnectorStore) HasPresence(ctx context.Context, scope blockstore.Scope) (bool, error) {
+	client, err := s.redisClient()
+	if err != nil {
+		return false, err
+	}
+	key, err := s.presenceKey(scope)
+	if err != nil {
+		return false, err
+	}
+	value, err := client.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read blockstore presence: %w", err)
+	}
+	deadline, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return false, nil
+	}
+	return time.Now().UnixMilli() < deadline, nil
+}
+
+type blockStoreCanonical struct {
+	Hash string    `json:"h"`
+	At   time.Time `json:"at"`
+}
+
+func canonicalKey(n int64) string { return "canon/" + strconv.FormatInt(n, 10) }
+
+// PutCanonical shares the hash a replica observed upstream at height n.
+func (s *blockStoreConnectorStore) PutCanonical(ctx context.Context, scope blockstore.Scope, n int64, hash string, at time.Time, ttl time.Duration) error {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return err
+	}
+	value, err := json.Marshal(blockStoreCanonical{Hash: strings.ToLower(hash), At: at})
+	if err != nil {
+		return fmt.Errorf("encode blockstore canonical entry: %w", err)
+	}
+	return s.connector.Set(ctx, partition, canonicalKey(n), value, &ttl)
+}
+
+// GetCanonical returns the last hash observed at height n and when.
+func (s *blockStoreConnectorStore) GetCanonical(ctx context.Context, scope blockstore.Scope, n int64) (string, time.Time, error) {
+	partition, err := s.partition(scope)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	value, err := s.connector.Get(ctx, data.ConnectorMainIndex, partition, canonicalKey(n), nil)
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return "", time.Time{}, blockstore.ErrNotFound
+		}
+		return "", time.Time{}, fmt.Errorf("get blockstore canonical entry: %w", err)
+	}
+	var entry blockStoreCanonical
+	if err := json.Unmarshal(value, &entry); err != nil || !validBlockStoreHash(entry.Hash) {
+		return "", time.Time{}, fmt.Errorf("invalid blockstore canonical entry at %d", n)
+	}
+	return entry.Hash, entry.At, nil
+}
+
+// blockStoreAdoptLimit bounds concurrent adoption work per network.
+const blockStoreAdoptLimit = 16
+
+// adoptIntoBlockStore feeds a block or logs response served to a client
+// (from eRPC's cache or an upstream) into the live block store, so later
+// reads of the same block or logs need no upstream call (pull model). It
+// never runs for the store's own fetches or for directed requests.
+func (n *Network) adoptIntoBlockStore(ctx context.Context, req *common.NormalizedRequest, method string, resp *common.NormalizedResponse) {
+	c := n.blockStore
+	if c == nil || n.blockStoreAdoptSem == nil || n.appCtx == nil || resp == nil || ctx.Value(blockStoreBypassKey{}) != nil || cacheWriteBypassed(ctx) {
+		return
+	}
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockByHash", "eth_getLogs":
+	default:
+		return
+	}
+	if blockStoreDirected(req.Directives()) || n.honorsIntegritySelector(req) {
+		return
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return
+	}
+	jrq.RLock()
+	params := append([]interface{}(nil), jrq.Params...)
+	jrq.RUnlock()
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil || jrr.Error != nil {
+		return
+	}
+	result := append(json.RawMessage(nil), jrr.GetResultBytes()...)
+	fromCache := resp.FromCache()
+	var adopt func(context.Context)
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockByHash":
+		if len(params) != 2 {
+			return
+		}
+		ref, ok1 := params[0].(string)
+		full, ok2 := params[1].(bool)
+		if !ok1 || !ok2 {
+			return
+		}
+		canonical := false
+		if method == "eth_getBlockByNumber" {
+			switch ref {
+			case "latest", "safe", "finalized":
+				canonical = true
+			default:
+				if _, err := parseExplicitBlockNumber(ref); err != nil {
+					return
+				}
+				canonical = true
+			}
+		} else {
+			// Number and hash only: the transactions are not decoded here.
+			_, hash, ok := blockstore.BlockIdentity(result)
+			if !validBlockStoreHash(ref) || !ok || !strings.EqualFold(hash, ref) {
+				return
+			}
+		}
+		// Skip the copy and the background parse when nothing would change
+		// (e.g. a cache replay of a height already held).
+		if !c.AdoptBlockNeeded(result, full, canonical, fromCache) {
+			return
+		}
+		adopt = func(ctx context.Context) { c.AdoptBlock(ctx, result, full, canonical, fromCache) }
+	case "eth_getLogs":
+		if len(params) != 1 {
+			return
+		}
+		obj, ok := params[0].(map[string]interface{})
+		if !ok {
+			return
+		}
+		unfiltered := true
+		for k := range obj {
+			switch k {
+			case "fromBlock", "toBlock", "blockHash":
+			case "address", "topics":
+				unfiltered = false
+			default:
+				return
+			}
+		}
+		if bh, ok := obj["blockHash"].(string); ok {
+			if !validBlockStoreHash(bh) {
+				return
+			}
+			adopt = func(ctx context.Context) {
+				c.ObserveLogs(ctx, result, -1, -1, false, fromCache)
+				if unfiltered && !fromCache {
+					c.AdoptLogsByHash(ctx, bh, result)
+				}
+			}
+			break
+		}
+		from, to := int64(-1), int64(-1)
+		fs, ok1 := obj["fromBlock"].(string)
+		ts, ok2 := obj["toBlock"].(string)
+		if ok1 && ok2 {
+			f, e1 := parseExplicitBlockNumber(fs)
+			t, e2 := parseExplicitBlockNumber(ts)
+			if e1 == nil && e2 == nil && t >= f {
+				from, to = f, t
+			}
+		}
+		adopt = func(ctx context.Context) { c.ObserveLogs(ctx, result, from, to, unfiltered && from >= 0, fromCache) }
+	}
+	n.goBlockStoreAdopt("response", adopt)
+}
+
+// goBlockStoreAdopt runs adopt off the caller's path, bounded by
+// blockStoreAdoptSem (dropped when saturated). A panic in adopt is recovered,
+// counted and logged so a bad payload cannot crash the process.
+func (n *Network) goBlockStoreAdopt(source string, adopt func(ctx context.Context)) {
+	if n.blockStoreAdoptSem == nil || n.appCtx == nil {
+		return
+	}
+	select {
+	case n.blockStoreAdoptSem <- struct{}{}:
+	default:
+		return
+	}
+	go func() {
+		defer func() { <-n.blockStoreAdoptSem }()
+		defer func() {
+			if rec := recover(); rec != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"blockstore-adopt",
+					fmt.Sprintf("network:%s source:%s", n.networkId, source),
+					common.ErrorFingerprint(rec),
+				).Inc()
+				if n.logger != nil {
+					n.logger.Error().Interface("panic", rec).Str("source", source).Str("stack", string(debug.Stack())).Msg("unexpected panic adopting into blockstore")
+				}
+			}
+		}()
+		actx, cancel := context.WithTimeout(n.appCtx, 30*time.Second)
+		defer cancel()
+		adopt(actx)
+	}()
+}

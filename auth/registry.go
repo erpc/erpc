@@ -109,8 +109,32 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		return nil, common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
-	// If no strategy matched or succeeded, consider the request unauthorized
-	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
+	// If no strategy matched or succeeded, consider the request unauthorized.
+	// When strategies could not decide (backend unavailable) and none of them
+	// returned a denial, the request is not known to be denied, so keep that
+	// distinction for long-lived sessions. A denial from any strategy is a
+	// verdict on the credentials and wins over a concurrent outage elsewhere.
+	joined := errors.Join(errs...)
+	if authUndecided(errs) {
+		return nil, common.NewErrAuthUnavailable("n/a", joined.Error(), joined)
+	}
+	return nil, common.NewErrAuthUnauthorized("n/a", joined.Error())
+}
+
+// authUndecided reports whether at least one strategy failed because its
+// backend was unavailable and no strategy denied the credentials outright.
+func authUndecided(errs []error) bool {
+	unavailable := false
+	for _, err := range errs {
+		if common.HasErrorCode(err, common.ErrCodeAuthUnavailable) {
+			unavailable = true
+			continue
+		}
+		if common.HasErrorCode(err, common.ErrCodeAuthUnauthorized) {
+			return false
+		}
+	}
+	return unavailable
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies

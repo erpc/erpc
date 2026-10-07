@@ -86,6 +86,12 @@ type Engine struct {
 	proberMu sync.RWMutex
 	probers  map[string]*Prober
 
+	// hooks holds per-network *NetworkHooks installed by the network
+	// layer (SetNetworkHooks). Kept apart from `networks` so a hook can be
+	// installed before or after RegisterNetwork and survives a
+	// re-registration.
+	hooks sync.Map
+
 	appCtx context.Context
 	cancel context.CancelFunc
 }
@@ -177,6 +183,87 @@ func NewEngine(
 	}
 	go e.idleSweepLoop()
 	return e
+}
+
+// NetworkHooks lets the network layer feed request-path knowledge the
+// engine cannot derive from the health tracker alone. Every field is
+// optional; a network without hooks behaves exactly as before.
+type NetworkHooks struct {
+	// HeadLagOnDemand reports, at each tick, that head lag is enforced
+	// per request for this network (a fresh fleet head tracker plus the
+	// tip check), so the slow state-poller lag view must not drive
+	// selection. While it returns true the eval sees blockHeadLag,
+	// finalizationLag and their *Seconds forms as 0 for every upstream:
+	// lag predicates (blockNumberLagAbove, blockSecondsLagAbove,
+	// finalizationLagAbove, removeByLag, ...) evaluate false and lag no
+	// longer reorders the score. The per-upstream lag gauges are not
+	// affected (the Prometheus head-lag gauges keep the real values).
+	//
+	// Called once per tick, and on the request path for a slot whose
+	// last tick masked lag (one atomic check), so the moment it turns
+	// false the slot re-evaluates with the real lag: a tracker that
+	// goes stale unmasks immediately rather than at the next tick.
+	// Must be cheap and side-effect free.
+	HeadLagOnDemand func() bool
+}
+
+// SetNetworkHooks installs (or, with nil, removes) the hooks for a
+// network. Safe to call at any time; the next tick / probe reads them.
+func (e *Engine) SetNetworkHooks(networkID string, h *NetworkHooks) {
+	if h == nil {
+		e.hooks.Delete(networkID)
+		return
+	}
+	e.hooks.Store(networkID, h)
+}
+
+func (e *Engine) networkHooks(networkID string) *NetworkHooks {
+	if v, ok := e.hooks.Load(networkID); ok {
+		return v.(*NetworkHooks)
+	}
+	return nil
+}
+
+// headLagOnDemand reports whether the network's lag is currently enforced
+// per request (see NetworkHooks.HeadLagOnDemand).
+func (e *Engine) headLagOnDemand(networkID string) bool {
+	h := e.networkHooks(networkID)
+	return h != nil && h.HeadLagOnDemand != nil && h.HeadLagOnDemand()
+}
+
+// syncLagMask re-evaluates a slot whose last tick's lag masking no longer
+// matches the network's state, in either direction:
+//   - masked, tracker went stale: lag exclusion must apply again now,
+//     not up to one evalInterval later;
+//   - unmasked, tracker became fresh: the last tick's exclusions may rest
+//     on the stale poller lag view.
+//
+// The re-eval runs asynchronously (one at a time per slot). Returns true
+// while the slot's last tick is out of sync with the network. Networks
+// without hooks return false with one map lookup.
+func (e *Engine) syncLagMask(s *Slot) (outOfSync bool) {
+	if s == nil || s.pinned.Load() {
+		return false
+	}
+	h := e.networkHooks(s.networkID)
+	if h == nil || h.HeadLagOnDemand == nil {
+		return false
+	}
+	if s.lagMasked.Load() == h.HeadLagOnDemand() {
+		return false
+	}
+	if s.retickPending.CompareAndSwap(false, true) {
+		go func() {
+			defer s.retickPending.Store(false)
+			select {
+			case <-s.stopCh:
+				return
+			default:
+			}
+			s.tickOnce()
+		}()
+	}
+	return true
 }
 
 // SetIdleEvictionAfter overrides the default engine idle-eviction
@@ -377,12 +464,16 @@ func (e *Engine) getOrdered(networkID, method, finality string, laneIDs []string
 	nowMs := time.Now().UnixMilli()
 	if slot != nil {
 		slot.lastAccessedAtMs.Store(nowMs)
+		e.syncLagMask(slot)
 		if ordered := slot.cache.Load(); ordered != nil && len(*ordered) > 0 {
 			return *ordered
 		}
 	}
 	if wildcard != nil {
 		wildcard.lastAccessedAtMs.Store(nowMs)
+		if wildcard != slot {
+			e.syncLagMask(wildcard)
+		}
 		if ordered := wildcard.cache.Load(); ordered != nil {
 			return *ordered
 		}
@@ -452,24 +543,50 @@ func (e *Engine) RecentDecisions(networkID, method, finality string, limit int) 
 // candidates."
 func (e *Engine) GetExcluded(networkID, method, finality string) []common.Upstream {
 	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality, nil)
-	if slot != nil {
-		// Honor the narrow slot whenever it has TICKED (non-nil pointer),
-		// even when its probe-candidate set is empty: with probe-blocking
-		// verdicts an empty set is a deliberate outcome ("everything
-		// excluded here is static"), not a cold start. Falling back to the
-		// wildcard on len==0 would resurrect probes the narrow eval
-		// suppressed. Pointer-nil (never ticked) is the only cold-start
-		// signal that defers to the wildcard slot.
-		if excluded := slot.excludedCache.Load(); excluded != nil {
-			return *excluded
+	src := slot
+	excluded := e.excludedOf(slot)
+	if excluded == nil {
+		src = wildcard
+		excluded = e.excludedOf(wildcard)
+	}
+	if excluded == nil {
+		return nil
+	}
+	// Tracked network with a fresh head: lag is checked per request (tip
+	// check), so an upstream excluded ONLY for lag is not a probe target
+	// (after the lag mask it is not excluded at all; this also covers a
+	// slot whose last tick predates the mask). Upstreams excluded for
+	// errors, throttling, latency, ... keep being probed for re-admission.
+	if len(*excluded) > 0 && e.headLagOnDemand(networkID) {
+		if lagOnly := src.lagOnlyExcluded.Load(); lagOnly != nil && len(*lagOnly) > 0 {
+			out := make([]common.Upstream, 0, len(*excluded))
+			for _, u := range *excluded {
+				if _, ok := (*lagOnly)[u.Id()]; ok {
+					continue
+				}
+				out = append(out, u)
+			}
+			return out
 		}
 	}
-	if wildcard != nil {
-		if excluded := wildcard.excludedCache.Load(); excluded != nil {
-			return *excluded
-		}
+	return *excluded
+}
+
+// excludedOf returns a slot's probe-candidate set, or nil when the slot
+// is unknown or has never ticked.
+//
+// A narrow slot is honored whenever it has TICKED (non-nil pointer),
+// even when its probe-candidate set is empty: with probe-blocking
+// verdicts an empty set is a deliberate outcome ("everything excluded
+// here is static"), not a cold start. Falling back to the wildcard on
+// len==0 would resurrect probes the narrow eval suppressed. Pointer-nil
+// (never ticked) is the only cold-start signal that defers to the
+// wildcard slot.
+func (e *Engine) excludedOf(s *Slot) *[]common.Upstream {
+	if s == nil {
+		return nil
 	}
-	return nil
+	return s.excludedCache.Load()
 }
 
 // PublishRequest hands a freshly-served request to the network's

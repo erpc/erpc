@@ -50,6 +50,8 @@ func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 		}
 	}
 	slot.cache.Store(&ordered)
+	// A pinned order must not be replaced by a lag-mask resync re-eval.
+	slot.pinned.Store(true)
 }
 
 // OverrideAllForTest applies OverrideOrderForTest to EVERY network this

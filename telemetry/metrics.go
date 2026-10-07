@@ -18,8 +18,8 @@ var (
 	MetricUpstreamRequestTotal = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
-		Help:      "Total number of actual requests to upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "attempt", "composite", "finality", "user", "agent_name"})
+		Help:      "Total number of actual requests to upstreams. `attempt` is the request's physical-operation count when this call started (upstream + cache operations, 1-based); it is NOT a retry ordinal, so do not read attempt!=\"0\" as a retry. `is_retry` is true when the call is a retry (upstream, network or cache retry rounds already happened for the request).",
+	}, []string{"project", "vendor", "network", "upstream", "category", "attempt", "composite", "finality", "user", "agent_name", "is_retry"})
 
 	MetricUpstreamErrorTotal = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -635,6 +635,54 @@ var (
 		Help:      "Total number of requests received for a network.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
+	MetricBlockStoreFresh = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_fresh",
+		Help:      "Whether this process has a fresh verified head-cache view (1) or not (0).",
+	}, []string{"project", "network"})
+
+	MetricBlockStoreRefreshTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_refresh_total",
+		Help:      "Head-cache refresh attempts by outcome: fresh, stale, or error.",
+	}, []string{"project", "network", "outcome"})
+
+	MetricBlockStoreHitsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_hits_total",
+		Help:      "HTTP block and log requests served from the verified head cache.",
+	}, []string{"project", "network", "category"})
+
+	MetricBlockStoreFetchTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_fetch_total",
+		Help:      "Every upstream request initiated by the blockstore or its logs fill, by kind (header, block, logs, head) and reason (miss, subscription, fill; background only with always-on following). Adoption never fetches.",
+	}, []string{"project", "network", "kind", "reason"})
+
+	MetricBlockStoreAdoptTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_adopt_total",
+		Help:      "Headers, block bodies and log lists the live blockstore adopted from responses served to clients (no fetch of its own), by kind.",
+	}, []string{"project", "network", "kind"})
+
+	MetricBlockStoreLogsFillTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "blockstore_logs_fill_total",
+		Help:      "Small-range eth_getLogs handled by the blockstore logs fill, by outcome (hit, fill, fallback, skipped) and reason.",
+	}, []string{"project", "network", "outcome", "reason"})
+
+	MetricWebSocketConnections = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "websocket_connections",
+		Help:      "Current accepted WebSocket connections.",
+	}, []string{"project", "network"})
+
+	MetricWebSocketClosuresTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "websocket_closures_total",
+		Help:      "Accepted WebSocket connections closed by bounded cause.",
+	}, []string{"project", "network", "reason"})
+
 	MetricNetworkMultiplexedRequests = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_multiplexed_request_total",
@@ -1218,3 +1266,65 @@ func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
 	sort.Float64s(buckets)
 	return buckets, nil
 }
+
+// Head tracker ("stalker") metrics. One elected replica per network polls
+// "latest" once per block; every replica serves the published head.
+var (
+	MetricHeadTrackerHeadBlock = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_tracker_head_block_number",
+		Help:      "Latest head published by the head tracker leader, as seen by this replica.",
+	}, []string{"project", "network"})
+
+	MetricHeadTrackerIsLeader = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_tracker_is_leader",
+		Help:      "1 when this replica holds the head tracker lease for the network (and polls), else 0.",
+	}, []string{"project", "network"})
+
+	MetricHeadTrackerPollDuration = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "head_tracker_poll_duration_seconds",
+		Help:      "Latency of the leader's eth_getBlockByNumber(latest) poll through the network's normal routing.",
+		Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	}, []string{"project", "network", "outcome"})
+
+	MetricHeadTrackerPropagationDelay = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "head_tracker_propagation_delay_seconds",
+		Help:      "Time between a new head's on-chain timestamp and the leader observing it (block timestamps are whole seconds, so sub-second values are coarse).",
+		Buckets:   []float64{0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30},
+	}, []string{"project", "network"})
+
+	MetricHeadTrackerServedLagBlocks = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_tracker_served_lag_blocks",
+		Help:      "Tracker head minus the latest block the network actually serves (0 while the tracker head is being served; >0 in fallback).",
+	}, []string{"project", "network"})
+
+	MetricHeadTrackerFallbackActive = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_tracker_fallback_active",
+		Help:      "1 while the tracker head is stale on this replica and \"latest\" falls back to the per-upstream poller heads.",
+	}, []string{"project", "network"})
+
+	MetricHeadTrackerFallbackTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "head_tracker_fallback_total",
+		Help:      "Transitions into fallback (tracker head stale) on this replica.",
+	}, []string{"project", "network"})
+
+	MetricHeadTrackerRejectedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "head_tracker_rejected_total",
+		Help:      "Leader poll results rejected by a sanity guard, by reason (regression, far_future, chain_id).",
+	}, []string{"project", "network", "reason"})
+)
+
+// MetricHeadTrackerTipChecksTotal counts head checks of an upstream made
+// because a tip read targeted a block above its known head (head tracker on).
+var MetricHeadTrackerTipChecksTotal = DefineCounter(prometheus.CounterOpts{
+	Namespace: "erpc",
+	Name:      "head_tracker_tip_checks_total",
+	Help:      "Head checks of an upstream before forwarding a tip read above its known head (debounced per upstream).",
+}, []string{"project", "network", "upstream"})
