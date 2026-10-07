@@ -399,6 +399,7 @@ func (finalizedNetwork) Config() *common.NetworkConfig {
 func (finalizedNetwork) Logger() *zerolog.Logger                          { l := log.Logger; return &l }
 func (finalizedNetwork) GetMethodMetrics(string) common.TrackedMetrics    { return nil }
 func (finalizedNetwork) SvmHighestLatestSlot(context.Context) int64       { return 0 }
+func (finalizedNetwork) SvmHighestConfirmedSlot(context.Context) int64    { return 0 }
 func (finalizedNetwork) SvmHighestFinalizedSlot(context.Context) int64    { return 0 }
 func (finalizedNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 { return 0 }
 func (finalizedNetwork) SvmHighestIndexedSlot(context.Context) int64      { return 0 }

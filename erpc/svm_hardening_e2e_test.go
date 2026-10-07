@@ -817,3 +817,50 @@ func TestSvm_BareHttpFailure_ClassifiedFromStatusAndFailsOver(t *testing.T) {
 		})
 	}
 }
+
+// TestSvm_ConfirmedTip_ExcludesNonServingUpstreams guards the confirmed floor
+// against voting upstreams that cannot serve the request. PickServedTip of
+// 3000/2000/1000 is 2000; dropping the 3000 upstream leaves 2000/1000, whose
+// pick is 1000.
+func TestSvm_ConfirmedTip_ExcludesNonServingUpstreams(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	util.SetupMocksForSvmStatePoller("svm-confirmed-high.localhost", 3000, 2900)
+	util.SetupMocksForSvmStatePoller("svm-confirmed-mid.localhost", 2000, 1900)
+	util.SetupMocksForSvmStatePoller("svm-confirmed-low.localhost", 1000, 900)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	net, reg := setupSvmSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
+		svmUpstreamConfig("high", "svm-confirmed-high.localhost"),
+		svmUpstreamConfig("mid", "svm-confirmed-mid.localhost"),
+		svmUpstreamConfig("low", "svm-confirmed-low.localhost"),
+	})
+
+	require.Eventually(t, func() bool {
+		for id, want := range map[string]int64{"high": 3000, "mid": 2000, "low": 1000} {
+			p := svmPollerFor(t, reg, ctx, net.networkId, id)
+			if p.ConfirmedSlot() != want {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, 50*time.Millisecond, "confirmed poller slots did not land")
+
+	require.Equal(t, int64(2000), net.SvmHighestConfirmedSlot(ctx),
+		"all three serving upstreams: confirmed tip is the middle slot")
+
+	net.PinUpstreamOrderForTest("mid", "low")
+	require.Equal(t, int64(1000), net.SvmHighestConfirmedSlot(ctx),
+		"an upstream absent from the serving set must not vote in the confirmed tip")
+
+	net.PinUpstreamOrderForTest("high", "mid", "low")
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}`))
+	req.SetDirectives(&common.RequestDirectives{UseUpstream: "mid|low"})
+	selCtx := context.WithValue(ctx, common.RequestContextKey, req)
+	require.Equal(t, int64(1000), net.SvmHighestConfirmedSlot(selCtx),
+		"use-upstream must narrow the confirmed tip to the selected upstreams")
+}

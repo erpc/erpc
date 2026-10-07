@@ -15,6 +15,7 @@ import (
 type fakeNetwork struct {
 	cfg           *common.NetworkConfig
 	latestSlot    int64
+	confirmedSlot int64
 	finalizedSlot int64
 	// finalizedSlotMax is the leading upstream's root. Left at 0 it mirrors
 	// finalizedSlot, so a single-upstream pool (where majority == max) is
@@ -33,6 +34,7 @@ func (f *fakeNetwork) Config() *common.NetworkConfig                 { return f.
 func (f *fakeNetwork) Logger() *zerolog.Logger                       { l := zerolog.Nop(); return &l }
 func (f *fakeNetwork) GetMethodMetrics(string) common.TrackedMetrics { return nil }
 func (f *fakeNetwork) SvmHighestLatestSlot(context.Context) int64    { return f.latestSlot }
+func (f *fakeNetwork) SvmHighestConfirmedSlot(context.Context) int64 { return f.confirmedSlot }
 func (f *fakeNetwork) SvmHighestFinalizedSlot(context.Context) int64 { return f.finalizedSlot }
 func (f *fakeNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 {
 	if f.finalizedSlotMax != 0 {
@@ -40,7 +42,7 @@ func (f *fakeNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 {
 	}
 	return f.finalizedSlot
 }
-func (f *fakeNetwork) SvmHighestIndexedSlot(context.Context) int64   { return f.indexedSlot }
+func (f *fakeNetwork) SvmHighestIndexedSlot(context.Context) int64 { return f.indexedSlot }
 func (f *fakeNetwork) SvmEnforceBlockAvailability() bool {
 	if f.enforceBlockAvailability == nil {
 		return true

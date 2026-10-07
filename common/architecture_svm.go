@@ -41,12 +41,14 @@ type SvmStatePoller interface {
 	Poll(ctx context.Context) error
 
 	LatestSlot() int64
+	ConfirmedSlot() int64
 	FinalizedSlot() int64
 	ShredInsertSlot() int64
 	MaxShredInsertSlotLag() int64
 	IsHealthy() bool
 
 	SuggestLatestSlot(slot int64)
+	SuggestConfirmedSlot(slot int64)
 	SuggestFinalizedSlot(slot int64)
 }
 

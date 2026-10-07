@@ -1369,8 +1369,24 @@ func (n *Network) servedTipMaxRegressionBlocks() int64 {
 func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestLatestSlot")
 	defer span.End()
-	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, false))
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, func(sp common.SvmStatePoller) int64 {
+		return sp.LatestSlot()
+	}))
 	span.SetAttributes(attribute.Int64("highest_latest_slot", pick.Tip))
+	return pick.Tip
+}
+
+// SvmHighestConfirmedSlot is the confirmed-slot counterpart: the MAJORITY tip.
+// Used by networkPostForward_getSlot to raise a stale confirmed answer. Same
+// PickServedTip aggregate as latest/finalized so one fast upstream cannot set
+// the advertised slot. The shred watermark is a finalized-row cap only.
+func (n *Network) SvmHighestConfirmedSlot(ctx context.Context) int64 {
+	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestConfirmedSlot")
+	defer span.End()
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, func(sp common.SvmStatePoller) int64 {
+		return sp.ConfirmedSlot()
+	}))
+	span.SetAttributes(attribute.Int64("highest_confirmed_slot", pick.Tip))
 	return pick.Tip
 }
 
@@ -1381,7 +1397,9 @@ func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlot")
 	defer span.End()
-	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, true))
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, func(sp common.SvmStatePoller) int64 {
+		return sp.FinalizedSlot()
+	}))
 	span.SetAttributes(attribute.Int64("highest_finalized_slot", pick.Tip))
 	return pick.Tip
 }
@@ -1456,22 +1474,33 @@ func (n *Network) SvmHighestIndexedSlot(ctx context.Context) int64 {
 	return maxSlot
 }
 
-// gatherSvmTipInputs collects slot values from SVM state pollers for
-// majority-tip computation via common.PickServedTip.
-func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []common.ServedTipInput {
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+// gatherSvmTipInputs collects slot values for majority-tip computation via
+// common.PickServedTip. The ballot is the serving set from tipCandidateUpstreams
+// — policy-eligible upstreams, narrowed to the request's use-upstream selector
+// when ctx carries one — not every registered upstream. Cordoned pollers keep
+// polling, so a registry-wide ballot would let a stale node move the floor.
+func (n *Network) gatherSvmTipInputs(ctx context.Context, slotOf func(common.SvmStatePoller) int64) []common.ServedTipInput {
+	method := "*"
+	if req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req != nil {
+		if m, err := req.Method(); err == nil && m != "" {
+			method = m
+		}
+	}
+	upstreams := n.tipCandidateUpstreams(ctx, method)
 	out := make([]common.ServedTipInput, 0, len(upstreams))
-	for _, u := range upstreams {
+	for _, raw := range upstreams {
+		// SvmUpstream, not *upstream.Upstream: any implementation that exposes a
+		// poller must be able to vote. A concrete assertion drops those silently
+		// and the majority tip goes cold.
+		u, ok := raw.(common.SvmUpstream)
+		if !ok {
+			continue
+		}
 		sp := u.SvmStatePoller()
 		if sp == nil || sp.IsObjectNull() {
 			continue
 		}
-		var slot int64
-		if useFinalized {
-			slot = sp.FinalizedSlot()
-		} else {
-			slot = sp.LatestSlot()
-		}
+		slot := slotOf(sp)
 		if slot <= 0 {
 			continue
 		}

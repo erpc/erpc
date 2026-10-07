@@ -23,7 +23,7 @@ const DefaultToleratedSlotRollback = 1024
 const DefaultPollInterval = 400 * time.Millisecond
 
 // maxConsecutiveSlotPollSkips bounds how many consecutive ticks the traffic
-// gate may skip the two getSlot calls. Live traffic proves freshness, but the
+// gate may skip a getSlot view. Live traffic proves freshness, but the
 // poller must periodically observe on its own — a stream of suggestions from a
 // single busy method must never fully starve independent verification.
 // ponytail: fixed bound mirrors the relay-skip cap proven in Lava-derived
@@ -41,12 +41,13 @@ const maxConsecutiveSlotPollSkips = 4
 // becomes N * debounce (~2s at defaults), against a circuit breaker that
 // already reacts to real request failures far sooner.
 //
-// The other three calls are deliberately NOT throttled, because their VALUES
+// The other four calls are deliberately NOT throttled, because their VALUES
 // move at chain rate (~2.5-3.7 slots/sec, measured) and each is a live bound:
 //
 //   - getSlot(finalized) IS the getBlock guard's bound at finalized commitment
 //     — which includes every request that pins no commitment — so a staler tip
 //     directly widens the window of requests that escape to upstreams.
+//   - getSlot(confirmed) is the floor for getSlot(confirmed) correction.
 //   - getSlot(processed) is the bound for non-finalized routing.
 //   - getMaxShredInsertSlot bounds every commitment level, and
 //     tipStalenessMargin is derived from the assumption that this snapshot is
@@ -66,8 +67,11 @@ const healthPollEveryNTicks = 5
 
 // Static request payloads — avoid allocating on every tick.
 var (
-	reqGetHealth             = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
-	reqGetSlotProcessed      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
+	reqGetHealth        = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
+	reqGetSlotProcessed = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
+	// Distinct id so e2e gock filters can serve poller getSlot(confirmed)
+	// without intercepting client getSlot(confirmed) — Circle's live path.
+	reqGetSlotConfirmed      = []byte(`{"jsonrpc":"2.0","id":"poller","method":"getSlot","params":[{"commitment":"confirmed"}]}`)
 	reqGetSlotFinalized      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
 	reqGetMaxShredInsertSlot = []byte(`{"jsonrpc":"2.0","id":1,"method":"getMaxShredInsertSlot","params":[]}`)
 )
@@ -82,6 +86,7 @@ type SvmStatePoller struct {
 	tracker   *health.Tracker
 
 	latestSlotShared    data.CounterInt64SharedVariable
+	confirmedSlotShared data.CounterInt64SharedVariable
 	finalizedSlotShared data.CounterInt64SharedVariable
 
 	shredInsertSlot       atomic.Int64
@@ -99,17 +104,22 @@ type SvmStatePoller struct {
 	debounceInterval atomic.Int64
 	lastPollAt       atomic.Int64
 
-	// lastExternalLatestAt / lastExternalFinalizedAt stamp (UnixMilli) the most
-	// recent EXTERNAL slot observation (live-traffic context.slot harvest or
-	// shared-state suggestion) per commitment view. The poll loop uses them as
-	// the traffic gate: when both views are fresher than the debounce window,
-	// the two getSlot calls are skipped. Only the public Suggest* entry points
-	// stamp these — the poller's own fetches go through the private variants,
-	// so a poll can never satisfy its own gate.
+	// lastExternal*At stamp (UnixMilli) the most recent EXTERNAL slot observation
+	// (live-traffic context.slot harvest or shared-state suggestion) per
+	// commitment view. The poll loop uses them as the traffic gate: processed
+	// and finalized skip together when BOTH of those views are fresher than the
+	// debounce window; confirmed skips on its own stamp. Confirmed is kept out
+	// of the both-views AND so an unobserved confirmed view cannot pin the
+	// other two open. Only the public Suggest* entry points stamp these — the
+	// poller's own fetches go through the private variants, so a poll can never
+	// satisfy its own gate.
 	lastExternalLatestAt    atomic.Int64
+	lastExternalConfirmedAt atomic.Int64
 	lastExternalFinalizedAt atomic.Int64
-	// slotPollSkips counts consecutive traffic-gated skips; guarded by pollMu.
-	slotPollSkips int
+	// slotPollSkips / confirmedSlotPollSkips count consecutive traffic-gated
+	// skips per view; guarded by pollMu.
+	slotPollSkips          int
+	confirmedSlotPollSkips int
 	// pollCount counts polls that passed the debounce gate. Guarded by pollMu.
 	pollCount int
 	// nextHealthPoll is the pollCount at which getHealth runs again. Starts at 0
@@ -148,9 +158,11 @@ func NewSvmStatePoller(
 	lg := logger.With().Str("component", "svmStatePoller").Str("networkId", networkId).Logger()
 
 	latestKey := fmt.Sprintf("svm/latestSlot/%s", common.UniqueUpstreamKey(up))
+	confirmedKey := fmt.Sprintf("svm/confirmedSlot/%s", common.UniqueUpstreamKey(up))
 	finalizedKey := fmt.Sprintf("svm/finalizedSlot/%s", common.UniqueUpstreamKey(up))
 
 	latestShared := sharedState.GetCounterInt64(latestKey, DefaultToleratedSlotRollback)
+	confirmedShared := sharedState.GetCounterInt64(confirmedKey, DefaultToleratedSlotRollback)
 	finalizedShared := sharedState.GetCounterInt64(finalizedKey, DefaultToleratedSlotRollback)
 
 	e := &SvmStatePoller{
@@ -160,6 +172,7 @@ func NewSvmStatePoller(
 		upstream:            up,
 		tracker:             tracker,
 		latestSlotShared:    latestShared,
+		confirmedSlotShared: confirmedShared,
 		finalizedSlotShared: finalizedShared,
 	}
 
@@ -276,19 +289,19 @@ func (e *SvmStatePoller) loop(interval time.Duration) {
 	}
 }
 
-// Poll fans out up to four RPC calls in parallel. Each result updates its own
+// Poll fans out up to five RPC calls in parallel. Each result updates its own
 // field so a single failure doesn't blank the others. Shred-insert lag is
 // computed after the fan-out joins — otherwise the getMaxShredInsertSlot
 // goroutine races against the getSlot goroutine and reads a stale (or zero)
 // latest slot.
 //
-// Traffic gate: when live traffic has refreshed BOTH the latest and finalized
-// slot views within the debounce window (via SuggestLatestSlot /
-// SuggestFinalizedSlot, fed by upstreamPostForward_trackContextSlot), the two
-// getSlot calls are skipped this tick — traffic already proved slot freshness,
-// and on paid vendor RPCs the poller is the dominant background cost.
-// Bounded by maxConsecutiveSlotPollSkips so suggestions can never fully
-// replace the poller's own observations.
+// Traffic gate: processed and finalized skip together when live traffic has
+// refreshed BOTH of those views within the debounce window (SuggestLatestSlot /
+// SuggestFinalizedSlot). Confirmed skips only when SuggestConfirmedSlot stamped
+// its own view — it is not folded into the both-views AND, because confirmed
+// starts unobserved and would otherwise keep processed/finalized polling until
+// confirmed traffic exists. Bounded per view by maxConsecutiveSlotPollSkips so
+// suggestions can never fully replace the poller's own observations.
 //
 // getMaxShredInsertSlot always runs: traffic carries no such signal, and the
 // watermark advances at chain rate, so a throttled snapshot would go stale
@@ -311,21 +324,35 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	}
 
 	skipSlots := false
-	if d > 0 && e.slotPollSkips < maxConsecutiveSlotPollSkips {
+	skipConfirmed := false
+	if d > 0 {
 		nowMs := time.Now().UnixMilli()
 		window := d.Milliseconds()
-		latestAt := e.lastExternalLatestAt.Load()
-		finalizedAt := e.lastExternalFinalizedAt.Load()
-		if window > 0 &&
-			latestAt > 0 && nowMs-latestAt < window &&
-			finalizedAt > 0 && nowMs-finalizedAt < window {
-			skipSlots = true
+		if e.slotPollSkips < maxConsecutiveSlotPollSkips {
+			latestAt := e.lastExternalLatestAt.Load()
+			finalizedAt := e.lastExternalFinalizedAt.Load()
+			if window > 0 &&
+				latestAt > 0 && nowMs-latestAt < window &&
+				finalizedAt > 0 && nowMs-finalizedAt < window {
+				skipSlots = true
+			}
+		}
+		if e.confirmedSlotPollSkips < maxConsecutiveSlotPollSkips {
+			confirmedAt := e.lastExternalConfirmedAt.Load()
+			if window > 0 && confirmedAt > 0 && nowMs-confirmedAt < window {
+				skipConfirmed = true
+			}
 		}
 	}
 	if skipSlots {
 		e.slotPollSkips++
 	} else {
 		e.slotPollSkips = 0
+	}
+	if skipConfirmed {
+		e.confirmedSlotPollSkips++
+	} else {
+		e.confirmedSlotPollSkips = 0
 	}
 
 	// getHealth carries a near-static boolean and feeds only the cordon edge, so
@@ -368,6 +395,17 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 			defer e.recoverPanic("fetchSlot.finalized")
 			if slot, err := e.fetchSlot(ctx, reqGetSlotFinalized); err == nil && slot > 0 {
 				e.suggestFinalizedSlot(slot)
+			}
+		}()
+	}
+
+	if !skipConfirmed {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer e.recoverPanic("fetchSlot.confirmed")
+			if slot, err := e.fetchSlot(ctx, reqGetSlotConfirmed); err == nil && slot > 0 {
+				e.suggestConfirmedSlot(slot)
 			}
 		}()
 	}
@@ -477,6 +515,10 @@ func (e *SvmStatePoller) LatestSlot() int64 {
 	return e.latestSlotShared.GetValue()
 }
 
+func (e *SvmStatePoller) ConfirmedSlot() int64 {
+	return e.confirmedSlotShared.GetValue()
+}
+
 func (e *SvmStatePoller) FinalizedSlot() int64 {
 	return e.finalizedSlotShared.GetValue()
 }
@@ -577,6 +619,25 @@ func (e *SvmStatePoller) suggestLatestSlot(slot int64) {
 	// Tracker feed lives in the counter's OnValue callback (NewSvmStatePoller):
 	// it also covers traffic-fed and cross-instance updates, and skips values
 	// the counter rejected.
+}
+
+// SuggestConfirmedSlot is the confirmed-commitment sibling of
+// SuggestLatestSlot; same external-vs-internal split. A confirmed slot is a
+// lower bound for processed, but that dual-write is the harvest hook's job —
+// this method only stamps the confirmed view.
+func (e *SvmStatePoller) SuggestConfirmedSlot(slot int64) {
+	if slot <= 0 {
+		return
+	}
+	e.lastExternalConfirmedAt.Store(time.Now().UnixMilli())
+	e.suggestConfirmedSlot(slot)
+}
+
+func (e *SvmStatePoller) suggestConfirmedSlot(slot int64) {
+	if slot <= 0 {
+		return
+	}
+	e.confirmedSlotShared.TryUpdate(e.appCtx, slot)
 }
 
 // SuggestFinalizedSlot is the finalized-commitment sibling of

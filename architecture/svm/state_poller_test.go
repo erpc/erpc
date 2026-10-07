@@ -134,9 +134,9 @@ func (s *scriptedUpstream) scriptError(key string, code int, msg string) {
 	s.responses[key] = scriptedResponse{errJr: common.NewErrJsonRpcExceptionExternal(code, msg, "")}
 }
 
-// requestKey maps a state-poller request payload to one of the four known
-// kinds. getSlot is split by commitment so processed and finalized route to
-// separate canned responses.
+// requestKey maps a state-poller request payload to one of the known
+// kinds. getSlot is split by commitment so processed, confirmed, and
+// finalized route to separate canned responses.
 func requestKey(body string) string {
 	switch {
 	case strings.Contains(body, `"method":"getHealth"`):
@@ -145,6 +145,8 @@ func requestKey(body string) string {
 		return "getMaxShredInsertSlot"
 	case strings.Contains(body, `"method":"getSlot"`) && strings.Contains(body, `"processed"`):
 		return "getSlot:processed"
+	case strings.Contains(body, `"method":"getSlot"`) && strings.Contains(body, `"confirmed"`):
+		return "getSlot:confirmed"
 	case strings.Contains(body, `"method":"getSlot"`) && strings.Contains(body, `"finalized"`):
 		return "getSlot:finalized"
 	}
@@ -245,11 +247,12 @@ func newPollerOnCtx(t *testing.T, appCtx context.Context, up common.Upstream) *S
 	)
 }
 
-func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
+func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:confirmed", []byte(`995`))
 	up.script("getSlot:finalized", []byte(`990`))
 	// The shred watermark is structurally AHEAD of the replayed slot, so
 	// ingestion lag = 1002 - 1000 = 2 (healthy).
@@ -264,6 +267,9 @@ func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
 	if up.callCount("getSlot:processed") != 1 {
 		t.Errorf("getSlot(processed) called %d times, want 1", up.callCount("getSlot:processed"))
 	}
+	if up.callCount("getSlot:confirmed") != 1 {
+		t.Errorf("getSlot(confirmed) called %d times, want 1", up.callCount("getSlot:confirmed"))
+	}
 	if up.callCount("getSlot:finalized") != 1 {
 		t.Errorf("getSlot(finalized) called %d times, want 1", up.callCount("getSlot:finalized"))
 	}
@@ -273,6 +279,9 @@ func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
 
 	if p.LatestSlot() != 1000 {
 		t.Errorf("LatestSlot = %d, want 1000", p.LatestSlot())
+	}
+	if p.ConfirmedSlot() != 995 {
+		t.Errorf("ConfirmedSlot = %d, want 995", p.ConfirmedSlot())
 	}
 	if p.FinalizedSlot() != 990 {
 		t.Errorf("FinalizedSlot = %d, want 990", p.FinalizedSlot())
@@ -359,29 +368,30 @@ func TestSvmStatePoller_Poll_DebouncesWithinInterval(t *testing.T) {
 	}
 }
 
-// scriptAllFour registers healthy canned responses for every poller request so
+// scriptAllFive registers healthy canned responses for every poller request so
 // the traffic-gate tests can focus on WHICH calls fire, not what they return.
-func scriptAllFour(up *scriptedUpstream) {
+func scriptAllFive(up *scriptedUpstream) {
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:confirmed", []byte(`995`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`998`))
 }
 
 // TestSvmStatePoller_Poll_TrafficGate_ClosedWithoutSuggestions: enabling the
 // debounce gate alone must not suppress anything — without external freshness
-// evidence Poll still fans out all four calls.
+// evidence Poll still fans out all five calls.
 func TestSvmStatePoller_Poll_TrafficGate_ClosedWithoutSuggestions(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllFive(up)
 	p := newPollerWithUpstream(t, up)
 	p.SetDebounceInterval(200 * time.Millisecond)
 
 	// First Poll is never debounce-blocked (no prior poll recorded).
 	require.NoError(t, p.Poll(context.Background()))
 
-	for _, key := range []string{"getHealth", "getSlot:processed", "getSlot:finalized", "getMaxShredInsertSlot"} {
+	for _, key := range []string{"getHealth", "getSlot:processed", "getSlot:confirmed", "getSlot:finalized", "getMaxShredInsertSlot"} {
 		if got := up.callCount(key); got != 1 {
 			t.Errorf("%s called %d times, want 1 (gate must stay closed without suggestions)", key, got)
 		}
@@ -396,7 +406,7 @@ func TestSvmStatePoller_Poll_TrafficGate_ClosedWithoutSuggestions(t *testing.T) 
 func TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllFive(up)
 	p := newPollerWithUpstream(t, up)
 	p.SetDebounceInterval(200 * time.Millisecond)
 
@@ -412,6 +422,9 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh(t *testi
 	if got := up.callCount("getSlot:finalized"); got != 0 {
 		t.Errorf("getSlot(finalized) called %d times, want 0 (gated by fresh traffic)", got)
 	}
+	if got := up.callCount("getSlot:confirmed"); got != 1 {
+		t.Errorf("getSlot(confirmed) called %d times, want 1 (confirmed is not in the both-views AND)", got)
+	}
 	if got := up.callCount("getHealth"); got != 1 {
 		t.Errorf("getHealth called %d times, want 1 (must run on gated ticks)", got)
 	}
@@ -426,7 +439,7 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh(t *testi
 
 // TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots: one
 // fresh view is not freshness — the gate requires BOTH latest and finalized
-// observations within the window, else Poll fans out all four calls.
+// observations within the window, else Poll fans out all five calls.
 func TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -441,14 +454,14 @@ func TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			up := newScriptedUpstream()
-			scriptAllFour(up)
+			scriptAllFive(up)
 			p := newPollerWithUpstream(t, up)
 			p.SetDebounceInterval(200 * time.Millisecond)
 
 			tc.suggest(p)
 			require.NoError(t, p.Poll(context.Background()))
 
-			for _, key := range []string{"getHealth", "getSlot:processed", "getSlot:finalized", "getMaxShredInsertSlot"} {
+			for _, key := range []string{"getHealth", "getSlot:processed", "getSlot:confirmed", "getSlot:finalized", "getMaxShredInsertSlot"} {
 				if got := up.callCount(key); got != 1 {
 					t.Errorf("%s called %d times, want 1 (one fresh view must not gate)", key, got)
 				}
@@ -464,7 +477,7 @@ func TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots(t *test
 func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllFive(up)
 	p := newPollerWithUpstream(t, up)
 
 	const debounce = 100 * time.Millisecond
@@ -508,7 +521,7 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 func TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllFive(up)
 	p := newPollerWithUpstream(t, up)
 
 	const debounce = 100 * time.Millisecond
@@ -526,6 +539,93 @@ func TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate(t *testing
 	}
 	if got := up.callCount("getSlot:finalized"); got != 2 {
 		t.Errorf("getSlot(finalized)=%d, want 2 (self-observed slots must not gate)", got)
+	}
+	if got := up.callCount("getSlot:confirmed"); got != 2 {
+		t.Errorf("getSlot(confirmed)=%d, want 2 (self-observed slots must not gate)", got)
+	}
+}
+
+func TestSvmStatePoller_Poll_FailedConfirmedKeepsLastSlot(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:confirmed", []byte(`995`))
+	up.script("getSlot:finalized", []byte(`990`))
+	up.script("getMaxShredInsertSlot", []byte(`1002`))
+
+	p := newPollerWithUpstream(t, up)
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, int64(995), p.ConfirmedSlot())
+
+	up.script("getSlot:processed", []byte(`1100`))
+	up.scriptError("getSlot:confirmed", -32000, "unavailable")
+	up.script("getSlot:finalized", []byte(`1080`))
+	up.script("getMaxShredInsertSlot", []byte(`1105`))
+	require.NoError(t, p.Poll(context.Background()))
+
+	if p.ConfirmedSlot() != 995 {
+		t.Errorf("failed confirmed poll must keep last slot; got %d", p.ConfirmedSlot())
+	}
+	if p.LatestSlot() != 1100 {
+		t.Errorf("processed must still update; got %d", p.LatestSlot())
+	}
+	if p.FinalizedSlot() != 1080 {
+		t.Errorf("finalized must still update; got %d", p.FinalizedSlot())
+	}
+	if p.ShredInsertSlot() != 1105 {
+		t.Errorf("shred must still update; got %d", p.ShredInsertSlot())
+	}
+	if !p.IsHealthy() {
+		t.Error("confirmed poll failure must not change health")
+	}
+}
+
+func TestSvmStatePoller_Poll_TrafficGate_ConfirmedSkipsIndependently(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllFive(up)
+	p := newPollerWithUpstream(t, up)
+	p.SetDebounceInterval(200 * time.Millisecond)
+
+	p.SuggestConfirmedSlot(1495)
+	require.NoError(t, p.Poll(context.Background()))
+
+	if got := up.callCount("getSlot:confirmed"); got != 0 {
+		t.Errorf("getSlot(confirmed) called %d times, want 0", got)
+	}
+	for _, key := range []string{"getSlot:processed", "getSlot:finalized", "getHealth", "getMaxShredInsertSlot"} {
+		if got := up.callCount(key); got != 1 {
+			t.Errorf("%s called %d times, want 1 (confirmed freshness must not gate other views)", key, got)
+		}
+	}
+	if p.ConfirmedSlot() != 1495 {
+		t.Errorf("confirmed surface must stay traffic-fed: got %d", p.ConfirmedSlot())
+	}
+}
+
+func TestSvmStatePoller_Poll_TrafficGate_ConfirmedSkipCap(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllFive(up)
+	p := newPollerWithUpstream(t, up)
+
+	const debounce = 100 * time.Millisecond
+	p.SetDebounceInterval(debounce)
+
+	wantConfirmedCalls := []int{0, 0, 0, 0, 1, 1}
+	for i, want := range wantConfirmedCalls {
+		if i > 0 {
+			time.Sleep(debounce + 40*time.Millisecond)
+		}
+		p.SuggestConfirmedSlot(int64(2000 + i))
+		require.NoError(t, p.Poll(context.Background()))
+		if got := p.pollCount; got != i+1 {
+			t.Fatalf("poll %d did not run: pollCount=%d, want %d", i+1, got, i+1)
+		}
+		if got := up.callCount("getSlot:confirmed"); got != want {
+			t.Fatalf("after poll %d: getSlot(confirmed)=%d, want %d", i+1, got, want)
+		}
 	}
 }
 
@@ -716,16 +816,16 @@ func TestSvmStatePoller_Poll_ShredWatermarkBehindProcessedClampsToZero(t *testin
 // operator's manual cordon.
 // TestSvmStatePoller_HealthThrottled_SlotSignalsStayHot pins the asymmetry that
 // cuts vendor quota without blunting any live bound: ONLY getHealth is
-// throttled (its value is a near-static boolean feeding the cordon edge). All
-// three slot signals must run on EVERY poll because their values move at chain
+// throttled (its value is a near-static boolean feeding the cordon edge). Slot
+// signals must run on EVERY poll because their values move at chain
 // rate and each is a bound — getSlot(finalized) for the getBlock guard,
-// getSlot(processed) for non-finalized routing, and getMaxShredInsertSlot for
-// every commitment level, whose tipStalenessMargin assumes the snapshot is at
-// most one debounce old.
+// getSlot(confirmed) for confirmed getSlot correction, getSlot(processed) for
+// non-finalized routing, and getMaxShredInsertSlot for every commitment level,
+// whose tipStalenessMargin assumes the snapshot is at most one debounce old.
 func TestSvmStatePoller_HealthThrottled_SlotSignalsStayHot(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllFive(up)
 	p := newPollerWithUpstream(t, up)
 	// Debounce left at 0: no whole-poll gate and no traffic gate, so every Poll
 	// runs its full body and the only throttling in play is the tick counter.
@@ -737,6 +837,7 @@ func TestSvmStatePoller_HealthThrottled_SlotSignalsStayHot(t *testing.T) {
 
 	// Hot: every live bound must be resampled on each poll.
 	require.Equal(t, polls, up.callCount("getSlot:processed"), "getSlot(processed) must run every poll")
+	require.Equal(t, polls, up.callCount("getSlot:confirmed"), "getSlot(confirmed) must run every poll")
 	require.Equal(t, polls, up.callCount("getSlot:finalized"), "getSlot(finalized) must run every poll")
 	require.Equal(t, polls, up.callCount("getMaxShredInsertSlot"),
 		"getMaxShredInsertSlot moves at chain rate and bounds non-finalized requests — it must NOT be throttled")
@@ -758,7 +859,7 @@ func TestSvmStatePoller_HealthThrottled_SlotSignalsStayHot(t *testing.T) {
 func TestSvmStatePoller_HealthThrottled_FailedProbeRetriesNextPoll(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllFive(up)
 	up.scriptError("getHealth", -32000, "degraded")
 	p := newPollerWithUpstream(t, up)
 
@@ -897,7 +998,7 @@ func TestSvmStatePoller_AppCtxCancellation_DrainsEveryLoop(t *testing.T) {
 	defer cancel()
 
 	responsive := newScriptedUpstream()
-	scriptAllFour(responsive)
+	scriptAllFive(responsive)
 	stuck := newBlockingUpstream()
 
 	pollers := []*SvmStatePoller{
@@ -970,6 +1071,7 @@ func TestSvmStatePoller_ConcurrentSuggestionsDuringPoll_StaySlotMonotonic(t *tes
 	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", fmt.Appendf(nil, `%d`, polledProcessed))
+	up.script("getSlot:confirmed", fmt.Appendf(nil, `%d`, polledProcessed))
 	up.script("getSlot:finalized", fmt.Appendf(nil, `%d`, polledFinalized))
 	up.script("getMaxShredInsertSlot", fmt.Appendf(nil, `%d`, polledProcessed))
 
@@ -1091,7 +1193,7 @@ func TestSvmStatePoller_ConcurrentBootstrap_StartsExactlyOneLoop(t *testing.T) {
 	defer cancel()
 
 	up := newScriptedUpstream()
-	scriptAllFour(up)
+	scriptAllFive(up)
 	p := newPollerOnCtx(t, appCtx, up)
 
 	const racers = 16

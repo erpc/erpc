@@ -571,6 +571,7 @@ func (s *svmUpstreamStub) SvmStatePoller() common.SvmStatePoller   { return s.po
 // the test can assert on what the hook extracted and how it routed it.
 type recordingSvmPoller struct {
 	lastSuggested          int64
+	lastConfirmedSuggested int64
 	lastFinalizedSuggested int64
 }
 
@@ -578,11 +579,13 @@ func (r *recordingSvmPoller) Bootstrap(context.Context) error   { return nil }
 func (r *recordingSvmPoller) IsObjectNull() bool                { return false }
 func (r *recordingSvmPoller) Poll(context.Context) error        { return nil }
 func (r *recordingSvmPoller) LatestSlot() int64                 { return 0 }
+func (r *recordingSvmPoller) ConfirmedSlot() int64              { return 0 }
 func (r *recordingSvmPoller) FinalizedSlot() int64              { return 0 }
 func (r *recordingSvmPoller) ShredInsertSlot() int64            { return 0 }
 func (r *recordingSvmPoller) MaxShredInsertSlotLag() int64      { return 0 }
 func (r *recordingSvmPoller) IsHealthy() bool                   { return true }
 func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggested = slot }
+func (r *recordingSvmPoller) SuggestConfirmedSlot(slot int64)   { r.lastConfirmedSuggested = slot }
 func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   { r.lastFinalizedSuggested = slot }
 func (r *recordingSvmPoller) SetDebounceInterval(time.Duration) {}
 
@@ -666,8 +669,9 @@ func TestUpstreamPostForward_TrackContextSlot_NoOpForNonSvmUpstream(t *testing.T
 // commitment-routed harvesting contract: context.slot on a response whose
 // EFFECTIVE commitment (explicit param wins, else network default, else the
 // node's own finalized default) is "finalized" feeds BOTH the finalized and
-// latest views; any weaker commitment — or a nil network, which makes the
-// level unresolvable — feeds only the latest view.
+// latest views (not confirmed); "confirmed" feeds confirmed and latest;
+// processed — or a nil network, which makes the level unresolvable — feeds
+// only the latest view.
 func TestUpstreamPostForward_TrackContextSlot_CommitmentRouting(t *testing.T) {
 	t.Parallel()
 
@@ -686,6 +690,7 @@ func TestUpstreamPostForward_TrackContextSlot_CommitmentRouting(t *testing.T) {
 		network       common.Network
 		reqBody       string
 		wantFinalized int64
+		wantConfirmed int64
 	}{
 		{
 			// Explicit param beats the weaker network default.
@@ -696,16 +701,22 @@ func TestUpstreamPostForward_TrackContextSlot_CommitmentRouting(t *testing.T) {
 		},
 		{
 			// Explicit param beats the stronger network default too.
-			name:          "explicit confirmed feeds latest only",
+			name:          "explicit confirmed feeds confirmed and latest",
 			network:       finalizedNet,
 			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"commitment":"confirmed"}]}`,
-			wantFinalized: 0,
+			wantConfirmed: slot,
 		},
 		{
 			name:          "network default finalized feeds both views",
 			network:       finalizedNet,
 			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey"]}`,
 			wantFinalized: slot,
+		},
+		{
+			name:          "network default confirmed feeds confirmed and latest",
+			network:       confirmedNet,
+			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey"]}`,
+			wantConfirmed: slot,
 		},
 		{
 			// Nothing pinned: the node answered at its finalized default, so
@@ -721,10 +732,9 @@ func TestUpstreamPostForward_TrackContextSlot_CommitmentRouting(t *testing.T) {
 			// Without a network the effective commitment is unknowable, so
 			// even an explicit finalized param must NOT feed the finalized
 			// view — locks the n != nil guard.
-			name:          "nil network feeds latest only",
-			network:       nil,
-			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"commitment":"finalized"}]}`,
-			wantFinalized: 0,
+			name:    "nil network feeds latest only",
+			network: nil,
+			reqBody: `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"commitment":"finalized"}]}`,
 		},
 	}
 
@@ -750,6 +760,9 @@ func TestUpstreamPostForward_TrackContextSlot_CommitmentRouting(t *testing.T) {
 			}
 			if poller.lastFinalizedSuggested != tc.wantFinalized {
 				t.Fatalf("expected SuggestFinalizedSlot(%d), got %d", tc.wantFinalized, poller.lastFinalizedSuggested)
+			}
+			if poller.lastConfirmedSuggested != tc.wantConfirmed {
+				t.Fatalf("expected SuggestConfirmedSlot(%d), got %d", tc.wantConfirmed, poller.lastConfirmedSuggested)
 			}
 		})
 	}
@@ -1606,9 +1619,9 @@ func TestHandleNetworkPostForward_CorrectsGetSlotOnly(t *testing.T) {
 
 // A caller who asked for commitment=confirmed must never receive a processed
 // slot. The poller's LatestSlot IS the processed tip and processed runs ahead of
-// confirmed (and may never be confirmed at all if its fork is abandoned), so
-// there is no legal floor to apply and the upstream answer passes through.
-func TestNetworkPostForward_GetSlot_ConfirmedCommitment_PassesThrough(t *testing.T) {
+// confirmed. When the confirmed majority tip is still 0, the live answer passes
+// through — including when the processed tip is well ahead of it.
+func TestNetworkPostForward_GetSlot_ConfirmedCommitment_ColdTipPassesThrough(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{
 		Architecture: common.ArchitectureSvm,
@@ -1630,8 +1643,80 @@ func TestNetworkPostForward_GetSlot_ConfirmedCommitment_PassesThrough(t *testing
 			t.Fatalf("params %s: unexpected error: %v", params, err)
 		}
 		if slot := readSlot(t, got); slot != 12345000 {
-			t.Fatalf("params %s: confirmed getSlot must pass through, got %d (processed tip 12345678)", params, slot)
+			t.Fatalf("params %s: cold confirmed tip must pass through, got %d (processed tip 12345678)", params, slot)
 		}
+	}
+}
+
+func TestNetworkPostForward_GetSlot_ConfirmedCommitment_RaisesStaleToMajorityTip(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}, latestSlot: 12345678, confirmedSlot: 12345200, finalizedSlot: 12340000, indexedSlot: 12344000}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}`
+	req := common.NewNormalizedRequest([]byte(body))
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("12344000"), nil)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if slot := readSlot(t, got); slot != 12345200 {
+		t.Fatalf("stale confirmed getSlot must raise to majority tip 12345200, got %d", slot)
+	}
+}
+
+func TestNetworkPostForward_GetSlot_ConfirmedCommitment_AboveTipLeftAlone(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}, latestSlot: 12345678, confirmedSlot: 12345200, indexedSlot: 12344000}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}`
+	req := common.NewNormalizedRequest([]byte(body))
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("12345300"), nil)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != resp {
+		t.Fatal("confirmed answer above the majority tip must be left unchanged")
+	}
+}
+
+func TestNetworkPostForward_GetSlot_ConfirmedCommitment_DoesNotUseProcessedTip(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}, latestSlot: 12345678, confirmedSlot: 12345200}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}`
+	req := common.NewNormalizedRequest([]byte(body))
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("12344000"), nil)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if slot := readSlot(t, got); slot != 12345200 {
+		t.Fatalf("confirmed floor must be the confirmed tip 12345200, not processed 12345678; got %d", slot)
 	}
 }
 

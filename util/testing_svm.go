@@ -15,8 +15,8 @@ import (
 // Kept here as a literal because util cannot import common (cycle).
 const SolanaMainnetBetaGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
-// SetupMocksForSvmStatePoller registers the four state-poller calls every SVM
-// upstream makes on each tick: getHealth, getSlot(processed), getSlot(finalized),
+// SetupMocksForSvmStatePoller registers the state-poller calls every SVM
+// upstream makes on each tick: getHealth, getSlot(processed/confirmed/finalized),
 // getMaxShredInsertSlot. It also mocks the one-shot bootstrap getGenesisHash with
 // the mainnet-beta hash so the upstream passes genesis validation (which is
 // fail-closed for known clusters). Each filter guards by URL.Host so a test with
@@ -64,6 +64,14 @@ func SetupMocksForSvmStatePollerWithShred(host string, latestSlot, finalizedSlot
 		Reply(200).
 		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d,"_note":"svm state poller expected mock for getSlot(processed)"}`, latestSlot)))
 
+	// getSlot(confirmed)
+	gock.New("http://" + host).
+		Post("").
+		Persist().
+		Filter(filterSvmGetSlot(host, "confirmed")).
+		Reply(200).
+		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":"poller","result":%d,"_note":"svm state poller expected mock for getSlot(confirmed)"}`, latestSlot)))
+
 	// getSlot(finalized)
 	gock.New("http://" + host).
 		Post("").
@@ -100,6 +108,14 @@ func filterSvmGetSlot(host, commitment string) func(*http.Request) bool {
 		if !strings.Contains(body, `"method":"getSlot"`) {
 			return false
 		}
-		return strings.Contains(body, commitment)
+		if !strings.Contains(body, commitment) {
+			return false
+		}
+		// Client getSlot(confirmed) is the Circle path; the poller uses id
+		// "poller" so this mock does not steal those requests.
+		if commitment == "confirmed" && !strings.Contains(body, `"id":"poller"`) {
+			return false
+		}
+		return true
 	}
 }

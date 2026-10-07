@@ -753,8 +753,15 @@ func upstreamPostForward_trackContextSlot(ctx context.Context, n common.Network,
 		return
 	}
 	if n != nil {
-		if effectiveCommitment(ctx, n, r) == "finalized" {
+		switch effectiveCommitment(ctx, n, r) {
+		case "finalized":
+			// A finalized slot sits about a root behind confirmed. Writing it
+			// into the confirmed counter would mark that view fresh and skip
+			// the confirmed poll while the counter sits on the root.
 			poller.SuggestFinalizedSlot(slot)
+		case "confirmed":
+			// A confirmed slot is a lower bound for processed.
+			poller.SuggestConfirmedSlot(slot)
 		}
 	}
 	poller.SuggestLatestSlot(slot)
@@ -889,16 +896,12 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 			highestSlot = finalizedTip - finalizedIndexingLagFallback
 		}
 	case "confirmed":
-		// No confirmed tip exists to floor against. The poller tracks the
-		// PROCESSED slot in LatestSlot, and processed runs ahead of confirmed —
-		// flooring a confirmed answer with it would return an unconfirmed slot
-		// to a caller who explicitly asked for confirmed. Pass through
-		// uncorrected rather than fabricate a confirmed tip.
-		//
-		// ponytail: no confirmed tip tracked. Upgrade path — have SvmStatePoller
-		// poll getSlot{commitment:confirmed} into its own shared counter and add
-		// a branch here that floors against it.
-		return nr, re
+		// Raise a stale live integer up to the majority confirmed tip. Leave a
+		// higher integer alone (same rule as processed). Tip 0 (cold poller)
+		// falls through to the highestSlot <= 0 pass-through below. Do not
+		// floor with LatestSlot and do not cap with the shred watermark — the
+		// shred cap is the finalized row.
+		highestSlot = svmNet.SvmHighestConfirmedSlot(reqCtx)
 	default:
 		// "processed" — LatestSlot IS the processed tip, so the floor is exact.
 		//

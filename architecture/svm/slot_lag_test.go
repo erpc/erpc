@@ -21,11 +21,13 @@ func (p *pollerAtSlot) Bootstrap(context.Context) error   { return nil }
 func (p *pollerAtSlot) IsObjectNull() bool                { return p.null }
 func (p *pollerAtSlot) Poll(context.Context) error        { return nil }
 func (p *pollerAtSlot) LatestSlot() int64                 { return p.slot }
+func (p *pollerAtSlot) ConfirmedSlot() int64              { return p.slot }
 func (p *pollerAtSlot) FinalizedSlot() int64              { return p.slot }
 func (p *pollerAtSlot) ShredInsertSlot() int64            { return 0 }
 func (p *pollerAtSlot) MaxShredInsertSlotLag() int64      { return 0 }
 func (p *pollerAtSlot) IsHealthy() bool                   { return true }
 func (p *pollerAtSlot) SuggestLatestSlot(int64)           {}
+func (p *pollerAtSlot) SuggestConfirmedSlot(int64)        {}
 func (p *pollerAtSlot) SuggestFinalizedSlot(int64)        {}
 func (p *pollerAtSlot) SetDebounceInterval(time.Duration) {}
 

@@ -99,26 +99,31 @@ https://docs.erpc.cloud/reference/svm/slot-tracking.llms.txt`}
 
 **Slot is not block height.** These are two different counters on Solana and the distinction drives several behaviors on this page. Every slot is a ~400 ms leader window; a leader that fails to produce advances the *slot* but not the *block height*. So `getBlockHeight` trails `getSlot` by exactly the number of skipped slots since genesis, and the two can never be substituted for one another.
 
-**What the poller tracks.** Four values per upstream:
+**What the poller tracks.** Five values per upstream:
 
 | Accessor | Source call | Meaning |
 |---|---|---|
 | `LatestSlot()` | `getSlot {"commitment":"processed"}` | The processed tip — the node's replay frontier |
+| `ConfirmedSlot()` | `getSlot {"commitment":"confirmed"}` | The confirmed tip — supermajority-voted, not yet rooted |
 | `FinalizedSlot()` | `getSlot {"commitment":"finalized"}` | The latest rooted slot |
 | `ShredInsertSlot()` | `getMaxShredInsertSlot` | Blockstore-ingestion watermark |
 | `MaxShredInsertSlotLag()` | derived | `maxShredInsertSlot − processedSlot` |
 
-**There is deliberately no confirmed tip.** Nothing polls `getSlot {"commitment":"confirmed"}`, and that absence is load-bearing for the `getSlot` correction below.
-
 **Tick cadence and the debounce gate.** The ticker fires at a fixed `DefaultPollInterval` of 400 ms — one Solana slot. `svm.statePollerDebounce` (default 400 ms) is a **gate on the fan-out**, not the ticker period: a tick that arrives inside the debounce window returns immediately without issuing any RPC. The ticker is deliberately *not* driven by the gate value, because a ticker firing at exactly the gate interval skips every other tick.
 
-**Per-tick fan-out.** Up to four concurrent calls: `getHealth`, `getSlot(processed)`, `getSlot(finalized)`, `getMaxShredInsertSlot`. Each runs in its own panic-recovered goroutine so a single bad response cannot take down the process.
+**Per-tick fan-out.** Up to five concurrent calls: `getHealth`, `getSlot(processed)`, `getSlot(confirmed)`, `getSlot(finalized)`, `getMaxShredInsertSlot`. Each runs in its own panic-recovered goroutine so a single bad response cannot take down the process. A failed confirmed poll leaves the last valid confirmed slot in place; the other calls in the same tick still update. Confirmed polling does not change upstream health.
 
-**Traffic-gated polling.** Solana responses whose result is the `RpcResponse<T>` envelope carry a `context.slot` telling eRPC which slot the node was at when it answered. That observation is harvested on the response path and fed into the poller, routed by the request's **effective commitment**: a finalized-commitment response feeds the finalized view *and* the latest view (a finalized slot is always a valid lower bound for the latest view); weaker commitments feed only the latest view. When both slot views are traffic-fresh within the debounce window, the tick **skips its two `getSlot` calls** — bounded at 4 consecutive skips, so live traffic can never fully starve independent verification. `getHealth` and `getMaxShredInsertSlot` always run. On busy networks this roughly halves background poll quota on metered vendors.
+**Traffic-gated polling.** Solana responses whose result is the `RpcResponse<T>` envelope carry a `context.slot` telling eRPC which slot the node was at when it answered. That observation is harvested on the response path and fed into the poller, routed by the request's **effective commitment**:
+
+- `finalized` feeds the finalized view *and* the latest view (a finalized slot is always a valid lower bound for processed). It does **not** feed confirmed — a finalized slot sits about a root behind confirmed, and writing it there would mark confirmed fresh and skip that poll while the counter sits on the root.
+- `confirmed` feeds the confirmed view *and* the latest view (a confirmed slot is a lower bound for processed).
+- `processed` feeds only the latest view.
+
+Processed and finalized skip together when **both** of those views are traffic-fresh within the debounce window. Confirmed skips on its own stamp, independently, so an unobserved confirmed view cannot keep processed/finalized polling. Each skip is bounded at 4 consecutive skips per view. `getHealth` and `getMaxShredInsertSlot` always run (getHealth is throttled by tick count, not by traffic).
 
 The envelope check runs *first*, before the response body is touched: every other method returns a bare value, so peeking for `context.slot` there is a guaranteed miss — and not a free one, since the walk traverses the whole result and full `getBlock` responses reach multiple megabytes.
 
-**Cross-pod convergence.** Both slot views live in shared counters keyed by the unique upstream key, so horizontal replicas converge without each pod paying its own poll cost. The tracker is fed only from the counter's `OnValue` callback — it fires once per *accepted* value whatever the source (this poller's fetch, a live-traffic suggestion, or cross-instance propagation) and stays silent when the counter rejects a lower slot, so the tracker can never be fed a slot the counter itself refused. Rollback tolerance is `DefaultToleratedSlotRollback = 1024`; a backwards jump beyond that is recorded as a large-rollback event — the signature of a load balancer swapping in a node on another fork, a snapshot restore, or a cross-wired endpoint.
+**Cross-pod convergence.** Slot views live in shared counters keyed by the unique upstream key (`svm/latestSlot/<upstream>`, `svm/confirmedSlot/<upstream>`, `svm/finalizedSlot/<upstream>`), so horizontal replicas converge without each pod paying its own poll cost. The tracker is fed only from the processed and finalized counters' `OnValue` callbacks — confirmed has no Prometheus gauge. Rollback tolerance is `DefaultToleratedSlotRollback = 1024`; a backwards jump beyond that is recorded as a large-rollback event on the processed and finalized counters.
 
 **Ingestion lag is the silent-stale detector.** `getMaxShredInsertSlot` is the blockstore-ingestion watermark and is structurally **at or ahead of** the replayed (processed) slot, so:
 
@@ -158,12 +163,12 @@ The floor is chosen **per commitment**, and never exceeds the tip for the commit
 | Effective commitment | Floor |
 |---|---|
 | `finalized` | `min(finalizedTip, indexedTip)`; when the indexed tip is unknown, `finalizedTip − 32`. **Clamped from both directions** — stale values are raised, values above the floor are capped down. `finalizedTip` here is the **majority** tip, because this value is advertised to clients and a lone rogue upstream must not inflate it. |
-| `confirmed` | **Passed through uncorrected.** |
+| `confirmed` | The confirmed majority tip (`ConfirmedSlot()` via `PickServedTip`). Stale values are raised only; a value above the tip is left alone. A cold tip (`0`) leaves the live answer unchanged. The processed tip is not used, and the shred watermark is not applied — that cap is the finalized row. |
 | `processed` | The processed tip (`LatestSlot()`). Stale values are raised only; a value above the tip is left alone. |
 
 "Effective" includes the level the node applies when the request pins none: Solana's documented default is `finalized`, so an **unset** commitment takes the `finalized` row, not the `processed` one. Flooring an unpinned `getSlot` at the processed tip advertised a slot ~60 above the finalized root — exactly the band the `getBlock` guard below rejects, so eRPC handed clients a head it then refused to serve.
 
-`confirmed` is passed through because **no confirmed tip is tracked**. The poller's `LatestSlot` is the *processed* slot, and processed runs ahead of confirmed — flooring a confirmed answer with it would hand back a slot that is not confirmed and may never be, since its fork can be abandoned. That is a commitment-contract violation, not a freshness improvement, so eRPC declines to fabricate a confirmed tip.
+`confirmed` floors against its own majority tip so a Circle client pinning `confirmed` can still have a stale live integer raised. Flooring it with `LatestSlot` would hand back a slot that is not confirmed and may never be, since its fork can be abandoned. The shred cap stays on the finalized row so `getBlock` is not asked for a slot the index does not have yet; confirmed and processed remain bounded by the indexed frontier for availability.
 
 The `finalized` branch caps downward for a different reason: `getSlot(finalized)` reflects the **consensus** layer, but `getBlock` on a just-finalized slot returns `-32004` until the provider's indexer writes it. Using `min(finalizedTip, indexedTip)` means neither a slow indexer nor a fast one can push callers into the un-indexed window. When the indexed tip is unavailable — cold poller, or a vendor that does not implement `getMaxShredInsertSlot` — the fallback is a fixed 32-slot lag.
 
@@ -210,7 +215,7 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 
 ### Worked examples
 
-**1. Cut background poll cost on a metered vendor.** Four calls per upstream every 400 ms is ~10 requests/second/upstream at default settings. A 2 s gate cuts that by 5× at the cost of a slightly wider `getBlock` guard margin (3 → 7 slots):
+**1. Cut background poll cost on a metered vendor.** Four hot calls (processed, confirmed, finalized, shred) plus getHealth every fifth tick is ~10.5 requests/second/upstream at default settings. A 2 s gate cuts that by 5× at the cost of a slightly wider `getBlock` guard margin (3 → 7 slots):
 
 <ConfigTabs
   path="projects[].networkDefaults.svm"
@@ -219,8 +224,9 @@ The filter is defensive throughout: an upstream with no state poller is **includ
     networkDefaults:
       svm:
         # Ticker stays at 400ms; this gates the fan-out. Under live traffic the
-        # poller additionally skips its two getSlot calls when context.slot
-        # observations are already fresh (bounded at 4 consecutive skips).
+        # poller additionally skips getSlot calls whose views are already
+        # traffic-fresh (processed+finalized together, confirmed on its own
+        # stamp; each bounded at 4 consecutive skips).
         statePollerDebounce: 2s
     networks:
       - architecture: svm
@@ -230,8 +236,9 @@ The filter is defensive throughout: an upstream with no state poller is **includ
   networkDefaults: {
     svm: {
       // Ticker stays at 400ms; this gates the fan-out. Under live traffic the
-      // poller additionally skips its two getSlot calls when context.slot
-      // observations are already fresh (bounded at 4 consecutive skips).
+      // poller additionally skips getSlot calls whose views are already
+      // traffic-fresh (processed+finalized together, confirmed on its own
+      // stamp; each bounded at 4 consecutive skips).
       statePollerDebounce: "2s",
     },
   },
@@ -329,10 +336,10 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 
 ### Request/response behavior
 
-- **`getSlot` responses may be rewritten**, including on cache hits, to the highest slot known for the request's commitment. `confirmed` is exempt.
+- **`getSlot` responses may be rewritten**, including on cache hits, to the highest slot known for the request's commitment. `confirmed` raises stale answers to the confirmed majority tip and leaves higher answers alone.
 - **`getBlockHeight` responses are never rewritten.**
 - **`getBlock` / `getConfirmedBlock` may be answered without any upstream call** when the requested slot is beyond the indexed frontier plus margin. The client sees the SVM missing-data contract (`-32004` family) and eRPC's indexing-lag retry fires immediately.
-- **Cordoned upstreams still receive poller traffic**, so recovery is detected; they receive no client traffic.
+- **Cordoned upstreams still receive poller traffic**, so recovery is detected; they receive no client traffic, and they do not vote in the latest, confirmed, or finalized majority tip. A request `use-upstream` selector narrows that ballot the same way. The `getBlock` bounds stay a max over every registered upstream.
 - **`getGenesisHash` never reaches an upstream** — it is answered from the immutable genesis table.
 - Unlike EVM's `eth_blockNumber`, `getSlot` returns a bare integer (not hex) and the correction is unconditional — there is no `enforceHighestBlock` directive gate.
 
@@ -351,7 +358,7 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 2. **`MaxShredInsertSlotLagThreshold` (100) is not configurable.** It is a compile-time constant governing per-upstream health, distinct from the `maxFinalizedSlotLag` config key despite the shared default value.
 3. **`statePollerDebounce` does not change the ticker period.** The ticker is pinned at 400 ms; the setting gates the fan-out. Setting it below 400 ms therefore has no effect.
 4. **There is no Prometheus metric for ingestion lag.** It is logged (`shredInsertSlotLag` on the cordon WARN) and it drives cordoning, but no gauge exposes it. Alert on `erpc_upstream_cordoned` and read the `reason` label.
-5. **`getSlot` at `confirmed` is not corrected**, so a client polling `getSlot(confirmed)` across pods can still observe the value move backwards. Use `processed` or `finalized` if monotonicity matters more than the confirmed contract.
+5. **`getSlot` at `confirmed` uses the confirmed majority tip**, never the processed tip. A cold confirmed tip (`0`) still passes the live integer through. The ballot is the selection policy's eligible set (`tipCandidateUpstreams`), then a request `use-upstream` selector when one is present. A cordoned upstream keeps polling and does not vote. `SvmHighestFinalizedSlotMax` and the indexed frontier stay a max over every registered upstream.
 6. **A `finalized` `getSlot` answer can be *lower* than what the upstream returned.** That is the indexing-lag cap doing its job — the raw consensus tip is not yet fetchable via `getBlock`.
 7. **The block-availability guard can still false-reject.** The margin is a heuristic over a snapshot; a caller far ahead of the pool's indexed frontier gets the missing-data path rather than a forward. Widen it by raising `statePollerDebounce`, or disable the guard.
 8. **A cold poller neither cordons nor guards.** Both features treat unknown state as healthy/available, so a freshly-started instance behaves as if every upstream were fine until the first samples land.

@@ -45,6 +45,7 @@ type EvmNetwork interface {
 type SvmNetwork interface {
 	Network
 	SvmHighestLatestSlot(ctx context.Context) int64
+	SvmHighestConfirmedSlot(ctx context.Context) int64
 	SvmHighestFinalizedSlot(ctx context.Context) int64
 	// SvmHighestFinalizedSlotMax is the finalized root of the MOST-ADVANCED
 	// upstream, where SvmHighestFinalizedSlot is the majority tip. Rejection
