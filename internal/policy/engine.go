@@ -253,15 +253,16 @@ func (e *Engine) syncLagMask(s *Slot) (outOfSync bool) {
 		return false
 	}
 	if s.retickPending.CompareAndSwap(false, true) {
-		go func() {
+		// Registered in the slot's waitgroup (under lifeMu, so never after
+		// stop() began waiting) so stop() drains it like the ticker: a
+		// stopped slot never re-evaluates, and never touches the engine's
+		// probers, after stop() returned.
+		if !s.goTracked(func() {
 			defer s.retickPending.Store(false)
-			select {
-			case <-s.stopCh:
-				return
-			default:
-			}
 			s.tickOnce()
-		}()
+		}) {
+			s.retickPending.Store(false)
+		}
 	}
 	return true
 }

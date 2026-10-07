@@ -29,8 +29,12 @@ type headTrackerBalancer struct {
 	mu       sync.Mutex
 	trackers map[*headTracker]struct{}
 
+	// ctxs are the registered trackers' contexts; running is set while a
+	// heartbeat loop runs (both under mu).
+	ctxs    map[*headTracker]context.Context
+	running bool
+
 	replicas atomic.Int64
-	started  atomic.Bool
 }
 
 var (
@@ -45,7 +49,7 @@ func headTrackerBalancerFor(ssr data.SharedStateRegistry) *headTrackerBalancer {
 	defer balancersMu.Unlock()
 	b, ok := balancers[ssr]
 	if !ok {
-		b = &headTrackerBalancer{ssr: ssr, trackers: map[*headTracker]struct{}{}}
+		b = &headTrackerBalancer{ssr: ssr, trackers: map[*headTracker]struct{}{}, ctxs: map[*headTracker]context.Context{}}
 		b.replicas.Store(1)
 		balancers[ssr] = b
 	}
@@ -57,32 +61,58 @@ const headTrackerReplicaHeartbeat = 5 * time.Second
 func (b *headTrackerBalancer) register(ctx context.Context, t *headTracker) {
 	b.mu.Lock()
 	b.trackers[t] = struct{}{}
+	b.ctxs[t] = ctx
+	start := !b.running
+	b.running = true
 	b.mu.Unlock()
-	if b.started.Swap(true) {
-		return
+	if start {
+		go b.heartbeatLoop(ctx)
 	}
-	go func() {
-		tk := time.NewTicker(headTrackerReplicaHeartbeat)
-		defer tk.Stop()
-		for {
-			hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			n, err := b.ssr.HeartbeatReplicas(hctx, 3*headTrackerReplicaHeartbeat)
-			cancel()
-			if err == nil && n > 0 {
-				b.replicas.Store(int64(n))
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-tk.C:
-			}
+}
+
+// heartbeatLoop runs on one registered tracker's context. When that tracker
+// stops (its context ends, e.g. its network was removed or reloaded) the
+// loop hands over to another registered tracker's context instead of
+// leaving the replica count frozen; with none left it ends, and the next
+// register starts a new one.
+func (b *headTrackerBalancer) heartbeatLoop(ctx context.Context) {
+	tk := time.NewTicker(headTrackerReplicaHeartbeat)
+	defer tk.Stop()
+	for {
+		hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		n, err := b.ssr.HeartbeatReplicas(hctx, 3*headTrackerReplicaHeartbeat)
+		cancel()
+		if err == nil && n > 0 {
+			b.replicas.Store(int64(n))
 		}
-	}()
+		select {
+		case <-ctx.Done():
+			if ctx = b.nextContext(); ctx == nil {
+				return
+			}
+		case <-tk.C:
+		}
+	}
+}
+
+// nextContext returns a live registered tracker context, or nil (and marks
+// the loop stopped) when there is none.
+func (b *headTrackerBalancer) nextContext() context.Context {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, c := range b.ctxs {
+		if c.Err() == nil {
+			return c
+		}
+	}
+	b.running = false
+	return nil
 }
 
 func (b *headTrackerBalancer) unregister(t *headTracker) {
 	b.mu.Lock()
 	delete(b.trackers, t)
+	delete(b.ctxs, t)
 	b.mu.Unlock()
 }
 

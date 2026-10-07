@@ -66,6 +66,8 @@ type Slot struct {
 	retickPending   atomic.Bool
 	tickMu          sync.Mutex
 	lagOnlyExcluded atomic.Pointer[map[string]struct{}]
+	// lifeMu orders goroutines started by goTracked against stop().
+	lifeMu sync.Mutex
 	// pinned is set by OverrideOrderForTest: the cache is test-owned and
 	// never re-evaluated by syncLagMask.
 	pinned atomic.Bool
@@ -173,8 +175,29 @@ func (s *Slot) start(ctx context.Context) {
 }
 
 func (s *Slot) stop() {
+	s.lifeMu.Lock()
 	s.stopOnce.Do(func() { close(s.stopCh) })
+	s.lifeMu.Unlock()
 	s.wg.Wait()
+}
+
+// goTracked runs fn on a goroutine stop() waits for, unless the slot is
+// already stopping (then it returns false and fn never runs). lifeMu orders
+// the wg.Add before stop's Wait.
+func (s *Slot) goTracked(fn func()) bool {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	select {
+	case <-s.stopCh:
+		return false
+	default:
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fn()
+	}()
+	return true
 }
 
 // decisionsRingSize bounds the slot's in-memory decision history.

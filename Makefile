@@ -76,6 +76,10 @@ test-fast:
 	@# of TestNetwork_* was skipped while SHARD_NETWORK only ran an enumerated
 	@# subset — so any test under a skipped prefix but outside a shard ran
 	@# NOWHERE in CI (which is how a deterministically-failing test merged).
+	@# SHARD_HEAD_STREAM holds the head tracker / block store / WebSocket
+	@# suites: their wall-clock E2E tests (lease handover, cadence, Redis
+	@# outage) take ~7.5 minutes serially and cannot run in parallel without
+	@# perturbing the timings they assert, so they get their own budget.
 	@# SHARD_CONTAINER_CACHE isolates the testcontainers-backed cache tests:
 	@# their duration is dominated by docker (image pull + dynamodb-local JVM
 	@# startup) and swings from ~15s to 9m+ on degraded runners. In the serial
@@ -88,13 +92,15 @@ test-fast:
 	  SHARD_HTTPSERVER="^TestHttpServer_"; \
 	  SHARD_INTEGRITY="^(TestNetworkRetry_|TestNetworkForward_|TestNetworkIntegrity_|TestHedgeConsensus_|TestEmptyResultAcceptShortCircuit$$|TestNetworkFailsafe_|TestNetworksBootstrap_|TestNetworkAvailability_|TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping$$|TestNetwork_HedgePolicy)"; \
 	  SHARD_CONTAINER_CACHE="^TestEvmJsonRpcCache_(DynamoDB|Redis)$$"; \
-	  SKIP_ALL="$$SHARD_CONSENSUS|$$SHARD_NETWORK|$$SHARD_HTTPSERVER|$$SHARD_INTEGRITY|$$SHARD_CONTAINER_CACHE|^TestConsensusPolicy_DSL|^TestHttp_"; \
+	  SHARD_HEAD_STREAM="^(TestHeadTracker|TestBlockStore|TestWs|TestAwaitPollResult)"; \
+	  SKIP_ALL="$$SHARD_CONSENSUS|$$SHARD_NETWORK|$$SHARD_HTTPSERVER|$$SHARD_INTEGRITY|$$SHARD_CONTAINER_CACHE|$$SHARD_HEAD_STREAM|^TestConsensusPolicy_DSL|^TestHttp_"; \
 	  pids=(); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CONSENSUS" -test.parallel 4 & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_NETWORK" & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_HTTPSERVER" & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_INTEGRITY" & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 15m -test.run "$$SHARD_CONTAINER_CACHE" & pids+=($$!); \
+	  /tmp/erpc.test -test.v -test.timeout 15m -test.run "$$SHARD_HEAD_STREAM" & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.skip "$$SKIP_ALL" & pids+=($$!); \
 	  fail=0; for pid in "$${pids[@]}"; do wait "$$pid" || fail=1; done; \
 	  exit $$fail'

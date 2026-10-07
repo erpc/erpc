@@ -16,8 +16,12 @@ import (
 
 func init() { util.ConfigureTestLogger() }
 
-// Regression: real connector connectTask writer, real
-// initializer state transitions and concurrent borrowed-client reads.
+// Regression: real connector connectTask writer, real initializer state
+// transitions and concurrent client reads. Client() is gated on the
+// initializer state (an ordered atomic), which alone hides the race, so the
+// readers ALSO use currentClient(), the ungated accessor RedisPubSubManager's
+// messageLoop reads on every reconnect: with connMu removed from conn() the
+// race detector flags these reads against connectTask's write.
 func TestRedisConnector_ClientReconnectRace(t *testing.T) {
 	m := miniredis.RunT(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -37,6 +41,7 @@ func TestRedisConnector_ClientReconnectRace(t *testing.T) {
 			defer wg.Done()
 			for ctx.Err() == nil {
 				_ = r.Client()
+				_ = r.currentClient()
 			}
 		}()
 	}
