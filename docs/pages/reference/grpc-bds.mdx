@@ -58,7 +58,7 @@ https://docs.erpc.cloud/reference/grpc-bds.llms.txt`}
 
 ### How it works
 
-**Dual role.** eRPC is simultaneously a gRPC server and a gRPC client. As a server it exposes `evm.RPCQueryService` (unary) and `evm.QueryService` (server-streaming); both are registered on the same `*grpc.Server` instance. As a client it constructs a `GenericGrpcBdsClient` for any upstream whose endpoint starts with `grpc://` or `grpc+bds://`.
+**Dual role.** eRPC is simultaneously a gRPC server and a gRPC client. As a server it exposes `evm.RPCQueryService` (unary) and `evm.QueryService` (server-streaming); both are registered on the same `*grpc.Server` instance. As a client it constructs a `GenericGrpcBdsClient` for any upstream whose endpoint starts with `grpc://`, `grpc+bds://` or `grpcs://`.
 
 **Server — port sharing.** By default `server.grpcHostV4`/`grpcPortV4` are copied from the HTTP equivalents, so both protocols share a single TCP port. `grpcSharesHttpV4` detects this (<SourceLink file="erpc/grpc_server.go" lines="42-53" />) and wraps the IPv4 handler in an h2c mux: frames with `content-type: application/grpc` route to the in-process `*grpc.Server`; everything else falls through to the HTTP chain. The gRPC path therefore bypasses the HTTP `TimeoutHandler` and `gzipHandler` entirely. When the ports differ, `erpc/init.go:L125-L136` starts a standalone TCP listener.
 
