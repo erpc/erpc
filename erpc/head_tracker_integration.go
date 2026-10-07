@@ -80,7 +80,29 @@ func (n *Network) headTrackerDeps() headTrackerDeps {
 		fallbackHead: func(ctx context.Context) int64 {
 			return n.evmPollerLatestBlockNumber(ctx, trace.SpanFromContext(ctx))
 		},
+		independentHead: n.headTrackerIndependentHead,
 	}
+}
+
+// headTrackerIndependentHead deliberately excludes the polled upstream and
+// static upper-bound (archive) observations. It is used only when the
+// tracker sees an implausibly rapid advance according to its block-time EMA.
+func (n *Network) headTrackerIndependentHead(ctx context.Context, polled common.Upstream) int64 {
+	if polled == nil {
+		return 0
+	}
+	var head int64
+	for _, candidate := range n.tipCandidateUpstreams(ctx, "*") {
+		u, ok := candidate.(common.EvmUpstream)
+		if !ok || u.Id() == polled.Id() || u.EvmStatePoller() == nil ||
+			u.EvmSyncingState() == common.EvmSyncingStateSyncing {
+			continue
+		}
+		if block, capped := evmTipObservation(u, false); !capped {
+			head = max(head, block)
+		}
+	}
+	return head
 }
 
 // headTrackerMajorMove mirrors the state poller's major-head-move threshold:

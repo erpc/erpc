@@ -128,7 +128,11 @@ type headTrackerDeps struct {
 	// fallbackHead is the head served while the tracker head is stale; used
 	// only for the served-lag metric.
 	fallbackHead func(ctx context.Context) int64
-	now          func() time.Time
+	// independentHead is the highest eligible, live poller head excluding the
+	// upstream that supplied the polled block. A single bad upstream cannot
+	// corroborate its own apparent fast-forward.
+	independentHead func(ctx context.Context, polled common.Upstream) int64
+	now             func() time.Time
 }
 
 type headTracker struct {
@@ -976,13 +980,26 @@ func (t *headTracker) reject(ctx context.Context, obs *headObservation, current 
 	if obs.Timestamp > 0 && time.Unix(obs.Timestamp, 0).After(now.Add(headTrackerFutureSlack)) {
 		return "far_future"
 	}
+	chainVerified := false
 	if p := t.prev; p != nil && p.Timestamp > 0 && obs.Timestamp >= p.Timestamp && obs.Number > p.Number && bt > 0 {
 		// The chain cannot produce blocks much faster than its measured rate:
 		// allow 4× the blocks the timestamps account for (+1s for whole-second
-		// timestamps) plus a fixed slack.
+		// timestamps) plus a fixed slack. An EMA warmed by sparse pollers may
+		// temporarily overestimate a fast chain's cadence, however. In that
+		// case accept only a recent, right-chain block independently observed
+		// within the rollback tolerance by ANOTHER eligible live upstream.
 		elapsed := time.Duration(obs.Timestamp-p.Timestamp+1) * time.Second
 		if allowed := 4*int64(elapsed/bt) + 16; obs.Number-p.Number > allowed {
-			return "far_future"
+			if t.deps.independentHead == nil || obs.Upstream == nil || obs.Timestamp == 0 ||
+				now.Sub(time.Unix(obs.Timestamp, 0)) > max(5*bt, time.Minute) {
+				return "far_future"
+			}
+			witness := t.deps.independentHead(ctx, obs.Upstream)
+			if witness <= current || witness < obs.Number-common.DefaultToleratedBlockHeadRollback ||
+				witness > obs.Number+common.DefaultToleratedBlockHeadRollback || !t.chainIdOk(ctx, obs) {
+				return "far_future"
+			}
+			chainVerified = true
 		}
 	}
 	// The first head this leader accepts is compared with nothing (the
@@ -990,7 +1007,7 @@ func (t *headTracker) reject(ctx context.Context, obs *headObservation, current 
 	// could be another chain's height: both need the serving upstream's
 	// chain id to match (S3).
 	firstAccept := t.prev == nil && (current == 0 || obs.Number > current)
-	if (firstAccept || (current > 0 && obs.Number-current > t.deps.majorMove())) && !t.chainIdOk(ctx, obs) {
+	if !chainVerified && (firstAccept || (current > 0 && obs.Number-current > t.deps.majorMove())) && !t.chainIdOk(ctx, obs) {
 		return "chain_id"
 	}
 	return ""

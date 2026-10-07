@@ -154,6 +154,60 @@ func TestHeadTracker_RegressionAndFutureGuards(t *testing.T) {
 	require.Empty(t, ht.reject(ctx, &headObservation{Number: 1010, Upstream: up}, 1000, now, bt), "small move needs no verification")
 }
 
+// A slow EMA must not strand a fast chain's genuine head when a separate
+// eligible upstream independently reports the same progress. A sole upstream
+// jumping ahead, or a block with a future timestamp, remains untrusted.
+func TestHeadTracker_CorroboratedFastCatchup(t *testing.T) {
+	ctx := t.Context()
+	ssr := newTestSSR(t, ctx)
+	now := time.Now().Truncate(time.Second)
+	polled := common.NewFakeUpstream("polled")
+	observed := int64(2100)
+	witness := int64(0)
+	var verified atomic.Int64
+	ht := newTestTracker(ssr, nil, headTrackerDeps{
+		now:       func() time.Time { return now },
+		blockTime: func() time.Duration { return 500 * time.Millisecond },
+		poll: func(context.Context, bool) (*headObservation, error) {
+			return &headObservation{Number: observed, Timestamp: now.Unix(), Upstream: polled}, nil
+		},
+		independentHead: func(_ context.Context, u common.Upstream) int64 {
+			require.Equal(t, polled.Id(), u.Id())
+			return witness
+		},
+		verifyChainId: func(context.Context, common.Upstream) (bool, error) {
+			verified.Add(1)
+			return true, nil
+		},
+	})
+	ht.head.TryUpdate(ctx, 1000)
+	ht.prev = &headObservation{Number: 1000, Timestamp: now.Add(-110 * time.Second).Unix()}
+	ht.prevAt = now.Add(-110 * time.Second)
+	ht.leaseDeadlineNs.Store(now.Add(time.Hour).UnixNano())
+
+	_, err := ht.tick(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(1000), ht.Head(), "one upstream alone cannot override the future guard")
+	witness = 2090
+	_, err = ht.tick(ctx)
+	require.NoError(t, err)
+	require.Equal(t, observed, ht.Head(), "corroborated current head must recover without waiting for the EMA")
+	require.Equal(t, observed, ht.FreshHead())
+	require.Positive(t, verified.Load(), "a recovered jump still verifies the chain id")
+
+	observed = 5000
+	_, err = ht.tick(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(2100), ht.Head(), "an uncorroborated leap must remain rejected")
+	observed = 2200
+	ht.deps.poll = func(context.Context, bool) (*headObservation, error) {
+		return &headObservation{Number: observed, Timestamp: now.Add(2 * time.Minute).Unix(), Upstream: polled}, nil
+	}
+	_, err = ht.tick(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(2100), ht.Head(), "a future-dated block remains rejected even with another head")
+}
+
 func TestHeadTracker_TickPublishesAndCallsBack(t *testing.T) {
 	ssr := newTestSSR(t, t.Context())
 	chain := &fakeChain{start: time.Now().Add(-10 * time.Second), blockTime: time.Second, base: 100}
