@@ -745,7 +745,7 @@ No provider-specific Prometheus metrics exist. The `vendor` label on all upstrea
 
 | metric | type | key labels | when it fires |
 |---|---|---|---|
-| `erpc_upstream_request_total` | counter | `project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name` | Every upstream request attempt |
+| `erpc_upstream_request_total` | counter | `project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name, is_retry` | Every upstream request attempt |
 | `erpc_upstream_request_duration_seconds` | histogram | `project, vendor, network, upstream, category, composite, finality, user` | Upstream round-trip latency |
 | `erpc_upstream_request_errors_total` | counter | `project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name` | Failed upstream requests |
 

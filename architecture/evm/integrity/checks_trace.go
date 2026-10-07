@@ -103,7 +103,7 @@ func runTraceBlockGasReconciliation(ctx context.Context, d *Decoded, cfg CheckCo
 		return Skipped
 	}
 
-	if n := len(header.RawTransactions); n > 0 && len(entries) != n {
+	if n := header.Transactions.Len(); n > 0 && len(entries) != n {
 		return failf("block %d has %d transactions but the trace returned %d",
 			number, n, len(entries)).disputes(number)
 	}

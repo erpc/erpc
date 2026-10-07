@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/telemetry"
 )
 
@@ -439,31 +440,162 @@ func hashOnlyHeader(raw json.RawMessage) (json.RawMessage, error) {
 	return (&BlockRecord{Block: raw}).BlockJSON(false)
 }
 
+// BlockIdentity extracts a block result's top-level number and hash without
+// decoding the rest (transactions are skipped, not materialized). ok is false
+// when either is missing or malformed; callers then take the full parse,
+// which rejects the block with the usual errors. The hash is normalized.
+func BlockIdentity(raw json.RawMessage) (n int64, hash string, ok bool) {
+	if len(raw) == 0 {
+		return 0, "", false
+	}
+	s := ast.NewSearcher(string(raw))
+	s.ValidateJSON = false
+	nn, err := s.GetByPath("number")
+	if err != nil {
+		return 0, "", false
+	}
+	ns, err := nn.StrictString()
+	if err != nil {
+		return 0, "", false
+	}
+	if n, err = parseHexInt(ns); err != nil || n < 0 {
+		return 0, "", false
+	}
+	hn, err := s.GetByPath("hash")
+	if err != nil {
+		return 0, "", false
+	}
+	if hash, err = hn.StrictString(); err != nil || !isHexOfLen(hash, 64) {
+		return 0, "", false
+	}
+	return n, normHash(hash), true
+}
+
+// heldHeaderLocked returns the held header at n (followed view first, then
+// the adopted view), or nil.
+func (c *Cache) heldHeaderLocked(n int64) *header {
+	if s := c.viewLocked(); s != nil {
+		if h := c.headers[s.HashAt(n)]; h != nil {
+			return h
+		}
+	}
+	if e := c.pull[n]; e != nil {
+		return e.h
+	}
+	return nil
+}
+
+// AdoptBlockNeeded reports, without parsing the block, whether AdoptBlock
+// could change anything. It is false when:
+//   - the response was replayed from eRPC's cache (weak evidence) and the
+//     height is already held: weak evidence never replaces or confirms a held
+//     entry, so only a missing body of the same hash could be learned;
+//   - the result was selected by hash (not canonical evidence) and its hash is
+//     not held, or nothing new (header, or body when full) would be kept.
+//
+// Both exceptions keep the body: when full and the held hash matches but no
+// body is kept yet, adoption is still needed. A fresh upstream by-number
+// result is always needed: even for a held hash it reconfirms freshness.
+func (c *Cache) AdoptBlockNeeded(raw json.RawMessage, full, canonical, fromCache bool) bool {
+	if c == nil {
+		return false
+	}
+	if canonical && !fromCache {
+		return true
+	}
+	n, hash, ok := BlockIdentity(raw)
+	if !ok {
+		// Unknown identity: the full parse decides (and rejects malformed input).
+		return true
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	h := c.heldHeaderLocked(n)
+	if h == nil {
+		// Not held: a by-hash result cannot adopt it; a cached by-number
+		// result is weak evidence that may seed an empty slot (e.g. after a
+		// restart, when eRPC's cache is the only source).
+		return canonical
+	}
+	if h.b.Hash != hash {
+		// Weak or non-canonical evidence never replaces a held hash.
+		return false
+	}
+	_, hasBody := c.bodies[hash]
+	return full && !hasBody
+}
+
+// reconfirmHeld handles a canonical observation of a hash already held at n
+// with nothing new to keep: it refreshes the held entry exactly as adopting
+// the same header again would, without parsing the block. It returns false
+// when the full path is still needed.
+func (c *Cache) reconfirmHeld(ctx context.Context, raw json.RawMessage, full, canonical, fromCache bool) bool {
+	n, hash, ok := BlockIdentity(raw)
+	if !ok {
+		return false
+	}
+	c.mu.RLock()
+	h := c.heldHeaderLocked(n)
+	_, hasBody := c.bodies[hash]
+	c.mu.RUnlock()
+	if h == nil {
+		return false
+	}
+	if h.b.Hash != hash {
+		// A conflicting hash: weak or by-hash evidence is a no-op; a fresh
+		// canonical observation is a reorg and takes the full path.
+		return fromCache || !canonical
+	}
+	if full && !hasBody {
+		return false
+	}
+	if canonical && !fromCache {
+		c.adopt(ctx, h, c.nowFn(), true, false)
+	}
+	return true
+}
+
 // AdoptBlock adopts a block result served to a client through the normal
 // path (eRPC's cache or an upstream). canonical is true when the request
 // selected the block by number or tag, so the result is evidence of the
 // canonical hash at its height; a by-hash result only completes the body of
 // a header already held. full marks an eth_getBlockByNumber(n, true) result.
 // fromCache marks weak evidence (see adoptLocked).
+//
+// A block whose height is already held with the same hash (and, for a full
+// result, whose body is already kept) is not parsed: its number and hash are
+// read cheaply and the held header is reconfirmed (see reconfirmHeld).
 func (c *Cache) AdoptBlock(ctx context.Context, raw json.RawMessage, full, canonical, fromCache bool) {
 	if c == nil || c.opt.MaxBlockSize > 0 && int64(len(raw)) > c.opt.MaxBlockSize {
 		return
 	}
-	b, n, err := parseBlockHeader(raw)
+	if c.reconfirmHeld(ctx, raw, full, canonical, fromCache) {
+		return
+	}
+	c.adoptParses.Add(1)
+	sb, n, err := parseScannedBlock(raw)
 	if err != nil {
 		return
 	}
+	b := sb.b
 	_, isFull, err := txHashesOf(b)
 	if err != nil || isFull != full && len(b.Transactions) > 0 {
 		return
 	}
-	hraw := raw
+	// The header is derived from the same scan: the hashes-only form is
+	// spliced from raw, so the block is not decoded again.
+	var h *header
 	if isFull && len(b.Transactions) > 0 {
-		if hraw, err = hashOnlyHeader(raw); err != nil {
-			return
+		if hraw, hb, ok := sb.hashesOnly(); ok {
+			h, err = headerFromScan(hb, hraw, n, n)
+		} else if hraw, herr := hashOnlyHeader(raw); herr == nil {
+			h, err = parseHeader(hraw, n)
+		} else {
+			err = herr
 		}
+	} else {
+		h, err = parseHeader(raw, n)
 	}
-	h, err := parseHeader(hraw, n)
 	if err != nil {
 		return
 	}

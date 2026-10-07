@@ -395,6 +395,17 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
 
+	// Forward an isolated copy: the probe must not share the client
+	// request's execution state. Sharing it inflated the client's attempt
+	// counter (the `attempt` label on erpc_upstream_request_total, the
+	// X-ERPC-*-Attempts headers, credit totals) and raced its upstream
+	// bookkeeping.
+	probeReq := req.CloneForProbe(ctx)
+	if probeReq == nil {
+		telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "no_method").Inc()
+		return
+	}
+
 	start := time.Now()
 	telemetry.MetricSelectionProbeRequests.WithLabelValues(p.networkID, u.Id(), method).Inc()
 	p.tracker.RecordUpstreamRequest(u, method, finality)
@@ -404,7 +415,7 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 	// non-supporting; we want probe traffic to reach the upstream so
 	// it can prove (or disprove) itself. isHedgeAttempt=false — probes
 	// are not hedge fan-outs.
-	_, err := u.Forward(ctx, req, true, false)
+	_, err := u.Forward(ctx, probeReq, true, false)
 	duration := time.Since(start)
 
 	isSuccess := err == nil

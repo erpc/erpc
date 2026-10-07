@@ -33,11 +33,13 @@ func init() {
 			}
 			root := strings.ToLower(h.TransactionsRoot)
 			isEmptyRoot := root == emptyTrieRoot || root == zeroHash32
-			count := len(h.RawTransactions)
+			count := h.Transactions.Len()
 			if !isEmptyRoot && count == 0 {
 				return failf("transactionsRoot %s is non-empty but block has 0 transactions; incomplete block data", h.TransactionsRoot)
 			}
-			if isEmptyRoot && count > 0 && !allPhantomRawTxs(h.RawTransactions) {
+			// Only here does the check need transaction CONTENTS (phantom-ness),
+			// so only here are the entries decoded, through the explicit accessor.
+			if isEmptyRoot && count > 0 && !allPhantomRawTxs(h.Transactions) {
 				// A hash-only list (fullTransactions=false) cannot settle this.
 				// Whether a transaction is a system/phantom tx that stays out of
 				// the trie is a property of the transaction OBJECT — from, gas,
@@ -47,7 +49,7 @@ func init() {
 				// rejecting it means asserting on data we cannot evaluate. That
 				// is exactly what happened on hyperevm: 5 of 5 upstreams
 				// rejected honest blocks whose only transaction was hash-only.
-				if anyHashOnlyTx(h.RawTransactions) {
+				if anyHashOnlyTx(h.Transactions) {
 					return Skipped
 				}
 				return failf("transactionsRoot is empty trie root but block has %d non-phantom transactions; inconsistent block data", count)
@@ -143,9 +145,9 @@ func init() {
 // transaction that does not participate in the transactions trie, so an empty
 // trie root is expected even though the list is non-empty. A hash-only entry is
 // treated as a real transaction.
-func allPhantomRawTxs(raw []any) bool {
-	for _, t := range raw {
-		obj, ok := t.(map[string]any)
+func allPhantomRawTxs(txs TxList) bool {
+	for i := 0; i < txs.Len(); i++ {
+		obj, ok := txs.Object(i)
 		if !ok {
 			return false
 		}
@@ -159,9 +161,9 @@ func allPhantomRawTxs(raw []any) bool {
 // anyHashOnlyTx reports whether the list contains a bare transaction hash
 // rather than a full object, which is what eth_getBlock*(fullTransactions=false)
 // returns and what makes phantom-ness undecidable.
-func anyHashOnlyTx(raw []any) bool {
-	for _, t := range raw {
-		if _, ok := t.(map[string]any); !ok {
+func anyHashOnlyTx(txs TxList) bool {
+	for i := 0; i < txs.Len(); i++ {
+		if !txs.IsObject(i) {
 			return true
 		}
 	}

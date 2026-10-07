@@ -2230,6 +2230,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.BlockStore == nil && defaults.Evm.BlockStore != nil {
 				n.Evm.BlockStore = defaults.Evm.BlockStore.Copy()
 			}
+			if n.Evm.HeadTracker == nil && defaults.Evm.HeadTracker != nil {
+				n.Evm.HeadTracker = defaults.Evm.HeadTracker.Copy()
+			}
 			if n.Evm.SafeBlockSource == "" {
 				n.Evm.SafeBlockSource = defaults.Evm.SafeBlockSource
 			}
@@ -2245,6 +2248,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
 			n.Evm.BlockStore = defaults.Evm.BlockStore.Copy()
+			n.Evm.HeadTracker = defaults.Evm.HeadTracker.Copy()
 		}
 		if n.Svm != nil && defaults.Svm != nil {
 			mergeSvmNetworkDefaults(n.Svm, defaults.Svm)
@@ -2576,6 +2580,7 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 
 func (e *EvmNetworkConfig) SetDefaults() error {
 	e.BlockStore.SetDefaults()
+	e.HeadTracker.SetDefaults()
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}

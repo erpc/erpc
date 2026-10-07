@@ -959,12 +959,16 @@ func (n *Network) adoptIntoBlockStore(ctx context.Context, req *common.Normalize
 				canonical = true
 			}
 		} else {
-			var body struct {
-				Hash string `json:"hash"`
-			}
-			if !validBlockStoreHash(ref) || json.Unmarshal(result, &body) != nil || !strings.EqualFold(body.Hash, ref) {
+			// Number and hash only: the transactions are not decoded here.
+			_, hash, ok := blockstore.BlockIdentity(result)
+			if !validBlockStoreHash(ref) || !ok || !strings.EqualFold(hash, ref) {
 				return
 			}
+		}
+		// Skip the copy and the background parse when nothing would change
+		// (e.g. a cache replay of a height already held).
+		if !c.AdoptBlockNeeded(result, full, canonical, fromCache) {
+			return
 		}
 		adopt = func(ctx context.Context) { c.AdoptBlock(ctx, result, full, canonical, fromCache) }
 	case "eth_getLogs":

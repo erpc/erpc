@@ -63,6 +63,10 @@ type Network struct {
 	// logs filled by one unfiltered upstream call (nil when disabled).
 	logsFiller *blockstore.LogsFiller
 
+	// headTracker is the opt-in fleet head tracker (nil when disabled; every
+	// call site is nil-safe so a network without evm.headTracker is untouched).
+	headTracker *headTracker
+
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
 	// servedTipAnchor watchdogs track when this process last SAW the served
@@ -804,6 +808,29 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
 
+	// Head tracker: the leader's routed observation IS the network's latest
+	// (no majority). A use-upstream selector keeps its subset-scoped poller
+	// head, since the tracker head describes the network, not the subset.
+	// A stale tracker head returns 0 and falls through (degraded mode).
+	if n.headTracker != nil && requestSelector(ctx) == "" {
+		if h := n.headTracker.FreshHead(); h > 0 {
+			return h
+		}
+		// Degraded mode (S7): never serve below the last fresh tracker head
+		// this replica served, so eth_blockNumber does not jump back by up to
+		// a poller interval when the tracker goes stale. The floor expires
+		// after headTrackerFallbackFloorTTL (fail open, like the served-tip
+		// regression guard) so it cannot wedge on a halted chain.
+		pollerHead := n.evmPollerLatestBlockNumber(ctx, span)
+		return max(pollerHead, n.headTracker.FallbackFloor())
+	}
+	return n.evmPollerLatestBlockNumber(ctx, span)
+}
+
+// evmPollerLatestBlockNumber is the served latest derived from the
+// per-upstream state pollers (served-tip majority when enabled, otherwise
+// the corroborated head).
+func (n *Network) evmPollerLatestBlockNumber(ctx context.Context, span trace.Span) int64 {
 	if !n.servedTipEnabledFor("latest") {
 		// tipCandidateUpstreams already scopes to the request's selector (if
 		// any), so the head is within-subset.
@@ -873,6 +900,11 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	}
 	useFinalized := n.cfg.Evm.EmptyResultConfidence == common.AvailbilityConfidenceFinalized
 	maxHead := n.evmHeadReference(ctx, useFinalized).Available
+	if !useFinalized {
+		// The fresh tracker head is a block an upstream has served, even
+		// while the slow per-upstream pollers have not caught up to it.
+		maxHead = max(maxHead, n.EvmTrackedHead())
+	}
 	if maxHead <= 0 || bn <= maxHead {
 		// Unknown head (fail open) or block within reach of some upstream.
 		return nil, false
@@ -1865,6 +1897,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// Head cache: fully covered block/log reads answered from the verified
 	// canonical window. Misses fall through to the normal path unchanged.
+	// The head tracker first answers eth_blockNumber locally and pins
+	// eth_getBlockByNumber("latest") to its head (nil tracker: no-op).
+	if n.headTracker != nil {
+		if resp, ok := n.tryServeHeadTracker(ctx, req, method); ok {
+			forwardSpan.SetAttributes(attribute.Bool("head_tracker.hit", true))
+			return resp, nil
+		}
+	}
 	if n.blockStore != nil || n.historicalBlockStore != nil {
 		if resp, ok := n.tryServeBlockStore(ctx, req, method); ok {
 			forwardSpan.SetAttributes(attribute.Bool("blockstore.hit", true))
@@ -1978,6 +2018,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
 		upsList = eligible
 	}
+	upsList = n.preferKnownTipUpstreams(ctx, upsList, req, method)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
 		ids := make([]string, len(upsList))
@@ -2285,8 +2326,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				Str("selectedUpstream", u.Id()).
 				Msg("selected upstream from list")
 
-			// Pre-forward: block availability gating → skip to next upstream
-			if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
+			// Pre-forward: head-tracker tip check, then block availability
+			// gating → skip to next upstream
+			skipErr, isRetryable := n.checkTipAvailability(loopCtx, u, effectiveReq, method)
+			if skipErr == nil {
+				skipErr, isRetryable = n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method)
+			}
+			if skipErr != nil {
 				n.handleBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
 				loopSpan.End()
 				continue
@@ -2904,7 +2950,13 @@ func (n *Network) handleBlockSkip(
 	// latestBlock stays stale until the background ticker fires (often 10s+).
 	// PollLatestBlockNumber respects its own debounce interval so concurrent
 	// triggers from multiple upstreams/requests are coalesced safely.
-	if isRetryable {
+	//
+	// Not while the head tracker is fresh: the tracker head runs ahead of
+	// every slow poller by design, so this would fire per upstream per
+	// replica every block and bring back the polling the tracker removes.
+	// The request fails over to another upstream instead, and the poller
+	// catches up on its own interval or through response enrichment.
+	if isRetryable && n.EvmTrackedHead() == 0 {
 		if eu, ok := u.(common.EvmUpstream); ok {
 			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 				go func() { // #nosec G118 -- fire-and-forget poll; must not share request lifetime

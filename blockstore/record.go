@@ -21,6 +21,12 @@ type rawBlock struct {
 	ParentHash   string            `json:"parentHash"`
 	LogsBloom    string            `json:"logsBloom"`
 	Transactions []json.RawMessage `json:"transactions"`
+
+	// Cached txHashesOf result, computed once while the block is scanned.
+	txDone bool
+	txSet  map[string]struct{}
+	txFull bool
+	txErr  error
 }
 
 // rawLog is the subset of log fields validation and filtering use.
@@ -46,24 +52,11 @@ func normHash(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
 // parseBlockHeader extracts identity fields from a block result.
 func parseBlockHeader(raw json.RawMessage) (*rawBlock, int64, error) {
-	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, 0, fmt.Errorf("null block")
-	}
-	var b rawBlock
-	if err := json.Unmarshal(raw, &b); err != nil {
+	sb, n, err := parseScannedBlock(raw)
+	if err != nil {
 		return nil, 0, err
 	}
-	n, err := parseHexInt(b.Number)
-	if err != nil {
-		return nil, 0, fmt.Errorf("block number: %w", err)
-	}
-	if n < 0 {
-		return nil, 0, fmt.Errorf("negative block number")
-	}
-	if !isHexOfLen(b.Hash, 64) || !isHexOfLen(b.ParentHash, 64) {
-		return nil, 0, fmt.Errorf("block has invalid hash/parentHash")
-	}
-	return &b, n, nil
+	return sb.b, n, nil
 }
 
 // txHashesOf returns the transaction hashes of a full (or hash-only) block.
@@ -71,47 +64,16 @@ func parseBlockHeader(raw json.RawMessage) (*rawBlock, int64, error) {
 // A repeated hash is rejected too: a canonical block lists each transaction once,
 // and callers compare these sets, so a duplicate would let a body with an extra
 // (or missing) entry match a verified header.
+// The result is computed once per parsed block and shared: callers must not
+// modify the returned set.
 func txHashesOf(b *rawBlock) (map[string]struct{}, bool, error) {
-	if b.Transactions == nil {
-		return nil, false, fmt.Errorf("block missing transactions array")
+	if !b.txDone {
+		b.computeTxHashes()
 	}
-	out := make(map[string]struct{}, len(b.Transactions))
-	full := true
-	add := func(h string) error {
-		h = normHash(h)
-		if _, dup := out[h]; dup {
-			return fmt.Errorf("duplicate transaction %s", h)
-		}
-		out[h] = struct{}{}
-		return nil
+	if b.txErr != nil {
+		return nil, false, b.txErr
 	}
-	for _, t := range b.Transactions {
-		t = bytes.TrimSpace(t)
-		if len(t) > 0 && t[0] == '"' {
-			full = false
-			var h string
-			if err := json.Unmarshal(t, &h); err != nil {
-				return nil, false, err
-			}
-			if err := add(h); err != nil {
-				return nil, false, err
-			}
-			continue
-		}
-		var tx struct {
-			Hash string `json:"hash"`
-		}
-		if err := json.Unmarshal(t, &tx); err != nil {
-			return nil, false, err
-		}
-		if tx.Hash == "" {
-			return nil, false, fmt.Errorf("transaction without hash")
-		}
-		if err := add(tx.Hash); err != nil {
-			return nil, false, err
-		}
-	}
-	return out, full, nil
+	return b.txSet, b.txFull, nil
 }
 
 func validateCompleteLogs(b *rawBlock, n int64, txs map[string]struct{}, logsRaw json.RawMessage) error {
@@ -161,12 +123,25 @@ func validateCompleteLogs(b *rawBlock, n int64, txs map[string]struct{}, logsRaw
 }
 
 // BlockJSON renders the block. full=false replaces transactions by hashes.
+// Every other field is kept byte for byte as received.
 func (r *BlockRecord) BlockJSON(full bool) (json.RawMessage, error) {
 	if full {
 		return r.Block, nil
 	}
+	if sb, err := scanBlock(r.Block); err == nil {
+		if out, _, ok := sb.hashesOnly(); ok {
+			return out, nil
+		}
+	}
+	return legacyHashesOnly(r.Block)
+}
+
+// legacyHashesOnly is the map-based rendering, kept for inputs the splice
+// does not cover (no or empty transactions, unvalidated transactions such as
+// duplicates or elements without a hash), with its original results.
+func legacyHashesOnly(block json.RawMessage) (json.RawMessage, error) {
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(r.Block, &m); err != nil {
+	if err := json.Unmarshal(block, &m); err != nil {
 		return nil, err
 	}
 	var txs []json.RawMessage

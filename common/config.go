@@ -2622,6 +2622,12 @@ type EvmNetworkConfig struct {
 	// feeds WebSocket subscriptions. Nil or disabled changes nothing.
 	BlockStore *EvmBlockStoreConfig `yaml:"blockStore,omitempty" json:"blockStore,omitempty"`
 
+	// HeadTracker opts into the fleet-wide head tracker: one elected replica
+	// polls eth_getBlockByNumber("latest") once per block and publishes the head
+	// through shared state; every replica serves it as "latest". Nil or
+	// disabled changes nothing. See EvmHeadTrackerConfig.
+	HeadTracker *EvmHeadTrackerConfig `yaml:"headTracker,omitempty" json:"headTracker,omitempty"`
+
 	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
 	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
 	// numeric distance band is gone — use emptyResultConfidence instead.

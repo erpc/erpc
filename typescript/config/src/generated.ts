@@ -1646,6 +1646,36 @@ export interface EvmNetworkConfig {
    * feeds WebSocket subscriptions. Nil or disabled changes nothing.
    */
   blockStore?: EvmBlockStoreConfig;
+  /**
+   * HeadTracker opts into the fleet-wide head tracker: one elected replica
+   * polls eth_getBlockByNumber("latest") once per block and publishes the head
+   * through shared state; every replica serves it as "latest". Nil or
+   * disabled changes nothing. See EvmHeadTrackerConfig.
+   */
+  headTracker?: EvmHeadTrackerConfig;
+}
+/**
+ * EvmHeadTrackerConfig configures the fleet-wide head tracker ("stalker").
+ */
+export interface EvmHeadTrackerConfig {
+  /**
+   * Enabled turns the tracker on for this network. Default false.
+   */
+  enabled: boolean;
+  /**
+   * FullBlocks makes the leader poll eth_getBlockByNumber("latest", true) and
+   * derive + cache the hashes-only form from it. Default false.
+   */
+  fullBlocks?: boolean;
+  /**
+   * Interval overrides the wait between polls. Unset derives it from the
+   * network's measured (EMA) block time.
+   */
+  interval?: BlockTimeAdaptiveDuration;
+  /**
+   * LeaseTtl is how long a leader's lease lives without renewal. Default 5s.
+   */
+  leaseTtl?: Duration;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"

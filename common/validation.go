@@ -1591,6 +1591,9 @@ func (e *EvmNetworkConfig) Validate() error {
 	if err := e.BlockStore.Validate(); err != nil {
 		return err
 	}
+	if err := e.HeadTracker.Validate(); err != nil {
+		return err
+	}
 	if e.FallbackFinalityDepth == 0 {
 		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
 	}

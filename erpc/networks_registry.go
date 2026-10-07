@@ -332,6 +332,9 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 	if err := nr.initBlockStore(network, nwCfg); err != nil {
 		return nil, fmt.Errorf("head cache for %s: %w", nwCfg.NetworkId(), err)
 	}
+	if err := nr.initHeadTracker(network, nwCfg); err != nil {
+		return nil, fmt.Errorf("head tracker for %s: %w", nwCfg.NetworkId(), err)
+	}
 	// Register alias for lazy-created networks to support alias-based routing
 	if nwCfg.Alias != "" {
 		// SplitN limit 2: three-part SVM IDs (svm:<chain>:<cluster>) keep the

@@ -55,6 +55,21 @@ type Slot struct {
 	// are sweepable.
 	lastAccessedAtMs atomic.Int64
 
+	// lagMasked is true when the most recent tick evaluated with head lag
+	// masked (NetworkHooks.HeadLagOnDemand). retickPending dedupes the
+	// asynchronous lag-mask resync re-eval (Engine.syncLagMask). tickMu
+	// serializes tickOnce now that it can run from the ticker and from
+	// that re-eval. lagOnlyExcluded is the set of upstream IDs the last
+	// tick excluded ONLY for head/finalization lag (consulted by the
+	// prober on tracked networks).
+	lagMasked       atomic.Bool
+	retickPending   atomic.Bool
+	tickMu          sync.Mutex
+	lagOnlyExcluded atomic.Pointer[map[string]struct{}]
+	// pinned is set by OverrideOrderForTest: the cache is test-owned and
+	// never re-evaluated by syncLagMask.
+	pinned atomic.Bool
+
 	// crossTick state — touched only inside tickOnce, no locking.
 	mu               sync.Mutex // protects fields below from admin reads
 	tickCount        uint64
@@ -170,6 +185,8 @@ const decisionsRingSize = 64
 
 // tickOnce runs one eval cycle synchronously. Exported via TickForTest.
 func (s *Slot) tickOnce() {
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
 	start := time.Now()
 	// Mark the slot active so the engine's idle-sweep keeps it alive
 	// even if no request has hit GetOrdered between ticks. Ticking IS
@@ -183,6 +200,20 @@ func (s *Slot) tickOnce() {
 
 	// 1. Snapshot metrics for every upstream.
 	metrics, metricsAcrossMethods, metricsByMethod := snapshotMetrics(s.engine.tracker, ups, s.method, parseFinality(s.finality))
+
+	// 1b. Tracked network with a fresh head: head lag is enforced per
+	// request (tip check), so the slow poller-based lag view must not
+	// exclude or reorder upstreams. Mask it in the eval's view only; the
+	// tracker and the Prometheus gauges keep the real values.
+	masked := s.engine.headLagOnDemand(s.networkID)
+	if masked {
+		maskHeadLag(metrics)
+		maskHeadLag(metricsAcrossMethods) // may alias metrics; idempotent
+		for _, m := range metricsByMethod {
+			maskHeadLag(m)
+		}
+	}
+	s.lagMasked.Store(masked)
 
 	// 2. Build EvalContext from cross-tick state.
 	s.mu.Lock()
@@ -318,6 +349,8 @@ func (s *Slot) tickOnce() {
 	s.cache.Store(&ordered2)
 	excludedUps := materializeExcluded(ups, excluded)
 	s.excludedCache.Store(&excludedUps)
+	lagOnly := lagOnlyExclusions(excluded)
+	s.lagOnlyExcluded.Store(&lagOnly)
 
 	// 6b. Reconcile this network's probe subsystem against the
 	// eval-emitted `__probeConfig`. Non-nil → create/update Prober;
@@ -657,6 +690,17 @@ func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string, fin
 	return local, acrossMethods, byMethod
 }
 
+// maskHeadLag zeroes every head/finalization lag field in an eval-side
+// metrics view (see NetworkHooks.HeadLagOnDemand). The map holds values,
+// so the tracker's own counters are untouched.
+func maskHeadLag(m map[string]UpstreamMetrics) {
+	for id, um := range m {
+		um.BlockHeadLag, um.FinalizationLag = 0, 0
+		um.BlockHeadLagSeconds, um.FinalizationLagSeconds = 0, 0
+		m[id] = um
+	}
+}
+
 // parseFinality maps a slot's string finality (the canonical
 // `realtime`/`unfinalized`/`finalized`/`unknown` plus the engine's
 // `"*"` wildcard) to the tracker-side `DataFinalityState`. The
@@ -800,6 +844,43 @@ func materializeExcluded(ups []common.Upstream, excluded []ExcludedUpstream) []c
 		}
 		if u, ok := index[ex.ID]; ok {
 			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// headLagReasonSlugs are the excludeIf leaf slugs that measure head or
+// finalization lag (stdlib.js `blockNumberLagAbove` & co.).
+var headLagReasonSlugs = map[string]struct{}{
+	"block_head_lag_above":           {},
+	"finalization_lag_above":         {},
+	"block_head_lag_seconds_above":   {},
+	"finalization_lag_seconds_above": {},
+}
+
+// lagOnlyExclusions returns the IDs of upstreams excluded solely by lag
+// predicates: every attributed leaf slug is a head-lag slug. Exclusions
+// without leaf attribution (removeByLag, raw filters, tags, cordons) are
+// not classified as lag-only, so the prober keeps its prior behavior for
+// them.
+func lagOnlyExclusions(excluded []ExcludedUpstream) map[string]struct{} {
+	var out map[string]struct{}
+	for _, ex := range excluded {
+		if len(ex.LeafReasons) == 0 {
+			continue
+		}
+		lagOnly := true
+		for _, r := range ex.LeafReasons {
+			if _, ok := headLagReasonSlugs[r]; !ok {
+				lagOnly = false
+				break
+			}
+		}
+		if lagOnly {
+			if out == nil {
+				out = make(map[string]struct{})
+			}
+			out[ex.ID] = struct{}{}
 		}
 	}
 	return out

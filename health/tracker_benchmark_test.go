@@ -228,7 +228,7 @@ func prewarmPerCallRequestCounter(combos []labelCombo, project string) {
 	for _, c := range combos {
 		for _, a := range attempts {
 			telemetry.MetricUpstreamRequestTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, a, c.comp, c.final.String(), c.user, "unknown").
+				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, a, c.comp, c.final.String(), c.user, "unknown", "false").
 				Inc()
 		}
 	}
@@ -241,7 +241,7 @@ func prewarmPerCallErrorCounter(combos []labelCombo, project string) {
 		for _, e := range errors {
 			for _, s := range severities {
 				telemetry.MetricUpstreamErrorTotal.
-					WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, e, s, c.comp, c.final.String(), c.user, "unknown").
+					WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, e, s, c.comp, c.final.String(), c.user, "unknown", "false").
 					Inc()
 			}
 		}
@@ -268,7 +268,7 @@ func BenchmarkUpstreamRequestTotal_PerCall(b *testing.B) {
 			c := combos[idx]
 			a := attempts[ai]
 			telemetry.MetricUpstreamRequestTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, a, c.comp, c.final.String(), c.user, "unknown").
+				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, a, c.comp, c.final.String(), c.user, "unknown", "false").
 				Inc()
 			idx++
 			if idx >= len(combos) {
@@ -305,7 +305,7 @@ func BenchmarkUpstreamErrorTotal_PerCall(b *testing.B) {
 			e := errors[ei]
 			s := severities[si]
 			telemetry.MetricUpstreamErrorTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, e, s, c.comp, c.final.String(), c.user, "unknown").
+				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, e, s, c.comp, c.final.String(), c.user, "unknown", "false").
 				Inc()
 			idx++
 			if idx >= len(combos) {

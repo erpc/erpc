@@ -51,6 +51,40 @@ Illustrative, not a tuned production config — enable cluster-min served tip fo
 }]`}
 />
 
+## Fleet head tracker
+
+Opt in per network to have exactly one replica follow the chain head block by block and share it with the whole fleet. `eth_blockNumber` and `"latest"` then advance every block while every per-upstream state poller can stay on a slow interval.
+
+<ConfigTabs
+  path="projects[].networks[].evm.headTracker"
+  focusYaml="7-11"
+  focusTs="7-11"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          headTracker:
+            enabled: true
+            # also cache the full block (and its hashes-only form) once per head
+            fullBlocks: true`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: {
+      chainId: 1,
+      headTracker: {
+        enabled: true,
+        // also cache the full block (and its hashes-only form) once per head
+        fullBlocks: true,
+      },
+    },
+  }],
+}]`}
+/>
+
 ## Agent reference
 
 Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
@@ -89,6 +123,61 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 />
 
 <AISection title="Block tracking & served tip — full agent reference">
+
+### Fleet head tracker (`evm.headTracker`)
+
+Opt-in per network. Requires a `database.sharedState` connector with the `redis` driver (or `memory` for a single process): other drivers log an error and the tracker never runs.
+
+- **Election.** Every replica runs the loop. Leases are spread: replicas heartbeat into `<clusterKey>/replicas`, a replica already leading `ceil(networks/replicas)` waits one TTL before taking a free lease, and a replica over its share hands one lease at a time over (released after holding it at least 30s). The holder of a token lease (`SET NX PX` on `<clusterKey>/lease/headTracker/<project>/<network>`, renewed every `leaseTtl/3`) polls; followers retry acquisition every `leaseTtl/5`, so a crashed leader is replaced within about `leaseTtl + leaseTtl/5`. A leader that cannot renew for `2/3·leaseTtl`, or whose poll fails 20 times in a row, steps down. A clean shutdown releases the lease immediately.
+- **Poll.** The leader sends `eth_getBlockByNumber("latest", fullBlocks)` through the network's normal `Forward` (selection policy, retries, failover and integrity checks all apply; cache reads, the multiplexer and the block store are bypassed, and the tag is never interpolated).
+- **Schedule.** Polls are clock-driven: the next poll fires at its scheduled time, or one block time after the previous poll was sent, even if that poll has not returned yet (at most 2 in flight per network; results are processed in order). Only the most recently sent poll schedules the next one: a poll that was overtaken still has its result processed, but its proposed wait is discarded. Waits are measured from when a poll was *sent*, so poll latency (a CPU-throttled pod, large `fullBlocks` payloads) does not lower the cadence. After a new head, until 4 visibility intervals were seen, it waits until the next block's expected timestamp (`block.timestamp + blockTime + mean propagation delay`), clamped to `[max(500ms, blockTime/2), blockTime + delay]`. From then on it uses the **visibility cadence**: the wall-clock time between the first and last observations divided by their **block-number delta**, over up to 32 observation intervals. It aims `max(cadence/80, 25ms)` before one cadence after the last head was found, with a lower wait bound of `max(500ms, min(blockTime, cadence)/2)` so a stale EMA cannot prevent recovery. Every multi-block jump contributes all its blocks to the estimate: six blocks observed over six seconds mean one second per block, not a six-second cadence. Non-monotonic observations and per-block gaps above `4·max(blockTime, 1s)` reset the visibility window. Bursty RPC visibility is handled by same-head backoff, not by treating a batch as one block. After an unchanged head, it waits for the next expected head if that head is still ahead. Otherwise consecutive same-head polls back off exponentially: from `max(500ms, visibility cadence)` once the visibility window is warm, or `max(500ms, blockTime/2)` before it warms, up to `min(4·blockTime, 30s)` once a block time is known, or from 1s up to 30s while it is not (on-demand chains rarely produce EMA samples). The backoff resets on every new head. Errors also retry at `max(500ms, blockTime/4)` with no backoff. `interval` overrides `blockTime` (`BlockTimeAdaptiveDuration`). Otherwise `blockTime` is the first available of: the network's EMA block time; the block time the leader published (`v2/headTrackerBlockTimeMs/<project>/<network>`, kept in shared state across deploys, so a fresh pod starts warm; values above 120s are ignored); the leader's own estimate from its last two distinct heads (≤30s, zero or negative timestamp deltas skipped); and finally 1s.
+- **Publish.** Each accepted new head goes to a shared-state counter (`v2/headTracker/<project>/<network>`), and every successful poll updates `v2/headTrackerAlive/<project>/<network>`. Followers receive both by pub/sub.
+- **Serve.** While the leader is live (see gotcha 3), `EvmHighestLatestBlockNumber` returns it directly (no majority, no servedTip clamps). `eth_blockNumber` is answered locally with no upstream call, and `eth_getBlockByNumber("latest", x)` is rewritten to the concrete head so the block store or cache serves it. Requests with `use-upstream` or `skipInterpolation` are left alone. When the head is stale, everything falls back to the per-upstream poller path (servedTip if enabled, else the corroborated second-highest head).
+- **Writes.** For each new head the leader feeds the block-time EMA with `Δblock.timestamp / Δblocknumber`, one normalized sample per distinct observed head. While it does so (and for 5 minutes after its last sample), it is the EMA's only input on that replica: the corroborated per-upstream poller head is not sampled. It caches `eth_getBlockByNumber(<hex>, full)` and `eth_getBlockByHash(<hash>, full)` under the normal cache policies, and with `fullBlocks` it also caches the derived hashes-only form. The block store adopts the header (and the body when full). A hashes-only poll never writes a full-block entry.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `evm.headTracker.enabled` | bool | `false` | Off: no tracker object exists and no code path changes. |
+| `evm.headTracker.fullBlocks` | bool | `false` | Poll with `true` and cache both variants. Costs one full block per head per network, not per replica. |
+| `evm.headTracker.interval` | `BlockTimeAdaptiveDuration` | unset (EMA, else published, else leader estimate, else 1s) | Override the cadence. A fixed duration polls on a plain timer instead of aligning to block timestamps. Source: <SourceLink file="common/config_head_tracker.go" lines="44" /> |
+| `evm.headTracker.leaseTtl` | Duration | `5s` | Failover bound. Must be ≥1s. Source: <SourceLink file="common/config_head_tracker.go" lines="46" /> |
+
+**Guards** (no agreement from other upstreams is needed):
+
+- A regression of more than 1024 blocks is rejected.
+- A block timestamp more than 60s in the future is rejected.
+- More than `4·elapsed/blockTime + 16` blocks since the previous head is rejected.
+- A jump above about one minute of blocks requires the serving upstream's `eth_chainId` to match.
+
+Rejections increment `erpc_head_tracker_rejected_total{reason}`.
+
+**Gotchas**
+
+1. **Tip check.** While the tracker head is fresh, a read of a block above an upstream's known head (and at or below the tracker head) is checked before it is forwarded. This applies to `eth_getLogs`, `trace_filter`, `arbtrace_filter` (target = `toBlock`), `eth_getBlockReceipts`, and `eth_getBlockByNumber`, `eth_getBlockByHash` and `eth_call` at an explicit number, which includes the interpolated `"latest"`. The check is one `eth_blockNumber` to that upstream: if its head is at or above the target the request is forwarded, otherwise the upstream is skipped as block-unavailable (retryable) and the next upstream goes through the same check. The check runs at most once per (upstream, tracker head) per replica, concurrent requests share it, and its answer advances the upstream's shared head, so other replicas usually skip theirs. The upstream that served the leader's poll already has the tracker head as its known head and needs no check. Nothing else credits an upstream with a height: a response to a request for block N is not proof the upstream has N, because lagging providers answer `[]`, clamped ranges, null, or even an `eth_call` result computed at their own head. Cost is at most about one `eth_blockNumber` per block per upstream that receives tip traffic while behind (`erpc_head_tracker_tip_checks_total`). In steady state, tip traffic concentrates on the leader-served upstream. While the tracker is fresh, policy evaluation masks slow-poller lag so lag alone neither excludes upstreams nor causes shadow probes. Before a numeric tip read is forwarded, eligible upstreams already known to have its target (including configured head-lag tolerance) are preferred, preserving policy priority within the ready group and within the remaining group. This is a local head lookup, not a poll or a fan-out. It does not revive method-ineligible or policy-excluded upstreams, and the policy's shared cached order is not mutated. Historical reads that every upstream can serve retain policy order. Leader polls, unknown numeric targets, methods without tip checks, and stale/disabled trackers are not reordered by this preference. Behind upstreams remain eligible for sequential lazy checks if the ready ones fail or a request explicitly selects them. `TestHeadTracker_TipCheckOrdering` covers concurrent distinct ranges, ready-upstream priority, method eligibility, pinned lazy checks and historical priority. Residual risk: a load-balanced provider can answer the check from an up-to-date backend and the request from a lagging one. Requests with `skipInterpolation` and a literal `"latest"` are never checked.
+2. The future-block short-circuit treats the fresh tracker head as available, so the advertised head is never nulled out by stale poller views.
+3. **Freshness is leader liveness, not chain progress.** After every successful poll the leader publishes an "alive" counter (its unix ms), whether or not the head moved. A replica treats the head as fresh while it saw the head or the alive counter change within `max(local window, window published by the leader)`. The leader computes `max(3·blockTime, 3·longest recent interval between its successful polls, 5s)` from its warm EMA (at least 60s while its own block time is still cold) and publishes it as `v2/headTrackerStaleMs/<project>/<network>`. Followers never need an EMA or history of their own, and use 60s until a window is published, measured on its own clock. The poll interval comes from two consecutive alive values, both stamped by the leader's clock, so no skew enters, and it covers followers whose block-time EMA is still cold. A chain that is slow, missing slots, or producing blocks on demand therefore stays fresh. Only a leader with no successful poll (dead, partitioned, or all upstreams failing) sends replicas into fallback (`erpc_head_tracker_fallback_active=1` plus a WARN at most once a minute). In fallback, served latest is floored at the last fresh tracker head for up to 1 minute, so `eth_blockNumber` never goes backwards.
+4. The leader writes the polled block to the cache and block store **before** publishing the head, so a follower that sees the new head always finds the block. On a same-height reorg (same number, new hash) it rewrites the cached block.
+5. The first head a leader accepts must come from an upstream whose `eth_chainId` matches. A published head that is more than 1024 blocks ahead of three consecutive, mutually consistent polls is treated as poisoned and rolled back, but only when those polls carry a **current** block timestamp (within `max(5·blockTime, 60s)` of now), so a stuck node on the right chain can never roll the head back (`erpc_head_tracker_rejected_total{reason="recovered_rollback"}`).
+6. A leader stops polling and never publishes once `2/3·leaseTtl` has passed since its last successful lease renewal, even while a renewal is in flight. Two pods therefore never publish at the same time.
+7. If shared state (Redis) is down, no pod can hold the lease and none polls. Every pod falls back to the per-upstream pollers, with no polling storm.
+8. **Cold start is seeded.** A fresh pod (deploy, failover) does not poll at the 1s cold default until its own EMA warms (4 observations). It uses the block time the previous leader published in shared state, and before anything is published it uses its own two-head estimate. Before rc.6, fresh pods on 2-12s chains polled up to once a second for the first minutes.
+9. **A slow poll does not fork the schedule.** Before rc.6, every finished poll's proposed wait was queued and consumed in order. One poll that ran longer than a block time left one surplus entry in the queue, so from then on each poll was paced by its predecessor's stale proposal. This produced a second, permanently offset schedule (staging rc.5: 1-2s chains went from 1.0 to 1.3-1.8 polls/block). Only the latest poll's result schedules now.
+10. **The block-time EMA can be right while polling is wrong.** Cadence must be measured per block, not per successful new-head poll. Otherwise a slow schedule observes multi-block jumps, mistakes those jumps for single blocks, and reinforces its own slow cadence even with a correct EMA. The EMA, two-head seed, and visibility estimator all normalize by height delta. `TestHeadTracker_UnderPolledLeaderConverges` starts 1s and 2s chains with a 6s EMA and verifies recovery to about one poll per block within one minute. Batched visibility is covered by `TestHeadTracker_BurstyVisibilityPollsAboutOncePerBlock`: its 1.5s/block chain exposes batches every 2s, with a budget of 1.1 polls/block and at most two blocks of lag after startup.
+11. **Read poll rates against a single head series.** `erpc_network_dynamic_block_time_milliseconds{project,network}` reports the on-chain EMA, not the wall-clock visibility estimate. Compare leader poll rates from `rate(erpc_head_tracker_poll_duration_seconds_count[5m])` against `deriv(erpc_head_tracker_head_block_number[5m])` for the same project/network. The head gauge is replicated: summing its derivatives across replicas or projects multiplies apparent chain speed. Filter the EMA by the matching leader before comparing it with polling cadence.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network |
+| `erpc_head_tracker_head_block_number` | gauge | project, network |
+| `erpc_head_tracker_is_leader` | gauge | project, network |
+| `erpc_head_tracker_poll_duration_seconds` | histogram | project, network, outcome |
+| `erpc_head_tracker_propagation_delay_seconds` | histogram | project, network |
+| `erpc_head_tracker_served_lag_blocks` | gauge | project, network |
+| `erpc_head_tracker_fallback_active` / `erpc_head_tracker_fallback_total` | gauge / counter | project, network |
+| `erpc_head_tracker_rejected_total` | counter | project, network, reason |
+| `erpc_head_tracker_tip_checks_total` | counter | project, network, upstream |
+
+Source: [`erpc/head_tracker.go`](https://github.com/erpc/erpc/blob/main/erpc/head_tracker.go), [`erpc/head_tracker_integration.go`](https://github.com/erpc/erpc/blob/main/erpc/head_tracker_integration.go), [`data/shared_state_lease.go`](https://github.com/erpc/erpc/blob/main/data/shared_state_lease.go). Tests: `erpc/head_tracker_test.go`, `erpc/head_tracker_e2e_test.go`.
 
 ### How it works
 

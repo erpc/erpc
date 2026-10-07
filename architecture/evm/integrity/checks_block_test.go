@@ -7,21 +7,21 @@ import (
 )
 
 func TestAllPhantomRawTxs(t *testing.T) {
-	assert.True(t, allPhantomRawTxs(nil))
-	assert.True(t, allPhantomRawTxs([]any{}))
-	assert.True(t, allPhantomRawTxs([]any{map[string]any{"from": "0x0000000000000000000000000000000000000000", "gas": "0x0"}}))
-	assert.True(t, allPhantomRawTxs([]any{map[string]any{"from": "0x0", "gas": "0x0"}})) // short zero form
-	assert.False(t, allPhantomRawTxs([]any{map[string]any{"from": "0xdead000000000000000000000000000000000001", "gas": "0x5208"}}))
+	assert.True(t, allPhantomRawTxs(anyTxList(nil)))
+	assert.True(t, allPhantomRawTxs(anyTxList([]any{})))
+	assert.True(t, allPhantomRawTxs(anyTxList([]any{map[string]any{"from": "0x0000000000000000000000000000000000000000", "gas": "0x0"}})))
+	assert.True(t, allPhantomRawTxs(anyTxList([]any{map[string]any{"from": "0x0", "gas": "0x0"}}))) // short zero form
+	assert.False(t, allPhantomRawTxs(anyTxList([]any{map[string]any{"from": "0xdead000000000000000000000000000000000001", "gas": "0x5208"}})))
 	// mix of phantom + real → not all phantom
-	assert.False(t, allPhantomRawTxs([]any{
+	assert.False(t, allPhantomRawTxs(anyTxList([]any{
 		map[string]any{"from": "0x0", "gas": "0x0"},
 		map[string]any{"from": "0xdead000000000000000000000000000000000001", "gas": "0x5208"},
-	}))
+	})))
 	// hash-only entry → conservatively not phantom
-	assert.False(t, allPhantomRawTxs([]any{"0xabc"}))
+	assert.False(t, allPhantomRawTxs(anyTxList([]any{"0xabc"})))
 	// non-zero gas or non-zero from → not phantom
-	assert.False(t, allPhantomRawTxs([]any{map[string]any{"from": "0x0", "gas": "0x1"}}))
-	assert.False(t, allPhantomRawTxs([]any{map[string]any{"from": "0x0000000000000000000000000000000000000001", "gas": "0x0"}}))
+	assert.False(t, allPhantomRawTxs(anyTxList([]any{map[string]any{"from": "0x0", "gas": "0x1"}})))
+	assert.False(t, allPhantomRawTxs(anyTxList([]any{map[string]any{"from": "0x0000000000000000000000000000000000000001", "gas": "0x0"}})))
 }
 
 func TestIsZeroishHex(t *testing.T) {
@@ -104,3 +104,7 @@ func repeat(s string, n int) string {
 	}
 	return string(out)
 }
+
+// anyTxList wraps a generically decoded transactions array (what a []any
+// decode yields) as a TxList.
+func anyTxList(a []any) TxList { return TxList{anys: a} }
