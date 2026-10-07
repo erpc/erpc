@@ -237,7 +237,7 @@ primary control surface.
 | `evm.dynamicBlockTimeDebounceMultiplier` | `*float64` | `0.7` | Scales EMA block time to derive the state-poller debounce interval. |
 | `evm.blockUnavailableDelayMultiplier` | `*float64` | `1.0` | Multiplies EMA-estimated block time to derive the dynamic retry delay for `ErrUpstreamBlockUnavailable`/`ErrEndpointMissingData`. Returns `0` before EMA warms up — falls back to `failsafe[*].retry.emptyResultDelay`. |
 | `evm.idempotentTransactionBroadcast` | `*bool` | nil (enabled) | When enabled, `eth_sendRawTransaction` converts "already known" to success and verifies "nonce too low" via `eth_getTransactionByHash`. Set to `false` to return raw upstream errors. |
-| `evm.emptyResultConfidence` | `AvailbilityConfidence` | `blockHead` | Confidence level for empty-result retries: `blockHead` = retry empties for blocks ≤ latest head; `finalizedBlock` = stricter, only retry for blocks ≤ finalized head. <SourceLink file="common/defaults.go" lines="2075-2079" /> |
+| `evm.emptyResultConfidence` | `AvailbilityConfidence` | `blockHead` | Selects latest or finalized head for empty-result retries; eligible empties within `futureBlockShortCircuitMargin` blocks above it can also be retried. <SourceLink file="common/defaults.go" lines="2075-2079" /> |
 | `evm.servedTip.enabledFor` | `[]string` | `[]` | Tags using cluster-min mode; valid values: `"latest"`, `"finalized"`, `"safe"`. |
 | `evm.servedTip.clusterDelta` | int64 | `0` (auto-derived, clamped [2,10]) | Max block gap to group upstreams into one cluster for served-tip computation. |
 | `evm.servedTip.guaranteedMethods` | `[]string` | `[]` | Glob patterns for methods whose supporting-upstreams subset is used for cluster computation. |

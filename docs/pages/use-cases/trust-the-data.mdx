@@ -145,7 +145,7 @@ tables and exact defaults live in each page's agent section.
 - `"1"` — finalized-forever static data (chain ID, genesis block); cached indefinitely.
 - A numeric string (e.g. `"19827314"`) — concrete block; uses `ConnectorMainIndex`.
 
-**Empty-result handling.** [`upstreamPostForward_markUnexpectedEmpty`](https://github.com/erpc/erpc/blob/main/architecture/evm/common.go#L11) converts a `null`/empty result to `ErrEndpointMissingData` when: (1) the method is in `markEmptyAsErrorMethods`, (2) `req.Directives().RetryEmpty` is `true`, and (3) the block is NOT beyond the confidence head. When the network head is unknown the check fails open — empties are treated as retryable.
+**Empty-result handling.** [`upstreamPostForward_markUnexpectedEmpty`](https://github.com/erpc/erpc/blob/main/architecture/evm/common.go#L11) converts a `null`/empty result to `ErrEndpointMissingData` when: (1) the method is in `markEmptyAsErrorMethods`, (2) `req.Directives().RetryEmpty` is `true`, and (3) the block is NOT more than `futureBlockShortCircuitMargin` blocks (default 16) beyond the confidence head. A negative margin disables the confidence guard. When the network head is unknown the check fails open: empties are treated as retryable.
 
 **Syncing state.** A self-hosted node must return `eth_syncing: false` **four consecutive times** (`FullySyncedThreshold = 4` at [`architecture/evm/evm_state_poller.go:L21`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L21)) before eRPC stops syncing-check requests. One `syncing=true` resets the counter to 1.
 
@@ -212,7 +212,7 @@ All fields under `networks[*].evm.*`. Populated by `EvmNetworkConfig.SetDefaults
 | `evm.dynamicBlockTimeDebounceMultiplier` | \*float64 | `0.7` | Scales EMA block time to derive the state-poller debounce interval. Lower = fresher but more polling. |
 | `evm.blockUnavailableDelayMultiplier` | \*float64 | `1.0` | Multiplies EMA-estimated block time to derive dynamic retry delay on `ErrUpstreamBlockUnavailable` or `ErrEndpointMissingData`. Falls back to `failsafe[*].retry.emptyResultDelay` before the EMA warms up. |
 | `evm.idempotentTransactionBroadcast` | \*bool | `nil` (enabled) | When enabled, `eth_sendRawTransaction` converts "already known" errors to success and verifies "nonce too low" by polling `eth_getTransactionByHash`. Set to `false` to return raw upstream errors. |
-| `evm.emptyResultConfidence` | string | `"blockHead"` | Confidence level for empty-result retries: `"blockHead"` = retry empties for blocks ≤ latest head; `"finalizedBlock"` = stricter, only retry for blocks ≤ finalized head. |
+| `evm.emptyResultConfidence` | string | `"blockHead"` | Selects latest or finalized head for the empty-result confidence guard; eligible empties within `futureBlockShortCircuitMargin` blocks above it can also be retried. |
 | `evm.maxFutureBlockRetryDistance` | \*int64 | — | **Deprecated** (yaml-only, tagged `json:"-"`). Replaced by `emptyResultConfidence`. A warning is logged and the value is ignored at runtime. |
 
 **Default `markEmptyAsErrorMethods` (11 methods):** `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionByHash`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getUncleByBlockHashAndIndex`, `eth_getUncleByBlockNumberAndIndex`, `debug_traceTransaction`, `trace_transaction`, `trace_block`, `trace_get`.

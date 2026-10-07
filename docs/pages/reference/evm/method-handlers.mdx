@@ -106,7 +106,7 @@ https://docs.erpc.cloud/reference/evm/method-handlers.llms.txt`}
 
 Resolution is lock-efficient: param values are extracted under a read lock, resolved outside the lock, then deep-copy + write-commit only occur when a change is actually needed. The `SkipInterpolation` directive and per-method `translateLatestTag`/`translateFinalizedTag` flags can disable interpolation on a per-request or per-method basis.
 
-**Future/missing block guard (`emptyResultBeyondConfidence`).** When an upstream returns null/empty for a numeric block request, `emptyResultBeyondConfidence` (`architecture/evm/common.go:L62`) compares the request's cached block number against the network's confidence head (`EvmHighestLatestBlockNumber` by default; `EvmHighestFinalizedBlockNumber` when `emptyResultConfidence: finalizedBlock`). If the requested block is strictly above the head, the result is truthful — no retry is triggered. If the head is unknown (0) the guard fails open: any block is treated as retryable. This prevents retry storms for not-yet-produced future blocks while preserving normal retry behavior for stale nodes.
+**Future/missing block guard (`emptyResultBeyondConfidence`).** When an upstream returns null/empty for a numeric block request, `emptyResultBeyondConfidence` (`architecture/evm/common.go:L62`) compares the request's cached block number against the network's confidence head (`EvmHighestLatestBlockNumber` by default; `EvmHighestFinalizedBlockNumber` when `emptyResultConfidence: finalizedBlock`). Only blocks more than `futureBlockShortCircuitMargin` (default 16) above that head have truthful empties without retry; eligible empties within the margin are retried as missing data. A negative margin disables this confidence guard. If the head is unknown (0) the guard fails open: any block is treated as retryable. The same margin controls the pre-forward `eth_getBlockByNumber` future-block short-circuit in latest served-tip mode.
 
 **eth_call / eth_estimateGas missing-block-param injection.** If the request arrives with exactly one parameter (the call object, no block tag), the project pre-forward hook appends `"latest"` as the second param before forwarding; interpolation then pins it to the network's latest block number, so no upstream applies its own default block. `eth_call` is intentionally excluded from `markEmptyAsErrorMethods` and from structured error wrapping — callers expect raw ABI revert data (a hex string), not a structured error object.
 
@@ -240,7 +240,7 @@ upstreams: [
 }]`}
 />
 
-**3. Finality-sensitive data pipeline.** When your application must never read data above the finalized head (e.g. a settlement system), set `emptyResultConfidence: finalizedBlock`. Blocks between finalized and latest become "beyond confidence" — empty results from that range are returned truthfully rather than retried:
+**3. Finality-sensitive data pipeline.** To use the finalized head for empty-result confidence, set `emptyResultConfidence: finalizedBlock`. Empty results more than `futureBlockShortCircuitMargin` blocks above the finalized head are returned without retry; empties within that margin remain retryable. This setting does not itself prevent nonempty unfinalized data from being returned:
 
 <ConfigTabs
   path="projects[].networks[].evm"

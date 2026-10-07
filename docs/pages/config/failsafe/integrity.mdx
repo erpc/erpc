@@ -153,9 +153,12 @@ the upstream's range; otherwise `ErrUpstreamBlockUnavailable` (retryable) routes
 different upstream. <SourceLink file="architecture/evm/block_range.go" />
 
 **Future-block empty-result guard.** `emptyResultBeyondConfidence` returns an empty
-result truthfully (rather than retrying) when the block is beyond the confidence head
-(latest or finalized, per `emptyResultConfidence`) — preventing retry storms on
-not-yet-produced blocks. Fail-open on unknown head or block tags. <SourceLink file="architecture/evm/common.go" lines="55-89" />
+result truthfully (rather than retrying) only when the block is more than
+`futureBlockShortCircuitMargin` blocks (default 16) beyond the confidence head
+(latest or finalized, per `emptyResultConfidence`). Eligible empties within the
+margin are retried as missing data. A negative margin disables this confidence
+guard and the pre-forward future-block short-circuit; both share the same setting.
+Fail-open on unknown head or block tags. <SourceLink file="architecture/evm/common.go" lines="55-89" />
 
 ### Layer 1 config schema — `networks[].directiveDefaults`
 

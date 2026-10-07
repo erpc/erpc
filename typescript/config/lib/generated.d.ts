@@ -1613,6 +1613,13 @@ export interface EvmNetworkConfig {
      */
     emptyResultConfidence?: AvailbilityConfidence;
     /**
+     * FutureBlockShortCircuitMargin is the number of blocks above the observed
+     * head still forwarded upstream. Negative disables the short-circuit.
+     * Nil defaults to 16: four seconds of tracker lag even on 250ms chains,
+     * and ample room for the usual one-block lag on 2s chains.
+     */
+    futureBlockShortCircuitMargin?: number;
+    /**
      * SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
      * requests carrying the `safe` block tag. Matching upstreams define and
      * serve `safe`; empty (without an inherited network default) keeps existing
