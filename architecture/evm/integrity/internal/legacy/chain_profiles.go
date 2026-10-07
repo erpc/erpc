@@ -111,6 +111,9 @@ func applyHeaderInvariants(cs CheckSet, inv *HeaderInvariants) {
 	if cfg.Params == nil {
 		cfg.Params = map[string]string{}
 	}
+	if inv.ActiveFromBlock > 0 {
+		cfg.Params["activeFromBlock"] = strconv.FormatUint(inv.ActiveFromBlock, 10)
+	}
 	if inv.EmptyUncles {
 		cfg.Params["emptyUncles"] = "true"
 	}

@@ -11,9 +11,13 @@ import (
 )
 
 func headerBody(uncles, difficulty, nonce string) []byte {
+	return headerBodyAt("0x65", uncles, difficulty, nonce)
+}
+
+func headerBodyAt(number, uncles, difficulty, nonce string) []byte {
 	return []byte(fmt.Sprintf(
-		`{"number":"0x65","hash":"0xabc","parentHash":"0xpar","sha3Uncles":"%s","difficulty":"%s","nonce":"%s"}`,
-		uncles, difficulty, nonce))
+		`{"number":"%s","hash":"0xabc","parentHash":"0xpar","sha3Uncles":"%s","difficulty":"%s","nonce":"%s"}`,
+		number, uncles, difficulty, nonce))
 }
 
 func blobBody(blobGasUsed string) []byte {
@@ -22,12 +26,16 @@ func blobBody(blobGasUsed string) []byte {
 }
 
 func runHeaderCheck(t *testing.T, body []byte, params map[string]string) Result {
+	return runHeaderCheckMethod(t, MethodGetBlockByNumber, body, params)
+}
+
+func runHeaderCheckMethod(t *testing.T, method string, body []byte, params map[string]string) Result {
 	t.Helper()
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x65",false]}`))
+	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":["0x65",false]}`, method)))
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), body, nil)
 	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	return Validate(context.Background(), Input{
-		Method:   "eth_getBlockByNumber",
+		Method:   method,
 		Upstream: common.NewFakeUpstream("u"),
 		Response: rs,
 		Checks:   only("headerConsensusInvariants", params),
@@ -77,6 +85,30 @@ func TestHeaderConsensusInvariants(t *testing.T) {
 		require.NoError(t, res.Err)
 		assert.Equal(t, "skip", outcomeOf(res, "headerConsensusInvariants"),
 			"reporting a pass would claim a verification that never happened")
+	})
+}
+
+func TestMainnetHeaderConsensusInvariantsAtMerge(t *testing.T) {
+	cs := CheckSet{"headerConsensusInvariants": CheckConfig{Enabled: true}}
+	ApplyChainProfile(cs, 1)
+	params := cs["headerConsensusInvariants"].Params
+	assert.Equal(t, "15537394", params["activeFromBlock"])
+
+	for _, method := range []string{MethodGetBlockByNumber, MethodGetBlockByHash} {
+		t.Run(method+" last proof-of-work block skips PoS invariants", func(t *testing.T) {
+			res := runHeaderCheckMethod(t, method, headerBodyAt("0xed14f1", "0xdeadbeef", "0x5", "0x00000000deadbeef"), params)
+			require.NoError(t, res.Err)
+			assert.Equal(t, "skip", outcomeOf(res, "headerConsensusInvariants"))
+		})
+	}
+	t.Run("first proof-of-stake block passes", func(t *testing.T) {
+		res := runHeaderCheck(t, headerBodyAt("0xed14f2", emptyUnclesHash, "0x0", "0x0000000000000000"), params)
+		require.NoError(t, res.Err)
+		assert.Equal(t, "pass", outcomeOf(res, "headerConsensusInvariants"))
+	})
+	t.Run("post-merge non-zero difficulty fails", func(t *testing.T) {
+		res := runHeaderCheck(t, headerBodyAt("0xed14f2", emptyUnclesHash, "0x5", "0x0000000000000000"), params)
+		require.Error(t, res.Err)
 	})
 }
 

@@ -250,6 +250,7 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `schemaConformance` | intrinsic | block, receipts | a result that doesn't decode to the expected shape |
 | `indexMagnitude` | intrinsic | receipt, receipts, logs | `logIndex`/`transactionIndex` int32-underflow (the Amoy incident) |
 | `headerFieldShapes` | intrinsic | block | header hash fields ≠ 32 bytes, `logsBloom` ≠ 256 bytes |
+| `headerConsensusInvariants` | intrinsic | block | chain-declared empty ommers, zero difficulty/nonce, and blob gas granularity where present; mainnet PoS constants activate at block 15,537,394 |
 | `logFieldShapes` | intrinsic | receipts, receipt, logs | log address ≠ 20 bytes, topic count > 4, topic ≠ 32 bytes |
 | `bloomEmptiness` | intrinsic | receipts | logs present but zero bloom (or non-zero bloom with no logs) |
 | `sameBlockHash` | intrinsic | receipts | receipts that don't all share one `blockHash` |
@@ -599,6 +600,7 @@ integrity:
    ```
    **Diagnostic rule of thumb:** if `erpc_integrity_violation_total{check="…Recompute"}` rejects across *every* upstream of one chain, it's the check, not the data — disable that check for that chain (and consider opening an issue so it can be added to this list).
 7. **Continuity does not run on `eth_getBlockByHash`** (see [Why continuity is by-number only](#why-continuity-is-by-number-only)) — and a by-hash response never moves the pin. Earlier builds checked by-hash lookups too, which produced a large stream of rejects (mostly ending as `integrity_failed` client errors) whenever one upstream kept serving settled orphaned blocks to clients unwinding reorgs: the pin correctly said "not canonical", but since the request named the orphan hash, no upstream could satisfy the pinned fork.
+8. **Mainnet's PoS header constants start at the Merge.** `headerConsensusInvariants` skips empty-ommers/zero-difficulty/zero-nonce assertions before block 15,537,394 (the first PoS block), rather than rejecting valid proof-of-work history. The check still enforces them from that block onward on both block lookup methods. The blob-gas multiple assertion remains independent and is skipped when `blobGasUsed` is absent, as it is before Cancun. Other chain profiles have no activation height declared without a verified fork boundary. <SourceLink file="architecture/evm/integrity/chain_architecture.go" /> <SourceLink file="architecture/evm/integrity/checks_consensus_header.go" />
 
 8. **Per-request profiles do not share responses.** A nonempty integrity selector bypasses ordinary JSON-RPC cache reads/writes and in-flight request multiplexing only when the configured integrity module accepts per-request selection (`headerMode: profiles` or `headerMode: full`). Its response is checked under the selected profile without becoming a shared response for default-profile callers. When no integrity module is configured, or `headerMode: off` ignores the selector, ordinary caching and multiplexing remain enabled. Blockstore reads and warming still bypass requests carrying an explicit selector. Requests with no selector retain normal caching and multiplexing.
 

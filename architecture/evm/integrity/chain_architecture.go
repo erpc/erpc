@@ -73,6 +73,9 @@ var arbSysContext = &StateContextProbe{
 // arbitrum. Declaring false simply means "not guaranteed here", never "known to
 // be violated".
 type HeaderInvariants struct {
+	// ActiveFromBlock is the first block where the declared consensus header
+	// constants hold. Zero means no known activation boundary.
+	ActiveFromBlock uint64
 	// EmptyUncles — sha3Uncles is always the empty-ommers hash (no proof-of-work
 	// ommers are produced).
 	EmptyUncles bool
@@ -100,7 +103,7 @@ var postMergeHeader = &HeaderInvariants{EmptyUncles: true, ZeroDifficulty: true,
 
 // ethereumHeader adds the blob-granularity invariant, measured on mainnet and
 // NOT true of the OP Stack, so it cannot live in postMergeHeader.
-var ethereumHeader = &HeaderInvariants{EmptyUncles: true, ZeroDifficulty: true, ZeroNonce: true, BlobGasMultiple: true}
+var ethereumHeader = &HeaderInvariants{ActiveFromBlock: 15537394, EmptyUncles: true, ZeroDifficulty: true, ZeroNonce: true, BlobGasMultiple: true}
 
 // recomputeFamily is the check set that synthetic/system transactions break:
 // the protocol commits them in the header roots but omits them from the RPC
