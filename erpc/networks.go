@@ -610,9 +610,13 @@ func configuredUpperExactBlock(u common.Upstream) *int64 {
 // routing share one notion of "which upstreams count". Falls back to the full
 // registered set when the policy is absent or has not yet produced a decision.
 func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []common.Upstream {
+	return n.tipCandidateUpstreamsForFinality(ctx, method, "*")
+}
+
+func (n *Network) tipCandidateUpstreamsForFinality(ctx context.Context, method, finality string) []common.Upstream {
 	var ups []common.Upstream
 	if n.policyEngine != nil {
-		if eligible := n.policyEngine.GetOrdered(n.networkId, method, "*"); len(eligible) > 0 {
+		if eligible := n.policyEngine.GetOrdered(n.networkId, method, finality); len(eligible) > 0 {
 			ups = eligible
 		}
 	}
@@ -1481,12 +1485,14 @@ func (n *Network) SvmHighestIndexedSlot(ctx context.Context) int64 {
 // polling, so a registry-wide ballot would let a stale node move the floor.
 func (n *Network) gatherSvmTipInputs(ctx context.Context, slotOf func(common.SvmStatePoller) int64) []common.ServedTipInput {
 	method := "*"
+	finality := "*"
 	if req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req != nil {
+		finality = req.Finality(ctx).String()
 		if m, err := req.Method(); err == nil && m != "" {
 			method = m
 		}
 	}
-	upstreams := n.tipCandidateUpstreams(ctx, method)
+	upstreams := n.tipCandidateUpstreamsForFinality(ctx, method, finality)
 	out := make([]common.ServedTipInput, 0, len(upstreams))
 	for _, raw := range upstreams {
 		// SvmUpstream, not *upstream.Upstream: any implementation that exposes a

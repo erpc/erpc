@@ -873,4 +873,37 @@ func TestSvm_ServedTip_ExcludesNonServingUpstreams(t *testing.T) {
 	require.Equal(t, int64(1000), net.SvmHighestConfirmedSlot(selCtx))
 	require.Equal(t, int64(900), net.SvmHighestFinalizedSlot(selCtx))
 	require.Equal(t, int64(2900), net.SvmHighestFinalizedSlotMax(selCtx))
+
+	net.policyEngine.Stop()
+	engine := policy.NewEngine(ctx, &log.Logger, "test", net.metricsTracker, policystdlib.Install, nil)
+	defer engine.Stop()
+	cfg := &common.SelectionPolicyConfig{
+		EvalScope:    common.EvalScopeNetworkMethodFinality,
+		EvalInterval: common.Duration(10 * time.Millisecond),
+		EvalFunc:     `(ups, ctx) => ctx.finality === 'realtime' ? ups.filter(u => u.id !== 'high') : ups`,
+	}
+	require.NoError(t, cfg.SetDefaults())
+	raw := reg.GetNetworkUpstreams(ctx, net.networkId)
+	ups := make([]common.Upstream, len(raw))
+	for i, u := range raw {
+		ups[i] = u
+	}
+	require.NoError(t, engine.RegisterNetwork(net.networkId, "", func() []common.Upstream { return ups }, cfg))
+	net.policyEngine = engine
+	req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":9,"method":"getSlot","params":[{"commitment":"confirmed"}]}`))
+	req.SetNetwork(net)
+	require.Equal(t, "realtime", req.Finality(ctx).String())
+	require.Eventually(t, func() bool {
+		return len(engine.GetOrdered(net.networkId, "getSlot", "realtime")) == 2
+	}, 2*time.Second, 20*time.Millisecond)
+	svmCountedMock("svm-confirmed-mid.localhost", "getSlot", 0, 200, `{"jsonrpc":"2.0","id":9,"result":1000}`)
+	svmCountedMock("svm-confirmed-low.localhost", "getSlot", 0, 200, `{"jsonrpc":"2.0","id":9,"result":1000}`)
+	resp, err := svmProjectForward(ctx, net, req)
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Equal(t, "1000", string(jrr.GetResultBytes()), "finality-excluded upstream must not raise the confirmed response")
+	req.SetDirectives(&common.RequestDirectives{UseUpstream: "low"})
+	scopedCtx := context.WithValue(ctx, common.RequestContextKey, req)
+	require.Equal(t, int64(900), net.SvmHighestFinalizedSlot(scopedCtx), "selector must narrow the finality-specific ballot")
 }
