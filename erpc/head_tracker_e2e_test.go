@@ -209,6 +209,18 @@ func (c *timedChain) serve(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		result = logs
+	case "eth_getBalance", "eth_gasPrice":
+		// Head-relative state: the answer is the height this node computed
+		// it at, so a test can tell a lagging upstream's stale answer.
+		at := c.head()
+		if len(req.Params) > 1 {
+			var tag string
+			_ = json.Unmarshal(req.Params[1], &tag)
+			if strings.HasPrefix(tag, "0x") {
+				at = min(c.resolveTag(tag), c.head())
+			}
+		}
+		result = fmt.Sprintf("0x%x", at)
 	case "eth_getBlockReceipts":
 		var ref string
 		_ = json.Unmarshal(req.Params[0], &ref)

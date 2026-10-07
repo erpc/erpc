@@ -270,14 +270,19 @@ func (n *Network) EvmTrackedHead() int64 {
 	return ht.fresh()
 }
 
-// tipCheckMethods are the methods whose tip reads are checked against the
-// serving upstream's own head before forwarding while the head tracker is
-// fresh. They share one property: a node asked for a block it does not have
-// yet does NOT fail cleanly. It returns [] or a clamped range (eth_getLogs,
-// trace_filter, arbtrace_filter, eth_getBlockReceipts), null
-// (eth_getBlockByNumber), or even a result computed at its own older head
-// (eth_call on some providers). Extend this set when another method is seen
-// doing the same.
+// tipCheckMethods are the methods whose reads at an explicit number are
+// checked against the serving upstream's own head before forwarding while
+// the head tracker is fresh, for ANY target at or below the tracked head
+// (within tolerance the upstream's known head already covers it). They share
+// one property: a node asked for a block it does not have yet does NOT fail
+// cleanly. It returns [] or a clamped range (eth_getLogs, trace_filter,
+// arbtrace_filter, eth_getBlockReceipts), null (eth_getBlockByNumber), or
+// even a result computed at its own older head (eth_call on some
+// providers). Extend this set when another method is seen doing the same.
+//
+// Every other method is checked only for head-relative reads (see
+// tipTarget): those are the reads the masked selection policy no longer
+// protects.
 var tipCheckMethods = map[string]struct{}{
 	"eth_getLogs":          {},
 	"trace_filter":         {},
@@ -288,20 +293,202 @@ var tipCheckMethods = map[string]struct{}{
 	"eth_call":             {},
 }
 
+// headRelativeBlockTags are block tags answered from the serving node's own
+// view of the chain head: a lagging node answers them with older state
+// instead of failing. "finalized" is not one of them (finality lag is not
+// masked by the tracker's head view and the poller interpolates it), nor
+// "earliest" (genesis).
+var headRelativeBlockTags = map[string]struct{}{
+	"latest":  {},
+	"pending": {},
+	"safe":    {},
+}
+
+// tipTarget is the head-lag contract while the tracker is fresh: the block
+// an upstream must have (its own head, within its head-lag tolerance) to
+// serve req, or 0 when req is not checked.
+//
+// Lag masking (NetworkHooks.HeadLagOnDemand) removes lag from the selection
+// policy for EVERY method, so per-request enforcement must cover every
+// request whose answer depends on the serving node's head, not only the tip
+// methods:
+//
+//   - a tip method (tipCheckMethods) at an explicit number: that number;
+//   - any method whose block reference is head-relative: a literal
+//     latest/pending/safe tag (not interpolated: skipInterpolation,
+//     translateLatestTag:false, or a tag the poller never translates), or no
+//     block reference at all (eth_gasPrice, eth_maxPriorityFeePerGas,
+//     eth_blobBaseFee, eth_feeHistory or eth_call without a block param,
+//     eth_estimateGas, ...): the tracked head;
+//   - any method at an explicit number at or above the tracked head
+//     (typically "latest" interpolated to the tracked head): that number.
+//
+// Not checked (0): historical reads below the tracked head on non-tip
+// methods (state at an older explicit block is either there or fails
+// cleanly on a node that is behind), by-hash and transaction-hash lookups
+// (no head dependence), "finalized" / "earliest", methods the network
+// treats as static (eth_chainId, net_version), eth_blockNumber and
+// eth_syncing (answered from the tracker, or a node's own status by
+// design), write methods (eth_sendRawTransaction: any synced node accepts
+// them, and a lagging node fails cleanly on a nonce it has not seen), and
+// methods the network has no definition for (custom or non-node APIs, e.g.
+// bundlers, may not even serve eth_blockNumber).
+//
+// Cost is unchanged in kind: one lazy, single-flighted eth_blockNumber per
+// (upstream, tracked head), only for an upstream whose known head is behind
+// the target, sequentially in failover order. The leader-served upstream's
+// known head is the tracked head (response enrichment), so it needs none.
+func (n *Network) tipTarget(ctx context.Context, req *common.NormalizedRequest, method string) int64 {
+	if n.headTracker == nil || ctx.Value(headTrackerPollKey{}) != nil {
+		return 0
+	}
+	tracked := n.EvmTrackedHead()
+	if tracked <= 0 {
+		return 0
+	}
+	if _, ok := tipCheckMethods[method]; ok {
+		if target, _ := req.EvmBlockNumber().(int64); target > 0 {
+			if target > tracked {
+				return 0
+			}
+			return target
+		}
+	}
+	if _, ok := headTrackerUncheckedMethods[method]; ok {
+		return 0
+	}
+	ref, bn := n.requestBlockRef(ctx, req, method)
+	switch {
+	case ref.headRelative:
+		return tracked
+	case ref.none:
+		return tracked
+	case bn >= tracked:
+		// Interpolated "latest" (or an explicit number) at the head. Above
+		// the tracked head nothing has it yet; the normal paths decide.
+		if bn > tracked {
+			return 0
+		}
+		return bn
+	}
+	return 0
+}
+
+// headTrackerUncheckedMethods never take a head check (see tipTarget).
+var headTrackerUncheckedMethods = map[string]struct{}{
+	"eth_blockNumber":                 {},
+	"erigon_blockNumber":              {},
+	"eth_syncing":                     {},
+	"eth_chainId":                     {},
+	"net_version":                     {},
+	"net_peerCount":                   {},
+	"net_listening":                   {},
+	"web3_clientVersion":              {},
+	"eth_sendRawTransaction":          {},
+	"eth_sendTransaction":             {},
+	"eth_sendRawTransactionSync":      {},
+	"eth_getTransactionByHash":        {},
+	"eth_getTransactionReceipt":       {},
+	"eth_getBlockByHash":              {},
+	"debug_traceTransaction":          {},
+	"trace_transaction":               {},
+	"eth_newFilter":                   {},
+	"eth_newBlockFilter":              {},
+	"eth_newPendingTransactionFilter": {},
+	"eth_getFilterChanges":            {},
+	"eth_getFilterLogs":               {},
+	"eth_uninstallFilter":             {},
+	"eth_subscribe":                   {},
+	"eth_unsubscribe":                 {},
+}
+
+// blockRefKind classifies a request's block reference for tipTarget.
+type blockRefKind struct {
+	// none: the method takes no block reference, or the request omits it
+	// (the node answers at its own head).
+	none bool
+	// headRelative: a literal latest / pending / safe tag reached the node.
+	headRelative bool
+}
+
+// requestBlockRef reads the request's block reference without mutating it:
+// the literal block params (so a tag that was not interpolated is seen as a
+// tag) and the numeric block the normalization cached, if any.
+func (n *Network) requestBlockRef(ctx context.Context, req *common.NormalizedRequest, method string) (blockRefKind, int64) {
+	bn, _ := req.EvmBlockNumber().(int64)
+	var cfg *common.CacheMethodConfig
+	if n.cfg != nil {
+		cfg = n.cfg.Methods.FindMethodConfig(method)
+	}
+	if cfg == nil {
+		cfg = common.FindDefaultCacheMethodConfig(method)
+	}
+	if cfg == nil {
+		// Unknown method: its block params (and whether the upstream is an
+		// EVM node at all) are unknown. Not checked.
+		return blockRefKind{}, 0
+	}
+	if cfg.Finalized {
+		return blockRefKind{}, 0
+	}
+	if cfg.Realtime {
+		return blockRefKind{none: true}, 0
+	}
+	if len(cfg.ReqRefs) == 1 && len(cfg.ReqRefs[0]) == 1 && cfg.ReqRefs[0][0] == "*" {
+		// Arbitrary block (by transaction hash): not head-relative.
+		return blockRefKind{}, 0
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return blockRefKind{}, bn
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+	found := false
+	var kind blockRefKind
+	for _, path := range cfg.ReqRefs {
+		v, err := jrq.PeekByPath(path...)
+		if err != nil || v == nil {
+			continue
+		}
+		found = true
+		tag := ""
+		switch x := v.(type) {
+		case string:
+			tag = x
+		case map[string]interface{}:
+			if t, ok := x["blockTag"].(string); ok {
+				tag = t
+			}
+		}
+		if _, ok := headRelativeBlockTags[strings.ToLower(tag)]; ok {
+			kind.headRelative = true
+		}
+	}
+	if !found && len(cfg.ReqRefs) > 0 {
+		// The block param is optional and omitted: the node uses "latest".
+		// Only for single-param references (a range filter without bounds
+		// defaults to latest too, which is head-relative as well).
+		kind.none = true
+	}
+	return kind, bn
+}
+
 // preferKnownTipUpstreams restores request-specific freshness preference lost
 // when policy evaluation masks slow-poller lag. It neither excludes upstreams
 // nor contacts them: behind/unknown upstreams remain available for lazy failover
 // checks. Policy order is preserved among known-ready upstreams and among the
 // rest. In particular, the leader-served upstream needs no verification RPC.
+//
+// It runs before prepareRequest interpolates tags, so the target comes from
+// tipTarget, which reads a literal "latest" (or a missing block param) as
+// the tracked head instead of skipping it.
 func (n *Network) preferKnownTipUpstreams(ctx context.Context, ups []common.Upstream, req *common.NormalizedRequest, method string) []common.Upstream {
-	if n.headTracker == nil || len(ups) < 2 || ctx.Value(headTrackerPollKey{}) != nil {
+	if len(ups) < 2 {
 		return ups
 	}
-	if _, ok := tipCheckMethods[method]; !ok {
-		return ups
-	}
-	target, _ := req.EvmBlockNumber().(int64)
-	if target <= 0 || target > n.EvmTrackedHead() {
+	target := n.tipTarget(ctx, req, method)
+	if target <= 0 {
 		return ups
 	}
 	// Never mutate the policy engine's shared cached slice. Snapshot each
@@ -334,9 +521,10 @@ func upstreamHeadLagTolerance(u common.Upstream) int64 {
 	return 0
 }
 
-// checkTipAvailability gates a tip read (a target block above the
-// upstream's known head, at or below the fresh tracker head) on the
-// upstream's OWN head:
+// checkTipAvailability gates a read whose answer depends on the serving
+// node's head (tipTarget: a tip method's explicit target, or a head-relative
+// read of any method, whose target is the tracked head) on the upstream's
+// OWN head:
 //
 //   - known head (state poller value) >= target: forward. The upstream that
 //     served the leader's latest poll is in this case without any check:
@@ -367,22 +555,16 @@ func upstreamHeadLagTolerance(u common.Upstream) int64 {
 // (or the leader's poll) from an up-to-date backend and the request itself
 // from a lagging one.
 //
-// Requests without a numeric target (by-hash lookups, tags that were not
-// interpolated, e.g. skipInterpolation) are not checked, and nothing runs
-// when the tracker is disabled or stale.
+// Historical, by-hash and finalized reads are not checked (see tipTarget),
+// and nothing runs when the tracker is disabled or stale (lag is then
+// unmasked and the selection policy enforces it as before).
 func (n *Network) checkTipAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
-	if n.headTracker == nil {
-		return nil, false
-	}
-	if _, ok := tipCheckMethods[method]; !ok {
+	target := n.tipTarget(ctx, req, method)
+	if target <= 0 {
 		return nil, false
 	}
 	tracked := n.EvmTrackedHead()
 	if tracked <= 0 {
-		return nil, false
-	}
-	target, _ := req.EvmBlockNumber().(int64)
-	if target <= 0 || target > tracked {
 		return nil, false
 	}
 	eu, ok := u.(common.EvmUpstream)
@@ -391,6 +573,11 @@ func (n *Network) checkTipAvailability(ctx context.Context, u common.Upstream, r
 	}
 	sp := eu.EvmStatePoller()
 	if sp == nil || sp.IsObjectNull() {
+		return nil, false
+	}
+	if _, tip := tipCheckMethods[method]; !tip && sp.LatestBlock() <= 0 {
+		// Head never learned (a poller that cannot read eth_blockNumber):
+		// nothing to compare. Tip methods keep the strict gate.
 		return nil, false
 	}
 	tol := upstreamHeadLagTolerance(u)
