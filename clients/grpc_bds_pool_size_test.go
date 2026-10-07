@@ -28,6 +28,7 @@ func newTestPool(t *testing.T, poolSize int) *bdsPool {
 		"{}",
 		poolSize,
 		0, // no expected chainId — identity checks stay disarmed in this test
+		nil, // no headers
 	)
 	require.NoError(t, err)
 	t.Cleanup(p.Shutdown)

@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 )
 
 // Hard-coded resilience tunables. Kept inline (not config-driven) until
@@ -144,6 +145,11 @@ type bdsPool struct {
 	// atomic because the cache connector arms it after probing the server.
 	appCtx          context.Context
 	expectedChainId atomic.Uint64
+	// md is the client's outgoing metadata (its headers), attached to the
+	// pool's own ChainId probes so an auth gateway in front of the server
+	// accepts them like any request. Atomic because SetHeaders may refresh it
+	// after construction.
+	md              atomic.Pointer[metadata.MD]
 	stopCh          chan struct{}
 	stopOnce        sync.Once
 }
@@ -162,6 +168,7 @@ func newBdsPool(
 	serviceConfig string,
 	poolSize int,
 	expectedChainId uint64,
+	md metadata.MD,
 ) (*bdsPool, error) {
 	if poolSize <= 0 {
 		poolSize = bdsPoolSize
@@ -182,6 +189,7 @@ func newBdsPool(
 		stopCh:        make(chan struct{}),
 	}
 	p.expectedChainId.Store(expectedChainId)
+	p.md.Store(&md)
 	for i := 0; i < poolSize; i++ {
 		c, err := p.dial()
 		if err != nil {
@@ -221,6 +229,9 @@ func (p *bdsPool) verifyConn(ctx context.Context, c *bdsConn) (bool, uint64, err
 	}
 	vctx, cancel := context.WithTimeout(ctx, bdsVerifyTimeout)
 	defer cancel()
+	if md := p.md.Load(); md != nil && len(*md) > 0 {
+		vctx = metadata.NewOutgoingContext(vctx, *md)
+	}
 	resp, err := c.rpcClient.ChainId(vctx, &evm.ChainIdRequest{})
 	if err != nil {
 		return false, 0, err
