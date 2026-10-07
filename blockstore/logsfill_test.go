@@ -336,6 +336,27 @@ func TestLogsFill_ReorgOverwritesHeight(t *testing.T) {
 	require.Equal(t, normHash(lfHash(100)), got.Hash, "the refilled hash replaces the stale entry")
 }
 
+func TestLogsFill_UnfinalizedEntryBecomingFinalizedRefills(t *testing.T) {
+	store := newLfStore()
+	finalized := int64(50)
+	fetch := chainFetcher(t, []map[string]interface{}{lfLog(100, 0, lfAddrA)})
+	f := NewLogsFiller(LogsFillOptions{MaxRange: 10, UnfinalizedTTL: func() time.Duration { return time.Minute }},
+		store, fetch.fetch, func(context.Context) int64 { return 120 }, func(context.Context) int64 { return finalized })
+	require.Equal(t, LogsFillFill, f.Serve(t.Context(), 100, 100, 0, nil).Outcome)
+	// A reorg replaced the original answer while its unfinalized TTL remains live.
+	finalized = 110
+	fetch.raw = func(int64, int64) (json.RawMessage, error) {
+		log := lfLog(100, 0, lfAddrB)
+		log["blockHash"] = lfHash(999)
+		return lfRaw(t, log), nil
+	}
+	res := f.Serve(t.Context(), 100, 100, 0, nil)
+	require.Equal(t, LogsFillFill, res.Outcome, "pre-finalization entry cannot become a finalized hit")
+	require.EqualValues(t, 2, fetch.calls.Load())
+	got, _ := store.GetBlockLogs(t.Context(), Scope{}, 100)
+	require.Equal(t, normHash(lfHash(999)), got.Hash)
+}
+
 // A fully covered range whose unfinalized heights came from different fills may
 // straddle a reorg (height 100 from the old fork, 101 from the new). It must be
 // refilled with one fresh call instead of being served as one coherent answer.
@@ -358,7 +379,7 @@ func TestLogsFill_UnfinalizedHitRequiresOneFill(t *testing.T) {
 	require.Equal(t, LogsFillHit, res.Outcome)
 	require.EqualValues(t, 1, fetch.calls.Load())
 
-	// Pre-upgrade entries (no fill id) are a miss while unfinalized, a hit once finalized.
+	// Pre-upgrade entries (no fill id or finality evidence) are always a miss.
 	legacy := newLfStore()
 	for _, n := range []int64{100, 101} {
 		require.NoError(t, legacy.PutBlockLogs(t.Context(), Scope{}, &BlockLogs{Number: n, Logs: lfRaw(t)}, time.Minute))
@@ -370,9 +391,9 @@ func TestLogsFill_UnfinalizedHitRequiresOneFill(t *testing.T) {
 		require.NoError(t, legacyFinal.PutBlockLogs(t.Context(), Scope{}, &BlockLogs{Number: n, Logs: lfRaw(t)}, time.Minute))
 	}
 	fetch3 := chainFetcher(t, lfChainLogs())
-	require.Equal(t, LogsFillHit, newTestFiller(legacyFinal, fetch3, 200, 150).Serve(t.Context(), 100, 101, 0, nil).Outcome,
-		"finalized heights cannot reorg, so mixed or legacy entries are served")
-	require.Zero(t, fetch3.calls.Load())
+	require.Equal(t, LogsFillFill, newTestFiller(legacyFinal, fetch3, 200, 150).Serve(t.Context(), 100, 101, 0, nil).Outcome,
+		"legacy entries lack evidence that they were stored after finalization")
+	require.EqualValues(t, 1, fetch3.calls.Load())
 }
 
 func TestLogsFill_NegativeLogIndexRejected(t *testing.T) {

@@ -121,6 +121,8 @@ func TestWs_IdlessNotificationsHaveNoSubscriptionEffects(t *testing.T) {
 
 	write(`{"jsonrpc":"2.0","method":"eth_subscribe","params":["newHeads"]}`)
 	assertSilent()
+	write(`{"method":"eth_subscribe","params":["newHeads"]}`)
+	assertSilent()
 	// This reply is a barrier after the id-less frame has been handled.
 	require.Equal(t, -32601, w.call("eth_chainId", `[]`).Error.Code)
 	require.Equal(t, 0, subCount(t, e))
@@ -131,6 +133,8 @@ func TestWs_IdlessNotificationsHaveNoSubscriptionEffects(t *testing.T) {
 	require.NoError(t, json.Unmarshal(subReply.Result, &subID))
 	require.Equal(t, 1, subCount(t, e))
 	write(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_unsubscribe","params":[%q]}`, subID))
+	assertSilent()
+	write(fmt.Sprintf(`{"method":"eth_unsubscribe","params":[%q]}`, subID))
 	assertSilent()
 	require.Equal(t, -32601, w.call("eth_chainId", `[]`).Error.Code)
 	require.Equal(t, 1, subCount(t, e), "id-less unsubscribe must not remove the subscription")

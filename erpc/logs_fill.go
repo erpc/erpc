@@ -172,9 +172,8 @@ func (n *Network) tryServeLogsFill(ctx context.Context, req *common.NormalizedRe
 			maxRange = lim
 		}
 	}
-	// Range is already enforced through maxRange (as "range_too_large");
-	// addresses and topics share the network's exact counting.
-	if n.exceedsGetLogsLimits(params[0].(map[string]interface{}), from, from) {
+	// Check the full range here as well as in Serve's maxRange gate.
+	if n.exceedsGetLogsLimits(params[0].(map[string]interface{}), from, to) {
 		n.logsFillMetric(blockstore.LogsFillSkipped, "limit")
 		return nil, false
 	}

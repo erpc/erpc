@@ -409,6 +409,28 @@ func TestHeadTracker_BogusFirstHeadAndRecovery(t *testing.T) {
 	require.Equal(t, n, ht.Head(), "consistent polls recover from the poisoned head")
 }
 
+func TestHeadTracker_PoisonedHeadWithinToleranceRecovers(t *testing.T) {
+	ssr := newTestSSR(t, t.Context())
+	n := int64(1000)
+	ht := newTestTracker(ssr, nil, headTrackerDeps{
+		blockTime: func() time.Duration { return time.Second },
+		poll: func(context.Context, bool) (*headObservation, error) {
+			return &headObservation{Number: n, Hash: fmt.Sprintf("0x%064x", n), Timestamp: time.Now().Unix()}, nil
+		},
+	})
+	ht.leaseDeadlineNs.Store(time.Now().Add(time.Hour).UnixNano())
+	ht.head.TryUpdate(t.Context(), n+500)
+	for i := 0; i < headTrackerRecoverAfter-1; i++ {
+		_, err := ht.tick(t.Context())
+		require.NoError(t, err)
+		require.Equal(t, int64(1500), ht.Head())
+		n++
+	}
+	_, err := ht.tick(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, n, ht.Head(), "consistent fresh polls correct a poisoned head within tolerance")
+}
+
 // NEW-2: a stuck node on the right chain, far (>1024 blocks) behind the real
 // head, polls consistently and passes the chain-id check. Its old block
 // timestamp must prevent it from rolling the published head back.
@@ -443,6 +465,18 @@ func TestHeadTracker_NoPublishPastLeaseDeadline(t *testing.T) {
 	ht.leaseDeadlineNs.Store(time.Now().Add(-time.Millisecond).UnixNano())
 	_, _ = ht.tick(t.Context())
 	require.Zero(t, ht.Head())
+}
+
+func TestHeadTracker_ReleasedLeaseCannotPublish(t *testing.T) {
+	ssr := newTestSSR(t, t.Context())
+	ht := newTestTracker(ssr, nil, headTrackerDeps{blockTime: func() time.Duration { return time.Second }})
+	lease, err := ssr.AcquireLease(t.Context(), "released-head", time.Hour)
+	require.NoError(t, err)
+	require.NotNil(t, lease)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	ht.lead(ctx, lease, time.Hour)
+	require.False(t, ht.holdsLease(), "a released lease must fence an in-flight tick")
 }
 
 // Several replicas share one shared state: exactly one polls, ~1 call per

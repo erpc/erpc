@@ -635,10 +635,7 @@ func (c *wsConn) handleOne(trimmed []byte) ([]byte, func(bool)) {
 		return errorReply(nil, int(common.JsonRpcErrorClientSideException), "invalid request"), nil
 	}
 	if len(req.ID) == 0 {
-		if req.JSONRPC == "2.0" {
-			return nil, nil
-		}
-		req.ID = json.RawMessage("null")
+		return nil, nil
 	}
 	if req.Method != "eth_subscribe" && req.Method != "eth_unsubscribe" {
 		return errorReply(req.ID, int(common.JsonRpcErrorUnsupportedException), fmt.Sprintf("method not supported over websocket: %s (use HTTP)", req.Method)), nil

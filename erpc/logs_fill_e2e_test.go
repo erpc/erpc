@@ -251,6 +251,17 @@ func TestHttp_LogsFill_SkipsAndFallbacks(t *testing.T) {
 	})
 }
 
+func TestHttp_LogsFill_ExplicitRangeLimitGate(t *testing.T) {
+	f := newLogsFillFixture(t, 120, false)
+	f.network.cfg.Evm.GetLogsMaxAllowedRange = 2
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x3c","toBlock":"0x3e"}]}`))
+	before := logsFillCounter("skipped", "limit")
+	resp, ok := f.network.tryServeLogsFill(t.Context(), req)
+	require.False(t, ok)
+	require.Nil(t, resp)
+	require.Equal(t, before+1, logsFillCounter("skipped", "limit"), "range must be rejected by the explicit limit gate")
+}
+
 func TestHttp_LogsFill_ConcurrentRequestsCoalesce(t *testing.T) {
 	f := newLogsFillFixture(t, 120, false)
 	f.up.unfilteredLogDelay.Store(int64(300 * time.Millisecond))

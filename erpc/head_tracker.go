@@ -237,13 +237,14 @@ func newHeadTracker(projectId, networkId, label string, cfg *common.EvmHeadTrack
 	}
 	lg := logger.With().Str("component", "headTracker").Logger()
 	scope := projectId + "/" + networkId
+	// Only the leader writes the head counter; tick vets every rollback before publishing.
 	t := &headTracker{
 		projectId:   projectId,
 		networkId:   networkId,
 		label:       label,
 		cfg:         cfg,
 		ssr:         ssr,
-		head:        ssr.GetCounterInt64(data.CounterValueSchemaVersion+"/headTracker/"+scope, common.DefaultToleratedBlockHeadRollback),
+		head:        ssr.GetCounterInt64(data.CounterValueSchemaVersion+"/headTracker/"+scope, 0),
 		alive:       ssr.GetCounterInt64(data.CounterValueSchemaVersion+"/headTrackerAlive/"+scope, 0),
 		staleMs:     ssr.GetCounterInt64(data.CounterValueSchemaVersion+"/headTrackerStaleMs/"+scope, 0),
 		blockTimeMs: ssr.GetCounterInt64(data.CounterValueSchemaVersion+"/headTrackerBlockTimeMs/"+scope, 0),
@@ -598,6 +599,7 @@ func (t *headTracker) lead(ctx context.Context, lease data.Lease, ttl time.Durat
 	t.logger.Info().Str("instance", t.ssr.InstanceId()).Msg("head tracker acquired leadership")
 	defer func() {
 		t.isLeader.Store(false)
+		t.leaseDeadlineNs.Store(0)
 		telemetry.MetricHeadTrackerIsLeader.WithLabelValues(t.projectId, t.label).Set(0)
 		if !t.abandonLease.Load() {
 			rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -823,9 +825,10 @@ func (t *headTracker) tick(ctx context.Context) (time.Duration, error) {
 
 	current := t.head.GetValue()
 	reason := t.reject(ctx, obs, current, now, bt)
-	if reason == "regression" && t.recoverFromPoisonedHead(ctx, obs, current) {
+	recovering := (reason == "regression" || reason == "" && obs.Number < current) && t.recoverFromPoisonedHead(ctx, obs, current)
+	if recovering {
 		reason = ""
-	} else if reason != "regression" {
+	} else if reason != "regression" && obs.Number >= current {
 		t.regressStreak, t.regressLast = 0, 0
 	}
 	if reason != "" {
@@ -835,7 +838,6 @@ func (t *headTracker) tick(ctx context.Context) (time.Duration, error) {
 		return retry, nil
 	}
 
-	recovering := current-obs.Number > common.DefaultToleratedBlockHeadRollback
 	if obs.Number < current && !recovering {
 		// A slightly lagging upstream answered: the next block is not out
 		// yet. The poll succeeded and the published head is still correct.

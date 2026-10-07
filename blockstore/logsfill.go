@@ -27,6 +27,8 @@ type BlockLogs struct {
 	// single answer can never mix pre- and post-reorg data. Entries written
 	// before this field existed have Fill == "" and count as a miss there.
 	Fill string `json:"f,omitempty"`
+	// FinalizedAt is the finalized height observed when this entry was stored.
+	FinalizedAt int64 `json:"fa,omitempty"`
 }
 
 func (b *BlockLogs) size() int64 { return int64(len(b.Logs) + len(b.Hash) + 32) }
@@ -150,6 +152,9 @@ func (f *LogsFiller) coherent(ctx context.Context, entries []*BlockLogs) bool {
 	fill := ""
 	for _, e := range entries {
 		if finalized > 0 && e.Number <= finalized {
+			if e.FinalizedAt < e.Number {
+				return false
+			}
 			continue
 		}
 		if e.Fill == "" {
@@ -398,6 +403,7 @@ func (f *LogsFiller) fill(ctx context.Context, from, to, latest int64) ([]*Block
 	}
 	finalized := f.finalized(ctx)
 	f.parallel(len(entries), func(i int) {
+		entries[i].FinalizedAt = finalized
 		if ttl, ok := f.entryTTL(entries[i], latest, finalized); ok {
 			_ = f.store.PutBlockLogs(ctx, f.opt.Scope, entries[i], ttl)
 		}
