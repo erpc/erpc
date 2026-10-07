@@ -818,11 +818,13 @@ func TestSvm_BareHttpFailure_ClassifiedFromStatusAndFailsOver(t *testing.T) {
 	}
 }
 
-// TestSvm_ConfirmedTip_ExcludesNonServingUpstreams guards the confirmed floor
-// against voting upstreams that cannot serve the request. PickServedTip of
-// 3000/2000/1000 is 2000; dropping the 3000 upstream leaves 2000/1000, whose
-// pick is 1000.
-func TestSvm_ConfirmedTip_ExcludesNonServingUpstreams(t *testing.T) {
+// TestSvm_ServedTip_ExcludesNonServingUpstreams guards the shared majority
+// ballot. gatherSvmTipInputs feeds latest, confirmed, and finalized, so a
+// use-upstream selector must narrow all three and leave the getBlock max on
+// the full registry. Processed/confirmed slots are 3000/2000/1000 (pick 2000,
+// or 1000 once the leader is excluded). Finalized slots are 2900/1900/900
+// (pick 1900, or 900 once the leader is excluded).
+func TestSvm_ServedTip_ExcludesNonServingUpstreams(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -840,27 +842,35 @@ func TestSvm_ConfirmedTip_ExcludesNonServingUpstreams(t *testing.T) {
 	})
 
 	require.Eventually(t, func() bool {
-		for id, want := range map[string]int64{"high": 3000, "mid": 2000, "low": 1000} {
+		want := map[string][2]int64{
+			"high": {3000, 2900},
+			"mid":  {2000, 1900},
+			"low":  {1000, 900},
+		}
+		for id, slots := range want {
 			p := svmPollerFor(t, reg, ctx, net.networkId, id)
-			if p.ConfirmedSlot() != want {
+			if p.LatestSlot() != slots[0] || p.ConfirmedSlot() != slots[0] || p.FinalizedSlot() != slots[1] {
 				return false
 			}
 		}
 		return true
-	}, 5*time.Second, 50*time.Millisecond, "confirmed poller slots did not land")
+	}, 5*time.Second, 50*time.Millisecond, "poller slots did not land")
 
-	require.Equal(t, int64(2000), net.SvmHighestConfirmedSlot(ctx),
-		"all three serving upstreams: confirmed tip is the middle slot")
+	require.Equal(t, int64(2000), net.SvmHighestLatestSlot(ctx))
+	require.Equal(t, int64(2000), net.SvmHighestConfirmedSlot(ctx))
+	require.Equal(t, int64(1900), net.SvmHighestFinalizedSlot(ctx))
+	require.Equal(t, int64(2900), net.SvmHighestFinalizedSlotMax(ctx),
+		"the getBlock bound is the leading root, not the majority tip")
 
-	net.PinUpstreamOrderForTest("mid", "low")
-	require.Equal(t, int64(1000), net.SvmHighestConfirmedSlot(ctx),
-		"an upstream absent from the serving set must not vote in the confirmed tip")
-
-	net.PinUpstreamOrderForTest("high", "mid", "low")
+	// Selector narrows the shared majority ballot and must not narrow the
+	// registry-wide max. PinUpstreamOrderForTest cannot show that split: it
+	// rewrites the registry itself, so both ballots see the same shorter list.
 	req := common.NewNormalizedRequest([]byte(
 		`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}`))
 	req.SetDirectives(&common.RequestDirectives{UseUpstream: "mid|low"})
 	selCtx := context.WithValue(ctx, common.RequestContextKey, req)
-	require.Equal(t, int64(1000), net.SvmHighestConfirmedSlot(selCtx),
-		"use-upstream must narrow the confirmed tip to the selected upstreams")
+	require.Equal(t, int64(1000), net.SvmHighestLatestSlot(selCtx))
+	require.Equal(t, int64(1000), net.SvmHighestConfirmedSlot(selCtx))
+	require.Equal(t, int64(900), net.SvmHighestFinalizedSlot(selCtx))
+	require.Equal(t, int64(2900), net.SvmHighestFinalizedSlotMax(selCtx))
 }
