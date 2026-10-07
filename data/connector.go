@@ -94,6 +94,14 @@ type CacheHeadReporter interface {
 	CacheLatestBlockTimestamp(networkId string) (unixSeconds int64, ok bool)
 }
 
+// ReadOnlyConnector is an optional capability implemented by connectors that only serve reads
+// (e.g. the gRPC connector in front of an external indexed-data service). Cache policies on such a
+// connector never match for set, so a policy left at the default appliesTo (both) does not turn
+// every cacheable response into a failed write, an error metric and a warning.
+type ReadOnlyConnector interface {
+	ReadOnly() bool
+}
+
 func NewConnector(
 	ctx context.Context,
 	logger *zerolog.Logger,

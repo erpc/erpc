@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 )
 
 // Hard-coded resilience tunables. Kept inline (not config-driven) until
@@ -120,6 +122,9 @@ type bdsPool struct {
 	target        string
 	creds         credentials.TransportCredentials
 	serviceConfig string
+	// methodPrefix is prepended to every call's method (see
+	// methodPrefixInterceptors); "" for a server at the root path.
+	methodPrefix string
 
 	// poolMu protects every read/write of p.conns. Pick takes RLock so
 	// the hot path stays cheap; replaceConn and Shutdown take Lock when
@@ -140,6 +145,11 @@ type bdsPool struct {
 	// atomic because the cache connector arms it after probing the server.
 	appCtx          context.Context
 	expectedChainId atomic.Uint64
+	// md is the client's outgoing metadata (its headers), attached to the
+	// pool's own ChainId probes so an auth gateway in front of the server
+	// accepts them like any request. Atomic because SetHeaders may refresh it
+	// after construction.
+	md              atomic.Pointer[metadata.MD]
 	stopCh          chan struct{}
 	stopOnce        sync.Once
 }
@@ -153,11 +163,12 @@ type bdsPool struct {
 func newBdsPool(
 	appCtx context.Context,
 	logger *zerolog.Logger,
-	projectId, upstreamId, target string,
+	projectId, upstreamId, target, methodPrefix string,
 	creds credentials.TransportCredentials,
 	serviceConfig string,
 	poolSize int,
 	expectedChainId uint64,
+	md metadata.MD,
 ) (*bdsPool, error) {
 	if poolSize <= 0 {
 		poolSize = bdsPoolSize
@@ -169,6 +180,7 @@ func newBdsPool(
 		target:        target,
 		creds:         creds,
 		serviceConfig: serviceConfig,
+		methodPrefix:  methodPrefix,
 		conns:         make([]*bdsConn, poolSize),
 		projectId:     projectId,
 		upstreamId:    upstreamId,
@@ -177,6 +189,7 @@ func newBdsPool(
 		stopCh:        make(chan struct{}),
 	}
 	p.expectedChainId.Store(expectedChainId)
+	p.md.Store(&md)
 	for i := 0; i < poolSize; i++ {
 		c, err := p.dial()
 		if err != nil {
@@ -216,6 +229,9 @@ func (p *bdsPool) verifyConn(ctx context.Context, c *bdsConn) (bool, uint64, err
 	}
 	vctx, cancel := context.WithTimeout(ctx, bdsVerifyTimeout)
 	defer cancel()
+	if md := p.md.Load(); md != nil && len(*md) > 0 {
+		vctx = metadata.NewOutgoingContext(vctx, *md)
+	}
 	resp, err := c.rpcClient.ChainId(vctx, &evm.ChainIdRequest{})
 	if err != nil {
 		return false, 0, err
@@ -356,7 +372,7 @@ func (p *bdsPool) Size() int {
 }
 
 func (p *bdsPool) dial() (*bdsConn, error) {
-	conn, err := grpc.NewClient(p.target,
+	opts := []grpc.DialOption{
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithTransportCredentials(p.creds),
 		grpc.WithChainUnaryInterceptor(grpcResponseMetadataInterceptor()),
@@ -379,7 +395,8 @@ func (p *bdsPool) dial() (*bdsConn, error) {
 				MaxDelay:   1 * time.Second,
 			},
 		}),
-	)
+	}
+	conn, err := grpc.NewClient(p.target, append(opts, methodPrefixInterceptors(p.methodPrefix)...)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial gRPC server at %s: %w", p.target, err)
 	}
@@ -519,18 +536,51 @@ func callBoundedT[T any](ctx context.Context, fn func(context.Context) (T, error
 	return util.BoundedCallT(ctx, fn)
 }
 
-// pickTargetForBDS extracts the host:port + TLS choice from an upstream URL.
-func pickTargetForBDS(parsedUrl *url.URL) (target string, useTLS bool) {
-	target = parsedUrl.Host
-	if parsedUrl.Port() == "" {
-		target = fmt.Sprintf("%s:50051", parsedUrl.Hostname())
-	}
-	target = fmt.Sprintf("dns:///%s", target)
-
+// pickTargetForBDS extracts the host:port, the method path prefix, and the TLS
+// choice from an upstream URL.
+//
+// TLS is on for port 443 or a `grpcs`/`*tls*` scheme. A URL without a port
+// dials 443 when TLS is on and 50051 otherwise, so `grpcs://edge.goldsky.com`
+// reaches the TLS front door rather than a plaintext port.
+//
+// pathPrefix is the URL path without its trailing slash ("" for none). A
+// server mounted below a path selector — `grpcs://edge.goldsky.com/boost`
+// serves `/boost/bds.evm.RPCQueryService/...` — needs every call's method
+// prefixed with it; gRPC itself has no notion of a base path.
+func pickTargetForBDS(parsedUrl *url.URL) (target, pathPrefix string, useTLS bool) {
 	if portNum, err := strconv.Atoi(parsedUrl.Port()); err == nil && portNum == 443 {
 		useTLS = true
 	} else if strings.HasPrefix(parsedUrl.Scheme, "grpcs") || strings.Contains(parsedUrl.Scheme, "tls") {
 		useTLS = true
 	}
-	return target, useTLS
+
+	target = parsedUrl.Host
+	if parsedUrl.Port() == "" {
+		port := "50051"
+		if useTLS {
+			port = "443"
+		}
+		target = net.JoinHostPort(parsedUrl.Hostname(), port)
+	}
+	target = fmt.Sprintf("dns:///%s", target)
+	pathPrefix = strings.TrimRight(parsedUrl.Path, "/")
+	return target, pathPrefix, useTLS
+}
+
+// methodPrefixInterceptors rewrite every unary and streaming call's full
+// method name to prefix + method, so `/bds.evm.RPCQueryService/ChainId`
+// reaches `/boost/bds.evm.RPCQueryService/ChainId`. Nil for an empty prefix:
+// the common case adds nothing to the call path.
+func methodPrefixInterceptors(prefix string) []grpc.DialOption {
+	if prefix == "" {
+		return nil
+	}
+	return []grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			return invoker(ctx, prefix+method, req, reply, cc, opts...)
+		}),
+		grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			return streamer(ctx, desc, cc, prefix+method, opts...)
+		}),
+	}
 }
