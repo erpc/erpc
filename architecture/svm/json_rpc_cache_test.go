@@ -499,8 +499,13 @@ func TestSvmGenerateKeys_CacheKeySuffix(t *testing.T) {
 	empty := keys("svm:mainnet-beta", "")
 	require.Equal(t, "svm:mainnet-beta:*", empty, "empty suffix must keep today's key")
 
+	// svm:mainnet-beta:systx is itself a valid network id, so the suffixed
+	// key escapes the network id and must not match that id's unsuffixed key.
 	suffixed := keys("svm:mainnet-beta", "systx")
-	require.Equal(t, "svm:mainnet-beta:systx:*", suffixed)
+	require.Equal(t, `svm\:mainnet-beta:systx:*`, suffixed)
+	longer := keys("svm:mainnet-beta:systx", "")
+	require.Equal(t, "svm:mainnet-beta:systx:*", longer)
+	require.NotEqual(t, suffixed, longer)
 
 	other := keys("svm:mainnet-beta", "archive")
 	require.NotEqual(t, empty, suffixed)

@@ -12,8 +12,20 @@ func TestCachePartitionKey(t *testing.T) {
 
 	assert.Equal(t, "evm:998:64321354", CachePartitionKey("evm:998", "", "64321354"),
 		"empty suffix must keep the historical {networkId}:{ref} key")
-	assert.Equal(t, "evm:998:systx:64321354", CachePartitionKey("evm:998", "systx", "64321354"))
-	assert.Equal(t, "svm:mainnet-beta:systx:*", CachePartitionKey("svm:mainnet-beta", "systx", "*"))
+	assert.Equal(t, "evm:998:systx:64321354", CachePartitionKey("evm:998", "systx", "64321354"),
+		"an EVM id plus a suffix is not a valid network id, so the key stays historical")
+	// svm:<cluster>:<suffix> is a valid network id, so the suffixed key must
+	// not equal the unsuffixed key of that longer id.
+	assert.Equal(t, `svm\:mainnet-beta:systx:*`, CachePartitionKey("svm:mainnet-beta", "systx", "*"))
+	assert.NotEqual(t,
+		CachePartitionKey("svm:foo", "bar", "123"),
+		CachePartitionKey("svm:foo:bar", "", "123"),
+	)
+	assert.Equal(t, "svm:foo:bar:123", CachePartitionKey("svm:foo:bar", "", "123"),
+		"unsuffixed keys stay historical")
+	assert.Equal(t, `svm\:foo:bar:123`, CachePartitionKey("svm:foo", "bar", "123"))
+	assert.Equal(t, "svm:fogo:mainnet:systx:1", CachePartitionKey("svm:fogo:mainnet", "systx", "1"),
+		"svm:<chain>:<cluster>:<suffix> is not a valid network id")
 
 	// A colon inside the ref must not land on another partition's key.
 	assert.NotEqual(t,
