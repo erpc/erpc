@@ -25,10 +25,8 @@ func upstreamPostForward_markUnexpectedEmpty(
 		}
 	}
 
-	// Confidence guard: do not retry an empty result for a concrete block beyond the
-	// network's required confidence head (latest by default, or finalized) — it isn't
-	// confirmed yet, so every upstream legitimately returns empty. Return the truthful
-	// empty instead of churning retries until the request times out.
+	// Confidence guard: beyond the head plus the configured safety margin, an
+	// empty is likely truthful. Near-tip empties may be from a lagging upstream.
 	if emptyResultBeyondConfidence(ctx, rq) {
 		return rs, re
 	}
@@ -53,9 +51,8 @@ func upstreamPostForward_markUnexpectedEmpty(
 }
 
 // emptyResultBeyondConfidence reports whether `rq` targets a concrete block number
-// beyond the network's required confidence head — i.e. not yet confirmed enough for an
-// empty result to mean "missing data" rather than "not produced/finalized yet", so
-// every upstream legitimately returns empty. The head is the latest head for
+// beyond the network's required confidence head plus its safety margin. The
+// head is the latest head for
 // EmptyResultConfidence=blockHead (the default) or the finalized head for
 // finalizedBlock. Returns false (fail-open) when the head is unknown or the request
 // does not target a concrete numeric block (tags and block-hash lookups never qualify).
@@ -85,7 +82,8 @@ func emptyResultBeyondConfidence(ctx context.Context, rq *common.NormalizedReque
 		// Fail open: without a known head we cannot tell beyond-confidence from behind.
 		return false
 	}
-	return bn > head
+	margin := cfg.Evm.FutureBlockMargin()
+	return margin >= 0 && bn > head && bn-head > margin
 }
 
 // normalizeEmptyArrayResponse returns a new NormalizedResponse with result `[]`,

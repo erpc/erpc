@@ -2608,6 +2608,11 @@ type EvmNetworkConfig struct {
 	//   - finalizedBlock: stricter — only retry empties for blocks at/below the
 	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
+	// FutureBlockShortCircuitMargin is the number of blocks above the observed
+	// head still forwarded upstream. Negative disables the short-circuit.
+	// Nil defaults to 16: four seconds of tracker lag even on 250ms chains,
+	// and ample room for the usual one-block lag on 2s chains.
+	FutureBlockShortCircuitMargin *int64 `yaml:"futureBlockShortCircuitMargin,omitempty" json:"futureBlockShortCircuitMargin,omitempty"`
 
 	// SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
 	// requests carrying the `safe` block tag. Matching upstreams define and

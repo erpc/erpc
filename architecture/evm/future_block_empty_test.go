@@ -9,8 +9,8 @@ import (
 )
 
 // TestEmptyResultBeyondConfidence pins the default (blockHead) rule for empty results:
-// any concrete block above the latest head is not-yet-produced (return the truthful
-// empty, do not retry), while the head and below stay retryable. Tags / unknown blocks
+// a concrete block above the latest head but within the safety margin may
+// already exist (retry an empty), while farther blocks return a truthful empty. Tags / unknown blocks
 // and an unknown head fail open (never treated as beyond confidence).
 func TestEmptyResultBeyondConfidence(t *testing.T) {
 	ctx := context.Background()
@@ -28,8 +28,13 @@ func TestEmptyResultBeyondConfidence(t *testing.T) {
 
 	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 999)), "behind head → retryable, not beyond")
 	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 1000)), "exactly head → not beyond")
-	assert.True(t, emptyResultBeyondConfidence(ctx, mk(nw, 1001)), "head+1 → beyond, return empty")
+	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 1001)), "head+1 may already exist → retry")
+	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 1016)), "head+margin → retry")
+	assert.True(t, emptyResultBeyondConfidence(ctx, mk(nw, 1017)), "head+margin+1 → truthful empty")
 	assert.True(t, emptyResultBeyondConfidence(ctx, mk(nw, 9_000_000)), "far ahead → beyond")
+	disabled := int64(-1)
+	nw.cfg.Evm.FutureBlockShortCircuitMargin = &disabled
+	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 9_000_000)), "negative margin disables the beyond-head fast path")
 	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 0)), "no concrete block (tag/hash) → never beyond")
 
 	// Unknown head (0) → fail open.
@@ -60,7 +65,8 @@ func TestEmptyResultBeyondConfidence_Finalized(t *testing.T) {
 
 	assert.False(t, emptyResultBeyondConfidence(ctx, mk(899)), "below finalized → retryable")
 	assert.False(t, emptyResultBeyondConfidence(ctx, mk(900)), "exactly finalized → not beyond")
-	assert.True(t, emptyResultBeyondConfidence(ctx, mk(901)), "finalized+1 (unfinalized) → beyond at finalized confidence")
+	assert.False(t, emptyResultBeyondConfidence(ctx, mk(901)), "finalized+1 within safety margin → retry")
+	assert.True(t, emptyResultBeyondConfidence(ctx, mk(917)), "finalized+margin+1 → truthful empty")
 	assert.True(t, emptyResultBeyondConfidence(ctx, mk(1000)), "latest head but unfinalized → beyond at finalized confidence")
 }
 
@@ -83,12 +89,17 @@ func TestEnforceNonNullBlock_FutureBlockNotErrored(t *testing.T) {
 		return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	}
 
-	// Beyond confidence (head+1): null is legitimate → returned as-is, no error.
-	resp := mkNullResp(1001)
+	// Clearly beyond confidence (head+margin+1): null is legitimate.
+	resp := mkNullResp(1017)
 	got, err := enforceNonNullBlock(ctx, resp.Request(), resp)
 	assert.NoError(t, err, "beyond-confidence numeric block null must not be force-errored")
 	assert.NotNil(t, got)
 	assert.True(t, got.IsResultEmptyish())
+	// A near-tip empty could be a lagging upstream: do not accept it as truth.
+	near := mkNullResp(1001)
+	nearGot, nearErr := enforceNonNullBlock(ctx, near.Request(), near)
+	assert.Error(t, nearErr)
+	assert.Nil(t, nearGot)
 
 	// Behind head: null is genuinely missing/pruned → still errors (unchanged).
 	resp2 := mkNullResp(999)

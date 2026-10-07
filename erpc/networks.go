@@ -871,22 +871,19 @@ func (n *Network) evmHeadReference(ctx context.Context, useFinalized bool) serve
 	return ref
 }
 
-// tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
-// `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
-// beyond every eligible upstream's head (at the network's emptyResultConfidence level).
-// No upstream can serve such a block yet, so dispatching + hedging across all of
-// them only burns latency and load before they each return empty — returning the
-// null here skips that fan-out entirely.
+// tryShortCircuitFutureBlock avoids dispatch only for a clearly far-future
+// concrete block. Near-tip numbers must go upstream: poller/tracker heads can
+// trail blocks an upstream has already served.
 //
-// Safety: it compares against the highest effective head across eligible
-// upstreams, static caps included (servedTipReference.Available), so it never
-// nulls out a block any upstream actually serves. It is gated on served-tip being enabled for the latest
-// axis — the same opt-in that makes the head trustworthy — and the synthesized
-// response is returned directly from Forward, so it is never written to cache
-// (the block will exist later). The post-forward empty guard remains as
-// defense-in-depth for the in-flight case where an upstream advances mid-request.
+// It compares against the highest observed eligible head (including static
+// caps) plus the configured safety margin. Only an operator-defined far-future
+// distance is assumed unavailable; the synthesized null is never cached.
 func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
 	if n.cfg == nil || n.cfg.Evm == nil || !n.servedTipEnabledFor("latest") {
+		return nil, false
+	}
+	margin := n.cfg.Evm.FutureBlockMargin()
+	if margin < 0 {
 		return nil, false
 	}
 	if !strings.EqualFold(method, "eth_getBlockByNumber") {
@@ -905,8 +902,8 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 		// while the slow per-upstream pollers have not caught up to it.
 		maxHead = max(maxHead, n.EvmTrackedHead())
 	}
-	if maxHead <= 0 || bn <= maxHead {
-		// Unknown head (fail open) or block within reach of some upstream.
+	if maxHead <= 0 || bn <= maxHead || bn-maxHead <= margin {
+		// Unknown head (fail open), or a block close enough to have been mined.
 		return nil, false
 	}
 	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)

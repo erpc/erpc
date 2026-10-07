@@ -2600,6 +2600,10 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		// latest head; a block above the head isn't produced yet → return it empty.
 		e.EmptyResultConfidence = AvailbilityConfidenceBlockHead
 	}
+	if e.FutureBlockShortCircuitMargin == nil {
+		margin := DefaultFutureBlockShortCircuitMargin
+		e.FutureBlockShortCircuitMargin = &margin
+	}
 	if e.MaxFutureBlockRetryDistance != nil {
 		log.Warn().Msg("config: evm.maxFutureBlockRetryDistance is deprecated and ignored; use evm.emptyResultConfidence (blockHead|finalizedBlock) instead")
 		e.MaxFutureBlockRetryDistance = nil
@@ -2635,6 +2639,17 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 
 	return nil
+}
+
+const DefaultFutureBlockShortCircuitMargin int64 = 16
+
+// FutureBlockMargin returns the safety distance even for network configs
+// constructed directly without passing through SetDefaults.
+func (e *EvmNetworkConfig) FutureBlockMargin() int64 {
+	if e.FutureBlockShortCircuitMargin == nil {
+		return DefaultFutureBlockShortCircuitMargin
+	}
+	return *e.FutureBlockShortCircuitMargin
 }
 
 func (i *EvmIntegrityConfig) SetDefaults() error {
