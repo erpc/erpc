@@ -852,6 +852,16 @@ func (t *headTracker) tick(ctx context.Context) (time.Duration, error) {
 			}
 			t.prev = obs
 		} else if t.prev == nil {
+			// First observation since this replica (re)acquired the lease:
+			// the hash the previous leader wrote at this height is unknown,
+			// and a same-height reorg during the handover would otherwise
+			// leave the orphaned block cached until it expires. Write the
+			// observed block unconditionally; for the same hash this is an
+			// idempotent overwrite (the block store reconfirms it without a
+			// parse), once per leadership change.
+			if t.deps.onAccepted != nil {
+				t.deps.onAccepted(ctx, obs)
+			}
 			t.prev, t.prevAt = obs, now
 		}
 		return sinceSent(t.staleWait(obs, now, bt), elapsed), nil
@@ -1200,24 +1210,36 @@ func parseHeadObservation(raw json.RawMessage) (*headObservation, error) {
 type upstreamCheck struct {
 	trackedAt int64 // tracker head when the check ran
 	head      int64
+	// retryAt is set for a FAILED check (timeout, 429, ...): it proves
+	// nothing about the upstream's head, so it only suppresses new checks
+	// until retryAt instead of for the whole tracker-head epoch.
+	retryAt time.Time
+}
+
+// headTrackerTipCheckRetry bounds how often a failing upstream is re-asked
+// for its head (per replica) while the tracker head does not move.
+const headTrackerTipCheckRetry = time.Second
+
+// current reports whether the check still answers for tracker head tracked.
+func (c *upstreamCheck) current(tracked int64, now time.Time) bool {
+	return c.trackedAt >= tracked && (c.retryAt.IsZero() || now.Before(c.retryAt))
 }
 
 // checkUpstreamHead returns u's head, asking it with eth_blockNumber at most
 // once per (upstream, tracker head) on this replica. Concurrent callers for
 // the same upstream share one call. The answer is fed into u's shared head
 // counter (SuggestLatestBlock), so the poller, the lag metrics and the other
-// replicas see it too. Returns the known head on any error.
+// replicas see it too. Returns the known head on any error; a failed check
+// is retried after headTrackerTipCheckRetry, not cached for the epoch.
 func (t *headTracker) checkUpstreamHead(ctx context.Context, u common.EvmUpstream, tracked int64, projectId, label string) int64 {
 	sp := u.EvmStatePoller()
 	id := u.Id()
-	if v, ok := t.checks.Load(id); ok {
-		if c := v.(*upstreamCheck); c.trackedAt >= tracked {
-			return max(c.head, sp.LatestBlock())
-		}
+	if v, ok := t.checks.Load(id); ok && v.(*upstreamCheck).current(tracked, t.deps.now()) {
+		return max(v.(*upstreamCheck).head, sp.LatestBlock())
 	}
 	key := fmt.Sprintf("%s@%d", id, tracked)
 	v, _, _ := t.checkGroup.Do(key, func() (interface{}, error) {
-		if c, ok := t.checks.Load(id); ok && c.(*upstreamCheck).trackedAt >= tracked {
+		if c, ok := t.checks.Load(id); ok && c.(*upstreamCheck).current(tracked, t.deps.now()) {
 			return c.(*upstreamCheck).head, nil
 		}
 		telemetry.MetricHeadTrackerTipChecksTotal.WithLabelValues(projectId, label, id).Inc()
@@ -1225,8 +1247,14 @@ func (t *headTracker) checkUpstreamHead(ctx context.Context, u common.EvmUpstrea
 		defer cancel()
 		head, err := fetchUpstreamBlockNumber(cctx, u)
 		if err != nil {
-			head = 0
-		} else if head > sp.LatestBlock() {
+			// The callers fall back to the known head; the failure is only
+			// remembered briefly (see upstreamCheck.retryAt), so one timeout
+			// or 429 does not mark a healthy upstream behind until the
+			// tracked head moves.
+			t.checks.Store(id, &upstreamCheck{trackedAt: tracked, retryAt: t.deps.now().Add(headTrackerTipCheckRetry)})
+			return int64(0), nil
+		}
+		if head > sp.LatestBlock() {
 			sp.SuggestLatestBlock(head)
 		}
 		t.checks.Store(id, &upstreamCheck{trackedAt: tracked, head: head})

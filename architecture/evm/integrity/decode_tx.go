@@ -125,22 +125,76 @@ type splitTx struct {
 
 func splitTxObject(raw string) *splitTx {
 	st := &splitTx{raw: raw}
-	var keys [32]string
-	seen := keys[:0]
+	var seen foldedKeySet
 	dup := false
 	isObj := forEachPair(raw, 0, func(k, v string) {
-		for _, p := range seen {
-			if asciiFoldEq(p, k) {
-				dup = true
-			}
+		if !dup && !seen.add(k) {
+			dup = true
 		}
-		seen = append(seen, k)
 		if id := txKeyID(k); id >= 0 {
 			st.fields[id] = v
 		}
 	})
 	st.ok = isObj && !dup
 	return st
+}
+
+// foldedKeySet detects object keys equal under ASCII case folding (the
+// asciiFoldEq relation). Real transactions have about 20 keys, compared
+// pairwise in a fixed array without allocating; past foldedKeyLinearMax keys
+// it switches to a map of ASCII-lowercased keys, so a hostile object with
+// thousands of keys costs linear, not quadratic, time.
+type foldedKeySet struct {
+	small [foldedKeyLinearMax]string
+	n     int
+	big   map[string]struct{}
+}
+
+const foldedKeyLinearMax = 32
+
+// add records k and reports false when an equal (ASCII case-folded) key was
+// already added.
+func (s *foldedKeySet) add(k string) bool {
+	if s.big == nil {
+		for _, p := range s.small[:s.n] {
+			if asciiFoldEq(p, k) {
+				return false
+			}
+		}
+		if s.n < foldedKeyLinearMax {
+			s.small[s.n] = k
+			s.n++
+			return true
+		}
+		s.big = make(map[string]struct{}, 2*foldedKeyLinearMax)
+		for _, p := range s.small[:s.n] {
+			s.big[asciiLower(p)] = struct{}{}
+		}
+	}
+	f := asciiLower(k)
+	if _, ok := s.big[f]; ok {
+		return false
+	}
+	s.big[f] = struct{}{}
+	return true
+}
+
+// asciiLower maps A-Z to a-z and leaves every other byte alone, so two keys
+// are asciiFoldEq exactly when their asciiLower forms are equal. It returns k
+// itself when there is nothing to change.
+func asciiLower(k string) string {
+	for i := 0; i < len(k); i++ {
+		if c := k[i]; 'A' <= c && c <= 'Z' {
+			b := []byte(k)
+			for j := i; j < len(b); j++ {
+				if 'A' <= b[j] && b[j] <= 'Z' {
+					b[j] += 'a' - 'A'
+				}
+			}
+			return string(b)
+		}
+	}
+	return k
 }
 
 func isNullRaw(v string) bool { return v == "" || v == "null" }

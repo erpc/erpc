@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/telemetry"
 )
 
@@ -441,34 +440,36 @@ func hashOnlyHeader(raw json.RawMessage) (json.RawMessage, error) {
 }
 
 // BlockIdentity extracts a block result's top-level number and hash without
-// decoding the rest (transactions are skipped, not materialized). ok is false
+// keeping the rest (transactions are skipped, not materialized). ok is false
 // when either is missing or malformed; callers then take the full parse,
 // which rejects the block with the usual errors. The hash is normalized.
+//
+// It decodes with scanCfg, the decoder of the full parse (parseScannedBlock),
+// so it resolves keys exactly as that parse does: case-insensitively, and
+// with the LAST occurrence of a duplicated key winning. A first-match
+// searcher would read {"hash":A,"hash":B} as A while the stored record says
+// B, letting the adopt-skip and reconfirm paths mistake a reorged block for
+// the held one.
 func BlockIdentity(raw json.RawMessage) (n int64, hash string, ok bool) {
 	if len(raw) == 0 {
 		return 0, "", false
 	}
-	s := ast.NewSearcher(string(raw))
-	s.ValidateJSON = false
-	nn, err := s.GetByPath("number")
-	if err != nil {
+	var id blockIdentity
+	if err := scanCfg.UnmarshalFromString(bytesString(raw), &id); err != nil || id.Number == nil || id.Hash == nil {
 		return 0, "", false
 	}
-	ns, err := nn.StrictString()
-	if err != nil {
+	n, err := parseHexInt(*id.Number)
+	if err != nil || n < 0 || !isHexOfLen(*id.Hash, 64) {
 		return 0, "", false
 	}
-	if n, err = parseHexInt(ns); err != nil || n < 0 {
-		return 0, "", false
-	}
-	hn, err := s.GetByPath("hash")
-	if err != nil {
-		return 0, "", false
-	}
-	if hash, err = hn.StrictString(); err != nil || !isHexOfLen(hash, 64) {
-		return 0, "", false
-	}
-	return n, normHash(hash), true
+	return n, normHash(*id.Hash), true
+}
+
+// blockIdentity is the part of a block result BlockIdentity reads. Pointers
+// tell a missing or null field from an empty string.
+type blockIdentity struct {
+	Number *string `json:"number"`
+	Hash   *string `json:"hash"`
 }
 
 // heldHeaderLocked returns the held header at n (followed view first, then

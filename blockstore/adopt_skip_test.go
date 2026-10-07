@@ -115,3 +115,46 @@ func TestAdoptBlock_HeldBlockSkipsParse(t *testing.T) {
 	require.EqualValues(t, 4, c.adoptParses.Load())
 	require.Equal(t, hashOf(20, "b"), c.CanonicalHash(20))
 }
+
+// BlockIdentity resolves a duplicated key like the full parse does (the last
+// occurrence wins), so a held hash in a FIRST "hash" key cannot hide the
+// effective, reorged hash from the reconfirm and adopt-skip paths.
+func TestBlockIdentity_DuplicateKeysMatchFullParse(t *testing.T) {
+	a, b := hashOf(5, "a"), hashOf(5, "b")
+	for _, raw := range []string{
+		`{"hash":"` + a + `","number":"0x4","hash":"` + b + `","number":"0x5"}`,
+		`{"Hash":"` + a + `","NUMBER":"0x4","hash":"` + b + `","number":"0x5"}`,
+	} {
+		n, hash, ok := BlockIdentity(json.RawMessage(raw))
+		require.True(t, ok, raw)
+		sb, err := scanBlock(json.RawMessage(raw))
+		require.NoError(t, err, raw)
+		require.Equal(t, normHash(sb.b.Hash), hash, "identity agrees with the full decoder: "+raw)
+		require.Equal(t, "0x5", sb.b.Number, raw)
+		require.EqualValues(t, 5, n, raw)
+		require.Equal(t, normHash(b), hash, raw)
+	}
+}
+
+func TestAdoptBlock_DuplicateHashKeyIsNotReconfirmed(t *testing.T) {
+	ch := newFakeChain(20)
+	c := newPullCache(ch, newMapStore())
+	c.AdoptBlock(ctxb(), headerOf(t, ch, 20), false, true, false)
+	require.Equal(t, hashOf(20, "a"), c.CanonicalHash(20))
+	parses := c.adoptParses.Load()
+
+	// The reorged block, prefixed with a duplicate "hash" key naming the held
+	// (orphaned) hash. The effective hash is the last one: the reorged block.
+	ch.reorg(20, "b")
+	reorged := headerOf(t, ch, 20)
+	dup := json.RawMessage(`{"hash":"` + hashOf(20, "a") + `",` + string(reorged[1:]))
+	_, hash, ok := BlockIdentity(dup)
+	require.True(t, ok)
+	require.Equal(t, normHash(hashOf(20, "b")), hash)
+
+	require.False(t, c.AdoptBlockNeeded(dup, false, true, true), "weak evidence never replaces a held hash")
+	require.True(t, c.AdoptBlockNeeded(dup, false, true, false), "fresh conflicting evidence is a reorg")
+	c.AdoptBlock(ctxb(), dup, false, true, false)
+	require.Equal(t, parses+1, c.adoptParses.Load(), "the reorged block is parsed, not reconfirmed as the held one")
+	require.Equal(t, hashOf(20, "b"), c.CanonicalHash(20), "reorg evidence is kept")
+}

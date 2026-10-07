@@ -250,6 +250,41 @@ func TestHeadTracker_SameHeightReorgRewritesBlock(t *testing.T) {
 	require.Equal(t, int64(500), ht.Head())
 }
 
+// S2 across a leadership change: the new leader has no previous observation
+// (prev is reset on step-down) and the published head is already at the
+// polled height. A different hash there (a reorg during the handover) must
+// still rewrite the cached block; the published number does not change.
+func TestHeadTracker_SameHeightReorgAfterHandoverRewritesBlock(t *testing.T) {
+	ssr := newTestSSR(t, t.Context())
+	hash := "0xaa"
+	var written []string
+	ht := newTestTracker(ssr, nil, headTrackerDeps{
+		blockTime: func() time.Duration { return time.Second },
+		poll: func(context.Context, bool) (*headObservation, error) {
+			return &headObservation{Number: 500, Hash: hash, Timestamp: time.Now().Unix()}, nil
+		},
+		onAccepted: func(_ context.Context, o *headObservation) { written = append(written, o.Hash) },
+	})
+	ht.leaseDeadlineNs.Store(time.Now().Add(time.Hour).UnixNano())
+	_, err := ht.tick(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []string{"0xaa"}, written)
+
+	// Leadership moves away and back: the teardown resets prev, while the
+	// shared published head stays at 500 (written by the old leader).
+	ht.prev = nil
+	hash = "0xbb"
+	_, err = ht.tick(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []string{"0xaa", "0xbb"}, written, "the reorged head block is rewritten after a handover")
+	require.Equal(t, int64(500), ht.Head())
+	require.Equal(t, "0xbb", ht.prev.Hash)
+
+	_, err = ht.tick(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []string{"0xaa", "0xbb"}, written, "the same block is not rewritten again")
+}
+
 // S3: the first head is verified (chain id), and a poisoned published head
 // is recovered from after headTrackerRecoverAfter consistent polls.
 func TestHeadTracker_BogusFirstHeadAndRecovery(t *testing.T) {
