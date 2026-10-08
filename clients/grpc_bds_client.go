@@ -657,7 +657,11 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 	// A BDS server answers it directly; a hash it does not hold (a block not
 	// indexed yet, or reorged away) is OUT_OF_RANGE, a miss like any other.
 	var blockHash []byte
-	if bhStr, ok := filterParams["blockHash"].(string); ok && bhStr != "" {
+	if raw, present := filterParams["blockHash"]; present && raw != nil {
+		bhStr, ok := raw.(string)
+		if !ok || bhStr == "" {
+			return nil, fmt.Errorf("failed to parse blockHash: want a 32-byte hex string, got %v", raw)
+		}
 		if filterParams["fromBlock"] != nil || filterParams["toBlock"] != nil {
 			return nil, fmt.Errorf("eth_getLogs blockHash cannot be combined with fromBlock/toBlock")
 		}
