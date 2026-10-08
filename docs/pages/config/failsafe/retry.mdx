@@ -490,7 +490,7 @@ Source: <SourceLink file="common/exec_state.go" lines="279-285" />
 
 | Error | When produced |
 |---|---|
-| `ErrFailsafeConfiguration` | Startup only — circuit breaker at network scope. Server aborts before serving any request. (Consensus at upstream scope is rejected earlier, by config validation.) Source: <SourceLink file="common/errors.go" lines="1573-1584" /> |
+| `ErrFailsafeConfiguration` | Startup only — circuit breaker at network scope. Server aborts before serving any request. (Consensus at upstream scope is rejected earlier, by config validation.) Source: <SourceLink file="common/errors.go" lines="1721-1732" /> |
 | `ErrFailsafeRetryExceeded` | After all retry rounds exhausted; wraps the last error with `ScopeNetwork` or `ScopeUpstream` and `durationMs`. For `eth_sendRawTransaction` with `ErrEndpointExecutionException`, the error is returned unwrapped (not inside `ErrFailsafeRetryExceeded`). Source: <SourceLink file="erpc/network_executor.go" lines="279-283" /> |
 
 **Log messages:**
