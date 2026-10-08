@@ -149,7 +149,7 @@ func NewGrpcBdsClient(
 		}
 	}
 
-	target, useTLS := pickTargetForBDS(parsedUrl)
+	target, methodPrefix, useTLS := pickTargetForBDS(parsedUrl)
 
 	// Determine whether to use TLS based on port or URL scheme.
 	var transportCredentials credentials.TransportCredentials
@@ -168,7 +168,7 @@ func NewGrpcBdsClient(
 
 	serviceConfig := bdsServiceConfig(healthCheckService)
 
-	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load())
+	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, methodPrefix, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load(), metadata.New(client.headers))
 	if err != nil {
 		return nil, err
 	}
@@ -1062,6 +1062,11 @@ func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
 	}
 	for k, v := range h {
 		c.headers[k] = v
+	}
+	// The pool's ChainId probes must carry the same headers as requests.
+	if c.pool != nil {
+		md := metadata.New(c.headers)
+		c.pool.md.Store(&md)
 	}
 }
 

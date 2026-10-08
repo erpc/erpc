@@ -377,6 +377,9 @@ func TestHttp_EvmGetLogs_MaxRange_EnforcedBeforeCache(t *testing.T) {
 	// entries are finalized and served by the policy above.
 	const overCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x1ff"}]}`
 	const withinCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x104"}]}`
+	// 0x0 is genesis, not an unresolved tag. 0x0–0x1ff is 512 blocks and must
+	// be refused before the cache read, same as any other over-cap range.
+	const genesisOverCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x1ff"}]}`
 	seed := func(body, blockNumber string) {
 		req := common.NewNormalizedRequest([]byte(body))
 		req.SetNetwork(ntw)
@@ -394,6 +397,7 @@ func TestHttp_EvmGetLogs_MaxRange_EnforcedBeforeCache(t *testing.T) {
 	}
 	seed(overCap, "0x150")
 	seed(withinCap, "0x102")
+	seed(genesisOverCap, "0x10")
 
 	// Unhappy path: 256 blocks against a cap of 10 is refused, though cached.
 	// JSON-RPC application errors stay HTTP 200 with the error in the body.
@@ -402,6 +406,13 @@ func TestHttp_EvmGetLogs_MaxRange_EnforcedBeforeCache(t *testing.T) {
 	require.Contains(t, body, "ErrGetLogsExceededMaxAllowedRange")
 	require.Contains(t, body, `"code":-32012`)
 	require.NotContains(t, body, "0x150", "an over-cap request must not be answered from the cache")
+
+	// Genesis-anchored over-cap range: block 0 must not skip the pre-cache check.
+	status, _, body = send(genesisOverCap, nil, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.Contains(t, body, "ErrGetLogsExceededMaxAllowedRange")
+	require.Contains(t, body, `"code":-32012`)
+	require.NotContains(t, body, `"blockNumber":"0x10"`, "a genesis over-cap request must not be answered from the cache")
 
 	// Happy path: a 5-block request is still served from the cache.
 	status, _, body = send(withinCap, nil, nil)

@@ -513,6 +513,10 @@ func fetchGrpcServers(ctx context.Context, logger *zerolog.Logger, endpoint stri
 	return out, nil
 }
 
+// ReadOnly implements ReadOnlyConnector: the gRPC connector only reads, so cache policies on it
+// never select it for writes.
+func (g *GrpcConnector) ReadOnly() bool { return true }
+
 func (g *GrpcConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	// no-op for read-only connector
 	return fmt.Errorf("grpc connector is read-only")

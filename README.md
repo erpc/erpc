@@ -82,7 +82,8 @@ This setup is ideal for development and testing purposes. For production environ
 ### Key Features
 
 - **Retries, failover, circuit breakers & hedged requests**: every call is routed to the fastest healthy upstream, automatically.
-- **Re-org-aware permanent cache**: serve reads from [cache](https://docs.erpc.cloud/operation/cache), stay consistent across chain reorgs, and eliminate redundant upstream calls.
+- **Re-org-aware permanent cache**: serve reads from [cache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache), stay consistent across chain reorgs, and eliminate redundant upstream calls.
+- **Hosted gRPC cache by Goldsky**: [plug in Goldsky's read-only cache](https://docs.erpc.cloud/config/database/goldsky-cache) of indexed chain data to serve historical reads without hitting your upstreams.
 - **Automatic method routing**: no need to track which provider supports which `eth_*` (EVM) or Solana method.
 - **Configurable rate limits**: set hourly or daily [rate limits](https://docs.erpc.cloud/config/rate-limiters) and compute-unit budgets per upstream to control usage and cost.
 - **Selection policies**: [influence which upstreams serve traffic](https://docs.erpc.cloud/config/projects/selection-policies) — e.g. cheap-first until error-rate or block-lag thresholds are crossed.

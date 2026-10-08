@@ -151,9 +151,12 @@ func getLogsFilterCounts(filter map[string]interface{}) (addrCount, topicCount i
 // (unresolvable tag, no state yet); no limit is checked then and the request
 // passes through, as it always has.
 func checkGetLogsHardLimits(ctx context.Context, n common.Network, fbStr, tbStr string, addrCount, topicCount int64) (fromBlock, toBlock int64, resolved bool, err error) {
-	_, fromBlock = resolveBlockTagForGetLogs(ctx, n, fbStr)
-	_, toBlock = resolveBlockTagForGetLogs(ctx, n, tbStr)
-	if fromBlock == 0 || toBlock == 0 {
+	fromHex, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
+	toHex, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
+	// Block 0 is genesis: the resolver returns ("0x0", 0). An unresolved tag
+	// returns ("", 0). A numeric check treats genesis as unresolved and skips
+	// every hard limit, so an over-cap 0x0–0xN request is still served from cache.
+	if fromHex == "" || toHex == "" {
 		return fromBlock, toBlock, false, nil
 	}
 	if fromBlock > toBlock {
@@ -212,9 +215,16 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
-	fromBlock, toBlock, resolved, limitErr := checkGetLogsHardLimits(ctx, n, fbStr, tbStr, addrCount, topicCount)
+	// Network.Forward binds the request before its own pre-forward, but this
+	// hook runs first, before the cache read. latest/finalized resolution
+	// scopes the tip to the request's use-upstream selector via this context
+	// value. Without it the unscoped tip is used: a range that fits the
+	// selected upstream is rejected, and a range that exceeds it can still
+	// be served from cache.
+	limitCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+	fromBlock, toBlock, resolved, limitErr := checkGetLogsHardLimits(limitCtx, n, fbStr, tbStr, addrCount, topicCount)
 
-	if fromBlock > 0 && toBlock >= fromBlock {
+	if resolved && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
 		finalityStr := nq.Finality(ctx).String()
 		telemetry.MetricNetworkEvmGetLogsRangeRequested.
@@ -404,11 +414,12 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.
 	// If tags cannot be resolved (e.g., "safe", "pending", or no state available),
 	// pass through to upstream without block range validation.
-	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fb)
-	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tb)
+	fromHex, fromBlock := resolveBlockTagForGetLogs(ctx, n, fb)
+	toHex, toBlock := resolveBlockTagForGetLogs(ctx, n, tb)
 
-	// If either block couldn't be resolved to a number, skip validation and pass to upstream
-	if fromBlock == 0 || toBlock == 0 {
+	// If either block couldn't be resolved to a number, skip validation and pass to upstream.
+	// "0x0" is genesis, not unresolved — only an empty hex means the tag did not resolve.
+	if fromHex == "" || toHex == "" {
 		return false, nil, nil
 	}
 

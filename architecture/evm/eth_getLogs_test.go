@@ -471,6 +471,36 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 		expectError bool
 	}{
 		{
+			name: "genesis_range_still_checks_availability",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x0",
+					"toBlock":   "0x5",
+				})
+				n.On("Id").Return("evm:123")
+				n.On("Config").Return(&common.NetworkConfig{
+					Evm: &common.EvmNetworkConfig{
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:      util.BoolPtr(true),
+						},
+					},
+				})
+				u.On("Id").Return("rpc1").Maybe()
+				stp := new(mockStatePoller)
+				u.On("EvmStatePoller").Return(stp)
+				stp.On("LatestBlock").Return(int64(1000))
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(0)).Return(true, nil)
+
+				return n, u, r
+			},
+			expectSplit: false,
+			expectError: false,
+		},
+		{
 			name: "range_within_limits",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
@@ -1195,6 +1225,42 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		assert.Error(t, err)
 	})
 
+	t.Run("genesis_range_still_enforces_max_allowed_range", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		// 0x0–0x1ff is 512 blocks. Block 0 must not be treated as unresolved.
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x1ff",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("genesis_block_within_cap_passes", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x0",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
 	t.Run("enforce_max_allowed_range_hard_limit", func(t *testing.T) {
 		n := new(mockNetwork)
 		n.On("Config").Return(&common.NetworkConfig{
@@ -1431,6 +1497,55 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		assert.False(t, handled) // Validation passed
 		assert.NoError(t, err)
 		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+}
+
+func TestProjectPreForward_eth_getLogs_UseUpstreamTip(t *testing.T) {
+	// Selected upstream tip is 1000; the unscoped tip is 2000. From block 996
+	// to latest is 5 blocks against the selected tip and 1005 against the
+	// unscoped one. Cap is 10.
+	newNet := func(selected int64) *mockNetwork {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		n.On("ProjectId").Return("test")
+		if selected > 0 {
+			n.On("EvmHighestLatestBlockNumber", mock.MatchedBy(func(ctx context.Context) bool {
+				req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+				return ok && req != nil && req.Directives() != nil && req.Directives().UseUpstream == "slow"
+			})).Return(selected)
+		}
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(2000)).Maybe()
+		return n
+	}
+	req := func(useUpstream string) *common.NormalizedRequest {
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x3e4", // 996
+			"toBlock":   "latest",
+		})
+		if useUpstream != "" {
+			r.SetDirectives(&common.RequestDirectives{UseUpstream: useUpstream})
+		}
+		return r
+	}
+
+	t.Run("selected_tip_within_cap", func(t *testing.T) {
+		n := newNet(1000)
+		handled, resp, err := projectPreForward_eth_getLogs(context.Background(), n, req("slow"))
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("unscoped_tip_exceeds_cap", func(t *testing.T) {
+		n := newNet(0)
+		handled, resp, err := projectPreForward_eth_getLogs(context.Background(), n, req(""))
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
 		n.AssertExpectations(t)
 	})
 }

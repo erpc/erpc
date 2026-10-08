@@ -1338,7 +1338,7 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 	return copied
 }
 
-// GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+// GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
 // gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
 // knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
 // every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -2340,6 +2340,8 @@ type NetworkConfig struct {
 	// CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
 	// key as {networkId}:{suffix}:{blockRef} so two networks that share a
 	// chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+	// When {networkId}:{suffix} is itself a valid network id, colons in the
+	// network id are escaped; see CachePartitionKey.
 	CacheKeySuffix string `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
 }
 
@@ -3247,10 +3249,21 @@ type RateLimitStoreConfig struct {
 // must not share a key with suffix "systx" and ref "foo". Segments without
 // those bytes are unchanged, including ordinary block numbers and the
 // reverse-index wildcard "*".
+//
+// Network ids are not escaped in the common case: every id contains ':', and
+// escaping them would orphan every historical unsuffixed key. The remaining
+// collision is a suffixed key whose networkId+":"+suffix is itself a valid
+// network id — svm:<cluster> plus suffix "bar" is the unsuffixed key of
+// svm:<cluster>:bar. Only that case escapes the network id's colons. EVM ids
+// (evm:<digits>) cannot grow a valid extra segment, so their suffixed keys
+// stay byte-for-byte.
 func CachePartitionKey(networkId, suffix, ref string) string {
 	ref = escapePartitionSegment(ref)
 	if suffix == "" {
 		return networkId + ":" + ref
+	}
+	if util.IsValidNetworkId(networkId + ":" + suffix) {
+		networkId = escapePartitionSegment(networkId)
 	}
 	return networkId + ":" + escapePartitionSegment(suffix) + ":" + ref
 }

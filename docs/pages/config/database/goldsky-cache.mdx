@@ -1,0 +1,153 @@
+---
+title: Goldsky cache (gRPC)
+description: Plug Goldsky's hosted, read-only gRPC cache into eRPC — historical blocks, logs, transactions and receipts served from Goldsky's indexed chain data before your requests reach your upstreams.
+---
+
+import { Callout, Steps } from "nextra/components";
+import { LLMsTxtLink, ConfigTabs } from "../../../components";
+
+<LLMsTxtLink />
+
+# Goldsky cache (gRPC)
+
+Goldsky hosts a read-only gRPC cache backed by its indexed chain data. Add it as a `grpc` [cache connector](/config/database/drivers) and eRPC asks it first for historical reads; a miss goes to your upstreams exactly as before.
+
+<Callout type="info">
+Requires eRPC **0.3.1 or later**: earlier releases ignore the URL path and dial port 50051 for a URL without a port. See [Older releases](#older-releases).
+</Callout>
+
+## Set it up
+
+<Steps>
+
+### Get a Goldsky API key
+
+Sign up or sign in at [app.goldsky.com](https://app.goldsky.com), open **Edge RPC**, click **New endpoint**, then **Create endpoint**. Copy the **API Key** shown in the **Edge Endpoint Created** dialog. The same key works for Edge RPC and for the cache. Keep it out of your config file:
+
+```bash
+export GOLDSKY_API_KEY=gs_edge_...
+```
+
+### Add the connector and a policy
+
+One URL per chain; eRPC calls `ChainId` on each at startup to map it to its network.
+
+<ConfigTabs
+  path="database.evmJsonRpcCache"
+  yaml={`database:
+  evmJsonRpcCache:
+    connectors:
+      - id: goldsky-cache
+        driver: grpc
+        grpc:
+          servers:
+            - grpcs://edge.goldsky.com/cache/ethereum
+            - grpcs://edge.goldsky.com/cache/base
+          headers:
+            x-api-key: \${GOLDSKY_API_KEY}
+          # the 100ms default is too short for a call across the internet
+          getTimeout: 2s
+      - id: memory-cache
+        driver: memory
+    policies:
+      - connector: goldsky-cache
+        network: "evm:1|evm:8453"
+        method: "eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts|eth_chainId|eth_blockNumber"
+        finality: finalized
+        appliesTo: get
+      - connector: memory-cache
+        network: "*"
+        method: "*"
+        finality: finalized`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [
+      {
+        id: "goldsky-cache",
+        driver: "grpc",
+        grpc: {
+          servers: [
+            "grpcs://edge.goldsky.com/cache/ethereum",
+            "grpcs://edge.goldsky.com/cache/base",
+          ],
+          headers: { "x-api-key": "\${GOLDSKY_API_KEY}" },
+          // the 100ms default is too short for a call across the internet
+          getTimeout: "2s",
+        },
+      },
+      { id: "memory-cache", driver: "memory" },
+    ],
+    policies: [
+      {
+        connector: "goldsky-cache",
+        network: "evm:1|evm:8453",
+        method: "eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts|eth_chainId|eth_blockNumber",
+        finality: "finalized",
+        appliesTo: "get",
+      },
+      { connector: "memory-cache", network: "*", method: "*", finality: "finalized" },
+    ],
+  },
+}`}
+/>
+
+The Goldsky cache is read-only. Keep a memory or Redis connector (above: `memory-cache`) for writes and for recent blocks the cache has not indexed yet.
+
+### Check it works
+
+At startup eRPC logs one line per URL:
+
+```
+gRPC client initialized for network  server=grpcs://edge.goldsky.com/cache/ethereum networkId=evm:1
+```
+
+Then request an old block and look at the `X-ERPC-Cache` response header — `HIT` when the response came from a cache, `MISS` when it went to an upstream:
+
+```bash
+curl -si http://localhost:4000/main/evm/1 \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1000000",false]}' \
+  | grep -i x-erpc-cache
+```
+
+Per connector, the Prometheus counter `erpc_cache_get_success_hit_total{connector="goldsky-cache"}` counts hits.
+
+</Steps>
+
+## What it serves
+
+- **Methods:** `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getLogs`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_chainId`, `eth_blockNumber`. eRPC never sends other methods to the connector.
+- **Misses:** data not indexed yet (e.g. the chain tip) answers gRPC `OUT_OF_RANGE`; eRPC treats it as a cache miss and calls your upstreams.
+- **Chains:** abstract, arbitrum, arbitrum-sepolia, arc, avalanche, base, base-sepolia, bsc, celo, ethereum, gnosis, hyperevm, ink, monad, optimism, polygon, robinhood, robinhood-testnet, sei, sepolia, tempo, tron. Use the name in the URL: `grpcs://edge.goldsky.com/cache/<chain>`.
+- **No writes:** eRPC never writes to a read-only connector, so from 0.3.1 `appliesTo: get` is optional. The example keeps it so the same config is quiet on older releases, which would otherwise try every write and log a warning.
+
+## Older releases
+
+<Callout type="warning">
+Before 0.3.1, eRPC drops the URL path and dials port 50051 when the URL has no port. Use one connector per chain on port 443 and name the chain in a header, each with its own policy for that chain's network.
+</Callout>
+
+```yaml
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: goldsky-ethereum
+        driver: grpc
+        grpc:
+          servers: [grpc://edge.goldsky.com:443]
+          headers:
+            x-api-key: ${GOLDSKY_API_KEY}
+            x-goldsky-chain: ethereum
+          getTimeout: 2s
+      - id: goldsky-base
+        driver: grpc
+        grpc:
+          servers: [grpc://edge.goldsky.com:443]
+          headers:
+            x-api-key: ${GOLDSKY_API_KEY}
+            x-goldsky-chain: base
+          getTimeout: 2s
+    policies:
+      - { connector: goldsky-ethereum, network: "evm:1", method: "eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts|eth_chainId|eth_blockNumber", finality: finalized, appliesTo: get }
+      - { connector: goldsky-base, network: "evm:8453", method: "eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts|eth_chainId|eth_blockNumber", finality: finalized, appliesTo: get }
+```

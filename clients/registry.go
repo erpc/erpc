@@ -129,7 +129,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 							clientErr = fmt.Errorf("failed to create WebSocket client for upstream %v: %w", cfg.Id, err)
 						}
 					}
-				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
+				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" || parsedUrl.Scheme == "grpcs" {
 					grpcPoolSize, grpcHealthCheckService := 0, ""
 					if cfg.Grpc != nil {
 						grpcPoolSize = cfg.Grpc.PoolSize
