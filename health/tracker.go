@@ -1042,7 +1042,6 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 		return
 	}
 
-
 	nowMs := time.Now().UnixMilli()
 	for _, k := range t.getUpsKeys(up, method, finality) {
 		tm := t.getUpsMetrics(k)
@@ -1441,6 +1440,8 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			Int64("previousValue", oldUpsVal).
 			Int64("newValue", blockNumber).
 			Msg("applied large latest block rollback for upstream in tracker")
+	} else if blockNumber == oldUpsVal && blockTimestamp > 0 && upsMeta.evmLatestBlockTimestamp.Load() == 0 {
+		upsMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 	}
 
 	oldNtwVal := ntwMeta.evmLatestBlockNumber.Load()
@@ -1466,9 +1467,9 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 
 	// The network timestamp and block-time EMA follow the corroborated head,
 	// whichever upstream reported it.
-	if ntwBn > oldNtwVal && headReporter != nil {
+	if ntwBn >= oldNtwVal && headReporter != nil {
 		headTs := t.getMetadata(metadataKey{headReporter, net}).evmLatestBlockTimestamp.Load()
-		if headTs > 0 {
+		if headTs > 0 && (ntwBn > oldNtwVal || ntwMeta.evmLatestBlockTimestamp.Load() != headTs) {
 			// Uses on-chain timestamps (not local clock) so the EMA tracks actual
 			// chain production rate, not our polling cadence. For fast chains where
 			// consecutive blocks share the same integer-second timestamp, samples
