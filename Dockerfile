@@ -35,12 +35,14 @@ RUN go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/e
 
 # Global typescript related image
 FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS ts-core
-RUN npm install -g pnpm
+# Pin to package.json `packageManager`: an unpinned install pulls the newest
+# pnpm, which re-execs itself to the pinned version and fails on alpine with
+# ERR_PNPM_PNPM_ENGINE_NO_NATIVE_BINARY (main release builds, 2026-09-29/30).
+RUN npm install -g pnpm@10.28.2
 
 # Stage where we will install dev dependencies + compile sdk
 FROM ts-core AS ts-dev
 RUN mkdir -p /temp/dev/typescript
-RUN npm install -g pnpm
 
 # Copy only the TypeScript package files
 COPY typescript/config /temp/dev/typescript/config

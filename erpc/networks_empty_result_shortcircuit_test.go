@@ -2,12 +2,15 @@ package erpc
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
@@ -21,6 +24,62 @@ import (
 // emptyish results and only checked emptyResultAccept at the failsafe-retry
 // level — wasting time on slow/timing-out upstreams.
 func TestEmptyResultAcceptShortCircuit(t *testing.T) {
+	t.Run("TraceBlock_UnknownEmptyRotates", func(t *testing.T) {
+		for _, mode := range []string{"hedge", "retry"} {
+			for _, first := range []string{"[]", "[ \t\r\n ]", "[" + strings.Repeat(" ", 128) + "]", "{}", `""`, "null", "missing"} {
+				t.Run(mode+"/"+first, func(t *testing.T) {
+					util.ResetGock()
+					defer util.ResetGock()
+					util.SetupMocksForEvmStatePoller()
+					var calls atomic.Int32
+					for i, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+						result := `[{"txHash":"0xabc","result":{"type":"CALL","gasUsed":"0x1"}}]`
+						if i == 0 {
+							result = first
+						}
+						gock.New(host).Post("").Filter(func(r *http.Request) bool {
+							return strings.Contains(util.SafeReadBody(r), "debug_traceBlockByNumber")
+						}).Persist().Reply(200).Map(func(r *http.Response) *http.Response {
+							calls.Add(1)
+							return r
+						}).BodyString(func() string {
+							if result == "missing" {
+								return `{"jsonrpc":"2.0","id":1}`
+							}
+							return `{"jsonrpc":"2.0","id":1,"result":` + result + `}`
+						}())
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					var network *Network
+					if mode == "hedge" {
+						network = setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+							Delay: common.NewStaticDuration(250 * time.Millisecond), MaxCount: 1,
+						})
+					} else {
+						network = setupTestNetworkWithRetryConfig(t, ctx,
+							&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+							&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond)},
+						)
+					}
+					network.PinUpstreamOrderForTest("rpc1", "rpc2")
+					req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"debug_traceBlockByNumber","params":["0x10",{"tracer":"callTracer"}]}`))
+					req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+					start := time.Now()
+					resp, err := network.Forward(ctx, req)
+					require.NoError(t, err)
+					require.NotNil(t, resp)
+					defer resp.Release()
+					jrr, err := resp.JsonRpcResponse()
+					require.NoError(t, err)
+					assert.Contains(t, jrr.GetResultString(), "0xabc")
+					assert.Equal(t, int32(2), calls.Load())
+					assert.Less(t, time.Since(start), 250*time.Millisecond)
+					t.Logf("mode=%s first=%q calls=%d elapsed=%v", mode, first, calls.Load(), time.Since(start))
+				})
+			}
+		}
+	})
 	t.Run("EthGetLogs_EmptyArray_OnlyFirstUpstreamCalled", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -428,4 +487,155 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 		assert.GreaterOrEqual(t, rpc1Calls.Load(), int32(1), "rpc1 should be called")
 		assert.GreaterOrEqual(t, rpc2Calls.Load(), int32(1), "rpc2 should also be called — empty accept list overrides defaults")
 	})
+}
+
+func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	var traceCalls, blockCalls atomic.Int32
+	var empty atomic.Bool
+	var transactions atomic.Value
+	transactions.Store(`[]`)
+	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_chainId") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x7b"}`)
+		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":false}`)
+		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
+			blockCalls.Add(1)
+			r.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x3e8","hash":"0xabc","parentHash":"0xdef","gasUsed":"0x0","transactions":` + transactions.Load().(string) + `,"timestamp":"0x6702a8f0"}}`))
+			return r
+		}).BodyString(`{}`)
+		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "debug_traceBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
+			traceCalls.Add(1)
+			result := `[{"result":{"type":"CALL","gasUsed":"0x0"}}]`
+			if empty.Load() && (transactions.Load().(string) != `["0xtx"]` || host == "http://rpc1.localhost") {
+				result = "[" + strings.Repeat(" ", 128) + "]"
+			}
+			r.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":` + result + `}`))
+			return r
+		}).BodyString(`{}`)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{Checks: map[string]*common.IntegrityCheckConfig{"traceBlockGasReconciliation": {Enabled: util.BoolPtr(true)}}, Follow: &common.IntegrityFollowConfig{Enabled: util.BoolPtr(true), Interval: common.Duration(20 * time.Millisecond)}}}, Failsafe: []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond)}, Hedge: &common.HedgePolicyConfig{Delay: common.NewStaticDuration(250 * time.Millisecond), MaxCount: 1}}}}
+	ups := []*common.UpstreamConfig{{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}, {Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}}
+	require.NoError(t, cfg.SetDefaults(ups, nil))
+	n := setupTestNetwork(t, ctx, ups, cfg)
+	n.PinUpstreamOrderForTest("rpc1", "rpc2")
+	request := func(ref string) *common.NormalizedRequest {
+		r := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"debug_traceBlockByNumber","params":["%s",{"tracer":"callTracer"}]}`, ref)))
+		r.SetNetwork(n)
+		r.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+		return r
+	}
+	warm := request("0x3e8")
+	resp, err := n.Forward(ctx, warm)
+	require.NoError(t, err)
+	resp.Release()
+	require.Eventually(t, func() bool { return evm.HasVerifiedEmptyTraceBlock(warm) }, 2*time.Second, 10*time.Millisecond)
+	empty.Store(true)
+	for _, ref := range []string{"0x3e8", "latest", "0x3e7"} {
+		beforeTrace, beforeBlock := traceCalls.Load(), blockCalls.Load()
+		start := time.Now()
+		resp, err = n.Forward(ctx, request(ref))
+		require.NoError(t, err)
+		jrr, e := resp.JsonRpcResponse()
+		require.NoError(t, e)
+		t.Logf("ref=%s result=%q proof=%v", ref, jrr.GetResultString(), evm.HasVerifiedEmptyTraceBlock(resp.Request()))
+		require.True(t, strings.HasPrefix(strings.TrimSpace(jrr.GetResultString()), "["))
+		resp.Release()
+		calls := traceCalls.Load() - beforeTrace
+		if ref == "0x3e8" {
+			require.Equal(t, int32(1), calls)
+			require.Equal(t, beforeBlock, blockCalls.Load())
+			require.Less(t, time.Since(start), 250*time.Millisecond)
+		} else {
+			require.Greater(t, calls, int32(1))
+		}
+		t.Logf("ref=%s traceCalls=%d auxiliaryCalls=%d elapsed=%v", ref, calls, blockCalls.Load()-beforeBlock, time.Since(start))
+	}
+	transactions.Store(`null`)
+	blockReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`))
+	resp, err = n.Forward(ctx, blockReq)
+	require.NoError(t, err)
+	resp.Release()
+	require.False(t, evm.HasVerifiedEmptyTraceBlock(warm))
+	beforeMissing := traceCalls.Load()
+	resp, err = n.Forward(ctx, request("0x3e8"))
+	require.NoError(t, err)
+	resp.Release()
+	require.Greater(t, traceCalls.Load()-beforeMissing, int32(1))
+	t.Logf("null transactions traceCalls=%d", traceCalls.Load()-beforeMissing)
+	transactions.Store(`["0xtx"]`)
+	blockReq = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":3,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`))
+	resp, err = n.Forward(ctx, blockReq)
+	require.NoError(t, err)
+	resp.Release()
+	beforeNonempty := traceCalls.Load()
+	resp, err = n.Forward(ctx, request("0x3e8"))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Contains(t, jrr.GetResultString(), "CALL")
+	resp.Release()
+	require.Equal(t, int32(2), traceCalls.Load()-beforeNonempty)
+	t.Logf("known nonempty traceCalls=%d", traceCalls.Load()-beforeNonempty)
+	transactions.Store(`null`)
+	resp, err = n.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":4,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`)))
+	require.NoError(t, err)
+	resp.Release()
+	transactions.Store(`[]`)
+	resp, err = n.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":5,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`)))
+	require.NoError(t, err)
+	resp.Release()
+	for _, tc := range []struct {
+		name    string
+		list    []string
+		inherit bool
+		accept  bool
+	}{
+		{"replacedDefault", []string{}, false, false},
+		{"default", nil, false, true},
+		{"inheritedDefault", nil, true, true},
+		{"explicitEmpty", []string{}, false, false},
+		{"inheritedEmpty", []string{}, true, false},
+		{"explicitOther", []string{"eth_call"}, false, false},
+		{"inheritedOther", []string{"eth_call"}, true, false},
+		{"explicitTrace", []string{"debug_traceBlockByNumber"}, false, true},
+		{"inheritedTrace", []string{"debug_traceBlockByNumber"}, true, true},
+	} {
+		policy := &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond), EmptyResultAccept: tc.list}
+		require.NoError(t, policy.SetDefaults(nil))
+		if tc.name == "replacedDefault" {
+			policy = &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond)}
+			require.NoError(t, policy.SetDefaults(nil))
+			policy.EmptyResultAccept = tc.list
+		}
+		if tc.inherit {
+			child := &common.RetryPolicyConfig{}
+			require.NoError(t, child.SetDefaults(policy.Copy()))
+			policy = child
+		}
+		require.NoError(t, policy.SetDefaults(nil))
+		for _, executor := range n.failsafeExecutors {
+			if executor.cfg == nil || executor.cfg.Retry == nil {
+				continue
+			}
+			executor.cfg.Retry = policy.Copy()
+			executor.emptyResultAccept = policy.EmptyResultAccept
+			if executor.emptyResultAccept == nil {
+				executor.emptyResultAccept = common.DefaultEmptyResultAccept()
+			}
+		}
+		before := traceCalls.Load()
+		resp, err = n.Forward(ctx, request("0x3e8"))
+		require.NoError(t, err)
+		resp.Release()
+		calls := traceCalls.Load() - before
+		if tc.accept {
+			require.Equal(t, int32(1), calls)
+		} else {
+			require.Greater(t, calls, int32(1))
+		}
+		t.Logf("policy=%s traceCalls=%d", tc.name, calls)
+	}
 }

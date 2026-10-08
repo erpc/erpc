@@ -1450,6 +1450,45 @@ func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 	}
 }
 
+// eth_estimateGas sent without a block parameter reaches the upstream pinned to
+// the network's latest block number, the same as eth_call.
+func TestInterpolation_EthEstimateGas_MissingBlockParamPinnedToLatestNumber(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_estimateGas") &&
+				strings.Contains(body, `},"0x`)
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x5208",
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_estimateGas","params":[{"to":"0xabc","value":"0x1"}]}`))
+	req.SetNetwork(network)
+
+	handled, resp, err := evm.HandleProjectPreForward(ctx, network, req)
+	require.True(t, handled)
+	require.NoError(t, err)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
 // Test eth_estimateGas with second parameter
 func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 	util.ResetGock()

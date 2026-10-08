@@ -137,7 +137,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		}
 		network.SetDefaults(nil, nil)
 
-		assert.EqualValues(t, &FailsafeConfig{
+		assert.EqualExportedValues(t, &FailsafeConfig{
 			MatchMethod: "*",
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:            12345,
@@ -145,7 +145,6 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 				BackoffMaxDelay:        Duration(3 * time.Second),
 				BackoffFactor:          1.2,
 				Jitter:                 Duration(0 * time.Millisecond),
-				EmptyResultAccept:      DefaultEmptyResultAccept(),
 				EmptyResultMaxAttempts: 2,
 			},
 		}, network.Failsafe[0])
@@ -420,13 +419,12 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 
 		// Verify failsafe retry is only applied to the first upstream
 		retry := cfg.Projects[0].Upstreams[0].Failsafe[0].Retry
-		assert.EqualValues(t, &RetryPolicyConfig{
+		assert.EqualExportedValues(t, &RetryPolicyConfig{
 			MaxAttempts:            2,
 			BackoffMaxDelay:        Duration(10 * time.Second),
 			Delay:                  Duration(1 * time.Second),
 			Jitter:                 Duration(500 * time.Millisecond),
 			BackoffFactor:          1.2,
-			EmptyResultAccept:      DefaultEmptyResultAccept(),
 			EmptyResultMaxAttempts: 2,
 		}, retry, "Retry policy should match expected values")
 
@@ -1205,6 +1203,14 @@ func TestBuildProviderSettings(t *testing.T) {
 		assert.Nil(t, settings["region"])
 		assert.Nil(t, settings["provider"])
 		assert.Nil(t, settings["type"])
+	})
+
+	t.Run("spectrum keeps both key segments", func(t *testing.T) {
+		endpoint, _ := url.Parse("evm+spectrum://TeamToken/KeyPart?host=spectrum-02.simplystaking.xyz")
+		settings, err := buildProviderSettings("spectrum", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "TeamToken/KeyPart", settings["apiKey"])
+		assert.Equal(t, "spectrum-02.simplystaking.xyz", settings["host"])
 	})
 
 	// Test case for QuickNode with tag filters

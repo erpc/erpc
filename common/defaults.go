@@ -1398,7 +1398,8 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 	if strings.HasPrefix(upstream.Endpoint, "http://") ||
 		strings.HasPrefix(upstream.Endpoint, "https://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
-		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
+		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") ||
+		strings.HasPrefix(upstream.Endpoint, "grpcs://") {
 		return nil, nil
 	}
 
@@ -1594,6 +1595,21 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 			}
 		}
 
+		return settings, nil
+	case "spectrum", "evm+spectrum":
+		// Spectrum keys span two path segments: spectrum://<team>/<key>
+		settings := VendorSettings{
+			"apiKey": endpoint.Host + strings.TrimSuffix(endpoint.Path, "/"),
+		}
+		params, err := url.ParseQuery(endpoint.RawQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse spectrum query parameters: %w", err)
+		}
+		for _, key := range []string{"host", "plan", "nodeType"} {
+			if value := params.Get(key); value != "" {
+				settings[key] = value
+			}
+		}
 		return settings, nil
 	case "onfinality", "evm+onfinality":
 		return VendorSettings{
@@ -2104,6 +2120,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
+		if n.CacheKeySuffix == "" {
+			n.CacheKeySuffix = defaults.CacheKeySuffix
+		}
 		if len(defaults.Failsafe) > 0 {
 			if len(n.Failsafe) == 0 {
 				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
@@ -2114,7 +2133,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			} else {
 				// Apply defaults to each failsafe config
 				for i, fs := range n.Failsafe {
-					// Find matching default by method/finality
+					// A default must cover every commitment selected by the network rule.
 					defaultFs := &FailsafeConfig{
 						MatchMethod: "*",
 					}
@@ -2131,7 +2150,17 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 						// Match finality (empty array means any finality)
 						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
 
-						if methodMatch && finalityMatch {
+						commitmentMatch := len(dfs.MatchCommitment) == 0
+						if !commitmentMatch && len(fs.MatchCommitment) > 0 {
+							commitmentMatch = true
+							for _, commitment := range fs.MatchCommitment {
+								if !slices.Contains(dfs.MatchCommitment, commitment) {
+									commitmentMatch = false
+									break
+								}
+							}
+						}
+						if methodMatch && finalityMatch && commitmentMatch {
 							defaultFs = dfs
 							break
 						}
@@ -2773,9 +2802,6 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		} else if defaults.EmptyResultIgnore != nil {
 			r.EmptyResultAccept = defaults.EmptyResultIgnore
 		}
-	}
-	if r.EmptyResultAccept == nil {
-		r.EmptyResultAccept = DefaultEmptyResultAccept()
 	}
 
 	// "Data not available yet" (empty/missing-data/block-unavailable) retries are all

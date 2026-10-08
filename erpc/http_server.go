@@ -29,8 +29,6 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 // Only compress responses larger than 1KB to save CPU on small responses
@@ -48,6 +46,9 @@ type HttpServer struct {
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
 	draining                *atomic.Bool
+	// drained is closed once the post-SIGTERM drain (waitBeforeShutdown, then
+	// Shutdown) has finished, so Init can keep the process alive until then.
+	drained                 chan struct{}
 	gzipPool                *util.GzipReaderPool
 	trustedForwarderNets    []net.IPNet
 	trustedForwarderIPs     map[string]struct{}
@@ -93,6 +94,7 @@ func NewHttpServer(
 		adminCfg:       adminCfg,
 		erpc:           erpc,
 		draining:       &draining,
+		drained:        make(chan struct{}),
 		gzipPool:       gzipPool,
 	}
 
@@ -174,19 +176,26 @@ func NewHttpServer(
 		})
 	}
 
-	// Without TLS, Go's net/http serves HTTP/1.x only on the cleartext
-	// listener, so wrap the IPv4 handler with h2c to accept HTTP/2
-	// prior-knowledge requests. This is independent of shared gRPC — gRPC only
-	// adds a content-type dispatch on top of this handler. (With TLS, HTTP/2 is
-	// negotiated via ALPN by ListenAndServeTLS, so no h2c wrapper is needed.)
+	// Without TLS, serve cleartext HTTP/2 (h2c prior knowledge) natively next to
+	// HTTP/1.1 on both listeners. Native support keeps h2c connections tracked by
+	// the http.Server, so Shutdown sends them GOAWAY, lets in-flight streams
+	// finish and waits for them, and SetKeepAlivesEnabled(false) GOAWAYs each one
+	// the next time its last open stream completes. (x/net's h2c.NewHandler
+	// hijacks the connection away from the server, which disables all of that.)
+	// HTTP/1.1 `Upgrade: h2c` is not supported. With TLS, nil keeps net/http's
+	// default: HTTP/1.1 and HTTP/2 negotiated via ALPN.
+	var protocols *http.Protocols
 	if cfg.TLS == nil || !cfg.TLS.Enabled {
-		handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
+		protocols = new(http.Protocols)
+		protocols.SetHTTP1(true)
+		protocols.SetUnencryptedHTTP2(true)
 	}
 
 	// Create IPv4 server if configured
 	if cfg.ListenV4 != nil && *cfg.ListenV4 {
 		srv.serverV4 = &http.Server{
 			Handler:        handlerV4,
+			Protocols:      protocols,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
 			IdleTimeout:    300 * time.Second,
@@ -198,6 +207,7 @@ func NewHttpServer(
 	if cfg.ListenV6 != nil && *cfg.ListenV6 {
 		srv.serverV6 = &http.Server{
 			Handler:        handlerV6,
+			Protocols:      protocols,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
 			IdleTimeout:    300 * time.Second,
@@ -215,13 +225,15 @@ func NewHttpServer(
 
 	go func() {
 		<-ctx.Done()
+		defer close(srv.drained)
 		// Actively drain keep-alive connections during the grace window: stamp
-		// `Connection: close` on every HTTP/1.1 response (and let Shutdown GOAWAY
-		// tracked HTTP/2 conns) so pooled clients migrate to healthy instances
-		// BEFORE Shutdown starts closing connections. Load balancers that preserve
-		// established flows (e.g. AWS NLB) never break these pools on their own —
-		// without this, a client pushing traffic over kept-alive connections rides
-		// them straight into Shutdown and sees resets (502s) on every deploy.
+		// `Connection: close` on every HTTP/1.1 response and GOAWAY each HTTP/2
+		// (h2 and h2c) connection the next time its last open stream completes,
+		// so pooled clients migrate to healthy instances BEFORE Shutdown starts
+		// closing connections. Load balancers that preserve established flows
+		// (e.g. AWS NLB) never break these pools on their own — without this, a
+		// client pushing traffic over kept-alive connections rides them straight
+		// into Shutdown and sees resets (502s) on every deploy.
 		if srv.serverV4 != nil {
 			srv.serverV4.SetKeepAlivesEnabled(false)
 		}
@@ -233,6 +245,9 @@ func NewHttpServer(
 		if srv.serverCfg.WaitBeforeShutdown != nil {
 			time.Sleep(srv.serverCfg.WaitBeforeShutdown.Duration())
 		}
+		// Shutdown closes the listeners and idle HTTP/1.1 connections, sends
+		// GOAWAY on every HTTP/2 connection, and waits (within its budget) for
+		// in-flight requests and streams to finish.
 		if err := srv.Shutdown(logger); err != nil {
 			logger.Error().Msgf("http server forced to shutdown: %s", err)
 		} else {
@@ -671,23 +686,17 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				var networkId string
 
 				if architecture == "" || chainId == "" {
-					if bodyBytes := nq.Body(); len(bodyBytes) > 0 {
-						var req map[string]interface{}
-						if err := common.SonicCfg.Unmarshal(bodyBytes, &req); err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-						if networkIdFromBody, ok := req["networkId"].(string); ok {
-							networkId = networkIdFromBody
-							// SplitN limit 2 so three-part SVM IDs (svm:<chain>:<cluster>)
-							// keep the chain:cluster tail intact as chainId; it is
-							// reassembled as architecture+":"+chainId below.
-							parts := strings.SplitN(networkId, ":", 2)
-							if len(parts) == 2 {
-								architecture = parts[0]
-								chainId = parts[1]
-							}
+					// Read the hint off the envelope nq.Validate() already parsed above,
+					// rather than decoding the body again into a map here.
+					if networkIdFromBody := nq.NetworkIdHint(); networkIdFromBody != "" {
+						networkId = networkIdFromBody
+						// SplitN limit 2 so three-part SVM IDs (svm:<chain>:<cluster>)
+						// keep the chain:cluster tail intact as chainId; it is
+						// reassembled as architecture+":"+chainId below.
+						parts := strings.SplitN(networkId, ":", 2)
+						if len(parts) == 2 {
+							architecture = parts[0]
+							chainId = parts[1]
 						}
 					}
 				} else {
@@ -1749,15 +1758,10 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	if !isSvmRequest && nq != nil {
 		isSvmRequest = strings.HasPrefix(nq.NetworkId(), "svm:")
 		// Body-routed requests have no URL architecture hint and auth still runs
-		// before network resolution. Capture networkId before JsonRpcRequest()
-		// consumes nq.Body(), without moving network lookup ahead of authentication.
+		// before network resolution, so fall back to the envelope's own hint
+		// without moving network lookup ahead of authentication.
 		if !isSvmRequest && nq.Network() == nil && (len(architectureHint) == 0 || architectureHint[0] == "") {
-			var envelope struct {
-				NetworkID string `json:"networkId"`
-			}
-			if common.SonicCfg.Unmarshal(nq.Body(), &envelope) == nil {
-				isSvmRequest = strings.HasPrefix(envelope.NetworkID, "svm:")
-			}
+			isSvmRequest = strings.HasPrefix(nq.NetworkIdHint(), "svm:")
 		}
 	}
 	if nq != nil {

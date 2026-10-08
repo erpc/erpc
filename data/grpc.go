@@ -131,7 +131,7 @@ func NewGrpcConnector(
 					gc.logger.Error().Err(perr).Str("server", serverURL).Msg("invalid gRPC server URL")
 					return common.NewTaskFatal(perr)
 				}
-				cli, cerr := clients.NewGrpcBdsClient(gc.appCtx, &lg, "<cache>", nil, parsed, cfg.PoolSize)
+				cli, cerr := clients.NewGrpcBdsClient(gc.appCtx, &lg, "<cache>", nil, parsed, cfg.PoolSize, cfg.HealthCheckService)
 				if cerr != nil {
 					gc.logger.Warn().Err(cerr).Str("server", serverURL).Msg("failed to create gRPC client")
 					return cerr
@@ -512,6 +512,10 @@ func fetchGrpcServers(ctx context.Context, logger *zerolog.Logger, endpoint stri
 	logger.Debug().Strs("servers", out).Msg("discovered gRPC cache servers")
 	return out, nil
 }
+
+// ReadOnly implements ReadOnlyConnector: the gRPC connector only reads, so cache policies on it
+// never select it for writes.
+func (g *GrpcConnector) ReadOnly() bool { return true }
 
 func (g *GrpcConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	// no-op for read-only connector

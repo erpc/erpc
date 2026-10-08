@@ -75,6 +75,20 @@ func (s *happyRPCServer) GetBlockByNumber(ctx context.Context, req *evm.GetBlock
 	}, nil
 }
 
+// GetTransactionByHash answers with a fixed one-byte r/s so tests can pin
+// the JSON-RPC signature encoding the client selects for its chain.
+func (s *happyRPCServer) GetTransactionByHash(ctx context.Context, req *evm.GetTransactionByHashRequest) (*evm.GetTransactionByHashResponse, error) {
+	s.calls.Add(1)
+	s.recordMetadata(ctx)
+	return &evm.GetTransactionByHashResponse{
+		Transaction: &evm.Transaction{
+			Hash: req.TransactionHash,
+			R:    []byte{0x01},
+			S:    []byte{0x02},
+		},
+	}, nil
+}
+
 func startHappyServer(t *testing.T, chainID, blockNumber uint64) (string, *happyRPCServer, func()) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -121,7 +135,7 @@ func newTestClient(t *testing.T, addr string) *GenericGrpcBdsClient {
 	logger := zerolog.New(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0, "")
 	require.NoError(t, err)
 	return client.(*GenericGrpcBdsClient)
 }
@@ -173,8 +187,10 @@ func TestSendRequest_HappyPath_GetBlockByNumber(t *testing.T) {
 }
 
 // TestSendRequest_HeadersPassedAsMetadata verifies SetHeaders entries
-// become outgoing gRPC metadata. Authentication / routing logic depends
-// on this — silently dropping headers would be a P0 production bug.
+// become outgoing gRPC metadata, on requests and on the pool's own ChainId
+// verification probes. Authentication / routing logic depends on this —
+// silently dropping headers would be a P0 production bug (an auth gateway
+// rejects every unauthenticated maintainer probe).
 func TestSendRequest_HeadersPassedAsMetadata(t *testing.T) {
 	addr, server, stop := startHappyServer(t, 1, 0)
 	defer stop()
@@ -190,6 +206,26 @@ func TestSendRequest_HeadersPassedAsMetadata(t *testing.T) {
 	vals := md.Get("x-test-header")
 	require.Equal(t, []string{"deadbeef"}, vals,
 		"client-set header must reach the server as gRPC metadata")
+
+	// The pool's chain-identity probe (maintainer tick, recycle, construction)
+	// must carry the same headers. SetHeaders ran after construction, so this
+	// also proves the pool's metadata is refreshed. Clear the recorded
+	// metadata first so the assertion sees only the probe's own call.
+	client.SetExpectedChainId(1)
+	server.mu.Lock()
+	server.lastMetadata = nil
+	server.mu.Unlock()
+	callsBefore := server.calls.Load()
+	client.pool.poolMu.RLock()
+	conn := client.pool.conns[0]
+	client.pool.poolMu.RUnlock()
+	ok, detected, err := client.pool.verifyConn(context.Background(), conn)
+	require.NoError(t, err)
+	require.True(t, ok, "happy server answers chainId 1")
+	require.Equal(t, uint64(1), detected)
+	require.Equal(t, callsBefore+1, server.calls.Load(), "verification must call the server")
+	require.Equal(t, []string{"deadbeef"}, server.snapshotMetadata().Get("x-test-header"),
+		"the pool's ChainId verification must carry the client's headers")
 }
 
 // TestSendRequest_ConfigHeadersReachWireAsMetadata closes the config→wire
@@ -210,7 +246,7 @@ func TestSendRequest_ConfigHeadersReachWireAsMetadata(t *testing.T) {
 	ups := common.NewFakeUpstream("test-ups", common.WithGrpcConfig(&common.GrpcUpstreamConfig{
 		Headers: map[string]string{"authorization": "Bearer secret-token"},
 	}))
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL, 0)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL, 0, "")
 	require.NoError(t, err)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))

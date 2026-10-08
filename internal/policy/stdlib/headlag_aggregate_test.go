@@ -38,17 +38,19 @@ func wildcardLag(t *testing.T, tr *health.Tracker, u common.Upstream) int64 {
 	return m.BlockHeadLag.Load()
 }
 
-// setHeads makes ups[1] the tip and ups[0] frozen `behind` blocks back.
+// setHeads makes ups[1] and ups[2] the tip (the network head is the
+// second-highest reporter, so it takes two) and ups[0] frozen `behind` blocks back.
 func setHeads(tr *health.Tracker, ups []common.Upstream, behind int64) {
 	tip := int64(1_000_000)
 	tr.SetLatestBlockNumber(ups[1], tip, 0)
+	tr.SetLatestBlockNumber(ups[2], tip, 0)
 	tr.SetLatestBlockNumber(ups[0], tip-behind, 0)
 }
 
 func TestWildcardLag_FinalityOff_SingleMethod(t *testing.T) {
 	lg := zerolog.Nop()
 	tr := health.NewTracker(&lg, "p", time.Minute)
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	for _, u := range ups {
 		recordTraffic(tr, u, "eth_call", common.DataFinalityStateUnknown, 5)
 	}
@@ -59,7 +61,7 @@ func TestWildcardLag_FinalityOff_SingleMethod(t *testing.T) {
 func TestWildcardLag_FinalityOff_MultiMethod(t *testing.T) {
 	lg := zerolog.Nop()
 	tr := health.NewTracker(&lg, "p", time.Minute)
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	methods := []string{"eth_getBlockByNumber", "eth_syncing", "eth_blockNumber", "eth_getTransactionReceipt", "eth_getTransactionCount", "eth_gasPrice", "eth_estimateGas"}
 	for _, u := range ups {
 		for _, m := range methods {
@@ -74,7 +76,7 @@ func TestWildcardLag_FinalityOn_MultiMethod_Unfinalized(t *testing.T) {
 	lg := zerolog.Nop()
 	tr := health.NewTracker(&lg, "p", time.Minute)
 	tr.EnableFinalityTracking()
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	methods := []string{"eth_getBlockByNumber", "eth_syncing", "eth_getTransactionReceipt", "eth_getTransactionCount"}
 	for _, u := range ups {
 		for _, m := range methods {
@@ -93,7 +95,7 @@ func TestWildcardLag_PolicyReadsAggregateFirst(t *testing.T) {
 	lg := zerolog.Nop()
 	tr := health.NewTracker(&lg, "p", time.Minute)
 	tr.EnableFinalityTracking()
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 
 	// Policy tick reads the wildcard aggregate first (lazy-creates it).
 	for _, u := range ups {
@@ -113,7 +115,7 @@ func TestWildcardLag_Interleaved_Continuous(t *testing.T) {
 	lg := zerolog.Nop()
 	tr := health.NewTracker(&lg, "p", time.Minute)
 	tr.EnableFinalityTracking()
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	methods := []string{"eth_getBlockByNumber", "eth_getTransactionReceipt", "eth_syncing"}
 
 	tip := int64(1_000_000)
@@ -125,6 +127,7 @@ func TestWildcardLag_Interleaved_Continuous(t *testing.T) {
 			recordTraffic(tr, u, methods[round%len(methods)], common.DataFinalityStateUnfinalized, 2)
 		}
 		tr.SetLatestBlockNumber(ups[1], tip, 0)
+		tr.SetLatestBlockNumber(ups[2], tip, 0)
 		tr.SetLatestBlockNumber(ups[0], tip-900, 0)
 		tip += 10
 	}
@@ -138,7 +141,7 @@ func TestWildcardLag_WithIdleEviction(t *testing.T) {
 	tr := health.NewTracker(&lg, "p", 100*time.Millisecond)
 	tr.EnableFinalityTracking()
 	tr.SetIdleEvictionAfter(40 * time.Millisecond)
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 
 	for _, u := range ups {
 		_ = tr.GetUpstreamMethodMetrics(u, "*", common.DataFinalityStateAll)
@@ -156,7 +159,7 @@ func TestWildcardLag_PollerOnly_NoTraffic(t *testing.T) {
 	lg := zerolog.Nop()
 	tr := health.NewTracker(&lg, "p", time.Minute)
 	tr.EnableFinalityTracking()
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	setHeads(tr, ups, 900)
 	require.EqualValues(t, 900, wildcardLag(t, tr, ups[0]))
 }
@@ -167,7 +170,7 @@ func TestWildcardLag_PollerBeforeTraffic_SinglePoll(t *testing.T) {
 	lg := zerolog.Nop()
 	tr := health.NewTracker(&lg, "p", time.Minute)
 	tr.EnableFinalityTracking()
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	setHeads(tr, ups, 900)
 	for _, u := range ups {
 		recordTraffic(tr, u, "eth_getBlockByNumber", common.DataFinalityStateUnfinalized, 5)
@@ -181,7 +184,7 @@ func TestWildcardLag_PollerBeforeTraffic_RepeatedPoll(t *testing.T) {
 	lg := zerolog.Nop()
 	tr := health.NewTracker(&lg, "p", time.Minute)
 	tr.EnableFinalityTracking()
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	setHeads(tr, ups, 900)
 	for _, u := range ups {
 		recordTraffic(tr, u, "eth_getBlockByNumber", common.DataFinalityStateUnfinalized, 5)

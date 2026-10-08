@@ -52,6 +52,10 @@ type healthTracker interface {
 	GetUpstreamMethodMetrics(up common.Upstream, method string, finality common.DataFinalityState) *health.TrackedMetrics
 	GetUpstreamMetrics(up common.Upstream) map[string]*health.TrackedMetrics
 	GetNetworkBlockTime(networkId string) time.Duration
+	// CordonedReason is the effective cordon for (upstream, method) —
+	// operator or automatic, wildcard shadowing the method — independent
+	// of which metrics bucket the slot reads.
+	CordonedReason(up common.Upstream, method string) (string, bool)
 }
 
 // readUpstreamMetrics builds the JS-visible metrics object for one upstream.
@@ -95,10 +99,8 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 		out.BlockHeadLagSeconds = float64(out.BlockHeadLag) * btSec
 		out.FinalizationLagSeconds = float64(out.FinalizationLag) * btSec
 	}
-	if m.Cordoned.Load() {
-		if r, ok := m.LastCordonedReason.Load().(string); ok {
-			out.CordonedReason = r
-		}
+	if r, ok := tr.CordonedReason(u, method); ok {
+		out.CordonedReason = r
 	}
 	return out
 }
@@ -222,7 +224,7 @@ func installSharedHelpers(rt *common.Runtime) error {
 // `tr` is needed for the per-network block-time lookup that converts
 // block-count lag to wall-clock seconds. `u.NetworkId()` provides the
 // network identity.
-func convertTrackedMetrics(tr healthTracker, u common.Upstream, m *health.TrackedMetrics) UpstreamMetrics {
+func convertTrackedMetrics(tr healthTracker, u common.Upstream, method string, m *health.TrackedMetrics) UpstreamMetrics {
 	if m == nil {
 		return UpstreamMetrics{}
 	}
@@ -251,10 +253,8 @@ func convertTrackedMetrics(tr healthTracker, u common.Upstream, m *health.Tracke
 		out.BlockHeadLagSeconds = float64(out.BlockHeadLag) * btSec
 		out.FinalizationLagSeconds = float64(out.FinalizationLag) * btSec
 	}
-	if m.Cordoned.Load() {
-		if r, ok := m.LastCordonedReason.Load().(string); ok {
-			out.CordonedReason = r
-		}
+	if r, ok := tr.CordonedReason(u, method); ok {
+		out.CordonedReason = r
 	}
 	return out
 }

@@ -115,7 +115,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 
 **Vendor chain-support strategies.** Vendors answer "do you support this network?" in four ways:
 
-1. **Static in-code map** (ankr, blastapi, blockdaemon, blockpi, dwellir, infura, llama, onfinality, etherspot): instant, no I/O, works on cold start.
+1. **Static in-code map** (ankr, blastapi, blockdaemon, blockpi, dwellir, infura, llama, onfinality, etherspot, spectrum): instant, no I/O, works on cold start.
 2. **Remote catalog with static fallback** (alchemy — 134-chain map; drpc — 150-chain map): fetches on warm paths; cold start falls back to the built-in map so the first request never blocks on I/O.
 3. **Remote catalog, no fallback** (conduit, superchain, tenderly, quicknode, chainstack, repository): cold start returns the retryable sentinel `ErrRemoteCacheCold`; the initializer retries with 3 s → 130 s exponential backoff until the first fetch lands.
 4. **Live `eth_chainId` probe** (envio for unknown chains, erpc, pimlico for unknown chains, routemesh, thirdweb): sends a real JSON-RPC call to the candidate endpoint with a 10 s timeout; probe clients are cached per chain id in `sync.Map`.
@@ -135,7 +135,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | field | type | default | behavior / footguns |
 |---|---|---|---|
 | `id` | string | vendor name (`p.Id = p.Vendor`) | Unique handle; appears in `<PROVIDER>` placeholder and bootstrap task names `network/<networkId>/provider/<id>`. Shorthand-converted providers get `<vendor>-<n>` (process-wide counter). No duplicate-id check — two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="common/defaults.go" lines="1474-1476" /> <SourceLink file="util/ids.go" lines="32-41" /> |
-| `vendor` | string | — (required) | Must exactly match one of 23 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-34" /> |
+| `vendor` | string | — (required) | Must exactly match one of 25 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon, satelink, spectrum`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-36" /> |
 | `settings` | `map[string]any` (VendorSettings) | `nil` | Free-form, vendor-interpreted. Redacted in JSON/YAML marshaling (never echoed in admin dump). See per-vendor tables below. <SourceLink file="common/config.go" lines="667-700" /> |
 | `settings.creditUnits` | `map[string]int64` | `nil` | Vendor-generic (works for every vendor): per-method **credit-unit** overrides for the cost accounting behind `X-ERPC-Credits` (`server.costHeaders`). Merged per method over the vendor's built-in `CreditUnitsProvider` table (alchemy and quicknode ship their public pricing); `"*"` = the vendor's fallback for unlisted methods. Vendors with no table default to a flat **1 credit per request** — set `"*": 0` to opt a vendor out entirely. Overriding one method keeps the rest; copied onto every upstream the provider generates. <SourceLink file="thirdparty/provider.go" lines="59-77" /> |
 | `onlyNetworks` | `[]string` | `nil` | Exhaustive allow-list (`evm:<positiveInt>` format, validated). If set, vendor's own `SupportsNetwork` is **not** called. Mutually exclusive with `ignoreNetworks` (validation error). <SourceLink file="thirdparty/provider.go" lines="42-49" /> |
@@ -169,6 +169,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | `quicknode://<key>[?tagIds=1,2&tagLabels=a,b]` | `{apiKey: key}` + parsed `tagIds`/`tagLabels` |
 | `repository://<host>/<path>[?query]` | `{repositoryUrl: "https://"+host+"/"+path+"?"+query}` |
 | `routemesh://<host>/rpc/<chainId>/<apiKey>` | `{baseURL: host, apiKey: pathParts[2]}` — path must match exactly |
+| `spectrum://<team>/<key>[?host=&plan=&nodeType=]` | `{apiKey: "<team>/<key>"}` + `host`/`plan`/`nodeType` from query |
 | `superchain://<spec>` | `{registryUrl: host+path}` |
 | `tenderly://<key>` | `{apiKey: key}` |
 | `thirdweb://<clientId>` | `{clientId: host}` |
@@ -295,6 +296,19 @@ Static map of 71 chains → subdomain prefixes. URL: `https://{subdomain}.dwelli
 | `apiKey` | yes | — |
 
 <SourceLink file="thirdparty/dwellir.go" lines="15-180" />
+
+#### spectrum
+
+[Spectrum Nodes](https://spectrumnodes.com). Static map of 142 EVM chains from the public catalog at [spectrumnodes.com/networks](https://spectrumnodes.com/networks) → route and offered node types. URL: `https://{host}/{apiKey}/{network}/{mn|tn}/{chain}/{plan}/{nodeType}/rpc/`; `{chain}` is the numeric chain ID except on Cronos (`cronosmainnet_25-1`, `cronostestnet_338`), and Avalanche ends in `rpc/ext/bc/C/rpc`. A chain answers only after it is enabled in the Spectrum dashboard project that owns the key, so pair this vendor with `onlyNetworks` listing the enabled chains. OwnsUpstream: `spectrum://`, `evm+spectrum://`, or a `.simplystaking.xyz/` endpoint.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+| `host` | no | `spectrum-03.simplystaking.xyz` (the region host shown in the dashboard) |
+| `plan` | no | `shared` (`dedicated` for dedicated nodes) |
+| `nodeType` | no | `archive`; `pruned` to prefer pruned nodes. A chain that offers only the other type uses that type. |
+
+<SourceLink file="thirdparty/spectrum.go" lines="1-272" />
 
 #### envio
 

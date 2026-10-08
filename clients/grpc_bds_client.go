@@ -34,6 +34,8 @@ import (
 	// Import gzip to register the compressor - enables automatic gzip compression
 	// when clients send "grpc-accept-encoding: gzip" header
 	_ "google.golang.org/grpc/encoding/gzip"
+	// Registers the client health-check function that healthCheckConfig uses.
+	_ "google.golang.org/grpc/health"
 )
 
 type GrpcBdsClient interface {
@@ -102,7 +104,10 @@ func (c *GenericGrpcBdsClient) SetExpectedChainId(chainId uint64) {
 
 // NewGrpcBdsClient builds a BDS gRPC client backed by a round-robin connection
 // pool. poolSize sets the number of connections; <= 0 uses the built-in default
-// (bdsPoolSize).
+// (bdsPoolSize). A non-empty healthCheckService turns on gRPC client health
+// checking for that grpc.health.v1 service name: round_robin then skips any
+// resolved address not reporting SERVING. A server without grpc.health
+// answers UNIMPLEMENTED, which grpc-go treats as healthy.
 func NewGrpcBdsClient(
 	appCtx context.Context,
 	logger *zerolog.Logger,
@@ -110,6 +115,7 @@ func NewGrpcBdsClient(
 	upstream common.Upstream,
 	parsedUrl *url.URL,
 	poolSize int,
+	healthCheckService string,
 ) (GrpcBdsClient, error) {
 	upsId := "n/a"
 	if upstream != nil {
@@ -143,7 +149,7 @@ func NewGrpcBdsClient(
 		}
 	}
 
-	target, useTLS := pickTargetForBDS(parsedUrl)
+	target, methodPrefix, useTLS := pickTargetForBDS(parsedUrl)
 
 	// Determine whether to use TLS based on port or URL scheme.
 	var transportCredentials credentials.TransportCredentials
@@ -160,27 +166,9 @@ func NewGrpcBdsClient(
 		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
 	}
 
-	// gRPC service config: round_robin distributes RPCs across all resolved addresses
-	// (no-op for single-target hosts). Transparent retries handle transient failures
-	// (UNAVAILABLE from connection resets, TCP retransmits) without surfacing errors
-	// to callers. WaitForReady queues RPCs during brief reconnects instead of failing
-	// immediately with UNAVAILABLE.
-	serviceConfig := `{
-		"loadBalancingConfig": [{"round_robin":{}}],
-		"methodConfig": [{
-			"name": [{"service": ""}],
-			"waitForReady": true,
-			"retryPolicy": {
-				"maxAttempts": 2,
-				"initialBackoff": "1s",
-				"maxBackoff": "5s",
-				"backoffMultiplier": 2,
-				"retryableStatusCodes": ["UNAVAILABLE"]
-			}
-		}]
-	}`
+	serviceConfig := bdsServiceConfig(healthCheckService)
 
-	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load())
+	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, methodPrefix, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load(), metadata.New(client.headers))
 	if err != nil {
 		return nil, err
 	}
@@ -217,6 +205,13 @@ func (c *GenericGrpcBdsClient) chainIdParam() *uint64 {
 		return nil
 	}
 	return &v
+}
+
+// signatureEncoding picks how transaction r/s render in JSON-RPC output for
+// the configured chain: 32-byte DATA on Tron, QUANTITY everywhere else
+// (including unknown chain 0), per execution-apis.
+func (c *GenericGrpcBdsClient) signatureEncoding() evm.SignatureEncoding {
+	return evm.SignatureEncodingForChain(c.expectedChainId.Load())
 }
 
 // grpcResponseMetadataInterceptor captures all response metadata (headers)
@@ -475,7 +470,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 
 		var result interface{}
 		if grpcResp.Block != nil {
-			result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
+			result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
 		}
 
 		jsonRpcResp := &common.JsonRpcResponse{}
@@ -541,7 +536,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 
 	var result interface{}
 	if hasBlock {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
+		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -616,7 +611,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, conn *b
 
 	var result interface{}
 	if grpcResp.Block != nil {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
+		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -811,7 +806,7 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, c
 
 	var result interface{}
 	if grpcResp.Transaction != nil {
-		result = evm.TransactionToJsonRpc(grpcResp.Transaction)
+		result = evm.TransactionToJsonRpc(grpcResp.Transaction, c.signatureEncoding())
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -1068,6 +1063,11 @@ func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
 	for k, v := range h {
 		c.headers[k] = v
 	}
+	// The pool's ChainId probes must carry the same headers as requests.
+	if c.pool != nil {
+		md := metadata.New(c.headers)
+		c.pool.md.Store(&md)
+	}
 }
 
 func (c *GenericGrpcBdsClient) QueryClient() evm.QueryServiceClient {
@@ -1288,7 +1288,7 @@ func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, conn
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
 	}
 
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransactionsResponseToJsonRpc(aggregated))
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransactionsResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
@@ -1327,7 +1327,7 @@ func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsCon
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
 	}
 
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryLogsResponseToJsonRpc(aggregated))
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryLogsResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
@@ -1366,7 +1366,7 @@ func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsC
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
 	}
 
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTracesResponseToJsonRpc(aggregated))
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTracesResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
@@ -1405,7 +1405,7 @@ func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *b
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
 	}
 
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransfersResponseToJsonRpc(aggregated))
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransfersResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 // svmGetBlockParams is the parsed second argument of Solana's `getBlock`.
@@ -1636,4 +1636,33 @@ func svmMapGetBlockError(err error) error {
 	default:
 		return fmt.Errorf("gRPC call failed: %w", err)
 	}
+}
+
+// bdsServiceConfig is the pool's gRPC service config: round_robin across every
+// resolved address, transparent retries on UNAVAILABLE, and waitForReady so RPCs
+// queue through brief reconnects instead of failing. healthCheckService, when
+// set, adds client health checking so round_robin uses only SERVING addresses.
+func bdsServiceConfig(healthCheckService string) string {
+	cfg := map[string]any{
+		"loadBalancingConfig": []any{map[string]any{"round_robin": map[string]any{}}},
+		"methodConfig": []any{map[string]any{
+			"name":         []any{map[string]any{"service": ""}},
+			"waitForReady": true,
+			"retryPolicy": map[string]any{
+				"maxAttempts":          2,
+				"initialBackoff":       "1s",
+				"maxBackoff":           "5s",
+				"backoffMultiplier":    2,
+				"retryableStatusCodes": []any{"UNAVAILABLE"},
+			},
+		}},
+	}
+	if healthCheckService != "" {
+		cfg["healthCheckConfig"] = map[string]any{"serviceName": healthCheckService}
+	}
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		panic(fmt.Sprintf("bds service config does not marshal: %v", err))
+	}
+	return string(out)
 }

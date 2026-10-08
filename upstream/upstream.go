@@ -216,6 +216,17 @@ type Upstream struct {
 	// Highest block at which the integrity state probe PROVED this upstream
 	// holds the state trie (0 = never proven). See EvmStateProvenBlock.
 	stateProvenBlock atomic.Int64
+	// operatorCordon is the operator's whole-upstream cordon as a shared
+	// counter: unix-ms when it was set, 0 when lifted. Shared state keeps
+	// replicas in sync and restores it at bootstrap; the memory driver keeps
+	// it in-process. Created once, lazily (see operatorCordonVar).
+	operatorCordon     atomic.Value // data.CounterInt64SharedVariable
+	operatorCordonOnce sync.Once
+	// operatorCordonReason is the reason given on this replica for the
+	// in-flight CordonAdmin/UncordonAdmin call; it is cleared when that
+	// call returns. Peers and restarted pods only see that an operator
+	// cordon exists.
+	operatorCordonReason atomic.Value
 }
 
 func NewUpstream(
@@ -330,6 +341,7 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 			u.svmStatePoller = svm.NewSvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
 		}
 	})
+	u.operatorCordonVar()
 
 	if u.evmStatePoller != nil {
 		err = u.evmStatePoller.Bootstrap(ctx)
@@ -1490,11 +1502,20 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(uppub)
 }
 
+// Cordon / Uncordon flip the tracker cell for (upstream, method) on this pod:
+// in-process detectors (consensus sit-out, state-poller checks) and
+// method-scoped operator cordons use them.
 func (u *Upstream) Cordon(method string, reason string) {
 	u.metricsTracker.Cordon(u, method, reason)
 }
 
+// Uncordon lifts a pod-local cordon. While the operator holds the shared
+// whole-upstream cordon, a detector cannot lift the "*" cell; only
+// UncordonAdmin can.
 func (u *Upstream) Uncordon(method string, reason string) {
+	if v, ok := u.operatorCordon.Load().(data.CounterInt64SharedVariable); ok && method == "*" && v.GetValue() > 0 {
+		return
+	}
 	u.metricsTracker.Uncordon(u, method, reason)
 }
 
@@ -1502,4 +1523,49 @@ func (u *Upstream) Uncordon(method string, reason string) {
 // method) is currently cordoned. Pass `"*"` for the wildcard scope.
 func (u *Upstream) CordonedReason(method string) (string, bool) {
 	return u.metricsTracker.CordonedReason(u, method)
+}
+
+// CordonAdmin sets the operator's whole-upstream cordon fleet-wide through
+// the shared counter (value = unix-ms, kept while already held). Local-first
+// and pushed in the background, like every other shared counter.
+func (u *Upstream) CordonAdmin(ctx context.Context, reason string) {
+	u.operatorCordonReason.Store(reason)
+	defer u.operatorCordonReason.Store("")
+	if v := u.operatorCordonVar(); v.GetValue() == 0 {
+		v.TryUpdate(ctx, time.Now().UnixMilli())
+	} else {
+		u.metricsTracker.Cordon(u, "*", reason)
+	}
+}
+
+// UncordonAdmin lifts the operator's cordon fleet-wide; on this pod that
+// also clears any automatic wildcard cordon — the operator call is the
+// override for a detector verdict.
+func (u *Upstream) UncordonAdmin(ctx context.Context, reason string) {
+	u.operatorCordonReason.Store(reason)
+	defer u.operatorCordonReason.Store("")
+	u.operatorCordonVar().TryUpdate(ctx, 0)
+	u.metricsTracker.Uncordon(u, "*", reason)
+}
+
+// operatorCordonVar creates the shared counter on first use; every value it
+// takes — from this pod, a peer, or the bootstrap fetch — flips the "*" cell.
+func (u *Upstream) operatorCordonVar() data.CounterInt64SharedVariable {
+	u.operatorCordonOnce.Do(func() {
+		key := data.CounterValueSchemaVersion + "/operatorCordon/" + u.ProjectId + "/" + common.UniqueUpstreamKey(u)
+		v := u.sharedStateRegistry.GetCounterInt64(key, 0)
+		v.OnValue(func(cordonedAtMs int64) {
+			reason := "operator cordon (set on another replica)"
+			if r, ok := u.operatorCordonReason.Load().(string); ok && r != "" {
+				reason = r
+			}
+			if cordonedAtMs > 0 {
+				u.metricsTracker.Cordon(u, "*", reason)
+			} else {
+				u.metricsTracker.Uncordon(u, "*", reason)
+			}
+		})
+		u.operatorCordon.Store(v)
+	})
+	return u.operatorCordon.Load().(data.CounterInt64SharedVariable)
 }

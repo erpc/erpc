@@ -1028,6 +1028,27 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 	return st, true, nil
 }
 
+// postgresLikePattern escapes LIKE metacharacters, then turns the caller's
+// '*' wildcard into '%'. '_' in a cacheKeySuffix (or a method name) must
+// stay literal — in LIKE it matches any single character, so suffix "foo_bar"
+// would otherwise read suffix "foo-bar".
+func postgresLikePattern(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\', '%', '_':
+			b.WriteByte('\\')
+			b.WriteByte(s[i])
+		case '*':
+			b.WriteByte('%')
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
 // getWithWildcard takes an already-acquired pool from the caller so it
 // shares the same RLock-scope and skips a redundant nil check. Caller is
 // responsible for ensuring `pool` is non-nil and that the connMu read lock
@@ -1048,26 +1069,26 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 	if index == ConnectorReverseIndex {
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
-			WHERE range_key = $1 AND partition_key LIKE $2
+			WHERE range_key = $1 AND partition_key LIKE $2 ESCAPE E'\\'
 			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
 			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table)
 		args = []interface{}{
 			strings.ReplaceAll(rangeKey, "*", "%"),
-			strings.ReplaceAll(partitionKey, "*", "%"),
+			postgresLikePattern(partitionKey),
 		}
 	} else {
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
-			WHERE partition_key = $1 AND range_key LIKE $2
+			WHERE partition_key = $1 AND range_key LIKE $2 ESCAPE E'\\'
 			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
 			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table)
 		args = []interface{}{
 			strings.ReplaceAll(partitionKey, "*", "%"),
-			strings.ReplaceAll(rangeKey, "*", "%"),
+			postgresLikePattern(rangeKey),
 		}
 	}
 

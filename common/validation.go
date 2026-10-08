@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
@@ -158,6 +159,14 @@ func (m *MetricsConfig) Validate() error {
 		}
 	}
 
+	// A malformed customization silently keeps or drops the wrong families, so
+	// reject it here rather than at Init, where the process is already committed
+	// to starting.
+	o := m.TelemetryOptions()
+	if _, err := telemetry.NewMetricPolicy(o.Customizations, o.LegacyLabels); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -205,7 +214,22 @@ func (b *RateLimitBudgetConfig) Validate() error {
 			return err
 		}
 	}
+	for method, units := range b.CreditUnits {
+		if units < 0 {
+			return fmt.Errorf("rateLimiter.*.budget.creditUnits.%s must not be negative", method)
+		}
+	}
 	return nil
+}
+
+// HasCreditRule reports whether any rule in the budget counts credits.
+func (b *RateLimitBudgetConfig) HasCreditRule() bool {
+	for _, rule := range b.Rules {
+		if rule != nil && rule.CountMode == RateLimitCountModeCredit {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *RateLimitRuleConfig) Validate() error {
@@ -224,6 +248,18 @@ func (r *RateLimitRuleConfig) Validate() error {
 		// ok
 	default:
 		return fmt.Errorf("rateLimiter.*.budget.rules.*.period must be one of: second, minute, hour, day, week, month, year")
+	}
+
+	switch r.CountMode {
+	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
+		// ok
+	default:
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.countMode '%s' is invalid, must be one of: %s, %s", r.CountMode, RateLimitCountModeRequest, RateLimitCountModeCredit)
+	}
+
+	// A zero ceiling would reject every request with a non-zero cost.
+	if r.CountMode == RateLimitCountModeCredit && r.MaxCount == 0 {
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.maxCount must be greater than 0 when countMode is %s", RateLimitCountModeCredit)
 	}
 	return nil
 }
@@ -527,16 +563,45 @@ func validateGrpcConnPoolSize(scope string, poolSize int) error {
 	return nil
 }
 
+// validateGrpcHealthCheckMount rejects a health check on an endpoint mounted
+// below a URL path. grpc-go opens the health Watch stream past every
+// interceptor, so it always calls bare `/grpc.health.v1.Health/Watch`, never
+// the mount; the answer would come from whatever serves the root.
+func validateGrpcHealthCheckMount(scope, endpoint, healthCheckService string) error {
+	if healthCheckService == "" {
+		return nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%s: invalid gRPC endpoint %s: %w", scope, util.RedactEndpoint(endpoint), err)
+	}
+	if strings.TrimRight(parsed.Path, "/") != "" {
+		return fmt.Errorf("%s.healthCheckService cannot be used with %s: the URL path mounts every call, but the gRPC health check always calls the root path", scope, util.RedactEndpoint(endpoint))
+	}
+	return nil
+}
+
 // Validate checks the gRPC cache-connector knobs. A zero PoolSize is valid and
 // means "use the built-in default".
 func (g *GrpcConnectorConfig) Validate() error {
-	return validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize)
+	if err := validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize); err != nil {
+		return err
+	}
+	for _, server := range g.Servers {
+		if err := validateGrpcHealthCheckMount("database.*.connector.grpc", server, g.HealthCheckService); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Validate checks the gRPC upstream knobs. A zero PoolSize is valid and means
 // "use the built-in default".
-func (g *GrpcUpstreamConfig) Validate() error {
-	return validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize)
+func (g *GrpcUpstreamConfig) Validate(endpoint string) error {
+	if err := validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize); err != nil {
+		return err
+	}
+	return validateGrpcHealthCheckMount("upstream.*.grpc", endpoint, g.HealthCheckService)
 }
 
 func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
@@ -546,6 +611,9 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	prefix := fmt.Sprintf("connector '%s'.%s[%d]", connectorId, field, index)
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
+	}
+	if len(fsCfg.MatchCommitment) > 0 {
+		return fmt.Errorf("%s: matchCommitment is not supported for connector-level failsafe", prefix)
 	}
 	return nil
 }
@@ -721,6 +789,24 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		}
 	} else if len(p.Providers) == 0 {
 		return fmt.Errorf("project.*.upstreams or project.*.providers is required, add at least one of them")
+	}
+	// Provider-generated upstreams copy upstreamDefaults only when no override
+	// matches, and that copy runs in a background bootstrap task. The
+	// executor's rejection is then only a log line and the upstream drops out.
+	if p.UpstreamDefaults != nil {
+		for _, fs := range p.UpstreamDefaults.Failsafe {
+			if fs != nil && fs.Consensus != nil {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
+			}
+			if fs != nil && len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.matchCommitment is only supported for network-level failsafe")
+			}
+		}
+	}
+	if p.NetworkDefaults != nil {
+		if err := p.NetworkDefaults.Validate(); err != nil {
+			return err
+		}
 	}
 	if p.Networks != nil {
 		existingIds := make(map[string]bool)
@@ -984,6 +1070,14 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			if err := fs.Validate(); err != nil {
 				return err
 			}
+			if len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("upstream '%s': failsafe.matchCommitment is only supported for network-level failsafe", u.Id)
+			}
+			// Upstreams register in the background, so the executor's own
+			// rejection only logs and erpc keeps serving without the upstream.
+			if fs.Consensus != nil {
+				return fmt.Errorf("upstream '%s': failsafe.consensus is only supported for network-level failsafe", u.Id)
+			}
 		}
 	}
 	if u.JsonRpc != nil {
@@ -992,7 +1086,7 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	if u.Grpc != nil {
-		if err := u.Grpc.Validate(); err != nil {
+		if err := u.Grpc.Validate(u.Endpoint); err != nil {
 			return err
 		}
 	}
@@ -1001,15 +1095,25 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return err
 		}
 	}
-	if u.RateLimitBudget != "" {
-		if !c.HasRateLimiterBudget(u.RateLimitBudget) {
-			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
-		}
-	}
 	switch u.RateLimitCountMode {
 	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
 	default:
 		return fmt.Errorf("upstream.*.rateLimitCountMode '%s' is invalid, must be one of: %s, %s", u.RateLimitCountMode, RateLimitCountModeRequest, RateLimitCountModeCredit)
+	}
+	if u.RateLimitBudget != "" {
+		budget := c.RateLimiterBudget(u.RateLimitBudget)
+		if budget == nil {
+			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
+		}
+		// Two cost sources for one counter; reject rather than pick silently.
+		if u.RateLimitCountMode == RateLimitCountModeCredit {
+			if len(budget.CreditUnits) > 0 {
+				return fmt.Errorf("upstream.*.rateLimitCountMode is '%s' but its budget '%s' also defines creditUnits; an upstream prices calls from its vendor's table, so remove one of them", RateLimitCountModeCredit, budget.Id)
+			}
+			if budget.HasCreditRule() {
+				return fmt.Errorf("upstream.*.rateLimitCountMode is '%s' but its budget '%s' also sets rules.*.countMode; set it in one place only", RateLimitCountModeCredit, budget.Id)
+			}
+		}
 	}
 	return nil
 }
@@ -1157,6 +1261,14 @@ func (f *FailsafeConfig) Validate() error {
 	case "", "*", "user", "internal":
 	default:
 		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+	}
+
+	for _, c := range f.MatchCommitment {
+		switch c {
+		case "none", "processed", "confirmed", "finalized":
+		default:
+			return fmt.Errorf("failsafe.matchCommitment '%s' is invalid, must be one of: none | processed | confirmed | finalized", c)
+		}
 	}
 
 	if f.Timeout != nil {
@@ -1458,6 +1570,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return fmt.Errorf("network.*.alias '%s' must contain only alphanumeric characters, dash, or underscore", n.Alias)
 		}
 	}
+	if err := validateCacheKeySuffix("network.*.cacheKeySuffix", n.CacheKeySuffix); err != nil {
+		return err
+	}
 	for i, sr := range n.StaticResponses {
 		if err := sr.Validate(); err != nil {
 			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
@@ -1465,6 +1580,23 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	}
 	if err := n.Integrity.Validate(); err != nil {
 		return fmt.Errorf("network.*: %w", err)
+	}
+	return nil
+}
+
+func (n *NetworkDefaults) Validate() error {
+	if n == nil {
+		return nil
+	}
+	return validateCacheKeySuffix("networkDefaults.cacheKeySuffix", n.CacheKeySuffix)
+}
+
+func validateCacheKeySuffix(field, suffix string) error {
+	if suffix == "" {
+		return nil
+	}
+	if !util.IsValidIdentifier(suffix) {
+		return fmt.Errorf("%s '%s' must contain only alphanumeric characters, dash, or underscore", field, suffix)
 	}
 	return nil
 }
@@ -1529,6 +1661,11 @@ func (e *EvmNetworkConfig) Validate() error {
 		for _, m := range e.ServedTip.GuaranteedMethods {
 			if err := ValidatePattern(m); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)
+			}
+		}
+		for _, sel := range e.ServedTip.GuaranteedFor {
+			if err := ValidatePattern(sel); err != nil {
+				return fmt.Errorf("network.*.evm.servedTip.guaranteedFor has invalid selector %q: %w", sel, err)
 			}
 		}
 	}

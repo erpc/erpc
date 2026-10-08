@@ -21,8 +21,42 @@ type responseGroup struct {
 
 	// Cached largest result/error for quick access (prefer largest response even within same consensus group)
 	LargestResult *common.NormalizedResponse
-	FirstError    error
-	HasResult     bool
+	// RepresentativeError is the error every winner rule returns for this group.
+	// It is the member with the lowest upstream id (ties broken by attempt
+	// index), never the first to arrive: a group can hold members whose codes or
+	// messages differ — missing-data groups by verdict, and no group has ever
+	// hashed the message — so picking by arrival made the client-visible error
+	// depend on which upstream happened to answer first.
+	RepresentativeError error
+	// repKey is the sort key of the member RepresentativeError came from.
+	repKey    representativeKey
+	HasResult bool
+}
+
+// representativeKey orders a group's error members. Upstream id is the stable
+// axis; attempt index only breaks ties when one upstream answered twice, and an
+// unattributed result (no upstream) always loses to an attributed one.
+type representativeKey struct {
+	unattributed bool
+	upstreamID   string
+	index        int
+}
+
+func newRepresentativeKey(r *execResult) representativeKey {
+	if r.Upstream == nil {
+		return representativeKey{unattributed: true, index: r.Index}
+	}
+	return representativeKey{upstreamID: r.Upstream.Id(), index: r.Index}
+}
+
+func (k representativeKey) before(other representativeKey) bool {
+	if k.unattributed != other.unattributed {
+		return !k.unattributed
+	}
+	if k.upstreamID != other.upstreamID {
+		return k.upstreamID < other.upstreamID
+	}
+	return k.index < other.index
 }
 
 func (g *responseGroup) participants() []common.ParticipantInfo {
@@ -121,15 +155,16 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 				// First successful response in this group
 				group.LargestResult = r.Result
 				group.ResponseSize = r.CachedResponseSize
-				group.FirstError = nil
+				group.RepresentativeError = nil
 				group.HasResult = true
 			} else if r.CachedResponseSize > group.ResponseSize {
 				// Found a larger response in the same consensus group
 				group.LargestResult = r.Result
 				group.ResponseSize = r.CachedResponseSize
 			}
-		} else if group.FirstError == nil && r.Err != nil {
-			group.FirstError = r.Err
+		} else if key := newRepresentativeKey(r); group.RepresentativeError == nil || key.before(group.repKey) {
+			group.RepresentativeError = r.Err
+			group.repKey = key
 		}
 	}
 
@@ -245,7 +280,7 @@ func (a *consensusAnalysis) groupOf(sr *slotResult) *responseGroup {
 		return nil
 	}
 	for _, g := range a.groups {
-		if sr.Error != nil && g.FirstError == sr.Error {
+		if sr.Error != nil && g.RepresentativeError == sr.Error {
 			return g
 		}
 		for _, r := range g.Results {
@@ -410,9 +445,9 @@ func (a *consensusAnalysis) getLeaderFirstErrorIncludingInfra() error {
 		return nil
 	}
 	for _, group := range a.groups {
-		if group == nil || group.FirstError == nil {
+		if group == nil || group.RepresentativeError == nil {
 			// Fast path: skip groups without cached error
-			// Still scan results in case FirstError isn't populated
+			// Still scan results in case RepresentativeError isn't populated
 		}
 		for _, r := range group.Results {
 			if r != nil && r.Upstream != nil && r.Upstream == a.leaderUpstream && r.Err != nil {
@@ -440,20 +475,44 @@ func isAgreedUponError(err error) bool {
 }
 
 // errorToConsensusHash generates a comparable hash from an error.
+//
+// Missing-data errors hash by verdict, not by number. A provider's JSON-RPC code
+// for "I do not have this" reports its own storage layout, not the chain: agave
+// answers a permanently absent slot with -32007 when check_blockstore_root
+// settles it locally and -32009 when check_bigtable_result had to ask long-term
+// storage, and answers a block it cannot serve with -32001 when its ledger was
+// pruned below the slot and -32004 when the slot is above its rooted tip. Two
+// honest upstreams therefore landed in different groups and disputed under
+// returnError, which is the one outcome neither of them claimed.
+//
+// EVM is unaffected in practice: every EVM missing-data site already normalizes
+// to JsonRpcErrorMissingData, so those responses shared a group before this and
+// share one now.
 func errorToConsensusHash(err error) string {
 	if err == nil {
 		return ""
 	}
+	hash := "error:generic"
 	var jre *common.ErrJsonRpcExceptionInternal
-	if errors.As(err, &jre) {
-		return fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
-	}
-	if se, ok := err.(common.StandardError); ok {
-		if base := se.Base(); base != nil {
-			return string(base.Code)
+	switch {
+	case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
+		hash = "missingdata"
+	case errors.As(err, &jre):
+		hash = fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
+	default:
+		if se, ok := err.(common.StandardError); ok {
+			if base := se.Base(); base != nil {
+				hash = string(base.Code)
+			}
 		}
 	}
-	return "error:generic"
+	// "Skipped for good" and "not indexed yet" are opposite claims about whether
+	// asking again can help. One group would hand the caller whichever arrived
+	// first, so permanence stays part of the key and the two dispute instead.
+	if common.IsPermanentlyMissingData(err) {
+		hash += ":permanent"
+	}
+	return hash
 }
 
 // resultToJsonRpcResponse safely converts a result to a JsonRpcResponse.

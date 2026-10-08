@@ -117,11 +117,11 @@ func NewFailsafeConnector(
 ) (*FailsafeConnector, error) {
 	lg := logger.With().Str("component", "failsafeConnector").Str("connectorId", wrapped.Id()).Logger()
 
-	getExecutors, err := buildCacheExecutors(ctx, &lg, wrapped.Id(), getCfgs)
+	getExecutors, err := buildCacheExecutors(ctx, &lg, wrapped.Id(), "get", getCfgs)
 	if err != nil {
 		return nil, err
 	}
-	setExecutors, err := buildCacheExecutors(ctx, &lg, wrapped.Id(), setCfgs)
+	setExecutors, err := buildCacheExecutors(ctx, &lg, wrapped.Id(), "set", setCfgs)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func NewFailsafeConnector(
 	}, nil
 }
 
-func buildCacheExecutors(ctx context.Context, logger *zerolog.Logger, connectorId string, cfgs []*common.FailsafeConfig) ([]*cacheExecutor, error) {
+func buildCacheExecutors(ctx context.Context, logger *zerolog.Logger, connectorId, direction string, cfgs []*common.FailsafeConfig) ([]*cacheExecutor, error) {
 	var executors []*cacheExecutor
 
 	for _, fsCfg := range cfgs {
@@ -148,11 +148,13 @@ func buildCacheExecutors(ctx context.Context, logger *zerolog.Logger, connectorI
 				map[string]interface{}{"connectorId": connectorId},
 			)
 		}
+		ex.identify(connectorId, direction)
 		executors = append(executors, ex)
 	}
 
 	// Append a no-op fallback executor so unmatched operations always have one.
 	noop, _ := NewCacheExecutor(ctx, nil, logger)
+	noop.identify(connectorId, direction)
 	executors = append(executors, noop)
 
 	return executors, nil
@@ -215,6 +217,13 @@ func (f *FailsafeConnector) CacheLatestBlockTimestamp(networkId string) (int64, 
 		return r.CacheLatestBlockTimestamp(networkId)
 	}
 	return 0, false
+}
+
+// ReadOnly forwards to the wrapped connector so cache policies skip writes to a read-only connector
+// through the failsafe wrapper too.
+func (f *FailsafeConnector) ReadOnly() bool {
+	r, ok := f.wrapped.(ReadOnlyConnector)
+	return ok && r.ReadOnly()
 }
 
 func (f *FailsafeConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {

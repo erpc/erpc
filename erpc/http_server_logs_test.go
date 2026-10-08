@@ -306,6 +306,120 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	require.Equal(t, 3, len(arr))
 }
 
+// The network's getLogsMaxAllowedRange is enforced before the cache read: an
+// over-cap eth_getLogs is refused even when the cache holds an answer for it, so
+// a request the network will refuse never costs a cache connector (on edge, one
+// wide Prism scan) first. A within-cap request is still served from the cache.
+func TestHttp_EvmGetLogs_MaxRange_EnforcedBeforeCache(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	gock.EnableNetworking()
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		return strings.Split(req.URL.Host, ":")[0] == "localhost"
+	})
+	util.SetupMocksForEvmStatePoller()
+	// No eth_getLogs mock: neither request may reach the upstream.
+	defer util.AssertNoPendingMocks(t, 0)
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{MaxTimeout: common.Duration(10 * time.Second).Ptr()},
+		Database: &common.DatabaseConfig{
+			EvmJsonRpcCache: &common.CacheConfig{
+				Connectors: []*common.ConnectorConfig{
+					{
+						Id:     "mem",
+						Driver: common.DriverMemory,
+						Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+					},
+				},
+				Policies: []*common.CachePolicyConfig{
+					{
+						Network:   "*",
+						Method:    "eth_getLogs",
+						Finality:  common.DataFinalityStateFinalized,
+						Connector: "mem",
+						TTL:       common.FixedDuration(5 * time.Minute),
+					},
+				},
+			},
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm:          &common.EvmNetworkConfig{ChainId: 123, GetLogsMaxAllowedRange: 10},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Id:       "rpc1",
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+	defer shutdown()
+
+	prj, err := erpcInstance.GetProject("test_project")
+	require.NoError(t, err)
+	ntw, err := prj.GetNetwork(context.Background(), util.EvmNetworkId(123))
+	require.NoError(t, err)
+
+	// Both ranges sit far below the finalized tip (0x11117777), so their cache
+	// entries are finalized and served by the policy above.
+	const overCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x1ff"}]}`
+	const withinCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x104"}]}`
+	// 0x0 is genesis, not an unresolved tag. 0x0–0x1ff is 512 blocks and must
+	// be refused before the cache read, same as any other over-cap range.
+	const genesisOverCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x1ff"}]}`
+	seed := func(body, blockNumber string) {
+		req := common.NewNormalizedRequest([]byte(body))
+		req.SetNetwork(ntw)
+		jrr, err := common.NewJsonRpcResponse(1, []map[string]interface{}{{"blockNumber": blockNumber, "logIndex": "0x0"}}, nil)
+		require.NoError(t, err)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).WithFinality(common.DataFinalityStateFinalized)
+		require.NoError(t, ntw.cacheDal.Set(context.Background(), req, resp))
+		// The memory connector writes asynchronously; wait until it reads back.
+		require.Eventually(t, func() bool {
+			probe := common.NewNormalizedRequest([]byte(body))
+			probe.SetNetwork(ntw)
+			got, err := ntw.cacheDal.Get(context.Background(), probe)
+			return err == nil && got != nil && !got.IsObjectNull()
+		}, 2*time.Second, 20*time.Millisecond, "seeded cache entry must be readable back")
+	}
+	seed(overCap, "0x150")
+	seed(withinCap, "0x102")
+	seed(genesisOverCap, "0x10")
+
+	// Unhappy path: 256 blocks against a cap of 10 is refused, though cached.
+	// JSON-RPC application errors stay HTTP 200 with the error in the body.
+	status, _, body := send(overCap, nil, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.Contains(t, body, "ErrGetLogsExceededMaxAllowedRange")
+	require.Contains(t, body, `"code":-32012`)
+	require.NotContains(t, body, "0x150", "an over-cap request must not be answered from the cache")
+
+	// Genesis-anchored over-cap range: block 0 must not skip the pre-cache check.
+	status, _, body = send(genesisOverCap, nil, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.Contains(t, body, "ErrGetLogsExceededMaxAllowedRange")
+	require.Contains(t, body, `"code":-32012`)
+	require.NotContains(t, body, `"blockNumber":"0x10"`, "a genesis over-cap request must not be answered from the cache")
+
+	// Happy path: a 5-block request is still served from the cache.
+	status, _, body = send(withinCap, nil, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.Contains(t, body, "0x102")
+}
+
 // On-error split by addresses for single-block range; ensure merged output contains both halves
 func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 	util.ResetGock()

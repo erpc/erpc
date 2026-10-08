@@ -153,12 +153,17 @@ iterates this slice in insertion order, so the output is always deterministic an
 ascending block range regardless of goroutine completion order. No deduplication is
 performed. Empty or `null` sub-responses are silently skipped during the merge write.
 
-**Hard limits before splitting.** Three hard limits fire at network pre-forward before any
-proactive splitting, in this order: block range (`getLogsMaxAllowedRange`, default 30 000),
-address count (`getLogsMaxAllowedAddresses`), topics OR-list length
-(`getLogsMaxAllowedTopics`). Exceeding any of these returns HTTP 413 immediately — they do
-NOT trigger `getLogsSplitOnError` reactive splitting. Only upstream-originated errors
-(HTTP 413 or JSON-RPC `-32012`) trigger the reactive path.
+**Hard limits before the cache and before splitting.** Three hard limits fire at project
+pre-forward, before the cache read, the multiplexer and upstream selection, in this order:
+block range (`getLogsMaxAllowedRange`, default 30 000), address count
+(`getLogsMaxAllowedAddresses`), topics OR-list length (`getLogsMaxAllowedTopics`). Exceeding
+any of these returns HTTP 413 immediately, even when the cache holds an answer for that
+exact request, so an over-cap request never costs a cache connector (such as a Prism scan of
+the whole range). Network pre-forward re-checks them before any proactive splitting, as a
+backstop for callers that reach `Network.Forward` directly. They do NOT trigger
+`getLogsSplitOnError` reactive splitting. Only upstream-originated errors (HTTP 413 or
+JSON-RPC `-32012`) trigger the reactive path. Split sub-requests are exempt: their parent
+was already checked.
 
 **Block tag handling.** Block tags `latest` and `finalized` are resolved to hex numbers
 using the highest known block from the network's state poller. Tags `safe`, `pending`,

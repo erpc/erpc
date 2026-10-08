@@ -31,8 +31,8 @@ func HandleProjectPreForward(ctx context.Context, network common.Network, nq *co
 	}
 
 	switch strings.ToLower(method) {
-	case "eth_call":
-		return projectPreForward_eth_call(ctx, network, nq)
+	case "eth_call", "eth_estimategas":
+		return projectPreForward_defaultLatestBlock(ctx, network, nq)
 	case "eth_chainid":
 		return projectPreForward_eth_chainId(ctx, network, nq)
 	case "eth_getlogs":

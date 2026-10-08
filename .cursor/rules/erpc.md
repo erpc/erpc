@@ -179,6 +179,10 @@ Concretely, for every design and review in this repo:
 ### Consensus Error Patterns
 - Execution exceptions (like smart contract reverts) are valid consensus results
 - When comparing errors for consensus, compare by their normalized JSON-RPC codes
+- Exception: missing-data errors are compared by verdict, not by code. A provider's
+  number for "I do not have this" describes its own storage layout, not the chain
+  (agave: `-32007` local blockstore vs `-32009` long-term storage; `-32001` pruned
+  ledger vs `-32004` unrooted slot), so comparing it manufactures disputes
 - Use `common.ErrCodeEndpointExecutionException` to identify execution errors
 
 ## Consensus Implementation
@@ -189,12 +193,20 @@ Concretely, for every design and review in this repo:
 - Error consensus should compare normalized codes, not just error types
 
 ### Error Hash Generation
-- For consensus comparison, generate hashes that include the normalized error code:
+- For consensus comparison, generate hashes that include the normalized error code,
+  except for missing-data, which hashes by verdict plus permanence:
   ```go
-  if errors.As(err, &jre) {
-      return fmt.Sprintf("%d", jre.NormalizedCode())
+  if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+      hash = "missingdata"
+  } else if errors.As(err, &jre) {
+      hash = fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
+  }
+  if common.IsPermanentlyMissingData(err) {
+      hash += ":permanent"
   }
   ```
+- The hash is never what the client sees; `buildErrorResponseBody` writes
+  `NormalizedCode()`, which stays the upstream's native number on SVM
 
 ### Short-Circuit Logic
 - Consensus can be reached on errors just like successful results
@@ -277,6 +289,11 @@ Use `atomic.Int64` / `atomic.Uint64` for single values read and written from mul
 
 ### Config Setters and Consumers Run on Different Goroutines
 Methods like `SetNetworkConfig` are called from the project registry goroutine, while the ticker goroutine and request-serving goroutines read that config. Any field shared between them must be protected by a mutex or atomic. When adding new shared state, check who writes it and who reads it.
+
+## Public Repository Content
+
+- Keep branches, commits, PR titles, PR bodies, and other public text self-contained.
+- Never include private issue identifiers, private workspace URLs, or assume readers can access internal systems.
 
 ## Commit and PR Guidelines
 - Follow the [Conventional Commits](https://www.conventionalcommits.org/) style (e.g. `feat:`, `fix:`) when writing commit messages.
