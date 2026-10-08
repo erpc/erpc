@@ -17,7 +17,7 @@ Every upstream sees the chain at a slightly different block. Without coordinatio
 - Consensus-cluster served tip that only advances when the majority of upstreams agree — no phantom future blocks, no stale tips
 - Optional per-group guarantee so the advertised tip stays servable by the upstreams your consensus policy requires
 - Per-upstream lag gauges that feed selection policies so slow nodes are deprioritized before requests reach them
-- Works across pods: Redis-backed shared counters mean only one replica polls per debounce window
+- Redis-backed counters share heads across replicas; each replica samples latest-block timestamps on its own debounce schedule.
 
 ## Quick taste
 
@@ -93,6 +93,8 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 ### How it works
 
 Each upstream gets its own `EvmStatePoller` background goroutine. On each tick of `statePollerInterval` (default 30 s), three concurrent goroutines fetch the latest block, finalized block, and syncing state. A synchronous `Poll()` runs once at bootstrap time to seed the upstream before any request traffic arrives.
+
+Remote head updates do not postpone local latest-block sampling. A local fetch can attach a missing timestamp to the same block already received from a peer. The block-time estimator accepts that matched observation without advancing the head again. Latest-block polling cost scales with replica count.
 
 **Routing the `safe` tag.** On op-stack chains, `safe` is node-relative because each verifier chooses its own L1 confirmation depth. If providers in one pool use different depths, they can honestly return different blocks for the same tag. Set `evm.safeBlockSource` to an upstream id/tag selector when one pool should define that answer:
 

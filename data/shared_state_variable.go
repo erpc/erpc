@@ -21,6 +21,7 @@ type CounterInt64SharedVariable interface {
 	SharedVariable
 	GetValue() int64
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
+	TryUpdateIfLocallyStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
@@ -101,6 +102,7 @@ func (v *baseSharedVariable) advanceTimestampPast(remoteTs int64) {
 
 type counterInt64 struct {
 	baseSharedVariable
+	localRefresh           baseSharedVariable
 	registry               *sharedStateRegistry
 	key                    string
 	value                  atomic.Int64
@@ -428,6 +430,18 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 }
 
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
+	return c.tryUpdateIfStale(ctx, staleness, executeNewValueFn, false)
+}
+
+func (c *counterInt64) TryUpdateIfLocallyStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
+	return c.tryUpdateIfStale(ctx, staleness, executeNewValueFn, true)
+}
+
+func (c *counterInt64) tryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error), local bool) (int64, error) {
+	freshness := &c.baseSharedVariable
+	if local {
+		freshness = &c.localRefresh
+	}
 	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale",
 		trace.WithAttributes(
 			attribute.String("key", c.key),
@@ -436,7 +450,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	)
 	defer span.End()
 
-	if !c.IsStale(staleness) {
+	if !freshness.IsStale(staleness) {
 		span.SetAttributes(attribute.Bool("skipped_not_stale", true))
 		return c.value.Load(), nil
 	}
@@ -448,7 +462,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	defer c.updateMu.Unlock()
 
 	// Double-check staleness after acquiring mutex
-	if !c.IsStale(staleness) {
+	if !freshness.IsStale(staleness) {
 		span.SetAttributes(attribute.Bool("skipped_not_stale_after_mutex", true))
 		return c.value.Load(), nil
 	}
@@ -459,6 +473,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// Do NOT acquire distributed locks or do any remote I/O here, otherwise degraded shared state
 	// (e.g. Redis lock acquisition) can block normal request flow.
 	span.SetAttributes(attribute.Bool("foreground_remote_io_disabled", true))
+	c.localRefresh.allocateUpdatedAtMs()
 
 	// Execute the refresh function (e.g., RPC call to get latest block) in background
 	resultCh := make(chan refreshResult, 1)
