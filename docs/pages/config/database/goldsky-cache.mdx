@@ -41,8 +41,9 @@ One URL per chain; eRPC calls `ChainId` on each at startup to map it to its netw
             - grpcs://edge.goldsky.com/cache/base
           headers:
             x-api-key: \${GOLDSKY_API_KEY}
-          # the 100ms default is too short for a call across the internet
-          getTimeout: 2s
+          # a read the cache can't answer this fast goes to your upstreams;
+          # raise it to keep wide eth_getLogs ranges in the cache
+          getTimeout: 200ms
       - id: memory-cache
         driver: memory
     policies:
@@ -66,8 +67,9 @@ One URL per chain; eRPC calls `ChainId` on each at startup to map it to its netw
             "grpcs://edge.goldsky.com/cache/base",
           ],
           headers: { "x-api-key": "\${GOLDSKY_API_KEY}" },
-          // the 100ms default is too short for a call across the internet
-          getTimeout: "2s",
+          // a read the cache can't answer this fast goes to your upstreams;
+          // raise it to keep wide eth_getLogs ranges in the cache
+          getTimeout: "200ms",
         },
       },
       { id: "memory-cache", driver: "memory" },
@@ -112,5 +114,6 @@ Per connector, the Prometheus counter `erpc_cache_get_success_hit_total{connecto
 
 - **Methods:** `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getLogs`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_chainId`, `eth_blockNumber`. eRPC never sends other methods to the connector.
 - **Misses:** data not indexed yet (e.g. the chain tip) answers gRPC `OUT_OF_RANGE`; eRPC treats it as a cache miss and calls your upstreams.
+- **`eth_getLogs`:** up to 30,000 blocks per call. Block, transaction and receipt reads answer well within `getTimeout: 200ms`; a wide or dense `eth_getLogs` range takes longer and goes to your upstreams unless you raise it.
 - **Chains:** abstract, arbitrum, arbitrum-sepolia, arc, avalanche, base, base-sepolia, bsc, celo, ethereum, gnosis, hyperevm, ink, monad, optimism, polygon, robinhood, robinhood-testnet, sei, sepolia, tempo, tron. Use the name in the URL: `grpcs://edge.goldsky.com/cache/<chain>`.
 - **No writes:** the connector is read-only and eRPC never writes to it, so the policy needs no `appliesTo`.
