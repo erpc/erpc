@@ -689,7 +689,7 @@ The RDS `db-XXXXXXXXXXXXXXXX` resource ID is the instance's resource ID (RDS con
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_ristretto_cache_current_cost` | gauge | `connector` | Every 30s by memory connector when `emitMetrics=true`. Bytes currently used by ristretto. |
-| `erpc_ristretto_cache_sets_failed_total` | counter | `connector` | Every 30s; delta of `SetsDropped + SetsRejected` from ristretto stats. |
+| `erpc_ristretto_cache_sets_failed_total` | counter | `connector` | Every 30s; delta of `SetsDropped + SetsRejected` from ristretto stats. Collection stops before cache closure resets those stats; the exported counter retains its last value. |
 | `erpc_cache_connector_earliest_block_number` | gauge | `connector`, `network` | Set every 60s when gRPC `fetchTaggedBlock("earliest")` succeeds. Drives fast-miss rejection. Not reset on transient poll failure. |
 | `erpc_cache_connector_latest_block_number` | gauge | `connector`, `network` | Set every 60s when gRPC `fetchTaggedBlock("latest")` succeeds. |
 | `erpc_cache_connector_finalized_block_number` | gauge | `connector`, `network` | Set every 60s when finalized block is fetchable. |

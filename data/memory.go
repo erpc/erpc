@@ -295,6 +295,12 @@ func (m *MemoryConnector) collectAndEmitMetrics() {
 	m.metricsMutex.Lock()
 	defer m.metricsMutex.Unlock()
 
+	m.closeMu.RLock()
+	defer m.closeMu.RUnlock()
+	if m.closed {
+		return
+	}
+
 	metrics := m.cache.Metrics
 
 	// Get current metric values
