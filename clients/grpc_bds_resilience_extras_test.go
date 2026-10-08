@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -87,6 +88,24 @@ func (s *happyRPCServer) GetTransactionByHash(ctx context.Context, req *evm.GetT
 			S:    []byte{0x02},
 		},
 	}, nil
+}
+
+// GetLogs answers with one log per requested block, each carrying 1 MiB of
+// data, so a test sizes the reply by the range it asks for.
+func (s *happyRPCServer) GetLogs(ctx context.Context, req *evm.GetLogsRequest) (*evm.GetLogsResponse, error) {
+	s.calls.Add(1)
+	s.recordMetadata(ctx)
+	data := make([]byte, 1<<20)
+	resp := &evm.GetLogsResponse{}
+	for n := req.GetFromBlock(); n <= req.GetToBlock(); n++ {
+		resp.Logs = append(resp.Logs, &evm.Log{
+			Address:     make([]byte, 20),
+			Data:        data,
+			BlockNumber: n,
+			BlockHash:   make([]byte, 32),
+		})
+	}
+	return resp, nil
 }
 
 func startHappyServer(t *testing.T, chainID, blockNumber uint64) (string, *happyRPCServer, func()) {
@@ -168,6 +187,9 @@ func TestSendRequest_HappyPath_ChainId(t *testing.T) {
 
 // TestSendRequest_HappyPath_GetBlockByNumber exercises eth_getBlockByNumber
 // against a successful server and asserts the block payload is propagated.
+// Then an eth_getLogs whose reply runs past 100 MiB, as a wide range on a busy
+// chain does (Ethereum: ~100 MB per 1,000 blocks): the client must take the
+// whole reply, not refuse it as RESOURCE_EXHAUSTED and push the read upstream.
 func TestSendRequest_HappyPath_GetBlockByNumber(t *testing.T) {
 	addr, server, stop := startHappyServer(t, 1, 0x100)
 	defer stop()
@@ -184,6 +206,17 @@ func TestSendRequest_HappyPath_GetBlockByNumber(t *testing.T) {
 	require.NotNil(t, jrr)
 	require.NotEqual(t, "null", jrr.GetResultString(),
 		"block must be non-null when server returns one")
+
+	// 0x100..0x177: 120 blocks, 120 MiB of log data in one reply.
+	req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x177"}]}`))
+	resp, err = client.SendRequest(context.Background(), req)
+	require.NoError(t, err, "a reply past 100 MiB must reach the caller")
+	jrr, err = resp.JsonRpcResponse()
+	require.NoError(t, err)
+	var logs []map[string]interface{}
+	require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &logs))
+	require.Len(t, logs, 120)
+	require.Equal(t, "0x177", logs[119]["blockNumber"])
 }
 
 // TestSendRequest_HeadersPassedAsMetadata verifies SetHeaders entries
