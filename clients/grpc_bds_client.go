@@ -470,7 +470,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 
 		var result interface{}
 		if grpcResp.Block != nil {
-			result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+			block := evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+			nodeShapeBlock(block)
+			result = block
 		}
 
 		jsonRpcResp := &common.JsonRpcResponse{}
@@ -536,7 +538,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 
 	var result interface{}
 	if hasBlock {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+		block := evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+		nodeShapeBlock(block)
+		result = block
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -611,7 +615,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, conn *b
 
 	var result interface{}
 	if grpcResp.Block != nil {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+		block := evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
+		nodeShapeBlock(block)
+		result = block
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -653,6 +659,20 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 
 	filterParams := params[0]
 
+	// EIP-234: a blockHash filter names one block and excludes fromBlock/toBlock.
+	// A BDS server answers it directly; a hash it does not hold (a block not
+	// indexed yet, or reorged away) is OUT_OF_RANGE, a miss like any other.
+	var blockHash []byte
+	if bhStr, ok := filterParams["blockHash"].(string); ok && bhStr != "" {
+		if filterParams["fromBlock"] != nil || filterParams["toBlock"] != nil {
+			return nil, fmt.Errorf("eth_getLogs blockHash cannot be combined with fromBlock/toBlock")
+		}
+		blockHash, err = parseHexBytes(bhStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse blockHash: %w", err)
+		}
+	}
+
 	var fromBlock, toBlock *uint64
 	if fromStr, ok := filterParams["fromBlock"].(string); ok {
 		if fromStr != "latest" && fromStr != "pending" && fromStr != "earliest" {
@@ -674,7 +694,7 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 		}
 	}
 
-	if fromBlock == nil || toBlock == nil {
+	if blockHash == nil && (fromBlock == nil || toBlock == nil) {
 		return nil, fmt.Errorf("special block numbers not yet supported via gRPC for eth_getLogs")
 	}
 
@@ -706,26 +726,29 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 	}
 
 	grpcReq := &evm.GetLogsRequest{
-		FromBlock: fromBlock,
-		ToBlock:   toBlock,
 		Addresses: addresses,
 		Topics:    topics,
 		ChainId:   c.chainIdParam(),
 	}
+	spanAttrs := []attribute.KeyValue{}
+	if blockHash != nil {
+		grpcReq.BlockHash = blockHash
+		spanAttrs = append(spanAttrs, attribute.String("block_hash", fmt.Sprintf("0x%x", blockHash)))
+	} else {
+		grpcReq.FromBlock, grpcReq.ToBlock = fromBlock, toBlock
+		spanAttrs = append(spanAttrs,
+			attribute.Int64("from_block", int64(*fromBlock)),
+			attribute.Int64("to_block", int64(*toBlock)),
+		)
+	}
 
 	c.logger.Debug().
-		Uint64("fromBlock", *fromBlock).
-		Uint64("toBlock", *toBlock).
+		Interface("filter", filterParams).
 		Int("addressCount", len(addresses)).
 		Int("topicCount", len(topics)).
 		Msg("calling gRPC GetLogs")
 
-	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs",
-		trace.WithAttributes(
-			attribute.Int64("from_block", int64(*fromBlock)),
-			attribute.Int64("to_block", int64(*toBlock)),
-		),
-	)
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs", trace.WithAttributes(spanAttrs...))
 	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*evm.GetLogsResponse, error) {
 		return conn.rpcClient.GetLogs(ctx, grpcReq)
 	})
@@ -806,7 +829,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, c
 
 	var result interface{}
 	if grpcResp.Transaction != nil {
-		result = evm.TransactionToJsonRpc(grpcResp.Transaction, c.signatureEncoding())
+		tx := evm.TransactionToJsonRpc(grpcResp.Transaction, c.signatureEncoding())
+		nodeShapeTransaction(tx)
+		result = tx
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -874,7 +899,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, 
 
 	var result interface{}
 	if grpcResp.Receipt != nil {
-		result = evm.ReceiptToJsonRpc(grpcResp.Receipt)
+		receipt := evm.ReceiptToJsonRpc(grpcResp.Receipt)
+		nodeShapeReceipt(receipt)
+		result = receipt
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -989,7 +1016,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, conn 
 	if grpcResp.Receipts != nil {
 		result = make([]interface{}, len(grpcResp.Receipts))
 		for i, receipt := range grpcResp.Receipts {
-			result[i] = evm.ReceiptToJsonRpc(receipt)
+			shaped := evm.ReceiptToJsonRpc(receipt)
+			nodeShapeReceipt(shaped)
+			result[i] = shaped
 		}
 	}
 
@@ -1085,6 +1114,74 @@ func (c *GenericGrpcBdsClient) QueryClient() evm.QueryServiceClient {
 
 func parseHexBytes(hexStr string) ([]byte, error) {
 	return evm.HexToBytes(hexStr)
+}
+
+// The manifesto converters render a BDS record field by field, and fill in
+// some fields a node never sends: L2 fee fields as null on every chain, the
+// receipt's execution figures on the transaction, an empty access list on a
+// legacy transaction, a chainId on a pre-EIP-155 one. The values are right;
+// the extra keys make a cache hit look unlike the same answer from an
+// upstream, which breaks response comparison (consensus, integrity checks,
+// clients diffing providers). These trims make the hit node-shaped, and only
+// remove what no chain's node sends where it was put: every one of these
+// figures stays on the receipt, where nodes send it (l1Fee on an OP chain,
+// blob fields on a blob receipt). Fields nodes disagree on (blockTimestamp on
+// a transaction, yParity on a deposit) are left as the record has them.
+
+// receiptFiguresOnTransaction are the execution results TransactionToJsonRpc
+// copies from the record onto the transaction. Nodes send them on the receipt
+// only.
+var receiptFiguresOnTransaction = []string{
+	"gasUsed", "effectiveGasPrice", "blobGasUsed", "blobGasPrice",
+	"l1Fee", "l1GasUsed", "l1GasPrice", "l1FeeScalar", "l1BlobBaseFee", "l1BlobBaseFeeScalar",
+}
+
+// nodeShapeTransaction trims tx, as rendered by evm.TransactionToJsonRpc, in place.
+func nodeShapeTransaction(tx map[string]interface{}) {
+	for k, v := range tx {
+		// "to" is null on a contract creation, and nodes send it that way.
+		if v == nil && k != "to" {
+			delete(tx, k)
+		}
+	}
+	for _, k := range receiptFiguresOnTransaction {
+		delete(tx, k)
+	}
+	if tx["type"] == "0x0" {
+		// A legacy transaction has no access list, and names a chainId only when
+		// its signature does (EIP-155: v = chainId*2 + 35 or 36; else 27 or 28).
+		delete(tx, "accessList")
+		if v, ok := tx["v"].(string); ok {
+			if n, err := evm.HexToUint64(v); err == nil && n < 35 {
+				delete(tx, "chainId")
+			}
+		}
+	}
+}
+
+// nodeShapeReceipt trims r, as rendered by evm.ReceiptToJsonRpc, in place.
+func nodeShapeReceipt(r map[string]interface{}) {
+	for k, v := range r {
+		// Nodes send "to" null on a contract creation and "contractAddress"
+		// null on anything else.
+		if v == nil && k != "to" && k != "contractAddress" {
+			delete(r, k)
+		}
+	}
+}
+
+// nodeShapeBlock trims the full transactions of a block rendered by
+// evm.BlockToJsonRpc, in place. Hash-only blocks are untouched.
+func nodeShapeBlock(block map[string]interface{}) {
+	txs, ok := block["transactions"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, t := range txs {
+		if tx, ok := t.(map[string]interface{}); ok {
+			nodeShapeTransaction(tx)
+		}
+	}
 }
 
 // buildTopicFilters converts the JSON-RPC topics array (where each entry may be
