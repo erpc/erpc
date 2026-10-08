@@ -450,6 +450,7 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
 	if e.shouldSkipLatestBlockCheck() {
+		e.recordLatestHead()
 		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
 	}
@@ -468,7 +469,20 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	)
 	defer span.End()
 
+	var fetched atomic.Bool
+	defer func() {
+		if !fetched.Load() {
+			e.recordLatestHead()
+		}
+	}()
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
+		fetched.Store(true)
+		recorded := false
+		defer func() {
+			if !recorded {
+				e.recordLatestHead()
+			}
+		}()
 		if e.logger.GetLevel() <= zerolog.TraceLevel {
 			e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
 		}
@@ -522,6 +536,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		// Directly update tracker with the correct timestamp for this locally-fetched block
 		// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
 		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
+		recorded = true
 
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
@@ -529,6 +544,27 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			Msg("fetched latest block from upstream")
 		return blockNum, nil
 	})
+}
+
+// recordLatestHead records this upstream's last known head when a poll
+// observes nothing new: the debounce skipped the fetch (block time above the
+// interval, or another pod fetched first), the fetch failed, or the chain-id
+// gate dropped the sample. The tracker records lag only when an upstream's
+// head is observed; without this, such an upstream would keep the lag of its
+// last advance while the network moves on. A fetch still in flight when the
+// poll returns records nothing yet: the counter's old head is not an
+// observation, and the fetch records when it ends.
+func (e *EvmStatePoller) recordLatestHead() {
+	if last := e.latestBlockShared.GetValue(); last > 0 {
+		e.tracker.SetLatestBlockNumber(e.upstream, last, 0)
+	}
+}
+
+// recordFinalizedHead is recordLatestHead for the finalized head.
+func (e *EvmStatePoller) recordFinalizedHead() {
+	if last := e.finalizedBlockShared.GetValue(); last > 0 {
+		e.tracker.SetFinalizedBlockNumber(e.upstream, last)
+	}
 }
 
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
@@ -744,6 +780,7 @@ func absInt64(v int64) int64 {
 
 func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
 	if e.shouldSkipFinalizedCheck() {
+		e.recordFinalizedHead()
 		return 0, nil
 	}
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollFinalizedBlockNumber",
@@ -761,7 +798,20 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 
 	dbi := e.resolveDebounce(cfg)
 
+	var fetched atomic.Bool
+	defer func() {
+		if !fetched.Load() {
+			e.recordFinalizedHead()
+		}
+	}()
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
+		fetched.Store(true)
+		recorded := false
+		defer func() {
+			if !recorded {
+				e.recordFinalizedHead()
+			}
+		}()
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
 		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,
@@ -815,6 +865,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			Msg("fetched finalized block")
 
 		e.tracker.SetFinalizedBlockNumber(e.upstream, blockNum)
+		recorded = true
 
 		return blockNum, nil
 	})

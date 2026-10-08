@@ -142,6 +142,8 @@ func TestTrackerCorroboratedLatestHead(t *testing.T) {
 		tracker.SetLatestBlockNumber(a, 100, 0)
 		tracker.SetLatestBlockNumber(b, 101, 0)
 		tracker.SetLatestBlockNumber(c, 1_000_000, 0)
+		// Lag is recorded when an upstream is observed: a's next poll.
+		tracker.SetLatestBlockNumber(a, 100, 0)
 
 		assert.Equal(t, int64(101), networkLatest(tracker, net))
 		assert.Equal(t, int64(1), blockHeadLag(tracker, a))
@@ -182,6 +184,7 @@ func TestTrackerCorroboratedLatestHead(t *testing.T) {
 		assert.Equal(t, int64(0), blockHeadLag(tracker, c))
 
 		tracker.SetLatestBlockNumber(b, 101, 0)
+		tracker.SetLatestBlockNumber(a, 100, 0) // a's next poll records its lag
 		assert.Equal(t, int64(101), networkLatest(tracker, net))
 		assert.Equal(t, int64(1), blockHeadLag(tracker, a))
 		assert.Equal(t, int64(0), blockHeadLag(tracker, b))
@@ -199,6 +202,7 @@ func TestTrackerCorroboratedLatestHead(t *testing.T) {
 		tracker.SetLatestBlockNumber(b, 101, 0)
 		tracker.SetLatestBlockNumber(c, 1_000_000, 0)
 		tracker.SetLatestBlockNumber(c, 102, 0)
+		tracker.SetLatestBlockNumber(a, 100, 0) // a's next poll records its lag
 
 		assert.Equal(t, int64(102), upstreamLatest(tracker, c))
 		assert.Equal(t, int64(101), networkLatest(tracker, net))
@@ -263,6 +267,7 @@ func TestTrackerCorroboratedFinalizedHead(t *testing.T) {
 		tracker.SetFinalizedBlockNumber(a, 31_000_000)
 		tracker.SetFinalizedBlockNumber(b, 31_000_010)
 		tracker.SetFinalizedBlockNumber(c, 99_000_000)
+		tracker.SetFinalizedBlockNumber(a, 31_000_000) // a's next poll records its lag
 
 		assert.Equal(t, int64(31_000_010), networkFinalized(tracker, net))
 		assert.Equal(t, int64(10), finalizationLag(tracker, a))
