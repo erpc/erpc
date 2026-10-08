@@ -66,7 +66,7 @@ func (nr *NetworksRegistry) initLogsFill(network *Network, hc *common.EvmBlockSt
 			}
 			// Adoption validates against held headers only (no fetch);
 			// keep it off the client's response path anyway.
-			network.goBlockStoreAdopt("logs-fill", func(actx context.Context) {
+			network.goBlockStoreAdopt(ctx, "logs-fill", func(actx context.Context) {
 				c.AdoptLogs(actx, entries)
 			})
 		},

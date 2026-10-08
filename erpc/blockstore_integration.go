@@ -19,6 +19,7 @@ import (
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type blockStoreBypassKey struct{}
@@ -400,10 +401,12 @@ func (n *Network) adoptHistoricalAsync(ctx context.Context, req *common.Normaliz
 	default:
 		return
 	}
+	spanCtx := trace.SpanContextFromContext(ctx)
 	go func() {
 		defer func() { <-n.historicalWarmSem }()
 		actx, cancel := context.WithTimeout(n.appCtx, 30*time.Second)
 		defer cancel()
+		actx = trace.ContextWithSpanContext(actx, spanCtx)
 		if err := h.Adopt(actx, block, byNumber); err != nil && n.logger != nil {
 			n.logger.Debug().Err(err).Str("method", method).Msg("historical blockstore adoption failed")
 		}
@@ -1013,13 +1016,14 @@ func (n *Network) adoptIntoBlockStore(ctx context.Context, req *common.Normalize
 		}
 		adopt = func(ctx context.Context) { c.ObserveLogs(ctx, result, from, to, unfiltered && from >= 0, fromCache) }
 	}
-	n.goBlockStoreAdopt("response", adopt)
+	n.goBlockStoreAdopt(ctx, "response", adopt)
 }
 
 // goBlockStoreAdopt runs adopt off the caller's path, bounded by
 // blockStoreAdoptSem (dropped when saturated). A panic in adopt is recovered,
-// counted and logged so a bad payload cannot crash the process.
-func (n *Network) goBlockStoreAdopt(source string, adopt func(ctx context.Context)) {
+// counted and logged so a bad payload cannot crash the process. Spans started
+// by adopt are parented on the span in parent, so they join the caller's trace.
+func (n *Network) goBlockStoreAdopt(parent context.Context, source string, adopt func(ctx context.Context)) {
 	if n.blockStoreAdoptSem == nil || n.appCtx == nil {
 		return
 	}
@@ -1028,6 +1032,7 @@ func (n *Network) goBlockStoreAdopt(source string, adopt func(ctx context.Contex
 	default:
 		return
 	}
+	spanCtx := trace.SpanContextFromContext(parent)
 	go func() {
 		defer func() { <-n.blockStoreAdoptSem }()
 		defer func() {
@@ -1044,6 +1049,7 @@ func (n *Network) goBlockStoreAdopt(source string, adopt func(ctx context.Contex
 		}()
 		actx, cancel := context.WithTimeout(n.appCtx, 30*time.Second)
 		defer cancel()
+		actx = trace.ContextWithSpanContext(actx, spanCtx)
 		adopt(actx)
 	}()
 }

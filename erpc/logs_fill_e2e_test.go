@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -16,6 +17,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func init() { util.ConfigureTestLogger() }
@@ -428,4 +431,34 @@ func TestHttp_LogsFill_AdoptPanicIsRecovered(t *testing.T) {
 		"the adopt goroutine must finish (recovered) and release its slot")
 	require.Eventually(t, func() bool { return panics() == panicsBefore+1 }, 5*time.Second, 10*time.Millisecond,
 		"the recovered panic is counted under scope blockstore-adopt")
+}
+
+// Spans started by a detached adopt goroutine join the caller's trace instead
+// of each starting a new root trace.
+func TestGoBlockStoreAdopt_ParentsSpansOnCaller(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	common.SetTracerProviderForTest(tp)
+	t.Cleanup(func() { common.IsTracingEnabled = false; common.IsTracingDetailed = false })
+
+	n := &Network{appCtx: context.Background(), blockStoreAdoptSem: make(chan struct{}, 1)}
+	parentCtx, parent := common.StartSpan(context.Background(), "request")
+	done := make(chan struct{})
+	n.goBlockStoreAdopt(parentCtx, "test", func(ctx context.Context) {
+		defer close(done)
+		_, span := common.StartSpan(ctx, "RedisConnector.Get")
+		span.End()
+	})
+	<-done
+	parent.End()
+
+	var child sdktrace.ReadOnlySpan
+	for _, s := range exp.GetSpans().Snapshots() {
+		if s.Name() == "RedisConnector.Get" {
+			child = s
+		}
+	}
+	require.NotNil(t, child)
+	require.Equal(t, parent.SpanContext().TraceID(), child.SpanContext().TraceID())
+	require.Equal(t, parent.SpanContext().SpanID(), child.Parent().SpanID())
 }
