@@ -100,7 +100,7 @@ func NewNetwork(
 	_ = projectId // network executor scope is per-network; project label comes from the metrics tracker.
 
 	// Build a provider that resolves the dynamic block-unavailable retry delay
-	// from the network's EMA-estimated block time. Returns 0 before warmup so
+	// from the network's median-estimated block time. Returns 0 before warmup so
 	// the static fallback kicks in.
 	var dynamicBlockUnavailableDelay func() time.Duration
 	if metricsTracker != nil {

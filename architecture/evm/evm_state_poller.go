@@ -433,7 +433,7 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime != 0 {
 		// Scale block time down by the configured multiplier (default 0.7) so the
 		// debounce expires before the next block is expected. This prefers freshness
-		// over saving RPC calls — EMA smooths long-term, multiplier covers the tail.
+		// over saving RPC calls — the median smooths long-term, multiplier covers the tail.
 		mult := common.DefaultDynamicBlockTimeDebounceMultiplier
 		if cfg != nil && cfg.DynamicBlockTimeDebounceMultiplier != nil && *cfg.DynamicBlockTimeDebounceMultiplier > 0 {
 			mult = *cfg.DynamicBlockTimeDebounceMultiplier

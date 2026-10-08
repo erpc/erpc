@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestSharedHeadEMASmoke(t *testing.T) {
+func TestSharedHeadBlockTimeSmoke(t *testing.T) {
 	logger := zerolog.Nop()
 	tr := health.NewTracker(&logger, "shared-head-repro", time.Minute)
 	up := common.NewFakeUpstream("a")
@@ -33,7 +33,7 @@ func TestSharedHeadEMASmoke(t *testing.T) {
 			t.Fatalf("local sample suppressed: calls=%d err=%v", calls, err)
 		}
 	}
-	t.Logf("shared-before-local EMA=%s", tr.GetNetworkBlockTime(up.NetworkId()))
+	t.Logf("shared-before-local blockTime=%s", tr.GetNetworkBlockTime(up.NetworkId()))
 	if got := tr.GetNetworkBlockTime(up.NetworkId()); got != 2*time.Second {
 		t.Fatalf("want 2s, got %s", got)
 	}

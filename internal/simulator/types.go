@@ -328,7 +328,7 @@ type UpstreamStatsRow struct {
 	P95Ms                  float64 `json:"p95"`
 	BlockHeadLag           int     `json:"blockHeadLag"`
 	FinalizationLag        int     `json:"finalizationLag"`
-	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds"` // block-count × tracker's EMA block-time
+	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds"` // block-count × tracker's median block-time
 	FinalizationLagSeconds float64 `json:"finalizationLagSeconds"`
 	Cordoned               bool    `json:"cordoned,omitempty"`
 	CordonedReason         string  `json:"cordonedReason,omitempty"`

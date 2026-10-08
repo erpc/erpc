@@ -1085,7 +1085,7 @@ export interface RetryPolicyConfig {
      * EmptyResultDelay is the fixed fallback delay before retrying when the requested
      * data isn't on the upstream yet — an empty/missing-data point-lookup OR an
      * ErrUpstreamBlockUnavailable (same root cause: the block/tx isn't produced or
-     * indexed yet). Retries prefer the dynamic block-time delay (EMA block time ×
+     * indexed yet). Retries prefer the dynamic block-time delay (median block time ×
      * Evm.BlockUnavailableDelayMultiplier); this fixed value is used only before that
      * estimate warms up. (Supersedes the now-deprecated BlockUnavailableDelay.)
      */
@@ -1585,7 +1585,7 @@ export interface EvmNetworkConfig {
      */
     markEmptyAsErrorMethods?: string[];
     /**
-     * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
+     * DynamicBlockTimeDebounceMultiplier scales the median-estimated block time to derive
      * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
      * the estimated block time, preferring fresher data at the cost of slightly more
      * polling. Lower values reduce staleness risk; higher values reduce RPC calls.
@@ -1593,7 +1593,7 @@ export interface EvmNetworkConfig {
      */
     dynamicBlockTimeDebounceMultiplier?: number;
     /**
-     * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
+     * BlockUnavailableDelayMultiplier scales the median-estimated block time to derive the
      * retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
      * or an empty/missing-data point-lookup). When the dynamic block time is known, the
      * delay is blockTime * this multiplier. Falls back to the static

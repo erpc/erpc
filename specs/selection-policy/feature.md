@@ -102,7 +102,7 @@ type UpstreamMetrics = {
   p99ResponseSeconds: number
   blockHeadLag: number                     // block-number delta from network tip
   finalizationLag: number                  // block-number delta from finalized tip
-  // Wall-clock lag — block-count × network's EMA-estimated block time
+  // Wall-clock lag — block-count × network's median-estimated block time
   // (`tracker.GetNetworkBlockTime`). Zero until the tracker has enough
   // samples to estimate block time; policies relying on these will be
   // no-ops during the first few seconds after boot, by design.
@@ -276,7 +276,7 @@ latencyDeviationAbove(multiplier, quantile?)
 blockNumberLagAbove(blocks)
 finalizationLagAbove(blocks)
 
-// Lag (wall-clock seconds — block-count × network's EMA block-time)
+// Lag (wall-clock seconds — block-count × network's median block-time)
 blockSecondsLagAbove(seconds)
 finalizationSecondsLagAbove(seconds)
 
@@ -625,7 +625,7 @@ latencyDeviationAbove(multiplier, quantile?)
 blockNumberLagAbove(blocks)
 finalizationLagAbove(blocks)
 
-// Lag (wall-clock seconds via tracker's EMA block-time)
+// Lag (wall-clock seconds via tracker's median block-time)
 blockSecondsLagAbove(seconds)
 finalizationSecondsLagAbove(seconds)
 

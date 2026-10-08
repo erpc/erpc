@@ -91,7 +91,7 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 		out.P99ResponseSeconds = qs[4].Seconds()
 	}
 	// Convert block-count lag to wall-clock seconds using the network's
-	// EMA-estimated block time. Zero until the tracker has enough
+	// median-estimated block time. Zero until the tracker has enough
 	// samples — policies that trip on `*LagSeconds` thresholds will be
 	// no-ops on a freshly-booted engine, by design.
 	if bt := tr.GetNetworkBlockTime(u.NetworkId()); bt > 0 {

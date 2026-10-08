@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// blockTimeNetwork wraps the shared testNetwork fake and reports a fixed EMA
+// blockTimeNetwork wraps the shared testNetwork fake and reports a fixed
 // block time, exercising the realtime age guard's block-time-derived TTL path
 // deterministically (no real health.Tracker warm-up needed).
 type blockTimeNetwork struct {
@@ -24,7 +24,7 @@ type blockTimeNetwork struct {
 func (n *blockTimeNetwork) EvmBlockTime() time.Duration { return n.blockTime }
 
 // realtimeReqBT builds a realtime request whose network reports blockTime as its
-// estimated (EMA) block time. blockTime == 0 mimics a cold/unknown estimate.
+// estimated (median) block time. blockTime == 0 mimics a cold/unknown estimate.
 func realtimeReqBT(method, params string, blockTime time.Duration) *common.NormalizedRequest {
 	req := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","method":%q,"params":%s,"id":1}`, method, params),
@@ -145,16 +145,16 @@ func TestEvmJsonRpcCache_BlockTimeDerivedTTL(t *testing.T) {
 		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-5), policy))
 	})
 
-	// --- cold EMA: block time unknown -> fall back to the static TTL ---
+	// --- cold median: block time unknown -> fall back to the static TTL ---
 
 	t.Run("UnknownBlockTimeFallsBackToStaticTTL", func(t *testing.T) {
 		policy := btPolicy(t, plainConnector("conn"), 2*time.Second, 1.0)
-		req := realtimeReqBT("eth_getBlockByNumber", `["latest",false]`, 0)                // EMA not warmed up
+		req := realtimeReqBT("eth_getBlockByNumber", `["latest",false]`, 0)                // median not warmed up
 		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-1), policy))  // 1s < 2s static
 		assert.False(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-5), policy)) // 5s > 2s static
 	})
 
-	// --- cold EMA and no static TTL -> bounded by the built-in safe default (2s) ---
+	// --- cold median and no static TTL -> bounded by the built-in safe default (2s) ---
 
 	t.Run("UnknownBlockTimeNoStaticTTLUsesSafeDefault", func(t *testing.T) {
 		policy := btPolicy(t, plainConnector("conn"), 0, 1.0)
@@ -188,7 +188,7 @@ func TestEvmJsonRpcCache_BlockTimeDerivedTTL(t *testing.T) {
 	// --- write path: storage expiry must match the read-side window ---
 
 	t.Run("SetStoresWithBlockTimeDerivedTTL", func(t *testing.T) {
-		// Warm EMA on mainnet: the entry must be stored for blockTime*mult (12s),
+		// Warm median on mainnet: the entry must be stored for blockTime*mult (12s),
 		// not the 2s fallback — otherwise the connector evicts it long before the
 		// read-side guard would stop serving it.
 		captured := setCapturingConnector(t, "conn")
@@ -207,7 +207,7 @@ func TestEvmJsonRpcCache_BlockTimeDerivedTTL(t *testing.T) {
 		policy := btPolicy(t, captured.MockConnector, 2*time.Second, 1.0)
 		cacheWithPolicy := &EvmJsonRpcCache{projectId: "test-project", logger: freshGuardCache().logger, policies: []*data.CachePolicy{policy}}
 
-		req := realtimeReqBT("eth_getBlockByNumber", `["latest",false]`, 0) // cold EMA
+		req := realtimeReqBT("eth_getBlockByNumber", `["latest",false]`, 0) // cold median
 		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(blockJrr(now))
 		require.NoError(t, cacheWithPolicy.Set(ctx, req, resp))
 		require.NotNil(t, captured.ttl)

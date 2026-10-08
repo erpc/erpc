@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,19 +63,20 @@ type NetworkMetadata struct {
 	headMu    sync.Mutex
 	reporters []common.Upstream
 
-	// Dynamic block time via EMA on on-chain block timestamps.
-	// Uses block.timestamp (integer seconds) normalized by block count gap.
+	// Dynamic block time: rolling median of per-block samples derived from
+	// on-chain block timestamps (integer seconds) normalized by block count gap.
 	// For fast chains where consecutive blocks share the same timestamp,
 	// samples are skipped until the timestamp advances, then blockGap
 	// normalization recovers sub-second precision.
 	// Callers should use GetNetworkBlockTime which returns 0 until enough
 	// samples have been collected.
-	evmBlockTime              atomic.Int64 // computed result in nanoseconds (read by consumers)
-	evmBlockTimeMu            sync.Mutex   // protects EMA state below
-	evmBlockTimePrevBlock     int64        // last block number fed to EMA
-	evmBlockTimePrevTimestamp int64        // block.timestamp (seconds) of that block
-	evmBlockTimeEmaNs         float64      // current EMA value in nanoseconds
-	evmBlockTimeSamples       int          // number of EMA samples collected
+	evmBlockTime              atomic.Int64               // computed result in nanoseconds (read by consumers)
+	evmBlockTimeMu            sync.Mutex                 // protects sampling state below
+	evmBlockTimePrevBlock     int64                      // last block number sampled
+	evmBlockTimePrevTimestamp int64                      // block.timestamp (seconds) of that block
+	evmBlockTimeWindow        [blockTimeWindowSize]int64 // ring buffer of per-block samples (ns)
+	evmBlockTimeNext          int                        // next ring slot to overwrite
+	evmBlockTimeSamples       int                        // samples held, capped at blockTimeWindowSize
 }
 
 type Timer struct {
@@ -1465,12 +1467,12 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		}
 	}
 
-	// The network timestamp and block-time EMA follow the corroborated head,
+	// The network timestamp and block-time median follow the corroborated head,
 	// whichever upstream reported it.
 	if ntwBn >= oldNtwVal && headReporter != nil {
 		headTs := t.getMetadata(metadataKey{headReporter, net}).evmLatestBlockTimestamp.Load()
 		if headTs > 0 && (ntwBn > oldNtwVal || ntwMeta.evmLatestBlockTimestamp.Load() != headTs) {
-			// Uses on-chain timestamps (not local clock) so the EMA tracks actual
+			// Uses on-chain timestamps (not local clock) so the median tracks actual
 			// chain production rate, not our polling cadence. For fast chains where
 			// consecutive blocks share the same integer-second timestamp, samples
 			// are skipped until the timestamp advances; blockGap normalization
@@ -1527,15 +1529,20 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 }
 
 // ------------------------------------
-// Dynamic Block Time (EMA)
+// Dynamic Block Time (rolling median)
 // ------------------------------------
 
+// A median rather than a mean: chains with occasional long stalls (one block
+// after 60s+ amid 2s blocks) would drag a mean far above the typical block
+// interval, and every consumer (retry delays, poll debounce, lag seconds)
+// wants the typical interval. A stall moves the median only once stalls are
+// the majority of the window.
 const (
-	blockTimeEmaAlpha   = 0.1 // smoothing factor; effective window ~19 samples
-	blockTimeMinSamples = 3   // minimum EMA samples before emitting (requires 4 observations total)
+	blockTimeWindowSize = 31 // samples in the rolling median
+	blockTimeMinSamples = 3  // minimum samples before emitting (requires 4 observations total)
 )
 
-// updateBlockTimeSample feeds a new block into the EMA using on-chain
+// updateBlockTimeSample feeds a new block into the rolling median using on-chain
 // block.timestamp (integer seconds). For fast chains where consecutive blocks
 // share the same timestamp, we skip the sample and do NOT advance prev — the
 // block gap accumulates until the timestamp ticks, then normalization recovers
@@ -1576,13 +1583,11 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 	// Per-block sample in nanoseconds (seconds → ms → ns, divided by block count).
 	sampleNs := float64(timestampDeltaSec) * 1e9 / float64(blockGap)
 
-	// Update EMA.
-	if ntwMeta.evmBlockTimeSamples == 0 {
-		ntwMeta.evmBlockTimeEmaNs = sampleNs
-	} else {
-		ntwMeta.evmBlockTimeEmaNs = blockTimeEmaAlpha*sampleNs + (1-blockTimeEmaAlpha)*ntwMeta.evmBlockTimeEmaNs
+	ntwMeta.evmBlockTimeWindow[ntwMeta.evmBlockTimeNext] = int64(sampleNs)
+	ntwMeta.evmBlockTimeNext = (ntwMeta.evmBlockTimeNext + 1) % blockTimeWindowSize
+	if ntwMeta.evmBlockTimeSamples < blockTimeWindowSize {
+		ntwMeta.evmBlockTimeSamples++
 	}
-	ntwMeta.evmBlockTimeSamples++
 
 	// Store current as previous.
 	ntwMeta.evmBlockTimePrevBlock = blockNumber
@@ -1593,16 +1598,13 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 		return
 	}
 
-	blockTimeNs := int64(ntwMeta.evmBlockTimeEmaNs)
+	var sorted [blockTimeWindowSize]int64
+	n := copy(sorted[:], ntwMeta.evmBlockTimeWindow[:ntwMeta.evmBlockTimeSamples])
+	slices.Sort(sorted[:n])
+	blockTimeNs := sorted[n/2]
 
-	// Sanity bounds: reject absurd values.
-	// Reset the internal EMA to the last published value so that recovery from a
-	// prolonged halt doesn't create a delayed spike when the EMA first crosses
-	// back below the threshold (e.g. jumping from 2s to ~119s).
+	// Sanity bounds: reject absurd values (e.g. a halt longer than the window).
 	if blockTimeNs < int64(10*time.Millisecond) || blockTimeNs > int64(120*time.Second) {
-		if lastGood := ntwMeta.evmBlockTime.Load(); lastGood > 0 {
-			ntwMeta.evmBlockTimeEmaNs = float64(lastGood)
-		}
 		return
 	}
 
@@ -1613,7 +1615,7 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 	).Set(float64(time.Duration(blockTimeNs).Milliseconds()))
 }
 
-// GetNetworkBlockTime returns the EMA-estimated block time for a network.
+// GetNetworkBlockTime returns the rolling-median block time for a network.
 // Returns 0 until at least blockTimeMinSamples have been collected.
 func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})

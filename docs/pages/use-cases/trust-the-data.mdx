@@ -209,8 +209,8 @@ All fields under `networks[*].evm.*`. Populated by `EvmNetworkConfig.SetDefaults
 | `evm.enforceBlockAvailability` | \*bool | `true` (nil resolves to true) | Gate requests to upstreams based on their known block bounds. |
 | `evm.maxRetryableBlockDistance` | \*int64 | `128` | Max block distance ahead of upstream's latest for which `block_unavailable` is retryable; larger distance is not retryable. |
 | `evm.markEmptyAsErrorMethods` | []string | 11 methods (see below) | Methods for which a `null`/empty upstream result is converted to `ErrEndpointMissingData` and retried. |
-| `evm.dynamicBlockTimeDebounceMultiplier` | \*float64 | `0.7` | Scales EMA block time to derive the state-poller debounce interval. Lower = fresher but more polling. |
-| `evm.blockUnavailableDelayMultiplier` | \*float64 | `1.0` | Multiplies EMA-estimated block time to derive dynamic retry delay on `ErrUpstreamBlockUnavailable` or `ErrEndpointMissingData`. Falls back to `failsafe[*].retry.emptyResultDelay` before the EMA warms up. |
+| `evm.dynamicBlockTimeDebounceMultiplier` | \*float64 | `0.7` | Scales the median block time to derive the state-poller debounce interval. Lower = fresher but more polling. |
+| `evm.blockUnavailableDelayMultiplier` | \*float64 | `1.0` | Multiplies the median block time to derive dynamic retry delay on `ErrUpstreamBlockUnavailable` or `ErrEndpointMissingData`. Falls back to `failsafe[*].retry.emptyResultDelay` during warm-up (fewer than 3 samples). |
 | `evm.idempotentTransactionBroadcast` | \*bool | `nil` (enabled) | When enabled, `eth_sendRawTransaction` converts "already known" errors to success and verifies "nonce too low" by polling `eth_getTransactionByHash`. Set to `false` to return raw upstream errors. |
 | `evm.emptyResultConfidence` | string | `"blockHead"` | Confidence level for empty-result retries: `"blockHead"` = retry empties for blocks ≤ latest head; `"finalizedBlock"` = stricter, only retry for blocks ≤ finalized head. |
 | `evm.maxFutureBlockRetryDistance` | \*int64 | — | **Deprecated** (yaml-only, tagged `json:"-"`). Replaced by `emptyResultConfidence`. A warning is logged and the value is ignored at runtime. |

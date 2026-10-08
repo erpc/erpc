@@ -415,7 +415,7 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 
 | Metric | What to check |
 |---|---|
-| `erpc_network_dynamic_block_time_milliseconds` | EMA block-time estimate (α=0.1, min 3 samples); 0 = startup or halted chain; sanity-clamped to [10ms, 120s] |
+| `erpc_network_dynamic_block_time_milliseconds` | Block-time estimate: rolling median (31 samples, min 3); 0 = startup; values outside [10ms, 120s] are not published |
 | `erpc_network_served_tip_block_number` | Served-tip pick per axis (latest/finalized) and lane; `lane="all"` = network-wide |
 | `erpc_network_served_tip_lag_blocks` | Lag of served tip behind freshest velocity-eligible upstream; absent in MAX mode |
 | `erpc_upstream_stale_latest_block_total` | Upstream returned a block number behind the network leader |
@@ -519,7 +519,7 @@ Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it i
 
 21. **`ParseHistogramBuckets` silently sorts the input.** If buckets are provided out of order they are sorted automatically; no warning is emitted. The result is valid Prometheus buckets, but it may differ from the intended order if you relied on a specific sequence. (<SourceLink file="telemetry/metrics.go" lines="997-1015" />)
 
-22. **`erpc_network_dynamic_block_time_milliseconds` is bounded [10ms, 120s] and requires min 3 samples.** The EMA (α=0.1) needs at least 3 block-time samples (4 total block observations) before the gauge emits. Chains faster than 10ms report the 10ms floor; chains with no new blocks for &gt;2 min report the 120s ceiling. Returns 0 during startup before enough samples accumulate. (<SourceLink file="health/tracker.go" lines="1381-1458" />)
+22. **`erpc_network_dynamic_block_time_milliseconds` is bounded [10ms, 120s] and requires min 3 samples.** The rolling median (31 samples) needs at least 3 block-time samples (4 total block observations) before the gauge emits. A median outside [10ms, 120s] is not published; the gauge keeps the last valid value. One long stall does not move it; it moves only once stalls are the majority of the window. Returns 0 during startup before enough samples accumulate. (<SourceLink file="health/tracker.go" lines="1545-1616" />)
 
 23. **`erpc_cors_preflight_requests_total` and `erpc_cors_disallowed_origin_total` share the same `project` mislabeling as `erpc_cors_requests_total`.** All three CORS counters set `project` to `r.URL.Path` (e.g. `/myproject/evm/1`), not the project ID. (<SourceLink file="erpc/http_server.go" lines="1069" />)
 
@@ -601,7 +601,7 @@ Top-20 operational metrics:
 | `erpc_rate_limiter_failopen_total` | counter | project, network, user, agent_name, budget, category, reason | Rate limiter failed open; `reason` ∈ admission_full/limit_timeout |
 | `erpc_rate_limiter_budget_max_count` | gauge | budget, method, scope | Budget's configured req/s; `scope` = ScopeString() (comma-joined flags: user/network/ip) |
 | `erpc_rate_limiter_remote_duration_seconds` | LabeledHistogram | budget, result | Remote rate-limit check (e.g. Redis DoLimit) duration; `result` ∈ ok/over_limit/fail_open |
-| `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | EMA block-time (α=0.1, min 3 samples); 0 = startup/halted; clamped [10ms, 120s] |
+| `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | Rolling-median block time (31 samples, min 3); 0 = startup; out-of-range [10ms, 120s] values not published |
 | `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served-tip pick; `lane="all"` = network-wide; `axis` ∈ latest/finalized |
 | `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Lag behind freshest velocity-eligible upstream; absent in MAX mode |
 | `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream excluded from tip pick; `reason` ∈ velocity/outlier |
@@ -628,7 +628,7 @@ Top-20 operational metrics:
 - [`telemetry/labeled_histogram.go:L58-L190`](https://github.com/erpc/erpc/blob/main/telemetry/labeled_histogram.go#L58-L190) — `LabeledHistogram` struct, `WithLabelValues`/`DeleteLabelValues`/`ActiveLabelValues`, label filter projection
 - [`telemetry/handles.go:L86-L105`](https://github.com/erpc/erpc/blob/main/telemetry/handles.go#L86-L105) — `CounterHandle`/`GaugeHandle`/`ObserverHandle` label-bound child caches; `ResetHandleCache`
 - [`health/tracker.go:L481-L667`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L481-L667) — `DefaultIdleEvictionAfter`; `rotateMetricsLoop`, `sweepIdle`, `sweepIdleObservers` — idle-series eviction for `upstream_request_duration_seconds` and `rate_limits_total`
-- [`health/tracker.go:L1381-L1458`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1381-L1458) — `erpc_network_dynamic_block_time_milliseconds` EMA algorithm (α=0.1, min 3 samples, bounds 10ms–120s)
+- [`health/tracker.go:L1545-L1616`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1545-L1616) — `erpc_network_dynamic_block_time_milliseconds` rolling median (31 samples, min 3, bounds 10ms–120s)
 - [`common/config.go:L2543-L2564`](https://github.com/erpc/erpc/blob/main/common/config.go#L2543-L2564) — `MetricsConfig` struct definition
 - [`common/defaults.go`](https://github.com/erpc/erpc/blob/main/common/defaults.go) — `MetricsConfig.SetDefaults`
 - [`common/errors.go:L17-L114`](https://github.com/erpc/erpc/blob/main/common/errors.go#L17-L114) — `errorLabelMode` global; `SetErrorLabelMode`; `ErrorSummary` (produces `error` label values for all error-labeled metrics)

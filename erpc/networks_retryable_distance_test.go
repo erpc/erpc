@@ -26,7 +26,7 @@ func newRetryDistanceNetwork(t *testing.T, configured *int64, blocksPerSecond in
 		metricsTracker: tracker,
 	}
 	if blocksPerSecond > 0 {
-		// Settle the tracker's block-time EMA by replaying observations through
+		// Settle the tracker's block-time median by replaying observations through
 		// the same entry point the poller uses: blocksPerSecond blocks for every
 		// one second of block timestamp. blockTimeMinSamples is 3, so eight
 		// rounds is comfortably past the gate.
@@ -39,7 +39,7 @@ func newRetryDistanceNetwork(t *testing.T, configured *int64, blocksPerSecond in
 			tracker.SetLatestBlockNumber(up, num, ts)
 		}
 		require.NotZero(t, tracker.GetNetworkBlockTime("evm:1"),
-			"precondition: the block-time EMA must have settled")
+			"precondition: the block-time median must have settled")
 	}
 	return n
 }

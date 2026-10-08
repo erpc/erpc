@@ -938,7 +938,7 @@ export interface JsonRpcUpstreamConfig {
   proxyPool?: string;
 }
 /**
- * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+ * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
  * gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
  * knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
  * every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -1112,7 +1112,7 @@ export interface RetryPolicyConfig {
    * EmptyResultDelay is the fixed fallback delay before retrying when the requested
    * data isn't on the upstream yet — an empty/missing-data point-lookup OR an
    * ErrUpstreamBlockUnavailable (same root cause: the block/tx isn't produced or
-   * indexed yet). Retries prefer the dynamic block-time delay (EMA block time ×
+   * indexed yet). Retries prefer the dynamic block-time delay (median block time ×
    * Evm.BlockUnavailableDelayMultiplier); this fixed value is used only before that
    * estimate warms up. (Supersedes the now-deprecated BlockUnavailableDelay.)
    */
@@ -1380,6 +1380,8 @@ export interface NetworkConfig {
    * CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
    * key as {networkId}:{suffix}:{blockRef} so two networks that share a
    * chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+   * When {networkId}:{suffix} is itself a valid network id, colons in the
+   * network id are escaped; see CachePartitionKey.
    */
   cacheKeySuffix?: string;
 }
@@ -1604,7 +1606,7 @@ export interface EvmNetworkConfig {
    */
   markEmptyAsErrorMethods?: string[];
   /**
-   * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
+   * DynamicBlockTimeDebounceMultiplier scales the median-estimated block time to derive
    * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
    * the estimated block time, preferring fresher data at the cost of slightly more
    * polling. Lower values reduce staleness risk; higher values reduce RPC calls.
@@ -1612,7 +1614,7 @@ export interface EvmNetworkConfig {
    */
   dynamicBlockTimeDebounceMultiplier?: number /* float64 */;
   /**
-   * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
+   * BlockUnavailableDelayMultiplier scales the median-estimated block time to derive the
    * retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
    * or an empty/missing-data point-lookup). When the dynamic block time is known, the
    * delay is blockTime * this multiplier. Falls back to the static

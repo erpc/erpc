@@ -71,9 +71,9 @@ type Network struct {
 	servedTipPartitions     sync.Map // map[string]*servedTipPartition (key = "grp:<hash>")
 	servedTipPartitionCount atomic.Int32
 
-	// servedTipBlockTimeOverride, when > 0, replaces the tracker's EMA block
+	// servedTipBlockTimeOverride, when > 0, replaces the tracker's median block
 	// time in buildServedTipConfig. Set ONLY from package-internal tests: the
-	// EMA needs live timestamped blocks that test fixtures don't produce, and
+	// median needs live timestamped blocks that test fixtures don't produce, and
 	// the prod-incident invariant tests must arm the velocity gate exactly the
 	// way prod had it armed.
 	servedTipBlockTimeOverride float64
@@ -279,7 +279,7 @@ func (n *Network) MetricsTracker() *health.Tracker {
 	return n.metricsTracker
 }
 
-// EvmBlockTime returns the network's estimated (EMA) block time, or 0 if not
+// EvmBlockTime returns the network's estimated (rolling median) block time, or 0 if not
 // yet known. Used by the cache layer to derive realtime TTLs from block cadence.
 func (n *Network) EvmBlockTime() time.Duration {
 	if n.metricsTracker == nil {

@@ -143,7 +143,7 @@ timeout (wraps entire invocation)
 - **Consensus** is delegated to the `consensusRunner` interface. The executor does not import
   the consensus package directly.
 - **Retry** (`runRetry`) iterates up to `maxAttempts`. For data-unavailable retries
-  (`block_unavailable`, `empty_result`, `missing_data`) it uses an EMA block-time-relative
+  (`block_unavailable`, `empty_result`, `missing_data`) it uses a median block-time-relative
   delay (falling back to `emptyResultDelay`). For genuine errors it uses exponential backoff
   via `failsafe.ComputeBackoff`. `firstInformativeErr` is tracked so a bare
   `ErrNoUpstreamsLeftToSelect` on a later attempt does not mask the root cause.
@@ -198,7 +198,7 @@ primary control surface.
 | `networks[].failsafe[].timeout` | `*Duration` | nil (no timeout) | Wraps full executor invocation; cause is `ErrDynamicTimeoutExceeded`. <SourceLink file="erpc/network_executor.go" lines="86-89" /> |
 | `networks[].failsafe[].retry.maxAttempts` | int | 1 (no retry) | Upper bound on retry iterations. <SourceLink file="erpc/network_executor.go" lines="210-213" /> |
 | `networks[].failsafe[].retry.emptyResultMaxAttempts` | int | 0 (disabled) | Cap for data-unavailable retries independently of `maxAttempts`. |
-| `networks[].failsafe[].retry.emptyResultDelay` | `*Duration` | nil | Fixed wait before data-unavailable retry, used before EMA block-time warms up. |
+| `networks[].failsafe[].retry.emptyResultDelay` | `*Duration` | nil | Fixed wait before data-unavailable retry, used during block-time warm-up (fewer than 3 samples). |
 | `networks[].failsafe[].retry.emptyResultAccept` | `[]string` | `DefaultEmptyResultAccept()` | Methods for which an empty/null result is NOT retried (e.g. `eth_call`, `eth_getLogs`). |
 | `networks[].failsafe[].retry.backoffFactor` | float | per `failsafe.ComputeBackoff` | Exponential backoff multiplier for genuine-error retries. |
 | `networks[].failsafe[].retry.backoffMaxDelay` | `*Duration` | per `failsafe.ComputeBackoff` | Maximum inter-retry delay. |
@@ -234,8 +234,8 @@ primary control surface.
 | `evm.traceFilterSplitConcurrency` | int | `10` | Max concurrent sub-requests when splitting `trace_filter`. <SourceLink file="common/defaults.go" lines="2105-2107" /> |
 | `evm.enforceBlockAvailability` | `*bool` | nil (true in logic) | Whether to gate requests based on upstream known block bounds. |
 | `evm.markEmptyAsErrorMethods` | `[]string` | 11 methods (see below) | Methods for which an empty/null upstream result is converted to `ErrEndpointMissingData` and retried. Default set: `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionByHash`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getUncleByBlockHashAndIndex`, `eth_getUncleByBlockNumberAndIndex`, `debug_traceTransaction`, `trace_transaction`, `trace_block`, `trace_get`. `eth_getBlockByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts` are intentionally excluded. <SourceLink file="common/defaults.go" lines="2044-2058" /> |
-| `evm.dynamicBlockTimeDebounceMultiplier` | `*float64` | `0.7` | Scales EMA block time to derive the state-poller debounce interval. |
-| `evm.blockUnavailableDelayMultiplier` | `*float64` | `1.0` | Multiplies EMA-estimated block time to derive the dynamic retry delay for `ErrUpstreamBlockUnavailable`/`ErrEndpointMissingData`. Returns `0` before EMA warms up — falls back to `failsafe[*].retry.emptyResultDelay`. |
+| `evm.dynamicBlockTimeDebounceMultiplier` | `*float64` | `0.7` | Scales the median block time to derive the state-poller debounce interval. |
+| `evm.blockUnavailableDelayMultiplier` | `*float64` | `1.0` | Multiplies the median block time to derive the dynamic retry delay for `ErrUpstreamBlockUnavailable`/`ErrEndpointMissingData`. Returns `0` during warm-up (fewer than 3 samples) — falls back to `failsafe[*].retry.emptyResultDelay`. |
 | `evm.idempotentTransactionBroadcast` | `*bool` | nil (enabled) | When enabled, `eth_sendRawTransaction` converts "already known" to success and verifies "nonce too low" via `eth_getTransactionByHash`. Set to `false` to return raw upstream errors. |
 | `evm.emptyResultConfidence` | `AvailbilityConfidence` | `blockHead` | Confidence level for empty-result retries: `blockHead` = retry empties for blocks ≤ latest head; `finalizedBlock` = stricter, only retry for blocks ≤ finalized head. <SourceLink file="common/defaults.go" lines="2075-2079" /> |
 | `evm.servedTip.enabledFor` | `[]string` | `[]` | Tags using cluster-min mode; valid values: `"latest"`, `"finalized"`, `"safe"`. |
@@ -391,8 +391,8 @@ all waiting followers with a response ID patch per follower:
   — static delays go stale as provider latencies shift; quantile mode self-adjusts per method.
 - **Enable multiplexing** for networks that see bursts of identical calls (e.g. `eth_blockNumber`,
   `eth_getBlockByNumber?latest`); it eliminates duplicate upstream cost at zero config complexity.
-- **Set `emptyResultDelay`** as a bootstrap fallback for data-unavailable retries — the EMA
-  block-time delay takes a few requests to warm up; without a fallback the first retries fire
+- **Set `emptyResultDelay`** as a bootstrap fallback for data-unavailable retries — the median
+  block-time delay needs 3 samples (4 blocks) to warm up; without a fallback the first retries fire
   immediately.
 - **Do not set `directiveDefaults.retryEmpty: true` globally** unless you also set
   `emptyResultMaxAttempts`; without a cap, methods that legitimately return null (e.g. unindexed

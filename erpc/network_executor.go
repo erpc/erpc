@@ -600,7 +600,7 @@ func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *comm
 	// (ErrUpstreamBlockUnavailable), a point-lookup marked empty-as-missing
 	// (ErrEndpointMissingData), or a plain emptyish result — all want the same
 	// thing: wait about one block before retrying, since that's when the data
-	// usually appears. Use the EMA-block-time-relative delay
+	// usually appears. Use the median-block-time-relative delay
 	// (blockTime × BlockUnavailableDelayMultiplier) once it's warmed up, else the
 	// relevant fixed fallback. One mechanism covers both cases; there is no
 	// separate per-policy empty-result multiplier.

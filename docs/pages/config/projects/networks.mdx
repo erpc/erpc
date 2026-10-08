@@ -174,8 +174,8 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `chainId` | `int64` | — (no default) | Drives `networkId = "evm:<chainId>"`. Not validated &gt; 0 for networks; `chainId: 0` yields `evm:0`. |
 | `fallbackFinalityDepth` | `int64` | `1024` (<SourceLink file="common/defaults.go" lines="1975" />) | Used when an upstream doesn't expose the `finalized` tag. Must be &gt; 0 after defaults. |
 | `fallbackStatePollerDebounce` | `Duration` | `5s` (<SourceLink file="common/defaults.go" lines="1976" />) | Static debounce for block polling until dynamic block time is learned. Must be &gt; 0. |
-| `dynamicBlockTimeDebounceMultiplier` | `*float64` | `0.7` (<SourceLink file="common/defaults.go" lines="1977" />) | Polling debounce = EMA block time × multiplier. Lower → more aggressive polling (fresher data, more upstream load). |
-| `blockUnavailableDelayMultiplier` | `*float64` | `1.0` (<SourceLink file="common/defaults.go" lines="1978" />) | Retry delay for block-unavailable = EMA block time × multiplier. |
+| `dynamicBlockTimeDebounceMultiplier` | `*float64` | `0.7` (<SourceLink file="common/defaults.go" lines="1977" />) | Polling debounce = median block time × multiplier. Lower → more aggressive polling (fresher data, more upstream load). |
+| `blockUnavailableDelayMultiplier` | `*float64` | `1.0` (<SourceLink file="common/defaults.go" lines="1978" />) | Retry delay for block-unavailable = median block time × multiplier. |
 | `enforceBlockAvailability` | `*bool` | `nil` (defer; fallback = enabled) | Network-level priority 2 in 5-step chain. `nil` defers to upstream bounds and system defaults. `false` disables enforcement even when an upstream has explicit bounds configured. |
 | `maxRetryableBlockDistance` | `*int64` | `nil` → `128` at use site (<SourceLink file="erpc/networks.go" lines="1973-1979" />) | Block-unavailable errors within this distance of upstream head are retryable; beyond → non-retryable skip. |
 | `getLogsMaxAllowedRange` | `int64` | `30_000` (<SourceLink file="common/defaults.go" lines="2092-2094" />) | Hard limit on `eth_getLogs` block range. Must be &gt; 0; `0` inherits defaults value. |
@@ -195,7 +195,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `maxFutureBlockRetryDistance` | `*int64` | `nil` | **Deprecated** — warned about and set to nil in `SetDefaults` (<SourceLink file="common/defaults.go" lines="2080-2083" />). Has no effect; remove from configs. |
 | `servedTip` | `EvmServedTipConfig` | `nil` = max mode | Copied wholesale from `networkDefaults.evm.servedTip` when nil. |
 | `servedTip.enabledFor` | `[]string` | `[]` (max mode) | Valid: `latest`, `finalized`, `safe`. Listing a tag switches that axis from max-across-upstreams to cluster-min + monotonic clamp via shared state. |
-| `servedTip.clusterDelta` | `int64` | `0` = auto-derive from EMA block time, clamped `[2, 10]` | Must be ≥ 0. |
+| `servedTip.clusterDelta` | `int64` | `0` = auto-derive from median block time, clamped `[2, 10]` | Must be ≥ 0. |
 | `servedTip.guaranteedMethods` | `[]string` (glob) | `[]` | Global tip clamped to per-method supporting-set floor (<SourceLink file="erpc/networks.go" lines="643-649" />). |
 
 #### `projects[].networks[].svm` — SvmNetworkConfig

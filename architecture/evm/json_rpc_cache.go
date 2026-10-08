@@ -997,7 +997,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 
 		// Record metric for age-guard rejection. Label with the policy's fixed
 		// TTL component, not the block-time-resolved value — the latter varies
-		// per sample (EMA-derived) and would explode label cardinality.
+		// per sample (median-derived) and would explode label cardinality.
 		method, _ := req.Method()
 		telemetry.MetricCacheGetAgeGuardRejectTotal.WithLabelValues(
 			c.projectId,

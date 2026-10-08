@@ -817,7 +817,6 @@ func TestRecordUpstreamFailure_AllSkipCodesIgnored(t *testing.T) {
 		{"RequestCanceled", common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled"))},
 		{"UpstreamHedgeCancelled", common.NewErrUpstreamHedgeCancelled("ups", fmt.Errorf("context canceled"))},
 		{"BlockUnavailable", common.NewErrUpstreamBlockUnavailable("ups", 1000, 999, 990)},
-
 	}
 
 	for _, tc := range cases {
@@ -1111,7 +1110,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Equal(t, time.Duration(0), d, "should reject absurd block times")
 	})
 
-	t.Run("EMA_RecoverFromBadEarlySamples", func(t *testing.T) {
+	t.Run("RecoverFromBadEarlySamples", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 		baseBlock := int64(1000)
 		baseTs := int64(1700000000)
@@ -1123,7 +1122,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 			feedBlockDetection(tracker, networkId, netLabel, baseBlock+i, baseTs+60+(i-1)*2)
 		}
 		d := tracker.GetNetworkBlockTime(networkId)
-		assert.InDelta(t, 2.0, d.Seconds(), 0.5, "EMA should recover from bad early data")
+		assert.InDelta(t, 2.0, d.Seconds(), 0.5, "estimate should recover from bad early data")
 	})
 
 	t.Run("ConcurrentGoroutinesSafety", func(t *testing.T) {
@@ -1196,7 +1195,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.InDelta(t, 3.0, d.Seconds(), 0.1, "should reflect 3s block time")
 	})
 
-	t.Run("EMA_AdaptsToNewBlockTime", func(t *testing.T) {
+	t.Run("AdaptsToNewBlockTime", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 		baseBlock := int64(1000)
 		baseTs := int64(1700000000)
@@ -1213,7 +1212,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 			feedBlockDetection(tracker, networkId, netLabel, lastBlock+i, lastTs+i*3)
 		}
 		d = tracker.GetNetworkBlockTime(networkId)
-		assert.InDelta(t, 3.0, d.Seconds(), 0.2, "EMA should adapt to new 3s block time")
+		assert.InDelta(t, 3.0, d.Seconds(), 0.2, "estimate should adapt to new 3s block time")
 	})
 
 	// ---------------------------------------------------------------
@@ -1281,27 +1280,35 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 		feedBlockDetection(tracker, networkId, netLabel, lastBlock+1, lastTs+haltDuration)
 
-		spiked := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, spiked.Seconds(), 30.0,
-			"chain halt with blockGap=1 causes a spike (expected, documented behavior)")
-		assert.Less(t, spiked.Seconds(), 120.0,
-			"spike should still be within sanity bounds")
+		afterHalt := tracker.GetNetworkBlockTime(networkId)
+		assert.InDelta(t, 2.0, afterHalt.Seconds(), 0.1,
+			"one block after a long halt must not move the typical block time")
 
 		resumeBlock := lastBlock + 1
 		resumeTs := lastTs + haltDuration
 		for i := int64(1); i <= 40; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, resumeBlock+i, resumeTs+i*2)
 		}
-		recovered := tracker.GetNetworkBlockTime(networkId)
-		assert.Less(t, recovered.Seconds(), 10.0,
-			"after 40 normal blocks, EMA should be recovering toward 2s")
+		assert.InDelta(t, 2.0, tracker.GetNetworkBlockTime(networkId).Seconds(), 0.1)
+	})
 
-		for i := int64(41); i <= 100; i++ {
-			feedBlockDetection(tracker, networkId, netLabel, resumeBlock+i, resumeTs+i*2)
+	// Intermittent stalls (a 60s gap every 10th block amid 2s blocks) keep the
+	// mean near 7.8s; retry delays and poll debounce derived from it would wait
+	// ~4 blocks. The typical interval stays 2s.
+	t.Run("EdgeCase_IntermittentStalls_KeepTypicalBlockTime", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		block := int64(1000)
+		ts := int64(1700000000)
+		for i := range 200 {
+			block++
+			if i%10 == 9 {
+				ts += 60
+			} else {
+				ts += 2
+			}
+			feedBlockDetection(tracker, networkId, netLabel, block, ts)
 		}
-		fullyRecovered := tracker.GetNetworkBlockTime(networkId)
-		assert.InDelta(t, 2.0, fullyRecovered.Seconds(), 0.5,
-			"after 100 normal blocks, EMA should be very close to 2s")
+		assert.InDelta(t, 2.0, tracker.GetNetworkBlockTime(networkId).Seconds(), 0.1)
 	})
 
 	t.Run("EdgeCase_ChainHalt_MultipleBlocksBurst", func(t *testing.T) {
@@ -1319,15 +1326,14 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		halt := int64(600)
 
 		feedBlockDetection(tracker, networkId, netLabel, lastBlock+1, lastTs+halt)
-		spiked := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, spiked.Seconds(), 30.0, "first block after halt spikes EMA")
+		assert.InDelta(t, 12.0, tracker.GetNetworkBlockTime(networkId).Seconds(), 0.5,
+			"first block after halt must not move the typical block time")
 
 		for i := int64(2); i <= 5; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, lastBlock+i, lastTs+halt+(i-1))
 		}
-		afterBurst := tracker.GetNetworkBlockTime(networkId)
-		assert.Less(t, afterBurst.Seconds(), spiked.Seconds(),
-			"burst of blocks should pull EMA back down from spike")
+		assert.InDelta(t, 12.0, tracker.GetNetworkBlockTime(networkId).Seconds(), 0.5,
+			"a short catch-up burst must not move the typical block time either")
 	})
 
 	t.Run("EdgeCase_QuietChainThenResumes", func(t *testing.T) {
@@ -1347,8 +1353,8 @@ func TestGetNetworkBlockTime(t *testing.T) {
 			feedBlockDetection(tracker, networkId, netLabel, lastBlock+i, lastTs+i*10)
 		}
 		slow := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, slow.Seconds(), 5.0, "phase 2: EMA should be moving toward 10s")
-		assert.Less(t, slow.Seconds(), 11.0, "phase 2: EMA should not overshoot")
+		assert.Greater(t, slow.Seconds(), 5.0, "phase 2: estimate should be moving toward 10s")
+		assert.Less(t, slow.Seconds(), 11.0, "phase 2: estimate should not overshoot")
 
 		lastBlock += 30
 		lastTs += 30 * 10
@@ -1357,7 +1363,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		}
 		resumed := tracker.GetNetworkBlockTime(networkId)
 		assert.InDelta(t, 2.0, resumed.Seconds(), 0.5,
-			"phase 3: EMA should recover back to ~2s")
+			"phase 3: estimate should recover back to ~2s")
 	})
 
 	t.Run("EdgeCase_SameTimestamp_AccumulatesBlockGap", func(t *testing.T) {
@@ -1377,7 +1383,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		// Timestamp ticks: blockGap=4, tsDelta=1s → 250ms/block
 		feedBlockDetection(tracker, networkId, netLabel, baseBlock+4, baseTs+1)
 
-		// Need more samples for EMA to emit (minSamples=3)
+		// Need more samples for the estimate to emit (minSamples=3)
 		for i := int64(5); i < 20; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, baseBlock+i, baseTs+i/4)
 		}

@@ -46,7 +46,7 @@ func mkReserveEngine(t *testing.T, eval string) (*policy.Engine, []common.Upstre
 
 // setLag force-creates the metric entry for an upstream and pins its
 // block-head lag (block-count) so the lag predicates are deterministic
-// without depending on the block-time EMA.
+// without depending on the block-time median.
 func setLag(tracker *health.Tracker, u common.Upstream, lag int64) {
 	tracker.GetUpstreamMethodMetrics(u, "*", common.DataFinalityStateAll).BlockHeadLag.Store(lag)
 }

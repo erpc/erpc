@@ -214,7 +214,7 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
 
 `throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles are populated only from _successful_ responses — a fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
 
-`blockHeadLag` and `finalizationLag` are atomic point-in-time state, not rolling counters. They persist across window rotations and stay non-zero until the upstream catches up to the network tip. `blockHeadLagSeconds` and `finalizationLagSeconds` multiply the block count by the tracker's EMA-estimated block time (alpha 0.1, minimum 3 samples before publishing). Until the EMA is warm, both seconds fields are `0` — pair `blockSecondsLagAbove` with `blockNumberLagAbove` for cold-start coverage.
+`blockHeadLag` and `finalizationLag` are atomic point-in-time state, not rolling counters. They persist across window rotations and stay non-zero until the upstream catches up to the network tip. `blockHeadLagSeconds` and `finalizationLagSeconds` multiply the block count by the tracker's block time. That block time is a rolling median (31 samples, min 3). During warm-up (fewer than 3 samples), both seconds fields are `0` — pair `blockSecondsLagAbove` with `blockNumberLagAbove` for cold-start coverage.
 
 **The default policy chain.** Omitting `evalFunc` applies the production-hardened default embedded at compile time:
 
@@ -308,8 +308,8 @@ Per-upstream `routing.scoreMultipliers` on the upstream config merge with the ch
 | `misbehaviorRate` | `float64` | EMA rolling misbehavior rate |
 | `blockHeadLag` | `int64` | Blocks behind network tip |
 | `finalizationLag` | `int64` | Finalization blocks behind tip |
-| `blockHeadLagSeconds` | `float64` | `blockHeadLag × networkBlockTime`; `0` until EMA warms |
-| `finalizationLagSeconds` | `float64` | `finalizationLag × networkBlockTime`; `0` until EMA warms |
+| `blockHeadLagSeconds` | `float64` | `blockHeadLag × networkBlockTime`; `0` during warm-up (fewer than 3 samples) |
+| `finalizationLagSeconds` | `float64` | `finalizationLag × networkBlockTime`; `0` during warm-up (fewer than 3 samples) |
 | `p50ResponseSeconds` | `float64` | p50 latency in seconds |
 | `p70ResponseSeconds` | `float64` | p70 latency in seconds |
 | `p90ResponseSeconds` | `float64` | p90 latency in seconds |
@@ -318,7 +318,7 @@ Per-upstream `routing.scoreMultipliers` on the upstream config merge with the ch
 | `cordonedReason` | `string` or absent | Set when upstream is cordoned |
 | `latencyP(q)` | `(q: number) => ms` | Snaps to nearest pre-computed bucket; input 0–1 or 0–100 |
 
-The block-time EMA used to compute `blockHeadLagSeconds`/`finalizationLagSeconds` has sanity bounds: values outside `[10ms, 120s]` are rejected and the internal EMA is reset to the last published value to prevent post-halt spikes.
+The block-time median used to compute `blockHeadLagSeconds`/`finalizationLagSeconds` has sanity bounds: a median outside `[10ms, 120s]` is not published, and the last valid value is kept. One long stall does not move it; it moves only once stalls are the majority of the 31-sample window.
 
 **`EvalContext` (`ctx`) shape** ([`internal/policy/eval.go:L17`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L17)):
 
@@ -581,7 +581,7 @@ non-obvious choices.
         .excludeIf(all(samplesAbove(10), errorRateAbove(0.5)))
         // Drop upstreams >8 blocks behind tip — stale state is dangerous for
         // trading. Pair with blockNumberLagAbove for cold-start coverage since
-        // blockSecondsLagAbove is 0 until the block-time EMA warms (>=3 pairs).
+        // blockSecondsLagAbove is 0 until the block-time median warms (>=3 samples).
         .excludeIf(any(blockNumberLagAbove(8), blockSecondsLagAbove(15)))
         .whenEmpty(() => upstreams)
         .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -695,7 +695,7 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 ### Best practices
 
 - **Pair `samplesAbove(N)` with every rate predicate.** `errorRateAbove(0.7)` on an upstream with 2 samples (1 failure → 50% rate) will exclude it spuriously. `all(samplesAbove(10), errorRateAbove(0.7))` waits for a statistically meaningful window. The default policy uses `samplesAbove(10)` for error/throttle and `samplesAbove(20)` before the latency-deviation check.
-- **Use `blockNumberLagAbove(N)` as the primary lag guard, not `blockSecondsLagAbove`.** The seconds variant is `0` until the block-time EMA warms (requires ≥3 block pairs). On cold start, `blockNumberLagAbove(16)` fires correctly; `blockSecondsLagAbove(30)` silently no-ops.
+- **Use `blockNumberLagAbove(N)` as the primary lag guard, not `blockSecondsLagAbove`.** The seconds variant is `0` until the block-time median warms (requires ≥3 samples). On cold start, `blockNumberLagAbove(16)` fires correctly; `blockSecondsLagAbove(30)` silently no-ops.
 - **Keep `evalScope: "network"` unless you genuinely need per-method ranking.** Each additional scope dimension multiplies ticker goroutines and JS eval cycles. If you need method-specific `scoreMultipliers`, set `evalScope: "network-method"` — without it, method-specific entries silently no-op.
 - **Don't set `routing.probe: "off"` on upstreams you care about recovering.** With probing off, an excluded upstream accumulates no shadow samples and only recovers when structural signals (lag clearing, etc.) naturally drive re-admission. Probing is what makes re-admission fast.
 - **Let `whenEmpty(() => upstreams)` stay in every policy.** Without it, a simultaneous spike in error rates across all upstreams returns `ErrUpstreamsExhausted` rather than degraded-but-working traffic. Fail-open is almost always better than fail-closed for RPC routing.
@@ -706,7 +706,7 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 
 1. **`scoreMultipliers.method` silently no-ops in `evalScope: "network"`.** `WildcardMatch("eth_getLogs", "*")` returns `false`. Entries with a specific `Method` field are only applied in per-method or per-method-finality slots. [`internal/policy/eval.go:resolveScoreMultipliers:L442`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L442)
 
-2. **`blockHeadLagSeconds` / `finalizationLagSeconds` are `0` until block-time EMA warms.** The EMA requires ≥3 `(blockNumber, blockTimestamp)` pairs with differing timestamps. Predicates like `blockSecondsLagAbove(30)` silently no-op until then. Use `blockNumberLagAbove(16)` as the primary guard. [`internal/policy/eval.go:L89-96`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L89-L96)
+2. **`blockHeadLagSeconds` / `finalizationLagSeconds` are `0` until the block-time median warms.** The median requires ≥3 samples, i.e. 4 `(blockNumber, blockTimestamp)` observations with differing timestamps. Predicates like `blockSecondsLagAbove(30)` silently no-op until then. Use `blockNumberLagAbove(16)` as the primary guard. [`internal/policy/eval.go:L89-96`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L89-L96)
 
 3. **`whenEmpty(() => upstreams)` prevents fail-closed.** If every `excludeIf` rule fires simultaneously (project-wide outage), the safety net restores the full unfiltered set. The network sends traffic to degraded upstreams rather than returning `ErrUpstreamsExhausted`. [`internal/policy/default_policy.js:L46`](https://github.com/erpc/erpc/blob/main/internal/policy/default_policy.js#L46)
 

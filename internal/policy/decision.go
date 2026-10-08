@@ -130,7 +130,7 @@ type DecisionDiff struct {
 //     decisions (a 16-block lag means 4 min on Eth mainnet but ~32 s on a
 //     2 s chain).
 //   - blockHeadLagSeconds / finalizationLagSeconds — same lag multiplied
-//     by the tracker's EMA-estimated block time for the network. Zero
+//     by the tracker's median-estimated block time for the network. Zero
 //     until the tracker has enough samples to estimate block time
 //     (typically a few seconds after first traffic). Use these when the
 //     trip threshold should be wall-clock (e.g. "trip if more than 60 s

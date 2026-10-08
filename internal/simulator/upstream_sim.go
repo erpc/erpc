@@ -37,8 +37,8 @@ import (
 // Block timestamps: every `eth_getBlockByNumber` / `eth_getBlockByHash`
 // response uses `simGenesisUnix + block * simBlockTimeSec` so that
 // consecutive blocks are spaced by a stable interval. The eRPC health
-// tracker's block-time EMA samples these deltas to estimate "seconds
-// per block" — without a synthetic-but-consistent timestamp the EMA
+// tracker's block-time median samples these deltas to estimate "seconds
+// per block" — without a synthetic-but-consistent timestamp the median
 // converges to nonsense and `blockSecondsLagAbove(...)` policy
 // predicates never fire.
 const (
@@ -51,13 +51,13 @@ const (
 	// Genesis offset. Picked so a block in the low millions yields a
 	// timestamp in the last decade — feels realistic when an operator
 	// inspects raw responses in the dumper. Absolute value doesn't
-	// matter for the EMA (it only reads diffs).
+	// matter for the median (it only reads diffs).
 	simGenesisUnix int64 = 1_438_269_973 // Aug 2015, near Eth mainnet genesis
 )
 
 // blockTimestamp returns the synthetic Unix seconds for `block`. Same
 // value for the same block across every upstream — required for the
-// network's block-time EMA to converge.
+// network's block-time median to converge.
 func blockTimestamp(block int64) int64 {
 	return simGenesisUnix + block*simBlockTimeSec
 }

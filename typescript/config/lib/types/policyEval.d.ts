@@ -33,7 +33,7 @@ export type PolicyEvalUpstreamMetrics = {
     finalizationLag: number;
     /**
      * Wall-clock seconds an upstream is behind the network's head, computed
-     * as `blockHeadLag * <tracker's EMA block-time>`. Zero until the tracker
+     * as `blockHeadLag * <tracker's median block-time>`. Zero until the tracker
      * has enough samples to estimate block time (a few seconds after first
      * traffic on most chains).
      */

@@ -18,7 +18,7 @@ func emptyArrayResponseForDelay(t *testing.T) *common.NormalizedResponse {
 }
 
 // Empty-result retries reuse the SAME dynamic block-time delay the block-unavailable
-// path uses (EMA block time × BlockUnavailableDelayMultiplier) — there is no separate
+// path uses (median block time × BlockUnavailableDelayMultiplier) — there is no separate
 // per-policy multiplier. A not-yet-visible block/tx typically appears within ~one
 // block, so this waits about that long instead of a hand-tuned constant.
 func TestNetworkExecutor_ComputeDelay_EmptyResultUsesDynamicBlockTimeDelay(t *testing.T) {

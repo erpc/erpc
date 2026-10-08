@@ -243,7 +243,7 @@ func TestSuggestFinalizedBlock_MajorJumpChainIdMismatchDroppedAndCordoned(t *tes
 
 // --- majorHeadMoveThreshold ---
 
-// feedBlockTime drives the tracker's block-time EMA to (tsDelta/numDelta)
+// feedBlockTime drives the tracker's block-time median to (tsDelta/numDelta)
 // seconds per block by replaying observations through the same entry point the
 // poller uses. blockTimeMinSamples is 3, so a handful of rounds is plenty.
 func feedBlockTime(t *testing.T, p *EvmStatePoller, up common.Upstream, numDelta, tsDelta int64) {
@@ -256,7 +256,7 @@ func feedBlockTime(t *testing.T, p *EvmStatePoller, up common.Upstream, numDelta
 		p.tracker.SetLatestBlockNumber(up, num, ts)
 	}
 	require.NotZero(t, p.tracker.GetNetworkBlockTime(up.NetworkId()),
-		"precondition: the block-time EMA must have settled")
+		"precondition: the block-time median must have settled")
 }
 
 func TestMajorHeadMoveThreshold(t *testing.T) {

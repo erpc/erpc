@@ -26,7 +26,7 @@ retries but **not** catch-up):
 | **Upstream Errors by Type** | `topk(15, rate(upstream_request_errors_total))` by `upstream,error` | the *why*: which upstream + error code (e.g. `ErrEndpointUnsupported`, `ErrEndpointCapacityExceeded`) |
 
 Healthy = per-retry wait ≈ the chain's block time, and pressure low/flat.
-**Act** when pressure climbs unbounded, p95 ≫ one block (verify vs. the EMA gauge
+**Act** when pressure climbs unbounded, p95 ≫ one block (verify vs. the block-time gauge
 first — see bucket caveat), catch-up fires on `finalized` data, or **Failover
 Retries spike** (then check *Upstream Errors by Type*).
 
@@ -109,11 +109,11 @@ upstream's archive completeness) rather than tuning the wait.
 
 `computeDelay` for a catch-up reason returns, in order:
 
-1. **`dynamicBlockUnavailableDelay()`** = EMA-estimated block time ×
+1. **`dynamicBlockUnavailableDelay()`** = median-estimated block time ×
    `blockUnavailableDelayMultiplier` (default **1.0**) — i.e. *wait one block*.
-   This is the steady-state path once the block-time EMA has warmed up.
+   This is the steady-state path once the block-time median has warmed up.
 2. else **`emptyResultDelay`** — a fixed fallback (default **700 ms**), used
-   before the EMA warms up (e.g. a freshly-deployed pod).
+   during warm-up (fewer than 3 samples), e.g. a freshly-deployed pod.
 
 Total catch-up retries are bounded by **`emptyResultMaxAttempts`** (default
 **2** → one retry), a cap **separate** from `maxAttempts` (genuine-error
@@ -142,13 +142,13 @@ same 10 s on Arbitrum would be alarming.
      (indexing lag) **or** the data is legitimately empty and `RetryEmpty` is
      over-eager.
 2. **Wait p95** — is each wait ≈ one block for that chain (table above)?
-   - p95 ≫ one block → the EMA block-time estimate is inflated (a laggy upstream
-     dragging the EMA), or backoff is leaking onto this path. **Before blaming the
-     EMA, verify it directly** with `erpc_network_dynamic_block_time_milliseconds`
-     and look at the **average** wait (`rate(_sum)/rate(_count)`). If the EMA is
+   - p95 ≫ one block → the block-time estimate is inflated (stalls are the
+     majority of the 31-sample median window), or backoff is leaking onto this
+     path. **Before blaming the estimate, verify it directly** with `erpc_network_dynamic_block_time_milliseconds`
+     and look at the **average** wait (`rate(_sum)/rate(_count)`). If the estimate is
      correct (e.g. mainnet ≈ 12000 ms) and the avg ≈ one block but p95 looks huge,
      it's a *histogram-bucket artifact*, not inflation — see the caveat below.
-   - p95 pinned at exactly 700 ms → EMA never warmed (cold pods / churn);
+   - p95 pinned at exactly 700 ms → the median never warmed (cold pods / churn);
      everything's on the fixed fallback.
 
    > **Bucket caveat (learned the hard way).** `network_data_unavailable_wait_seconds`
@@ -157,7 +157,7 @@ same 10 s on Arbitrum would be alarming.
    > shared the global request-latency buckets (e.g. `…,1,3,5,10,30`), whose sparse
    > 10→30 s gap put mainnet's 12 s wait in one coarse bucket — so `histogram_quantile`
    > read ~30 s/"1 min" while the **avg was a healthy 12 s**. If you ever see a
-   > scary p95 here, confirm against the EMA gauge and the avg before concluding
+   > scary p95 here, confirm against the block-time gauge and the avg before concluding
    > anything; trust p95 only with the dedicated buckets in place.
 3. **Wait Pressure** — the only panel that measures *impact*. `rate(_sum)` is
    wait-seconds accrued per second ≈ **average number of requests concurrently
@@ -174,13 +174,13 @@ same 10 s on Arbitrum would be alarming.
 
 **Healthy:** flat/low pressure; p95 ≈ one block per chain; reason mix matches
 chain speed; all on `unfinalized` finality; brief regime shifts right after a
-deploy (cold EMA → 700 ms fallback until warm) that settle within a minute.
+deploy (cold median → 700 ms fallback until warm) that settle within a minute.
 
 **Act:**
 - Pressure climbing without a ceiling on a network → upstreams chronically
   behind tip. Check the selection policy (is it routing to a laggy primary?) and
   upstream `block_head_lag`.
-- p95 wait ≫ one block on a fast chain → EMA inflated by a bad upstream; or the
+- p95 wait ≫ one block on a fast chain → block-time median inflated by sustained stalls; or the
   multiplier is set too high.
 - Retries high **and** hitting `emptyResultMaxAttempts` → requests exhaust
   catch-up and surface empties/errors to callers.
@@ -192,7 +192,7 @@ deploy (cold EMA → 700 ms fallback until warm) that settle within a minute.
 | knob | path | effect |
 |---|---|---|
 | `blockUnavailableDelayMultiplier` | `evm` (default 1.0) | scales the per-block wait. <1 = fail faster, less latency, more empties; >1 = wait longer, fewer empties, more latency. |
-| `emptyResultDelay` | `retry` (default 700 ms) | the cold fallback wait before the block-time EMA warms up. |
+| `emptyResultDelay` | `retry` (default 700 ms) | the cold fallback wait during block-time warm-up (fewer than 3 samples). |
 | `emptyResultMaxAttempts` | `retry` (default 2) | how many catch-up retries before giving up. Separate from `maxAttempts`. |
 
 ## Worked example
@@ -210,7 +210,7 @@ A typical snapshot of the three panels:
   `arbitrum-one / empty_result`. Low impact — **not alarming**. If it kept
   climbing past a few, *then* you'd chase upstream freshness.
 - A regime shift where the reason mix flips within a minute usually lines up
-  with a **deploy**: new pods start with a cold block-time EMA and fall back to
+  with a **deploy**: new pods start with a cold block-time median and fall back to
   `emptyResultDelay` until it warms, briefly changing both the dominant reason
   and the wait length. Correlate with release time before suspecting an upstream.
 

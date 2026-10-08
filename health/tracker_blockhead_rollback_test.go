@@ -227,7 +227,7 @@ func TestTrackerFinalizedBlockRollbackTolerance(t *testing.T) {
 	})
 }
 
-// After a head rollback the block-time EMA must keep sampling: its previous
+// After a head rollback the block-time estimate must keep sampling: its previous
 // anchor may sit at the (bogus) old head, and without re-anchoring every
 // subsequent block would look out-of-order until the chain re-passed it —
 // freezing dynamic block time estimation indefinitely.
@@ -237,28 +237,29 @@ func TestTrackerBlockTimeReanchorsAfterHeadRollback(t *testing.T) {
 	net := ups.NetworkId()
 	base := int64(1_700_000_000)
 
-	// Establish a ~1s/block EMA (4 observations → 3 samples).
+	// Establish a ~1s/block estimate (4 observations → 3 samples).
 	tracker.SetLatestBlockNumber(ups, 100, base)
 	tracker.SetLatestBlockNumber(ups, 101, base+1)
 	tracker.SetLatestBlockNumber(ups, 102, base+2)
 	tracker.SetLatestBlockNumber(ups, 103, base+3)
 	assert.InDelta(t, float64(time.Second), float64(tracker.GetNetworkBlockTime(net)), float64(50*time.Millisecond))
 
-	// Bogus far-ahead sample moves the EMA anchor to the bogus height.
+	// Bogus far-ahead sample moves the sampling anchor to the bogus height.
 	tracker.SetLatestBlockNumber(ups, 90_000_000, base+4)
-	// Correction rolls the head back (no EMA sample of its own).
+	// Correction rolls the head back (no sample of its own).
 	tracker.SetLatestBlockNumber(ups, 104, base+5)
 	assert.Equal(t, int64(104), networkLatest(tracker, net))
 
-	// Sampling resumes: the first forward observation re-anchors, the next one
-	// produces a sample again (3s/block here), and the EMA starts moving.
-	tracker.SetLatestBlockNumber(ups, 105, base+8)
-	tracker.SetLatestBlockNumber(ups, 106, base+11)
+	// The rollback re-anchored sampling at 104, so 3s/block samples resume and
+	// move the estimate once they are the window majority.
+	ts := base + 5
+	for n := int64(105); n <= 112; n++ {
+		ts += 3
+		tracker.SetLatestBlockNumber(ups, n, ts)
+	}
 
-	bt := tracker.GetNetworkBlockTime(net)
-	assert.Greater(t, int64(bt), int64(1050*time.Millisecond),
-		"EMA must move toward the new 3s/block cadence instead of staying frozen")
-	assert.Less(t, int64(bt), int64(2*time.Second))
+	assert.InDelta(t, float64(3*time.Second), float64(tracker.GetNetworkBlockTime(net)), float64(50*time.Millisecond),
+		"estimate must move to the new 3s/block cadence instead of staying frozen")
 }
 
 // A large head rollback is not just something to chart. Until it was recorded as
