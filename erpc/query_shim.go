@@ -122,7 +122,7 @@ func (qe *EvmQueryExecutor) runShim(ctx context.Context, p *queryPlan, onPage fu
 			return err
 		}
 		if qe.projectShimPages {
-			projectQueryPage(p.req, page)
+			page = projectQueryPage(p.req, page)
 		}
 		if err := onPage(page); err != nil {
 			return err
@@ -855,7 +855,7 @@ func hexQuantity(n uint64) string {
 // answer (an upstream that lags and does not have the block yet) is asked
 // once more of every other upstream that takes the method, so a lagging
 // upstream never hides an available block; that answer stands, error or
-// not. The upstream that answers with data becomes the pin in place of one
+// not, unless the error too says the block is missing. The upstream that answers with data becomes the pin in place of one
 // that failed or lagged, and a pin that answered null when no other upstream
 // had data is dropped. The consistency checks guard what comes back.
 func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, pg *shimPageState, method string, params []interface{}) ([]byte, error) {
@@ -875,12 +875,14 @@ func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, pg *shimPageS
 	if isJSONNull(result) && pinnable(served) && ctx.Err() == nil &&
 		qe.anyUpstreamHandles(ctx, method, func(id string) bool { return id != served }) {
 		other, otherServed, err := qe.forwardOnce(ctx, pg, method, params, "!"+served)
-		if err != nil {
-			return nil, err
-		}
-		if isJSONNull(other) {
+		// The others lack the block too (null, or an error saying so): the
+		// null stands, and the lagging pin goes.
+		if isJSONNull(other) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData, common.ErrCodeUpstreamBlockUnavailable) {
 			pg.unpin(served)
 			return result, nil
+		}
+		if err != nil {
+			return nil, err
 		}
 		result, served = other, otherServed
 	}

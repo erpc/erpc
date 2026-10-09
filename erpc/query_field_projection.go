@@ -6,11 +6,14 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// projectQueryPage clears, in place, every field of a shim page's objects
-// that req does not select, for gRPC clients (the JSON renderer writes only
-// selected fields). A nil selection keeps every field. Pages share no
-// objects, and within a page each object sits in one list only.
-func projectQueryPage(req, page proto.Message) {
+// projectQueryPage returns a copy of a shim page whose objects keep only the
+// fields req selects, for gRPC clients (the JSON renderer writes only
+// selected fields). A nil selection keeps every field. It copies because
+// objects point into their block's header (a transaction's blockNumber and
+// blockTimestamp, a trace's blockTimestamp), and the blocks relation holds
+// that header itself.
+func projectQueryPage(req, page proto.Message) proto.Message {
+	page = proto.Clone(page)
 	switch r := req.(type) {
 	case *evm.QueryBlocksRequest:
 		p := page.(*evm.QueryBlocksResponse)
@@ -35,6 +38,7 @@ func projectQueryPage(req, page proto.Message) {
 		projectEach(p.Transactions, r.GetTransactionFields())
 		projectEach(p.Blocks, r.GetBlockFields())
 	}
+	return page
 }
 
 // selectionAliases maps a selection field name to the object field it

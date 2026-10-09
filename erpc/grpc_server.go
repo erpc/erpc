@@ -508,16 +508,20 @@ func grpcStatusOf(err error) error {
 		return status.Error(codes.Unauthenticated, err.Error())
 	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout, common.ErrCodeNetworkRequestTimeout, common.ErrCodeFailsafeTimeoutExceeded) || errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded, common.ErrCodeEndpointRequestTooLarge,
+	case common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded, common.ErrCodeEndpointRequestTooLarge, common.ErrCodeEndpointBillingIssue,
 		common.ErrCodeAuthRateLimitRuleExceeded, common.ErrCodeProjectRateLimitRuleExceeded, common.ErrCodeNetworkRateLimitRuleExceeded, common.ErrCodeUpstreamRateLimitRuleExceeded):
 		return status.Error(codes.ResourceExhausted, err.Error())
 	case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
 		return status.Error(codes.NotFound, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeEndpointClientSideException, common.ErrCodeInvalidRequest):
+	case common.IsClientError(err):
+		// Deterministic: a malformed request, or one past a getLogs limit.
 		return status.Error(codes.InvalidArgument, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect):
-		// Every upstream failed in a way none of the above names: a retry
-		// later may find one serving.
+	case common.HasErrorCode(err, common.ErrCodeEndpointExecutionException):
+		// The call itself failed (a revert): every upstream says the same.
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case common.HasErrorCode(err, common.ErrCodeNoUpstreamsLeftToSelect) ||
+		(common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) && common.IsRetryableTowardNetwork(err)):
+		// Every upstream failed transiently: a retry later may find one serving.
 		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())

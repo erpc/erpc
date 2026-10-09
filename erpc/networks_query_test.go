@@ -520,29 +520,46 @@ func TestNetworkQuery_Shim(t *testing.T) {
 		target := uint32(2)
 		stream, err := client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{
 			FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0x65"), Target: &target,
-			TransactionFields: &bdsevm.TransactionFieldSelection{Hash: true, Gas: true, Status: true},
-			BlockFields:       &bdsevm.BlockFieldSelection{Number: true},
+			TransactionFields: &bdsevm.TransactionFieldSelection{Hash: true, Gas: true, Status: true, BlockNumber: true, BlockTimestamp: true},
+			// Transactions point into the header the blocks relation holds:
+			// clearing the header's unselected number and timestamp must not
+			// clear the transactions' blockNumber and blockTimestamp.
+			BlockFields: &bdsevm.BlockFieldSelection{Hash: true},
 		})
 		pages, code := grpcPages(t, stream, err)
 		require.Equal(t, codes.OK, code)
 		require.Len(t, pages, 2, "one page per block at target 2")
 		for i, page := range pages {
+			n := uint64(0x64 + i)
 			require.Len(t, page.Transactions, 2)
 			tx := page.Transactions[0]
-			assert.Equal(t, uint64(0x64+i), page.CursorBlock.GetNumber())
+			assert.Equal(t, n, page.CursorBlock.GetNumber())
 			assert.NotEmpty(t, tx.Hash, "selected")
 			assert.Equal(t, uint64(0x5208), tx.GasLimit, `"gas" selects gasLimit`)
 			require.NotNil(t, tx.Status, "selected receipt field")
 			assert.Equal(t, uint32(1), *tx.Status)
+			require.NotNil(t, tx.BlockNumber, "selected")
+			assert.Equal(t, n, *tx.BlockNumber)
+			require.NotNil(t, tx.BlockTimestamp, "selected")
+			assert.Equal(t, 1000+n, *tx.BlockTimestamp)
 			assert.Empty(t, tx.From, "unselected")
 			assert.Empty(t, tx.Input, "unselected")
 			assert.Empty(t, tx.Value, "unselected")
 			assert.Nil(t, tx.GasUsed, "unselected receipt field")
 			require.Len(t, page.Blocks, 1)
-			assert.Equal(t, uint64(0x64+i), page.Blocks[0].Number)
-			assert.Empty(t, page.Blocks[0].Hash, "unselected")
-			assert.NotEmpty(t, page.CursorBlock.GetHash(), "block references are never projected")
+			assert.Equal(t, qtHash(n), bdsevm.BytesToHex(page.Blocks[0].Hash), "selected")
+			assert.Zero(t, page.Blocks[0].Number, "unselected")
+			assert.Zero(t, page.Blocks[0].Timestamp, "unselected")
+			assert.Equal(t, n, page.CursorBlock.GetNumber(), "block references are never projected")
 		}
+
+		// The JSON transport renders the same request from the same blocks
+		// with every selected field intact.
+		result, jsonCode := queryJson(t, ctx, ntw, "eth_queryTransactions",
+			`[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["blockNumber","blockTimestamp"],"blocks":["hash"]}}]`)
+		require.Zero(t, jsonCode)
+		assert.Equal(t, []interface{}{"0x64", "0x64"}, qtField(qtData(result, "transactions"), "blockNumber"))
+		assert.Equal(t, []interface{}{"0x44c", "0x44c"}, qtField(qtData(result, "transactions"), "blockTimestamp"))
 
 		order := bdsevm.SortOrder_DESC
 		stream, err = client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0x65"), Order: &order})
