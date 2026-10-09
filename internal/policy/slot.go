@@ -218,26 +218,65 @@ func (s *Slot) tickOnce() {
 	// the PREFER_FASTEST formula in Go. The chronological step log is
 	// captured only when the engine's debug flag is on (simulator always,
 	// eRPC when the logger is at DEBUG) — see `Engine.SetStepLogEnabled`.
+	// The eval runs on its own goroutine so a slow policy cannot hold the tick
+	// past `timeout`. It publishes through a channel, NOT through variables shared
+	// with the parent. Assigning `evalRes`/`evalErr` from both goroutines was two
+	// defects in one:
+	//
+	//   - the parent's timeout write raced the goroutine's result write, which the
+	//     race detector reports and which made the stdlib suite flake under load;
+	//   - the parent then waited on the goroutine, so the late assignment always
+	//     landed second and always overwrote `ErrEvalTimeout`. A slow-but-successful
+	//     eval was published as if it had arrived on time, and a slow-and-failing one
+	//     reported its own error. `ErrEvalTimeout` reached no Decision, so
+	//     `selection_eval_errors_total{kind="timeout"}` could never increment. An
+	//     operator whose policy outgrew its `evalTimeout` saw no error, no log and no
+	//     metric — only a verdict computed from a stale snapshot.
+	//
+	// Now the parent picks the winner, and when the timeout fires the timeout wins.
+	type evalOutcome struct {
+		res *EvalResult
+		err error
+	}
+	stepLogEnabled := s.engine.stepLogEnabled.Load()
+	// Buffered, so the goroutine never blocks publishing a result nobody wants.
+	outcome := make(chan evalOutcome, 1)
+	go func() {
+		res, err := runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
+		outcome <- evalOutcome{res: res, err: err}
+	}()
+
 	var (
 		evalRes *EvalResult
 		evalErr error
+		// lateFirst: the eval timed out, but this slot has never published an
+		// ordering, and the late result is valid. See below.
+		lateFirst bool
 	)
-	stepLogEnabled := s.engine.stepLogEnabled.Load()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
-	}()
-
 	if timeout > 0 {
 		select {
-		case <-done:
+		case o := <-outcome:
+			evalRes, evalErr = o.res, o.err
 		case <-time.After(timeout):
 			evalErr = fmt.Errorf("%w after %s", ErrEvalTimeout, timeout)
-			<-done // let the goroutine finish — sobek doesn't support interrupt mid-call cleanly
+			// Wait for the goroutine; sobek cannot be interrupted mid-call cleanly, so
+			// the eval has to run to completion. Once the slot holds an ordering, the
+			// late result is DISCARDED: the deadline is the answer the operator
+			// configured, and the previous cache stands.
+			//
+			// Before the first publish there is no previous cache. Discarding the late
+			// result then leaves the network on raw registration order, fallback tier
+			// included, until the next tick (15s by default). A first eval on a busy
+			// host can easily miss a 100ms deadline. A late answer from the policy beats
+			// no policy at all, so publish it, and still count the timeout.
+			o := <-outcome
+			if s.cache.Load() == nil && o.err == nil && o.res != nil {
+				evalRes, lateFirst = o.res, true
+			}
 		}
 	} else {
-		<-done
+		o := <-outcome
+		evalRes, evalErr = o.res, o.err
 	}
 
 	decision := &Decision{
@@ -251,6 +290,19 @@ func (s *Slot) tickOnce() {
 			Metrics:     metrics,
 		},
 		State: state,
+	}
+
+	if lateFirst {
+		// The decision still carries the timeout, so it reaches the decisions
+		// ring and emitMetrics counts it as kind="timeout".
+		decision.Error = evalErr.Error()
+		s.engine.logger.Warn().
+			Str("network", s.networkID).
+			Str("method", s.method).
+			Str("tick_id", decision.ID).
+			Err(evalErr).
+			Msg("selection policy eval failed; no ordering exists yet, so publishing its late result")
+		evalErr = nil
 	}
 
 	if evalErr != nil {
