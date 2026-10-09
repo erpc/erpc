@@ -653,6 +653,24 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 
 	filterParams := params[0]
 
+	// EIP-234: a blockHash filter names one block and excludes fromBlock/toBlock.
+	// A BDS server answers it directly; a hash it does not hold (a block not
+	// indexed yet, or reorged away) is OUT_OF_RANGE, a miss like any other.
+	var blockHash []byte
+	if raw, present := filterParams["blockHash"]; present && raw != nil {
+		bhStr, ok := raw.(string)
+		if !ok || bhStr == "" {
+			return nil, fmt.Errorf("failed to parse blockHash: want a 32-byte hex string, got %v", raw)
+		}
+		if filterParams["fromBlock"] != nil || filterParams["toBlock"] != nil {
+			return nil, fmt.Errorf("eth_getLogs blockHash cannot be combined with fromBlock/toBlock")
+		}
+		blockHash, err = parseHexBytes(bhStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse blockHash: %w", err)
+		}
+	}
+
 	var fromBlock, toBlock *uint64
 	if fromStr, ok := filterParams["fromBlock"].(string); ok {
 		if fromStr != "latest" && fromStr != "pending" && fromStr != "earliest" {
@@ -674,7 +692,7 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 		}
 	}
 
-	if fromBlock == nil || toBlock == nil {
+	if blockHash == nil && (fromBlock == nil || toBlock == nil) {
 		return nil, fmt.Errorf("special block numbers not yet supported via gRPC for eth_getLogs")
 	}
 
@@ -706,26 +724,29 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 	}
 
 	grpcReq := &evm.GetLogsRequest{
-		FromBlock: fromBlock,
-		ToBlock:   toBlock,
 		Addresses: addresses,
 		Topics:    topics,
 		ChainId:   c.chainIdParam(),
 	}
+	spanAttrs := []attribute.KeyValue{}
+	if blockHash != nil {
+		grpcReq.BlockHash = blockHash
+		spanAttrs = append(spanAttrs, attribute.String("block_hash", fmt.Sprintf("0x%x", blockHash)))
+	} else {
+		grpcReq.FromBlock, grpcReq.ToBlock = fromBlock, toBlock
+		spanAttrs = append(spanAttrs,
+			attribute.Int64("from_block", int64(*fromBlock)),
+			attribute.Int64("to_block", int64(*toBlock)),
+		)
+	}
 
 	c.logger.Debug().
-		Uint64("fromBlock", *fromBlock).
-		Uint64("toBlock", *toBlock).
+		Interface("filter", filterParams).
 		Int("addressCount", len(addresses)).
 		Int("topicCount", len(topics)).
 		Msg("calling gRPC GetLogs")
 
-	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs",
-		trace.WithAttributes(
-			attribute.Int64("from_block", int64(*fromBlock)),
-			attribute.Int64("to_block", int64(*toBlock)),
-		),
-	)
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs", trace.WithAttributes(spanAttrs...))
 	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*evm.GetLogsResponse, error) {
 		return conn.rpcClient.GetLogs(ctx, grpcReq)
 	})
