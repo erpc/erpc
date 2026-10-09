@@ -176,15 +176,18 @@ body is streamed. An async goroutine fires `cacheDal.Set` with a 10-second deadl
 `appCtx` — a client disconnect never aborts the cache write. Panics in the write goroutine
 are recovered and reported via `erpc_unexpected_panic_total{scope="cache-set"}`.
 
-**gRPC query-stream path**
+**eth_query\* (MIP-16) path**
 
-`ProcessQueryStream` handles `eth_queryBlocks`, `eth_queryTransactions`, `eth_queryLogs`,
-`eth_queryTraces`, and `eth_queryTransfers`. Auth and rate limiting are identical to the
-unary path. `EvmQueryExecutor.Execute` attempts native pipe-through to an upstream gRPC BDS
-client; if no upstream supports structured queries, it shims via sequential JSON-RPC
-subrequests (`eth_getBlockByNumber`, `eth_getLogs`, `trace_block`, etc.) with block-boundary-
-aware pagination. Composite subrequests set `IsCompositeRequest=true` to skip network-scope
-retry and hedge, preventing exponential amplification.
+One `EvmQueryExecutor` answers `eth_queryBlocks`, `eth_queryTransactions`, `eth_queryLogs`,
+`eth_queryTraces`, and `eth_queryTransfers` for both transports. gRPC `QueryService` streams
+enter through `ProcessQueryStream` (auth and rate limiting identical to the unary path);
+JSON-RPC calls enter through `Network.Forward`, which hands them to the executor before the
+cache and per-upstream dispatch and returns one page per call. The executor resolves the
+range once, checks availability, tries native gRPC BDS upstreams first (MIP-16 request
+passed through unchanged), and otherwise builds block-aligned pages from
+`eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getLogs` and `trace_block` /
+`debug_traceBlockByNumber` sub-requests, each sent through `Network.Forward` with the client
+request as parent. See [method handlers](/reference/evm/method-handlers).
 
 ### Config schema
 

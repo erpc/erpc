@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/url"
 	"testing"
-	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
@@ -88,12 +87,6 @@ func TestBuildTopicFiltersRejectsInvalidHex(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestGrpcBdsClientQueryMethodsDoNotShortCircuit verifies that query methods
-// are routed to the streaming QueryService handlers rather than being
-// rejected outright by SendRequest. Against a non-existent target the
-// handler surfaces a transport-failure error — but critically NOT
-// ErrEndpointUnsupported, which would disqualify the upstream from carrying
-// eth_query* traffic.
 func TestGrpcBdsClientAppliesUpstreamGrpcHeaders(t *testing.T) {
 	parsedURL, err := url.Parse("grpc://127.0.0.1:1")
 	require.NoError(t, err)
@@ -134,29 +127,4 @@ func TestGrpcBdsClientNilUpstreamNoHeaders(t *testing.T) {
 	gc, ok := client.(*GenericGrpcBdsClient)
 	require.True(t, ok)
 	require.Empty(t, gc.headers)
-}
-
-func TestGrpcBdsClientQueryMethodsDoNotShortCircuit(t *testing.T) {
-	parsedURL, err := url.Parse("grpc://127.0.0.1:1")
-	require.NoError(t, err)
-
-	logger := zerolog.New(io.Discard)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0, "")
-	require.NoError(t, err)
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks","params":[{"fromBlock":"0x1","toBlock":"0x2","limit":1}]}`))
-
-	// Tight deadline so we don't wait for connect-timeout retries.
-	callCtx, cancelCall := context.WithTimeout(ctx, 500*time.Millisecond)
-	defer cancelCall()
-	_, err = client.SendRequest(callCtx, req)
-	require.Error(t, err)
-	require.False(
-		t,
-		common.HasErrorCode(err, common.ErrCodeEndpointUnsupported),
-		"query methods must not be short-circuited as unsupported at SendRequest level; error was: %v",
-		err,
-	)
 }

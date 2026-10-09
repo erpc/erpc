@@ -19,11 +19,6 @@ const (
 	CompositeTypeLogsSplitProactive        = "logs-split-proactive"
 	CompositeTypeTraceFilterSplitOnError   = "trace-filter-split-on-error"
 	CompositeTypeTraceFilterSplitProactive = "trace-filter-split-proactive"
-	CompositeTypeQueryBlocksShim           = "query-blocks-shim"
-	CompositeTypeQueryTransactionsShim     = "query-transactions-shim"
-	CompositeTypeQueryLogsShim             = "query-logs-shim"
-	CompositeTypeQueryTracesShim           = "query-traces-shim"
-	CompositeTypeQueryTransfersShim        = "query-transfers-shim"
 )
 
 const RequestContextKey ContextKey = "rq"

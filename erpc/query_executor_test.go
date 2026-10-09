@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"net/url"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	upstreampkg "github.com/erpc/erpc/upstream"
@@ -18,202 +22,147 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
-func TestQueryBlocks_DoesNotFallbackAfterPartialPipeThroughFailure(t *testing.T) {
-	t.Helper()
-
-	firstCalls := 0
-	secondCalls := 0
-
-	firstUpstream := newTestQueryUpstream(
-		t,
-		"upstream-1",
-		&fakeGrpcBdsClient{
-			queryClient: &fakeQueryServiceClient{
-				queryBlocksFn: func(ctx context.Context, in *evm.QueryBlocksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryBlocksResponse], error) {
-					firstCalls++
-					return &fakeServerStreamingClient[evm.QueryBlocksResponse]{
-						responses: []*evm.QueryBlocksResponse{
-							{
-								Blocks:      []*evm.BlockHeader{{Number: 1}},
-								CursorBlock: &evm.CursorBlock{Number: 1},
-							},
-						},
-						finalErr: errors.New("upstream stream failed"),
-					}, nil
-				},
-			},
+// Native QueryService upstreams through the executor, for both transports:
+// a JSON-RPC eth_query* request through Network.Forward gets one page of the
+// first native upstream that answers, and a gRPC stream gets every page and
+// never switches upstream once a page went out.
+func TestQueryExecutor_Native(t *testing.T) {
+	page := func(n uint64, cursor uint64) *evm.QueryLogsResponse {
+		ref := func(b uint64) *evm.CursorBlock {
+			return &evm.CursorBlock{Number: b, Hash: make([]byte, 32), ParentHash: make([]byte, 32)}
+		}
+		return &evm.QueryLogsResponse{
+			Logs:        []*evm.Log{{BlockNumber: n, LogIndex: 0, Address: make([]byte, 20), BlockHash: make([]byte, 32), TransactionHash: make([]byte, 32)}},
+			FromBlock:   ref(1),
+			ToBlock:     ref(9),
+			CursorBlock: ref(cursor),
+		}
+	}
+	var seen []*evm.QueryLogsRequest
+	unimplemented := newTestQueryUpstream(t, "native-old", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{
+		queryLogsFn: func(ctx context.Context, in *evm.QueryLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryLogsResponse], error) {
+			return &fakeServerStreamingClient[evm.QueryLogsResponse]{finalErr: status.Error(codes.Unimplemented, "QueryLogs")}, nil
 		},
-	)
-	secondUpstream := newTestQueryUpstream(
-		t,
-		"upstream-2",
-		&fakeGrpcBdsClient{
-			queryClient: &fakeQueryServiceClient{
-				queryBlocksFn: func(ctx context.Context, in *evm.QueryBlocksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryBlocksResponse], error) {
-					secondCalls++
-					return &fakeServerStreamingClient[evm.QueryBlocksResponse]{
-						responses: []*evm.QueryBlocksResponse{
-							{
-								Blocks: []*evm.BlockHeader{{Number: 1}},
-							},
-						},
-					}, nil
-				},
-			},
+	}})
+	serving := newTestQueryUpstream(t, "native", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{
+		queryLogsFn: func(ctx context.Context, in *evm.QueryLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryLogsResponse], error) {
+			seen = append(seen, in)
+			return &fakeServerStreamingClient[evm.QueryLogsResponse]{
+				responses: []*evm.QueryLogsResponse{page(1, 4), page(5, 9)},
+				finalErr:  errors.New("stream broke after two pages"),
+			}, nil
 		},
-	)
+	}})
+	qe := newTestQueryExecutor(t, "eth_queryLogs", unimplemented, serving)
 
-	qe := newTestQueryExecutor(t, "eth_queryBlocks", firstUpstream, secondUpstream)
+	t.Run("JSON-RPC gets one page, parsed and rendered by the MIP-16 codec", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":7,"method":"eth_queryLogs","params":[{"fromBlock":"0x1","toBlock":"0x9","target":"0x1","fields":{"logs":["blockNumber"]}}]}`))
+		resp, err := qe.network.forwardQuery(context.Background(), req, "eth_queryLogs")
+		require.NoError(t, err)
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		var result map[string]interface{}
+		require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &result))
+		assert.Equal(t, map[string]interface{}{"logs": []interface{}{map[string]interface{}{"blockNumber": "0x1"}}}, result["data"])
+		assert.Equal(t, "0x4", result["cursorBlock"].(map[string]interface{})["number"])
 
-	pageCount := 0
-	err := qe.queryBlocks(context.Background(), &evm.QueryBlocksRequest{
-		FromBlock: util.StringPtr("0x1"),
-		ToBlock:   util.StringPtr("0x2"),
-	}, func(page proto.Message) error {
-		pageCount++
-		return nil
+		require.Len(t, seen, 1)
+		assert.Equal(t, uint32(1), seen[0].GetTarget(), "the native upstream gets the MIP-16 request unchanged")
+		assert.Equal(t, uint64(1), seen[0].GetChainId())
 	})
 
-	require.Error(t, err)
-	assert.Equal(t, 1, firstCalls)
-	assert.Equal(t, 0, secondCalls)
-	assert.Equal(t, 1, pageCount)
+	t.Run("gRPC gets every page and no other upstream after a page", func(t *testing.T) {
+		var cursors []uint64
+		err := qe.Execute(context.Background(), &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9")}, func(p proto.Message) error {
+			cursors = append(cursors, p.(*evm.QueryLogsResponse).GetCursorBlock().GetNumber())
+			return nil
+		})
+		require.ErrorContains(t, err, "stream broke after two pages")
+		assert.Equal(t, []uint64{4, 9}, cursors)
+	})
 
-	var streamErr *StreamError
-	require.ErrorAs(t, err, &streamErr)
-	assert.True(t, streamErr.PageEmitted)
-	require.NotNil(t, streamErr.LastCursor)
-	assert.Equal(t, uint64(1), streamErr.LastCursor.Number)
+	t.Run("errors carry the MIP-16 codes on both transports", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":8,"method":"eth_queryBlocks","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}`))
+		_, err := qe.network.forwardQuery(context.Background(), req, "eth_queryBlocks")
+		var jre *common.ErrJsonRpcExceptionInternal
+		require.ErrorAs(t, err, &jre)
+		assert.Equal(t, common.JsonRpcErrorNumber(-32004), jre.NormalizedCode(), "no native QueryBlocks and no shim")
+
+		err = qe.Execute(context.Background(), &evm.QueryBlocksRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x2")}, func(proto.Message) error { return nil })
+		assert.Equal(t, codes.Unimplemented, status.Code(queryGrpcError(err)))
+
+		order := evm.SortOrder_DESC
+		err = qe.Execute(context.Background(), &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9"), Order: &order}, func(proto.Message) error { return nil })
+		assert.Equal(t, codes.InvalidArgument, status.Code(queryGrpcError(err)), "inverted desc range")
+
+		// A native upstream's MIP-16 failure (pipeThrough wraps it in
+		// StreamError) keeps its code on both transports when no shim can
+		// take over.
+		outOfRange := newTestQueryUpstream(t, "native-window", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{
+			queryTracesFn: func(ctx context.Context, in *evm.QueryTracesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryTracesResponse], error) {
+				return &fakeServerStreamingClient[evm.QueryTracesResponse]{finalErr: status.Error(codes.OutOfRange, "traces pruned")}, nil
+			},
+		}})
+		windowed := newTestQueryExecutor(t, "eth_queryTraces", outOfRange)
+		err = windowed.Execute(context.Background(), &evm.QueryTracesRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x2")}, func(proto.Message) error { return nil })
+		assert.Equal(t, codes.OutOfRange, status.Code(queryGrpcError(err)))
+		req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":9,"method":"eth_queryTraces","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}`))
+		_, err = windowed.network.forwardQuery(context.Background(), req, "eth_queryTraces")
+		require.ErrorAs(t, err, &jre)
+		assert.Equal(t, common.JsonRpcErrorNumber(-32001), jre.NormalizedCode())
+	})
+
+	t.Run("a real BDS client sends the upstream's grpc.headers on the stream", func(t *testing.T) {
+		lis, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		server := grpc.NewServer()
+		qs := &headerRecordingQueryServer{}
+		evm.RegisterQueryServiceServer(server, qs)
+		go func() { _ = server.Serve(lis) }()
+		defer server.Stop()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		logger := zerolog.Nop()
+		endpoint, err := url.Parse("grpc://" + lis.Addr().String())
+		require.NoError(t, err)
+		client, err := clients.NewGrpcBdsClient(ctx, &logger, "prjA", nil, endpoint, 0, "")
+		require.NoError(t, err)
+		defer client.(clients.ShutdownableClient).Shutdown()
+		client.SetHeaders(map[string]string{"x-api-key": "demo"})
+
+		native := newTestQueryExecutor(t, "eth_queryLogs", newTestQueryUpstream(t, "native-real", client))
+		var pages int
+		err = native.Execute(ctx, &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9")}, func(proto.Message) error {
+			pages++
+			return nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, pages)
+		require.NotNil(t, qs.apiKey.Load(), "the QueryService server got no call")
+		assert.Equal(t, []string{"demo"}, *qs.apiKey.Load(), "x-api-key must reach the QueryService server")
+	})
 }
 
-func TestQueryBlocks_FallsBackWhenPipeThroughFailsBeforeFirstPage(t *testing.T) {
-	t.Helper()
-
-	firstCalls := 0
-	secondCalls := 0
-
-	firstUpstream := newTestQueryUpstream(
-		t,
-		"upstream-1",
-		&fakeGrpcBdsClient{
-			queryClient: &fakeQueryServiceClient{
-				queryBlocksFn: func(ctx context.Context, in *evm.QueryBlocksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryBlocksResponse], error) {
-					firstCalls++
-					return &fakeServerStreamingClient[evm.QueryBlocksResponse]{
-						finalErr: errors.New("upstream failed before first page"),
-					}, nil
-				},
-			},
-		},
-	)
-	secondUpstream := newTestQueryUpstream(
-		t,
-		"upstream-2",
-		&fakeGrpcBdsClient{
-			queryClient: &fakeQueryServiceClient{
-				queryBlocksFn: func(ctx context.Context, in *evm.QueryBlocksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryBlocksResponse], error) {
-					secondCalls++
-					return &fakeServerStreamingClient[evm.QueryBlocksResponse]{
-						responses: []*evm.QueryBlocksResponse{
-							{
-								Blocks: []*evm.BlockHeader{{Number: 2}},
-							},
-						},
-					}, nil
-				},
-			},
-		},
-	)
-
-	qe := newTestQueryExecutor(t, "eth_queryBlocks", firstUpstream, secondUpstream)
-
-	var pages []*evm.QueryBlocksResponse
-	err := qe.queryBlocks(context.Background(), &evm.QueryBlocksRequest{
-		FromBlock: util.StringPtr("0x1"),
-		ToBlock:   util.StringPtr("0x2"),
-	}, func(page proto.Message) error {
-		pages = append(pages, page.(*evm.QueryBlocksResponse))
-		return nil
-	})
-
-	require.NoError(t, err)
-	assert.Equal(t, 1, firstCalls)
-	assert.Equal(t, 1, secondCalls)
-	require.Len(t, pages, 1)
-	require.Len(t, pages[0].Blocks, 1)
-	assert.Equal(t, uint64(2), pages[0].Blocks[0].Number)
+// headerRecordingQueryServer is a QueryService server that records the
+// x-api-key metadata of a QueryLogs call and answers one page.
+type headerRecordingQueryServer struct {
+	evm.UnimplementedQueryServiceServer
+	apiKey atomic.Pointer[[]string]
 }
 
-func TestQueryLogs_DoesNotFallbackAfterPartialPipeThroughFailure(t *testing.T) {
-	t.Helper()
-
-	firstCalls := 0
-	secondCalls := 0
-
-	firstUpstream := newTestQueryUpstream(
-		t,
-		"upstream-1",
-		&fakeGrpcBdsClient{
-			queryClient: &fakeQueryServiceClient{
-				queryLogsFn: func(ctx context.Context, in *evm.QueryLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryLogsResponse], error) {
-					firstCalls++
-					return &fakeServerStreamingClient[evm.QueryLogsResponse]{
-						responses: []*evm.QueryLogsResponse{
-							{
-								Logs:        []*evm.Log{{BlockNumber: 1, LogIndex: 0}},
-								CursorBlock: &evm.CursorBlock{Number: 1},
-							},
-						},
-						finalErr: errors.New("upstream log stream failed"),
-					}, nil
-				},
-			},
-		},
-	)
-	secondUpstream := newTestQueryUpstream(
-		t,
-		"upstream-2",
-		&fakeGrpcBdsClient{
-			queryClient: &fakeQueryServiceClient{
-				queryLogsFn: func(ctx context.Context, in *evm.QueryLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryLogsResponse], error) {
-					secondCalls++
-					return &fakeServerStreamingClient[evm.QueryLogsResponse]{
-						responses: []*evm.QueryLogsResponse{
-							{
-								Logs: []*evm.Log{{BlockNumber: 1, LogIndex: 0}},
-							},
-						},
-					}, nil
-				},
-			},
-		},
-	)
-
-	qe := newTestQueryExecutor(t, "eth_queryLogs", firstUpstream, secondUpstream)
-
-	pageCount := 0
-	err := qe.queryLogs(context.Background(), &evm.QueryLogsRequest{
-		FromBlock: util.StringPtr("0x1"),
-		ToBlock:   util.StringPtr("0x2"),
-	}, func(page proto.Message) error {
-		pageCount++
-		return nil
-	})
-
-	require.Error(t, err)
-	assert.Equal(t, 1, firstCalls)
-	assert.Equal(t, 0, secondCalls)
-	assert.Equal(t, 1, pageCount)
-
-	var streamErr *StreamError
-	require.ErrorAs(t, err, &streamErr)
-	assert.True(t, streamErr.PageEmitted)
-	require.NotNil(t, streamErr.LastCursor)
-	assert.Equal(t, uint64(1), streamErr.LastCursor.Number)
+func (s *headerRecordingQueryServer) QueryLogs(req *evm.QueryLogsRequest, stream grpc.ServerStreamingServer[evm.QueryLogsResponse]) error {
+	md, _ := metadata.FromIncomingContext(stream.Context())
+	key := md.Get("x-api-key")
+	s.apiKey.Store(&key)
+	ref := &evm.CursorBlock{Number: 9, Hash: make([]byte, 32), ParentHash: make([]byte, 32)}
+	return stream.Send(&evm.QueryLogsResponse{FromBlock: ref, ToBlock: ref, CursorBlock: ref})
 }
 
 type fakeGrpcBdsClient struct {
@@ -230,6 +179,8 @@ func (c *fakeGrpcBdsClient) SetHeaders(h map[string]string) {}
 
 func (c *fakeGrpcBdsClient) QueryClient() evm.QueryServiceClient { return c.queryClient }
 
+func (c *fakeGrpcBdsClient) WithHeaders(ctx context.Context) context.Context { return ctx }
+
 type fakeQueryServiceClient struct {
 	queryBlocksFn       func(ctx context.Context, in *evm.QueryBlocksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryBlocksResponse], error)
 	queryTransactionsFn func(ctx context.Context, in *evm.QueryTransactionsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryTransactionsResponse], error)
@@ -240,35 +191,35 @@ type fakeQueryServiceClient struct {
 
 func (c *fakeQueryServiceClient) QueryBlocks(ctx context.Context, in *evm.QueryBlocksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryBlocksResponse], error) {
 	if c.queryBlocksFn == nil {
-		return nil, errors.New("unexpected QueryBlocks")
+		return nil, status.Error(codes.Unimplemented, "QueryBlocks")
 	}
 	return c.queryBlocksFn(ctx, in, opts...)
 }
 
 func (c *fakeQueryServiceClient) QueryTransactions(ctx context.Context, in *evm.QueryTransactionsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryTransactionsResponse], error) {
 	if c.queryTransactionsFn == nil {
-		return nil, errors.New("unexpected QueryTransactions")
+		return nil, status.Error(codes.Unimplemented, "QueryTransactions")
 	}
 	return c.queryTransactionsFn(ctx, in, opts...)
 }
 
 func (c *fakeQueryServiceClient) QueryLogs(ctx context.Context, in *evm.QueryLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryLogsResponse], error) {
 	if c.queryLogsFn == nil {
-		return nil, errors.New("unexpected QueryLogs")
+		return nil, status.Error(codes.Unimplemented, "QueryLogs")
 	}
 	return c.queryLogsFn(ctx, in, opts...)
 }
 
 func (c *fakeQueryServiceClient) QueryTraces(ctx context.Context, in *evm.QueryTracesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryTracesResponse], error) {
 	if c.queryTracesFn == nil {
-		return nil, errors.New("unexpected QueryTraces")
+		return nil, status.Error(codes.Unimplemented, "QueryTraces")
 	}
 	return c.queryTracesFn(ctx, in, opts...)
 }
 
 func (c *fakeQueryServiceClient) QueryTransfers(ctx context.Context, in *evm.QueryTransfersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryTransfersResponse], error) {
 	if c.queryTransfersFn == nil {
-		return nil, errors.New("unexpected QueryTransfers")
+		return nil, status.Error(codes.Unimplemented, "QueryTransfers")
 	}
 	return c.queryTransfersFn(ctx, in, opts...)
 }
@@ -335,10 +286,6 @@ func newTestUpstreamsRegistry(t *testing.T, networkID, method string, upstreams 
 	setUnexportedField(t, registry, "networkUpstreams", map[string][]*upstreampkg.Upstream{
 		networkID: upstreams,
 	})
-	// Also populate the atomic snapshot so GetNetworkUpstreams' fast path works.
-	atomicMap := &sync.Map{}
-	atomicMap.Store(networkID, upstreams)
-	setUnexportedField(t, registry, "networkUpstreamsAtomic", *atomicMap)
 	return registry
 }
 

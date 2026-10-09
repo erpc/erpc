@@ -145,12 +145,16 @@ func (rp *RequestProcessor) ProcessQueryStream(
 
 	executor := NewEvmQueryExecutor(network, &lg)
 	executor.parentRequestId = nq.ID()
+	executor.projectShimPages = true
 	err = executor.Execute(ctx, queryReq, onPage)
 
 	dur := time.Since(start)
 	if err != nil {
 		lg.Info().Err(err).Dur("durationMs", dur).Msgf("query stream completed with error")
 		common.SetTraceSpanError(span, err)
+		if mapped := queryGrpcError(err); mapped != nil {
+			return mapped
+		}
 	} else {
 		lg.Info().Dur("durationMs", dur).Msgf("query stream completed successfully")
 	}
@@ -158,6 +162,8 @@ func (rp *RequestProcessor) ProcessQueryStream(
 	return err
 }
 
+// queryMethodFromProto returns the eth_query* method of a QueryService
+// request, or "" for any other message.
 func queryMethodFromProto(req proto.Message) string {
 	switch req.(type) {
 	case *evm.QueryBlocksRequest:
@@ -171,6 +177,6 @@ func queryMethodFromProto(req proto.Message) string {
 	case *evm.QueryTransfersRequest:
 		return "eth_queryTransfers"
 	default:
-		return "unknown"
+		return ""
 	}
 }

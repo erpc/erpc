@@ -938,7 +938,7 @@ export interface JsonRpcUpstreamConfig {
   proxyPool?: string;
 }
 /**
- * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+ * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
  * gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
  * knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
  * every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -1006,13 +1006,27 @@ export interface EvmUpstreamConfig {
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
 }
+/**
+ * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
+ * eth_getBlockReceipts, eth_getLogs, trace_block / debug_traceBlockByNumber) the
+ * eth_query* executor issues when no native QueryService upstream answers. The
+ * sub-requests go through the network like any request; the budget bounds the
+ * work of one MIP-16 page.
+ */
 export interface EvmQueryShimConfig {
   enabled?: boolean;
   allowedMethods?: string[];
-  concurrency?: number /* int */;
-  maxBlockRange?: number /* int64 */;
-  maxLimit?: number /* int */;
-  defaultLimit?: number /* int */;
+  /**
+   * MaxBlocksPerPage is the budget of blocks one page may scan. A page that
+   * reaches it ends at the last scanned block.
+   */
+  maxBlocksPerPage?: number /* int64 */;
+  /**
+   * MaxPageDuration is the budget of time one page may scan. A page that
+   * reaches it ends at the last complete block, or fails with -32005 when no
+   * block completed.
+   */
+  maxPageDuration?: Duration;
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -1380,6 +1394,8 @@ export interface NetworkConfig {
    * CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
    * key as {networkId}:{suffix}:{blockRef} so two networks that share a
    * chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+   * When {networkId}:{suffix} is itself a valid network id, colons in the
+   * network id are escaped; see CachePartitionKey.
    */
   cacheKeySuffix?: string;
 }
