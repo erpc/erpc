@@ -310,6 +310,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 
 	// Method-specific post-forward hooks with directive-based validation
 	switch methodLower {
+	case "eth_call":
+		rs, validationErr = upstreamPostForward_eth_call(ctx, rq, rs, re)
+
 	case "eth_getlogs":
 		rs, validationErr = upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
 

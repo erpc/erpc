@@ -21,6 +21,33 @@ func newTestNetworkWithMarkEmptyMethods(methods []string) *testNetwork {
 	}
 }
 
+func TestUpstreamPostForward_EthCallNull(t *testing.T) {
+	for _, tc := range []struct {
+		method, result string
+		wantError      bool
+	}{
+		{"eth_call", "null", true},
+		{"eth_call", `"0x"`, false},
+		{"eth_call", `"0x00000000"`, false},
+		{"eth_estimateGas", "null", false},
+	} {
+		t.Run(tc.method+"/"+tc.result, func(t *testing.T) {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + tc.method + `","params":[]}`))
+			req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
+			jrr, err := common.NewJsonRpcResponseFromBytes([]byte("1"), []byte(tc.result), nil)
+			assert.NoError(t, err)
+			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+			_, err = HandleUpstreamPostForward(context.Background(), newTestNetworkWithMarkEmptyMethods(nil), nil, req, resp, nil, false)
+			if tc.wantError {
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException))
+				assert.True(t, common.IsRetryableTowardNetwork(err))
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
 	methods := []string{
 		// Blocks (eth_getBlockByHash excluded - subgraphs return empty for it)
@@ -114,7 +141,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_RetryEmptyFalse(t *testing.T) {
 func TestUpstreamPostForward_UnexpectedEmpty_NonListedMethods(t *testing.T) {
 	// Methods that should NOT trigger error conversion even with empty results
 	methods := []string{
-		"eth_call",
+		// eth_call has a dedicated null-result check, regardless of this list.
 		"eth_getBalance",
 		"eth_getCode",
 		"eth_getStorageAt",

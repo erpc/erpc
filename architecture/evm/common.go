@@ -1,10 +1,32 @@
 package evm
 
 import (
+	"bytes"
 	"context"
+	"errors"
 
 	"github.com/erpc/erpc/common"
 )
+
+// A null eth_call result violates the JSON-RPC method contract (hex DATA is
+// required, including for empty output). Use a server-side endpoint exception
+// rather than MissingData: the latter is gated by RetryEmpty=false at both
+// failsafe scopes, while this malformed response must penalize the upstream
+// and retry toward another one regardless of that directive.
+func upstreamPostForward_eth_call(ctx context.Context, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
+	if re != nil || rs == nil {
+		return rs, re
+	}
+	jrr, err := rs.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil || jrr.Error != nil || !bytes.Equal(bytes.TrimSpace(jrr.GetResultBytes()), []byte("null")) {
+		return rs, re
+	}
+	// Do not retain the malformed response: the network retry loop can otherwise
+	// promote a non-nil response from a failed attempt to its best response.
+	// Upstream.Forward stored it as last-valid before this post-forward check.
+	rq.ClearLastValidResponseIf(rs)
+	return nil, common.NewErrEndpointServerSideException(errors.New("upstream returned null for eth_call instead of hex DATA"), nil, 0)
+}
 
 // upstreamPostForward_markUnexpectedEmpty converts empty results for point-lookups
 // (blocks, transactions, receipts, traces, etc.) to missing-data so network retry can rotate.

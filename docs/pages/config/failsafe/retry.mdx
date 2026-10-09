@@ -163,7 +163,7 @@ The two scopes compose multiplicatively: `network.maxAttempts: 3` × `upstream.m
 
 **Backoff formula.** `ComputeBackoff(cfg, attempt)` where `attempt` is 0-based (first retry = 0). If `Delay == 0`: return 0 immediately. Otherwise: `d = Delay × BackoffFactor^attempt`, capped at `BackoffMaxDelay`, then additive uniform jitter in `[0, Jitter)` using `math/rand`. Because attempt is 0-indexed, the first retry always uses exactly `Delay` (exponent 0 = 1).
 
-**`retryEmpty` is the master gate.** When `false` (the default), neither scope retries empty/missing-data/block-unavailable responses — the null is passed through unchanged to the client.
+**`retryEmpty` is the master gate for ordinary empty results.** When `false` (the default), neither scope retries empty/missing-data/block-unavailable responses. Exception: literal `result: null` for `eth_call` is malformed (the method requires hex DATA) and is retried as a server-side endpoint error regardless of this directive; `"0x"` and other hex results remain valid.
 
 **Empty-as-error conversion.** The EVM post-forward hook converts `result: null` for methods in `markEmptyAsErrorMethods` into `ErrEndpointMissingData`. This fires only when `RetryEmpty == true`. The confidence guard (`emptyResultBeyondConfidence`) stops conversion only for concrete blocks more than `futureBlockShortCircuitMargin` blocks (default 16) above the selected latest or finalized confidence head. Empties within the margin can be retried; a negative margin disables the guard and the pre-forward future-block short-circuit.
 

@@ -16,11 +16,111 @@ import (
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
 func init() {
 	util.ConfigureTestLogger()
+}
+
+func TestNetworkRetry_EthCallNullWithoutRetryEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name, second string
+		wantError    bool
+	}{
+		{"fallback", "0x42", false},
+		{"all-null", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			calls := 0
+			for i, value := range []interface{}{nil, tc.second} {
+				if tc.wantError {
+					value = nil
+				}
+				url := "http://rpc1.localhost"
+				if i == 1 {
+					url = "http://rpc2.localhost"
+				}
+				gock.New(url).Post("").Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_call")
+				}).Persist().Reply(200).Map(func(r *http.Response) *http.Response {
+					calls++
+					return r
+				}).JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": value})
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkForMissingDataRetry(t, ctx,
+				&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(false)},
+				&common.RetryPolicyConfig{MaxAttempts: 2})
+			if tc.wantError {
+				cache := &common.MockCacheDal{}
+				cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil)
+				network.cacheDal = cache
+				defer func() {
+					cache.AssertCalled(t, "Get", mock.Anything, mock.Anything)
+					cache.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything)
+				}()
+			}
+			network.PinUpstreamOrderForTest("rpc1", "rpc2")
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`))
+			req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+			resp, err := network.Forward(ctx, req)
+			if tc.wantError {
+				require.Error(t, err)
+				assert.Nil(t, resp)
+			} else {
+				require.NoError(t, err)
+				jrr, jerr := resp.JsonRpcResponse()
+				require.NoError(t, jerr)
+				assert.Equal(t, `"0x42"`, jrr.GetResultString())
+			}
+			assert.GreaterOrEqual(t, calls, 2)
+		})
+	}
+}
+
+func TestNetworkRetry_EthCallHexResultsCacheable(t *testing.T) {
+	for _, result := range []string{"0x", "0x00000000"} {
+		t.Run(result, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			gock.New("http://rpc1.localhost").Post("").Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_call")
+			}).Times(1).Reply(200).JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": result})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			network := setupTestNetworkForMissingDataRetry(t, ctx,
+				&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(false)},
+				&common.RetryPolicyConfig{MaxAttempts: 2})
+			network.PinUpstreamOrderForTest("rpc1", "rpc2")
+			cache := &common.MockCacheDal{}
+			cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil)
+			written := make(chan struct{}, 1)
+			cache.On("Set", mock.Anything, mock.Anything, mock.Anything).Run(func(mock.Arguments) {
+				written <- struct{}{}
+			}).Return(nil)
+			network.cacheDal = cache
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`))
+			req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Equal(t, `"`+result+`"`, jrr.GetResultString())
+			select {
+			case <-written:
+			case <-time.After(3 * time.Second):
+				t.Fatal("valid hex response was not written to cache")
+			}
+		})
+	}
 }
 
 func TestNetworkRetry_MissingDataError(t *testing.T) {
@@ -725,7 +825,7 @@ func TestNetworkForward_TryAllUpstreams_AllEmpty_DelayBetweenRounds(t *testing.T
 
 		rpc1Calls := 0
 
-		// rpc1 returns null for eth_call. Empty results are success (nil error)
+		// rpc1 returns valid empty hex for eth_call. Empty results are success (nil error)
 		// so the loop returns immediately. HandleIf checks EmptyResultAccept —
 		// since eth_call is in the list, the empty result is accepted.
 		gock.New("http://rpc1.localhost").
@@ -739,7 +839,7 @@ func TestNetworkForward_TryAllUpstreams_AllEmpty_DelayBetweenRounds(t *testing.T
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  nil,
+				"result":  "0x",
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -987,7 +1087,7 @@ func TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty(t *testing.T) {
 				"error":   map[string]interface{}{"code": -32000, "message": "Internal server error"},
 			})
 
-		// rpc2 returns empty/null (valid response, but emptyish)
+		// rpc2 returns valid empty hex data
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
@@ -999,7 +1099,7 @@ func TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  nil,
+				"result":  "0x",
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1370,8 +1470,8 @@ func TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry(t *testin
 // - TestUpstreamSelection_EmptyResponses_DontBlockReselection
 // - TestUpstreamSelection_MissingDataError_DontBlockReselection
 
-func TestNetworkForward_UpstreamReselection_WrongEmptyStillTracked(t *testing.T) {
-	t.Run("Rpc1Empty_Rpc2HasData_ErrorsByUpstreamTracksEmpty", func(t *testing.T) {
+func TestNetworkForward_UpstreamReselection_NullServerErrorTracked(t *testing.T) {
+	t.Run("Rpc1Null_Rpc2HasData_ErrorsByUpstreamTracksServerError", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -1426,19 +1526,17 @@ func TestNetworkForward_UpstreamReselection_WrongEmptyStillTracked(t *testing.T)
 		require.NoError(t, jrrErr)
 		assert.Contains(t, jrr.GetResultString(), "0x42")
 
-		// Verify that ErrorsByUpstream still tracks that rpc1 returned empty.
-		// This is important for the "wrong empty response" metric and error reporting.
+		// The malformed null counts as an upstream server failure, not missing data.
 		emptyCount := 0
 		req.ErrorsByUpstream.Range(func(key, value interface{}) bool {
 			if err, ok := value.(error); ok {
-				if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+				if common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
 					emptyCount++
 				}
 			}
 			return true
 		})
-		assert.Equal(t, 1, emptyCount,
-			"ErrorsByUpstream should track exactly 1 upstream that returned empty (for wrong-empty metric)")
+		assert.Equal(t, 1, emptyCount, "ErrorsByUpstream should track the malformed upstream")
 	})
 }
 
