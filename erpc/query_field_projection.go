@@ -6,12 +6,11 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// projectQueryPage returns a copy of a shim page whose objects keep only the
-// fields req selects, for gRPC clients (the JSON renderer projects by
-// itself). A nil primary selection keeps every field. The page is copied
-// because the shim shares headers between pages and block references.
-func projectQueryPage(req, page proto.Message) proto.Message {
-	page = proto.Clone(page)
+// projectQueryPage clears, in place, every field of a shim page's objects
+// that req does not select, for gRPC clients (the JSON renderer writes only
+// selected fields). A nil selection keeps every field. Pages share no
+// objects, and within a page each object sits in one list only.
+func projectQueryPage(req, page proto.Message) {
 	switch r := req.(type) {
 	case *evm.QueryBlocksRequest:
 		p := page.(*evm.QueryBlocksResponse)
@@ -36,7 +35,6 @@ func projectQueryPage(req, page proto.Message) proto.Message {
 		projectEach(p.Transactions, r.GetTransactionFields())
 		projectEach(p.Blocks, r.GetBlockFields())
 	}
-	return page
 }
 
 // selectionAliases maps a selection field name to the object field it
@@ -49,26 +47,30 @@ var selectionAliases = map[protoreflect.FullName]map[protoreflect.Name]protorefl
 // select. A nil selection keeps every field.
 func projectEach[T proto.Message, S proto.Message](objects []T, sel S) {
 	selMsg := sel.ProtoReflect()
-	if !selMsg.IsValid() {
+	if !selMsg.IsValid() || len(objects) == 0 {
 		return
 	}
 	selFields := selMsg.Descriptor().Fields()
+	objDesc := objects[0].ProtoReflect().Descriptor()
+	aliases := selectionAliases[objDesc.FullName()]
+	var cleared []protoreflect.FieldDescriptor
+	for i := range selFields.Len() {
+		sf := selFields.Get(i)
+		if selMsg.Get(sf).Bool() {
+			continue
+		}
+		name := sf.Name()
+		if alias, ok := aliases[name]; ok {
+			name = alias
+		}
+		if of := objDesc.Fields().ByName(name); of != nil {
+			cleared = append(cleared, of)
+		}
+	}
 	for _, obj := range objects {
 		m := obj.ProtoReflect()
-		objFields := m.Descriptor().Fields()
-		aliases := selectionAliases[m.Descriptor().FullName()]
-		for i := range selFields.Len() {
-			sf := selFields.Get(i)
-			if selMsg.Get(sf).Bool() {
-				continue
-			}
-			name := sf.Name()
-			if alias, ok := aliases[name]; ok {
-				name = alias
-			}
-			if of := objFields.ByName(name); of != nil {
-				m.Clear(of)
-			}
+		for _, of := range cleared {
+			m.Clear(of)
 		}
 	}
 }

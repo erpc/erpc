@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,8 +32,8 @@ type EvmQueryExecutor struct {
 	network         *Network
 	logger          *zerolog.Logger
 	parentRequestId interface{}
-	// projectShimPages clears unselected fields on shim pages, for gRPC
-	// clients; the JSON renderer applies the selection by itself.
+	// projectShimPages clears unselected fields on shim pages for gRPC
+	// clients; the JSON renderer reads only the selected fields anyway.
 	projectShimPages bool
 }
 
@@ -54,9 +55,10 @@ const (
 // queryPlan is the resolved form of one eth_query* request.
 type queryPlan struct {
 	method string
+	req    proto.Message
 	desc   bool
-	// from and to are the resolved fromBlock and toBlock, in request terms:
-	// in desc order from is the upper bound.
+	// from and to are the resolved fromBlock and toBlock; in desc order from
+	// is the upper bound.
 	from, to uint64
 	// target is the target number of primary objects per page; 0 is none.
 	target uint32
@@ -139,12 +141,14 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 		return nativeErr
 	}
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String("query.path", "shim"))
-	return qe.runShim(ctx, plan, req, onPage)
+	return qe.runShim(ctx, plan, onPage)
 }
 
-// candidateUpstreams lists the network's upstreams in selection-policy order
-// for method, or in registration order before the policy engine has run.
-func (qe *EvmQueryExecutor) candidateUpstreams(ctx context.Context, method string) []common.Upstream {
+// nativeUpstreams returns, in selection-policy order (registration order
+// before the policy engine has run), the upstreams that answer
+// bds.evm.QueryService themselves and accept method per their allow/ignore
+// config.
+func (qe *EvmQueryExecutor) nativeUpstreams(ctx context.Context, method string) []common.Upstream {
 	var ups []common.Upstream
 	if qe.network.policyEngine != nil {
 		// A query range spans finalized and unfinalized blocks, so it routes
@@ -156,21 +160,14 @@ func (qe *EvmQueryExecutor) candidateUpstreams(ctx context.Context, method strin
 			ups = append(ups, u)
 		}
 	}
-	return ups
-}
-
-// nativeUpstreams returns the upstreams that answer bds.evm.QueryService
-// themselves and accept method per their allow/ignore config.
-func (qe *EvmQueryExecutor) nativeUpstreams(ctx context.Context, method string) []common.Upstream {
 	var out []common.Upstream
-	for _, u := range qe.candidateUpstreams(ctx, method) {
+	for _, u := range ups {
 		if !servesNativeQuery(u) {
 			continue
 		}
-		if ok, err := u.ShouldHandleMethod(method); err == nil && !ok {
-			continue
+		if ok, err := u.ShouldHandleMethod(method); err != nil || ok {
+			out = append(out, u)
 		}
-		out = append(out, u)
 	}
 	return out
 }
@@ -287,14 +284,7 @@ func (qe *EvmQueryExecutor) newPlan(ctx context.Context, method string, req prot
 	if err := evm.ValidateQueryRange(params.order, from, to); err != nil {
 		return nil, err
 	}
-
-	plan := &queryPlan{
-		method: method,
-		desc:   desc,
-		from:   from,
-		to:     to,
-		budget: budget,
-	}
+	plan := &queryPlan{method: method, req: req, desc: desc, from: from, to: to, budget: budget}
 	if params.target != nil {
 		if *params.target == 0 {
 			return nil, queryInvalidParams("target must be a QUANTITY of at least 0x1")
@@ -318,18 +308,41 @@ func parseQueryQuantity(s string) (uint64, bool) {
 	return n, err == nil
 }
 
-// queryShimSubMethods are the sub-requests the shim needs to build the
-// primary objects of method; an upstream serves the shim for method when it
-// accepts any of them.
-func queryShimSubMethods(method string) []string {
-	switch method {
-	case "eth_queryLogs":
-		return []string{"eth_getLogs"}
-	case "eth_queryTraces", "eth_queryTransfers":
-		return []string{"trace_block", "debug_traceBlockByNumber"}
-	default:
-		return []string{"eth_getBlockByNumber"}
+// queryShimSubMethods are the sub-requests the shim issues for req, each a
+// set of alternatives: every page reads block headers (and toBlock's), plus
+// the method's primary sub-request, plus receipts when the selection reads
+// receipt fields. An upstream serves the shim for req when it accepts one
+// method of every set.
+func queryShimSubMethods(req proto.Message) [][]string {
+	sets := [][]string{{"eth_getBlockByNumber"}}
+	switch r := req.(type) {
+	case *evm.QueryTransactionsRequest:
+		if needsReceipts(r.GetTransactionFields()) {
+			sets = append(sets, []string{"eth_getBlockReceipts"})
+		}
+		return sets
+	case *evm.QueryLogsRequest:
+		sets = append(sets, []string{"eth_getLogs"})
+	case *evm.QueryTracesRequest, *evm.QueryTransfersRequest:
+		sets = append(sets, []string{"trace_block", "debug_traceBlockByNumber"})
 	}
+	if sel := joinedTransactionFields(req); sel != nil && needsReceipts(sel) {
+		sets = append(sets, []string{"eth_getBlockReceipts"})
+	}
+	return sets
+}
+
+// servesAll reports whether u accepts one method of every set.
+func servesAll(u common.Upstream, sets [][]string) bool {
+	for _, set := range sets {
+		if !slices.ContainsFunc(set, func(m string) bool {
+			ok, err := u.ShouldHandleMethod(m)
+			return err == nil && ok
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkAvailability fails with -32001 when a block of the resolved range is
@@ -360,13 +373,10 @@ func (qe *EvmQueryExecutor) checkAvailability(ctx context.Context, p *queryPlan,
 		add(u)
 	}
 	if shimEnabled {
-		subMethods := queryShimSubMethods(p.method)
+		subMethods := queryShimSubMethods(p.req)
 		for _, u := range qe.network.upstreamsRegistry.GetNetworkUpstreams(ctx, qe.network.Id()) {
-			for _, m := range subMethods {
-				if ok, err := u.ShouldHandleMethod(m); err == nil && ok {
-					add(u)
-					break
-				}
+			if servesAll(u, subMethods) {
+				add(u)
 			}
 		}
 	}
@@ -396,8 +406,8 @@ func (qe *EvmQueryExecutor) checkAvailability(ctx context.Context, p *queryPlan,
 	return queryRangeUnavailable("block %#x is outside the availability window of every upstream for %s", covered, p.method)
 }
 
-// Errors. Each carries the MIP-16 code evm.QueryErrorCode reads, and the gRPC
-// status code BaseError.ToGRPCStatus maps it to.
+// Errors. The MIP-16 ones carry the code evm.QueryErrorCode reads, and the
+// gRPC status code BaseError.ToGRPCStatus maps it to.
 
 func queryInvalidParams(format string, args ...interface{}) error {
 	return &evm.QueryParamsError{Message: fmt.Sprintf(format, args...)}
@@ -416,6 +426,12 @@ func queryMethodNotServed(format string, args ...interface{}) error {
 // queryBudgetExceeded is -32005 / RESOURCE_EXHAUSTED.
 func queryBudgetExceeded(format string, args ...interface{}) error {
 	return bdscommon.NewError(bdscommon.ErrorCode_RANGE_TOO_LARGE, fmt.Sprintf(format, args...))
+}
+
+// queryUnavailable is a transient failure with no MIP-16 code: gRPC
+// UNAVAILABLE, and erpc's retryable server error -32603 on JSON-RPC.
+func queryUnavailable(format string, args ...interface{}) error {
+	return status.Errorf(codes.Unavailable, format, args...)
 }
 
 // queryJsonRpcError converts an executor failure to the JSON-RPC error the
@@ -448,8 +464,9 @@ func queryJsonRpcError(err error) error {
 	return common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), message, err, nil)
 }
 
-// queryGrpcError converts an executor failure to the gRPC status of the
-// MIP-16 condition, or returns nil when err carries none.
+// queryGrpcError converts an executor failure to the gRPC status a client
+// gets: the MIP-16 status of a MIP-16 condition, a native upstream's own
+// status, else erpc's error mapping.
 func queryGrpcError(err error) error {
 	var paramsErr *evm.QueryParamsError
 	var baseErr *bdscommon.BaseError
@@ -462,7 +479,7 @@ func queryGrpcError(err error) error {
 	if st, ok := status.FromError(err); ok {
 		return st.Err()
 	}
-	return nil
+	return grpcStatusOf(err)
 }
 
 func queryCodeOfGrpc(code codes.Code) int {

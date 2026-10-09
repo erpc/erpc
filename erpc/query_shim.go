@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,20 +26,16 @@ import (
 // failsafe and upstream selection apply as to any request.
 //
 // A page scans blocks from its fromBlock in traversal order, in chunks fetched
-// concurrently. A block is complete when its header, its primary objects and
-// the transactions they join (with receipts when selected) are fetched; all
-// of it runs under the page's time budget. The page ends at the first of:
-// toBlock; the block that brings the primary count to target; the budget
-// (blocks per page, or time), which discards the unfinished block; a break
-// in chain consistency.
+// concurrently, under the page's budget. It ends at the first of: toBlock; the
+// block that brings the primary count to target; the budget, which discards
+// the unfinished block; a break in chain consistency.
 //
 // Chain consistency (MIP-16): every object of a block must carry the hash of
-// the block's header (log, receipt and trace blockHash; the transaction hash
-// at each index for callTracer results, which carry no block hash), and the
-// headers of the page must link by parentHash in traversal order. The
-// sub-requests of a page prefer the upstream that answered the first one. At
-// a break the blocks from the one before it are scanned once more with cache
-// reads skipped, and the page is cut at the last consistent block.
+// the block's header (callTracer results, which carry no block hash, must name
+// the block's transaction at their index), and the headers of the page must
+// link by parentHash in traversal order. At a break the blocks from the one
+// before it are scanned once more with cache reads skipped, and the page is
+// cut at the last consistent block.
 
 // errQueryPageBudget is the cause of a page's own scan deadline, which tells
 // it apart from the caller's deadline and from a sub-request's timeout.
@@ -78,10 +75,10 @@ func (b *shimBlock) count() int {
 	return len(b.blocks) + len(b.transactions) + len(b.logs) + len(b.traces) + len(b.transfers)
 }
 
-// shimPageState is the state the sub-requests of one page share.
+// shimPageState is the state the sub-requests of one page share: the
+// upstream they prefer (the pin) and whether they skip cache reads.
 type shimPageState struct {
 	plan      *queryPlan
-	req       proto.Message
 	skipCache bool
 
 	mu     sync.Mutex
@@ -94,9 +91,9 @@ func (pg *shimPageState) pin() string {
 	return pg.pinned
 }
 
-// setPin pins the page to the upstream that served a sub-request, the first
-// time one is known, or in place of replaced when that pinned upstream just
-// failed or lagged. An id that is not pinnable is not pinned.
+// setPin pins the page to upstreamID when nothing is pinned, or in place of
+// replaced when replaced is the pin. An id that cannot go in a selector (a
+// cache answer has none) changes nothing.
 func (pg *shimPageState) setPin(upstreamID, replaced string) {
 	if !pinnable(upstreamID) {
 		return
@@ -108,15 +105,24 @@ func (pg *shimPageState) setPin(upstreamID, replaced string) {
 	pg.mu.Unlock()
 }
 
-func (qe *EvmQueryExecutor) runShim(ctx context.Context, p *queryPlan, req proto.Message, onPage func(proto.Message) error) error {
+// unpin drops the pin when it is upstreamID.
+func (pg *shimPageState) unpin(upstreamID string) {
+	pg.mu.Lock()
+	if pg.pinned == upstreamID {
+		pg.pinned = ""
+	}
+	pg.mu.Unlock()
+}
+
+func (qe *EvmQueryExecutor) runShim(ctx context.Context, p *queryPlan, onPage func(proto.Message) error) error {
 	pageFrom := p.from
 	for {
-		page, cursor, err := qe.shimPage(ctx, p, req, pageFrom)
+		page, cursor, err := qe.shimPage(ctx, p, pageFrom)
 		if err != nil {
 			return err
 		}
 		if qe.projectShimPages {
-			page = projectQueryPage(req, page)
+			projectQueryPage(p.req, page)
 		}
 		if err := onPage(page); err != nil {
 			return err
@@ -130,13 +136,13 @@ func (qe *EvmQueryExecutor) runShim(ctx context.Context, p *queryPlan, req proto
 
 // shimPage builds the page that starts at pageFrom and returns it with its
 // cursor block number.
-func (qe *EvmQueryExecutor) shimPage(ctx context.Context, p *queryPlan, req proto.Message, pageFrom uint64) (proto.Message, uint64, error) {
+func (qe *EvmQueryExecutor) shimPage(ctx context.Context, p *queryPlan, pageFrom uint64) (proto.Message, uint64, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Query.ShimPage", trace.WithAttributes(
 		attribute.String("query.method", p.method),
-		attribute.String("query.pageFrom", fmt.Sprintf("%#x", pageFrom)),
+		attribute.String("query.pageFrom", hexQuantity(pageFrom)),
 	))
 	defer span.End()
-	pg := &shimPageState{plan: p, req: req}
+	pg := &shimPageState{plan: p}
 
 	remaining := p.to - pageFrom + 1
 	if p.desc {
@@ -180,15 +186,15 @@ scan:
 			break
 		}
 		// Blocks past a chain break cannot join the page unless the re-scan
-		// below mends it, so scanning further is wasted.
+		// mends it, so scanning further is wasted.
 		if consistentPrefix(scanned, p.desc) < len(scanned) {
 			break
 		}
 		chunk = min(chunk*2, queryShimMaxChunk)
 	}
 
-	// The consistency re-scan and the toBlock header get their own bound, so
-	// a page whose scan used the whole budget can still be returned.
+	// The re-scan and the toBlock header get their own bound, so a page whose
+	// scan used the whole budget can still be returned.
 	finishCtx, cancelFinish := context.WithTimeout(ctx, p.budget.maxDuration)
 	defer cancelFinish()
 	page, err := qe.consistentBlocks(ctx, finishCtx, pg, scanned)
@@ -197,9 +203,10 @@ scan:
 		return nil, 0, err
 	}
 	if len(page) == 0 {
-		return nil, 0, queryBudgetExceeded("block %#x is not consistent across sub-requests (reorg in progress)", pageFrom)
+		// A reorg in progress, or upstreams that disagree on fromBlock: a
+		// retry later succeeds, so this is no MIP-16 limit.
+		return nil, 0, queryUnavailable("block %#x is not consistent across sub-requests (reorg in progress or lagging upstream), retry later", pageFrom)
 	}
-	cursor := page[len(page)-1].number
 	span.SetAttributes(attribute.Int("query.blocksScanned", len(scanned)), attribute.Int("query.pageBlocks", len(page)))
 
 	resp, err := qe.assemblePage(finishCtx, pg, page)
@@ -207,7 +214,7 @@ scan:
 		common.SetTraceSpanError(span, err)
 		return nil, 0, err
 	}
-	return resp, cursor, nil
+	return resp, page[len(page)-1].number, nil
 }
 
 // isBudgetStop reports whether err ended the scan because the page's own time
@@ -227,12 +234,10 @@ func isBudgetStop(ctx, scanCtx context.Context, err error) bool {
 }
 
 // consistentBlocks returns the longest leading run of scanned that is
-// consistent: each block's objects carry its header hash, and the headers
-// link in traversal order. At the first break it scans the blocks from the
-// one before the break again, once, skipping cache reads and pinned afresh,
-// and keeps whichever run is longer. The run is then cut at target again,
-// since a re-scanned block may hold more objects. The re-scan runs under
-// finishCtx; ctx is the caller's.
+// consistent. At the first break it scans the blocks from the one before the
+// break once more, under finishCtx, skipping cache reads and pinned afresh,
+// and keeps whichever run is longer, cut at target again since a re-scanned
+// block may hold more objects. ctx is the caller's.
 func (qe *EvmQueryExecutor) consistentBlocks(ctx, finishCtx context.Context, pg *shimPageState, scanned []*shimBlock) ([]*shimBlock, error) {
 	p := pg.plan
 	k := consistentPrefix(scanned, p.desc)
@@ -246,26 +251,18 @@ func (qe *EvmQueryExecutor) consistentBlocks(ctx, finishCtx context.Context, pg 
 	for i := range numbers {
 		numbers[i] = scanned[start+i].number
 	}
-	again := &shimPageState{plan: p, req: pg.req, skipCache: true}
+	again := &shimPageState{plan: p, skipCache: true}
 	merged := append(make([]*shimBlock, 0, len(scanned)), scanned[:start]...)
-	count := 0
-	for _, b := range merged {
-		count += b.count()
-	}
-	// Best effort, in chunks of the scan's size: a re-scan that fails, runs
-	// out of time or breaks again keeps the blocks it completed, and the
-	// first scan's consistent run stays the floor.
+	// Best effort: a re-scan that fails, runs out of time or breaks again
+	// keeps the blocks it completed, and the first scan's run stays the floor.
 	for i := 0; i < len(numbers); i += queryShimMaxChunk {
 		blocks, err := qe.scanChunk(finishCtx, again, numbers[i:min(i+queryShimMaxChunk, len(numbers))])
 		merged = append(merged, blocks...)
-		for _, b := range blocks {
-			count += b.count()
-		}
 		if err != nil {
 			qe.logger.Debug().Err(err).Str("method", p.method).Msg("query page re-scan ended early")
 			break
 		}
-		if consistentPrefix(merged, p.desc) < len(merged) || (p.target > 0 && count >= int(p.target)) {
+		if _, full := p.cutAtTarget(merged); full || consistentPrefix(merged, p.desc) < len(merged) {
 			break
 		}
 	}
@@ -276,16 +273,23 @@ func (qe *EvmQueryExecutor) consistentBlocks(ctx, finishCtx context.Context, pg 
 	if k2 := consistentPrefix(merged, p.desc); k2 > k {
 		best = merged[:k2]
 	}
+	best, _ = p.cutAtTarget(best)
+	return best, nil
+}
+
+// cutAtTarget returns the leading blocks up to the one that brings the
+// primary count to target, and whether target was reached.
+func (p *queryPlan) cutAtTarget(blocks []*shimBlock) ([]*shimBlock, bool) {
 	if p.target == 0 {
-		return best, nil
+		return blocks, false
 	}
-	count = 0
-	for i, b := range best {
+	count := 0
+	for i, b := range blocks {
 		if count += b.count(); count >= int(p.target) {
-			return best[:i+1], nil
+			return blocks[:i+1], true
 		}
 	}
-	return best, nil
+	return blocks, false
 }
 
 // consistentPrefix returns how many leading blocks are consistent and link
@@ -314,7 +318,7 @@ func consistentPrefix(blocks []*shimBlock, desc bool) int {
 // returns the complete ones up to the first that failed or did not finish.
 func (qe *EvmQueryExecutor) scanChunk(ctx context.Context, pg *shimPageState, numbers []uint64) ([]*shimBlock, error) {
 	var logs map[uint64][]*evm.Log
-	if r, ok := pg.req.(*evm.QueryLogsRequest); ok {
+	if r, ok := pg.plan.req.(*evm.QueryLogsRequest); ok {
 		var err error
 		if logs, err = qe.chunkLogs(ctx, pg, r, numbers); err != nil {
 			return nil, err
@@ -326,11 +330,10 @@ func (qe *EvmQueryExecutor) scanChunk(ctx context.Context, pg *shimPageState, nu
 	for i, n := range numbers {
 		g.Go(func() error {
 			b, err := qe.scanBlock(gctx, pg, n, logs[n])
-			if err != nil {
-				return err
+			if err == nil {
+				results[i] = b
 			}
-			results[i] = b
-			return nil
+			return err
 		})
 	}
 	err := g.Wait()
@@ -342,8 +345,8 @@ func (qe *EvmQueryExecutor) scanChunk(ctx context.Context, pg *shimPageState, nu
 }
 
 // chunkLogs reads the logs of a chunk with one eth_getLogs, which applies the
-// address and topics filter with the same semantics MIP-16 requires, and
-// groups them by block, sorted by logIndex.
+// address and topics filter with the semantics MIP-16 requires, and groups
+// them by block, sorted by logIndex.
 func (qe *EvmQueryExecutor) chunkLogs(ctx context.Context, pg *shimPageState, r *evm.QueryLogsRequest, numbers []uint64) (map[uint64][]*evm.Log, error) {
 	lo, hi := numbers[0], numbers[len(numbers)-1]
 	if pg.plan.desc {
@@ -355,17 +358,16 @@ func (qe *EvmQueryExecutor) chunkLogs(ctx context.Context, pg *shimPageState, r 
 	}
 	byBlock := make(map[uint64][]*evm.Log)
 	// Each topics position is a condition, a null one included: a log needs
-	// at least as many topics as the filter has positions (eth_getLogs
-	// semantics). Some nodes drop trailing null positions, so check here.
+	// at least as many topics as the filter has positions. Some nodes drop
+	// trailing null positions, so check here.
 	minTopics := len(r.GetFilter().GetTopics())
 	for _, l := range logs {
 		if l.BlockNumber < lo || l.BlockNumber > hi {
 			return nil, fmt.Errorf("eth_getLogs for %#x-%#x returned a log of block %#x", lo, hi, l.BlockNumber)
 		}
-		if len(l.Topics) < minTopics {
-			continue
+		if len(l.Topics) >= minTopics {
+			byBlock[l.BlockNumber] = append(byBlock[l.BlockNumber], l)
 		}
-		byBlock[l.BlockNumber] = append(byBlock[l.BlockNumber], l)
 	}
 	for _, blockLogs := range byBlock {
 		slices.SortFunc(blockLogs, func(a, b *evm.Log) int { return compareUint(a.LogIndex, b.LogIndex) })
@@ -377,25 +379,26 @@ func (qe *EvmQueryExecutor) chunkLogs(ctx context.Context, pg *shimPageState, r 
 // read per chunk and passed in) and the transactions they join. Every check
 // of the block's objects against its header sets b.consistent.
 func (qe *EvmQueryExecutor) scanBlock(ctx context.Context, pg *shimPageState, n uint64, logs []*evm.Log) (*shimBlock, error) {
-	b := &shimBlock{number: n, consistent: true}
-	switch r := pg.req.(type) {
+	req := pg.plan.req
+	joined := joinedTransactionFields(req)
+	// Full transactions only when the block's own objects or a join read
+	// them; a logs block without logs joins nothing.
+	_, isTxs := req.(*evm.QueryTransactionsRequest)
+	_, isLogs := req.(*evm.QueryLogsRequest)
+	block, err := qe.fetchBlock(ctx, pg, n, isTxs || (joined != nil && (!isLogs || len(logs) > 0)))
+	if err != nil {
+		return nil, err
+	}
+	b := &shimBlock{number: n, header: block.Header, consistent: true}
+	var hashes [][]byte // transactions the block's objects reference
+	switch r := req.(type) {
 	case *evm.QueryBlocksRequest:
-		block, err := qe.fetchBlock(ctx, pg, n, false)
-		if err != nil {
-			return nil, err
-		}
-		b.header = block.Header
 		if matchesAny(b.header.Miner, r.GetFilter().GetMiner()) {
 			b.blocks = []*evm.BlockHeader{b.header}
 		}
 		return b, nil
 
 	case *evm.QueryTransactionsRequest:
-		block, err := qe.fetchBlock(ctx, pg, n, true)
-		if err != nil {
-			return nil, err
-		}
-		b.header = block.Header
 		f := r.GetFilter()
 		for _, tx := range block.FullTransactions {
 			if !bytes.Equal(tx.BlockHash, b.header.Hash) {
@@ -406,26 +409,16 @@ func (qe *EvmQueryExecutor) scanBlock(ctx context.Context, pg *shimPageState, n 
 			}
 		}
 		if len(b.transactions) > 0 && needsReceipts(r.GetTransactionFields()) {
-			ok, err := qe.mergeReceipts(ctx, pg, b.header, b.transactions)
-			if err != nil {
+			if err := qe.mergeReceipts(ctx, pg, b, b.transactions); err != nil {
 				return nil, err
 			}
-			b.consistent = b.consistent && ok
 		}
 		slices.SortFunc(b.transactions, compareTransactions)
 		return b, nil
 
 	case *evm.QueryLogsRequest:
-		// The header is fetched for every block: the page's hash chain needs
-		// it. Full transactions only when the block has logs to join.
-		block, err := qe.fetchBlock(ctx, pg, n, r.GetTransactionFields() != nil && len(logs) > 0)
-		if err != nil {
-			return nil, err
-		}
-		b.header = block.Header
 		b.logs = logs
-		hashes := make([][]byte, len(logs))
-		for i, l := range logs {
+		for _, l := range logs {
 			if !bytes.Equal(l.BlockHash, b.header.Hash) {
 				b.consistent = false
 			}
@@ -434,61 +427,57 @@ func (qe *EvmQueryExecutor) scanBlock(ctx context.Context, pg *shimPageState, n 
 				ts := b.header.Timestamp
 				l.BlockTimestamp = &ts
 			}
-			hashes[i] = l.TransactionHash
+			hashes = append(hashes, l.TransactionHash)
 		}
-		return b, qe.joinTransactions(ctx, pg, b, r.GetTransactionFields(), hashes, block.FullTransactions)
 
 	case *evm.QueryTracesRequest:
-		block, err := qe.fetchBlock(ctx, pg, n, r.GetTransactionFields() != nil)
+		traces, err := qe.blockTraces(ctx, pg, b, block)
 		if err != nil {
 			return nil, err
 		}
-		b.header = block.Header
-		traces, ok, err := qe.blockTraces(ctx, pg, block)
-		if err != nil {
-			return nil, err
-		}
-		b.consistent = ok
 		f := r.GetFilter()
-		var hashes [][]byte
 		for _, t := range traces {
-			if (t.Reverted && !f.GetIncludeReverted()) || !matchesAny(t.From, f.GetFrom()) || !matchesAny(t.To, f.GetTo()) || !matchesSelector(t.Input, f.GetSelector()) {
-				continue
+			if (!t.Reverted || f.GetIncludeReverted()) && matchesAny(t.From, f.GetFrom()) && matchesAny(t.To, f.GetTo()) && matchesSelector(t.Input, f.GetSelector()) {
+				b.traces = append(b.traces, t)
+				hashes = append(hashes, t.TransactionHash)
 			}
-			b.traces = append(b.traces, t)
-			hashes = append(hashes, t.TransactionHash)
 		}
 		slices.SortFunc(b.traces, func(x, y *evm.Trace) int {
 			return compareFrames(x.TransactionIndex, x.TraceAddress, y.TransactionIndex, y.TraceAddress)
 		})
-		return b, qe.joinTransactions(ctx, pg, b, r.GetTransactionFields(), hashes, block.FullTransactions)
 
 	case *evm.QueryTransfersRequest:
-		block, err := qe.fetchBlock(ctx, pg, n, r.GetTransactionFields() != nil)
+		traces, err := qe.blockTraces(ctx, pg, b, block)
 		if err != nil {
 			return nil, err
 		}
-		b.header = block.Header
-		traces, ok, err := qe.blockTraces(ctx, pg, block)
-		if err != nil {
-			return nil, err
-		}
-		b.consistent = ok
 		f := r.GetFilter()
-		var hashes [][]byte
 		for _, t := range evm.NativeTransfersFromTraces(traces) {
-			if (t.Reverted && !f.GetIncludeReverted()) || !matchesAny(t.From, f.GetFrom()) || !matchesAny(t.To, f.GetTo()) {
-				continue
+			if (!t.Reverted || f.GetIncludeReverted()) && matchesAny(t.From, f.GetFrom()) && matchesAny(t.To, f.GetTo()) {
+				b.transfers = append(b.transfers, t)
+				hashes = append(hashes, t.TransactionHash)
 			}
-			b.transfers = append(b.transfers, t)
-			hashes = append(hashes, t.TransactionHash)
 		}
 		slices.SortFunc(b.transfers, func(x, y *evm.NativeTransfer) int {
 			return compareFrames(x.TransactionIndex, x.TraceAddress, y.TransactionIndex, y.TraceAddress)
 		})
-		return b, qe.joinTransactions(ctx, pg, b, r.GetTransactionFields(), hashes, block.FullTransactions)
 	}
-	return nil, queryInvalidParams("unknown query request type %T", pg.req)
+	return b, qe.joinTransactions(ctx, pg, b, joined, hashes, block.FullTransactions)
+}
+
+// joinedTransactionFields is the selection of the transactions relation of
+// req, nil when req does not join it (eth_queryTransactions has no relation:
+// transactions are its primary objects).
+func joinedTransactionFields(req proto.Message) *evm.TransactionFieldSelection {
+	switch r := req.(type) {
+	case *evm.QueryLogsRequest:
+		return r.GetTransactionFields()
+	case *evm.QueryTracesRequest:
+		return r.GetTransactionFields()
+	case *evm.QueryTransfersRequest:
+		return r.GetTransactionFields()
+	}
+	return nil
 }
 
 // joinTransactions picks, from txs (the block's transactions, fetched with its
@@ -505,26 +494,23 @@ func (qe *EvmQueryExecutor) joinTransactions(ctx context.Context, pg *shimPageSt
 	}
 	for _, tx := range txs {
 		if _, ok := wanted[string(tx.Hash)]; ok {
+			b.related = append(b.related, tx)
 			if !bytes.Equal(tx.BlockHash, b.header.Hash) {
 				b.consistent = false
-				return nil
 			}
-			b.related = append(b.related, tx)
 		}
 	}
 	if len(b.related) < len(wanted) {
 		// An object references a transaction this block does not hold.
 		b.consistent = false
+	}
+	if !b.consistent {
 		return nil
 	}
-	if needsReceipts(sel) {
-		ok, err := qe.mergeReceipts(ctx, pg, b.header, b.related)
-		if err != nil {
-			return err
-		}
-		b.consistent = b.consistent && ok
-	}
 	slices.SortFunc(b.related, compareTransactions)
+	if needsReceipts(sel) {
+		return qe.mergeReceipts(ctx, pg, b, b.related)
+	}
 	return nil
 }
 
@@ -533,123 +519,99 @@ func (qe *EvmQueryExecutor) joinTransactions(ctx context.Context, pg *shimPageSt
 // from the verified headers of the page (toBlock's when it is beyond it).
 func (qe *EvmQueryExecutor) assemblePage(ctx context.Context, pg *shimPageState, page []*shimBlock) (proto.Message, error) {
 	p := pg.plan
-	first, last := page[0], page[len(page)-1]
-	fromRef, cursorRef := blockRefOf(first.header), blockRefOf(last.header)
-	toRef := cursorRef
+	last := page[len(page)-1]
+	from, cursor := blockRefOf(page[0].header), blockRefOf(last.header)
+	to := cursor
 	if last.number != p.to {
 		block, err := qe.fetchBlock(ctx, pg, p.to, false)
 		if err != nil {
 			return nil, err
 		}
-		toRef = blockRefOf(block.Header)
+		to = blockRefOf(block.Header)
 	}
-
-	relatedTxs := func(sel *evm.TransactionFieldSelection) []*evm.Transaction {
+	related := func(sel *evm.TransactionFieldSelection) []*evm.Transaction {
 		if sel == nil {
 			return nil
 		}
-		txs := []*evm.Transaction{}
-		for _, b := range page {
-			txs = appendInOrder(txs, b.related, p.desc)
-		}
-		return txs
+		return collect(page, p.desc, func(b *shimBlock) []*evm.Transaction { return b.related })
 	}
-	relatedBlocks := func(sel *evm.BlockFieldSelection) []*evm.BlockHeader {
+	blocks := func(sel *evm.BlockFieldSelection) []*evm.BlockHeader {
 		if sel == nil {
 			return nil
 		}
-		blocks := []*evm.BlockHeader{}
+		headers := []*evm.BlockHeader{}
 		for _, b := range page {
 			if b.count() > 0 {
-				blocks = append(blocks, b.header)
+				headers = append(headers, b.header)
 			}
 		}
-		return blocks
+		return headers
 	}
 
-	switch r := pg.req.(type) {
+	switch r := p.req.(type) {
 	case *evm.QueryBlocksRequest:
-		resp := &evm.QueryBlocksResponse{Blocks: []*evm.BlockHeader{}, FromBlock: fromRef, ToBlock: toRef, CursorBlock: cursorRef}
-		for _, b := range page {
-			resp.Blocks = append(resp.Blocks, b.blocks...)
-		}
-		return resp, nil
-
+		return &evm.QueryBlocksResponse{FromBlock: from, ToBlock: to, CursorBlock: cursor,
+			Blocks: collect(page, p.desc, func(b *shimBlock) []*evm.BlockHeader { return b.blocks }),
+		}, nil
 	case *evm.QueryTransactionsRequest:
-		resp := &evm.QueryTransactionsResponse{Transactions: []*evm.Transaction{}, FromBlock: fromRef, ToBlock: toRef, CursorBlock: cursorRef}
-		for _, b := range page {
-			resp.Transactions = appendInOrder(resp.Transactions, b.transactions, p.desc)
-		}
-		resp.Blocks = relatedBlocks(r.GetBlockFields())
-		return resp, nil
-
+		return &evm.QueryTransactionsResponse{FromBlock: from, ToBlock: to, CursorBlock: cursor,
+			Transactions: collect(page, p.desc, func(b *shimBlock) []*evm.Transaction { return b.transactions }),
+			Blocks:       blocks(r.GetBlockFields()),
+		}, nil
 	case *evm.QueryLogsRequest:
-		resp := &evm.QueryLogsResponse{Logs: []*evm.Log{}, FromBlock: fromRef, ToBlock: toRef, CursorBlock: cursorRef}
-		for _, b := range page {
-			resp.Logs = appendInOrder(resp.Logs, b.logs, p.desc)
-		}
-		resp.Transactions = relatedTxs(r.GetTransactionFields())
-		resp.Blocks = relatedBlocks(r.GetBlockFields())
-		return resp, nil
-
+		return &evm.QueryLogsResponse{FromBlock: from, ToBlock: to, CursorBlock: cursor,
+			Logs:         collect(page, p.desc, func(b *shimBlock) []*evm.Log { return b.logs }),
+			Transactions: related(r.GetTransactionFields()),
+			Blocks:       blocks(r.GetBlockFields()),
+		}, nil
 	case *evm.QueryTracesRequest:
-		resp := &evm.QueryTracesResponse{Traces: []*evm.Trace{}, FromBlock: fromRef, ToBlock: toRef, CursorBlock: cursorRef}
-		for _, b := range page {
-			resp.Traces = appendInOrder(resp.Traces, b.traces, p.desc)
-		}
-		resp.Transactions = relatedTxs(r.GetTransactionFields())
-		resp.Blocks = relatedBlocks(r.GetBlockFields())
-		return resp, nil
-
+		return &evm.QueryTracesResponse{FromBlock: from, ToBlock: to, CursorBlock: cursor,
+			Traces:       collect(page, p.desc, func(b *shimBlock) []*evm.Trace { return b.traces }),
+			Transactions: related(r.GetTransactionFields()),
+			Blocks:       blocks(r.GetBlockFields()),
+		}, nil
 	case *evm.QueryTransfersRequest:
-		resp := &evm.QueryTransfersResponse{Transfers: []*evm.NativeTransfer{}, FromBlock: fromRef, ToBlock: toRef, CursorBlock: cursorRef}
-		for _, b := range page {
-			resp.Transfers = appendInOrder(resp.Transfers, b.transfers, p.desc)
-		}
-		resp.Transactions = relatedTxs(r.GetTransactionFields())
-		resp.Blocks = relatedBlocks(r.GetBlockFields())
-		return resp, nil
+		return &evm.QueryTransfersResponse{FromBlock: from, ToBlock: to, CursorBlock: cursor,
+			Transfers:    collect(page, p.desc, func(b *shimBlock) []*evm.NativeTransfer { return b.transfers }),
+			Transactions: related(r.GetTransactionFields()),
+			Blocks:       blocks(r.GetBlockFields()),
+		}, nil
 	}
-	return nil, queryInvalidParams("unknown query request type %T", pg.req)
+	return nil, queryInvalidParams("unknown query request type %T", p.req)
 }
 
 func blockRefOf(h *evm.BlockHeader) *evm.CursorBlock {
 	return &evm.CursorBlock{Number: h.Number, Hash: h.Hash, ParentHash: h.ParentHash}
 }
 
-// appendInOrder appends one block's objects, sorted ascending, in traversal
-// order: reversed in desc, so the whole array is descending.
-func appendInOrder[T any](dst, blockObjects []T, desc bool) []T {
-	if !desc {
-		return append(dst, blockObjects...)
+// collect concatenates one kind of object of the page's blocks, each block's
+// sorted ascending, in traversal order: reversed in desc, so the whole array
+// is descending. It is never nil, so an empty page renders [].
+func collect[T any](page []*shimBlock, desc bool, of func(*shimBlock) []T) []T {
+	out := []T{}
+	for _, b := range page {
+		objects := of(b)
+		if !desc {
+			out = append(out, objects...)
+			continue
+		}
+		for i := len(objects) - 1; i >= 0; i-- {
+			out = append(out, objects[i])
+		}
 	}
-	for i := len(blockObjects) - 1; i >= 0; i-- {
-		dst = append(dst, blockObjects[i])
-	}
-	return dst
+	return out
 }
 
 // Filters. An empty list places no constraint (MIP-16 Filters).
 
 func matchesAny(value []byte, candidates [][]byte) bool {
-	if len(candidates) == 0 {
-		return true
-	}
-	for _, c := range candidates {
-		if bytes.Equal(value, c) {
-			return true
-		}
-	}
-	return false
+	return len(candidates) == 0 || slices.ContainsFunc(candidates, func(c []byte) bool { return bytes.Equal(value, c) })
 }
 
 // matchesSelector matches the first 4 bytes of input; an input shorter than 4
 // bytes never matches a selector filter.
 func matchesSelector(input []byte, selectors [][]byte) bool {
-	if len(selectors) == 0 {
-		return true
-	}
-	return len(input) >= 4 && matchesAny(input[:4], selectors)
+	return len(selectors) == 0 || (len(input) >= 4 && matchesAny(input[:4], selectors))
 }
 
 // needsReceipts reports whether a transaction selection reads receipt fields;
@@ -695,7 +657,7 @@ func (qe *EvmQueryExecutor) fetchBlock(ctx context.Context, pg *shimPageState, n
 		}
 		return nil, err
 	}
-	if string(result) == "null" {
+	if isJSONNull(result) {
 		return nil, queryRangeUnavailable("block %#x is not available", n)
 	}
 	var block evm.JsonRpcBlock
@@ -712,37 +674,41 @@ func (qe *EvmQueryExecutor) fetchBlock(ctx context.Context, pg *shimPageState, n
 	return protoBlock, nil
 }
 
-// mergeReceipts merges the receipts of the block of header into txs. It
-// reports false when a receipt is missing or belongs to another block hash.
-func (qe *EvmQueryExecutor) mergeReceipts(ctx context.Context, pg *shimPageState, header *evm.BlockHeader, txs []*evm.Transaction) (bool, error) {
-	n := header.Number
-	result, err := qe.forwardSubrequest(ctx, pg, "eth_getBlockReceipts", []interface{}{hexQuantity(n)})
+// mergeReceipts merges the receipts of block b into txs. A receipt that is
+// missing or of another block hash marks b inconsistent.
+func (qe *EvmQueryExecutor) mergeReceipts(ctx context.Context, pg *shimPageState, b *shimBlock, txs []*evm.Transaction) error {
+	result, err := qe.forwardSubrequest(ctx, pg, "eth_getBlockReceipts", []interface{}{hexQuantity(b.number)})
 	if err != nil {
-		return false, err
+		if isUnsupportedSubrequest(err) {
+			return queryMethodNotServed("%s with receipt fields needs eth_getBlockReceipts, and no upstream serves it", pg.plan.method)
+		}
+		return err
 	}
 	var raw []*evm.JsonRpcReceipt
 	if err := sonic.Unmarshal(result, &raw); err != nil {
-		return false, fmt.Errorf("decode receipts of block %#x: %w", n, err)
+		return fmt.Errorf("decode receipts of block %#x: %w", b.number, err)
 	}
 	byHash := make(map[string]*evm.Receipt, len(raw))
 	for _, r := range raw {
 		receipt, err := r.ToProto()
 		if err != nil {
-			return false, fmt.Errorf("decode receipts of block %#x: %w", n, err)
+			return fmt.Errorf("decode receipts of block %#x: %w", b.number, err)
 		}
-		if !bytes.Equal(receipt.BlockHash, header.Hash) {
-			return false, nil
+		if !bytes.Equal(receipt.BlockHash, b.header.Hash) {
+			b.consistent = false
+			return nil
 		}
 		byHash[string(receipt.TransactionHash)] = receipt
 	}
 	for _, tx := range txs {
 		receipt, ok := byHash[string(tx.Hash)]
 		if !ok {
-			return false, nil
+			b.consistent = false
+			return nil
 		}
 		evm.MergeReceipt(tx, receipt)
 	}
-	return true, nil
+	return nil
 }
 
 func (qe *EvmQueryExecutor) fetchLogs(ctx context.Context, pg *shimPageState, fromBlock, toBlock uint64, filter *evm.LogFilter) ([]*evm.Log, error) {
@@ -789,44 +755,47 @@ func (qe *EvmQueryExecutor) fetchLogs(ctx context.Context, pg *shimPageState, fr
 }
 
 // blockTraces returns every call frame of block, with reverted set per
-// MIP-16, and whether the frames belong to block: trace_block frames carry a
-// block hash; callTracer results carry none, so each result's txHash must be
-// the block's transaction at its index. It uses trace_block, else
-// debug_traceBlockByNumber with the callTracer, and remembers on the network
-// which one answered.
-func (qe *EvmQueryExecutor) blockTraces(ctx context.Context, pg *shimPageState, block *evm.Block) ([]*evm.Trace, bool, error) {
-	h := block.Header
-	n := h.Number
+// MIP-16, from trace_block, else debug_traceBlockByNumber with the
+// callTracer; the network remembers which one answered. Frames that do not
+// belong to the block mark b inconsistent: a trace_block frame of another
+// block hash, or of a transaction the block does not hold; a callTracer
+// result (which carries no block hash) that is not the block's transaction
+// at its index.
+func (qe *EvmQueryExecutor) blockTraces(ctx context.Context, pg *shimPageState, b *shimBlock, block *evm.Block) ([]*evm.Trace, error) {
+	h, n, txHashes := b.header, b.number, block.TransactionHashes
 	source := &qe.network.queryTraceSource
 	if source.Load() != queryTraceSourceDebug {
 		result, err := qe.forwardSubrequest(ctx, pg, "trace_block", []interface{}{hexQuantity(n)})
 		if err == nil {
 			var raw []map[string]interface{}
 			if err := sonic.Unmarshal(result, &raw); err != nil {
-				return nil, false, fmt.Errorf("decode trace_block %#x: %w", n, err)
+				return nil, fmt.Errorf("decode trace_block %#x: %w", n, err)
 			}
-			consistent := true
 			wantHash := evm.BytesToHex(h.Hash)
 			traces := make([]*evm.Trace, 0, len(raw))
 			for _, item := range raw {
 				if hash, ok := item["blockHash"].(string); ok && !strings.EqualFold(hash, wantHash) {
-					consistent = false
+					b.consistent = false
 				}
 				t, err := evm.TraceFromParity(item, n, h.Hash, &h.Timestamp)
 				if err != nil {
-					return nil, false, fmt.Errorf("decode trace_block %#x: %w", n, err)
+					return nil, fmt.Errorf("decode trace_block %#x: %w", n, err)
 				}
 				if t.TraceType == evm.TraceType_TRACE_REWARD {
 					continue // a block reward is no call frame of a transaction
+				}
+				// Frames without a transaction hash (system calls) are kept.
+				if len(t.TransactionHash) > 0 && !holdsTransaction(txHashes, t.TransactionIndex, t.TransactionHash) {
+					b.consistent = false
 				}
 				traces = append(traces, t)
 			}
 			evm.PropagateParityReverted(traces)
 			source.Store(queryTraceSourceParity)
-			return traces, consistent, nil
+			return traces, nil
 		}
 		if !isUnsupportedSubrequest(err) {
-			return nil, false, err
+			return nil, err
 		}
 		source.Store(queryTraceSourceDebug)
 	}
@@ -838,27 +807,38 @@ func (qe *EvmQueryExecutor) blockTraces(ctx context.Context, pg *shimPageState, 
 	if err != nil {
 		if isUnsupportedSubrequest(err) {
 			source.Store(queryTraceSourceUnknown)
-			return nil, false, queryMethodNotServed("%s needs trace_block or debug_traceBlockByNumber, and no upstream serves either", pg.plan.method)
+			return nil, queryMethodNotServed("%s needs trace_block or debug_traceBlockByNumber, and no upstream serves either", pg.plan.method)
 		}
-		return nil, false, err
+		return nil, err
 	}
 	var items []map[string]interface{}
 	if err := sonic.Unmarshal(result, &items); err != nil {
-		return nil, false, fmt.Errorf("decode debug_traceBlockByNumber %#x: %w", n, err)
+		return nil, fmt.Errorf("decode debug_traceBlockByNumber %#x: %w", n, err)
 	}
-	consistent := len(items) == len(block.TransactionHashes)
+	if len(items) != len(txHashes) {
+		b.consistent = false
+	}
 	var traces []*evm.Trace
 	for i, item := range items {
 		frames, err := evm.TraceFromGethDebug(item, uint32(i), n, h.Hash, &h.Timestamp)
 		if err != nil {
-			return nil, false, fmt.Errorf("decode debug_traceBlockByNumber %#x: %w", n, err)
+			return nil, fmt.Errorf("decode debug_traceBlockByNumber %#x: %w", n, err)
 		}
-		if consistent && len(frames) > 0 && !bytes.Equal(frames[0].TransactionHash, block.TransactionHashes[i]) {
-			consistent = false
+		if len(frames) > 0 && (i >= len(txHashes) || !bytes.Equal(frames[0].TransactionHash, txHashes[i])) {
+			b.consistent = false
 		}
 		traces = append(traces, frames...)
 	}
-	return traces, consistent, nil
+	return traces, nil
+}
+
+// holdsTransaction reports whether hash is one of the block's transaction
+// hashes, looking at index first.
+func holdsTransaction(txHashes [][]byte, index uint32, hash []byte) bool {
+	if int(index) < len(txHashes) && bytes.Equal(txHashes[index], hash) {
+		return true
+	}
+	return slices.ContainsFunc(txHashes, func(h []byte) bool { return bytes.Equal(h, hash) })
 }
 
 func isUnsupportedSubrequest(err error) bool {
@@ -866,20 +846,21 @@ func isUnsupportedSubrequest(err error) bool {
 }
 
 func hexQuantity(n uint64) string {
-	return fmt.Sprintf("0x%x", n)
+	return "0x" + strconv.FormatUint(n, 16)
 }
 
 // forwardSubrequest sends a shim sub-request through the network, pinned to
-// the page's upstream once one answered, when that upstream takes the method.
-// A pinned request that fails is sent again unpinned, so a page still fails
-// over. A null answer (an upstream that lags and does not have the block yet)
-// is asked once more of every other upstream, pinned or not, so a lagging
-// upstream never hides an available block. The upstream that answers becomes
-// the page's pin, in place of a pin that failed or lagged. The consistency
-// check guards what comes back.
+// the page's upstream when that upstream takes the method. A pinned request
+// that fails is sent once more unpinned, so a page still fails over. A null
+// answer (an upstream that lags and does not have the block yet) is asked
+// once more of every other upstream that takes the method, so a lagging
+// upstream never hides an available block; that answer stands, error or
+// not. The upstream that answers with data becomes the pin in place of one
+// that failed or lagged, and a pin that answered null when no other upstream
+// had data is dropped. The consistency checks guard what comes back.
 func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, pg *shimPageState, method string, params []interface{}) ([]byte, error) {
 	pin := pg.pin()
-	if pin != "" && !qe.upstreamHandles(ctx, pin, method) {
+	if pin != "" && !qe.anyUpstreamHandles(ctx, method, func(id string) bool { return id == pin }) {
 		// The pinned upstream does not take this method (allow/ignore config,
 		// or a method it reported unsupported): a pinned attempt is wasted.
 		pin = ""
@@ -891,11 +872,14 @@ func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, pg *shimPageS
 	if err != nil {
 		return nil, err
 	}
-	if isJSONNull(result) && pinnable(served) && ctx.Err() == nil {
-		// "!served" selects every other upstream. Without another upstream
-		// that has the data, the null stands and pins nothing.
-		other, otherServed, otherErr := qe.forwardOnce(ctx, pg, method, params, "!"+served)
-		if otherErr != nil || isJSONNull(other) {
+	if isJSONNull(result) && pinnable(served) && ctx.Err() == nil &&
+		qe.anyUpstreamHandles(ctx, method, func(id string) bool { return id != served }) {
+		other, otherServed, err := qe.forwardOnce(ctx, pg, method, params, "!"+served)
+		if err != nil {
+			return nil, err
+		}
+		if isJSONNull(other) {
+			pg.unpin(served)
 			return result, nil
 		}
 		result, served = other, otherServed
@@ -904,13 +888,14 @@ func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, pg *shimPageS
 	return result, nil
 }
 
-// upstreamHandles reports whether the network's upstream id accepts method:
-// ShouldHandleMethod returns (true, nil).
-func (qe *EvmQueryExecutor) upstreamHandles(ctx context.Context, id, method string) bool {
+// anyUpstreamHandles reports whether one of the network's upstreams whose id
+// match accepts accepts method: ShouldHandleMethod returns (true, nil).
+func (qe *EvmQueryExecutor) anyUpstreamHandles(ctx context.Context, method string, match func(id string) bool) bool {
 	for _, u := range qe.network.upstreamsRegistry.GetNetworkUpstreams(ctx, qe.network.Id()) {
-		if u.Id() == id {
-			ok, err := u.ShouldHandleMethod(method)
-			return err == nil && ok
+		if match(u.Id()) {
+			if ok, err := u.ShouldHandleMethod(method); err == nil && ok {
+				return true
+			}
 		}
 	}
 	return false

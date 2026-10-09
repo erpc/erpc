@@ -152,14 +152,10 @@ func (rp *RequestProcessor) ProcessQueryStream(
 	if err != nil {
 		lg.Info().Err(err).Dur("durationMs", dur).Msgf("query stream completed with error")
 		common.SetTraceSpanError(span, err)
-		if mapped := queryGrpcError(err); mapped != nil {
-			return mapped
-		}
-	} else {
-		lg.Info().Dur("durationMs", dur).Msgf("query stream completed successfully")
+		return err
 	}
-
-	return err
+	lg.Info().Dur("durationMs", dur).Msgf("query stream completed successfully")
+	return nil
 }
 
 // queryMethodFromProto returns the eth_query* method of a QueryService

@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"runtime/debug"
@@ -195,19 +196,19 @@ func (gs *GrpcServer) ChainId(ctx context.Context, req *evm.ChainIdRequest) (*ev
 	}
 	resp, err := gs.processor.ProcessUnary(ctx, input, buildJSONRPCRequest("eth_chainId", []interface{}{}))
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	result, err := parseJSONRPCResult(ctx, resp)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	var chainIDHex string
 	if err := sonic.Unmarshal(result, &chainIDHex); err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	chainID, err := evm.HexToUint64(chainIDHex)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	return &evm.ChainIdResponse{ChainId: chainID}, nil
 }
@@ -219,22 +220,22 @@ func (gs *GrpcServer) GetBlockByNumber(ctx context.Context, req *evm.GetBlockByN
 	}
 	resp, err := gs.processor.ProcessUnary(ctx, input, buildJSONRPCRequest("eth_getBlockByNumber", []interface{}{req.BlockNumber, req.IncludeTransactions}))
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	result, err := parseJSONRPCResult(ctx, resp)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	if string(result) == "null" {
 		return &evm.GetBlockResponse{}, nil
 	}
 	var block evm.JsonRpcBlock
 	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	protoBlock, err := block.ToProto()
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	return &evm.GetBlockResponse{
 		Block:            protoBlock.Header,
@@ -251,22 +252,22 @@ func (gs *GrpcServer) GetBlockByHash(ctx context.Context, req *evm.GetBlockByHas
 	}
 	resp, err := gs.processor.ProcessUnary(ctx, input, buildJSONRPCRequest("eth_getBlockByHash", []interface{}{evm.BytesToHex(req.BlockHash), req.IncludeTransactions}))
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	result, err := parseJSONRPCResult(ctx, resp)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	if string(result) == "null" {
 		return &evm.GetBlockResponse{}, nil
 	}
 	var block evm.JsonRpcBlock
 	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	protoBlock, err := block.ToProto()
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	return &evm.GetBlockResponse{
 		Block:            protoBlock.Header,
@@ -318,21 +319,21 @@ func (gs *GrpcServer) GetLogs(ctx context.Context, req *evm.GetLogsRequest) (*ev
 	}
 	resp, err := gs.processor.ProcessUnary(ctx, input, buildJSONRPCRequest("eth_getLogs", []interface{}{payload}))
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	result, err := parseJSONRPCResult(ctx, resp)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	var rawLogs []*evm.JsonRpcLog
 	if err := sonic.Unmarshal(result, &rawLogs); err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	logs := make([]*evm.Log, 0, len(rawLogs))
 	for _, rawLog := range rawLogs {
 		log, err := rawLog.ToProto()
 		if err != nil {
-			return nil, gs.mapToGRPCStatus(err)
+			return nil, grpcStatusOf(err)
 		}
 		logs = append(logs, log)
 	}
@@ -346,22 +347,22 @@ func (gs *GrpcServer) GetTransactionByHash(ctx context.Context, req *evm.GetTran
 	}
 	resp, err := gs.processor.ProcessUnary(ctx, input, buildJSONRPCRequest("eth_getTransactionByHash", []interface{}{evm.BytesToHex(req.TransactionHash)}))
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	result, err := parseJSONRPCResult(ctx, resp)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	if string(result) == "null" {
 		return &evm.GetTransactionByHashResponse{}, nil
 	}
 	var txMap map[string]interface{}
 	if err := sonic.Unmarshal(result, &txMap); err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	tx, err := evm.ParseJsonRpcTransaction(txMap, nil)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	return &evm.GetTransactionByHashResponse{Transaction: tx}, nil
 }
@@ -373,22 +374,22 @@ func (gs *GrpcServer) GetTransactionReceipt(ctx context.Context, req *evm.GetTra
 	}
 	resp, err := gs.processor.ProcessUnary(ctx, input, buildJSONRPCRequest("eth_getTransactionReceipt", []interface{}{evm.BytesToHex(req.TransactionHash)}))
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	result, err := parseJSONRPCResult(ctx, resp)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	if string(result) == "null" {
 		return &evm.GetTransactionReceiptResponse{}, nil
 	}
 	var receipt evm.JsonRpcReceipt
 	if err := sonic.Unmarshal(result, &receipt); err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	protoReceipt, err := receipt.ToProto()
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	return &evm.GetTransactionReceiptResponse{Receipt: protoReceipt}, nil
 }
@@ -408,21 +409,21 @@ func (gs *GrpcServer) GetBlockReceipts(ctx context.Context, req *evm.GetBlockRec
 	}
 	resp, err := gs.processor.ProcessUnary(ctx, input, buildJSONRPCRequest("eth_getBlockReceipts", []interface{}{blockParam}))
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	result, err := parseJSONRPCResult(ctx, resp)
 	if err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	var rawReceipts []*evm.JsonRpcReceipt
 	if err := sonic.Unmarshal(result, &rawReceipts); err != nil {
-		return nil, gs.mapToGRPCStatus(err)
+		return nil, grpcStatusOf(err)
 	}
 	receipts := make([]*evm.Receipt, 0, len(rawReceipts))
 	for _, rawReceipt := range rawReceipts {
 		receipt, err := rawReceipt.ToProto()
 		if err != nil {
-			return nil, gs.mapToGRPCStatus(err)
+			return nil, grpcStatusOf(err)
 		}
 		receipts = append(receipts, receipt)
 	}
@@ -430,53 +431,35 @@ func (gs *GrpcServer) GetBlockReceipts(ctx context.Context, req *evm.GetBlockRec
 }
 
 func (gs *GrpcServer) QueryBlocks(req *evm.QueryBlocksRequest, stream evm.QueryService_QueryBlocksServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_queryBlocks")
-	if err != nil {
-		return err
-	}
-	return gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
-		return stream.Send(page.(*evm.QueryBlocksResponse))
-	})
+	return serveQuery(gs, req, stream)
 }
 
 func (gs *GrpcServer) QueryTransactions(req *evm.QueryTransactionsRequest, stream evm.QueryService_QueryTransactionsServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_queryTransactions")
-	if err != nil {
-		return err
-	}
-	return gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
-		return stream.Send(page.(*evm.QueryTransactionsResponse))
-	})
+	return serveQuery(gs, req, stream)
 }
 
 func (gs *GrpcServer) QueryLogs(req *evm.QueryLogsRequest, stream evm.QueryService_QueryLogsServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_queryLogs")
-	if err != nil {
-		return err
-	}
-	return gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
-		return stream.Send(page.(*evm.QueryLogsResponse))
-	})
+	return serveQuery(gs, req, stream)
 }
 
 func (gs *GrpcServer) QueryTraces(req *evm.QueryTracesRequest, stream evm.QueryService_QueryTracesServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_queryTraces")
-	if err != nil {
-		return err
-	}
-	return gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
-		return stream.Send(page.(*evm.QueryTracesResponse))
-	})
+	return serveQuery(gs, req, stream)
 }
 
 func (gs *GrpcServer) QueryTransfers(req *evm.QueryTransfersRequest, stream evm.QueryService_QueryTransfersServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_queryTransfers")
+	return serveQuery(gs, req, stream)
+}
+
+// serveQuery streams the pages of a QueryService request, and ends the
+// stream with the gRPC status of whatever failed (queryGrpcError).
+func serveQuery[Res any](gs *GrpcServer, req proto.Message, stream grpc.ServerStreamingServer[Res]) error {
+	input, err := gs.extractRequestInput(stream.Context(), queryMethodFromProto(req))
 	if err != nil {
 		return err
 	}
-	return gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
-		return stream.Send(page.(*evm.QueryTransfersResponse))
-	})
+	return queryGrpcError(gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
+		return stream.Send(any(page).(*Res))
+	}))
 }
 
 func (gs *GrpcServer) StreamBlocks(req *evm.StreamBlocksRequest, stream evm.StreamService_StreamBlocksServer) error {
@@ -484,7 +467,7 @@ func (gs *GrpcServer) StreamBlocks(req *evm.StreamBlocksRequest, stream evm.Stre
 	if err != nil {
 		return err
 	}
-	return gs.mapToGRPCStatus(gs.processor.ProcessBlockStream(stream.Context(), input, func(header *evm.BlockHeader) error {
+	return grpcStatusOf(gs.processor.ProcessBlockStream(stream.Context(), input, func(header *evm.BlockHeader) error {
 		return stream.Send(&evm.StreamBlocksResponse{Header: header})
 	}))
 }
@@ -513,23 +496,29 @@ func (gs *GrpcServer) panicRecoveryStream() grpc.StreamServerInterceptor {
 	}
 }
 
-func (gs *GrpcServer) mapToGRPCStatus(err error) error {
+// grpcStatusOf maps an erpc error to the gRPC status a client gets.
+func grpcStatusOf(err error) error {
 	if err == nil {
 		return nil
 	}
 	switch {
 	case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
 		return status.Error(codes.Unimplemented, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized):
+	case common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized, common.ErrCodeAuthUnauthorized):
 		return status.Error(codes.Unauthenticated, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout):
+	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout, common.ErrCodeNetworkRequestTimeout, common.ErrCodeFailsafeTimeoutExceeded) || errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded, common.ErrCodeEndpointRequestTooLarge):
+	case common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded, common.ErrCodeEndpointRequestTooLarge,
+		common.ErrCodeAuthRateLimitRuleExceeded, common.ErrCodeProjectRateLimitRuleExceeded, common.ErrCodeNetworkRateLimitRuleExceeded, common.ErrCodeUpstreamRateLimitRuleExceeded):
 		return status.Error(codes.ResourceExhausted, err.Error())
 	case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
 		return status.Error(codes.NotFound, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeEndpointClientSideException):
+	case common.HasErrorCode(err, common.ErrCodeEndpointClientSideException, common.ErrCodeInvalidRequest):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect):
+		// Every upstream failed in a way none of the above names: a retry
+		// later may find one serving.
+		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

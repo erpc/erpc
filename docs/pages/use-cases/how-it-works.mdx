@@ -445,7 +445,7 @@ all waiting followers with a response ID patch per follower:
     <SourceLink file="erpc/networks.go" lines="1494-1518" />
 11. **Query shim retry safety**: a gRPC query stream error is only retried on the next upstream
     if no page has been emitted (`StreamError.PageEmitted` gate). Partial-result retries are
-    forbidden. <SourceLink file="erpc/query_executor.go" lines="247-253" />
+    forbidden. <SourceLink file="erpc/query_executor.go" lines="126-136" />
 12. **`TranslateToJsonRpcException` dominant-code selection**: when all upstreams return skipped
     or unsupported errors, the wire JSON-RPC code depends on the first child's error type — either
     `-32601` (method not found) or `-32603` (server error). Clients cannot reliably distinguish

@@ -2,13 +2,17 @@ package erpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
@@ -22,6 +26,11 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // The query shim end to end: JSON-RPC eth_query* requests through
@@ -191,9 +200,9 @@ func mockQueryChain(blockDelay time.Duration) {
 }
 
 // setupQueryTestNetwork builds a network of the upstreams ids (default rpc1),
-// each at http://<id>.localhost, all enabling queryShim, selected in the
-// order given.
-func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.EvmQueryShimConfig, ids ...string) *Network {
+// each at http://<id>.localhost, all enabling queryShim and ignoring
+// ignoreMethods, selected in the order given.
+func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.EvmQueryShimConfig, ignoreMethods []string, ids ...string) *Network {
 	t.Helper()
 
 	clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
@@ -207,10 +216,11 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.
 	ups := make([]*common.UpstreamConfig, len(ids))
 	for i, id := range ids {
 		ups[i] = &common.UpstreamConfig{
-			Id:       id,
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://" + id + ".localhost",
-			Evm:      &common.EvmUpstreamConfig{ChainId: 123, QueryShim: queryShim},
+			Id:            id,
+			Type:          common.UpstreamTypeEvm,
+			Endpoint:      "http://" + id + ".localhost",
+			IgnoreMethods: ignoreMethods,
+			Evm:           &common.EvmUpstreamConfig{ChainId: 123, QueryShim: queryShim},
 		}
 	}
 
@@ -263,9 +273,8 @@ func queryJson(t *testing.T, ctx context.Context, ntw *Network, method string, p
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, params)))
 	resp, err := ntw.Forward(ctx, req)
 	if err != nil {
-		translated := common.TranslateToJsonRpcException(err)
-		jre, ok := translated.(*common.ErrJsonRpcExceptionInternal)
-		require.True(t, ok, "error must render as a JSON-RPC error: %v", err)
+		var jre *common.ErrJsonRpcExceptionInternal
+		require.ErrorAs(t, common.TranslateToJsonRpcException(err), &jre, "error must render as a JSON-RPC error: %v", err)
 		return nil, int(jre.NormalizedCode())
 	}
 	jrr, err := resp.JsonRpcResponse()
@@ -273,6 +282,50 @@ func queryJson(t *testing.T, ctx context.Context, ntw *Network, method string, p
 	var result map[string]interface{}
 	require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &result))
 	return result, 0
+}
+
+// queryGrpc serves ntw on a real eRPC gRPC server (project prjA) and returns
+// a QueryService client of it, with the metadata the server requires.
+func queryGrpc(t *testing.T, ctx context.Context, ntw *Network) (bdsevm.QueryServiceClient, context.Context) {
+	t.Helper()
+	networks := &NetworksRegistry{}
+	networks.preparedNetworks.Store(ntw.Id(), ntw)
+	erpcInstance := &ERPC{projectsRegistry: &ProjectsRegistry{preparedProjects: map[string]*PreparedProject{
+		"prjA": {Config: &common.ProjectConfig{Id: "prjA"}, networksRegistry: networks},
+	}}}
+	gs, err := NewGrpcServer(ctx, &log.Logger, &common.ServerConfig{
+		GrpcMaxRecvMsgSize: util.IntPtr(1 << 20),
+		GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
+		GrpcReflection:     util.BoolPtr(false),
+	}, erpcInstance)
+	require.NoError(t, err)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = gs.server.Serve(lis) }()
+	t.Cleanup(gs.server.Stop)
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	md := metadata.New(map[string]string{"x-erpc-project": "prjA", "x-erpc-chain-id": "123"})
+	return bdsevm.NewQueryServiceClient(conn), metadata.NewOutgoingContext(ctx, md)
+}
+
+// grpcPages reads every page of a server stream, and the status code it
+// ended with (codes.OK after the last page).
+func grpcPages[T any](t *testing.T, stream grpc.ServerStreamingClient[T], err error) ([]*T, codes.Code) {
+	t.Helper()
+	require.NoError(t, err)
+	var pages []*T
+	for {
+		page, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return pages, codes.OK
+		}
+		if err != nil {
+			return pages, status.Code(err)
+		}
+		pages = append(pages, page)
+	}
 }
 
 func qtData(result map[string]interface{}, key string) []map[string]interface{} {
@@ -300,7 +353,7 @@ func TestNetworkQuery_Shim(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)})
+	ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil)
 
 	t.Run("blocks page ends at target with real block references", func(t *testing.T) {
 		result, code := queryJson(t, ctx, ntw, "eth_queryBlocks",
@@ -419,9 +472,97 @@ func TestNetworkQuery_Shim(t *testing.T) {
 		assert.Empty(t, qtData(result, "logs"))
 		assert.Equal(t, "0x68", result["cursorBlock"].(map[string]interface{})["number"])
 
-		// A page whose first block is not consistent has no block-aligned page.
+		// A page whose first block is not consistent has no block-aligned
+		// page: a transient failure, erpc's retryable server error, never
+		// the MIP-16 budget code -32005.
 		_, code = queryJson(t, ctx, ntw, "eth_queryLogs", `[{"fromBlock":"0x69","toBlock":"0x69"}]`)
-		assert.Equal(t, -32005, code)
+		assert.Equal(t, -32603, code)
+	})
+
+	t.Run("a shim upstream that does not serve a sub-request the query needs", func(t *testing.T) {
+		// Every upstream ignores eth_getBlockReceipts: a query that selects
+		// receipt fields is not served (-32004) before any scan, and one
+		// that does not still is.
+		noReceipts := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, []string{"eth_getBlockReceipts"})
+		_, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash","status"]}}]`)
+		assert.Equal(t, -32004, code)
+		_, code = queryJson(t, ctx, noReceipts, "eth_queryLogs", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"logs":["data"],"transactions":["status"]}}]`)
+		assert.Equal(t, -32004, code, "a joined relation's receipt fields need receipts too")
+		result, code := queryJson(t, ctx, noReceipts, "eth_queryTransactions", `[{"fromBlock":"0x64","toBlock":"0x64","fields":{"transactions":["hash"]}}]`)
+		require.Zero(t, code)
+		assert.Len(t, qtData(result, "transactions"), 2)
+	})
+
+	// rpc3 serves 0x66 but answers null for its receipts (it lags); rpc4,
+	// asked next, fails. The failure is the answer, not "not available".
+	gock.New("http://rpc3.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x66"`)
+		}).
+		Reply(200).JSON(qtReply(qtBlock(0x66)))
+	gock.New("http://rpc3.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON(qtReply(nil))
+	gock.New("http://rpc4.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{"code": -32000, "message": "receipts backend down"}})
+	failing := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc3", "rpc4")
+
+	t.Run("a lagging upstream's null does not hide the other upstream's error", func(t *testing.T) {
+		_, code := queryJson(t, ctx, failing, "eth_queryTransactions", `[{"fromBlock":"0x66","toBlock":"0x66","fields":{"transactions":["hash","status"]}}]`)
+		assert.NotZero(t, code)
+		assert.NotContains(t, []int{-32001, -32005}, code, "rpc4's failure, not a missing block or the budget")
+	})
+
+	t.Run("gRPC streams projected shim pages and maps every failure to a status", func(t *testing.T) {
+		client, gctx := queryGrpc(t, ctx, ntw)
+		target := uint32(2)
+		stream, err := client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{
+			FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0x65"), Target: &target,
+			TransactionFields: &bdsevm.TransactionFieldSelection{Hash: true, Gas: true, Status: true},
+			BlockFields:       &bdsevm.BlockFieldSelection{Number: true},
+		})
+		pages, code := grpcPages(t, stream, err)
+		require.Equal(t, codes.OK, code)
+		require.Len(t, pages, 2, "one page per block at target 2")
+		for i, page := range pages {
+			require.Len(t, page.Transactions, 2)
+			tx := page.Transactions[0]
+			assert.Equal(t, uint64(0x64+i), page.CursorBlock.GetNumber())
+			assert.NotEmpty(t, tx.Hash, "selected")
+			assert.Equal(t, uint64(0x5208), tx.GasLimit, `"gas" selects gasLimit`)
+			require.NotNil(t, tx.Status, "selected receipt field")
+			assert.Equal(t, uint32(1), *tx.Status)
+			assert.Empty(t, tx.From, "unselected")
+			assert.Empty(t, tx.Input, "unselected")
+			assert.Empty(t, tx.Value, "unselected")
+			assert.Nil(t, tx.GasUsed, "unselected receipt field")
+			require.Len(t, page.Blocks, 1)
+			assert.Equal(t, uint64(0x64+i), page.Blocks[0].Number)
+			assert.Empty(t, page.Blocks[0].Hash, "unselected")
+			assert.NotEmpty(t, page.CursorBlock.GetHash(), "block references are never projected")
+		}
+
+		order := bdsevm.SortOrder_DESC
+		stream, err = client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0x65"), Order: &order})
+		_, code = grpcPages(t, stream, err)
+		assert.Equal(t, codes.InvalidArgument, code, "inverted desc range")
+		stream, err = client.QueryTransactions(gctx, &bdsevm.QueryTransactionsRequest{FromBlock: util.StringPtr("0x64"), ToBlock: util.StringPtr("0xffffffff")})
+		_, code = grpcPages(t, stream, err)
+		assert.Equal(t, codes.OutOfRange, code, "block above the chain head")
+		logs, err := client.QueryLogs(gctx, &bdsevm.QueryLogsRequest{FromBlock: util.StringPtr("0x69"), ToBlock: util.StringPtr("0x69")})
+		_, code = grpcPages(t, logs, err)
+		assert.Equal(t, codes.Unavailable, code, "fromBlock inconsistent: retry later")
+
+		// A sub-request failure with no MIP-16 meaning gets erpc's status.
+		failingClient, fctx := queryGrpc(t, ctx, failing)
+		stream, err = failingClient.QueryTransactions(fctx, &bdsevm.QueryTransactionsRequest{
+			FromBlock: util.StringPtr("0x66"), ToBlock: util.StringPtr("0x66"),
+			TransactionFields: &bdsevm.TransactionFieldSelection{Hash: true, Status: true},
+		})
+		_, code = grpcPages(t, stream, err)
+		assert.Equal(t, codes.Unavailable, code)
 	})
 
 	t.Run("a lagging upstream's null never hides an available block", func(t *testing.T) {
@@ -447,7 +588,7 @@ func TestNetworkQuery_Shim(t *testing.T) {
 				}).
 				Reply(200).JSON(qtReply(block))
 		}
-		lagging := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, "rpc2", "rpc1")
+		lagging := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc2", "rpc1")
 
 		result, code := queryJson(t, ctx, lagging, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66","fields":{"blocks":["number","hash"]}}]`)
 		require.Zero(t, code)
@@ -467,13 +608,13 @@ func TestNetworkQuery_ShimLimits(t *testing.T) {
 	defer cancel()
 
 	t.Run("no upstream serves the method", func(t *testing.T) {
-		ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryLogs"}})
+		ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryLogs"}}, nil)
 		_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x64"}]`)
 		assert.Equal(t, -32004, code)
 	})
 
 	t.Run("budget ends before fromBlock completes", func(t *testing.T) {
-		ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), MaxPageDuration: common.Duration(200 * time.Millisecond)})
+		ntw := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true), MaxPageDuration: common.Duration(200 * time.Millisecond)}, nil)
 		_, code := queryJson(t, ctx, ntw, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66"}]`)
 		assert.Equal(t, -32005, code)
 	})
