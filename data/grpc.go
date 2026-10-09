@@ -99,6 +99,14 @@ func NewGrpcConnector(
 	if len(servers) == 0 {
 		lg.Warn().Msg("no gRPC servers provided or discovered")
 	}
+	// Bootstrap replaces the static servers list, so config-time Validate only
+	// saw the YAML servers (if any). Re-check the effective endpoints before
+	// building clients that would enable a root-only health watcher on a mount.
+	for _, s := range servers {
+		if err := common.ValidateGrpcHealthCheckMount("database.*.connector.grpc", s, cfg.HealthCheckService); err != nil {
+			return nil, err
+		}
+	}
 
 	gc := &GrpcConnector{
 		id:                 id,

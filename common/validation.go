@@ -563,11 +563,11 @@ func validateGrpcConnPoolSize(scope string, poolSize int) error {
 	return nil
 }
 
-// validateGrpcHealthCheckMount rejects a health check on an endpoint mounted
+// ValidateGrpcHealthCheckMount rejects a health check on an endpoint mounted
 // below a URL path. grpc-go opens the health Watch stream past every
 // interceptor, so it always calls bare `/grpc.health.v1.Health/Watch`, never
 // the mount; the answer would come from whatever serves the root.
-func validateGrpcHealthCheckMount(scope, endpoint, healthCheckService string) error {
+func ValidateGrpcHealthCheckMount(scope, endpoint, healthCheckService string) error {
 	if healthCheckService == "" {
 		return nil
 	}
@@ -588,7 +588,7 @@ func (g *GrpcConnectorConfig) Validate() error {
 		return err
 	}
 	for _, server := range g.Servers {
-		if err := validateGrpcHealthCheckMount("database.*.connector.grpc", server, g.HealthCheckService); err != nil {
+		if err := ValidateGrpcHealthCheckMount("database.*.connector.grpc", server, g.HealthCheckService); err != nil {
 			return err
 		}
 	}
@@ -601,7 +601,7 @@ func (g *GrpcUpstreamConfig) Validate(endpoint string) error {
 	if err := validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize); err != nil {
 		return err
 	}
-	return validateGrpcHealthCheckMount("upstream.*.grpc", endpoint, g.HealthCheckService)
+	return ValidateGrpcHealthCheckMount("upstream.*.grpc", endpoint, g.HealthCheckService)
 }
 
 func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
