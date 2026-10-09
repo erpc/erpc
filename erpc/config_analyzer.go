@@ -257,6 +257,15 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 				}
 			}
 		}
+
+		// Warnings: failover enabled but no fallback-tier upstream to escalate to.
+		failoverEnabled := p.NetworkDefaults != nil && p.NetworkDefaults.Failover.Enabled()
+		for _, nw := range p.Networks {
+			failoverEnabled = failoverEnabled || nw.Failover.Enabled()
+		}
+		if failoverEnabled && !projectHasFallbackTier(p) {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("project=%s failover.onDefaultsExhausted is enabled but no upstream is tagged '%s', so requests never escalate", p.Id, common.TagTierFallback))
+		}
 	}
 
 	// Admin auth budgets
@@ -279,6 +288,11 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 
 	// Upstream runtime checks (chain id + block hash comparisons). Use a silent logger and short timeout per upstream
 	silent := zerolog.New(io.Discard)
+
+	// Transient upstreams below spawn client goroutines bound to their ctx;
+	// cancel it on return so they don't outlive validation.
+	valCtx, cancelVal := context.WithCancel(ctx)
+	defer cancelVal()
 
 	// Histogram buckets (validate config value)
 	if err := telemetry.SetHistogramBuckets(cfg.Metrics.HistogramBuckets); err != nil {
@@ -327,7 +341,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 		}
 		clReg := clients.NewClientRegistry(&silent, project.Id, prxPool, upstream.NewCompositeJsonRpcErrorExtractor())
 		vndReg := thirdparty.NewVendorsRegistry()
-		rlr, err := upstream.NewRateLimitersRegistry(ctx, cfg.RateLimiters, &silent)
+		rlr, err := upstream.NewRateLimitersRegistry(valCtx, cfg.RateLimiters, &silent)
 		if err != nil {
 			appendErr(fmt.Sprintf("project=%s failed to create rate limiters registry: %v", project.Id, err))
 			continue
@@ -346,7 +360,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 				}
 
 				// Create upstream
-				ups, err := upstream.NewUpstream(ctx, prj, uc, clReg, rlr, vndReg, &silent, mt, nil)
+				ups, err := upstream.NewUpstream(valCtx, prj, uc, clReg, rlr, vndReg, &silent, mt, nil)
 				if err != nil {
 					appendErr(fmt.Sprintf("project=%s upstream=%s failed to create upstream: %v", prj, uc.Id, err))
 					return
@@ -952,6 +966,24 @@ func calculateConfigStats(cfg *common.Config) ConfigStats {
 	return stats
 }
 
+// projectHasFallbackTier reports whether any upstream the project defines,
+// directly or via provider overrides, is tagged as fallback tier.
+func projectHasFallbackTier(p *common.ProjectConfig) bool {
+	for _, u := range p.Upstreams {
+		if u.HasTag(common.TagTierFallback) {
+			return true
+		}
+	}
+	for _, pr := range p.Providers {
+		for _, o := range pr.Overrides {
+			if o != nil && o.HasTag(common.TagTierFallback) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func printConfigStats(logger zerolog.Logger, stats ConfigStats) {
 	logger.Info().Msg("Configuration Statistics:")
 
@@ -988,6 +1020,10 @@ func printConfigStats(logger zerolog.Logger, stats ConfigStats) {
 }
 
 func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger zerolog.Logger) error {
+	// Transient upstreams below spawn client goroutines bound to their ctx;
+	// cancel it on return so they don't outlive validation.
+	valCtx, cancelVal := context.WithCancel(ctx)
+	defer cancelVal()
 	err := telemetry.SetHistogramBuckets(
 		cfg.Metrics.HistogramBuckets,
 	)
@@ -1014,7 +1050,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 		)
 		vndReg := thirdparty.NewVendorsRegistry()
 		rlr, err := upstream.NewRateLimitersRegistry(
-			ctx,
+			valCtx,
 			cfg.RateLimiters,
 			&logger,
 		)
@@ -1050,7 +1086,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 				continue
 			}
 			ups, err := upstream.NewUpstream(
-				ctx,
+				valCtx,
 				project.Id,
 				upsCfg,
 				clReg,
@@ -1063,7 +1099,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 			if err != nil {
 				return fmt.Errorf("failed to create upstream for project: \"%s\" and upstream id: \"%s\": %w", project.Id, upsCfg.Id, err)
 			}
-			chainStr, err := ups.EvmGetChainId(ctx)
+			chainStr, err := ups.EvmGetChainId(valCtx)
 			if err != nil {
 				return fmt.Errorf("failed to get chain id for project: \"%s\" and upstream id: \"%s\": %w", project.Id, upsCfg.Id, err)
 			}

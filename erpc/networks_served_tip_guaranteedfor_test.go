@@ -199,3 +199,33 @@ func TestGuaranteedFor_AppliesToTheFinalizedAxis(t *testing.T) {
 	assert.Equal(t, int64(880), network.EvmHighestFinalizedBlockNumber(ctx),
 		"finalized majority is 900; the internals have only finalized 880")
 }
+
+// A head already delivered to a WebSocket subscriber floors "latest", but it
+// can never lift the tip past a guarantee: the named group still cannot serve
+// the delivered block, and the guarantee is the operator's hard clamp.
+func TestGuaranteedFor_DeliveredHeadFloorDoesNotLiftPastTheGuarantee(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
+		&common.EvmServedTipConfig{EnabledFor: []string{"latest"}, GuaranteedFor: []string{tagInternal}})
+	n.NoteObservedLatestBlock(ctx, 1000)
+	assert.Equal(t, int64(993), n.EvmHighestLatestBlockNumber(ctx),
+		"the internals only have 993; a delivered 1000 must not override the guarantee")
+}
+
+// Without a guarantee the delivered-head floor still applies on top of the
+// majority served tip.
+func TestGuaranteedFor_DeliveredHeadFloorAppliesWhenUnset(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	n := guaranteedForNetwork(t, ctx, mixedPool([]int64{1000, 1000, 1000}, []int64{993, 993}),
+		&common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+	n.NoteObservedLatestBlock(ctx, 1001)
+	assert.Equal(t, int64(1001), n.EvmHighestLatestBlockNumber(ctx))
+}

@@ -1,0 +1,345 @@
+---
+description: WebSocket support in eRPC for persistent connections and real-time subscriptions...
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
+# WebSocket
+
+eRPC supports WebSocket connections on the same HTTP port. Clients can connect via `ws://` or `wss://` for persistent JSON-RPC connections and real-time subscriptions (`eth_subscribe`).
+
+## Connecting
+
+Connect to eRPC using the same URL path as HTTP, but with the `ws://` or `wss://` scheme:
+
+```
+ws://<your-erpc-hostname>/<project-id>/<network-architecture>/<chain-id>
+```
+
+```javascript
+// Browser / Node.js example
+const ws = new WebSocket("ws://localhost:4000/main/evm/1");
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "eth_blockNumber",
+    params: []
+  }));
+};
+
+ws.onmessage = (event) => {
+  console.log(JSON.parse(event.data));
+  // { "jsonrpc": "2.0", "id": 1, "result": "0x1234567" }
+};
+```
+
+<Callout type="info">
+  WebSocket connections use the same port as HTTP — no additional configuration needed. Domain aliasing rules also apply to WebSocket connections.
+</Callout>
+
+## Regular JSON-RPC over WebSocket
+
+All JSON-RPC methods supported over HTTP also work over WebSocket. The connection is persistent, so you can send multiple requests without reconnecting:
+
+```javascript
+// Send multiple requests on the same connection
+ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }));
+ws.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_chainId", params: [] }));
+ws.send(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "eth_getBlockByNumber", params: ["latest", false] }));
+```
+
+Batch requests (JSON arrays) are also supported:
+
+```javascript
+ws.send(JSON.stringify([
+  { jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] },
+  { jsonrpc: "2.0", id: 2, method: "eth_chainId", params: [] }
+]));
+// Response is a JSON array
+```
+
+All eRPC features work identically for WebSocket RPC requests: authentication, method filters, caching, upstream scoring, failsafe policies (retry, hedge, circuit breaker), rate limiting, multiplexing (request deduplication), EVM integrity checks, and metrics. Each request is bounded by `server.maxTimeout`, and a connection processes at most `server.webSocket.maxConcurrentRequestsPerConnection` messages at once — further messages wait until one finishes. A batch is one message; its requests run concurrently, as over HTTP. Credentials (`secret` query parameter or headers, JWT, SIWE, client IP) come from the upgrade request: an upgrade that no auth strategy accepts is refused with `401`, and each request on the connection is still authenticated, with method scoping and rate limits, as over HTTP.
+
+## Subscriptions
+
+eRPC supports `eth_subscribe` and `eth_unsubscribe` for real-time event streaming. Subscriptions require at least one upstream configured with a `ws://` or `wss://` endpoint.
+
+### eth_subscribe
+
+```javascript
+const ws = new WebSocket("ws://localhost:4000/main/evm/1");
+
+ws.onopen = () => {
+  // Subscribe to new block headers
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "eth_subscribe",
+    params: ["newHeads"]
+  }));
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  
+  if (msg.id) {
+    // Subscription confirmation
+    console.log("Subscription ID:", msg.result);
+    // "0x2a151383161618ebffddfed9de4be5db"
+  }
+  
+  if (msg.method === "eth_subscription") {
+    // New block notification
+    console.log("New block:", msg.params.result.number);
+  }
+};
+```
+
+Supported subscription types (depends on upstream node capabilities):
+- `newHeads` — new block headers
+- `logs` — log entries matching a filter
+- `newPendingTransactions` — pending transaction hashes
+
+#### Subscribing to logs with a filter
+
+The second params entry is a filter object with optional `address` (string or array) and `topics` (array of topic hex strings or arrays for OR-matching). The filter is hashed by eRPC so multiple clients requesting the same filter share a single underlying upstream subscription.
+
+```javascript
+ws.send(JSON.stringify({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "eth_subscribe",
+  params: [
+    "logs",
+    {
+      address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // USDC
+      topics: [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" // Transfer
+      ]
+    }
+  ]
+}));
+```
+
+### eth_unsubscribe
+
+```javascript
+ws.send(JSON.stringify({
+  jsonrpc: "2.0",
+  id: 2,
+  method: "eth_unsubscribe",
+  params: ["0x2a151383161618ebffddfed9de4be5db"]
+}));
+// Response: { "jsonrpc": "2.0", "id": 2, "result": true }
+```
+
+### Subscription features
+
+- **Resilient delivery** — `newHeads` is subscribed on every connected WebSocket upstream of the network, and each block is delivered from whichever upstream announces it first. With [`failover.onDefaultsExhausted`](/config/projects/networks#failover) enabled, heads from upstreams tagged `tier:fallback` are delivered only while no other upstream that the selection policy routes to has a live `newHeads` subscription, so clients are not told of a block only a fallback has while the primaries are up. A held-back head still updates that fallback's tip tracker. How quickly fallback heads take over when the primaries fail follows the selection policy's `evalInterval`. `logs` and `newPendingTransactions` are subscribed on every WebSocket upstream; with [`failover.onDefaultsExhausted`](/config/projects/networks#failover) enabled, on every one outside `tier:fallback` that the selection policy routes to, and on the `tier:fallback` upstreams only while none of those has the subscription live. This is rechecked on every head, so the fallbacks take over when the primaries drop a subscription (or the policy excludes them) and hand it back once a primary has it live again; a subscribe that fails is retried in the background.
+- **No surprise disconnects** — upstream reconnects, scoring changes and brief outages never close your connection; eRPC re-subscribes upstream behind the scenes. eRPC closes a connection only on shutdown (`1001`), when the client stops answering pings, or when a `logs` subscription overflows its buffer (see below).
+- **Deduplication** — even though multiple upstreams are subscribed in parallel, you only receive each block, log or pending tx once. Logs are identified by `blockHash`, `transactionHash` and `logIndex`; a log missing any of them is passed through without deduplication.
+- **Shared subscriptions** — clients subscribing to the same event on the same network share one upstream subscription per upstream. Each client gets its own subscription ID and receives every notification independently.
+- **Slow-client safety** — every subscription has its own buffer of `server.webSocket.subscriptionBufferSize` notifications, so a slow reader never blocks other clients or upstream delivery. When it overflows, `newHeads` and `newPendingTransactions` drop the oldest queued notification; a `logs` subscription closes the connection with `1013` instead, so the client knows it missed data and can re-subscribe and backfill with `eth_getLogs`. Drops are counted in `erpc_websocket_subscription_notifications_dropped_total`.
+- **Connection-scoped IDs** — eRPC issues its own subscription IDs, so they stay the same across upstream reconnects and upstream switches. They belong to the connection that created them: `eth_unsubscribe` only works on that connection, and subscriptions end when it closes.
+- **Rate limiting** — subscribe/unsubscribe calls count against the same project and network rate limits as regular RPC.
+
+### Reorg handling for `logs` subscriptions
+
+When a block containing one of your matched logs is reorged out, the upstream node re-sends that log with `"removed": true` on the same subscription. eRPC passes these notifications through unchanged, so you get the same semantics as a direct WebSocket connection to a node. If a log is removed and later re-added (the chain switches back), each transition is delivered once, even when several upstreams report it.
+
+```javascript
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.method === "eth_subscription" && msg.params.result.removed) {
+    // This log was in a block that was reorged out.
+    // Roll back any state you derived from it.
+  }
+};
+```
+
+### When eth_subscribe fails
+
+`eth_subscribe` returns a JSON-RPC error when:
+
+- the network has no WebSocket upstream, or none of the selected upstreams is connected and accepts the subscription;
+- the subscription type is not supported (`-32602`);
+- the connection already has `server.webSocket.maxSubscriptionsPerConnection` active subscriptions;
+- the request is rate limited.
+
+A failed `eth_subscribe` leaves your WebSocket connection open. You can retry on the same connection.
+
+## WebSocket upstreams
+
+To support subscriptions, configure at least one upstream with a `ws://` or `wss://` endpoint:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      # Regular HTTP upstream (for standard RPC)
+      - id: eth-mainnet-http
+        endpoint: https://eth-mainnet.example.com
+        evm:
+          chainId: 1
+
+      # WebSocket upstream (enables subscriptions)
+      - id: eth-mainnet-ws
+        endpoint: ws://eth-mainnet.example.com:8546
+        evm:
+          chainId: 1
+        failsafe:
+          retry:
+            maxAttempts: 2
+            delay: 100ms
+          timeout:
+            duration: 30s
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        // Regular HTTP upstream
+        {
+          id: "eth-mainnet-http",
+          endpoint: "https://eth-mainnet.example.com",
+          evm: { chainId: 1 },
+        },
+        // WebSocket upstream (enables subscriptions)
+        {
+          id: "eth-mainnet-ws",
+          endpoint: "ws://eth-mainnet.example.com:8546",
+          evm: { chainId: 1 },
+          failsafe: {
+            retry: { maxAttempts: 2, delay: "100ms" },
+            timeout: { duration: "30s" },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+<Callout type="info">
+  WebSocket upstreams also serve regular JSON-RPC requests (not just subscriptions). eRPC's scoring system picks the best upstream regardless of transport — HTTP or WebSocket.
+</Callout>
+
+The WebSocket upstream client features:
+- **Persistent connection** with automatic reconnection — every re-dial waits a jittered exponential backoff (1s to 30s), which resets only after a connection has stayed up for a full keepalive window
+- **Ping/pong keepalive** (30s interval) to detect dead connections
+- **Lazy connection** — if the upstream is unavailable at startup, eRPC retries in the background without blocking
+- **Fail-fast while reconnecting** — requests sent while the connection is down fail immediately with a retryable error so they fail over to other upstreams
+
+`eth_subscribe` and `eth_unsubscribe` are only sent to upstreams by eRPC's own subscription handling. A plain HTTP `eth_subscribe` is never forwarded to a WebSocket upstream, since the resulting subscription would have no owner.
+
+## Server configuration
+
+WebSocket server settings can be tuned via the `webSocket` section in server config. Defaults work well for most deployments:
+
+```yaml filename="erpc.yaml"
+server:
+  httpPortV4: 4000
+  webSocket:
+    # Read buffer size in bytes (default: 4096)
+    readBufferSize: 4096
+    # Write buffer size in bytes (default: 4096)
+    writeBufferSize: 4096
+    # Maximum incoming message size in bytes (default: 1048576 = 1MB)
+    maxMessageSize: 1048576
+    # Ping interval for keepalive (default: 30s). A client that sends neither
+    # a pong nor a request within twice this interval is disconnected.
+    pingInterval: 30s
+    # Maximum active subscriptions per WebSocket connection (default: 100)
+    maxSubscriptionsPerConnection: 100
+    # Maximum requests a connection runs at once (default: 250)
+    maxConcurrentRequestsPerConnection: 250
+    # Notifications queued per subscription for a slow reader (default: 256)
+    subscriptionBufferSize: 256
+```
+
+The upgrade request must name a network (`/<project-id>/<architecture>/<chain-id>`, or a path that [domain aliasing](/operation/url) resolves to one); otherwise it is rejected with `400`. On shutdown eRPC closes every client connection with `1001` (going away) straight away so clients reconnect to another instance; in-flight requests get up to `server.waitBeforeShutdown` to answer first.
+
+## Indexer configuration
+
+`eth_subscribe` fan-out and deduplication are handled by an internal event indexer. Most deployments can leave this unset:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+indexer:
+  # Per-filter seen-set used to drop duplicate log / pending-tx
+  # notifications delivered by sibling upstreams. 0 = default (8192).
+  dedupWindowSize: 8192
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  indexer: {
+    dedupWindowSize: 8192,
+  },
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+<Callout type="info">
+  `indexer.canonicalChainDepth` is deprecated and ignored: reorged-out logs now come from the upstream's own `removed: true` notifications.
+</Callout>
+
+## Subscription compatibility knobs
+
+### Stripping `fromBlock: "0x0"` from `eth_subscribe` logs filters
+
+Some JSON-RPC clients include `fromBlock: "0x0"` in the `eth_subscribe("logs", {…})` filter as a "from genesis" marker. `eth_subscribe` is a live-stream RPC — `fromBlock` has no standardised meaning there — and on backends that prune historical data the subscribe call fails outright. eRPC can strip the field per-network so the live stream succeeds; historical logs stay retrievable via `eth_getLogs` in the normal way.
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
+          # before forwarding to upstream. Non-zero fromBlocks pass through.
+          stripSubscribeFromBlockZero: true
+```
+
+Only a string `fromBlock` that parses to zero (`"0x0"`, `"0"`, `"0x00"`, …) is stripped — any other value passes through unchanged. Leave unset for chains where upstreams handle the field correctly. The field can also be set once under `networkDefaults.evm`.
+
+### HTTP / WebSocket tip-sync considerations for strict consumers
+
+Some RPC consumers compare the block number returned by HTTP `eth_getBlockByNumber("latest")` against a tip they've observed via a WebSocket `newHeads` subscription and flag any lag as a health-check failure. On fast-block chains (sub-second to a few seconds) the HTTP round-trip can trivially exceed the inter-block interval, so the HTTP response carries a block that was current when it was generated but older than a `newHeads` notification that arrived in parallel. That behaviour is inherent to HTTP-vs-push timing and is visible with or without a proxy in front.
+
+eRPC minimises the gap in three ways:
+
+- **Per-block cache keying for moving tags.** The realtime cache entry for a `latest` / `finalized` request is keyed by the block number the tag currently resolves to, so each tip advance is a distinct key rather than pinning every call within the TTL to the same cached payload.
+- **`enforceHighestBlock` response rewrite.** When the upstream returns a block number below the network's tracked tip, eRPC's [integrity check](/config/failsafe/integrity) fetches the specific higher block from another upstream and returns that instead (falling back to the highest valid block it has if none can serve it).
+- **Delivered-head floor.** When an upstream WebSocket delivers a `newHeads` notification, eRPC updates that upstream's tip tracker before fanning the head out to clients, and records it as a floor for the network's `latest`. A head reaches subscribers, and feeds the floor, only once the delivering upstream's tip tracker has accepted it; a head far ahead of the tracker is verified first and is not delivered, so subscribers resume with the next head. Held-back fallback heads are not delivered either. The floor is bounded: a value no live upstream comes close to (a stale or poisoned entry) is ignored rather than trusted, so it cannot pin the served tip. When `servedTip` is enabled for `latest`, it never lifts `latest` past [`servedTip.guaranteedFor`](/config/projects/networks) / `guaranteedMethods`. It does not apply to requests scoped with `use-upstream`. With shared state configured the floor is also propagated to other instances in the background, so they converge within the propagation delay rather than instantly.
+
+Even so, a transient single-block lag can reach a client when the chain produces a block faster than an in-flight HTTP round-trip completes. If your consumer treats single-block HTTP-vs-WS lag as a hard failure, widen its tolerance to match the chain's block time rather than expect eRPC (or any proxy) to eliminate it.
+
+## Directives
+
+[Request directives](/operation/directives) can be set via headers or query parameters on the initial WebSocket upgrade request. They apply to every regular RPC request on that connection, batches included, subject to the same `allowClientDirectives` rules as HTTP:
+
+```javascript
+// Pass directives via query params on the WebSocket URL
+const ws = new WebSocket("ws://localhost:4000/main/evm/1?useUpstream=my-preferred-upstream");
+```
+
+Subscriptions (`eth_subscribe`) ignore the `useUpstream` directive — they're delivered by the network's WebSocket upstreams as described above, so notifications keep flowing if any upstream slows down.

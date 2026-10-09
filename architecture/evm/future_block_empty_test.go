@@ -26,15 +26,15 @@ func TestEmptyResultBeyondConfidence(t *testing.T) {
 		return req
 	}
 
-	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 999)), "behind head → retryable, not beyond")
-	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 1000)), "exactly head → not beyond")
-	assert.True(t, emptyResultBeyondConfidence(ctx, mk(nw, 1001)), "head+1 → beyond, return empty")
-	assert.True(t, emptyResultBeyondConfidence(ctx, mk(nw, 9_000_000)), "far ahead → beyond")
-	assert.False(t, emptyResultBeyondConfidence(ctx, mk(nw, 0)), "no concrete block (tag/hash) → never beyond")
+	assert.False(t, EmptyResultBeyondConfidence(ctx, mk(nw, 999)), "behind head → retryable, not beyond")
+	assert.False(t, EmptyResultBeyondConfidence(ctx, mk(nw, 1000)), "exactly head → not beyond")
+	assert.True(t, EmptyResultBeyondConfidence(ctx, mk(nw, 1001)), "head+1 → beyond, return empty")
+	assert.True(t, EmptyResultBeyondConfidence(ctx, mk(nw, 9_000_000)), "far ahead → beyond")
+	assert.False(t, EmptyResultBeyondConfidence(ctx, mk(nw, 0)), "no concrete block (tag/hash) → never beyond")
 
 	// Unknown head (0) → fail open.
 	noHead := &queryTestNetwork{cfg: nw.cfg, latest: 0}
-	assert.False(t, emptyResultBeyondConfidence(ctx, mk(noHead, 9_000_000)), "unknown head → fail open")
+	assert.False(t, EmptyResultBeyondConfidence(ctx, mk(noHead, 9_000_000)), "unknown head → fail open")
 }
 
 // TestEmptyResultBeyondConfidence_Finalized pins the finalizedBlock confidence level:
@@ -58,10 +58,10 @@ func TestEmptyResultBeyondConfidence_Finalized(t *testing.T) {
 		return req
 	}
 
-	assert.False(t, emptyResultBeyondConfidence(ctx, mk(899)), "below finalized → retryable")
-	assert.False(t, emptyResultBeyondConfidence(ctx, mk(900)), "exactly finalized → not beyond")
-	assert.True(t, emptyResultBeyondConfidence(ctx, mk(901)), "finalized+1 (unfinalized) → beyond at finalized confidence")
-	assert.True(t, emptyResultBeyondConfidence(ctx, mk(1000)), "latest head but unfinalized → beyond at finalized confidence")
+	assert.False(t, EmptyResultBeyondConfidence(ctx, mk(899)), "below finalized → retryable")
+	assert.False(t, EmptyResultBeyondConfidence(ctx, mk(900)), "exactly finalized → not beyond")
+	assert.True(t, EmptyResultBeyondConfidence(ctx, mk(901)), "finalized+1 (unfinalized) → beyond at finalized confidence")
+	assert.True(t, EmptyResultBeyondConfidence(ctx, mk(1000)), "latest head but unfinalized → beyond at finalized confidence")
 }
 
 // TestEnforceNonNullBlock_FutureBlockNotErrored pins the #6 fix: the network-level

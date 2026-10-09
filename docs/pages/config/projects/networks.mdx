@@ -51,6 +51,104 @@ Illustrative, not a tuned production config — declare Ethereum with a human-re
 }]`}
 />
 
+## `eth_subscribe`
+
+Some JSON-RPC clients include `fromBlock: "0x0"` in the `eth_subscribe("logs", {…})` filter as a "from genesis" marker. `eth_subscribe` is a live-stream RPC — `fromBlock` has no standardised meaning there — and on backends that prune historical data the subscribe call fails outright. Enable `stripSubscribeFromBlockZero` on the network to drop the field before forwarding so the live stream succeeds; historical logs stay retrievable via `eth_getLogs` in the normal way.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
+          # before forwarding to upstream WebSockets. Only a value that
+          # parses to zero is stripped — other fromBlocks pass through.
+          stripSubscribeFromBlockZero: true  # default: false
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+            // Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
+            // before forwarding to upstream WebSockets. Only a value that
+            // parses to zero is stripped — other fromBlocks pass through.
+            stripSubscribeFromBlockZero: true,  // default: false
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+Leave unset for chains where upstreams handle `fromBlock: "0x0"` in an `eth_subscribe` filter correctly (most do — the flag is a targeted workaround, not a universal default). It can also be set once for every network under `networkDefaults.evm`.
+
+## Failover
+
+By default a request only reaches the upstreams the [selection policy](/config/projects/selection-policies) currently routes to; upstreams tagged `tier:fallback` join once the policy promotes them, which happens on its evaluation interval. `failover.onDefaultsExhausted` adds a per-request escape for the moments before that: when every routed upstream failed with an error that another upstream might not repeat, the same request is retried once on the `tier:fallback` upstreams it has not tried yet — even while the policy still keeps them cordoned.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networkDefaults:
+      failover:
+        onDefaultsExhausted: true  # default: false
+    upstreams:
+      - endpoint: https://primary.example.com
+      - endpoint: https://backup.example.com
+        tags: ["tier:fallback"]
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networkDefaults: {
+        failover: { onDefaultsExhausted: true }, // default: false
+      },
+      upstreams: [
+        { endpoint: "https://primary.example.com" },
+        { endpoint: "https://backup.example.com", tags: ["tier:fallback"] },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+The escape:
+
+- escalates only on errors that are retryable toward the network — an error every upstream would return (e.g. an execution revert) is returned as-is;
+- treats an empty result as a miss only for a concrete block number the network should already have (see `evm.emptyResultConfidence`), so polling for a pending transaction receipt does not sweep the fallbacks;
+- skips fallbacks whose circuit breaker is open for the method, or that don't handle the method;
+- fires at most once per request, and never for consensus requests;
+- is counted in `erpc_network_fallback_escape_total{project,network,category}` — expect zero in steady state.
+
+The validation report warns when `onDefaultsExhausted` is enabled but no upstream is tagged `tier:fallback`.
+
 ## Agent reference
 
 Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one

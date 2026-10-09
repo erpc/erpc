@@ -12305,3 +12305,53 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		cache.AssertExpectations(t)
 	})
 }
+
+func newStubUpstream(id, tag string) common.Upstream {
+	if tag == "" {
+		return common.NewFakeUpstream(id)
+	}
+	return common.NewFakeUpstream(id, common.WithTags(tag))
+}
+
+func TestTierUpstreamsByGroup(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []common.Upstream
+		want []string
+	}{
+		{
+			name: "no fallback keeps order",
+			in:   []common.Upstream{newStubUpstream("a", ""), newStubUpstream("b", "")},
+			want: []string{"a", "b"},
+		},
+		{
+			name: "defaults before fallbacks, order kept within tier",
+			in: []common.Upstream{
+				newStubUpstream("fallback-hi", common.TagTierFallback),
+				newStubUpstream("default-lo", ""),
+				newStubUpstream("default-hi", ""),
+				newStubUpstream("fallback-lo", common.TagTierFallback),
+			},
+			want: []string{"default-lo", "default-hi", "fallback-hi", "fallback-lo"},
+		},
+		{
+			name: "only fallbacks",
+			in:   []common.Upstream{newStubUpstream("fb-1", common.TagTierFallback), newStubUpstream("fb-2", common.TagTierFallback)},
+			want: []string{"fb-1", "fb-2"},
+		},
+		{
+			name: "other tags stay in the default tier",
+			in: []common.Upstream{
+				newStubUpstream("fb", common.TagTierFallback),
+				newStubUpstream("custom", "experimental"),
+				newStubUpstream("def", ""),
+			},
+			want: []string{"custom", "def", "fb"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ids(tierUpstreamsByGroup(tc.in)))
+		})
+	}
+}
