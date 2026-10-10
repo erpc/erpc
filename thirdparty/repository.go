@@ -58,7 +58,9 @@ func (v *RepositoryVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		recheckInterval = DefaultRecheckInterval
 	}
 
-	chains, ok := v.resolveChains(logger, urlStr, recheckInterval)
+	fallbackURL, _ := settings["fallbackRepositoryUrl"].(string)
+
+	chains, ok := v.resolveChains(logger, urlStr, recheckInterval, fallbackURL)
 	if !ok {
 		return false, ErrRemoteCacheCold
 	}
@@ -69,17 +71,69 @@ func (v *RepositoryVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 // resolveChains does a lock-free Lookup, kicks off an async refresh on
 // staleness, and returns (data, true) on hit or (nil, false) on cold start.
 // See remote_cache.go for the request-path safety rule.
-func (v *RepositoryVendor) resolveChains(logger *zerolog.Logger, urlStr string, recheckInterval time.Duration) (map[int64][]string, bool) {
+func (v *RepositoryVendor) resolveChains(logger *zerolog.Logger, urlStr string, recheckInterval time.Duration, fallbackURL string) (map[int64][]string, bool) {
 	chains, fresh := v.cache.Lookup(urlStr, recheckInterval)
 	if !fresh {
-		v.cache.TriggerAsyncRefresh(logger, urlStr, func(ctx context.Context) (map[int64][]string, error) {
-			return fetchRemoteData(ctx, urlStr)
-		})
+		v.triggerRepositoryRefresh(logger, urlStr, fallbackURL)
 	}
 	if chains == nil {
 		return nil, false
 	}
 	return chains, true
+}
+
+func (v *RepositoryVendor) triggerRepositoryRefresh(logger *zerolog.Logger, primaryURL, fallbackURL string) {
+	v.cache.TriggerAsyncRefresh(logger, primaryURL, func(ctx context.Context) (map[int64][]string, error) {
+		data, err := fetchRemoteData(ctx, primaryURL)
+		if err == nil {
+			return data, nil
+		}
+		if v.cache.Has(primaryURL) {
+			return nil, err
+		}
+		if fallbackURL == "" {
+			return nil, err
+		}
+		logger.Warn().Err(err).Msg("could not refresh remote repository data; will use stale data")
+		logger.Warn().Str("fallbackUrl", fallbackURL).Msg("no cached data; attempting fallback repository URL")
+		fbData, fbErr := fetchRemoteData(ctx, fallbackURL)
+		if fbErr != nil {
+			logger.Warn().Err(fbErr).Msg("fallback repository fetch also failed")
+			return nil, err
+		}
+		// Store without a fresh timestamp so the primary URL is retried next interval.
+		v.cache.StoreProvisional(primaryURL, fbData)
+		return nil, fmt.Errorf("repository fallback data stored provisionally")
+	})
+}
+
+// trySyncColdStartFetch synchronously loads repository data on the bootstrap
+// path when the cache is empty: primary first, then optional fallback.
+func (v *RepositoryVendor) trySyncColdStartFetch(ctx context.Context, logger *zerolog.Logger, primaryURL, fallbackURL string) (map[int64][]string, bool) {
+	if v.cache.Has(primaryURL) {
+		return nil, false
+	}
+
+	data, err := fetchRemoteData(ctx, primaryURL)
+	if err == nil {
+		v.cache.StoreFresh(primaryURL, data)
+		return data, true
+	}
+
+	logger.Warn().Err(err).Msg("could not refresh remote repository data; will use stale data")
+	if fallbackURL == "" {
+		return nil, false
+	}
+
+	logger.Warn().Str("fallbackUrl", fallbackURL).Msg("no cached data; attempting fallback repository URL")
+	fbData, fbErr := fetchRemoteData(ctx, fallbackURL)
+	if fbErr != nil {
+		logger.Warn().Err(fbErr).Msg("fallback repository fetch also failed")
+		return nil, false
+	}
+	v.cache.StoreProvisional(primaryURL, fbData)
+	v.triggerRepositoryRefresh(logger, primaryURL, fallbackURL)
+	return fbData, true
 }
 
 func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -109,9 +163,17 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 	if !ok {
 		recheckInterval = DefaultRecheckInterval
 	}
-	chains, ok := v.resolveChains(logger, urlStr, recheckInterval)
+
+	fallbackURL, _ := settings["fallbackRepositoryUrl"].(string)
+
+	chains, ok := v.resolveChains(logger, urlStr, recheckInterval, fallbackURL)
 	if !ok {
-		return nil, ErrRemoteCacheCold
+		if chains, ok = v.trySyncColdStartFetch(ctx, logger, urlStr, fallbackURL); !ok {
+			if fallbackURL != "" {
+				return nil, fmt.Errorf("chain ID %d not found in remote data or has no endpoints", chainID)
+			}
+			return nil, ErrRemoteCacheCold
+		}
 	}
 	endpoints, ok := chains[chainID]
 	if !ok || len(endpoints) == 0 {
