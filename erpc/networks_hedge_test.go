@@ -267,19 +267,19 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 				})
 		}
 
-		// Track hedge timing
-		var hedgeTime time.Time
-		var primaryTime time.Time
+		// Record when the final request's hedge reaches rpc2. Measure from
+		// the start of Forward, not from the primary's arrival at rpc1: the
+		// hedge timer starts before the primary is forwarded, so the primary
+		// can arrive late under load and make the gap look shorter than the
+		// delay. A timer never fires early, so the lower bound is safe.
+		var armed atomic.Bool
+		var hedgeAt atomic.Int64
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				if strings.Contains(body, "eth_getBalance") {
-					primaryTime = time.Now()
-					return true
-				}
-				return false
+				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
 			Delay(300 * time.Millisecond).
@@ -294,7 +294,9 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				if strings.Contains(body, "eth_getBalance") {
-					hedgeTime = time.Now()
+					if armed.Load() {
+						hedgeAt.CompareAndSwap(0, time.Now().UnixNano())
+					}
 					return true
 				}
 				return false
@@ -329,14 +331,15 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		}
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+		start := time.Now()
+		armed.Store(true)
 		resp, err := network.Forward(ctx, req)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 
-		// Verify hedge delay was at least MinDelay (allow tiny scheduling tolerance)
-		hedgeDelay := hedgeTime.Sub(primaryTime)
-		tolerance := 2 * time.Millisecond
-		assert.GreaterOrEqual(t, hedgeDelay, 100*time.Millisecond-tolerance, "Hedge delay should respect MinDelay boundary")
+		require.NotZero(t, hedgeAt.Load(), "the final request's hedge should reach rpc2")
+		hedgeDelay := time.Unix(0, hedgeAt.Load()).Sub(start)
+		assert.GreaterOrEqual(t, hedgeDelay, 100*time.Millisecond, "Hedge delay should respect MinDelay boundary")
 	})
 
 	t.Run("QuantileBasedHedge_MaxDelayBoundary", func(t *testing.T) {
@@ -353,7 +356,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 				Post("").
 				Times(1).
 				Reply(200).
-				Delay(200 * time.Millisecond). // Slow responses
+				Delay(1 * time.Second). // Slow responses: p99 lands near 1s
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      1,
@@ -365,7 +368,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 				Post("").
 				Times(1).
 				Reply(200).
-				Delay(200 * time.Millisecond).
+				Delay(1 * time.Second).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      1,
@@ -373,22 +376,21 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 				})
 		}
 
-		// Track hedge timing
-		var hedgeTime time.Time
-		var primaryTime time.Time
+		// An upper bound on wall-clock time is only safe with a wide gap
+		// between the right delay and the wrong ones. Max is 150ms; the
+		// unclamped p99 is ~1s and Base is 2s. So the final hedge must leave
+		// within 800ms of Forward starting: a clamped policy passes with
+		// 650ms to spare, an unclamped one fails. Only the final request's
+		// hedge is recorded; warm-up hedges may still be in flight.
+		var armed atomic.Bool
+		var hedgeAt atomic.Int64
 
 		// Set up test mocks - make them catch-all
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Persist().
-			Filter(func(r *http.Request) bool {
-				if primaryTime.IsZero() {
-					primaryTime = time.Now()
-				}
-				return true
-			}).
 			Reply(200).
-			Delay(400 * time.Millisecond).
+			Delay(2 * time.Second).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -399,8 +401,8 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(r *http.Request) bool {
-				if hedgeTime.IsZero() {
-					hedgeTime = time.Now()
+				if armed.Load() {
+					hedgeAt.CompareAndSwap(0, time.Now().UnixNano())
 				}
 				return true
 			}).
@@ -418,8 +420,8 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		// Set up network with quantile that would result in very high delay
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
 			Delay: &common.AdaptiveDuration{
-				Base:     common.Duration(300 * time.Millisecond), // High base delay
-				Quantile: 0.99,                                    // 99th percentile
+				Base:     common.Duration(2 * time.Second), // High base delay
+				Quantile: 0.99,                             // 99th percentile
 				Min:      common.Duration(10 * time.Millisecond),
 				Max:      common.Duration(150 * time.Millisecond), // Max boundary
 			},
@@ -435,13 +437,15 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		}
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+		start := time.Now()
+		armed.Store(true)
 		resp, err := network.Forward(ctx, req)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 
-		// Verify hedge delay was at most MaxDelay
-		hedgeDelay := hedgeTime.Sub(primaryTime)
-		assert.LessOrEqual(t, hedgeDelay, 160*time.Millisecond, "Hedge delay should respect MaxDelay boundary")
+		require.NotZero(t, hedgeAt.Load(), "the final request's hedge should reach rpc2")
+		hedgeDelay := time.Unix(0, hedgeAt.Load()).Sub(start)
+		assert.LessOrEqual(t, hedgeDelay, 800*time.Millisecond, "Hedge delay should respect MaxDelay boundary")
 	})
 
 	t.Run("HedgePolicy_SkipsNonRetryableWriteMethods", func(t *testing.T) {
@@ -792,22 +796,21 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// Set up all mocks BEFORE creating network
-		// Track timing
-		var primaryTime, hedgeTime time.Time
+		// Set up all mocks BEFORE creating network.
+		// The hedge timer can fire late under CPU pressure but never early,
+		// so only a lower bound on wall-clock time is safe. The upper bound
+		// comes from the winner: rpc2 can only answer first if the hedge
+		// fired well before rpc1's 1s reply, i.e. far below the 5s Max.
+		var hedgeTime time.Time
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				if strings.Contains(body, "eth_getBalance") {
-					primaryTime = time.Now()
-					return true
-				}
-				return false
+				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(300 * time.Millisecond).
+			Delay(1 * time.Second).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -843,22 +846,31 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			Delay: &common.AdaptiveDuration{
 				Base:     common.Duration(100 * time.Millisecond), // Base delay (fallback)
 				Quantile: 0.9,
-				Max:      common.Duration(200 * time.Millisecond),
+				// Max sits far above Base so a policy that wrongly
+				// clamps to Max cannot pass the winner check below.
+				Max: common.Duration(5 * time.Second),
 			},
 			MaxCount: 1,
 		})
 
 		// First request without any metrics history
 		req := common.NewNormalizedRequest(requestBytes)
+		start := time.Now()
 		resp, err := network.Forward(ctx, req)
 
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 
-		// Verify hedge was triggered with base delay (no metrics available)
-		hedgeDelay := hedgeTime.Sub(primaryTime)
-		assert.GreaterOrEqual(t, hedgeDelay, 90*time.Millisecond, "Should use base delay when no metrics available")
-		assert.LessOrEqual(t, hedgeDelay, 110*time.Millisecond, "Should use base delay when no metrics available")
+		// Upper side: the hedge (rpc2) won, so the policy did not wait
+		// for Max or for rpc1's 1s reply.
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, jrr.GetResultString(), "0x2222", "Hedge should fire at base delay, well before Max, when no metrics available")
+
+		// Lower side: the timer never fires early, so the hedge left at
+		// least Base after Forward started. This rules out a zero delay.
+		require.False(t, hedgeTime.IsZero(), "Hedge request should reach rpc2")
+		assert.GreaterOrEqual(t, hedgeTime.Sub(start), 100*time.Millisecond, "Should use base delay when no metrics available")
 	})
 
 	t.Run("HedgePolicy_ConcurrentRequests", func(t *testing.T) {
