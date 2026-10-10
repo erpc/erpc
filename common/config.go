@@ -1365,13 +1365,21 @@ type EvmUpstreamConfig struct {
 	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
 }
 
+// EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
+// eth_getBlockReceipts, eth_getLogs, trace_block / debug_traceBlockByNumber) the
+// eth_query* executor issues when no native QueryService upstream answers. The
+// sub-requests go through the network like any request; the budget bounds the
+// work of one MIP-16 page.
 type EvmQueryShimConfig struct {
 	Enabled        *bool    `yaml:"enabled,omitempty" json:"enabled"`
 	AllowedMethods []string `yaml:"allowedMethods,omitempty" json:"allowedMethods"`
-	Concurrency    int      `yaml:"concurrency,omitempty" json:"concurrency"`
-	MaxBlockRange  int64    `yaml:"maxBlockRange,omitempty" json:"maxBlockRange"`
-	MaxLimit       int      `yaml:"maxLimit,omitempty" json:"maxLimit"`
-	DefaultLimit   int      `yaml:"defaultLimit,omitempty" json:"defaultLimit"`
+	// MaxBlocksPerPage is the budget of blocks one page may scan. A page that
+	// reaches it ends at the last scanned block.
+	MaxBlocksPerPage int64 `yaml:"maxBlocksPerPage,omitempty" json:"maxBlocksPerPage"`
+	// MaxPageDuration is the budget of time one page may scan. A page that
+	// reaches it ends at the last complete block, or fails with -32005 when no
+	// block completed.
+	MaxPageDuration Duration `yaml:"maxPageDuration,omitempty" json:"maxPageDuration" tstype:"Duration"`
 }
 
 func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
@@ -1379,10 +1387,8 @@ func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
 		return nil
 	}
 	copied := &EvmQueryShimConfig{
-		Concurrency:   c.Concurrency,
-		MaxBlockRange: c.MaxBlockRange,
-		MaxLimit:      c.MaxLimit,
-		DefaultLimit:  c.DefaultLimit,
+		MaxBlocksPerPage: c.MaxBlocksPerPage,
+		MaxPageDuration:  c.MaxPageDuration,
 	}
 	if c.Enabled != nil {
 		v := *c.Enabled
@@ -1393,6 +1399,23 @@ func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
 		copy(copied.AllowedMethods, c.AllowedMethods)
 	}
 	return copied
+}
+
+// AllowsMethod reports whether the shim is enabled for the eth_query* method:
+// enabled, and the method matches allowedMethods (empty allows all).
+func (c *EvmQueryShimConfig) AllowsMethod(method string) bool {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return false
+	}
+	if len(c.AllowedMethods) == 0 {
+		return true
+	}
+	for _, allowed := range c.AllowedMethods {
+		if match, err := WildcardMatch(allowed, method); err == nil && match {
+			return true
+		}
+	}
+	return false
 }
 
 // EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.

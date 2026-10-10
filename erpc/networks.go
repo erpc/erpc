@@ -77,6 +77,11 @@ type Network struct {
 	// the prod-incident invariant tests must arm the velocity gate exactly the
 	// way prod had it armed.
 	servedTipBlockTimeOverride float64
+
+	// queryTraceSource remembers which trace method answered the eth_query*
+	// shim on this network (queryTraceSource* values), so a network whose
+	// upstreams lack trace_block asks debug_traceBlockByNumber directly.
+	queryTraceSource atomic.Int32
 }
 
 // maxServedTipPartitions caps the number of materialized per-tag served-tip
@@ -1874,6 +1879,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
 			common.SetTraceSpanError(forwardSpan, err)
 			return nil, err
+		}
+
+		// MIP-16 eth_query*: the query executor answers it for both transports
+		// (see forwardQuery). Shim sub-requests carry a parent id and are
+		// ordinary methods, so they never re-enter here.
+		if queryMethod := canonicalQueryMethod(method); queryMethod != "" {
+			resp, err := n.forwardQuery(ctx, req, queryMethod)
+			if err != nil {
+				common.SetTraceSpanError(forwardSpan, err)
+			}
+			return resp, err
 		}
 	}
 

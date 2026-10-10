@@ -1392,7 +1392,25 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	aux.JSONRPC = "2.0"
 
 	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
-		return err
+		// MIP-16 answers eth_query* params that are not an array with
+		// -32602, not a parse error: decode the envelope again with the
+		// params left raw and drop them, so the query parser rejects the
+		// request with the right code.
+		raw := &struct {
+			JSONRPC   string          `json:"jsonrpc,omitempty"`
+			ID        json.RawMessage `json:"id,omitempty"`
+			Method    uniqueString    `json:"method"`
+			Params    json.RawMessage `json:"params"`
+			NetworkID interface{}     `json:"networkId,omitempty"`
+		}{Method: uniqueString{member: "method"}}
+		if SonicCfg.Unmarshal(data, raw) != nil || !strings.HasPrefix(strings.ToLower(raw.Method.value), "eth_query") {
+			return err
+		}
+		if raw.JSONRPC != "" {
+			r.JSONRPC = raw.JSONRPC
+		}
+		r.Params = nil
+		aux.ID, aux.Method, aux.NetworkID = raw.ID, raw.Method, raw.NetworkID
 	}
 
 	// Absent and present-but-empty stay distinct on the wire: an object with
