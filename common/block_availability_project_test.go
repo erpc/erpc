@@ -115,6 +115,44 @@ func TestTranslateToJsonRpcException_BlockUnavailableIsMissingData(t *testing.T)
 				NewErrFailsafeRetryExceeded(ScopeNetwork, exhausted, nil))))
 	})
 
+	// All upstreams pre-check skipped due to block-unavailable (e.g. every upstream
+	// exceeded its lower/upper availability bound). The skip carries a verdict —
+	// the upstream was consulted, just not over the wire — so all-skipped is
+	// still unanimity and must return -32014.
+	t.Run("all pre-check skipped due to block unavailable", func(t *testing.T) {
+		skip := func(id string) error {
+			return NewErrUpstreamRequestSkipped(blockUnavailable(id), id)
+		}
+		order := []string{"up-a", "up-b", "up-c"}
+		causes := map[string]error{
+			"up-a": skip("up-a"),
+			"up-b": skip("up-b"),
+			"up-c": skip("up-c"),
+		}
+		exhausted := newExhausted(t, order, causes)
+		assert.EqualValues(t, JsonRpcErrorMissingData,
+			clientWireCode(t, TranslateToJsonRpcException(exhausted)),
+			"all pre-check skips due to block-unavailable must be -32014")
+		assert.EqualValues(t, JsonRpcErrorMissingData,
+			clientWireCode(t, TranslateToJsonRpcException(
+				NewErrFailsafeRetryExceeded(ScopeNetwork, exhausted, nil))),
+			"retry-exceeded wrapper must also be -32014")
+	})
+
+	// A skip due to a reason other than block-unavailable (method filter, cordon,
+	// etc.) is neutral — it carries no verdict and must not trigger -32014.
+	t.Run("all skipped for non-block-unavailable reason", func(t *testing.T) {
+		neutralSkip := func(id string) error {
+			return NewErrUpstreamRequestSkipped(nil, id)
+		}
+		order := []string{"up-a", "up-b"}
+		causes := map[string]error{"up-a": neutralSkip("up-a"), "up-b": neutralSkip("up-b")}
+		exhausted := newExhausted(t, order, causes)
+		assert.NotEqualValues(t, JsonRpcErrorMissingData,
+			clientWireCode(t, TranslateToJsonRpcException(exhausted)),
+			"neutral skips must not claim block is definitively absent")
+	})
+
 	// Membership in a multi-error bundle means ONE upstream hit the condition, not
 	// that it is the verdict. Reporting -32014 for these would hand the client a
 	// definitive "this block does not exist" while hiding a real consensus or

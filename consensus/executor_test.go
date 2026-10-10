@@ -751,4 +751,33 @@ func TestRecordMetricsAndTracing_InfoSeverityNotCountedAsConsensusError(t *testi
 		assert.Equal(t, errBefore+1, testutil.ToFloat64(errCounter),
 			"non-info errors must still be counted as consensus errors")
 	})
+
+	// When ALL upstreams unanimously agree the block is outside the availability
+	// window, the consensus records "consensus_on_error" (hasConsensus=true,
+	// result.Error≠nil). This is a deterministic gate outcome — the client
+	// requested a block no upstream will serve — not an infra failure.
+	// ErrUpstreamBlockUnavailable is SeverityWarning (self-healing for a lagging
+	// upstream), which would normally pass the severity guard, but unanimous
+	// block-unavailable consensus must be excluded from MetricConsensusErrors.
+	t.Run("block-unavailable unanimous consensus skips consensus_errors_total", func(t *testing.T) {
+		labels := metricsLabels{
+			projectId:   "test-proj-block-unavail",
+			networkId:   "test-net",
+			category:    "eth_getBlockByNumber",
+			finalityStr: "latest",
+			method:      "eth_getBlockByNumber",
+			userId:      "n/a",
+			agentName:   "n/a",
+		}
+		blockUnavailErr := common.NewErrUpstreamBlockUnavailable("up-a", 1000, 900, 850)
+		errCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+			labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr, labels.userId, labels.agentName)
+		errBefore := testutil.ToFloat64(errCounter)
+
+		e.recordMetricsAndTracing(newTestRequest(), time.Now(),
+			&slotResult{Error: blockUnavailErr}, buildAgreedErrorAnalysis(), labels, span)
+
+		assert.Equal(t, errBefore, testutil.ToFloat64(errCounter),
+			"unanimous block-unavailable must not inflate consensus_errors_total")
+	})
 }
