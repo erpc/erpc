@@ -2377,6 +2377,11 @@ export const UpstreamOutcomeCancelled: UpstreamAttemptOutcome = "cancelled";
 export const UpstreamOutcomeTimeout: UpstreamAttemptOutcome = "timeout";
 export const UpstreamOutcomeSkipped: UpstreamAttemptOutcome = "skipped";
 /**
+ * The upstream answered that it does not serve this method or feature
+ * (ErrEndpointUnsupported). It is not a server fault: the breaker ignores it.
+ */
+export const UpstreamOutcomeUnsupported: UpstreamAttemptOutcome = "unsupported";
+/**
  * UpstreamSelectionReason describes WHY a particular upstream was
  * selected for a given attempt. Operators use this to debug skew in
  * upstream-pick distribution (e.g. why is one upstream getting all

@@ -182,7 +182,7 @@ Special: a `0x08c379a0` prefix in a successful HTTP 200 result (`dt[1:11]`, not 
 - `total Hedges = UpstreamHedges + NetworkHedges + CacheHedges`
 - `Snapshot()` loads counters independently with no global lock — under high concurrency totals may briefly drift from component sums.
 
-**UpstreamAttemptOutcome values:** `success`, `empty`, `transport_error`, `server_error`, `client_error`, `rate_limited`, `missing_data`, `exec_revert`, `block_unavailable`, `breaker_open`, `cancelled`, `timeout`, `skipped`.
+**UpstreamAttemptOutcome values:** `success`, `empty`, `transport_error`, `server_error`, `client_error`, `rate_limited`, `missing_data`, `unsupported`, `exec_revert`, `block_unavailable`, `breaker_open`, `cancelled`, `timeout`, `skipped`.
 
 **UpstreamSelectionReason values:** `primary`, `retry`, `hedge`, `consensus_slot`, `sweep`.
 
