@@ -1,6 +1,6 @@
 ---
 title: Goldsky cache (gRPC)
-description: Plug Goldsky's hosted, read-only gRPC cache into eRPC — historical blocks, logs, transactions and receipts served from Goldsky's indexed chain data before your requests reach your upstreams.
+description: Plug Goldsky's hosted, read-only gRPC cache into eRPC — historical blocks, logs, transactions and receipts served from Goldsky's indexed chain data before your requests reach your upstreams — and Monad's MIP-16 eth_queryLogs and eth_queryTransactions served natively.
 ---
 
 import { Steps } from "nextra/components";
@@ -117,3 +117,58 @@ Per connector, the Prometheus counter `erpc_cache_get_success_hit_total{connecto
 - **`eth_getLogs`:** up to 30,000 blocks per call. Block, transaction and receipt reads answer well within `getTimeout: 200ms`; a wide or dense `eth_getLogs` range takes longer and goes to your upstreams unless you raise it.
 - **Chains:** abstract, arbitrum, arbitrum-sepolia, arc, avalanche, base, base-sepolia, bsc, celo, ethereum, gnosis, hyperevm, ink, monad, optimism, polygon, robinhood, robinhood-testnet, sei, sepolia, tempo, tron. Use the name in the URL: `grpcs://edge.goldsky.com/cache/<chain>`.
 - **No writes:** the connector is read-only and eRPC never writes to it, so the policy needs no `appliesTo`.
+
+## Monad `eth_query*` (MIP-16)
+
+On Monad (chain 143), the same endpoint also serves `eth_queryLogs` and `eth_queryTransactions` ([MIP-16](https://github.com/monad-crypto/MIPs/pull/89)) natively through `bds.evm.QueryService`: one paged read from Goldsky's index instead of a node call per block. Add it as a gRPC **upstream** (not a cache connector) that allows those methods. eRPC tries it first and answers `eth_queryBlocks`, `eth_queryTraces` and `eth_queryTransfers` with the [query shim](/reference/evm/method-handlers) on your archive node:
+
+<ConfigTabs
+  path="upstreams"
+  yaml={`upstreams:
+  - id: goldsky-monad
+    endpoint: grpcs://edge.goldsky.com/cache/monad
+    grpc:
+      headers:
+        x-api-key: \${GOLDSKY_API_KEY}
+    evm:
+      chainId: 143
+    ignoreMethods: ["*"]
+    allowMethods:
+      - eth_chainId
+      - eth_getBlockByNumber
+      - eth_queryLogs
+      - eth_queryTransactions
+  - id: monad-archive
+    endpoint: https://your-monad-archive-node
+    evm:
+      chainId: 143
+      # serves eth_queryBlocks, eth_queryTraces and eth_queryTransfers,
+      # and any range the Goldsky upstream cannot answer
+      queryShim:
+        enabled: true`}
+  ts={`upstreams: [
+  {
+    id: "goldsky-monad",
+    endpoint: "grpcs://edge.goldsky.com/cache/monad",
+    grpc: { headers: { "x-api-key": "\${GOLDSKY_API_KEY}" } },
+    evm: { chainId: 143 },
+    ignoreMethods: ["*"],
+    allowMethods: ["eth_chainId", "eth_getBlockByNumber", "eth_queryLogs", "eth_queryTransactions"],
+  },
+  {
+    id: "monad-archive",
+    endpoint: "https://your-monad-archive-node",
+    evm: {
+      chainId: 143,
+      // serves eth_queryBlocks, eth_queryTraces and eth_queryTransfers,
+      // and any range the Goldsky upstream cannot answer
+      queryShim: { enabled: true },
+    },
+  },
+]`}
+/>
+
+- **Both transports:** JSON-RPC `eth_query*` and gRPC `QueryService` streams use the same upstreams and return the same MIP-16 pages.
+- **Range:** genesis to the chain tip. eRPC resolves `latest`, `safe` and `finalized` to block numbers before it calls the upstream.
+- **Without an archive node:** leave out `monad-archive`. `eth_queryBlocks`, `eth_queryTraces` and `eth_queryTransfers` then return `-32004` (method not supported).
+- **Edge RPC:** Goldsky Edge RPC endpoints for Monad (`https://edge.goldsky.com/standard/evm/143`) already serve all five `eth_query*` methods this way.
