@@ -40,10 +40,11 @@ type GenericHttpJsonRpcClient struct {
 	httpClient      *http.Client
 	isLogLevelTrace bool
 
-	enableGzip    bool
-	supportsBatch bool
-	batchMaxSize  int
-	batchMaxWait  time.Duration
+	enableGzip       bool
+	maxResponseBytes int64
+	supportsBatch    bool
+	batchMaxSize     int
+	batchMaxWait     time.Duration
 
 	batchMu       sync.Mutex
 	batchRequests map[interface{}]*batchRequest
@@ -130,6 +131,9 @@ func NewGenericHttpJsonRpcClient(
 
 		if jsonRpcCfg.EnableGzip != nil {
 			client.enableGzip = *jsonRpcCfg.EnableGzip
+		}
+		if jsonRpcCfg.MaxResponseBytes != nil {
+			client.maxResponseBytes = *jsonRpcCfg.MaxResponseBytes
 		}
 
 		if jsonRpcCfg.Headers != nil {
@@ -492,7 +496,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 }
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
-	bodyBytes, cleanup, err := c.readResponseBody(resp, int(resp.ContentLength))
+	bodyBytes, cleanup, err := c.readResponseBody(resp, c.responseExpectedSize(resp))
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -752,22 +756,29 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		}
 		return nil, common.NewErrEndpointTransportFailure(c.Url, err)
 	}
-	// DO NOT close resp.Body here - it will be closed by NormalizedResponse after reading
-
-	var bodyReader io.ReadCloser = resp.Body
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzReader, err := c.gzipPool.GetReset(resp.Body)
-		if err != nil {
-			_ = resp.Body.Close() // Must close on error path
-			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
-		}
-		bodyReader = c.gzipPool.WrapGzipReader(gzReader)
+	bodyReader, err := c.openResponseBody(resp)
+	if err != nil {
+		return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
+	}
+	var limited *limitedResponseBody
+	if c.maxResponseBytes > 0 {
+		limited = &limitedResponseBody{ReadCloser: bodyReader, remaining: c.maxResponseBytes, limit: c.maxResponseBytes}
+		bodyReader = limited
 	}
 
 	nr := common.NewNormalizedResponse().
 		WithRequest(req).
 		WithBody(bodyReader).
-		WithExpectedSize(int(resp.ContentLength))
+		WithExpectedSize(c.responseExpectedSize(resp))
+
+	if limited != nil {
+		_, _ = nr.JsonRpcResponse()
+		if limited.limitErr != nil {
+			nr.Release()
+			common.SetTraceSpanError(span, limited.limitErr)
+			return nil, limited.limitErr
+		}
+	}
 
 	err = c.normalizeJsonRpcError(resp, nr)
 	if err != nil {
@@ -844,20 +855,82 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 }
 
 func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expectedSize int) ([]byte, func(), error) {
-	var reader io.ReadCloser = resp.Body
-	defer resp.Body.Close()
-
-	// Check if response is gzipped
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gr, err := c.gzipPool.GetReset(resp.Body)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error creating gzip reader: %w", err)
-		}
-		defer c.gzipPool.Put(gr)
-		reader = gr
+	reader, err := c.openResponseBody(resp)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error creating gzip reader: %w", err)
+	}
+	defer reader.Close()
+	if c.maxResponseBytes > 0 {
+		reader = &limitedResponseBody{ReadCloser: reader, remaining: c.maxResponseBytes, limit: c.maxResponseBytes}
 	}
 
 	return util.ReadAll(reader, expectedSize)
+}
+
+type responseBodyReadCloser struct {
+	io.Reader
+	decoder io.Closer
+	body    io.Closer
+}
+
+func (r *responseBodyReadCloser) Close() error {
+	decoderErr := r.decoder.Close()
+	bodyErr := r.body.Close()
+	if decoderErr != nil {
+		return decoderErr
+	}
+	return bodyErr
+}
+
+func (c *GenericHttpJsonRpcClient) openResponseBody(resp *http.Response) (io.ReadCloser, error) {
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		return resp.Body, nil
+	}
+	gr, err := c.gzipPool.GetReset(resp.Body)
+	if err != nil {
+		_ = resp.Body.Close()
+		return nil, err
+	}
+	decoder := c.gzipPool.WrapGzipReader(gr)
+	return &responseBodyReadCloser{Reader: decoder, decoder: decoder, body: resp.Body}, nil
+}
+
+func (c *GenericHttpJsonRpcClient) responseExpectedSize(resp *http.Response) int {
+	if c.maxResponseBytes > 0 && (resp.Header.Get("Content-Encoding") == "gzip" || resp.ContentLength > c.maxResponseBytes) {
+		return 0
+	}
+	return int(resp.ContentLength)
+}
+
+type limitedResponseBody struct {
+	io.ReadCloser
+	remaining int64
+	limit     int64
+	limitErr  error
+}
+
+func (r *limitedResponseBody) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.limitErr != nil {
+		return 0, r.limitErr
+	}
+	if r.remaining == 0 {
+		var probe [1]byte
+		n, err := r.ReadCloser.Read(probe[:])
+		if n > 0 {
+			r.limitErr = common.NewErrUpstreamResponseTooLarge(uint64(r.limit)+1, r.limit)
+			return 0, r.limitErr
+		}
+		return 0, err
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.ReadCloser.Read(p)
+	r.remaining -= int64(n)
+	return n, err
 }
 
 func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {
