@@ -301,3 +301,46 @@ func TestIsNoAttemptError(t *testing.T) {
 		assert.True(t, isNoAttemptResult(nil))
 	})
 }
+
+// TestNextResponse_DeliveredResponsesSurviveTheCap pins the collection
+// loop's receive step. Two responses are already in the channel and the
+// wait cap has already fired: the state the loop finds when a loaded
+// scheduler wakes it late. Both responses must count. A bare select over
+// the two picks the timer about half the time and drops them.
+func TestNextResponse_DeliveredResponsesSurviveTheCap(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		responses := make(chan *execResult, 3)
+		first, second := &execResult{}, &execResult{}
+		responses <- first
+		responses <- second
+		capC := make(chan time.Time, 1)
+		capC <- time.Now()
+		capExpired := false
+
+		got, ok := nextResponse(responses, capC, &capExpired)
+		require.True(t, ok, "a delivered response was dropped when the cap fired")
+		require.Same(t, first, got)
+
+		got, ok = nextResponse(responses, capC, &capExpired)
+		require.True(t, ok, "a delivered response was dropped when the cap fired")
+		require.Same(t, second, got)
+
+		got, ok = nextResponse(responses, capC, &capExpired)
+		require.False(t, ok, "with the cap fired and nothing in hand, the loop must stop")
+		require.Nil(t, got)
+		require.True(t, capExpired)
+	}
+}
+
+// TestNextResponse_NilDeliveryAfterTheCapIsReceived: a participant can
+// deliver nil. After the cap fires, that delivery must read as received,
+// so the loop skips it rather than stopping early.
+func TestNextResponse_NilDeliveryAfterTheCapIsReceived(t *testing.T) {
+	responses := make(chan *execResult, 1)
+	responses <- nil
+	capExpired := true
+
+	got, ok := nextResponse(responses, nil, &capExpired)
+	require.True(t, ok)
+	require.Nil(t, got)
+}
