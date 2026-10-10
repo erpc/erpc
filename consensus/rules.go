@@ -312,15 +312,21 @@ var consensusRules = []consensusRule{
 			if best == nil {
 				return false
 			}
-			// Apply when the leading group meets threshold and is empty OR consensus error, while any non-empty exists
-			if best.Count >= a.config.agreementThreshold && (best.ResponseType == ResponseTypeEmpty || best.ResponseType == ResponseTypeConsensusError) {
-				for _, g := range a.groups {
-					if g.ResponseType == ResponseTypeNonEmpty {
-						return true
-					}
+			// Apply when an empty OR consensus-error group leads (or ties for the
+			// lead) at or above threshold, while any non-empty exists. a.groups
+			// is a map, so best alone is a random pick among tied leaders.
+			if best.Count < a.config.agreementThreshold {
+				return false
+			}
+			emptyLeads, hasNonEmpty := false, false
+			for _, g := range a.groups {
+				if g.ResponseType == ResponseTypeNonEmpty {
+					hasNonEmpty = true
+				} else if g.Count == best.Count && (g.ResponseType == ResponseTypeEmpty || g.ResponseType == ResponseTypeConsensusError) {
+					emptyLeads = true
 				}
 			}
-			return false
+			return emptyLeads && hasNonEmpty
 		},
 		Action: func(a *consensusAnalysis) *slotResult {
 			var bestNonEmpty *responseGroup
