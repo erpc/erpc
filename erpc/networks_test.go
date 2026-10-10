@@ -10321,6 +10321,15 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.NotNil(t, resp)
 		resp.Release()
 
+		// Release waits for the network's cache write, but the memory
+		// connector (ristretto) applies writes through an async buffer.
+		// Wait until the middle range is readable, or the full request
+		// below can miss the cache and send the middle range upstream.
+		require.Eventually(t, func() bool {
+			cached, err := slowCache.Get(ctx, middleRangeRequest)
+			return err == nil && cached != nil
+		}, 5*time.Second, 5*time.Millisecond, "middle range never became readable from cache")
+
 		// Now make the full request that should be split into three parts
 		fullRangeRequest := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
