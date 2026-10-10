@@ -30,10 +30,21 @@ func IsValidIdentifier(s string) bool {
 	return validIdentifierRegex.MatchString(s)
 }
 
+// MaxNetworkIdLength bounds a network id accepted off the wire. Real ids are
+// far shorter ("evm:11155111", "svm:eclipse:mainnet-beta").
+const MaxNetworkIdLength = 64
+
+// IsValidNetworkId reports whether s is a network id eRPC will lazily
+// bootstrap a network for. Each accepted id gets its own BootstrapTask,
+// NetworkConfig and `network` label, so an "evm:" chain id must use its one
+// canonical decimal spelling: "evm:007", "evm:-1" and "evm:+1" are not aliases
+// for a real network.
 func IsValidNetworkId(s string) bool {
+	if len(s) > MaxNetworkIdLength {
+		return false
+	}
 	if strings.HasPrefix(s, "evm:") {
-		_, err := strconv.Atoi(s[4:])
-		return err == nil
+		return isCanonicalChainId(s[4:])
 	}
 	if strings.HasPrefix(s, "svm:") {
 		// Two accepted shapes: "svm:<cluster>" (implicit solana, back-compat)
@@ -64,6 +75,22 @@ func IsValidNetworkId(s string) bool {
 		return true
 	}
 	return false
+}
+
+// isCanonicalChainId reports whether s is the canonical decimal spelling of a
+// positive int64 chain id: digits only, no sign, no leading zero.
+func isCanonicalChainId(s string) bool {
+	if s == "" || s[0] == '0' {
+		return false
+	}
+	for i := range len(s) {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	// Only overflow is left for ParseInt to catch.
+	_, err := strconv.ParseInt(s, 10, 64)
+	return err == nil
 }
 
 var counters = make(map[string]int)
