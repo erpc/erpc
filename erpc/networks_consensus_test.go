@@ -35,6 +35,10 @@ type consensusTestCase struct {
 	hedgePolicy          *common.HedgePolicyConfig
 	mockResponses        []mockResponse
 	expectedCalls        []int
+	// expectedCallsMax, when set, turns expectedCalls[i] into a lower bound
+	// and this into the upper bound, for upstreams whose call count depends
+	// on the order in which consensus slots start.
+	expectedCallsMax     []int
 	expectedResult       *expectedResult
 	expectedError        *expectedError
 	expectedPendingMocks int
@@ -1506,7 +1510,11 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32000, "cannot query unfinalized data")},
 				{status: 200, body: jsonRpcSuccess("0x7a")},
 			},
-			expectedCalls: []int{1, 2, 1}, // upstream 2 is retried once due to MaxAttempts:2
+			// Upstream 2 is retried once due to MaxAttempts:2. All slots draw
+			// from one round-robin pool, so when slot 3 starts after slot 2's
+			// retry, slot 3 also lands on upstream 2: 3 calls, same result.
+			expectedCalls:    []int{1, 2, 1},
+			expectedCallsMax: []int{1, 3, 1},
 			expectedResult: &expectedResult{
 				jsonRpcResult: `"0x7a"`,
 			},
@@ -2794,6 +2802,10 @@ func startConsensusMockServers(t *testing.T, tc consensusTestCase) {
 		capturedSrv := srv
 		capturedExpectedCount := expectedCount
 		capturedOptionalCall := optionalCall
+		capturedMaxCount := expectedCount
+		if idx < len(tc.expectedCallsMax) {
+			capturedMaxCount = tc.expectedCallsMax[idx]
+		}
 
 		t.Cleanup(func() {
 			capturedSrv.Close()
@@ -2803,6 +2815,13 @@ func startConsensusMockServers(t *testing.T, tc consensusTestCase) {
 					assert.GreaterOrEqual(t, actual, 0)
 					assert.LessOrEqual(t, actual, 1,
 						"upstream %d should be called at most once before consensus cancellation races", capturedIdx+1)
+					return
+				}
+				if capturedMaxCount > capturedExpectedCount {
+					assert.GreaterOrEqual(t, actual, capturedExpectedCount,
+						"upstream %d called too few times", capturedIdx+1)
+					assert.LessOrEqual(t, actual, capturedMaxCount,
+						"upstream %d called too many times", capturedIdx+1)
 					return
 				}
 				assert.Equal(t, capturedExpectedCount, actual,
