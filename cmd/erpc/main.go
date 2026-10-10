@@ -108,11 +108,18 @@ func main() {
 			// Suppress all logs
 			zerolog.SetGlobalLevel(zerolog.Disabled)
 
+			// Reject unsupported formats before loading the configuration.
+			format := cmd.String("format")
+			if err := validateReportFormat(format); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				util.OsExit(1)
+				return nil
+			}
+
 			cfg, err := getConfig(logger, cmd)
 			if err != nil {
 				// Config load errors should be included as Errors in output, not printed
 				report := &erpc.ValidationReport{Errors: []string{fmt.Sprintf("config load error: %v", err)}}
-				format := cmd.String("format")
 				if format == "md" {
 					out := erpc.RenderValidationReportMarkdown(report)
 					fmt.Println(out)
@@ -125,7 +132,6 @@ func main() {
 			}
 
 			report := erpc.GenerateValidationReport(ctx, cfg)
-			format := cmd.String("format")
 			if format == "md" {
 				out := erpc.RenderValidationReportMarkdown(report)
 				fmt.Println(out)
@@ -245,6 +251,16 @@ func main() {
 	if err := cmd.Run(ctx, os.Args); err != nil {
 		logger.Error().Msgf("failed to start erpc: %v", err)
 		util.OsExit(util.ExitCodeERPCStartFailed)
+	}
+}
+
+// Supported output formats of the validation report
+func validateReportFormat(format string) error {
+	switch format {
+	case "json", "md":
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q (use json or md)", format)
 	}
 }
 
