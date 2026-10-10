@@ -248,6 +248,35 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		}
 
+		// HyperEVM read precompiles (0x…0800 onwards) execute against HyperCore
+		// state for the requested block. Many nodes hold that state only for
+		// their live tip; for any other block they answer
+		//   -32003 "out of gas: gas exhausted during precompiled contract execution: <rpc gas cap>"
+		// while a node that holds the state answers the same call. This is a
+		// data gap on the node, not an execution result, so it must not reach
+		// the generic "out of gas" branch below, which returns it to the caller
+		// as a final execution exception. eth_sendRawTransaction keeps its
+		// existing transaction-rejected handling.
+		if strings.Contains(msg, "gas exhausted during precompiled contract execution") {
+			isSendRawTx := false
+			if nr != nil && nr.Request() != nil {
+				m, _ := nr.Request().Method()
+				isSendRawTx = strings.EqualFold(m, "eth_sendRawTransaction")
+			}
+			if !isSendRawTx {
+				return common.NewErrEndpointMissingData(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorMissingData,
+						err.Message,
+						nil,
+						details,
+					),
+					upstream,
+				)
+			}
+		}
+
 		//----------------------------------------------------------------
 		// "Timeouts / node-level" errors
 		//----------------------------------------------------------------
