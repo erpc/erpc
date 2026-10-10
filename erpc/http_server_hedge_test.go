@@ -2358,9 +2358,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("ServerTimesOutBeforeHedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamHasTimeout", func(t *testing.T) {
+		// Only the server timeout may end this request. The network timeout,
+		// rpc2's timeout and rpc2's reply sit far beyond it, so no other
+		// timer can race it. They used to sit 20ms past it, and a 20ms
+		// scheduler stall on a loaded runner let rpc2's answer win. The
+		// 500ms server timeout leaves the 5ms hedge ample time to fire, so
+		// rpc2's mock is always consumed. gock returns early when the server
+		// timeout cancels the request, so the long delays cost nothing.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(30 * time.Millisecond).Ptr(),
+				MaxTimeout: common.Duration(500 * time.Millisecond).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -2379,7 +2386,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 										Delay:    common.NewStaticDuration(5 * time.Millisecond),
 									},
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(90 * time.Millisecond),
+										Duration: common.NewStaticDuration(10 * time.Second),
 									},
 								},
 							},
@@ -2415,7 +2422,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(60 * time.Millisecond),
+										Duration: common.NewStaticDuration(10 * time.Second),
 									},
 									Retry: nil,
 								},
@@ -2439,7 +2446,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(402).
-			Delay(450 * time.Millisecond). // slow path; kept well under MaxTimeout to avoid timeout races + reduce lingering gock-sleep goroutines that starve later subtests
+			Delay(10 * time.Second). // never answers in time; rpc1's 45ms upstream timeout fails it first
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2453,7 +2460,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(45 * time.Millisecond).
+			Delay(10 * time.Second).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
