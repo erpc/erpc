@@ -429,16 +429,17 @@ func (v *QuicknodeVendor) fetchEndpoints(ctx context.Context, apiKey string, fil
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
-
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			return nil, fmt.Errorf("quicknode API returned status %d: %s", resp.StatusCode, string(body))
+			return nil, closeResponseBody(resp.Body, fmt.Errorf("quicknode API returned status %d: %s", resp.StatusCode, string(body)))
 		}
 
 		var endpointsResp QuicknodeEndpointsResponse
 		if err := common.SonicCfg.NewDecoder(resp.Body).Decode(&endpointsResp); err != nil {
-			return nil, fmt.Errorf("failed to decode QuickNode endpoints response: %w", err)
+			return nil, closeResponseBody(resp.Body, fmt.Errorf("failed to decode QuickNode endpoints response: %w", err))
+		}
+		if err := closeResponseBody(resp.Body, nil); err != nil {
+			return nil, err
 		}
 
 		if endpointsResp.Error != "" {
