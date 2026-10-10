@@ -143,8 +143,18 @@ func (e *executor) Run(
 	}
 
 	labels := e.extractMetricsLabels(ctx, originalReq)
+	parentSpan := trace.SpanFromContext(ctx)
 	ctx, consensusSpan := e.startConsensusSpan(ctx, labels)
 	defer consensusSpan.End()
+	if ups := originalReq.Upstreams(); len(ups) > 0 {
+		ids := make([]string, len(ups))
+		for i, u := range ups {
+			ids[i] = u.Id()
+		}
+		attr := attribute.StringSlice("consensus.participants", ids)
+		consensusSpan.SetAttributes(attr)
+		parentSpan.SetAttributes(attr)
+	}
 
 	lg := e.logger.With().
 		Interface("id", originalReq.ID()).
