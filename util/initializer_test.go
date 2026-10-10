@@ -15,8 +15,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testLogWriter forwards to t.Log until the test's cleanup runs. Task
+// goroutines log after they publish their terminal state (and some test tasks
+// ignore their context), so they can outlive the test; logging into a finished
+// test is a data race in the testing package.
+type testLogWriter struct {
+	mu     sync.Mutex
+	t      *testing.T
+	closed bool
+}
+
+func (w *testLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.closed {
+		w.t.Log(string(p))
+	}
+	return len(p), nil
+}
+
 func setupInitializer(t *testing.T, ctx context.Context, conf *InitializerConfig) *Initializer {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
+	w := &testLogWriter{t: t}
+	t.Cleanup(func() {
+		w.mu.Lock()
+		w.closed = true
+		w.mu.Unlock()
+	})
+	logger := zerolog.New(w)
 	return NewInitializer(ctx, &logger, conf)
 }
 
@@ -247,26 +272,26 @@ func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
 	defer cancel()
 
 	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout:   time.Second,
-		AutoRetry:     true,
-		RetryMinDelay: time.Millisecond * 250,
-		RetryMaxDelay: time.Millisecond * 250,
+		TaskTimeout: time.Second,
+		AutoRetry:   true,
+		// Long enough that the retry cannot run before the Partial check below.
+		RetryMinDelay: time.Second,
+		RetryMaxDelay: time.Second,
 	})
 
 	// We'll define three tasks:
-	// 1) A task that takes time (so the initializer stays "Initializing" briefly).
+	// 1) A task that runs until released (so the initializer stays "Initializing").
 	// 2) A task that fails on the first run.
 	// 3) A task that succeeds immediately.
+	release := make(chan struct{})
 	longRunningTask := NewBootstrapTask("long-running", func(ctx context.Context) error {
-		time.Sleep(50 * time.Millisecond)
+		<-release
 		return nil
 	})
 
-	attempts := 0
+	var attempts atomic.Int32
 	failingTaskFirst := NewBootstrapTask("fail-first-attempt", func(ctx context.Context) error {
-		time.Sleep(10 * time.Millisecond)
-		attempts++
-		if attempts <= 1 {
+		if attempts.Add(1) <= 1 {
 			return errors.New("failing on first attempt")
 		}
 		return nil
@@ -281,14 +306,18 @@ func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
 		_ = init.ExecuteTasks(appCtx, longRunningTask, failingTaskFirst, immediateSuccess)
 	}()
 
-	// Give an instant for tasks to start so we can observe StateInitializing.
-	time.Sleep(5 * time.Millisecond)
+	// The first attempt of the failing task ends while the long task still runs.
+	require.Eventually(t, func() bool { return TaskState(failingTaskFirst.state.Load()) == TaskFailed }, 5*time.Second, time.Millisecond)
 	assert.Equal(t, StateInitializing, init.State(), "one or more tasks should still be running")
-	time.Sleep(50 * time.Millisecond)
+	close(release)
+	require.Eventually(t, func() bool {
+		return TaskState(longRunningTask.state.Load()) == TaskSucceeded &&
+			TaskState(immediateSuccess.state.Load()) == TaskSucceeded
+	}, 5*time.Second, time.Millisecond)
 	assert.Equal(t, StatePartial, init.State(), "one task must be failed")
 
-	// Wait again for the retry attempt to finish
-	time.Sleep(250 * time.Millisecond)
+	// The auto-retry loop re-runs the failed task after RetryMinDelay.
+	require.Eventually(t, func() bool { return init.State() == StateReady }, 5*time.Second, 5*time.Millisecond)
 	err := init.WaitForTasks(appCtx)
 	require.NoError(t, err, "the second attempt should succeed, no further errors expected")
 
@@ -421,36 +450,37 @@ func TestInitializer_MultipleRapidFailures(t *testing.T) {
 	defer cancel()
 	init := setupInitializer(t, appCtx, conf)
 
-	var attempts int
+	var attempts atomic.Int32
 	task := NewBootstrapTask("quick-failer", func(ctx context.Context) error {
-		attempts++
+		attempts.Add(1)
 		// Fail quickly:
 		return errors.New("keep failing")
 	})
 
 	init.ExecuteTasks(appCtx, task)
 
+	// Check we tried multiple times (rapidly)
+	require.Eventually(t, func() bool { return attempts.Load() > 1 }, 2*time.Second, 5*time.Millisecond,
+		"should attempt multiple times in quick succession")
+
+	// Stop the 10-20ms retry loop first: while it runs, a check can catch an
+	// attempt in flight (State() reads Retrying, WaitForTasks reads the cleared
+	// error of a starting attempt). Stop waits for that attempt to end.
+	init.Stop(nil)
+
 	// Use a context with short timeout so we don't spin forever
 	ctx, cancel := context.WithTimeout(appCtx, time.Millisecond*300)
 	defer cancel()
-
-	// WaitForTasks is expected to fail
-	time.Sleep(time.Millisecond * 200)
 	err := init.WaitForTasks(ctx)
-	require.Error(t, err, "task should eventually fail or context should time out")
+	require.Error(t, err, "task should end failed")
 
-	// Check we tried multiple times (rapidly)
-	assert.True(t, attempts > 1, "should attempt multiple times in quick succession")
-
-	// Check final State is either partial or failed
+	// Check final State is failed
 	state := init.State()
 	assert.True(
 		t,
 		state == StateFailed,
 		"final state should reflect the repeated failures, got %v", state,
 	)
-
-	init.Stop(nil)
 }
 
 func TestInitializer_ForcedCancellationMidTask(t *testing.T) {
@@ -602,18 +632,14 @@ func TestInitializer_ManualMarkAsFailedAfterSuccess(t *testing.T) {
 	// 3) Manually mark the task as failed
 	init.MarkTaskAsFailed(task.Name, errors.New("manual forced failure after success"))
 
-	// After forcing it to fail, with AutoRetry=true we expect a new attempt to start soon
-	// That next attempt is attempts=2 => fails quickly
-	// Next one is attempts=3 => fails quickly
-	// Next is attempts=4 => eventually succeeds
-	time.Sleep(time.Millisecond * 200)
-
-	// 4) Wait for the re-attempts to finish
-	ctx, cancel := context.WithTimeout(appCtx, time.Second*3)
-	defer cancel()
-	err = init.WaitForTasks(ctx)
-
-	// We expect the final attempt (#4) to succeed eventually
+	// After forcing it to fail, with AutoRetry=true the loop re-runs it:
+	// attempts #2 and #3 fail quickly, #4 succeeds. WaitForTasks returns as soon
+	// as the task is in a terminal state, including Failed between retries, so
+	// wait for the success itself.
+	require.Eventually(t, func() bool {
+		return TaskState(task.state.Load()) == TaskSucceeded
+	}, 3*time.Second, 5*time.Millisecond, "final attempt should succeed eventually")
+	err = init.WaitForTasks(appCtx)
 	require.NoError(t, err, "final attempt should succeed eventually")
 
 	// Check that we ended up with SUCCEEDED state
