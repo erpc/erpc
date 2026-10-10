@@ -206,8 +206,8 @@ func (c *chainView) HeaderAt(number int64) (*integrity.Header, bool) {
 	return h, ok
 }
 
-// HasVerifiedEmptyTraceBlock uses only the followed segment; it never fetches a block.
-func HasVerifiedEmptyTraceBlock(req *common.NormalizedRequest) bool {
+// HasVerifiedEmptyBlock uses only the followed segment; it never fetches a block.
+func HasVerifiedEmptyBlock(req *common.NormalizedRequest) bool {
 	if req == nil || req.Network() == nil {
 		return false
 	}

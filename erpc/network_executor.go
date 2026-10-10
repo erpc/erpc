@@ -143,14 +143,14 @@ func (e *networkExecutor) acceptsEmptyResult(method string, resp *common.Normali
 	if slices.Contains(e.EmptyResultAccept(), method) {
 		return true
 	}
-	if method != "debug_traceBlockByNumber" ||
+	if (method != "debug_traceBlockByNumber" && method != "eth_getBlockReceipts") ||
 		(e != nil && e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.EmptyResultAccept != nil) {
 		return false
 	}
-	return isEmptyTraceArray(resp) && evm.HasVerifiedEmptyTraceBlock(resp.Request())
+	return isEmptyBlockArray(resp) && evm.HasVerifiedEmptyBlock(resp.Request())
 }
 
-func isEmptyTraceArray(resp *common.NormalizedResponse) bool {
+func isEmptyBlockArray(resp *common.NormalizedResponse) bool {
 	if resp == nil {
 		return false
 	}
@@ -172,7 +172,7 @@ func isEmptyTraceArray(resp *common.NormalizedResponse) bool {
 }
 
 func isEmptyNetworkResult(method string, resp *common.NormalizedResponse) bool {
-	return resp.IsResultEmptyish() || (method == "debug_traceBlockByNumber" && isEmptyTraceArray(resp))
+	return resp.IsResultEmptyish() || ((method == "debug_traceBlockByNumber" || method == "eth_getBlockReceipts") && isEmptyBlockArray(resp))
 }
 
 // HasHedge returns whether hedge is configured.
