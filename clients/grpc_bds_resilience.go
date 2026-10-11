@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"net"
 	"net/url"
@@ -377,7 +378,13 @@ func (p *bdsPool) dial() (*bdsConn, error) {
 		grpc.WithTransportCredentials(p.creds),
 		grpc.WithChainUnaryInterceptor(grpcResponseMetadataInterceptor()),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(100*1024*1024),
+			// No client-side bound on a reply: a BDS server answers what the
+			// request asked for, and a wide eth_getLogs on a busy chain runs
+			// past any fixed size (Ethereum: ~100 MB per 1,000 blocks). The
+			// HTTP upstream client reads bodies unbounded too; the bound on a
+			// reply's size is the range the network allows
+			// (getLogsMaxAllowedRange). MaxInt32 is protobuf's own message limit.
+			grpc.MaxCallRecvMsgSize(math.MaxInt32),
 			grpc.MaxCallSendMsgSize(100*1024*1024),
 		),
 		grpc.WithDefaultServiceConfig(p.serviceConfig),

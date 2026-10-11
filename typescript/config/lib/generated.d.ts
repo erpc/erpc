@@ -979,13 +979,27 @@ export interface EvmUpstreamConfig {
     maxAvailableRecentBlocks?: number;
     queryShim?: EvmQueryShimConfig;
 }
+/**
+ * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
+ * eth_getBlockReceipts, eth_getLogs, trace_block / debug_traceBlockByNumber) the
+ * eth_query* executor issues when no native QueryService upstream answers. The
+ * sub-requests go through the network like any request; the budget bounds the
+ * work of one MIP-16 page.
+ */
 export interface EvmQueryShimConfig {
     enabled?: boolean;
     allowedMethods?: string[];
-    concurrency?: number;
-    maxBlockRange?: number;
-    maxLimit?: number;
-    defaultLimit?: number;
+    /**
+     * MaxBlocksPerPage is the budget of blocks one page may scan. A page that
+     * reaches it ends at the last scanned block.
+     */
+    maxBlocksPerPage?: number;
+    /**
+     * MaxPageDuration is the budget of time one page may scan. A page that
+     * reaches it ends at the last complete block, or fails with -32005 when no
+     * block completed.
+     */
+    maxPageDuration?: Duration;
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.

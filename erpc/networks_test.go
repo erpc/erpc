@@ -10538,8 +10538,14 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 5*time.Second)
 
-		pollerInterval := 2000 * time.Millisecond
-		pollerDebounce := 1000 * time.Millisecond
+		// The ticker must not fire during the test: the herd alone must drive
+		// every refresh after bootstrap, so the metric count is exact.
+		pollerInterval := 1 * time.Hour
+		// The debounce window must outlast the whole herd (≤1s jitter + ≤200ms
+		// updateMaxWait) plus the slow (1s) refresh. The window is counted from
+		// the start of a refresh, so a shorter one lets late herd members start
+		// a second refresh.
+		pollerDebounce := 4000 * time.Millisecond
 
 		fsCfg := &common.FailsafeConfig{
 			MatchMethod: "*",
@@ -10612,7 +10618,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 3.  Wait until the value becomes stale (> debounce), then unleash
 		//     a burst of concurrent PollLatestBlockNumber() calls.
 		// ------------------------------------------------------------------
-		time.Sleep((pollerDebounce * 2) + 200*time.Millisecond) // let cache go stale
+		time.Sleep(pollerDebounce + 200*time.Millisecond) // let cache go stale
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -10628,10 +10634,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		close(start)
 		wg.Wait()
 
-		// Stop ticker before final mock assertions
-		cancel() // stop poller ticker to avoid races with mock assertions
-
-		// Wait for the value to update to 20 (with timeout)
+		// Wait for the background refresh to apply block 20 (with timeout)
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			if poller.LatestBlock() == 20 {
@@ -10643,18 +10646,14 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// Cached value should be 20 (final success).
 		assert.Equal(t, int64(20), poller.LatestBlock())
 
-		// Stop the poller now to avoid an extra background cycle incrementing metrics
 		cancel()
 
-		// Metric counts successful cache refreshes (bootstrap + final success).
-		// It should not increase for failed attempts, so we expect exactly 2.
+		// Metric counts refresh executions: bootstrap + exactly one for the herd
+		// (its retries fail twice, then succeed within the same execution).
 		polledMetric, err := telemetry.MetricUpstreamLatestBlockPolled.
 			GetMetricWithLabelValues("prjA", "vendorA", "n/a", "rpc1")
 		require.NoError(t, err)
-		metricValue := promUtil.ToFloat64(polledMetric)
-		// Depending on timing, a background cycle may perform one more successful refresh
-		// before cancellation. Accept 2 or 3 (bootstrap + final success [+ optional one more]).
-		assert.True(t, metricValue == 2 || metricValue == 3, "expected metric to be 2 or 3, got %v", metricValue)
+		assert.Equal(t, float64(2), promUtil.ToFloat64(polledMetric))
 
 		// Only the failing mocks should have been hit exactly failAttempts times.
 		assert.Equal(t, int32(failAttempts), atomic.LoadInt32(&latestBlockPolls))

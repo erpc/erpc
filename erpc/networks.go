@@ -86,6 +86,11 @@ type Network struct {
 	// the prod-incident invariant tests must arm the velocity gate exactly the
 	// way prod had it armed.
 	servedTipBlockTimeOverride float64
+
+	// queryTraceSource remembers which trace method answered the eth_query*
+	// shim on this network (queryTraceSource* values), so a network whose
+	// upstreams lack trace_block asks debug_traceBlockByNumber directly.
+	queryTraceSource atomic.Int32
 }
 
 // NoteObservedLatestBlock records a head about to be delivered on a WebSocket
@@ -1084,7 +1089,11 @@ func (n *Network) observeServedTipRefereeTransition(axis string, lane string, an
 
 	// Load first: "still idle" is the answer on essentially every evaluation
 	// this process ever makes.
-	if anchor.refereeState.Load() == state || anchor.refereeState.Swap(state) == state {
+	if anchor.refereeState.Load() == state {
+		return
+	}
+	previous := anchor.refereeState.Swap(state)
+	if previous == state {
 		return
 	}
 	switch state {
@@ -1105,10 +1114,15 @@ func (n *Network) observeServedTipRefereeTransition(axis string, lane string, an
 			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "fallback").
 			Inc()
 	default:
-		n.logger.Warn().
-			Str("axis", axis).
-			Int64("pick", final).
-			Msg("served tip is back on the majority pick; the trajectory referee is no longer overriding")
+		// Idle is reachable from Overriding (an actual override just ended)
+		// and from Declining (the referee never intervened; it fell back to
+		// the majority pick). Only the former ever overrode anything.
+		if previous == servedTipRefereeOverriding {
+			n.logger.Warn().
+				Str("axis", axis).
+				Int64("pick", final).
+				Msg("served tip is back on the majority pick; the trajectory referee is no longer overriding")
+		}
 	}
 }
 
@@ -1945,6 +1959,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err := evm.ApplySafeBlockSource(ctx, n, req); err != nil {
 			common.SetTraceSpanError(forwardSpan, err)
 			return nil, err
+		}
+
+		// MIP-16 eth_query*: the query executor answers it for both transports
+		// (see forwardQuery). Shim sub-requests carry a parent id and are
+		// ordinary methods, so they never re-enter here.
+		if queryMethod := canonicalQueryMethod(method); queryMethod != "" {
+			resp, err := n.forwardQuery(ctx, req, queryMethod)
+			if err != nil {
+				common.SetTraceSpanError(forwardSpan, err)
+			}
+			return resp, err
 		}
 	}
 

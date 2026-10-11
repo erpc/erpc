@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -76,17 +77,69 @@ func (s *happyRPCServer) GetBlockByNumber(ctx context.Context, req *evm.GetBlock
 }
 
 // GetTransactionByHash answers with a fixed one-byte r/s so tests can pin
-// the JSON-RPC signature encoding the client selects for its chain.
+// the JSON-RPC signature encoding the client selects for its chain. It is a
+// legacy, pre-EIP-155 transaction (v = 27) carrying the receipt figures a BDS
+// record holds, so tests can pin the node shape the client renders it in.
 func (s *happyRPCServer) GetTransactionByHash(ctx context.Context, req *evm.GetTransactionByHashRequest) (*evm.GetTransactionByHashResponse, error) {
 	s.calls.Add(1)
 	s.recordMetadata(ctx)
+	gasUsed := uint64(21000)
+	effectiveGasPrice := "1000000000"
+	chainID := s.chainID
 	return &evm.GetTransactionByHashResponse{
 		Transaction: &evm.Transaction{
-			Hash: req.TransactionHash,
-			R:    []byte{0x01},
-			S:    []byte{0x02},
+			Hash:              req.TransactionHash,
+			To:                make([]byte, 20),
+			R:                 []byte{0x01},
+			S:                 []byte{0x02},
+			V:                 []byte{27},
+			ChainId:           &chainID,
+			GasUsed:           &gasUsed,
+			EffectiveGasPrice: &effectiveGasPrice,
 		},
 	}, nil
+}
+
+// GetTransactionReceipt answers with a contract-creation receipt on a chain
+// with no L2 fee fields.
+func (s *happyRPCServer) GetTransactionReceipt(ctx context.Context, req *evm.GetTransactionReceiptRequest) (*evm.GetTransactionReceiptResponse, error) {
+	s.calls.Add(1)
+	s.recordMetadata(ctx)
+	status := uint32(1)
+	contract := make([]byte, 20)
+	contract[19] = 0xc0
+	return &evm.GetTransactionReceiptResponse{
+		Receipt: &evm.Receipt{
+			TransactionHash: req.TransactionHash,
+			ContractAddress: contract,
+			Status:          &status,
+		},
+	}, nil
+}
+
+// GetLogs answers a block range with one log per requested block, each
+// carrying 1 MiB of data, so a test sizes the reply by the range it asks for;
+// and a blockHash filter with one log in that block.
+func (s *happyRPCServer) GetLogs(ctx context.Context, req *evm.GetLogsRequest) (*evm.GetLogsResponse, error) {
+	s.calls.Add(1)
+	s.recordMetadata(ctx)
+	if req.BlockHash != nil {
+		return &evm.GetLogsResponse{Logs: []*evm.Log{{
+			Address:   make([]byte, 20),
+			BlockHash: req.BlockHash,
+		}}}, nil
+	}
+	data := make([]byte, 1<<20)
+	resp := &evm.GetLogsResponse{}
+	for n := req.GetFromBlock(); n <= req.GetToBlock(); n++ {
+		resp.Logs = append(resp.Logs, &evm.Log{
+			Address:     make([]byte, 20),
+			Data:        data,
+			BlockNumber: n,
+			BlockHash:   make([]byte, 32),
+		})
+	}
+	return resp, nil
 }
 
 func startHappyServer(t *testing.T, chainID, blockNumber uint64) (string, *happyRPCServer, func()) {
@@ -168,6 +221,11 @@ func TestSendRequest_HappyPath_ChainId(t *testing.T) {
 
 // TestSendRequest_HappyPath_GetBlockByNumber exercises eth_getBlockByNumber
 // against a successful server and asserts the block payload is propagated.
+// Then an eth_getLogs whose reply runs past 100 MiB, as a wide range on a busy
+// chain does (Ethereum: ~100 MB per 1,000 blocks): the client must take the
+// whole reply, not refuse it as RESOURCE_EXHAUSTED and push the read upstream.
+// Then an EIP-234 eth_getLogs by blockHash, which the client must send to the
+// server as a blockHash, not refuse; and a receipt shaped as a node sends it.
 func TestSendRequest_HappyPath_GetBlockByNumber(t *testing.T) {
 	addr, server, stop := startHappyServer(t, 1, 0x100)
 	defer stop()
@@ -184,6 +242,45 @@ func TestSendRequest_HappyPath_GetBlockByNumber(t *testing.T) {
 	require.NotNil(t, jrr)
 	require.NotEqual(t, "null", jrr.GetResultString(),
 		"block must be non-null when server returns one")
+
+	// 0x100..0x177: 120 blocks, 120 MiB of log data in one reply.
+	req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x177"}]}`))
+	resp, err = client.SendRequest(context.Background(), req)
+	require.NoError(t, err, "a reply past 100 MiB must reach the caller")
+	jrr, err = resp.JsonRpcResponse()
+	require.NoError(t, err)
+	var logs []map[string]interface{}
+	require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &logs))
+	require.Len(t, logs, 120)
+	require.Equal(t, "0x177", logs[119]["blockNumber"])
+
+	// EIP-234: one block named by hash.
+	req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":3,"method":"eth_getLogs","params":[{"blockHash":"0x00000000000000000000000000000000000000000000000000000000000000ab"}]}`))
+	resp, err = client.SendRequest(context.Background(), req)
+	require.NoError(t, err, "a blockHash filter must reach the server")
+	jrr, err = resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &logs))
+	require.Len(t, logs, 1)
+	require.Equal(t, "0x00000000000000000000000000000000000000000000000000000000000000ab", logs[0]["blockHash"])
+
+	// A receipt for a contract creation on a chain with no L2 fees: "to" stays
+	// null, as nodes send it; the L2 fee fields the converter fills in as null
+	// do not appear.
+	req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":4,"method":"eth_getTransactionReceipt","params":["0x000000000000000000000000000000000000000000000000000000000000abcd"]}`))
+	resp, err = client.SendRequest(context.Background(), req)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse()
+	require.NoError(t, err)
+	var receipt map[string]interface{}
+	require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &receipt))
+	require.Contains(t, receipt, "to")
+	require.Nil(t, receipt["to"])
+	require.Equal(t, "0x00000000000000000000000000000000000000c0", receipt["contractAddress"])
+	require.Equal(t, "0x1", receipt["status"])
+	for _, absent := range []string{"l1Fee", "l1GasUsed", "l1GasPrice"} {
+		require.NotContains(t, receipt, absent)
+	}
 }
 
 // TestSendRequest_HeadersPassedAsMetadata verifies SetHeaders entries
