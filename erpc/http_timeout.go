@@ -34,6 +34,14 @@ type timeoutHandler struct {
 }
 
 func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The timeout writer cannot be hijacked, which a WebSocket upgrade
+	// needs. Each request over the connection gets the same deadline in
+	// ws_server.go instead.
+	if isWebSocketUpgradeRequest(r) {
+		h.handler.ServeHTTP(w, r)
+		return
+	}
+
 	ctx, cancelCtx := context.WithTimeoutCause(r.Context(), h.dt, ErrHandlerTimeout)
 	defer func() {
 		cancelCtx()

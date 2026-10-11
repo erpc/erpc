@@ -101,16 +101,47 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		return user, nil
 	}
 
+	return nil, unauthorized(errs)
+}
+
+// AcceptsPayload reports whether any strategy authenticates ap, whatever the
+// method: nil when one does, or the error Authenticate would return. It
+// applies no method scoping and takes no rate-limit permit, so it only
+// rejects credentials no request could use; Authenticate still runs for
+// every request.
+func (r *AuthRegistry) AcceptsPayload(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) error {
+	if ap == nil {
+		return common.NewErrAuthUnauthorized("n/a", "auth payload is nil")
+	}
+	if len(r.strategies) == 0 {
+		return nil
+	}
+	var errs []error
+	for _, az := range r.strategies {
+		if !az.strategy.Supports(ap) {
+			continue
+		}
+		if _, err := az.strategy.Authenticate(ctx, req, ap); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		return nil
+	}
+	return unauthorized(errs)
+}
+
+// unauthorized is the error for a payload no strategy accepted.
+func unauthorized(errs []error) error {
 	if len(errs) == 1 {
-		return nil, errs[0]
+		return errs[0]
 	}
 
 	if len(errs) == 0 {
-		return nil, common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
+		return common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
 	// If no strategy matched or succeeded, consider the request unauthorized
-	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
+	return common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies

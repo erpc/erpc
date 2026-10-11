@@ -15,6 +15,7 @@ type ClientType string
 const (
 	ClientTypeHttpJsonRpc ClientType = "HttpJsonRpc"
 	ClientTypeGrpcBds     ClientType = "GrpcBds"
+	ClientTypeWsJsonRpc   ClientType = "WsJsonRpc"
 )
 
 type ClientInterface interface {
@@ -26,10 +27,19 @@ type Client struct {
 	Upstream common.Upstream
 }
 
+// clientCreation lets concurrent callers that miss the cache share one client
+// instead of each spawning one. Failed creations are not memoised.
+type clientCreation struct {
+	once   sync.Once
+	client ClientInterface
+	err    error
+}
+
 type ClientRegistry struct {
 	logger            *zerolog.Logger
 	projectId         string
 	clients           sync.Map
+	clientCreations   sync.Map // upstream key -> *clientCreation
 	proxyPoolRegistry *ProxyPoolRegistry
 	evmExtractor      common.JsonRpcErrorExtractor
 }
@@ -53,7 +63,6 @@ func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups com
 }
 
 func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.Upstream) (ClientInterface, error) {
-	var once sync.Once
 	var newClient ClientInterface
 	var clientErr error
 
@@ -76,10 +85,14 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 		}
 	}
 
+	upstreamKey := common.UniqueUpstreamKey(ups)
+	cv, _ := manager.clientCreations.LoadOrStore(upstreamKey, &clientCreation{})
+	creation := cv.(*clientCreation)
+
 	if err != nil {
 		clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
 	} else {
-		once.Do(func() {
+		creation.once.Do(func() {
 			lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
 			switch cfg.Type {
 			case common.UpstreamTypeEvm:
@@ -95,10 +108,27 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						manager.evmExtractor,
 					)
 					if err != nil {
-						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
+						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v: %w", cfg.Id, err)
 					}
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
-					clientErr = fmt.Errorf("websocket client not implemented yet")
+					// The WebSocket dialer does not go through a proxy pool;
+					// refuse rather than silently dial direct.
+					if proxyPool != nil {
+						clientErr = fmt.Errorf("jsonRpc.proxyPool is not supported for WebSocket upstream %v", cfg.Id)
+					} else {
+						newClient, err = NewWsJsonRpcClient(
+							appCtx,
+							&lg,
+							manager.projectId,
+							ups,
+							parsedUrl,
+							cfg.JsonRpc,
+							manager.evmExtractor,
+						)
+						if err != nil {
+							clientErr = fmt.Errorf("failed to create WebSocket client for upstream %v: %w", cfg.Id, err)
+						}
+					}
 				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" || parsedUrl.Scheme == "grpcs" {
 					grpcPoolSize, grpcHealthCheckService := 0, ""
 					if cfg.Grpc != nil {
@@ -115,7 +145,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						grpcHealthCheckService,
 					)
 					if err != nil {
-						clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)
+						clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v: %w", cfg.Id, err)
 					}
 				} else {
 					clientErr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
@@ -137,7 +167,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						manager.evmExtractor,
 					)
 					if err != nil {
-						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
+						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v: %w", cfg.Id, err)
 					}
 				} else {
 					clientErr = fmt.Errorf("unsupported endpoint scheme for svm upstream %v: %v (only http/https supported)", cfg.Id, parsedUrl.Scheme)
@@ -147,10 +177,14 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 				clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
 			}
 
+			creation.client, creation.err = newClient, clientErr
 			if clientErr == nil {
-				manager.clients.Store(common.UniqueUpstreamKey(ups), newClient)
+				manager.clients.Store(upstreamKey, newClient)
+			} else {
+				manager.clientCreations.CompareAndDelete(upstreamKey, creation)
 			}
 		})
+		newClient, clientErr = creation.client, creation.err
 	}
 
 	return newClient, clientErr
