@@ -909,7 +909,7 @@ export interface JsonRpcUpstreamConfig {
     proxyPool?: string;
 }
 /**
- * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+ * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
  * gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
  * knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
  * every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -1375,6 +1375,8 @@ export interface NetworkConfig {
      * CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
      * key as {networkId}:{suffix}:{blockRef} so two networks that share a
      * chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+     * When {networkId}:{suffix} is itself a valid network id, colons in the
+     * network id are escaped; see CachePartitionKey.
      */
     cacheKeySuffix?: string;
 }
