@@ -6,7 +6,7 @@ import { Callout, Tabs, Tab } from "nextra/components";
 
 # WebSocket
 
-eRPC supports WebSocket connections on the same HTTP port. Clients can connect via `ws://` or `wss://` for persistent JSON-RPC connections and real-time subscriptions (`eth_subscribe`).
+eRPC supports WebSocket connections on the same HTTP port. Clients can connect via `ws://` or `wss://` for persistent JSON-RPC connections and real-time subscriptions (`eth_subscribe`). The server side is **off by default**: set `server.webSocket.enabled: true` to accept connections.
 
 ## Connecting
 
@@ -36,7 +36,7 @@ ws.onmessage = (event) => {
 ```
 
 <Callout type="info">
-  WebSocket connections use the same port as HTTP — no additional configuration needed. Domain aliasing rules also apply to WebSocket connections.
+  WebSocket connections use the same port as HTTP once `server.webSocket.enabled` is `true`. With it off, an upgrade request is answered as ordinary HTTP. Domain aliasing rules also apply to WebSocket connections.
 </Callout>
 
 ## Regular JSON-RPC over WebSocket
@@ -246,12 +246,14 @@ The WebSocket upstream client features:
 
 ## Server configuration
 
-WebSocket server settings can be tuned via the `webSocket` section in server config. Defaults work well for most deployments:
+The WebSocket server is enabled and tuned via the `webSocket` section in server config. Only `enabled` is required; the other defaults work well for most deployments. WebSocket upstreams (`ws://` / `wss://` endpoints) work regardless of this setting.
 
 ```yaml filename="erpc.yaml"
 server:
   httpPortV4: 4000
   webSocket:
+    # Accept WebSocket upgrades on the HTTP port (default: false)
+    enabled: true
     # Read buffer size in bytes (default: 4096)
     readBufferSize: 4096
     # Write buffer size in bytes (default: 4096)

@@ -89,30 +89,40 @@ func TestWebSocket_UpgradeHeaderDoesNotBypassMaxTimeout(t *testing.T) {
 
 // Header tokens are case-insensitive (RFC 6455 section 4.2.1); a handshake
 // spelled "Upgrade: WebSocket" must upgrade, not be answered as a
-// healthcheck.
+// healthcheck. With WebSocket off the same handshake is ordinary HTTP.
 func TestWebSocket_UpgradeHeaderIsCaseInsensitive(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
 
-	addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
-	defer cleanup()
+	handshake := func(t *testing.T, cfg *common.Config) *http.Response {
+		addr, cleanup := setupTestERPCServer(t, cfg)
+		t.Cleanup(cleanup)
 
-	raw, err := net.Dial("tcp", addr)
-	require.NoError(t, err)
-	defer raw.Close()
-	_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+		raw, err := net.Dial("tcp", addr)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = raw.Close() })
+		_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
 
-	_, err = fmt.Fprintf(raw, "GET /test_ws/evm/123 HTTP/1.1\r\n"+
-		"Host: %s\r\n"+
-		"Upgrade: WebSocket\r\n"+
-		"Connection: Upgrade\r\n"+
-		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"+
-		"Sec-WebSocket-Version: 13\r\n\r\n", addr)
-	require.NoError(t, err)
+		_, err = fmt.Fprintf(raw, "GET /test_ws/evm/123 HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: WebSocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"+
+			"Sec-WebSocket-Version: 13\r\n\r\n", addr)
+		require.NoError(t, err)
 
-	resp, err := http.ReadResponse(bufio.NewReader(raw), nil)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+		resp, err := http.ReadResponse(bufio.NewReader(raw), nil)
+		require.NoError(t, err)
+		return resp
+	}
+
+	assert.Equal(t, http.StatusSwitchingProtocols, handshake(t, httpOnlyConfig()).StatusCode)
+
+	off := httpOnlyConfig()
+	off.Server.WebSocket = &common.WebSocketServerConfig{Enabled: util.BoolPtr(false)}
+	resp := handshake(t, off)
+	assert.NotEqual(t, http.StatusSwitchingProtocols, resp.StatusCode, "webSocket.enabled=false must not upgrade")
+	assert.Empty(t, resp.Header.Get("Upgrade"))
 }
 
 //

@@ -168,12 +168,13 @@ func NewHttpServer(
 
 	h := srv.createRequestHandler()
 
+	wsEnabled := srv.webSocketEnabled()
 	if cfg.EnableGzip != nil && *cfg.EnableGzip {
-		h = gzipHandler(h)
+		h = gzipHandler(h, wsEnabled)
 	}
 
 	// Create handler with timeout
-	httpHandler := TimeoutHandler(logger, h, reqMaxTimeout)
+	httpHandler := TimeoutHandler(logger, h, reqMaxTimeout, wsEnabled)
 	handlerV4 := httpHandler
 	handlerV6 := httpHandler
 
@@ -407,7 +408,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		// A WebSocket connection serves the one network in its URL.
-		if isWebSocketUpgradeRequest(r) {
+		if isWebSocketUpgradeRequest(r, s.webSocketEnabled()) {
 			if architecture == "" || chainId == "" {
 				handleErrorResponse(
 					httpCtx,
@@ -1095,7 +1096,7 @@ func (s *HttpServer) parseUrlPath(
 		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm' or 'svm')", ps)
 	}
 
-	if !isPost && !isOptions && !isWebSocketUpgradeRequest(r) {
+	if !isPost && !isOptions && !isWebSocketUpgradeRequest(r, s.webSocketEnabled()) {
 		isHealthCheck = true
 	}
 
@@ -2239,7 +2240,7 @@ func (w *conditionalGzipWriter) Close() error {
 	return nil
 }
 
-func gzipHandler(next http.Handler) http.Handler {
+func gzipHandler(next http.Handler, wsEnabled bool) http.Handler {
 	// Pool writers across responses for better performance
 	var gzPool = util.NewGzipWriterPool()
 
@@ -2247,7 +2248,7 @@ func gzipHandler(next http.Handler) http.Handler {
 		// A WebSocket handshake has no body to compress and must reach the
 		// upgrader with a ResponseWriter that can be hijacked, which the
 		// gzip writer cannot.
-		if isWebSocketUpgradeRequest(r) {
+		if isWebSocketUpgradeRequest(r, wsEnabled) {
 			next.ServeHTTP(w, r)
 			return
 		}

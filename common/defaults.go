@@ -884,6 +884,9 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.WebSocket == nil {
 		s.WebSocket = &WebSocketServerConfig{}
 	}
+	if s.WebSocket.Enabled == nil {
+		s.WebSocket.Enabled = util.BoolPtr(false)
+	}
 	if s.WebSocket.ReadBufferSize == 0 {
 		s.WebSocket.ReadBufferSize = 4096
 	}
