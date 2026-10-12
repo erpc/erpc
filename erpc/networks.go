@@ -2529,7 +2529,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					selector = d.UseUpstream
 				}
 				var fallbacks []common.Upstream
-				for _, fb := range n.upstreamsRegistry.GetFallbackEscapeUpstreams(execSpanCtx, n.networkId, method) {
+				for _, fb := range n.upstreamsRegistry.GetFallbackEscapeUpstreams(execSpanCtx, n.networkId, method, effectiveReq.Finality(execSpanCtx)) {
 					if selector != "" {
 						if matches, _ := common.UpstreamMatchesSelector(selector, fb); !matches {
 							continue

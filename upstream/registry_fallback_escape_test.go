@@ -93,7 +93,7 @@ func TestGetFallbackEscapeUpstreams_FiltersByGroup(t *testing.T) {
 	defer cancel()
 	registry, _ := setupRegistryWithFallbacks(t, ctx)
 
-	out := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_call")
+	out := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_call", common.DataFinalityStateUnknown)
 	ids := make([]string, 0, len(out))
 	for _, u := range out {
 		ids = append(ids, u.Id())
@@ -120,7 +120,7 @@ func TestGetFallbackEscapeUpstreams_IgnoresCordon(t *testing.T) {
 	require.True(t, mt.IsCordoned(fb1, "eth_call"), "fb1 should be cordoned")
 	require.True(t, mt.IsCordoned(fb2, "eth_call"), "fb2 should be cordoned")
 
-	out := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_call")
+	out := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_call", common.DataFinalityStateUnknown)
 	ids := make([]string, 0, len(out))
 	for _, u := range out {
 		ids = append(ids, u.Id())
@@ -141,7 +141,7 @@ func TestGetFallbackEscapeUpstreams_FiltersIgnoreMethods(t *testing.T) {
 	// Mark eth_call as ignored on fallback-1; AllowMethods left empty.
 	fb1.config.IgnoreMethods = []string{"eth_call"}
 
-	out := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_call")
+	out := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_call", common.DataFinalityStateUnknown)
 	ids := make([]string, 0, len(out))
 	for _, u := range out {
 		ids = append(ids, u.Id())
@@ -150,7 +150,7 @@ func TestGetFallbackEscapeUpstreams_FiltersIgnoreMethods(t *testing.T) {
 		"fallback-1 should be excluded because eth_call is in its IgnoreMethods; got %v", ids)
 
 	// Sanity: a different method that isn't ignored should include fallback-1.
-	out2 := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_getLogs")
+	out2 := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_getLogs", common.DataFinalityStateUnknown)
 	ids2 := make([]string, 0, len(out2))
 	for _, u := range out2 {
 		ids2 = append(ids2, u.Id())
@@ -189,6 +189,6 @@ func TestGetFallbackEscapeUpstreams_NoFallbacksReturnsEmpty(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.NoError(t, registry.PrepareUpstreamsForNetwork(ctx, "evm:123"))
 
-	out := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_call")
+	out := registry.GetFallbackEscapeUpstreams(ctx, "evm:123", "eth_call", common.DataFinalityStateUnknown)
 	assert.Empty(t, out, "no fallback-group upstreams configured → empty slice")
 }

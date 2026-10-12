@@ -427,10 +427,11 @@ func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId s
 }
 
 // GetFallbackEscapeUpstreams returns the network's bootstrapped fallback-tier
-// upstreams that are not down for method and allow it. Selection-policy
-// cordons are deliberately ignored: the per-request escape exists to get past
-// them.
-func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, networkId, method string) []*Upstream {
+// upstreams that are not down for method at finality and allow it.
+// Selection-policy cordons are deliberately ignored: the per-request escape
+// exists to get past them. finality must be the request's so a breaker scoped
+// to finalized/realtime is not skipped.
+func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, networkId, method string, finality common.DataFinalityState) []*Upstream {
 	all := u.GetNetworkUpstreams(ctx, networkId)
 	out := make([]*Upstream, 0, len(all))
 	for _, up := range all {
@@ -438,7 +439,7 @@ func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, netw
 		if cfg == nil || !cfg.HasTag(common.TagTierFallback) {
 			continue
 		}
-		if up.IsDown(method) {
+		if up.IsDown(method, finality) {
 			continue
 		}
 		if allowed, err := up.ShouldHandleMethod(method); err != nil || !allowed {
