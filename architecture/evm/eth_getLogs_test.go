@@ -1035,15 +1035,30 @@ func TestNetworkPostForward_NoSplitOnNonTooLargeError(t *testing.T) {
 func TestNetworkPreForward_eth_getLogs_blockHash_with_filters(t *testing.T) {
 	addr := "0x" + strings.Repeat("a", 40)
 	topic := "0x" + strings.Repeat("d", 64)
+	// Both hooks, the project one guarding the cache read and the network one
+	// as backstop, must agree on every filter.
 	run := func(address, topics interface{}) (bool, error) {
-		r := createTestRequest(map[string]interface{}{
-			"blockHash": "0x" + strings.Repeat("b", 64),
-			"address":   address,
-			"topics":    topics,
-		})
-		handled, resp, err := networkPreForward_eth_getLogs(context.Background(), new(mockNetwork), nil, r)
-		assert.Nil(t, resp)
-		return handled, err
+		var outs [2]struct {
+			handled bool
+			err     error
+		}
+		for i := range outs {
+			r := createTestRequest(map[string]interface{}{
+				"blockHash": "0x" + strings.Repeat("b", 64),
+				"address":   address,
+				"topics":    topics,
+			})
+			var resp *common.NormalizedResponse
+			if i == 0 {
+				outs[i].handled, resp, outs[i].err = projectPreForward_eth_getLogs(context.Background(), new(mockNetwork), r)
+			} else {
+				outs[i].handled, resp, outs[i].err = networkPreForward_eth_getLogs(context.Background(), new(mockNetwork), nil, r)
+			}
+			assert.Nil(t, resp)
+		}
+		assert.Equal(t, outs[0].handled, outs[1].handled, "%v %v", address, topics)
+		assert.Equal(t, outs[0].err == nil, outs[1].err == nil, "%v %v", address, topics)
+		return outs[0].handled, outs[0].err
 	}
 
 	handled, err := run([]interface{}{addr}, []interface{}{[]interface{}{topic}, nil})
