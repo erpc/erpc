@@ -889,20 +889,24 @@ func (n *Network) evmHeadReference(ctx context.Context, useFinalized bool) serve
 
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
 // `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
-// beyond every eligible upstream's head (at the network's emptyResultConfidence level).
+// beyond every upstream's latest head.
 // No upstream can serve such a block yet, so dispatching + hedging across all of
 // them only burns latency and load before they each return empty — returning the
 // null here skips that fan-out entirely.
 //
-// Safety: it compares against the highest effective head across eligible
-// upstreams, static caps included (servedTipReference.Available), so it never
-// nulls out a block any upstream actually serves. It is gated on served-tip being enabled for the latest
-// axis — the same opt-in that makes the head trustworthy — and the synthesized
+// Safety: it compares against the highest last-observed effective latest head
+// across every upstream of the network, static caps included, and fails open
+// when any of them has no observed head (see futureBlockCeiling), so it never
+// nulls out a block at or below a head an upstream has reported. A block an
+// upstream produced after its last observed head can still get null until the
+// poller or a head subscription reports it. It runs when the network sets
+// evm.shortCircuitFutureBlocks or enables served-tip for the latest axis (see
+// EvmNetworkConfig.ShortCircuitFutureBlocksEnabled), and the synthesized
 // response is returned directly from Forward, so it is never written to cache
 // (the block will exist later). The post-forward empty guard remains as
 // defense-in-depth for the in-flight case where an upstream advances mid-request.
 func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
-	if n.cfg == nil || n.cfg.Evm == nil || !n.servedTipEnabledFor("latest") {
+	if n.cfg == nil || !n.cfg.Evm.ShortCircuitFutureBlocksEnabled() {
 		return nil, false
 	}
 	if !strings.EqualFold(method, "eth_getBlockByNumber") {
@@ -914,9 +918,8 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 		// params carry no concrete future number — never short-circuit.
 		return nil, false
 	}
-	useFinalized := n.cfg.Evm.EmptyResultConfidence == common.AvailbilityConfidenceFinalized
-	maxHead := n.evmHeadReference(ctx, useFinalized).Available
-	if maxHead <= 0 || bn <= maxHead {
+	maxHead, known := n.futureBlockCeiling(ctx)
+	if !known || bn <= maxHead {
 		// Unknown head (fail open) or block within reach of some upstream.
 		return nil, false
 	}
@@ -927,6 +930,34 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	resp.SetEvmBlockNumber(bn)
 	return resp, true
+}
+
+// futureBlockCeiling returns the highest effective latest head across every
+// upstream of the network, regardless of selection policy, tier or syncing
+// state: any of them can end up serving a request (policy order, the fallback
+// escape, syncing upstreams without skipWhenSyncing). It uses latest heads
+// whatever emptyResultConfidence says: that setting decides how an empty answer
+// is treated, not whether an upstream can have the block. known is false when
+// the network has no upstreams or any upstream's head is unknown.
+func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known bool) {
+	if n.upstreamsRegistry == nil {
+		return 0, false
+	}
+	ups := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	if len(ups) == 0 {
+		return 0, false
+	}
+	for _, u := range ups {
+		if u.EvmStatePoller() == nil {
+			return 0, false
+		}
+		blk, _ := evmTipObservation(u, false)
+		if blk <= 0 {
+			return 0, false
+		}
+		head = max(head, blk)
+	}
+	return head, true
 }
 
 // servedTip computes the majority served tip for one axis over the
@@ -1497,7 +1528,7 @@ func (n *Network) SvmEnforceBlockAvailability() bool {
 // This is used only by the networkPreForward_getBlock guard — its job is to
 // avoid short-circuiting requests that ANY upstream can serve. It therefore
 // uses MAX, not the majority (median) tip. This mirrors how EVM's
-// tryShortCircuitFutureBlock uses evmHeadReference.Max (not PickServedTip.Tip):
+// tryShortCircuitFutureBlock uses the max head across upstreams (not PickServedTip.Tip):
 // "never null out a block the most-ahead upstream actually has."
 // SvmHighestLatestSlot / SvmHighestFinalizedSlot remain median-based because
 // they advertise the chain head to clients — a different, conservative goal.
@@ -2156,10 +2187,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
+	// Future-block short-circuit: a concrete block number beyond every
+	// upstream's head cannot be served yet — return the truthful null instead of
+	// dispatching + hedging across upstreams that will all return empty. Runs
+	// before rate limiting so a non-dispatched request consumes no permit, and
+	// before the probe-bus publish so it is never mirrored to excluded upstreams.
+	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
+		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
+		if mlx != nil {
+			mlx.Close(ctx, resp, nil)
+		}
+		return resp, nil
+	}
+
 	// Feed the per-network probe-bus AFTER we know the request is
 	// actually going to dispatch to an upstream (i.e. not a
-	// cache-hit / static-response / follower-multiplexer
-	// short-circuit, all of which returned earlier). The publish is
+	// cache-hit / static-response / follower-multiplexer /
+	// future-block short-circuit, all of which returned earlier). The publish is
 	// non-blocking and drops on overflow — request latency is never
 	// affected. The Prober (if any) samples from this feed to mirror
 	// the request against currently-excluded upstreams so their
@@ -2184,18 +2228,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 			return resp, nil
 		}
-	}
-
-	// Future-block short-circuit: a concrete block number beyond every eligible
-	// upstream's head cannot be served yet — return the truthful null instead of
-	// dispatching + hedging across upstreams that will all return empty. Runs
-	// before rate limiting so a non-dispatched request consumes no permit.
-	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
-		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
-		if mlx != nil {
-			mlx.Close(ctx, resp, nil)
-		}
-		return resp, nil
 	}
 
 	// 3) Check if we should handle this method on this network

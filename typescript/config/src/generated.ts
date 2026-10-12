@@ -1719,6 +1719,18 @@ export interface EvmNetworkConfig {
    */
   emptyResultConfidence?: AvailbilityConfidence;
   /**
+   * ShortCircuitFutureBlocks returns null for a numbered eth_getBlockByNumber
+   * above the highest latest head across every upstream of the network
+   * (regardless of selection policy, tier or syncing state), without
+   * dispatching it; it never fires while any upstream's head is unknown.
+   * Clients that poll the next block by number otherwise walk every routed
+   * upstream on each poll. Always on when servedTip is enabled for "latest".
+   * The head is what the state poller and head subscriptions last reported, so
+   * a block an upstream produced since then gets null until eRPC sees it: only
+   * enable it where heads arrive promptly (e.g. over WebSocket).
+   */
+  shortCircuitFutureBlocks?: boolean;
+  /**
    * SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
    * requests carrying the `safe` block tag. Matching upstreams define and
    * serve `safe`; empty (without an inherited network default) keeps existing

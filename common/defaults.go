@@ -2280,6 +2280,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
 			}
+			if n.Evm.ShortCircuitFutureBlocks == nil && defaults.Evm.ShortCircuitFutureBlocks != nil {
+				n.Evm.ShortCircuitFutureBlocks = defaults.Evm.ShortCircuitFutureBlocks
+			}
 			if n.Evm.StripSubscribeFromBlockZero == nil && defaults.Evm.StripSubscribeFromBlockZero != nil {
 				n.Evm.StripSubscribeFromBlockZero = defaults.Evm.StripSubscribeFromBlockZero
 			}

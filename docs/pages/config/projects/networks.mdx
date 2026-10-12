@@ -99,6 +99,54 @@ export default createConfig({
 
 Leave unset for chains where upstreams handle `fromBlock: "0x0"` in an `eth_subscribe` filter correctly (most do — the flag is a targeted workaround, not a universal default). It can also be set once for every network under `networkDefaults.evm`.
 
+## Future-block polling
+
+Clients that follow a chain by number (for example rollup nodes reading L1) poll `eth_getBlockByNumber` for the block after the head and treat `null` as "not produced yet". No upstream has that block, so each one returns `null` in turn and every poll walks every routed upstream, fallbacks included. Enable `shortCircuitFutureBlocks` to return `null` for a numbered `eth_getBlockByNumber` above the latest head of every upstream of the network (static availability caps included), without dispatching it. A block at or below the last head any upstream reported is still dispatched, and the request is dispatched as usual while any upstream's head is unknown. It is always on when `servedTip.enabledFor` includes `"latest"`.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # Returns null for eth_getBlockByNumber(N) when N is above every
+          # upstream's head, instead of asking each upstream.
+          # default: false
+          shortCircuitFutureBlocks: true
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+            // Returns null for eth_getBlockByNumber(N) when N is above every
+            // upstream's head, instead of asking each upstream.
+            // default: false
+            shortCircuitFutureBlocks: true,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+The head is what eRPC last saw from the state poller and head subscriptions. A block an upstream produced after that gets `null` until eRPC sees it, so a client that learned of the block elsewhere (for example from the node's own `newHeads`) can briefly get `null` for a block that exists. Only enable it where heads arrive promptly, such as networks with WebSocket head subscriptions, and where clients retry a `null`.
+
 ## Failover
 
 By default a request only reaches the upstreams the [selection policy](/config/projects/selection-policies) currently routes to; upstreams tagged `tier:fallback` join once the policy promotes them, which happens on its evaluation interval. `failover.onDefaultsExhausted` adds a per-request escape for the moments before that: when every routed upstream failed with an error that another upstream might not repeat, the same request is retried once on the `tier:fallback` upstreams it has not tried yet — even while the policy still keeps them cordoned.
@@ -286,6 +334,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `idempotentTransactionBroadcast` | `*bool` | `nil` = **enabled** (<SourceLink file="architecture/evm/eth_sendRawTransaction.go" lines="27-36" />) | "Already known"/"nonce too low"-verified errors become success-with-tx-hash, making retry/hedge safe for `eth_sendRawTransaction`. |
 | `markEmptyAsErrorMethods` | `[]string` | `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionByHash`, and 8 others (<SourceLink file="common/defaults.go" lines="2044-2057" />) | Methods where empty response = error (retried, upstream scored down). `eth_getTransactionReceipt` deliberately excluded. |
 | `emptyResultConfidence` | `blockHead` \| `finalizedBlock` | `blockHead` (<SourceLink file="common/defaults.go" lines="2075-2079" />) | How confirmed a block must be for empty point-lookups to be retried as missing data. |
+| `shortCircuitFutureBlocks` | `*bool` | `nil` = **off**; inherited from `networkDefaults.evm` (<SourceLink file="common/defaults.go" lines="2283-2285" />) | Returns `null` for a numbered `eth_getBlockByNumber` above the highest latest head across every upstream of the network (static caps included; selection policy, tier and syncing state ignored), without dispatching. Fails open while any upstream's head is unknown. Uses latest heads regardless of `emptyResultConfidence`. Always on when `servedTip.enabledFor` includes `latest` (<SourceLink file="common/config.go" lines="2777-2785" />). Does not change what `latest` resolves to. |
 | `safeBlockSource` | `string` (upstream selector) | `""` = inherit or provider-defined routing | Routes standard block-tagged JSON-RPC requests carrying `safe` to matching upstreams and skips cache reads. The tag stays verbatim so those upstreams define both height and hash. Operator routing overrides client `use-upstream`; retry/consensus still applies inside the matching pool. An empty network value inherits `networkDefaults.evm.safeBlockSource` when present. Does not affect `eth_query*` or direct gRPC Query APIs. |
 | `evm.integrity.enforceHighestBlock` | `*bool` | `true` (<SourceLink file="common/defaults.go" lines="2117-2120" />) | **Deprecated** — migrated into `directiveDefaults.enforceHighestBlock` at `SetDefaults` time when the directive is unset (<SourceLink file="common/defaults.go" lines="1952-1966" />). Prefer `directiveDefaults.enforceHighestBlock`. |
 | `evm.integrity.enforceGetLogsBlockRange` | `*bool` | `true` (<SourceLink file="common/defaults.go" lines="2121-2123" />) | **Deprecated** — same migration path as `enforceHighestBlock`. |
@@ -336,7 +385,7 @@ Not present on `SvmNetworkConfig`: there is no `maxSlotsPerSignaturesQuery`. An 
 | `failsafe[]` | `[]FailsafeConfig` | `nil` | Network has none → deep-copied wholesale. Network has some → per-entry merge from the FIRST compatible default (wildcard method + finality match); break on first match (<SourceLink file="common/defaults.go" lines="1793-1832" />). |
 | `selectionPolicy` | `SelectionPolicyConfig` | `nil` | Shallow-copied when network's is nil (<SourceLink file="common/defaults.go" lines="1833-1836" />). |
 | `directiveDefaults` | `DirectiveDefaultsConfig` | `nil` | Shallow-copied when network's is nil — **no per-field merge** (<SourceLink file="common/defaults.go" lines="1837-1840" />). |
-| `evm` | `EvmNetworkConfig` | `nil` | Struct-copied wholesale when network has no `evm` block — **except onto SVM networks, which never receive it**. Otherwise per-field fill for: `integrity`, `fallbackStatePollerDebounce`, `dynamicBlockTimeDebounceMultiplier`, `blockUnavailableDelayMultiplier`, `fallbackFinalityDepth`, `getLogsMaxAllowed*`, `getLogs*`, `traceFilter*`, `servedTip`, `emptyResultConfidence`. NOT inherited individually: `chainId`, `enforceBlockAvailability`, `maxRetryableBlockDistance`, `markEmptyAsErrorMethods`, `idempotentTransactionBroadcast` (<SourceLink file="common/defaults.go" lines="1845-1889" />). |
+| `evm` | `EvmNetworkConfig` | `nil` | Struct-copied wholesale when network has no `evm` block — **except onto SVM networks, which never receive it**. Otherwise per-field fill for: `integrity`, `fallbackStatePollerDebounce`, `dynamicBlockTimeDebounceMultiplier`, `blockUnavailableDelayMultiplier`, `fallbackFinalityDepth`, `getLogsMaxAllowed*`, `getLogs*`, `traceFilter*`, `servedTip`, `emptyResultConfidence`, `shortCircuitFutureBlocks`. NOT inherited individually: `chainId`, `enforceBlockAvailability`, `maxRetryableBlockDistance`, `markEmptyAsErrorMethods`, `idempotentTransactionBroadcast` (<SourceLink file="common/defaults.go" lines="1845-1889" />). |
 | `svm` | `SvmNetworkConfig` | `nil` | Per-field fill: `chain`, `commitment`, `statePollerDebounce`, `maxFinalizedSlotLag`, `enforceBlockAvailability` (<SourceLink file="common/defaults.go" lines="2197-2221" />). **`cluster` is deliberately NOT inherited** — it is network identity, and inheriting it would let two networks alias one another. The two pointer fields are tested for `nil`, not for their zero value, so an explicit `maxFinalizedSlotLag: 0` or `enforceBlockAvailability: false` set here survives the merge. |
 | `multiplexing` | `*bool` | `nil` | Value-copied when network's `multiplexing` is nil (<SourceLink file="common/defaults.go" lines="1841-1844" />). No deep merge — a network must set its own `multiplexing` to deviate from the project-wide default. |
 
@@ -694,14 +743,15 @@ POST /main                    →  body {"networkId": "svm:fogo:mainnet", ...}
 20. **Failed lazy bootstrap is user-retryable** — non-fatal bootstrap tasks are retried by the background auto-retry loop and by the next request's `ExecuteTasks`. Only `resolveNetworkConfig` format errors are `TaskFatal` and never retried. [`erpc/networks_registry.go:L263-266`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L263-L266)
 21. **Provider `onlyNetworks` bypasses vendor support checks entirely** — a networkId listed in `onlyNetworks` returns `SupportsNetwork = true` without consulting the vendor's dynamic check; `ignoreNetworks` is evaluated first and short-circuits to false. [`thirdparty/provider.go:L34-49`](https://github.com/erpc/erpc/blob/main/thirdparty/provider.go#L34-L49)
 22. **Synthesized lazy network configs become permanently visible** — `ExposeNetworkConfig` appends to `project.Config.Networks` (admin API surface) and never overwrites an existing entry, so lazy networks persist in the admin response after first use. [`erpc/projects.go:L58-77`](https://github.com/erpc/erpc/blob/main/erpc/projects.go#L58-L77)
-23. **Syncing upstreams are excluded from every head computation** — max mode, cluster mode, lowest-finalized, and guaranteed-method floor calculations all skip upstreams in `EvmSyncingStateSyncing`. [`erpc/networks.go:L327-330`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L327-L330)
-24. **Future-block short-circuit compares against the MAX eligible head, not the cluster-min served tip** — it never nulls a block that the most-ahead upstream reports having. The synthetic null response is never cached, and the short-circuit only fires for concrete block numbers (not tags or hashes). [`erpc/networks.go:L570-610`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L570-L610)
+23. **Syncing upstreams are excluded from every head computation** — max mode, cluster mode, lowest-finalized, and guaranteed-method floor calculations all skip upstreams in `EvmSyncingStateSyncing`. The future-block short-circuit is the exception: it counts every upstream of the network, syncing ones included ([`erpc/networks.go:L935-954`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L935-L954)). [`erpc/networks.go:L327-330`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L327-L330)
+24. **Future-block short-circuit compares against the MAX head across every upstream of the network, not the cluster-min served tip** — selection policy, tier (a cordoned fallback can still serve through the escape) and syncing state are ignored, and it fails open while any upstream's head is unknown, so it never nulls a block that any upstream reports having. One upstream whose head is never learned (for example a broken endpoint) therefore keeps it from firing on that network. It runs only when `evm.shortCircuitFutureBlocks` is true or `servedTip.enabledFor` includes `latest`, and always compares latest heads: `emptyResultConfidence: finalizedBlock` does not make it null an unfinalized block an upstream already has. The synthetic null response is never cached, and the short-circuit only fires for concrete block numbers (not tags or hashes). [`erpc/networks.go:L901-954`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L901-L954)
 25. **Wrong-empty misbehavior is suppressed for out-of-bounds blocks** — if the block number in a missing-data response falls outside an upstream's configured `blockAvailability` bounds, the empty response is expected and no misbehavior is recorded against that upstream. [`erpc/networks.go:L1566-1587`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1566-L1587)
 26. **`getLogsMaxAllowedRange: 0` is rejected by validation** — the field must be &gt; 0 after defaults (`common/validation.go:L1309-1311`). Unlike `getLogsMaxAllowedAddresses` and `getLogsMaxAllowedTopics` (which default to 0 = unlimited), `getLogsMaxAllowedRange` defaults to 30 000 and cannot be explicitly zeroed out; setting `0` in a network inheriting from defaults is treated as "unset" and inherits the parent value. [`common/defaults.go:L2092-2094`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2092-L2094)
 27. **Zero projects → implicit `main` project + catch-all aliasing rule** — when the config has no projects, eRPC auto-creates `{matchDomain: "*", serveProject: "main"}`, so `/evm/123` works without a project path segment. [`common/defaults.go:L100-110`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L100-L110)
 28. **Selector-scoped tips never pollute network gauges** — stateless scoped picks (unmatched or non-simple selectors) use a sentinel lane and emit no Prometheus gauge; equivalent selectors dedup into one partition keyed by matched-set hash; the cap of 16 partitions is enforced globally per network. [`erpc/networks.go:L98-105`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L98-L105)
 29. **Static response params matching has no wildcard** — there is no glob or `*` support; every params slot must match exactly. To catch a method regardless of params, add an entry with an empty `params` array. To match block 0 (`"0x0"`), be exact — `"0x00"` will not match. [`common/static_response.go:L14-99`](https://github.com/erpc/erpc/blob/main/common/static_response.go#L14-L99)
 30. **Same-chain networks share Redis cache keys unless `cacheKeySuffix` is set** — partition keys are `{networkId}:{blockRef}` (`evm:998:64321354`). Two projects on chainId 998 with a shared Redis will HIT each other's bodies. `X-ERPC-Skip-Cache-Read` still writes, so the last fetch poisons the other project. Set `cacheKeySuffix: systx` on one network to get `evm:998:systx:{blockRef}`. Colon is rejected. Reverse-index wildcard is `{networkId}:{suffix}:*`, passed from the known network id and suffix rather than inferred from the concrete key. Memory/Redis `Delete` must use the same `WithReverseIndex` ctx as `Set`. A chain-wide main-key flush of `evm:998:*` still matches suffixed data keys. [`common/config.go:L3022-L3028`](https://github.com/erpc/erpc/blob/main/common/config.go#L3022-L3028), [`data/connector.go`](https://github.com/erpc/erpc/blob/main/data/connector.go)
+31. **`shortCircuitFutureBlocks` can briefly null a block that exists** — the head it compares against is what the state poller and head subscriptions last reported. A block an upstream produced after that gets `null` until eRPC sees it, even if the client already saw it via the node's own `newHeads` (the case covered by `TestNetworkAvailability_Issue934_*`, which run with the option off). Enable it only where heads arrive promptly (WebSocket head subscriptions) and clients retry a `null`. [`erpc/networks.go:L901-926`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L901-L926)
 
 ### Observability
 
@@ -733,6 +783,9 @@ POST /main                    →  body {"networkId": "svm:fogo:mainnet", ...}
 - `"skipping static response: cannot inspect request"` (debug) — `JsonRpcRequest()` failed; static check skipped.
 - `"failed to build static response"` (error) — `NewJsonRpcResponse` failed on a matched static entry.
 - Provider task: `"registering N upstream(s) from provider"` (`upstream/registry.go`).
+
+**Span attributes** (on the `Network.Forward` span):
+- `future_block.short_circuit=true` — the future-block short-circuit returned `null` without dispatching (`evm.shortCircuitFutureBlocks` or served-tip for `latest`). No metric counts these; they are not dispatched, so they do not appear in upstream request metrics.
 
 ### Source code entry points
 
