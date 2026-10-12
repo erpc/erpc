@@ -182,11 +182,12 @@ func (s *JwtStrategy) findVerificationKey(ctx context.Context, token *jwt.Token)
 func errAuthUnauthorizedFromJwtParse(err error) error {
 	var ve *jwt.ValidationError
 	if errors.As(err, &ve) {
-		if ve.Errors&jwt.ValidationErrorExpired != 0 {
-			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonTokenExpired)
-		}
+		// Signature first: claims (including exp) are untrusted if the sig failed.
 		if ve.Errors&jwt.ValidationErrorSignatureInvalid != 0 {
 			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature)
+		}
+		if ve.Errors&jwt.ValidationErrorExpired != 0 {
+			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonTokenExpired)
 		}
 		// Other ValidationError flags (nbf, iat, malformed, …) keep jwt's text.
 		return common.NewErrAuthUnauthorized("jwt", err.Error())

@@ -629,7 +629,7 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 25. **Admin auth registry DOES support rate-limit budgets.** Unlike the healthcheck scope, the admin `AuthRegistry` is created with the same `rateLimitersRegistry` as projects. Rate-limit budgets on admin auth strategies are applied when configured.
 26. **`verificationJwksUrl` must be absolute HTTP(S).** Non-empty values are parsed at startup; scheme must be `http` or `https` and a host is required. Scheme-less hosts, `file://`, and other schemes fail validation even when static `verificationKeys` are also set. [<SourceLink file="common/validation.go" />]
 
-27. **JWT `jwt.Parse` failures are classified into `AuthUnauthorizedReason`.** Expired tokens (`ValidationErrorExpired`) → `token_expired` / "token expired"; bad signatures → `invalid_signature` / "invalid signature". Other `ValidationError` flags keep the jwt library text without a `reason` detail. Classification lives in auth (not `common`) to avoid importing `golang-jwt` into `common`. [<SourceLink file="auth/strategy_jwt.go" />, <SourceLink file="common/errors.go" lines="548-615" />]
+27. **JWT `jwt.Parse` failures are classified into `AuthUnauthorizedReason`.** Bad signatures → `invalid_signature` / "invalid signature"; expired tokens (`ValidationErrorExpired`) → `token_expired` / "token expired". If both bits are set, signature wins — claims (including `exp`) are untrusted without a valid sig. Other `ValidationError` flags keep the jwt library text without a `reason` detail. Classification lives in auth (not `common`) to avoid importing `golang-jwt` into `common`. [<SourceLink file="auth/strategy_jwt.go" />, <SourceLink file="common/errors.go" lines="548-615" />]
 
 ### Observability
 

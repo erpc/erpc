@@ -275,6 +275,15 @@ func TestJwtStrategyParseErrorClassification(t *testing.T) {
 		assert.Equal(t, common.AuthUnauthorizedReasonInvalidSignature, authErr.Reason())
 		assert.Equal(t, common.AuthUnauthorizedReasonInvalidSignature.Message(), authErr.Message)
 	})
+
+	t.Run("signature invalid wins when expired bit also set", func(t *testing.T) {
+		err := errAuthUnauthorizedFromJwtParse(&jwt.ValidationError{
+			Errors: jwt.ValidationErrorExpired | jwt.ValidationErrorSignatureInvalid,
+		})
+		var authErr *common.ErrAuthUnauthorized
+		require.ErrorAs(t, err, &authErr)
+		assert.Equal(t, common.AuthUnauthorizedReasonInvalidSignature, authErr.Reason())
+	})
 }
 
 func TestNormalizeClaimToStrings(t *testing.T) {
