@@ -1797,6 +1797,69 @@ func TestApplyDefaults_UpstreamDefaultsSvm(t *testing.T) {
 		require.Equal(t, "mainnet", d.Svm.Cluster, "the defaults block itself must stay unmutated")
 	})
 
+	t.Run("blockAvailability inherits from upstreamDefaults and is not aliased", func(t *testing.T) {
+		window := &SvmBlockAvailabilityConfig{
+			Lower: &SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(100000)},
+		}
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster:           "mainnet-beta",
+			BlockAvailability: window,
+		}}
+		a := &UpstreamConfig{Id: "a", Type: UpstreamTypeSvm, Endpoint: "http://a:8899"}
+		b := &UpstreamConfig{Id: "b", Type: UpstreamTypeSvm, Endpoint: "http://b:8899"}
+		require.NoError(t, a.ApplyDefaults(d))
+		require.NoError(t, b.ApplyDefaults(d))
+
+		require.NotNil(t, a.Svm.BlockAvailability)
+		require.NotNil(t, b.Svm.BlockAvailability)
+		require.NotSame(t, d.Svm.BlockAvailability, a.Svm.BlockAvailability)
+		require.NotSame(t, a.Svm.BlockAvailability, b.Svm.BlockAvailability)
+		require.NotSame(t, a.Svm.BlockAvailability.Lower, b.Svm.BlockAvailability.Lower)
+		require.Equal(t, int64(100000), *a.Svm.BlockAvailability.Lower.LatestSlotMinus)
+
+		*a.Svm.BlockAvailability.Lower.LatestSlotMinus = 1
+		require.Equal(t, int64(100000), *b.Svm.BlockAvailability.Lower.LatestSlotMinus)
+		require.Equal(t, int64(100000), *d.Svm.BlockAvailability.Lower.LatestSlotMinus)
+	})
+
+	t.Run("partial svm block inherits blockAvailability when unset", func(t *testing.T) {
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster: "mainnet-beta",
+			BlockAvailability: &SvmBlockAvailabilityConfig{
+				Lower: &SvmAvailabilityBoundConfig{ExactSlot: int64Ptr(50)},
+			},
+		}}
+		u := &UpstreamConfig{
+			Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899",
+			Svm: &SvmUpstreamConfig{Cluster: "devnet"},
+		}
+		require.NoError(t, u.ApplyDefaults(d))
+		require.Equal(t, "devnet", u.Svm.Cluster, "explicit cluster must win")
+		require.NotNil(t, u.Svm.BlockAvailability)
+		require.Equal(t, int64(50), *u.Svm.BlockAvailability.Lower.ExactSlot)
+		require.NotSame(t, d.Svm.BlockAvailability, u.Svm.BlockAvailability)
+	})
+
+	t.Run("upstream's own blockAvailability wins", func(t *testing.T) {
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster: "mainnet-beta",
+			BlockAvailability: &SvmBlockAvailabilityConfig{
+				Lower: &SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(100000)},
+			},
+		}}
+		u := &UpstreamConfig{
+			Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899",
+			Svm: &SvmUpstreamConfig{
+				Cluster: "mainnet-beta",
+				BlockAvailability: &SvmBlockAvailabilityConfig{
+					Lower: &SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(128)},
+				},
+			},
+		}
+		require.NoError(t, u.ApplyDefaults(d))
+		require.Equal(t, int64(128), *u.Svm.BlockAvailability.Lower.LatestSlotMinus)
+	})
+
 	t.Run("no upstreamDefaults.svm leaves the upstream untouched", func(t *testing.T) {
 		u := &UpstreamConfig{Id: "u1", Type: UpstreamTypeEvm, Endpoint: "http://localhost:8545"}
 		require.NoError(t, u.ApplyDefaults(&UpstreamConfig{}))
@@ -1994,3 +2057,29 @@ func TestFindDefaultCacheMethodConfigMatchesTableCascade(t *testing.T) {
 	assert.Greater(t, seen, 20, "sanity: the default tables should be populated")
 	assert.Nil(t, FindDefaultCacheMethodConfig("custom_notADefaultMethod"))
 }
+
+func TestUpstreamConfig_Copy_SvmBlockAvailabilityNotAliased(t *testing.T) {
+	src := &UpstreamConfig{
+		Id: "a", Type: UpstreamTypeSvm, Endpoint: "http://a:8899",
+		Svm: &SvmUpstreamConfig{
+			Cluster: "mainnet-beta",
+			BlockAvailability: &SvmBlockAvailabilityConfig{
+				Lower: &SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(100000)},
+			},
+		},
+	}
+	cp := src.Copy()
+	require.NotSame(t, src.Svm, cp.Svm)
+	require.NotSame(t, src.Svm.BlockAvailability, cp.Svm.BlockAvailability)
+	require.NotSame(t, src.Svm.BlockAvailability.Lower, cp.Svm.BlockAvailability.Lower)
+
+	*cp.Svm.BlockAvailability.Lower.LatestSlotMinus = 1
+	require.Equal(t, int64(100000), *src.Svm.BlockAvailability.Lower.LatestSlotMinus)
+}
+
+// Hook dispatch (architecture/evm/hooks.go) routes method names
+// case-insensitively, so the per-method config lookup must resolve the same
+// way — otherwise a non-canonical casing dispatches into method-specific logic
+// but resolves no config (no gating, no caching, no block-ref extraction).
+// Canonicalization is lookup-only: the wire method string is forwarded
+// upstream verbatim (per JSON-RPC 2.0 the method member is case-sensitive).

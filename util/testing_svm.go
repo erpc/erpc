@@ -35,11 +35,24 @@ func SetupMocksForSvmStatePoller(host string, latestSlot, finalizedSlot int64) {
 	SetupMocksForSvmStatePollerWithShred(host, latestSlot, finalizedSlot, latestSlot)
 }
 
+// SetupMocksForSvmStatePollerWithFirstAvailable is the full form, including the
+// upstream's ledger floor. A floor of 0 is known-and-unconstraining, which is
+// why the two shorter helpers pass it: the floor gate only ever skips an
+// upstream whose floor is ABOVE the requested slot, so 0 leaves every existing
+// test's routing unchanged while still mocking the call the poller now makes.
+func SetupMocksForSvmStatePollerWithFirstAvailable(host string, latestSlot, finalizedSlot, shredInsertSlot, firstAvailableSlot int64) {
+	setupSvmStatePollerMocks(host, latestSlot, finalizedSlot, shredInsertSlot, firstAvailableSlot)
+}
+
 // SetupMocksForSvmStatePollerWithShred is like SetupMocksForSvmStatePoller but
 // allows specifying the getMaxShredInsertSlot return value independently. Use
 // shredInsertSlot < finalizedSlot to simulate a provider whose indexer is behind
 // the consensus finalized tip (the devnet scenario that triggers -32004).
 func SetupMocksForSvmStatePollerWithShred(host string, latestSlot, finalizedSlot, shredInsertSlot int64) {
+	setupSvmStatePollerMocks(host, latestSlot, finalizedSlot, shredInsertSlot, 0)
+}
+
+func setupSvmStatePollerMocks(host string, latestSlot, finalizedSlot, shredInsertSlot, firstAvailableSlot int64) {
 	// getGenesisHash → mainnet-beta (bootstrap cluster-identity validation)
 	gock.New("http://" + host).
 		Post("").
@@ -79,6 +92,14 @@ func SetupMocksForSvmStatePollerWithShred(host string, latestSlot, finalizedSlot
 		Filter(filterByHostAndBody(host, "getMaxShredInsertSlot")).
 		Reply(200).
 		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d,"_note":"svm state poller expected mock for getMaxShredInsertSlot"}`, shredInsertSlot)))
+
+	// getFirstAvailableBlock → the upstream's ledger floor
+	gock.New("http://" + host).
+		Post("").
+		Persist().
+		Filter(filterByHostAndBody(host, "getFirstAvailableBlock")).
+		Reply(200).
+		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d,"_note":"svm state poller expected mock for getFirstAvailableBlock"}`, firstAvailableSlot)))
 }
 
 func filterByHostAndBody(host, needle string) func(*http.Request) bool {

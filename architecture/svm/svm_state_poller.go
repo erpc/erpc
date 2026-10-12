@@ -13,6 +13,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -64,12 +66,28 @@ const maxConsecutiveSlotPollSkips = 4
 // needs a different health-detection latency than ~2s.
 const healthPollEveryNTicks = 5
 
+// DefaultFirstAvailableSlotStaleness is the minimum interval between
+// getFirstAvailableBlock fetches per upstream.
+//
+// Deliberately ~75x the slot time. The floor sits O(100k) slots below the head
+// and rises at most one slot per slot, so freshness buys nothing measurable.
+// It also needs NO staleness margin on the comparison: a stale floor is always
+// LOWER than the true floor, so it can only under-exclude — one wasted round
+// trip the sweep already absorbs — and never wrongly exclude. That is the
+// opposite of indexedTipStalenessMargin, whose bound moves TOWARD the
+// requested slot and therefore does need slack.
+//
+// The only thing this window bounds is recovery after a floor DROP (a node
+// re-provisioned with longer history behind a stable endpoint).
+const DefaultFirstAvailableSlotStaleness = 30 * time.Second
+
 // Static request payloads — avoid allocating on every tick.
 var (
-	reqGetHealth             = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
-	reqGetSlotProcessed      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
-	reqGetSlotFinalized      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
-	reqGetMaxShredInsertSlot = []byte(`{"jsonrpc":"2.0","id":1,"method":"getMaxShredInsertSlot","params":[]}`)
+	reqGetHealth              = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
+	reqGetSlotProcessed       = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
+	reqGetSlotFinalized       = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
+	reqGetMaxShredInsertSlot  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getMaxShredInsertSlot","params":[]}`)
+	reqGetFirstAvailableBlock = []byte(`{"jsonrpc":"2.0","id":1,"method":"getFirstAvailableBlock","params":[]}`)
 )
 
 var _ common.SvmStatePoller = (*SvmStatePoller)(nil)
@@ -83,6 +101,29 @@ type SvmStatePoller struct {
 
 	latestSlotShared    data.CounterInt64SharedVariable
 	finalizedSlotShared data.CounterInt64SharedVariable
+
+	// firstAvailableSlotShared is this upstream's LEDGER FLOOR — the lowest
+	// slot it can still serve, as reported by its own getFirstAvailableBlock.
+	// Created with ignoreRollbackOf = 0 so a DECREASE is accepted: a node
+	// re-provisioned from a longer snapshot, or a vendor enabling long-term
+	// storage, legitimately drops its floor. The error asymmetry forces that
+	// choice — a floor stuck too HIGH excludes an upstream that can serve,
+	// while a floor stuck too LOW costs one wasted round trip.
+	firstAvailableSlotShared data.CounterInt64SharedVariable
+
+	// firstAvailableSlotKnown separates "observed floor of 0" from "never
+	// observed". The counter cannot: GetValue() returns 0 for both, and 0 is a
+	// real answer — a genesis-backed archive reports it. Conflating them would
+	// make a full-history upstream read as "history starts at MIN(others)",
+	// i.e. unknown reading as unavailable.
+	firstAvailableSlotKnown atomic.Bool
+
+	// firstAvailableSlotPending is set when a stale refresh timed out (or
+	// otherwise returned without establishing known). TryUpdateIfStale's
+	// UpdateMaxWait path marks the counter fresh with a nil error while the
+	// fetch continues asynchronously — that freshness must NOT be read as a
+	// peer-seeded observation on the next tick's fast path.
+	firstAvailableSlotPending atomic.Bool
 
 	shredInsertSlot       atomic.Int64
 	maxShredInsertSlotLag atomic.Int64
@@ -150,8 +191,16 @@ func NewSvmStatePoller(
 	latestKey := fmt.Sprintf("svm/latestSlot/%s", common.UniqueUpstreamKey(up))
 	finalizedKey := fmt.Sprintf("svm/finalizedSlot/%s", common.UniqueUpstreamKey(up))
 
+	firstAvailableKey := fmt.Sprintf("svm/firstAvailableSlot/%s", common.UniqueUpstreamKey(up))
+
 	latestShared := sharedState.GetCounterInt64(latestKey, DefaultToleratedSlotRollback)
 	finalizedShared := sharedState.GetCounterInt64(finalizedKey, DefaultToleratedSlotRollback)
+	// ignoreRollbackOf = 0 accepts every change, including decreases, and also
+	// disables the non-positive guard — required here, because 0 is a legal
+	// floor. DefaultToleratedSlotRollback is for fork detection on a HEAD; a
+	// floor has no forks. No OnLargeRollback callback either: a floor decrease
+	// is normal operation, not the wrong-node signal that callback reports.
+	firstAvailableShared := sharedState.GetCounterInt64(firstAvailableKey, 0)
 
 	e := &SvmStatePoller{
 		projectId:           projectId,
@@ -161,7 +210,25 @@ func NewSvmStatePoller(
 		tracker:             tracker,
 		latestSlotShared:    latestShared,
 		finalizedSlotShared: finalizedShared,
+
+		firstAvailableSlotShared: firstAvailableShared,
 	}
+
+	// Any accepted floor CHANGE marks the floor known and refreshes the gauge,
+	// whatever produced it (this instance's fetch, or a peer's push). OnValue
+	// is edge-triggered: it cannot cover an initial load that raced this
+	// registration, nor a propagated value equal to the counter's current one
+	// (a peer's floor of 0 into a zero-valued counter). Those paths are closed
+	// by refreshFirstAvailableSlot's not-stale fast path — but ONLY when no
+	// local refresh is still pending a real observation (see
+	// firstAvailableSlotPending). Registered unconditionally: unlike the slot
+	// counters below it feeds no tracker, so it has no dependency on `tracker`
+	// being non-nil.
+	firstAvailableShared.OnValue(func(v int64) {
+		e.firstAvailableSlotPending.Store(false)
+		e.firstAvailableSlotKnown.Store(true)
+		e.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot).Set(float64(v))
+	})
 
 	// Counter callbacks, mirroring EvmStatePoller (evm_state_poller.go:157-171).
 	// OnValue is the ONLY tracker feed for slots: it fires once per ACCEPTED
@@ -419,6 +486,19 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 		e.nextHealthPoll = e.pollCount
 	}
 
+	// The ledger floor runs AFTER the fan-out joins, not inside it, because its
+	// edge validation compares the sampled floor against this upstream's own
+	// head — and inside the fan-out that read races the getSlot goroutine, so
+	// LatestSlot() would still be 0 and the check would silently never fire.
+	// The cost of serialising it is bounded: TryUpdateIfStale returns on a fast
+	// path while the value is fresh, and when it does refresh, the foreground
+	// wait is capped by SharedStateConfig.UpdateMaxWait with the fetch
+	// continuing asynchronously.
+	func() {
+		defer e.recoverPanic("fetchFirstAvailableSlot")
+		e.refreshFirstAvailableSlot(ctx)
+	}()
+
 	// A health verdict nobody routes on is not a defense; publish it.
 	e.applyHealthToRouting()
 
@@ -503,6 +583,138 @@ func (e *SvmStatePoller) IsHealthy() bool {
 		return false
 	}
 	return true
+}
+
+// refreshFirstAvailableSlot re-reads this upstream's ledger floor, debounced by
+// the counter itself rather than by the poll gate. TryUpdateIfStale returns on
+// a fast path when the value is fresh, so calling it every tick costs one
+// atomic load, and it coordinates the actual fetch across erpc instances
+// through the counter's updatedAt.
+//
+// It sits OUTSIDE the skipSlots traffic gate for the same reason getHealth and
+// getMaxShredInsertSlot do: live traffic carries no floor signal, so a busy
+// method must never suppress this observation.
+//
+// known is set only from a successful fetch, OnValue, or a not-stale fast path
+// that is NOT still waiting on a timed-out refresh. TryUpdateIfStale's
+// UpdateMaxWait timeout returns (initialValue, nil) while the RPC continues
+// asynchronously — treating that nil as an observation would mark slot 0 known
+// on a cold poller and leave firstAvailableSlotPlus enforcing from genesis if
+// the async fetch later fails.
+func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
+	wasStale := e.firstAvailableSlotShared.IsStale(DefaultFirstAvailableSlotStaleness)
+	slot, err := e.firstAvailableSlotShared.TryUpdateIfStale(ctx, DefaultFirstAvailableSlotStaleness,
+		func(ctx context.Context) (int64, error) {
+			slot, err := e.fetchFirstAvailableSlot(ctx)
+			if err != nil {
+				// Includes -32601 from an upstream that does not implement the
+				// method, and null/empty results. Returning the error leaves
+				// the previous value and the known flag untouched, so that
+				// upstream is never excluded.
+				return 0, err
+			}
+			if slot < 0 {
+				return 0, fmt.Errorf("negative first available slot %d", slot)
+			}
+			// A node's floor cannot exceed its own head. Validating that here
+			// is what stops one buggy or hostile upstream from advertising a
+			// floor near MaxInt64 and self-evicting from every slot-named
+			// read. When LatestSlot is still 0 the check is skipped, so a cold
+			// poller cannot reject a legitimate sample.
+			if latest := e.LatestSlot(); latest > 0 && slot > latest {
+				return 0, fmt.Errorf("first available slot %d is above own latest slot %d", slot, latest)
+			}
+			e.firstAvailableSlotPending.Store(false)
+			e.firstAvailableSlotKnown.Store(true)
+			e.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot).Set(float64(slot))
+			return slot, nil
+		})
+	if err != nil {
+		return
+	}
+	if e.firstAvailableSlotKnown.Load() {
+		e.firstAvailableSlotPending.Store(false)
+		e.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot).Set(float64(slot))
+		return
+	}
+	if !wasStale {
+		// Fast path: counter was already fresh before this call. Timeout
+		// cannot produce this branch on the tick that timed out. A prior
+		// timeout's markFreshAttempt CAN make a later tick look fresh with
+		// no observation — firstAvailableSlotPending refuses to promote that
+		// zero. Peer-seeded freshness (including a propagated 0 that fired
+		// no OnValue) has pending=false and is trusted here.
+		if e.firstAvailableSlotPending.Load() {
+			return
+		}
+		e.firstAvailableSlotKnown.Store(true)
+		e.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot).Set(float64(slot))
+		return
+	}
+	// wasStale and still unknown: the foreground wait timed out (or the
+	// closure never established known). Remember so a subsequent fast path
+	// does not treat markFreshAttempt as a peer observation. Async success
+	// clears pending via the closure / OnValue.
+	e.firstAvailableSlotPending.Store(true)
+}
+
+// fetchFirstAvailableSlot is the floor-only edge parser. Shared fetchSlot maps
+// JSON null/empty to (0, nil) for getSlot / getMaxShredInsertSlot, where an
+// absent tip is "not yet observed" rather than a value — but a null
+// getFirstAvailableBlock is a malformed answer, not a genesis floor. Rejecting
+// it here keeps known=false and leaves firstAvailableSlotPlus unbounded.
+func (e *SvmStatePoller) fetchFirstAvailableSlot(ctx context.Context) (int64, error) {
+	resp, err := e.call(ctx, reqGetFirstAvailableBlock)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		return 0, err
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return 0, err
+	}
+	if jrr.Error != nil {
+		return 0, jrr.Error
+	}
+	raw := string(jrr.GetResultBytes())
+	if raw == "" || raw == "null" {
+		return 0, fmt.Errorf("getFirstAvailableBlock returned %s", raw)
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse first available slot %q: %w", raw, err)
+	}
+	return v, nil
+}
+
+// gauge resolves a per-upstream gauge for this poller's upstream. Labels match
+// the tracker's convention so SVM series join with the generic upstream ones.
+func (e *SvmStatePoller) gauge(vec *prometheus.GaugeVec) prometheus.Gauge {
+	if e.upstream == nil {
+		// Same guard applyHealthToRouting applies: a poller without an
+		// upstream has nothing to label a series with.
+		return vec.WithLabelValues(e.projectId, "", "", "")
+	}
+	return vec.WithLabelValues(
+		e.projectId,
+		e.upstream.VendorName(),
+		e.upstream.NetworkLabel(),
+		e.upstream.Id(),
+	)
+}
+
+// FirstAvailableSlot reports this upstream's ledger floor.
+//
+// known=false means never observed — a cold poller, a failed fetch, or an
+// upstream without the method — and callers MUST read that as "no constraint",
+// never as "nothing available".
+func (e *SvmStatePoller) FirstAvailableSlot() (int64, bool) {
+	if !e.firstAvailableSlotKnown.Load() {
+		return 0, false
+	}
+	return e.firstAvailableSlotShared.GetValue(), true
 }
 
 // applyHealthToRouting publishes the poller's verdict to upstream selection.

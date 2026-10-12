@@ -69,6 +69,17 @@ var (
 		Help:      "Finalized block number of upstreams.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	// MetricUpstreamSvmFirstAvailableSlot is an upstream's ledger floor — the
+	// lowest slot it can still serve, from its own getFirstAvailableBlock.
+	// Routing depends on it: a request naming a slot below this value skips
+	// the upstream. Absent until the first successful observation, because an
+	// unobserved floor is treated as "no constraint" rather than as 0.
+	MetricUpstreamSvmFirstAvailableSlot = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_svm_first_available_slot",
+		Help:      "Lowest slot an SVM upstream can still serve (its ledger floor).",
+	}, []string{"project", "vendor", "network", "upstream"})
+
 	MetricCacheConnectorEarliestBlockNumber = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "cache_connector_earliest_block_number",

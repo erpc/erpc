@@ -107,6 +107,7 @@ https://docs.erpc.cloud/reference/svm/slot-tracking.llms.txt`}
 | `FinalizedSlot()` | `getSlot {"commitment":"finalized"}` | The latest rooted slot |
 | `ShredInsertSlot()` | `getMaxShredInsertSlot` | Blockstore-ingestion watermark |
 | `MaxShredInsertSlotLag()` | derived | `maxShredInsertSlot − processedSlot` |
+| `FirstAvailableSlot()` | `getFirstAvailableBlock` | Ledger floor — the lowest slot this node still retains. `known=false` until observed; unknown is **not** slot 0. |
 
 **There is deliberately no confirmed tip.** Nothing polls `getSlot {"commitment":"confirmed"}`, and that absence is load-bearing for the `getSlot` correction below.
 
@@ -190,6 +191,17 @@ The `+2` covers tick scheduling and the cross-source skew between `getSlot` (ser
 
 The guard **fails open** whenever the tip it needs is unknown — an indexed frontier of `0` forwards every slot, and a finalized root of `0` falls back to the indexed bound rather than collapsing to slot `0`. Absence of tracking is not evidence of unavailability, so a cold poller or a vendor without `getMaxShredInsertSlot` must not cost requests every upstream could serve.
 
+**Per-upstream ledger floor and declared slot windows.** Two complementary lower bounds share the same `svm.enforceBlockAvailability` switch:
+
+1. **Observed floor** — the poller's `FirstAvailableSlot()` from `getFirstAvailableBlock`. A request naming a slot below that floor is skipped on this upstream (`-32001`, permanent for the request).
+2. **Declared window** — optional `upstreams[*].svm.blockAvailability.{lower,upper}` (`exactSlot` / `latestSlotMinus` / `firstAvailableSlotPlus`). An operator restriction, never a widening: effective lower = max(observed floor, declared lower).
+
+**Exception for range methods.** `getBlocks` / `getBlocksWithLimit` are a routing *preference*, not a refusal: Agave answers a start below its floor by clamping to the lowest retained slot. When at least one **selected** (post-policy) upstream has a *known* floor at or below the start, below-floor peers are skipped so the unclamped answer wins. When no selected upstream covers the start, the request **forwards everywhere** so every node can clamp — the same answer clients use to discover where history begins. Only a known floor authorizes the preference; an unknown/cold upstream does not.
+
+The per-upstream gate runs declared bounds first, then the observed floor. Pool-level short-circuits (`networkPreForward_belowPoolFloor`) keep using **observed** floors only — a declared bound is not evidence the data does not exist elsewhere in the pool.
+
+A cold poller, an unobserved floor, or a computed min>max range fail-open. `firstAvailableSlotPlus` with an unobserved floor is unbounded (unlike EVM's `earliestBlockPlus`, which computes `0+N` before detection).
+
 **Consensus slot-lag pre-filter.** For a request whose resolved finality is `Finalized` **and** with a consensus policy active, upstreams whose `FinalizedSlot` trails the reference by more than `svm.maxFinalizedSlotLag` are pruned before consensus runs — the same query sent to a stale upstream and a current one returns different answers for data the caller has been promised is immutable.
 
 The reference slot is **not** the raw pool max, which is poisonable: a single upstream reporting a wildly inflated finalized slot would become the reference, every honest upstream would trail it by more than the lag, and the filter could shrink the pool to just the liar. Instead, when the leader outruns the runner-up by more than `maxFinalizedSlotLag`, the **runner-up** becomes the reference — the leader still passes (the filter only drops trailers) but can no longer drag the bar above the honest pack. This defends a single liar; colluding upstreams would need a majority-based baseline.
@@ -202,7 +214,7 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 |---|---|---|---|
 | `networks[*].svm.statePollerDebounce` | Duration | `400ms` (one slot) | Minimum interval between poll fan-outs. A **gate**, not the ticker period — the ticker stays at 400 ms. Raising it widens the `getBlock` guard's staleness margin proportionally. |
 | `networks[*].svm.maxFinalizedSlotLag` | `*int64` | `100` slots (≈40 s) | Consensus-scoped only: applied when a consensus policy is active **and** the request's resolved finality is `Finalized`. **Tri-state** — omit for the 100-slot default, `0` to **disable** the filter entirely, `>0` for that value. |
-| `networks[*].svm.enforceBlockAvailability` | `*bool` | `true` | Gates the `getBlock`/`getConfirmedBlock` availability guard. Set `false` when shred-insert tracking is unavailable or unreliable on a deployment. |
+| `networks[*].svm.enforceBlockAvailability` | `*bool` | `true` | Gates the `getBlock`/`getConfirmedBlock` availability guard, the per-upstream observed-floor skip, **and** declared `svm.blockAvailability` windows. Set `false` when shred-insert tracking is unavailable or unreliable on a deployment. |
 
 `maxFinalizedSlotLag` is a pointer precisely so an explicit `0` is distinguishable from "unset": a plain integer would collapse those two cases and make the documented disable switch unreachable. The `100` default is materialized in exactly one place (`SetDefaults`) so every reader downstream can simply test `lag != nil && *lag > 0`.
 
@@ -358,6 +370,9 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 9. **The poller does not lift a manual cordon.** The edge-trigger flag records that *this poller* cordoned; an operator's `Cordon` via the admin API is untouched by recovery.
 10. **Large-rollback events are recorded, not acted on.** A backwards slot jump beyond 1024 is surfaced as `erpc_upstream_block_head_large_rollback`; it does not itself cordon.
 11. **`context.slot` harvesting only covers envelope methods.** `getSlot`, `getBlock`, and `getTransaction` return bare values and contribute nothing to the traffic gate. `getProgramAccounts` is included because its envelope form is opt-in via `withContext: true` and the non-envelope miss is cheap.
+12. **Declared `svm.blockAvailability` shares `enforceBlockAvailability`.** Setting the switch to `false` disables the observed-floor skip and the declared window together. There is no second knob.
+13. **Declared lower never widens the observed floor.** Effective lower = max(`getFirstAvailableBlock`, declared lower). Pool-level short-circuits still use observed floors only.
+14. **`firstAvailableSlotPlus` with an unobserved floor is unbounded.** Unknown floor is not slot 0 — the request forwards until the poller has a real sample.
 
 ### Observability
 
@@ -374,6 +389,10 @@ The SVM poller feeds the shared health tracker, so the standard upstream gauges 
 | `erpc_upstream_cordon_event_total` | counter | Increments only on a cordon **transition** (edge-triggered) |
 | `erpc_upstream_cordon_duration_seconds` | histogram | Observed on uncordon |
 | `erpc_upstream_stale_latest_block_total` | counter | A `getSlot` answer was corrected upward or capped |
+| `erpc_upstream_svm_first_available_slot` | gauge | The upstream's ledger floor from `getFirstAvailableBlock` — lowest slot it can still serve. Absent until first observed; set on any accepted value including cross-pod propagation |
+| `erpc_upstream_stale_lower_bound_total{confidence="firstAvailableBlock"}` | counter | A slot-named read skipped an upstream whose observed floor is above the named slot |
+| `erpc_upstream_stale_lower_bound_total{confidence="configured"}` | counter | A slot-named read skipped an upstream below its declared `svm.blockAvailability.lower` |
+| `erpc_upstream_stale_upper_bound_total{confidence="configured"}` | counter | A slot-named read skipped an upstream above its declared `svm.blockAvailability.upper` |
 | `erpc_network_retry_attempt_total{reason="missing_data"}` | counter | Includes retries triggered by the `getBlock` availability guard |
 
 **Notable log lines:**
@@ -390,6 +409,8 @@ The SVM poller feeds the shared health tracker, so the standard upstream gauges 
 - [`architecture/svm/svm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/svm_state_poller.go) — `Poll` fan-out, debounce and traffic gates, ingestion-lag computation, `IsHealthy`, `applyHealthToRouting` (edge-triggered cordoning), slot accessors, shared-counter wiring.
 - [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `networkPostForward_getSlot` (per-commitment correction), `networkPreForward_getBlock` (availability guard), `effectiveCommitment`, `tipStalenessMargin`, `upstreamPostForward_trackContextSlot`.
 - [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByFinalizedSlotLag`, `ReferenceFinalizedSlot` (second-highest clamp), `HighestFinalizedSlot`, `FilterByMinContextSlot`.
+- [`architecture/svm/ledger_floor.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/ledger_floor.go) — observed `getFirstAvailableBlock` floor, per-upstream skip, below-pool-floor short-circuit.
+- [`architecture/svm/slot_bounds.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_bounds.go) — declared `svm.blockAvailability` resolution and per-upstream skip.
 - <SourceLink file="common/architecture_svm.go" lines="29-59" label="common/architecture_svm.go — SvmStatePoller interface, MaxShredInsertSlotLagThreshold" />
 - <SourceLink file="common/config.go" lines="2344-2367" label="common/config.go — statePollerDebounce, maxFinalizedSlotLag, enforceBlockAvailability" />
 - <SourceLink file="common/defaults.go" lines="2197-2251" label="common/defaults.go — mergeSvmNetworkDefaults and SvmNetworkConfig.SetDefaults" />

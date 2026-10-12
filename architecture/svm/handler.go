@@ -54,6 +54,12 @@ func (h *SvmArchitectureHandler) HandleNetworkPreForward(ctx context.Context, ne
 	}
 	switch method {
 	case "getBlock", "getConfirmedBlock":
+		// Floor before ceiling. The two bounds are disjoint — a slot cannot be
+		// both below the pool's oldest retained slot and above its newest
+		// indexed one — so the order is for readability, not correctness.
+		if handled, resp, err := networkPreForward_belowPoolFloor(ctx, network, upstreams, req); handled || err != nil {
+			return handled, resp, err
+		}
 		return networkPreForward_getBlock(ctx, network, req)
 	}
 	return false, nil, nil

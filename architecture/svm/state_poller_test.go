@@ -12,7 +12,9 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
@@ -143,6 +145,8 @@ func requestKey(body string) string {
 		return "getHealth"
 	case strings.Contains(body, `"method":"getMaxShredInsertSlot"`):
 		return "getMaxShredInsertSlot"
+	case strings.Contains(body, `"method":"getFirstAvailableBlock"`):
+		return "getFirstAvailableBlock"
 	case strings.Contains(body, `"method":"getSlot"`) && strings.Contains(body, `"processed"`):
 		return "getSlot:processed"
 	case strings.Contains(body, `"method":"getSlot"`) && strings.Contains(body, `"finalized"`):
@@ -245,7 +249,7 @@ func newPollerOnCtx(t *testing.T, appCtx context.Context, up common.Upstream) *S
 	)
 }
 
-func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
+func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
@@ -254,6 +258,7 @@ func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
 	// The shred watermark is structurally AHEAD of the replayed slot, so
 	// ingestion lag = 1002 - 1000 = 2 (healthy).
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
+	up.script("getFirstAvailableBlock", []byte(`200`))
 
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
@@ -270,6 +275,9 @@ func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
 	if up.callCount("getMaxShredInsertSlot") != 1 {
 		t.Errorf("getMaxShredInsertSlot called %d times, want 1", up.callCount("getMaxShredInsertSlot"))
 	}
+	if up.callCount("getFirstAvailableBlock") != 1 {
+		t.Errorf("getFirstAvailableBlock called %d times, want 1", up.callCount("getFirstAvailableBlock"))
+	}
 
 	if p.LatestSlot() != 1000 {
 		t.Errorf("LatestSlot = %d, want 1000", p.LatestSlot())
@@ -283,6 +291,228 @@ func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
 	if !p.IsHealthy() {
 		t.Error("IsHealthy should be true: getHealth ok + lag within threshold")
 	}
+	if floor, known := p.FirstAvailableSlot(); !known || floor != 200 {
+		t.Errorf("FirstAvailableSlot = (%d, %v), want (200, true)", floor, known)
+	}
+}
+
+// The ledger floor is the one poll whose absence must never cost us an
+// upstream. Each of these leaves known=false, which every consumer reads as
+// "no constraint".
+func TestSvmStatePoller_FirstAvailableSlot_UnknownUntilObserved(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:finalized", []byte(`990`))
+	up.script("getMaxShredInsertSlot", []byte(`1002`))
+
+	p := newPollerWithUpstream(t, up)
+	// Cold: never polled.
+	floor, known := p.FirstAvailableSlot()
+	require.False(t, known, "a cold poller must report the floor as unknown")
+	require.Zero(t, floor)
+
+	// An upstream that does not implement the method stays unknown.
+	up.scriptError("getFirstAvailableBlock", -32601, "Method not found")
+	require.NoError(t, p.Poll(context.Background()))
+	floor, known = p.FirstAvailableSlot()
+	require.False(t, known, "-32601 must leave the floor unknown, not record 0")
+	require.Zero(t, floor)
+}
+
+// Zero is a real floor — a genesis-backed archive reports it — so it must be
+// distinguishable from "never observed". This is the whole reason
+// FirstAvailableSlot returns a second value instead of just the counter.
+func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:finalized", []byte(`990`))
+	up.script("getMaxShredInsertSlot", []byte(`1002`))
+	up.script("getFirstAvailableBlock", []byte(`0`))
+
+	p := newPollerWithUpstream(t, up)
+	require.NoError(t, p.Poll(context.Background()))
+
+	floor, known := p.FirstAvailableSlot()
+	require.True(t, known, "an observed floor of 0 must read as KNOWN")
+	require.Zero(t, floor)
+}
+
+// JSON null is a malformed getFirstAvailableBlock answer, not a genesis floor.
+// Recording it as known 0 would make firstAvailableSlotPlus enforce an open
+// window from slot 0 and violate the unknown/fail-open contract.
+func TestSvmStatePoller_FirstAvailableSlot_NullLeavesUnknown(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:finalized", []byte(`990`))
+	up.script("getMaxShredInsertSlot", []byte(`1002`))
+	up.script("getFirstAvailableBlock", []byte(`null`))
+
+	p := newPollerWithUpstream(t, up)
+	require.NoError(t, p.Poll(context.Background()))
+
+	floor, known := p.FirstAvailableSlot()
+	require.False(t, known, "null must leave the floor unknown, not record 0")
+	require.Zero(t, floor)
+}
+
+// A value that arrives through the COUNTER rather than through this instance's
+// own fetch must still mark the floor known. On a multi-instance deployment the
+// counter is seeded from the shared connector and refreshed by peer pushes, so
+// a replica may legitimately never perform the fetch itself.
+func TestSvmStatePoller_FirstAvailableSlot_KnownFromCounterPropagation(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	p := newPollerWithUpstream(t, up)
+
+	_, known := p.FirstAvailableSlot()
+	require.False(t, known, "nothing observed yet")
+
+	// Stands in for a peer's value arriving via cross-instance propagation:
+	// both paths land on the counter's accepted-value callback.
+	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000)
+
+	floor, known := p.FirstAvailableSlot()
+	require.True(t, known, "an accepted floor value must mark the floor known, whatever produced it")
+	require.EqualValues(t, 200000, floor)
+}
+
+// The replica case, end to end: when the counter is already fresh,
+// TryUpdateIfStale takes its not-stale fast path and never runs the fetch
+// closure. The floor must still read as known, or it reads as "no constraint"
+// and the silent-truncation case reopens on every instance that is not the one
+// doing the fetching.
+func TestSvmStatePoller_FirstAvailableSlot_KnownWithoutLocalFetch(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`300000`))
+	up.script("getSlot:finalized", []byte(`299900`))
+	up.script("getMaxShredInsertSlot", []byte(`300001`))
+	up.script("getFirstAvailableBlock", []byte(`200000`))
+
+	p := newPollerWithUpstream(t, up)
+	// Seed the counter the way the shared-state registry does before this
+	// instance's first tick, which also marks it fresh.
+	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000)
+
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Zero(t, up.callCount("getFirstAvailableBlock"),
+		"a fresh counter must suppress the local fetch — that is the condition this guards")
+	floor, known := p.FirstAvailableSlot()
+	require.True(t, known, "the floor must be known even though this instance never fetched it")
+	require.EqualValues(t, 200000, floor)
+}
+
+// The propagated-zero case: a peer's floor of 0 lands on a counter whose value
+// is already 0, so no value-change callback fires — yet the counter is fresh,
+// so the first tick's TryUpdateIfStale takes its fast path and never fetches.
+// The floor must still become known on that tick, and the gauge must be
+// maintained, or firstAvailableSlotPlus and the pool checks silently disable
+// on every instance except the one doing the fetching.
+func TestSvmStatePoller_FirstAvailableSlot_PropagatedZeroBecomesKnownOnTick(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`300000`))
+	up.script("getSlot:finalized", []byte(`299900`))
+	up.script("getMaxShredInsertSlot", []byte(`300001`))
+	up.script("getFirstAvailableBlock", []byte(`0`))
+
+	p := newPollerWithUpstream(t, up)
+	// Stands in for a peer's 0 arriving via propagation: value unchanged
+	// (0 -> 0), no callback, but the counter is now fresh.
+	p.firstAvailableSlotShared.TryUpdate(context.Background(), 0)
+
+	_, known := p.FirstAvailableSlot()
+	require.False(t, known, "a no-change propagation fires no callback, so nothing is known yet")
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.Zero(t, up.callCount("getFirstAvailableBlock"),
+		"a fresh counter must suppress the local fetch — that is the condition this guards")
+
+	floor, known := p.FirstAvailableSlot()
+	require.True(t, known, "a valid shared observation, even of 0, must mark the floor known on the tick")
+	require.Zero(t, floor)
+}
+
+// The gauge twin of the replica case: when the value arrives through the
+// counter rather than this instance's fetch, the gauge must still be exported
+// — otherwise the series exists only on the pod that happens to fetch.
+//
+// Not parallel: the assertion reads a process-global gauge series whose labels
+// (test / empty vendor/network / test-poller) are shared by every poller test
+// in this file. Another parallel test writing a different floor between Poll
+// and ToFloat64 would flake the equality check.
+func TestSvmStatePoller_FirstAvailableSlot_GaugeSetWithoutLocalFetch(t *testing.T) {
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`300000`))
+	up.script("getSlot:finalized", []byte(`299900`))
+	up.script("getMaxShredInsertSlot", []byte(`300001`))
+	up.script("getFirstAvailableBlock", []byte(`200000`))
+
+	p := newPollerWithUpstream(t, up)
+	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000)
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.Zero(t, up.callCount("getFirstAvailableBlock"),
+		"a fresh counter must suppress the local fetch — that is the condition this guards")
+	require.Equal(t, float64(200000),
+		testutil.ToFloat64(p.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot)),
+		"the gauge must be exported even when this instance never fetched")
+}
+
+// A floor above the node's own head is structurally impossible, so the sample
+// is rejected at the edge. Without this one buggy or hostile upstream could
+// advertise a floor near MaxInt64 and evict itself from every slot-named read.
+func TestSvmStatePoller_FirstAvailableSlot_AboveOwnLatestRejected(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:finalized", []byte(`990`))
+	up.script("getMaxShredInsertSlot", []byte(`1002`))
+	up.script("getFirstAvailableBlock", []byte(`5000`))
+
+	p := newPollerWithUpstream(t, up)
+	require.NoError(t, p.Poll(context.Background()))
+
+	floor, known := p.FirstAvailableSlot()
+	require.False(t, known, "a floor above the upstream's own latest slot must be rejected")
+	require.Zero(t, floor)
+}
+
+// The floor moves O(1) slot per slot while sitting O(100k) slots below the
+// head, so it is polled on its own staleness window rather than every tick.
+func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:finalized", []byte(`990`))
+	up.script("getMaxShredInsertSlot", []byte(`1002`))
+	up.script("getFirstAvailableBlock", []byte(`200`))
+
+	p := newPollerWithUpstream(t, up)
+	const polls = 2 * healthPollEveryNTicks
+	for range polls {
+		require.NoError(t, p.Poll(context.Background()))
+	}
+
+	// getHealth is tick-throttled (healthPollEveryNTicks); the floor is
+	// independently debounced by DefaultFirstAvailableSlotStaleness, so it
+	// stays at one fetch across this burst.
+	require.Equal(t, polls/healthPollEveryNTicks, up.callCount("getHealth"),
+		"getHealth runs every Nth poll")
+	require.Equal(t, 1, up.callCount("getFirstAvailableBlock"),
+		"the floor is debounced by its own staleness window, not by the poll gate")
 }
 
 func TestSvmStatePoller_Poll_HealthFailureFlipsHealthy(t *testing.T) {
