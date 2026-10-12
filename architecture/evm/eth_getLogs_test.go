@@ -1033,18 +1033,36 @@ func TestNetworkPostForward_NoSplitOnNonTooLargeError(t *testing.T) {
 }
 
 func TestNetworkPreForward_eth_getLogs_blockHash_with_filters(t *testing.T) {
-	n := new(mockNetwork)
-	r := createTestRequest(map[string]interface{}{
-		"fromBlock": "0x1",
-		"toBlock":   "0x5",
-		"blockHash": "0xabc",
-		"address":   []interface{}{"0xA"},
-		"topics":    []interface{}{[]interface{}{"0xT"}},
-	})
-	handled, resp, err := networkPreForward_eth_getLogs(context.Background(), n, nil, r)
+	addr := "0x" + strings.Repeat("a", 40)
+	topic := "0x" + strings.Repeat("d", 64)
+	run := func(address, topics interface{}) (bool, error) {
+		r := createTestRequest(map[string]interface{}{
+			"blockHash": "0x" + strings.Repeat("b", 64),
+			"address":   address,
+			"topics":    topics,
+		})
+		handled, resp, err := networkPreForward_eth_getLogs(context.Background(), new(mockNetwork), nil, r)
+		assert.Nil(t, resp)
+		return handled, err
+	}
+
+	handled, err := run([]interface{}{addr}, []interface{}{[]interface{}{topic}, nil})
 	assert.NoError(t, err)
 	assert.False(t, handled)
-	assert.Nil(t, resp)
+
+	// A value of the wrong length must refuse, never pass on: a cache that
+	// drops it widens the filter to every log (a 32-byte "address" once did).
+	for _, bad := range []struct{ address, topics interface{} }{
+		{"0x" + strings.Repeat("a", 64), nil},
+		{[]interface{}{addr, "0xA"}, nil},
+		{addr, []interface{}{"0x" + strings.Repeat("d", 62)}},
+		{nil, []interface{}{nil, []interface{}{topic, "0xzz" + strings.Repeat("d", 62)}}},
+		{nil, []interface{}{nil, nil, nil, nil, topic}},
+	} {
+		handled, err := run(bad.address, bad.topics)
+		assert.True(t, handled, "%v %v", bad.address, bad.topics)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeInvalidRequest), "%v %v", bad.address, bad.topics)
+	}
 }
 
 func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
@@ -1287,7 +1305,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x1",
 			"toBlock":   "0x2",
-			"address":   []interface{}{"0xA", "0xB", "0xC"},
+			"address":   []interface{}{"0x" + strings.Repeat("a", 40), "0x" + strings.Repeat("b", 40), "0x" + strings.Repeat("c", 40)},
 		})
 
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
@@ -1306,7 +1324,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x1",
 			"toBlock":   "0x2",
-			"topics":    []interface{}{[]interface{}{"0xAAA", "0xBBB", "0xCCC"}},
+			"topics":    []interface{}{[]interface{}{"0x" + strings.Repeat("a", 64), "0x" + strings.Repeat("b", 64), "0x" + strings.Repeat("c", 64)}},
 		})
 
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)

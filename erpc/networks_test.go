@@ -12238,7 +12238,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		cache := &common.MockCacheDal{}
 		network.cacheDal = cache
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x11"}],"id":1}`))
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x0000000000000000000000000000000000000011"}],"id":1}`))
 
 		jrr, err := common.NewJsonRpcResponse(req.ID(), []interface{}{}, nil)
 		require.NoError(t, err)
@@ -12273,7 +12273,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		cache := &common.MockCacheDal{}
 		network.cacheDal = cache
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x11"}],"id":1}`))
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x0000000000000000000000000000000000000011"}],"id":1}`))
 
 		cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Once()
 
@@ -12283,7 +12283,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"method":  "eth_getLogs",
-				"params":  []interface{}{map[string]interface{}{"address": "0x11"}},
+				"params":  []interface{}{map[string]interface{}{"address": "0x0000000000000000000000000000000000000011"}},
 				"id":      float64(1),
 			}).
 			Times(1).
