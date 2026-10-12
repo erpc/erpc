@@ -250,8 +250,10 @@ func TestJwtStrategyParseErrorClassification(t *testing.T) {
 			Jwt:  &JwtPayload{Token: token},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token expired")
-		assert.NotContains(t, err.Error(), "invalid signature")
+		var authErr *common.ErrAuthUnauthorized
+		require.ErrorAs(t, err, &authErr)
+		assert.Equal(t, common.AuthUnauthorizedReasonTokenExpired, authErr.Reason())
+		assert.Equal(t, common.AuthUnauthorizedReasonTokenExpired.Message(), authErr.Message)
 	})
 
 	t.Run("wrong HMAC secret reports invalid signature", func(t *testing.T) {
@@ -268,8 +270,10 @@ func TestJwtStrategyParseErrorClassification(t *testing.T) {
 			Jwt:  &JwtPayload{Token: token},
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid signature")
-		assert.NotContains(t, err.Error(), "token expired")
+		var authErr *common.ErrAuthUnauthorized
+		require.ErrorAs(t, err, &authErr)
+		assert.Equal(t, common.AuthUnauthorizedReasonInvalidSignature, authErr.Reason())
+		assert.Equal(t, common.AuthUnauthorizedReasonInvalidSignature.Message(), authErr.Message)
 	})
 }
 

@@ -549,6 +549,26 @@ type ErrAuthUnauthorized struct{ BaseError }
 
 const ErrCodeAuthUnauthorized ErrorCode = "ErrAuthUnauthorized"
 
+// AuthUnauthorizedReason is a stable denial class for ErrAuthUnauthorized.
+// Message text is derived from the reason so callers do not invent labels.
+type AuthUnauthorizedReason string
+
+const (
+	AuthUnauthorizedReasonTokenExpired     AuthUnauthorizedReason = "token_expired"
+	AuthUnauthorizedReasonInvalidSignature AuthUnauthorizedReason = "invalid_signature"
+)
+
+func (r AuthUnauthorizedReason) Message() string {
+	switch r {
+	case AuthUnauthorizedReasonTokenExpired:
+		return "token expired"
+	case AuthUnauthorizedReasonInvalidSignature:
+		return "invalid signature"
+	default:
+		return string(r)
+	}
+}
+
 var NewErrAuthUnauthorized = func(strategy string, message string) error {
 	return &ErrAuthUnauthorized{
 		BaseError{
@@ -561,8 +581,35 @@ var NewErrAuthUnauthorized = func(strategy string, message string) error {
 	}
 }
 
+// NewErrAuthUnauthorizedReason builds ErrAuthUnauthorized with Message from reason.
+var NewErrAuthUnauthorizedReason = func(strategy string, reason AuthUnauthorizedReason) error {
+	return &ErrAuthUnauthorized{
+		BaseError{
+			Code:    ErrCodeAuthUnauthorized,
+			Message: reason.Message(),
+			Details: map[string]interface{}{
+				"strategy": strategy,
+				"reason":   reason,
+			},
+		},
+	}
+}
+
 func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
 	return http.StatusUnauthorized
+}
+
+func (e *ErrAuthUnauthorized) Reason() AuthUnauthorizedReason {
+	if e == nil || e.Details == nil {
+		return ""
+	}
+	if r, ok := e.Details["reason"].(AuthUnauthorizedReason); ok {
+		return r
+	}
+	if s, ok := e.Details["reason"].(string); ok {
+		return AuthUnauthorizedReason(s)
+	}
+	return ""
 }
 
 type ErrAuthRateLimitRuleExceeded struct{ BaseError }

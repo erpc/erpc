@@ -103,7 +103,7 @@ func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRe
 	// Verify the signature (and standard claims such as exp via jwt.Parse).
 	token, err = jwt.Parse(ap.Jwt.Token, key)
 	if err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", classifyJwtParseError(err))
+		return nil, errAuthUnauthorizedFromJwtParse(err)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
@@ -176,20 +176,22 @@ func (s *JwtStrategy) findVerificationKey(ctx context.Context, token *jwt.Token)
 	return nil, fmt.Errorf("no suitable verification key found")
 }
 
-// classifyJwtParseError maps jwt.Parse ValidationError bitflags to stable
-// auth denial reasons so clients can distinguish expiry from bad signatures.
-func classifyJwtParseError(err error) string {
+// errAuthUnauthorizedFromJwtParse maps jwt.Parse errors onto
+// AuthUnauthorizedReason (message comes from the reason). Classification stays
+// here so common/ does not import golang-jwt.
+func errAuthUnauthorizedFromJwtParse(err error) error {
 	var ve *jwt.ValidationError
 	if errors.As(err, &ve) {
 		if ve.Errors&jwt.ValidationErrorExpired != 0 {
-			return "token expired"
+			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonTokenExpired)
 		}
 		if ve.Errors&jwt.ValidationErrorSignatureInvalid != 0 {
-			return "invalid signature"
+			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature)
 		}
-		return err.Error()
+		// Other ValidationError flags (nbf, iat, malformed, …) keep jwt's text.
+		return common.NewErrAuthUnauthorized("jwt", err.Error())
 	}
-	return "invalid signature"
+	return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature)
 }
 
 func (s *JwtStrategy) validateClaims(claims jwt.MapClaims) error {
