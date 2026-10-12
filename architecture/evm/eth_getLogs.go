@@ -141,6 +141,77 @@ func getLogsFilterCounts(filter map[string]interface{}) (addrCount, topicCount i
 	return addrCount, topicCount
 }
 
+// checkGetLogsFilterValues refuses an address that is not 20 bytes, a topic
+// that is not 32 bytes, and more than 4 topic positions. Nodes refuse these
+// too, but a cache connector may drop a value it cannot parse instead, which
+// widens the filter: prism once answered a 32-byte "address" with every log in
+// the range, 11.5 MB per 100 blocks. The caller must hold the read lock.
+func checkGetLogsFilterValues(filter map[string]interface{}) error {
+	if err := checkGetLogsFilterField(filter["address"], "address", 20); err != nil {
+		return err
+	}
+	switch topics := filter["topics"].(type) {
+	case nil:
+	case []interface{}:
+		if len(topics) > 4 {
+			return common.NewErrInvalidRequest(fmt.Errorf("topics: at most 4 positions, got %d", len(topics)))
+		}
+		for position, topic := range topics {
+			if err := checkGetLogsFilterField(topic, fmt.Sprintf("topics[%d]", position), 32); err != nil {
+				return err
+			}
+		}
+	default:
+		return common.NewErrInvalidRequest(fmt.Errorf("topics: expected an array, got %T", topics))
+	}
+	return nil
+}
+
+// checkGetLogsFilterField accepts null (no constraint), one 0x-hex value of
+// exactly size bytes, or an array of them.
+func checkGetLogsFilterField(value interface{}, field string, size int) error {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return checkGetLogsFilterValue(v, field, size)
+	case []interface{}:
+		for index, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return common.NewErrInvalidRequest(fmt.Errorf("%s[%d]: expected a hex string, got %T", field, index, item))
+			}
+			if err := checkGetLogsFilterValue(s, fmt.Sprintf("%s[%d]", field, index), size); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return common.NewErrInvalidRequest(fmt.Errorf("%s: expected a hex string or an array, got %T", field, value))
+	}
+}
+
+func checkGetLogsFilterValue(value, field string, size int) error {
+	digits, ok := strings.CutPrefix(value, "0x")
+	if !ok {
+		digits, ok = strings.CutPrefix(value, "0X")
+	}
+	if ok && len(digits) == 2*size && isHexDigits(digits) {
+		return nil
+	}
+	return common.NewErrInvalidRequest(fmt.Errorf("%s: expected %d bytes of 0x-hex, got %q", field, size, value))
+}
+
+func isHexDigits(s string) bool {
+	for i := range len(s) {
+		c := s[i]
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 // checkGetLogsHardLimits resolves an eth_getLogs range and enforces the
 // network's hard limits (getLogsMaxAllowedRange/Addresses/Topics). They depend
 // only on network config, never on the selected upstreams, so the project hook
@@ -203,6 +274,14 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 	if !ok {
 		jrq.RUnlock()
 		return false, nil, nil
+	}
+	// Before the blockHash short-circuit: a widened filter costs a whole block
+	// there too. Derived sub-requests carry their parent's checked filter.
+	if nq.ParentRequestId() == nil && !nq.IsCompositeRequest() {
+		if err := checkGetLogsFilterValues(filter); err != nil {
+			jrq.RUnlock()
+			return true, nil, err
+		}
 	}
 	// EIP-234 short-circuit (blockHash): no range size applicable
 	if _, ok := filter["blockHash"].(string); ok {
@@ -276,6 +355,10 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	if !ok {
 		jrq.RUnlock()
 		return false, nil, nil
+	}
+	if err := checkGetLogsFilterValues(filter); err != nil {
+		jrq.RUnlock()
+		return true, nil, err
 	}
 
 	// EIP-234 short-circuit

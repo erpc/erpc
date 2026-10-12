@@ -149,7 +149,7 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 		return resp.StatusCode, string(b)
 	}
 
-	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x18100","toBlock":"0x182ff","topics":["0x1234"]}],"id":1}`
+	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x18100","toBlock":"0x182ff","topics":["0x0000000000000000000000000000000000000000000000000000000000001234"]}],"id":1}`
 	status, body := 0, ""
 	status, body = send(payload, nil)
 	if status != 200 {
@@ -451,7 +451,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 		Post("/").
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x1\"") && strings.Contains(b, "\"toBlock\":\"0x1\"") && strings.Contains(b, "\"address\":[\"0xA\"]")
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x1\"") && strings.Contains(b, "\"toBlock\":\"0x1\"") && strings.Contains(b, "\"address\":[\"0x000000000000000000000000000000000000000a\"]")
 		}).
 		Times(1).
 		Reply(200).
@@ -459,7 +459,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      2,
 			"result": []map[string]interface{}{
-				{"blockNumber": "0x1", "logIndex": "0x1", "address": "0xA"},
+				{"blockNumber": "0x1", "logIndex": "0x1", "address": "0x000000000000000000000000000000000000000a"},
 			},
 		})
 
@@ -467,7 +467,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 		Post("/").
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x1\"") && strings.Contains(b, "\"toBlock\":\"0x1\"") && strings.Contains(b, "\"address\":[\"0xB\"]")
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x1\"") && strings.Contains(b, "\"toBlock\":\"0x1\"") && strings.Contains(b, "\"address\":[\"0x000000000000000000000000000000000000000b\"]")
 		}).
 		Times(1).
 		Reply(200).
@@ -475,7 +475,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      3,
 			"result": []map[string]interface{}{
-				{"blockNumber": "0x1", "logIndex": "0x2", "address": "0xB"},
+				{"blockNumber": "0x1", "logIndex": "0x2", "address": "0x000000000000000000000000000000000000000b"},
 			},
 		})
 
@@ -512,7 +512,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
-	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x1","address":["0xA","0xB"]}],"id":1}`
+	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x1","address":["0x000000000000000000000000000000000000000a","0x000000000000000000000000000000000000000b"]}],"id":1}`
 	req, err := http.NewRequest("POST", baseURL+"/test_project/evm/123", strings.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -557,14 +557,14 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 		Post("/").
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"topics\":[[\"0xT1\"]]")
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"topics\":[[\"0x0000000000000000000000000000000000000000000000000000000000000001\"]]")
 		}).
 		Times(1).
 		Reply(200).
 		JSON(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      2,
-			"result":  []map[string]interface{}{{"blockNumber": "0x2", "logIndex": "0x1", "topics": []string{"0xT1"}}},
+			"result":  []map[string]interface{}{{"blockNumber": "0x2", "logIndex": "0x1", "topics": []string{"0x0000000000000000000000000000000000000000000000000000000000000001"}}},
 		})
 
 	// Subrequest for topic0 = 0xT2
@@ -572,14 +572,14 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 		Post("/").
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"topics\":[[\"0xT2\"]]")
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"topics\":[[\"0x0000000000000000000000000000000000000000000000000000000000000002\"]]")
 		}).
 		Times(1).
 		Reply(200).
 		JSON(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      3,
-			"result":  []map[string]interface{}{{"blockNumber": "0x2", "logIndex": "0x2", "topics": []string{"0xT2"}}},
+			"result":  []map[string]interface{}{{"blockNumber": "0x2", "logIndex": "0x2", "topics": []string{"0x0000000000000000000000000000000000000000000000000000000000000002"}}},
 		})
 
 	// Server
@@ -609,7 +609,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 	defer httpServer.serverV4.Shutdown(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x2","toBlock":"0x2","topics":[["0xT1","0xT2"]]}],"id":1}`
+	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x2","toBlock":"0x2","topics":[["0x0000000000000000000000000000000000000000000000000000000000000001","0x0000000000000000000000000000000000000000000000000000000000000002"]]}],"id":1}`
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%d/test_project/evm/123", port), strings.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
