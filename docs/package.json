@@ -14,7 +14,7 @@
 		"@svgr/webpack": "^8.1.0",
 		"clsx": "^2.1.1",
 		"next": "^15.5.25",
-		"sharp": "0.35.4",
+		"sharp": "0.35.5",
 		"nextra": "^2.13.4",
 		"nextra-theme-docs": "^2.13.4",
 		"prism-react-renderer": "^2.4.1",
