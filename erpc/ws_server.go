@@ -150,11 +150,17 @@ func (s *HttpServer) handleWebSocket(
 }
 
 // isWebSocketUpgradeRequest reports whether r is a WebSocket opening
-// handshake (RFC 6455 section 4.1). Every upgrade-specific code path uses
-// this one check, so a request that merely resembles an upgrade is treated
-// as ordinary HTTP everywhere.
-func isWebSocketUpgradeRequest(r *http.Request) bool {
-	return r.Method == http.MethodGet && websocket.IsWebSocketUpgrade(r)
+// handshake (RFC 6455 section 4.1) that this server serves. Every
+// upgrade-specific code path uses this one check, so with WebSocket off, or
+// for a request that merely resembles an upgrade, it is ordinary HTTP
+// everywhere.
+func isWebSocketUpgradeRequest(r *http.Request, wsEnabled bool) bool {
+	return wsEnabled && r.Method == http.MethodGet && websocket.IsWebSocketUpgrade(r)
+}
+
+func (s *HttpServer) webSocketEnabled() bool {
+	return s.serverCfg != nil && s.serverCfg.WebSocket != nil &&
+		s.serverCfg.WebSocket.Enabled != nil && *s.serverCfg.WebSocket.Enabled
 }
 
 // checkWsOrigin checks the upgrade request's origin against the project's

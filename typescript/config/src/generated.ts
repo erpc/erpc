@@ -288,6 +288,11 @@ export interface ServerConfig {
   costHeaders?: boolean;
 }
 export interface WebSocketServerConfig {
+  /**
+   * Enabled accepts WebSocket upgrades on the HTTP port. Off by default:
+   * with it off an upgrade request is ordinary HTTP.
+   */
+  enabled?: boolean;
   readBufferSize?: number /* int */;
   writeBufferSize?: number /* int */;
   maxMessageSize?: number /* int64 */;

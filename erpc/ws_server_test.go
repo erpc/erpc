@@ -225,6 +225,13 @@ func startTestERPCServer(t *testing.T, cfg *common.Config) (*HttpServer, string,
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// These servers exist to serve WebSocket; production configs opt in.
+	if cfg.Server.WebSocket == nil {
+		cfg.Server.WebSocket = &common.WebSocketServerConfig{}
+	}
+	if cfg.Server.WebSocket.Enabled == nil {
+		cfg.Server.WebSocket.Enabled = util.BoolPtr(true)
+	}
 	err := cfg.SetDefaults(&common.DefaultOptions{})
 	require.NoError(t, err)
 

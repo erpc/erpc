@@ -191,6 +191,9 @@ type ServerConfig struct {
 }
 
 type WebSocketServerConfig struct {
+	// Enabled accepts WebSocket upgrades on the HTTP port. Off by default:
+	// with it off an upgrade request is ordinary HTTP.
+	Enabled                       *bool     `yaml:"enabled,omitempty" json:"enabled"`
 	ReadBufferSize                int       `yaml:"readBufferSize,omitempty" json:"readBufferSize"`
 	WriteBufferSize               int       `yaml:"writeBufferSize,omitempty" json:"writeBufferSize"`
 	MaxMessageSize                int64     `yaml:"maxMessageSize,omitempty" json:"maxMessageSize"`

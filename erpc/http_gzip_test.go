@@ -18,7 +18,7 @@ import (
 func gzipTestRequest(t *testing.T, handler http.HandlerFunc, acceptGzip bool) (*http.Response, []byte) {
 	t.Helper()
 
-	srv := httptest.NewServer(gzipHandler(handler))
+	srv := httptest.NewServer(gzipHandler(handler, false))
 	t.Cleanup(srv.Close)
 
 	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
