@@ -232,6 +232,47 @@ func TestJwtStrategyClaimMatchersRoles(t *testing.T) {
 	})
 }
 
+func TestJwtStrategyParseErrorClassification(t *testing.T) {
+	cfg := &common.JwtStrategyConfig{
+		VerificationKeys:  map[string]string{"default": testJwtHMACSecret},
+		AllowedAlgorithms: []string{"HS256"},
+	}
+
+	t.Run("expired token reports token expired not invalid signature", func(t *testing.T) {
+		s := newTestJwtStrategy(t, cfg)
+		token := signTestJWT(t, jwt.MapClaims{
+			"sub": "service-a",
+			"exp": time.Now().Add(-time.Hour).Unix(),
+		})
+
+		_, err := s.Authenticate(context.Background(), nil, &AuthPayload{
+			Type: common.AuthTypeJwt,
+			Jwt:  &JwtPayload{Token: token},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "token expired")
+		assert.NotContains(t, err.Error(), "invalid signature")
+	})
+
+	t.Run("wrong HMAC secret reports invalid signature", func(t *testing.T) {
+		s := newTestJwtStrategy(t, cfg)
+		bad := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"sub": "service-a",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		token, err := bad.SignedString([]byte("wrong-hmac-secret"))
+		require.NoError(t, err)
+
+		_, err = s.Authenticate(context.Background(), nil, &AuthPayload{
+			Type: common.AuthTypeJwt,
+			Jwt:  &JwtPayload{Token: token},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid signature")
+		assert.NotContains(t, err.Error(), "token expired")
+	})
+}
+
 func TestNormalizeClaimToStrings(t *testing.T) {
 	t.Run("array of strings via interface slice", func(t *testing.T) {
 		got, err := normalizeClaimToStrings([]interface{}{"a", "b"})

@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -99,10 +100,10 @@ func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRe
 		return nil, common.NewErrAuthUnauthorized("jwt", err.Error())
 	}
 
-	// Verify the signature
+	// Verify the signature (and standard claims such as exp via jwt.Parse).
 	token, err = jwt.Parse(ap.Jwt.Token, key)
 	if err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", "invalid signature")
+		return nil, common.NewErrAuthUnauthorized("jwt", classifyJwtParseError(err))
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
@@ -173,6 +174,22 @@ func (s *JwtStrategy) findVerificationKey(ctx context.Context, token *jwt.Token)
 	}
 
 	return nil, fmt.Errorf("no suitable verification key found")
+}
+
+// classifyJwtParseError maps jwt.Parse ValidationError bitflags to stable
+// auth denial reasons so clients can distinguish expiry from bad signatures.
+func classifyJwtParseError(err error) string {
+	var ve *jwt.ValidationError
+	if errors.As(err, &ve) {
+		if ve.Errors&jwt.ValidationErrorExpired != 0 {
+			return "token expired"
+		}
+		if ve.Errors&jwt.ValidationErrorSignatureInvalid != 0 {
+			return "invalid signature"
+		}
+		return err.Error()
+	}
+	return "invalid signature"
 }
 
 func (s *JwtStrategy) validateClaims(claims jwt.MapClaims) error {
