@@ -761,7 +761,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			_ = resp.Body.Close() // Must close on error path
 			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
-		bodyReader = c.gzipPool.WrapGzipReader(gzReader)
+		// The wrapper closes resp.Body too; gzip.Reader.Close does not.
+		bodyReader = c.gzipPool.WrapGzipReader(gzReader, resp.Body)
 	}
 
 	nr := common.NewNormalizedResponse().
@@ -887,6 +888,13 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		}
 	}
 
+	return classifyJsonRpcError(r, nr, jr, err, c.errorExtractor, c.upstream)
+}
+
+// classifyJsonRpcError turns a parsed upstream response into a normalized
+// error (nil on success). Shared by the HTTP and WebSocket clients; WS
+// callers pass a synthetic 200 response since the frame has no HTTP status.
+func classifyJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, err error, extractor common.JsonRpcErrorExtractor, ups common.Upstream) error {
 	if err != nil {
 		e := common.NewErrJsonRpcExceptionInternal(
 			0,
@@ -894,7 +902,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 			"could not parse json rpc response from upstream",
 			err,
 			map[string]interface{}{
-				"upstreamId": c.upstream.Id(),
+				"upstreamId": ups.Id(),
 				"statusCode": r.StatusCode,
 				"headers":    r.Header,
 			},
@@ -921,8 +929,10 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		}
 	}
 
-	if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {
-		return e
+	if extractor != nil {
+		if e := extractor.Extract(r, nr, jr, ups); e != nil {
+			return e
+		}
 	}
 
 	if jr == nil || jr.Error == nil {
@@ -935,7 +945,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		"unknown json-rpc error",
 		jr.Error,
 		map[string]interface{}{
-			"upstreamId": c.upstream.Id(),
+			"upstreamId": ups.Id(),
 			"statusCode": r.StatusCode,
 			"headers":    r.Header,
 		},

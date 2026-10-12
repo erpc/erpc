@@ -475,7 +475,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			e.recordLatestHead()
 		}
 	}()
-	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
+	return e.latestBlockShared.TryUpdateIfLocallyStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		fetched.Store(true)
 		recorded := false
 		defer func() {
@@ -516,6 +516,13 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 				e.stateMu.Unlock()
 				return 0, nil
 			} else {
+				// An open circuit breaker short-circuits before tryForward
+				// records the failure, which would freeze the upstream's error
+				// rate; record it here. Other failures are already recorded.
+				if e.tracker != nil && common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+					e.tracker.RecordUpstreamRequest(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime)
+					e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime, err)
+				}
 				e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
 				return 0, err
 			}
@@ -844,6 +851,11 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 				e.stateMu.Unlock()
 				return 0, nil
 			} else {
+				// See PollLatestBlockNumber.
+				if e.tracker != nil && common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+					e.tracker.RecordUpstreamRequest(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateFinalized)
+					e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateFinalized, err)
+				}
 				e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
 				return 0, err
 			}

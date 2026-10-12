@@ -127,6 +127,15 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, req *common.
 	return nil, nil
 }
 
+// AcceptsConsumerPayload reports whether any consumer auth strategy accepts
+// ap for some method (see auth.AuthRegistry.AcceptsPayload).
+func (p *PreparedProject) AcceptsConsumerPayload(ctx context.Context, req *common.NormalizedRequest, ap *auth.AuthPayload) error {
+	if p.consumerAuthRegistry != nil {
+		return p.consumerAuthRegistry.AcceptsPayload(ctx, req, ap)
+	}
+	return nil
+}
+
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	start := time.Now()
 	ctx, span := common.StartDetailSpan(ctx, "Project.Forward")

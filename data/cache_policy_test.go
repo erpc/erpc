@@ -1,9 +1,11 @@
 package data
 
 import (
+	"context"
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -335,6 +337,42 @@ func TestCachePolicy_MatchesUpstreamSelector(t *testing.T) {
 			got, err := policy.MatchesUpstreamSelector(tc.selector)
 			assert.NoError(t, err)
 			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	// Connector eligibility by capability: a read-only connector (the gRPC
+	// connector, bare or behind the failsafe wrapper) serves gets but is never
+	// selected for set, even with appliesTo left at its default (both); a
+	// writable connector is selected for both.
+	lg := zerolog.Nop()
+	grpcConn := &GrpcConnector{id: "goldsky-cache", logger: &lg}
+	failsafeGrpc, err := NewFailsafeConnector(context.Background(), &lg, grpcConn, nil, nil)
+	assert.NoError(t, err)
+	for _, c := range []struct {
+		name    string
+		conn    Connector
+		wantSet bool
+	}{
+		{name: "grpc", conn: grpcConn, wantSet: false},
+		{name: "failsafe(grpc)", conn: failsafeGrpc, wantSet: false},
+		{name: "writable", conn: NewMockConnector("memory"), wantSet: true},
+	} {
+		t.Run("read-only "+c.name, func(t *testing.T) {
+			policy, err := NewCachePolicy(&common.CachePolicyConfig{
+				Network:   "evm:1",
+				Method:    "eth_getBlockByNumber",
+				Finality:  common.DataFinalityStateFinalized,
+				AppliesTo: common.CachePolicyAppliesToBoth,
+			}, c.conn)
+			assert.NoError(t, err)
+
+			set, err := policy.MatchesForSet("evm:1", "eth_getBlockByNumber", nil, common.DataFinalityStateFinalized, false)
+			assert.NoError(t, err)
+			assert.Equal(t, c.wantSet, set)
+
+			get, err := policy.MatchesForGet("evm:1", "eth_getBlockByNumber", nil, common.DataFinalityStateFinalized)
+			assert.NoError(t, err)
+			assert.True(t, get, "read-only connectors still serve gets")
 		})
 	}
 }

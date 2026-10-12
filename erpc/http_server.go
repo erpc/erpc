@@ -23,14 +23,14 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/gorilla/websocket"
 	"github.com/klauspost/compress/gzip"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 // Only compress responses larger than 1KB to save CPU on small responses
@@ -48,11 +48,17 @@ type HttpServer struct {
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
 	draining                *atomic.Bool
+	// drained is closed once the post-SIGTERM drain (waitBeforeShutdown, then
+	// Shutdown) has finished, so Init can keep the process alive until then.
+	drained                 chan struct{}
 	gzipPool                *util.GzipReaderPool
 	trustedForwarderNets    []net.IPNet
 	trustedForwarderIPs     map[string]struct{}
 	trustedIPHeaders        []string
 	resolvedResponseHeaders map[string]string
+	subscriptionManager     *SubscriptionManager
+	activeWsConns           sync.Map // connId -> *WsConnection
+	reqMaxTimeout           time.Duration
 }
 
 func NewHttpServer(
@@ -61,6 +67,7 @@ func NewHttpServer(
 	cfg *common.ServerConfig,
 	healthCheckCfg *common.HealthCheckConfig,
 	adminCfg *common.AdminConfig,
+	indexerCfg *common.IndexerConfig,
 	erpc *ERPC,
 ) (*HttpServer, error) {
 	reqMaxTimeout := 150 * time.Second
@@ -85,15 +92,26 @@ func NewHttpServer(
 
 	gzipPool := util.NewGzipReaderPool()
 
+	subMgrLogger := logger.With().Str("component", "subscriptions").Logger()
+	indexerLogger := logger.With().Str("component", "indexer").Logger()
+	indexerOpts := indexer.Options{}
+	if indexerCfg != nil {
+		indexerOpts.DedupWindowSize = indexerCfg.DedupWindowSize
+	}
+	idx := indexer.New(&indexerLogger, indexerOpts)
+
 	srv := &HttpServer{
-		logger:         logger,
-		appCtx:         ctx,
-		serverCfg:      cfg,
-		healthCheckCfg: healthCheckCfg,
-		adminCfg:       adminCfg,
-		erpc:           erpc,
-		draining:       &draining,
-		gzipPool:       gzipPool,
+		logger:              logger,
+		appCtx:              ctx,
+		serverCfg:           cfg,
+		healthCheckCfg:      healthCheckCfg,
+		adminCfg:            adminCfg,
+		erpc:                erpc,
+		draining:            &draining,
+		drained:             make(chan struct{}),
+		gzipPool:            gzipPool,
+		subscriptionManager: NewSubscriptionManager(&subMgrLogger, idx),
+		reqMaxTimeout:       reqMaxTimeout,
 	}
 
 	if cfg != nil {
@@ -150,12 +168,13 @@ func NewHttpServer(
 
 	h := srv.createRequestHandler()
 
+	wsEnabled := srv.webSocketEnabled()
 	if cfg.EnableGzip != nil && *cfg.EnableGzip {
-		h = gzipHandler(h)
+		h = gzipHandler(h, wsEnabled)
 	}
 
 	// Create handler with timeout
-	httpHandler := TimeoutHandler(logger, h, reqMaxTimeout)
+	httpHandler := TimeoutHandler(logger, h, reqMaxTimeout, wsEnabled)
 	handlerV4 := httpHandler
 	handlerV6 := httpHandler
 
@@ -174,19 +193,26 @@ func NewHttpServer(
 		})
 	}
 
-	// Without TLS, Go's net/http serves HTTP/1.x only on the cleartext
-	// listener, so wrap the IPv4 handler with h2c to accept HTTP/2
-	// prior-knowledge requests. This is independent of shared gRPC — gRPC only
-	// adds a content-type dispatch on top of this handler. (With TLS, HTTP/2 is
-	// negotiated via ALPN by ListenAndServeTLS, so no h2c wrapper is needed.)
+	// Without TLS, serve cleartext HTTP/2 (h2c prior knowledge) natively next to
+	// HTTP/1.1 on both listeners. Native support keeps h2c connections tracked by
+	// the http.Server, so Shutdown sends them GOAWAY, lets in-flight streams
+	// finish and waits for them, and SetKeepAlivesEnabled(false) GOAWAYs each one
+	// the next time its last open stream completes. (x/net's h2c.NewHandler
+	// hijacks the connection away from the server, which disables all of that.)
+	// HTTP/1.1 `Upgrade: h2c` is not supported. With TLS, nil keeps net/http's
+	// default: HTTP/1.1 and HTTP/2 negotiated via ALPN.
+	var protocols *http.Protocols
 	if cfg.TLS == nil || !cfg.TLS.Enabled {
-		handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
+		protocols = new(http.Protocols)
+		protocols.SetHTTP1(true)
+		protocols.SetUnencryptedHTTP2(true)
 	}
 
 	// Create IPv4 server if configured
 	if cfg.ListenV4 != nil && *cfg.ListenV4 {
 		srv.serverV4 = &http.Server{
 			Handler:        handlerV4,
+			Protocols:      protocols,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
 			IdleTimeout:    300 * time.Second,
@@ -198,6 +224,7 @@ func NewHttpServer(
 	if cfg.ListenV6 != nil && *cfg.ListenV6 {
 		srv.serverV6 = &http.Server{
 			Handler:        handlerV6,
+			Protocols:      protocols,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
 			IdleTimeout:    300 * time.Second,
@@ -215,24 +242,35 @@ func NewHttpServer(
 
 	go func() {
 		<-ctx.Done()
+		defer close(srv.drained)
 		// Actively drain keep-alive connections during the grace window: stamp
-		// `Connection: close` on every HTTP/1.1 response (and let Shutdown GOAWAY
-		// tracked HTTP/2 conns) so pooled clients migrate to healthy instances
-		// BEFORE Shutdown starts closing connections. Load balancers that preserve
-		// established flows (e.g. AWS NLB) never break these pools on their own —
-		// without this, a client pushing traffic over kept-alive connections rides
-		// them straight into Shutdown and sees resets (502s) on every deploy.
+		// `Connection: close` on every HTTP/1.1 response and GOAWAY each HTTP/2
+		// (h2 and h2c) connection the next time its last open stream completes,
+		// so pooled clients migrate to healthy instances BEFORE Shutdown starts
+		// closing connections. Load balancers that preserve established flows
+		// (e.g. AWS NLB) never break these pools on their own — without this, a
+		// client pushing traffic over kept-alive connections rides them straight
+		// into Shutdown and sees resets (502s) on every deploy.
 		if srv.serverV4 != nil {
 			srv.serverV4.SetKeepAlivesEnabled(false)
 		}
 		if srv.serverV6 != nil {
 			srv.serverV6.SetKeepAlivesEnabled(false)
 		}
+		// Hijacked WebSocket connections are not affected by the above, so
+		// close them now: clients reconnect elsewhere while in-flight
+		// requests get the grace window to finish.
+		var grace time.Duration
+		if srv.serverCfg.WaitBeforeShutdown != nil {
+			grace = srv.serverCfg.WaitBeforeShutdown.Duration()
+		}
+		go srv.shutdownWebSockets(logger, grace)
 		// wait for readiness probe to mark the pod NotReady
 		// ideally (period_seconds * failure_threshold) + safety margin (1s)
-		if srv.serverCfg.WaitBeforeShutdown != nil {
-			time.Sleep(srv.serverCfg.WaitBeforeShutdown.Duration())
-		}
+		time.Sleep(grace)
+		// Shutdown closes the listeners and idle HTTP/1.1 connections, sends
+		// GOAWAY on every HTTP/2 connection, and waits (within its budget) for
+		// in-flight requests and streams to finish.
 		if err := srv.Shutdown(logger); err != nil {
 			logger.Error().Msgf("http server forced to shutdown: %s", err)
 		} else {
@@ -369,6 +407,52 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 		}
 
+		// A WebSocket connection serves the one network in its URL.
+		if isWebSocketUpgradeRequest(r, s.webSocketEnabled()) {
+			if architecture == "" || chainId == "" {
+				handleErrorResponse(
+					httpCtx,
+					&lg,
+					&startedAt,
+					nil,
+					common.NewErrInvalidUrlPath("websocket connections must target a network, for example /<project>/<architecture>/<chainId>", r.URL.Path),
+					w,
+					encoder,
+					writeFatalError,
+					&common.TRUE,
+					s.executionHeadersMode(),
+				)
+				return
+			}
+			// Every message on the connection authenticates with this upgrade
+			// request's credentials, so refuse the upgrade when no strategy
+			// accepts them rather than hold a connection that can never be
+			// served. Method scoping and rate limits still apply per message.
+			nq := common.NewNormalizedRequest(nil)
+			nq.SetClientIP(s.resolveRealClientIP(r))
+			ap, err := auth.NewPayloadFromHttp("", r.RemoteAddr, r.Header, r.URL.Query())
+			if err == nil {
+				err = project.AcceptsConsumerPayload(httpCtx, nq, ap)
+			}
+			if err != nil {
+				handleErrorResponse(
+					httpCtx,
+					&lg,
+					&startedAt,
+					nil,
+					err,
+					w,
+					encoder,
+					writeFatalError,
+					s.serverCfg.IncludeErrorDetails,
+					s.executionHeadersMode(),
+				)
+				return
+			}
+			s.handleWebSocket(w, r, &lg, project, architecture, chainId)
+			return
+		}
+
 		// Handle gzipped request bodies
 		var bodyReader io.Reader = r.Body
 		if r.Header.Get("Content-Encoding") == "gzip" {
@@ -498,63 +582,26 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
-				if project != nil {
-					for _, matchKey := range project.Config.ForwardHeaders {
-						for key, values := range headers {
-							matches, err := common.WildcardMatch(matchKey, key)
-							if err != nil {
-								responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
-								common.EndRequestSpan(requestCtx, nil, responses[index])
-								return
-							}
-							if matches {
-								for _, value := range values {
-									nq.ForwardHeaders.Add(matchKey, value)
-								}
-							}
-						}
-					}
+				if err := applyForwardHeaders(project, nq, headers); err != nil {
+					responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
+					common.EndRequestSpan(requestCtx, nil, responses[index])
+					return
 				}
 
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
 
-				shouldHandleMethod := true
-
-				if project != nil && project.Config.IgnoreMethods != nil {
-					for _, m := range project.Config.IgnoreMethods {
-						match, err := common.WildcardMatch(m, method)
-						if err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-						if match {
-							shouldHandleMethod = false
-							break
-						}
-					}
-				}
-
-				if project != nil && project.Config.AllowMethods != nil {
-					for _, m := range project.Config.AllowMethods {
-						match, err := common.WildcardMatch(m, method)
-						if err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-						if match {
-							shouldHandleMethod = true
-							break
-						}
-					}
+				shouldHandleMethod, err := isMethodAllowed(project, method)
+				if err != nil {
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
 				}
 
 				if !shouldHandleMethod {
 					jsonrpcVersion := "2.0"
 					var reqId interface{}
-					if jrr, err := nq.JsonRpcRequest(); err != nil {
+					if jrr, _ := nq.JsonRpcRequest(); jrr != nil {
 						jsonrpcVersion = jrr.JSONRPC
 						reqId = jrr.ID
 					}
@@ -573,7 +620,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 
 				var ap *auth.AuthPayload
-				var err error
 
 				if project != nil {
 					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
@@ -704,16 +750,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 				nq.SetNetwork(nw)
 
-				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
-				// Configure how to store User-Agent (raw vs simplified) based on project config
-				uaMode := common.UserAgentTrackingModeSimplified
-				if project != nil {
-					if project.Config.UserAgentMode != "" {
-						uaMode = project.Config.UserAgentMode
-					}
-					nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
-				}
-				nq.EnrichFromHttp(headers, queryArgs, uaMode)
+				applyRequestDirectives(project, nw, nq, headers, queryArgs)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
@@ -1059,7 +1096,7 @@ func (s *HttpServer) parseUrlPath(
 		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm' or 'svm')", ps)
 	}
 
-	if !isPost && !isOptions {
+	if !isPost && !isOptions && !isWebSocketUpgradeRequest(r, s.webSocketEnabled()) {
 		isHealthCheck = true
 	}
 
@@ -2004,6 +2041,8 @@ func (s *HttpServer) createTLSConfig() (*tls.Config, error) {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http servers...")
 
+	s.shutdownWebSockets(logger, 0)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -2045,6 +2084,36 @@ func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	}
 
 	return lastErr
+}
+
+// shutdownWebSockets refuses new WebSocket connections and closes the active
+// ones with GoingAway, giving their in-flight requests up to grace to
+// finish, then waits for subscription cleanup to complete.
+func (s *HttpServer) shutdownWebSockets(logger *zerolog.Logger, grace time.Duration) {
+	s.draining.Store(true)
+
+	var conns []*WsConnection
+	s.activeWsConns.Range(func(_, value interface{}) bool {
+		wsc := value.(*WsConnection)
+		wsc.stop(websocket.CloseGoingAway, "server shutting down", grace)
+		conns = append(conns, wsc)
+		return true
+	})
+	if len(conns) == 0 {
+		return
+	}
+
+	logger.Info().Int("connections", len(conns)).Msg("closing active WebSocket connections...")
+	timeout := time.After(grace + 10*time.Second)
+	for _, wsc := range conns {
+		select {
+		case <-wsc.done:
+		case <-timeout:
+			logger.Warn().Int("connections", len(conns)).Msg("timed out waiting for WebSocket connections to close")
+			return
+		}
+	}
+	logger.Info().Int("connections", len(conns)).Msg("all WebSocket connections closed")
 }
 
 // conditionalGzipWriter wraps ResponseWriter and decides whether to compress
@@ -2171,11 +2240,19 @@ func (w *conditionalGzipWriter) Close() error {
 	return nil
 }
 
-func gzipHandler(next http.Handler) http.Handler {
+func gzipHandler(next http.Handler, wsEnabled bool) http.Handler {
 	// Pool writers across responses for better performance
 	var gzPool = util.NewGzipWriterPool()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A WebSocket handshake has no body to compress and must reach the
+		// upgrader with a ResponseWriter that can be hijacked, which the
+		// gzip writer cannot.
+		if isWebSocketUpgradeRequest(r, wsEnabled) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// The response representation depends on Accept-Encoding, so caches
 		// must be told regardless of whether this response ends up compressed.
 		w.Header().Set("Vary", "Accept-Encoding")
@@ -2324,6 +2401,74 @@ func stripAddrDecorations(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// applyForwardHeaders copies the request headers matching the project's
+// forwardHeaders patterns onto nq.
+func applyForwardHeaders(project *PreparedProject, nq *common.NormalizedRequest, headers http.Header) error {
+	if project == nil {
+		return nil
+	}
+	for _, matchKey := range project.Config.ForwardHeaders {
+		for key, values := range headers {
+			matches, err := common.WildcardMatch(matchKey, key)
+			if err != nil {
+				return err
+			}
+			if matches {
+				for _, value := range values {
+					nq.ForwardHeaders.Add(matchKey, value)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// isMethodAllowed applies the project's ignoreMethods / allowMethods
+// (allowMethods wins).
+func isMethodAllowed(project *PreparedProject, method string) (bool, error) {
+	if project == nil {
+		return true, nil
+	}
+	allowed := true
+	for _, m := range project.Config.IgnoreMethods {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			allowed = false
+			break
+		}
+	}
+	for _, m := range project.Config.AllowMethods {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			allowed = true
+			break
+		}
+	}
+	return allowed, nil
+}
+
+// applyRequestDirectives applies network directive defaults and then the
+// client's own directives from headers/query, subject to the project's
+// allowClientDirectives for the resolved user.
+func applyRequestDirectives(project *PreparedProject, nw *Network, nq *common.NormalizedRequest, headers http.Header, queryArgs map[string][]string) {
+	nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
+	// Configure how to store User-Agent (raw vs simplified) based on project config
+	uaMode := common.UserAgentTrackingModeSimplified
+	if project != nil {
+		if project.Config.UserAgentMode != "" {
+			uaMode = project.Config.UserAgentMode
+		}
+		nq.SetAllowClientDirectiveMatcher(project.clientDirectiveMatcherFor(nq.User()))
+	}
+	nq.EnrichFromHttp(headers, queryArgs, uaMode)
 }
 
 // isAdminMethodBlocked returns true when the admin config's DenyMethods/AllowMethods

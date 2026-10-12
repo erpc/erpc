@@ -188,6 +188,13 @@ var architectures = map[string]Architecture{
 		Disable: recomputeFamily,
 		Header:  postMergeHeader,
 	},
+
+	// Kaia roots use native transaction/receipt serialization and a
+	// governance-selected derivation, not Ethereum's fixed trie contract.
+	"kaia": {
+		Name:    "kaia",
+		Disable: recomputeFamily,
+	},
 }
 
 // ArchitectureByName exposes a family for introspection/tests.

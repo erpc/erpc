@@ -219,6 +219,13 @@ func (f *FailsafeConnector) CacheLatestBlockTimestamp(networkId string) (int64, 
 	return 0, false
 }
 
+// ReadOnly forwards to the wrapped connector so cache policies skip writes to a read-only connector
+// through the failsafe wrapper too.
+func (f *FailsafeConnector) ReadOnly() bool {
+	r, ok := f.wrapped.(ReadOnlyConnector)
+	return ok && r.ReadOnly()
+}
+
 func (f *FailsafeConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {
 	fe := pickCacheExecutor(f.getExecutors, ctx)
 	if fe == nil {

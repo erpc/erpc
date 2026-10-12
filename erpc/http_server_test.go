@@ -112,7 +112,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -254,7 +254,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -400,7 +400,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -7865,7 +7865,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8157,7 +8157,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	// Give state poller more time to initialize and update shared state
 	time.Sleep(1 * time.Second)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8276,7 +8276,7 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8321,6 +8321,50 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	// to reconnect elsewhere.
 	resp = sendRequest()
 	require.True(t, resp.Close, "drain-window responses must carry Connection: close so pooled clients migrate before Shutdown")
+}
+
+func TestHttpServer_IgnoredMethodKeepsRequestId(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id:            "test_project",
+				IgnoreMethods: []string{"eth_getBalance"},
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm:          &common.EvmNetworkConfig{ChainId: 123},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+	defer shutdown()
+
+	statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":7}`, nil, nil)
+	assert.Equal(t, http.StatusOK, statusCode)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(body), &resp))
+	assert.Equal(t, float64(7), resp["id"], "the error response must echo the request id")
+	errMap, _ := resp["error"].(map[string]interface{})
+	assert.Contains(t, errMap["message"], "method not supported")
 }
 
 func TestHttpServer_AdminMethodFilter(t *testing.T) {
@@ -8369,7 +8413,7 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		require.NoError(t, err)
 		erpcInstance.Bootstrap(ctx)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		require.NoError(t, err)
 
 		listener, err := net.Listen("tcp", "127.0.0.1:0")

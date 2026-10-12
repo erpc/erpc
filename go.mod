@@ -8,7 +8,7 @@ require (
 	github.com/DataDog/sketches-go v1.4.8
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.1
 	github.com/aws/aws-sdk-go v1.55.8
-	github.com/blockchain-data-standards/manifesto v0.0.0-20260924092100-34daf4bfdb2d
+	github.com/blockchain-data-standards/manifesto v0.0.0-20261008203857-00f4bd1d2991
 	github.com/bytedance/sonic v1.15.2
 	github.com/coder/websocket v1.8.15
 	github.com/dgraph-io/ristretto/v2 v2.4.2
@@ -20,6 +20,7 @@ require (
 	github.com/go-logr/zerologr v1.2.3
 	github.com/go-redsync/redsync/v4 v4.17.0
 	github.com/golang-jwt/jwt/v4 v4.5.2
+	github.com/gorilla/websocket v1.5.3
 	github.com/grafana/sobek v0.0.0-20241024150027-d91f02b05e9b
 	github.com/h2non/gock v1.2.0
 	github.com/jackc/pgconn v1.14.3

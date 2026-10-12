@@ -894,7 +894,7 @@ func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"finalized","toBlock":"latest","address":"0xabc"}]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"finalized","toBlock":"latest","address":"0x000000000000000000000000000000000000abc0"}]}`))
 	req.SetNetwork(network)
 
 	jrq, err := req.JsonRpcRequest()
@@ -951,7 +951,7 @@ func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	// Numeric blocks in filter
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":100,"toBlock":200,"address":"0xabc"}]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":100,"toBlock":200,"address":"0x000000000000000000000000000000000000abc0"}]}`))
 	req.SetNetwork(network)
 
 	jrq, err := req.JsonRpcRequest()
@@ -1595,7 +1595,7 @@ func TestInterpolation_EthGetLogs_MixedParams(t *testing.T) {
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	// Mixed: numeric fromBlock, tag toBlock
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":100,"toBlock":"latest","address":"0xabc"}]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":100,"toBlock":"latest","address":"0x000000000000000000000000000000000000abc0"}]}`))
 	req.SetNetwork(network)
 
 	jrq, err := req.JsonRpcRequest()
@@ -1788,7 +1788,7 @@ func BenchmarkInterpolation_NumericNormalization(b *testing.B) {
 	ctx := context.Background()
 	network, _ := setupTestNetworkForInterpolation(nil, ctx, nil)
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":100,"toBlock":200,"address":"0xabc"}]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":100,"toBlock":200,"address":"0x000000000000000000000000000000000000abc0"}]}`))
 	req.SetNetwork(network)
 
 	b.ResetTimer()

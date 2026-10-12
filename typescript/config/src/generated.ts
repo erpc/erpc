@@ -222,8 +222,24 @@ export interface Config {
   projects?: (ProjectConfig | undefined)[];
   rateLimiters?: RateLimiterConfig;
   metrics?: MetricsConfig;
+  indexer?: IndexerConfig;
   proxyPools?: (ProxyPoolConfig | undefined)[];
   tracing?: TracingConfig;
+}
+/**
+ * IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
+ */
+export interface IndexerConfig {
+  /**
+   * Deprecated: ignored; the indexer no longer tracks a canonical chain.
+   * Kept so configs that still set it load under strict decoding.
+   */
+  canonicalChainDepth?: number /* int */;
+  /**
+   * DedupWindowSize is the per-filter seen-set capacity for log and
+   * pending-tx fan-out across upstreams. 0 uses the default (8192).
+   */
+  dedupWindowSize?: number /* int */;
 }
 export interface ServerConfig {
   listenV4?: boolean;
@@ -253,6 +269,7 @@ export interface ServerConfig {
   trustedIPForwarders?: string[];
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
+  webSocket?: WebSocketServerConfig;
   /**
    * ExecutionHeaders controls the per-request diagnostic headers
    * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
@@ -269,6 +286,31 @@ export interface ServerConfig {
    * CreditUnitsProvider and UpstreamConfig.CreditUnits.
    */
   costHeaders?: boolean;
+}
+export interface WebSocketServerConfig {
+  /**
+   * Enabled accepts WebSocket upgrades on the HTTP port. Off by default:
+   * with it off an upgrade request is ordinary HTTP.
+   */
+  enabled?: boolean;
+  readBufferSize?: number /* int */;
+  writeBufferSize?: number /* int */;
+  maxMessageSize?: number /* int64 */;
+  pingInterval?: Duration;
+  maxSubscriptionsPerConnection?: number /* int */;
+  /**
+   * MaxConcurrentRequestsPerConnection bounds the messages a connection has
+   * in flight; further frames wait (backpressure) instead of being rejected.
+   * A batch is one message; its requests run concurrently, as over HTTP.
+   */
+  maxConcurrentRequestsPerConnection?: number /* int */;
+  /**
+   * SubscriptionBufferSize is the number of notifications queued per
+   * subscription for a client that is behind. On overflow newHeads and
+   * newPendingTransactions drop their oldest entry; logs close the
+   * connection instead (1013), so the client knows it missed data.
+   */
+  subscriptionBufferSize?: number /* int */;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -709,13 +751,26 @@ export const UserAgentTrackingModeSimplified: UserAgentTrackingMode = "simplifie
 export const UserAgentTrackingModeRaw: UserAgentTrackingMode = "raw";
 export interface NetworkDefaults {
   rateLimitBudget?: string;
-  cacheKeySuffix?: string;
   failsafe?: (FailsafeConfig | undefined)[];
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
   svm?: TsSvmNetworkConfigForDefaults;
   multiplexing?: boolean;
+  cacheKeySuffix?: string;
+  failover?: FailoverConfig;
+}
+/**
+ * FailoverConfig controls per-request escalation to fallback-tier upstreams,
+ * independent of the selection policy.
+ */
+export interface FailoverConfig {
+  /**
+   * OnDefaultsExhausted tries upstreams not tagged `tier:fallback` first and
+   * advances to the fallback tier within the same request only once every
+   * other upstream failed with an error retryable toward the network.
+   */
+  onDefaultsExhausted?: boolean;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -735,6 +790,11 @@ export interface ProviderConfig {
   upstreamIdTemplate?: string;
   overrides?: { [key: string]: UpstreamConfig | undefined};
 }
+/**
+ * TagTierFallback marks an upstream as part of the fallback tier, used only
+ * when the other upstreams are unavailable.
+ */
+export const TagTierFallback = "tier:fallback";
 /**
  * RateLimitCountMode selects the accounting unit an upstream's rate-limit
  * budget charges per call.
@@ -938,7 +998,7 @@ export interface JsonRpcUpstreamConfig {
   proxyPool?: string;
 }
 /**
- * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+ * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
  * gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
  * knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
  * every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -1006,13 +1066,27 @@ export interface EvmUpstreamConfig {
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
 }
+/**
+ * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
+ * eth_getBlockReceipts, eth_getLogs, trace_block / debug_traceBlockByNumber) the
+ * eth_query* executor issues when no native QueryService upstream answers. The
+ * sub-requests go through the network like any request; the budget bounds the
+ * work of one MIP-16 page.
+ */
 export interface EvmQueryShimConfig {
   enabled?: boolean;
   allowedMethods?: string[];
-  concurrency?: number /* int */;
-  maxBlockRange?: number /* int64 */;
-  maxLimit?: number /* int */;
-  defaultLimit?: number /* int */;
+  /**
+   * MaxBlocksPerPage is the budget of blocks one page may scan. A page that
+   * reaches it ends at the last scanned block.
+   */
+  maxBlocksPerPage?: number /* int64 */;
+  /**
+   * MaxPageDuration is the budget of time one page may scan. A page that
+   * reaches it ends at the last complete block, or fails with -32005 when no
+   * block completed.
+   */
+  maxPageDuration?: Duration;
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -1043,6 +1117,15 @@ export interface EvmAvailabilityBoundConfig {
 export interface FailsafeConfig {
   matchMethod?: string;
   matchFinality?: DataFinalityState[];
+  /**
+   * MatchCommitment scopes a network-scope policy by the Solana commitment
+   * erpc pins on the wire: the caller's value, else the svm.commitment default
+   * that injection writes, else "none". Empty = any. Values are OR-ed and
+   * exact (confirmed does not match processed). Non-SVM requests and SVM
+   * write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
+   * Rejected at upstream and connector scopes.
+   */
+  matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
   /**
    * MatchRequestKind scopes this policy by who issued the request:
    * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
@@ -1359,15 +1442,23 @@ export interface NetworkConfig {
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   alias?: string;
-  cacheKeySuffix?: string;
   methods?: MethodsConfig;
   multiplexing?: boolean;
   staticResponses?: (StaticResponseConfig | undefined)[];
+  failover?: FailoverConfig;
   /**
    * Integrity overrides the project-wide data-integrity configuration for this
    * network. Merges over the project block (network wins).
    */
   integrity?: IntegrityConfig;
+  /**
+   * CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
+   * key as {networkId}:{suffix}:{blockRef} so two networks that share a
+   * chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+   * When {networkId}:{suffix} is itself a valid network id, colons in the
+   * network id are escaped; see CachePartitionKey.
+   */
+  cacheKeySuffix?: string;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1589,6 +1680,13 @@ export interface EvmNetworkConfig {
    * Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
    */
   markEmptyAsErrorMethods?: string[];
+  /**
+   * StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
+   * logs filters before forwarding upstream. fromBlock has no meaning for a
+   * live subscription, and backends that prune history reject it.
+   * DEFAULT: false.
+   */
+  stripSubscribeFromBlockZero?: boolean;
   /**
    * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
    * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
@@ -1939,7 +2037,6 @@ export interface MetricsConfig {
    * families are exposed at all, which of their labels survive, and which
    * buckets a histogram uses. Entries are applied by specificity rather than
    * by list order — see MetricsCustomizationConfig.
-   *
    * 	metrics:
    * 	  customizations:
    * 	    - subject: "consensus_*"
@@ -1953,7 +2050,7 @@ export interface MetricsConfig {
    * 	    - subject: network_request_duration_seconds
    * 	      buckets: [0.05, 0.5, 5]
    */
-  customizations?: MetricsCustomizationConfig[];
+  customizations?: (MetricsCustomizationConfig | undefined)[];
   /**
    * Deprecated: use Customizations with a `labels` list. Kept working so
    * existing configs keep loading; it is desugared onto the same rules as an
@@ -1999,7 +2096,6 @@ export const MetricActionDrop: MetricCustomizationAction = "drop";
 /**
  * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
  * selecting metric families, and what to do with them.
- *
  * Overlapping subjects resolve by specificity, not by list order: an exact
  * family name beats a prefix, a longer prefix beats a shorter one, and equally
  * specific subjects break to the one written later. So "drop consensus_*, keep
@@ -2019,7 +2115,6 @@ export interface MetricsCustomizationConfig {
    * Action drops the matched families from /metrics, or keeps them against a
    * broader drop. Omit it to leave exposure alone and only customize labels or
    * buckets.
-   *
    * A dropped eRPC family is never registered, so it costs no series and no
    * collection time — but that makes it a startup decision, undone only by a
    * restart. Stock collectors are registered outside eRPC and so are filtered
@@ -2031,20 +2126,19 @@ export interface MetricsCustomizationConfig {
    * Labels projects the matched families' label sets. Same precedence rules as
    * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
    * drops the group and spares the one label.
-   *
    * Dropping a label collapses every series that differed only in it. Counter
    * sums stay correct, but the dimension stops being queryable — check what
    * reads it (billing or attribution pipelines, dashboards) first. Gauges have
    * no projection, because collapsing gauge series would report whichever
    * writer wrote last rather than a coarser number.
    */
-  labels?: MetricLabelCustomizationConfig[];
+  labels?: (MetricLabelCustomizationConfig | undefined)[];
   /**
    * Buckets replaces the bucket boundaries of the matched histograms,
    * overriding both metrics.histogramBuckets and what the metric declares in
    * code. Must be strictly increasing.
    */
-  buckets?: number[];
+  buckets?: number /* float64 */[];
 }
 /**
  * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated

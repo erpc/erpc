@@ -52,6 +52,14 @@ func NewUpstreamExecutor(cfg *common.UpstreamFailsafeConfig, logger *zerolog.Log
 			},
 		)
 	}
+	if len(cfg.MatchCommitment) > 0 {
+		return nil, common.NewErrFailsafeConfiguration(
+			errors.New("matchCommitment is only supported for network-level failsafe"),
+			map[string]interface{}{
+				"matchCommitment": cfg.MatchCommitment,
+			},
+		)
+	}
 
 	e := &upstreamExecutor{
 		cfg:        cfg,

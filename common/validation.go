@@ -65,6 +65,20 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if c.Indexer != nil {
+		if err := c.Indexer.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Validate rejects nonsensical values; zeros pass through and resolve to
+// internal defaults inside the indexer.
+func (i *IndexerConfig) Validate() error {
+	if i.DedupWindowSize < 0 {
+		return fmt.Errorf("indexer.dedupWindowSize must be >= 0 (0 uses the default)")
+	}
 	return nil
 }
 
@@ -91,6 +105,23 @@ func (s *ServerConfig) Validate() error {
 	}
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
+	}
+	if ws := s.WebSocket; ws != nil {
+		if ws.PingInterval == nil || *ws.PingInterval <= 0 {
+			return fmt.Errorf("server.webSocket.pingInterval must be greater than 0")
+		}
+		if ws.ReadBufferSize < 0 || ws.WriteBufferSize < 0 || ws.MaxMessageSize < 0 {
+			return fmt.Errorf("server.webSocket buffer and message sizes must not be negative")
+		}
+		if ws.MaxSubscriptionsPerConnection < 1 {
+			return fmt.Errorf("server.webSocket.maxSubscriptionsPerConnection must be at least 1")
+		}
+		if ws.MaxConcurrentRequestsPerConnection < 1 {
+			return fmt.Errorf("server.webSocket.maxConcurrentRequestsPerConnection must be at least 1")
+		}
+		if ws.SubscriptionBufferSize < 1 {
+			return fmt.Errorf("server.webSocket.subscriptionBufferSize must be at least 1")
+		}
 	}
 
 	// Validate trusted IP forwarders if provided (IPs or CIDRs). Support legacy + new field
@@ -563,16 +594,45 @@ func validateGrpcConnPoolSize(scope string, poolSize int) error {
 	return nil
 }
 
+// validateGrpcHealthCheckMount rejects a health check on an endpoint mounted
+// below a URL path. grpc-go opens the health Watch stream past every
+// interceptor, so it always calls bare `/grpc.health.v1.Health/Watch`, never
+// the mount; the answer would come from whatever serves the root.
+func validateGrpcHealthCheckMount(scope, endpoint, healthCheckService string) error {
+	if healthCheckService == "" {
+		return nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%s: invalid gRPC endpoint %s: %w", scope, util.RedactEndpoint(endpoint), err)
+	}
+	if strings.TrimRight(parsed.Path, "/") != "" {
+		return fmt.Errorf("%s.healthCheckService cannot be used with %s: the URL path mounts every call, but the gRPC health check always calls the root path", scope, util.RedactEndpoint(endpoint))
+	}
+	return nil
+}
+
 // Validate checks the gRPC cache-connector knobs. A zero PoolSize is valid and
 // means "use the built-in default".
 func (g *GrpcConnectorConfig) Validate() error {
-	return validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize)
+	if err := validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize); err != nil {
+		return err
+	}
+	for _, server := range g.Servers {
+		if err := validateGrpcHealthCheckMount("database.*.connector.grpc", server, g.HealthCheckService); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Validate checks the gRPC upstream knobs. A zero PoolSize is valid and means
 // "use the built-in default".
-func (g *GrpcUpstreamConfig) Validate() error {
-	return validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize)
+func (g *GrpcUpstreamConfig) Validate(endpoint string) error {
+	if err := validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize); err != nil {
+		return err
+	}
+	return validateGrpcHealthCheckMount("upstream.*.grpc", endpoint, g.HealthCheckService)
 }
 
 func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
@@ -582,6 +642,9 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	prefix := fmt.Sprintf("connector '%s'.%s[%d]", connectorId, field, index)
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
+	}
+	if len(fsCfg.MatchCommitment) > 0 {
+		return fmt.Errorf("%s: matchCommitment is not supported for connector-level failsafe", prefix)
 	}
 	return nil
 }
@@ -765,6 +828,9 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		for _, fs := range p.UpstreamDefaults.Failsafe {
 			if fs != nil && fs.Consensus != nil {
 				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
+			}
+			if fs != nil && len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.matchCommitment is only supported for network-level failsafe")
 			}
 		}
 	}
@@ -1035,6 +1101,9 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			if err := fs.Validate(); err != nil {
 				return err
 			}
+			if len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("upstream '%s': failsafe.matchCommitment is only supported for network-level failsafe", u.Id)
+			}
 			// Upstreams register in the background, so the executor's own
 			// rejection only logs and erpc keeps serving without the upstream.
 			if fs.Consensus != nil {
@@ -1048,7 +1117,7 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	if u.Grpc != nil {
-		if err := u.Grpc.Validate(); err != nil {
+		if err := u.Grpc.Validate(u.Endpoint); err != nil {
 			return err
 		}
 	}
@@ -1223,6 +1292,14 @@ func (f *FailsafeConfig) Validate() error {
 	case "", "*", "user", "internal":
 	default:
 		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+	}
+
+	for _, c := range f.MatchCommitment {
+		switch c {
+		case "none", "processed", "confirmed", "finalized":
+		default:
+			return fmt.Errorf("failsafe.matchCommitment '%s' is invalid, must be one of: none | processed | confirmed | finalized", c)
+		}
 	}
 
 	if f.Timeout != nil {

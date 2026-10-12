@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -173,4 +175,67 @@ func TestInterpolation_NumericBlockFinality(t *testing.T) {
 	// Check finality after normalization
 	finalityAfter := req.Finality(ctx)
 	assert.NotEqual(t, common.DataFinalityStateRealtime, finalityAfter, "Numeric block should still NOT be realtime after normalization")
+}
+
+// On a chain whose finalized block equals its latest (instant finality), a
+// translated "latest" must still be realtime and must not be served from a
+// finalized cache policy: a nonce or balance read at "latest" has to reflect
+// the chain now, not a cached answer for the block it was translated to.
+func TestInterpolation_InstantFinalityLatestStaysRealtime(t *testing.T) {
+	for _, method := range []string{"eth_getTransactionCount", "eth_getBalance"} {
+		t.Run(method, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			mockJsonRpcUpstream("rpc1.localhost", "0x7b", "0x11118888", "0x11118888")
+			for _, result := range []string{"0x1", "0x2"} {
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Times(1).
+					Filter(func(r *http.Request) bool {
+						body := util.SafeReadBody(r)
+						return strings.Contains(body, method) && !strings.Contains(body, `"latest"`)
+					}).
+					Reply(200).
+					JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": result})
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+			require.Equal(t, network.EvmHighestLatestBlockNumber(ctx), network.EvmHighestFinalizedBlockNumber(ctx))
+
+			cacheCfg := &common.CacheConfig{
+				Connectors: []*common.ConnectorConfig{{
+					Id:     "mem",
+					Driver: common.DriverMemory,
+					Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+				}},
+				Policies: []*common.CachePolicyConfig{{
+					Network:   "*",
+					Method:    "*",
+					Finality:  common.DataFinalityStateFinalized,
+					TTL:       common.FixedDuration(time.Hour),
+					Connector: "mem",
+				}},
+			}
+			require.NoError(t, cacheCfg.SetDefaults())
+			cache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+			require.NoError(t, err)
+			network.cacheDal = cache.WithProjectId("prjA")
+
+			for _, want := range []string{"0x1", "0x2"} {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":["0xabc","latest"]}`))
+				req.SetNetwork(network)
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				assert.Equal(t, common.DataFinalityStateRealtime, req.Finality(ctx))
+				jrr, err := resp.JsonRpcResponse()
+				require.NoError(t, err)
+				assert.Equal(t, `"`+want+`"`, jrr.GetResultString())
+				resp.Release()
+				time.Sleep(100 * time.Millisecond) // let the async cache write land
+			}
+		})
+	}
 }

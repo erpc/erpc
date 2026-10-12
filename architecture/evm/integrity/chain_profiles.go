@@ -33,6 +33,8 @@ var chains = map[int64]ChainSpec{
 	56:    {Architecture: "bsc"},
 	137:   {Architecture: "polygon-pos"},
 	999:   {Architecture: "hyperevm"},
+	1001:  {Architecture: "kaia"},
+	8217:  {Architecture: "kaia"},
 	8453:  {Architecture: "op-stack"},
 	42161: {Architecture: "arbitrum-nitro"},
 }

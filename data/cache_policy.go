@@ -16,6 +16,9 @@ type CachePolicy struct {
 	str           string
 	minSize       *int
 	maxSize       *int
+	// readOnly is true when the connector only serves reads (ReadOnlyConnector);
+	// such a policy never matches for set.
+	readOnly      bool
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
@@ -47,12 +50,18 @@ func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CacheP
 
 	str = fmt.Sprintf("policy(%s)", str)
 
+	readOnly := false
+	if r, ok := connector.(ReadOnlyConnector); ok {
+		readOnly = r.ReadOnly()
+	}
+
 	return &CachePolicy{
 		config:    cfg,
 		connector: connector,
 		str:       str,
 		minSize:   minSize,
 		maxSize:   maxSize,
+		readOnly:  readOnly,
 	}, nil
 }
 
@@ -80,6 +89,10 @@ func (p *CachePolicy) MarshalJSON() ([]byte, error) {
 }
 
 func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) (bool, error) {
+	// A read-only connector is never written to, whatever appliesTo says.
+	if p.readOnly {
+		return false, nil
+	}
 	// Respect appliesTo directive for set
 	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToSet {
 		return false, nil

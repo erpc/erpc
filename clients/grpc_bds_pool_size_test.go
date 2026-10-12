@@ -23,10 +23,12 @@ func newTestPool(t *testing.T, poolSize int) *bdsPool {
 		"test-project",
 		"n/a",
 		"dns:///127.0.0.1:50051",
+		"",
 		insecure.NewCredentials(),
 		"{}",
 		poolSize,
 		0, // no expected chainId — identity checks stay disarmed in this test
+		nil, // no headers
 	)
 	require.NoError(t, err)
 	t.Cleanup(p.Shutdown)

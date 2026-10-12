@@ -3,6 +3,7 @@ package erpc
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,7 +120,7 @@ func TestHttpServer_Gzip_E2E_StreamedJsonRpc(t *testing.T) {
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + bigResult + `}`))
 
-	sendRequest, _, _, shutdown, _ := createServerTestFixtures(gzipE2ECfg(), t)
+	sendRequest, _, _, shutdown, instance := createServerTestFixtures(gzipE2ECfg(), t)
 	defer shutdown()
 
 	reqBody := `{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x386053",false],"id":1}`
@@ -135,6 +136,22 @@ func TestHttpServer_Gzip_E2E_StreamedJsonRpc(t *testing.T) {
 	assert.Less(t, len(raw), len(decoded), "wire bytes must be smaller than the uncompressed payload")
 	t.Logf("MISS: wire=%d bytes, decompressed=%d bytes, ratio=%.3f, x-erpc-cache=%q",
 		len(raw), len(decoded), float64(len(raw))/float64(len(decoded)), headers["X-Erpc-Cache"])
+
+	project, err := instance.GetProject("test_project")
+	require.NoError(t, err)
+	network, err := project.GetNetwork(context.Background(), util.EvmNetworkId(123))
+	require.NoError(t, err)
+	// Forward returns before the asynchronous cache write completes.
+	require.Eventually(t, func() bool {
+		probe := common.NewNormalizedRequest([]byte(reqBody))
+		probe.SetNetwork(network)
+		cached, err := network.cacheDal.Get(context.Background(), probe)
+		if cached == nil {
+			return false
+		}
+		defer cached.Release()
+		return err == nil && !cached.IsObjectNull()
+	}, 2*time.Second, 20*time.Millisecond, "finalized block must be readable from cache")
 
 	// Second call: served from the finalized-block cache (HIT). #990 explicitly
 	// reported cache hits going out uncompressed; assert the HIT path compresses

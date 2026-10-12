@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -423,6 +424,47 @@ func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId s
 	u.networkUpstreamsAtomic.Store(networkId, cp)
 	u.upstreamsMu.RUnlock()
 	return cp
+}
+
+// GetFallbackEscapeUpstreams returns the network's bootstrapped fallback-tier
+// upstreams that are not down for method and allow it. Selection-policy
+// cordons are deliberately ignored: the per-request escape exists to get past
+// them.
+func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, networkId, method string) []*Upstream {
+	all := u.GetNetworkUpstreams(ctx, networkId)
+	out := make([]*Upstream, 0, len(all))
+	for _, up := range all {
+		cfg := up.Config()
+		if cfg == nil || !cfg.HasTag(common.TagTierFallback) {
+			continue
+		}
+		if up.IsDown(method) {
+			continue
+		}
+		if allowed, err := up.ShouldHandleMethod(method); err != nil || !allowed {
+			continue
+		}
+		out = append(out, up)
+	}
+	return out
+}
+
+// GetWsUpstreams returns all WS-capable upstreams for a network (ws:// or wss:// endpoints).
+func (u *UpstreamsRegistry) GetWsUpstreams(ctx context.Context, networkId string) []*Upstream {
+	all := u.GetNetworkUpstreams(ctx, networkId)
+	var ws []*Upstream
+	for _, up := range all {
+		if cfg := up.Config(); cfg != nil && IsWsEndpoint(cfg.Endpoint) {
+			ws = append(ws, up)
+		}
+	}
+	return ws
+}
+
+// IsWsEndpoint reports whether endpoint uses the ws:// or wss:// scheme.
+func IsWsEndpoint(endpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	return err == nil && (parsed.Scheme == "ws" || parsed.Scheme == "wss")
 }
 
 func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {
