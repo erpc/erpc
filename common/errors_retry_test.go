@@ -375,6 +375,17 @@ func TestClassifySeverity_NotImplemented(t *testing.T) {
 		"not-implemented must be warning, not the critical fall-through")
 }
 
+func TestClassifySeverity_SubscriptionNotFound(t *testing.T) {
+	// eth_unsubscribe for an already-gone / unknown subscription is a benign
+	// client condition (JSON-RPC convention is to return false, not fault). It
+	// must classify as a client error → info severity, not the critical
+	// fall-through that would page on routine WS unsubscribe churn.
+	err := NewErrSubscriptionNotFound("0xdeadbeef")
+	assert.True(t, IsClientError(err), "subscription-not-found is a client condition")
+	assert.Equal(t, SeverityInfo, ClassifySeverity(err),
+		"subscription-not-found must be info, not the critical fall-through")
+}
+
 func BenchmarkIsRetryableTowardNetwork(b *testing.B) {
 	missingDataErr := NewErrEndpointMissingData(
 		NewErrJsonRpcExceptionInternal(-32000, -32014, "missing trie node", nil, nil),

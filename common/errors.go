@@ -2799,6 +2799,7 @@ func IsClientError(err error) bool {
 		ErrCodeGetLogsExceededMaxAllowedAddresses,
 		ErrCodeGetLogsExceededMaxAllowedTopics,
 		ErrCodeGetLogsExceededMaxAllowedResponseSize,
+		ErrCodeSubscriptionNotFound,
 	))
 }
 
