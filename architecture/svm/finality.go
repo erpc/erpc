@@ -44,6 +44,9 @@ var neverCacheMethods = map[string]bool{
 	"getRecentPerformanceSamples": true,
 	"getRecentPrioritizationFees": true,
 	"requestAirdrop":              true,
+	// Pool-answered from the live floor view (min across upstreams): the floor
+	// moves as validators prune, so a cached value would go stale silently.
+	"getFirstAvailableBlock": true,
 	// Direct balance reads — never cache; these feed financial decisions (e.g.
 	// deposit-address sweeps) and must never return a stale value.
 	"getBalance":             true,

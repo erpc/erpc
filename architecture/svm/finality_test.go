@@ -40,7 +40,7 @@ func (f *fakeNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 {
 	}
 	return f.finalizedSlot
 }
-func (f *fakeNetwork) SvmHighestIndexedSlot(context.Context) int64   { return f.indexedSlot }
+func (f *fakeNetwork) SvmHighestIndexedSlot(context.Context) int64 { return f.indexedSlot }
 func (f *fakeNetwork) SvmEnforceBlockAvailability() bool {
 	if f.enforceBlockAvailability == nil {
 		return true
@@ -61,7 +61,7 @@ func newReq(method, paramsJson string) *common.NormalizedRequest {
 
 func TestFinality_NeverCacheMethods_ReturnRealtime(t *testing.T) {
 	t.Parallel()
-	methods := []string{"getLatestBlockhash", "sendTransaction", "simulateTransaction", "getSignatureStatuses"}
+	methods := []string{"getLatestBlockhash", "sendTransaction", "simulateTransaction", "getSignatureStatuses", "getFirstAvailableBlock"}
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
 	for _, m := range methods {
 		if got := GetFinality(context.Background(), net, newReq(m, "[]"), nil); got != common.DataFinalityStateRealtime {
