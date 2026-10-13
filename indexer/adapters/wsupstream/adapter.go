@@ -465,7 +465,10 @@ func (a *Adapter) release(ctx context.Context, id string, epoch uint64) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	_ = a.send(clients.WithWsSubscription(ctx, &clients.WsSubscription{Epoch: epoch}), methodEthUnsubscribe, []interface{}{id})
+	if err := a.send(clients.WithWsSubscription(ctx, &clients.WsSubscription{Epoch: epoch}), methodEthUnsubscribe, []interface{}{id}); err != nil {
+		// A quiet subscription never triggers the client's orphan cancel.
+		a.wsClient.UnsubscribeOrphan(id, epoch)
+	}
 }
 
 // send forwards a subscription RPC through the upstream. It is marked
