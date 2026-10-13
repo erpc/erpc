@@ -1163,3 +1163,12 @@ func TestJsonRpcRequest_CacheHash_EvmHexCaseInsensitive(t *testing.T) {
 	require.Equal(t, hashUpper, hashLower,
 		"EVM hex params are case-insensitive and must share a CacheHash")
 }
+
+func TestTranslateToJsonRpcException_SubscriptionLimitIsCapacityNotInternal(t *testing.T) {
+	err := NewErrSubscriptionLimitExceeded(10)
+
+	assert.Equal(t, SeverityInfo, ClassifySeverity(err),
+		"subscription limit is a client condition and must never grade critical")
+	assert.EqualValues(t, JsonRpcErrorCapacityExceeded, clientWireCode(t, TranslateToJsonRpcException(err)),
+		"subscription limit must map to -32005, not -32603")
+}

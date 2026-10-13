@@ -165,7 +165,7 @@ ws.onmessage = (event) => {
 
 - the network has no WebSocket upstream, or none of the selected upstreams is connected and accepts the subscription;
 - the subscription type is not supported (`-32602`);
-- the connection already has `server.webSocket.maxSubscriptionsPerConnection` active subscriptions;
+- the connection already has `server.webSocket.maxSubscriptionsPerConnection` active subscriptions (`-32005`);
 - the request is rate limited.
 
 A failed `eth_subscribe` leaves your WebSocket connection open. You can retry on the same connection.

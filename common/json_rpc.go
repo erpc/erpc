@@ -1905,6 +1905,20 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	// The client can free a slot by unsubscribing; -32603 would read as a server fault.
+	if HasErrorCode(err, ErrCodeSubscriptionLimitExceeded) {
+		reason := "subscription limit exceeded"
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorCapacityExceeded,
+			reason,
+			err,
+			nil,
+		)
+	}
 	if HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
 		var reason string
 		if se, ok := err.(StandardError); ok {
