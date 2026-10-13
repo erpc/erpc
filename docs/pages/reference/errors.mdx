@@ -536,6 +536,8 @@ Entry: [`common/json_rpc.go:L1501`](https://github.com/erpc/erpc/blob/main/commo
 
 **9. A chain answers `is initializing; please retry shortly` forever.** That message is only correct while a bootstrap is in progress. Once a network has been in initialization for `upstream.NoUpstreamsAvailableAfter` (5 minutes) with **zero** upstreams registered, eRPC swaps it for `ErrNetworkNoUpstreamsAvailable` — `no RPC providers are available for network '<id>' in project '<id>'` on HTTP 404, and increments `erpc_network_no_upstreams_available_total{project,network}`. It means no configured upstream or provider covers that chain (removed from config, deprecated, or never supported), so retrying will not help; fix the config or provider coverage. The status is 404 rather than 5xx because the condition is a coverage gap, not a server fault — but it is still an operator-actionable state, so alert on `erpc_network_no_upstreams_available_total` rather than on wire 5xx. The initializer keeps re-attempting in the background, so a network that later gains an upstream recovers on its own.
 
+Past that threshold the verdict is immediate: the request does not wait out the 30s bootstrap budget first, even while an unrelated upstream task (one with no `evm.chainId`, such as a revoked API key) keeps failing.
+
 ### Best practices
 
 - Alert on `severity="critical"` only — `severity="info"` covers client errors and EVM reverts; `severity="warning"` covers hedge discards and client disconnects.
