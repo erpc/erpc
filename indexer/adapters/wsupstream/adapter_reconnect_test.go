@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -47,6 +48,8 @@ type notifyServer struct {
 	// gate, when set, is received from after each eth_subscribe is
 	// recorded and before it is answered.
 	gate chan struct{}
+	// rejectNewHeads answers newHeads subscribes with -32601.
+	rejectNewHeads bool
 }
 
 type notifyConn struct {
@@ -72,7 +75,7 @@ func newNotifyServer(t *testing.T) *notifyServer {
 		}
 		nc := &notifyConn{conn: conn, requests: make(chan notifyRequest, 64)}
 		n.newConn <- nc
-		go nc.serve(n.gate)
+		go nc.serve(n.gate, n.rejectNewHeads)
 	}))
 	t.Cleanup(n.srv.Close)
 	return n
@@ -85,7 +88,7 @@ func (n *notifyServer) wsURL(t *testing.T) *url.URL {
 	return u
 }
 
-func (nc *notifyConn) serve(gate chan struct{}) {
+func (nc *notifyConn) serve(gate chan struct{}, rejectNewHeads bool) {
 	subs := 0
 	for {
 		_, msg, err := nc.conn.ReadMessage()
@@ -109,6 +112,10 @@ func (nc *notifyConn) serve(gate chan struct{}) {
 		nc.requests <- req.notifyRequest
 		if gate != nil {
 			<-gate
+		}
+		if rejectNewHeads && req.Params[0] == indexer.SubTypeNewHeads {
+			nc.write(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"error":{"code":-32601,"message":"the method eth_subscribe does not exist/is not available"}}`)
+			continue
 		}
 		nc.write(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":"` + req.SubID + `"}`)
 		if req.Params[0] == indexer.SubTypeLogs {
@@ -164,7 +171,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	logger := zerolog.New(zerolog.NewTestWriter(t)).Level(zerolog.WarnLevel)
-	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), u, nil, nil)
+	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), u, nil, evm.NewJsonRpcErrorExtractor())
 	require.NoError(t, err)
 	wsc := ci.(*clients.WsJsonRpcClient)
 	a := &Adapter{

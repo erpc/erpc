@@ -261,19 +261,29 @@ func filterKey(subType, paramsHash string) string {
 // reconnect.
 func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 	backoff := a.retryMin
+	headsUnsupported := false
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		done := true
-		attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
-		a.heads.mu.Lock()
-		err := a.subscribeLocked(attemptCtx, &a.heads, []interface{}{indexer.SubTypeNewHeads}, a.handleNewHeads)
-		a.heads.mu.Unlock()
-		cancel()
-		if err != nil {
-			done = false
-			a.logger.Warn().Err(err).Msg("failed to subscribe newHeads, will retry")
+		if !headsUnsupported {
+			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
+			a.heads.mu.Lock()
+			err := a.subscribeLocked(attemptCtx, &a.heads, []interface{}{indexer.SubTypeNewHeads}, a.handleNewHeads)
+			a.heads.mu.Unlock()
+			cancel()
+			switch {
+			case err == nil:
+			case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
+				// Retrying can't change the answer; the state poller tracks
+				// the head, and a later resubscribe asks again.
+				headsUnsupported = true
+				a.logger.Warn().Err(err).Msg("upstream does not support newHeads, not retrying on this connection")
+			default:
+				done = false
+				a.logger.Warn().Err(err).Msg("failed to subscribe newHeads, will retry")
+			}
 		}
 
 		a.subsMu.Lock()
