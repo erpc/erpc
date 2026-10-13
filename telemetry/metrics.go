@@ -135,6 +135,16 @@ var (
 		Help:      "Whether the upstream WebSocket connection is currently established (1) or down/wedged (0).",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	// MetricUpstreamWebsocketHeadsStallReconnectsTotal counts reconnects
+	// forced because an upstream's newHeads subscription went silent while
+	// the same upstream's polled head kept advancing. Any increase means a
+	// node dropped a live subscription without closing it.
+	MetricUpstreamWebsocketHeadsStallReconnectsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_websocket_heads_stall_reconnects_total",
+		Help:      "Upstream WebSocket reconnects forced by a silent newHeads subscription while the upstream head advanced.",
+	}, []string{"project", "network", "upstream"})
+
 	MetricWebsocketSubscriptionNotificationsDroppedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "websocket_subscription_notifications_dropped_total",

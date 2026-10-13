@@ -219,6 +219,7 @@ func (a *Adapter) watchHeads() {
 		if id != "" && id == prevID && epoch == prevEpoch && seen == prevSeen && prevPolled > lastHead {
 			a.logger.Warn().Str("upstreamSubId", id).Int64("lastHead", lastHead).Int64("polledHead", prevPolled).
 				Msg("newHeads subscription silent while upstream head advances, reconnecting")
+			telemetry.CounterHandle(telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal, a.projectID, a.networkLabel, a.upstreamID).Inc()
 			a.wsClient.Reconnect(epoch)
 		}
 		prevID, prevEpoch, prevSeen, prevPolled = id, epoch, seen, a.polledHead()

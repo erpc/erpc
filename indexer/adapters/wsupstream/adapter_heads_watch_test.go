@@ -9,6 +9,8 @@ import (
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
@@ -33,6 +35,9 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
+	stalls := telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal.WithLabelValues("test-project", "evm:123", "test-ws-upstream")
+	stallsBefore := testutil.ToFloat64(stalls)
+
 	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
 	require.Equal(t, int64(100), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
 	polled.Store(105)
@@ -43,6 +48,7 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("silent newHeads subscription was never recovered")
 	}
+	require.Equal(t, stallsBefore+1, testutil.ToFloat64(stalls), "a forced reconnect is counted")
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 	conn2.sendNewHead(conn2.nextRequest(t, methodEthSubscribe).SubID, 106)
 	require.Equal(t, int64(106), nextEvent(t, sink, indexer.KindNewHead).Block.Number)

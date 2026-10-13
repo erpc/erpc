@@ -177,11 +177,13 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 	require.NoError(t, err)
 	wsc := ci.(*clients.WsJsonRpcClient)
 	a := &Adapter{
-		upstreamID: "test-ws-upstream",
-		networkID:  "evm:123",
-		wsClient:   wsc,
-		logger:     &logger,
-		filters:    make(map[string]*filterSub),
+		upstreamID:   "test-ws-upstream",
+		networkID:    "evm:123",
+		projectID:    "test-project",
+		networkLabel: "evm:123",
+		wsClient:     wsc,
+		logger:       &logger,
+		filters:      make(map[string]*filterSub),
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
 			return wsc.SendRequest(ctx, nq)
 		},

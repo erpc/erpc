@@ -313,6 +313,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_network_multiplexed_request_total` | counter | project, network, category, finality, user, agent_name | Request de-duplicated into an identical in-flight request. |
 | `erpc_network_fallback_escape_total` | counter | project, network, category | The per-request fallback escape (`failover.onDefaultsExhausted`) retried a request on `tier:fallback` upstreams. Expected zero in steady state. |
 | `erpc_upstream_websocket_connected` | gauge | project, vendor, network, upstream | `1` while the upstream's WebSocket connection is established, `0` while it reconnects. |
+| `erpc_upstream_websocket_heads_stall_reconnects_total` | counter | project, network, upstream | Reconnects forced because the upstream's newHeads subscription went silent while its polled head kept advancing. Any increase means a node dropped a live subscription without closing it. |
 | `erpc_websocket_subscription_notifications_dropped_total` | counter | project, network, kind | Client subscription notifications dropped because the subscription's buffer (`server.webSocket.subscriptionBufferSize`) was full. For `kind="logs"` the connection is also closed with `1013`. |
 | `erpc_websocket_connections_active` | gauge | project | Open client WebSocket connections. |
 | `erpc_websocket_subscriptions_active` | gauge | project, network, kind | Open client `eth_subscribe` subscriptions; drops on `eth_unsubscribe` and when the connection closes. |
