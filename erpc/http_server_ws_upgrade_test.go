@@ -84,4 +84,9 @@ func TestHttpServer_WebSocketUpgradeReachesDispatch(t *testing.T) {
 	}
 
 	assertReachedWS("/", nil)
+
+	// A proxy (e.g. Traefik) that adds Accept-Encoding: gzip to the upgrade
+	// request must not break the handshake: the gzip writer is not an
+	// http.Hijacker, which used to 500 the upgrade.
+	assertReachedWS("/", http.Header{"Accept-Encoding": []string{"gzip"}})
 }
