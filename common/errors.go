@@ -3209,6 +3209,20 @@ var NewErrSubscriptionLimitExceeded = func(max int) error {
 	}
 }
 
+// NewErrInstanceSubscriptionLimitExceeded is the instance-wide counterpart
+// of NewErrSubscriptionLimitExceeded (server.webSocket.maxSubscriptions).
+var NewErrInstanceSubscriptionLimitExceeded = func(max int) error {
+	return &ErrSubscriptionLimitExceeded{
+		BaseError{
+			Code:    ErrCodeSubscriptionLimitExceeded,
+			Message: "maximum subscriptions per instance exceeded",
+			Details: map[string]interface{}{
+				"maxPerInstance": max,
+			},
+		},
+	}
+}
+
 func (e *ErrSubscriptionLimitExceeded) ErrorStatusCode() int {
 	return http.StatusTooManyRequests
 }

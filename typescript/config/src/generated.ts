@@ -311,6 +311,22 @@ export interface WebSocketServerConfig {
    * connection instead (1013), so the client knows it missed data.
    */
   subscriptionBufferSize?: number /* int */;
+  /**
+   * MaxConnections caps concurrent client connections on this instance
+   * (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+   * unknown or spoofed.
+   */
+  maxConnections?: number /* int */;
+  /**
+   * MaxConnectionsPerIP caps concurrent client connections from one
+   * resolved client IP (0 = unlimited); see trustedIPForwarders.
+   */
+  maxConnectionsPerIP?: number /* int */;
+  /**
+   * MaxSubscriptions caps active subscriptions across all connections on
+   * this instance (0 = unlimited).
+   */
+  maxSubscriptions?: number /* int */;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is

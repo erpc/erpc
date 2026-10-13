@@ -166,6 +166,7 @@ ws.onmessage = (event) => {
 - the network has no WebSocket upstream, or none of the selected upstreams is connected and accepts the subscription;
 - the subscription type is not supported (`-32602`);
 - the connection already has `server.webSocket.maxSubscriptionsPerConnection` active subscriptions (`-32005`);
+- the instance already has `server.webSocket.maxSubscriptions` active subscriptions (`-32005`);
 - the request is rate limited.
 
 A failed `eth_subscribe` leaves your WebSocket connection open. You can retry on the same connection.
@@ -269,7 +270,19 @@ server:
     maxConcurrentRequestsPerConnection: 250
     # Notifications queued per subscription for a slow reader (default: 256)
     subscriptionBufferSize: 256
+    # Instance-wide caps; 0 (the default) means unlimited
+    maxConnections: 0
+    maxConnectionsPerIP: 0
+    maxSubscriptions: 0
 ```
+
+`maxSubscriptionsPerConnection` alone does not bound a client: it can open any number of connections. On a public endpoint also set the instance-wide caps:
+
+- `maxConnections` — concurrent client connections on the instance. The only connection cap that holds when client IPs are unknown or spoofed.
+- `maxConnectionsPerIP` — concurrent client connections from one client IP, resolved as for HTTP (see `trustedIPForwarders`). Together with `maxSubscriptionsPerConnection` it bounds one client's subscriptions.
+- `maxSubscriptions` — active subscriptions across all connections on the instance.
+
+A connection over a cap is refused with `429` before the upgrade; a subscription over `maxSubscriptions` gets a JSON-RPC error and the connection stays open. Refusals are counted in `erpc_websocket_rejected_total`. The caps are per instance, so a fleet admits up to N times each.
 
 The upgrade request must name a network (`/<project-id>/<architecture>/<chain-id>`, or a path that [domain aliasing](/operation/url) resolves to one); otherwise it is rejected with `400`. On shutdown eRPC closes every client connection with `1001` (going away) straight away so clients reconnect to another instance; in-flight requests get up to `server.waitBeforeShutdown` to answer first.
 

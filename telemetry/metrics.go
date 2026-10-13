@@ -261,6 +261,15 @@ var (
 		Help:      "Times an upstream's head was benched out of the served-tip ballots and the network lag reference: it stayed behind peers that kept advancing for its stall window.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	// MetricWebsocketRejectedTotal counts client WebSocket connections and
+	// subscriptions refused by the instance-wide caps, by reason:
+	// conn_global, conn_per_ip or sub_global.
+	MetricWebsocketRejectedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "websocket_rejected_total",
+		Help:      "Client WebSocket connections and subscriptions refused by server.webSocket caps, by reason (conn_global, conn_per_ip, sub_global).",
+	}, []string{"project", "reason"})
+
 	MetricUpstreamCordoned = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

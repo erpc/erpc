@@ -59,6 +59,7 @@ type HttpServer struct {
 	resolvedResponseHeaders map[string]string
 	subscriptionManager     *SubscriptionManager
 	activeWsConns           sync.Map // connId -> *WsConnection
+	wsConnLimiter           *wsConnLimiter
 	reqMaxTimeout           time.Duration
 }
 
@@ -116,6 +117,9 @@ func NewHttpServer(
 	}
 
 	if cfg != nil {
+		if ws := cfg.WebSocket; ws != nil {
+			srv.wsConnLimiter = newWsConnLimiter(ws.MaxConnections, ws.MaxConnectionsPerIP)
+		}
 		srv.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
 		var forwarders []string
 		forwarders = append(forwarders, cfg.TrustedIPForwarders...)

@@ -324,6 +324,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_upstream_subscription_event_bytes_total` | counter | project, network, upstream, kind | Bytes of those notifications. |
 | `erpc_subscription_dedup_dropped_total` | counter | project, network, kind | Upstream events dropped as duplicates of one already delivered (the same head or log from several upstreams). |
 | `erpc_subscription_dedup_entries` | gauge | project, network | Keys held by the network's `logs` / `newPendingTransactions` dedup windows; each filter holds at most `indexer.dedupWindowSize` (default 8192). |
+| `erpc_websocket_rejected_total` | counter | project, reason | Client WebSocket connection or subscription refused by an instance-wide cap. `reason` ∈ `"conn_global"` (`server.webSocket.maxConnections`), `"conn_per_ip"` (`maxConnectionsPerIP`), `"sub_global"` (`maxSubscriptions`). |
 | `erpc_network_static_response_served_total` | counter | project, network, category | Served from a configured static response; no upstream touched. |
 | `erpc_network_timeout_fired_total` | counter | project, network, category, finality, scope | Timeout policy killed a request. `scope` ∈ `"network"`, `"upstream"`. Suppressed when retry-exhausted error wins. |
 | `erpc_network_retry_attempt_total` | counter | project, network, category, reason, finality | Network-scope retry. `reason` ∈ `"empty_result"`, `"pending_tx"`, `"retryable_error"`, `"block_unavailable"`, `"missing_data"`. |
