@@ -3112,22 +3112,21 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 	return nil, false
 }
 
-// checkSvmUpstreamSlotAvailability skips an upstream whose declared slot window
-// or observed ledger floor sits above (or, for a declared upper, below) the
-// slot the request literally names.
+// checkSvmUpstreamSlotAvailability skips an upstream whose OPERATOR-DECLARED
+// svm.blockAvailability window excludes the slot the request literally names
+// (the END of the range for getBlocks/getBlocksWithLimit on the upper side).
+//
+// Mirrors the EVM flow: availability is what the operator declares, never what
+// a vendor's own getFirstAvailableBlock claims. An observed floor takes part
+// only when the operator opts in through firstAvailableSlotPlus, resolved
+// inside CheckUpstreamDeclaredSlotBounds. Without a declared window every
+// upstream is tried — a vendor can advertise a floor above slots it still
+// serves (e.g. a provider reporting ~509M while serving slot 300M), so an
+// always-on floor would refuse reads no upstream was ever asked.
 //
 // Gated on SvmEnforceBlockAvailability so the lower and upper SVM bounds share
-// ONE operator switch, rather than growing a second knob whose only
-// non-default setting is "serve the silently-short list".
+// ONE operator switch.
 //
-// Declared bounds run first, then the observed getFirstAvailableBlock floor.
-// That order is the composition: effective lower = max(observed floor,
-// declared lower), because whichever check fires first still skips, and a
-// declared bound never widens past the observed floor. Pool-level short
-// circuits keep using observed floors only — a declared bound is an operator
-// restriction, not evidence the data does not exist.
-//
-// Observed-floor skips are never retryable: the floor rises monotonically.
 // Declared-upper skips pass their retryable flag through to handleBlockSkip
 // (whose async poller-kick is already EVM-gated, so SVM retryable only
 // affects skip bookkeeping).
@@ -3135,46 +3134,20 @@ func (n *Network) checkSvmUpstreamSlotAvailability(ctx context.Context, u common
 	if !n.SvmEnforceBlockAvailability() {
 		return nil, false
 	}
-	if skipErr, retryable := svm.CheckUpstreamDeclaredSlotBounds(ctx, u, req); skipErr != nil {
-		if svm.IsDeclaredUpperBoundSkip(skipErr) {
-			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
-				n.projectId, u.VendorName(), n.Label(), u.Id(), method, svm.DeclaredConfidenceLabel,
-			).Inc()
-		} else {
-			telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
-				n.projectId, u.VendorName(), n.Label(), u.Id(), method, svm.DeclaredConfidenceLabel,
-			).Inc()
-		}
-		return skipErr, retryable
-	}
-	skipErr := svm.CheckUpstreamLedgerFloor(ctx, u, req)
+	skipErr, retryable := svm.CheckUpstreamDeclaredSlotBounds(ctx, u, req)
 	if skipErr == nil {
 		return nil, false
 	}
-	// Range reads (getBlocks/getBlocksWithLimit): the floor skip is a routing
-	// PREFERENCE, not a refusal. agave answers a start below its floor by
-	// clamping to the lowest slot it retains — a valid answer clients use to
-	// discover where history begins — so an upstream is skipped only while the
-	// pool holds one that covers the start unclamped. When no known upstream
-	// covers it, forward everywhere: the sweep then sees the same clamped
-	// answers it would without this gate, instead of a -32001 agave would
-	// never emit for these methods.
-	if svm.IsRangeSlotMethod(method) {
-		if slot, named := svm.RequestLowerBoundSlot(ctx, req); named {
-			// Cover must be evaluated against THIS request's post-policy
-			// selection (SetUpstreams), not the full registry. An archive that
-			// covers the start but is cordoned/excluded for this request must
-			// not authorize skipping every selected validator — otherwise the
-			// range fails instead of forwarding for agave to clamp.
-			if !svm.PoolCoversSlotStart(req.Upstreams(), slot) {
-				return nil, false
-			}
-		}
+	if svm.IsDeclaredUpperBoundSkip(skipErr) {
+		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+			n.projectId, u.VendorName(), n.Label(), u.Id(), method, svm.DeclaredConfidenceLabel,
+		).Inc()
+	} else {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			n.projectId, u.VendorName(), n.Label(), u.Id(), method, svm.DeclaredConfidenceLabel,
+		).Inc()
 	}
-	telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
-		n.projectId, u.VendorName(), n.Label(), u.Id(), method, svm.FloorConfidenceLabel,
-	).Inc()
-	return skipErr, false
+	return skipErr, retryable
 }
 
 // checkUpstreamBlockAvailability performs per-upstream gating for the request based on

@@ -36,10 +36,9 @@ func SetupMocksForSvmStatePoller(host string, latestSlot, finalizedSlot int64) {
 }
 
 // SetupMocksForSvmStatePollerWithFirstAvailable is the full form, including the
-// upstream's ledger floor. A floor of 0 is known-and-unconstraining, which is
-// why the two shorter helpers pass it: the floor gate only ever skips an
-// upstream whose floor is ABOVE the requested slot, so 0 leaves every existing
-// test's routing unchanged while still mocking the call the poller now makes.
+// upstream's reported ledger floor. The poller only calls getFirstAvailableBlock
+// for an upstream declaring a firstAvailableSlotPlus bound, so the mock is
+// inert for every other test; the shorter helpers pass 0.
 func SetupMocksForSvmStatePollerWithFirstAvailable(host string, latestSlot, finalizedSlot, shredInsertSlot, firstAvailableSlot int64) {
 	setupSvmStatePollerMocks(host, latestSlot, finalizedSlot, shredInsertSlot, firstAvailableSlot)
 }

@@ -346,14 +346,54 @@ func TestCheckUpstreamDeclaredSlotBounds_RangeEnd(t *testing.T) {
 	})
 }
 
-func TestCheckUpstreamDeclaredSlotBounds_DoesNotWidenObservedFloor(t *testing.T) {
+// A vendor's observed getFirstAvailableBlock is a hint, not availability: a
+// provider can report a floor above slots it still serves. Nothing is skipped
+// on it unless the operator opts in through firstAvailableSlotPlus.
+func TestCheckUpstreamDeclaredSlotBounds_ObservedFloorIsHintOnly(t *testing.T) {
 	t.Parallel()
-	// Declared lower 100, observed floor 200: declared check must NOT skip
-	// slot 150 (that skip belongs to the floor gate). Declared bounds only restrict.
-	up := upWithBounds("u", 300000, 200, true, declaredCfg("u",
-		&common.SvmAvailabilityBoundConfig{ExactSlot: i64(100)},
-		nil,
-	))
-	err, _ := CheckUpstreamDeclaredSlotBounds(context.Background(), up, reqOf(t, "getBlock", `[150]`))
-	require.NoError(t, err, "declared lower is below the observed floor; the floor gate owns that skip")
+	ctx := context.Background()
+
+	t.Run("no declared window: floor above the slot never skips", func(t *testing.T) {
+		for _, cfg := range []*common.UpstreamConfig{
+			nil,
+			{Id: "u", Type: common.UpstreamTypeSvm, Svm: &common.SvmUpstreamConfig{Cluster: "devnet"}},
+		} {
+			up := upWithBounds("u", 600000000, 509000000, true, cfg)
+			err, retryable := CheckUpstreamDeclaredSlotBounds(ctx, up, reqOf(t, "getBlock", `[300000000]`))
+			require.NoError(t, err)
+			require.False(t, retryable)
+		}
+	})
+
+	t.Run("exactSlot lower overrides a higher observed floor", func(t *testing.T) {
+		up := upWithBounds("u", 600000000, 509000000, true, declaredCfg("u",
+			&common.SvmAvailabilityBoundConfig{ExactSlot: i64(0)},
+			nil,
+		))
+		err, _ := CheckUpstreamDeclaredSlotBounds(ctx, up, reqOf(t, "getBlock", `[300000000]`))
+		require.NoError(t, err, "the declared lower, not the observed floor, decides")
+	})
+
+	t.Run("firstAvailableSlotPlus opts in to the observed floor", func(t *testing.T) {
+		up := upWithBounds("u", 600000000, 509000000, true, declaredCfg("u",
+			&common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: i64(10)},
+			nil,
+		))
+		err, _ := CheckUpstreamDeclaredSlotBounds(ctx, up, reqOf(t, "getBlock", `[300000000]`))
+		require.Error(t, err)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+		require.Contains(t, err.Error(), "First available block: 509000010")
+
+		err, _ = CheckUpstreamDeclaredSlotBounds(ctx, up, reqOf(t, "getBlock", `[509000010]`))
+		require.NoError(t, err)
+	})
+
+	t.Run("firstAvailableSlotPlus with unknown floor is unbounded", func(t *testing.T) {
+		up := upWithBounds("u", 600000000, 0, false, declaredCfg("u",
+			&common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: i64(10)},
+			nil,
+		))
+		err, _ := CheckUpstreamDeclaredSlotBounds(ctx, up, reqOf(t, "getBlock", `[1]`))
+		require.NoError(t, err)
+	})
 }

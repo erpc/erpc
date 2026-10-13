@@ -141,10 +141,11 @@ of the tip (configurable via `networks[].evm.maxRetryableBlockDistance`).
 
 **SVM slot availability.** Solana upstreams declare the same kind of window as
 `svm.blockAvailability`, with slot-native bound names (`exactSlot`,
-`latestSlotMinus`, `firstAvailableSlotPlus`). Declared bounds are an operator
-restriction layered on the observed `getFirstAvailableBlock` floor — they never
-widen it. The network-level `svm.enforceBlockAvailability` switch gates both the
-declared window and the observed-floor skip.
+`latestSlotMinus`, `firstAvailableSlotPlus`). Only what the operator
+declares is enforced; a vendor's own `getFirstAvailableBlock` is never treated as
+availability (it is polled solely as the anchor of a `firstAvailableSlotPlus`
+bound, like EVM's `earliestBlockPlus`). The network-level
+`svm.enforceBlockAvailability` switch gates the declared window.
 (<SourceLink file="architecture/svm/slot_bounds.go" />)
 (<SourceLink file="erpc/networks.go" lines="2930-2974" />)
 
@@ -268,10 +269,10 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].svm.cluster` | string | `""`; inherited from `upstreamDefaults.svm.cluster` | The cluster this upstream serves. Must match the network-level `svm.cluster` for the upstream to be eligible for that network. Unlike the network side, cluster **is** inherited here — on an upstream it only says "which cluster do I serve", and a pool homogeneous across one cluster is the common case. |
 | `upstreams[*].svm.chain` | string | `""` → treated as `"solana"`; inherited from `upstreamDefaults.svm.chain` | Which SVM chain this upstream serves. Must match the network-level `svm.chain`. |
 | `upstreams[*].svm.checkGenesisHash` | bool | `false` | Opts an **unknown** `(chain, cluster)` pair into `getGenesisHash` validation at bootstrap. Known Solana clusters (`mainnet-beta`, `devnet`, `testnet`) are always validated regardless of this flag: a mismatch **or a fetch failure** fails the upstream, catching nodes mis-pointed at the wrong cluster and refusing to register one that could not be verified. For unknown clusters the same check (with no table comparison) runs only when this flag is set, so private and local clusters with no published genesis hash still work. |
-| `upstreams[*].svm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Operator restriction on the slot window this upstream may serve. Each bound sets exactly one of `exactSlot`, `latestSlotMinus`, `firstAvailableSlotPlus`. Effective lower = max(observed `getFirstAvailableBlock` floor, declared lower); declared bounds only restrict. Gated by `networks[*].svm.enforceBlockAvailability`. (<SourceLink file="common/config.go" lines="2539-2561" />) |
+| `upstreams[*].svm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Operator restriction on the slot window this upstream may serve. Each bound sets exactly one of `exactSlot`, `latestSlotMinus`, `firstAvailableSlotPlus`. Only declared bounds are enforced; the observed `getFirstAvailableBlock` floor is polled only when a bound uses `firstAvailableSlotPlus`. Gated by `networks[*].svm.enforceBlockAvailability`. (<SourceLink file="common/config.go" lines="2539-2561" />) |
 | `upstreams[*].svm.blockAvailability.{lower,upper}.exactSlot` | `*int64` | nil | Fixed slot bound. Must be ≥ 0. |
 | `upstreams[*].svm.blockAvailability.{lower,upper}.latestSlotMinus` | `*int64` | nil | Bound = poller's `LatestSlot()` − N. Recomputed on each check. Cold poller (latest ≤ 0) fail-opens that side. |
-| `upstreams[*].svm.blockAvailability.{lower,upper}.firstAvailableSlotPlus` | `*int64` | nil | Bound = observed `getFirstAvailableBlock` floor + N. Unobserved floor fail-opens that side — unknown is not slot 0. |
+| `upstreams[*].svm.blockAvailability.{lower,upper}.firstAvailableSlotPlus` | `*int64` | nil | Bound = observed `getFirstAvailableBlock` floor + N. Setting it is what opts the upstream in to polling the floor. Unobserved floor fail-opens that side — unknown is not slot 0. |
 | `upstreamDefaults` | `*UpstreamConfig` | nil | Project-level template. Gets its own `SetDefaults(nil)` first. Each upstream runs `ApplyDefaults` then `SetDefaults`. |
 | `proxyPools[*].id` | string | required | Pool name referenced by `upstreams[*].jsonRpc.proxyPool`. |
 | `proxyPools[*].urls` | `[]string` | required, min 1 | Proxy URLs. Accepted schemes: `http://`, `https://`, `socks5://` (case-insensitive prefix check — `socks4://` rejected at startup). |
@@ -930,10 +931,11 @@ SVM upstream gets its own slot/health poller automatically:
     removes an SVM upstream from selection until it recovers. See
     [SVM slot tracking & health](/reference/svm/slot-tracking).
 
-25. **SVM declared lower is composed with the observed floor via max.** An archive whose
-    `getFirstAvailableBlock` is genesis (0) plus `lower.latestSlotMinus: 100000` skips
-    slots older than `latest − 100000`. A declared lower below the observed floor does
-    not widen it — the floor gate still skips. (<SourceLink file="erpc/networks.go" lines="2930-2974" />)
+25. **SVM never gates on a vendor-reported floor by default.** An upstream's
+    `getFirstAvailableBlock` is polled only when it declares `firstAvailableSlotPlus`.
+    Otherwise every slot-named read reaches the upstream, even when the vendor reports
+    a floor above slots it still serves; `exactSlot: 0` explicitly declares full history.
+    (<SourceLink file="erpc/networks.go" />)
 26. **SVM declared bounds fail-open when state is unknown.** A cold poller, an
     unobserved `getFirstAvailableBlock` floor, or a computed min>max range treats that
     window as unbounded rather than refusing traffic. `firstAvailableSlotPlus` with an
@@ -961,7 +963,7 @@ SVM upstream gets its own slot/health poller automatically:
 | `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Edge transitions (cordon/uncordon) only |
 | `erpc_upstream_cordon_duration_seconds` | histogram (1 s … 86 400 s) | project, network, upstream | Observed on each uncordon |
 | `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot above upper bound. SVM `confidence` is `"configured"` for declared `svm.blockAvailability.upper`. |
-| `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot below lower bound. SVM `confidence` is `"configured"` (declared) or `"firstAvailableBlock"` (observed floor). |
+| `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot below lower bound. SVM `confidence` is `"configured"` (declared `svm.blockAvailability`). |
 
 ### Source code entry points
 

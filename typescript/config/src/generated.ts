@@ -1615,8 +1615,10 @@ export interface SvmUpstreamConfig {
   checkGenesisHash?: boolean;
   /**
    * BlockAvailability is an operator restriction on the slot window this
-   * upstream may serve. Effective lower = max(observed getFirstAvailableBlock
-   * floor, declared lower); declared bounds only restrict, never widen.
+   * upstream may serve. Only what the operator declares is enforced; the
+   * upstream's own getFirstAvailableBlock is polled (and used as a lower
+   * anchor) solely when a bound uses firstAvailableSlotPlus, mirroring EVM's
+   * earliestBlockPlus. Unknown floor = unbounded.
    */
   blockAvailability?: SvmBlockAvailabilityConfig;
 }

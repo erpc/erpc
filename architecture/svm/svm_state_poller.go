@@ -486,7 +486,13 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 		e.nextHealthPoll = e.pollCount
 	}
 
-	// The ledger floor runs AFTER the fan-out joins, not inside it, because its
+	// The ledger floor is polled ONLY for an upstream whose operator declared a
+	// firstAvailableSlotPlus bound (see declaresFirstAvailableSlotPlus). A
+	// vendor's getFirstAvailableBlock is a hint, not availability — it can sit
+	// above slots the vendor still serves — so an upstream with no such opt-in
+	// costs no extra call and carries no observed floor at all.
+	//
+	// It runs AFTER the fan-out joins, not inside it, because its
 	// edge validation compares the sampled floor against this upstream's own
 	// head — and inside the fan-out that read races the getSlot goroutine, so
 	// LatestSlot() would still be 0 and the check would silently never fire.
@@ -494,10 +500,12 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	// path while the value is fresh, and when it does refresh, the foreground
 	// wait is capped by SharedStateConfig.UpdateMaxWait with the fetch
 	// continuing asynchronously.
-	func() {
-		defer e.recoverPanic("fetchFirstAvailableSlot")
-		e.refreshFirstAvailableSlot(ctx)
-	}()
+	if e.declaresFirstAvailableSlotPlus() {
+		func() {
+			defer e.recoverPanic("fetchFirstAvailableSlot")
+			e.refreshFirstAvailableSlot(ctx)
+		}()
+	}
 
 	// A health verdict nobody routes on is not a defense; publish it.
 	e.applyHealthToRouting()
@@ -583,6 +591,24 @@ func (e *SvmStatePoller) IsHealthy() bool {
 		return false
 	}
 	return true
+}
+
+// declaresFirstAvailableSlotPlus reports whether this upstream's operator-
+// declared svm.blockAvailability uses a firstAvailableSlotPlus bound on either
+// side — the only way an observed floor is consulted. Same spirit as EVM's
+// earliestBlockPlus: the floor is polled because a declared bound needs it as
+// its anchor, never by default.
+func (e *SvmStatePoller) declaresFirstAvailableSlotPlus() bool {
+	if e.upstream == nil {
+		return false
+	}
+	cfg := e.upstream.Config()
+	if cfg == nil || cfg.Svm == nil || cfg.Svm.BlockAvailability == nil {
+		return false
+	}
+	ba := cfg.Svm.BlockAvailability
+	return (ba.Lower != nil && ba.Lower.FirstAvailableSlotPlus != nil) ||
+		(ba.Upper != nil && ba.Upper.FirstAvailableSlotPlus != nil)
 }
 
 // refreshFirstAvailableSlot re-reads this upstream's ledger floor, debounced by

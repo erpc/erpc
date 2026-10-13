@@ -18,8 +18,7 @@ func TestSvm_DeclaredBounds_SkipsBelowConfiguredLower(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 
-	// Archive observed at genesis; latestSlotMinus: 100000 is an operator
-	// restriction on top of that floor.
+	// latestSlotMinus: 100000 is an operator restriction on the window.
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("archive.localhost", 300000, 299900, 300001, 0)
 
 	minus := int64(100000)
