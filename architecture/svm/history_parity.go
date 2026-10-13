@@ -5,10 +5,50 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 )
+
+// PoolFirstAvailableSlot returns the pool's ledger floor: the MIN across
+// upstreams, because a request below one upstream's floor fails over to
+// another. That is the same "never deny data some upstream has" rule that makes
+// the upper guard use MAX.
+//
+// known=false unless EVERY upstream's floor is observed. A MIN over a partial
+// set is not a conservative estimate, it is an over-report in the forbidden
+// direction: with a known validator at 200000 and an unknown archive,
+// MIN-over-known says "history starts at 200000" — unknown reading as
+// unavailable. An upstream we cannot inspect counts as unknown for the same
+// reason.
+//
+// Floors are only observed when an upstream declares firstAvailableSlotPlus
+// (opt-in poll); without that the pool floor is unknown and callers fail open.
+func PoolFirstAvailableSlot(upstreams []common.Upstream) (int64, bool) {
+	if len(upstreams) == 0 {
+		return 0, false
+	}
+	minSlot := int64(math.MaxInt64)
+	for _, u := range upstreams {
+		sup, ok := u.(common.SvmUpstream)
+		if !ok {
+			return 0, false
+		}
+		poller := sup.SvmStatePoller()
+		if poller == nil || poller.IsObjectNull() {
+			return 0, false
+		}
+		slot, known := poller.FirstAvailableSlot()
+		if !known {
+			return 0, false
+		}
+		if slot < minSlot {
+			minSlot = slot
+		}
+	}
+	return minSlot, true
+}
 
 // solanaDefaultSignaturesLimit is the page size agave applies to
 // getSignaturesForAddress when the caller omits `limit`
