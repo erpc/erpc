@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -387,13 +386,9 @@ func (a *Adapter) subscribeFilterLocked(ctx context.Context, sub *filterSub) err
 			outParams = cleaned
 		}
 	}
-	err := a.subscribeLocked(ctx, &sub.upstreamSub, outParams, func(params []byte) {
+	return a.subscribeLocked(ctx, &sub.upstreamSub, outParams, func(params []byte) {
 		a.handleFilter(sub.subType, sub.paramsHash, params)
 	})
-	if err != nil {
-		return fmt.Errorf("filter subscribe: %w", err)
-	}
-	return nil
 }
 
 // subscribeLocked subscribes sub unless it is live or dropped; the caller
