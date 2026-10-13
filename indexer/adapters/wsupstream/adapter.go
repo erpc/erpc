@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/clients"
@@ -37,6 +38,10 @@ var (
 	resubRetryMax = 30 * time.Second
 )
 
+// headsWatchInterval is how long newHeads may stay silent about a block the
+// upstream already reports over RPC; a var so tests can shorten it.
+var headsWatchInterval = 15 * time.Second
+
 var errNotConnected = errors.New("upstream websocket is not connected")
 
 // Adapter is the EventIngress of one WS upstream on one network.
@@ -59,6 +64,12 @@ type Adapter struct {
 	attemptTimeout time.Duration
 
 	stripSubscribeFromBlockZero bool
+
+	// polledHead is the upstream's latest block as polled over RPC, 0 if
+	// unknown; nil disables watchHeads.
+	polledHead func() int64
+	headsSeen  atomic.Uint64
+	lastHead   atomic.Int64
 
 	nw   indexer.NetworkHandle
 	sink indexer.Sink
@@ -125,6 +136,12 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts O
 		retryMax:                    resubRetryMax,
 		attemptTimeout:              resubAttemptTimeout,
 		stripSubscribeFromBlockZero: opts.StripSubscribeFromBlockZero,
+		polledHead: func() int64 {
+			if p := up.EvmStatePoller(); p != nil && !p.IsObjectNull() {
+				return p.LatestBlock()
+			}
+			return 0
+		},
 	}
 }
 
@@ -174,7 +191,39 @@ func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexe
 	})
 
 	a.startResubscribe()
+	if a.polledHead != nil {
+		go a.watchHeads()
+	}
 	return nil
+}
+
+// watchHeads reconnects when the newHeads subscription stays silent for a
+// whole interval although the upstream reported a newer block over RPC when
+// it began: pings keep such a connection up, so nothing else notices the
+// dead subscription. A halted chain or a lagging node trips neither half.
+func (a *Adapter) watchHeads() {
+	ticker := time.NewTicker(headsWatchInterval)
+	defer ticker.Stop()
+	var prevID string
+	var prevEpoch, prevSeen uint64
+	var prevPolled int64
+	for {
+		select {
+		case <-a.wsClient.Done():
+			return
+		case <-ticker.C:
+		}
+		a.subsMu.Lock()
+		id, epoch := a.heads.id, a.heads.epoch
+		a.subsMu.Unlock()
+		seen, lastHead := a.headsSeen.Load(), a.lastHead.Load()
+		if id != "" && id == prevID && epoch == prevEpoch && seen == prevSeen && prevPolled > lastHead {
+			a.logger.Warn().Str("upstreamSubId", id).Int64("lastHead", lastHead).Int64("polledHead", prevPolled).
+				Msg("newHeads subscription silent while upstream head advances, reconnecting")
+			a.wsClient.Reconnect(epoch)
+		}
+		prevID, prevEpoch, prevSeen, prevPolled = id, epoch, seen, a.polledHead()
+	}
 }
 
 // startResubscribe launches the retry loop for the current connection
@@ -480,6 +529,8 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 		a.logger.Warn().Err(err).Str("number", header.Number).Msg("failed to parse block number")
 		return
 	}
+	a.lastHead.Store(num)
+	a.headsSeen.Add(1)
 	a.sink.Ingest(indexer.StreamEvent{
 		Kind:      indexer.KindNewHead,
 		NetworkId: a.networkID,

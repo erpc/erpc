@@ -214,6 +214,21 @@ func (c *WsJsonRpcClient) Epoch() uint64 {
 	return c.epoch.Load()
 }
 
+// Done is closed once the client has shut down for good.
+func (c *WsJsonRpcClient) Done() <-chan struct{} { return c.appCtx.Done() }
+
+// Reconnect closes connection epoch, if still current; readLoop then tears
+// it down and re-dials, firing the disconnect and reconnect callbacks.
+func (c *WsJsonRpcClient) Reconnect(epoch uint64) {
+	c.connMu.Lock()
+	conn := c.conn
+	current := conn != nil && c.epoch.Load() == epoch
+	c.connMu.Unlock()
+	if current {
+		_ = conn.Close()
+	}
+}
+
 func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartDetailSpan(ctx, "WsJsonRpcClient.SendRequest",
 		trace.WithAttributes(
