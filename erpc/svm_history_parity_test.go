@@ -50,13 +50,14 @@ func svmSigPage(n int) string {
 func TestSvm_GetSignaturesForAddress_ShortPageContinuesToNextUpstream(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
-	util.SetupMocksForSvmStatePoller("svm-sigs-rpc1.localhost", 1000, 990)
-	util.SetupMocksForSvmStatePoller("svm-sigs-rpc2.localhost", 1000, 990)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigs-rpc1.localhost", 1000, 990, 1000, 500)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigs-rpc2.localhost", 1000, 990, 1000, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// rpc1 is a pruned validator: its history for the address ends after 2.
+	// rpc1 is a pruned validator (floor 500): its history for the address ends
+	// after 2. rpc2 is the archive (floor 0).
 	short := mockSvmMethod("svm-sigs-rpc1.localhost", "getSignaturesForAddress", svmSigPage(2))
 	full := mockSvmMethod("svm-sigs-rpc2.localhost", "getSignaturesForAddress", svmSigPage(5))
 
@@ -65,6 +66,7 @@ func TestSvm_GetSignaturesForAddress_ShortPageContinuesToNextUpstream(t *testing
 		svmUpstreamConfig("rpc2", "svm-sigs-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
+	time.Sleep(300 * time.Millisecond) // let the floor poll land
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr",{"limit":5}]}`))
 	resp, err := svmProjectForward(ctx, net, req)
@@ -105,14 +107,16 @@ func TestSvm_GetSignaturesForAddress_FullPageStopsSweep(t *testing.T) {
 func TestSvm_GetSignaturesForAddress_AllShortServesLastValidPage(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
-	util.SetupMocksForSvmStatePoller("svm-sigsall-rpc1.localhost", 1000, 990)
-	util.SetupMocksForSvmStatePoller("svm-sigsall-rpc2.localhost", 1000, 990)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsall-rpc1.localhost", 1000, 990, 1000, 500)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsall-rpc2.localhost", 1000, 990, 1000, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// An address with only 2 signatures is legitimately short everywhere: the
-	// client still gets the answer, not an error.
+	// client still gets the answer, not an error. rpc1 is pruned (floor 500) and
+	// sweeps on; rpc2 holds the deepest history (floor 0), so its short page is
+	// authoritative.
 	mockSvmMethod("svm-sigsall-rpc1.localhost", "getSignaturesForAddress", svmSigPage(2))
 	mockSvmMethod("svm-sigsall-rpc2.localhost", "getSignaturesForAddress", svmSigPage(2))
 
@@ -121,6 +125,7 @@ func TestSvm_GetSignaturesForAddress_AllShortServesLastValidPage(t *testing.T) {
 		svmUpstreamConfig("rpc2", "svm-sigsall-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
+	time.Sleep(300 * time.Millisecond) // let the floor poll land
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr"]}`))
 	resp, err := svmProjectForward(ctx, net, req)
@@ -138,8 +143,8 @@ const (
 func TestSvm_GetSignatureStatuses_SearchHistoryNullContinuesToNextUpstream(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
-	util.SetupMocksForSvmStatePoller("svm-status-rpc1.localhost", 1000, 990)
-	util.SetupMocksForSvmStatePoller("svm-status-rpc2.localhost", 1000, 990)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-status-rpc1.localhost", 1000, 990, 1000, 500)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-status-rpc2.localhost", 1000, 990, 1000, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -152,6 +157,7 @@ func TestSvm_GetSignatureStatuses_SearchHistoryNullContinuesToNextUpstream(t *te
 		svmUpstreamConfig("rpc2", "svm-status-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
+	time.Sleep(300 * time.Millisecond) // let the floor poll land
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["sig"],{"searchTransactionHistory":true}]}`))
 	resp, err := svmProjectForward(ctx, net, req)
@@ -213,4 +219,86 @@ func TestSvm_GetFirstAvailableBlock_PoolAnswersMinFloor(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "0", string(jrr.GetResultBytes()),
 		"the pool floor is the archive's, not whichever upstream was picked first")
+}
+
+// The shortest page must never beat the most complete one. The archive (floor 0)
+// answers first with 4 of limit 5 (short because the address only has 4); the
+// pruned validator (floor 500) would answer 2. The archive holds the pool's
+// deepest history, so its short page is the answer and the sweep stops there.
+func TestSvm_GetSignaturesForAddress_DeepestUpstreamShortPageIsAuthoritative(t *testing.T) {
+	for _, order := range [][2]string{{"archive", "pruned"}, {"pruned", "archive"}} {
+		order := order
+		t.Run(order[0]+"-first", func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			archiveHost := "svm-sigsdeep-archive-" + order[0] + ".localhost"
+			prunedHost := "svm-sigsdeep-pruned-" + order[0] + ".localhost"
+			util.SetupMocksForSvmStatePollerWithFirstAvailable(archiveHost, 1000, 990, 1000, 0)
+			util.SetupMocksForSvmStatePollerWithFirstAvailable(prunedHost, 1000, 990, 1000, 500)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			archive := mockSvmMethod(archiveHost, "getSignaturesForAddress", svmSigPage(4))
+			pruned := mockSvmMethod(prunedHost, "getSignaturesForAddress", svmSigPage(2))
+
+			ids := map[string]string{"archive": archiveHost, "pruned": prunedHost}
+			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
+				svmUpstreamConfig(order[0], ids[order[0]]),
+				svmUpstreamConfig(order[1], ids[order[1]]),
+			})
+			net.PinUpstreamOrderForTest(order[0], order[1])
+			time.Sleep(300 * time.Millisecond) // let the floor poll land
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr",{"limit":5}]}`))
+			resp, err := svmProjectForward(ctx, net, req)
+			require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			require.Contains(t, string(jrr.GetResultBytes()), `"sig3"`, "the archive's 4-entry page must be served")
+			require.GreaterOrEqual(t, archive.Load(), int64(1))
+			if order[0] == "archive" {
+				require.Zero(t, pruned.Load(), "the deepest upstream's page ends the sweep")
+			}
+		})
+	}
+}
+
+// Same for getSignatureStatuses: the archive's [found, null] (a signature that
+// genuinely never landed) must not be replaced by the pruned node's [null, null].
+func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.T) {
+	const archiveBody = `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":900},"value":[{"slot":5,"confirmations":null,"err":null,"confirmationStatus":"finalized"},null]}}`
+	const prunedBody = `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":900},"value":[null,null]}}`
+	for _, order := range [][2]string{{"archive", "pruned"}, {"pruned", "archive"}} {
+		order := order
+		t.Run(order[0]+"-first", func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			archiveHost := "svm-statusdeep-archive-" + order[0] + ".localhost"
+			prunedHost := "svm-statusdeep-pruned-" + order[0] + ".localhost"
+			util.SetupMocksForSvmStatePollerWithFirstAvailable(archiveHost, 1000, 990, 1000, 0)
+			util.SetupMocksForSvmStatePollerWithFirstAvailable(prunedHost, 1000, 990, 1000, 500)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			mockSvmMethod(archiveHost, "getSignatureStatuses", archiveBody)
+			mockSvmMethod(prunedHost, "getSignatureStatuses", prunedBody)
+
+			ids := map[string]string{"archive": archiveHost, "pruned": prunedHost}
+			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
+				svmUpstreamConfig(order[0], ids[order[0]]),
+				svmUpstreamConfig(order[1], ids[order[1]]),
+			})
+			net.PinUpstreamOrderForTest(order[0], order[1])
+			time.Sleep(300 * time.Millisecond) // let the floor poll land
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["a","b"],{"searchTransactionHistory":true}]}`))
+			resp, err := svmProjectForward(ctx, net, req)
+			require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			require.Contains(t, string(jrr.GetResultBytes()), `"finalized"`, "the archive's [found, null] must be served")
+		})
+	}
 }

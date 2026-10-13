@@ -161,7 +161,7 @@ func TestPostForward_GetSignatureStatuses_NullContinue(t *testing.T) {
 		require.Error(t, err)
 		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
 		require.True(t, common.IsRetryableTowardNetwork(err), "the sweep must continue to the next upstream")
-		require.False(t, common.IsPermanentlyMissingData(err))
+		require.True(t, common.IsPermanentlyMissingData(err), "waiting cannot make a signature land: no delayed re-sweep")
 	})
 
 	t.Run("flag true + all non-null is served", func(t *testing.T) {
@@ -236,7 +236,7 @@ func TestPostForward_GetSignaturesForAddress_ShortPage(t *testing.T) {
 		require.Error(t, err)
 		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
 		require.True(t, common.IsRetryableTowardNetwork(err))
-		require.False(t, common.IsPermanentlyMissingData(err))
+		require.True(t, common.IsPermanentlyMissingData(err), "waiting cannot lengthen history: no delayed re-sweep")
 	})
 
 	t.Run("limit N with N results is accepted", func(t *testing.T) {
@@ -316,4 +316,83 @@ func TestPostForward_HistoryParity_OtherMethodsUntouched(t *testing.T) {
 	req := reqOf(t, "getTransaction", `["sig"]`)
 	_, err := h.HandleUpstreamPostForward(ctx, net, up, req, resultResp(t, req, `null`), nil, false)
 	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// deepest-history exemption
+// ---------------------------------------------------------------------------
+
+func TestPostForward_HistoryParity_DeepestHistoryIsAuthoritative(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h := &SvmArchitectureHandler{}
+	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
+
+	archive := upstreamWithFloor("archive", 300000, 0, true)
+	archive2 := upstreamWithFloor("archive2", 300000, 0, true)
+	pruned := upstreamWithFloor("pruned", 300000, 200000, true)
+	unknown := upstreamWithFloor("unknown", 300000, 0, false)
+
+	sigs := func(u common.Upstream, pool ...common.Upstream) (*common.NormalizedResponse, error) {
+		req := reqOf(t, "getSignaturesForAddress", `["addr",{"limit":5}]`)
+		req.SetUpstreams(pool)
+		return h.HandleUpstreamPostForward(ctx, net, u, req, resultResp(t, req, sigPage(2)), nil, false)
+	}
+	const withNull = `{"context":{"slot":9},"value":[null]}`
+	statuses := func(u common.Upstream, pool ...common.Upstream) (*common.NormalizedResponse, error) {
+		req := reqOf(t, "getSignatureStatuses", `[["a"],{"searchTransactionHistory":true}]`)
+		req.SetUpstreams(pool)
+		return h.HandleUpstreamPostForward(ctx, net, u, req, resultResp(t, req, withNull), nil, false)
+	}
+
+	t.Run("pool-deepest upstream's short page is served", func(t *testing.T) {
+		t.Parallel()
+		rs, err := sigs(archive, pruned, archive)
+		require.NoError(t, err)
+		require.NotNil(t, rs)
+	})
+
+	t.Run("pool-deepest upstream's null status is served", func(t *testing.T) {
+		t.Parallel()
+		rs, err := statuses(archive, pruned, archive)
+		require.NoError(t, err)
+		require.NotNil(t, rs)
+	})
+
+	t.Run("a tie at the pool floor is authoritative", func(t *testing.T) {
+		t.Parallel()
+		_, err := sigs(archive, archive, archive2)
+		require.NoError(t, err)
+		_, err = statuses(archive2, archive, archive2)
+		require.NoError(t, err)
+	})
+
+	t.Run("a shallower upstream still sweeps on", func(t *testing.T) {
+		t.Parallel()
+		_, err := sigs(pruned, pruned, archive)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+		require.True(t, common.IsRetryableTowardNetwork(err))
+		_, err = statuses(pruned, pruned, archive)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+	})
+
+	t.Run("an unknown pool member's floor keeps the sweep going", func(t *testing.T) {
+		t.Parallel()
+		_, err := sigs(archive, archive, unknown)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+		_, err = statuses(archive, archive, unknown)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+	})
+
+	t.Run("the upstream's own unknown floor keeps the sweep going", func(t *testing.T) {
+		t.Parallel()
+		_, err := sigs(unknown, unknown, archive)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+	})
+
+	t.Run("no pool on the request fails open to the sweep", func(t *testing.T) {
+		t.Parallel()
+		_, err := sigs(archive)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+	})
 }
