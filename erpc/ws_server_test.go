@@ -19,9 +19,12 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1608,6 +1611,18 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	defer cleanup()
 	time.Sleep(2 * time.Second)
 
+	counter := func(c *prometheus.CounterVec, labels ...string) float64 {
+		return testutil.ToFloat64(c.WithLabelValues(labels...))
+	}
+	ingress := func() float64 {
+		return counter(telemetry.MetricUpstreamSubscriptionEventsTotal, "test_ws", "evm:123", "ws-upstream-0", "logs") +
+			counter(telemetry.MetricUpstreamSubscriptionEventsTotal, "test_ws", "evm:123", "ws-upstream-1", "logs")
+	}
+	ingressBefore := ingress()
+	dedupBefore := counter(telemetry.MetricSubscriptionDedupDroppedTotal, "test_ws", "evm:123", "logs")
+	sentBefore := counter(telemetry.MetricWebsocketNotificationsSentTotal, "test_ws", "evm:123", "logs")
+	bytesBefore := counter(telemetry.MetricWebsocketNotificationBytesTotal, "test_ws", "evm:123", "logs")
+
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{}]}`)
@@ -1630,6 +1645,15 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(800 * time.Millisecond))
 	_, _, err = conn.ReadMessage()
 	assert.Error(t, err, "duplicate log from second upstream must be deduped by blockHash+txHash+logIndex")
+
+	// Each upstream logs subscribe sends the same log once: all but the
+	// first event in are dedup drops, and one notification goes out.
+	in := float64(atomic.LoadInt64(&subscribeCount))
+	assert.Equal(t, in, ingress()-ingressBefore)
+	assert.Equal(t, in-1, counter(telemetry.MetricSubscriptionDedupDroppedTotal, "test_ws", "evm:123", "logs")-dedupBefore)
+	assert.Equal(t, 1.0, counter(telemetry.MetricWebsocketNotificationsSentTotal, "test_ws", "evm:123", "logs")-sentBefore)
+	assert.Equal(t, float64(len(msg)), counter(telemetry.MetricWebsocketNotificationBytesTotal, "test_ws", "evm:123", "logs")-bytesBefore)
+	assert.GreaterOrEqual(t, testutil.ToFloat64(telemetry.MetricSubscriptionDedupEntries.WithLabelValues("test_ws", "evm:123")), 1.0)
 }
 
 // TestWebSocket_ReconnectAfterUnsubscribe: an upstream reconnect after the

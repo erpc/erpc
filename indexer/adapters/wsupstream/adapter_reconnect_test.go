@@ -28,6 +28,8 @@ type fakeNetworkHandle struct{}
 
 func (fakeNetworkHandle) Id() string                            { return "evm:123" }
 func (fakeNetworkHandle) SuggestLatestBlock(string, int64) bool { return true }
+func (fakeNetworkHandle) DedupDropped(indexer.EventKind)        {}
+func (fakeNetworkHandle) DedupEntriesAdded(int)                 {}
 
 type fakeSink struct {
 	events chan indexer.StreamEvent

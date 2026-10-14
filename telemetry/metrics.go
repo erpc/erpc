@@ -129,6 +129,60 @@ var (
 		Help:      "Subscription notifications dropped because a client's per-subscription buffer was full. For logs the client connection is closed with 1013.",
 	}, []string{"project", "network", "kind"})
 
+	MetricWebsocketConnectionsActive = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "websocket_connections_active",
+		Help:      "Open client WebSocket connections.",
+	}, []string{"project"})
+
+	MetricWebsocketSubscriptionsActive = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "websocket_subscriptions_active",
+		Help:      "Open client eth_subscribe subscriptions.",
+	}, []string{"project", "network", "kind"})
+
+	MetricWebsocketNotificationsSentTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "websocket_notifications_sent_total",
+		Help:      "Subscription notifications written to clients.",
+	}, []string{"project", "network", "kind"})
+
+	MetricWebsocketNotificationBytesTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "websocket_notification_bytes_total",
+		Help:      "JSON bytes of subscription notifications written to clients, without cost frame headers.",
+	}, []string{"project", "network", "kind"})
+
+	MetricUpstreamSubscriptionsActive = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_subscriptions_active",
+		Help:      "eth_subscribe subscriptions live on upstream WebSocket connections; one per filter shared by every client.",
+	}, []string{"project", "network", "upstream", "kind"})
+
+	MetricUpstreamSubscriptionEventsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_subscription_events_total",
+		Help:      "Subscription notifications received from upstreams, before dedup.",
+	}, []string{"project", "network", "upstream", "kind"})
+
+	MetricUpstreamSubscriptionEventBytesTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_subscription_event_bytes_total",
+		Help:      "Bytes of subscription notifications received from upstreams, before dedup.",
+	}, []string{"project", "network", "upstream", "kind"})
+
+	MetricSubscriptionDedupDroppedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "subscription_dedup_dropped_total",
+		Help:      "Upstream subscription events dropped as duplicates of an event already delivered.",
+	}, []string{"project", "network", "kind"})
+
+	MetricSubscriptionDedupEntries = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "subscription_dedup_entries",
+		Help:      "Event keys held by the network's logs and newPendingTransactions dedup windows; each filter's window holds at most indexer.dedupWindowSize keys (default 8192).",
+	}, []string{"project", "network"})
+
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
 	// freshest block a strict MAJORITY of eligible upstreams already have (see
@@ -1218,6 +1272,15 @@ var (
 		Help:      "Size of the result body of upstream JSON-RPC responses in bytes (decoded post-gzip), per network/method/finality.",
 		Buckets:   []float64{4096, 65536, 1048576, 16777216, 104857600},
 	}, []string{"project", "network", "category", "finality"})
+
+	// Each client subscription has its own queue (server.webSocket.subscriptionBufferSize,
+	// default 256); a connection has no queue of its own.
+	MetricWebsocketSendQueueLength = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "websocket_send_queue_length",
+		Help:      "Notifications still queued on a client subscription when its writer takes the next one.",
+		Buckets:   []float64{0, 1, 4, 16, 64, 128, 256, 1024},
+	}, []string{"project", "network", "kind"})
 )
 
 func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {

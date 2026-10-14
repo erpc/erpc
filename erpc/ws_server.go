@@ -35,6 +35,9 @@ type WsConnection struct {
 	server    *HttpServer
 	project   *PreparedProject
 	networkId string
+	// networkLabel labels the connection's subscription metrics; set by
+	// SubscriptionManager.getOrCreateConn before the first subscription.
+	networkLabel string
 	// architecture is the URL's, for error bodies built before the request
 	// is bound to its network (as on the HTTP path).
 	architecture common.NetworkArchitecture
@@ -121,6 +124,7 @@ func (s *HttpServer) handleWebSocket(
 	// Store before checking draining so shutdownWebSockets either sees this
 	// connection or we see its flag.
 	s.activeWsConns.Store(wsc.id, wsc)
+	telemetry.GaugeHandle(telemetry.MetricWebsocketConnectionsActive, project.Config.Id).Inc()
 	if s.draining.Load() {
 		wsc.stop(websocket.CloseGoingAway, "server shutting down", 0)
 	}
@@ -665,6 +669,7 @@ func (wsc *WsConnection) teardown() {
 	}
 	_ = wsc.conn.Close()
 	wsc.server.activeWsConns.Delete(wsc.id)
+	telemetry.GaugeHandle(telemetry.MetricWebsocketConnectionsActive, wsc.project.Config.Id).Dec()
 	close(wsc.done)
 
 	wsc.logger.Info().Str("connId", wsc.id).Int("closeCode", wsc.closeCode).Msg("websocket connection closed")
@@ -682,7 +687,10 @@ func (wsc *WsConnection) waitInflight(timeout time.Duration) {
 	}
 }
 
-func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription, result json.RawMessage) error {
+func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription, result json.RawMessage, queued int) error {
+	labels := []string{wsc.project.Config.Id, wsc.networkLabel, sub.Kind.String()}
+	telemetry.ObserverHandle(telemetry.MetricWebsocketSendQueueLength, labels...).Observe(float64(queued))
+
 	notification := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "eth_subscription",
@@ -691,7 +699,28 @@ func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription
 			"result":       result,
 		},
 	}
-	return wsc.writeJSON(wsc.notificationCostBlock(sub), notification)
+	body := countingWriter{}
+	err := wsc.writeMessage(wsc.notificationCostBlock(sub), func(w io.Writer) error {
+		body.w = w
+		return json.NewEncoder(&body).Encode(notification)
+	})
+	if err != nil {
+		return err
+	}
+	telemetry.CounterHandle(telemetry.MetricWebsocketNotificationsSentTotal, labels...).Inc()
+	telemetry.CounterHandle(telemetry.MetricWebsocketNotificationBytesTotal, labels...).Add(float64(body.n))
+	return nil
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += n
+	return n, err
 }
 
 // NotificationDropped records a notification lost to a full subscription
@@ -699,14 +728,8 @@ func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription
 // the client reconnects knowing it missed data instead of silently
 // diverging.
 func (wsc *WsConnection) NotificationDropped(sub wsclient.Subscription, lossy bool) {
-	// sub.NetworkID is the indexer's project-scoped key; the connection has
-	// one network.
-	network := wsc.networkId
-	if nw, err := wsc.project.GetNetwork(wsc.ctx, wsc.networkId); err == nil {
-		network = nw.Label()
-	}
 	telemetry.CounterHandle(telemetry.MetricWebsocketSubscriptionNotificationsDroppedTotal,
-		wsc.project.Config.Id, network, sub.Kind.String(),
+		wsc.project.Config.Id, wsc.networkLabel, sub.Kind.String(),
 	).Inc()
 
 	now := time.Now().UnixNano()

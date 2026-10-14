@@ -66,9 +66,10 @@ func logRemoved(payload json.RawMessage) bool {
 type DedupWindow struct {
 	size int
 
-	mu    sync.Mutex
-	state map[string]bool
-	order []string
+	mu     sync.Mutex
+	state  map[string]bool
+	order  []string
+	closed bool
 }
 
 // NewDedupWindow returns a DedupWindow holding up to size keys, or
@@ -84,16 +85,21 @@ func NewDedupWindow(size int) *DedupWindow {
 }
 
 // Mark records key in the given removed state and reports whether it should
-// be delivered: the key is new or its last delivered state differs.
-func (w *DedupWindow) Mark(key string, removed bool) bool {
+// be delivered (the key is new or its last delivered state differs) and how
+// many keys the window gained: 1 while it fills, else 0. A closed window
+// delivers everything and holds nothing.
+func (w *DedupWindow) Mark(key string, removed bool) (deliver bool, added int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return true, 0
+	}
 	if last, ok := w.state[key]; ok {
 		if last == removed {
-			return false
+			return false, 0
 		}
 		w.state[key] = removed
-		return true
+		return true, 0
 	}
 	// Decoded strings may alias the notification buffer; the window
 	// outlives it.
@@ -107,6 +113,16 @@ func (w *DedupWindow) Mark(key string, removed bool) bool {
 			delete(w.state, old)
 		}
 		w.order = w.order[evict:]
+		return true, 1 - evict
 	}
-	return true
+	return true, 1
+}
+
+// Close empties the window for good and returns how many keys it held.
+func (w *DedupWindow) Close() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(w.order)
+	w.closed, w.state, w.order = true, nil, nil
+	return n
 }
