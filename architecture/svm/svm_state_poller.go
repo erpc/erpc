@@ -658,6 +658,12 @@ func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
 			return slot, nil
 		})
 	if err != nil {
+		// A failed fetch still marks the counter fresh (markFreshAttempt), so
+		// the next tick takes the fast path below. Pending keeps that path
+		// from promoting the untouched 0 to an observation.
+		if !e.firstAvailableSlotKnown.Load() {
+			e.firstAvailableSlotPending.Store(true)
+		}
 		return
 	}
 	if e.firstAvailableSlotKnown.Load() {

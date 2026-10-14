@@ -55,15 +55,19 @@ var rangeSlotMethods = map[string]struct{}{
 	"getBlocksWithLimit": {},
 }
 
+// maxGetBlocksRange is agave's MAX_GET_CONFIRMED_BLOCKS_RANGE: the span an
+// open-ended getBlocks covers.
+const maxGetBlocksRange = 500_000
+
 // RequestRangeEndSlot extracts the highest slot a range request can touch, as
 // opposed to RequestLowerBoundSlot's start. It exists for the declared UPPER
 // bound: an operator's window cap is violated by a range whose END runs past
 // it even when the start is inside, and a truncated answer from this upstream
 // would hide a fuller one from another.
 //
-//   - getBlocks(start, end?): end is param 1. When omitted the range extends
-//     to the tip, so latest (the upstream's own) stands in for it; unknown
-//     latest fails open.
+//   - getBlocks(start, end?): end is param 1. When omitted, agave ends the
+//     range at start+maxGetBlocksRange, capped at its root (rpc.rs get_blocks),
+//     so that is the end here, capped by latest when known.
 //   - getBlocksWithLimit(start, limit): limit is a COUNT of confirmed blocks,
 //     not a slot span. Skipped slots mean the Nth returned block can sit well
 //     past start+limit, and limit=1 returns only the block at start (so
@@ -105,10 +109,11 @@ func RequestRangeEndSlot(ctx context.Context, r *common.NormalizedRequest, start
 				return end, true
 			}
 		}
-		if latest <= 0 {
-			return 0, false
+		end := start + maxGetBlocksRange
+		if latest > 0 && latest < end {
+			end = latest
 		}
-		return latest, true
+		return end, true
 	case "getBlocksWithLimit":
 		if len(rpcReq.Params) < 2 {
 			return 0, false

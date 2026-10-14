@@ -309,6 +309,17 @@ func TestCheckUpstreamDeclaredSlotBounds_RangeEnd(t *testing.T) {
 		require.Contains(t, err.Error(), "-32004")
 	})
 
+	t.Run("getBlocks omitted end within agave span of start serves", func(t *testing.T) {
+		// agave ends an open range at start+500000, not at the tip: a tip far
+		// past the window must not reject a range whose span ends inside it.
+		far := upWithBounds("u", 2_000_000, 0, true, declaredCfg("u",
+			nil,
+			&common.SvmAvailabilityBoundConfig{ExactSlot: i64(1_000_000)},
+		))
+		err, _ := CheckUpstreamDeclaredSlotBounds(ctx, far, reqOf(t, "getBlocks", `[100]`))
+		require.NoError(t, err)
+	})
+
 	t.Run("getBlocksWithLimit uses tip as upper, beyond window skips", func(t *testing.T) {
 		// limit is a block COUNT, not a slot span — end is the upstream tip.
 		past := upWithBounds("u", 5000, 0, true, declaredCfg("u",

@@ -347,6 +347,13 @@ func TestSvmStatePoller_FirstAvailableSlot_UnknownUntilObserved(t *testing.T) {
 	floor, known = p.FirstAvailableSlot()
 	require.False(t, known, "-32601 must leave the floor unknown, not record 0")
 	require.Zero(t, floor)
+
+	// The failed fetch marks the counter fresh. The next tick takes the
+	// not-stale fast path and must not promote that stale 0 to an observation.
+	require.NoError(t, p.Poll(context.Background()))
+	floor, known = p.FirstAvailableSlot()
+	require.False(t, known, "a failed probe must stay unknown on the next tick, not become a known 0")
+	require.Zero(t, floor)
 }
 
 // The observed floor is opt-in: an upstream whose operator declared no
