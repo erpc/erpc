@@ -161,6 +161,19 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			return capErr
 		}
 
+		// jsonrpsee per-connection eth_subscribe cap (reth -32006): a full socket, not an unhealthy upstream.
+		if strings.Contains(msg, "Too many subscriptions") {
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
 		if r.StatusCode == 402 ||
 			strings.Contains(msg, "reached the free tier") ||
 			strings.Contains(msg, "Monthly capacity limit") ||
