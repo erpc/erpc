@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -130,15 +132,16 @@ func TestWebSocket_UpgradeHeaderIsCaseInsensitive(t *testing.T) {
 //
 
 // subscribingWsUpstream answers eth_subscribe/eth_unsubscribe on top of the
-// state-poller methods.
+// state-poller methods, with a fresh upstream id per subscribe.
 func subscribingWsUpstream(t *testing.T) string {
 	t.Helper()
+	var subs atomic.Int64
 	srv := mockWsUpstream(t, func(conn *websocket.Conn) {
 		standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
 			result := interface{}("0x1")
 			switch method {
 			case "eth_subscribe":
-				result = "0xupstreamsub"
+				result = fmt.Sprintf("0xupstreamsub%d", subs.Add(1))
 			case "eth_unsubscribe":
 				result = true
 			}
@@ -155,6 +158,15 @@ func wsConnCount(s *HttpServer) (active, subscribed int) {
 	subscribed = len(s.subscriptionManager.conns)
 	s.subscriptionManager.connMu.Unlock()
 	return active, subscribed
+}
+
+// wsGauges reads the pressure gauges of the test_ws project on evm:123:
+// client connections, client subscriptions of kind, and the subscriptions
+// of kind live on ws-upstream.
+func wsGauges(kind string) (conns, clientSubs, upstreamSubs float64) {
+	return testutil.ToFloat64(telemetry.MetricWebsocketConnectionsActive.WithLabelValues("test_ws")),
+		testutil.ToFloat64(telemetry.MetricWebsocketSubscriptionsActive.WithLabelValues("test_ws", "evm:123", kind)),
+		testutil.ToFloat64(telemetry.MetricUpstreamSubscriptionsActive.WithLabelValues("test_ws", "evm:123", "ws-upstream", kind))
 }
 
 // A client that subscribes and immediately closes must not leave an egress
@@ -175,11 +187,14 @@ func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		active, subscribed := wsConnCount(srv)
-		return active == 0 && subscribed == 0
+		conns, clientSubs, _ := wsGauges("newHeads")
+		return active == 0 && subscribed == 0 && conns == 0 && clientSubs == 0
 	}, 5*time.Second, 50*time.Millisecond, "connections must be fully cleaned up")
 }
 
-// eth_unsubscribe only reaches the caller's own subscriptions.
+// eth_unsubscribe only reaches the caller's own subscriptions. The pressure
+// gauges follow subscribe, unsubscribe and close back to zero, and a logs
+// filter whose last client disconnects is released upstream.
 func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -195,6 +210,12 @@ func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 	resp := sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 	subID, ok := resp["result"].(string)
 	require.True(t, ok, "subscribe failed: %v", resp)
+	_, clientSubs, _ := wsGauges("newHeads")
+	assert.Equal(t, 1.0, clientSubs)
+	require.Eventually(t, func() bool {
+		conns, _, _ := wsGauges("newHeads")
+		return conns == 2
+	}, 5*time.Second, 50*time.Millisecond, "earlier tests' connections must be gone, leaving these 2")
 
 	unsub := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"eth_unsubscribe","params":["%s"]}`, subID)
 	resp = sendAndReceive(t, connB, unsub)
@@ -202,6 +223,27 @@ func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 
 	resp = sendAndReceive(t, connA, unsub)
 	assert.Equal(t, true, resp["result"], "owner must still be able to unsubscribe: %v", resp)
+	_, clientSubs, _ = wsGauges("newHeads")
+	assert.Equal(t, 0.0, clientSubs, "unsubscribe must drop the client subscription gauge")
+
+	// The upstream may still be connecting; a failed filter subscribe is
+	// answered with an error and can be retried.
+	require.Eventually(t, func() bool {
+		resp = sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":3,"method":"eth_subscribe","params":["logs",{}]}`)
+		_, ok := resp["result"].(string)
+		return ok
+	}, 5*time.Second, 100*time.Millisecond, "logs subscribe must succeed")
+	_, clientSubs, upstreamSubs := wsGauges("logs")
+	assert.Equal(t, 1.0, clientSubs)
+	assert.Equal(t, 1.0, upstreamSubs, "one logs filter must be live upstream")
+
+	// Closing without eth_unsubscribe leaves cleanup to CleanupConnection.
+	require.NoError(t, connA.Close())
+	require.NoError(t, connB.Close())
+	require.Eventually(t, func() bool {
+		conns, clientSubs, upstreamSubs := wsGauges("logs")
+		return conns == 0 && clientSubs == 0 && upstreamSubs == 0
+	}, 5*time.Second, 50*time.Millisecond, "closed connections must release every gauge and the upstream filter")
 }
 
 // Shutdown closes client connections with 1001 as soon as it starts, not

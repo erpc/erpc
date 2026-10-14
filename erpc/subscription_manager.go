@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -87,7 +88,7 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, err
 	}
 
-	conn := sm.getOrCreateConn(wsc)
+	conn := sm.getOrCreateConn(wsc, nw.Label())
 	if conn == nil {
 		return nil, wsclient.ErrClosed
 	}
@@ -129,7 +130,11 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, err
 	}
 
+	// Counted before it is visible, so a racing cleanup never takes the
+	// gauge below zero.
+	wsc.subscriptionsGauge(kind).Inc()
 	if err := conn.adapter.AddSubscription(clientSubID, key, kind, filterHash, maxSubs); err != nil {
+		wsc.subscriptionsGauge(kind).Dec()
 		sm.releaseFilter(ctx, key, kind, filterHash)
 		if errors.Is(err, wsclient.ErrLimitExceeded) {
 			err = common.NewErrSubscriptionLimitExceeded(maxSubs)
@@ -203,6 +208,7 @@ func (sm *SubscriptionManager) Unsubscribe(
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, err
 	}
+	wsc.subscriptionsGauge(kind).Dec()
 	sm.releaseFilter(ctx, subNetworkID, kind, filterHash)
 
 	lg.Info().Str("clientSubId", clientSubID).Str("subType", kind.String()).Msg("subscription removed")
@@ -226,6 +232,7 @@ func (sm *SubscriptionManager) CleanupConnection(wsc *WsConnection) {
 	ctx, cancel := context.WithTimeout(context.Background(), unsubscribeTimeout)
 	defer cancel()
 	for _, sub := range conn.adapter.Drain() {
+		wsc.subscriptionsGauge(sub.Kind).Dec()
 		sm.releaseFilter(ctx, sub.NetworkID, sub.Kind, sub.FilterHash)
 	}
 	conn.detach()
@@ -358,7 +365,7 @@ func (sm *SubscriptionManager) resolveSubscription(ctx context.Context, networkI
 
 // getOrCreateConn returns the connection's entry, attaching a new egress
 // on first use, or nil once the connection was cleaned up.
-func (sm *SubscriptionManager) getOrCreateConn(wsc *WsConnection) *connEntry {
+func (sm *SubscriptionManager) getOrCreateConn(wsc *WsConnection, networkLabel string) *connEntry {
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
 	if wsc.subsClosed {
@@ -367,10 +374,15 @@ func (sm *SubscriptionManager) getOrCreateConn(wsc *WsConnection) *connEntry {
 	if existing, ok := sm.conns[wsc.id]; ok {
 		return existing
 	}
+	wsc.networkLabel = networkLabel
 	adapter := wsclient.New(wsc.id, wsc, sm.logger, wsc.server.serverCfg.WebSocket.SubscriptionBufferSize)
 	entry := &connEntry{adapter: adapter, detach: sm.idx.Attach(adapter)}
 	sm.conns[wsc.id] = entry
 	return entry
+}
+
+func (wsc *WsConnection) subscriptionsGauge(kind indexer.EventKind) prometheus.Gauge {
+	return telemetry.GaugeHandle(telemetry.MetricWebsocketSubscriptionsActive, wsc.project.Config.Id, wsc.networkLabel, kind.String())
 }
 
 func (sm *SubscriptionManager) acquireRateLimits(
@@ -449,6 +461,14 @@ type headSource interface {
 }
 
 func (h *networkHandle) Id() string { return indexerNetworkKey(h.nw) }
+
+func (h *networkHandle) DedupDropped(kind indexer.EventKind) {
+	telemetry.CounterHandle(telemetry.MetricSubscriptionDedupDroppedTotal, h.nw.projectId, h.nw.Label(), kind.String()).Inc()
+}
+
+func (h *networkHandle) DedupEntriesAdded(delta int) {
+	telemetry.GaugeHandle(telemetry.MetricSubscriptionDedupEntries, h.nw.projectId, h.nw.Label()).Add(float64(delta))
+}
 
 // indexerNetworkKey names nw in the indexer and its adapters. Projects can
 // define the same network, each with its own upstreams, so the key includes
