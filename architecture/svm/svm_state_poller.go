@@ -83,11 +83,11 @@ const DefaultFirstAvailableSlotStaleness = 30 * time.Second
 
 // Static request payloads — avoid allocating on every tick.
 var (
-	reqGetHealth              = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
-	reqGetSlotProcessed       = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
-	reqGetSlotFinalized       = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
-	reqGetMaxShredInsertSlot  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getMaxShredInsertSlot","params":[]}`)
-	reqGetOldestStoredBlock   = []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlocksWithLimit","params":[0,1]}`)
+	reqGetHealth             = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
+	reqGetSlotProcessed      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
+	reqGetSlotFinalized      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
+	reqGetMaxShredInsertSlot = []byte(`{"jsonrpc":"2.0","id":1,"method":"getMaxShredInsertSlot","params":[]}`)
+	reqGetOldestStoredBlock  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlocksWithLimit","params":[0,1]}`)
 )
 
 var _ common.SvmStatePoller = (*SvmStatePoller)(nil)
