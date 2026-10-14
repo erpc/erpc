@@ -1431,9 +1431,9 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 	return false
 }
 
-// writeCostHeaders emits the opt-in cost/billing header group for the
-// routed sub-responses of one HTTP response — the same shape on the single
-// and batch write paths, always before WriteHeader:
+// costHeaders builds the opt-in cost/billing header group for the routed
+// sub-responses of one response — the same shape for single and batch
+// responses, and for HTTP (writeCostHeaders) and WebSocket cost frames:
 //
 //	X-ERPC-Calls:           routed JSON-RPC sub-calls in this response
 //	X-ERPC-Billable:        how many were billable (isBillableItem)
@@ -1462,11 +1462,11 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 //	                        is not a fact about the response and is omitted
 //	                        rather than guessed.
 //
-// Early errors that never routed a request get no cost headers — there is
-// no routed call to account for.
-func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter, items []interface{}) {
+// nil when the group is off or there are no items: early errors that never
+// routed a request have no routed call to account for.
+func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.Header {
 	if !s.costHeadersEnabled() || len(items) == 0 {
-		return
+		return nil
 	}
 	billable := 0
 	methods := map[string]struct{}{}
@@ -1509,12 +1509,13 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 			}
 		}
 	}
-	setInt(w, "X-ERPC-Calls", len(items))
-	setInt(w, "X-ERPC-Billable", billable)
+	h := make(http.Header, 8)
+	h.Set("X-ERPC-Calls", strconv.Itoa(len(items)))
+	h.Set("X-ERPC-Billable", strconv.Itoa(billable))
 	if networkId != "" && !networkAmbiguous {
-		w.Header().Set("X-ERPC-Network-Id", networkId)
+		h.Set("X-ERPC-Network-Id", networkId)
 		if networkAlias != "" && networkAlias != "n/a" {
-			w.Header().Set("X-ERPC-Network-Alias", networkAlias)
+			h.Set("X-ERPC-Network-Alias", networkAlias)
 		}
 	}
 	if len(methods) > 0 {
@@ -1523,7 +1524,7 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 			names = append(names, m)
 		}
 		sort.Strings(names)
-		w.Header().Set("X-ERPC-Methods", strings.Join(names, ","))
+		h.Set("X-ERPC-Methods", strings.Join(names, ","))
 	}
 	if len(credits) > 0 {
 		keys := make([]string, 0, len(credits))
@@ -1535,9 +1536,18 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 		for i, k := range keys {
 			segments[i] = k + "=" + strconv.FormatInt(credits[k], 10)
 		}
-		w.Header().Set("X-ERPC-Credits", strings.Join(segments, ";"))
-		w.Header().Set("X-ERPC-Credits-Total", strconv.FormatInt(creditsTotal, 10))
-		w.Header().Set("X-ERPC-Credits-Version", common.ErpcVersion)
+		h.Set("X-ERPC-Credits", strings.Join(segments, ";"))
+		h.Set("X-ERPC-Credits-Total", strconv.FormatInt(creditsTotal, 10))
+		h.Set("X-ERPC-Credits-Version", common.ErpcVersion)
+	}
+	return h
+}
+
+// writeCostHeaders sets costHeaders on an HTTP response, before WriteHeader.
+func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter, items []interface{}) {
+	dst := w.Header()
+	for k, v := range s.costHeaders(ctx, items) {
+		dst[k] = v
 	}
 }
 

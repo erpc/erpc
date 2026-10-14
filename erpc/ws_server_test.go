@@ -1,12 +1,16 @@
 package erpc
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -203,6 +207,21 @@ func sendAndReceive(t *testing.T, conn *websocket.Conn, req string) map[string]i
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(msg, &resp))
 	return resp
+}
+
+// readCostFrame reads one cost-frame message and splits it into its header
+// block and JSON body.
+func readCostFrame(t *testing.T, conn *websocket.Conn) (textproto.MIMEHeader, []byte) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	r := textproto.NewReader(bufio.NewReader(bytes.NewReader(msg)))
+	h, err := r.ReadMIMEHeader()
+	require.NoError(t, err, "message should start with a header block: %q", msg)
+	body, err := io.ReadAll(r.R)
+	require.NoError(t, err)
+	return h, body
 }
 
 // setupTestERPCServer boots an eRPC instance with the given config, returns
@@ -703,6 +722,137 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		// Unsubscribe
 		unsubResp := sendAndReceive(t, conn, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"eth_unsubscribe","params":["%s"]}`, clientSubId))
 		assert.Equal(t, true, unsubResp["result"])
+	})
+
+	// With server.costHeaders on, a client that opts in with
+	// X-ERPC-Cost-Frames: 1 gets every message prefixed with its cost header
+	// block; a client that does not gets plain JSON.
+	t.Run("CostFrames", func(t *testing.T) {
+		notifCh := make(chan struct{}, 1)
+		mockUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
+			standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
+				switch method {
+				case "eth_subscribe":
+					subId := "0xdeadbeef12345678"
+					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": subId})
+					go func() {
+						time.Sleep(200 * time.Millisecond)
+						mockWriteJSON(conn, map[string]interface{}{
+							"jsonrpc": "2.0",
+							"method":  "eth_subscription",
+							"params": map[string]interface{}{
+								"subscription": subId,
+								"result":       map[string]interface{}{"number": "0x101", "hash": "0xaaa"},
+							},
+						})
+						select {
+						case notifCh <- struct{}{}:
+						default:
+						}
+					}()
+				case "eth_getBalance":
+					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0xabc123"})
+				default:
+					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x1"})
+				}
+			})
+		})
+		defer mockUpstream.Close()
+
+		setupGock()
+		defer util.ResetGock()
+
+		cfg := standardWsConfig("ws" + strings.TrimPrefix(mockUpstream.URL, "http"))
+		cfg.Server.CostHeaders = util.BoolPtr(true)
+		addr, cleanup := setupTestERPCServer(t, cfg)
+		defer cleanup()
+
+		time.Sleep(2 * time.Second)
+
+		conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", addr),
+			http.Header{"X-ERPC-Cost-Frames": {"1"}})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		send := func(req string) (textproto.MIMEHeader, []byte) {
+			t.Helper()
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(req)))
+			return readCostFrame(t, conn)
+		}
+		assertNetwork := func(h textproto.MIMEHeader) {
+			t.Helper()
+			assert.Equal(t, "evm:123", h.Get("X-ERPC-Network-Id"))
+			assert.Equal(t, "evm:123", h.Get("X-ERPC-Network-Alias"))
+		}
+
+		// newHeads: the subscribe reply, then each notification as 1 billable call.
+		h, body := send(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "eth_subscribe", h.Get("X-ERPC-Methods"))
+		var subResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &subResp))
+		clientSubId, ok := subResp["result"].(string)
+		require.True(t, ok, "subscription ID should be a string: %s", body)
+
+		select {
+		case <-notifCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for upstream to send notification")
+		}
+		h, body = readCostFrame(t, conn)
+		assert.Equal(t, textproto.MIMEHeader{
+			"X-Erpc-Calls":         {"1"},
+			"X-Erpc-Billable":      {"1"},
+			"X-Erpc-Methods":       {"eth_subscription"},
+			"X-Erpc-Subscription":  {"newHeads"},
+			"X-Erpc-Network-Id":    {"evm:123"},
+			"X-Erpc-Network-Alias": {"evm:123"},
+		}, h)
+		var notif map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &notif))
+		assert.Equal(t, "eth_subscription", notif["method"])
+		assert.Equal(t, clientSubId, notif["params"].(map[string]interface{})["subscription"])
+
+		// A single call.
+		h, body = send(`{"jsonrpc":"2.0","id":2,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "1", h.Get("X-ERPC-Billable"))
+		assert.Equal(t, "eth_getBalance", h.Get("X-ERPC-Methods"))
+		assertNetwork(h)
+		var single map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &single))
+		assert.Equal(t, "0xabc123", single["result"])
+
+		// A batch: one block for the whole batch.
+		h, body = send(`[{"jsonrpc":"2.0","id":3,"method":"eth_getBalance","params":["0xaaaa","latest"]},{"jsonrpc":"2.0","id":4,"method":"eth_getBalance","params":["0xbbbb","latest"]}]`)
+		assert.Equal(t, "2", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "2", h.Get("X-ERPC-Billable"))
+		assert.Equal(t, "eth_getBalance", h.Get("X-ERPC-Methods"))
+		assertNetwork(h)
+		var batch []map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &batch))
+		assert.Len(t, batch, 2)
+
+		// A batch that is not JSON routed nothing: empty block.
+		h, body = send(`[{"jsonrpc":"2.0",`)
+		assert.Empty(t, h)
+		var parseErr map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &parseErr))
+		assert.NotNil(t, parseErr["error"])
+
+		// A single unparsable request is a call HTTP would count, unbilled.
+		h, body = send(`{not valid json`)
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "0", h.Get("X-ERPC-Billable"))
+		var invalid map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &invalid))
+		assert.NotNil(t, invalid["error"])
+
+		// Without the header: plain JSON.
+		plain := dialWs(t, addr)
+		defer plain.Close()
+		resp := sendAndReceive(t, plain, `{"jsonrpc":"2.0","id":5,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+		assert.Equal(t, "0xabc123", resp["result"])
 	})
 
 	// Verifies eth_subscribe returns an error when no WS upstream is configured

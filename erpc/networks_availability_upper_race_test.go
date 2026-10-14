@@ -706,10 +706,9 @@ projects:
 // maps), so block-availability gating fails open and the request is forwarded — i.e. it
 // is never constrained by the state poller. This test grounds both in reality.
 //
-// Note: eRPC does not provide the newHeads websocket subscription itself (the ws upstream
-// client is unimplemented and the server is request/response only), so — as in the issue
-// — the client subscribes to newHeads directly on a node and uses eRPC for the follow-up
-// JSON-RPC calls.
+// Note: as in the issue, the client subscribes to newHeads directly on a node and uses
+// eRPC only for the follow-up JSON-RPC calls; eRPC's own WebSocket server and
+// eth_subscribe are not part of this flow.
 func TestNetworkAvailability_Issue934_ArcSyncFlow_CustomMethodAndFreshBlock(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()

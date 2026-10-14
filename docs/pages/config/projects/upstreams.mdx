@@ -846,8 +846,10 @@ SVM upstream gets its own slot/health poller automatically:
 
 ### Edge cases & gotchas
 
-1. **`ws://`/`wss://` pass config validation but fail at client creation** with
-   "websocket client not implemented yet" and retry forever. Use `http://`/`https://` instead.
+1. **`ws://`/`wss://` upstreams serve regular requests and feed subscriptions, but a plain
+   HTTP `eth_subscribe` is never forwarded to them** (the subscription would have no owner).
+   Clients subscribe through eRPC's own [WebSocket server](/operation/websocket)
+   (`server.webSocket.enabled: true`).
 2. **`allowMethods` without `ignoreMethods`** silently blocks all other methods via an
    injected `ignoreMethods: ["*"]`. To allow specific methods while keeping defaults,
    use `ignoreMethods` with explicit patterns instead.
