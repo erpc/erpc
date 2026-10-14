@@ -8,6 +8,9 @@ Decisions already taken:
 2. Logs stay gap-free on every network, including networks with only wss sources.
 3. Only policy-eligible upstreams can push heads.
 4. HTTP polling is a subscription source by opt-in per upstream; wss is one by default.
+5. Sources stop 60s after the last consumer leaves.
+6. `Gap` closes each connection with a `logs` subscription on that network with `1013`, as buffer overflow does today.
+7. gRPC `StreamBlocks` resends the new branch on a reorg; it has no removal message (§6.1).
 
 ## 1. Terms
 
@@ -74,7 +77,7 @@ type ChainSink interface {
     Head(ev ChainBlock)                     // ascending, once per adoption
     Logs(ev ChainBlock, logs [][]byte)      // chain order, verbatim log JSON
     Unwind(ev ChainBlock, logs [][]byte)    // descending, before the new branch
-    Gap(networkId string, from, to int64)   // unrecoverable; logs subscribers closed
+    Gap(networkId string, from, to int64)   // unrecoverable; closes logs connections and gRPC streams
 }
 
 type ChainBlock struct {
@@ -136,7 +139,7 @@ Example, one wss push:
 
 - HTTP sources reuse `fetchBlock("latest")`; it already returns the full header and stops discarding it.
 - The fast timer lives in the poller's existing goroutine; `TryUpdateIfLocallyStale` still collapses it with traffic polls.
-- Sources start on the network's first demand and stop 60s after the last consumer leaves (open question 1).
+- Sources start on the network's first demand and stop 60s after the last consumer leaves.
 - Demand: a client subscription, a gRPC stream, or `integrity.follow.enabled` on the network.
 
 ## 6. Fork choice, gaps, reorgs
@@ -177,6 +180,33 @@ t2    B pushes  101 0xcc, parent 0xbb              conflict at 100
 - A client response that changes a pin inside the emitted range produces the same `Unwind`/`Head` events.
 - Every fetch goes through `network.Forward`: routing, block-availability gate, failsafe, consensus when configured.
 
+### 6.1 Reorg on the wire
+
+The reorg above, per consumer:
+
+| Consumer | Receives | Precedent |
+|---|---|---|
+| ws `newHeads` | `100 0xbb`, `101 0xcc` | geth sends only the new head, `0xcc` |
+| ws `logs` | logs of `100 0xaa` with `removed:true`; then logs of `100 0xbb`, `101 0xcc` | geth; the `eth_subscribe` contract |
+| gRPC `StreamBlocks` | `100 0xbb`, `101 0xcc` | QuickNode Streams "restream on reorg" |
+
+gRPC client rule: a header with a number at or below the last one received replaces that number and every number above it.
+
+- The first resent number is ancestor + 1: the same fact as Substreams `BlockUndoSignal.last_valid_block`, with no extra message.
+- Per-block removal (Firehose `STEP_UNDO`, geth `removed:true`) costs one message per dropped block and keeps every sent payload until finality.
+- Each header carries `hash` and `parentHash`: a client can check linkage itself.
+- `Gap` ends the stream with `DATA_LOSS`; the message names the missing range.
+- Proto: `blockchain-data-standards/manifesto` `evm/stream.proto`, comments only. "Ascending, once per block" becomes "ascending; after a reorg, restarts at the fork point".
+
+Resume, proposed (open question 1):
+
+- Without it, a reorg or block between disconnect and reconnect is lost to the client.
+- `StreamBlocksRequest` gains `optional uint64 fromBlock` and `optional bytes fromHash`: the last header the client applied.
+- Replay starts at `fromBlock + 1` when `fromHash` is canonical, else at `fromBlock − reorgWindow`. The client rule makes over-replay safe, so no ancestor search.
+- Replay reads the tracker window; older heights come by number through `network.Forward`, at most `maxBackfill`.
+- Beyond `maxBackfill`: `OUT_OF_RANGE`; the client backfills by unary calls.
+- Same shape as Firehose and Substreams cursors, without an opaque cursor.
+
 ## 7. Logs path
 
 ```
@@ -192,6 +222,7 @@ t2    B pushes  101 0xcc, parent 0xbb              conflict at 100
   - Checked 2026-10-14, one block each: equal on eth, sepolia, hoodi, monad.
 - Logs cursor: `Logs` strictly in chain order; heads never wait for it.
 - A receipts fetch that fails retries with backoff. When its block leaves the window, `Gap` fires for logs.
+- `Gap` closes each connection with a `logs` subscription on the network with `1013`; the client resubscribes and backfills with `eth_getLogs`.
 - Logs travel as verbatim JSON. Receipt logs carry `blockTimestamp`; `integrity.Log` does not model it.
 - Matching uses `LogsFilter.Matches` (geth `filterLogs`), moved out of `integrity` into `architecture/evm/logfilter`. Integrity and indexer share it.
 - `Unwind` replays the block's stored logs with `removed:true` to every filter matching now, as geth does.
@@ -306,9 +337,8 @@ One home per fact:
 - A polled header and a vendor push can differ in optional fields; first adopted wins.
 - Breaking config and metric renames: dashboards and configs need updates in the same release.
 - `newPendingTransactions` keeps today's wss-only path.
+- `StreamBlocks` consumers that expect strictly ascending numbers see a repeat after a reorg. Known consumers: `edge-api` relays it; a Turbo tip-detection experiment (`streamling-goldsky-plugins` #162) reads it. Neither checked.
 
 ## 13. Open questions
 
-1. Idle stop after 60s, or keep sources running once started, as wss `newHeads` does today?
-2. Close `logs` subscriptions with `1013` on `Gap`, or keep them open and log only?
-3. gRPC `StreamBlocks` proto has no removal message: send new-branch blocks only, or extend the proto?
+1. gRPC resume (§6.1): add `fromBlock` and `fromHash` to `StreamBlocksRequest`, or keep the stream tip-only?

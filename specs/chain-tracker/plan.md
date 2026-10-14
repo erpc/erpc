@@ -16,7 +16,7 @@ slice 6  docs, last deletions, one build and test run, PR
 
 | # | Who | What | Blocks |
 |---|---|---|---|
-| 1 | Aram | Answer spec §13 open questions 1–3 | slices 1, 3, 5 |
+| 1 | Aram | Answer spec §13 open question 1: gRPC resume | slice 5 |
 | 2 | Aram | Approve read-only `eth_getBlockReceipts` calls on each Edge vendor (eth, sepolia, hoodi, monad) | slice 3 |
 | 3 | agent | Run those calls; record support per vendor in the spec | slice 3 |
 
@@ -45,7 +45,7 @@ Boundaries are final here; each component starts simple.
   - Network demand refcount: client subscription, gRPC stream, `integrity.follow.enabled`.
   - Poller fast timer in its existing goroutine at `resolveDebounce`, on while demanded.
   - Source liveness for gate 4: wss subscription live, or HTTP poll ok within 2 periods.
-  - Idle stop per open question 1.
+  - Idle stop: sources stop 60s after the last consumer leaves.
 - Change:
   - `fetchBlock("latest")` returns the header bytes; the poll path calls `ObserveHead`.
   - `enrichStatePoller` passes `eth_getBlockByNumber(latest)` response headers to `ObserveHead`.
@@ -82,7 +82,7 @@ Boundaries are final here; each component starts simple.
   - `architecture/evm/logfilter`: `LogsFilter`, `Matches`, bloom test; moved from `integrity/logfilter.go`.
   - Indexer logs filter registry and matching; `WantsLogs` from the bloom test.
   - Tracker: receipts fetch by hash, logs cursor, empty-root skip, per-network bloom proof, receipts kept in the window.
-  - Indexer `Logs`, `Unwind` with `removed:true`, `Gap` per open question 2.
+  - Indexer `Logs`, `Unwind` with `removed:true`; `Gap` closes each connection with a `logs` subscription on the network with `1013`.
 - Delete:
   - wsupstream logs subscriptions: logs `EnsureFilter` path, `stripFromBlockZero`, `isZeroBlockRef`.
   - `networks[].evm.stripSubscribeFromBlockZero`.
@@ -92,6 +92,7 @@ Boundaries are final here; each component starts simple.
   - 2 filters, 3 blocks: one `eth_getBlockReceipts` per block, no upstream `eth_subscribe logs`.
   - Reorg of 1 block: removed logs of the old block, then logs of the new one.
   - Block with a bloom no filter matches: no receipts call.
+  - Receipts keep failing until the block leaves the window: the client connection closes with `1013`.
 
 ## Slice 4: integrity on tracker data
 
@@ -105,9 +106,15 @@ Boundaries are final here; each component starts simple.
 
 ## Slice 5: gRPC StreamBlocks
 
-- Add: `StreamBlocks` egress on the indexer, from `Head` events; reorg per open question 3.
+- Add:
+  - `StreamBlocks` egress on the indexer, from `Head` events.
+  - Reorg: resend from ancestor + 1 (spec §6.1). `Gap`: end the stream with `DATA_LOSS`.
+  - Resume per open question 1.
+- Proto, `blockchain-data-standards/manifesto` PR first: `evm/stream.proto` contract comments, plus resume fields if approved; bump the module here.
 - Delete: `blockStreamManager`, `blockStreamHub`, `fetchBlockHeader`, `blockStreamMaxBackfill`.
-- Tests: extend `erpc/block_stream_test.go`: a stream gets every block once, in order, with no `eth_getBlockByNumber` per block.
+- Tests, extend `erpc/block_stream_test.go`:
+  - A stream gets every block once, in order, with no `eth_getBlockByNumber` per block.
+  - A 1-block reorg: the stream gets the new block again at the same number.
 
 ## Slice 6: docs, deletions, verify, PR
 
