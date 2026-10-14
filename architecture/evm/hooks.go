@@ -60,6 +60,8 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, upstre
 		return networkPreForward_eth_getLogs(ctx, network, upstreams, nq)
 	case "eth_chainid":
 		return networkPreForward_eth_chainId(ctx, network, upstreams, nq)
+	case "eth_blocknumber":
+		return networkPreForward_eth_blockNumber(ctx, network, nq)
 	case "trace_filter", "arbtrace_filter":
 		return networkPreForward_trace_filter(ctx, network, upstreams, nq)
 	default:

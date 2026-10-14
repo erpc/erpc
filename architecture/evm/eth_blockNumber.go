@@ -10,6 +10,36 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// networkPreForward_eth_blockNumber answers eth_blockNumber from the served tip
+// without dispatching, in majority served-tip mode only. There the post-forward
+// hook below pins every response to the tip EXACTLY, so the upstream's answer is
+// always discarded: the call buys nothing but vendor cost and latency. The
+// default (floor-only) mode keeps forwarding, because a fresher upstream head
+// passes through there. An unknown tip (cold pollers) and enforce-highest-block
+// =false also keep forwarding.
+func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	cfg := network.Config()
+	if cfg == nil || !cfg.Evm.ServedTipEnabledFor("latest") {
+		return false, nil, nil
+	}
+	if dirs := nq.Directives(); dirs == nil || !dirs.EnforceHighestBlock {
+		return false, nil, nil
+	}
+	tip := common.EvmHighestLatestBlockNumber(network, context.WithValue(ctx, common.RequestContextKey, nq))
+	if tip <= 0 {
+		return false, nil, nil
+	}
+	hex, err := common.NormalizeHex(tip)
+	if err != nil {
+		return true, nil, err
+	}
+	jrr, err := common.NewJsonRpcResponse(nq.ID(), hex, nil)
+	if err != nil {
+		return true, nil, err
+	}
+	return true, common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr), nil
+}
+
 // networkPostForward_eth_blockNumber enforces the network's served tip on
 // every eth_blockNumber response regardless of its source — a live upstream OR
 // the cache. The correction is a pure in-memory synthesis (poller state),
