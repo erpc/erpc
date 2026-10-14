@@ -66,8 +66,8 @@ const maxConsecutiveSlotPollSkips = 4
 // needs a different health-detection latency than ~2s.
 const healthPollEveryNTicks = 5
 
-// DefaultFirstAvailableSlotStaleness is the minimum interval between
-// getFirstAvailableBlock fetches per upstream.
+// DefaultFirstAvailableSlotStaleness is the minimum interval between floor
+// probes (getBlocksWithLimit(0, 1)) per upstream.
 //
 // Deliberately ~75x the slot time. The floor sits O(100k) slots below the head
 // and rises at most one slot per slot, so freshness buys nothing measurable.
@@ -87,7 +87,7 @@ var (
 	reqGetSlotProcessed       = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
 	reqGetSlotFinalized       = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
 	reqGetMaxShredInsertSlot  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getMaxShredInsertSlot","params":[]}`)
-	reqGetFirstAvailableBlock = []byte(`{"jsonrpc":"2.0","id":1,"method":"getFirstAvailableBlock","params":[]}`)
+	reqGetOldestStoredBlock   = []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlocksWithLimit","params":[0,1]}`)
 )
 
 var _ common.SvmStatePoller = (*SvmStatePoller)(nil)
@@ -103,7 +103,7 @@ type SvmStatePoller struct {
 	finalizedSlotShared data.CounterInt64SharedVariable
 
 	// firstAvailableSlotShared is this upstream's LEDGER FLOOR — the lowest
-	// slot it can still serve, as reported by its own getFirstAvailableBlock.
+	// slot it can still serve, the oldest block getBlocksWithLimit returns.
 	// Created with ignoreRollbackOf = 0 so a DECREASE is accepted: a node
 	// re-provisioned from a longer snapshot, or a vendor enabling long-term
 	// storage, legitimately drops its floor. The error asymmetry forces that
@@ -486,10 +486,9 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 		e.nextHealthPoll = e.pollCount
 	}
 
-	// The ledger floor is polled ONLY for an upstream whose operator declared a
-	// firstAvailableSlotPlus bound (see declaresFirstAvailableSlotPlus). A
-	// vendor's getFirstAvailableBlock is a hint, not availability — it can sit
-	// above slots the vendor still serves — so an upstream with no such opt-in
+	// The floor is probed ONLY for an upstream whose operator declared a
+	// firstAvailableSlotPlus bound (see declaresFirstAvailableSlotPlus), the
+	// same opt-in as EVM's earliestBlockPlus. An upstream with no such bound
 	// costs no extra call and carries no observed floor at all.
 	//
 	// It runs AFTER the fan-out joins, not inside it, because its
@@ -684,13 +683,17 @@ func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
 	e.firstAvailableSlotPending.Store(true)
 }
 
-// fetchFirstAvailableSlot is the floor-only edge parser. Shared fetchSlot maps
-// JSON null/empty to (0, nil) for getSlot / getMaxShredInsertSlot, where an
-// absent tip is "not yet observed" rather than a value — but a null
-// getFirstAvailableBlock is a malformed answer, not a genesis floor. Rejecting
-// it here keeps known=false and leaves firstAvailableSlotPlus unbounded.
+// fetchFirstAvailableSlot reads the oldest block this upstream can actually
+// serve: the first element of getBlocksWithLimit(0, 1). Agave answers it from
+// the same storage getBlock reads — long-term storage (BigTable) when the start
+// is below the local ledger, else the local ledger's first rooted slot — so the
+// slot it names is servable and the one before it is not. getFirstAvailableBlock
+// is NOT used: it reports only the local ledger, so a BigTable-backed node
+// (Alchemy devnet: 509M) reports a floor far above slots it serves (116M).
+// An empty list (no stored block, or a swallowed long-term-storage error) is no
+// observation, not a floor.
 func (e *SvmStatePoller) fetchFirstAvailableSlot(ctx context.Context) (int64, error) {
-	resp, err := e.call(ctx, reqGetFirstAvailableBlock)
+	resp, err := e.call(ctx, reqGetOldestStoredBlock)
 	if resp != nil {
 		defer resp.Release()
 	}
@@ -704,15 +707,14 @@ func (e *SvmStatePoller) fetchFirstAvailableSlot(ctx context.Context) (int64, er
 	if jrr.Error != nil {
 		return 0, jrr.Error
 	}
-	raw := string(jrr.GetResultBytes())
-	if raw == "" || raw == "null" {
-		return 0, fmt.Errorf("getFirstAvailableBlock returned %s", raw)
+	var slots []int64
+	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &slots); err != nil {
+		return 0, fmt.Errorf("parse getBlocksWithLimit result: %w", err)
 	}
-	v, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("parse first available slot %q: %w", raw, err)
+	if len(slots) == 0 {
+		return 0, errors.New("getBlocksWithLimit(0, 1) returned no block")
 	}
-	return v, nil
+	return slots[0], nil
 }
 
 // gauge resolves a per-upstream gauge for this poller's upstream. Labels match

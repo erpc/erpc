@@ -23,10 +23,8 @@ func svmUpstreamCfg(id, host string) *common.UpstreamConfig {
 	}
 }
 
-// A vendor's getFirstAvailableBlock is a hint, not availability: Alchemy devnet
-// reports a floor ~509M yet still serves slot 300M. With no declared
-// firstAvailableSlotPlus the floor is neither polled nor enforced, so every
-// slot-named read — point or range — reaches the upstream.
+// With no declared firstAvailableSlotPlus the floor is neither probed nor
+// enforced, so every slot-named read — point or range — reaches the upstream.
 func TestSvm_ObservedFloor_NeverSkipsWithoutDeclaredBound(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()

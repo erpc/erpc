@@ -36,9 +36,9 @@ func SetupMocksForSvmStatePoller(host string, latestSlot, finalizedSlot int64) {
 }
 
 // SetupMocksForSvmStatePollerWithFirstAvailable is the full form, including the
-// upstream's reported ledger floor. The poller only calls getFirstAvailableBlock
-// for an upstream declaring a firstAvailableSlotPlus bound, so the mock is
-// inert for every other test; the shorter helpers pass 0.
+// upstream's oldest stored block (the getBlocksWithLimit(0, 1) floor probe).
+// The poller only probes for an upstream declaring a firstAvailableSlotPlus
+// bound, so the mock is inert for every other test; the shorter helpers pass 0.
 func SetupMocksForSvmStatePollerWithFirstAvailable(host string, latestSlot, finalizedSlot, shredInsertSlot, firstAvailableSlot int64) {
 	setupSvmStatePollerMocks(host, latestSlot, finalizedSlot, shredInsertSlot, firstAvailableSlot)
 }
@@ -92,13 +92,13 @@ func setupSvmStatePollerMocks(host string, latestSlot, finalizedSlot, shredInser
 		Reply(200).
 		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d,"_note":"svm state poller expected mock for getMaxShredInsertSlot"}`, shredInsertSlot)))
 
-	// getFirstAvailableBlock → the upstream's ledger floor
+	// getBlocksWithLimit(0, 1) → the upstream's oldest stored block
 	gock.New("http://" + host).
 		Post("").
 		Persist().
-		Filter(filterByHostAndBody(host, "getFirstAvailableBlock")).
+		Filter(filterByHostAndBody(host, `"method":"getBlocksWithLimit","params":[0,1]`)).
 		Reply(200).
-		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d,"_note":"svm state poller expected mock for getFirstAvailableBlock"}`, firstAvailableSlot)))
+		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":[%d],"_note":"svm state poller expected mock for the floor probe"}`, firstAvailableSlot)))
 }
 
 func filterByHostAndBody(host, needle string) func(*http.Request) bool {

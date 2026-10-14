@@ -3116,13 +3116,10 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 // svm.blockAvailability window excludes the slot the request literally names
 // (the END of the range for getBlocks/getBlocksWithLimit on the upper side).
 //
-// Mirrors the EVM flow: availability is what the operator declares, never what
-// a vendor's own getFirstAvailableBlock claims. An observed floor takes part
-// only when the operator opts in through firstAvailableSlotPlus, resolved
-// inside CheckUpstreamDeclaredSlotBounds. Without a declared window every
-// upstream is tried — a vendor can advertise a floor above slots it still
-// serves (e.g. a provider reporting ~509M while serving slot 300M), so an
-// always-on floor would refuse reads no upstream was ever asked.
+// Mirrors the EVM flow: availability is what the operator declares. An observed
+// floor takes part only when the operator opts in through
+// firstAvailableSlotPlus, resolved inside CheckUpstreamDeclaredSlotBounds.
+// Without a declared window every upstream is tried.
 //
 // Gated on SvmEnforceBlockAvailability so the lower and upper SVM bounds share
 // ONE operator switch.

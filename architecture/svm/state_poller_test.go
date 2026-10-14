@@ -173,8 +173,8 @@ func requestKey(body string) string {
 		return "getHealth"
 	case strings.Contains(body, `"method":"getMaxShredInsertSlot"`):
 		return "getMaxShredInsertSlot"
-	case strings.Contains(body, `"method":"getFirstAvailableBlock"`):
-		return "getFirstAvailableBlock"
+	case strings.Contains(body, `"method":"getBlocksWithLimit","params":[0,1]`):
+		return "oldestBlock"
 	case strings.Contains(body, `"method":"getSlot"`) && strings.Contains(body, `"processed"`):
 		return "getSlot:processed"
 	case strings.Contains(body, `"method":"getSlot"`) && strings.Contains(body, `"finalized"`):
@@ -286,7 +286,7 @@ func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 	// The shred watermark is structurally AHEAD of the replayed slot, so
 	// ingestion lag = 1002 - 1000 = 2 (healthy).
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("getFirstAvailableBlock", []byte(`200`))
+	up.script("oldestBlock", []byte(`[200]`))
 
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
@@ -303,8 +303,8 @@ func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 	if up.callCount("getMaxShredInsertSlot") != 1 {
 		t.Errorf("getMaxShredInsertSlot called %d times, want 1", up.callCount("getMaxShredInsertSlot"))
 	}
-	if up.callCount("getFirstAvailableBlock") != 1 {
-		t.Errorf("getFirstAvailableBlock called %d times, want 1", up.callCount("getFirstAvailableBlock"))
+	if up.callCount("oldestBlock") != 1 {
+		t.Errorf("floor probe called %d times, want 1", up.callCount("oldestBlock"))
 	}
 
 	if p.LatestSlot() != 1000 {
@@ -342,18 +342,16 @@ func TestSvmStatePoller_FirstAvailableSlot_UnknownUntilObserved(t *testing.T) {
 	require.Zero(t, floor)
 
 	// An upstream that does not implement the method stays unknown.
-	up.scriptError("getFirstAvailableBlock", -32601, "Method not found")
+	up.scriptError("oldestBlock", -32601, "Method not found")
 	require.NoError(t, p.Poll(context.Background()))
 	floor, known = p.FirstAvailableSlot()
 	require.False(t, known, "-32601 must leave the floor unknown, not record 0")
 	require.Zero(t, floor)
 }
 
-// The observed floor is an opt-in hint, never availability: an upstream whose
-// operator declared no firstAvailableSlotPlus costs no getFirstAvailableBlock
-// call and carries no floor, however many ticks run. This is what keeps a
-// vendor that reports a floor above slots it still serves from ever being
-// refused on it.
+// The observed floor is opt-in: an upstream whose operator declared no
+// firstAvailableSlotPlus costs no floor probe and carries no floor, however
+// many ticks run.
 func TestSvmStatePoller_FirstAvailableSlot_NotPolledWithoutDeclaredBound(t *testing.T) {
 	t.Parallel()
 	exact := int64(0)
@@ -374,13 +372,13 @@ func TestSvmStatePoller_FirstAvailableSlot_NotPolledWithoutDeclaredBound(t *test
 			up.script("getSlot:processed", []byte(`1000`))
 			up.script("getSlot:finalized", []byte(`990`))
 			up.script("getMaxShredInsertSlot", []byte(`1002`))
-			up.script("getFirstAvailableBlock", []byte(`509`))
+			up.script("oldestBlock", []byte(`[509]`))
 
 			p := newPollerWithUpstream(t, up)
 			for range 3 {
 				require.NoError(t, p.Poll(context.Background()))
 			}
-			require.Zero(t, up.callCount("getFirstAvailableBlock"))
+			require.Zero(t, up.callCount("oldestBlock"))
 			floor, known := p.FirstAvailableSlot()
 			require.False(t, known)
 			require.Zero(t, floor)
@@ -398,7 +396,7 @@ func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("getFirstAvailableBlock", []byte(`0`))
+	up.script("oldestBlock", []byte(`[0]`))
 
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
@@ -408,23 +406,24 @@ func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 	require.Zero(t, floor)
 }
 
-// JSON null is a malformed getFirstAvailableBlock answer, not a genesis floor.
-// Recording it as known 0 would make firstAvailableSlotPlus enforce an open
-// window from slot 0 and violate the unknown/fail-open contract.
-func TestSvmStatePoller_FirstAvailableSlot_NullLeavesUnknown(t *testing.T) {
+// An empty getBlocksWithLimit(0, 1) is no observation, not a genesis floor:
+// agave swallows a long-term-storage error into an empty list. Recording it as
+// known 0 would make firstAvailableSlotPlus enforce a window from slot 0 and
+// violate the unknown/fail-open contract.
+func TestSvmStatePoller_FirstAvailableSlot_EmptyLeavesUnknown(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstreamDeclaringFloor()
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("getFirstAvailableBlock", []byte(`null`))
+	up.script("oldestBlock", []byte(`[]`))
 
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
 
 	floor, known := p.FirstAvailableSlot()
-	require.False(t, known, "null must leave the floor unknown, not record 0")
+	require.False(t, known, "an empty list must leave the floor unknown, not record 0")
 	require.Zero(t, floor)
 }
 
@@ -461,7 +460,7 @@ func TestSvmStatePoller_FirstAvailableSlot_KnownWithoutLocalFetch(t *testing.T) 
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
 	up.script("getMaxShredInsertSlot", []byte(`300001`))
-	up.script("getFirstAvailableBlock", []byte(`200000`))
+	up.script("oldestBlock", []byte(`[200000]`))
 
 	p := newPollerWithUpstream(t, up)
 	// Seed the counter the way the shared-state registry does before this
@@ -470,7 +469,7 @@ func TestSvmStatePoller_FirstAvailableSlot_KnownWithoutLocalFetch(t *testing.T) 
 
 	require.NoError(t, p.Poll(context.Background()))
 
-	require.Zero(t, up.callCount("getFirstAvailableBlock"),
+	require.Zero(t, up.callCount("oldestBlock"),
 		"a fresh counter must suppress the local fetch — that is the condition this guards")
 	floor, known := p.FirstAvailableSlot()
 	require.True(t, known, "the floor must be known even though this instance never fetched it")
@@ -490,7 +489,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PropagatedZeroBecomesKnownOnTick(t *t
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
 	up.script("getMaxShredInsertSlot", []byte(`300001`))
-	up.script("getFirstAvailableBlock", []byte(`0`))
+	up.script("oldestBlock", []byte(`[0]`))
 
 	p := newPollerWithUpstream(t, up)
 	// Stands in for a peer's 0 arriving via propagation: value unchanged
@@ -501,7 +500,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PropagatedZeroBecomesKnownOnTick(t *t
 	require.False(t, known, "a no-change propagation fires no callback, so nothing is known yet")
 
 	require.NoError(t, p.Poll(context.Background()))
-	require.Zero(t, up.callCount("getFirstAvailableBlock"),
+	require.Zero(t, up.callCount("oldestBlock"),
 		"a fresh counter must suppress the local fetch — that is the condition this guards")
 
 	floor, known := p.FirstAvailableSlot()
@@ -523,13 +522,13 @@ func TestSvmStatePoller_FirstAvailableSlot_GaugeSetWithoutLocalFetch(t *testing.
 	up.script("getSlot:processed", []byte(`300000`))
 	up.script("getSlot:finalized", []byte(`299900`))
 	up.script("getMaxShredInsertSlot", []byte(`300001`))
-	up.script("getFirstAvailableBlock", []byte(`200000`))
+	up.script("oldestBlock", []byte(`[200000]`))
 
 	p := newPollerWithUpstream(t, up)
 	p.firstAvailableSlotShared.TryUpdate(context.Background(), 200000)
 
 	require.NoError(t, p.Poll(context.Background()))
-	require.Zero(t, up.callCount("getFirstAvailableBlock"),
+	require.Zero(t, up.callCount("oldestBlock"),
 		"a fresh counter must suppress the local fetch — that is the condition this guards")
 	require.Equal(t, float64(200000),
 		testutil.ToFloat64(p.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot)),
@@ -546,7 +545,7 @@ func TestSvmStatePoller_FirstAvailableSlot_AboveOwnLatestRejected(t *testing.T) 
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("getFirstAvailableBlock", []byte(`5000`))
+	up.script("oldestBlock", []byte(`[5000]`))
 
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
@@ -565,7 +564,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
 	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("getFirstAvailableBlock", []byte(`200`))
+	up.script("oldestBlock", []byte(`[200]`))
 
 	p := newPollerWithUpstream(t, up)
 	const polls = 2 * healthPollEveryNTicks
@@ -578,7 +577,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.
 	// stays at one fetch across this burst.
 	require.Equal(t, polls/healthPollEveryNTicks, up.callCount("getHealth"),
 		"getHealth runs every Nth poll")
-	require.Equal(t, 1, up.callCount("getFirstAvailableBlock"),
+	require.Equal(t, 1, up.callCount("oldestBlock"),
 		"the floor is debounced by its own staleness window, not by the poll gate")
 }
 

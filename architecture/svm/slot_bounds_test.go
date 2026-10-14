@@ -346,9 +346,8 @@ func TestCheckUpstreamDeclaredSlotBounds_RangeEnd(t *testing.T) {
 	})
 }
 
-// A vendor's observed getFirstAvailableBlock is a hint, not availability: a
-// provider can report a floor above slots it still serves. Nothing is skipped
-// on it unless the operator opts in through firstAvailableSlotPlus.
+// An observed floor skips nothing unless the operator opts in through
+// firstAvailableSlotPlus.
 func TestCheckUpstreamDeclaredSlotBounds_ObservedFloorIsHintOnly(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

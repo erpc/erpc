@@ -12,7 +12,7 @@ import (
 // DeclaredConfidenceLabel is the `confidence` label used on
 // MetricUpstreamStaleLowerBound / MetricUpstreamStaleUpperBound for a skip
 // driven by operator-configured svm.blockAvailability, not by an observed
-// getFirstAvailableBlock floor.
+// floor.
 const DeclaredConfidenceLabel = "configured"
 
 // maxRetryableSlotDistance mirrors erpc.defaultMaxRetryableBlockDistance as a

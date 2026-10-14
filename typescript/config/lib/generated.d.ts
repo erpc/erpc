@@ -1536,9 +1536,9 @@ export interface SvmUpstreamConfig {
     /**
      * BlockAvailability is an operator restriction on the slot window this
      * upstream may serve. Only what the operator declares is enforced; the
-     * upstream's own getFirstAvailableBlock is polled (and used as a lower
-     * anchor) solely when a bound uses firstAvailableSlotPlus, mirroring EVM's
-     * earliestBlockPlus. Unknown floor = unbounded.
+     * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
+     * used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
+     * mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
      */
     blockAvailability?: SvmBlockAvailabilityConfig;
 }
