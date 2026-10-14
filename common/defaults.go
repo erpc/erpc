@@ -2285,6 +2285,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
 			}
+			if n.Evm.ShortCircuitFutureBlocks == nil && defaults.Evm.ShortCircuitFutureBlocks != nil {
+				n.Evm.ShortCircuitFutureBlocks = defaults.Evm.ShortCircuitFutureBlocks
+			}
 			if n.Evm.StripSubscribeFromBlockZero == nil && defaults.Evm.StripSubscribeFromBlockZero != nil {
 				n.Evm.StripSubscribeFromBlockZero = defaults.Evm.StripSubscribeFromBlockZero
 			}
@@ -2524,6 +2527,11 @@ func DefaultEmptyResultAccept() []string {
 		"eth_getCode",
 		"eth_getStorageAt",
 		"eth_getTransactionCount",
+		// Solana: 0 is a full-history node's real first slot, and [] is a
+		// program with no matching accounts. Retrying either asks every
+		// upstream the same question and returns the same answer.
+		"getFirstAvailableBlock",
+		"getProgramAccounts",
 	}
 }
 

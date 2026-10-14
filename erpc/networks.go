@@ -513,7 +513,6 @@ func (n *Network) gatherEvmTipInputsForMethod(
 func evmTipBallot(upstreams []common.Upstream, useFinalized bool) (common.ServedTipPick, servedTipReference) {
 	live := make([]common.ServedTipInput, 0, len(upstreams))
 	var capped []common.ServedTipInput
-	var available int64
 	for _, cu := range upstreams {
 		u, ok := cu.(common.EvmUpstream)
 		if !ok || u.EvmStatePoller() == nil {
@@ -526,7 +525,6 @@ func evmTipBallot(upstreams []common.Upstream, useFinalized bool) (common.Served
 		if blk <= 0 {
 			continue
 		}
-		available = max(available, blk)
 		in := common.ServedTipInput{
 			UpstreamID:  u.Id(),
 			BlockNumber: blk,
@@ -542,10 +540,10 @@ func evmTipBallot(upstreams []common.Upstream, useFinalized bool) (common.Served
 		// the only observations available. (No live head means no live reference
 		// for the regression guard either; it falls back to its own last
 		// corroborated pick, see guardServedTipRegression.)
-		return common.PickServedTip(capped), servedTipReference{Available: available}
+		return common.PickServedTip(capped), servedTipReference{}
 	}
 	pick := common.PickServedTip(live)
-	return pick, servedTipReference{Corroborated: pick.Freshest, Max: pick.Max, Available: available}
+	return pick, servedTipReference{Corroborated: pick.Freshest, Max: pick.Max}
 }
 
 // servedTipReference is what the LIVE (non-capped) heads of one ballot say,
@@ -582,12 +580,6 @@ type servedTipReference struct {
 	// pick in the very shape the guard exists for (one live witness left, two
 	// stuck upstreams outvoting it).
 	Max int64
-
-	// Available is the highest effective head across EVERY candidate, live or
-	// static-capped: the bound above which no candidate holds the block. Only
-	// the future-block short-circuit reads it; the ballot and the guard ignore
-	// caps, but a capped archive still serves the blocks below its cap.
-	Available int64
 }
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
@@ -872,12 +864,12 @@ func (n *Network) servedTipEnabledFor(tag string) bool {
 	return n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTipEnabledFor(tag)
 }
 
-// evmHeadReference is the corroborated head, the raw live max and the servable
-// ceiling over the eligible, non-syncing upstreams for one axis — the same
-// ballot the served tip votes on. It serves the default (non-served-tip) head
-// accessors and the future-block short-circuit. A cap-only set has no live
-// reference, so its caps stand in: they are the only heads anyone in it can
-// serve.
+// evmHeadReference is the corroborated head and the raw live max over the
+// eligible, non-syncing upstreams for one axis — the same ballot the served tip
+// votes on. It serves the default (non-served-tip) head accessors; the
+// future-block short-circuit uses futureBlockCeiling instead. A cap-only set has
+// no live reference, so its caps stand in: they are the only heads anyone in it
+// can serve.
 func (n *Network) evmHeadReference(ctx context.Context, useFinalized bool) servedTipReference {
 	pick, ref := evmTipBallot(n.tipCandidateUpstreams(ctx, "*"), useFinalized)
 	if ref.Max <= 0 && pick.Inputs > 0 {
@@ -889,20 +881,24 @@ func (n *Network) evmHeadReference(ctx context.Context, useFinalized bool) serve
 
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
 // `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
-// beyond every eligible upstream's head (at the network's emptyResultConfidence level).
+// beyond every upstream's latest head.
 // No upstream can serve such a block yet, so dispatching + hedging across all of
 // them only burns latency and load before they each return empty — returning the
 // null here skips that fan-out entirely.
 //
-// Safety: it compares against the highest effective head across eligible
-// upstreams, static caps included (servedTipReference.Available), so it never
-// nulls out a block any upstream actually serves. It is gated on served-tip being enabled for the latest
-// axis — the same opt-in that makes the head trustworthy — and the synthesized
+// Safety: it compares against the highest last-observed effective latest head
+// across every upstream of the network, static caps included, and fails open
+// when any of them has no observed head (see futureBlockCeiling), so it never
+// nulls out a block at or below a head an upstream has reported. A block an
+// upstream produced after its last observed head can still get null until the
+// poller or a head subscription reports it. It runs when the network sets
+// evm.shortCircuitFutureBlocks or enables served-tip for the latest axis (see
+// EvmNetworkConfig.ShortCircuitFutureBlocksEnabled), and the synthesized
 // response is returned directly from Forward, so it is never written to cache
 // (the block will exist later). The post-forward empty guard remains as
 // defense-in-depth for the in-flight case where an upstream advances mid-request.
 func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
-	if n.cfg == nil || n.cfg.Evm == nil || !n.servedTipEnabledFor("latest") {
+	if n.cfg == nil || !n.cfg.Evm.ShortCircuitFutureBlocksEnabled() {
 		return nil, false
 	}
 	if !strings.EqualFold(method, "eth_getBlockByNumber") {
@@ -914,9 +910,8 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 		// params carry no concrete future number — never short-circuit.
 		return nil, false
 	}
-	useFinalized := n.cfg.Evm.EmptyResultConfidence == common.AvailbilityConfidenceFinalized
-	maxHead := n.evmHeadReference(ctx, useFinalized).Available
-	if maxHead <= 0 || bn <= maxHead {
+	maxHead, known := n.futureBlockCeiling(ctx)
+	if !known || bn <= maxHead {
 		// Unknown head (fail open) or block within reach of some upstream.
 		return nil, false
 	}
@@ -927,6 +922,34 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	resp.SetEvmBlockNumber(bn)
 	return resp, true
+}
+
+// futureBlockCeiling returns the highest effective latest head across every
+// upstream of the network, regardless of selection policy, tier or syncing
+// state: any of them can end up serving a request (policy order, the fallback
+// escape, syncing upstreams without skipWhenSyncing). It uses latest heads
+// whatever emptyResultConfidence says: that setting decides how an empty answer
+// is treated, not whether an upstream can have the block. known is false when
+// the network has no upstreams or any upstream's head is unknown.
+func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known bool) {
+	if n.upstreamsRegistry == nil {
+		return 0, false
+	}
+	ups := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	if len(ups) == 0 {
+		return 0, false
+	}
+	for _, u := range ups {
+		if u.EvmStatePoller() == nil {
+			return 0, false
+		}
+		blk, _ := evmTipObservation(u, false)
+		if blk <= 0 {
+			return 0, false
+		}
+		head = max(head, blk)
+	}
+	return head, true
 }
 
 // servedTip computes the majority served tip for one axis over the
@@ -1497,7 +1520,7 @@ func (n *Network) SvmEnforceBlockAvailability() bool {
 // This is used only by the networkPreForward_getBlock guard — its job is to
 // avoid short-circuiting requests that ANY upstream can serve. It therefore
 // uses MAX, not the majority (median) tip. This mirrors how EVM's
-// tryShortCircuitFutureBlock uses evmHeadReference.Max (not PickServedTip.Tip):
+// tryShortCircuitFutureBlock uses the max head across upstreams (not PickServedTip.Tip):
 // "never null out a block the most-ahead upstream actually has."
 // SvmHighestLatestSlot / SvmHighestFinalizedSlot remain median-based because
 // they advertise the chain head to clients — a different, conservative goal.
@@ -2156,10 +2179,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
+	// Future-block short-circuit: a concrete block number beyond every
+	// upstream's head cannot be served yet — return the truthful null instead of
+	// dispatching + hedging across upstreams that will all return empty. Runs
+	// before rate limiting so a non-dispatched request consumes no permit, and
+	// before the probe-bus publish so it is never mirrored to excluded upstreams.
+	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
+		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
+		if mlx != nil {
+			mlx.Close(ctx, resp, nil)
+		}
+		return resp, nil
+	}
+
 	// Feed the per-network probe-bus AFTER we know the request is
 	// actually going to dispatch to an upstream (i.e. not a
-	// cache-hit / static-response / follower-multiplexer
-	// short-circuit, all of which returned earlier). The publish is
+	// cache-hit / static-response / follower-multiplexer /
+	// future-block short-circuit, all of which returned earlier). The publish is
 	// non-blocking and drops on overflow — request latency is never
 	// affected. The Prober (if any) samples from this feed to mirror
 	// the request against currently-excluded upstreams so their
@@ -2184,18 +2220,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 			return resp, nil
 		}
-	}
-
-	// Future-block short-circuit: a concrete block number beyond every eligible
-	// upstream's head cannot be served yet — return the truthful null instead of
-	// dispatching + hedging across upstreams that will all return empty. Runs
-	// before rate limiting so a non-dispatched request consumes no permit.
-	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
-		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
-		if mlx != nil {
-			mlx.Close(ctx, resp, nil)
-		}
-		return resp, nil
 	}
 
 	// 3) Check if we should handle this method on this network
@@ -3636,35 +3660,34 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	ctx, span := common.StartDetailSpan(ctx, "Network.NormalizeResponse")
 	defer span.End()
+	return stampClientResponseID(ctx, req, resp)
+}
 
-	// For any JSON-RPC architecture: ensure the response ID always reflects the
-	// client's original request ID, regardless of what the upstream echoed back.
-	// This is especially important for proxies that normalize or multiplex IDs
-	// toward upstreams, and must apply to every JSON-RPC architecture — not just
-	// EVM — so non-EVM clients (Solana and future architectures) aren't left with
-	// mismatched response IDs.
-	if resp != nil {
-		if jrr, err := resp.JsonRpcResponse(ctx); err == nil && jrr != nil {
-			jrq, err := req.JsonRpcRequest(ctx)
-			if err != nil {
-				return err
-			}
-			// Prefer the verbatim request id bytes when available so that
-			// large integers (>2^53), fractional ids, and other exotic
-			// numeric formats round-trip without precision loss. Falls
-			// back to the typed id for programmatically-constructed
-			// requests where idRaw is unset.
-			if rawID := jrq.IDRawBytes(); len(rawID) > 0 {
-				if err := jrr.SetIDBytes(rawID); err != nil {
-					return err
-				}
-			} else if err := jrr.SetID(jrq.ID); err != nil {
-				return err
-			}
-		}
+// stampClientResponseID makes the response id the client's original request
+// id, regardless of what the upstream echoed back or which typed id a hook or
+// cache built the response with. It applies to every JSON-RPC architecture, so
+// proxies that multiplex ids toward upstreams never leak them to the client.
+//
+// The verbatim request id bytes win when present, so large integers (>2^53),
+// fractional ids, and string ids round-trip exactly. A `null` id is echoed as
+// `null` only on Solana (Agave does); EVM keeps the random id the request
+// carried upstream. Programmatically built requests fall back to the typed id.
+func stampClientResponseID(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	if resp == nil {
+		return nil
 	}
-
-	return nil
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil {
+		return nil
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return err
+	}
+	if rawID := jrq.IDRawBytes(); len(rawID) > 0 && (string(rawID) != "null" || isSvmRequest(req)) {
+		return jrr.SetIDBytes(rawID)
+	}
+	return jrr.SetID(jrq.ID)
 }
 
 func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {

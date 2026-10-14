@@ -364,6 +364,16 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	resp, err := p.forwardWithHooks(ctx, network, nq)
+	// Post-forward hooks, short-circuits and cache hits build responses from
+	// the typed request id, so the client's id is stamped last, here.
+	if serr := stampClientResponseID(ctx, nq, resp); serr != nil && err == nil {
+		err = serr
+	}
+	return resp, err
+}
+
+func (p *PreparedProject) forwardWithHooks(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	h := network.architectureHandler
 	if h != nil {
 		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)

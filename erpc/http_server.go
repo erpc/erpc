@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -339,6 +340,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				writeFatalError,
 				&common.TRUE,
 				s.executionHeadersMode(),
+				common.NetworkArchitecture(architecture),
 			)
 			return
 		}
@@ -380,6 +382,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				writeFatalError,
 				s.serverCfg.IncludeErrorDetails,
 				s.executionHeadersMode(),
+				common.NetworkArchitecture(architecture),
 			)
 			return
 		}
@@ -397,6 +400,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				writeFatalError,
 				&common.TRUE,
 				s.executionHeadersMode(),
+				common.NetworkArchitecture(architecture),
 			)
 			return
 		}
@@ -421,6 +425,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					writeFatalError,
 					&common.TRUE,
 					s.executionHeadersMode(),
+					common.NetworkArchitecture(architecture),
 				)
 				return
 			}
@@ -446,6 +451,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					writeFatalError,
 					s.serverCfg.IncludeErrorDetails,
 					s.executionHeadersMode(),
+					common.NetworkArchitecture(architecture),
 				)
 				return
 			}
@@ -469,6 +475,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					writeFatalError,
 					&common.TRUE,
 					s.executionHeadersMode(),
+					common.NetworkArchitecture(architecture),
 				)
 				return
 			}
@@ -497,6 +504,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				writeFatalError,
 				&common.TRUE,
 				s.executionHeadersMode(),
+				common.NetworkArchitecture(architecture),
 			)
 			return
 		}
@@ -526,6 +534,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					writeFatalError,
 					&common.TRUE,
 					s.executionHeadersMode(),
+					common.NetworkArchitecture(architecture),
 				)
 				common.SetTraceSpanError(parseRequestsSpan, err)
 				parseRequestsSpan.End()
@@ -534,6 +543,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		responses := make([]interface{}, len(requests))
+		// notifications marks valid Solana requests without an "id" member. They
+		// still run, but get no reply (JSON-RPC 2.0 §4.1), which is what Agave
+		// does: web3.js and @solana/kit never send one, and a reply carrying a
+		// random id is a response to a request nobody made.
+		notifications := make([]bool, len(requests))
 		var wg sync.WaitGroup
 
 		headers := r.Header
@@ -581,6 +595,9 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					common.EndRequestSpan(requestCtx, nil, responses[index])
 					return
 				}
+				if jrr, _ := nq.JsonRpcRequest(); jrr != nil && jrr.IsNotification() {
+					notifications[index] = isSvmRequest(nq, common.NetworkArchitecture(architecture))
+				}
 
 				if err := applyForwardHeaders(project, nq, headers); err != nil {
 					responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
@@ -603,7 +620,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					var reqId interface{}
 					if jrr, _ := nq.JsonRpcRequest(); jrr != nil {
 						jsonrpcVersion = jrr.JSONRPC
-						reqId = jrr.ID
+						reqId = jrr.ResponseID(isSvmRequest(nq, common.NetworkArchitecture(architecture)))
 					}
 					responses[index] = &HttpJsonRpcErrorResponse{
 						Jsonrpc: jsonrpcVersion,
@@ -675,7 +692,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							jsonrpcVersion := "2.0"
 							if jrr != nil {
 								jsonrpcVersion = jrr.JSONRPC
-								reqId = jrr.ID
+								reqId = jrr.ResponseID(isSvmRequest(nq, common.NetworkArchitecture(architecture)))
 							}
 							responses[index] = &HttpJsonRpcErrorResponse{
 								Jsonrpc: jsonrpcVersion,
@@ -795,19 +812,37 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		common.InjectHTTPResponseTraceContext(httpCtx, w)
 
-		if isBatch {
+		// Notifications get no entry; a request of only notifications gets an
+		// empty body.
+		replies := responses
+		if slices.Contains(notifications, true) {
+			replies = make([]interface{}, 0, len(responses))
+			for i, resp := range responses {
+				if !notifications[i] {
+					replies = append(replies, resp)
+				}
+			}
+		}
+		defer func() {
+			for _, resp := range responses {
+				if v, ok := resp.(*common.NormalizedResponse); ok && v != nil {
+					go v.Release()
+				}
+			}
+		}()
+
+		if len(replies) == 0 {
+			s.writeBatchExecHeaders(httpCtx, w, responses)
+			s.writeCostHeaders(httpCtx, w, responses)
+			w.WriteHeader(http.StatusOK)
+			common.EnrichHTTPServerSpan(httpCtx, http.StatusOK, nil)
+		} else if isBatch {
 			s.writeBatchExecHeaders(httpCtx, w, responses)
 			s.writeCostHeaders(httpCtx, w, responses)
 			w.WriteHeader(http.StatusOK)
 
-			bw := NewBatchResponseWriter(responses)
+			bw := NewBatchResponseWriter(replies)
 			_, err = bw.WriteTo(w)
-			for _, resp := range responses {
-				if r, ok := resp.(*common.NormalizedResponse); ok {
-					go r.Release()
-				}
-			}
-
 			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
 				s.logger.Error().Err(err).Msg("failed to write batch response")
 				writeFatalError(httpCtx, http.StatusInternalServerError, err)
@@ -822,13 +857,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 			// Determine HTTP status code - defaults to 200 for JSON-RPC responses,
 			// but transport-level errors (auth, rate limit, etc.) get appropriate status codes
-			statusCode := determineResponseStatusCode(res)
+			statusCode := determineResponseStatusCode(res, common.NetworkArchitecture(architecture))
 			w.WriteHeader(statusCode)
 
 			switch v := res.(type) {
 			case *common.NormalizedResponse:
 				_, err = v.WriteTo(w)
-				go v.Release()
 			case *HttpJsonRpcErrorResponse:
 				_, err = writeJsonRpcError(w, v)
 			default:
@@ -1397,9 +1431,9 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 	return false
 }
 
-// writeCostHeaders emits the opt-in cost/billing header group for the
-// routed sub-responses of one HTTP response — the same shape on the single
-// and batch write paths, always before WriteHeader:
+// costHeaders builds the opt-in cost/billing header group for the routed
+// sub-responses of one response — the same shape for single and batch
+// responses, and for HTTP (writeCostHeaders) and WebSocket cost frames:
 //
 //	X-ERPC-Calls:           routed JSON-RPC sub-calls in this response
 //	X-ERPC-Billable:        how many were billable (isBillableItem)
@@ -1428,11 +1462,11 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 //	                        is not a fact about the response and is omitted
 //	                        rather than guessed.
 //
-// Early errors that never routed a request get no cost headers — there is
-// no routed call to account for.
-func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter, items []interface{}) {
+// nil when the group is off or there are no items: early errors that never
+// routed a request have no routed call to account for.
+func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.Header {
 	if !s.costHeadersEnabled() || len(items) == 0 {
-		return
+		return nil
 	}
 	billable := 0
 	methods := map[string]struct{}{}
@@ -1475,12 +1509,13 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 			}
 		}
 	}
-	setInt(w, "X-ERPC-Calls", len(items))
-	setInt(w, "X-ERPC-Billable", billable)
+	h := make(http.Header, 8)
+	h.Set("X-ERPC-Calls", strconv.Itoa(len(items)))
+	h.Set("X-ERPC-Billable", strconv.Itoa(billable))
 	if networkId != "" && !networkAmbiguous {
-		w.Header().Set("X-ERPC-Network-Id", networkId)
+		h.Set("X-ERPC-Network-Id", networkId)
 		if networkAlias != "" && networkAlias != "n/a" {
-			w.Header().Set("X-ERPC-Network-Alias", networkAlias)
+			h.Set("X-ERPC-Network-Alias", networkAlias)
 		}
 	}
 	if len(methods) > 0 {
@@ -1489,7 +1524,7 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 			names = append(names, m)
 		}
 		sort.Strings(names)
-		w.Header().Set("X-ERPC-Methods", strings.Join(names, ","))
+		h.Set("X-ERPC-Methods", strings.Join(names, ","))
 	}
 	if len(credits) > 0 {
 		keys := make([]string, 0, len(credits))
@@ -1501,9 +1536,18 @@ func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter
 		for i, k := range keys {
 			segments[i] = k + "=" + strconv.FormatInt(credits[k], 10)
 		}
-		w.Header().Set("X-ERPC-Credits", strings.Join(segments, ";"))
-		w.Header().Set("X-ERPC-Credits-Total", strconv.FormatInt(creditsTotal, 10))
-		w.Header().Set("X-ERPC-Credits-Version", common.ErpcVersion)
+		h.Set("X-ERPC-Credits", strings.Join(segments, ";"))
+		h.Set("X-ERPC-Credits-Total", strconv.FormatInt(creditsTotal, 10))
+		h.Set("X-ERPC-Credits-Version", common.ErpcVersion)
+	}
+	return h
+}
+
+// writeCostHeaders sets costHeaders on an HTTP response, before WriteHeader.
+func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter, items []interface{}) {
+	dst := w.Header()
+	for k, v := range s.costHeaders(ctx, items) {
+		dst[k] = v
 	}
 }
 
@@ -1619,7 +1663,9 @@ func (s *HttpServer) writeBatchExecHeaders(ctx context.Context, w http.ResponseW
 // determineResponseStatusCode extracts any error from a response and determines
 // the appropriate HTTP status code. Defaults to 200 for JSON-RPC responses,
 // but transport-level errors (auth, rate limit, not found) get appropriate status codes.
-func determineResponseStatusCode(res interface{}) int {
+// architectureHint carries the URL-parsed architecture for responses that hold
+// no request (a body that never parsed).
+func determineResponseStatusCode(res interface{}, architectureHint ...common.NetworkArchitecture) int {
 	var err error
 	switch v := res.(type) {
 	case *HttpJsonRpcErrorResponse:
@@ -1636,7 +1682,12 @@ func determineResponseStatusCode(res interface{}) int {
 
 	// Transport-level errors get appropriate HTTP status codes
 	switch {
-	// 400 Bad Request - malformed requests
+	// 400 Bad Request - malformed requests. Solana clients expect what Agave
+	// does: HTTP 200 with the -32700/-32600/-32602 error in the body. web3.js
+	// and @solana/kit throw a transport error on 400 and never read the code.
+	case common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest) &&
+		isSvmRequest(extractRequest(res), architectureHint...):
+		return http.StatusOK
 	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest):
 		return http.StatusBadRequest
 	// 401 Unauthorized - authentication failures
@@ -1736,6 +1787,24 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	return resp
 }
 
+// isSvmRequest reports whether a request targets a Solana network. Authentication
+// and body parsing run before network resolution, so callers pass the
+// URL-parsed architecture as a hint; later errors derive it from nq.Network(),
+// and body-routed requests fall back to the envelope's "networkId".
+func isSvmRequest(nq *common.NormalizedRequest, architectureHint ...common.NetworkArchitecture) bool {
+	if len(architectureHint) > 0 && architectureHint[0] == common.ArchitectureSvm {
+		return true
+	}
+	if nq == nil {
+		return false
+	}
+	if strings.HasPrefix(nq.NetworkId(), "svm:") {
+		return true
+	}
+	return nq.Network() == nil && (len(architectureHint) == 0 || architectureHint[0] == "") &&
+		strings.HasPrefix(nq.NetworkIdHint(), "svm:")
+}
+
 // buildErrorResponseBody constructs the error response without logging.
 func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
@@ -1776,21 +1845,12 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 	var jsonrpcVersion string = "2.0"
 	var reqId interface{} = nil
 	var method string = ""
-	isSvmRequest := len(architectureHint) > 0 && architectureHint[0] == common.ArchitectureSvm
-	if !isSvmRequest && nq != nil {
-		isSvmRequest = strings.HasPrefix(nq.NetworkId(), "svm:")
-		// Body-routed requests have no URL architecture hint and auth still runs
-		// before network resolution, so fall back to the envelope's own hint
-		// without moving network lookup ahead of authentication.
-		if !isSvmRequest && nq.Network() == nil && (len(architectureHint) == 0 || architectureHint[0] == "") {
-			isSvmRequest = strings.HasPrefix(nq.NetworkIdHint(), "svm:")
-		}
-	}
+	svm := isSvmRequest(nq, architectureHint...)
 	if nq != nil {
 		jrr, _ := nq.JsonRpcRequest()
 		if jrr != nil {
 			jsonrpcVersion = jrr.JSONRPC
-			reqId = jrr.ID
+			reqId = jrr.ResponseID(svm)
 			method = jrr.Method
 		}
 	}
@@ -1804,7 +1864,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 		// collision-free generic server bucket instead. Keep native upstream
 		// -32005 untouched: it really does mean NodeUnhealthy and its outer error
 		// chain contains none of these local limiter codes.
-		if wireCode == common.JsonRpcErrorCapacityExceeded && isSvmRequest &&
+		if wireCode == common.JsonRpcErrorCapacityExceeded && svm &&
 			common.HasErrorCode(err,
 				common.ErrCodeAuthRateLimitRuleExceeded,
 				common.ErrCodeProjectRateLimitRuleExceeded,
@@ -1861,35 +1921,15 @@ func handleErrorResponse(
 	writeFatalError func(ctx context.Context, statusCode int, body error),
 	includeErrorDetails *bool,
 	mode common.ExecutionHeadersMode,
+	architectureHint ...common.NetworkArchitecture,
 ) {
-	resp := processErrorBody(logger, startedAt, nq, err, includeErrorDetails)
-	// Transport defaults to 200 for JSON-RPC, with limited exceptions.
-	// Non-200 codes are reserved for transport/infrastructure level issues,
-	// not JSON-RPC application errors (which stay 200 with error in body).
-	statusCode := http.StatusOK
-	switch {
-	// 400 Bad Request - malformed requests (not valid JSON-RPC)
-	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest):
-		statusCode = http.StatusBadRequest
-	// 401 Unauthorized - authentication failures
-	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
-		statusCode = http.StatusUnauthorized
-	// 404 Not Found - resource not found at HTTP level
-	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound, common.ErrCodeNetworkNotSupported):
-		statusCode = http.StatusNotFound
-	// 429 Too Many Requests - rate limiting (critical for client retry logic)
-	case common.HasErrorCode(err,
-		common.ErrCodeAuthRateLimitRuleExceeded,
-		common.ErrCodeProjectRateLimitRuleExceeded,
-		common.ErrCodeNetworkRateLimitRuleExceeded,
-		common.ErrCodeEndpointCapacityExceeded):
-		statusCode = http.StatusTooManyRequests
-	// 404 Not Found - no upstream could be initialized for this network at all.
-	// Terminal, not transient, so it is a coverage gap rather than a server fault
-	// (see ErrNetworkNoUpstreamsAvailable). Deliberately last: a more specific
-	// verdict already on the cause chain (429 quota) describes the failure better.
-	case common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable):
-		statusCode = http.StatusNotFound
+	resp := processErrorBody(logger, startedAt, nq, err, includeErrorDetails, architectureHint...)
+	// Status reads the JSON-RPC body when there is one (it carries the request,
+	// hence the network), else the raw error: a non-JSON-RPC body may be a
+	// value type that no longer satisfies `error`.
+	statusCode := determineResponseStatusCode(err, architectureHint...)
+	if body, ok := resp.(*HttpJsonRpcErrorResponse); ok {
+		statusCode = determineResponseStatusCode(body, architectureHint...)
 	}
 	// Emit X-ERPC-* headers BEFORE WriteHeader — once WriteHeader fires
 	// the header map is sealed. processErrorBody attaches `nq` to the

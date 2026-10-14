@@ -1297,6 +1297,32 @@ func TestNetworkConfig_SetDefaults_StripSubscribeFromBlockZeroInheritsFromDefaul
 	assert.Equal(t, &strip, n.Evm.StripSubscribeFromBlockZero)
 }
 
+func TestNetworkConfig_SetDefaults_ShortCircuitFutureBlocksInheritsFromDefaults(t *testing.T) {
+	enabled, disabled := true, false
+	defaults := &NetworkDefaults{Evm: &EvmNetworkConfig{ShortCircuitFutureBlocks: &enabled}}
+
+	inherited := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+	assert.NoError(t, inherited.SetDefaults(nil, defaults))
+	assert.True(t, inherited.Evm.ShortCircuitFutureBlocksEnabled())
+
+	// An explicit network-level false wins over a true default.
+	overridden := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1, ShortCircuitFutureBlocks: &disabled}}
+	assert.NoError(t, overridden.SetDefaults(nil, defaults))
+	assert.False(t, overridden.Evm.ShortCircuitFutureBlocksEnabled())
+}
+
+func TestEvmNetworkConfig_ShortCircuitFutureBlocksEnabled(t *testing.T) {
+	var nilCfg *EvmNetworkConfig
+	assert.False(t, nilCfg.ShortCircuitFutureBlocksEnabled())
+	assert.False(t, (&EvmNetworkConfig{}).ShortCircuitFutureBlocksEnabled())
+	enabled, disabled := true, false
+	assert.False(t, (&EvmNetworkConfig{ShortCircuitFutureBlocks: &disabled}).ShortCircuitFutureBlocksEnabled())
+	assert.True(t, (&EvmNetworkConfig{ShortCircuitFutureBlocks: &enabled}).ShortCircuitFutureBlocksEnabled())
+	// servedTip for "latest" keeps the short-circuit on, as before.
+	assert.True(t, (&EvmNetworkConfig{ServedTip: &EvmServedTipConfig{EnabledFor: []string{"latest"}}}).ShortCircuitFutureBlocksEnabled())
+	assert.False(t, (&EvmNetworkConfig{ServedTip: &EvmServedTipConfig{EnabledFor: []string{"finalized"}}}).ShortCircuitFutureBlocksEnabled())
+}
+
 func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
 	cfg := &Config{}
 	base := func(mode RateLimitCountMode) *UpstreamConfig {

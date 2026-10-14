@@ -2778,6 +2778,17 @@ type EvmNetworkConfig struct {
 	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
 
+	// ShortCircuitFutureBlocks returns null for a numbered eth_getBlockByNumber
+	// above the highest latest head across every upstream of the network
+	// (regardless of selection policy, tier or syncing state), without
+	// dispatching it; it never fires while any upstream's head is unknown.
+	// Clients that poll the next block by number otherwise walk every routed
+	// upstream on each poll. Always on when servedTip is enabled for "latest".
+	// The head is what the state poller and head subscriptions last reported, so
+	// a block an upstream produced since then gets null until eRPC sees it: only
+	// enable it where heads arrive promptly (e.g. over WebSocket).
+	ShortCircuitFutureBlocks *bool `yaml:"shortCircuitFutureBlocks,omitempty" json:"shortCircuitFutureBlocks,omitempty"`
+
 	// SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
 	// requests carrying the `safe` block tag. Matching upstreams define and
 	// serve `safe`; empty (without an inherited network default) keeps existing
@@ -2856,6 +2867,20 @@ type EvmServedTipConfig struct {
 	// configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
 	// bare number is parsed as MILLISECONDS.
 	TrajectoryWindow *Duration `yaml:"trajectoryWindow,omitempty" json:"trajectoryWindow,omitempty"`
+}
+
+// ShortCircuitFutureBlocksEnabled reports whether a numbered eth_getBlockByNumber
+// above every upstream's head returns null without dispatching: when
+// ShortCircuitFutureBlocks is true, or servedTip is enabled for "latest".
+// Nil-receiver safe.
+func (c *EvmNetworkConfig) ShortCircuitFutureBlocksEnabled() bool {
+	if c == nil {
+		return false
+	}
+	if c.ShortCircuitFutureBlocks != nil && *c.ShortCircuitFutureBlocks {
+		return true
+	}
+	return c.ServedTipEnabledFor("latest")
 }
 
 // ServedTipEnabledFor reports whether the majority served tip is enabled for

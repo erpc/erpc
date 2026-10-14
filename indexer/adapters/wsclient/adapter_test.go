@@ -21,7 +21,7 @@ type fakeWriter struct {
 	dropped []bool        // lossy flag per NotificationDropped call
 }
 
-func (w *fakeWriter) WriteSubscriptionNotification(_ string, result json.RawMessage) error {
+func (w *fakeWriter) WriteSubscriptionNotification(_ Subscription, result json.RawMessage) error {
 	if w.block != nil {
 		<-w.block
 	}
