@@ -220,7 +220,25 @@ func TestWebSocket_ShutdownClosesPromptlyAfterInflightRequests(t *testing.T) {
 		Delay(500 * time.Millisecond).
 		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0xabc123"})
 
-	cfg := standardWsConfig(subscribingWsUpstream(t))
+	// The network may route eth_getBalance to either upstream, so both answer
+	// it the same way, late enough to still be in flight at shutdown.
+	wsUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
+		standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
+			switch method {
+			case "eth_subscribe":
+				_ = mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0xupstreamsub"})
+			case "eth_getBalance":
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					_ = mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0xabc123"})
+				}()
+			default:
+				_ = mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": true})
+			}
+		})
+	})
+	t.Cleanup(wsUpstream.Close)
+	cfg := standardWsConfig("ws" + strings.TrimPrefix(wsUpstream.URL, "http"))
 	cfg.Server.WaitBeforeShutdown = common.Duration(5 * time.Second).Ptr()
 	srv, addr, cancel := startTestERPCServer(t, cfg)
 	defer func() { cancel(); _ = srv.Shutdown(&log.Logger) }()

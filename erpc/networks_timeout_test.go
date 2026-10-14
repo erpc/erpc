@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/prometheus/client_golang/prometheus"
@@ -746,10 +747,14 @@ func setupTestNetworkWithUpstreamTimeoutPolicy(t *testing.T, ctx context.Context
 }
 
 // timeoutFiredCounterValue returns the total MetricNetworkTimeoutFiredTotal
-// count for the given scope label across all other label combinations.
+// count for the given scope label across all other label combinations. It reads
+// the Vec through a private registry: the default registry only holds counters
+// once some test in the process ran Init, so gathering from it is order-dependent.
 func timeoutFiredCounterValue(t *testing.T, scope string) uint64 {
 	t.Helper()
-	mfs, err := prometheus.DefaultGatherer.Gather()
+	reg := prometheus.NewRegistry()
+	require.NoError(t, reg.Register(telemetry.MetricNetworkTimeoutFiredTotal))
+	mfs, err := reg.Gather()
 	require.NoError(t, err)
 	var total uint64
 	for _, mf := range mfs {
