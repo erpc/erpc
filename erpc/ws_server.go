@@ -437,7 +437,7 @@ func (wsc *WsConnection) buildUnsupportedMethodResponse(nq *common.NormalizedReq
 	var reqId interface{}
 	if jrr, err := nq.JsonRpcRequest(); err == nil {
 		jsonrpcVersion = jrr.JSONRPC
-		reqId = jrr.ID
+		reqId = jrr.ResponseID()
 	}
 	return &HttpJsonRpcErrorResponse{
 		Jsonrpc: jsonrpcVersion,

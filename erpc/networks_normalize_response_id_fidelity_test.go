@@ -133,7 +133,8 @@ func TestJsonRpcRequest_IDRawBytes(t *testing.T) {
 		{name: "string", body: `{"jsonrpc":"2.0","method":"x","id":"a"}`, want: `"a"`},
 		{name: "large_int", body: `{"jsonrpc":"2.0","method":"x","id":9007199254740993}`, want: `9007199254740993`},
 		{name: "negative_int", body: `{"jsonrpc":"2.0","method":"x","id":-42}`, want: `-42`},
-		{name: "null_id_no_raw", body: `{"jsonrpc":"2.0","method":"x","id":null}`, want: ``},
+		// A null id is echoed as null (Agave does), so its bytes are kept.
+		{name: "null_id", body: `{"jsonrpc":"2.0","method":"x","id":null}`, want: `null`},
 		{name: "missing_id_no_raw", body: `{"jsonrpc":"2.0","method":"x"}`, want: ``},
 	}
 

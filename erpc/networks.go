@@ -3594,35 +3594,34 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	ctx, span := common.StartDetailSpan(ctx, "Network.NormalizeResponse")
 	defer span.End()
+	return stampClientResponseID(ctx, req, resp)
+}
 
-	// For any JSON-RPC architecture: ensure the response ID always reflects the
-	// client's original request ID, regardless of what the upstream echoed back.
-	// This is especially important for proxies that normalize or multiplex IDs
-	// toward upstreams, and must apply to every JSON-RPC architecture — not just
-	// EVM — so non-EVM clients (Solana and future architectures) aren't left with
-	// mismatched response IDs.
-	if resp != nil {
-		if jrr, err := resp.JsonRpcResponse(ctx); err == nil && jrr != nil {
-			jrq, err := req.JsonRpcRequest(ctx)
-			if err != nil {
-				return err
-			}
-			// Prefer the verbatim request id bytes when available so that
-			// large integers (>2^53), fractional ids, and other exotic
-			// numeric formats round-trip without precision loss. Falls
-			// back to the typed id for programmatically-constructed
-			// requests where idRaw is unset.
-			if rawID := jrq.IDRawBytes(); len(rawID) > 0 {
-				if err := jrr.SetIDBytes(rawID); err != nil {
-					return err
-				}
-			} else if err := jrr.SetID(jrq.ID); err != nil {
-				return err
-			}
-		}
+// stampClientResponseID makes the response id the client's original request
+// id, regardless of what the upstream echoed back or which typed id a hook or
+// cache built the response with. It applies to every JSON-RPC architecture, so
+// proxies that multiplex ids toward upstreams never leak them to the client.
+//
+// The verbatim request id bytes win when present, so large integers (>2^53),
+// fractional ids, and `null` round-trip exactly: a `null` request id answers
+// `null`, not the random id the request carried upstream. Programmatically
+// built requests have no wire bytes and fall back to the typed id.
+func stampClientResponseID(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	if resp == nil {
+		return nil
 	}
-
-	return nil
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil {
+		return nil
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return err
+	}
+	if rawID := jrq.IDRawBytes(); len(rawID) > 0 {
+		return jrr.SetIDBytes(rawID)
+	}
+	return jrr.SetID(jrq.ID)
 }
 
 func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {

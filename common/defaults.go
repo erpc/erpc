@@ -2522,6 +2522,11 @@ func DefaultEmptyResultAccept() []string {
 		"eth_getCode",
 		"eth_getStorageAt",
 		"eth_getTransactionCount",
+		// Solana: 0 is a full-history node's real first slot, and [] is a
+		// program with no matching accounts. Retrying either asks every
+		// upstream the same question and returns the same answer.
+		"getFirstAvailableBlock",
+		"getProgramAccounts",
 	}
 }
 
