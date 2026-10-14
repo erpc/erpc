@@ -151,7 +151,7 @@ The two scopes compose multiplicatively: `network.maxAttempts: 3` × `upstream.m
 2. `ErrEndpointExecutionException` with `retryableTowardNetwork: false` — no retry.
 3. `ErrUpstreamBlockUnavailable` — retry reason `"block_unavailable"` (unless `emptyResultMaxAttempts` cap reached).
 4. `ErrEndpointMissingData` + `RetryEmpty == false` directive — no retry; otherwise reason `"missing_data"` (unless cap reached).
-5. `IsRetryableTowardNetwork(err) == true` — reason `"retryable_error"`.
+5. `IsRetryableTowardNetwork(err) == true` — reason `"retryable_error"`. A sweep whose every upstream answered "method unsupported" (`-32601`) or ignores the method is not retryable: neither a retry nor a hedge re-asks the upstreams, so an unknown method fails after one sweep.
 6. `resp.IsResultEmptyish()` + `RetryEmpty == true` directive + result not accepted by the empty-result policy — reason `"empty_result"` (unless cap reached).
 7. `RetryPending == true` + tx-lookup method — reason `"pending_tx"` (unless cap reached).
 
