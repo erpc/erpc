@@ -15,6 +15,7 @@ import (
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/gorilla/websocket"
@@ -38,6 +39,11 @@ type WsConnection struct {
 	// is bound to its network (as on the HTTP path).
 	architecture common.NetworkArchitecture
 	httpReq      *http.Request // the upgrade request, for auth and headers
+	// costFrames: every text message starts with a cost header block (see
+	// writeMessage); set at upgrade from headerCostFrames and costHeaders.
+	costFrames bool
+	// notifyCostBlocks caches each subscription kind's notification block.
+	notifyCostBlocks [indexer.KindPendingTx + 1]atomic.Pointer[[]byte]
 
 	// Write synchronization (gorilla/websocket requires synchronized writes)
 	writeMu sync.Mutex
@@ -104,6 +110,7 @@ func (s *HttpServer) handleWebSocket(
 		networkId:    fmt.Sprintf("%s:%s", architecture, chainId),
 		architecture: common.NetworkArchitecture(architecture),
 		httpReq:      r,
+		costFrames:   s.costHeadersEnabled() && r.Header.Get(headerCostFrames) == "1",
 		sem:          make(chan struct{}, wsCfg.MaxConcurrentRequestsPerConnection),
 		stopped:      make(chan struct{}),
 		done:         make(chan struct{}),
@@ -267,6 +274,7 @@ func (wsc *WsConnection) handleMessage(raw []byte) {
 
 	out, notification := wsc.handleRequest(ctx, raw, &startedAt, false)
 	if notification {
+		wsc.writeMeteringOnly(wsc.costBlock(ctx, []interface{}{out}))
 		if r, ok := out.(*common.NormalizedResponse); ok {
 			go r.Release()
 		}
@@ -276,7 +284,7 @@ func (wsc *WsConnection) handleMessage(raw []byte) {
 	case *common.NormalizedResponse:
 		wsc.writeNormalizedResponse(v)
 	default:
-		if err := wsc.writeJSON(v); err != nil {
+		if err := wsc.writeJSON(wsc.costBlock(ctx, []interface{}{v}), v); err != nil {
 			wsc.logger.Debug().Err(err).Str("connId", wsc.id).Msg("failed to write error response")
 		}
 	}
@@ -421,8 +429,12 @@ func (wsc *WsConnection) handleBatch(ctx context.Context, raw []byte, startedAt 
 			replies = append(replies, resp)
 		}
 	}
+	// Costs cover notifications too, as on HTTP: they ran.
+	costs := wsc.costBlock(ctx, responses)
 	if len(replies) > 0 {
-		wsc.writeBatchResponse(replies)
+		wsc.writeBatchResponse(costs, replies)
+	} else {
+		wsc.writeMeteringOnly(costs)
 	}
 
 	for _, resp := range responses {
@@ -455,8 +467,67 @@ const wsWriteDeadline = 10 * time.Second
 
 var errWsConnClosed = errors.New("connection closed")
 
-// writeMessage writes one text message produced by write.
-func (wsc *WsConnection) writeMessage(write func(w io.Writer) error) error {
+// headerCostFrames on the upgrade request opts the connection into cost
+// frames, when server.costHeaders is also on.
+const headerCostFrames = "X-ERPC-Cost-Frames"
+
+var crlf = []byte("\r\n")
+
+// costBlock is the cost frame header block for a response to items: the
+// HTTP cost header set in HTTP/1.1 wire form, without the closing blank
+// line. nil when cost frames are off or nothing was routed.
+func (wsc *WsConnection) costBlock(ctx context.Context, items []interface{}) []byte {
+	if !wsc.costFrames {
+		return nil
+	}
+	h := wsc.server.costHeaders(ctx, items)
+	if len(h) == 0 {
+		return nil
+	}
+	var b bytes.Buffer
+	_ = h.Write(&b)
+	return b.Bytes()
+}
+
+// notificationCostBlock is the cost frame header block of one subscription
+// notification: one billable eth_subscription call on the connection's
+// network. sub.NetworkID is the indexer's project-scoped key, not the
+// network id the response headers carry, so the connection's is used.
+func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription) []byte {
+	if !wsc.costFrames {
+		return nil
+	}
+	kind := int(sub.Kind)
+	cacheable := kind >= 0 && kind < len(wsc.notifyCostBlocks)
+	if cacheable {
+		if b := wsc.notifyCostBlocks[kind].Load(); b != nil {
+			return *b
+		}
+	}
+	h := http.Header{}
+	h.Set("X-ERPC-Calls", "1")
+	h.Set("X-ERPC-Billable", "1")
+	h.Set("X-ERPC-Methods", "eth_subscription")
+	h.Set("X-ERPC-Subscription", sub.Kind.String())
+	h.Set("X-ERPC-Network-Id", wsc.networkId)
+	nw, err := wsc.project.GetNetwork(wsc.ctx, wsc.networkId)
+	if err == nil {
+		h.Set("X-ERPC-Network-Alias", nw.Label())
+	}
+	var buf bytes.Buffer
+	_ = h.Write(&buf)
+	b := buf.Bytes()
+	// Retry the alias next time if the network lookup failed.
+	if cacheable && err == nil {
+		wsc.notifyCostBlocks[kind].Store(&b)
+	}
+	return b
+}
+
+// writeMessage writes one text message produced by write. With cost frames
+// on, the message starts with costs (a header block, possibly empty) and the
+// blank line ending it, so the block and its body are one message.
+func (wsc *WsConnection) writeMessage(costs []byte, write func(w io.Writer) error) error {
 	wsc.writeMu.Lock()
 	defer wsc.writeMu.Unlock()
 
@@ -472,21 +543,29 @@ func (wsc *WsConnection) writeMessage(write func(w io.Writer) error) error {
 	if err != nil {
 		return err
 	}
-	err = write(w)
+	if wsc.costFrames {
+		if _, err = w.Write(costs); err == nil {
+			_, err = w.Write(crlf)
+		}
+	}
+	if err == nil {
+		err = write(w)
+	}
 	if closeErr := w.Close(); err == nil {
 		err = closeErr
 	}
 	return err
 }
 
-func (wsc *WsConnection) writeJSON(v interface{}) error {
-	return wsc.writeMessage(func(w io.Writer) error {
+func (wsc *WsConnection) writeJSON(costs []byte, v interface{}) error {
+	return wsc.writeMessage(costs, func(w io.Writer) error {
 		return json.NewEncoder(w).Encode(v)
 	})
 }
 
+// writeError writes an error for a message that routed no call.
 func (wsc *WsConnection) writeError(code int, message string) {
-	_ = wsc.writeJSON(map[string]interface{}{
+	_ = wsc.writeJSON(nil, map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      nil,
 		"error": map[string]interface{}{
@@ -499,7 +578,7 @@ func (wsc *WsConnection) writeError(code int, message string) {
 func (wsc *WsConnection) writeNormalizedResponse(resp *common.NormalizedResponse) {
 	// Release even when the write never starts (connection closed or broken).
 	defer func() { go resp.Release() }()
-	err := wsc.writeMessage(func(w io.Writer) error {
+	err := wsc.writeMessage(wsc.costBlock(wsc.ctx, []interface{}{resp}), func(w io.Writer) error {
 		_, err := resp.WriteTo(w)
 		return err
 	})
@@ -508,11 +587,21 @@ func (wsc *WsConnection) writeNormalizedResponse(resp *common.NormalizedResponse
 	}
 }
 
-func (wsc *WsConnection) writeBatchResponse(responses []interface{}) {
-	_ = wsc.writeMessage(func(w io.Writer) error {
+func (wsc *WsConnection) writeBatchResponse(costs []byte, responses []interface{}) {
+	_ = wsc.writeMessage(costs, func(w io.Writer) error {
 		_, err := NewBatchResponseWriter(responses).WriteTo(w)
 		return err
 	})
+}
+
+// writeMeteringOnly writes a cost block with an empty body for calls that
+// ran but get no reply (id-less notifications), so a metering proxy still
+// sees them. Nothing is written without cost frames or routed items.
+func (wsc *WsConnection) writeMeteringOnly(costs []byte) {
+	if len(costs) == 0 {
+		return
+	}
+	_ = wsc.writeMessage(costs, func(io.Writer) error { return nil })
 }
 
 func (wsc *WsConnection) pingLoop(interval time.Duration) {
@@ -593,16 +682,16 @@ func (wsc *WsConnection) waitInflight(timeout time.Duration) {
 	}
 }
 
-func (wsc *WsConnection) WriteSubscriptionNotification(clientSubId string, result json.RawMessage) error {
+func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription, result json.RawMessage) error {
 	notification := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "eth_subscription",
 		"params": map[string]interface{}{
-			"subscription": clientSubId,
+			"subscription": sub.ClientSubID,
 			"result":       result,
 		},
 	}
-	return wsc.writeJSON(notification)
+	return wsc.writeJSON(wsc.notificationCostBlock(sub), notification)
 }
 
 // NotificationDropped records a notification lost to a full subscription
@@ -610,8 +699,10 @@ func (wsc *WsConnection) WriteSubscriptionNotification(clientSubId string, resul
 // the client reconnects knowing it missed data instead of silently
 // diverging.
 func (wsc *WsConnection) NotificationDropped(sub wsclient.Subscription, lossy bool) {
-	network := sub.NetworkID
-	if nw, err := wsc.project.GetNetwork(wsc.ctx, sub.NetworkID); err == nil {
+	// sub.NetworkID is the indexer's project-scoped key; the connection has
+	// one network.
+	network := wsc.networkId
+	if nw, err := wsc.project.GetNetwork(wsc.ctx, wsc.networkId); err == nil {
 		network = nw.Label()
 	}
 	telemetry.CounterHandle(telemetry.MetricWebsocketSubscriptionNotificationsDroppedTotal,

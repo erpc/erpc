@@ -20,7 +20,7 @@ var ErrLimitExceeded = errors.New("subscription limit exceeded")
 
 // NotificationWriter writes notifications to the client connection.
 type NotificationWriter interface {
-	WriteSubscriptionNotification(clientSubId string, result json.RawMessage) error
+	WriteSubscriptionNotification(sub Subscription, result json.RawMessage) error
 	// NotificationDropped is called each time a full buffer costs a
 	// notification. lossy is false when the client cannot re-derive what
 	// was lost (see isLossy), in which case the connection should end.
@@ -229,7 +229,7 @@ func (a *Adapter) runWriter(sub *clientSub) {
 		case <-sub.done:
 			return
 		case payload := <-sub.notify:
-			if err := a.writer.WriteSubscriptionNotification(sub.id, payload); err != nil {
+			if err := a.writer.WriteSubscriptionNotification(sub.snapshot(), payload); err != nil {
 				a.logger.Debug().Err(err).Str("clientSubId", sub.id).
 					Msg("failed to write subscription notification")
 			}
