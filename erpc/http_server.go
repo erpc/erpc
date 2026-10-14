@@ -813,7 +813,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		common.InjectHTTPResponseTraceContext(httpCtx, w)
 
 		// Notifications get no entry; a request of only notifications gets an
-		// empty body.
+		// empty body. An empty batch ("[]") still has len(responses)==0 and
+		// must keep writing "[]" via the isBatch branch below.
 		replies := responses
 		if slices.Contains(notifications, true) {
 			replies = make([]interface{}, 0, len(responses))
@@ -831,7 +832,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 		}()
 
-		if len(replies) == 0 {
+		if len(replies) == 0 && len(responses) > 0 {
 			s.writeBatchExecHeaders(httpCtx, w, responses)
 			s.writeCostHeaders(httpCtx, w, responses)
 			w.WriteHeader(http.StatusOK)
