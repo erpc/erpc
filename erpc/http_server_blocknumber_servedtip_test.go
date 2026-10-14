@@ -77,10 +77,12 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 		send, _, shutdown := bniServedTipBoot(t, bniServedTipConfig(false), "rpc2", "rpc1")
 		defer shutdown()
 
-		got, _ := bniSend(t, send, nil, nil)
+		got, hdrs := bniSend(t, send, nil, nil)
 		assert.Equal(t, bniLaggingHead, got,
 			"eth_blockNumber must be pinned to the majority tip (0x%x) that \"latest\" interpolation uses, not the fresher upstream head (0x%x)",
 			bniLaggingHead, bniHealthyHead)
+		assert.Empty(t, hdrs["X-Erpc-Upstream"],
+			"the pin discards any upstream answer, so the served tip must be answered without dispatching")
 	})
 
 	t.Run("Bug_CacheHitAboveTipMustBePinnedToServedTip", func(t *testing.T) {
