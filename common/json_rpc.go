@@ -1387,10 +1387,11 @@ func (r *JsonRpcRequest) IDRawBytes() []byte {
 
 // ResponseID is the id an error response built outside the upstream path must
 // carry: the client's verbatim id bytes when the wire had them, else the typed
-// id. A `null` request id therefore answers `null`, not the random id the
-// request was given for upstreams.
-func (r *JsonRpcRequest) ResponseID() interface{} {
-	if raw := r.IDRawBytes(); raw != nil {
+// id. A `null` id answers `null` only when echoNull is set (Solana, as Agave
+// does); otherwise it answers the random id the request was given for
+// upstreams, which is what EVM clients have always received.
+func (r *JsonRpcRequest) ResponseID(echoNull bool) interface{} {
+	if raw := r.IDRawBytes(); raw != nil && (echoNull || string(raw) != "null") {
 		return json.RawMessage(raw)
 	}
 	r.RLock()

@@ -620,7 +620,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					var reqId interface{}
 					if jrr, _ := nq.JsonRpcRequest(); jrr != nil {
 						jsonrpcVersion = jrr.JSONRPC
-						reqId = jrr.ResponseID()
+						reqId = jrr.ResponseID(isSvmRequest(nq, common.NetworkArchitecture(architecture)))
 					}
 					responses[index] = &HttpJsonRpcErrorResponse{
 						Jsonrpc: jsonrpcVersion,
@@ -692,7 +692,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							jsonrpcVersion := "2.0"
 							if jrr != nil {
 								jsonrpcVersion = jrr.JSONRPC
-								reqId = jrr.ResponseID()
+								reqId = jrr.ResponseID(isSvmRequest(nq, common.NetworkArchitecture(architecture)))
 							}
 							responses[index] = &HttpJsonRpcErrorResponse{
 								Jsonrpc: jsonrpcVersion,
@@ -1840,7 +1840,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 		jrr, _ := nq.JsonRpcRequest()
 		if jrr != nil {
 			jsonrpcVersion = jrr.JSONRPC
-			reqId = jrr.ResponseID()
+			reqId = jrr.ResponseID(svm)
 			method = jrr.Method
 		}
 	}

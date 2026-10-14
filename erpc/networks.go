@@ -3603,9 +3603,9 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 // proxies that multiplex ids toward upstreams never leak them to the client.
 //
 // The verbatim request id bytes win when present, so large integers (>2^53),
-// fractional ids, and `null` round-trip exactly: a `null` request id answers
-// `null`, not the random id the request carried upstream. Programmatically
-// built requests have no wire bytes and fall back to the typed id.
+// fractional ids, and string ids round-trip exactly. A `null` id is echoed as
+// `null` only on Solana (Agave does); EVM keeps the random id the request
+// carried upstream. Programmatically built requests fall back to the typed id.
 func stampClientResponseID(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	if resp == nil {
 		return nil
@@ -3618,7 +3618,7 @@ func stampClientResponseID(ctx context.Context, req *common.NormalizedRequest, r
 	if err != nil {
 		return err
 	}
-	if rawID := jrq.IDRawBytes(); len(rawID) > 0 {
+	if rawID := jrq.IDRawBytes(); len(rawID) > 0 && (string(rawID) != "null" || isSvmRequest(req)) {
 		return jrr.SetIDBytes(rawID)
 	}
 	return jrr.SetID(jrq.ID)

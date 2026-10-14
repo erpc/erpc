@@ -3,6 +3,7 @@ package erpc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -82,6 +83,49 @@ func TestNormalizeResponse_IDByteFidelity(t *testing.T) {
 			// no canonicalization.
 			assert.Contains(t, buf.String(), `"id":`+tc.wantID,
 				"response wire output must preserve the request id byte-for-byte; got %q", buf.String())
+		})
+	}
+}
+
+// TestNormalizeResponse_NullIDEchoIsSolanaOnly pins the split behind the
+// Solana wire fixes: Agave answers `"id":null` with `null`, so Solana clients
+// get `null` back; EVM clients keep the non-null id eRPC has always returned.
+func TestNormalizeResponse_NullIDEchoIsSolanaOnly(t *testing.T) {
+	ctx := context.Background()
+	network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
+
+	for _, tc := range []struct {
+		name     string
+		route    string
+		wantNull bool
+	}{
+		{name: "svm_echoes_null", route: `,"networkId":"svm:mainnet-beta"`, wantNull: true},
+		{name: "evm_keeps_typed_id", route: `,"networkId":"evm:1"`, wantNull: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"getSlot","id":null` + tc.route + `}`))
+			jrq, err := req.JsonRpcRequest(ctx)
+			require.NoError(t, err)
+
+			resp := common.NewNormalizedResponse().WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`1`), nil))
+			require.NoError(t, network.normalizeResponse(ctx, req, resp))
+			out, err := resp.JsonRpcResponse(ctx)
+			require.NoError(t, err)
+			var buf bytes.Buffer
+			_, err = out.WriteTo(&buf)
+			require.NoError(t, err)
+
+			errBody := buildErrorResponseBody(req, common.NewErrInvalidRequest(assert.AnError), nil, nil).(*HttpJsonRpcErrorResponse)
+
+			if tc.wantNull {
+				assert.Contains(t, buf.String(), `"id":null`)
+				assert.Equal(t, json.RawMessage(`null`), errBody.Id)
+			} else {
+				assert.NotContains(t, buf.String(), `"id":null`)
+				assert.Equal(t, jrq.ID, errBody.Id)
+				assert.NotNil(t, jrq.ID)
+			}
 		})
 	}
 }
