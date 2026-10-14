@@ -586,6 +586,89 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
 		assert.NotNil(t, resp["error"], "should forward upstream error")
 	})
+
+	// An unknown method (-32601 from every upstream) answers after one sweep
+	// of the upstreams, over WebSocket and HTTP alike: no network retry or
+	// hedge re-asks them.
+	t.Run("UnknownMethodFailsFast", func(t *testing.T) {
+		util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.ResetGock()
+
+		var calls [2]atomic.Int32
+		for i, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+			gock.New(host).
+				Post("/").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_doesNotExist")
+				}).
+				Reply(200).
+				// gock runs filters for every host's mocks; Map runs once per reply.
+				Map(func(res *http.Response) *http.Response {
+					calls[i].Add(1)
+					return res
+				}).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32601,
+						"message": "the method eth_doesNotExist does not exist/is not available",
+					},
+				})
+		}
+
+		// Production's network policy for "*": retries and a hedge.
+		cfg := httpOnlyConfig()
+		cfg.Projects[0].Upstreams = append(cfg.Projects[0].Upstreams, &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc2.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		})
+		cfg.Projects[0].Networks[0].Failsafe = []*common.FailsafeConfig{{
+			MatchMethod: "*",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 6},
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 1,
+				Delay:    &common.AdaptiveDuration{Base: common.Duration(500 * time.Millisecond)},
+			},
+		}}
+		addr, cleanup := setupTestERPCServer(t, cfg)
+		defer cleanup()
+
+		const req = `{"jsonrpc":"2.0","id":1,"method":"eth_doesNotExist","params":[]}`
+		assertOneSweep := func(t *testing.T, elapsed time.Duration, errObj interface{}) {
+			t.Helper()
+			e, ok := errObj.(map[string]interface{})
+			require.True(t, ok, "expected an error, got %v", errObj)
+			assert.Equal(t, float64(-32601), e["code"])
+			assert.Less(t, elapsed, 500*time.Millisecond, "unknown method must not be retried or hedged")
+			assert.Equal(t, int32(1), calls[0].Load(), "rpc1 asked once")
+			assert.Equal(t, int32(1), calls[1].Load(), "rpc2 asked once")
+			calls[0].Store(0)
+			calls[1].Store(0)
+		}
+
+		conn := dialWs(t, addr)
+		defer conn.Close()
+		// The first request bootstraps the network; keep that out of the timing.
+		warm := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":0,"method":"eth_getBlockByNumber","params":["latest",false]}`)
+		require.NotNil(t, warm["result"], "warm-up failed: %v", warm)
+		start := time.Now()
+		resp := sendAndReceive(t, conn, req)
+		assertOneSweep(t, time.Since(start), resp["error"])
+
+		start = time.Now()
+		cleanClient := &http.Client{Transport: &http.Transport{}}
+		httpResp, err := cleanClient.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json", strings.NewReader(req))
+		require.NoError(t, err)
+		defer httpResp.Body.Close()
+		var body map[string]interface{}
+		require.NoError(t, json.NewDecoder(httpResp.Body).Decode(&body))
+		assertOneSweep(t, time.Since(start), body["error"])
+	})
 }
 
 //
@@ -888,7 +971,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		assert.NotNil(t, resp["error"], "should return error when no WS upstream available")
 	})
 
-	// Verifies eth_unsubscribe with a nonexistent ID returns an error
+	// Verifies eth_unsubscribe with a nonexistent ID fails as geth's does
 	t.Run("UnsubscribeUnknownIDFails", func(t *testing.T) {
 		setupGock()
 		defer util.ResetGock()
@@ -900,7 +983,10 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer conn.Close()
 
 		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_unsubscribe","params":["0xnonexistent"]}`)
-		assert.NotNil(t, resp["error"], "should return error for unknown subscription ID")
+		errObj, ok := resp["error"].(map[string]interface{})
+		require.True(t, ok, "should return error for unknown subscription ID: %v", resp)
+		assert.Equal(t, float64(-32000), errObj["code"])
+		assert.Equal(t, "subscription not found", errObj["message"])
 	})
 
 	// Verifies client disconnect cleanly removes the client from the fan-out

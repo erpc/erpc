@@ -1920,6 +1920,16 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	// geth answers an unknown eth_unsubscribe id with its generic -32000.
+	if HasErrorCode(err, ErrCodeSubscriptionNotFound) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorCallException,
+			"subscription not found",
+			err,
+			nil,
+		)
+	}
 	// A block outside every upstream's availability window (pruned history, or an
 	// explicit blockAvailability bound) is missing data, not an internal failure.
 	// Without this it falls through to the generic -32603 server-side exception,
