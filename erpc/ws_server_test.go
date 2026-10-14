@@ -848,11 +848,26 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		require.NoError(t, json.Unmarshal(body, &invalid))
 		assert.NotNil(t, invalid["error"])
 
-		// Without the header: plain JSON.
+		// An id-less call gets no reply but still ran: a metering-only
+		// message, the block with an empty body.
+		h, body = send(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xcccc","latest"]}`)
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "1", h.Get("X-ERPC-Billable"))
+		assert.Equal(t, "eth_getBalance", h.Get("X-ERPC-Methods"))
+		assert.Empty(t, body)
+
+		// Without the header: plain JSON, and nothing for the id-less call,
+		// so the next message is the reply to id 5.
 		plain := dialWs(t, addr)
 		defer plain.Close()
+		require.NoError(t, plain.WriteMessage(websocket.TextMessage,
+			[]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xcccc","latest"]}`)))
 		resp := sendAndReceive(t, plain, `{"jsonrpc":"2.0","id":5,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+		assert.Equal(t, float64(5), resp["id"])
 		assert.Equal(t, "0xabc123", resp["result"])
+		plain.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_, extra, err := plain.ReadMessage()
+		assert.Error(t, err, "no message for the id-less call, got %q", extra)
 	})
 
 	// Verifies eth_subscribe returns an error when no WS upstream is configured

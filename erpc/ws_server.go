@@ -274,6 +274,7 @@ func (wsc *WsConnection) handleMessage(raw []byte) {
 
 	out, notification := wsc.handleRequest(ctx, raw, &startedAt, false)
 	if notification {
+		wsc.writeMeteringOnly(wsc.costBlock(ctx, []interface{}{out}))
 		if r, ok := out.(*common.NormalizedResponse); ok {
 			go r.Release()
 		}
@@ -428,9 +429,12 @@ func (wsc *WsConnection) handleBatch(ctx context.Context, raw []byte, startedAt 
 			replies = append(replies, resp)
 		}
 	}
+	// Costs cover notifications too, as on HTTP: they ran.
+	costs := wsc.costBlock(ctx, responses)
 	if len(replies) > 0 {
-		// Costs cover notifications too, as on HTTP: they ran.
-		wsc.writeBatchResponse(wsc.costBlock(ctx, responses), replies)
+		wsc.writeBatchResponse(costs, replies)
+	} else {
+		wsc.writeMeteringOnly(costs)
 	}
 
 	for _, resp := range responses {
@@ -590,6 +594,16 @@ func (wsc *WsConnection) writeBatchResponse(costs []byte, responses []interface{
 	})
 }
 
+// writeMeteringOnly writes a cost block with an empty body for calls that
+// ran but get no reply (id-less notifications), so a metering proxy still
+// sees them. Nothing is written without cost frames or routed items.
+func (wsc *WsConnection) writeMeteringOnly(costs []byte) {
+	if len(costs) == 0 {
+		return
+	}
+	_ = wsc.writeMessage(costs, func(io.Writer) error { return nil })
+}
+
 func (wsc *WsConnection) pingLoop(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -685,8 +699,10 @@ func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription
 // the client reconnects knowing it missed data instead of silently
 // diverging.
 func (wsc *WsConnection) NotificationDropped(sub wsclient.Subscription, lossy bool) {
-	network := sub.NetworkID
-	if nw, err := wsc.project.GetNetwork(wsc.ctx, sub.NetworkID); err == nil {
+	// sub.NetworkID is the indexer's project-scoped key; the connection has
+	// one network.
+	network := wsc.networkId
+	if nw, err := wsc.project.GetNetwork(wsc.ctx, wsc.networkId); err == nil {
 		network = nw.Label()
 	}
 	telemetry.CounterHandle(telemetry.MetricWebsocketSubscriptionNotificationsDroppedTotal,

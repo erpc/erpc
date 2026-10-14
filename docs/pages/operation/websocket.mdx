@@ -289,7 +289,8 @@ X-Erpc-Network-Id: evm:1\r\n
 {"jsonrpc":"2.0","id":1,"result":"0x1234567"}
 ```
 
-- **Responses** (single and batch) carry exactly the cost headers the same calls would get over HTTP (`X-ERPC-Calls`, `X-ERPC-Billable`, `X-ERPC-Methods`, `X-ERPC-Credits`, `X-ERPC-Credits-Total`, `X-ERPC-Credits-Version`, `X-ERPC-Network-Id`, `X-ERPC-Network-Alias`). A batch's `X-ERPC-Calls` counts every request in it, including notification-only requests that get no reply entry.
+- **Responses** (single and batch) carry exactly the cost headers the same calls would get over HTTP (`X-ERPC-Calls`, `X-ERPC-Billable`, `X-ERPC-Methods`, `X-ERPC-Credits`, `X-ERPC-Credits-Total`, `X-ERPC-Credits-Version`, `X-ERPC-Network-Id`, `X-ERPC-Network-Alias`). A batch's `X-ERPC-Calls` counts every request in it, including id-less requests (JSON-RPC notifications) that get no reply entry.
+- **Calls that get no reply** — an id-less request, or a batch of only those — still ran, so they get a *metering-only* message: the header block for those calls followed by an empty body. A proxy meters it and never relays it.
 - **Messages that routed no call** — a batch that is not valid JSON, an empty batch — start with just `\r\n`.
 - **Subscription notifications** (`eth_subscription`) each carry `X-ERPC-Calls: 1`, `X-ERPC-Billable: 1`, `X-ERPC-Methods: eth_subscription`, `X-ERPC-Subscription: <newHeads|logs|newPendingTransactions>`, `X-ERPC-Network-Id` and `X-ERPC-Network-Alias`; no credits.
 
