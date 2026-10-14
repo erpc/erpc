@@ -262,7 +262,11 @@ func TestWebSocket_ShutdownClosesPromptlyAfterInflightRequests(t *testing.T) {
 		Delay(500 * time.Millisecond).
 		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0xabc123"})
 
+	// As in production, the ws upstream serves only subscriptions, so
+	// eth_getBalance always reaches the slow HTTP mock.
 	cfg := standardWsConfig(subscribingWsUpstream(t))
+	cfg.Projects[0].Upstreams[1].IgnoreMethods = []string{"*"}
+	cfg.Projects[0].Upstreams[1].AllowMethods = []string{"eth_subscribe", "eth_unsubscribe"}
 	cfg.Server.WaitBeforeShutdown = common.Duration(5 * time.Second).Ptr()
 	srv, addr, cancel := startTestERPCServer(t, cfg)
 	defer func() { cancel(); _ = srv.Shutdown(&log.Logger) }()
