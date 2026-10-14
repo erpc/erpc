@@ -16,9 +16,8 @@ slice 6  docs, last deletions, one build and test run, PR
 
 | # | Who | What | Blocks |
 |---|---|---|---|
-| 1 | Aram | Answer spec §13 open question 1: gRPC resume | slice 5 |
-| 2 | Aram | Approve read-only `eth_getBlockReceipts` calls on each Edge vendor (eth, sepolia, hoodi, monad) | slice 3 |
-| 3 | agent | Run those calls; record support per vendor in the spec | slice 3 |
+| 1 | Aram | Approve read-only `eth_getBlockReceipts` calls on each Edge vendor (eth, sepolia, hoodi, monad) | slice 3 |
+| 2 | agent | Run those calls; record support per vendor in the spec | slice 3 |
 
 ## Slice 0: skeleton
 
@@ -109,12 +108,14 @@ Boundaries are final here; each component starts simple.
 - Add:
   - `StreamBlocks` egress on the indexer, from `Head` events.
   - Reorg: resend from ancestor + 1 (spec §6.1). `Gap`: end the stream with `DATA_LOSS`.
-  - Resume per open question 1.
-- Proto, `blockchain-data-standards/manifesto` PR first: `evm/stream.proto` contract comments, plus resume fields if approved; bump the module here.
+  - Resume from `fromBlock` and `fromHash` (spec §6.1): replay, then live, in one ordered sequence.
+- Proto, `blockchain-data-standards/manifesto` PR first: `evm/stream.proto` reorg contract comments and the 2 resume fields; bump the module here.
 - Delete: `blockStreamManager`, `blockStreamHub`, `fetchBlockHeader`, `blockStreamMaxBackfill`.
 - Tests, extend `erpc/block_stream_test.go`:
   - A stream gets every block once, in order, with no `eth_getBlockByNumber` per block.
   - A 1-block reorg: the stream gets the new block again at the same number.
+  - Reconnect with the last header before a 1-block reorg: replay from `fromBlock − reorgWindow`, ending on the new branch.
+  - Reconnect with a header older than `maxBackfill`: `OUT_OF_RANGE`.
 
 ## Slice 6: docs, deletions, verify, PR
 

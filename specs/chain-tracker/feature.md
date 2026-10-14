@@ -11,6 +11,7 @@ Decisions already taken:
 5. Sources stop 60s after the last consumer leaves.
 6. `Gap` closes each connection with a `logs` subscription on that network with `1013`, as buffer overflow does today.
 7. gRPC `StreamBlocks` resends the new branch on a reorg; it has no removal message (§6.1).
+8. gRPC `StreamBlocks` resumes from the last header the client applied (§6.1).
 
 ## 1. Terms
 
@@ -196,15 +197,19 @@ gRPC client rule: a header with a number at or below the last one received repla
 - Per-block removal (Firehose `STEP_UNDO`, geth `removed:true`) costs one message per dropped block and keeps every sent payload until finality.
 - Each header carries `hash` and `parentHash`: a client can check linkage itself.
 - `Gap` ends the stream with `DATA_LOSS`; the message names the missing range.
-- Proto: `blockchain-data-standards/manifesto` `evm/stream.proto`, comments only. "Ascending, once per block" becomes "ascending; after a reorg, restarts at the fork point".
+- Proto: `blockchain-data-standards/manifesto` `evm/stream.proto`. "Ascending, once per block" becomes "ascending; after a reorg, restarts at the fork point". Resume adds 2 optional fields.
 
-Resume, proposed (open question 1):
+Resume:
 
 - Without it, a reorg or block between disconnect and reconnect is lost to the client.
 - `StreamBlocksRequest` gains `optional uint64 fromBlock` and `optional bytes fromHash`: the last header the client applied.
+- Both set, or neither; one alone is `INVALID_ARGUMENT`. Neither: start at the tip, as today.
 - Replay starts at `fromBlock + 1` when `fromHash` is canonical, else at `fromBlock − reorgWindow`. The client rule makes over-replay safe, so no ancestor search.
+- Canonical check: the tracker window; below it, one header by number through `network.Forward`.
+- `fromBlock` above this pod's head (reconnect to a lagging pod): the stream sends nothing until the head reaches `fromBlock`, then checks `fromHash`.
 - Replay reads the tracker window; older heights come by number through `network.Forward`, at most `maxBackfill`.
 - Beyond `maxBackfill`: `OUT_OF_RANGE`; the client backfills by unary calls.
+- Replay then live: one ordered sequence per stream; live heads wait until replay reaches them.
 - Same shape as Firehose and Substreams cursors, without an opaque cursor.
 
 ## 7. Logs path
@@ -338,7 +343,3 @@ One home per fact:
 - Breaking config and metric renames: dashboards and configs need updates in the same release.
 - `newPendingTransactions` keeps today's wss-only path.
 - `StreamBlocks` consumers that expect strictly ascending numbers see a repeat after a reorg. Known consumers: `edge-api` relays it; a Turbo tip-detection experiment (`streamling-goldsky-plugins` #162) reads it. Neither checked.
-
-## 13. Open questions
-
-1. gRPC resume (§6.1): add `fromBlock` and `fromHash` to `StreamBlocksRequest`, or keep the stream tip-only?
