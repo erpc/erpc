@@ -147,7 +147,7 @@ declares is enforced. The upstream's oldest stored block, probed with
 `earliestBlockPlus`; it is probed only for upstreams declaring one. The network-level
 `svm.enforceBlockAvailability` switch gates the declared window.
 (<SourceLink file="architecture/svm/slot_bounds.go" />)
-(<SourceLink file="erpc/networks.go" lines="2930-2974" />)
+(<SourceLink file="erpc/networks.go" lines="3105-3148" />)
 
 Set it once for a whole project under `upstreamDefaults` instead of repeating it on
 every upstream — useful when a pool is uniformly pruned (e.g. nodes started with a
@@ -269,7 +269,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].svm.cluster` | string | `""`; inherited from `upstreamDefaults.svm.cluster` | The cluster this upstream serves. Must match the network-level `svm.cluster` for the upstream to be eligible for that network. Unlike the network side, cluster **is** inherited here — on an upstream it only says "which cluster do I serve", and a pool homogeneous across one cluster is the common case. |
 | `upstreams[*].svm.chain` | string | `""` → treated as `"solana"`; inherited from `upstreamDefaults.svm.chain` | Which SVM chain this upstream serves. Must match the network-level `svm.chain`. |
 | `upstreams[*].svm.checkGenesisHash` | bool | `false` | Opts an **unknown** `(chain, cluster)` pair into `getGenesisHash` validation at bootstrap. Known Solana clusters (`mainnet-beta`, `devnet`, `testnet`) are always validated regardless of this flag: a mismatch **or a fetch failure** fails the upstream, catching nodes mis-pointed at the wrong cluster and refusing to register one that could not be verified. For unknown clusters the same check (with no table comparison) runs only when this flag is set, so private and local clusters with no published genesis hash still work. |
-| `upstreams[*].svm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Operator restriction on the slot window this upstream may serve. Each bound sets exactly one of `exactSlot`, `latestSlotMinus`, `firstAvailableSlotPlus`. Only declared bounds are enforced; the observed floor is probed only when a bound uses `firstAvailableSlotPlus`. Gated by `networks[*].svm.enforceBlockAvailability`. (<SourceLink file="common/config.go" lines="2539-2561" />) |
+| `upstreams[*].svm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Operator restriction on the slot window this upstream may serve. Each bound sets exactly one of `exactSlot`, `latestSlotMinus`, `firstAvailableSlotPlus`. Only declared bounds are enforced; the observed floor is probed only when a bound uses `firstAvailableSlotPlus`. Gated by `networks[*].svm.enforceBlockAvailability`. (<SourceLink file="common/config.go" lines="2616-2652" />) |
 | `upstreams[*].svm.blockAvailability.{lower,upper}.exactSlot` | `*int64` | nil | Fixed slot bound. Must be ≥ 0. |
 | `upstreams[*].svm.blockAvailability.{lower,upper}.latestSlotMinus` | `*int64` | nil | Bound = poller's `LatestSlot()` − N. Recomputed on each check. Cold poller (latest ≤ 0) fail-opens that side. |
 | `upstreams[*].svm.blockAvailability.{lower,upper}.firstAvailableSlotPlus` | `*int64` | nil | Bound = oldest stored block (`getBlocksWithLimit(0, 1)`) + N. Setting it is what opts the upstream in to polling the floor. Unobserved floor fail-opens that side — unknown is not slot 0. |
@@ -942,7 +942,7 @@ SVM upstream gets its own slot/health poller automatically:
 27. **`svm.blockAvailability` inherits from `upstreamDefaults.svm`.** Wholesale copy when
     the upstream omits its `svm` block; per-field copy of `blockAvailability` when the
     upstream has a partial `svm` block and left the field unset. Copies are deep — two
-    upstreams must not alias the same pointer. (<SourceLink file="common/defaults.go" lines="1836-1845" />)
+    upstreams must not alias the same pointer. (<SourceLink file="common/defaults.go" lines="1850-1877" />)
 
 
 ### Observability

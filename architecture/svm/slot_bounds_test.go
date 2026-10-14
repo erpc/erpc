@@ -234,6 +234,7 @@ func TestCheckUpstreamDeclaredSlotBounds_UpperRetryable(t *testing.T) {
 		require.Error(t, err)
 		require.False(t, retryable, "200 slots ahead exceeds the 128-slot retry horizon")
 		require.Contains(t, err.Error(), "-32004")
+		require.True(t, common.IsPermanentlyMissingData(err))
 	})
 
 	t.Run("above a static upper but behind the tip is not retryable", func(t *testing.T) {
@@ -244,6 +245,7 @@ func TestCheckUpstreamDeclaredSlotBounds_UpperRetryable(t *testing.T) {
 		err, retryable := CheckUpstreamDeclaredSlotBounds(ctx, static, reqOf(t, "getBlock", `[600]`))
 		require.Error(t, err)
 		require.False(t, retryable, "slot is inside history; waiting cannot raise a configured cap")
+		require.True(t, common.IsPermanentlyMissingData(err))
 	})
 
 	t.Run("slot at upper is servable", func(t *testing.T) {
@@ -263,6 +265,7 @@ func TestCheckUpstreamDeclaredSlotBounds_UpperRetryable(t *testing.T) {
 		require.Error(t, err)
 		require.False(t, retryable, "advancing the tip can never move an exact cap")
 		require.Contains(t, err.Error(), "-32004")
+		require.True(t, common.IsPermanentlyMissingData(err))
 	})
 }
 

@@ -221,10 +221,13 @@ func NewSvmStatePoller(
 	// (a peer's floor of 0 into a zero-valued counter). Those paths are closed
 	// by refreshFirstAvailableSlot's not-stale fast path — but ONLY when no
 	// local refresh is still pending a real observation (see
-	// firstAvailableSlotPending). Registered unconditionally: unlike the slot
-	// counters below it feeds no tracker, so it has no dependency on `tracker`
-	// being non-nil.
+	// firstAvailableSlotPending). Gated on declaresFirstAvailableSlotPlus so a
+	// propagated shared counter (same id/endpoint key, different config) cannot
+	// export the floor gauge or mark this poller known without opt-in.
 	firstAvailableShared.OnValue(func(v int64) {
+		if !e.declaresFirstAvailableSlotPlus() {
+			return
+		}
 		e.firstAvailableSlotPending.Store(false)
 		e.firstAvailableSlotKnown.Store(true)
 		e.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot).Set(float64(v))

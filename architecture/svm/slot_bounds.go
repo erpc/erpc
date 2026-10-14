@@ -108,8 +108,9 @@ func resolveDeclaredBound(bound *common.SvmAvailabilityBoundConfig, isLower bool
 // not just the start). Retryable iff the upper kind is dynamic AND the slot is
 // ahead of LatestSlot() by at most maxRetryableSlotDistance, matching EVM's
 // near-tip classification — an exactSlot cap can never reopen by waiting.
-// handleBlockSkip's poller-kick is already EVM-gated, so the retryable flag
-// only affects skip bookkeeping on the SVM path.
+// Non-retryable upper skips are permanent (like lower skips) so the failsafe
+// executor does not treat an all-upstream declared-window rejection as
+// transient missing_data.
 //
 // Fail-open when no slot is named, no bounds are configured, or resolution
 // produced an unbounded range (cold poller, unobserved floor, invalid min>max).
@@ -173,6 +174,11 @@ func CheckUpstreamDeclaredSlotBounds(ctx context.Context, u common.Upstream, r *
 			retryable := false
 			if !fixedUpper && latest > 0 && upperSlot > latest {
 				retryable = upperSlot-latest <= maxRetryableSlotDistance
+			}
+			if !retryable {
+				if me, ok := err.(*common.ErrEndpointMissingData); ok {
+					me.WithPermanentMissingData(true)
+				}
 			}
 			return err, retryable
 		}
