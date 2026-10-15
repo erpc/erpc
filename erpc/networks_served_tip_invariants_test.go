@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/require"
 )
@@ -208,9 +209,8 @@ func TestServedTipInvariant_SteadyState_NeverStalls(t *testing.T) {
 }
 
 // Sanity guard for the invariants themselves: the fixture really runs the
-// majority served-tip mode (not the legacy max fallback) — if someone flips
-// the fixture default off, the invariants above would pass vacuously against
-// max mode and stop guarding the served-tip path.
+// majority quorum — if someone flips the fixture to another quorum, the
+// invariants above would no longer guard the shape they were written for.
 func TestServedTipInvariant_Fixture_ServedTipModeActive(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -220,8 +220,8 @@ func TestServedTipInvariant_Fixture_ServedTipModeActive(t *testing.T) {
 	defer cancel()
 
 	network, _ := setupServedTipNetwork(t, ctx, servedTipInvariantFixtures(100))
-	require.True(t, network.servedTipEnabledFor("latest"),
-		"invariant fixtures must exercise the served-tip path, not the max fallback")
+	require.Equal(t, common.ServedTipQuorumMajority, network.cfg.Evm.ServedTipQuorum(),
+		"invariant fixtures must exercise the majority quorum")
 
 	// MAX(heads) != majority(heads) for an uneven topology proves the pick
 	// actually goes through the served-tip algorithm.
