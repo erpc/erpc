@@ -1187,6 +1187,9 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	if c.Evm != nil {
 		copied.Evm = c.Evm.Copy()
 	}
+	if c.Svm != nil {
+		copied.Svm = c.Svm.Copy()
+	}
 	if c.Failsafe != nil {
 		copied.Failsafe = make([]*FailsafeConfig, len(c.Failsafe))
 		for i, failsafe := range c.Failsafe {
@@ -2609,6 +2612,74 @@ type SvmUpstreamConfig struct {
 	// no table comparison) runs only when this flag is set; otherwise it is skipped so
 	// private/local clusters with no published genesis hash still work.
 	CheckGenesisHash bool `yaml:"checkGenesisHash,omitempty" json:"checkGenesisHash"`
+
+	// BlockAvailability is an operator restriction on the slot window this
+	// upstream may serve. Only what the operator declares is enforced; the
+	// upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
+	// used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
+	// mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+	BlockAvailability *SvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
+}
+
+// SvmBlockAvailabilityConfig is the per-upstream declared slot window.
+// Presence of lower/upper implies the restriction is active. When both are
+// nil, it is effectively off.
+type SvmBlockAvailabilityConfig struct {
+	Lower *SvmAvailabilityBoundConfig `yaml:"lower,omitempty" json:"lower,omitempty"`
+	Upper *SvmAvailabilityBoundConfig `yaml:"upper,omitempty" json:"upper,omitempty"`
+}
+
+func (c *SvmBlockAvailabilityConfig) Copy() *SvmBlockAvailabilityConfig {
+	if c == nil {
+		return nil
+	}
+	out := &SvmBlockAvailabilityConfig{}
+	if c.Lower != nil {
+		out.Lower = c.Lower.Copy()
+	}
+	if c.Upper != nil {
+		out.Upper = c.Upper.Copy()
+	}
+	return out
+}
+
+// SvmAvailabilityBoundConfig is a single declared slot bound.
+// Exactly one field must be set.
+type SvmAvailabilityBoundConfig struct {
+	ExactSlot              *int64 `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
+	LatestSlotMinus        *int64 `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
+	FirstAvailableSlotPlus *int64 `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+}
+
+func (c *SvmAvailabilityBoundConfig) Copy() *SvmAvailabilityBoundConfig {
+	if c == nil {
+		return nil
+	}
+	out := &SvmAvailabilityBoundConfig{}
+	if c.ExactSlot != nil {
+		v := *c.ExactSlot
+		out.ExactSlot = &v
+	}
+	if c.LatestSlotMinus != nil {
+		v := *c.LatestSlotMinus
+		out.LatestSlotMinus = &v
+	}
+	if c.FirstAvailableSlotPlus != nil {
+		v := *c.FirstAvailableSlotPlus
+		out.FirstAvailableSlotPlus = &v
+	}
+	return out
+}
+
+func (s *SvmUpstreamConfig) Copy() *SvmUpstreamConfig {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.BlockAvailability != nil {
+		out.BlockAvailability = s.BlockAvailability.Copy()
+	}
+	return &out
 }
 
 type EvmNetworkConfig struct {

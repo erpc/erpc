@@ -124,6 +124,10 @@ const _sharedUpstream: SvmUpstreamConfig = {
   chain: "solana",
   cluster: "devnet",
   checkGenesisHash: false,
+  blockAvailability: {
+    lower: { latestSlotMinus: 100_000 },
+    upper: { exactSlot: 1_000_000_000 },
+  },
 };
 
 const _sharedDefaults: SvmNetworkConfigForDefaults = {
@@ -190,6 +194,29 @@ const _clusterInDefaults: SvmNetworkConfigForDefaults = {
   // @ts-expect-error — cluster is per-network and omitted from the defaults type
   cluster: "mainnet-beta",
 };
+
+createConfig({
+  projects: [
+    {
+      id: "evm-bound-names-on-svm",
+      upstreams: [
+        {
+          type: "svm",
+          endpoint: "http://localhost:8899",
+          svm: {
+            cluster: "mainnet-beta",
+            blockAvailability: {
+              lower: {
+                // @ts-expect-error — SVM bounds use exactSlot/latestSlotMinus/firstAvailableSlotPlus
+                latestBlockMinus: 100000,
+              },
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
 
 // Suppress "declared but never read" for the smoke values.
 void _realisticSvmConfig;

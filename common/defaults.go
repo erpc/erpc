@@ -1857,8 +1857,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	// network identity: on an upstream it only says "which cluster do I serve",
 	// and a pool homogeneous across one cluster is the common case.
 	if u.Svm == nil && defaults.Svm != nil {
-		cp := *defaults.Svm
-		u.Svm = &cp
+		u.Svm = defaults.Svm.Copy()
 	} else if u.Svm != nil && defaults.Svm != nil {
 		if u.Svm.Chain == "" && defaults.Svm.Chain != "" {
 			u.Svm.Chain = defaults.Svm.Chain
@@ -1872,6 +1871,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		// inherited true is ever needed.
 		if defaults.Svm.CheckGenesisHash {
 			u.Svm.CheckGenesisHash = true
+		}
+		if u.Svm.BlockAvailability == nil && defaults.Svm.BlockAvailability != nil {
+			u.Svm.BlockAvailability = defaults.Svm.BlockAvailability.Copy()
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {

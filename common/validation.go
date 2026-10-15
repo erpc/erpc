@@ -1780,6 +1780,70 @@ func (s *SvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if !isValidSvmSegment(s.Cluster) {
 		return fmt.Errorf("upstream.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
 	}
+	if s.BlockAvailability != nil {
+		if err := s.BlockAvailability.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *SvmBlockAvailabilityConfig) Validate() error {
+	if c.Lower != nil {
+		if err := c.Lower.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.lower is invalid: %w", err)
+		}
+	}
+	if c.Upper != nil {
+		if err := c.Upper.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.upper is invalid: %w", err)
+		}
+	}
+
+	if c.Lower != nil && c.Upper != nil && c.Lower.ExactSlot != nil && c.Upper.ExactSlot != nil {
+		if *c.Lower.ExactSlot > *c.Upper.ExactSlot {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.lower.exactSlot must be <= upper.exactSlot")
+		}
+	}
+	if c.Lower != nil && c.Upper != nil && c.Lower.LatestSlotMinus != nil && c.Upper.LatestSlotMinus != nil {
+		if *c.Lower.LatestSlotMinus < *c.Upper.LatestSlotMinus {
+			return fmt.Errorf("upstream.*.svm.blockAvailability: when both bounds are latestSlotMinus, lower.latestSlotMinus must be >= upper.latestSlotMinus")
+		}
+	}
+	if c.Lower != nil && c.Upper != nil && c.Lower.FirstAvailableSlotPlus != nil && c.Upper.FirstAvailableSlotPlus != nil {
+		if *c.Lower.FirstAvailableSlotPlus > *c.Upper.FirstAvailableSlotPlus {
+			return fmt.Errorf("upstream.*.svm.blockAvailability: when both bounds are firstAvailableSlotPlus, lower.firstAvailableSlotPlus must be <= upper.firstAvailableSlotPlus")
+		}
+	}
+	return nil
+}
+
+func (b *SvmAvailabilityBoundConfig) Validate() error {
+	setCount := 0
+	if b.ExactSlot != nil {
+		setCount++
+	}
+	if b.LatestSlotMinus != nil {
+		setCount++
+	}
+	if b.FirstAvailableSlotPlus != nil {
+		setCount++
+	}
+	if setCount == 0 {
+		return fmt.Errorf("bound must set exactly one of: exactSlot, latestSlotMinus, firstAvailableSlotPlus")
+	}
+	if setCount > 1 {
+		return fmt.Errorf("bound fields exactSlot, latestSlotMinus, firstAvailableSlotPlus are mutually exclusive")
+	}
+	if b.ExactSlot != nil && *b.ExactSlot < 0 {
+		return fmt.Errorf("bound.exactSlot must be >= 0")
+	}
+	if b.LatestSlotMinus != nil && *b.LatestSlotMinus < 0 {
+		return fmt.Errorf("bound.latestSlotMinus must be >= 0")
+	}
+	if b.FirstAvailableSlotPlus != nil && *b.FirstAvailableSlotPlus < 0 {
+		return fmt.Errorf("bound.firstAvailableSlotPlus must be >= 0")
+	}
 	return nil
 }
 

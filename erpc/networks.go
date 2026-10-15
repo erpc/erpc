@@ -3126,6 +3126,51 @@ func (n *Network) recordHedgeDiscard(
 	common.SetTraceSpanError(span, common.NewErrUpstreamHedgeCancelled(u.Id(), err))
 }
 
+func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
+	switch n.cfg.Architecture {
+	case common.ArchitectureEvm:
+		return n.checkEvmUpstreamBlockAvailability(ctx, u, req, method)
+	case common.ArchitectureSvm:
+		return n.checkSvmUpstreamSlotAvailability(ctx, u, req, method)
+	}
+	return nil, false
+}
+
+// checkSvmUpstreamSlotAvailability skips an upstream whose OPERATOR-DECLARED
+// svm.blockAvailability window excludes the slot the request literally names
+// (the END of the range for getBlocks/getBlocksWithLimit on the upper side).
+//
+// Mirrors the EVM flow: availability is what the operator declares. An observed
+// floor takes part only when the operator opts in through
+// firstAvailableSlotPlus, resolved inside CheckUpstreamDeclaredSlotBounds.
+// Without a declared window every upstream is tried.
+//
+// Gated on SvmEnforceBlockAvailability so the lower and upper SVM bounds share
+// ONE operator switch.
+//
+// Declared-upper skips pass their retryable flag through to handleBlockSkip
+// (whose async poller-kick is already EVM-gated, so SVM retryable only
+// affects skip bookkeeping).
+func (n *Network) checkSvmUpstreamSlotAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
+	if !n.SvmEnforceBlockAvailability() {
+		return nil, false
+	}
+	skipErr, retryable := svm.CheckUpstreamDeclaredSlotBounds(ctx, u, req)
+	if skipErr == nil {
+		return nil, false
+	}
+	if svm.IsDeclaredUpperBoundSkip(skipErr) {
+		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+			n.projectId, u.VendorName(), n.Label(), u.Id(), method, svm.DeclaredConfidenceLabel,
+		).Inc()
+	} else {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			n.projectId, u.VendorName(), n.Label(), u.Id(), method, svm.DeclaredConfidenceLabel,
+		).Inc()
+	}
+	return skipErr, retryable
+}
+
 // checkUpstreamBlockAvailability performs per-upstream gating for the request based on
 // the upstream's configured block availability bounds. It is invoked just before
 // forwarding to an upstream to avoid copying/filtering the list.
@@ -3152,10 +3197,7 @@ func (n *Network) recordHedgeDiscard(
 //
 // FAIL-OPEN BEHAVIOR: If we cannot determine the bounds or block number (e.g. state
 // poller not ready), we allow the request to proceed rather than blocking traffic.
-func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
-	if n.cfg.Architecture != common.ArchitectureEvm {
-		return nil, false
-	}
+func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
 	// Range methods (eth_getLogs, trace_filter, arbtrace_filter) enforce block
 	// availability via their own range-aware pre-forward hooks; gating them here on a
 	// single extracted block number would conflict with that.

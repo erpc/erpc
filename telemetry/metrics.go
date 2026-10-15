@@ -69,6 +69,18 @@ var (
 		Help:      "Finalized block number of upstreams.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	// MetricUpstreamSvmFirstAvailableSlot is an upstream's oldest stored block,
+	// from getBlocksWithLimit(0, 1). It is probed, and routing uses it, only
+	// for an upstream whose svm.blockAvailability declares a
+	// firstAvailableSlotPlus bound.
+	// Absent until the first successful observation, because an unobserved
+	// floor is treated as "no constraint" rather than as 0.
+	MetricUpstreamSvmFirstAvailableSlot = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_svm_first_available_slot",
+		Help:      "Oldest block an SVM upstream serves, from getBlocksWithLimit(0, 1) (probed only when firstAvailableSlotPlus is declared).",
+	}, []string{"project", "vendor", "network", "upstream"})
+
 	MetricCacheConnectorEarliestBlockNumber = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "cache_connector_earliest_block_number",

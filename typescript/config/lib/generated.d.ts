@@ -1533,6 +1533,32 @@ export interface SvmUpstreamConfig {
      * private/local clusters with no published genesis hash still work.
      */
     checkGenesisHash?: boolean;
+    /**
+     * BlockAvailability is an operator restriction on the slot window this
+     * upstream may serve. Only what the operator declares is enforced; the
+     * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
+     * used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
+     * mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+     */
+    blockAvailability?: SvmBlockAvailabilityConfig;
+}
+/**
+ * SvmBlockAvailabilityConfig is the per-upstream declared slot window.
+ * Presence of lower/upper implies the restriction is active. When both are
+ * nil, it is effectively off.
+ */
+export interface SvmBlockAvailabilityConfig {
+    lower?: SvmAvailabilityBoundConfig;
+    upper?: SvmAvailabilityBoundConfig;
+}
+/**
+ * SvmAvailabilityBoundConfig is a single declared slot bound.
+ * Exactly one field must be set.
+ */
+export interface SvmAvailabilityBoundConfig {
+    exactSlot?: number;
+    latestSlotMinus?: number;
+    firstAvailableSlotPlus?: number;
 }
 export interface EvmNetworkConfig {
     chainId: number;
