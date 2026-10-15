@@ -301,6 +301,8 @@ func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	p.latestBlockNumber = blockNumber
 }
 
+func (p *FakeEvmStatePoller) RefreshLatestBlock() {}
+
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
 }
