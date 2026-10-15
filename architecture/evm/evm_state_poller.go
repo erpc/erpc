@@ -37,7 +37,7 @@ const (
 	// represent before it is treated as major and re-verified against a live
 	// eth_chainId (see majorHeadMoveThreshold). One minute is comfortably more
 	// chain than a healthy poller can miss between samples — the default state
-	// poller interval is 5s — while staying far below the height difference any
+	// poller interval is 30s — while staying far below the height difference any
 	// two unrelated chains exhibit.
 	chainIdVerifyChainProgress = 60 * time.Second
 
