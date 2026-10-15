@@ -1451,8 +1451,8 @@ func secondHighestHead(ntwMeta *NetworkMetadata, getVal func(*NetworkMetadata) i
 	return first, firstUps
 }
 
-// headStallAfter is how long an upstream may sit below a peer that kept
-// moving before its head is benched: three of its poll periods, never under
+// headStallAfter is how long an upstream may stay behind (headIsBehind)
+// before its head is benched: three of its poll periods, never under
 // 30s, so ordinary poll skew never benches anyone. A poll period is the longer
 // of the poll interval and the poll debounce, because a poll inside the
 // debounce reuses the stored head (see EvmStatePoller.resolveDebounce); an
