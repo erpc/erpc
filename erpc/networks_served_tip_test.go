@@ -2043,6 +2043,45 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		served(t, network, 5_000, "a halted fleet beside one moving wrong-chain peer")
 	})
 
+	t.Run("an endpoint serving another chain with the same chain id is benched by block age", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "chain", chainID: 123, latestBlock: 47_900_000},
+			{id: "other", chainID: 123, latestBlock: 1_823_000},
+		}, nil)
+		chain, other := ups[0], ups[1]
+		tr := network.metricsTracker
+		// Two chains share the chain id: ours makes a block every 2s, the other
+		// (an on-demand rollup testnet) one every 5 minutes, both with fresh
+		// timestamps. 46M blocks apart, no lead is plausible, so only block
+		// age can tell them apart.
+		const gap = 5 * time.Minute
+		window := stallAfter(other, 0)
+		require.Less(t, 2*window, gap, "the other chain's gap must outlast its bench delay")
+		head, otherHead := int64(47_900_000), int64(1_823_000)
+		report(tr, chain, head, servedTipClock().Unix())
+		report(tr, other, otherHead, servedTipClock().Unix())
+		served(t, network, otherHead, "until block age tells the chains apart, quorum 2 serves the lower head")
+
+		for elapsed := time.Duration(0); elapsed < gap; elapsed += 2 * time.Second {
+			advance(2 * time.Second)
+			head++
+			report(tr, chain, head, servedTipClock().Unix())
+		}
+		require.True(t, tr.IsHeadBenched(other), "a head whose block stays a stall window older than its peer's is benched")
+		require.False(t, tr.IsHeadBenched(chain))
+		served(t, network, head, "the chain that keeps producing blocks defines latest")
+		require.Greater(t, lagOf(network, other), int64(16), "past the default blockNumberLagAbove, so routing leaves it")
+
+		// Its next block never brings it back: it cannot reach our head.
+		advance(2 * time.Second)
+		head++
+		report(tr, other, otherHead+1, servedTipClock().Unix())
+		report(tr, chain, head, servedTipClock().Unix())
+		require.True(t, tr.IsHeadBenched(other))
+		served(t, network, head, "after the other chain's next block")
+	})
+
 	t.Run("a static head at a slow chain's tip is not benched while peers catch up", func(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
