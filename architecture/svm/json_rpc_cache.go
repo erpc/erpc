@@ -588,8 +588,10 @@ func extractSlotRef(rpcReq *common.JsonRpcRequest) string {
 
 // defaultRealtimeColdStartTTL bounds realtime storage TTL when a policy sets
 // ttl.blockTimeMultiplier but has no ttl.fallback and the network's slot time
-// isn't known yet (cold start / EMA not warmed).
-const defaultRealtimeColdStartTTL = 2 * time.Second
+// isn't known yet (cold start / EMA not warmed). Sized to Solana Alpenglow's
+// ~200ms slot target so omitted fallbacks stay near one slot of head staleness
+// rather than the EVM-oriented 2s default.
+const defaultRealtimeColdStartTTL = 200 * time.Millisecond
 
 // networkBlockTime returns the request network's estimated slot/block time, or
 // 0 if unavailable. Reuses Network.EvmBlockTime (tracker GetNetworkBlockTime)
