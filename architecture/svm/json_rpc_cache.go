@@ -335,8 +335,16 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	for _, policy := range policies {
 		connector := policy.GetConnector()
+		// Fixed TTL component for telemetry labels (stable values only).
 		ttl := policy.GetTTL()
 		ttlLabel := ttlString(ttl)
+		// Storage expiry tracks slot-time-derived realtime TTL when configured
+		// (blockTimeMultiplier). Without this, helm's multiplier is a no-op and
+		// entries always expire at the fixed fallback even after the EMA warms.
+		storageTTL := ttl
+		if resolved := policy.ResolveTTL(networkBlockTime(req), defaultRealtimeColdStartTTL); resolved > 0 {
+			storageTTL = &resolved
+		}
 		if !policy.MatchesSizeLimits(len(payload)) {
 			telemetry.MetricCacheSetSkippedTotal.WithLabelValues(
 				c.projectId, req.NetworkLabel(), rpcReq.Method,
@@ -362,7 +370,7 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		// fold earlier policies' latency into later connectors' samples and
 		// mis-attribute "Cache Set Latency (Success)" panels.
 		setStart := time.Now()
-		if err := connector.Set(setCtx, groupKey, requestKey, valueToStore, ttl); err != nil {
+		if err := connector.Set(setCtx, groupKey, requestKey, valueToStore, storageTTL); err != nil {
 			errSummary := common.ErrorSummary(err)
 			telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 				c.projectId, req.NetworkLabel(), rpcReq.Method,
@@ -591,6 +599,25 @@ func extractSlotRef(rpcReq *common.JsonRpcRequest) string {
 		}
 	}
 	return "*"
+}
+
+// defaultRealtimeColdStartTTL bounds realtime storage TTL when a policy sets
+// blockTimeMultiplier but has no static fallback and the network's slot time
+// isn't known yet (cold start / EMA not warmed).
+const defaultRealtimeColdStartTTL = 2 * time.Second
+
+// networkBlockTime returns the request network's estimated slot/block time, or
+// 0 if unavailable. Reuses Network.EvmBlockTime (tracker GetNetworkBlockTime)
+// — the getter is network-agnostic despite the EVM-ish name.
+func networkBlockTime(req *common.NormalizedRequest) time.Duration {
+	ntw := req.Network()
+	if ntw == nil {
+		return 0
+	}
+	if p, ok := ntw.(interface{ EvmBlockTime() time.Duration }); ok {
+		return p.EvmBlockTime()
+	}
+	return 0
 }
 
 // Compile-time assertion that SvmJsonRpcCache implements common.CacheDAL.
