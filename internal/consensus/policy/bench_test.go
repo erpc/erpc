@@ -83,7 +83,9 @@ func BenchmarkEvaluate_ColdVM(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		p := &pool{free: make(chan *vm, 1), build: fnProg.build, size: 1}
+		// size 0 disables async refill; alive counts the one-shot VM so
+		// Evaluate does not drive alive negative or spawn unreachable builds.
+		p := &pool{free: make(chan *vm, 1), build: fnProg.build, size: 0, alive: 1}
 		p.free <- v
 		sel := &Selector{pool: p}
 		if _, err := sel.Evaluate(ctx, 50*time.Millisecond); err != nil {
