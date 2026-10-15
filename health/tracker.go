@@ -1727,12 +1727,15 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		}
 	}
 
-	// 3) Recompute block head lag for this upstream. A benched head at or above
-	// the network head (frozen above a chain that went on below it) lags by
-	// what the network made since its bench, so routing leaves it too.
+	// 3) Recompute block head lag for this upstream. A benched head that has
+	// not moved since its bench counts as no higher than the network head was
+	// then, so a head frozen above a chain that went on below it lags by what
+	// the network made since, even once the network passes its height (its
+	// blocks may be a dead fork). A benched head that moves again (replaying)
+	// lags by its real distance.
 	lagHead := func(meta *NetworkMetadata) int64 {
 		h := meta.evmLatestBlockNumber.Load()
-		if h >= ntwBn && meta.headBenched.Load() && meta.headBenchRef > 0 {
+		if meta.headBenched.Load() && meta.headBenchRef > 0 && meta.headChangedAt.Before(meta.headBenchedAt) {
 			return min(h, meta.headBenchRef)
 		}
 		return h
