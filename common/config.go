@@ -2690,8 +2690,7 @@ type EvmNetworkConfig struct {
 
 	// ServedTip configures how the network derives the "latest"/"finalized"
 	// block it advertises to clients (and enforces via block-availability).
-	// Nil or disabled selects the default mode (the corroborated latest across eligible
-	// upstreams, see ServedTipPick.Freshest); set Enabled to opt into the majority tip. See
+	// Nil uses the defaults: quorum 2, regression guard on, no guarantees. See
 	// EvmServedTipConfig.
 	ServedTip                  *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
 	GetLogsMaxAllowedRange     int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
@@ -2783,7 +2782,7 @@ type EvmNetworkConfig struct {
 	// (regardless of selection policy, tier or syncing state), without
 	// dispatching it; it never fires while any upstream's head is unknown.
 	// Clients that poll the next block by number otherwise walk every routed
-	// upstream on each poll. Always on when servedTip is enabled for "latest".
+	// upstream on each poll.
 	// The head is what the state poller and head subscriptions last reported, so
 	// a block an upstream produced since then gets null until eRPC sees it: only
 	// enable it where heads arrive promptly (e.g. over WebSocket).
@@ -2804,30 +2803,24 @@ type EvmNetworkConfig struct {
 // EvmServedTipConfig controls how the network derives the "latest"/"finalized"
 // block it advertises (and enforces) from its upstreams.
 //
-// In the default mode the served tip is the corroborated latest block across eligible
-// non-syncing upstreams (second-highest, or the only one) — which can still advertise a block a slightly-ahead
-// pair has, causing "block not found" churn when requests route to a
-// slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
-// served value is instead the freshest block a strict MAJORITY of the eligible
-// upstreams already have, so interpolated requests land on upstreams that can
-// serve the advertised block.
+// Both axes use one rule: over the eligible (selection-policy), non-syncing,
+// live (not static-capped) and non-benched upstreams, serve the highest block
+// at least Quorum of them already have. An upstream whose head stopped moving
+// while another kept advancing is benched by the health tracker and leaves
+// the ballot until it catches up again.
 type EvmServedTipConfig struct {
-	// EnabledFor lists the block tags whose served value uses the cluster-min tip
-	// instead of the default corroborated head. Valid entries: "latest" and "finalized" (the
-	// "safe" tag follows "finalized"). Empty selects the default mode for all tags.
-	EnabledFor []string `yaml:"enabledFor,omitempty" json:"enabledFor,omitempty"`
-
-	// Deprecated: ClusterDelta configured the former cluster-based picker and is
-	// ignored — the majority order statistic needs no tuning. Kept only so
-	// existing configs keep parsing.
-	ClusterDelta int64 `yaml:"clusterDelta,omitempty" json:"clusterDelta,omitempty"`
+	// Quorum is how many eligible upstreams must already have a block before it
+	// is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
+	// uses DefaultServedTipQuorum (2). A ballot with fewer voters than the
+	// quorum serves the block all of them have.
+	Quorum ServedTipQuorum `yaml:"quorum,omitempty" json:"quorum,omitempty" tstype:"number | 'majority'"`
 
 	// GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
 	// "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
 	// serve the advertised latest. For a request on a matching method, "latest"
 	// resolves against the majority of only the upstreams that support it
 	// (membership auto-detected via ShouldHandleMethod — no per-upstream config).
-	// Empty means only the global (all-eligible) majority is computed.
+	// Empty means only the global ballot is computed.
 	GuaranteedMethods []string `yaml:"guaranteedMethods,omitempty" json:"guaranteedMethods,omitempty"`
 
 	// GuaranteedFor lists upstream SELECTORS (id or tag glob — the same
@@ -2840,67 +2833,32 @@ type EvmServedTipConfig struct {
 	GuaranteedFor []string `yaml:"guaranteedFor,omitempty" json:"guaranteedFor,omitempty"`
 
 	// MaxRegressionBlocks is how far below the corroborated LIVE upstream head
-	// (the second-highest live head) the majority pick may fall before it is
-	// treated as a poisoned ballot rather than as reality. While a pick is below
-	// that bound the network keeps serving its last corroborated pick
-	// (in-process, for at most one minute, then it fails open and serves the
-	// pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the
-	// same rollback tolerance the state poller and health tracker apply to a
+	// (the second-highest live head) the pick may fall before it is treated as
+	// a poisoned ballot rather than as reality. While a pick is below that
+	// bound the network keeps serving its last corroborated pick (in-process,
+	// for at most one minute, then it fails open and serves the pick as
+	// computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
+	// rollback tolerance the state poller and health tracker apply to a
 	// retreating head, so all three layers agree on what counts as a genuine
-	// deep correction. -1 disables the regression guard entirely (the symmetric
-	// opposite of trajectoryWindow: 0); no other negative value is accepted.
+	// deep correction. -1 disables the regression guard entirely; no other
+	// negative value is accepted.
 	MaxRegressionBlocks int64 `yaml:"maxRegressionBlocks,omitempty" json:"maxRegressionBlocks,omitempty"`
-
-	// TrajectoryWindow is how much recorded head history the trajectory referee
-	// needs before it may participate in the pick. The referee tracks where this
-	// network's head has been over the window and, when a stalled group holds
-	// the majority, serves the corroborated group that is actually where the
-	// chain should be by now (see architecture/evm's TipTrajectory: advisory,
-	// upward-only, in-process, and a no-op until every confidence condition
-	// holds). Unset uses DefaultServedTipTrajectoryWindow (10m); an explicit 0
-	// disables the referee entirely — nothing is recorded and the pick is the
-	// plain majority. Any other value must be between
-	// MinServedTipTrajectoryWindow and MaxServedTipTrajectoryWindow: below the
-	// minimum the window is self-defeating (it must be long enough that a stall
-	// cannot look like a trajectory), and above the maximum the sample ring can
-	// never span it, so the referee would stand down forever while looking
-	// configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
-	// bare number is parsed as MILLISECONDS.
-	TrajectoryWindow *Duration `yaml:"trajectoryWindow,omitempty" json:"trajectoryWindow,omitempty"`
 }
 
 // ShortCircuitFutureBlocksEnabled reports whether a numbered eth_getBlockByNumber
-// above every upstream's head returns null without dispatching: when
-// ShortCircuitFutureBlocks is true, or servedTip is enabled for "latest".
-// Nil-receiver safe.
+// above every upstream's head returns null without dispatching. Nil-receiver
+// safe.
 func (c *EvmNetworkConfig) ShortCircuitFutureBlocksEnabled() bool {
-	if c == nil {
-		return false
-	}
-	if c.ShortCircuitFutureBlocks != nil && *c.ShortCircuitFutureBlocks {
-		return true
-	}
-	return c.ServedTipEnabledFor("latest")
+	return c != nil && c.ShortCircuitFutureBlocks != nil && *c.ShortCircuitFutureBlocks
 }
 
-// ServedTipEnabledFor reports whether the majority served tip is enabled for
-// the given block axis ("latest" or "finalized"). The "safe" tag resolves to the
-// finalized axis, so listing "safe" in EnabledFor enables it for "finalized".
-// Anything not listed uses the default corroborated head. Nil-receiver safe.
-func (c *EvmNetworkConfig) ServedTipEnabledFor(tag string) bool {
+// ServedTipQuorum is the network's configured served-tip quorum (zero = the
+// default). Nil-receiver safe.
+func (c *EvmNetworkConfig) ServedTipQuorum() ServedTipQuorum {
 	if c == nil || c.ServedTip == nil {
-		return false
+		return 0
 	}
-	for _, t := range c.ServedTip.EnabledFor {
-		if strings.EqualFold(t, tag) {
-			return true
-		}
-		// "safe" resolves to the finalized axis.
-		if strings.EqualFold(tag, "finalized") && strings.EqualFold(t, "safe") {
-			return true
-		}
-	}
-	return false
+	return c.ServedTip.Quorum
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

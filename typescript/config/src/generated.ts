@@ -1648,8 +1648,7 @@ export interface EvmNetworkConfig {
   /**
    * ServedTip configures how the network derives the "latest"/"finalized"
    * block it advertises to clients (and enforces via block-availability).
-   * Nil or disabled selects the default mode (the corroborated latest across eligible
-   * upstreams, see ServedTipPick.Freshest); set Enabled to opt into the majority tip. See
+   * Nil uses the defaults: quorum 2, regression guard on, no guarantees. See
    * EvmServedTipConfig.
    */
   servedTip?: EvmServedTipConfig;
@@ -1755,7 +1754,7 @@ export interface EvmNetworkConfig {
    * (regardless of selection policy, tier or syncing state), without
    * dispatching it; it never fires while any upstream's head is unknown.
    * Clients that poll the next block by number otherwise walk every routed
-   * upstream on each poll. Always on when servedTip is enabled for "latest".
+   * upstream on each poll.
    * The head is what the state poller and head subscriptions last reported, so
    * a block an upstream produced since then gets null until eRPC sees it: only
    * enable it where heads arrive promptly (e.g. over WebSocket).
@@ -1772,34 +1771,27 @@ export interface EvmNetworkConfig {
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
  * block it advertises (and enforces) from its upstreams.
- * In the default mode the served tip is the corroborated latest block across eligible
- * non-syncing upstreams (second-highest, or the only one) — which can still advertise a block a slightly-ahead
- * pair has, causing "block not found" churn when requests route to a
- * slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
- * served value is instead the freshest block a strict MAJORITY of the eligible
- * upstreams already have, so interpolated requests land on upstreams that can
- * serve the advertised block.
+ * Both axes use one rule: over the eligible (selection-policy), non-syncing,
+ * live (not static-capped) and non-benched upstreams, serve the highest block
+ * at least Quorum of them already have. An upstream whose head stopped moving
+ * while another kept advancing is benched by the health tracker and leaves
+ * the ballot until it catches up again.
  */
 export interface EvmServedTipConfig {
   /**
-   * EnabledFor lists the block tags whose served value uses the cluster-min tip
-   * instead of the default corroborated head. Valid entries: "latest" and "finalized" (the
-   * "safe" tag follows "finalized"). Empty selects the default mode for all tags.
+   * Quorum is how many eligible upstreams must already have a block before it
+   * is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
+   * uses DefaultServedTipQuorum (2). A ballot with fewer voters than the
+   * quorum serves the block all of them have.
    */
-  enabledFor?: string[];
-  /**
-   * Deprecated: ClusterDelta configured the former cluster-based picker and is
-   * ignored — the majority order statistic needs no tuning. Kept only so
-   * existing configs keep parsing.
-   */
-  clusterDelta?: number /* int64 */;
+  quorum?: number | 'majority';
   /**
    * GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
    * "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
    * serve the advertised latest. For a request on a matching method, "latest"
    * resolves against the majority of only the upstreams that support it
    * (membership auto-detected via ShouldHandleMethod — no per-upstream config).
-   * Empty means only the global (all-eligible) majority is computed.
+   * Empty means only the global ballot is computed.
    */
   guaranteedMethods?: string[];
   /**
@@ -1814,35 +1806,17 @@ export interface EvmServedTipConfig {
   guaranteedFor?: string[];
   /**
    * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
-   * (the second-highest live head) the majority pick may fall before it is
-   * treated as a poisoned ballot rather than as reality. While a pick is below
-   * that bound the network keeps serving its last corroborated pick
-   * (in-process, for at most one minute, then it fails open and serves the
-   * pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the
-   * same rollback tolerance the state poller and health tracker apply to a
+   * (the second-highest live head) the pick may fall before it is treated as
+   * a poisoned ballot rather than as reality. While a pick is below that
+   * bound the network keeps serving its last corroborated pick (in-process,
+   * for at most one minute, then it fails open and serves the pick as
+   * computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
+   * rollback tolerance the state poller and health tracker apply to a
    * retreating head, so all three layers agree on what counts as a genuine
-   * deep correction. -1 disables the regression guard entirely (the symmetric
-   * opposite of trajectoryWindow: 0); no other negative value is accepted.
+   * deep correction. -1 disables the regression guard entirely; no other
+   * negative value is accepted.
    */
   maxRegressionBlocks?: number /* int64 */;
-  /**
-   * TrajectoryWindow is how much recorded head history the trajectory referee
-   * needs before it may participate in the pick. The referee tracks where this
-   * network's head has been over the window and, when a stalled group holds
-   * the majority, serves the corroborated group that is actually where the
-   * chain should be by now (see architecture/evm's TipTrajectory: advisory,
-   * upward-only, in-process, and a no-op until every confidence condition
-   * holds). Unset uses DefaultServedTipTrajectoryWindow (10m); an explicit 0
-   * disables the referee entirely — nothing is recorded and the pick is the
-   * plain majority. Any other value must be between
-   * MinServedTipTrajectoryWindow and MaxServedTipTrajectoryWindow: below the
-   * minimum the window is self-defeating (it must be long enough that a stall
-   * cannot look like a trajectory), and above the maximum the sample ring can
-   * never span it, so the referee would stand down forever while looking
-   * configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
-   * bare number is parsed as MILLISECONDS.
-   */
-  trajectoryWindow?: Duration;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -2645,8 +2619,9 @@ export type TrackedMetrics = any;
 
 /**
  * ServedTipInput is a single observation: an upstream's last-known tip block.
- * Callers are responsible for excluding syncing or cordoned upstreams BEFORE
- * passing observations here; the picker treats every input as a candidate.
+ * Callers are responsible for excluding syncing, cordoned or benched upstreams
+ * BEFORE passing observations here; the picker treats every input as a
+ * candidate.
  */
 export interface ServedTipInput {
   /**
@@ -2666,18 +2641,17 @@ export interface ServedTipInput {
 export interface ServedTipPick {
   /**
    * Tip is the value to advertise as latest/finalized: the highest block
-   * number that a strict MAJORITY of the inputs have already reached, or 0
-   * when there are no valid inputs.
+   * number that at least quorum of the inputs have already reached (all of
+   * them when there are fewer inputs than the quorum), or 0 when there are
+   * no valid inputs.
    */
   tip: number /* int64 */;
   /**
    * Freshest is the freshest CORROBORATED view: the 2nd-highest valid input
    * (or the only input when N=1) — the reference for the deliberate-lag
    * gauge (Freshest - Tip). Using the 2nd-highest instead of the raw max
-   * means a single rogue far-future upstream cannot inflate the lag gauge
-   * (the problem the old velocity gate solved via MaxEligible: one
-   * wrong-chain endpoint used to make the gauge read hundreds of thousands
-   * of blocks). The absolute per-upstream maxima remain observable via
+   * means a single rogue far-future upstream cannot inflate the lag gauge.
+   * The absolute per-upstream maxima remain observable via
    * erpc_upstream_latest_block_number.
    */
   freshest: number /* int64 */;
@@ -2692,14 +2666,18 @@ export interface ServedTipPick {
    * Inputs is the number of valid (BlockNumber > 0) observations.
    */
   inputs: number /* int */;
-  /**
-   * Sorted is the valid inputs, DESCENDING by block number — the order
-   * statistic's own working slice, exposed so the trajectory referee can
-   * cluster the very same ballot without sorting it a second time. Nil when
-   * there are no valid inputs; never mutate it.
-   */
-  sorted: ServedTipInput[];
 }
+/**
+ * ServedTipQuorum is how many voters must already have a block before it is
+ * served: a fixed count (>= 1), or ServedTipQuorumMajority for floor(N/2)+1 of
+ * the N voters. The zero value is DefaultServedTipQuorum. In YAML/JSON it is a
+ * positive integer or the string "majority".
+ */
+export type ServedTipQuorum = number /* int */;
+/**
+ * ServedTipQuorumMajority requires a strict majority of the voters.
+ */
+export const ServedTipQuorumMajority: ServedTipQuorum = -1;
 
 //////////
 // source: timeout_func.go

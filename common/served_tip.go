@@ -1,10 +1,16 @@
 package common
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+)
 
 // ServedTipInput is a single observation: an upstream's last-known tip block.
-// Callers are responsible for excluding syncing or cordoned upstreams BEFORE
-// passing observations here; the picker treats every input as a candidate.
+// Callers are responsible for excluding syncing, cordoned or benched upstreams
+// BEFORE passing observations here; the picker treats every input as a
+// candidate.
 type ServedTipInput struct {
 	// UpstreamID is preserved only for telemetry attribution. It is not used
 	// in the pick.
@@ -18,17 +24,16 @@ type ServedTipInput struct {
 // ServedTipPick is the picker's output.
 type ServedTipPick struct {
 	// Tip is the value to advertise as latest/finalized: the highest block
-	// number that a strict MAJORITY of the inputs have already reached, or 0
-	// when there are no valid inputs.
+	// number that at least quorum of the inputs have already reached (all of
+	// them when there are fewer inputs than the quorum), or 0 when there are
+	// no valid inputs.
 	Tip int64
 
 	// Freshest is the freshest CORROBORATED view: the 2nd-highest valid input
 	// (or the only input when N=1) — the reference for the deliberate-lag
 	// gauge (Freshest - Tip). Using the 2nd-highest instead of the raw max
-	// means a single rogue far-future upstream cannot inflate the lag gauge
-	// (the problem the old velocity gate solved via MaxEligible: one
-	// wrong-chain endpoint used to make the gauge read hundreds of thousands
-	// of blocks). The absolute per-upstream maxima remain observable via
+	// means a single rogue far-future upstream cannot inflate the lag gauge.
+	// The absolute per-upstream maxima remain observable via
 	// erpc_upstream_latest_block_number.
 	Freshest int64
 
@@ -40,70 +45,136 @@ type ServedTipPick struct {
 
 	// Inputs is the number of valid (BlockNumber > 0) observations.
 	Inputs int
-
-	// Sorted is the valid inputs, DESCENDING by block number — the order
-	// statistic's own working slice, exposed so the trajectory referee can
-	// cluster the very same ballot without sorting it a second time. Nil when
-	// there are no valid inputs; never mutate it.
-	Sorted []ServedTipInput
 }
 
-// PickServedTip returns the freshest block number that a strict majority of
-// the eligible upstreams have already reached: the floor(N/2)-th highest head
-// (0-indexed, descending). This is the entire served-tip algorithm.
+// ServedTipQuorum is how many voters must already have a block before it is
+// served: a fixed count (>= 1), or ServedTipQuorumMajority for floor(N/2)+1 of
+// the N voters. The zero value is DefaultServedTipQuorum. In YAML/JSON it is a
+// positive integer or the string "majority".
+type ServedTipQuorum int
+
+// ServedTipQuorumMajority requires a strict majority of the voters.
+const ServedTipQuorumMajority ServedTipQuorum = -1
+
+// Of returns the quorum for a ballot of n voters, capped at n so a ballot with
+// fewer voters than the quorum serves the block all of them have.
+func (q ServedTipQuorum) Of(n int) int {
+	need := DefaultServedTipQuorum
+	switch {
+	case q == ServedTipQuorumMajority:
+		need = n/2 + 1
+	case q > 0:
+		need = int(q)
+	}
+	return max(1, min(need, n))
+}
+
+func (q ServedTipQuorum) String() string {
+	switch {
+	case q == ServedTipQuorumMajority:
+		return "majority"
+	case q > 0:
+		return strconv.Itoa(int(q))
+	}
+	return strconv.Itoa(DefaultServedTipQuorum)
+}
+
+func parseServedTipQuorum(s string) (ServedTipQuorum, error) {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "majority") {
+		return ServedTipQuorumMajority, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("servedTip.quorum must be an integer >= 1 or \"majority\", got %q", s)
+	}
+	return ServedTipQuorum(n), nil
+}
+
+func (q ServedTipQuorum) MarshalYAML() (interface{}, error) {
+	if q == ServedTipQuorumMajority {
+		return "majority", nil
+	}
+	return int(q), nil
+}
+
+func (q *ServedTipQuorum) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var n int
+	if err := unmarshal(&n); err == nil {
+		return q.set(strconv.Itoa(n))
+	}
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+	return q.set(s)
+}
+
+func (q ServedTipQuorum) MarshalJSON() ([]byte, error) {
+	if q == ServedTipQuorumMajority {
+		return []byte(`"majority"`), nil
+	}
+	return []byte(strconv.Itoa(int(q))), nil
+}
+
+func (q *ServedTipQuorum) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	return q.set(strings.Trim(string(data), `"`))
+}
+
+func (q *ServedTipQuorum) set(s string) error {
+	parsed, err := parseServedTipQuorum(s)
+	if err != nil {
+		return err
+	}
+	*q = parsed
+	return nil
+}
+
+// PickServedTip returns the freshest block number that at least q of the
+// eligible upstreams have already reached: the q-th highest head (all of them
+// when fewer than q voted). This is the entire served-tip algorithm.
 //
-// One order statistic over the live heads provides every protection the
-// previous cluster + velocity-gate + persistent-counter pipeline engineered
-// separately — with zero state and zero configuration:
+// One order statistic over the live heads provides every protection a
+// stateful pipeline would have to engineer separately — with zero state:
 //
 //   - GARBAGE-RESISTANT: a far-future tip from a rogue/wrong-chain upstream
-//     cannot move the pick unless a strict majority agrees with it.
-//   - STUCK-RESISTANT: a frozen or lagging upstream cannot hold the pick
-//     back unless it IS the majority (a halted chain — where holding back is
-//     the correct answer).
-//   - SERVABLE: by construction at least floor(N/2)+1 upstreams already have
-//     the advertised block, so interpolated "latest" requests land on
-//     upstreams that can actually serve it.
+//     cannot move the pick unless q-1 others agree with it.
+//   - SERVABLE: at least q upstreams already have the advertised block, so
+//     interpolated "latest" requests land on upstreams that can serve it.
 //   - MONOTONIC IN PRACTICE: each input is itself a monotonic, rollback-
 //     tolerant poller counter, and an order statistic over monotonic inputs
 //     only regresses when the ELIGIBLE SET changes — bounded by the live
-//     head spread (a couple of blocks), the same wobble any load-balanced
-//     provider exhibits.
-//   - WEDGE-IMMUNE: nothing is persisted and nothing is predicted — no
-//     inherited counter, no anchor clock, no block-time estimate, no
-//     absorbing state. The 2026-06 production incident (served tips silently
-//     frozen hours in the past, fleet-wide) is structurally impossible here;
+//     head spread.
+//   - WEDGE-IMMUNE: nothing is persisted and nothing is predicted. The 2026-06
+//     production incident (served tips silently frozen hours in the past,
+//     fleet-wide) is structurally impossible here;
 //     networks_served_tip_invariants_test.go (package erpc) pins that class
 //     of outcome forever.
 //
-// Examples (heads descending): N=1 → that head; N=2 → the LOWER (never
-// advertise a block only one upstream claims); N=3 → 2nd; N=4 → 3rd; N=5 → 3rd.
-func PickServedTip(tips []ServedTipInput) ServedTipPick {
-	// One sorted slice serves the whole evaluation: the order statistic here
-	// and the referee's clustering downstream (ServedTipPick.Sorted). The
-	// UpstreamIDs travel with it because group IDENTITY — not just the head
-	// values — is what the referee's dwell test is keyed on.
-	sorted := make([]ServedTipInput, 0, len(tips))
+// A voter that stopped moving holds the pick back only while it is needed for
+// the quorum; the health tracker benches such a voter (see
+// health.Tracker.IsHeadBenched) so it leaves the ballot instead.
+//
+// Examples (heads descending), default q=2: N=1 → that head; N=2 → the lower;
+// N=3..∞ → 2nd. Majority: N=3 → 2nd; N=4 → 3rd; N=5 → 3rd.
+func PickServedTip(tips []ServedTipInput, q ServedTipQuorum) ServedTipPick {
+	sorted := make([]int64, 0, len(tips))
 	for _, t := range tips {
 		if t.BlockNumber > 0 {
-			sorted = append(sorted, t)
+			sorted = append(sorted, t.BlockNumber)
 		}
 	}
 	if len(sorted) == 0 {
 		return ServedTipPick{}
 	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].BlockNumber > sorted[j].BlockNumber })
-	freshest := sorted[0].BlockNumber
-	if len(sorted) > 1 {
-		// Corroborated freshest: a single rogue far-future tip must not be
-		// able to inflate the lag reference (see ServedTipPick.Freshest).
-		freshest = sorted[1].BlockNumber
-	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] > sorted[j] })
 	return ServedTipPick{
-		Tip:      sorted[len(sorted)/2].BlockNumber,
-		Freshest: freshest,
-		Max:      sorted[0].BlockNumber,
+		Tip:      sorted[q.Of(len(sorted))-1],
+		Freshest: sorted[min(1, len(sorted)-1)],
+		Max:      sorted[0],
 		Inputs:   len(sorted),
-		Sorted:   sorted,
 	}
 }

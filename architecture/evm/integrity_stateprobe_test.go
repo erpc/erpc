@@ -156,7 +156,7 @@ func TestStateProber(t *testing.T) {
 
 // A fast-chain fleet where structural probe lag exceeds nothing but the clock.
 //
-// eRPC advertises "latest" as the majority CLAIMED head (PickServedTip), and
+// eRPC advertises "latest" as a quorum of CLAIMED heads (PickServedTip), and
 // clients additionally pin state calls at concrete heights they derive
 // themselves (an indexer calls eth_getBlockByNumber, then eth_call at that
 // number). The state prober advances each upstream's PROVEN head only at probe
@@ -191,8 +191,8 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 		{"upstream-f", 0},
 	}
 
-	// The tip eRPC advertises: the majority order statistic over CLAIMED heads
-	// (all live and within a block of each other).
+	// The tip eRPC advertises: the default-quorum order statistic over CLAIMED
+	// heads (all live and within a block of each other).
 	tips := make([]common.ServedTipInput, 0, len(fleet))
 	ups := make([]common.Upstream, 0, len(fleet))
 	for _, f := range fleet {
@@ -206,8 +206,8 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 		}
 		ups = append(ups, u)
 	}
-	tip := common.PickServedTip(tips).Tip
-	require.Equal(t, head, tip, "sanity: a healthy fleet's majority tip is the head")
+	tip := common.PickServedTip(tips, 0).Tip
+	require.Equal(t, head, tip, "sanity: a healthy fleet's served tip is the head")
 
 	// The precondition, asserted so the fixture cannot rot into triviality: the
 	// advertised tip exceeds the proven head of a strict majority of the fleet

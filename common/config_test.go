@@ -1318,9 +1318,8 @@ func TestEvmNetworkConfig_ShortCircuitFutureBlocksEnabled(t *testing.T) {
 	enabled, disabled := true, false
 	assert.False(t, (&EvmNetworkConfig{ShortCircuitFutureBlocks: &disabled}).ShortCircuitFutureBlocksEnabled())
 	assert.True(t, (&EvmNetworkConfig{ShortCircuitFutureBlocks: &enabled}).ShortCircuitFutureBlocksEnabled())
-	// servedTip for "latest" keeps the short-circuit on, as before.
-	assert.True(t, (&EvmNetworkConfig{ServedTip: &EvmServedTipConfig{EnabledFor: []string{"latest"}}}).ShortCircuitFutureBlocksEnabled())
-	assert.False(t, (&EvmNetworkConfig{ServedTip: &EvmServedTipConfig{EnabledFor: []string{"finalized"}}}).ShortCircuitFutureBlocksEnabled())
+	// Only the explicit key turns it on; a servedTip block does not.
+	assert.False(t, (&EvmNetworkConfig{ServedTip: &EvmServedTipConfig{Quorum: ServedTipQuorumMajority}}).ShortCircuitFutureBlocksEnabled())
 }
 
 func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {

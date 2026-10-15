@@ -1667,27 +1667,11 @@ func (e *EvmNetworkConfig) Validate() error {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
 	if e.ServedTip != nil {
-		for _, tag := range e.ServedTip.EnabledFor {
-			switch strings.ToLower(strings.TrimSpace(tag)) {
-			case "latest", "finalized", "safe":
-			default:
-				return fmt.Errorf("network.*.evm.servedTip.enabledFor contains unknown tag %q (valid: latest, finalized, safe)", tag)
-			}
-		}
-		if e.ServedTip.ClusterDelta < 0 {
-			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
+		if q := e.ServedTip.Quorum; q < 0 && q != ServedTipQuorumMajority {
+			return fmt.Errorf("network.*.evm.servedTip.quorum must be an integer >= 1 or \"majority\"")
 		}
 		if e.ServedTip.MaxRegressionBlocks < -1 {
 			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0, or -1 to disable the regression guard (0 uses the default rollback tolerance)")
-		}
-		if w := e.ServedTip.TrajectoryWindow; w != nil && w.Duration() != 0 {
-			if d := w.Duration(); d < MinServedTipTrajectoryWindow || d > MaxServedTipTrajectoryWindow {
-				return fmt.Errorf(
-					"network.*.evm.servedTip.trajectoryWindow must be 0 (disables the trajectory referee) "+
-						"or between %s and %s, got %s — NOTE a bare number in YAML is parsed as MILLISECONDS, "+
-						"so write trajectoryWindow: \"10m\", not trajectoryWindow: 10",
-					MinServedTipTrajectoryWindow, MaxServedTipTrajectoryWindow, d)
-			}
 		}
 		for _, m := range e.ServedTip.GuaranteedMethods {
 			if err := ValidatePattern(m); err != nil {
