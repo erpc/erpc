@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/failsafe"
 	policyengine "github.com/erpc/erpc/internal/consensus/policy"
 	"github.com/erpc/erpc/telemetry"
 )
@@ -152,12 +153,16 @@ func toEvalUpstreams(ups []common.Upstream, method string) []policyengine.Upstre
 			}
 		}
 		pu.Health.CordonClasses = classes
-		// MVP health mapping: a non-empty cordon set is StateCordoned; anything
-		// else is StateHealthy. StateUnhealthy is reserved for a later phase —
-		// no observed case forces it yet.
-		if len(classes) > 0 {
+		// Cordon wins over breaker state: a cordoned upstream is out of
+		// rotation for a typed reason, which allUnavailable() whitelists
+		// separately. An open catch-all circuit breaker with no cordon is
+		// the unhealthy-but-uncordoned case (down, not yet cordoned).
+		switch {
+		case len(classes) > 0:
 			pu.Health.State = policyengine.StateCordoned
-		} else {
+		case circuitBreakerOpen(up):
+			pu.Health.State = policyengine.StateUnhealthy
+		default:
 			pu.Health.State = policyengine.StateHealthy
 		}
 
@@ -174,6 +179,18 @@ func toEvalUpstreams(ups []common.Upstream, method string) []policyengine.Upstre
 		out = append(out, pu)
 	}
 	return out
+}
+
+// circuitBreakerOpen reports the catch-all breaker used for methods without
+// their own failsafe block. Half-open is still serving probes, so only StateOpen
+// is the down-but-uncordoned case allUnavailable() documents. Upstreams that
+// do not expose a breaker (fakes, non-upstream types) are not unhealthy.
+func circuitBreakerOpen(up common.Upstream) bool {
+	type circuitBreaker interface {
+		CircuitBreakerState() failsafe.State
+	}
+	b, ok := up.(circuitBreaker)
+	return ok && b.CircuitBreakerState() == failsafe.StateOpen
 }
 
 // hasPunishmentOrOperator reports whether up currently holds a punishment or
