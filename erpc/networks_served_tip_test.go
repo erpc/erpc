@@ -1841,14 +1841,14 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 	t.Run("heads frozen above a chain that restarted lower are benched and routed around", func(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "fork-a", chainID: 123, latestBlock: 20_000},
-			{id: "fork-b", chainID: 123, latestBlock: 20_000},
+			{id: "fork-a", chainID: 123, latestBlock: 9_060},
+			{id: "fork-b", chainID: 123, latestBlock: 9_060},
 			{id: "canon-a", chainID: 123, latestBlock: 9_000},
 			{id: "canon-b", chainID: 123, latestBlock: 9_000},
 		}, nil)
 		forks, canons := ups[:2], ups[2:]
 		tr := network.metricsTracker
-		const forkAt = int64(20_000)
+		const forkAt = int64(9_060)
 		forkTs := servedTipClock().Add(-10 * time.Minute).Unix()
 		canon := int64(9_000)
 		poll := func(d time.Duration) {
@@ -1886,14 +1886,17 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		}
 		served(t, network, canon, "both forks benched: the canonical pair defines latest")
 
-		for range 20 {
+		// The canonical chain passes the frozen height. The frozen head still
+		// lags by what the chain made since its bench, not by the one block it
+		// now trails: its blocks up to forkAt are the dead fork's.
+		for canon <= forkAt {
 			poll(2 * time.Second)
 		}
 		for _, u := range forks {
 			require.True(t, tr.IsHeadBenched(u), "%s: a frozen head never rejoins", u.Id())
 		}
 		lag := lagOf(network, forks[0])
-		require.Equal(t, canon-benchedAt, lag, "a benched head above the network head lags by what the chain made since its bench")
+		require.Equal(t, canon-benchedAt, lag, "a frozen benched head lags by what the chain made since its bench")
 		require.Greater(t, lag, int64(16), "past the default blockNumberLagAbove, so routing leaves the frozen head")
 		served(t, network, canon, "as the canonical chain moves on")
 	})
