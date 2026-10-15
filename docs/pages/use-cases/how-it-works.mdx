@@ -89,8 +89,8 @@ authenticates the consumer via `project.AuthenticateConsumer`, resolves
 
 `PreparedProject.Forward` acquires a project-level rate-limit permit (no-op when
 `rateLimitBudget` is unset), fires `HandleProjectPreForward` — the first EVM hook, which
-handles `eth_blockNumber` (early cache return), `eth_call` (static call optimisation),
-`eth_chainId` (served from config), and proactive `eth_getLogs` / `trace_filter` range
+handles `eth_call` / `eth_estimateGas` (default block tag), `eth_chainId` (served from
+config), and proactive `eth_getLogs` / `trace_filter` range
 splitting. If the hook handles the request, `HandleNetworkPostForward` is called on the
 result before returning. Otherwise the call proceeds to `network.Forward`.
 
@@ -107,9 +107,10 @@ result before returning. Otherwise the call proceeds to `network.Forward`.
 4. **Upstream ordering** — `policyEngine.GetOrdered` returns upstreams ranked by selection
    policy scores; falls back to registry order on cold start.
 5. **EVM network pre-forward hook** (`HandleNetworkPreForward`) — upstream-aware
-   short-circuits for `eth_getLogs` range enforcement, `eth_chainId`, `trace_filter`.
-6. **Future-block short-circuit** — requests for a concrete block beyond every eligible
-   upstream head return `null` immediately without touching any upstream.
+   short-circuits for `eth_getLogs` range enforcement, `eth_chainId`, `trace_filter`, and
+   `eth_blockNumber` (answered from the served tip while `enforceHighestBlock` is on).
+6. **Future-block short-circuit** — with `evm.shortCircuitFutureBlocks: true`, a numbered
+   `eth_getBlockByNumber` beyond every upstream's head returns `null` without touching any upstream.
 7. **Method guard** — `eth_accounts` and `eth_sign` are hardcoded unsupported; stateful
    methods require exactly one targeted upstream.
 8. **Network rate limiting** — network-level budget checked.
@@ -241,9 +242,10 @@ primary control surface.
 | `evm.blockUnavailableDelayMultiplier` | `*float64` | `1.0` | Multiplies EMA-estimated block time to derive the dynamic retry delay for `ErrUpstreamBlockUnavailable`/`ErrEndpointMissingData`. Returns `0` before EMA warms up — falls back to `failsafe[*].retry.emptyResultDelay`. |
 | `evm.idempotentTransactionBroadcast` | `*bool` | nil (enabled) | When enabled, `eth_sendRawTransaction` converts "already known" to success and verifies "nonce too low" via `eth_getTransactionByHash`. Set to `false` to return raw upstream errors. |
 | `evm.emptyResultConfidence` | `AvailbilityConfidence` | `blockHead` | Confidence level for empty-result retries: `blockHead` = retry empties for blocks ≤ latest head; `finalizedBlock` = stricter, only retry for blocks ≤ finalized head. <SourceLink file="common/defaults.go" lines="2075-2079" /> |
-| `evm.servedTip.enabledFor` | `[]string` | `[]` | Tags using cluster-min mode; valid values: `"latest"`, `"finalized"`, `"safe"`. |
-| `evm.servedTip.clusterDelta` | int64 | `0` (auto-derived, clamped [2,10]) | Max block gap to group upstreams into one cluster for served-tip computation. |
-| `evm.servedTip.guaranteedMethods` | `[]string` | `[]` | Glob patterns for methods whose supporting-upstreams subset is used for cluster computation. |
+| `evm.servedTip.quorum` | int ≥ 1 \| `"majority"` | `2` | Upstreams that must already have a block before it is served as `latest`/`finalized`. See [Block tracking](/reference/evm/block-tracking). |
+| `evm.servedTip.maxRegressionBlocks` | int64 | `0` (= 1024) | Regression guard tolerance below the corroborated live head; `-1` disables. |
+| `evm.servedTip.guaranteedMethods` | `[]string` | `[]` | Glob patterns; the tip is clamped to the majority pick of each method's supporting upstreams. |
+| `evm.servedTip.guaranteedFor` | `[]string` | `[]` | Upstream selectors; the tip is clamped to the majority pick of each group. |
 | `evm.integrity.enforceHighestBlock` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceHighestBlock`. |
 | `evm.integrity.enforceGetLogsBlockRange` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceGetLogsBlockRange`. |
 | `evm.integrity.enforceNonNullTaggedBlocks` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceNonNullTaggedBlocks`. |
@@ -498,8 +500,10 @@ all waiting followers with a response ID patch per follower:
 | `erpc_upstream_wrong_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned empty while another returned data |
 | `erpc_upstream_request_errors_total` | counter | (upstream error labels) | Upstream skip due to block availability check failure |
 | `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served-tip block number computed for the network |
-| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Deliberate cushion below the freshest upstream tip |
-| `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream dropped from served-tip computation (velocity/outlier gate) |
+| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks the served tip sits below the second-highest voter |
+| `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since the served tip last changed |
+| `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | Regression-guard transitions (`held`/`failed_open`) |
+| `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream, reason | Upstream head benched out of the served-tip ballots |
 | `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | One increment per upstream attempt with its terminal outcome |
 
 Key OpenTelemetry spans:

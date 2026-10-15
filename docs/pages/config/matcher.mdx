@@ -231,7 +231,7 @@ connector `failsafeForGets[]`/`failsafeForSets[]`)
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `networks[].evm.servedTip.guaranteedMethods[]` | []string | — | Each element validated by `ValidatePattern` at config load (the only config field with startup validation). At runtime, `WildcardMatch` against the request method determines whether the served-tip mechanism applies. Source: <SourceLink file="common/validation.go" lines="1323-1326" /> |
+| `networks[].evm.servedTip.guaranteedMethods[]` | []string | — | Each element validated by `ValidatePattern` at config load (as are `servedTip.guaranteedFor[]` and `safeBlockSource`). At runtime, each pattern selects the eligible upstreams whose `ShouldHandleMethod` accepts it; the served tip is clamped to their majority pick. Source: <SourceLink file="common/validation.go" lines="1676-1685" /> |
 
 **Provider network overrides** — `providers[].overrides` (map keys)
 
@@ -536,8 +536,8 @@ rule, a heavy-method request consumes from both buckets:
 - Avoid setting `!` in `use-upstream` selector patterns unless you specifically want to suppress
   tag matching — any `!` anywhere in the pattern disables tag fallback entirely.
 - **Validate patterns at startup** where possible: `ValidatePattern` is only automatically called
-  for `evm.servedTip.guaranteedMethods`; other fields accept invalid patterns silently and fail
-  at runtime.
+  for `evm.servedTip.guaranteedMethods`, `evm.servedTip.guaranteedFor` and `evm.safeBlockSource`;
+  other fields accept invalid patterns silently and fail at runtime.
 
 ### Edge cases & gotchas
 
@@ -551,7 +551,7 @@ rule, a heavy-method request consumes from both buckets:
 8. **Static response `method` is exact equality, not wildcard.** Unlike every other string matcher, `FindStaticResponseMatch` uses byte equality. A glob pattern in `staticResponses[].method` is silently treated as a literal string. Source: <SourceLink file="common/static_response.go" lines="16" />
 9. **`CachePolicyConfig.finality` zero-value is `finalized`.** Omitting `finality` in a cache policy gives a finalized-only policy without any warning. Source: <SourceLink file="common/data.go" lines="15" />
 10. **Multiple rate-limit rules fire simultaneously.** All rules whose `method` pattern matches are returned and each independently debits a token bucket. A single request may be throttled by a `"*"` rule and a specific-method rule at the same time. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="63-78" />
-11. **`ValidatePattern` is called only for `evm.servedTip.guaranteedMethods` at startup.** Other pattern fields (cache policy method, failsafe matchMethod, etc.) are not validated at config load — an invalid pattern silently skips matches at runtime. Source: <SourceLink file="common/validation.go" lines="1323-1326" />
+11. **`ValidatePattern` is called only for `evm.servedTip.guaranteedMethods`, `evm.servedTip.guaranteedFor` and `evm.safeBlockSource` at startup.** Other pattern fields (cache policy method, failsafe matchMethod, etc.) are not validated at config load — an invalid pattern silently skips matches at runtime. Source: <SourceLink file="common/validation.go" lines="1676-1691" />
 12. **`WildcardMatch` concurrent calls are safe** (no shared mutable state per call) but `RateLimiterBudget.GetRulesByMethod` holds a `sync.RWMutex` during iteration. Re-tokenization cost is paid under the read lock on every matching call. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="63-78" />
 13. **`paramToString` on float64 from JSON.** JSON numbers decode as `float64`; `strconv.FormatFloat(v, 'f', -1, 64)` produces `"1234"` not `"1234.0"`. A string pattern `"123*"` would match numeric param `1234`. Source: <SourceLink file="data/cache_policy.go" lines="234-249" />
 14. **Cache `MatchesForGet` returns `true` for `unknown` finality across all policies.** A request with indeterminate finality can be served from a `finalized` policy's cache, potentially returning stale data. Source: <SourceLink file="data/cache_policy.go" lines="146-149" />
