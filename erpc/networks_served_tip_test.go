@@ -38,7 +38,7 @@ type servedTipFixture struct {
 	// upperExactBlock, when > 0, configures blockAvailability.upper.exactBlock —
 	// the upstream still polls latestBlock as its head, but only SERVES up to
 	// this block, so its effective latest is the bound rather than a head
-	// observation (the celo "legacy" upstream shape).
+	// observation (a "legacy" upstream that serves only a frozen historical range).
 	upperExactBlock int64
 	// upperLatestMinus, when set, configures blockAvailability.upper.latestBlockMinus
 	// — a bound DERIVED from the upstream's own head, so it tracks the chain at
@@ -683,7 +683,7 @@ func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
 // A halted chain that resumes with a burst (sequencer outage ending, L2 batch
 // landing) must be served the moment a majority reports the jump. The old
 // velocity gate had to be tuned (slack/buffer) to permit exactly this, and a
-// mis-tuned gate freezing on the jump is what wedged prod; statelessness has
+// mis-tuned gate freezing on the jump is the frozen-tip regression; statelessness has
 // no window to outrun.
 func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 	util.ResetGock()
@@ -711,13 +711,13 @@ func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 		"the post-halt burst must be served on the first pick that sees it")
 }
 
-// ─── Availability bounds are not head observations (2026-08 celo) ────────────
+// ─── Availability bounds are not head observations ──────────────────────────
 
 // A blockAvailability.upper bound is a SERVING-RANGE declaration, not a view of
 // the chain head, so it must not appear on the ballot while any live head does.
 // Two upstreams pinned at `upper.exactBlock` (their pollers sitting at the live
 // tip) used to outvote the live heads as soon as the eligible set shrank —
-// exactly how celo served September-2023 state on 2026-08-11.
+// pulling "latest" down to a block years in the past.
 func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -782,7 +782,7 @@ func TestServedTip_LatestBlockMinusUpstreamsStillVote(t *testing.T) {
 		served, canServe, len(ups))
 }
 
-// The guaranteed-method floor was the second door onto the incident value: its
+// The guaranteed-method floor was the second door onto the capped value: its
 // ballot took raw effective heads and ran AFTER the guard, so a static cap that
 // the network ballot had just refused came back as a "floor" and was served.
 // The floor now builds its per-method ballot with the same rule.
@@ -794,13 +794,13 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	const legacyCap = int64(21_615_999)
+	const legacyCap = int64(50_000)
 	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
-		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
-		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
-		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
-		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+		{id: "leader", chainID: 123, latestBlock: 100_000},
+		{id: "peer-a", chainID: 123, latestBlock: 99_996},
+		{id: "peer-b", chainID: 123, latestBlock: 99_968},
+		{id: "legacy-1", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
+		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
 	}, &common.EvmServedTipConfig{
 		Quorum:            common.ServedTipQuorumMajority,
 		GuaranteedMethods: []string{"eth_getLogs"},
@@ -809,8 +809,8 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 	require.Greater(t, network.EvmHighestLatestBlockNumber(ctx), legacyCap,
 		"precondition: with the full fleet eligible the tip is a live head")
 
-	// The incident ballot: one live upstream lag-excluded.
-	network.PinUpstreamOrderForTest("celo-mainnet-nirvana", "quicknode-celo", "celo-mainnet-nirvana-legacy", "quicknode-celo-legacy")
+	// The failing ballot: one live upstream lag-excluded.
+	network.PinUpstreamOrderForTest("peer-a", "peer-b", "legacy-1", "legacy-2")
 
 	assert.Greater(t, network.EvmHighestLatestBlockNumber(ctx), legacyCap,
 		"the guaranteed-method floor must not re-admit the serving range the ballot filter removed")
@@ -820,10 +820,10 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 // ballot (no live head → it holds its last corroborated pick), and the
 // guaranteed-method floor — which runs AFTER the guard — then recomputes that
 // same collapsed instant and drags the served value back to the cap. Each fix
-// was correct alone; together they still served 21,615,999.
+// was correct alone; together they still served the cap.
 //
 // The live upstreams here go SYNCING rather than being un-pinned: that is the
-// production shape (lag-excluded, cordoned, mid-restart upstreams stay
+// realistic shape (lag-excluded, cordoned, mid-restart upstreams stay
 // REGISTERED), and registration is what tells the floor that a cap-only ballot
 // is transient rather than the operator's configuration.
 func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) {
@@ -835,13 +835,13 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 	defer cancel()
 	advance := pinServedTipClock(t)
 
-	const legacyCap = int64(21_615_999)
+	const legacyCap = int64(50_000)
 	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
-		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
-		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
-		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
-		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+		{id: "leader", chainID: 123, latestBlock: 100_000},
+		{id: "peer-a", chainID: 123, latestBlock: 99_996},
+		{id: "peer-b", chainID: 123, latestBlock: 99_968},
+		{id: "legacy-1", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
+		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
 	}, &common.EvmServedTipConfig{
 		Quorum:            common.ServedTipQuorumMajority,
 		GuaranteedMethods: []string{"eth_getLogs"},
@@ -851,7 +851,7 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
 
 	// Every live upstream drops out of the ballot at once; only the two
-	// 2023-capped ones remain servable, and they support eth_getLogs.
+	// capped ones remain servable, and they support eth_getLogs.
 	for _, u := range ups[:3] {
 		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 	}
@@ -1009,8 +1009,8 @@ func pinServedTipClock(t *testing.T) func(time.Duration) {
 // A pick that drops more than the tolerance below the freshest live head is a
 // poisoned ballot, not a chain that moved: the last corroborated pick is served
 // instead. Here the two upstreams stuck at block 5 become the majority the
-// moment the healthy pair leaves the eligible set — the same shape as celo's
-// bound-capped pair, reached without any bounds at all (which is why the guard
+// moment the healthy pair leaves the eligible set — the same shape as two
+// bound-capped upstreams, reached without any bounds at all (which is why the guard
 // exists independently of the bounds filter).
 func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
 	util.ResetGock()
@@ -1046,8 +1046,8 @@ func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
 
 // The guard is a bounded pause, never a wedge: once the regression outlasts
 // servedTipRegressionTTL, reality is the better explanation and the pick is
-// served as computed. This is the property whose absence (a clamp that could
-// hold forever) froze the fleet in 2026-06.
+// served as computed. Without this property a clamp could hold forever and
+// freeze the tip.
 func TestServedTip_RegressionGuard_FailsOpenAfterTTL(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1140,7 +1140,7 @@ func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
 		"an uncorroborated cap must never be remembered as a good pick")
 }
 
-// THE remaining door onto the celo incident value, and the reason the guard no
+// THE remaining door onto the capped value, and the reason the guard no
 // longer stands down without a live head: when EVERY live upstream leaves the
 // eligible set while the bound-capped ones stay, the ballot legitimately falls
 // back to the caps — and a guard that requires a live reference is absent on the
@@ -1156,13 +1156,13 @@ func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T
 	defer cancel()
 	advance := pinServedTipClock(t)
 
-	const legacyCap = int64(21_615_999)
+	const legacyCap = int64(50_000)
 	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
-		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
-		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
-		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
-		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+		{id: "leader", chainID: 123, latestBlock: 100_000},
+		{id: "peer-a", chainID: 123, latestBlock: 99_996},
+		{id: "peer-b", chainID: 123, latestBlock: 99_968},
+		{id: "legacy-1", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
+		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
 	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
 
 	healthy := network.EvmHighestLatestBlockNumber(ctx)
@@ -1170,13 +1170,13 @@ func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T
 	beforeHeld := servedTipRegressionCount(network, "latest", "held")
 	beforeOpen := servedTipRegressionCount(network, "latest", "failed_open")
 
-	// All three live upstreams drop out at once (a vendor incident, a policy
-	// exclusion sweep): only the two 2023-capped ones remain eligible.
-	network.PinUpstreamOrderForTest("celo-mainnet-nirvana-legacy", "quicknode-celo-legacy")
+	// All three live upstreams drop out at once (a provider outage, a policy
+	// exclusion sweep): only the two capped ones remain eligible.
+	network.PinUpstreamOrderForTest("legacy-1", "legacy-2")
 
 	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
 		"with no live head left the guard must hold its last corroborated pick, "+
-			"not hand `latest` to a September-2023 serving range")
+			"not hand `latest` to a historical serving range")
 	assert.Equal(t, beforeHeld+1, servedTipRegressionCount(network, "latest", "held"))
 
 	advance(servedTipRegressionTTL + time.Second)
@@ -1536,9 +1536,9 @@ func suggestServedTipHead(u *upstream.Upstream, head int64) {
 
 // ─── Stalled heads are benched ───────────────────────────────────────────────
 //
-// The ARC devnet shape (erpc#1253) end to end, on the default config, through
+// The erpc#1253 shape end to end, on the default config, through
 // real pollers, the real health tracker and the real Network: two upstreams,
-// one goes offline for a snapshot. With quorum 2 the stalled one would hold
+// one stops advancing. With quorum 2 the stalled one would hold
 // "latest" (and eth_call interpolation and eth_blockNumber) at its height for
 // the whole outage, and as the lag reference it would read lag 0 so routing
 // never drops it. The tracker benches it once it has sat below a peer that kept
@@ -1592,9 +1592,9 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
 			{id: "live", chainID: 123, latestBlock: 1_000},
-			{id: "snap", chainID: 123, latestBlock: 1_000},
+			{id: "stalled", chainID: 123, latestBlock: 1_000},
 		}, nil)
-		live, snap := ups[0], ups[1]
+		live, stalled := ups[0], ups[1]
 		tr := network.metricsTracker
 
 		// Healthy: both move together.
@@ -1603,54 +1603,54 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 			advance(2 * time.Second)
 			head += 2
 			live.EvmStatePoller().SuggestLatestBlock(head)
-			snap.EvmStatePoller().SuggestLatestBlock(head)
+			stalled.EvmStatePoller().SuggestLatestBlock(head)
 		}
 		served(t, network, head, "a healthy pair")
 		stalledAt := head
 
-		// snap goes offline; live keeps moving. Inside the stall window
+		// stalled stops advancing; live keeps moving. Inside the stall window
 		// nothing changes: quorum 2 still serves the lower head.
-		window := stallAfter(snap)
+		window := stallAfter(stalled)
 		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
 			advance(2 * time.Second)
 			head += 2
 			live.EvmStatePoller().SuggestLatestBlock(head)
 		}
-		require.False(t, tr.IsHeadBenched(snap), "a peer below for less than its stall window is not benched")
+		require.False(t, tr.IsHeadBenched(stalled), "a peer below for less than its stall window is not benched")
 		served(t, network, stalledAt, "inside the stall window")
-		require.Zero(t, lagOf(network, snap), "inside the stall window the lower head is still the lag reference")
+		require.Zero(t, lagOf(network, stalled), "inside the stall window the lower head is still the lag reference")
 
-		// Past the stall window, the next head live reports benches snap.
+		// Past the stall window, the next head live reports benches stalled.
 		advance(4 * time.Second)
 		head += 2
 		live.EvmStatePoller().SuggestLatestBlock(head)
-		require.True(t, tr.IsHeadBenched(snap), "a head below a moving peer for its stall window is benched")
+		require.True(t, tr.IsHeadBenched(stalled), "a head below a moving peer for its stall window is benched")
 		require.False(t, tr.IsHeadBenched(live))
 		served(t, network, head, "a benched head leaves the ballot")
-		require.Equal(t, head-stalledAt, lagOf(network, snap),
+		require.Equal(t, head-stalledAt, lagOf(network, stalled),
 			"the benched head is measured against the live one, so blockNumberLagAbove can route around it")
 		require.Zero(t, lagOf(network, live))
 
-		// snap comes back and replays: moving, but behind. It stays benched
+		// stalled comes back and replays: moving, but behind. It stays benched
 		// and "latest" never drops back to it.
 		last := head
 		for replay := stalledAt; replay < head-10; replay += 20 {
 			advance(time.Second)
 			head++
 			live.EvmStatePoller().SuggestLatestBlock(head)
-			snap.EvmStatePoller().SuggestLatestBlock(replay)
-			require.True(t, tr.IsHeadBenched(snap), "a replaying head stays benched until it catches up (at %d, live %d)", replay, head)
+			stalled.EvmStatePoller().SuggestLatestBlock(replay)
+			require.True(t, tr.IsHeadBenched(stalled), "a replaying head stays benched until it catches up (at %d, live %d)", replay, head)
 			got := network.EvmHighestLatestBlockNumber(ctx)
 			require.GreaterOrEqual(t, got, last, "latest must never regress while a benched head replays")
 			last = got
 		}
 		served(t, network, head, "while the benched head replays")
 
-		// snap catches up: it rejoins and its lag is 0 again.
+		// stalled catches up: it rejoins and its lag is 0 again.
 		advance(time.Second)
-		snap.EvmStatePoller().SuggestLatestBlock(head)
-		require.False(t, tr.IsHeadBenched(snap), "a benched head that caught up rejoins")
-		require.Zero(t, lagOf(network, snap))
+		stalled.EvmStatePoller().SuggestLatestBlock(head)
+		require.False(t, tr.IsHeadBenched(stalled), "a benched head that caught up rejoins")
+		require.Zero(t, lagOf(network, stalled))
 		served(t, network, head, "after the rejoin")
 	})
 

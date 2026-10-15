@@ -60,8 +60,8 @@ func TestPickServedTip_DefaultQuorumIsSecondHighest(t *testing.T) {
 func TestPickServedTip_GarbageTipCannotMoveThePick(t *testing.T) {
 	// A rogue upstream reporting a fantasy-future block (wrong chain,
 	// misconfigured endpoint) is just one voice — the majority ignores it.
-	// This is the abstract/zora prod scenario that used to inflate lag gauges
-	// and (pre-2026-06 fix) could poison the persistent counter.
+	// This is the wrong-chain endpoint shape that used to inflate lag gauges
+	// and, under the earlier persistent-counter design, could poison the counter.
 	p := PickServedTip(tipsFromInts(999_999_999, 101, 100), ServedTipQuorumMajority)
 	assert.Equal(t, int64(101), p.Tip)
 	assert.Equal(t, int64(101), p.Freshest,
@@ -141,8 +141,8 @@ func TestPickServedTip_Scenario_MajorityLaggersWin(t *testing.T) {
 func TestPickServedTip_Scenario_BurstCatchupServedImmediately(t *testing.T) {
 	// Old: the velocity gate carried slack+buffer tuned to ALLOW legitimate
 	// burst catch-up (L2 sequencer batches, a halted chain resuming), plus
-	// fail-open for when that tuning was wrong — mis-tuning is what froze
-	// prod. New: stateless, so a jump is served the moment a majority
+	// fail-open for when that tuning was wrong — mis-tuning froze the
+	// tip. New: stateless, so a jump is served the moment a majority
 	// reports it; there is no window to outrun and nothing to mis-arm.
 	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(100, 100, 99), ServedTipQuorumMajority).Tip)
 	assert.Equal(t, int64(1100), PickServedTip(tipsFromInts(1100, 1100, 1099), ServedTipQuorumMajority).Tip)
@@ -150,8 +150,8 @@ func TestPickServedTip_Scenario_BurstCatchupServedImmediately(t *testing.T) {
 
 func TestPickServedTip_Scenario_GarbageCannotInflateLagReference(t *testing.T) {
 	// Old: MaxEligible (the velocity-gated max) kept a rogue far-future tip
-	// out of the lag gauge — without that, dashboards read "1.8 days behind"
-	// on healthy chains (the abstract/zora incident). New: Freshest is the
+	// out of the lag gauge — without that, dashboards read days behind
+	// on healthy chains (a wrong-chain endpoint). New: Freshest is the
 	// 2nd-highest head, so a single rogue cannot touch the gauge either.
 	p := PickServedTip(tipsFromInts(999_999_999, 102, 101, 100), ServedTipQuorumMajority)
 	assert.Equal(t, int64(101), p.Tip)
@@ -160,7 +160,7 @@ func TestPickServedTip_Scenario_GarbageCannotInflateLagReference(t *testing.T) {
 }
 
 func TestPickServedTip_Scenario_HaltedChainHoldsHonestly(t *testing.T) {
-	// Old: a halted chain froze the counter (and post-incident, tripped the
+	// Old: a halted chain froze the counter (and, later, tripped the
 	// stuck watchdog). New: picks over frozen heads keep returning the same
 	// honest consensus value — no invented progress; the advance-age
 	// watchdog still fires at the Network layer.

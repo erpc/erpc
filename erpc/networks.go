@@ -134,8 +134,8 @@ type servedTipPartition struct {
 // value actually move.
 //
 // IN-PROCESS ONLY, by design: nothing here is persisted or shared between
-// pods. A persisted anchor plus a strict clamp is exactly what wedged the
-// served tip fleet-wide in 2026-06 (see the picker's doc comment and
+// pods. A persisted anchor plus a strict clamp is exactly what produces the
+// frozen-tip regression (see the picker's doc comment and
 // networks_served_tip_invariants_test.go); every field below is rebuilt from
 // live observations after a restart, and the guard always fails open on its
 // own after a bounded window.
@@ -468,12 +468,12 @@ func (n *Network) gatherEvmTipInputsForMethod(
 // STATIC-CAP UPSTREAMS DO NOT VOTE while any live head is present. An upstream
 // configured with `blockAvailability.upper.exactBlock` below the chain's head is
 // declaring a SERVING RANGE ("I answer up to block X"), not observing where the
-// head is — see evmTipObservation. Letting such a declaration onto the ballot is
-// what broke celo (evm:42220) on 2026-08-11: two legacy upstreams pinned at
-// `upper.exactBlock: 21615999` outvoted the live heads (74.5M) the moment a
-// third live upstream was excluded for lag, "latest" interpolated to a
-// September-2023 block, the availability gate then admitted ONLY those two
-// upstreams (the live ones start at 21616000), and funded accounts read 0x0.
+// head is — see evmTipObservation. Letting such a declaration onto the ballot
+// lets two capped legacy upstreams pull the tip down: pinned at an
+// `upper.exactBlock` far below the live heads, they outvote them the moment a
+// third live upstream is excluded for lag, "latest" interpolates to a
+// historical block, the availability gate then admits ONLY those two
+// upstreams (the live ones start above the cap), and funded accounts read 0x0.
 //
 // BENCHED UPSTREAMS DO NOT VOTE while any non-benched one does: the health
 // tracker benches a head that stopped moving while another upstream advanced
@@ -977,7 +977,7 @@ func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known boo
 // reports in the very same evaluation. Nothing is persisted and nothing is
 // predicted, so no inherited or rogue value can pin, freeze or poison the
 // result (networks_served_tip_invariants_test.go pins those outcomes against
-// the 2026-06 production incident).
+// the frozen-tip regression).
 func (n *Network) servedTip(
 	ctx context.Context,
 	span trace.Span,
@@ -1038,8 +1038,8 @@ func (n *Network) servedTip(
 // This is a physics check, independent of which voters are honest: a chain's
 // head does not fall a thousand blocks between two evaluations while an upstream
 // still reports the old one, so a pick that far below corroborated evidence is a
-// poisoned ballot — an availability bound voting as a head (the 2026-08 celo
-// incident), a bogus vendor head, a rolled-back shared counter. It is
+// poisoned ballot — an availability bound voting as a head (two capped
+// legacy upstreams), a bogus vendor head, a rolled-back shared counter. It is
 // deliberately independent of the bound-capped filter in
 // gatherEvmTipInputsForMethod: that removes ONE known source of low votes, this
 // bounds the damage of any other.
@@ -1068,9 +1068,9 @@ func (n *Network) servedTip(
 //
 // NO LIVE HEAD IS NOT A REASON TO STAND DOWN. When every live upstream leaves the
 // eligible set while bound-capped ones remain, the ballot legitimately falls back
-// to the caps — and a guard that requires a live reference would be exactly as
-// absent as it was during the celo incident, on the one ballot shape that caused
-// it. With no live head the guard measures against its own last corroborated pick
+// to the caps — and a guard that requires a live reference would be absent on
+// exactly the ballot shape that pulls the tip down to a cap. With no live head
+// the guard measures against its own last corroborated pick
 // and holds it UNCLAMPED (there is no live head to clamp to) for the same bounded
 // TTL, then fails open to the capped pick. Networks that are genuinely all-capped
 // never armed the guard in the first place — nothing live ever corroborated a
@@ -1511,8 +1511,8 @@ func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
 // Every subset's ballot is built by evmTipBallot, i.e. by exactly the rule the
 // network-wide ballot uses — including the static-cap filter, applied to THAT
 // method's supporting set. Without it the floor was a second door onto the
-// incident value: with `guaranteedMethods` configured, the floor ballot took raw
-// effective heads and ran AFTER the guard, so the celo pair's 21,615,999 came
+// capped value: with `guaranteedMethods` configured, the floor ballot took raw
+// effective heads and ran AFTER the guard, so the capped pair's bound came
 // back as a "floor" and was served, on a branch whose whole premise is that a
 // serving range never defines the head.
 //
@@ -1531,10 +1531,10 @@ func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
 //   - TRANSIENT: live upstreams DO serve the method, they are just absent from
 //     this instant's eligible set — lag-excluded, cordoned, mid-restart. Their
 //     absence is exactly the condition the regression guard is holding through,
-//     and flooring to the cap would hand the incident value back the moment the
+//     and flooring to the cap would hand the capped value back the moment the
 //     eligible set collapsed. That composition (the guard correctly holding
-//     74.5M while the floor dragged the served value to 21,615,999) was live at
-//     the previous head of this branch.
+//     the live tip while the floor dragged the served value to the cap) was
+//     live at the previous head of this branch.
 //
 // So a cap-only ballot floors only when the REGISTERED set — the operator's
 // configuration, which eligibility churn cannot change — has no live upstream
@@ -1595,8 +1595,8 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 
 		if ref.Max <= 0 && n.liveUpstreamServesMethod(ctx, m, useFinalized) {
 			// Cap-only ballot, but the configuration says live upstreams serve
 			// this method — they are merely absent right now. See the comment
-			// above: that floor is a transient lie, and serving it is the celo
-			// value.
+			// above: that floor is a transient lie, and serving it hands
+			// `latest` to the cap.
 			continue
 		}
 		if pick.Tip > 0 && (floor == 0 || pick.Tip < floor) {

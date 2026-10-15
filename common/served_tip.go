@@ -148,9 +148,9 @@ func (q *ServedTipQuorum) set(s string) error {
 //     tolerant poller counter, and an order statistic over monotonic inputs
 //     only regresses when the ELIGIBLE SET changes — bounded by the live
 //     head spread.
-//   - WEDGE-IMMUNE: nothing is persisted and nothing is predicted. The 2026-06
-//     production incident (served tips silently frozen hours in the past,
-//     fleet-wide) is structurally impossible here;
+//   - WEDGE-IMMUNE: nothing is persisted and nothing is predicted. A
+//     frozen-tip regression (served tips silently stuck hours in the past)
+//     is structurally impossible here;
 //     networks_served_tip_invariants_test.go (package erpc) pins that class
 //     of outcome forever.
 //

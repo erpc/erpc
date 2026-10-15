@@ -233,7 +233,7 @@ var (
 	// MetricNetworkServedTipRegressionTotal counts the TRANSITIONS into a guard
 	// state: a pick fell further than the configured tolerance below the
 	// corroborated live head, i.e. a ballot poisoned by values that are not head
-	// observations (the 2026-08 celo incident: two upstreams voting their
+	// observations (e.g. two capped legacy upstreams voting their
 	// blockAvailability.upper bound). outcome="held" = the network started
 	// serving its last corroborated pick instead; outcome="failed_open" = a hold
 	// outlasted the guard's window and the pick is served as computed.
