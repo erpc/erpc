@@ -419,7 +419,7 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 | `erpc_network_served_tip_block_number` | Served-tip pick per axis (latest/finalized) and lane; `lane="all"` = network-wide |
 | `erpc_network_served_tip_lag_blocks` | Blocks the served tip sits below the second-highest voter, clamped at 0 |
 | `erpc_network_served_tip_advance_age_seconds` | Seconds since the served tip last changed; sustained high on a live chain = stuck tip |
-| `erpc_upstream_head_benched_total` | Upstream head benched: it stopped moving while a peer advanced |
+| `erpc_upstream_head_benched_total` | Upstream head benched: it stayed behind peers that kept advancing |
 | `erpc_upstream_stale_latest_block_total` | Upstream returned a block number behind the network leader |
 | `erpc_upstream_block_head_large_rollback` | Size of the last rollback &gt; 1024 blocks, per `finality` axis (`latest`/`finalized`). Sticky — alert on `changes()`, not on `&gt; 0` |
 
@@ -608,7 +608,7 @@ Top-20 operational metrics:
 | `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks below the second-highest voter, clamped at 0 |
 | `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since the served tip last changed; absent until the first change |
 | `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | Regression-guard transitions; `outcome` ∈ held/failed_open |
-| `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream, reason | Upstream head benched; `reason` = stalled |
+| `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream, reason | Upstream head benched; `reason` = behind |
 | `erpc_network_evm_block_range_requested_total` | counter | project, network, vendor, upstream, category, user, finality, bucket, size | Block-range heatmap; `bucket` = tip-relative label when tip known (`"TIP"`, `"L100k"`, `"100k-200k"`, …) or static 100k-aligned label |
 | `erpc_network_evm_get_logs_forced_splits_total` | counter | project, network, dimension, user, agent_name | eth_getLogs forcibly split; `dimension` ∈ block_range/addresses/topics0 |
 | `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Request skipped: upstream latest &lt; requested upper bound; `confidence` ∈ blockHead/finalizedBlock |

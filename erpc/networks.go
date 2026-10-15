@@ -476,8 +476,8 @@ func (n *Network) gatherEvmTipInputsForMethod(
 // upstreams (the live ones start above the cap), and funded accounts read 0x0.
 //
 // BENCHED UPSTREAMS DO NOT VOTE while any non-benched one does: the health
-// tracker benches a head that stopped moving while another upstream advanced
-// past it (health.Tracker.IsHeadBenched), so one stalled node cannot hold
+// tracker benches a head that stayed behind peers that kept advancing
+// (health.Tracker.IsHeadBenched), so one stalled node cannot hold
 // "latest" at its height. A live head always outranks a cap, benched or not:
 // a stalled live node is still closer to the chain than a serving range.
 //

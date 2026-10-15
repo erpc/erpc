@@ -354,7 +354,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks the served tip sits below the second-highest voter, clamped at 0. |
 | `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since this process saw the served tip change; absent until the first change. Sustained high on a live chain = stuck tip. |
 | `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | Regression-guard transitions. `outcome` ∈ `"held"`, `"failed_open"`. Any increase is alert-worthy. |
-| `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream, reason | Upstream head benched out of the served-tip ballots and the lag reference. `reason` = `"stalled"`. |
+| `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream, reason | Upstream head benched out of the served-tip ballots and the lag reference. `reason` = `"behind"`. |
 
 #### Area 4: Cache connector freshness
 

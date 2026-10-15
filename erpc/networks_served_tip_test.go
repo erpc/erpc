@@ -1838,6 +1838,69 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		require.Zero(t, lagOf(network, live))
 	})
 
+	t.Run("a node replaying far behind the tip is benched while it moves", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 100_000},
+			{id: "replaying", chainID: 123, latestBlock: 99_400},
+		}, nil)
+		live, replaying := ups[0], ups[1]
+		tr := network.metricsTracker
+		// A 2s chain. replaying restarted from a snapshot 600 blocks (20 min)
+		// old and replays 4 blocks per 2s, so it moves on every poll.
+		start := servedTipClock().Unix()
+		tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
+		head, behind := int64(100_000), int64(99_400)
+		poll := func(d time.Duration) {
+			advance(d)
+			behind = min(behind+int64(d/(500*time.Millisecond)), head)
+			report(tr, replaying, behind, tsOf(behind))
+			head += int64(d / (2 * time.Second))
+			report(tr, live, head, tsOf(head))
+		}
+		report(tr, replaying, behind, tsOf(behind))
+		report(tr, live, head, tsOf(head))
+		served(t, network, behind, "at boot quorum 2 serves the replaying head")
+
+		window := stallAfter(replaying, 2*time.Second)
+		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+			poll(2 * time.Second)
+		}
+		require.False(t, tr.IsHeadBenched(replaying), "not benched inside its stall window")
+		served(t, network, behind, "inside the stall window quorum 2 serves the replaying head")
+
+		// Its own moves never reset the window: its head block stays a stall
+		// window older than live's.
+		poll(4 * time.Second)
+		require.True(t, tr.IsHeadBenched(replaying), "a head replaying far behind a live peer for its stall window is benched")
+		require.False(t, tr.IsHeadBenched(live))
+		served(t, network, head, "the replaying head leaves the ballot")
+		require.Equal(t, head-behind, lagOf(network, replaying), "a benched head that moves lags by its real distance")
+		require.Greater(t, lagOf(network, replaying), int64(16), "past the default blockNumberLagAbove, so routing leaves it")
+
+		// It gains 3 blocks a poll. It rejoins on the report that reaches live's
+		// head, not before, and "latest" never drops back to it meanwhile.
+		last := head
+		for polls := 0; tr.IsHeadBenched(replaying); polls++ {
+			require.Less(t, polls, 400, "a replaying head rejoins once it catches up")
+			poll(2 * time.Second)
+			got := network.EvmHighestLatestBlockNumber(ctx)
+			require.GreaterOrEqual(t, got, last, "latest never regresses while it replays")
+			last = got
+		}
+		require.Equal(t, head-1, behind, "it rejoins on reaching live's head; live then moved one on")
+
+		// Back at the tip it trails live by one block, far less than its stall
+		// window of chain time: it votes again and is never benched.
+		for range 3 * int(window/(2*time.Second)) {
+			poll(2 * time.Second)
+			require.False(t, tr.IsHeadBenched(replaying), "a node one block behind is never benched (at %d, live %d)", behind, head)
+		}
+		require.Equal(t, head-1, behind)
+		require.Zero(t, lagOf(network, replaying), "the lower voter is the lag reference again")
+		served(t, network, behind, "quorum 2 serves the lower of two heads at the tip")
+	})
+
 	t.Run("heads frozen above a chain that restarted lower are benched and routed around", func(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{

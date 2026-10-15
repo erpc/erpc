@@ -771,7 +771,7 @@ POST /main                    →  body {"networkId": "svm:fogo:mainnet", ...}
 | `erpc_network_served_tip_lag_blocks` | gauge | `project`, `network`, `lane`, `axis` | `Freshest - served` (second-highest voter minus tip), clamped ≥ 0 |
 | `erpc_network_served_tip_advance_age_seconds` | gauge | `project`, `network`, `lane`, `axis` | Seconds since the served tip last changed |
 | `erpc_network_served_tip_regression_total` | counter | `project`, `network`, `lane`, `axis`, `outcome` | Regression-guard transitions (`held`\|`failed_open`) |
-| `erpc_upstream_head_benched_total` | counter | `project`, `vendor`, `network`, `upstream`, `reason` | Upstream head benched out of the served-tip ballots (`stalled`) |
+| `erpc_upstream_head_benched_total` | counter | `project`, `vendor`, `network`, `upstream`, `reason` | Upstream head benched out of the served-tip ballots (`behind`) |
 | `erpc_network_hedged_request_total` | counter | `project`, `network`, `upstream`, `category`, `attempt`, `finality`, `user`, `agent_name` | Hedge attempt dispatched for this upstream |
 | `erpc_network_hedge_discards_total` | counter | `project`, `network`, `upstream`, `category`, `attempt`, `hedge`, `finality`, `user`, `agent_name` | Hedge response discarded (a faster response already won) |
 | `erpc_upstream_wrong_empty_response_total` | counter | `project`, `vendor`, `network`, `upstream`, `category`, `finality`, `user`, `agent_name` | Upstream returned missing-data while another upstream served real data; suppressed when the block is outside the upstream's `blockAvailability` bounds |
