@@ -308,19 +308,31 @@ var consensusRules = []consensusRule{
 			if !(isDisputeAcceptMost || isLowParticipantsAcceptMost) {
 				return false
 			}
-			best := a.getBestByCount()
-			if best == nil {
-				return false
-			}
-			// Apply when the leading group meets threshold and is empty OR consensus error, while any non-empty exists
-			if best.Count >= a.config.agreementThreshold && (best.ResponseType == ResponseTypeEmpty || best.ResponseType == ResponseTypeConsensusError) {
-				for _, g := range a.groups {
-					if g.ResponseType == ResponseTypeNonEmpty {
-						return true
+			// Gate on the counts, not on getBestByCount(): on equal counts Go map
+			// iteration can return the non-empty as "best", which would skip this
+			// rule and let the generic threshold winner randomly pick empty (flake
+			// on tied above-threshold empty vs non-empty groups).
+			//
+			// Only fire while an empty/error group at threshold is at least tied
+			// with the leading non-empty. When a non-empty group strictly leads by
+			// count there is nothing to rescue here, and firing would pick that
+			// group by count — overriding PreferLargerResponses, which the later
+			// rules honour.
+			bestEmptyOrErrAbove := 0
+			bestNonEmptyCount := 0
+			for _, g := range a.groups {
+				switch g.ResponseType {
+				case ResponseTypeNonEmpty:
+					if g.Count > bestNonEmptyCount {
+						bestNonEmptyCount = g.Count
+					}
+				case ResponseTypeEmpty, ResponseTypeConsensusError:
+					if g.Count >= a.config.agreementThreshold && g.Count > bestEmptyOrErrAbove {
+						bestEmptyOrErrAbove = g.Count
 					}
 				}
 			}
-			return false
+			return bestEmptyOrErrAbove > 0 && bestNonEmptyCount > 0 && bestEmptyOrErrAbove >= bestNonEmptyCount
 		},
 		Action: func(a *consensusAnalysis) *slotResult {
 			var bestNonEmpty *responseGroup
@@ -466,37 +478,67 @@ var consensusRules = []consensusRule{
 			}
 		},
 	},
-	// ReturnError: if empty meets threshold but any non-empty exists, dispute
+	// ReturnError + PreferNonEmpty: dispute when Empty would win against any
+	// NonEmpty (promoteAbstentionWinner may later release via empty-outside-
+	// retention), OR when ConsensusError and NonEmpty both meet threshold
+	// (MissingData abstention tie → promoteAbstentionWinner via MissingData
+	// waiver). Do NOT dispute an agreed ConsensusError against a below-
+	// threshold NonEmpty — PreferNonEmpty must not override an agreed
+	// execution revert (return_error_prefer_non_empty_does_not_override_agreed_error).
+	// Gate on group presence (not getBestByCount) so a tied NonEmpty cannot
+	// win by map iteration and mask a genuine consensus-valid error. Only
+	// dispute when the empty/ConsensusError group is competitive with the
+	// best NonEmpty (count >=) — a strict NonEmpty majority (e.g. empty=2,
+	// non-empty=4 at threshold 2) must still win without synthesizing a
+	// dispute.
 	{
-		Description: "return error when empty would win but non-empty exists (above threshold)",
+		Description: "return error when empty/tied consensus-error would win but non-empty exists (above threshold)",
 		Condition: func(a *consensusAnalysis) bool {
 			if a.config.disputeBehavior != common.ConsensusDisputeBehaviorReturnError {
 				return false
 			}
-			// Trigger this rule only when prefer-non-empty is enabled; otherwise, allow the generic
-			// threshold-winner rule to select the empty result.
 			if !a.config.preferNonEmpty {
 				return false
 			}
-			best := a.getBestByCount()
-			if best == nil || best.ResponseType != ResponseTypeEmpty || best.Count < a.config.agreementThreshold {
-				return false
-			}
-			// any non-empty group present?
+			bestEmpty := 0
+			bestConsensusErr := 0
+			bestNonEmpty := 0
+			hasAnyNonEmpty := false
 			for _, g := range a.groups {
-				if g.ResponseType == ResponseTypeNonEmpty {
-					return true
+				if g == nil {
+					continue
+				}
+				switch g.ResponseType {
+				case ResponseTypeEmpty:
+					if g.Count > bestEmpty {
+						bestEmpty = g.Count
+					}
+				case ResponseTypeConsensusError:
+					if g.Count > bestConsensusErr {
+						bestConsensusErr = g.Count
+					}
+				case ResponseTypeNonEmpty:
+					hasAnyNonEmpty = true
+					if g.Count > bestNonEmpty {
+						bestNonEmpty = g.Count
+					}
 				}
 			}
-			return false
+			th := a.config.agreementThreshold
+			if bestEmpty >= th && hasAnyNonEmpty && bestEmpty >= bestNonEmpty {
+				return true
+			}
+			return bestConsensusErr >= th && bestNonEmpty >= th && bestConsensusErr >= bestNonEmpty
 		},
 		Action: func(a *consensusAnalysis) *slotResult {
-			// With ReturnError + preferNonEmpty, do not override the threshold winner; dispute instead
 			return &slotResult{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
 		},
 	},
-	// AcceptMostCommon + PreferNonEmpty: when above threshold and both non-empty and consensus-error meet,
-	// choose the best non-empty (by count then size). Applies only to non-empty (empty is not preferred here).
+	// AcceptMostCommon + PreferNonEmpty: when above threshold and both non-empty
+	// and consensus-error meet, choose the best non-empty. Under ReturnError,
+	// ConsensusError ties go through the dispute→promoteAbstentionWinner path
+	// above (MissingData waiver only) so PreferNonEmpty alone cannot mask a
+	// genuine agreed execution error.
 	{
 		Description: "accept-most-common + prefer-non-empty: above threshold choose non-empty over consensus error",
 		Condition: func(a *consensusAnalysis) bool {
@@ -512,7 +554,6 @@ var consensusRules = []consensusRule{
 			if best == nil || best.Count < a.config.agreementThreshold {
 				return false
 			}
-			// Check presence of at least one non-empty group meeting threshold
 			hasNonEmptyAbove := false
 			hasConsensusErrAbove := false
 			for _, g := range a.getValidGroups() {
@@ -903,13 +944,11 @@ var shortCircuitRules = []shortCircuitRule{
 			if _, ok := methodFields(a.config.preferHighestValueFor, a.method); ok {
 				return false
 			}
-			// Don't short-circuit to an error under AcceptMostCommon when a preference
-			// could change the winner (PreferNonEmpty or PreferLargerResponses).
-			// We intentionally avoid early termination even if a non-empty/larger has
-			// not yet arrived, to allow preferred valid results to participate.
-			acceptMostCommon := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult ||
-				a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult
-			if acceptMostCommon && (a.config.preferNonEmpty || a.config.preferLargerResponses) {
+			// Don't short-circuit to an error under PreferNonEmpty / PreferLarger:
+			// a NonEmpty that PreferNonEmpty would later dispute→promote (Empty /
+			// MissingData abstention) or AcceptMostCommon would prefer may still
+			// arrive. PreferNonEmpty alone must not early-return ConsensusError.
+			if a.config.preferNonEmpty || a.config.preferLargerResponses {
 				return false
 			}
 			return true

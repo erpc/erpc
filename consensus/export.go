@@ -16,81 +16,135 @@ import (
 // Caller must provide method and networkId to avoid parsing overhead in the exporter.
 type misbehaviorExporter interface {
 	AppendWithMetadata(line []byte, method string, networkId string) error
+	Close() error
 }
 
-// file-based exporter implementation
+// sharedFileHubs owns the write lock and open handles for each absolute
+// destination directory. Named policies that inherit the same file destination
+// get independent fileMisbehaviorExporter wrappers (so each keeps its own
+// policyName for `{policy}` substitution) but share one hub — concurrent
+// appends cannot tear NDJSON lines across exporters.
+var sharedFileHubs sync.Map // map[string]*sharedFileHub keyed by cleaned base path
+
+type sharedFileHub struct {
+	mu      sync.Mutex
+	handles map[string]*os.File
+	refs    int
+}
+
+func fileHubForBase(basePath string) *sharedFileHub {
+	actual, _ := sharedFileHubs.LoadOrStore(basePath, &sharedFileHub{
+		handles: make(map[string]*os.File),
+	})
+	return actual.(*sharedFileHub)
+}
+
+// file-based exporter implementation. Multiple instances may share a
+// destination path; writes go through a sharedFileHub so they serialize.
+// The hub pointer is pinned at construction. Hubs are retained in
+// sharedFileHubs even at refs==0 so a concurrent constructor cannot
+// LoadOrStore a second hub for the same path after a last Close.
 type fileMisbehaviorExporter struct {
-	mu  sync.Mutex
-	cfg *common.MisbehaviorsDestinationConfig
-	log *zerolog.Logger
-	// Map of active file handles by resolved pattern
-	fileHandles map[string]*os.File
+	cfg        *common.MisbehaviorsDestinationConfig
+	log        *zerolog.Logger
+	policyName string
+	basePath   string
+	hub        *sharedFileHub
+	closed     bool
 }
 
-func newFileMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) (*fileMisbehaviorExporter, error) {
+func newFileMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger, policyName string) (*fileMisbehaviorExporter, error) {
 	if cfg == nil || cfg.Path == "" {
 		return nil, fmt.Errorf("empty path configuration")
 	}
 
-	// Validate base path
 	basePath := filepath.Clean(cfg.Path)
 	if !filepath.IsAbs(basePath) {
 		return nil, fmt.Errorf("export path must be absolute: %s", basePath)
 	}
 
-	// Create base directory
 	if err := os.MkdirAll(basePath, 0o750); err != nil {
 		return nil, err
 	}
 
+	hub := fileHubForBase(basePath)
+	hub.mu.Lock()
+	hub.refs++
+	hub.mu.Unlock()
+
 	return &fileMisbehaviorExporter{
-		cfg:         cfg,
-		log:         log,
-		fileHandles: make(map[string]*os.File),
+		cfg:        cfg,
+		log:        log,
+		policyName: policyName,
+		basePath:   basePath,
+		hub:        hub,
 	}, nil
 }
 
-// AppendWithMetadata appends a line with contextual information for file naming
+// AppendWithMetadata appends a line with contextual information for file naming.
+// The closed check and the framed write share hub.mu so Close cannot race a
+// write onto a hub that was already deleted from sharedFileHubs.
 func (e *fileMisbehaviorExporter) AppendWithMetadata(line []byte, method string, networkId string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	fileName := resolveFilePatternWithDefaults(e.cfg, method, networkId, time.Now(), e.policyName)
+	fullPath := filepath.Join(e.basePath, fileName)
 
-	// Resolve the file pattern with appropriate defaults
-	fileName := resolveFilePatternWithDefaults(e.cfg, method, networkId, time.Now())
-	fullPath := filepath.Join(e.cfg.Path, fileName)
+	e.hub.mu.Lock()
+	defer e.hub.mu.Unlock()
+	if e.closed {
+		return fmt.Errorf("misbehavior file exporter closed")
+	}
 
-	// Get or create file handle
-	f, exists := e.fileHandles[fullPath]
+	f, exists := e.hub.handles[fullPath]
 	if !exists {
+		// Default file patterns include {timestampMs}, so each flush can resolve
+		// a new path. Evict prior handles for this destination so a long-lived
+		// process cannot accumulate one FD per flush.
+		for p, old := range e.hub.handles {
+			_ = old.Close()
+			delete(e.hub.handles, p)
+		}
 		var err error
 		// #nosec G304 -- path is derived from admin-controlled configuration
 		f, err = os.OpenFile(fullPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			return fmt.Errorf("failed to open file %s: %w", fullPath, err)
 		}
-		e.fileHandles[fullPath] = f
+		e.hub.handles[fullPath] = f
 	}
 
-	if _, err := f.Write(line); err != nil {
+	if _, err := f.Write(append(append([]byte{}, line...), '\n')); err != nil {
 		return err
 	}
-	_, err := f.Write([]byte("\n"))
-	return err
+	return nil
 }
 
-// Note: No Append() without metadata; callers must pass method/networkId explicitly
-
+// Close drops this exporter's reference on the shared hub. When the last
+// exporter for a destination path closes, all cached descriptors are closed.
+// The hub itself stays in sharedFileHubs at refs==0 so a concurrent
+// constructor always finds the same lock — deleting it would let LoadOrStore
+// create a second hub and split NDJSON writes across two mutexes.
 func (e *fileMisbehaviorExporter) Close() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
+	e.hub.mu.Lock()
+	defer e.hub.mu.Unlock()
+	if e.closed {
+		return nil
+	}
+	e.closed = true
+	if e.hub.refs > 0 {
+		e.hub.refs--
+	}
+	if e.hub.refs > 0 {
+		return nil
+	}
 	var firstErr error
-	for path, f := range e.fileHandles {
+	for p, f := range e.hub.handles {
 		if err := f.Close(); err != nil && firstErr == nil {
 			firstErr = err
-			e.log.Warn().Err(err).Str("path", path).Msg("failed to close file handle")
+			if e.log != nil {
+				e.log.Warn().Err(err).Str("path", p).Msg("failed to close misbehavior file handle")
+			}
 		}
-		delete(e.fileHandles, path)
+		delete(e.hub.handles, p)
 	}
 	return firstErr
 }
@@ -162,5 +216,5 @@ type MisbehaviorExporter = misbehaviorExporter
 // NewMisbehaviorExporter builds the configured exporter. nil when the config
 // is unset or initialization fails — export is best-effort by design.
 func NewMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) MisbehaviorExporter {
-	return createMisbehaviorExporter(cfg, log)
+	return createMisbehaviorExporter(cfg, log, defaultPolicyName)
 }

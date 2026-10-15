@@ -85,10 +85,16 @@ type consensusAnalysis struct {
 	// Use for "how many more can arrive" math; use totalParticipants for
 	// vote counting.
 	collectedResponses int
-	validParticipants  int
-	originalRequest    *common.NormalizedRequest
-	leaderUpstream     common.Upstream
-	method             string // The RPC method being called (e.g., "eth_getTransactionCount")
+	// collectionSealed is set when the analyzer will not incorporate any more
+	// responses into this analysis — typically after a wait-cap fires and
+	// remaining in-flight slots are cancelled. Waivers treat a sealed bag as
+	// round-complete even when collectedResponses < maxParticipants: the
+	// missing slots cannot return data anymore.
+	collectionSealed  bool
+	validParticipants int
+	originalRequest   *common.NormalizedRequest
+	leaderUpstream    common.Upstream
+	method            string // The RPC method being called (e.g., "eth_getTransactionCount")
 
 	// Cached computed values
 	cachedBestNonEmpty *responseGroup
@@ -259,8 +265,23 @@ func dedupeByUpstream(responses []*execResult) []*execResult {
 // totalParticipants: a deduplicated duplicate consumed a participant slot —
 // counting it as still-arriving capacity would suppress short-circuits (and
 // hold composition-dispute rounds open) after every slot already answered.
+//
+// A sealed collection (wait-cap cancelled the rest) reports false even when
+// collectedResponses < maxParticipants — nothing in-flight can still join.
 func (a *consensusAnalysis) hasRemaining() bool {
+	if a == nil || a.collectionSealed {
+		return false
+	}
 	return a.config.maxParticipants > a.collectedResponses
+}
+
+// sealCollection marks the response bag final: the analyzer will not accept
+// further answers. Call after wait-cap (or equivalent) cancels remaining slots
+// so MissingData / empty-outside-retention waivers can evaluate.
+func (a *consensusAnalysis) sealCollection() {
+	if a != nil {
+		a.collectionSealed = true
+	}
 }
 
 func (a *consensusAnalysis) participants() []common.ParticipantInfo {

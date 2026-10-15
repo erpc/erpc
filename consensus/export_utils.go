@@ -75,8 +75,16 @@ func sanitizeForFilename(s string) string {
 // - {method}: the RPC method name
 // - {networkId}: the network ID with : replaced by _
 // - {instanceId}: unique instance identifier
-func resolveFilePattern(pattern string, method string, networkId string, timestamp time.Time) string {
+// - {timestampMs}: UTC unix milliseconds
+// - {policy}: injective hex encoding of the consensus policy name via
+//   common.ConsensusPolicyObjectKeyComponent (required when multiple policies
+//   share a destination — sanitizeForFilename alone is non-injective, e.g.
+//   "a/b" and "a_b")
+func resolveFilePattern(pattern string, method string, networkId string, timestamp time.Time, policyName string) string {
 	// No defaulting here; defaults are applied during config SetDefaults
+	if policyName == "" {
+		policyName = defaultPolicyName
+	}
 
 	replacements := map[string]string{
 		"{dateByHour}":  timestamp.UTC().Format("2006-01-02-15"),
@@ -85,6 +93,7 @@ func resolveFilePattern(pattern string, method string, networkId string, timesta
 		"{networkId}":   sanitizeForFilename(networkId),
 		"{instanceId}":  getInstanceID(),
 		"{timestampMs}": fmt.Sprintf("%d", timestamp.UTC().UnixMilli()),
+		"{policy}":      common.ConsensusPolicyObjectKeyComponent(policyName),
 	}
 
 	result := pattern
@@ -100,9 +109,9 @@ func resolveFilePattern(pattern string, method string, networkId string, timesta
 }
 
 // resolveFilePatternWithDefaults uses different defaults based on destination type
-func resolveFilePatternWithDefaults(cfg *common.MisbehaviorsDestinationConfig, method string, networkId string, timestamp time.Time) string {
+func resolveFilePatternWithDefaults(cfg *common.MisbehaviorsDestinationConfig, method string, networkId string, timestamp time.Time, policyName string) string {
 	pattern := cfg.FilePattern
-	return resolveFilePattern(pattern, method, networkId, timestamp)
+	return resolveFilePattern(pattern, method, networkId, timestamp, policyName)
 }
 
 // parseS3Path parses an S3 URI into bucket and key prefix

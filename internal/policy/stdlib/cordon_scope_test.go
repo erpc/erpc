@@ -55,9 +55,9 @@ func TestRemoveCordoned_HonorsWildcardAndMethodCordonsAtEveryScope(t *testing.T)
 			for _, u := range ups {
 				byId[u.Id()] = u
 			}
-			tracker.Cordon(byId["operator-wild"], "*", "incident")
-			tracker.Cordon(byId["operator-method"], "eth_getLogs", "slow logs")
-			tracker.Cordon(byId["auto-wild"], "*", "consensus sit-out")
+			tracker.Cordon(byId["operator-wild"], "*", "incident", common.CordonClassOperator)
+			tracker.Cordon(byId["operator-method"], "eth_getLogs", "slow logs", common.CordonClassOperator)
+			tracker.Cordon(byId["auto-wild"], "*", "consensus sit-out", common.CordonClassPunishment)
 
 			// excluded = upstreams the slot's routing output no longer contains.
 			excluded := func(method, finality string) map[string]bool {
