@@ -87,11 +87,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 
+		// Only the hedge may answer this request. rpc1 (the primary) used to
+		// answer at 30ms, 19ms after rpc2's hedged answer. A scheduler stall
+		// of that size on a loaded runner let rpc1's answer win. rpc1 now
+		// never answers in time, so a late hedge only slows the test. gock
+		// returns early when the hedge winner cancels rpc1's request.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(30 * time.Millisecond).
+			Delay(10 * time.Second).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
