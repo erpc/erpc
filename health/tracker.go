@@ -1457,15 +1457,18 @@ func headStallAfter(ups common.Upstream) time.Duration {
 // evaluateHeadBench runs the head bench state machine over every reporter of
 // the network after `changed` (if non-nil) stored a new latest head. A
 // reporter is "below" while a non-benched peer that moved after it last moved
-// has a higher head; one below for its stall window is benched. A benched
-// reporter rejoins once it has moved since and caught up with the lowest
-// non-benched peer, or when no non-benched peer is left. Requiring the peer to
-// have moved after it keeps a chain halt (nobody moves) and a static far-future
-// rogue (never moves) from benching anyone; requiring the benched one to move
-// keeps a stuck head that still sits above a slower peer from flapping.
+// has a higher head within a plausible lead (benchPlausibleLead); one below for
+// its stall window is benched. A benched reporter rejoins once it has moved
+// since and reached the highest non-benched head, so adding it back can never
+// lower an order statistic of the ballot, or when no non-benched peer is left.
+// Requiring the peer to have moved after it keeps a chain halt (nobody moves)
+// and a static far-future rogue (never moves) from benching anyone; the
+// plausible lead keeps a moving wrong-chain head from benching the honest
+// fleet; requiring the benched one to move keeps a stuck head from flapping.
 // Caller holds ntwMeta.headMu.
 func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMetadata) {
 	now := t.now().UnixMilli()
+	blockTime := time.Duration(ntwMeta.evmBlockTime.Load())
 	reporters := ntwMeta.reporters
 	if changed != nil {
 		changed.headChangedAtMs = now
@@ -1474,13 +1477,16 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 	for _, u := range reporters {
 		uHead := u.meta.evmLatestBlockNumber.Load()
 		above := false
-		for _, v := range reporters {
-			if v.meta == u.meta {
-				continue
-			}
-			if !v.meta.headBenched.Load() && v.meta.evmLatestBlockNumber.Load() > uHead && v.meta.headChangedAtMs > u.meta.headChangedAtMs {
-				above = true
-				break
+		if uHead > 0 {
+			maxLead := benchPlausibleLead(u.meta, now, blockTime)
+			for _, v := range reporters {
+				if v.meta == u.meta || v.meta.headBenched.Load() || v.meta.headChangedAtMs <= u.meta.headChangedAtMs {
+					continue
+				}
+				if lead := v.meta.evmLatestBlockNumber.Load() - uHead; lead > 0 && lead <= maxLead {
+					above = true
+					break
+				}
 			}
 		}
 		switch {
@@ -1511,17 +1517,15 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		if !u.meta.headBenched.Load() {
 			continue
 		}
-		lowest := int64(0)
+		highest := int64(0)
 		for _, v := range reporters {
 			if v.meta == u.meta || v.meta.headBenched.Load() {
 				continue
 			}
-			if h := v.meta.evmLatestBlockNumber.Load(); h > 0 && (lowest == 0 || h < lowest) {
-				lowest = h
-			}
+			highest = max(highest, v.meta.evmLatestBlockNumber.Load())
 		}
 		uHead := u.meta.evmLatestBlockNumber.Load()
-		if lowest > 0 && (u.meta.headChangedAtMs < u.meta.headBenchedAtMs || uHead < lowest) {
+		if highest > 0 && (u.meta.headChangedAtMs < u.meta.headBenchedAtMs || uHead < highest) {
 			continue
 		}
 		u.meta.headBenched.Store(false)
@@ -1531,6 +1535,28 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			Int64("head", uHead).
 			Msg("upstream head rejoined: it caught up with its non-benched peers")
 	}
+}
+
+// benchPlausibleLead is the most blocks a peer may be ahead of u and still
+// count as the chain moving on without it: the rollback tolerance every head
+// layer shares, plus twice what the chain produced since u's head was current
+// (the earlier of when u last moved and u's head block timestamp, so a process
+// that starts mid-outage still sees the outage). A larger lead is another
+// chain, not a stall. Unknown block time leaves only the tolerance.
+func benchPlausibleLead(u *NetworkMetadata, now int64, blockTime time.Duration) int64 {
+	lead := int64(common.DefaultToleratedBlockHeadRollback)
+	btMs := blockTime.Milliseconds()
+	if btMs <= 0 {
+		return lead
+	}
+	stale := now - u.headChangedAtMs
+	if ts := u.evmLatestBlockTimestamp.Load(); ts > 0 {
+		stale = max(stale, now-ts*1000)
+	}
+	if stale > 0 {
+		lead += 2 * stale / btMs
+	}
+	return lead
 }
 
 // IsHeadBenched reports whether the upstream's latest head is benched: it

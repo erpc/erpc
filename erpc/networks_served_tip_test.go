@@ -1698,6 +1698,30 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		require.Zero(t, lagOf(network, honest), "the rogue is not the lag reference")
 		served(t, network, head, "a lone far-future head is never served")
 	})
+
+	t.Run("moving far-future upstream never benches a stalled honest one", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "honest", chainID: 123, latestBlock: 4_000},
+			{id: "rogue", chainID: 123, latestBlock: 4_000},
+		}, nil)
+		honest, rogue := ups[0], ups[1]
+		tr := network.metricsTracker
+		rogueHead := int64(104_000)
+		suggestServedTipHead(rogue, rogueHead)
+
+		// honest's poller dies for well past its stall window while the
+		// wrong-chain head keeps advancing: a lead no chain produced in that
+		// time is another chain, not a stall.
+		for range 30 {
+			advance(10 * time.Second)
+			rogueHead += 5
+			tr.SetLatestBlockNumber(rogue, rogueHead, 0)
+		}
+		require.False(t, tr.IsHeadBenched(honest), "an implausible lead must not bench the honest head")
+		require.Zero(t, lagOf(network, honest), "the rogue is not the lag reference")
+		served(t, network, 4_000, "a lone moving far-future head is never served")
+	})
 }
 
 // ─── The finalized axis is not a second-class citizen ────────────────────────
