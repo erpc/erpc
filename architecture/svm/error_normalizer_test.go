@@ -580,7 +580,7 @@ func (s *stubSvm) Tracker() common.HealthTracker {
 func (s *stubSvm) Forward(_ context.Context, _ *common.NormalizedRequest, _, _ bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (s *stubSvm) ShouldHandleMethod(string) (bool, error) { return true, nil }
-func (s *stubSvm) Cordon(string, string)                   {}
-func (s *stubSvm) Uncordon(string, string)                 {}
-func (s *stubSvm) IgnoreMethod(string)                     {}
+func (s *stubSvm) ShouldHandleMethod(string) (bool, error)     { return true, nil }
+func (s *stubSvm) Cordon(string, string, common.CordonClass)   {}
+func (s *stubSvm) Uncordon(string, string, common.CordonClass) {}
+func (s *stubSvm) IgnoreMethod(string)                         {}

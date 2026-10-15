@@ -561,11 +561,11 @@ func (s *svmUpstreamStub) Tracker() common.HealthTracker { return nil }
 func (s *svmUpstreamStub) Forward(context.Context, *common.NormalizedRequest, bool, bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (s *svmUpstreamStub) ShouldHandleMethod(string) (bool, error) { return true, nil }
-func (s *svmUpstreamStub) Cordon(string, string)                   {}
-func (s *svmUpstreamStub) Uncordon(string, string)                 {}
-func (s *svmUpstreamStub) IgnoreMethod(string)                     {}
-func (s *svmUpstreamStub) SvmStatePoller() common.SvmStatePoller   { return s.poller }
+func (s *svmUpstreamStub) ShouldHandleMethod(string) (bool, error)     { return true, nil }
+func (s *svmUpstreamStub) Cordon(string, string, common.CordonClass)   {}
+func (s *svmUpstreamStub) Uncordon(string, string, common.CordonClass) {}
+func (s *svmUpstreamStub) IgnoreMethod(string)                         {}
+func (s *svmUpstreamStub) SvmStatePoller() common.SvmStatePoller       { return s.poller }
 
 // recordingSvmPoller captures SuggestLatestSlot / SuggestFinalizedSlot calls so
 // the test can assert on what the hook extracted and how it routed it.

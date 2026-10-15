@@ -81,10 +81,14 @@ first chain step, so a cordon takes effect within one eval interval (default 15 
 it reaches a replica. A custom `evalFunc` must call `.removeCordoned()` explicitly or the
 cordon has no routing effect.
 
-`erpc_uncordonUpstream` lifts the operator cordon for the whole fleet; on every replica
-that also lifts an automatic wildcard cordon (they share the `"*"` cell) — the operator
-call is the override for a detector verdict. Uncordoning a method never lifts a wildcard
-cordon.
+`erpc_uncordonUpstream` lifts the shared operator cordon for the whole fleet and
+clears **every** cordon class on `"*"` (operator, punishment, and availability).
+That is the operator recovery path for any wildcard cordon. Availability cordons
+also clear automatically when their owner recovers: the EVM state poller lifts
+its own bit after a later major-move `eth_chainId` verify matches again, and
+the SVM state poller lifts when `getHealth` / shred-insert lag recover.
+Method-scoped `Uncordon` still clears only the requested class bit (feature §4.5).
+Uncordoning a method never lifts a wildcard cordon.
 
 The reason string is kept only on the replica that took the call; peers and restarted
 pods report `"operator cordon (set on another replica)"`. Re-cordoning an already
@@ -240,7 +244,9 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
 2. **Automatic and method-scoped cordons are per pod; whole-upstream operator cordons are
    per fleet.** A consensus sit-out, chain-identity cordon or `method: "eth_getLogs"` cordon
    on one replica is not visible on others. An `erpc_uncordonUpstream` for `"*"` reaches
-   every replica and lifts automatic wildcard cordons there too.
+   every replica and clears all cordon classes there (operator + punishment + availability).
+   EVM/SVM availability cordons also clear automatically on their owning poller when the
+   underlying health/identity check recovers.
 3. **The reason travels only with the pod that took the call.** Peers and restarted pods
    show `"operator cordon (set on another replica)"` in `erpc_listCordoned` and in the
    `erpc_upstream_cordoned` `reason` label.
