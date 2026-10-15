@@ -2,12 +2,17 @@ package erpc
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/util"
+	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -124,5 +129,50 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 		// bypasses max-mode enforcement.
 		got, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
 		assert.Equal(t, bniHealthyHead, got)
+	})
+
+	t.Run("LocalAnswerRefreshesBallotPollers", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Heads move up 5 blocks once `moved` flips. Registered before the
+		// static bootstrap mocks so gock matches them first; until the flip
+		// they decline and the static heads (0x800/0x1000) answer.
+		var moved atomic.Bool
+		for host, head := range map[string]string{
+			"http://rpc1.localhost": "0x805",
+			"http://rpc2.localhost": "0x1005",
+		} {
+			gock.New(host).Post("").Persist().
+				Filter(func(r *http.Request) bool {
+					b := util.SafeReadBody(r)
+					return moved.Load() && strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
+				}).
+				Reply(200).
+				JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, head)))
+		}
+		setupBniPollerMocks()
+		setupBniBlockNumberMocks()
+
+		// A 30s ticker cannot poll during the test; a 100ms debounce lets each
+		// eth_blockNumber answer kick a refresh almost at once.
+		cfg := bniConfig(false, nil)
+		for _, u := range cfg.Projects[0].Upstreams {
+			u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
+			u.Evm.StatePollerDebounce = common.Duration(100 * time.Millisecond)
+		}
+		send, _, shutdown := bniServedTipBoot(t, cfg, "rpc2", "rpc1")
+		defer shutdown()
+
+		got, _ := bniSend(t, send, nil, nil)
+		require.Equal(t, bniLaggingHead, got)
+
+		moved.Store(true)
+		require.Eventually(t, func() bool {
+			got, _ := bniSend(t, send, nil, nil)
+			return got == bniLaggingHead+5
+		}, 3*time.Second, 50*time.Millisecond,
+			"eth_blockNumber must refresh the ballot's pollers and reach the moved served head (0x%x) without waiting for the 30s poll interval",
+			bniLaggingHead+5)
 	})
 }
