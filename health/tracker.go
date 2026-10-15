@@ -62,17 +62,22 @@ type NetworkMetadata struct {
 	headMu    sync.Mutex
 	reporters []headReporter
 
-	// On upstream entries only; the timestamps are guarded by the network
-	// entry's headMu. headChangedAt is when this upstream's stored latest head
-	// last changed; headBelowSince is when a non-benched peer that moved after
-	// it was first seen above it (zero = not below); headBenchedAt is when it
-	// was last benched. They keep the clock's monotonic reading, so a wall-clock
-	// step never makes a head look stalled. headBenched is read lock-free by the
-	// served-tip ballots (see Tracker.IsHeadBenched).
-	headChangedAt  time.Time
-	headBelowSince time.Time
-	headBenchedAt  time.Time
-	headBenched    atomic.Bool
+	// On upstream entries only; guarded by the network entry's headMu.
+	// headChangedAt is when this upstream's stored latest head last changed;
+	// headBehindSince is when a peer was first seen proving the chain went on
+	// without it (zero = not behind); headBenchedAt is when it was last benched
+	// and headBenchRef the network head right after. They keep the clock's
+	// monotonic reading, so a wall-clock step never makes a head look stalled.
+	// headTsFloor is the newest block timestamp (seconds) seen for any of its
+	// heads, a lower bound on its current head's (evmLatestBlockTimestamp is
+	// exact or 0). headBenched is read lock-free by the served-tip ballots (see
+	// Tracker.IsHeadBenched).
+	headChangedAt   time.Time
+	headBehindSince time.Time
+	headBenchedAt   time.Time
+	headBenchRef    int64
+	headTsFloor     int64
+	headBenched     atomic.Bool
 
 	// Dynamic block time via EMA on on-chain block timestamps: on the network
 	// entry from the corroborated head, on an upstream entry from that
@@ -1465,17 +1470,14 @@ func headStallAfter(ups common.Upstream, blockTime time.Duration) time.Duration 
 
 // evaluateHeadBench runs the head bench state machine over every reporter of
 // the network after `changed` (if non-nil) stored a new latest head. A
-// reporter is "below" while a non-benched peer that moved after it last moved
-// has a higher head within a plausible lead (benchPlausibleLead); one below for
-// its stall window is benched. A benched reporter rejoins once it has moved
-// since and reached the corroborated non-benched head (the second-highest, or
-// the only one): adding a voter at or above the k-th highest head never lowers
-// it, and a lone far-ahead rogue cannot hold the bar out of reach. It also
-// rejoins when no non-benched peer is left.
-// Requiring the peer to have moved after it keeps a chain halt (nobody moves)
-// and a static far-future rogue (never moves) from benching anyone; the
-// plausible lead keeps a moving wrong-chain head from benching the honest
-// fleet; requiring the benched one to move keeps a stuck head from flapping.
+// reporter is "behind" while a non-benched peer that moved after it last moved
+// proves the chain went on without it (headIsBehind); one behind for its stall
+// window is benched. A benched reporter rejoins once it has moved since and
+// reached the corroborated non-benched head (the second-highest, or the only
+// one): adding a voter at or above the k-th highest head never lowers it, and
+// a lone far-ahead rogue cannot hold the bar out of reach. It also rejoins when
+// no non-benched peer is left. Requiring the benched one to move keeps a stuck
+// head from flapping.
 // It reports whether anyone was benched or rejoined. Caller holds
 // ntwMeta.headMu.
 func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMetadata) (membershipChanged bool) {
@@ -1484,42 +1486,23 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 	reporters := ntwMeta.reporters
 	if changed != nil {
 		changed.headChangedAt = now
-		changed.headBelowSince = time.Time{}
+		changed.headBehindSince = time.Time{}
 	}
 	for _, u := range reporters {
-		uHead := u.meta.evmLatestBlockNumber.Load()
-		above := false
-		if uHead > 0 {
-			for _, v := range reporters {
-				if v.meta == u.meta || v.meta.headBenched.Load() || !v.meta.headChangedAt.After(u.meta.headChangedAt) {
-					continue
-				}
-				bt := blockTime
-				if bt <= 0 {
-					// The network block time follows the corroborated head, which
-					// never advances while it is the stalled one (a process that
-					// starts mid-outage): measure the chain by the peer's own blocks.
-					bt = time.Duration(v.meta.evmBlockTime.Load())
-				}
-				if lead := v.meta.evmLatestBlockNumber.Load() - uHead; lead > 0 && lead <= benchPlausibleLead(u.meta, now, bt) {
-					above = true
-					break
-				}
-			}
-		}
+		behind := u.meta.evmLatestBlockNumber.Load() > 0 && headIsBehind(u, reporters, now, blockTime)
 		switch {
-		case !above:
-			u.meta.headBelowSince = time.Time{}
-		case u.meta.headBelowSince.IsZero():
-			u.meta.headBelowSince = now
+		case !behind:
+			u.meta.headBehindSince = time.Time{}
+		case u.meta.headBehindSince.IsZero():
+			u.meta.headBehindSince = now
 		}
 	}
 	for _, u := range reporters {
-		if u.meta.headBenched.Load() || u.meta.headBelowSince.IsZero() {
+		if u.meta.headBenched.Load() || u.meta.headBehindSince.IsZero() {
 			continue
 		}
 		stallAfter := headStallAfter(u.ups, blockTime)
-		if now.Sub(u.meta.headBelowSince) < stallAfter {
+		if now.Sub(u.meta.headBehindSince) < stallAfter {
 			continue
 		}
 		u.meta.headBenched.Store(true)
@@ -1530,7 +1513,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			Str("networkId", u.ups.NetworkId()).
 			Int64("head", u.meta.evmLatestBlockNumber.Load()).
 			Dur("stallAfter", stallAfter).
-			Msg("benched upstream head: it stopped moving while a peer kept advancing; it leaves the served-tip ballots and the lag reference until it catches up")
+			Msg("benched upstream head: it stopped moving while peers kept advancing; it leaves the served-tip ballots and the lag reference until it catches up")
 	}
 	bar, _ := secondHighestHead(ntwMeta, func(m *NetworkMetadata) int64 { return m.evmLatestBlockNumber.Load() }, true)
 	for _, u := range reporters {
@@ -1538,11 +1521,17 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			continue
 		}
 		uHead := u.meta.evmLatestBlockNumber.Load()
+		if u.meta.headBenchedAt.Equal(now) {
+			u.meta.headBenchRef = uHead
+			if bar > 0 {
+				u.meta.headBenchRef = bar
+			}
+		}
 		if bar > 0 && (u.meta.headChangedAt.Before(u.meta.headBenchedAt) || uHead < bar) {
 			continue
 		}
 		u.meta.headBenched.Store(false)
-		u.meta.headBelowSince = time.Time{}
+		u.meta.headBehindSince = time.Time{}
 		membershipChanged = true
 		u.ups.Logger().Info().
 			Str("networkId", u.ups.NetworkId()).
@@ -1550,6 +1539,50 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			Msg("upstream head rejoined: it caught up with its non-benched peers")
 	}
 	return membershipChanged
+}
+
+// headIsBehind reports whether a non-benched peer that moved after u last
+// moved proves the chain went on without u:
+//   - by height: the peer is above u within a plausible lead
+//     (benchPlausibleLead); one such peer is enough;
+//   - by time: the peer's newest block is at least u's stall window younger
+//     than u's head block, whatever the heights. That catches a head frozen
+//     above a chain that restarted lower (a dead fork) and a static far-ahead
+//     one. It takes two such peers while two exist, so one wrong-chain peer
+//     cannot bench the fleet.
+//
+// Requiring the peer to have moved after u keeps a chain halt (nobody moves)
+// from benching anyone; the plausible lead and the two-peer rule keep a
+// moving wrong-chain head from benching the honest fleet. Caller holds
+// ntwMeta.headMu.
+func headIsBehind(u headReporter, reporters []headReporter, now time.Time, blockTime time.Duration) bool {
+	uHead, uTs := u.meta.evmLatestBlockNumber.Load(), u.meta.evmLatestBlockTimestamp.Load()
+	stallSecs := int64(headStallAfter(u.ups, blockTime) / time.Second)
+	peers, younger := 0, 0
+	for _, v := range reporters {
+		vHead := v.meta.evmLatestBlockNumber.Load()
+		if v.meta == u.meta || vHead <= 0 || v.meta.headBenched.Load() {
+			continue
+		}
+		peers++
+		if !v.meta.headChangedAt.After(u.meta.headChangedAt) {
+			continue
+		}
+		bt := blockTime
+		if bt <= 0 {
+			// The network block time follows the corroborated head, which
+			// never advances while it is the stalled one (a process that
+			// starts mid-outage): measure the chain by the peer's own blocks.
+			bt = time.Duration(v.meta.evmBlockTime.Load())
+		}
+		if lead := vHead - uHead; lead > 0 && lead <= benchPlausibleLead(u.meta, now, bt) {
+			return true
+		}
+		if uTs > 0 && v.meta.headTsFloor-uTs >= stallSecs {
+			younger++
+		}
+	}
+	return younger > 0 && younger >= min(2, peers)
 }
 
 // benchPlausibleLead is the most blocks a peer may be ahead of u and still
@@ -1575,7 +1608,7 @@ func benchPlausibleLead(u *NetworkMetadata, now time.Time, blockTime time.Durati
 }
 
 // IsHeadBenched reports whether the upstream's latest head is benched: it
-// stopped moving while a peer kept advancing, and has not caught up since.
+// stopped moving while peers kept advancing, and has not caught up since.
 // Benched heads are left out of the network lag reference and of the served-tip
 // ballots.
 func (t *Tracker) IsHeadBenched(ups common.Upstream) bool {
@@ -1625,9 +1658,13 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			Int64("previousValue", oldUpsVal).
 			Int64("newValue", blockNumber).
 			Msg("applied large latest block rollback for upstream in tracker")
+		upsMeta.headTsFloor = 0
 		headChanged = true
 	} else if blockNumber == oldUpsVal && blockTimestamp > 0 && upsMeta.evmLatestBlockTimestamp.Load() == 0 {
 		upsMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
+	}
+	if blockTimestamp > 0 && blockNumber == upsMeta.evmLatestBlockNumber.Load() {
+		upsMeta.headTsFloor = max(upsMeta.headTsFloor, blockTimestamp)
 	}
 
 	t.addHeadReporter(ntwMeta, net, upstream)
@@ -1638,7 +1675,8 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			upsMeta.sampleBlockTime(blockNumber, blockTimestamp)
 		}
 	}
-	if t.evaluateHeadBench(ntwMeta, changed) {
+	membershipChanged := t.evaluateHeadBench(ntwMeta, changed)
+	if membershipChanged {
 		// Bench membership also decides the finalized lag reference.
 		t.rederiveNetworkFinalized(ntwMeta, net, netLabel, &lg)
 	}
@@ -1688,18 +1726,27 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		}
 	}
 
-	// 3) Recompute block head lag for this upstream
-	upsLag := blocksBehind(ntwBn, upsMeta.evmLatestBlockNumber.Load())
+	// 3) Recompute block head lag for this upstream. A benched head at or above
+	// the network head (frozen above a chain that went on below it) lags by
+	// what the network made since its bench, so routing leaves it too.
+	lagHead := func(meta *NetworkMetadata) int64 {
+		h := meta.evmLatestBlockNumber.Load()
+		if h >= ntwBn && meta.headBenched.Load() && meta.headBenchRef > 0 {
+			return min(h, meta.headBenchRef)
+		}
+		return h
+	}
+	upsLag := blocksBehind(ntwBn, lagHead(upsMeta))
 	gLag := t.getHeadLagGauge(t.projectId, vendor, netLabel, id)
 	gLag.Set(float64(upsLag))
 
 	// 4) Update the TrackedMetrics.BlockHeadLag fields for Upstream(s)
-	if needsGlobalUpdate {
+	if needsGlobalUpdate || membershipChanged {
 		// Recompute for every upstream in the network
 		t.updateNetworkLagMetrics(
 			net,
 			ntwBn,
-			func(meta *NetworkMetadata) int64 { return meta.evmLatestBlockNumber.Load() },
+			lagHead,
 			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
 			t.getHeadLagGauge,
 			&lg,
