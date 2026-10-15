@@ -12,13 +12,6 @@ slice 5  gRPC StreamBlocks as indexer egress; block_stream hub gone
 slice 6  docs, last deletions, one build and test run, PR
 ```
 
-## Before slice 0
-
-| # | Who | What | Blocks |
-|---|---|---|---|
-| 1 | Aram | Approve read-only `eth_getBlockReceipts` calls on each Edge vendor (eth, sepolia, hoodi, monad) | slice 3 |
-| 2 | agent | Run those calls; record support per vendor in the spec | slice 3 |
-
 ## Slice 0: skeleton
 
 Boundaries are final here; each component starts simple.
@@ -80,7 +73,7 @@ Boundaries are final here; each component starts simple.
 - Add:
   - `architecture/evm/logfilter`: `LogsFilter`, `Matches`, bloom test; moved from `integrity/logfilter.go`.
   - Indexer logs filter registry and matching; `WantsLogs` from the bloom test.
-  - Tracker: receipts fetch by hash, logs cursor, empty-root skip, per-network bloom proof, receipts kept in the window.
+  - Tracker: receipts fetch by hash, answer check (spec §7), logs cursor, empty-root skip, per-network bloom proof, receipts kept in the window.
   - Indexer `Logs`, `Unwind` with `removed:true`; `Gap` closes each connection with a `logs` subscription on the network with `1013`.
 - Delete:
   - wsupstream logs subscriptions: logs `EnsureFilter` path, `stripFromBlockZero`, `isZeroBlockRef`.
@@ -91,6 +84,7 @@ Boundaries are final here; each component starts simple.
   - 2 filters, 3 blocks: one `eth_getBlockReceipts` per block, no upstream `eth_subscribe logs`.
   - Reorg of 1 block: removed logs of the old block, then logs of the new one.
   - Block with a bloom no filter matches: no receipts call.
+  - Receipts answer null once, then served: the block's logs arrive once, in order.
   - Receipts keep failing until the block leaves the window: the client connection closes with `1013`.
 
 ## Slice 4: integrity on tracker data

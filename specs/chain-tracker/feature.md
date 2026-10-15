@@ -225,7 +225,9 @@ Resume:
 - No fetch when `transactionsRoot` is the empty-trie root, or `WantsLogs` is false.
 - Bloom skip is proven per network: the first 8 blocks with transactions are fetched regardless. Header bloom must equal OR of receipt blooms; any later mismatch turns the skip off for the process.
   - Checked 2026-10-14, one block each: equal on eth, sepolia, hoodi, monad.
+  - Checked 2026-10-15: equal on all 23 Edge vendor upstreams that answered (table below).
 - Logs cursor: `Logs` strictly in chain order; heads never wait for it.
+- A receipts answer counts only when it is non-null, every receipt names the requested `blockHash`, and it is non-empty unless `transactionsRoot` is the empty-trie root. Anything else is a failed fetch, never "no logs".
 - A receipts fetch that fails retries with backoff. When its block leaves the window, `Gap` fires for logs.
 - `Gap` closes each connection with a `logs` subscription on the network with `1013`; the client resubscribes and backfills with `eth_getLogs`.
 - Logs travel as verbatim JSON. Receipt logs carry `blockTimestamp`; `integrity.Log` does not model it.
@@ -242,9 +244,24 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 | hoodi | 12s | 16–173 | 11–147 | 64–130 |
 | monad | ~0.4s | 41–158 | 32–136 | 68–96 |
 
-- One pod with a matching filter: about 7.5 GB/day on eth, 22 GB/day on monad.
+- Sizes above are uncompressed. eRPC sends `Accept-Encoding: gzip` (`clients/http_json_rpc_client.go:823`); gzip vendors cut 8–12× (table below).
+- One pod with a matching filter, on the wire: about 0.7 GB/day on eth, 2.5 GB/day on monad; 22 GB/day on monad when Nirvana serves (no gzip).
 - Logs reach clients one receipts round trip after the head (about 70–160 ms above).
 - Window memory: 34 blocks × ~1 MB ≈ 35 MB per tracked eth network.
+
+Edge vendors, 2026-10-15, one block per chain at head − 5, fetched by hash, from a laptop (latency not comparable with AWS):
+
+| Chain | Block, txs | Upstreams that served | ms | Wire KB of raw KB |
+|---|---|---|---|---|
+| eth | 26,197,760, 225 | 6 of 7: QuickNode, Tenderly, Chainstack, BlockPI, Alchemy, Spectrum | 283–826 | 69–84 of 747–756 |
+| sepolia | 11,920,278, 135 | 8 of 8: Nodies, QuickNode, BlockPI ×2, Alchemy, OnFinality, Dwellir, Spectrum | 305–810 | 35–49 of 399 |
+| hoodi | 3,821,022, 32 | 3 of 3: QuickNode, BlockPI, Alchemy | 282–473 | 17 of 198 |
+| monad | 113,607,282, 14 | 6 of 6: Monad Foundation, Nirvana ×4, Alchemy | 178–1,362 | 13–16 of 125; Nirvana 125, no gzip |
+
+- Every answer matched the header: receipt order = transaction order, `blockHash`, bloom; every log has `blockTimestamp`.
+- Blockmachine (eth) answered HTTP 429, `-32030 insufficient compute units`, `remaining: 0`.
+- Nirvana answers in 1,015–1,362 ms; the others in 178–826 ms.
+- Not tested: receipts at the tip, right after a head push. A null answer there is the retry case above.
 
 ## 8. Integrity
 
@@ -336,7 +353,8 @@ One home per fact:
 
 - Logs latency rises by one receipts round trip versus vendor log pushes.
 - Receipts bandwidth: see §7; every pod fetches its own.
-- `eth_getBlockReceipts` support checked on public RPCs only; Edge vendors unchecked.
+- Nirvana sends receipts uncompressed: 10× the bytes of the other monad vendors.
+- Receipts at the tip, right after a head push, are untested on every vendor; a vendor that announces a head before its receipts are ready delays logs by one retry.
 - A conflicting push waits one fresh by-number fetch (about 100 ms) before it can switch the branch.
 - When upstreams disagree at the tip, each network answer can move the pin; subscribers see every move as `Unwind`/`Head`.
 - A polled header and a vendor push can differ in optional fields; first adopted wins.
