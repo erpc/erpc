@@ -388,6 +388,7 @@ The SVM poller feeds the shared health tracker, so the standard upstream gauges 
 | `erpc_upstream_stale_lower_bound_total{confidence="configured"}` | counter | A slot-named read skipped an upstream below its declared `svm.blockAvailability.lower` |
 | `erpc_upstream_stale_upper_bound_total{confidence="configured"}` | counter | A slot-named read skipped an upstream above its declared `svm.blockAvailability.upper` |
 | `erpc_network_retry_attempt_total{reason="missing_data"}` | counter | Includes retries triggered by the `getBlock` availability guard |
+| `erpc_network_dynamic_block_time_milliseconds` | gauge | EMA **slot** time (wall-clock Δ / accepted slot gap on head advances; α=0.1, ≥3 samples). Out-of-range samples ([10ms, 120s]) are rejected and the last published value is kept. Absent/0 until warm. Feeds realtime cache `blockTimeMultiplier` and other `GetNetworkBlockTime` consumers. |
 
 **Notable log lines:**
 
