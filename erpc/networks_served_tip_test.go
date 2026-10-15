@@ -1847,16 +1847,27 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		live, replaying := ups[0], ups[1]
 		tr := network.metricsTracker
 		// A 2s chain. replaying restarted from a snapshot 600 blocks (20 min)
-		// old and replays 4 blocks per 2s, so it moves on every poll.
+		// old and replays 4 blocks per 2s, so it moves on every poll. Once the
+		// block time is known, every other move of each upstream arrives
+		// without its block timestamp, as a peer pod's poll does through
+		// shared state.
 		start := servedTipClock().Unix()
 		tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
 		head, behind := int64(100_000), int64(99_400)
+		polls := 0
 		poll := func(d time.Duration) {
 			advance(d)
+			polls++
+			ts := func(n int64) int64 {
+				if polls > 4 && polls%2 == 0 {
+					return 0
+				}
+				return tsOf(n)
+			}
 			behind = min(behind+int64(d/(500*time.Millisecond)), head)
-			report(tr, replaying, behind, tsOf(behind))
+			report(tr, replaying, behind, ts(behind))
 			head += int64(d / (2 * time.Second))
-			report(tr, live, head, tsOf(head))
+			report(tr, live, head, ts(head))
 		}
 		report(tr, replaying, behind, tsOf(behind))
 		report(tr, live, head, tsOf(head))

@@ -70,13 +70,17 @@ type NetworkMetadata struct {
 	// monotonic reading, so a wall-clock step never makes a head look stalled.
 	// headTsFloor is the newest block timestamp (seconds) seen for any of its
 	// heads, a lower bound on its current head's (evmLatestBlockTimestamp is
-	// exact or 0). headBenched is read lock-free by the served-tip ballots (see
+	// exact or 0). headStale is the staleness verdict (see headIsBehind) of
+	// the last evaluation that knew its head's timestamp: moves without one
+	// (a peer pod's poll through shared state, a response suggestion) keep it.
+	// headBenched is read lock-free by the served-tip ballots (see
 	// Tracker.IsHeadBenched).
 	headChangedAt   time.Time
 	headBehindSince time.Time
 	headBenchedAt   time.Time
 	headBenchRef    int64
 	headTsFloor     int64
+	headStale       bool
 	headBenched     atomic.Bool
 
 	// Dynamic block time via EMA on on-chain block timestamps: on the network
@@ -1532,6 +1536,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		}
 		u.meta.headBenched.Store(false)
 		u.meta.headBehindSince = time.Time{}
+		u.meta.headStale = false
 		membershipChanged = true
 		u.ups.Logger().Info().
 			Str("networkId", u.ups.NetworkId()).
@@ -1546,11 +1551,15 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 //   - by height: a peer that moved after u last moved is above u within a
 //     plausible lead (benchPlausibleLead); one such peer is enough. Each move
 //     of u resets this, so it measures a stall;
-//   - by staleness: a peer that moved within u's stall window is above u
-//     within a plausible lead, and its newest block (never counted as newer
-//     than now) is at least u's stall window younger than u's head block.
-//     That holds while u moves, so it catches a node replaying far behind
-//     the tip: after a restore, a restart or a deep rollback;
+//   - by staleness: a live peer (one that moved within its or u's stall
+//     window) is above u within a plausible lead, and its newest block (never
+//     counted as newer than now) is at least u's stall window younger than
+//     u's head block. That holds while u moves, so it catches a node
+//     replaying far behind the tip: after a restore, a restart or a deep
+//     rollback. A head stored without its timestamp keeps the last verdict
+//     that had one, while the live peer is still a stall window of blocks
+//     ahead: only u's own timestamp can prove it stale, so a rogue peer
+//     claiming a higher head never can;
 //   - by time: a peer that moved after u last moved has a newest block at
 //     least u's stall window younger than u's head block, whatever the
 //     heights. That catches a head frozen above a chain that restarted lower
@@ -1566,6 +1575,7 @@ func headIsBehind(u headReporter, reporters []headReporter, now time.Time, block
 	stallAfter := headStallAfter(u.ups, blockTime)
 	stallSecs := int64(stallAfter / time.Second)
 	peers, younger := 0, 0
+	byHeight, stale := false, false
 	for _, v := range reporters {
 		vHead := v.meta.evmLatestBlockNumber.Load()
 		if v.meta == u.meta || vHead <= 0 || v.meta.headBenched.Load() {
@@ -1581,29 +1591,35 @@ func headIsBehind(u headReporter, reporters []headReporter, now time.Time, block
 		}
 		lead := vHead - uHead
 		plausible := lead > 0 && lead <= benchPlausibleLead(u.meta, now, bt)
-		if !v.meta.headChangedAt.After(u.meta.headChangedAt) {
-			if plausible && uTs > 0 && now.Sub(v.meta.headChangedAt) < stallAfter &&
-				min(v.meta.headTsFloor, now.Unix())-uTs >= stallSecs {
-				return true
+		live := now.Sub(v.meta.headChangedAt) < max(stallAfter, headStallAfter(v.ups, blockTime))
+		if plausible && live {
+			if uTs > 0 {
+				stale = stale || min(v.meta.headTsFloor, now.Unix())-uTs >= stallSecs
+			} else if u.meta.headStale && lead*bt.Milliseconds() >= stallAfter.Milliseconds() {
+				stale = true
 			}
+		}
+		if !v.meta.headChangedAt.After(u.meta.headChangedAt) {
 			continue
 		}
-		if plausible {
-			return true
-		}
+		byHeight = byHeight || plausible
 		if uTs > 0 && v.meta.headTsFloor-uTs >= stallSecs {
 			younger++
 		}
 	}
-	return younger > 0 && younger >= min(2, peers)
+	if uTs > 0 {
+		u.meta.headStale = stale
+	}
+	return byHeight || stale || (younger > 0 && younger >= min(2, peers))
 }
 
 // benchPlausibleLead is the most blocks a peer may be ahead of u and still
 // count as the chain moving on without it: the rollback tolerance every head
 // layer shares, plus twice what the chain produced since u's head was current
-// (the earlier of when u last moved and u's head block timestamp, so a process
-// that starts mid-outage still sees the outage). A larger lead is another
-// chain, not a stall. Unknown block time leaves only the tolerance.
+// (the earlier of when u last moved and the newest block timestamp seen for
+// u, so a process that starts mid-outage still sees the outage). A larger
+// lead is another chain, not a stall. Unknown block time leaves only the
+// tolerance.
 func benchPlausibleLead(u *NetworkMetadata, now time.Time, blockTime time.Duration) int64 {
 	lead := int64(common.DefaultToleratedBlockHeadRollback)
 	btMs := blockTime.Milliseconds()
@@ -1611,7 +1627,7 @@ func benchPlausibleLead(u *NetworkMetadata, now time.Time, blockTime time.Durati
 		return lead
 	}
 	stale := now.Sub(u.headChangedAt).Milliseconds()
-	if ts := u.evmLatestBlockTimestamp.Load(); ts > 0 {
+	if ts := u.headTsFloor; ts > 0 {
 		stale = max(stale, now.UnixMilli()-ts*1000)
 	}
 	if stale > 0 {
