@@ -1955,6 +1955,46 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		served(t, network, head, "the rogue's lone head above the tip is never served")
 	})
 
+	t.Run("a benched replay that reaches a voter as stale as itself stays benched", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 100_000},
+			{id: "restored", chainID: 123, latestBlock: 99_200},
+			{id: "peer-replay", chainID: 123, latestBlock: 99_300},
+		}, nil)
+		live, restored, peerReplay := ups[0], ups[1], ups[2]
+		tr := network.metricsTracker
+		// A 2s chain. Two nodes replay from old snapshots. restored gains 4
+		// blocks per 2s with its own block timestamps, so it is proven stale
+		// and benched. peer-replay gains 3, and each of its moves reaches this
+		// process without a timestamp (a peer pod's poll), so nothing proves
+		// it stale: it stays a voter and sets the bar restored must reach.
+		start := servedTipClock().Unix()
+		tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
+		head, r, p := int64(100_000), int64(99_200), int64(99_300)
+		window := stallAfter(restored, 2*time.Second)
+		last, wasBenched := int64(0), false
+		for polls := 0; !wasBenched || tr.IsHeadBenched(restored); polls++ {
+			require.Less(t, polls, 1000, "restored rejoins once it replays to the tip")
+			advance(2 * time.Second)
+			r = min(r+4, head)
+			report(tr, restored, r, tsOf(r))
+			p = min(p+3, head)
+			report(tr, peerReplay, p, 0)
+			head++
+			report(tr, live, head, tsOf(head))
+			wasBenched = wasBenched || tr.IsHeadBenched(restored)
+			if wasBenched && (head-r)*2 >= 2*int64(window/time.Second) {
+				require.True(t, tr.IsHeadBenched(restored), "a benched head two stall windows behind the tip stays benched, even once it reaches a stale voter (restored %d, peer-replay %d, live %d)", r, p, head)
+			}
+			got := network.EvmHighestLatestBlockNumber(ctx)
+			require.GreaterOrEqual(t, got, last, "latest never regresses (restored %d, peer-replay %d, live %d)", r, p, head)
+			last = got
+		}
+		require.Less(t, head-r, int64(window/(2*time.Second))+2, "it rejoins once within a stall window of chain time of the tip")
+		served(t, network, r, "after the rejoin quorum 2 serves the restored head")
+	})
+
 	t.Run("heads frozen above a chain that restarted lower are benched and routed around", func(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
