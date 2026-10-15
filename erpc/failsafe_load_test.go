@@ -155,6 +155,42 @@ func BenchmarkLoad_Consensus_3of5_256w(b *testing.B) {
 	runLatencyLoadTest(b, bn, 256, 5*time.Second)
 }
 
+// Same 3-of-5 consensus load as the baseline above, but with the pre-round
+// custom-policy selector enabled. The eval does representative per-round work
+// (walks the 5 upstreams, checks cordon classes + role) and resolves to a
+// named policy, so this exercises the full selector hot path (VM borrow +
+// context bind + eval + map lookup + markSelected). Comparing p99 here against
+// BenchmarkLoad_Consensus_3of5_256w is the ≪1ms-delta selector-overhead gate.
+//
+//	go test -run=^$ -bench='BenchmarkLoad_Consensus_3of5_256w' -benchtime=10s ./erpc
+func BenchmarkLoad_Consensus_3of5_256w_Selector(b *testing.B) {
+	mocks := make([]*benchMockUpstream, 5)
+	for i := range mocks {
+		mocks[i] = newBenchUpstream(benchMethod, nil)
+	}
+	consensus := func() *common.ConsensusPolicyConfig {
+		return &common.ConsensusPolicyConfig{MaxParticipants: 5, AgreementThreshold: 3}
+	}
+	cfg := consensus()
+	cfg.CustomPolicy = &common.ConsensusCustomPolicyConfig{
+		EvalFunction: `(ctx) => {
+			if (ctx.upstreams.anyPunished() || ctx.upstreams.anyOperatorCordon()) return "standard"
+			const internals = ctx.upstreams.withTag("type:internal")
+			if (internals.allUnavailable() && ctx.user?.auth === "consensus-fallback") return "fallback"
+			return "standard"
+		}`,
+		EvalTimeout: common.Duration(50 * time.Millisecond),
+	}
+	cfg.Policies = map[string]*common.ConsensusPolicyConfig{"standard": consensus()}
+	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
+		Timeout:   &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(10 * time.Second)},
+		Retry:     &common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(0)},
+		Consensus: cfg,
+	}}, mocks)
+	defer bn.Close()
+	runLatencyLoadTest(b, bn, 256, 5*time.Second)
+}
+
 // 30s, 256-way concurrency against an UNRELIABLE primary — exercises
 // retry rotation + hedge fan-out under sustained pressure.
 func BenchmarkLoad_FailoverPrimary_256w(b *testing.B) {

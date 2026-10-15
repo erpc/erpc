@@ -1253,11 +1253,23 @@ export interface ConsensusPolicyConfig {
    */
   preferHighestValueFor?: { [key: string]: string[]};
   /**
+   * BlockEvidenceFields names, per method, the response field paths that
+   * carry the winner's own block number (e.g. eth_getTransactionByHash →
+   * ["blockNumber"]). It follows the same shape as PreferHighestValueFor:
+   * "result" for the direct result, or a field name for a nested result
+   * object. This is the block proof consumed by the empty-outside-retention
+   * waiver (requiredParticipants[].waiveAgreementOnEmptyOutsideRetention):
+   * the first resolved value is taken as the winner's block. A method not
+   * listed here has no proof, so the waiver never fires for it (dispute).
+   */
+  blockEvidenceFields?: { [key: string]: string[]};
+  /**
    * FireAndForget when true, allows consensus to return a response to the client immediately
    * upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
    * This is useful for write operations like eth_sendRawTransaction where you want to
    * broadcast the transaction to as many nodes as possible while still returning quickly.
    * Default is false (normal behavior - cancel remaining requests on short-circuit).
+   * An explicit false overlays a true base under extends; an omitted field does not.
    */
   fireAndForget?: boolean;
   /**
@@ -1295,6 +1307,56 @@ export interface ConsensusPolicyConfig {
    * like any other low-participation tick. Empty (default) = disabled.
    */
   requiredParticipants?: (ConsensusRequiredParticipant | undefined)[];
+  /**
+   * Extends names a one-level base for this named policy: another entry in
+   * `policies`, or "default" for the inline consensus block. Resolved at
+   * load (SetDefaults): the base is copied, this policy's set fields overlay
+   * it (explicit requiredParticipants: [] clears quotas), then defaults run
+   * on the result. Without Extends a named policy starts from stock defaults,
+   * not the inline block — operators who want the shared hygiene say
+   * extends: default explicitly (feature §2). Only meaningful on named
+   * policies; ignored on the inline block.
+   */
+  extends?: string;
+  /**
+   * CustomPolicy, when set, enables the pre-round consensus-policy selector.
+   * Its EvalFunction is freeform operator JS `(ctx) => string | null` run once
+   * per request before fan-out; the returned name selects one of the named
+   * `Policies` to govern the round. An empty/null result, an unknown name, or
+   * any eval failure falls closed to THIS (the enclosing/inline) config, which
+   * is therefore the strictest default. Nil (default) = selector disabled and
+   * the inline config governs every round.
+   */
+  customPolicy?: ConsensusCustomPolicyConfig;
+  /**
+   * Policies is the set of named policies the selector can choose from. Each
+   * value is a full ConsensusPolicyConfig; the selector's returned name keys
+   * into this map. Names not present here resolve to the inline default
+   * (fail-closed). Nested CustomPolicy/Policies on a named policy are ignored —
+   * selection happens once, at the top level. Empty (default) = no named
+   * policies (only the inline default exists).
+   */
+  policies?: { [key: string]: ConsensusPolicyConfig | undefined};
+}
+/**
+ * ConsensusDefaultPolicyName is the reserved label reported (metric +
+ * X-ERPC-Consensus-Policy header) whenever a round runs under the inline
+ * default policy — either because the eval returned null or because it fell
+ * closed. It cannot be used as a key in consensus.policies, so the label
+ * stays unambiguous between "selector chose the policy named default" and
+ * "selector fell closed to the inline default".
+ */
+export const ConsensusDefaultPolicyName = "default";
+/**
+ * ConsensusCustomPolicyConfig configures the pre-round consensus-policy
+ * selector. EvalFunction is the operator-supplied JS expression evaluating to
+ * `(ctx) => string | null`; EvalTimeout caps its wall-clock per request (an
+ * overrun fails closed to the default policy). See common/defaults.go for the
+ * EvalTimeout default.
+ */
+export interface ConsensusCustomPolicyConfig {
+  evalFunction: string;
+  evalTimeout?: Duration;
 }
 /**
  * ConsensusRequiredParticipant is one tag-quota entry for
@@ -1311,6 +1373,42 @@ export interface ConsensusRequiredParticipant {
   tag: string;
   minParticipants: number /* int */;
   minAgreement?: number /* int */;
+  /**
+   * WaiveAgreementOnMissingData, when true, waives this entry's MinAgreement
+   * winner-composition quota for a round in which at least MinAgreement
+   * distinct tag-matching participants returned ErrEndpointMissingData and
+   * no matching participant returned data. Sibling errors do not block the
+   * count; a matching successful result holds the quota so disagreement
+   * cannot be waived away. Default false = the quota is never waived (strict).
+   */
+  waiveAgreementOnMissingData?: boolean;
+  /**
+   * WaiveAgreementOnEmptyOutsideRetention, when true, waives this entry's
+   * MinAgreement quota for a round in which at least MinAgreement distinct
+   * tag-matching participants returned an EMPTY result, no matching
+   * participant returned a non-empty result, AND the winning group's block
+   * (extracted via the policy's blockEvidenceFields) is older than
+   * RetentionBlocks behind the observed chain head. This is the v1.1
+   * empty-waiver: it lets an abstainer that legitimately pruned old history
+   * (e.g. post-EIP-4444) fall out of the quota when the winner proves the
+   * data is outside the abstainer's retained range, without weakening the
+   * quota for recent data — a null on a recent block still holds the quota
+   * and disputes. A matching sibling that returned data also holds the
+   * quota (that is a real vote, not a prune). Sibling errors do not block
+   * the empty count. Requires RetentionBlocks > 0 and a policy-level
+   * blockEvidenceFields entry for the method. Default false = the quota is
+   * never waived on empty (strict).
+   */
+  waiveAgreementOnEmptyOutsideRetention?: boolean;
+  /**
+   * RetentionBlocks is the depth, in blocks behind the observed chain head,
+   * that this participant is expected to retain. It defines the boundary for
+   * WaiveAgreementOnEmptyOutsideRetention: a winner block is "outside
+   * retention" when head - winnerBlock > RetentionBlocks. Only meaningful when
+   * WaiveAgreementOnEmptyOutsideRetention is set. Default 0 = no retention
+   * boundary (the empty-waiver never fires).
+   */
+  retentionBlocks?: number /* int64 */;
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";
@@ -1961,6 +2059,14 @@ export interface AuthConfig {
   strategies: TsAuthStrategyConfig[];
 }
 export interface AuthStrategyConfig {
+  /**
+   * Name identifies this strategy for operator logic that keys on which
+   * strategy authenticated the caller (e.g. consensus.customPolicy evals
+   * compare ctx.user.auth). Optional; unnamed strategies stamp "" on the
+   * user. Never accepted from client-controlled input — only this config
+   * field (feature §4.3).
+   */
+  name?: string;
   ignoreMethods?: string[];
   allowMethods?: string[];
   rateLimitBudget?: string;
@@ -2612,6 +2718,7 @@ export interface ExecStateSnapshot {
   consensusslots: number /* int */;
   consensusdisputes: number /* int */;
   consensuslowparticipants: number /* int */;
+  consensuspolicy: string;
   startedat: any /* time.Time */;
 }
 
@@ -2726,6 +2833,36 @@ export const ScopeNetwork: Scope = "network";
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
 /**
+ * CordonClass is the typed reason-category a cordon carries. The consensus
+ * selector matches on this class, never on the free-text cordon reason (which
+ * is diagnostic only), so the eval never couples to the message text of a
+ * cordon-producing call site. An upstream can hold several classes at once —
+ * the health tracker stores one flag per class (see health.Tracker), so
+ * classes do not overwrite each other and Uncordon clears only its own class.
+ * The class is a required parameter at every call site, so there is no runtime
+ * "unknown" class: a class added in the future must be mapped explicitly by the
+ * selector before it can ever permit a downgrade — fail closed by construction.
+ */
+export type CordonClass = string;
+/**
+ * CordonClassPunishment is set by the consensus executor's misbehavior
+ * sitout. It BLOCKS role-gated fallback: a punished upstream anywhere pins
+ * the request to the strictest policy.
+ */
+export const CordonClassPunishment: CordonClass = "punishment";
+/**
+ * CordonClassAvailability is set by the EVM state poller (chain-identity
+ * mismatch) and the SVM state poller (lag / unhealthy). It ALLOWS role-gated
+ * fallback — a genuine availability failure is the case fallback exists for.
+ */
+export const CordonClassAvailability: CordonClass = "availability";
+/**
+ * CordonClassOperator is set by the admin API. It BLOCKS fallback (fail
+ * closed): an admin cordon is undifferentiated between maintenance and
+ * distrust, so it is read as distrust.
+ */
+export const CordonClassOperator: CordonClass = "operator";
+/**
  * HealthTracker is an interface for tracking upstream health metrics.
  * `finality` is the DataFinalityState the request resolved to —
  * `DataFinalityStateAll` when the caller can't determine finality
@@ -2755,6 +2892,14 @@ export interface User {
    * override" — the project-level pattern applies.
    */
   allowclientdirectives?: string;
+  /**
+   * Auth is the name of the auth strategy that authenticated this caller
+   * (feature §4.3). Stamped ONLY by the auth registry from the strategy
+   * config — never from a client-controlled header. Empty when the strategy
+   * is unnamed. The trusted-header path never sets it. The consensus-policy
+   * selector compares this string in operator evals (ctx.user.auth).
+   */
+  auth: string;
 }
 
 //////////

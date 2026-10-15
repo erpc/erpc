@@ -112,6 +112,34 @@ func anyAgreementQuota(reqs []*common.ConsensusRequiredParticipant) bool {
 	return false
 }
 
+// anyEmptyOutsideRetentionOptIn reports whether any requiredParticipants entry
+// opts into the empty-outside-retention waiver with a real quota. Gates the
+// abstention-winner rescue so configs that never enabled the waiver keep the
+// exact synthesized-dispute behavior they had before.
+func anyEmptyOutsideRetentionOptIn(reqs []*common.ConsensusRequiredParticipant) bool {
+	for _, r := range reqs {
+		if r != nil && r.WaiveAgreementOnEmptyOutsideRetention && r.MinAgreement > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// anyMissingDataWaiverOptIn reports whether any requiredParticipants entry
+// opts into the MissingData waiver with a real quota. promoteAbstentionWinner
+// must honour this the same way it honours the empty-outside-retention opt-in:
+// a PreferNonEmpty+ReturnError dispute over a ConsensusError (MissingData)
+// abstention is only worth promoting when a MissingData waiver can release
+// the blocked quota.
+func anyMissingDataWaiverOptIn(reqs []*common.ConsensusRequiredParticipant) bool {
+	for _, r := range reqs {
+		if r != nil && r.WaiveAgreementOnMissingData && r.MinAgreement > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // resultsSatisfyAgreementQuotas reports whether the result set satisfies
 // every minAgreement entry: for each entry, at least minAgreement DISTINCT
 // upstreams must match the entry's tag. Distinctness is enforced here (not
@@ -122,8 +150,20 @@ func anyAgreementQuota(reqs []*common.ConsensusRequiredParticipant) bool {
 // hash groups — preferHighestValueFor counts agreement by numeric value,
 // and the same value with different encodings lands in different groups.
 func resultsSatisfyAgreementQuotas(results []*execResult, reqs []*common.ConsensusRequiredParticipant) bool {
+	return resultsSatisfyAgreementQuotasExcept(results, reqs, nil)
+}
+
+// resultsSatisfyAgreementQuotasExcept is resultsSatisfyAgreementQuotas with a
+// set of entries whose quota is treated as already met (the MissingData
+// waiver). A waived entry is skipped exactly as a minAgreement<=0 entry is —
+// it enforces nothing for this round. `waived` is keyed by the entry pointer,
+// so identity (not value) decides which entry is released.
+func resultsSatisfyAgreementQuotasExcept(results []*execResult, reqs []*common.ConsensusRequiredParticipant, waived map[*common.ConsensusRequiredParticipant]struct{}) bool {
 	for _, req := range reqs {
 		if req == nil || req.MinAgreement <= 0 {
+			continue
+		}
+		if _, ok := waived[req]; ok {
 			continue
 		}
 		matched := 0

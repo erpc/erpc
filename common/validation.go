@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/grafana/sobek"
 	"github.com/rs/zerolog/log"
 )
 
@@ -1322,6 +1324,11 @@ func (f *FailsafeConfig) Validate() error {
 			return err
 		}
 	}
+	if f.Consensus != nil {
+		if err := f.Consensus.Validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1374,6 +1381,31 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 	return nil
 }
 
+// lookupMethodFields resolves a per-method field list with the same
+// exact-first / case-insensitive precedence used at runtime for
+// blockEvidenceFields and ignoreFields. Returns the matched key so callers
+// can cite it in errors.
+func lookupMethodFields(defs map[string][]string, method string) ([]string, string, bool) {
+	if len(defs) == 0 || method == "" {
+		return nil, "", false
+	}
+	if fields, ok := defs[method]; ok {
+		return fields, method, true
+	}
+	var bestKey string
+	var best []string
+	var found bool
+	for k, v := range defs {
+		if !strings.EqualFold(k, method) {
+			continue
+		}
+		if !found || k < bestKey {
+			bestKey, best, found = k, v, true
+		}
+	}
+	return best, bestKey, found
+}
+
 func (c *ConsensusPolicyConfig) Validate() error {
 	if c.MaxParticipants <= 0 {
 		return fmt.Errorf("consensus.maxParticipants must be greater than 0")
@@ -1397,6 +1429,9 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	anyWaivable := false
+	anyEmptyWaiver := false
+	haveNeverWaivableFloor := false
 	for i, rp := range c.RequiredParticipants {
 		if rp == nil {
 			return fmt.Errorf("consensus.requiredParticipants[%d] must not be null", i)
@@ -1416,9 +1451,260 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		if rp.MinAgreement > rp.MinParticipants {
 			return fmt.Errorf("consensus.requiredParticipants[%d].minAgreement (%d) cannot exceed minParticipants (%d): the pool quota must invite at least as many matching upstreams as the winning group is required to contain", i, rp.MinAgreement, rp.MinParticipants)
 		}
+		if rp.RetentionBlocks < 0 {
+			return fmt.Errorf("consensus.requiredParticipants[%d].retentionBlocks must not be negative", i)
+		}
+		if rp.WaiveAgreementOnEmptyOutsideRetention && rp.RetentionBlocks <= 0 {
+			return fmt.Errorf("consensus.requiredParticipants[%d] uses waiveAgreementOnEmptyOutsideRetention but sets no retentionBlocks > 0: without a retention boundary the empty-waiver can never prove a block is outside range and would never fire", i)
+		}
+		if rp.WaiveAgreementOnMissingData || rp.WaiveAgreementOnEmptyOutsideRetention {
+			anyWaivable = true
+		} else if rp.MinAgreement > 0 {
+			// A never-waivable entry that actually enforces a quota. Entries with
+			// minAgreement<=0 are skipped by anyAgreementQuota /
+			// resultsSatisfyAgreementQuotas (consensus/quota.go), so they enforce
+			// nothing and cannot serve as the floor.
+			haveNeverWaivableFloor = true
+		}
+		if rp.WaiveAgreementOnEmptyOutsideRetention {
+			anyEmptyWaiver = true
+		}
+	}
+	// R9: a policy that opts into a waiver (MissingData or empty-outside-retention)
+	// must keep a floor — at least one never-waivable entry with minAgreement>0 —
+	// so the round can never be reduced to only-waivable quotas that all release
+	// at once.
+	if anyWaivable && !haveNeverWaivableFloor {
+		return fmt.Errorf("consensus.requiredParticipants: a policy using waiveAgreementOnMissingData or waiveAgreementOnEmptyOutsideRetention must also keep at least one never-waivable entry with minAgreement > 0 (the waivable quotas cannot be the only floor)")
+	}
+	// R11: the empty-outside-retention waiver needs a block proof, which comes
+	// from blockEvidenceFields. Opting in without configuring it is a config
+	// error — the waiver could never fire and the operator's intent is silently
+	// dropped.
+	if anyEmptyWaiver && len(c.BlockEvidenceFields) == 0 {
+		return fmt.Errorf("consensus.requiredParticipants uses waiveAgreementOnEmptyOutsideRetention but consensus.blockEvidenceFields is empty: the waiver needs a per-method block-evidence field to prove the winner's block is outside retention")
+	}
+	// A block-evidence path that is also ignored would let differing block
+	// numbers collapse into one winner group while waiver proof is taken from
+	// a size-selected response — reject that overlap at load time. An ignore
+	// path that is an ancestor of the evidence path strips it too
+	// (ignoreFields["receipt"] removes receipt.blockNumber), so reject any
+	// ignore path equal to or a dot-delimited ancestor of an evidence path.
+	// Method lookup matches runtime methodFields (exact first, then EqualFold).
+	for method, evidencePaths := range c.BlockEvidenceFields {
+		ignored, ignoreKey, found := lookupMethodFields(c.IgnoreFields, method)
+		if !found || len(evidencePaths) == 0 {
+			continue
+		}
+		for _, ep := range evidencePaths {
+			for _, ip := range ignored {
+				if ip == ep || strings.HasPrefix(ep, ip+".") {
+					return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is also listed in ignoreFields[%q]: evidence fields must not be ignored or waiver proof can disagree with the winning group", method, ep, ignoreKey)
+				}
+			}
+		}
+	}
+
+	// Smoke-compile the custom-policy eval function so a syntactically broken
+	// selector fails at load time rather than falling closed on every request.
+	if c.CustomPolicy != nil {
+		if strings.TrimSpace(c.CustomPolicy.EvalFunction) == "" {
+			return fmt.Errorf("consensus.customPolicy.evalFunction is required when customPolicy is set")
+		}
+		// Zero is the SetDefaults sentinel (→ 50ms). Negative would disable the
+		// hard wall-clock cap and let a runaway eval hang request goroutines.
+		if c.CustomPolicy.EvalTimeout < 0 {
+			return fmt.Errorf("consensus.customPolicy.evalTimeout must be >= 0 (got %s); omit or use 0 for the default", c.CustomPolicy.EvalTimeout)
+		}
+		if _, err := sobek.Compile("consensus-policy.js", "("+c.CustomPolicy.EvalFunction+")", false); err != nil {
+			return fmt.Errorf("consensus.customPolicy.evalFunction failed to compile: %w", err)
+		}
+	}
+
+	// Validate every named policy the selector can choose from. Selection is
+	// top-level only, so a nested customPolicy/policies on a named policy is
+	// inert — reject it so operators are not misled into thinking it nests.
+	// Extends is resolved in SetDefaults before Validate runs on a live config;
+	// at validation time Extends should already be cleared, but an unresolved
+	// Extends pointing at an unknown/nested base is still rejected here for
+	// callers that Validate without SetDefaults.
+	for name, p := range c.Policies {
+		if p == nil {
+			return fmt.Errorf("consensus.policies[%q] must not be null", name)
+		}
+		if name == ConsensusDefaultPolicyName {
+			return fmt.Errorf("consensus.policies[%q] uses the reserved name %q, which labels the fail-closed inline default in the consensus_policy metric and X-ERPC-Consensus-Policy header; pick another name", name, ConsensusDefaultPolicyName)
+		}
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("consensus.policies keys must be non-empty: an empty name is reserved for the inline default selector result and can never be selected")
+		}
+		if p.CustomPolicy != nil || len(p.Policies) > 0 {
+			return fmt.Errorf("consensus.policies[%q] must not itself define customPolicy or policies: selection happens once at the top level", name)
+		}
+		if base := strings.TrimSpace(p.Extends); base != "" {
+			if base == ConsensusDefaultPolicyName {
+				// ok — inline default
+			} else if b, ok := c.Policies[base]; !ok || b == nil {
+				return fmt.Errorf("consensus.policies[%q].extends references unknown base %q", name, base)
+			} else if strings.TrimSpace(b.Extends) != "" {
+				return fmt.Errorf("consensus.policies[%q].extends %q is itself an extends policy; only one-level extends is supported in v1", name, base)
+			}
+		}
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("consensus.policies[%q] is invalid: %w", name, err)
+		}
+	}
+
+	// R10: two policies (the inline default + any named policy) must not share
+	// an S3 misbehaviorsDestination.path unless each colliding policy's
+	// filePattern carries {timestampMs} — without it two exporters resolve the
+	// same object key and overwrite each other.
+	if err := validateConsensusS3PathCollisions(c); err != nil {
+		return err
+	}
+
+	// Named policies share one misbehavior limiter + sitout map (feature §4.4).
+	// Differing punishMisbehavior settings would make first-touch win for the
+	// shared rate limiter — reject that at load so every selectable policy
+	// enforces the same disputeThreshold / disputeWindow / sitOutPenalty.
+	if err := validateConsensusSharedPunishMisbehavior(c); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+// validateConsensusSharedPunishMisbehavior requires the inline default and every
+// named policy to carry identical PunishMisbehavior (including all-nil).
+func validateConsensusSharedPunishMisbehavior(c *ConsensusPolicyConfig) error {
+	if len(c.Policies) == 0 {
+		return nil
+	}
+	type named struct {
+		name string
+		cfg  *PunishMisbehaviorConfig
+	}
+	all := []named{{name: "<default>", cfg: c.PunishMisbehavior}}
+	for name, p := range c.Policies {
+		if p == nil {
+			continue
+		}
+		all = append(all, named{name: name, cfg: p.PunishMisbehavior})
+	}
+	ref := all[0]
+	for _, other := range all[1:] {
+		if punishMisbehaviorEqual(ref.cfg, other.cfg) {
+			continue
+		}
+		return fmt.Errorf("consensus.policies[%q].punishMisbehavior must match consensus.punishMisbehavior (and every other named policy): the misbehavior limiter is shared across policies, so disputeThreshold / disputeWindow / sitOutPenalty cannot differ", other.name)
+	}
+	return nil
+}
+
+func punishMisbehaviorEqual(a, b *PunishMisbehaviorConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.DisputeThreshold == b.DisputeThreshold &&
+		a.DisputeWindow == b.DisputeWindow &&
+		a.SitOutPenalty == b.SitOutPenalty
+}
+
+// validateConsensusS3PathCollisions enforces R10 across the inline default
+// policy and every named policy for both S3 and file destinations that share
+// a path. Shared destinations require `{timestampMs}` and `{policy}` so
+// concurrent exporters cannot overwrite or interleave into the same object/file.
+func validateConsensusS3PathCollisions(c *ConsensusPolicyConfig) error {
+	type policyDest struct {
+		name string
+		dest *MisbehaviorsDestinationConfig
+		kind string // "s3" or "file"
+	}
+	var dests []policyDest
+	collect := func(name string, cfg *ConsensusPolicyConfig) {
+		if cfg == nil || cfg.MisbehaviorsDestination == nil {
+			return
+		}
+		t := strings.ToLower(string(cfg.MisbehaviorsDestination.Type))
+		switch t {
+		case string(MisbehaviorsDestinationTypeS3):
+			dests = append(dests, policyDest{name: name, dest: cfg.MisbehaviorsDestination, kind: "s3"})
+		case string(MisbehaviorsDestinationTypeFile), "":
+			dests = append(dests, policyDest{name: name, dest: cfg.MisbehaviorsDestination, kind: "file"})
+		}
+	}
+	collect(ConsensusDefaultPolicyName, c)
+	for name, p := range c.Policies {
+		collect(name, p)
+	}
+
+	byPath := make(map[string][]policyDest, len(dests))
+	for _, d := range dests {
+		key := d.kind + ":"
+		if d.kind == "s3" {
+			key += canonicalizeS3MisbehaviorPath(d.dest.Path)
+		} else {
+			key += filepath.Clean(d.dest.Path)
+		}
+		byPath[key] = append(byPath[key], d)
+	}
+	for path, group := range byPath {
+		if len(group) < 2 {
+			continue
+		}
+		// {policy} is substituted via ConsensusPolicyObjectKeyComponent —
+		// injective over the raw policy name — so sanitizeForFilename
+		// collisions (e.g. "a/b" vs "a_b") cannot collapse keys/filenames.
+		seenHex := make(map[string]string, len(group))
+		for _, d := range group {
+			label := "S3"
+			if d.kind == "file" {
+				label = "file"
+			}
+			if !strings.Contains(d.dest.FilePattern, "{timestampMs}") {
+				return fmt.Errorf("consensus policies %q and others share the %s misbehaviorsDestination.path %q but %q's filePattern %q does not contain {timestampMs}; without it the exporters overwrite each other's objects", d.name, label, path, d.name, d.dest.FilePattern)
+			}
+			if !strings.Contains(d.dest.FilePattern, "{policy}") {
+				return fmt.Errorf("consensus policies %q and others share the %s misbehaviorsDestination.path %q but %q's filePattern %q does not contain {policy}; without a policy discriminator concurrent exporters can write the same file/object even with {timestampMs}", d.name, label, path, d.name, d.dest.FilePattern)
+			}
+			hexName := ConsensusPolicyObjectKeyComponent(d.name)
+			if prev, ok := seenHex[hexName]; ok {
+				return fmt.Errorf("consensus policies %q and %q share the %s misbehaviorsDestination.path %q and resolve to the same {policy} discriminator %q (ConsensusPolicyObjectKeyComponent must stay injective)", prev, d.name, label, path, hexName)
+			}
+			seenHex[hexName] = d.name
+		}
+	}
+	return nil
+}
+
+// canonicalizeS3MisbehaviorPath normalizes an S3 URI for R10 collision
+// grouping the same way the exporter's parseS3Path treats destinations:
+// lowercase scheme/bucket only, preserve key-prefix case, ensure a non-empty
+// prefix ends with "/". Lowercasing the prefix would falsely collide
+// `s3://bucket/Logs` with `s3://bucket/logs`.
+func canonicalizeS3MisbehaviorPath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	lower := strings.ToLower(trimmed)
+	if !strings.HasPrefix(lower, "s3://") {
+		return lower
+	}
+	rest := trimmed[len("s3://"):] // keep original case for the path portion
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		return lower
+	}
+	bucket := strings.ToLower(parts[0])
+	if len(parts) == 1 || parts[1] == "" {
+		return "s3://" + bucket
+	}
+	prefix := parts[1]
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return "s3://" + bucket + "/" + prefix
 }
 
 // Validate validates the MisbehaviorsDestinationConfig

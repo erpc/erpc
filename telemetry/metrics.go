@@ -1094,6 +1094,51 @@ var (
 		Name:      "network_evm_block_range_requested_total",
 		Help:      "Total requests observed by block-number buckets for heatmap.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "user", "finality", "bucket", "size"})
+
+	// --- Custom Consensus Policies Engine (selector) ---
+
+	// MetricConsensusCompositionWaived counts every time a requiredParticipants
+	// minAgreement quota was waived because all tag-matching participants
+	// returned the waived reason. The reason label is one of: missing_data (v1 —
+	// every match returned ErrEndpointMissingData) or empty_outside_retention
+	// (v1.1 — every match returned an empty result and the winner's block is
+	// proven older than the entry's retention). A step change here is a security
+	// signal, not only an availability one — alert on it.
+	MetricConsensusCompositionWaived = DefineLabeledCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_composition_waived_total",
+		Help:      "Times a requiredParticipants minAgreement quota was waived (all tag-matching participants returned the waived reason).",
+	}, []string{"project", "network", "tag", "reason"})
+
+	// MetricConsensusCompositionWaiverUnproven counts fail-closed empty-outside-
+	// retention evaluations where the waiver could not be proven (no winner
+	// block, no finite abstainer availability lower bound, and/or no known
+	// chain head). Reason is one of: no_winner_block, no_avail_bound, no_head.
+	// Mid-round deferral (round still collecting) is debug-logged, not counted.
+	MetricConsensusCompositionWaiverUnproven = DefineLabeledCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_composition_waiver_unproven_total",
+		Help:      "Times an empty-outside-retention waiver held the quota because proof was unavailable (fail closed).",
+	}, []string{"project", "network", "reason"})
+
+	// MetricConsensusPolicySelected counts the named consensus policy chosen by
+	// the pre-round selector for each served round. Cardinality is bounded by
+	// the number of named policies per network (expected <= 10). Sustained
+	// non-default selection (e.g. fallback) is an alerting signal.
+	MetricConsensusPolicySelected = DefineLabeledCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_policy_selected_total",
+		Help:      "Named consensus policy selected by the pre-round selector per served round.",
+	}, []string{"project", "network", "consensus_policy"})
+
+	// MetricConsensusPolicyEvalFailed counts fail-closed selections split by
+	// reason (timeout, throw, unknown_name). The selector falls back to the
+	// strictest default policy on each of these.
+	MetricConsensusPolicyEvalFailed = DefineLabeledCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_policy_eval_failed_total",
+		Help:      "Consensus-policy selector evaluations that failed closed to the default policy, by reason.",
+	}, []string{"project", "network", "reason"})
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -1223,6 +1268,12 @@ var (
 		Name:      "consensus_duration_seconds",
 		Help:      "Duration of consensus operations.",
 	}, []string{"project", "network", "category", "outcome", "finality", "user", "agent_name"})
+
+	MetricConsensusPolicyEvalDuration = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "consensus_policy_eval_duration_seconds",
+		Help:      "Wall-clock duration of the pre-round consensus-policy selector evaluation (JS eval + resolution).",
+	}, []string{"project", "network"})
 
 	MetricCacheSetSuccessDuration = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",

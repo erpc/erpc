@@ -4384,7 +4384,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 
 				// Cordon the upstream
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
-				mtk.Cordon(up, "*", "test cordoning")
+				mtk.CordonClass(up, "*", "test cordoning", common.CordonClassOperator)
 
 				return &HttpServer{
 					logger: logger,

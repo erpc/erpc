@@ -329,7 +329,8 @@ func TestTierWsIngresses(t *testing.T) {
 // before the poller takes it. Until then it must not reach clients: once
 // delivered it would also advance the indexer's head dedup marker, and a
 // head from an endpoint now answering for another chain would suppress
-// every real head below it.
+// every real head below it. A proven mismatch also availability-cordons the
+// upstream, so keep-fresh tips stay withheld until chain-identity recovers.
 func TestNetworkHandle_SuggestLatestBlock_WithholdsUnacceptedMajorJump(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -348,10 +349,21 @@ func TestNetworkHandle_SuggestLatestBlock_WithholdsUnacceptedMajorJump(t *testin
 
 	handle := &networkHandle{nw: network}
 	assert.False(t, handle.SuggestLatestBlock("ws:rpc2", 5_000_000), "an unaccepted major jump must not reach clients")
-	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail)
+	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail / cordon)
 	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 	assert.Less(t, network.deliveredLatestBlock.Load(), int64(5_000_000))
-	assert.True(t, handle.SuggestLatestBlock("ws:rpc2", 1001))
+	// Still cross-wired: non-major advances must not write through while cordoned.
+	assert.False(t, handle.SuggestLatestBlock("ws:rpc2", 1001))
+	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
+
+	// Endpoint fixed: recovery runs on a keep-fresh suggestion and delivery resumes.
+	util.ResetGock()
+	gock.New("http://rpc2.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
+		Reply(200).JSON([]byte(`{"result":"0x7b"}`))
+	require.Eventually(t, func() bool {
+		return handle.SuggestLatestBlock("ws:rpc2", 1001)
+	}, 2*time.Second, 20*time.Millisecond, "matching chainId must uncordon and accept the tip")
 	assert.True(t, handle.SuggestLatestBlock("ws:rpc2", 1002))
 }
 

@@ -121,6 +121,16 @@ type EvmStatePoller struct {
 	// keep-fresh advances never touch this.
 	latestMajorVerifyInProgress sync.Mutex
 
+	// cordonedByChainId is edge-triggered ownership of an availability cordon
+	// set by cordonForChainIdMismatch. When a later major-move verify passes,
+	// the poller lifts only its own availability bit (never an operator or
+	// punishment cordon) — same pattern as SvmStatePoller.cordonedByHealth.
+	// chainIdCordonMu serializes flag + tracker bit so a concurrent recovery
+	// cannot CAS the flag false before Cordon lands (leaving a permanent
+	// availability cordon with no owner).
+	cordonedByChainId atomic.Bool
+	chainIdCordonMu   sync.Mutex
+
 	// Earliest per probe tracking
 	earliestByProbe              map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
 	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
@@ -562,8 +572,10 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	// counter and skew every lag-based routing decision. That check makes a live
 	// eth_chainId call, so it runs OFF the hot path and this function stays
 	// non-blocking. Small advances (the common keep-fresh case) still apply
-	// inline with zero added latency, exactly as before.
-	if currentValue > 0 && blockNumber-currentValue > e.majorHeadMoveThreshold() {
+	// inline with zero added latency — except while we own a chain-identity
+	// availability cordon, when every advance re-verifies so recovery cannot
+	// stall on a never-again-major head.
+	if currentValue > 0 && (blockNumber-currentValue > e.majorHeadMoveThreshold() || e.cordonedByChainId.Load()) {
 		e.verifyThenSuggestLatestBlock(blockNumber)
 		return
 	}
@@ -599,7 +611,7 @@ func (e *EvmStatePoller) verifyThenSuggestLatestBlock(blockNumber int64) {
 		if blockNumber <= currentValue {
 			return
 		}
-		if blockNumber-currentValue > e.majorHeadMoveThreshold() &&
+		if (blockNumber-currentValue > e.majorHeadMoveThreshold() || e.cordonedByChainId.Load()) &&
 			!e.verifyChainIdOnMajorHeadMove(ctx, "latest", currentValue, blockNumber) {
 			e.logger.Warn().
 				Int64("blockNumber", blockNumber).
@@ -691,7 +703,16 @@ func (e *EvmStatePoller) majorHeadMoveThreshold() int64 {
 }
 
 func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag string, current, polled int64) bool {
-	if current <= 0 || absInt64(polled-current) <= e.majorHeadMoveThreshold() {
+	major := current > 0 && absInt64(polled-current) > e.majorHeadMoveThreshold()
+	if current <= 0 || !major {
+		// While cordoned, still probe eth_chainId on small advances so recovery
+		// does not require another major jump. Reject the sample until identity
+		// is actually revalidated — otherwise a still-cross-wired endpoint can
+		// poison the shared latest/finalized counter on every keep-fresh tick.
+		if e.cordonedByChainId.Load() {
+			e.tryUncordonViaChainIdProbe(ctx, tag)
+			return !e.cordonedByChainId.Load()
+		}
 		return true
 	}
 	cfgChainId := int64(0)
@@ -727,19 +748,80 @@ func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag s
 		e.cordonForChainIdMismatch(tag, current, polled, fmt.Errorf("eth_chainId returned %s but upstream is configured for chainId %d", detected, cfgChainId))
 		return false
 	}
+	e.maybeUncordonAfterChainIdRecovery()
 	return true
 }
 
+// tryUncordonViaChainIdProbe is the recovery-only path used while
+// cordonedByChainId is set. Success lifts the availability cordon; failures
+// leave it in place. Callers that invoke this on a non-major sample must
+// reject that sample until the ownership flag clears (see
+// verifyChainIdOnMajorHeadMove).
+func (e *EvmStatePoller) tryUncordonViaChainIdProbe(ctx context.Context, tag string) {
+	cfgChainId := int64(0)
+	if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil {
+		cfgChainId = cfg.Evm.ChainId
+	}
+	if cfgChainId <= 0 {
+		return
+	}
+	eu, ok := e.upstream.(common.EvmUpstream)
+	if !ok {
+		return
+	}
+	detected, err := eu.EvmGetChainId(ctx)
+	if err != nil {
+		// A typed mismatch is proof the endpoint is still cross-wired —
+		// reassert the availability cordon. UncordonAdmin may have cleared
+		// the tracker bit while cordonedByChainId stayed set; without a
+		// re-cordon the upstream would stay fail-open for routing.
+		if common.HasErrorCode(err, common.ErrCodeEndpointChainIdMismatch) {
+			e.cordonForChainIdMismatch(tag, 0, 0, err)
+			return
+		}
+		e.logger.Debug().Err(err).Str("tag", tag).
+			Msg("chain-identity recovery probe failed; leaving availability cordon in place")
+		return
+	}
+	if detected != strconv.FormatInt(cfgChainId, 10) {
+		e.cordonForChainIdMismatch(tag, 0, 0, fmt.Errorf("eth_chainId returned %s but upstream is configured for chainId %d", detected, cfgChainId))
+		return
+	}
+	e.maybeUncordonAfterChainIdRecovery()
+}
+
 // cordonForChainIdMismatch fails loud on a proven cross-wired endpoint: the
-// sample is rejected and the upstream is cordoned (admins uncordon via the
-// existing erpc_uncordonUpstream admin method once the endpoint is fixed).
+// sample is rejected and the upstream is availability-cordoned. Recovery is
+// automatic when a later major-move verify sees a matching eth_chainId again
+// (see maybeUncordonAfterChainIdRecovery); operators can also clear via
+// erpc_uncordonUpstream → UncordonAdmin.
 func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled int64, cause error) {
 	e.logger.Error().Err(cause).
 		Str("tag", tag).
 		Int64("currentValue", current).
 		Int64("polledValue", polled).
 		Msg("major head move REJECTED: upstream answers for a different chain — cordoning upstream")
-	e.upstream.Cordon("*", fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error()))
+	e.chainIdCordonMu.Lock()
+	defer e.chainIdCordonMu.Unlock()
+	// Tracker bit first, then ownership flag — a concurrent recovery that
+	// observes the flag must also observe the cordon (or take the mutex and
+	// wait until both are set).
+	common.CordonClassed(e.upstream, "*", fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error()), common.CordonClassAvailability)
+	e.cordonedByChainId.Store(true)
+}
+
+// maybeUncordonAfterChainIdRecovery lifts an availability cordon this poller
+// previously set, once eth_chainId matches the configured chain again. Edge-
+// triggered so we never clear an operator/punishment cordon we do not own.
+func (e *EvmStatePoller) maybeUncordonAfterChainIdRecovery() {
+	e.chainIdCordonMu.Lock()
+	defer e.chainIdCordonMu.Unlock()
+	if !e.cordonedByChainId.Load() {
+		return
+	}
+	e.cordonedByChainId.Store(false)
+	e.logger.Info().Msg("chain identity re-validated after mismatch; uncordoning availability")
+	common.UncordonClassed(e.upstream, "*", "evm state poller: chain identity re-validated after mismatch", common.CordonClassAvailability)
 }
 
 func absInt64(v int64) int64 {
@@ -870,7 +952,7 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 		// cross-wired endpoint reporting another chain's height must not enter the
 		// shared finalized counter. Already off the hot path here (own goroutine),
 		// so the live eth_chainId call is safe to make.
-		if blockNumber-currentValue > e.majorHeadMoveThreshold() &&
+		if (blockNumber-currentValue > e.majorHeadMoveThreshold() || e.cordonedByChainId.Load()) &&
 			!e.verifyChainIdOnMajorHeadMove(ctx, "finalized", currentValue, blockNumber) {
 			e.logger.Warn().
 				Int64("blockNumber", blockNumber).
