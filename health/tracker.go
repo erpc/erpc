@@ -1459,8 +1459,10 @@ func headStallAfter(ups common.Upstream) time.Duration {
 // reporter is "below" while a non-benched peer that moved after it last moved
 // has a higher head within a plausible lead (benchPlausibleLead); one below for
 // its stall window is benched. A benched reporter rejoins once it has moved
-// since and reached the highest non-benched head, so adding it back can never
-// lower an order statistic of the ballot, or when no non-benched peer is left.
+// since and reached the corroborated non-benched head (the second-highest, or
+// the only one): adding a voter at or above the k-th highest head never lowers
+// it, and a lone far-ahead rogue cannot hold the bar out of reach. It also
+// rejoins when no non-benched peer is left.
 // Requiring the peer to have moved after it keeps a chain halt (nobody moves)
 // and a static far-future rogue (never moves) from benching anyone; the
 // plausible lead keeps a moving wrong-chain head from benching the honest
@@ -1513,19 +1515,13 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			Dur("stallAfter", stallAfter).
 			Msg("benched upstream head: it stopped moving while a peer kept advancing; it leaves the served-tip ballots and the lag reference until it catches up")
 	}
+	bar, _ := secondHighestHead(ntwMeta, func(m *NetworkMetadata) int64 { return m.evmLatestBlockNumber.Load() }, true)
 	for _, u := range reporters {
 		if !u.meta.headBenched.Load() {
 			continue
 		}
-		highest := int64(0)
-		for _, v := range reporters {
-			if v.meta == u.meta || v.meta.headBenched.Load() {
-				continue
-			}
-			highest = max(highest, v.meta.evmLatestBlockNumber.Load())
-		}
 		uHead := u.meta.evmLatestBlockNumber.Load()
-		if highest > 0 && (u.meta.headChangedAtMs < u.meta.headBenchedAtMs || uHead < highest) {
+		if bar > 0 && (u.meta.headChangedAtMs < u.meta.headBenchedAtMs || uHead < bar) {
 			continue
 		}
 		u.meta.headBenched.Store(false)

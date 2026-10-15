@@ -1675,13 +1675,14 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		served(t, network, 2_000, "a halted chain")
 	})
 
-	t.Run("static far-future upstream is never served and benches nobody", func(t *testing.T) {
+	t.Run("static far-future upstream is never served, benches nobody, and never blocks a rejoin", func(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-			{id: "honest", chainID: 123, latestBlock: 3_000},
+			{id: "honest-a", chainID: 123, latestBlock: 3_000},
+			{id: "honest-b", chainID: 123, latestBlock: 3_000},
 			{id: "rogue", chainID: 123, latestBlock: 3_000},
 		}, nil)
-		honest, rogue := ups[0], ups[1]
+		a, b, rogue := ups[0], ups[1], ups[2]
 		tr := network.metricsTracker
 		suggestServedTipHead(rogue, 103_000)
 		require.Equal(t, int64(103_000), rogue.EvmStatePoller().LatestBlock())
@@ -1690,13 +1691,32 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		for range 60 {
 			advance(10 * time.Second)
 			head++
-			honest.EvmStatePoller().SuggestLatestBlock(head)
+			a.EvmStatePoller().SuggestLatestBlock(head)
+			b.EvmStatePoller().SuggestLatestBlock(head)
 			tr.SetLatestBlockNumber(rogue, 103_000, 0)
-			require.False(t, tr.IsHeadBenched(honest), "a static head above never benches the moving one")
+			require.False(t, tr.IsHeadBenched(a), "a static head above never benches the moving ones")
+			require.False(t, tr.IsHeadBenched(b), "a static head above never benches the moving ones")
 		}
 		require.False(t, tr.IsHeadBenched(rogue))
-		require.Zero(t, lagOf(network, honest), "the rogue is not the lag reference")
+		require.Zero(t, lagOf(network, a), "the rogue is not the lag reference")
 		served(t, network, head, "a lone far-future head is never served")
+
+		// b stalls past its window and is benched; the rogue stays a voter.
+		for elapsed := time.Duration(0); elapsed <= stallAfter(b); elapsed += 10 * time.Second {
+			advance(10 * time.Second)
+			head++
+			a.EvmStatePoller().SuggestLatestBlock(head)
+		}
+		require.True(t, tr.IsHeadBenched(b))
+		served(t, network, head, "quorum 2 over {a, rogue} still serves the honest head")
+
+		// b catches up with a. The rogue's head is out of anyone's reach, so it
+		// must not be the rejoin bar.
+		advance(time.Second)
+		b.EvmStatePoller().SuggestLatestBlock(head)
+		require.False(t, tr.IsHeadBenched(b), "a caught-up head rejoins even with a far-future voter above it")
+		require.Zero(t, lagOf(network, b))
+		served(t, network, head, "after the rejoin")
 	})
 
 	t.Run("moving far-future upstream never benches a stalled honest one", func(t *testing.T) {
