@@ -1912,6 +1912,49 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		served(t, network, behind, "quorum 2 serves the lower of two heads at the tip")
 	})
 
+	t.Run("a staleness verdict ends when the node catches up, so a plausible rogue cannot keep it", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 50_000},
+			{id: "trailing", chainID: 123, latestBlock: 49_940},
+			{id: "rogue", chainID: 123, latestBlock: 50_000},
+		}, nil)
+		live, trailing, rogue := ups[0], ups[1], ups[2]
+		tr := network.metricsTracker
+		// A 2s chain. trailing keeps pace 60 blocks (120s) back, more than its
+		// 90s stall window of chain time, so its own timestamps prove it stale.
+		start := servedTipClock().Unix()
+		tsOf := func(n int64) int64 { return start + (n-50_000)*2 }
+		head := int64(50_000)
+		for range 5 {
+			advance(2 * time.Second)
+			head++
+			report(tr, trailing, head-60, tsOf(head-60))
+			report(tr, live, head, tsOf(head))
+			report(tr, rogue, head, tsOf(head))
+		}
+		require.False(t, tr.IsHeadBenched(trailing), "not benched inside its stall window")
+
+		// It catches up through a peer pod's poll (no timestamp). Then the
+		// rogue claims a head 60 blocks above the tip and keeps moving: a lead
+		// a stall window of blocks ahead, but no proof trailing is stale.
+		advance(2 * time.Second)
+		head++
+		report(tr, trailing, head, 0)
+		report(tr, live, head, tsOf(head))
+		report(tr, rogue, head, tsOf(head))
+		for range 3 * int(stallAfter(trailing, 2*time.Second)/(2*time.Second)) {
+			advance(2 * time.Second)
+			head++
+			report(tr, trailing, head, 0)
+			report(tr, live, head, tsOf(head))
+			report(tr, rogue, head+60, tsOf(head+60))
+			require.False(t, tr.IsHeadBenched(trailing), "a node at the tip is never benched by a verdict it disproved (head %d)", head)
+		}
+		require.Zero(t, lagOf(network, trailing))
+		served(t, network, head, "the rogue's lone head above the tip is never served")
+	})
+
 	t.Run("heads frozen above a chain that restarted lower are benched and routed around", func(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
