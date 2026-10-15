@@ -8,7 +8,6 @@ import (
 	"math"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 )
 
 // PoolFirstAvailableSlot returns the pool's ledger floor: the MIN across
@@ -56,45 +55,6 @@ func PoolFirstAvailableSlot(upstreams []common.Upstream) (int64, bool) {
 // It is a wire-contract fact, so the short-page check can compare against it
 // instead of treating an omitted limit as unknowable.
 const solanaDefaultSignaturesLimit = 1000
-
-// networkPreForward_getFirstAvailableBlock answers a client's
-// getFirstAvailableBlock from the pool: the MIN of the upstreams' observed
-// ledger floors, because a request below one upstream's floor fails over to
-// another. That is "the oldest slot this pool can serve", which is what a
-// client migrating off a single full-history backend actually wants to know —
-// forwarding would instead report whichever one upstream happened to be picked.
-//
-// It fails open (forwards, behaving as without this hook) whenever the answer
-// would not be the pool's truth:
-//   - fewer than two upstreams: the live answer of the single upstream is
-//     strictly fresher than its polled floor, so there is nothing to merge;
-//   - ANY selected upstream's floor is unknown (PoolFirstAvailableSlot):
-//     advertising MIN over a partial set would read an unobserved archive as
-//     "history starts at the pruned validator's floor" — unknown must not read
-//     as unavailable.
-//
-// Internal requests (probes) are never answered locally.
-func networkPreForward_getFirstAvailableBlock(ctx context.Context, upstreams []common.Upstream, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
-	if len(upstreams) < 2 {
-		return false, nil, nil
-	}
-	if dirs := r.Directives(); dirs != nil && dirs.IsInternal {
-		return false, nil, nil
-	}
-	floor, known := PoolFirstAvailableSlot(upstreams)
-	if !known {
-		return false, nil, nil
-	}
-	id := r.ID()
-	if id == nil {
-		id = util.RandomID()
-	}
-	jrr, err := common.NewJsonRpcResponse(id, floor, nil)
-	if err != nil {
-		return true, nil, fmt.Errorf("failed to build getFirstAvailableBlock response: %w", err)
-	}
-	return true, common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(jrr), nil
-}
 
 // upstreamPostForward_historyParity turns two SUCCESSFUL-but-incomplete answers
 // into MissingData so the sweep continues to the next upstream — the same

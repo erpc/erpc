@@ -55,8 +55,6 @@ func (h *SvmArchitectureHandler) HandleNetworkPreForward(ctx context.Context, ne
 	switch method {
 	case "getBlock", "getConfirmedBlock":
 		return networkPreForward_getBlock(ctx, network, req)
-	case "getFirstAvailableBlock":
-		return networkPreForward_getFirstAvailableBlock(ctx, upstreams, req)
 	}
 	return false, nil, nil
 }
