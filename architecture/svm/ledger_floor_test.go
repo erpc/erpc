@@ -150,6 +150,16 @@ func TestRequestRangeEndSlot(t *testing.T) {
 		require.EqualValues(t, 80, end)
 	})
 
+	t.Run("getBlocks null end uses tip like omitted", func(t *testing.T) {
+		end, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50, null]`), 50, 80)
+		require.True(t, ok)
+		require.EqualValues(t, 80, end)
+
+		end, ok = RequestRangeEndSlot(ctx, reqOf(t, "getBlocks", `[50, null, {"commitment":"finalized"}]`), 50, 80)
+		require.True(t, ok)
+		require.EqualValues(t, 80, end)
+	})
+
 	t.Run("getBlocksWithLimit uses tip, not start+limit", func(t *testing.T) {
 		// limit is a confirmed-block COUNT. start+limit would both reject
 		// limit=1 against an upper equal to start, and under-bound ranges

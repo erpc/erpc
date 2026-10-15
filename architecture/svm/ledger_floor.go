@@ -98,15 +98,19 @@ func RequestRangeEndSlot(ctx context.Context, r *common.NormalizedRequest, start
 			// Commitment injection appends the options object where an omitted
 			// end would sit ([start] becomes [start, {options}]), so a trailing
 			// object means "no end named" and the range extends to the tip.
-			if _, isOptions := rpcReq.Params[1].(map[string]interface{}); !isOptions {
-				// A present-but-invalid end (fractional, string, negative) is
-				// not ours to interpret — fail open and let the node answer
-				// -32602.
-				end, ok := toInt64Exact(rpcReq.Params[1])
-				if !ok || end < 0 {
-					return 0, false
+			// Explicit JSON null is the same omitted end ([start, null] or
+			// [start, null, {options}]) — do not fail-open past the upper gate.
+			if rpcReq.Params[1] != nil {
+				if _, isOptions := rpcReq.Params[1].(map[string]interface{}); !isOptions {
+					// A present-but-invalid end (fractional, string, negative) is
+					// not ours to interpret — fail open and let the node answer
+					// -32602.
+					end, ok := toInt64Exact(rpcReq.Params[1])
+					if !ok || end < 0 {
+						return 0, false
+					}
+					return end, true
 				}
-				return end, true
 			}
 		}
 		end := start + maxGetBlocksRange
