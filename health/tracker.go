@@ -60,15 +60,17 @@ type NetworkMetadata struct {
 	// publication for the network so a slow re-derivation can never overwrite a
 	// newer one; reporters is every upstream that has reported a head here.
 	headMu    sync.Mutex
-	reporters []common.Upstream
+	reporters []headReporter
 
-	// On upstream entries only; the two timestamps are guarded by the network
+	// On upstream entries only; the timestamps are guarded by the network
 	// entry's headMu. headChangedAtMs is when this upstream's stored latest
 	// head last changed; headBelowSinceMs is when a non-benched peer that moved
-	// after it was first seen above it (0 = not below). headBenched is read
-	// lock-free by the served-tip ballots (see Tracker.IsHeadBenched).
+	// after it was first seen above it (0 = not below); headBenchedAtMs is when
+	// it was last benched. headBenched is read lock-free by the served-tip
+	// ballots (see Tracker.IsHeadBenched).
 	headChangedAtMs  int64
 	headBelowSinceMs int64
+	headBenchedAtMs  int64
 	headBenched      atomic.Bool
 
 	// Dynamic block time via EMA on on-chain block timestamps.
@@ -1385,16 +1387,25 @@ func blocksBehind(networkHead, upstreamHead int64) int64 {
 	return networkHead - upstreamHead
 }
 
-// addHeadReporter registers reporter as a head reporter on the network. Caller
-// holds ntwMeta.headMu.
-func addHeadReporter(ntwMeta *NetworkMetadata, reporter common.Upstream) {
+// headReporter is one upstream that has reported a head on a network, with its
+// per-network metadata resolved once (metadata entries are never evicted).
+type headReporter struct {
+	ups  common.Upstream
+	meta *NetworkMetadata
+}
+
+// addHeadReporter registers reporter as a head reporter on the network and
+// returns its metadata. Caller holds ntwMeta.headMu.
+func (t *Tracker) addHeadReporter(ntwMeta *NetworkMetadata, net string, reporter common.Upstream) *NetworkMetadata {
 	id := reporter.Id()
 	for _, r := range ntwMeta.reporters {
-		if r.Id() == id {
-			return
+		if r.ups.Id() == id {
+			return r.meta
 		}
 	}
-	ntwMeta.reporters = append(ntwMeta.reporters, reporter)
+	meta := t.getMetadata(metadataKey{reporter, net})
+	ntwMeta.reporters = append(ntwMeta.reporters, headReporter{ups: reporter, meta: meta})
+	return meta
 }
 
 // corroboratedNetworkHead derives the network head for one axis (the lag
@@ -1402,29 +1413,28 @@ func addHeadReporter(ntwMeta *NetworkMetadata, reporter common.Upstream) {
 // only one while a single reporter has a head. When every reporter is benched
 // it fails open to all of them. It returns the reporter holding that head so
 // the caller can carry that block's timestamp. Caller holds ntwMeta.headMu.
-func (t *Tracker) corroboratedNetworkHead(ntwMeta *NetworkMetadata, net string, getVal func(*NetworkMetadata) int64) (int64, common.Upstream) {
-	if head, holder := t.secondHighestHead(ntwMeta, net, getVal, true); head > 0 {
+func corroboratedNetworkHead(ntwMeta *NetworkMetadata, getVal func(*NetworkMetadata) int64) (int64, common.Upstream) {
+	if head, holder := secondHighestHead(ntwMeta, getVal, true); head > 0 {
 		return head, holder
 	}
-	return t.secondHighestHead(ntwMeta, net, getVal, false)
+	return secondHighestHead(ntwMeta, getVal, false)
 }
 
-func (t *Tracker) secondHighestHead(ntwMeta *NetworkMetadata, net string, getVal func(*NetworkMetadata) int64, skipBenched bool) (int64, common.Upstream) {
+func secondHighestHead(ntwMeta *NetworkMetadata, getVal func(*NetworkMetadata) int64, skipBenched bool) (int64, common.Upstream) {
 	var first, second int64
 	var firstUps, secondUps common.Upstream
 	for _, r := range ntwMeta.reporters {
-		meta := t.getMetadata(metadataKey{r, net})
-		if skipBenched && meta.headBenched.Load() {
+		if skipBenched && r.meta.headBenched.Load() {
 			continue
 		}
-		v := getVal(meta)
+		v := getVal(r.meta)
 		switch {
 		case v <= 0:
 		case v > first:
 			second, secondUps = first, firstUps
-			first, firstUps = v, r
+			first, firstUps = v, r.ups
 		case v > second:
-			second, secondUps = v, r
+			second, secondUps = v, r.ups
 		}
 	}
 	if second > 0 {
@@ -1447,83 +1457,77 @@ func headStallAfter(ups common.Upstream) time.Duration {
 // evaluateHeadBench runs the head bench state machine over every reporter of
 // the network after `changed` (if non-nil) stored a new latest head. A
 // reporter is "below" while a non-benched peer that moved after it last moved
-// has a higher head; one below for its stall window is benched, and a benched
-// reporter rejoins once it has caught up with the lowest non-benched peer.
-// Requiring the peer to have moved after it keeps a chain halt (nobody moves)
-// and a static far-future rogue (never moves) from benching anyone. Caller
-// holds ntwMeta.headMu.
-func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, net string, changed common.Upstream) {
+// has a higher head; one below for its stall window is benched. A benched
+// reporter rejoins once it has moved since and caught up with the lowest
+// non-benched peer, or when no non-benched peer is left. Requiring the peer to
+// have moved after it keeps a chain halt (nobody moves) and a static far-future
+// rogue (never moves) from benching anyone; requiring the benched one to move
+// keeps a stuck head that still sits above a slower peer from flapping.
+// Caller holds ntwMeta.headMu.
+func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMetadata) {
 	now := t.now().UnixMilli()
 	reporters := ntwMeta.reporters
 	if changed != nil {
-		m := t.getMetadata(metadataKey{changed, net})
-		m.headChangedAtMs = now
-		m.headBelowSinceMs = 0
+		changed.headChangedAtMs = now
+		changed.headBelowSinceMs = 0
 	}
 	for _, u := range reporters {
-		um := t.getMetadata(metadataKey{u, net})
-		uHead := um.evmLatestBlockNumber.Load()
+		uHead := u.meta.evmLatestBlockNumber.Load()
 		above := false
 		for _, v := range reporters {
-			if v == u {
+			if v.meta == u.meta {
 				continue
 			}
-			vm := t.getMetadata(metadataKey{v, net})
-			if !vm.headBenched.Load() && vm.evmLatestBlockNumber.Load() > uHead && vm.headChangedAtMs > um.headChangedAtMs {
+			if !v.meta.headBenched.Load() && v.meta.evmLatestBlockNumber.Load() > uHead && v.meta.headChangedAtMs > u.meta.headChangedAtMs {
 				above = true
 				break
 			}
 		}
 		switch {
 		case !above:
-			um.headBelowSinceMs = 0
-		case um.headBelowSinceMs == 0:
-			um.headBelowSinceMs = now
+			u.meta.headBelowSinceMs = 0
+		case u.meta.headBelowSinceMs == 0:
+			u.meta.headBelowSinceMs = now
 		}
 	}
 	for _, u := range reporters {
-		um := t.getMetadata(metadataKey{u, net})
-		if um.headBenched.Load() || um.headBelowSinceMs == 0 {
+		if u.meta.headBenched.Load() || u.meta.headBelowSinceMs == 0 {
 			continue
 		}
-		stallAfter := headStallAfter(u)
-		if now-um.headBelowSinceMs < stallAfter.Milliseconds() {
+		stallAfter := headStallAfter(u.ups)
+		if now-u.meta.headBelowSinceMs < stallAfter.Milliseconds() {
 			continue
 		}
-		um.headBenched.Store(true)
-		telemetry.MetricUpstreamHeadBenchedTotal.WithLabelValues(t.projectId, u.VendorName(), u.NetworkLabel(), u.Id(), "stalled").Inc()
-		u.Logger().Warn().
-			Str("networkId", net).
-			Int64("head", um.evmLatestBlockNumber.Load()).
+		u.meta.headBenched.Store(true)
+		u.meta.headBenchedAtMs = now
+		telemetry.MetricUpstreamHeadBenchedTotal.WithLabelValues(t.projectId, u.ups.VendorName(), u.ups.NetworkLabel(), u.ups.Id(), "stalled").Inc()
+		u.ups.Logger().Warn().
+			Str("networkId", u.ups.NetworkId()).
+			Int64("head", u.meta.evmLatestBlockNumber.Load()).
 			Dur("stallAfter", stallAfter).
 			Msg("benched upstream head: it stopped moving while a peer kept advancing; it leaves the served-tip ballots and the lag reference until it catches up")
 	}
 	for _, u := range reporters {
-		um := t.getMetadata(metadataKey{u, net})
-		if !um.headBenched.Load() {
+		if !u.meta.headBenched.Load() {
 			continue
 		}
-		uHead := um.evmLatestBlockNumber.Load()
 		lowest := int64(0)
 		for _, v := range reporters {
-			if v == u {
+			if v.meta == u.meta || v.meta.headBenched.Load() {
 				continue
 			}
-			vm := t.getMetadata(metadataKey{v, net})
-			if vm.headBenched.Load() {
-				continue
-			}
-			if h := vm.evmLatestBlockNumber.Load(); h > 0 && (lowest == 0 || h < lowest) {
+			if h := v.meta.evmLatestBlockNumber.Load(); h > 0 && (lowest == 0 || h < lowest) {
 				lowest = h
 			}
 		}
-		if lowest > 0 && uHead < lowest {
+		uHead := u.meta.evmLatestBlockNumber.Load()
+		if lowest > 0 && (u.meta.headChangedAtMs < u.meta.headBenchedAtMs || uHead < lowest) {
 			continue
 		}
-		um.headBenched.Store(false)
-		um.headBelowSinceMs = 0
-		u.Logger().Info().
-			Str("networkId", net).
+		u.meta.headBenched.Store(false)
+		u.meta.headBelowSinceMs = 0
+		u.ups.Logger().Info().
+			Str("networkId", u.ups.NetworkId()).
 			Int64("head", uHead).
 			Msg("upstream head rejoined: it caught up with its non-benched peers")
 	}
@@ -1559,13 +1563,13 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	defer ntwMeta.headMu.Unlock()
 
 	oldUpsVal := upsMeta.evmLatestBlockNumber.Load()
-	var changed common.Upstream
+	headChanged := false
 	if blockNumber > oldUpsVal {
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
 		upsMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 		g := t.getLatestBlockGauge(t.projectId, vendor, netLabel, id)
 		g.Set(float64(blockNumber))
-		changed = upstream
+		headChanged = true
 	} else if oldUpsVal-blockNumber > common.DefaultToleratedBlockHeadRollback {
 		// The upstream reports a head far behind the one stored for it: treat it
 		// as a correction (a deep reorg, or a previously recorded bogus sample),
@@ -1580,16 +1584,20 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			Int64("previousValue", oldUpsVal).
 			Int64("newValue", blockNumber).
 			Msg("applied large latest block rollback for upstream in tracker")
-		changed = upstream
+		headChanged = true
 	} else if blockNumber == oldUpsVal && blockTimestamp > 0 && upsMeta.evmLatestBlockTimestamp.Load() == 0 {
 		upsMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 	}
 
-	addHeadReporter(ntwMeta, upstream)
-	t.evaluateHeadBench(ntwMeta, net, changed)
+	t.addHeadReporter(ntwMeta, net, upstream)
+	var changed *NetworkMetadata
+	if headChanged {
+		changed = upsMeta
+	}
+	t.evaluateHeadBench(ntwMeta, changed)
 
 	oldNtwVal := ntwMeta.evmLatestBlockNumber.Load()
-	ntwBn, headReporter := t.corroboratedNetworkHead(ntwMeta, net, func(meta *NetworkMetadata) int64 {
+	ntwBn, headReporter := corroboratedNetworkHead(ntwMeta, func(meta *NetworkMetadata) int64 {
 		return meta.evmLatestBlockNumber.Load()
 	})
 	if ntwBn <= 0 {
@@ -1806,9 +1814,9 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 			Msg("applied large finalized block rollback for upstream in tracker")
 	}
 
-	addHeadReporter(ntwMeta, upstream)
+	t.addHeadReporter(ntwMeta, net, upstream)
 	oldNtwVal := ntwMeta.evmFinalizedBlockNumber.Load()
-	ntwVal, _ := t.corroboratedNetworkHead(ntwMeta, net, func(meta *NetworkMetadata) int64 {
+	ntwVal, _ := corroboratedNetworkHead(ntwMeta, func(meta *NetworkMetadata) int64 {
 		return meta.evmFinalizedBlockNumber.Load()
 	})
 	if ntwVal <= 0 {

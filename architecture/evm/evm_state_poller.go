@@ -560,7 +560,9 @@ func (e *EvmStatePoller) RefreshLatestBlock() {
 	}
 	go func() {
 		defer e.latestRefreshInFlight.Store(false)
-		if _, err := e.PollLatestBlockNumber(e.appCtx); err != nil {
+		ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
+		defer cancel()
+		if _, err := e.PollLatestBlockNumber(ctx); err != nil {
 			e.logger.Debug().Err(err).Msg("on-demand latest block refresh failed in evm state poller")
 		}
 	}()

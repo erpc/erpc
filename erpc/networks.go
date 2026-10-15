@@ -835,28 +835,45 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	return floored
 }
 
-// EvmRefreshLatestBlock asks every poller of the request's latest-head ballot
-// (the candidates tipCandidateUpstreams would return) for a background refresh.
-// It walks the policy's or registry's shared slices in place, so a hot path
-// such as eth_blockNumber pays no allocation for it.
+// EvmRefreshLatestBlock asks the pollers that decide the request's latest head
+// for a background refresh: in routing order, only as many voting
+// (non-syncing, non-benched) upstreams as the quorum needs, since a fresher
+// head anywhere else cannot move the served value. It walks the policy's or
+// registry's shared slices in place, so a hot path such as eth_blockNumber pays
+// no allocation for it.
 func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 	sel := requestSelector(ctx)
-	refresh := func(u common.Upstream) {
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	var need, done int
+	refresh := func(u common.Upstream) bool {
 		if sel != "" {
 			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
-				return
+				return false
 			}
 		}
-		if eu, ok := u.(common.EvmUpstream); ok {
-			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				sp.RefreshLatestBlock()
-			}
+		eu, ok := u.(common.EvmUpstream)
+		if !ok || eu.EvmSyncingState() == common.EvmSyncingStateSyncing {
+			return false
 		}
+		if n.metricsTracker != nil && n.metricsTracker.IsHeadBenched(u) {
+			return false
+		}
+		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			sp.RefreshLatestBlock()
+			done++
+		}
+		return done >= need
 	}
 	if n.policyEngine != nil {
 		if eligible := n.policyEngine.GetOrdered(n.networkId, "*", "*"); len(eligible) > 0 {
+			need = q.Of(len(eligible))
 			for _, u := range eligible {
-				refresh(u)
+				if refresh(u) {
+					return
+				}
 			}
 			return
 		}
@@ -864,8 +881,12 @@ func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 	if n.upstreamsRegistry == nil {
 		return
 	}
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-		refresh(u)
+	ups := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	need = q.Of(len(ups))
+	for _, u := range ups {
+		if refresh(u) {
+			return
+		}
 	}
 }
 

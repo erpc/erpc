@@ -56,9 +56,8 @@ func TestTrackerCorroboratedHeadConcurrentUpdatesDoNotRegress(t *testing.T) {
 	upstreams := []common.Upstream{a, b, c, d}
 
 	ntwMeta := tracker.getMetadata(metadataKey{nil, net})
-	ntwMeta.reporters = upstreams
 	for i, head := range []int64{99, 100, 99, 99} {
-		tracker.getMetadata(metadataKey{upstreams[i], net}).evmLatestBlockNumber.Store(head)
+		tracker.addHeadReporter(ntwMeta, net, upstreams[i]).evmLatestBlockNumber.Store(head)
 	}
 	ntwMeta.evmLatestBlockNumber.Store(99)
 
