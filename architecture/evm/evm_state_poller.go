@@ -450,15 +450,21 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 // chain's finality depth in time. Finalized moves once per finality window, so a poll at
 // the latest-block cadence mostly returns the number it already has; this bounds how far
 // the finalized block can trail to that fraction of the window instead.
+//
+// An upstream behind the network's corroborated finalized block keeps the regular
+// debounce: peers already saw the next finalized block, and a vendor whose load balancer
+// mixes stale and fresh backends needs every sample to catch up. Response finality uses
+// the serving upstream's own finalized block, and cache hits the lowest across upstreams.
 func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, debounce time.Duration) time.Duration {
 	if cfg == nil || cfg.FinalizedDebounceDepthMultiplier == nil {
 		return debounce
 	}
 	mult := *cfg.FinalizedDebounceDepthMultiplier
+	networkId := e.upstream.NetworkId()
 	finalized := e.finalizedBlockShared.GetValue()
 	depth := e.latestBlockShared.GetValue() - finalized
-	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
-	if mult <= 0 || finalized <= 0 || depth <= 0 || blockTime <= 0 {
+	blockTime := e.tracker.GetNetworkBlockTime(networkId)
+	if mult <= 0 || finalized <= 0 || depth <= 0 || blockTime <= 0 || finalized < e.tracker.GetNetworkFinalizedBlock(networkId) {
 		return debounce
 	}
 	return max(debounce, time.Duration(float64(depth)*float64(blockTime)*mult))
