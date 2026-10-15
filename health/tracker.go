@@ -1507,6 +1507,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		}
 		u.meta.headBenched.Store(true)
 		u.meta.headBenchedAt = now
+		u.meta.headBenchRef = 0 // taken below, once the bar excludes it
 		membershipChanged = true
 		telemetry.MetricUpstreamHeadBenchedTotal.WithLabelValues(t.projectId, u.ups.VendorName(), u.ups.NetworkLabel(), u.ups.Id(), "stalled").Inc()
 		u.ups.Logger().Warn().
@@ -1521,7 +1522,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			continue
 		}
 		uHead := u.meta.evmLatestBlockNumber.Load()
-		if u.meta.headBenchedAt.Equal(now) {
+		if u.meta.headBenchRef == 0 {
 			u.meta.headBenchRef = uHead
 			if bar > 0 {
 				u.meta.headBenchRef = bar
