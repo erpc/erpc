@@ -379,15 +379,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		if strings.Contains(ml, "nonce too low") ||
 			strings.Contains(ml, "nonce is too low") ||
-			strings.Contains(ml, "nonce has already been used") ||
-			// HyperEVM (Hyperliquid) returns opaque HyperCore↔HyperEVM boundary
-			// errors as JSON-RPC code -32100 with message
-			// "Unexpected error (code=10055)". Per Hyperliquid docs that bucket
-			// covers nonce conflicts, duplicate hashes, insufficient funds, and
-			// underpriced replacements — so treat as nonce-too-low (verify via
-			// eth_getTransactionByHash) rather than already-known (blind success).
-			// https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm
-			strings.Contains(ml, "code=10055") {
+			strings.Contains(ml, "nonce has already been used") {
 			// These indicate a nonce conflict - requires verification to distinguish
 			// between duplicate tx (idempotent) vs different tx with same nonce (error)
 			return common.NewErrEndpointNonceException(
@@ -400,6 +392,31 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				common.NonceExceptionReasonNonceTooLow,
 			)
+		}
+
+		// HyperEVM (Hyperliquid) returns opaque HyperCore↔HyperEVM boundary
+		// errors as JSON-RPC -32100 with message "Unexpected error (code=10055)".
+		// Per Hyperliquid docs that bucket covers nonce conflicts, duplicate
+		// hashes, insufficient funds, and underpriced replacements. Scope the
+		// match to eth_sendRawTransaction only — the message is too broad to
+		// reinterpret as NonceTooLow on other methods (would stop failover).
+		// Treat as nonce-too-low (verify via eth_getTransactionByHash) rather
+		// than already-known (blind success).
+		// https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm
+		if strings.Contains(ml, "code=10055") &&
+			nr != nil && nr.Request() != nil {
+			if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+				return common.NewErrEndpointNonceException(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorTransactionRejected,
+						err.Message,
+						nil,
+						details,
+					),
+					common.NonceExceptionReasonNonceTooLow,
+				)
+			}
 		}
 
 		//----------------------------------------------------------------

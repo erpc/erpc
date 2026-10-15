@@ -347,32 +347,51 @@ func TestExtractJsonRpcError_MempoolPolicyRejections(t *testing.T) {
 }
 
 // HyperEVM embeds 10055 in the message ("Unexpected error (code=10055)"), not
-// the JSON-RPC code field (which is typically -32100). It must normalize to
-// nonce-too-low (on-chain verify) rather than already-known (blind success),
-// because the same code also covers insufficient funds / underpriced.
+// the JSON-RPC code field (which is typically -32100). Scoped to
+// eth_sendRawTransaction only: normalize to nonce-too-low (on-chain verify)
+// rather than already-known (blind success), because the same code also covers
+// insufficient funds / underpriced. Other methods must keep failover.
 func TestExtractJsonRpcError_HyperEVMCode10055(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name    string
+		method  string
 		code    int
 		message string
 		wantNTL bool
 	}{
 		{
-			name:    "observed HyperEVM wire message",
+			name:    "sendRawTransaction observed HyperEVM wire message",
+			method:  "eth_sendRawTransaction",
 			code:    -32100,
 			message: "Unexpected error (code=10055)",
 			wantNTL: true,
 		},
 		{
-			name:    "code=10055 with other wrapper wording",
+			name:    "sendRawTransaction code=10055 with other wrapper wording",
+			method:  "eth_sendRawTransaction",
 			code:    -32603,
 			message: "rpc error: code=10055 msg=boundary",
 			wantNTL: true,
 		},
 		{
+			name:    "eth_call keeps server-side / failover behavior",
+			method:  "eth_call",
+			code:    -32100,
+			message: "Unexpected error (code=10055)",
+			wantNTL: false,
+		},
+		{
+			name:    "nil request does not match",
+			method:  "",
+			code:    -32100,
+			message: "Unexpected error (code=10055)",
+			wantNTL: false,
+		},
+		{
 			name:    "unrelated 10055 digit sequence does not match",
+			method:  "eth_sendRawTransaction",
 			code:    -32000,
 			message: "internal error reference 10055",
 			wantNTL: false,
@@ -384,11 +403,18 @@ func TestExtractJsonRpcError_HyperEVMCode10055(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			var nr *common.NormalizedResponse
+			if tc.method != "" {
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","method":"` + tc.method + `","params":[],"id":1}`))
+				nr = common.NewNormalizedResponse().WithRequest(req)
+			}
+
 			r := &http.Response{StatusCode: 200, Header: http.Header{}}
 			jrErr := common.NewErrJsonRpcExceptionExternal(tc.code, tc.message, "")
 			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
 
-			err := ExtractJsonRpcError(r, nil, jr, nil)
+			err := ExtractJsonRpcError(r, nr, jr, nil)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
