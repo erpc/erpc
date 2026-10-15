@@ -166,4 +166,23 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(respBody))
 		assert.Contains(t, string(respBody), "0x1a2b3c")
 	})
+
+	// Empty batch body must stay "[]". The Solana notification path writes an
+	// empty body when every reply was filtered out; that branch must not also
+	// catch len(requests)==0 from "[]", or EVM clients that JSON.parse the
+	// response will throw on a 200 with no body.
+	t.Run("EmptyBatchBodyIsEmptyArray", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(envelopeTestConfig(), t)
+		defer shutdown()
+		time.Sleep(1500 * time.Millisecond)
+
+		statusCode, _, respBody := sendRequest(`[]`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode, "body: %s", respBody)
+		assert.Equal(t, `[]`, strings.TrimSpace(respBody))
+	})
 }
