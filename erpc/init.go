@@ -237,7 +237,7 @@ func Init(
 	}
 	// CloseAll waits for in-flight consensus analyzers, then flushes exporters.
 	// Fire-and-forget rounds outlive HTTP shutdown and still export misbehavior.
-	consensus.CloseAll()
+	consensus.CloseAll(context.Background())
 
 	return nil
 }
