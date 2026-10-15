@@ -2245,6 +2245,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.DynamicBlockTimeDebounceMultiplier == nil && defaults.Evm.DynamicBlockTimeDebounceMultiplier != nil {
 				n.Evm.DynamicBlockTimeDebounceMultiplier = defaults.Evm.DynamicBlockTimeDebounceMultiplier
 			}
+			if n.Evm.FinalizedDebounceDepthMultiplier == nil && defaults.Evm.FinalizedDebounceDepthMultiplier != nil {
+				n.Evm.FinalizedDebounceDepthMultiplier = defaults.Evm.FinalizedDebounceDepthMultiplier
+			}
 			if n.Evm.BlockUnavailableDelayMultiplier == nil && defaults.Evm.BlockUnavailableDelayMultiplier != nil {
 				n.Evm.BlockUnavailableDelayMultiplier = defaults.Evm.BlockUnavailableDelayMultiplier
 			}
@@ -2440,6 +2443,7 @@ func migrateLegacyIntegrityChecks(n *NetworkConfig) {
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
+const DefaultFinalizedDebounceDepthMultiplier = 0.05
 const DefaultBlockUnavailableDelayMultiplier = 1.0
 
 // DefaultToleratedBlockHeadRollback is the tolerance (in blocks) applied when a
@@ -2618,6 +2622,10 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.DynamicBlockTimeDebounceMultiplier == nil {
 		d := DefaultDynamicBlockTimeDebounceMultiplier
 		e.DynamicBlockTimeDebounceMultiplier = &d
+	}
+	if e.FinalizedDebounceDepthMultiplier == nil {
+		d := DefaultFinalizedDebounceDepthMultiplier
+		e.FinalizedDebounceDepthMultiplier = &d
 	}
 	if e.BlockUnavailableDelayMultiplier == nil {
 		d := DefaultBlockUnavailableDelayMultiplier

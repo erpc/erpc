@@ -1915,6 +1915,13 @@ func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	return 0
 }
 
+// GetNetworkFinalizedBlock returns the network's corroborated finalized block
+// (see corroboratedNetworkHead): the second-highest finalized block across its
+// non-benched upstreams, or the only one. 0 until reported.
+func (t *Tracker) GetNetworkFinalizedBlock(networkId string) int64 {
+	return t.getMetadata(metadataKey{nil, networkId}).evmFinalizedBlockNumber.Load()
+}
+
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
 	lg := upstream.Logger().With().Str("networkId", upstream.NetworkId()).Logger()
 
