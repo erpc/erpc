@@ -346,6 +346,65 @@ func TestExtractJsonRpcError_MempoolPolicyRejections(t *testing.T) {
 	}
 }
 
+// HyperEVM embeds 10055 in the message ("Unexpected error (code=10055)"), not
+// the JSON-RPC code field (which is typically -32100). It must normalize to
+// nonce-too-low (on-chain verify) rather than already-known (blind success),
+// because the same code also covers insufficient funds / underpriced.
+func TestExtractJsonRpcError_HyperEVMCode10055(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		code    int
+		message string
+		wantNTL bool
+	}{
+		{
+			name:    "observed HyperEVM wire message",
+			code:    -32100,
+			message: "Unexpected error (code=10055)",
+			wantNTL: true,
+		},
+		{
+			name:    "code=10055 with other wrapper wording",
+			code:    -32603,
+			message: "rpc error: code=10055 msg=boundary",
+			wantNTL: true,
+		},
+		{
+			name:    "unrelated 10055 digit sequence does not match",
+			code:    -32000,
+			message: "internal error reference 10055",
+			wantNTL: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(tc.code, tc.message, "")
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nil, jr, nil)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			var ne *common.ErrEndpointNonceException
+			isNTL := errors.As(err, &ne) &&
+				ne.Details["nonceExceptionReason"] == string(common.NonceExceptionReasonNonceTooLow)
+			if isNTL != tc.wantNTL {
+				t.Fatalf("expected nonceTooLow=%v, got %T: %v", tc.wantNTL, err, err)
+			}
+			if tc.wantNTL && common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+				t.Fatalf("10055 must not fall through to server-side exception: %v", err)
+			}
+		})
+	}
+}
+
 // A TX_REPLAY_ATTACK rejection of an already-accepted transaction normalizes
 // to an "already known" nonce exception; other "replay attack" wording does not.
 func TestExtractJsonRpcError_ReplayAttackIdempotency(t *testing.T) {

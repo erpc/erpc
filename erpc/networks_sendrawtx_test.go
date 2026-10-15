@@ -215,6 +215,119 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 		_ = resp
 	})
 
+	// HyperEVM returns opaque "Unexpected error (code=10055)" (JSON-RPC -32100)
+	// for HyperCore↔HyperEVM boundary failures (nonce / duplicate / insufficient
+	// funds / underpriced). Classify as nonce-too-low so we verify on-chain
+	// instead of failing over to ErrUpstreamsExhausted or treating as already-known.
+	t.Run("HyperEVMCode10055WithMatchingTxReturnsSuccess", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32100,
+					"message": "Unexpected error (code=10055)",
+				},
+			})
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"hash":        expectedTxHash,
+					"nonce":       "0x9",
+					"blockHash":   "0x1234567890abcdef",
+					"blockNumber": "0x100",
+					"from":        "0x1234567890123456789012345678901234567890",
+					"to":          "0x3535353535353535353535353535353535353535",
+					"value":       "0xde0b6b3a7640000",
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		require.NoError(t, err, "HyperEVM 10055 with matching tx should convert to success")
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, jrr.GetResultString(), "0x")
+	})
+
+	t.Run("HyperEVMCode10055WithNoMatchingTxReturnsError", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32100,
+					"message": "Unexpected error (code=10055)",
+				},
+			})
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  nil,
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		_, err := network.Forward(ctx, req)
+
+		require.Error(t, err, "10055 without matching tx must remain an error (e.g. insufficient funds)")
+		assert.NotContains(t, err.Error(), "ErrUpstreamsExhausted")
+		assert.Contains(t, err.Error(), "code=10055")
+	})
+
 	t.Run("ExecutionRevertedIsRetryableAcrossUpstreams", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
