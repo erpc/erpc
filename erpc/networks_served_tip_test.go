@@ -1782,37 +1782,59 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
 			{id: "live", chainID: 123, latestBlock: 47_880_000},
-			{id: "stalled", chainID: 123, latestBlock: 1_800_000},
+			{id: "stalled-a", chainID: 123, latestBlock: 1_800_000},
+			{id: "stalled-b", chainID: 123, latestBlock: 1_800_000},
 		}, nil)
-		live, stalled := ups[0], ups[1]
+		live, stalls := ups[0], ups[1:]
 		tr := network.metricsTracker
 		const stalledAt = int64(1_800_000)
-		// stalled's head block was produced two years before this process.
+		// The stalled heads' block was produced two years before this process.
+		// Each has two non-benched peers and only live is younger, so the time
+		// rule never fires: only the height rule can bench them, and with the
+		// network block time unknown (the corroborated head is the stalled
+		// one) that rule needs live's own block time.
 		stalledTs := servedTipClock().Add(-2 * 365 * 24 * time.Hour).Unix()
 		head := int64(47_880_000)
 		poll := func(d time.Duration) {
 			advance(d)
-			report(tr, stalled, stalledAt, stalledTs)
+			for _, u := range stalls {
+				report(tr, u, stalledAt, stalledTs)
+			}
 			head += int64(d / (2 * time.Second))
 			report(tr, live, head, servedTipClock().Unix())
 		}
-		report(tr, stalled, stalledAt, stalledTs)
+		for _, u := range stalls {
+			report(tr, u, stalledAt, stalledTs)
+		}
 		served(t, network, stalledAt, "at boot quorum 2 serves the stalled head")
 
-		// The corroborated head is the stalled one, so the network block time
-		// never settles; live's own block time does after 4 polls.
-		window := stallAfter(stalled, 0)
+		// Three timestamped head changes: live's block time is not known yet.
+		for range 3 {
+			poll(2 * time.Second)
+		}
+		for _, u := range ups {
+			require.False(t, tr.IsHeadBenched(u), "%s: nobody is benched before live's block time is known", u.Id())
+		}
+		served(t, network, stalledAt, "before live's block time is known")
+
+		// The fourth settles it; the stall window runs from there.
+		poll(2 * time.Second)
+		window := stallAfter(stalls[0], 0)
 		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
 			poll(2 * time.Second)
 		}
-		require.False(t, tr.IsHeadBenched(stalled), "a stalled head is not benched inside its stall window")
+		for _, u := range stalls {
+			require.False(t, tr.IsHeadBenched(u), "%s: not benched inside its stall window", u.Id())
+		}
 		served(t, network, stalledAt, "inside the stall window")
 
 		poll(4 * time.Second)
-		require.True(t, tr.IsHeadBenched(stalled), "a head frozen since before the process started is benched after its stall window")
+		for _, u := range stalls {
+			require.True(t, tr.IsHeadBenched(u), "%s: a head frozen since before the process started is benched after its stall window", u.Id())
+		}
 		require.False(t, tr.IsHeadBenched(live))
-		served(t, network, head, "the stalled head leaves the ballot")
-		require.Equal(t, head-stalledAt, lagOf(network, stalled), "the benched head is measured against the live one")
+		served(t, network, head, "the stalled heads leave the ballot")
+		require.Equal(t, head-stalledAt, lagOf(network, stalls[0]), "the benched head is measured against the live one")
 		require.Zero(t, lagOf(network, live))
 	})
 
@@ -1851,10 +1873,10 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		}
 		served(t, network, forkAt, "inside the stall window quorum 2 still serves the frozen pair")
 
-		// The pinned clock gives every report of this poll the bench instant,
-		// so the bench reference is the canonical head this poll ends on.
-		poll(4 * time.Second)
+		// The forks re-report first in each poll, so the bench lands before the
+		// canonical pair moves: the canonical head at bench time is `canon` now.
 		benchedAt := canon
+		poll(4 * time.Second)
 		for _, u := range forks {
 			require.True(t, tr.IsHeadBenched(u), "%s: a head whose block is far older than its moving peers' is benched", u.Id())
 		}
