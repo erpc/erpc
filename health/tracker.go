@@ -1487,12 +1487,9 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 				netLabel,
 				"evm_state_poller",
 			).Set(float64(distanceMs) / 1000.0)
-		} else if headTs <= 0 && ntwBn > oldNtwVal && strings.HasPrefix(net, "svm:") {
-			// SVM pollers pass timestamp=0 (no on-chain slot timestamp). Feed the
-			// same EMA with wall-clock seconds on accepted head advances; sample
-			// math still divides by the slot gap, so poller cadence alone cannot
-			// masquerade as chain production rate. Do not store wall-clock into
-			// tip-age fields — those expect an on-chain tip timestamp.
+		} else if strings.HasPrefix(net, "svm:") && headTs <= 0 && ntwBn > oldNtwVal {
+			// SVM has no on-chain tip timestamp (pollers pass 0). Use wall-clock only
+			// for the block-time EMA — do not write it into tip-age fields/metrics.
 			t.updateBlockTimeSample(ntwMeta, netLabel, ntwBn, time.Now().Unix())
 		}
 	}
