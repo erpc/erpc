@@ -149,27 +149,33 @@ func (c *Consensus) Close() error {
 // and shared file hubs release before the process exits.
 //
 // Fire-and-forget analyzers use context.WithoutCancel, and exporter Close may
-// upload to S3 with no context of its own. ctx bounds both waits. When it
-// ends, CloseAll returns and leaves a still-running flush behind so process
-// exit is not stuck on a hung upstream or bucket.
+// upload to S3 with no context of its own. ctx bounds the analyzer wait. If
+// that wait expires, CloseAll returns without closing exporters: a close
+// racing a still-running analyzer drops file appends and can lose an S3
+// buffer. Process exit is the fallback for that hung analyzer.
 func CloseAll(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	waitOrContinue(ctx, func() { inflightAnalyzers.Wait() })
+	if !waitFinished(ctx, func() { inflightAnalyzers.Wait() }) {
+		return
+	}
 	liveConsensuses.Range(func(key, _ any) bool {
 		c, ok := key.(*Consensus)
 		if !ok {
 			return true
 		}
-		waitOrContinue(ctx, func() { _ = c.Close() })
+		// Exporters close only after every analyzer has finished. A second
+		// deadline here would close under an analyzer that is still inside
+		// the wait we just completed; that wait already returned.
+		_ = c.Close()
 		return true
 	})
 }
 
-// waitOrContinue runs fn and returns when fn finishes or ctx ends, whichever
-// is first. fn is not cancelled; the caller stops waiting.
-func waitOrContinue(ctx context.Context, fn func()) {
+// waitFinished runs fn and reports whether it finished before ctx ended.
+// fn is not cancelled.
+func waitFinished(ctx context.Context, fn func()) bool {
 	done := make(chan struct{})
 	go func() {
 		fn()
@@ -177,7 +183,9 @@ func waitOrContinue(ctx context.Context, fn func()) {
 	}()
 	select {
 	case <-done:
+		return true
 	case <-ctx.Done():
+		return false
 	}
 }
 
