@@ -175,8 +175,24 @@ export interface Config {
     projects?: (ProjectConfig | undefined)[];
     rateLimiters?: RateLimiterConfig;
     metrics?: MetricsConfig;
+    indexer?: IndexerConfig;
     proxyPools?: (ProxyPoolConfig | undefined)[];
     tracing?: TracingConfig;
+}
+/**
+ * IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
+ */
+export interface IndexerConfig {
+    /**
+     * Deprecated: ignored; the indexer no longer tracks a canonical chain.
+     * Kept so configs that still set it load under strict decoding.
+     */
+    canonicalChainDepth?: number;
+    /**
+     * DedupWindowSize is the per-filter seen-set capacity for log and
+     * pending-tx fan-out across upstreams. 0 uses the default (8192).
+     */
+    dedupWindowSize?: number;
 }
 export interface ServerConfig {
     listenV4?: boolean;
@@ -208,6 +224,7 @@ export interface ServerConfig {
     responseHeaders?: {
         [key: string]: string;
     };
+    webSocket?: WebSocketServerConfig;
     /**
      * ExecutionHeaders controls the per-request diagnostic headers
      * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
@@ -224,6 +241,31 @@ export interface ServerConfig {
      * CreditUnitsProvider and UpstreamConfig.CreditUnits.
      */
     costHeaders?: boolean;
+}
+export interface WebSocketServerConfig {
+    /**
+     * Enabled accepts WebSocket upgrades on the HTTP port. Off by default:
+     * with it off an upgrade request is ordinary HTTP.
+     */
+    enabled?: boolean;
+    readBufferSize?: number;
+    writeBufferSize?: number;
+    maxMessageSize?: number;
+    pingInterval?: Duration;
+    maxSubscriptionsPerConnection?: number;
+    /**
+     * MaxConcurrentRequestsPerConnection bounds the messages a connection has
+     * in flight; further frames wait (backpressure) instead of being rejected.
+     * A batch is one message; its requests run concurrently, as over HTTP.
+     */
+    maxConcurrentRequestsPerConnection?: number;
+    /**
+     * SubscriptionBufferSize is the number of notifications queued per
+     * subscription for a client that is behind. On overflow newHeads and
+     * newPendingTransactions drop their oldest entry; logs close the
+     * connection instead (1013), so the client knows it missed data.
+     */
+    subscriptionBufferSize?: number;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -677,6 +719,19 @@ export interface NetworkDefaults {
     svm?: TsSvmNetworkConfigForDefaults;
     multiplexing?: boolean;
     cacheKeySuffix?: string;
+    failover?: FailoverConfig;
+}
+/**
+ * FailoverConfig controls per-request escalation to fallback-tier upstreams,
+ * independent of the selection policy.
+ */
+export interface FailoverConfig {
+    /**
+     * OnDefaultsExhausted tries upstreams not tagged `tier:fallback` first and
+     * advances to the fallback tier within the same request only once every
+     * other upstream failed with an error retryable toward the network.
+     */
+    onDefaultsExhausted?: boolean;
 }
 export interface CORSConfig {
     allowedOrigins: string[];
@@ -700,6 +755,11 @@ export interface ProviderConfig {
         [key: string]: UpstreamConfig | undefined;
     };
 }
+/**
+ * TagTierFallback marks an upstream as part of the fallback tier, used only
+ * when the other upstreams are unavailable.
+ */
+export declare const TagTierFallback = "tier:fallback";
 /**
  * RateLimitCountMode selects the accounting unit an upstream's rate-limit
  * budget charges per call.
@@ -1170,6 +1230,19 @@ export interface ConsensusPolicyConfig {
         [key: string]: string[];
     };
     /**
+     * BlockEvidenceFields names, per method, the response field paths that
+     * carry the winner's own block number (e.g. eth_getTransactionByHash →
+     * ["blockNumber"]). It follows the same shape as PreferHighestValueFor:
+     * "result" for the direct result, or a field name for a nested result
+     * object. This is the block proof consumed by the empty-outside-retention
+     * waiver (requiredParticipants[].waiveAgreementOnEmptyOutsideRetention):
+     * the first resolved value is taken as the winner's block. A method not
+     * listed here has no proof, so the waiver never fires for it (dispute).
+     */
+    blockEvidenceFields?: {
+        [key: string]: string[];
+    };
+    /**
      * FireAndForget when true, allows consensus to return a response to the client immediately
      * upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
      * This is useful for write operations like eth_sendRawTransaction where you want to
@@ -1212,6 +1285,58 @@ export interface ConsensusPolicyConfig {
      * like any other low-participation tick. Empty (default) = disabled.
      */
     requiredParticipants?: (ConsensusRequiredParticipant | undefined)[];
+    /**
+     * Extends names a one-level base for this named policy: another entry in
+     * `policies`, or "default" for the inline consensus block. Resolved at
+     * load (SetDefaults): the base is copied, this policy's set fields overlay
+     * it (explicit requiredParticipants: [] clears quotas), then defaults run
+     * on the result. Without Extends a named policy starts from stock defaults,
+     * not the inline block — operators who want the shared hygiene say
+     * extends: default explicitly (feature §2). Only meaningful on named
+     * policies; ignored on the inline block.
+     */
+    extends?: string;
+    /**
+     * CustomPolicy, when set, enables the pre-round consensus-policy selector.
+     * Its EvalFunction is freeform operator JS `(ctx) => string | null` run once
+     * per request before fan-out; the returned name selects one of the named
+     * `Policies` to govern the round. An empty/null result, an unknown name, or
+     * any eval failure falls closed to THIS (the enclosing/inline) config, which
+     * is therefore the strictest default. Nil (default) = selector disabled and
+     * the inline config governs every round.
+     */
+    customPolicy?: ConsensusCustomPolicyConfig;
+    /**
+     * Policies is the set of named policies the selector can choose from. Each
+     * value is a full ConsensusPolicyConfig; the selector's returned name keys
+     * into this map. Names not present here resolve to the inline default
+     * (fail-closed). Nested CustomPolicy/Policies on a named policy are ignored —
+     * selection happens once, at the top level. Empty (default) = no named
+     * policies (only the inline default exists).
+     */
+    policies?: {
+        [key: string]: ConsensusPolicyConfig | undefined;
+    };
+}
+/**
+ * ConsensusDefaultPolicyName is the reserved label reported (metric +
+ * X-ERPC-Consensus-Policy header) whenever a round runs under the inline
+ * default policy — either because the eval returned null or because it fell
+ * closed. It cannot be used as a key in consensus.policies, so the label
+ * stays unambiguous between "selector chose the policy named default" and
+ * "selector fell closed to the inline default".
+ */
+export declare const ConsensusDefaultPolicyName = "default";
+/**
+ * ConsensusCustomPolicyConfig configures the pre-round consensus-policy
+ * selector. EvalFunction is the operator-supplied JS expression evaluating to
+ * `(ctx) => string | null`; EvalTimeout caps its wall-clock per request (an
+ * overrun fails closed to the default policy). See common/defaults.go for the
+ * EvalTimeout default.
+ */
+export interface ConsensusCustomPolicyConfig {
+    evalFunction: string;
+    evalTimeout?: Duration;
 }
 /**
  * ConsensusRequiredParticipant is one tag-quota entry for
@@ -1228,6 +1353,42 @@ export interface ConsensusRequiredParticipant {
     tag: string;
     minParticipants: number;
     minAgreement?: number;
+    /**
+     * WaiveAgreementOnMissingData, when true, waives this entry's MinAgreement
+     * winner-composition quota for a round in which at least MinAgreement
+     * distinct tag-matching participants returned ErrEndpointMissingData and
+     * no matching participant returned data. Sibling errors do not block the
+     * count; a matching successful result holds the quota so disagreement
+     * cannot be waived away. Default false = the quota is never waived (strict).
+     */
+    waiveAgreementOnMissingData?: boolean;
+    /**
+     * WaiveAgreementOnEmptyOutsideRetention, when true, waives this entry's
+     * MinAgreement quota for a round in which at least MinAgreement distinct
+     * tag-matching participants returned an EMPTY result, no matching
+     * participant returned a non-empty result, AND the winning group's block
+     * (extracted via the policy's blockEvidenceFields) is older than
+     * RetentionBlocks behind the observed chain head. This is the v1.1
+     * empty-waiver: it lets an abstainer that legitimately pruned old history
+     * (e.g. post-EIP-4444) fall out of the quota when the winner proves the
+     * data is outside the abstainer's retained range, without weakening the
+     * quota for recent data — a null on a recent block still holds the quota
+     * and disputes. A matching sibling that returned data also holds the
+     * quota (that is a real vote, not a prune). Sibling errors do not block
+     * the empty count. Requires RetentionBlocks > 0 and a policy-level
+     * blockEvidenceFields entry for the method. Default false = the quota is
+     * never waived on empty (strict).
+     */
+    waiveAgreementOnEmptyOutsideRetention?: boolean;
+    /**
+     * RetentionBlocks is the depth, in blocks behind the observed chain head,
+     * that this participant is expected to retain. It defines the boundary for
+     * WaiveAgreementOnEmptyOutsideRetention: a winner block is "outside
+     * retention" when head - winnerBlock > RetentionBlocks. Only meaningful when
+     * WaiveAgreementOnEmptyOutsideRetention is set. Default 0 = no retention
+     * boundary (the empty-waiver never fires).
+     */
+    retentionBlocks?: number;
 }
 export type MisbehaviorsDestinationType = string;
 export declare const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType;
@@ -1366,6 +1527,7 @@ export interface NetworkConfig {
     methods?: MethodsConfig;
     multiplexing?: boolean;
     staticResponses?: (StaticResponseConfig | undefined)[];
+    failover?: FailoverConfig;
     /**
      * Integrity overrides the project-wide data-integrity configuration for this
      * network. Merges over the project block (network wins).
@@ -1627,6 +1789,13 @@ export interface EvmNetworkConfig {
      */
     markEmptyAsErrorMethods?: string[];
     /**
+     * StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
+     * logs filters before forwarding upstream. fromBlock has no meaning for a
+     * live subscription, and backends that prune history reject it.
+     * DEFAULT: false.
+     */
+    stripSubscribeFromBlockZero?: boolean;
+    /**
      * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
      * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
      * the estimated block time, preferring fresher data at the cost of slightly more
@@ -1862,6 +2031,14 @@ export interface AuthConfig {
     strategies: TsAuthStrategyConfig[];
 }
 export interface AuthStrategyConfig {
+    /**
+     * Name identifies this strategy for operator logic that keys on which
+     * strategy authenticated the caller (e.g. consensus.customPolicy evals
+     * compare ctx.user.auth). Optional; unnamed strategies stamp "" on the
+     * user. Never accepted from client-controlled input — only this config
+     * field (feature §4.3).
+     */
+    name?: string;
     ignoreMethods?: string[];
     allowMethods?: string[];
     rateLimitBudget?: string;
@@ -2511,6 +2688,7 @@ export interface ExecStateSnapshot {
     consensusslots: number;
     consensusdisputes: number;
     consensuslowparticipants: number;
+    consensuspolicy: string;
     startedat: any;
 }
 export type NetworkArchitecture = string;
@@ -2607,6 +2785,36 @@ export declare const ScopeNetwork: Scope;
 export declare const ScopeUpstream: Scope;
 export type UpstreamType = string;
 /**
+ * CordonClass is the typed reason-category a cordon carries. The consensus
+ * selector matches on this class, never on the free-text cordon reason (which
+ * is diagnostic only), so the eval never couples to the message text of a
+ * cordon-producing call site. An upstream can hold several classes at once —
+ * the health tracker stores one flag per class (see health.Tracker), so
+ * classes do not overwrite each other and Uncordon clears only its own class.
+ * The class is a required parameter at every call site, so there is no runtime
+ * "unknown" class: a class added in the future must be mapped explicitly by the
+ * selector before it can ever permit a downgrade — fail closed by construction.
+ */
+export type CordonClass = string;
+/**
+ * CordonClassPunishment is set by the consensus executor's misbehavior
+ * sitout. It BLOCKS role-gated fallback: a punished upstream anywhere pins
+ * the request to the strictest policy.
+ */
+export declare const CordonClassPunishment: CordonClass;
+/**
+ * CordonClassAvailability is set by the EVM state poller (chain-identity
+ * mismatch) and the SVM state poller (lag / unhealthy). It ALLOWS role-gated
+ * fallback — a genuine availability failure is the case fallback exists for.
+ */
+export declare const CordonClassAvailability: CordonClass;
+/**
+ * CordonClassOperator is set by the admin API. It BLOCKS fallback (fail
+ * closed): an admin cordon is undifferentiated between maintenance and
+ * distrust, so it is read as distrust.
+ */
+export declare const CordonClassOperator: CordonClass;
+/**
  * HealthTracker is an interface for tracking upstream health metrics.
  * `finality` is the DataFinalityState the request resolved to —
  * `DataFinalityStateAll` when the caller can't determine finality
@@ -2632,6 +2840,14 @@ export interface User {
      * override" — the project-level pattern applies.
      */
     allowclientdirectives?: string;
+    /**
+     * Auth is the name of the auth strategy that authenticated this caller
+     * (feature §4.3). Stamped ONLY by the auth registry from the strategy
+     * config — never from a client-controlled header. Empty when the strategy
+     * is unnamed. The trusted-header path never sets it. The consensus-policy
+     * selector compares this string in operator evals (ctx.user.auth).
+     */
+    auth: string;
 }
 /**
  * MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool
