@@ -197,25 +197,24 @@ var (
 
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
-	// freshest block a strict MAJORITY of eligible upstreams already have (see
-	// common.PickServedTip). lane="all" is the network-wide pick; a named lane is a
-	// use-upstream group's own pick (present only for networks receiving
-	// targeted traffic).
+	// freshest block at least servedTip.quorum eligible upstreams already have
+	// (see common.PickServedTip). lane="all" is the network-wide pick; a named
+	// lane is a use-upstream group's own pick (present only for networks
+	// receiving targeted traffic).
 	MetricNetworkServedTipBlockNumber = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_block_number",
-		Help:      "Block number served/advertised as the tip (freshest block a strict majority of eligible upstreams already have). lane=\"all\" = network-wide; a named lane = a use-upstream group's own tip.",
+		Help:      "Block number served/advertised as the tip (freshest block at least servedTip.quorum eligible upstreams already have). lane=\"all\" = network-wide; a named lane = a use-upstream group's own tip.",
 	}, []string{"project", "network", "lane", "axis"})
 
 	// MetricNetworkServedTipLagBlocks is the deliberate, bounded served-tip lag:
-	// blocks the majority tip sits behind the single freshest upstream view at
-	// pick time (Freshest - Tip). Computed at the same instant as the pick, so it
-	// is exact (no cross-metric scrape skew). NOTE: the series is ABSENT (not 0)
-	// when served-tip is in default MAX mode (feature off) for that axis.
+	// blocks the served tip sits behind the corroborated freshest upstream view
+	// at pick time (Freshest - Tip). Computed at the same instant as the pick,
+	// so it is exact (no cross-metric scrape skew).
 	MetricNetworkServedTipLagBlocks = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_lag_blocks",
-		Help:      "Blocks the majority served tip sits behind the single freshest upstream view at pick time, per network, lane and axis. lane=\"all\" is the network-wide pick; a named lane is a use-upstream group's own pick.",
+		Help:      "Blocks the served tip sits behind the corroborated freshest upstream view at pick time, per network, lane and axis. lane=\"all\" is the network-wide pick; a named lane is a use-upstream group's own pick.",
 	}, []string{"project", "network", "lane", "axis"})
 
 	// MetricNetworkServedTipAdvanceAgeSeconds is the time since this process
@@ -224,7 +223,7 @@ var (
 	// freeze the tip (a failure mode nobody predicted included), a healthy
 	// network advances every block or two, so `age >> block time` on a network
 	// with live traffic is always alert-worthy. Absent until the process
-	// observes its first change (and absent in default MAX mode).
+	// observes its first change.
 	MetricNetworkServedTipAdvanceAgeSeconds = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_advance_age_seconds",
@@ -250,29 +249,17 @@ var (
 		Help:      "Transitions into a served-tip regression-guard state (counts state ENTRIES, not evaluations; any nonzero rate is alert-worthy), by outcome: held = the last corroborated pick is being served instead of a pick far below the corroborated live head; failed_open = that hold outlasted the guard's window and the pick is served as computed.",
 	}, []string{"project", "network", "lane", "axis", "outcome"})
 
-	// MetricNetworkServedTipTrajectoryTotal counts the TRANSITIONS into a
-	// trajectory-referee state: a FRESHER corroborated group of live heads sat
-	// above the majority pick. outcome="override" = that group matched the
-	// network's own head trajectory, earned its dwell, and is being served
-	// instead of a stalled majority — rare, and the reason to page someone: some
-	// upstreams froze while remaining eligible. outcome="fallback" = it was
-	// refused (too far from the trajectory, or it has not held its place long
-	// enough), so the majority pick stands.
-	//
-	// TRANSITIONS, NOT EVALUATIONS (see MetricNetworkServedTipRegressionTotal),
-	// and an override the guaranteed-method floor pulls back to the majority pick
-	// is not counted at all — it changed nothing.
-	//
-	// Both outcomes are silent in steady state by construction: a fleet whose
-	// live heads form one cluster elects that cluster, and a fleet permanently
-	// split around its own median elects the median's group (the trajectory is
-	// fitted to the median, so no permanently-offset group is ever closer to it).
-	// Any nonzero rate here means the fleet's groups are genuinely diverging.
-	MetricNetworkServedTipTrajectoryTotal = DefineCounter(prometheus.CounterOpts{
+	// MetricUpstreamHeadBenchedTotal counts the times the health tracker benched
+	// an upstream's head: reason="stalled" = its latest block stopped moving
+	// while another eligible upstream kept advancing past it for longer than
+	// max(30s, 3 × statePollerInterval). A benched upstream votes in no
+	// served-tip ballot and is not the network lag reference until its head
+	// catches up with the live ones.
+	MetricUpstreamHeadBenchedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "network_served_tip_trajectory_total",
-		Help:      "Transitions into a served-tip trajectory-referee state (counts state ENTRIES, not evaluations; any nonzero rate is alert-worthy), by outcome: override = a corroborated group of live heads matched the network's head trajectory and is served in place of a stalled majority; fallback = such a group sat above the majority pick and was refused.",
-	}, []string{"project", "network", "lane", "axis", "outcome"})
+		Name:      "upstream_head_benched_total",
+		Help:      "Times an upstream's head was benched out of the served-tip ballots and the network lag reference, by reason (stalled = stopped moving while another upstream advanced past it).",
+	}, []string{"project", "vendor", "network", "upstream", "reason"})
 
 	MetricUpstreamCordoned = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",

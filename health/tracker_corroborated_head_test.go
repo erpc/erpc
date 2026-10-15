@@ -62,10 +62,12 @@ func TestTrackerCorroboratedHeadConcurrentUpdatesDoNotRegress(t *testing.T) {
 	}
 	ntwMeta.evmLatestBlockNumber.Store(99)
 
+	// d is registered after c, so registering d's report walks past c and
+	// parks inside the network's head critical section.
 	c.armed.Store(true)
 	firstDone := make(chan struct{})
 	go func() {
-		tracker.SetLatestBlockNumber(a, 101, 0)
+		tracker.SetLatestBlockNumber(d, 101, 0)
 		close(firstDone)
 	}()
 	<-c.reached
