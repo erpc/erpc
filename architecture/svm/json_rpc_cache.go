@@ -339,8 +339,9 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		ttl := policy.GetTTL()
 		ttlLabel := ttlString(ttl)
 		// Storage expiry tracks slot-time-derived realtime TTL when configured
-		// (blockTimeMultiplier). Without this, helm's multiplier is a no-op and
-		// entries always expire at the fixed fallback even after the EMA warms.
+		// (policies[*].ttl.blockTimeMultiplier). Without ResolveTTL that field
+		// is a no-op and entries always expire at the fixed fallback even after
+		// the EMA warms.
 		storageTTL := ttl
 		if resolved := policy.ResolveTTL(networkBlockTime(req), defaultRealtimeColdStartTTL); resolved > 0 {
 			storageTTL = &resolved
@@ -586,7 +587,7 @@ func extractSlotRef(rpcReq *common.JsonRpcRequest) string {
 }
 
 // defaultRealtimeColdStartTTL bounds realtime storage TTL when a policy sets
-// blockTimeMultiplier but has no static fallback and the network's slot time
+// ttl.blockTimeMultiplier but has no ttl.fallback and the network's slot time
 // isn't known yet (cold start / EMA not warmed).
 const defaultRealtimeColdStartTTL = 2 * time.Second
 
