@@ -63,15 +63,16 @@ type NetworkMetadata struct {
 	reporters []headReporter
 
 	// On upstream entries only; the timestamps are guarded by the network
-	// entry's headMu. headChangedAtMs is when this upstream's stored latest
-	// head last changed; headBelowSinceMs is when a non-benched peer that moved
-	// after it was first seen above it (0 = not below); headBenchedAtMs is when
-	// it was last benched. headBenched is read lock-free by the served-tip
-	// ballots (see Tracker.IsHeadBenched).
-	headChangedAtMs  int64
-	headBelowSinceMs int64
-	headBenchedAtMs  int64
-	headBenched      atomic.Bool
+	// entry's headMu. headChangedAt is when this upstream's stored latest head
+	// last changed; headBelowSince is when a non-benched peer that moved after
+	// it was first seen above it (zero = not below); headBenchedAt is when it
+	// was last benched. They keep the clock's monotonic reading, so a wall-clock
+	// step never makes a head look stalled. headBenched is read lock-free by the
+	// served-tip ballots (see Tracker.IsHeadBenched).
+	headChangedAt  time.Time
+	headBelowSince time.Time
+	headBenchedAt  time.Time
+	headBenched    atomic.Bool
 
 	// Dynamic block time via EMA on on-chain block timestamps.
 	// Uses block.timestamp (integer seconds) normalized by block count gap.
@@ -1469,12 +1470,12 @@ func headStallAfter(ups common.Upstream) time.Duration {
 // fleet; requiring the benched one to move keeps a stuck head from flapping.
 // Caller holds ntwMeta.headMu.
 func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMetadata) {
-	now := t.now().UnixMilli()
+	now := t.now()
 	blockTime := time.Duration(ntwMeta.evmBlockTime.Load())
 	reporters := ntwMeta.reporters
 	if changed != nil {
-		changed.headChangedAtMs = now
-		changed.headBelowSinceMs = 0
+		changed.headChangedAt = now
+		changed.headBelowSince = time.Time{}
 	}
 	for _, u := range reporters {
 		uHead := u.meta.evmLatestBlockNumber.Load()
@@ -1482,7 +1483,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		if uHead > 0 {
 			maxLead := benchPlausibleLead(u.meta, now, blockTime)
 			for _, v := range reporters {
-				if v.meta == u.meta || v.meta.headBenched.Load() || v.meta.headChangedAtMs <= u.meta.headChangedAtMs {
+				if v.meta == u.meta || v.meta.headBenched.Load() || !v.meta.headChangedAt.After(u.meta.headChangedAt) {
 					continue
 				}
 				if lead := v.meta.evmLatestBlockNumber.Load() - uHead; lead > 0 && lead <= maxLead {
@@ -1493,21 +1494,21 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		}
 		switch {
 		case !above:
-			u.meta.headBelowSinceMs = 0
-		case u.meta.headBelowSinceMs == 0:
-			u.meta.headBelowSinceMs = now
+			u.meta.headBelowSince = time.Time{}
+		case u.meta.headBelowSince.IsZero():
+			u.meta.headBelowSince = now
 		}
 	}
 	for _, u := range reporters {
-		if u.meta.headBenched.Load() || u.meta.headBelowSinceMs == 0 {
+		if u.meta.headBenched.Load() || u.meta.headBelowSince.IsZero() {
 			continue
 		}
 		stallAfter := headStallAfter(u.ups)
-		if now-u.meta.headBelowSinceMs < stallAfter.Milliseconds() {
+		if now.Sub(u.meta.headBelowSince) < stallAfter {
 			continue
 		}
 		u.meta.headBenched.Store(true)
-		u.meta.headBenchedAtMs = now
+		u.meta.headBenchedAt = now
 		telemetry.MetricUpstreamHeadBenchedTotal.WithLabelValues(t.projectId, u.ups.VendorName(), u.ups.NetworkLabel(), u.ups.Id(), "stalled").Inc()
 		u.ups.Logger().Warn().
 			Str("networkId", u.ups.NetworkId()).
@@ -1521,11 +1522,11 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			continue
 		}
 		uHead := u.meta.evmLatestBlockNumber.Load()
-		if bar > 0 && (u.meta.headChangedAtMs < u.meta.headBenchedAtMs || uHead < bar) {
+		if bar > 0 && (u.meta.headChangedAt.Before(u.meta.headBenchedAt) || uHead < bar) {
 			continue
 		}
 		u.meta.headBenched.Store(false)
-		u.meta.headBelowSinceMs = 0
+		u.meta.headBelowSince = time.Time{}
 		u.ups.Logger().Info().
 			Str("networkId", u.ups.NetworkId()).
 			Int64("head", uHead).
@@ -1539,15 +1540,15 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 // (the earlier of when u last moved and u's head block timestamp, so a process
 // that starts mid-outage still sees the outage). A larger lead is another
 // chain, not a stall. Unknown block time leaves only the tolerance.
-func benchPlausibleLead(u *NetworkMetadata, now int64, blockTime time.Duration) int64 {
+func benchPlausibleLead(u *NetworkMetadata, now time.Time, blockTime time.Duration) int64 {
 	lead := int64(common.DefaultToleratedBlockHeadRollback)
 	btMs := blockTime.Milliseconds()
 	if btMs <= 0 {
 		return lead
 	}
-	stale := now - u.headChangedAtMs
+	stale := now.Sub(u.headChangedAt).Milliseconds()
 	if ts := u.evmLatestBlockTimestamp.Load(); ts > 0 {
-		stale = max(stale, now-ts*1000)
+		stale = max(stale, now.UnixMilli()-ts*1000)
 	}
 	if stale > 0 {
 		lead += 2 * stale / btMs
