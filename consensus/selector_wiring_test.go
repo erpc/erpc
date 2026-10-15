@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -20,6 +21,19 @@ const evalForWiring = `(ctx) => {
 	if (ctx.user?.auth === "admin") return "historical"
 	return "standard"
 }`
+
+func TestCloseAll_StopsWhenDeadlineExpires(t *testing.T) {
+	inflightAnalyzers.Add(1)
+	t.Cleanup(func() { inflightAnalyzers.Done() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	CloseAll(ctx)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("CloseAll blocked for %s after the deadline", elapsed)
+	}
+}
 
 func newWiringConsensus(t *testing.T) *Consensus {
 	t.Helper()

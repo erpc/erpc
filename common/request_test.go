@@ -26,9 +26,9 @@ func (m *mockUpstreamForSelection) Tracker() HealthTracker  { return nil }
 func (m *mockUpstreamForSelection) Forward(ctx context.Context, nq *NormalizedRequest, byPass, isHedgeAttempt bool) (*NormalizedResponse, error) {
 	return nil, nil
 }
-func (m *mockUpstreamForSelection) Cordon(method string, reason string, class CordonClass)   {}
-func (m *mockUpstreamForSelection) Uncordon(method string, reason string, class CordonClass) {}
-func (m *mockUpstreamForSelection) IgnoreMethod(method string)                               {}
+func (m *mockUpstreamForSelection) Cordon(method string, reason string)   {}
+func (m *mockUpstreamForSelection) Uncordon(method string, reason string) {}
+func (m *mockUpstreamForSelection) IgnoreMethod(method string)            {}
 func (m *mockUpstreamForSelection) ShouldHandleMethod(method string) (bool, error) {
 	return true, nil
 }

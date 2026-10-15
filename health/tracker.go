@@ -958,7 +958,20 @@ func (m *TrackedMetrics) reasonForMask(mask uint32) string {
 	return ""
 }
 
-func (t *Tracker) Cordon(upstream common.Upstream, method, reason string, class common.CordonClass) {
+// Cordon is the stable HealthTracker method. A caller that does not name a
+// class gets an operator cordon: undifferentiated, and it blocks consensus
+// policy fallback.
+func (t *Tracker) Cordon(upstream common.Upstream, method, reason string) {
+	t.CordonClass(upstream, method, reason, common.CordonClassOperator)
+}
+
+// Uncordon is the stable HealthTracker method. It clears only the operator
+// class, which is what Cordon sets.
+func (t *Tracker) Uncordon(upstream common.Upstream, method, reason string) {
+	t.UncordonClass(upstream, method, reason, common.CordonClassOperator)
+}
+
+func (t *Tracker) CordonClass(upstream common.Upstream, method, reason string, class common.CordonClass) {
 	lg := upstream.Logger()
 	lg.Debug().
 		Str("method", method).
@@ -1060,7 +1073,7 @@ func (t *Tracker) UncordonClassesNotAfter(upstream common.Upstream, method, reas
 	}
 }
 
-func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason string, class common.CordonClass) {
+func (t *Tracker) UncordonClass(upstream common.Upstream, method string, reason string, class common.CordonClass) {
 	lg := upstream.Logger()
 	lg.Debug().
 		Str("method", method).

@@ -161,7 +161,11 @@ func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipS
 	return nil, nil
 }
 
-func (u *FakeUpstream) Cordon(method string, reason string, class CordonClass) {
+func (u *FakeUpstream) Cordon(method string, reason string) {
+	u.CordonClass(method, reason, CordonClassOperator)
+}
+
+func (u *FakeUpstream) CordonClass(method string, reason string, class CordonClass) {
 	u.cordonMu.Lock()
 	defer u.cordonMu.Unlock()
 	u.cordoned = true
@@ -182,7 +186,11 @@ func (u *FakeUpstream) ShouldHandleMethod(method string) (bool, error) {
 	return true, nil
 }
 
-func (u *FakeUpstream) Uncordon(method string, reason string, class CordonClass) {
+func (u *FakeUpstream) Uncordon(method string, reason string) {
+	u.UncordonClass(method, reason, CordonClassOperator)
+}
+
+func (u *FakeUpstream) UncordonClass(method string, reason string, class CordonClass) {
 	u.cordonMu.Lock()
 	defer u.cordonMu.Unlock()
 	u.cordoned = false
@@ -384,12 +392,14 @@ func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, fi
 	// No-op for testing
 }
 
-func (t *FakeHealthTracker) Cordon(upstream Upstream, method string, reason string, class CordonClass) {
-	// No-op for testing
+func (t *FakeHealthTracker) Cordon(upstream Upstream, method string, reason string) {}
+
+func (t *FakeHealthTracker) Uncordon(upstream Upstream, method string, reason string) {}
+
+func (t *FakeHealthTracker) CordonClass(upstream Upstream, method string, reason string, class CordonClass) {
 }
 
-func (t *FakeHealthTracker) Uncordon(upstream Upstream, method string, reason string, class CordonClass) {
-	// No-op for testing
+func (t *FakeHealthTracker) UncordonClass(upstream Upstream, method string, reason string, class CordonClass) {
 }
 
 func (t *FakeHealthTracker) CordonClasses(upstream Upstream, method string) []CordonClass {

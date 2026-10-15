@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -1939,9 +1940,11 @@ type ConsensusPolicyConfig struct {
 	// This is useful for write operations like eth_sendRawTransaction where you want to
 	// broadcast the transaction to as many nodes as possible while still returning quickly.
 	// Default is false (normal behavior - cancel remaining requests on short-circuit).
-	// Pointer so one-level `extends` can overlay an explicit false onto a true base
-	// (a bare bool cannot distinguish omit from false).
-	FireAndForget *bool `yaml:"fireAndForget,omitempty" json:"fireAndForget,omitempty"`
+	// An explicit false overlays a true base under extends; an omitted field does not.
+	FireAndForget bool `yaml:"fireAndForget,omitempty" json:"fireAndForget"`
+	// fireAndForgetSet is true when YAML or JSON contained the key, including
+	// an explicit false. A Go composite literal does not set it.
+	fireAndForgetSet bool `yaml:"-" json:"-"`
 
 	// MaxWaitOnResult caps how long consensus waits for additional participants
 	// AFTER at least one non-empty response has arrived. Use this to bound
@@ -2084,6 +2087,60 @@ type ConsensusRequiredParticipant struct {
 	RetentionBlocks int64 `yaml:"retentionBlocks,omitempty" json:"retentionBlocks,omitempty"`
 }
 
+// UnmarshalYAML records whether fireAndForget was present, including an
+// explicit false. A bool field cannot tell omit from false; extends overlay
+// needs that distinction and the public field stays a bool.
+func (c *ConsensusPolicyConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Tag == "!!null" {
+		return nil
+	}
+	type plain ConsensusPolicyConfig
+	encoded, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(encoded))
+	dec.KnownFields(true)
+	var raw plain
+	if err := dec.Decode(&raw); err != nil {
+		// The alias type exists only to avoid re-entering UnmarshalYAML.
+		// Startup errors should name the config type operators wrote.
+		return errors.New(strings.ReplaceAll(err.Error(), "common.plain", "common.ConsensusPolicyConfig"))
+	}
+	*c = ConsensusPolicyConfig(raw)
+	c.fireAndForgetSet = yamlMapHasKey(value, "fireAndForget")
+	return nil
+}
+
+func yamlMapHasKey(value *yaml.Node, key string) bool {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == key {
+			return true
+		}
+	}
+	return false
+}
+
+// UnmarshalJSON matches UnmarshalYAML so a JSON config (admin or TS stringify
+// that bypasses the YAML decoder) still overlays an explicit false.
+func (c *ConsensusPolicyConfig) UnmarshalJSON(data []byte) error {
+	type plain ConsensusPolicyConfig
+	var raw plain
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*c = ConsensusPolicyConfig(raw)
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	_, c.fireAndForgetSet = keys["fireAndForget"]
+	return nil
+}
+
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 	if c == nil {
 		return nil
@@ -2126,10 +2183,6 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 	copied.MaxWaitOnResult = c.MaxWaitOnResult.Copy()
 	copied.MaxWaitOnEmpty = c.MaxWaitOnEmpty.Copy()
 
-	if c.FireAndForget != nil {
-		v := *c.FireAndForget
-		copied.FireAndForget = &v
-	}
 	if c.PreferNonEmpty != nil {
 		v := *c.PreferNonEmpty
 		copied.PreferNonEmpty = &v

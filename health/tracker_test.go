@@ -817,7 +817,6 @@ func TestRecordUpstreamFailure_AllSkipCodesIgnored(t *testing.T) {
 		{"RequestCanceled", common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled"))},
 		{"UpstreamHedgeCancelled", common.NewErrUpstreamHedgeCancelled("ups", fmt.Errorf("context canceled"))},
 		{"BlockUnavailable", common.NewErrUpstreamBlockUnavailable("ups", 1000, 999, 990)},
-
 	}
 
 	for _, tc := range cases {
@@ -1435,7 +1434,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		beforeCordonCount := promUtil.ToFloat64(cordonCounter)
 		beforeUncordonCount := promUtil.ToFloat64(uncordonCounter)
 
-		tracker.Cordon(ups, "*", "vendor maintenance", common.CordonClassOperator)
+		tracker.CordonClass(ups, "*", "vendor maintenance", common.CordonClassOperator)
 		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
 			"cordon event counter increments on OFF→ON edge")
 
@@ -1448,7 +1447,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		require.NotZero(t, startedAt, "CordonedAtMs must be set on OFF→ON edge")
 
 		time.Sleep(5 * time.Millisecond)
-		tracker.Cordon(ups, "*", "vendor maintenance (extended)", common.CordonClassOperator)
+		tracker.CordonClass(ups, "*", "vendor maintenance (extended)", common.CordonClassOperator)
 		require.Equal(t, startedAt, tm.CordonedAtMs.Load(),
 			"already-cordoned re-cordon must preserve original start timestamp")
 		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
@@ -1458,7 +1457,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		// non-zero value, then uncordon.
 		time.Sleep(20 * time.Millisecond)
 		histBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
-		tracker.Uncordon(ups, "*", "vendor resolved", common.CordonClassOperator)
+		tracker.UncordonClass(ups, "*", "vendor resolved", common.CordonClassOperator)
 		histAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
 
 		assert.Equal(t, int64(0), tm.CordonedAtMs.Load(),
@@ -1481,16 +1480,16 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		tracker.Bootstrap(ctx)
 
 		ups := common.NewFakeUpstream("operator-cordoned")
-		tracker.Cordon(ups, "*", "vendor maintenance", common.CordonClassOperator)
+		tracker.CordonClass(ups, "*", "vendor maintenance", common.CordonClassOperator)
 		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
 		require.NotZero(t, tm.CordonMask.Load(), "operator cordon must be set")
 
-		tracker.Uncordon(ups, "*", "spurious", common.CordonClass("some-future-class"))
+		tracker.UncordonClass(ups, "*", "spurious", common.CordonClass("some-future-class"))
 		assert.NotZero(t, tm.CordonMask.Load(),
 			"an unrecognized-class uncordon must leave the operator cordon intact")
 
 		// The real operator uncordon clears only the operator bit.
-		tracker.Uncordon(ups, "*", "vendor resolved", common.CordonClassOperator)
+		tracker.UncordonClass(ups, "*", "vendor resolved", common.CordonClassOperator)
 		assert.Zero(t, tm.CordonMask.Load(), "operator uncordon clears the operator cordon")
 	})
 
@@ -1501,11 +1500,11 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		tracker.Bootstrap(ctx)
 
 		ups := common.NewFakeUpstream("multi-class-operator")
-		tracker.Cordon(ups, "*", "misbehaving in consensus", common.CordonClassPunishment)
-		tracker.Cordon(ups, "*", "poller lag", common.CordonClassAvailability)
-		tracker.Cordon(ups, "*", "vendor maintenance", common.CordonClassOperator)
+		tracker.CordonClass(ups, "*", "misbehaving in consensus", common.CordonClassPunishment)
+		tracker.CordonClass(ups, "*", "poller lag", common.CordonClassAvailability)
+		tracker.CordonClass(ups, "*", "vendor maintenance", common.CordonClassOperator)
 
-		tracker.Uncordon(ups, "*", "vendor resolved", common.CordonClassOperator)
+		tracker.UncordonClass(ups, "*", "vendor resolved", common.CordonClassOperator)
 		classes := tracker.CordonClasses(ups, "*")
 		hasPunishment, hasAvailability, hasOperator := false, false, false
 		for _, c := range classes {
@@ -1535,17 +1534,17 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		tracker.Bootstrap(ctx)
 
 		ups := common.NewFakeUpstream("multi-class")
-		tracker.Cordon(ups, "*", "misbehaving in consensus", common.CordonClassPunishment)
+		tracker.CordonClass(ups, "*", "misbehaving in consensus", common.CordonClassPunishment)
 		reason, ok := tracker.CordonedReason(ups, "*")
 		require.True(t, ok)
 		assert.Equal(t, "misbehaving in consensus", reason)
 
-		tracker.Cordon(ups, "*", "poller lag", common.CordonClassAvailability)
+		tracker.CordonClass(ups, "*", "poller lag", common.CordonClassAvailability)
 		reason, ok = tracker.CordonedReason(ups, "*")
 		require.True(t, ok)
 		assert.Equal(t, "poller lag", reason)
 
-		tracker.Uncordon(ups, "*", "availability recovered", common.CordonClassAvailability)
+		tracker.UncordonClass(ups, "*", "availability recovered", common.CordonClassAvailability)
 		require.True(t, tracker.IsCordoned(ups, "*"), "punishment bit must still be set")
 		reason, ok = tracker.CordonedReason(ups, "*")
 		require.True(t, ok)
@@ -1670,7 +1669,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 
 		ups := common.NewFakeUpstream("cordoned-method-target")
 		tracker.RecordUpstreamRequest(ups, "eth_call", common.DataFinalityStateUnknown)
-		tracker.Cordon(ups, "eth_call", "investigated regression", common.CordonClassOperator)
+		tracker.CordonClass(ups, "eth_call", "investigated regression", common.CordonClassOperator)
 
 		// Wait through a couple of sweep cycles.
 		time.Sleep(2500 * time.Millisecond)
@@ -1701,7 +1700,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		before := promUtil.ToFloat64(uncordonCounter)
 
 		require.NotPanics(t, func() {
-			tracker.Uncordon(ups, "*", "spurious uncordon", common.CordonClassOperator)
+			tracker.UncordonClass(ups, "*", "spurious uncordon", common.CordonClassOperator)
 		})
 		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
 		assert.False(t, tm.CordonMask.Load() != 0)

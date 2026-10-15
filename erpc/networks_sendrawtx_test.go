@@ -2394,7 +2394,7 @@ func setupSendRawTxTestNetworkWithFireAndForget(t *testing.T, ctx context.Contex
 				Consensus: &common.ConsensusPolicyConfig{
 					MaxParticipants:    3,
 					AgreementThreshold: 1, // Return on first success
-					FireAndForget:      util.BoolPtr(true),
+					FireAndForget:      true,
 				},
 			},
 		},

@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // validConsensusBase returns a minimal ConsensusPolicyConfig that passes the
@@ -369,6 +370,37 @@ func TestConsensusPolicyConfig_CopyIncludesNewFields(t *testing.T) {
 	require.Contains(t, cp.BlockEvidenceFields, "eth_getTransactionReceipt")
 	cp.BlockEvidenceFields["eth_getTransactionReceipt"][0] = "changed"
 	assert.Equal(t, "blockNumber", c.BlockEvidenceFields["eth_getTransactionReceipt"][0])
+}
+
+func TestConsensusPolicy_ExtendsExplicitFireAndForgetFalse(t *testing.T) {
+	// Composite literal keeps compiling: the public field is a bool.
+	_ = ConsensusPolicyConfig{FireAndForget: true}
+
+	const src = `
+maxParticipants: 3
+agreementThreshold: 2
+fireAndForget: true
+policies:
+  strict:
+    extends: default
+    fireAndForget: false
+  inherit:
+    extends: default
+`
+	var c ConsensusPolicyConfig
+	require.NoError(t, yaml.Unmarshal([]byte(src), &c))
+	require.NoError(t, c.SetDefaults())
+	assert.True(t, c.FireAndForget)
+	assert.False(t, c.Policies["strict"].FireAndForget, "explicit false overlays a true base")
+	assert.True(t, c.Policies["inherit"].FireAndForget, "omitted field keeps the base")
+}
+
+func TestConsensusPolicy_UnknownFieldRejected(t *testing.T) {
+	var c ConsensusPolicyConfig
+	err := yaml.Unmarshal([]byte("maxParticipants: 3\nnotAField: true\n"), &c)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "notAField")
+	assert.NotContains(t, err.Error(), "common.plain")
 }
 
 func TestConsensusPolicy_ExtendsDefault(t *testing.T) {
