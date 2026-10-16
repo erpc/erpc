@@ -984,7 +984,9 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 //   - within tolerance → a LIVE-corroborated pick becomes the new remembered
 //     value (a capped one never does);
 //   - below tolerance, for up to servedTipRegressionTTL since that value was
-//     recorded → serves it instead, never above the highest live head;
+//     recorded → serves it instead, never above the highest live head, unless
+//     every live voter is within tolerance of the pick (then only the memory
+//     disagrees, and the pick is served);
 //   - past the TTL → fails open, serves the pick as computed, and DISARMS: a
 //     value that has outlived the window is no longer evidence, so the guard
 //     re-arms from whatever the live heads corroborate next instead of measuring
@@ -1067,13 +1069,23 @@ func (n *Network) guardServedTipRegression(axis string, label string, anchor *se
 	}
 	held := servedTipClock().Sub(*lastGoodAt)
 	if held >= servedTipRegressionTTL {
-		if n.noteServedTipGuardTransition(anchor, servedTipGuardFailedOpen, axis, pick, reference, held) {
+		// Failing open is an event only for a guard that was holding; a memory
+		// that merely aged out while the guard stood aside is dropped quietly.
+		if anchor.guardState.Load() == servedTipGuardHolding && n.noteServedTipGuardTransition(anchor, servedTipGuardFailedOpen, axis, pick, reference, held) {
 			telemetry.MetricNetworkServedTipRegressionTotal.
 				WithLabelValues(n.projectId, n.Label(), label, axis, "failed_open").
 				Inc()
 		}
 		anchor.lastGoodValue.Store(0)
 		anchor.lastGoodAt.Store(nil)
+		return pick
+	}
+
+	// Only the live voters can show that a pick is poisoned. When every one of
+	// them sits within tolerance of it, the regression is against memory
+	// alone, left by heads that no longer vote (benched for a dead fork, or
+	// excluded), and a hold would serve a head fewer than quorum voters have.
+	if live && liveMax-pick <= tolerance {
 		return pick
 	}
 

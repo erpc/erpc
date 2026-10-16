@@ -2058,6 +2058,51 @@ func TestServedTip_StalledHeadIsBenched(t *testing.T) {
 		served(t, network, canon, "as the canonical chain moves on")
 	})
 
+	t.Run("benching a pair frozen far above the chain trips no regression hold", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "fork-a", chainID: 123, latestBlock: 20_000},
+			{id: "fork-b", chainID: 123, latestBlock: 20_000},
+			{id: "canon-a", chainID: 123, latestBlock: 9_000},
+			{id: "canon-b", chainID: 123, latestBlock: 8_999},
+		}, nil)
+		forks, canons := ups[:2], ups[2:]
+		tr := network.metricsTracker
+		forkTs := servedTipClock().Add(-10 * time.Minute).Unix()
+		canon := int64(9_000)
+		poll := func(d time.Duration) {
+			advance(d)
+			for _, u := range forks {
+				report(tr, u, 20_000, forkTs)
+			}
+			canon += int64(d / (2 * time.Second))
+			// The canonical pair stays one block apart, so its highest head is
+			// not the quorum pick.
+			report(tr, canons[0], canon, servedTipClock().Unix())
+			report(tr, canons[1], canon-1, servedTipClock().Unix())
+		}
+
+		window := stallAfter(forks[0], 0)
+		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+			poll(2 * time.Second)
+		}
+		served(t, network, 20_000, "inside the stall window the frozen pair carries quorum 2, and the guard remembers it")
+		held := servedTipRegressionCount(network, "latest", "held")
+		failedOpen := servedTipRegressionCount(network, "latest", "failed_open")
+
+		poll(4 * time.Second)
+		for _, u := range forks {
+			require.True(t, tr.IsHeadBenched(u), "%s", u.Id())
+		}
+		served(t, network, canon-1, "the live voters agree with the pick: the guard must not hold the frozen pair's height, nor serve canon-a's head alone")
+		for end := servedTipClock().Add(servedTipRegressionTTL + 2*time.Second); servedTipClock().Before(end); {
+			poll(2 * time.Second)
+			served(t, network, canon-1, "while the remembered height ages out")
+		}
+		assert.Equal(t, held, servedTipRegressionCount(network, "latest", "held"), "a bench is not a regression")
+		assert.Equal(t, failedOpen, servedTipRegressionCount(network, "latest", "failed_open"), "a guard that never held does not fail open")
+	})
+
 	t.Run("one moving wrong-chain peer cannot bench a halted fleet by block age", func(t *testing.T) {
 		advance := pinServedTipClock(t)
 		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
