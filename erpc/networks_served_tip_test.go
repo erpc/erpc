@@ -1410,8 +1410,8 @@ func TestServedTip_RegressionGuard_AHoldNeverLowersTheTip(t *testing.T) {
 
 	// The ballot's own corroborated head is 10_000, so a pick of 5_000 trips the
 	// guard — but the memory (100) is far below the pick.
-	served := network.guardServedTipRegression("latest", "all", &anchor, 5_000,
-		servedTipReference{Corroborated: 10_000, Max: 10_000})
+	served := network.guardServedTipRegression("latest", "all", &anchor,
+		common.ServedTipPick{Tip: 5_000, Freshest: 10_000, Max: 10_000}, true)
 
 	assert.GreaterOrEqual(t, served, int64(5_000),
 		"a hold must never serve a block LOWER than the pick it was suppressing")
@@ -1437,12 +1437,12 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 	})
 
 	var anchor servedTipAnchor
-	ref := servedTipReference{Corroborated: 10_000, Max: 10_000}
-	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "all", &anchor, 10_000, ref),
+	ballot := common.ServedTipPick{Tip: 10_000, Freshest: 10_000, Max: 10_000}
+	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "all", &anchor, ballot, true),
 		"arm the guard first; that evaluation is the one allowed to allocate")
 
 	allocs := testing.AllocsPerRun(200, func() {
-		network.guardServedTipRegression("latest", "all", &anchor, 10_000, ref)
+		network.guardServedTipRegression("latest", "all", &anchor, ballot, true)
 	})
 	assert.Zero(t, allocs, "the throttled healthy path must not allocate at all")
 
@@ -1450,7 +1450,7 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 	// refreshed again.
 	advance(2 * time.Second)
 	before := anchor.lastGoodAt.Load()
-	network.guardServedTipRegression("latest", "all", &anchor, 10_000, ref)
+	network.guardServedTipRegression("latest", "all", &anchor, ballot, true)
 	assert.NotEqual(t, before, anchor.lastGoodAt.Load(), "the TTL clock still advances")
 }
 

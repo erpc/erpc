@@ -440,7 +440,7 @@ func (n *Network) gatherEvmTipInputsForMethod(
 	ctx context.Context,
 	useFinalized bool,
 	method string,
-) (common.ServedTipPick, servedTipReference) {
+) (common.ServedTipPick, bool) {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
@@ -449,8 +449,9 @@ func (n *Network) gatherEvmTipInputsForMethod(
 }
 
 // evmTipBallot turns one candidate set into the served-tip pick for an axis
-// under quorum q, plus the regression guard's view of its live heads
-// (servedTipReference). Syncing upstreams never vote.
+// under quorum q, and reports whether live (non-capped) heads decided it: a
+// cap-only ballot gives the regression guard no live reference. Syncing
+// upstreams never vote.
 //
 // STATIC-CAP UPSTREAMS DO NOT VOTE while any live head is present. An upstream
 // configured with `blockAvailability.upper.exactBlock` below the chain's head is
@@ -474,7 +475,7 @@ func (n *Network) gatherEvmTipInputsForMethod(
 // contains at least one live head. A set of only historical/frozen upstreams
 // legitimately serves its cap — that cap is the freshest block anyone in it can
 // serve — so it keeps voting.
-func (n *Network) evmTipBallot(upstreams []common.Upstream, useFinalized bool, q common.ServedTipQuorum) (common.ServedTipPick, servedTipReference) {
+func (n *Network) evmTipBallot(upstreams []common.Upstream, useFinalized bool, q common.ServedTipQuorum) (common.ServedTipPick, bool) {
 	live := make([]common.ServedTipInput, 0, len(upstreams))
 	var capped, benchedLive, benchedCapped []common.ServedTipInput
 	for _, cu := range upstreams {
@@ -516,45 +517,9 @@ func (n *Network) evmTipBallot(upstreams []common.Upstream, useFinalized bool, q
 		if len(capped) == 0 {
 			capped = benchedCapped
 		}
-		return common.PickServedTip(capped, q), servedTipReference{}
+		return common.PickServedTip(capped, q), false
 	}
-	pick := common.PickServedTip(live, q)
-	return pick, servedTipReference{Corroborated: pick.Freshest, Max: pick.Max}
-}
-
-// servedTipReference is what the LIVE (non-capped) heads of one ballot say,
-// in the two distinct roles the regression guard needs. Both are 0 when every
-// candidate is capped.
-type servedTipReference struct {
-	// Corroborated is the SECOND-highest live head — the freshest view that two
-	// live upstreams both reach — or the only live head when there is exactly
-	// one. It is what a regression is MEASURED against, and it is second-highest
-	// for the same reason ServedTipPick.Freshest is: measured against the raw
-	// max, one far-future/wrong-chain upstream made every honest pick look like
-	// a regression, so the guard never took its healthy branch, never recorded a
-	// corroborated value, and sat permanently disarmed — emitting no metric and
-	// no log at all.
-	//
-	// BOUNDARY, stated because it is a real one: this tolerates ONE Byzantine
-	// head, not two. Two upstreams reporting the same far-future block are
-	// indistinguishable from two upstreams that are simply ahead, so they can
-	// still raise the reference and leave the guard unarmed (silently — the
-	// guard only records a corroborated value on its healthy branch). Nothing
-	// available in a single evaluation separates those cases; what limits the
-	// damage is elsewhere: the pick itself needs a quorum to move, and
-	// rememberServedTipPick refuses to commit an uncorroborated leap into the
-	// memory.
-	Corroborated int64
-
-	// Max is the highest live head: the ceiling a HELD value may not exceed, so
-	// the guard can never advertise a block no live upstream has (the invariant
-	// the old monotonic clamp broke). It is deliberately the raw max and not the
-	// corroborated view — a ceiling that a single rogue can only RAISE cannot be
-	// used to make the guard serve anything the rogue chose, while a ceiling of
-	// the second-highest head would collapse the hold back onto the poisoned
-	// pick in the very shape the guard exists for (one live witness left, two
-	// stuck upstreams outvoting it).
-	Max int64
+	return common.PickServedTip(live, q), true
 }
 
 // evmTipObservation returns an upstream's effective head for the axis, plus
@@ -968,11 +933,8 @@ func (n *Network) servedTip(
 	axis string,
 	lane *servedTipLane,
 ) (tip int64, liveMax int64) {
-	pick, ref := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
-	liveMax = ref.Max
-	if liveMax <= 0 {
-		liveMax = pick.Max
-	}
+	pick, live := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
+	liveMax = pick.Max
 
 	// Regression guard: "latest" cannot drop far below the corroborated live
 	// head in one evaluation. Runs BEFORE the guaranteed-method floor, which is
@@ -980,7 +942,7 @@ func (n *Network) servedTip(
 	var anchor *servedTipAnchor
 	if lane != nil {
 		anchor = lane.anchor(useFinalized)
-		pick.Tip = n.guardServedTipRegression(axis, lane.label, anchor, pick.Tip, ref)
+		pick.Tip = n.guardServedTipRegression(axis, lane.label, anchor, pick, live)
 	}
 
 	// Capability guarantee (#855): the served tip must never exceed what any
@@ -1029,13 +991,28 @@ func (n *Network) servedTip(
 // bounds the damage of any other.
 //
 // TWO SOURCES OF EVIDENCE, ONE CEILING. A regression is measured against the
-// higher of (a) `ref.Corroborated`, the second-highest LIVE head of this
-// evaluation, and (b) the last pick this process saw live-corroborated. Neither
-// alone is enough: (a) alone is defeated by the guard's own headline shape —
-// one live upstream left, two stuck ones outvoting it, where the second-highest
-// live head IS the poison — and (b) alone would be memory with no present-tense
-// check. A HELD value is then capped at `ref.Max`, the highest live head, so the
-// guard can never advertise a block no live upstream has.
+// higher of (a) the corroborated live head, `ballot.Freshest` of a live ballot
+// (the second-highest live head, or the only one), and (b) the last pick this
+// process saw live-corroborated. Neither alone is enough: (a) alone is defeated
+// by the guard's own headline shape — one live upstream left, two stuck ones
+// outvoting it, where the second-highest live head IS the poison — and (b)
+// alone would be memory with no present-tense check. (a) is second-highest
+// because, measured against the raw max, one far-future/wrong-chain upstream
+// made every honest pick look like a regression, so the guard never took its
+// healthy branch, never recorded a value, and sat permanently disarmed with no
+// metric and no log. That tolerates ONE Byzantine head, not two: two upstreams
+// reporting the same far-future block are indistinguishable from two that are
+// simply ahead, so they can still raise the reference and leave the guard
+// silently unarmed. Nothing in a single evaluation separates those cases; the
+// pick's own quorum and rememberServedTipPick's refusal to commit an
+// uncorroborated leap limit the damage.
+//
+// A HELD value is capped at `ballot.Max` of a live ballot, the highest live
+// head, so the guard can never advertise a block no live upstream has. It is
+// deliberately the raw max: a ceiling a single rogue can only RAISE cannot make
+// the guard serve anything the rogue chose, while a second-highest ceiling
+// would collapse the hold onto the poisoned pick in the very shape the guard
+// exists for (one live witness left, two stuck upstreams outvoting it).
 //
 // It never blocks serving and never persists anything:
 //   - no pick, or maxRegressionBlocks: -1 → returns the pick untouched (a
@@ -1071,9 +1048,14 @@ func (n *Network) servedTip(
 // While it holds, the served-tip lag gauge (Freshest - Tip) would read negative —
 // the served value is above the corroborated freshest view — so it is clamped at
 // 0; erpc_network_served_tip_regression_total is what says a hold is in progress.
-func (n *Network) guardServedTipRegression(axis string, label string, anchor *servedTipAnchor, pick int64, ref servedTipReference) int64 {
+func (n *Network) guardServedTipRegression(axis string, label string, anchor *servedTipAnchor, ballot common.ServedTipPick, live bool) int64 {
+	pick := ballot.Tip
 	if pick <= 0 {
 		return pick
+	}
+	var corroborated, liveMax int64
+	if live {
+		corroborated, liveMax = ballot.Freshest, ballot.Max
 	}
 	tolerance := n.servedTipMaxRegressionBlocks()
 	if tolerance < 0 {
@@ -1083,7 +1065,7 @@ func (n *Network) guardServedTipRegression(axis string, label string, anchor *se
 
 	lastGood, lastGoodAt := anchor.lastGoodValue.Load(), anchor.lastGoodAt.Load()
 	armed := lastGood > 0 && lastGoodAt != nil
-	reference := ref.Corroborated
+	reference := corroborated
 	if armed && lastGood > reference {
 		reference = lastGood
 	}
@@ -1102,7 +1084,7 @@ func (n *Network) guardServedTipRegression(axis string, label string, anchor *se
 	}
 	if pick >= minAcceptable {
 		now := servedTipClock()
-		if n.rememberServedTipPick(anchor, pick, lastGood, lastGoodAt, ref, tolerance, now) {
+		if n.rememberServedTipPick(anchor, pick, lastGood, lastGoodAt, corroborated, tolerance, now) {
 			// The timestamp is a TTL clock, not an audit log: refreshing it at
 			// most once a second keeps a 60s window exact to within its own
 			// granularity, and keeps the ONLY heap allocation on this path — the
@@ -1137,8 +1119,8 @@ func (n *Network) guardServedTipRegression(axis string, label string, anchor *se
 	// monotonic clamp broke). With no live head there is nothing to clamp to and
 	// the remembered value stands as recorded.
 	served := lastGood
-	if ref.Max > 0 && ref.Max < served {
-		served = ref.Max
+	if liveMax > 0 && liveMax < served {
+		served = liveMax
 	}
 	if served <= pick {
 		// A HOLD MAY ONLY EVER RAISE. A memory at or below the current pick has
@@ -1200,8 +1182,8 @@ func (n *Network) guardServedTipRegression(axis string, label string, anchor *se
 // after which the next healthy evaluation adopts the new height — and the
 // detection reference already takes the HIGHER of the memory and the live
 // corroborated head, so a memory left behind is ignored rather than harmful.
-func (n *Network) rememberServedTipPick(anchor *servedTipAnchor, pick int64, lastGood int64, lastGoodAt *time.Time, ref servedTipReference, tolerance int64, now time.Time) bool {
-	if ref.Max <= 0 || pick > ref.Corroborated {
+func (n *Network) rememberServedTipPick(anchor *servedTipAnchor, pick int64, lastGood int64, lastGoodAt *time.Time, corroborated int64, tolerance int64, now time.Time) bool {
+	if corroborated <= 0 || pick > corroborated {
 		return false
 	}
 	// The last value this process trusted: the memory while it is still fresh,
@@ -1539,11 +1521,11 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 
 			}
 			supporting = append(supporting, cu)
 		}
-		pick, ref := n.evmTipBallot(supporting, useFinalized, common.ServedTipQuorumMajority)
+		pick, live := n.evmTipBallot(supporting, useFinalized, common.ServedTipQuorumMajority)
 		if pick.Inputs == 0 {
 			continue
 		}
-		if ref.Max <= 0 && n.liveUpstreamInGroup(ctx, sel, useFinalized) {
+		if !live && n.liveUpstreamInGroup(ctx, sel, useFinalized) {
 			continue
 		}
 		if pick.Tip > 0 && (floor == 0 || pick.Tip < floor) {
@@ -1559,13 +1541,13 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 
 			}
 			supporting = append(supporting, cu)
 		}
-		pick, ref := n.evmTipBallot(supporting, useFinalized, common.ServedTipQuorumMajority)
+		pick, live := n.evmTipBallot(supporting, useFinalized, common.ServedTipQuorumMajority)
 		if pick.Inputs == 0 {
 			// No supporting upstream for this method → no constraint (fall through
 			// rather than pinning the tip to 0).
 			continue
 		}
-		if ref.Max <= 0 && n.liveUpstreamServesMethod(ctx, m, useFinalized) {
+		if !live && n.liveUpstreamServesMethod(ctx, m, useFinalized) {
 			// Cap-only ballot, but the configuration says live upstreams serve
 			// this method — they are merely absent right now. See the comment
 			// above: that floor is a transient lie, and serving it hands
