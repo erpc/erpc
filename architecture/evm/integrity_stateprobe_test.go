@@ -193,10 +193,10 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 
 	// The tip eRPC advertises: the default-quorum order statistic over CLAIMED
 	// heads (all live and within a block of each other).
-	tips := make([]common.ServedTipInput, 0, len(fleet))
+	tips := make([]int64, 0, len(fleet))
 	ups := make([]common.Upstream, 0, len(fleet))
 	for _, f := range fleet {
-		tips = append(tips, common.ServedTipInput{UpstreamID: f.id, BlockNumber: head})
+		tips = append(tips, head)
 		u := &cadenceLaggedUpstream{
 			FakeUpstream: common.NewFakeUpstream(f.id).(*common.FakeUpstream),
 			claimed:      head,

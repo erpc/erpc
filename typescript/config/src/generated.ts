@@ -2628,24 +2628,6 @@ export type TrackedMetrics = any;
 // source: served_tip.go
 
 /**
- * ServedTipInput is a single observation: an upstream's last-known tip block.
- * Callers are responsible for excluding syncing, cordoned or benched upstreams
- * BEFORE passing observations here; the picker treats every input as a
- * candidate.
- */
-export interface ServedTipInput {
-  /**
-   * UpstreamID is preserved only for telemetry attribution. It is not used
-   * in the pick.
-   */
-  upstreamid: string;
-  /**
-   * BlockNumber is the upstream's reported tip. Zero or negative values are
-   * treated as "no data yet" and filtered before picking.
-   */
-  blocknumber: number /* int64 */;
-}
-/**
  * ServedTipPick is the picker's output.
  */
 export interface ServedTipPick {

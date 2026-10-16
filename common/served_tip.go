@@ -2,24 +2,10 @@ package common
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
-
-// ServedTipInput is a single observation: an upstream's last-known tip block.
-// Callers are responsible for excluding syncing, cordoned or benched upstreams
-// BEFORE passing observations here; the picker treats every input as a
-// candidate.
-type ServedTipInput struct {
-	// UpstreamID is preserved only for telemetry attribution. It is not used
-	// in the pick.
-	UpstreamID string
-
-	// BlockNumber is the upstream's reported tip. Zero or negative values are
-	// treated as "no data yet" and filtered before picking.
-	BlockNumber int64
-}
 
 // ServedTipPick is the picker's output.
 type ServedTipPick struct {
@@ -137,6 +123,10 @@ func (q *ServedTipQuorum) set(s string) error {
 // eligible upstreams have already reached: the q-th highest head (all of them
 // when fewer than q voted). This is the entire served-tip algorithm.
 //
+// heads are the voters' heads; callers exclude syncing, cordoned or benched
+// upstreams BEFORE passing them, and heads <= 0 ("no data yet") are ignored.
+// It sorts heads in place, so a caller's ballot pays no copy.
+//
 // One order statistic over the live heads provides every protection a
 // stateful pipeline would have to engineer separately — with zero state:
 //
@@ -160,21 +150,18 @@ func (q *ServedTipQuorum) set(s string) error {
 //
 // Examples (heads descending), default q=2: N=1 → that head; N=2 → the lower;
 // N=3..∞ → 2nd. Majority: N=3 → 2nd; N=4 → 3rd; N=5 → 3rd.
-func PickServedTip(tips []ServedTipInput, q ServedTipQuorum) ServedTipPick {
-	sorted := make([]int64, 0, len(tips))
-	for _, t := range tips {
-		if t.BlockNumber > 0 {
-			sorted = append(sorted, t.BlockNumber)
-		}
-	}
-	if len(sorted) == 0 {
+func PickServedTip(heads []int64, q ServedTipQuorum) ServedTipPick {
+	slices.Sort(heads)
+	first, _ := slices.BinarySearch(heads, 1)
+	valid := heads[first:]
+	n := len(valid)
+	if n == 0 {
 		return ServedTipPick{}
 	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] > sorted[j] })
 	return ServedTipPick{
-		Tip:      sorted[q.Of(len(sorted))-1],
-		Freshest: sorted[min(1, len(sorted)-1)],
-		Max:      sorted[0],
-		Inputs:   len(sorted),
+		Tip:      valid[n-q.Of(n)],
+		Freshest: valid[max(n-2, 0)],
+		Max:      valid[n-1],
+		Inputs:   n,
 	}
 }

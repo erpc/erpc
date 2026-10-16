@@ -484,7 +484,10 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 // regression guard either; it falls back to its own last corroborated pick,
 // see guardServedTipRegression.)
 func (n *Network) evmTipBallot(ctx context.Context, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (common.ServedTipPick, bool) {
-	var heads []common.ServedTipInput
+	// Typical pools fit the stack buffer, so the ballot stays off the heap;
+	// append moves a larger one there.
+	var buf [16]int64
+	heads := buf[:0]
 	best := -1
 	for u := range n.tipCandidateUpstreams(ctx) {
 		if member != nil && !member(u) {
@@ -497,7 +500,7 @@ func (n *Network) evmTipBallot(ctx context.Context, useFinalized bool, q common.
 		if best < 0 || rank < best {
 			best, heads = rank, heads[:0]
 		}
-		heads = append(heads, common.ServedTipInput{UpstreamID: u.Id(), BlockNumber: head})
+		heads = append(heads, head)
 	}
 	return common.PickServedTip(heads, q), best >= 0 && best <= 1
 }
@@ -1338,9 +1341,9 @@ func (n *Network) SvmHighestIndexedSlot(ctx context.Context) int64 {
 
 // gatherSvmTipInputs collects slot values from SVM state pollers for
 // majority-tip computation via common.PickServedTip.
-func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []common.ServedTipInput {
+func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []int64 {
 	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	out := make([]common.ServedTipInput, 0, len(upstreams))
+	out := make([]int64, 0, len(upstreams))
 	for _, u := range upstreams {
 		sp := u.SvmStatePoller()
 		if sp == nil || sp.IsObjectNull() {
@@ -1355,7 +1358,7 @@ func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []c
 		if slot <= 0 {
 			continue
 		}
-		out = append(out, common.ServedTipInput{UpstreamID: u.Id(), BlockNumber: slot})
+		out = append(out, slot)
 	}
 	return out
 }
