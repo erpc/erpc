@@ -74,8 +74,10 @@ const solanaDefaultSignaturesLimit = 1000
 // Consensus participant slots (common.IsConsensusSlot) skip this hook: parallel
 // upstreams vote on the bodies they returned. Converting identical legitimate
 // short pages into MissingData would make consensus agree on an error and the
-// network layer would not fall back to last-valid-response. Cross-upstream retry
-// belongs to the serial sweep path, not consensus fan-out.
+// network layer would not fall back to last-valid-response when consensus
+// actually ran (ExecState.ConsensusExecuted). SkipConsensus uses the serial
+// sweep without participant slots, so LVR fallback still applies. Cross-upstream
+// retry belongs to the serial sweep path, not consensus fan-out.
 //
 // Errors pass through untouched: -32011 / -32020 and friends are classified by
 // the error normalizer and fail over on their own.

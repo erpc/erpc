@@ -2394,7 +2394,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// Don't override consensus results with last valid response from individual upstreams
 		// For example if 1 upstream gives empty response another 3 give "reverted" error,
 		// we should still return reverted error, even though there was an empty response before.
-		if failsafeExecutor.HasConsensus() {
+		// SkipConsensus (and other bypasses) run the serial sweep without participant slots —
+		// ConsensusExecuted stays false so history-parity sweeps can still fall back to LVR.
+		if req.ExecState().ConsensusExecuted() {
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
@@ -2540,7 +2542,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// LVR is a borrowed pointer — consensus executor owns releasing non-winner responses.
 	// Just drop our reference so it doesn't outlive the response lifecycle.
-	if failsafeExecutor.HasConsensus() {
+	if req.ExecState().ConsensusExecuted() {
 		req.ClearLastValidResponse()
 	}
 

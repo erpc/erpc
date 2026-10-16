@@ -356,3 +356,62 @@ func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
 }
+
+func TestSvm_SkipConsensus_HistoryParity_AllShortPagesUseLastValidResponse(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForSvmStatePoller("svm-skipcons-sigs-a.localhost", 1000, 990)
+	util.SetupMocksForSvmStatePoller("svm-skipcons-sigs-b.localhost", 1000, 990)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mockSvmMethod("svm-skipcons-sigs-a.localhost", "getSignaturesForAddress", svmSigPage(2))
+	mockSvmMethod("svm-skipcons-sigs-b.localhost", "getSignaturesForAddress", svmSigPage(2))
+
+	net := setupTestSvmNetworkWithConsensus(t, ctx, []*common.UpstreamConfig{
+		svmUpstreamConfig("a", "svm-skipcons-sigs-a.localhost"),
+		svmUpstreamConfig("b", "svm-skipcons-sigs-b.localhost"),
+	}, []common.DataFinalityState{common.DataFinalityStateRealtime})
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr",{"limit":5}]}`))
+	h := http.Header{}
+	h.Set("X-ERPC-Skip-Consensus", "true")
+	req.EnrichFromHttp(h, nil, common.UserAgentTrackingModeSimplified)
+	require.True(t, req.Directives().SkipConsensus)
+
+	resp, err := svmProjectForward(ctx, net, req)
+	require.NoError(t, err, "SkipConsensus serial sweep must fall back to last-valid-response, not fail because consensus is merely configured")
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
+}
+
+func TestSvm_SkipConsensus_HistoryParity_NullStatusesUseLastValidResponse(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForSvmStatePoller("svm-skipcons-st-a.localhost", 1000, 990)
+	util.SetupMocksForSvmStatePoller("svm-skipcons-st-b.localhost", 1000, 990)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mockSvmMethod("svm-skipcons-st-a.localhost", "getSignatureStatuses", svmSigStatusNull)
+	mockSvmMethod("svm-skipcons-st-b.localhost", "getSignatureStatuses", svmSigStatusNull)
+
+	net := setupTestSvmNetworkWithConsensus(t, ctx, []*common.UpstreamConfig{
+		svmUpstreamConfig("a", "svm-skipcons-st-a.localhost"),
+		svmUpstreamConfig("b", "svm-skipcons-st-b.localhost"),
+	}, []common.DataFinalityState{common.DataFinalityStateRealtime})
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["sig"],{"searchTransactionHistory":true}]}`))
+	h := http.Header{}
+	h.Set("X-ERPC-Skip-Consensus", "true")
+	req.EnrichFromHttp(h, nil, common.UserAgentTrackingModeSimplified)
+
+	resp, err := svmProjectForward(ctx, net, req)
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Contains(t, string(jrr.GetResultBytes()), `null`)
+}
