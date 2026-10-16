@@ -759,28 +759,12 @@ func isSimpleGroupSelector(selector string) bool {
 // non-syncing, live, non-benched upstreams already have — so interpolated
 // requests land on upstreams that can serve the advertised block, and a lone
 // far-ahead (or wrong-chain) upstream never defines it — then guarded against a
-// deep regression, clamped to every configured guarantee, and floored to the
-// head already delivered to WebSocket subscribers. See servedTip.
+// deep regression, floored to the head already delivered to WebSocket
+// subscribers, and clamped to every configured guarantee. See servedTip.
 func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
-
-	lane := n.servedTipLaneFor(ctx)
-	pick, liveMax := n.servedTip(ctx, span, false, "latest", lane)
-	if lane != &n.servedTipAll {
-		// The delivered-head floor is network-wide, so it applies to unscoped
-		// requests only.
-		return pick
-	}
-	floored := n.applyDeliveredHeadFloor(pick, liveMax)
-	if floored > pick {
-		// The floor may lift past the pick but never past a guarantee
-		// (servedTip already clamped pick to it).
-		if g := n.guaranteedFloor(ctx, false); g > 0 && g < floored {
-			floored = max(pick, g)
-		}
-	}
-	return floored
+	return n.servedTip(ctx, span, false)
 }
 
 // EvmRefreshLatestBlock asks the pollers that decide the request's latest head
@@ -911,14 +895,12 @@ func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known boo
 	return head, true
 }
 
-// servedTip computes the served tip for one axis over the
-// selection-policy-eligible upstreams — the freshest block at least the
-// configured quorum of them already has (see evmTipBallot and
-// common.PickServedTip) — guards the result against a regression far below
-// the live heads, applies the guaranteed floors, and exports the gauges. It
-// also returns the highest live head of the ballot (the caps' max when the
-// ballot is cap-only): the ceiling the delivered-head floor is measured
-// against.
+// servedTip computes the served tip for one axis of the request bound to ctx:
+// the freshest block at least the configured quorum of the eligible voters
+// already has (see evmTipBallot and common.PickServedTip), guarded against a
+// regression far below the live heads, lifted to the head already delivered to
+// WebSocket subscribers (network-wide latest only), clamped to every
+// configured guarantee, then exported on the request's lane.
 //
 // The guard is in-process, bounded and one-directional (it can only hold the
 // tip, and only briefly), and it cannot produce a block that no live upstream
@@ -926,23 +908,28 @@ func (n *Network) futureBlockCeiling(ctx context.Context) (head int64, known boo
 // predicted, so no inherited or rogue value can pin, freeze or poison the
 // result (networks_served_tip_invariants_test.go pins those outcomes against
 // the frozen-tip regression).
-func (n *Network) servedTip(
-	ctx context.Context,
-	span trace.Span,
-	useFinalized bool,
-	axis string,
-	lane *servedTipLane,
-) (tip int64, liveMax int64) {
-	pick, live := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
-	liveMax = pick.Max
+func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool) int64 {
+	axis := "latest"
+	if finalized {
+		axis = "finalized"
+	}
+	lane := n.servedTipLaneFor(ctx)
+	pick, live := n.gatherEvmTipInputsForMethod(ctx, finalized, "*")
+	tip := pick.Tip
 
 	// Regression guard: "latest" cannot drop far below the corroborated live
 	// head in one evaluation. Runs BEFORE the guaranteed-method floor, which is
 	// a deliberate operator-configured clamp the guard must not fight.
 	var anchor *servedTipAnchor
 	if lane != nil {
-		anchor = lane.anchor(useFinalized)
-		pick.Tip = n.guardServedTipRegression(axis, lane.label, anchor, pick, live)
+		anchor = lane.anchor(finalized)
+		tip = n.guardServedTipRegression(axis, lane.label, anchor, pick, live)
+	}
+
+	// The delivered-head floor is network-wide, so it applies to unscoped
+	// requests only.
+	if lane == &n.servedTipAll && !finalized {
+		tip = n.applyDeliveredHeadFloor(tip, pick.Max)
 	}
 
 	// Capability guarantee (#855): the served tip must never exceed what any
@@ -950,17 +937,18 @@ func (n *Network) servedTip(
 	// (guaranteedMethods) or an operator-named group (guaranteedFor) — so a
 	// request on such a method (e.g. trace_*), or one consensus requires that
 	// group to answer, never resolves "latest" to a block only upstreams
-	// outside the subset have.
-	if pick.Tip > 0 {
-		if floor := n.guaranteedFloor(ctx, useFinalized); floor > 0 && floor < pick.Tip {
-			pick.Tip = floor
+	// outside the subset have. It runs after the delivered-head floor, so the
+	// floor may lift the tip but never past a guarantee.
+	if tip > 0 {
+		if floor := n.guaranteedFloor(ctx, finalized); floor > 0 && floor < tip {
+			tip = floor
 		}
 	}
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
 			attribute.String("served_tip.axis", axis),
-			attribute.Int64("served_tip.tip", pick.Tip),
+			attribute.Int64("served_tip.tip", tip),
 			attribute.Int64("served_tip.freshest", pick.Freshest),
 			attribute.Int("served_tip.inputs", pick.Inputs),
 		)
@@ -969,12 +957,12 @@ func (n *Network) servedTip(
 	// Watchdog anchor: when did this process last see the served value
 	// change. Telemetry only — nothing feeds back into the pick.
 	if lane != nil {
-		if pick.Tip > 0 {
-			anchor.observe(pick.Tip)
+		if tip > 0 {
+			anchor.observe(tip)
 		}
-		n.observeServedTipMetrics(axis, lane.label, pick, anchor.age())
+		n.observeServedTipMetrics(axis, lane.label, tip, pick.Freshest, anchor.age())
 	}
-	return pick.Tip, liveMax
+	return tip
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting the
@@ -1412,8 +1400,7 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	))
 	defer span.End()
 
-	tip, _ := n.servedTip(ctx, span, true, "finalized", n.servedTipLaneFor(ctx))
-	return tip
+	return n.servedTip(ctx, span, true)
 }
 
 // applyDeliveredHeadFloor lifts the computed network-wide "latest" head to the
@@ -1423,7 +1410,7 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 // turn the served tip into a persisted clamp.
 //
 // A delivered head always came from some live upstream, so the floor is
-// honoured only within maxRetryableBlockDistance of the freshest live head
+// honoured only within maxRetryableBlockDistance of the ballot's highest head
 // (liveMax), or when no head is known at all. A stale shared value is ignored
 // and ages out as the chain advances.
 func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
@@ -1617,18 +1604,18 @@ func (n *Network) liveUpstreamInGroup(ctx context.Context, selector string, useF
 // ("latest"|"finalized") is a label rather than part of the metric name to
 // keep the gauge set small. lane="all" is the network-wide pick; a named lane
 // is a use-upstream group's own pick.
-func (n *Network) observeServedTipMetrics(axis string, laneLabel string, pick common.ServedTipPick, advanceAge time.Duration) {
-	if pick.Tip > 0 {
+func (n *Network) observeServedTipMetrics(axis string, laneLabel string, tip, freshest int64, advanceAge time.Duration) {
+	if tip > 0 {
 		telemetry.MetricNetworkServedTipBlockNumber.
 			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(pick.Tip))
+			Set(float64(tip))
 		// Deliberate lag: how far the served tip sits behind the corroborated
 		// freshest upstream view in the same set. Clamped at 0 because the tip
 		// can legitimately sit ABOVE that view while the regression guard
 		// holds its last corroborated pick, and a lag gauge that reads
 		// negative is a broken dashboard, not a signal; the hold has its own
 		// counter (…_regression_total).
-		lag := pick.Freshest - pick.Tip
+		lag := freshest - tip
 		if lag < 0 {
 			lag = 0
 		}
