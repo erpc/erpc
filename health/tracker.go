@@ -1402,10 +1402,13 @@ func blocksBehind(networkHead, upstreamHead int64) int64 {
 }
 
 // headReporter is one upstream that has reported a head on a network, with its
-// per-network metadata resolved once (metadata entries are never evicted).
+// per-network metadata resolved once (metadata entries are never evicted) and
+// its stall window (headStallAfter), refreshed at the start of each
+// evaluateHeadBench.
 type headReporter struct {
-	ups  common.Upstream
-	meta *NetworkMetadata
+	ups        common.Upstream
+	meta       *NetworkMetadata
+	stallAfter time.Duration
 }
 
 // addHeadReporter registers reporter as a head reporter on the network and
@@ -1490,6 +1493,9 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 	now := t.now()
 	blockTime := time.Duration(ntwMeta.evmBlockTime.Load())
 	reporters := ntwMeta.reporters
+	for i := range reporters {
+		reporters[i].stallAfter = headStallAfter(reporters[i].ups, blockTime)
+	}
 	if changed != nil {
 		changed.headChangedAt = now
 	}
@@ -1506,8 +1512,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		if u.meta.headBenched.Load() || u.meta.headBehindSince.IsZero() {
 			continue
 		}
-		stallAfter := headStallAfter(u.ups, blockTime)
-		if now.Sub(u.meta.headBehindSince) < stallAfter {
+		if now.Sub(u.meta.headBehindSince) < u.stallAfter {
 			continue
 		}
 		u.meta.headBenched.Store(true)
@@ -1518,7 +1523,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		u.ups.Logger().Warn().
 			Str("networkId", u.ups.NetworkId()).
 			Int64("head", u.meta.evmLatestBlockNumber.Load()).
-			Dur("stallAfter", stallAfter).
+			Dur("stallAfter", u.stallAfter).
 			Msg("benched upstream head: it stayed behind peers that kept advancing; it leaves the served-tip ballots and the lag reference until it catches up")
 	}
 	bar, _ := secondHighestHead(ntwMeta, func(m *NetworkMetadata) int64 { return m.evmLatestBlockNumber.Load() }, true)
@@ -1585,7 +1590,7 @@ func (m *NetworkMetadata) movedSinceBench() bool {
 // as young as any honest peer's. Caller holds ntwMeta.headMu.
 func headIsBehind(u headReporter, reporters []headReporter, now time.Time, blockTime time.Duration) bool {
 	uHead, uTs := u.meta.evmLatestBlockNumber.Load(), u.meta.evmLatestBlockTimestamp.Load()
-	stallAfter := headStallAfter(u.ups, blockTime)
+	stallAfter := u.stallAfter
 	stallSecs := int64(stallAfter / time.Second)
 	peers, younger := 0, 0
 	byHeight, stale := false, false
@@ -1604,7 +1609,7 @@ func headIsBehind(u headReporter, reporters []headReporter, now time.Time, block
 		}
 		lead := vHead - uHead
 		plausible := lead > 0 && lead <= benchPlausibleLead(u.meta, now, bt)
-		live := now.Sub(v.meta.headChangedAt) < max(stallAfter, headStallAfter(v.ups, blockTime))
+		live := now.Sub(v.meta.headChangedAt) < max(stallAfter, v.stallAfter)
 		if plausible && live {
 			if uTs > 0 {
 				stale = stale || v.meta.headTsFloor-uTs >= stallSecs
