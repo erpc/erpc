@@ -144,7 +144,8 @@ alwaysFinalizedMethods = getInflationReward   (defined only over finalized epoch
 neverCacheMethods = sendTransaction, sendRawTransaction, simulateTransaction, requestAirdrop,
                     getLatestBlockhash, getRecentBlockhash, getFeeForMessage,
                     getSignatureStatuses, getVoteAccounts, getLeaderSchedule, getEpochInfo,
-                    getSlotLeaders, getRecentPerformanceSamples, getRecentPrioritizationFees
+                    getSlotLeaders, getRecentPerformanceSamples, getRecentPrioritizationFees,
+                    getBalance, getTokenAccountBalance
 ```
 
 Two categories live in `neverCacheMethods`: **mutating or effectful** calls, where caching would break the at-least-once semantics callers expect, and **transient realtime snapshots** that go stale in under one slot. `getEpochSchedule` is deliberately *excluded* — its constants only change at epoch boundaries (~432,000 slots), so it falls through to the moving-head bucket and is cached under the realtime policy's TTL.
