@@ -110,8 +110,8 @@ func TestServedTipInvariant_ProcessRestart_KeepsTracking(t *testing.T) {
 	// Simulate a process restart: ALL in-process served-tip state is lost; the
 	// shared counter survives in the backing store (exactly the restart that
 	// failed to heal). The chain meanwhile advanced past the gate bound.
-	network.servedLatestAnchor.seenValue.Store(0)
-	network.servedLatestAnchor.changedAtMs.Store(0)
+	network.servedTipAll.latest.seenValue.Store(0)
+	network.servedTipAll.latest.changedAtMs.Store(0)
 
 	served := int64(0)
 	for r := int64(100); r <= 110; r++ { // jump: deploy downtime ≫ gate bound

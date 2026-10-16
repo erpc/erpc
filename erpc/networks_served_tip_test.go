@@ -541,15 +541,15 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 			"fast* -> the fast group's own tip")
 		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "!fast*")),
 			"!fast* -> the complement (slow) group's own tip")
-		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"a pattern and its negation create exactly two lanes")
 
 		// Each partition is named by common.LaneName of its matched id set:
 		// {fast-1,fast-2} -> "fast", {slow-1,slow-2} -> "slow". A single vendor
 		// prefix is never a lane (the partition needs >=2 upstreams).
 		lanes := map[string]bool{}
-		nw.servedTipPartitions.Range(func(_, v any) bool {
-			lanes[v.(*servedTipPartition).lane] = true
+		nw.servedTipLanes.Range(func(_, v any) bool {
+			lanes[v.(*servedTipLane).label] = true
 			return true
 		})
 		assert.True(t, lanes["fast"] && lanes["slow"],
@@ -561,7 +561,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		for _, sel := range []string{"fast-*", "family:fast", "slow*", "family:slow", "!fast*"} {
 			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
 		}
-		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"equivalent selectors (same matched set) must dedup, not create new lanes")
 
 		// Non-group selectors NEVER materialize: match-all, single-node,
@@ -569,7 +569,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		for _, sel := range []string{"*", "fast-1", "slow-1", "ghost*", "does-not-exist", "(fast*|slow*)"} {
 			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
 		}
-		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"match-all / single-node / no-match / boolean selectors must not create state (DDoS-safe)")
 	})
 }
@@ -593,14 +593,14 @@ func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 	})
 
 	require.Equal(t, int64(100), network.EvmHighestLatestBlockNumber(ctx))
-	require.Negative(t, network.servedLatestAnchor.age(),
+	require.Negative(t, network.servedTipAll.latest.age(),
 		"first observation alone must not stamp the watchdog")
 
 	for _, u := range ups {
 		u.EvmStatePoller().SuggestLatestBlock(105)
 	}
 	require.Equal(t, int64(105), network.EvmHighestLatestBlockNumber(ctx))
-	age := network.servedLatestAnchor.age()
+	age := network.servedTipAll.latest.age()
 	require.GreaterOrEqual(t, age, time.Duration(0),
 		"watchdog must stamp once the served value moves")
 	require.Less(t, age, 5*time.Second)
@@ -983,7 +983,7 @@ func TestServedTip_AllInputsFiltered_FailsOpenToZero(t *testing.T) {
 // servedTipRegressionCount reads the guard's counter for a network/axis/outcome.
 func servedTipRegressionCount(n *Network, axis, outcome string) float64 {
 	return promUtil.ToFloat64(telemetry.MetricNetworkServedTipRegressionTotal.
-		WithLabelValues(n.projectId, n.Label(), servedTipLaneAll, axis, outcome))
+		WithLabelValues(n.projectId, n.Label(), "all", axis, outcome))
 }
 
 // pinServedTipClock freezes the guard's clock for the duration of a test and
@@ -1107,7 +1107,7 @@ func TestServedTip_RegressionGuard_SmallReorgPassesThrough(t *testing.T) {
 		"a regression inside the tolerance is reality and must pass through")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
 		"a tolerated regression is not a guard trip")
-	assert.Equal(t, int64(9_500), network.servedLatestAnchor.lastGoodValue.Load(),
+	assert.Equal(t, int64(9_500), network.servedTipAll.latest.lastGoodValue.Load(),
 		"the tolerated pick becomes the new corroborated value")
 }
 
@@ -1136,7 +1136,7 @@ func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
 		"no live head → no reference → the guard must not interfere")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
 		"the guard cannot trip without a live head to compare against")
-	assert.Zero(t, network.servedLatestAnchor.lastGoodValue.Load(),
+	assert.Zero(t, network.servedTipAll.latest.lastGoodValue.Load(),
 		"an uncorroborated cap must never be remembered as a good pick")
 }
 
@@ -1210,7 +1210,7 @@ func TestServedTip_RegressionGuard_SingleRogueUpstreamDoesNotDisarmIt(t *testing
 
 	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
 		"the majority pick ignores the rogue, as it always did")
-	require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load(),
+	require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load(),
 		"and the guard must be ARMED by that honest pick, not silently disabled by the rogue")
 
 	// Armed means it still protects: lose the honest majority to a stuck pair.
@@ -1270,7 +1270,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 			eligible(id, true)
 		}
 		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
-		require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load())
+		require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load())
 
 		// Both rogues return, two honest upstreams drop out: the ballot is
 		// [100M, 100M, 10000] and the majority pick IS the fantasy.
@@ -1281,7 +1281,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		advance(time.Second)
 		require.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx),
 			"precondition: the majority of this eligible set really is far-future")
-		assert.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load(),
+		assert.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load(),
 			"an uncorroborated leap must never become the value the guard holds the network to")
 
 		eligible("h2", true)
@@ -1302,7 +1302,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, eligible, advance := fantasyFleet(t, ctx)
-		anchor := &network.servedLatestAnchor
+		anchor := &network.servedTipAll.latest
 
 		// 1. Armed at the honest head.
 		for _, id := range []string{"h1", "h2", "h3"} {
@@ -1361,7 +1361,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, eligible, advance := fantasyFleet(t, ctx)
-		anchor := &network.servedLatestAnchor
+		anchor := &network.servedTipAll.latest
 
 		// The very first evaluation this process ever makes is majority-rogue.
 		eligible("rogue-1", true)
@@ -1410,7 +1410,7 @@ func TestServedTip_RegressionGuard_AHoldNeverLowersTheTip(t *testing.T) {
 
 	// The ballot's own corroborated head is 10_000, so a pick of 5_000 trips the
 	// guard — but the memory (100) is far below the pick.
-	served := network.guardServedTipRegression("latest", "", &anchor, 5_000,
+	served := network.guardServedTipRegression("latest", "all", &anchor, 5_000,
 		servedTipReference{Corroborated: 10_000, Max: 10_000})
 
 	assert.GreaterOrEqual(t, served, int64(5_000),
@@ -1438,11 +1438,11 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 
 	var anchor servedTipAnchor
 	ref := servedTipReference{Corroborated: 10_000, Max: 10_000}
-	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "", &anchor, 10_000, ref),
+	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "all", &anchor, 10_000, ref),
 		"arm the guard first; that evaluation is the one allowed to allocate")
 
 	allocs := testing.AllocsPerRun(200, func() {
-		network.guardServedTipRegression("latest", "", &anchor, 10_000, ref)
+		network.guardServedTipRegression("latest", "all", &anchor, 10_000, ref)
 	})
 	assert.Zero(t, allocs, "the throttled healthy path must not allocate at all")
 
@@ -1450,7 +1450,7 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 	// refreshed again.
 	advance(2 * time.Second)
 	before := anchor.lastGoodAt.Load()
-	network.guardServedTipRegression("latest", "", &anchor, 10_000, ref)
+	network.guardServedTipRegression("latest", "all", &anchor, 10_000, ref)
 	assert.NotEqual(t, before, anchor.lastGoodAt.Load(), "the TTL clock still advances")
 }
 
@@ -1479,7 +1479,7 @@ func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
 	assert.Equal(t, int64(5), network.EvmHighestLatestBlockNumber(ctx),
 		"maxRegressionBlocks: -1 means the operator gets the raw pick, poisoned or not")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"))
-	assert.Zero(t, network.servedLatestAnchor.lastGoodValue.Load(),
+	assert.Zero(t, network.servedTipAll.latest.lastGoodValue.Load(),
 		"a disabled guard records nothing either")
 }
 
@@ -1508,7 +1508,7 @@ func TestServedTip_LagGaugeNeverReadsNegative(t *testing.T) {
 		"precondition: the guard is holding above the ballot's freshest corroborated view")
 
 	lag := promUtil.ToFloat64(telemetry.MetricNetworkServedTipLagBlocks.
-		WithLabelValues(network.projectId, network.Label(), servedTipLaneAll, "latest"))
+		WithLabelValues(network.projectId, network.Label(), "all", "latest"))
 	assert.GreaterOrEqual(t, lag, float64(0), "the deliberate-lag gauge must never read negative")
 }
 
@@ -2336,7 +2336,7 @@ func TestServedTip_RegressionGuard_HeldValueIsClampedToTheLiveHead(t *testing.T)
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	})
 	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
-	require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load())
+	require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load())
 
 	// Every upstream that had 10_000 drops out. The ballot is [9000, 5, 5] → 5,
 	// which the guard suppresses — but it may not serve its remembered 10_000

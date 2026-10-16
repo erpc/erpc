@@ -60,22 +60,21 @@ type Network struct {
 	// a WebSocket subscriber.
 	deliveredLatestBlock atomic.Int64
 
-	// servedTipAnchor watchdogs track when this process last SAW the served
-	// value change — the advance-age stuck-tip gauge — and hold the regression
-	// guard's memory. The pick itself is stateless (common.PickServedTip).
-	servedLatestAnchor    servedTipAnchor
-	servedFinalizedAnchor servedTipAnchor
+	// servedTipAll is the network-wide served-tip lane. Lanes hold the
+	// advance-age watchdog and the regression guard's memory; the pick itself
+	// is stateless (common.PickServedTip).
+	servedTipAll servedTipLane
 
-	// servedTipPartitions holds lazily-materialized per-group LANES for
+	// servedTipLanes holds lazily-materialized per-group lanes for
 	// use-upstream selectors that carve out a real sub-group (e.g.
-	// `flashblocks*` / `family:systx`): a stable gauge label (LaneName) plus
-	// watchdog anchors. TELEMETRY ONLY — the pick for any selector is the
-	// same stateless majority over the matched subset. Bounded by
-	// construction: keyed by the hash of the MATCHED UPSTREAM SET (equivalent
-	// selectors dedup; garbage selectors can't inflate state beyond the real
-	// topology) and capped by maxServedTipPartitions.
-	servedTipPartitions     sync.Map // map[string]*servedTipPartition (key = "grp:<hash>")
-	servedTipPartitionCount atomic.Int32
+	// `flashblocks*` / `family:systx`). The pick for any selector is the same
+	// stateless quorum over the matched subset; a lane adds only its gauge
+	// label (LaneName), watchdog and guard memory. Bounded by construction:
+	// keyed by the hash of the MATCHED UPSTREAM SET (equivalent selectors
+	// dedup; garbage selectors can't inflate state beyond the real topology)
+	// and capped by maxServedTipLanes.
+	servedTipLanes     sync.Map // map[string]*servedTipLane (key = "grp:<hash>")
+	servedTipLaneCount atomic.Int32
 
 	// queryTraceSource remembers which trace method answered the eth_query*
 	// shim on this network (queryTraceSource* values), so a network whose
@@ -110,19 +109,25 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 	}
 }
 
-// maxServedTipPartitions caps the number of materialized per-tag served-tip
-// partitions per network (a backstop on top of the "must be a configured tag"
-// gate). Realistic configs have 1–3 groups; beyond the cap, extra tags fall
-// back to the stateless subset candidate.
-const maxServedTipPartitions = 16
+// maxServedTipLanes caps the materialized group lanes per network, a backstop
+// on top of the matched-set dedup. Realistic configs have 1–3 groups; beyond
+// the cap, a group's request gets the stateless subset pick with no lane.
+const maxServedTipLanes = 16
 
-// servedTipPartition is one node group's telemetry lane: the stable gauge
-// label (common.LaneName of the matched upstream set) and the group's
-// watchdog anchors. It holds NO pick state.
-type servedTipPartition struct {
-	lane            string
-	latestAnchor    servedTipAnchor
-	finalizedAnchor servedTipAnchor
+// servedTipLane is one served-tip scope with its own telemetry and guard
+// memory: the network-wide pick (label "all") or a use-upstream group's pick
+// (label common.LaneName of the matched upstream set). It holds NO pick state.
+type servedTipLane struct {
+	label     string
+	latest    servedTipAnchor
+	finalized servedTipAnchor
+}
+
+func (l *servedTipLane) anchor(finalized bool) *servedTipAnchor {
+	if finalized {
+		return &l.finalized
+	}
+	return &l.latest
 }
 
 // servedTipAnchor tracks, per process, when the served-tip VALUE was last
@@ -207,24 +212,6 @@ func (a *servedTipAnchor) age() time.Duration {
 		return time.Since(time.UnixMilli(ms))
 	}
 	return -1
-}
-
-// servedTipLaneAll is the lane label for the network-wide served tip.
-const servedTipLaneAll = "all"
-
-// servedTipLaneNone is the sentinel passed to clusteredServedTip for a
-// stateless selector-scoped tip (glob/single-node/match-all that did not form a
-// group): observeServedTipMetrics emits nothing for it, so such a subset value
-// never overwrites any gauge.
-const servedTipLaneNone = "\x00scoped"
-
-// servedTipLaneLabel maps an internal lane to its metric label: the
-// network-wide pick ("") is published as lane="all".
-func servedTipLaneLabel(lane string) string {
-	if lane == "" {
-		return servedTipLaneAll
-	}
-	return lane
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks
@@ -682,29 +669,33 @@ func requestSelector(ctx context.Context) string {
 	return ""
 }
 
-// servedTipPartitionFor returns the lazily-materialized telemetry lane for a
-// GROUP-scoped request, or nil to signal the unlabeled stateless path. The group
-// identity (key + lane, and its bounded/DDoS-safe gating) comes from
-// EvmUpstreamGroupForSelector; the count is capped by maxServedTipPartitions.
-func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *servedTipPartition {
-	key, lane := n.EvmUpstreamGroupForSelector(ctx, selector)
+// servedTipLaneFor returns the served-tip lane of the request bound to ctx:
+// the network-wide lane when it carries no use-upstream selector, the group's
+// lazily-materialized lane when the selector carves out a real sub-group
+// (identity and DDoS-safe gating from EvmUpstreamGroupForSelector, count capped
+// by maxServedTipLanes), else nil: the subset pick then runs with no guard, no
+// gauges and no anchor, so a subset value never overwrites any gauge.
+func (n *Network) servedTipLaneFor(ctx context.Context) *servedTipLane {
+	sel := requestSelector(ctx)
+	if sel == "" {
+		return &n.servedTipAll
+	}
+	key, label := n.EvmUpstreamGroupForSelector(ctx, sel)
 	if key == "" {
 		return nil
 	}
-	// Fast path: already materialized.
-	if p, ok := n.servedTipPartitions.Load(key); ok {
-		return p.(*servedTipPartition)
+	if l, ok := n.servedTipLanes.Load(key); ok {
+		return l.(*servedTipLane)
 	}
 	// Cap backstop (also bounds a race racing past the cap).
-	if n.servedTipPartitionCount.Load() >= maxServedTipPartitions {
+	if n.servedTipLaneCount.Load() >= maxServedTipLanes {
 		return nil
 	}
-	p := &servedTipPartition{lane: lane}
-	actual, loaded := n.servedTipPartitions.LoadOrStore(key, p)
+	actual, loaded := n.servedTipLanes.LoadOrStore(key, &servedTipLane{label: label})
 	if !loaded {
-		n.servedTipPartitionCount.Add(1)
+		n.servedTipLaneCount.Add(1)
 	}
-	return actual.(*servedTipPartition)
+	return actual.(*servedTipLane)
 }
 
 // partitionKeyFor maps a use-upstream selector to a STABLE served-tip partition
@@ -727,7 +718,7 @@ func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *s
 // A group must match >=2 upstreams (single-node targeting needs no group
 // counter — the per-upstream poller is already monotonic) and fewer than ALL
 // (matching everything is just the network-wide tip). A per-network cap
-// (maxServedTipPartitions) backstops pathological topologies. Anything else
+// (maxServedTipLanes) backstops pathological topologies. Anything else
 // returns "" (stateless cluster-min over the subset).
 func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string, []string) {
 	if !isSimpleGroupSelector(selector) || n.upstreamsRegistry == nil {
@@ -755,7 +746,7 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string,
 // use-upstream selector to a stable group key (for keying per-group state) and a
 // human-readable lane name, or ("","") when the selector doesn't carve out a real
 // sub-group. partitionKeyFor provides the dedup/bounds/cross-pod-stable key; this adds
-// the lane. Used by served-tip latest-block tracking (servedTipPartitionFor) AND by
+// the lane. Used by served-tip latest-block tracking (servedTipLaneFor) AND by
 // the integrity module, so both corroborate/track within the SAME group a request was
 // pinned to (whatever node groups the use-upstream selector carves out) — one grouping, not two.
 // EvmAllUpstreams exposes the network's upstreams to the architecture layer
@@ -809,21 +800,13 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
 
-	if sel := requestSelector(ctx); sel != "" {
-		// Targeted request: the gather is already scoped to the selector's
-		// subset, so the pick is within-group. A selector that names a real
-		// configured group additionally gets its own lane (gauge labels +
-		// watchdog anchor); arbitrary selectors emit no gauges. The
-		// delivered-head floor is network-wide, so it applies to unscoped
+	lane := n.servedTipLaneFor(ctx)
+	pick, liveMax := n.servedTip(ctx, span, false, "latest", lane)
+	if lane != &n.servedTipAll {
+		// The delivered-head floor is network-wide, so it applies to unscoped
 		// requests only.
-		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
-			tip, _ := n.servedTip(ctx, span, false, "latest", &p.latestAnchor, p.lane)
-			return tip
-		}
-		tip, _ := n.servedTip(ctx, span, false, "latest", nil, servedTipLaneNone)
-		return tip
+		return pick
 	}
-	pick, liveMax := n.servedTip(ctx, span, false, "latest", &n.servedLatestAnchor, "")
 	floored := n.applyDeliveredHeadFloor(pick, liveMax)
 	if floored > pick {
 		// The floor may lift past the pick but never past a guarantee
@@ -983,8 +966,7 @@ func (n *Network) servedTip(
 	span trace.Span,
 	useFinalized bool,
 	axis string,
-	anchor *servedTipAnchor,
-	lane string,
+	lane *servedTipLane,
 ) (tip int64, liveMax int64) {
 	pick, ref := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
 	liveMax = ref.Max
@@ -995,7 +977,11 @@ func (n *Network) servedTip(
 	// Regression guard: "latest" cannot drop far below the corroborated live
 	// head in one evaluation. Runs BEFORE the guaranteed-method floor, which is
 	// a deliberate operator-configured clamp the guard must not fight.
-	pick.Tip = n.guardServedTipRegression(axis, lane, anchor, pick.Tip, ref)
+	var anchor *servedTipAnchor
+	if lane != nil {
+		anchor = lane.anchor(useFinalized)
+		pick.Tip = n.guardServedTipRegression(axis, lane.label, anchor, pick.Tip, ref)
+	}
 
 	// Capability guarantee (#855): the served tip must never exceed what any
 	// configured guarantee SUBSET can serve — a method's supporting upstreams
@@ -1020,14 +1006,12 @@ func (n *Network) servedTip(
 
 	// Watchdog anchor: when did this process last see the served value
 	// change. Telemetry only — nothing feeds back into the pick.
-	advanceAge := time.Duration(-1)
-	if anchor != nil {
+	if lane != nil {
 		if pick.Tip > 0 {
 			anchor.observe(pick.Tip)
 		}
-		advanceAge = anchor.age()
+		n.observeServedTipMetrics(axis, lane.label, pick, anchor.age())
 	}
-	n.observeServedTipMetrics(axis, lane, pick, advanceAge)
 	return pick.Tip, liveMax
 }
 
@@ -1054,9 +1038,9 @@ func (n *Network) servedTip(
 // guard can never advertise a block no live upstream has.
 //
 // It never blocks serving and never persists anything:
-//   - no pick, or no anchor for this lane (arbitrary use-upstream selectors
-//     deliberately materialize no state), or maxRegressionBlocks: -1 → returns
-//     the pick untouched;
+//   - no pick, or maxRegressionBlocks: -1 → returns the pick untouched (a
+//     request with no lane — an arbitrary use-upstream selector — never reaches
+//     the guard: it deliberately materializes no state);
 //   - within tolerance → a LIVE-corroborated pick becomes the new remembered
 //     value (a capped one never does);
 //   - below tolerance, for up to servedTipRegressionTTL since that value was
@@ -1087,8 +1071,8 @@ func (n *Network) servedTip(
 // While it holds, the served-tip lag gauge (Freshest - Tip) would read negative —
 // the served value is above the corroborated freshest view — so it is clamped at
 // 0; erpc_network_served_tip_regression_total is what says a hold is in progress.
-func (n *Network) guardServedTipRegression(axis string, lane string, anchor *servedTipAnchor, pick int64, ref servedTipReference) int64 {
-	if anchor == nil || pick <= 0 {
+func (n *Network) guardServedTipRegression(axis string, label string, anchor *servedTipAnchor, pick int64, ref servedTipReference) int64 {
+	if pick <= 0 {
 		return pick
 	}
 	tolerance := n.servedTipMaxRegressionBlocks()
@@ -1140,7 +1124,7 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 	if held >= servedTipRegressionTTL {
 		if n.noteServedTipGuardTransition(anchor, servedTipGuardFailedOpen, axis, pick, reference, held) {
 			telemetry.MetricNetworkServedTipRegressionTotal.
-				WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "failed_open").
+				WithLabelValues(n.projectId, n.Label(), label, axis, "failed_open").
 				Inc()
 		}
 		anchor.lastGoodValue.Store(0)
@@ -1166,7 +1150,7 @@ func (n *Network) guardServedTipRegression(axis string, lane string, anchor *ser
 	}
 	if n.noteServedTipGuardTransition(anchor, servedTipGuardHolding, axis, pick, reference, held) {
 		telemetry.MetricNetworkServedTipRegressionTotal.
-			WithLabelValues(n.projectId, n.Label(), servedTipLaneLabel(lane), axis, "held").
+			WithLabelValues(n.projectId, n.Label(), label, axis, "held").
 			Inc()
 	}
 	return served
@@ -1446,18 +1430,7 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	))
 	defer span.End()
 
-	if sel := requestSelector(ctx); sel != "" {
-		// See EvmHighestLatestBlockNumber: a configured-tag selector gets its
-		// own lane (telemetry labels + watchdog anchor); any other selector
-		// computes the same stateless pick without emitting gauges.
-		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
-			tip, _ := n.servedTip(ctx, span, true, "finalized", &p.finalizedAnchor, p.lane)
-			return tip
-		}
-		tip, _ := n.servedTip(ctx, span, true, "finalized", nil, servedTipLaneNone)
-		return tip
-	}
-	tip, _ := n.servedTip(ctx, span, true, "finalized", &n.servedFinalizedAnchor, "")
+	tip, _ := n.servedTip(ctx, span, true, "finalized", n.servedTipLaneFor(ctx))
 	return tip
 }
 
@@ -1658,16 +1631,11 @@ func (n *Network) liveUpstreamInGroup(ctx context.Context, selector string, useF
 	return false
 }
 
-// observeServedTipMetrics exports the served-tip gauges. axis
+// observeServedTipMetrics exports one lane's served-tip gauges. axis
 // ("latest"|"finalized") is a label rather than part of the metric name to
 // keep the gauge set small. lane="all" is the network-wide pick; a named lane
-// is a use-upstream group's own pick; the stateless lane-none sentinel emits
-// nothing (a subset value must never overwrite a gauge).
-func (n *Network) observeServedTipMetrics(axis string, lane string, pick common.ServedTipPick, advanceAge time.Duration) {
-	if lane == servedTipLaneNone {
-		return
-	}
-	laneLabel := servedTipLaneLabel(lane)
+// is a use-upstream group's own pick.
+func (n *Network) observeServedTipMetrics(axis string, laneLabel string, pick common.ServedTipPick, advanceAge time.Duration) {
 	if pick.Tip > 0 {
 		telemetry.MetricNetworkServedTipBlockNumber.
 			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).

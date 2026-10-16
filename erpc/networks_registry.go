@@ -170,6 +170,7 @@ func NewNetwork(
 		failsafeExecutors: failsafeExecutors,
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
+	network.servedTipAll.label = "all"
 
 	if nwCfg.Architecture == "" {
 		nwCfg.Architecture = common.ArchitectureEvm
