@@ -37,6 +37,7 @@ func (n *queryTestNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) i
 	return n.finalized
 }
 func (n *queryTestNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream { return nil }
+func (n *queryTestNetwork) EvmRefreshLatestBlock(ctx context.Context)             {}
 
 // queryTestConfigUpstream is a minimal common.Upstream with a given config.
 type queryTestConfigUpstream struct {

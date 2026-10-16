@@ -121,6 +121,9 @@ type EvmStatePoller struct {
 	// keep-fresh advances never touch this.
 	latestMajorVerifyInProgress sync.Mutex
 
+	// Single in-flight flag for RefreshLatestBlock's background poll.
+	latestRefreshInFlight atomic.Bool
+
 	// Earliest per probe tracking
 	earliestByProbe              map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
 	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
@@ -560,6 +563,33 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			Msg("fetched latest block from upstream")
 		return blockNum, nil
 	})
+}
+
+// RefreshLatestBlock starts a background latest-block poll when the stored
+// head is older than the poll debounce and no refresh is already in flight,
+// so a head read on the request path does not wait for the next ticker poll.
+// It never blocks and spawns at most one goroutine per poller at a time.
+func (e *EvmStatePoller) RefreshLatestBlock() {
+	if e.IsObjectNull() || e.latestBlockShared == nil {
+		return
+	}
+	e.stateMu.RLock()
+	cfg, skip := e.cfg, e.skipLatestBlockCheck
+	e.stateMu.RUnlock()
+	if skip || !e.latestBlockShared.IsStale(e.resolveDebounce(cfg)) {
+		return
+	}
+	if !e.latestRefreshInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer e.latestRefreshInFlight.Store(false)
+		ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
+		defer cancel()
+		if _, err := e.PollLatestBlockNumber(ctx); err != nil {
+			e.logger.Debug().Err(err).Msg("on-demand latest block refresh failed in evm state poller")
+		}
+	}()
 }
 
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {

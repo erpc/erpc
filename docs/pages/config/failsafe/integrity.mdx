@@ -128,12 +128,13 @@ at network scope (try another upstream), not retryable at the same upstream, fee
 Configured under `networks[].directiveDefaults`. On by default; toggle per-request via
 `X-ERPC-Enforce-*` headers / `?enforce-*=` query params.
 
-**Highest-block enforcement — `eth_blockNumber`.** Reads `dirs.EnforceHighestBlock`. If
-the response block is below the network-known highest, eRPC replaces the response with a
-synthetic JSON-RPC result containing the highest hex block number — no re-request is
-made. Applies to EVERY response source, including cache hits, so a stale value planted in
-a shared cache can never be served below the tip this instance knows. The tip is resolved
-request-aware: a `use-upstream` selector scopes it to the targeted subset. <SourceLink file="architecture/evm/eth_blockNumber.go" lines="31-123" />
+**Highest-block enforcement — `eth_blockNumber`.** Reads `dirs.EnforceHighestBlock`. While
+the network's served head is known, eRPC answers `eth_blockNumber` from it without
+dispatching. Otherwise the request is forwarded, and every response — including cache
+hits — is pinned exactly to the served head once it is known: a higher value is lowered,
+a lower one raised, with no re-request. The head is resolved request-aware: a
+`use-upstream` selector scopes it to the targeted subset. See
+[Block tracking](/reference/evm/block-tracking). <SourceLink file="architecture/evm/eth_blockNumber.go" lines="13-171" />
 
 **Highest-block enforcement — `eth_getBlockByNumber[latest/finalized]`.** Reads
 `dirs.EnforceHighestBlock`. If the returned block is behind the network-known highest,
@@ -162,7 +163,7 @@ not-yet-produced blocks. Fail-open on unknown head or block tags. <SourceLink fi
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
-| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber` (synthetic upgrade, incl. cache hits) and `eth_getBlockByNumber[latest/finalized]` (re-fetch). Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
+| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber` (answered from the served head; every response pinned to it, incl. cache hits) and `eth_getBlockByNumber[latest/finalized]` (re-fetch). Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
 | `enforceGetLogsBlockRange` | `*bool` | `true` | Pre-screens `eth_getLogs`/`trace_filter` ranges against upstream availability. The actual hooks read `evm.integrity.enforceGetLogsBlockRange` directly. Header: `X-ERPC-Enforce-GetLogs-Range`. <SourceLink file="common/defaults.go" lines="1461-1463" /> |
 | `enforceNonNullTaggedBlocks` | `*bool` | `true` | Converts null tagged `eth_getBlockByNumber` responses into `ErrEndpointMissingData`. Disable for chains that legitimately return null for some tags (e.g. ZKSync Era). Header: `X-ERPC-Enforce-Non-Null-Tagged-Blocks`. <SourceLink file="common/defaults.go" lines="1464-1466" /> |
 

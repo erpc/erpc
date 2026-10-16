@@ -171,9 +171,9 @@ resolve `latest`/`finalized` and gate block availability. They must reflect the
 request's selector so a `systx`-targeted request never resolves `latest` to a
 block only a faster family has.
 
-- `ComputeServedTipCandidate` ([architecture/evm/served_tip.go:102-196](../../architecture/evm/served_tip.go))
-  stays a **pure, unchanged** function. `gatherEvmTipInputsForMethod`
-  ([erpc/networks.go:275-305](../../erpc/networks.go)) gains a selector filter on
+- The picker, `common.PickServedTip` ([common/served_tip.go](../../common/served_tip.go)),
+  stays a **pure** function. The candidate walk, `tipCandidateUpstreams`
+  ([erpc/networks.go](../../erpc/networks.go)), applies the selector filter to
   its inputs.
 - **Untargeted** → existing network-wide monotonic counter
   (`servedLatestBlockShared`, [erpc/networks.go:59-62](../../erpc/networks.go)).

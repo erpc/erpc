@@ -339,8 +339,8 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 |---|---|---|---|
 | `erpc_upstream_latest_block_number` | gauge | project, vendor, network, upstream | Upstream's latest block advanced. |
 | `erpc_upstream_finalized_block_number` | gauge | project, vendor, network, upstream | Upstream's finalized block advanced. |
-| `erpc_upstream_block_head_lag` | gauge | project, vendor, network, upstream | Blocks behind the freshest upstream. |
-| `erpc_upstream_finalization_lag` | gauge | project, vendor, network, upstream | Finalized blocks behind the freshest upstream. |
+| `erpc_upstream_block_head_lag` | gauge | project, vendor, network, upstream | Blocks behind the corroborated network head (second-highest non-benched upstream). |
+| `erpc_upstream_finalization_lag` | gauge | project, vendor, network, upstream | Finalized blocks behind the corroborated network finalized head. |
 | `erpc_upstream_block_head_large_rollback` | gauge | project, vendor, network, upstream, finality | Block head rolled back by more than `DefaultToleratedBlockHeadRollback` = 1024 blocks. Gauge value = absolute delta of the rollback. `finality` is the head axis that rolled back (`latest` or `finalized`), **not** a `DataFinalityState`. Sticky: never reset, so a non-zero value means "this process saw a rollback at some point", not "a rollback is happening now". |
 | `erpc_upstream_latest_block_polled_total` | counter | project, vendor, network, upstream | State poller proactively polled latest block. |
 | `erpc_upstream_finalized_block_polled_total` | counter | project, vendor, network, upstream | State poller proactively polled finalized block. |
@@ -350,9 +350,11 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Request skipped: requested lower bound below upstream's available range. Same `confidence` values. |
 | `erpc_network_latest_block_timestamp_distance_seconds` | gauge | project, network, origin | `now − latest block timestamp`. `origin` ∈ `"evm_state_poller"`, `"network_response"`. |
 | `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | EMA block-time estimate (α=0.1, min 3 samples). Returns 0 until 3 samples. Bounded 10ms–120s. |
-| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served-tip pick per axis (latest/finalized). `lane="all"` = network-wide; a named lane = the use-upstream group for that lane. |
-| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Lag of served tip behind freshest velocity-eligible upstream. Absent in default MAX mode. |
-| `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream excluded from served-tip pick. `reason` ∈ `"velocity"`, `"outlier"`. Absent in MAX mode. |
+| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | The tip actually served per `axis` (`latest`/`finalized`): the [served-tip pick](/reference/evm/block-tracking#served-tip) after the regression guard, the WebSocket delivered-head floor (network-wide `latest` only) and the guarantee floors. Set on every evaluation with a known tip, with or without a `servedTip` block. `lane="all"` = network-wide; a named lane = a [use-upstream group](/reference/lanes); a request without a lane writes nothing. Keeps its last value while no upstream has a head. |
+| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | `Freshest − served`, clamped at 0. `Freshest` is the second-highest head on the ballot (the only one when one votes), so a lone far-ahead head never inflates it. Reads 0 at quorum ≤ 2 unless a guarantee floor sits below the pick, and 0 while the guard or the WebSocket floor lifts the tip. Keeps its last value while no upstream has a head. |
+| `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since this process saw the served value change, written at each evaluation; absent until the first change. Keeps rising while no upstream has a head: the stuck-tip signal. |
+| `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | [Regression-guard](/reference/evm/block-tracking#regression-guard) transitions, not evaluations. `outcome` ∈ `"held"` (serving the last corroborated pick), `"failed_open"` (the hold outlasted 1 minute). Any increase is alert-worthy. |
+| `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream | Times this process [benched](/reference/evm/block-tracking#benching) the upstream's head out of the served-tip ballots and the lag reference: it stayed behind peers that kept advancing for its stall window. |
 
 #### Area 4: Cache connector freshness
 

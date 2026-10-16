@@ -396,20 +396,23 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 		send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
 		defer shutdown()
 
-		first, _ := bniSend(t, send, nil, nil)
-		require.Equal(t, bniHealthyHead, first, "precondition: fresh-path correction must work")
-
-		// The fix may either write the corrected value back (entry >= tip) or
-		// skip caching the stale original (no entry). Both satisfy the
-		// invariant; today the stale 0x800 lands in the cache (bug B1).
+		// With the head known, an enforced eth_blockNumber is answered from the
+		// served head before dispatch and writes nothing to the cache. The path
+		// that still dispatches AND persists is a request that opts out of
+		// enforcement: the lagging upstream answers first and its raw 0x800
+		// lands in the shared cache.
+		raw, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
+		require.Equal(t, bniLaggingHead, raw, "precondition: the opt-out request is answered by the lagging upstream")
 		v, ok := bniWaitForCachedValue(ntw, 2*time.Second)
-		if !ok {
-			t.Log("no eth_blockNumber cache entry written — acceptable (stale value skipped)")
-			return
-		}
-		assert.GreaterOrEqual(t, v, bniHealthyHead,
-			"cache poisoned: the forward path persisted the stale upstream value (0x%x) instead of the corrected value it served to the client (0x%x)",
-			v, first)
+		require.True(t, ok, "precondition: the dispatched opt-out response must reach the cache, or this test exercises nothing")
+		t.Logf("cache now holds eth_blockNumber=0x%x", v)
+
+		// Every enforced client reading that entry must still see the tip.
+		got, hdrs := bniSend(t, send, nil, nil)
+		assert.Equal(t, "HIT", hdrs["X-Erpc-Cache"], "the enforced read must come from the entry the opt-out request wrote")
+		assert.Equal(t, bniHealthyHead, got,
+			"cache poisoned: a stale upstream value persisted by the forward path (0x%x) reached an enforced client below the tip (0x%x)",
+			v, bniHealthyHead)
 	})
 
 	// ── B2 isolated: a stale entry already in the (possibly shared) cache ───
