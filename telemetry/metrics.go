@@ -250,15 +250,15 @@ var (
 	}, []string{"project", "network", "lane", "axis", "outcome"})
 
 	// MetricUpstreamHeadBenchedTotal counts the times the health tracker benched
-	// an upstream's head: reason="behind" = it stayed behind peers that kept
-	// advancing (stalled, or replaying far behind the tip) for its stall
-	// window. A benched upstream votes in no served-tip ballot and is not the
-	// network lag reference until its head catches up with the live ones.
+	// an upstream's head: it stayed behind peers that kept advancing (stalled,
+	// or replaying far behind the tip) for its stall window. A benched upstream
+	// votes in no served-tip ballot and is not the network lag reference until
+	// its head catches up with the live ones.
 	MetricUpstreamHeadBenchedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_head_benched_total",
-		Help:      "Times an upstream's head was benched out of the served-tip ballots and the network lag reference, by reason (behind = stayed behind peers that kept advancing for its stall window).",
-	}, []string{"project", "vendor", "network", "upstream", "reason"})
+		Help:      "Times an upstream's head was benched out of the served-tip ballots and the network lag reference: it stayed behind peers that kept advancing for its stall window.",
+	}, []string{"project", "vendor", "network", "upstream"})
 
 	MetricUpstreamCordoned = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
