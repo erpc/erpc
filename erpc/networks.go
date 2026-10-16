@@ -577,35 +577,39 @@ func configuredUpperExactBlock(u common.Upstream) *int64 {
 // arbitrary selector value can never grow per-pod memory. No-op when there is
 // no request or no selector in ctx (background/admin callers).
 func (n *Network) tipCandidateUpstreams(ctx context.Context) iter.Seq[common.Upstream] {
-	return func(yield func(common.Upstream) bool) {
-		sel := requestSelector(ctx)
-		visit := func(u common.Upstream) bool {
-			if sel != "" {
-				if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
-					return true
-				}
-			}
-			return yield(u)
-		}
-		if n.policyEngine != nil {
-			if eligible := n.policyEngine.GetOrdered(n.networkId, "*", "*"); len(eligible) > 0 {
-				for _, u := range eligible {
-					if !visit(u) {
-						return
-					}
-				}
-				return
+	// Kept this small so it inlines: the closure then stays on the caller's
+	// stack instead of costing a heap allocation per walk.
+	return func(yield func(common.Upstream) bool) { n.walkTipCandidates(ctx, yield) }
+}
+
+func (n *Network) walkTipCandidates(ctx context.Context, yield func(common.Upstream) bool) {
+	sel := requestSelector(ctx)
+	visit := func(u common.Upstream) bool {
+		if sel != "" {
+			if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
+				return true
 			}
 		}
-		// A partially-initialized network (cache-only paths, tests without a
-		// registry) has no candidates, so the head accessors fail open (0).
-		if n.upstreamsRegistry == nil {
+		return yield(u)
+	}
+	if n.policyEngine != nil {
+		if eligible := n.policyEngine.GetOrdered(n.networkId, "*", "*"); len(eligible) > 0 {
+			for _, u := range eligible {
+				if !visit(u) {
+					return
+				}
+			}
 			return
 		}
-		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-			if !visit(u) {
-				return
-			}
+	}
+	// A partially-initialized network (cache-only paths, tests without a
+	// registry) has no candidates, so the head accessors fail open (0).
+	if n.upstreamsRegistry == nil {
+		return
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		if !visit(u) {
+			return
 		}
 	}
 }
