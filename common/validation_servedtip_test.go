@@ -38,12 +38,6 @@ func TestEvmNetworkConfig_Validate_ServedTip(t *testing.T) {
 		require.NoError(t, e.Validate())
 	})
 
-	t.Run("zero maxRegressionBlocks means the default tolerance", func(t *testing.T) {
-		e := baseValidEvmNetworkConfig()
-		e.ServedTip = &EvmServedTipConfig{}
-		require.NoError(t, e.Validate())
-	})
-
 	t.Run("guaranteedFor accepts id and tag selectors", func(t *testing.T) {
 		e := baseValidEvmNetworkConfig()
 		e.ServedTip = &EvmServedTipConfig{
@@ -62,7 +56,7 @@ func TestEvmNetworkConfig_Validate_ServedTip(t *testing.T) {
 		assert.Contains(t, err.Error(), "guaranteedFor")
 	})
 
-	t.Run("empty guaranteedFor is the default", func(t *testing.T) {
+	t.Run("empty servedTip is the default", func(t *testing.T) {
 		e := baseValidEvmNetworkConfig()
 		e.ServedTip = &EvmServedTipConfig{}
 		require.NoError(t, e.Validate())
