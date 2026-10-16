@@ -106,11 +106,12 @@ func resolveDeclaredBound(bound *common.SvmAvailabilityBoundConfig, isLower bool
 // Above the declared upper: -32004 BlockNotAvailable, evaluated against the
 // highest slot the request can touch (the END for getBlocks/getBlocksWithLimit,
 // not just the start). Retryable iff the upper kind is dynamic AND the slot is
-// ahead of LatestSlot() by at most maxRetryableSlotDistance, matching EVM's
-// near-tip classification — an exactSlot cap can never reopen by waiting.
-// Non-retryable upper skips are permanent (like lower skips) so the failsafe
-// executor does not treat an all-upstream declared-window rejection as
-// transient missing_data.
+// ahead of the resolved upper bound by at most maxRetryableSlotDistance — a
+// moving cap (latestSlotMinus / firstAvailableSlotPlus) can reopen as observed
+// state advances, including when the request is still behind LatestSlot().
+// An exactSlot cap can never reopen by waiting. Non-retryable upper skips are
+// permanent (like lower skips) so the failsafe executor does not treat an
+// all-upstream declared-window rejection as transient missing_data.
 //
 // Fail-open when no slot is named, no bounds are configured, or resolution
 // produced an unbounded range (cold poller, unobserved floor, invalid min>max).
@@ -163,17 +164,19 @@ func CheckUpstreamDeclaredSlotBounds(ctx context.Context, u common.Upstream, r *
 				u,
 			)
 			// exactSlot is a FIXED cap: the tip advancing can never reopen the
-			// window, so a near-tip retry would burn rounds for nothing. Only
+			// window, so a near-bound retry would burn rounds for nothing. Only
 			// dynamic uppers (latestSlotMinus, firstAvailableSlotPlus) move with
-			// observed state and can become servable by waiting.
+			// observed state and can become servable by waiting — measure the
+			// retry distance from the resolved upper, not from LatestSlot(), so
+			// a slot between the cap and the tip is not marked permanent.
 			fixedUpper := false
 			if cfg := u.Config(); cfg != nil && cfg.Svm != nil && cfg.Svm.BlockAvailability != nil &&
 				cfg.Svm.BlockAvailability.Upper != nil && cfg.Svm.BlockAvailability.Upper.ExactSlot != nil {
 				fixedUpper = true
 			}
 			retryable := false
-			if !fixedUpper && latest > 0 && upperSlot > latest {
-				retryable = upperSlot-latest <= maxRetryableSlotDistance
+			if !fixedUpper {
+				retryable = upperSlot-maxBound <= maxRetryableSlotDistance
 			}
 			if !retryable {
 				if me, ok := err.(*common.ErrEndpointMissingData); ok {
