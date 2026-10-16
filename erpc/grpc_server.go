@@ -504,7 +504,10 @@ func grpcStatusOf(err error) error {
 	switch {
 	case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
 		return status.Error(codes.Unimplemented, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized, common.ErrCodeAuthUnauthorized):
+	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized):
+		auth.RecordAuthFailed(nil, err)
+		return status.Error(codes.Unauthenticated, err.Error())
+	case common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized):
 		return status.Error(codes.Unauthenticated, err.Error())
 	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout, common.ErrCodeNetworkRequestTimeout, common.ErrCodeFailsafeTimeoutExceeded) || errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
