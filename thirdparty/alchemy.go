@@ -153,11 +153,12 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	3448148188: "tron-testnet",
 }
 
-// alchemyChainIdsRegisteredToOtherChains holds chain ids Alchemy assigns to a
-// network that chainlist registers to another chain; serving them would route
-// that chain's traffic to the wrong blocks.
-var alchemyChainIdsRegisteredToOtherChains = map[int64]struct{}{
-	6900: {}, // Alchemy: anime-sepolia; chainlist: Nibiru cataclysm-1
+// alchemyCollidingChainIds holds chain ids under which Alchemy serves a
+// different chain than the one that id usually names. eth_chainId cannot tell
+// the two apart, so an auto-discovered upstream would serve another chain's
+// blocks.
+var alchemyCollidingChainIds = map[int64]struct{}{
+	6900: {}, // Alchemy: anime-sepolia testnet; 6900 is Nibiru mainnet
 }
 
 const DefaultAlchemyRecheckInterval = 24 * time.Hour
@@ -630,7 +631,7 @@ func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context, apiUrl string)
 			newData[chainID] = subdomain
 		}
 	}
-	for chainID := range alchemyChainIdsRegisteredToOtherChains {
+	for chainID := range alchemyCollidingChainIds {
 		delete(newData, chainID)
 	}
 

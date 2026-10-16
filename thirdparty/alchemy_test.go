@@ -94,7 +94,7 @@ func TestAlchemyVendor_SuccessfulFetchPromotesOverFallback(t *testing.T) {
 	assert.False(t, supported, "first call returns built-in static map; async refresh hasn't published yet")
 	supported, err = vendor.SupportsNetwork(ctx, &logger, settings, "evm:6900")
 	require.NoError(t, err)
-	assert.False(t, supported, "chain 6900 is Nibiru on chainlist, not Alchemy's anime-sepolia")
+	assert.False(t, supported, "chain 6900 is Nibiru mainnet, not Alchemy's anime-sepolia")
 
 	// Wait for async refresh to hit the mock server, then re-query.
 	select {
