@@ -1702,6 +1702,16 @@ export interface EvmNetworkConfig {
      */
     dynamicBlockTimeDebounceMultiplier?: number;
     /**
+     * FinalizedDebounceDepthMultiplier sets how stale an upstream's finalized block may
+     * get before the state poller fetches it again, as a fraction of the chain's
+     * finality depth in time: (latest - finalized) x EMA block time x multiplier. The
+     * result applies only when it is longer than the regular debounce. Finalized
+     * advances once per finality window, so polling it at the latest-block cadence
+     * mostly returns the same number. 0 disables it (finalized uses the regular debounce).
+     * Default: 0.05 (refresh about 20 times per finality window).
+     */
+    finalizedDebounceDepthMultiplier?: number;
+    /**
      * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
      * retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
      * or an empty/missing-data point-lookup). When the dynamic block time is known, the
@@ -1752,11 +1762,12 @@ export interface EvmNetworkConfig {
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
  * block it advertises (and enforces) from its upstreams.
- * Both axes use one rule: over the eligible (selection-policy), non-syncing,
- * live (not static-capped) and non-benched upstreams, serve the highest block
- * at least Quorum of them already have. An upstream whose head stopped moving
- * while another kept advancing is benched by the health tracker and leaves
- * the ballot until it catches up again.
+ * Both axes use one rule: among the eligible (selection-policy), non-syncing
+ * upstreams, only the best voter rank present votes (live, then benched, then
+ * static-capped, then benched and static-capped), and the served block is the
+ * highest one at least Quorum of those voters already have. The health
+ * tracker benches an upstream whose head stopped moving while another kept
+ * advancing, until it catches up again.
  */
 export interface EvmServedTipConfig {
     /**
@@ -2587,24 +2598,6 @@ export type SvmNetwork = Network;
 export type QuantileTracker = any;
 export type TrackedMetrics = any;
 /**
- * ServedTipInput is a single observation: an upstream's last-known tip block.
- * Callers are responsible for excluding syncing, cordoned or benched upstreams
- * BEFORE passing observations here; the picker treats every input as a
- * candidate.
- */
-export interface ServedTipInput {
-    /**
-     * UpstreamID is preserved only for telemetry attribution. It is not used
-     * in the pick.
-     */
-    upstreamid: string;
-    /**
-     * BlockNumber is the upstream's reported tip. Zero or negative values are
-     * treated as "no data yet" and filtered before picking.
-     */
-    blocknumber: number;
-}
-/**
  * ServedTipPick is the picker's output.
  */
 export interface ServedTipPick {
@@ -2632,7 +2625,7 @@ export interface ServedTipPick {
      */
     max: number;
     /**
-     * Inputs is the number of valid (BlockNumber > 0) observations.
+     * Inputs is the number of valid (> 0) heads.
      */
     inputs: number;
 }

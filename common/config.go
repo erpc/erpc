@@ -2812,11 +2812,12 @@ type EvmNetworkConfig struct {
 // EvmServedTipConfig controls how the network derives the "latest"/"finalized"
 // block it advertises (and enforces) from its upstreams.
 //
-// Both axes use one rule: over the eligible (selection-policy), non-syncing,
-// live (not static-capped) and non-benched upstreams, serve the highest block
-// at least Quorum of them already have. An upstream whose head stopped moving
-// while another kept advancing is benched by the health tracker and leaves
-// the ballot until it catches up again.
+// Both axes use one rule: among the eligible (selection-policy), non-syncing
+// upstreams, only the best voter rank present votes (live, then benched, then
+// static-capped, then benched and static-capped), and the served block is the
+// highest one at least Quorum of those voters already have. The health
+// tracker benches an upstream whose head stopped moving while another kept
+// advancing, until it catches up again.
 type EvmServedTipConfig struct {
 	// Quorum is how many eligible upstreams must already have a block before it
 	// is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
