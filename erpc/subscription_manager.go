@@ -310,7 +310,7 @@ func (s *subIngressSelector) Select(_, _ string, _ []interface{}) (defaults, fal
 	failoverOn := s.nw.cfg != nil && s.nw.cfg.Failover.Enabled()
 	eligible := make(map[string]struct{})
 	if failoverOn {
-		for _, u := range s.nw.tipCandidateUpstreams(ctx, "*") {
+		for u := range s.nw.tipCandidateUpstreams(ctx) {
 			eligible[u.Id()] = struct{}{}
 		}
 	}
@@ -519,7 +519,7 @@ func (h *networkHandle) deliversHeadsFrom(ctx context.Context, u common.Upstream
 	if h.nw.cfg == nil || !h.nw.cfg.Failover.Enabled() || !isFallbackTier(u) {
 		return true
 	}
-	for _, c := range h.nw.tipCandidateUpstreams(ctx, "*") {
+	for c := range h.nw.tipCandidateUpstreams(ctx) {
 		if s := h.heads[c.Id()]; s != nil && !isFallbackTier(c) && s.HeadsLive() {
 			return false
 		}

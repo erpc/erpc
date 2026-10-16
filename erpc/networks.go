@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"iter"
 	"math"
 	"runtime/debug"
 	"slices"
@@ -426,30 +427,9 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-// gatherEvmTipInputsForMethod builds the served-tip ballot from the upstreams
-// that the selection policy considers ELIGIBLE for `method` — so an upstream
-// the user (or an integrity guard) excluded/cordoned drops out of head tracking
-// in the same place it drops out of routing. `method == "*"` yields the
-// network-wide eligible set (the global served tip); a concrete method yields
-// the per-method eligible set (a capability lane). Falls back to the full
-// registered set on cold start / when the policy has produced no decision yet.
-//
-// The ballot itself (who votes, and the guard's live reference) is
-// evmTipBallot's rule.
-func (n *Network) gatherEvmTipInputsForMethod(
-	ctx context.Context,
-	useFinalized bool,
-	method string,
-) (common.ServedTipPick, bool) {
-	var q common.ServedTipQuorum
-	if n.cfg != nil {
-		q = n.cfg.Evm.ServedTipQuorum()
-	}
-	return n.evmTipBallot(n.tipCandidateUpstreams(ctx, method), useFinalized, q)
-}
-
-// evmTipBallot turns one candidate set into the served-tip pick for an axis
-// under quorum q, and reports whether live (non-capped) heads decided it: a
+// evmTipBallot builds the served-tip pick for an axis under quorum q from the
+// request's tip candidates (tipCandidateUpstreams) that satisfy member (nil =
+// all of them), and reports whether live (non-capped) heads decided it: a
 // cap-only ballot gives the regression guard no live reference. Syncing
 // upstreams never vote.
 //
@@ -475,10 +455,12 @@ func (n *Network) gatherEvmTipInputsForMethod(
 // contains at least one live head. A set of only historical/frozen upstreams
 // legitimately serves its cap — that cap is the freshest block anyone in it can
 // serve — so it keeps voting.
-func (n *Network) evmTipBallot(upstreams []common.Upstream, useFinalized bool, q common.ServedTipQuorum) (common.ServedTipPick, bool) {
-	live := make([]common.ServedTipInput, 0, len(upstreams))
-	var capped, benchedLive, benchedCapped []common.ServedTipInput
-	for _, cu := range upstreams {
+func (n *Network) evmTipBallot(ctx context.Context, useFinalized bool, q common.ServedTipQuorum, member func(common.Upstream) bool) (common.ServedTipPick, bool) {
+	var live, capped, benchedLive, benchedCapped []common.ServedTipInput
+	for cu := range n.tipCandidateUpstreams(ctx) {
+		if member != nil && !member(cu) {
+			continue
+		}
 		u, ok := cu.(common.EvmUpstream)
 		if !ok || u.EvmStatePoller() == nil {
 			continue
@@ -578,49 +560,53 @@ func configuredUpperExactBlock(u common.Upstream) *int64 {
 	return cfg.Evm.BlockAvailability.Upper.ExactBlock
 }
 
-// tipCandidateUpstreams returns the eligible upstreams that feed the served-tip
-// picker for `method`, sourced from the selection policy so head tracking and
-// routing share one notion of "which upstreams count". Falls back to the full
-// registered set when the policy is absent or has not yet produced a decision.
-func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []common.Upstream {
-	var ups []common.Upstream
-	if n.policyEngine != nil {
-		if eligible := n.policyEngine.GetOrdered(n.networkId, method, "*"); len(eligible) > 0 {
-			ups = eligible
+// tipCandidateUpstreams yields, in routing order, the upstreams that may vote
+// on the request's served tip: the selection policy's eligible set, so an
+// upstream the user (or an integrity guard) excluded or cordoned drops out of
+// head tracking where it drops out of routing, else the full registered set
+// while the policy is absent or has made no decision yet. It walks the
+// policy's or registry's own slice in place, so callers on the hot path pay no
+// copy.
+//
+// Selector-scoped served tip: when the request targets a subset of upstreams
+// (the use-upstream id/tag selector), the network's `latest`/`finalized` must
+// be decided AMONG that subset — otherwise a more-ahead group (e.g. base
+// flashblocks vs normal) would define the tip for a request pinned to the
+// other group, causing "block not found" churn. The filter is stateless, so an
+// arbitrary selector value can never grow per-pod memory. No-op when there is
+// no request or no selector in ctx (background/admin callers).
+func (n *Network) tipCandidateUpstreams(ctx context.Context) iter.Seq[common.Upstream] {
+	return func(yield func(common.Upstream) bool) {
+		sel := requestSelector(ctx)
+		visit := func(u common.Upstream) bool {
+			if sel != "" {
+				if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
+					return true
+				}
+			}
+			return yield(u)
 		}
-	}
-	if ups == nil {
-		if n.upstreamsRegistry == nil {
-			// Defensive: a partially-initialized network (e.g. cache-only paths or tests
-			// that don't wire a registry) has none — report no candidates so the head
-			// accessors fail open (return 0) instead of dereferencing a nil registry.
-			return nil
-		}
-		raw := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-		ups = make([]common.Upstream, 0, len(raw))
-		for _, u := range raw {
-			ups = append(ups, u)
-		}
-	}
-
-	// Selector-scoped served tip: when the request targets a subset of
-	// upstreams (the use-upstream id/tag selector), the network's
-	// `latest`/`finalized` must be decided AMONG that subset — otherwise a
-	// more-ahead group (e.g. base flashblocks vs normal) would define the tip
-	// for a request pinned to the other group, causing "block not found"
-	// churn. This is stateless (no shared counter / no materialized state),
-	// so an arbitrary selector value can never grow per-pod memory. No-op when
-	// there is no request or no selector in ctx (background/admin callers).
-	if sel := requestSelector(ctx); sel != "" {
-		filtered := make([]common.Upstream, 0, len(ups))
-		for _, u := range ups {
-			if m, _ := common.UpstreamMatchesSelector(sel, u); m {
-				filtered = append(filtered, u)
+		if n.policyEngine != nil {
+			if eligible := n.policyEngine.GetOrdered(n.networkId, "*", "*"); len(eligible) > 0 {
+				for _, u := range eligible {
+					if !visit(u) {
+						return
+					}
+				}
+				return
 			}
 		}
-		return filtered
+		// A partially-initialized network (cache-only paths, tests without a
+		// registry) has no candidates, so the head accessors fail open (0).
+		if n.upstreamsRegistry == nil {
+			return
+		}
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			if !visit(u) {
+				return
+			}
+		}
 	}
-	return ups
 }
 
 // requestSelector returns the use-upstream selector for the request bound to
@@ -914,7 +900,11 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 		axis = "finalized"
 	}
 	lane := n.servedTipLaneFor(ctx)
-	pick, live := n.gatherEvmTipInputsForMethod(ctx, finalized, "*")
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	pick, live := n.evmTipBallot(ctx, finalized, q, nil)
 	tip := pick.Tip
 
 	// Regression guard: "latest" cannot drop far below the corroborated live
@@ -975,7 +965,7 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 // poisoned ballot — an availability bound voting as a head (two capped
 // legacy upstreams), a bogus vendor head, a rolled-back shared counter. It is
 // deliberately independent of the bound-capped filter in
-// gatherEvmTipInputsForMethod: that removes ONE known source of low votes, this
+// evmTipBallot: that removes ONE known source of low votes, this
 // bounds the damage of any other.
 //
 // TWO SOURCES OF EVIDENCE, ONE CEILING. A regression is measured against the
@@ -1492,8 +1482,6 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 
 	if len(methods) == 0 && len(st.GuaranteedFor) == 0 {
 		return 0
 	}
-	eligible := n.tipCandidateUpstreams(ctx, "*")
-	supporting := make([]common.Upstream, 0, len(eligible))
 	var floor int64
 	for _, sel := range st.GuaranteedFor {
 		// Group guarantee: the advertised tip must be servable by this group's
@@ -1501,14 +1489,10 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 
 		// transient-absence rule as the method guarantee below — only the
 		// membership predicate differs (selector match instead of method
 		// support).
-		supporting = supporting[:0]
-		for _, cu := range eligible {
-			if m, _ := common.UpstreamMatchesSelector(sel, cu); !m {
-				continue
-			}
-			supporting = append(supporting, cu)
-		}
-		pick, live := n.evmTipBallot(supporting, useFinalized, common.ServedTipQuorumMajority)
+		pick, live := n.evmTipBallot(ctx, useFinalized, common.ServedTipQuorumMajority, func(u common.Upstream) bool {
+			m, _ := common.UpstreamMatchesSelector(sel, u)
+			return m
+		})
 		if pick.Inputs == 0 {
 			continue
 		}
@@ -1520,15 +1504,11 @@ func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 
 		}
 	}
 	for _, m := range methods {
-		supporting = supporting[:0]
-		for _, cu := range eligible {
-			// Supporting set = eligible upstreams that handle this method.
-			if handle, _ := cu.ShouldHandleMethod(m); !handle {
-				continue
-			}
-			supporting = append(supporting, cu)
-		}
-		pick, live := n.evmTipBallot(supporting, useFinalized, common.ServedTipQuorumMajority)
+		// Supporting set = eligible upstreams that handle this method.
+		pick, live := n.evmTipBallot(ctx, useFinalized, common.ServedTipQuorumMajority, func(u common.Upstream) bool {
+			handle, _ := u.ShouldHandleMethod(m)
+			return handle
+		})
 		if pick.Inputs == 0 {
 			// No supporting upstream for this method → no constraint (fall through
 			// rather than pinning the tip to 0).
