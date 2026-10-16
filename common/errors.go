@@ -232,15 +232,15 @@ func (e *BaseError) WithPermanentMissingData(p bool) *BaseError {
 	return e
 }
 
-// WithHistoryParityContinuation marks MissingData that exists only to continue a
+// WithHistorySweepContinuation marks MissingData that exists only to continue a
 // serial upstream sweep after an incomplete-but-successful JSON-RPC body — not
 // proof that the upstream lacked data other peers had.
-func (e *BaseError) WithHistoryParityContinuation(p bool) *BaseError {
+func (e *BaseError) WithHistorySweepContinuation(p bool) *BaseError {
 	if e != nil {
 		if e.Details == nil {
 			e.Details = map[string]interface{}{}
 		}
-		e.Details["historyParityContinuation"] = p
+		e.Details["historySweepContinuation"] = p
 	}
 	return e
 }
@@ -2717,15 +2717,19 @@ func IsPermanentlyMissingData(err error) bool {
 	return false
 }
 
-// IsHistoryParityContinuation reports MissingData emitted to continue a serial
+// IsHistorySweepContinuation reports MissingData emitted to continue a serial
 // sweep after an incomplete 200 — not a wrong-empty disagreement with the winner.
-func IsHistoryParityContinuation(err error) bool {
+func IsHistorySweepContinuation(err error) bool {
 	for cur := err; cur != nil; {
 		cse, ok := cur.(StandardError)
 		if !ok {
 			break
 		}
 		if base := cse.Base(); base != nil && base.Details != nil {
+			if p, ok := base.Details["historySweepContinuation"].(bool); ok && p {
+				return true
+			}
+			// Pre-rename detail key (same PR stack may still grep old logs).
 			if p, ok := base.Details["historyParityContinuation"].(bool); ok && p {
 				return true
 			}

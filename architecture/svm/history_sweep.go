@@ -56,7 +56,7 @@ func PoolFirstAvailableSlot(upstreams []common.Upstream) (int64, bool) {
 // instead of treating an omitted limit as unknowable.
 const solanaDefaultSignaturesLimit = 1000
 
-// upstreamPostForward_historyParity turns two SUCCESSFUL-but-incomplete answers
+// upstreamPostForward_historySweep turns two SUCCESSFUL-but-incomplete answers
 // into MissingData so the sweep continues to the next upstream — the same
 // "this upstream does not have it, another may" verdict a pruned validator's
 // -32011 already produces, for the nodes that answer 200 instead of erroring.
@@ -81,7 +81,7 @@ const solanaDefaultSignaturesLimit = 1000
 //
 // Errors pass through untouched: -32011 / -32020 and friends are classified by
 // the error normalizer and fail over on their own.
-func upstreamPostForward_historyParity(ctx context.Context, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+func upstreamPostForward_historySweep(ctx context.Context, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) (*common.NormalizedResponse, error) {
 	if common.IsConsensusSlot(ctx) {
 		return rs, nil
 	}
@@ -158,7 +158,7 @@ func signatureStatusesNullToMissingData(ctx context.Context, u common.Upstream, 
 	if nulls == 0 || holdsDeepestHistory(u, r) {
 		return nil
 	}
-	return newHistoryParityMissingData(
+	return newHistorySweepMissingData(
 		u,
 		fmt.Sprintf("getSignatureStatuses with searchTransactionHistory returned %d null status(es) of %d", nulls, len(result.Value)),
 		map[string]interface{}{"method": "getSignatureStatuses", "nulls": nulls, "total": len(result.Value)},
@@ -197,7 +197,7 @@ func signaturesForAddressShortPageToMissingData(ctx context.Context, u common.Up
 	if int64(len(page)) >= limit || holdsDeepestHistory(u, r) {
 		return nil
 	}
-	return newHistoryParityMissingData(
+	return newHistorySweepMissingData(
 		u,
 		fmt.Sprintf("getSignaturesForAddress returned a short page (%d of limit %d)", len(page), limit),
 		map[string]interface{}{"method": "getSignaturesForAddress", "returned": len(page), "limit": limit},
@@ -232,7 +232,7 @@ func holdsDeepestHistory(u common.Upstream, r *common.NormalizedRequest) bool {
 	return poolKnown && floor <= poolFloor
 }
 
-// newHistoryParityMissingData builds the incomplete-answer verdict: MissingData
+// newHistorySweepMissingData builds the incomplete-answer verdict: MissingData
 // (so the sweep continues to the next upstream) marked PERMANENT. Permanence
 // governs only the time-delayed re-sweep after a completed sweep, never
 // cross-upstream failover (that is retryableTowardNetwork, unaffected). Waiting
@@ -240,14 +240,14 @@ func holdsDeepestHistory(u common.Upstream, r *common.NormalizedRequest) bool {
 // signature land, so re-sweeping every upstream after a delay — until
 // EmptyResultMaxAttempts — would only multiply load for the same answer. The
 // client then receives the request's last-valid response.
-func newHistoryParityMissingData(u common.Upstream, msg string, details map[string]interface{}) error {
+func newHistorySweepMissingData(u common.Upstream, msg string, details map[string]interface{}) error {
 	err := common.NewErrEndpointMissingData(
 		common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorMissingData, msg, nil, details),
 		u,
 	)
 	if me, ok := err.(*common.ErrEndpointMissingData); ok {
 		me.WithPermanentMissingData(true)
-		me.WithHistoryParityContinuation(true)
+		me.WithHistorySweepContinuation(true)
 	}
 	return err
 }

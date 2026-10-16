@@ -87,7 +87,7 @@ func TestPostForward_GetSignatureStatuses_NullContinue(t *testing.T) {
 		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
 		require.True(t, common.IsRetryableTowardNetwork(err), "the sweep must continue to the next upstream")
 		require.True(t, common.IsPermanentlyMissingData(err), "waiting cannot make a signature land: no delayed re-sweep")
-		require.True(t, common.IsHistoryParityContinuation(err), "must not count as wrong-empty misbehavior")
+		require.True(t, common.IsHistorySweepContinuation(err), "must not count as wrong-empty misbehavior")
 	})
 
 	t.Run("flag true + all non-null is served", func(t *testing.T) {
@@ -233,7 +233,7 @@ func TestPostForward_GetSignaturesForAddress_ShortPage(t *testing.T) {
 }
 
 // Methods outside the two history-parity entries are untouched.
-func TestPostForward_HistoryParity_OtherMethodsUntouched(t *testing.T) {
+func TestPostForward_HistorySweep_OtherMethodsUntouched(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	h := &SvmArchitectureHandler{}
@@ -248,7 +248,7 @@ func TestPostForward_HistoryParity_OtherMethodsUntouched(t *testing.T) {
 // deepest-history exemption
 // ---------------------------------------------------------------------------
 
-func TestPostForward_HistoryParity_DeepestHistoryIsAuthoritative(t *testing.T) {
+func TestPostForward_HistorySweep_DeepestHistoryIsAuthoritative(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	h := &SvmArchitectureHandler{}
@@ -326,7 +326,7 @@ func TestPostForward_HistoryParity_DeepestHistoryIsAuthoritative(t *testing.T) {
 // History parity is for serial sweep continuation only. Under consensus, identical
 // valid short pages must stay 200s so participants can agree; MissingData would
 // collapse to an agreed error with no last-valid-response fallback.
-func TestPostForward_HistoryParity_SkippedUnderConsensusSlot(t *testing.T) {
+func TestPostForward_HistorySweep_SkippedUnderConsensusSlot(t *testing.T) {
 	t.Parallel()
 	ctx := common.WithConsensusSlot(context.Background())
 	h := &SvmArchitectureHandler{}
