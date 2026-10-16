@@ -87,6 +87,7 @@ func TestPostForward_GetSignatureStatuses_NullContinue(t *testing.T) {
 		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
 		require.True(t, common.IsRetryableTowardNetwork(err), "the sweep must continue to the next upstream")
 		require.True(t, common.IsPermanentlyMissingData(err), "waiting cannot make a signature land: no delayed re-sweep")
+		require.True(t, common.IsHistoryParityContinuation(err), "must not count as wrong-empty misbehavior")
 	})
 
 	t.Run("flag true + all non-null is served", func(t *testing.T) {

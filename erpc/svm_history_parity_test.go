@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/require"
@@ -292,6 +293,44 @@ func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.
 // When every consensus participant returns the same legitimately short page,
 // history parity must not turn those 200s into MissingData (consensus would
 // agree on an error and last-valid-response fallback is disabled).
+// When rpc1 (shallow) and rpc2 (deepest) return the same legitimately short page,
+// rpc1's parity-continuation MissingData must not record wrong-empty misbehavior.
+func TestSvm_HistoryParity_NoMisbehaviorForIdenticalShortPages(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsmb-rpc1.localhost", 1000, 990, 1000, 500)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsmb-rpc2.localhost", 1000, 990, 1000, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mockSvmMethod("svm-sigsmb-rpc1.localhost", "getSignaturesForAddress", svmSigPage(2))
+	mockSvmMethod("svm-sigsmb-rpc2.localhost", "getSignaturesForAddress", svmSigPage(2))
+
+	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
+		svmUpstreamConfigWithFloorPoll("rpc1", "svm-sigsmb-rpc1.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc2", "svm-sigsmb-rpc2.localhost"),
+	})
+	net.PinUpstreamOrderForTest("rpc1", "rpc2")
+	time.Sleep(300 * time.Millisecond)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr",{"limit":5}]}`))
+	resp, err := svmProjectForward(ctx, net, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	var rpc1 *upstream.Upstream
+	for _, u := range net.upstreamsRegistry.GetAllUpstreams() {
+		if u.Id() == "rpc1" {
+			rpc1 = u
+			break
+		}
+	}
+	require.NotNil(t, rpc1)
+	metrics := net.metricsTracker.GetUpstreamMethodMetrics(rpc1, "getSignaturesForAddress", common.DataFinalityStateRealtime)
+	require.Zero(t, metrics.MisbehaviorsTotal.Load(), "parity sweep must not punish an upstream that returned the same page as the winner")
+}
+
 func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
