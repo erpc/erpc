@@ -267,6 +267,62 @@ func TestMinAgreement_CorrelatedWinnerDisputes(t *testing.T) {
 		"winner without required internal upstream must be a composition dispute, got: %v", winner.Error)
 }
 
+func TestMinAgreement_MissingTagIsLowParticipants(t *testing.T) {
+	// Externals agree and meet agreementThreshold, but NO internal upstream
+	// answered at all this round (not merely dissenting) -> the required
+	// participant is missing outright, so this must surface as
+	// LowParticipants, not CompositionDispute.
+	cfg := &config{
+		maxParticipants:      2,
+		agreementThreshold:   2,
+		disputeBehavior:      common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+		requiredParticipants: mixedQuota(1),
+	}
+	ext1 := taggedUpstream("external-1", "type:external")
+	ext2 := taggedUpstream("external-2", "type:external")
+
+	analysis := analyze(cfg, []*execResult{
+		resultFrom(t, ext1, "0xaa", 0),
+		resultFrom(t, ext2, "0xaa", 1),
+	})
+	winner := winnerOf(cfg, analysis)
+
+	require.NotNil(t, winner.Error)
+	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),
+		"missing required tag with zero participants must be LowParticipants, got: %v", winner.Error)
+	assert.False(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute))
+}
+
+func TestMinAgreement_TaggedUpstreamInfraErrorIsLowParticipants(t *testing.T) {
+	// The internal-tagged upstream is present in the round but only ever
+	// produced an infrastructure error (timeout/5xx) — it never successfully
+	// answered. That's the same "missing" condition as never participating
+	// at all, so this must also surface as LowParticipants, not a
+	// CompositionDispute (infra-error responses must not count as a match).
+	cfg := &config{
+		maxParticipants:      3,
+		agreementThreshold:   2,
+		disputeBehavior:      common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+		requiredParticipants: mixedQuota(1),
+	}
+	internal := taggedUpstream("internal-1", "type:internal")
+	ext1 := taggedUpstream("external-1", "type:external")
+	ext2 := taggedUpstream("external-2", "type:external")
+
+	infraErr := common.NewErrEndpointServerSideException(nil, nil, 500)
+	analysis := analyze(cfg, []*execResult{
+		resultFrom(t, ext1, "0xaa", 0),
+		resultFrom(t, ext2, "0xaa", 1),
+		errorFrom(internal, infraErr, 2),
+	})
+	winner := winnerOf(cfg, analysis)
+
+	require.NotNil(t, winner.Error)
+	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),
+		"a tagged upstream that only produced infra errors must be treated as missing (LowParticipants), got: %v", winner.Error)
+	assert.False(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute))
+}
+
 func TestMinAgreement_ZeroIsNoOp(t *testing.T) {
 	// minAgreement: 0 keeps today's behavior: the correlated externals win.
 	cfg := &config{
@@ -509,5 +565,45 @@ func TestMinAgreement_Validation(t *testing.T) {
 			{Tag: "type:internal", MinParticipants: 2, MinAgreement: 2},
 		}
 		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("agreementThreshold below sum(minAgreement) is accepted", func(t *testing.T) {
+		// enforceWinnerComposition independently enforces the true per-tag
+		// requirement regardless of agreementThreshold, so a lower explicit
+		// value is a looser count gate, not an unsatisfiable config.
+		cfg := &common.ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 2,
+			RequiredParticipants: []*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:archive", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("agreementThreshold matching sum(minAgreement) is accepted", func(t *testing.T) {
+		cfg := &common.ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 2,
+			RequiredParticipants: []*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("agreementThreshold above sum(minAgreement) is accepted", func(t *testing.T) {
+		cfg := &common.ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 3,
+			RequiredParticipants: []*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, cfg.Validate(), "an explicit threshold stricter than the derived default is a legitimate config")
 	})
 }
