@@ -161,7 +161,14 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 			u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
 			u.Evm.StatePollerDebounce = common.Duration(100 * time.Millisecond)
 		}
-		send, _, shutdown := bniServedTipBoot(t, cfg, "rpc2", "rpc1")
+		// rpc3 is a static serving range (upper.exactBlock below its head), first
+		// in routing order: it never votes, so it must not take a refresh slot
+		// from the voters rpc2 and rpc1.
+		rangeEnd := int64(0x700)
+		cfg.Projects[0].Upstreams[2].Evm.BlockAvailability = &common.EvmBlockAvailabilityConfig{
+			Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: &rangeEnd},
+		}
+		send, _, shutdown := bniServedTipBoot(t, cfg, "rpc3", "rpc2", "rpc1")
 		defer shutdown()
 
 		got, _ := bniSend(t, send, nil, nil)
