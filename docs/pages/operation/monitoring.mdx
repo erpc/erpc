@@ -416,12 +416,10 @@ and rate-limit events — but **two rules reference stale metric names** (`erpc_
 | Metric | What to check |
 |---|---|
 | `erpc_network_dynamic_block_time_milliseconds` | EMA block-time estimate (α=0.1, min 3 samples); 0 = startup or halted chain; sanity-clamped to [10ms, 120s] |
-| `erpc_network_served_tip_block_number` | Served-tip pick per axis (latest/finalized) and lane; `lane="all"` = network-wide |
-| `erpc_network_served_tip_lag_blocks` | Blocks the served tip sits below the second-highest voter, clamped at 0 |
-| `erpc_network_served_tip_advance_age_seconds` | Seconds since the served tip last changed; sustained high on a live chain = stuck tip |
-| `erpc_upstream_head_benched_total` | Upstream head benched: it stayed behind peers that kept advancing |
 | `erpc_upstream_stale_latest_block_total` | Upstream returned a block number behind the network leader |
 | `erpc_upstream_block_head_large_rollback` | Size of the last rollback &gt; 1024 blocks, per `finality` axis (`latest`/`finalized`). Sticky — alert on `changes()`, not on `&gt; 0` |
+
+Served-tip and bench metrics: defined in the [metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking); alert recipes in [Served-tip alerts](#served-tip-alerts).
 
 **Solana (SVM) upstreams**
 
@@ -476,6 +474,23 @@ Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it i
 | `erpc_cors_requests_total` | CORS-triggered requests; note: `project` label = URL path not project ID |
 | `erpc_cors_preflight_requests_total` | OPTIONS preflight; same `project` mislabeling |
 | `erpc_cors_disallowed_origin_total` | Request from an origin not on the allowlist |
+
+### Served-tip alerts
+
+```promql
+# Stuck tip: network-wide latest stopped moving on a live chain.
+# Set the threshold above the chain's longest normal gap between blocks.
+max by (project, network) (erpc_network_served_tip_advance_age_seconds{lane="all", axis="latest"}) > 120
+
+# Regression guard started holding, or gave up holding.
+sum by (project, network, lane, axis, outcome) (increase(erpc_network_served_tip_regression_total[5m])) > 0
+
+# An upstream head was benched out of the ballots.
+sum by (project, network, upstream) (increase(erpc_upstream_head_benched_total[15m])) > 0
+
+# Tip held back for 10 minutes: a guarantee group (or a quorum above 2) trails the freshest heads.
+min_over_time(erpc_network_served_tip_lag_blocks{lane="all", axis="latest"}[10m]) > 5
+```
 
 ### Edge cases & gotchas
 
@@ -604,11 +619,6 @@ Top-20 operational metrics:
 | `erpc_rate_limiter_budget_max_count` | gauge | budget, method, scope | Budget's configured req/s; `scope` = ScopeString() (comma-joined flags: user/network/ip) |
 | `erpc_rate_limiter_remote_duration_seconds` | LabeledHistogram | budget, result | Remote rate-limit check (e.g. Redis DoLimit) duration; `result` ∈ ok/over_limit/fail_open |
 | `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | EMA block-time (α=0.1, min 3 samples); 0 = startup/halted; clamped [10ms, 120s] |
-| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served-tip pick; `lane="all"` = network-wide; `axis` ∈ latest/finalized |
-| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks below the second-highest voter, clamped at 0 |
-| `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since the served tip last changed; absent until the first change |
-| `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | Regression-guard transitions; `outcome` ∈ held/failed_open |
-| `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream, reason | Upstream head benched; `reason` = behind |
 | `erpc_network_evm_block_range_requested_total` | counter | project, network, vendor, upstream, category, user, finality, bucket, size | Block-range heatmap; `bucket` = tip-relative label when tip known (`"TIP"`, `"L100k"`, `"100k-200k"`, …) or static 100k-aligned label |
 | `erpc_network_evm_get_logs_forced_splits_total` | counter | project, network, dimension, user, agent_name | eth_getLogs forcibly split; `dimension` ∈ block_range/addresses/topics0 |
 | `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Request skipped: upstream latest &lt; requested upper bound; `confidence` ∈ blockHead/finalizedBlock |
@@ -620,6 +630,8 @@ Top-20 operational metrics:
 | `erpc_upstream_wrong_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned empty while consensus showed others had data |
 | `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Auth failure; `strategy` is always `"database"` (only database strategy emits this) |
 | `erpc_unexpected_panic_total` | counter | scope, extra, error | Recovered panic; `scope` ∈ request-handler/final-error-writer/top-level-handler/timeout-handler/validate-pattern/redis-pubsub/shared-state-registry/matcher |
+
+Served-tip and bench metrics: see the [metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking).
 
 ### Source code entry points
 
