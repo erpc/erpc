@@ -76,7 +76,6 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	34443:      "mode-mainnet",
 	919:        "mode-sepolia",
 	69000:      "anime-mainnet",
-	6900:       "anime-sepolia",
 	33139:      "apechain-mainnet",
 	33111:      "apechain-curtis",
 	232:        "lens-mainnet",
@@ -152,6 +151,13 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	351243127:  "xmtp-ropsten",
 	728126428:  "tron-mainnet",
 	3448148188: "tron-testnet",
+}
+
+// alchemyChainIdsRegisteredToOtherChains holds chain ids Alchemy assigns to a
+// network that chainlist registers to another chain; serving them would route
+// that chain's traffic to the wrong blocks.
+var alchemyChainIdsRegisteredToOtherChains = map[int64]struct{}{
+	6900: {}, // Alchemy: anime-sepolia; chainlist: Nibiru cataclysm-1
 }
 
 const DefaultAlchemyRecheckInterval = 24 * time.Hour
@@ -623,6 +629,9 @@ func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context, apiUrl string)
 		if _, exists := newData[chainID]; !exists {
 			newData[chainID] = subdomain
 		}
+	}
+	for chainID := range alchemyChainIdsRegisteredToOtherChains {
+		delete(newData, chainID)
 	}
 
 	return newData, nil
