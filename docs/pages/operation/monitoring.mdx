@@ -494,7 +494,7 @@ Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it i
 
 8. **`erpc_upstream_cordoned` `category` label is the cordon scope (method string), not a request-category.** `"*"` = wholesale cordon; a specific method string = per-method cordon. Do not join this `category` with `category` on request-accounting metrics. (<SourceLink file="health/tracker.go" lines="458-465" />)
 
-9. **`erpc_auth_failed_total` always has `strategy="database"`.** Only the database auth strategy records this counter. For other strategies, monitor `erpc_network_failed_request_total{error=~"ErrAuthUnauthorized.*"}` instead. (<SourceLink file="auth/strategy_database.go" lines="467-472" />)
+9. **`erpc_auth_failed_total` covers client-facing auth denials.** Filter by `strategy` and `reason` (e.g. `strategy="jwt",reason="token_expired"`). (<SourceLink file="auth/auth_metrics.go" />)
 
 10. **`erpc_upstream_attempt_outcome_total` `is_hedge` and `is_retry` are `"true"`/`"false"` strings, not `"1"`/`"0"`.** Use `{is_hedge="true"}` in Prometheus queries. (<SourceLink file="upstream/upstream.go" lines="80-85" />)
 
@@ -612,7 +612,7 @@ Top-20 operational metrics:
 | `erpc_shadow_response_mismatch_total` | counter | project, vendor, network, upstream, category, finality, emptyish, larger | Shadow upstream diverged from primary; `emptyish`/`larger` ∈ `"true"`/`"false"` |
 | `erpc_selection_probe_errors_total` | counter | network, upstream, method, reason | Probe to excluded upstream errored; `reason` ∈ timeout/throttled/auth/skipped/error |
 | `erpc_upstream_wrong_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned empty while consensus showed others had data |
-| `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Auth failure; `strategy` is always `"database"` (only database strategy emits this) |
+| `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Client-facing auth denial; `agent_name` always `unknown`; closed `reason` sets |
 | `erpc_unexpected_panic_total` | counter | scope, extra, error | Recovered panic; `scope` ∈ request-handler/final-error-writer/top-level-handler/timeout-handler/validate-pattern/redis-pubsub/shared-state-registry/matcher |
 | `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served tip as served; `lane="all"` = network-wide; `axis` ∈ latest/finalized |
 | `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks the served tip sits below the second-highest voter, clamped at 0 |

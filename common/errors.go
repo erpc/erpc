@@ -569,13 +569,16 @@ func (r AuthUnauthorizedReason) Message() string {
 	}
 }
 
-var NewErrAuthUnauthorized = func(strategy string, message string) error {
+// NewErrAuthUnauthorized builds ErrAuthUnauthorized with a closed reason label
+// for metrics (Details.reason) and a separate client-facing message.
+var NewErrAuthUnauthorized = func(strategy, reason, message string) error {
 	return &ErrAuthUnauthorized{
 		BaseError{
 			Code:    ErrCodeAuthUnauthorized,
 			Message: message,
 			Details: map[string]interface{}{
 				"strategy": strategy,
+				"reason":   reason,
 			},
 		},
 	}
@@ -583,16 +586,7 @@ var NewErrAuthUnauthorized = func(strategy string, message string) error {
 
 // NewErrAuthUnauthorizedReason builds ErrAuthUnauthorized with Message from reason.
 var NewErrAuthUnauthorizedReason = func(strategy string, reason AuthUnauthorizedReason) error {
-	return &ErrAuthUnauthorized{
-		BaseError{
-			Code:    ErrCodeAuthUnauthorized,
-			Message: reason.Message(),
-			Details: map[string]interface{}{
-				"strategy": strategy,
-				"reason":   reason,
-			},
-		},
-	}
+	return NewErrAuthUnauthorized(strategy, string(reason), reason.Message())
 }
 
 func (e *ErrAuthUnauthorized) ErrorStatusCode() int {

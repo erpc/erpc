@@ -722,6 +722,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							nq,
 							common.NewErrAuthUnauthorized(
 								"",
+								"unauthorized",
 								"admin is not enabled for this project",
 							),
 							s.serverCfg.IncludeErrorDetails,
@@ -1745,6 +1746,7 @@ func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
 
 func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	err := origErr
+	auth.RecordAuthFailed(nq, err)
 
 	// Build the response first, then log with it. Authentication runs before
 	// network resolution, so its caller passes the URL-parsed architecture as a
