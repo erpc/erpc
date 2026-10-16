@@ -650,28 +650,28 @@ func (n *Network) servedTipLaneFor(ctx context.Context) *servedTipLane {
 	return actual.(*servedTipLane)
 }
 
-// partitionKeyFor maps a use-upstream selector to a STABLE served-tip partition
-// key, or "" when the selector must use the stateless path.
+// partitionKeyFor maps a use-upstream selector to a STABLE group key, or ""
+// when the selector forms no group.
 //
-// A per-group monotonic tracker is materialized only for a "simple" selector (a
-// single glob token, optionally negated — e.g. `flashblocks*`, `!flashblocks*`,
-// or an exact tag like `family:systx`) that carves out a real SUB-group of the
-// network's upstreams. The key is a hash of the MATCHED UPSTREAM SET, not the
-// selector text, which makes the whole thing bounded and cross-pod safe:
+// A group forms only for a "simple" selector (a single glob token, optionally
+// negated — e.g. `flashblocks*`, `!flashblocks*`, or an exact tag like
+// `family:systx`) that carves out a real SUB-group of the network's upstreams.
+// The key is a hash of the MATCHED UPSTREAM SET, not the selector text, which
+// makes the whole thing bounded and cross-pod safe:
 //
 //   - `flashblocks*`, `fl*`, `flash*`, and a `family:flashblocks` tag that all
-//     resolve to the same upstreams collapse to ONE partition (dedup);
+//     resolve to the same upstreams collapse to ONE group (dedup);
 //   - prefix-enumeration / garbage selectors cannot inflate state beyond the
 //     (small, topology-bounded) number of real groupings — an attacker can't
 //     manufacture more distinct sets than the upstream layout allows;
-//   - every pod derives the same key from the same config, so the shared
-//     counter is cross-pod consistent.
+//   - every pod derives the same key from the same config, so the group's
+//     identity (and lane label) is consistent across pods.
 //
-// A group must match >=2 upstreams (single-node targeting needs no group
-// counter — the per-upstream poller is already monotonic) and fewer than ALL
-// (matching everything is just the network-wide tip). A per-network cap
-// (maxServedTipLanes) backstops pathological topologies. Anything else
-// returns "" (stateless cluster-min over the subset).
+// A group must match >=2 upstreams (single-node targeting has no peers to
+// group) and fewer than ALL (matching everything is just the network-wide
+// tip). A per-network cap (maxServedTipLanes) backstops pathological
+// topologies. Anything else returns "": the request gets the stateless subset
+// pick with no lane.
 func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string, []string) {
 	if !isSimpleGroupSelector(selector) || n.upstreamsRegistry == nil {
 		return "", nil
@@ -946,9 +946,8 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 // still reports the old one, so a pick that far below corroborated evidence is a
 // poisoned ballot — an availability bound voting as a head (two capped
 // legacy upstreams), a bogus vendor head, a rolled-back shared counter. It is
-// deliberately independent of the bound-capped filter in
-// evmTipBallot: that removes ONE known source of low votes, this
-// bounds the damage of any other.
+// deliberately independent of the static-cap rule in tipVoterRank: that
+// removes ONE known source of low votes, this bounds the damage of any other.
 //
 // TWO SOURCES OF EVIDENCE, ONE CEILING. A regression is measured against the
 // higher of (a) the corroborated live head, `ballot.Freshest` of a live ballot

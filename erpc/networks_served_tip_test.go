@@ -468,8 +468,8 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 // served `latest`/`finalized` decision: when a request targets a subset of
 // upstreams (by tag here), the tip is computed AMONG that subset so a
 // more-ahead group (e.g. base flashblocks) never defines `latest` for a
-// request pinned to the other group. Selector scoping is stateless — it must
-// not advance/read the network-wide monotonic counter.
+// request pinned to the other group. Selector scoping is stateless — a
+// selector that forms no group creates no lane.
 func TestServedTip_SelectorScoped(t *testing.T) {
 	withSel := func(ctx context.Context, sel string) context.Context {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
