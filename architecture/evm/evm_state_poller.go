@@ -37,7 +37,7 @@ const (
 	// represent before it is treated as major and re-verified against a live
 	// eth_chainId (see majorHeadMoveThreshold). One minute is comfortably more
 	// chain than a healthy poller can miss between samples — the default state
-	// poller interval is 5s — while staying far below the height difference any
+	// poller interval is 30s — while staying far below the height difference any
 	// two unrelated chains exhibit.
 	chainIdVerifyChainProgress = 60 * time.Second
 
@@ -446,6 +446,30 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 	return 1 * time.Second
 }
 
+// resolveFinalizedDebounce widens the debounce for finalized polls to a fraction of the
+// chain's finality depth in time. Finalized moves once per finality window, so a poll at
+// the latest-block cadence mostly returns the number it already has; this bounds how far
+// the finalized block can trail to that fraction of the window instead.
+//
+// An upstream behind the network's corroborated finalized block keeps the regular
+// debounce: peers already saw the next finalized block, and a vendor whose load balancer
+// mixes stale and fresh backends needs every sample to catch up. Response finality uses
+// the serving upstream's own finalized block, and cache hits the lowest across upstreams.
+func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, debounce time.Duration) time.Duration {
+	if cfg == nil || cfg.FinalizedDebounceDepthMultiplier == nil {
+		return debounce
+	}
+	mult := *cfg.FinalizedDebounceDepthMultiplier
+	networkId := e.upstream.NetworkId()
+	finalized := e.finalizedBlockShared.GetValue()
+	depth := e.latestBlockShared.GetValue() - finalized
+	blockTime := e.tracker.GetNetworkBlockTime(networkId)
+	if mult <= 0 || finalized <= 0 || depth <= 0 || blockTime <= 0 || finalized < e.tracker.GetNetworkFinalizedBlock(networkId) {
+		return debounce
+	}
+	return max(debounce, time.Duration(float64(depth)*float64(blockTime)*mult))
+}
+
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
@@ -766,7 +790,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	networkLabel := e.networkLabel
 	e.stateMu.RUnlock()
 
-	dbi := e.resolveDebounce(cfg)
+	dbi := e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))
 
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")

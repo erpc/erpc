@@ -781,6 +781,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	var bodyReader io.Reader = bytes.NewReader(body)
 	var pooledRC io.ReadCloser
+	contentLength := int64(len(body))
 
 	// Check if gzip compression is enabled
 	if c.enableGzip {
@@ -810,6 +811,7 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 		prc := util.NewPooledBufferReadCloser(buf)
 		pooledRC = prc
 		bodyReader = prc
+		contentLength = int64(buf.Len())
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bodyReader)
@@ -819,6 +821,10 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 		}
 		return nil, err
 	}
+	// NewRequest infers the length only for *bytes.Reader and friends; without
+	// it the pooled gzip body goes out chunked, which costs more on the wire
+	// than gzip saves on small requests.
+	httpReq.ContentLength = contentLength
 
 	httpReq.Header.Set("Accept-Encoding", "gzip")
 	httpReq.Header.Set("Content-Type", "application/json")

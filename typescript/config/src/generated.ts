@@ -1722,6 +1722,16 @@ export interface EvmNetworkConfig {
    */
   dynamicBlockTimeDebounceMultiplier?: number /* float64 */;
   /**
+   * FinalizedDebounceDepthMultiplier sets how stale an upstream's finalized block may
+   * get before the state poller fetches it again, as a fraction of the chain's
+   * finality depth in time: (latest - finalized) x EMA block time x multiplier. The
+   * result applies only when it is longer than the regular debounce. Finalized
+   * advances once per finality window, so polling it at the latest-block cadence
+   * mostly returns the same number. 0 disables it (finalized uses the regular debounce).
+   * Default: 0.05 (refresh about 20 times per finality window).
+   */
+  finalizedDebounceDepthMultiplier?: number /* float64 */;
+  /**
    * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
    * retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
    * or an empty/missing-data point-lookup). When the dynamic block time is known, the
