@@ -29,7 +29,7 @@ type ServedTipPick struct {
 	// is the one place a lone far-ahead head is still visible to callers.
 	Max int64
 
-	// Inputs is the number of valid (BlockNumber > 0) observations.
+	// Inputs is the number of valid (> 0) heads.
 	Inputs int
 }
 
