@@ -1537,7 +1537,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		// benched on its own report would rejoin on the next one without
 		// moving; a node still proven behind (a replay that reached a voter as
 		// stale as itself) would rejoin and be benched again a window later.
-		if bar > 0 && (!u.meta.headChangedAt.After(u.meta.headBenchedAt) || uHead < bar || !u.meta.headBehindSince.IsZero()) {
+		if bar > 0 && (!u.meta.movedSinceBench() || uHead < bar || !u.meta.headBehindSince.IsZero()) {
 			continue
 		}
 		u.meta.headBenched.Store(false)
@@ -1550,6 +1550,13 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 			Msg("upstream head rejoined: it caught up with its non-benched peers")
 	}
 	return membershipChanged
+}
+
+// movedSinceBench reports whether the head moved after the evaluation that
+// benched it; a move in that same evaluation does not count. Caller holds the
+// network's headMu.
+func (m *NetworkMetadata) movedSinceBench() bool {
+	return m.headChangedAt.After(m.headBenchedAt)
 }
 
 // headIsBehind reports whether a non-benched peer proves the chain went on
@@ -1767,7 +1774,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// lags by its real distance.
 	lagHead := func(meta *NetworkMetadata) int64 {
 		h := meta.evmLatestBlockNumber.Load()
-		if meta.headBenched.Load() && meta.headBenchRef > 0 && meta.headChangedAt.Before(meta.headBenchedAt) {
+		if meta.headBenched.Load() && meta.headBenchRef > 0 && !meta.movedSinceBench() {
 			return min(h, meta.headBenchRef)
 		}
 		return h
