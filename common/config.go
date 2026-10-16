@@ -1403,6 +1403,12 @@ type EvmUpstreamConfig struct {
 	// head comparison every request pinned at head+1 in that moment is rerouted even though the
 	// upstream would have answered it. 0 (default) keeps the exact head comparison.
 	HeadLagToleranceBlocks int64 `yaml:"headLagToleranceBlocks,omitempty" json:"headLagToleranceBlocks"`
+	// PinLatestTag sends this upstream the network head as a concrete block number wherever a
+	// state call (eth_call, eth_getBalance, ...) asks for "latest" or omits the block, and skips the
+	// upstream when its blockAvailability upper bound is below that head or the head is unknown.
+	// For an upstream whose own head lags the network: it answers only blocks it holds, and a block
+	// it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+	PinLatestTag *bool `yaml:"pinLatestTag,omitempty" json:"pinLatestTag"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
@@ -1560,6 +1566,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.SkipSyncingCheck != nil {
 		v := *c.SkipSyncingCheck
 		copied.SkipSyncingCheck = &v
+	}
+	if c.PinLatestTag != nil {
+		v := *c.PinLatestTag
+		copied.PinLatestTag = &v
 	}
 	if c.DeprecatedIntegrity != nil {
 		copied.DeprecatedIntegrity = c.DeprecatedIntegrity.Copy()
