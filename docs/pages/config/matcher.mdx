@@ -128,7 +128,7 @@ like `"latest"`), numeric operators fall through to glob matching and will not c
 Use `0x*` to match hex-format values, and combine with named tags using `|` for full coverage.
 
 **`MatchesSelector` and upstream tag awareness.** The `use-upstream` directive and served-tip
-partition grouping use `MatchesSelector` rather than plain `WildcardMatch`. The function first
+[lane](/reference/lanes) grouping use `MatchesSelector` rather than plain `WildcardMatch`. The function first
 tests the pattern against the upstream's `id`. If that matches, it returns `true` immediately. If
 the pattern contains **no `!` anywhere** (purely-positive), it also iterates the upstream's
 `tags []string` and returns `true` on any tag match. Any `!` anywhere in the pattern — even
@@ -231,7 +231,7 @@ connector `failsafeForGets[]`/`failsafeForSets[]`)
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `networks[].evm.servedTip.guaranteedMethods[]` | []string | — | Each element validated by `ValidatePattern` at config load (as are `servedTip.guaranteedFor[]` and `safeBlockSource`). At runtime, each pattern selects the eligible upstreams whose `ShouldHandleMethod` accepts it; the served tip is clamped to their majority pick. Source: <SourceLink file="common/validation.go" lines="1676-1685" /> |
+| `networks[].evm.servedTip.guaranteedMethods[]` | []string | — | Each element validated by `ValidatePattern` at config load (as are `servedTip.guaranteedFor[]` and `safeBlockSource`). At runtime, each pattern selects the upstreams whose `ShouldHandleMethod` accepts it ([guarantee subsets](/reference/evm/block-tracking#guarantee-subsets)). Source: <SourceLink file="common/validation.go" lines="1669-1685" /> |
 
 **Provider network overrides** — `providers[].overrides` (map keys)
 
