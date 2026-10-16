@@ -246,7 +246,7 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 		"jsonrpc": jrReq.JSONRPC,
 		"id":      wireID,
 		"method":  method,
-		"params":  common.WireParams(ctx, jrReq.Params),
+		"params":  common.WireParams(ctx, req, jrReq.Params),
 	})
 	jrReq.RUnlock()
 	if err != nil {

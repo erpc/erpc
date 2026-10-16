@@ -2712,7 +2712,7 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 			}
 			return nil, common.NewErrUpstreamBlockUnavailable(u.Id(), 0, latest, finalized)
 		}
-		execSpanCtx = common.WithWireParams(execSpanCtx, params)
+		execSpanCtx = common.WithWireParams(execSpanCtx, req, params)
 	}
 
 	h := n.architectureHandler
