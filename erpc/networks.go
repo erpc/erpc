@@ -1404,12 +1404,11 @@ func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
 
 // guaranteedFloor returns the lowest majority served tip across every
 // configured guarantee SUBSET, or 0 when none is configured or none constrains
-// the tip. Two kinds of subset, one rule:
+// the tip. Two kinds of subset, one rule (guaranteedSubsetTip):
 //
-//   - GuaranteedMethods — the selection-policy-eligible set for that method
-//     (which, via autoIgnoreUnsupportedMethods, excludes upstreams that don't
-//     support it). "latest" never resolves to a block only non-supporting
-//     upstreams have.
+//   - GuaranteedMethods — the eligible upstreams that handle the method
+//     (autoIgnoreUnsupportedMethods drops the rest). "latest" never resolves
+//     to a block only non-supporting upstreams have.
 //   - GuaranteedFor — the eligible upstreams matching an id/tag selector. The
 //     advertised tip stays servable by an operator-named GROUP, which is what a
 //     mixed internal/external pool needs when consensus requires the internals
@@ -1418,135 +1417,70 @@ func (n *Network) applyDeliveredHeadFloor(computed, liveMax int64) int64 {
 // Each subset is clamped to its OWN MAJORITY, never its minimum, so a single
 // frozen member is outvoted inside its group and cannot pin the network. An
 // empty subset constrains nothing.
-//
-// Every subset's ballot is built by evmTipBallot, i.e. by exactly the rule the
-// network-wide ballot uses — including the static-cap filter, applied to THAT
-// method's supporting set. Without it the floor was a second door onto the
-// capped value: with `guaranteedMethods` configured, the floor ballot took raw
-// effective heads and ran AFTER the guard, so the capped pair's bound came
-// back as a "floor" and was served, on a branch whose whole premise is that a
-// serving range never defines the head.
-//
-// The per-set mixed-pool rule is what keeps that from breaking the floor's
-// purpose: capped upstreams drop out of a method's ballot only when some LIVE
-// upstream also supports that method. If only capped upstreams support it, they
-// set the floor — which is the entire point of the floor, since they are the
-// only upstreams that can serve the method at all.
-//
-// STATIC CONFIG DECIDES THAT, NOT TRANSIENT ELIGIBILITY. A cap-only ballot has
-// two very different causes, and only one of them is a floor:
-//
-//   - PERMANENT: no live upstream is configured to serve the method at all
-//     (the archive-only trace_* shape). The cap is genuinely the freshest block
-//     anyone can serve, so it floors the tip.
-//   - TRANSIENT: live upstreams DO serve the method, they are just absent from
-//     this instant's eligible set — lag-excluded, cordoned, mid-restart. Their
-//     absence is exactly the condition the regression guard is holding through,
-//     and flooring to the cap would hand the capped value back the moment the
-//     eligible set collapsed. That composition (the guard correctly holding
-//     the live tip while the floor dragged the served value to the cap) was
-//     live at the previous head of this branch.
-//
-// So a cap-only ballot floors only when the REGISTERED set — the operator's
-// configuration, which eligibility churn cannot change — has no live upstream
-// serving that method. Otherwise the method sets no floor for this evaluation
-// and the guard's hold (and its bounded fail-open) governs, exactly as it does
-// when the whole ballot goes cap-only.
 func (n *Network) guaranteedFloor(ctx context.Context, useFinalized bool) int64 {
 	if n.cfg == nil || n.cfg.Evm == nil || n.cfg.Evm.ServedTip == nil {
 		return 0
 	}
 	st := n.cfg.Evm.ServedTip
-	methods := st.GuaranteedMethods
-	if len(methods) == 0 && len(st.GuaranteedFor) == 0 {
-		return 0
-	}
 	var floor int64
+	fold := func(tip int64) {
+		if tip > 0 && (floor == 0 || tip < floor) {
+			floor = tip
+		}
+	}
 	for _, sel := range st.GuaranteedFor {
-		// Group guarantee: the advertised tip must be servable by this group's
-		// own MAJORITY. Same ballot, same min-across-subsets fold, same
-		// transient-absence rule as the method guarantee below — only the
-		// membership predicate differs (selector match instead of method
-		// support).
-		pick, live := n.evmTipBallot(ctx, useFinalized, common.ServedTipQuorumMajority, func(u common.Upstream) bool {
+		fold(n.guaranteedSubsetTip(ctx, useFinalized, func(u common.Upstream) bool {
 			m, _ := common.UpstreamMatchesSelector(sel, u)
 			return m
-		})
-		if pick.Inputs == 0 {
-			continue
-		}
-		if !live && n.liveUpstreamInGroup(ctx, sel, useFinalized) {
-			continue
-		}
-		if pick.Tip > 0 && (floor == 0 || pick.Tip < floor) {
-			floor = pick.Tip
-		}
+		}))
 	}
-	for _, m := range methods {
-		// Supporting set = eligible upstreams that handle this method.
-		pick, live := n.evmTipBallot(ctx, useFinalized, common.ServedTipQuorumMajority, func(u common.Upstream) bool {
+	for _, m := range st.GuaranteedMethods {
+		fold(n.guaranteedSubsetTip(ctx, useFinalized, func(u common.Upstream) bool {
 			handle, _ := u.ShouldHandleMethod(m)
 			return handle
-		})
-		if pick.Inputs == 0 {
-			// No supporting upstream for this method → no constraint (fall through
-			// rather than pinning the tip to 0).
-			continue
-		}
-		if !live && n.liveUpstreamServesMethod(ctx, m, useFinalized) {
-			// Cap-only ballot, but the configuration says live upstreams serve
-			// this method — they are merely absent right now. See the comment
-			// above: that floor is a transient lie, and serving it hands
-			// `latest` to the cap.
-			continue
-		}
-		if pick.Tip > 0 && (floor == 0 || pick.Tip < floor) {
-			floor = pick.Tip
-		}
+		}))
 	}
 	return floor
 }
 
-// liveUpstreamServesMethod reports whether any REGISTERED upstream that is not a
-// static serving-range cap is configured to serve `method` — the static-config
-// question guaranteedFloor asks before letting a cap-only ballot set a
-// floor. It reads the registered set, not the eligible one, precisely because
-// eligibility is the thing that churns.
+// guaranteedSubsetTip is the majority tip of the guarantee subset `member`
+// selects, or 0 when that subset sets no floor this evaluation.
 //
-// An upstream with no head yet counts as live: "we cannot tell" must fall on the
-// side of skipping the floor, since serving a stale cap is the failure this
-// whole change exists to prevent. Only reached when a method's ballot came back
-// cap-only, i.e. approximately never on the hot path.
-func (n *Network) liveUpstreamServesMethod(ctx context.Context, method string, useFinalized bool) bool {
-	if n.upstreamsRegistry == nil {
-		return false
+// The ballot is evmTipBallot's, so a subset's static caps drop out whenever a
+// live member is in it; without that the floor was a second door onto the
+// capped value that the network-wide ballot keeps out. A CAP-ONLY ballot has
+// two causes, and only one is a floor:
+//
+//   - PERMANENT: no live upstream is configured into the subset at all (the
+//     archive-only trace_* shape). The cap is the freshest block anyone in it
+//     can serve, so it floors the tip.
+//   - TRANSIENT: live members exist but are absent from this instant's eligible
+//     set — lag-excluded, cordoned, mid-restart. That is exactly the shape the
+//     regression guard holds through, and flooring to the cap would hand the
+//     capped value back the moment the eligible set collapsed.
+//
+// So a cap-only ballot floors only when the REGISTERED set, which eligibility
+// churn cannot change, has no live member (anyRegisteredLiveHead).
+func (n *Network) guaranteedSubsetTip(ctx context.Context, useFinalized bool, member func(common.Upstream) bool) int64 {
+	pick, live := n.evmTipBallot(ctx, useFinalized, common.ServedTipQuorumMajority, member)
+	if pick.Inputs == 0 || (!live && n.anyRegisteredLiveHead(ctx, member, useFinalized)) {
+		return 0
 	}
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-		if handle, _ := u.ShouldHandleMethod(method); !handle {
-			continue
-		}
-		if eu, ok := common.Upstream(u).(common.EvmUpstream); ok {
-			if _, capped := evmTipObservation(eu, useFinalized); capped {
-				continue
-			}
-		}
-		return true
-	}
-	return false
+	return pick.Tip
 }
 
-// liveUpstreamInGroup is liveUpstreamServesMethod for a group guarantee: does
-// any REGISTERED upstream matching `selector` observe a real head rather than a
-// static serving-range cap. Same reason as the method case — a cap-only group
-// ballot must floor the tip only when the operator's CONFIG says nobody in that
-// group is live, never when live members are merely absent from this instant's
-// eligible set.
-func (n *Network) liveUpstreamInGroup(ctx context.Context, selector string, useFinalized bool) bool {
+// anyRegisteredLiveHead reports whether any REGISTERED upstream matching member
+// is not a static serving-range cap. An upstream with no head yet counts as
+// live: "we cannot tell" must fall on the side of skipping the floor, since
+// serving a stale cap is the failure the floor rule exists to prevent. Only
+// reached for a cap-only subset ballot, i.e. approximately never on the hot
+// path.
+func (n *Network) anyRegisteredLiveHead(ctx context.Context, member func(common.Upstream) bool, useFinalized bool) bool {
 	if n.upstreamsRegistry == nil {
 		return false
 	}
 	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-		if m, _ := common.UpstreamMatchesSelector(selector, u); !m {
+		if !member(u) {
 			continue
 		}
 		if eu, ok := common.Upstream(u).(common.EvmUpstream); ok {
