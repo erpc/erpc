@@ -342,7 +342,7 @@ With a `use-upstream` selector, `tipCandidateUpstreams` narrows the candidates t
 - Use `guaranteedMethods: ["trace_*"]` when mixing archive and non-archive upstreams — prevents the served tip from advancing past what trace-capable nodes have.
 - Lower `fallbackStatePollerDebounce` to 200–500 ms on sub-second chains (Arbitrum, Base, Optimism) so warm-up doesn't stall on a 5 s default.
 - Avoid setting `dynamicBlockTimeDebounceMultiplier: 0`; it is silently ignored and the default 0.7 is used. To impose a fixed debounce, use `statePollerDebounce` on the upstream instead.
-- Monitor `erpc_upstream_block_head_lag` per upstream, and alert on a stuck tip, guard transitions and benches with the [served-tip alerts](/operation/monitoring#served-tip-alerts).
+- Monitor `erpc_upstream_block_head_lag` per upstream, and alert on `erpc_network_served_tip_advance_age_seconds` (stuck tip), `erpc_network_served_tip_regression_total` and `erpc_upstream_head_benched_total` ([metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking)).
 
 ### Edge cases & gotchas
 
