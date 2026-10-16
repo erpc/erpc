@@ -35,7 +35,7 @@ type Network struct {
 	networkLabel         string
 	projectId            string
 	logger               *zerolog.Logger
-	bootstrapOnce        sync.Once
+	servedTipRefreshOnce sync.Once
 	appCtx               context.Context
 	cfg                  *common.NetworkConfig
 	inFlightRequests     *sync.Map
