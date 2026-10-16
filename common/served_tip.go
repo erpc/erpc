@@ -55,16 +55,6 @@ func (q ServedTipQuorum) Of(n int) int {
 	return max(1, min(need, n))
 }
 
-func (q ServedTipQuorum) String() string {
-	switch {
-	case q == ServedTipQuorumMajority:
-		return "majority"
-	case q > 0:
-		return strconv.Itoa(int(q))
-	}
-	return strconv.Itoa(DefaultServedTipQuorum)
-}
-
 func parseServedTipQuorum(s string) (ServedTipQuorum, error) {
 	s = strings.TrimSpace(s)
 	if strings.EqualFold(s, "majority") {
