@@ -346,6 +346,138 @@ func TestExtractJsonRpcError_MempoolPolicyRejections(t *testing.T) {
 	}
 }
 
+// HyperEVM embeds 10055 in the message ("Unexpected error (code=10055)"), not
+// the JSON-RPC code field (which is typically -32100). Scoped to
+// eth_sendRawTransaction only: normalize to nonce-too-low (on-chain verify)
+// rather than already-known (blind success), because the same code also covers
+// insufficient funds / underpriced. Other methods must keep failover.
+func TestExtractJsonRpcError_HyperEVMCode10055(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		method  string
+		code    int
+		message string
+		wantNTL bool
+	}{
+		{
+			name:    "sendRawTransaction observed HyperEVM wire message",
+			method:  "eth_sendRawTransaction",
+			code:    -32100,
+			message: "Unexpected error (code=10055)",
+			wantNTL: true,
+		},
+		{
+			name:    "sendRawTransaction code=10055 with other wrapper wording",
+			method:  "eth_sendRawTransaction",
+			code:    -32603,
+			message: "rpc error: code=10055 msg=boundary",
+			wantNTL: true,
+		},
+		{
+			name:    "eth_call keeps server-side / failover behavior",
+			method:  "eth_call",
+			code:    -32100,
+			message: "Unexpected error (code=10055)",
+			wantNTL: false,
+		},
+		{
+			name:    "nil request does not match",
+			method:  "",
+			code:    -32100,
+			message: "Unexpected error (code=10055)",
+			wantNTL: false,
+		},
+		{
+			name:    "unrelated 10055 digit sequence does not match",
+			method:  "eth_sendRawTransaction",
+			code:    -32000,
+			message: "internal error reference 10055",
+			wantNTL: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var nr *common.NormalizedResponse
+			if tc.method != "" {
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","method":"` + tc.method + `","params":[],"id":1}`))
+				nr = common.NewNormalizedResponse().WithRequest(req)
+			}
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(tc.code, tc.message, "")
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			var ne *common.ErrEndpointNonceException
+			isNTL := errors.As(err, &ne) &&
+				ne.Details["nonceExceptionReason"] == string(common.NonceExceptionReasonNonceTooLow)
+			if isNTL != tc.wantNTL {
+				t.Fatalf("expected nonceTooLow=%v, got %T: %v", tc.wantNTL, err, err)
+			}
+			if tc.wantNTL && common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+				t.Fatalf("10055 must not fall through to server-side exception: %v", err)
+			}
+		})
+	}
+}
+
+// A TX_REPLAY_ATTACK rejection of an already-accepted transaction normalizes
+// to an "already known" nonce exception; other "replay attack" wording does not.
+func TestExtractJsonRpcError_ReplayAttackIdempotency(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		message      string
+		alreadyKnown bool
+	}{
+		{
+			name:         "observed errmsg token",
+			message:      "errcode: 113, errmsg: TX_REPLAY_ATTACK",
+			alreadyKnown: true,
+		},
+		{
+			name:    "other replay attack wording",
+			message: "replay attack detected",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(
+				int(common.JsonRpcErrorServerSideException),
+				tc.message,
+				"",
+			)
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nil, jr, nil)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			var ne *common.ErrEndpointNonceException
+			isAlreadyKnown := errors.As(err, &ne) &&
+				ne.Details["nonceExceptionReason"] == string(common.NonceExceptionReasonAlreadyKnown)
+			if isAlreadyKnown != tc.alreadyKnown {
+				t.Fatalf("expected alreadyKnown=%v, got %T: %v", tc.alreadyKnown, err, err)
+			}
+		})
+	}
+}
+
 // TestExtractJsonRpcError_RethRevertError covers reth's Debug-formatted revert,
 // returned as -32603 with the revert bytes only in the message (seen on HyperEVM
 // nodes for eth_estimateGas pinned to a block number or "pending"). It is an
@@ -404,6 +536,86 @@ func TestExtractJsonRpcError_RethRevertError(t *testing.T) {
 			}
 			if got := jre.Details["data"]; got != tc.wantData {
 				t.Fatalf("data: got %v, want %v", got, tc.wantData)
+			}
+		})
+	}
+}
+
+// hl-node's reply when a HyperEVM read precompile (0x…0800 onwards) runs
+// against a block for which the node holds no HyperCore state. The trailing
+// number is the node's RPC gas cap and differs per provider.
+const hyperEvmPrecompileStateGap = "out of gas: gas exhausted during precompiled contract execution: 600000000"
+
+// TestExtractJsonRpcError_HyperEvmPrecompileStateGap verifies that the
+// precompile-state gap is classified as missing data, so the network sweep
+// moves on to an upstream that holds the state. A generic "out of gas" stays a
+// final execution result, and eth_sendRawTransaction keeps its existing
+// transaction-rejected handling.
+func TestExtractJsonRpcError_HyperEvmPrecompileStateGap(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name            string
+		method          string // empty = no request attached to the response
+		message         string
+		wantCode        common.ErrorCode
+		wantNormalized  common.JsonRpcErrorNumber
+		wantRetryableNw bool
+	}{
+		{name: "eth_call", method: "eth_call", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_estimateGas", method: "eth_estimateGas", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_createAccessList", method: "eth_createAccessList", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_simulateV1", method: "eth_simulateV1", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "debug_traceCall", method: "debug_traceCall", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "unknown method", method: "hl_someFutureCall", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "no request attached", method: "", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "other gas cap", method: "eth_call", message: "out of gas: gas exhausted during precompiled contract execution: 50000000",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "plain out of gas stays a final execution result", method: "eth_call", message: "out of gas",
+			wantCode: common.ErrCodeEndpointExecutionException, wantNormalized: common.JsonRpcErrorTransactionRejected, wantRetryableNw: false},
+		{name: "eth_sendRawTransaction keeps transaction-rejected handling", method: "eth_sendRawTransaction", message: hyperEvmPrecompileStateGap,
+			wantCode: common.ErrCodeEndpointExecutionException, wantNormalized: common.JsonRpcErrorTransactionRejected, wantRetryableNw: true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var nr *common.NormalizedResponse
+			if tc.method != "" {
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","method":"` + tc.method + `","params":[],"id":1}`))
+				nr = common.NewNormalizedResponse().WithRequest(req)
+			}
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(-32003, tc.message, "")
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if !common.HasErrorCode(err, tc.wantCode) {
+				t.Fatalf("expected %s, got %T: %v", tc.wantCode, err, err)
+			}
+			if got := common.IsRetryableTowardNetwork(err); got != tc.wantRetryableNw {
+				t.Fatalf("IsRetryableTowardNetwork: got %v, want %v", got, tc.wantRetryableNw)
+			}
+			jre := &common.ErrJsonRpcExceptionInternal{}
+			if !errors.As(err, &jre) {
+				t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
+			}
+			if got := jre.NormalizedCode(); got != tc.wantNormalized {
+				t.Fatalf("normalized code: got %d, want %d", got, tc.wantNormalized)
+			}
+			if got := jre.Message; got != tc.message {
+				t.Fatalf("node message must reach the caller verbatim: got %q, want %q", got, tc.message)
 			}
 		})
 	}

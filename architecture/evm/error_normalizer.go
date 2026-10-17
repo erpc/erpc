@@ -248,6 +248,35 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		}
 
+		// HyperEVM read precompiles (0x…0800 onwards) execute against HyperCore
+		// state for the requested block. Many nodes hold that state only for
+		// their live tip; for any other block they answer
+		//   -32003 "out of gas: gas exhausted during precompiled contract execution: <rpc gas cap>"
+		// while a node that holds the state answers the same call. This is a
+		// data gap on the node, not an execution result, so it must not reach
+		// the generic "out of gas" branch below, which returns it to the caller
+		// as a final execution exception. eth_sendRawTransaction keeps its
+		// existing transaction-rejected handling.
+		if strings.Contains(msg, "gas exhausted during precompiled contract execution") {
+			isSendRawTx := false
+			if nr != nil && nr.Request() != nil {
+				m, _ := nr.Request().Method()
+				isSendRawTx = strings.EqualFold(m, "eth_sendRawTransaction")
+			}
+			if !isSendRawTx {
+				return common.NewErrEndpointMissingData(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorMissingData,
+						err.Message,
+						nil,
+						details,
+					),
+					upstream,
+				)
+			}
+		}
+
 		//----------------------------------------------------------------
 		// "Timeouts / node-level" errors
 		//----------------------------------------------------------------
@@ -362,7 +391,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(ml, "already in the mempool") ||
 			strings.Contains(ml, "transaction already exists") ||
 			strings.Contains(ml, "already have transaction") ||
-			strings.Contains(ml, "already exists in mempool") {
+			strings.Contains(ml, "already exists in mempool") ||
+			strings.Contains(ml, "tx_replay_attack") {
 			// These indicate the exact same transaction is already known - idempotent success case
 			return common.NewErrEndpointNonceException(
 				common.NewErrJsonRpcExceptionInternal(
@@ -391,6 +421,31 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				common.NonceExceptionReasonNonceTooLow,
 			)
+		}
+
+		// HyperEVM (Hyperliquid) returns opaque HyperCore↔HyperEVM boundary
+		// errors as JSON-RPC -32100 with message "Unexpected error (code=10055)".
+		// Per Hyperliquid docs that bucket covers nonce conflicts, duplicate
+		// hashes, insufficient funds, and underpriced replacements. Scope the
+		// match to eth_sendRawTransaction only — the message is too broad to
+		// reinterpret as NonceTooLow on other methods (would stop failover).
+		// Treat as nonce-too-low (verify via eth_getTransactionByHash) rather
+		// than already-known (blind success).
+		// https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm
+		if strings.Contains(ml, "code=10055") &&
+			nr != nil && nr.Request() != nil {
+			if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+				return common.NewErrEndpointNonceException(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorTransactionRejected,
+						err.Message,
+						nil,
+						details,
+					),
+					common.NonceExceptionReasonNonceTooLow,
+				)
+			}
 		}
 
 		//----------------------------------------------------------------

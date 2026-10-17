@@ -26,7 +26,9 @@ Illustrative, not a tuned production config — a minimal upstream definition:
   yaml={`projects:
   - id: main
     upstreams:
-      - # chain ID auto-detected; state poller starts automatically
+      - # chain ID auto-detected; state poller starts automatically.
+        # http(s) and ws(s) schemes are supported; use ws:// or wss://
+        # for WebSocket upstreams (required for eth_subscribe support).
         endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY`}
   ts={`projects: [{
   id: "main",
@@ -137,6 +139,16 @@ skip into `ErrUpstreamBlockUnavailable`, retryable when the block is within 128 
 of the tip (configurable via `networks[].evm.maxRetryableBlockDistance`).
 (<SourceLink file="erpc/networks.go" lines="1919-1987" />)
 
+**SVM slot availability.** Solana upstreams declare the same kind of window as
+`svm.blockAvailability`, with slot-native bound names (`exactSlot`,
+`latestSlotMinus`, `firstAvailableSlotPlus`). Only what the operator
+declares is enforced. The upstream's oldest stored block, probed with
+`getBlocksWithLimit(0, 1)`, anchors a `firstAvailableSlotPlus` bound, like EVM's
+`earliestBlockPlus`; it is probed only for upstreams declaring one. The network-level
+`svm.enforceBlockAvailability` switch gates the declared window.
+(<SourceLink file="architecture/svm/slot_bounds.go" />)
+(<SourceLink file="erpc/networks.go" lines="3105-3148" />)
+
 Set it once for a whole project under `upstreamDefaults` instead of repeating it on
 every upstream — useful when a pool is uniformly pruned (e.g. nodes started with a
 retention window). An upstream that declares its own `blockAvailability` **or** the
@@ -202,7 +214,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 |---|---|---|---|
 | `upstreams[*].id` | string | Derived: native-scheme endpoint → `<hostname>-<N>`; non-native → `<scheme>-<N>`; if `vendorName` set → `<vendorName>-<N>` (<SourceLink file="common/defaults.go" lines="1596-1615" />) | Used in task names, metrics labels, `use-upstream` matching, admin cordon RPCs. |
 | `upstreams[*].type` | `UpstreamType` | `"evm"` when omitted (<SourceLink file="common/defaults.go" lines="1715-1718" />) | `evm` and `svm` are both supported at runtime. The `evm+<vendor>` shorthand schemes are normalized to `"evm"` at defaults time. **Footgun**: `svm` is never inferred — an upstream serving Solana that omits `type` silently becomes an EVM upstream and fails to bootstrap. Always write `type: svm` explicitly. |
-| `upstreams[*].endpoint` | string | `""` (required) | Native schemes: `http://`, `https://`, `grpc://`, `grpc+bds://`. Non-native (e.g. `alchemy://KEY`) converts the upstream into a provider. `ws://`/`wss://` pass validation but fail at client creation with "websocket client not implemented yet" — retries forever. Redacted in JSON/YAML output. |
+| `upstreams[*].endpoint` | string | `""` (required) | Native schemes: `http://`, `https://`, `ws://`, `wss://`, `grpc://`, `grpc+bds://`. Non-native (e.g. `alchemy://KEY`) converts the upstream into a provider. `ws://`/`wss://` create a persistent WebSocket client (auto-reconnect, keepalive) that serves regular requests and `eth_subscribe` — see [WebSocket](/operation/websocket). Redacted in JSON/YAML output. |
 | `upstreams[*].tags` | `[]string` | nil; all-or-nothing inheritance from `upstreamDefaults.tags` (<SourceLink file="common/defaults.go" lines="1505-1510" />) | `<dim>:<value>` convention. Matched by `use-upstream` and policy stdlib. **Footgun**: one tag on the upstream drops ALL defaults tags. |
 | `upstreams[*].vendorName` | string | `""`; at runtime filled by URL pattern match or `guessVendorName()` | When non-empty, forces name-lookup only — `OwnsUpstream` URL matching is skipped. Mismatch silently applies the wrong error normalizer. No warning is logged. |
 | `upstreams[*].ignoreMethods` | `[]string` | nil; **forced to `["*"]` when `allowMethods` set and `ignoreMethods` nil** (<SourceLink file="common/defaults.go" lines="1706-1712" />) | Evaluated first in `ShouldHandleMethod`. Glob wildcards + `\|` OR + `&` AND + `!` NOT. Result cached per method forever. |
@@ -239,6 +251,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].evm.statePollerDebounce` | Duration | `0` → inferred from chain block time | Minimum spacing between forced polls. |
 | `upstreams[*].evm.skipWhenSyncing` | `*bool` | `false` (<SourceLink file="common/defaults.go" lines="1766-1772" />) | Skip requests with `ErrUpstreamSyncing` while the poller reports syncing state. |
 | `upstreams[*].evm.skipSyncingCheck` | `*bool` | `false` | Disable `eth_syncing` polling for this upstream and hard-set syncing state to `NotSyncing`. Use for nodes that always return a syncing object (e.g. Pharos/Antora) even when fully caught up, which would otherwise cause permanent circuit-breaker false positives. |
+| `upstreams[*].evm.pinLatestTag` | `*bool` | `false` (inherits `upstreamDefaults.evm.pinLatestTag`) | For `eth_call`, `eth_getBalance`, `eth_getCode`, `eth_getTransactionCount`, `eth_getStorageAt` asking `"latest"` (or omitting the block): this upstream receives the network head as a hex number; other upstreams, the cache and the response keep `"latest"`. Skipped when the head is above its `blockAvailability.upper` bound or unknown. For an upstream whose own head lags the network: a block it lacks fails as missing data and the next upstream answers. |
 | `upstreams[*].evm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Each bound sets exactly one of `exactBlock`, `latestBlockMinus`, `earliestBlockPlus`. Cross-bound validation: `latestBlockMinus` lower value must be ≥ upper value. |
 | `upstreams[*].evm.blockAvailability.{lower,upper}.latestBlockMinus` | `*int64` | nil | Bound = latest − N. Recomputed on each check from state poller. |
 | `upstreams[*].evm.blockAvailability.{lower,upper}.earliestBlockPlus` | `*int64` | nil | Bound = detected earliest block + N via probe. Earliest `0` before detection computes `0+N`. |
@@ -253,10 +266,14 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].evm.integrity.eth_getBlockReceipts.checkLogIndexStrictIncrements` | `*bool` | nil | Sub-check: verify log indices strictly increment within a block. |
 | `upstreams[*].evm.integrity.eth_getBlockReceipts.checkLogsBloom` | `*bool` | nil | Sub-check: verify logs bloom filter consistency. |
 | `upstreams[*].evm.getLogsMaxAllowedRange` / `getLogsMaxAllowedAddresses` / `getLogsMaxAllowedTopics` / `getLogsSplitOnError` / `getLogsMaxBlockRange` | int64 / int64 / int64 / `*bool` / int64 | all zero/nil | **Deprecated and ignored at runtime.** Tagged `json:"-"` so invisible in JSON config dumps. A WARN is logged at registration if any `maxAllowed*` value `> 0` or `getLogsSplitOnError != nil`. Migrate to `networks[*].evm.*` equivalents. (<SourceLink file="upstream/registry.go" lines="107-118" />) |
-| `upstreams[*].evm.queryShim.*` | object | all zero/nil | Query-shim feature config (`enabled`, `allowedMethods`, `concurrency`, `maxBlockRange`, `maxLimit`, `defaultLimit`). Covered by the query-shim reference; listed here because the fields live on `EvmUpstreamConfig`. |
+| `upstreams[*].evm.queryShim.*` | object | all zero/nil | MIP-16 `eth_query*` shim: `enabled` and `allowedMethods` (this upstream may serve the shim's sub-requests for those methods), `maxBlocksPerPage` (default `1000`) and `maxPageDuration` (default `10s`), the page budget. The old `concurrency`, `maxBlockRange`, `maxLimit` and `defaultLimit` fields are gone: MIP-16 pages by `target` and budget, with no `limit` or `cursor`. See the [method handlers reference](/reference/evm/method-handlers). |
 | `upstreams[*].svm.cluster` | string | `""`; inherited from `upstreamDefaults.svm.cluster` | The cluster this upstream serves. Must match the network-level `svm.cluster` for the upstream to be eligible for that network. Unlike the network side, cluster **is** inherited here — on an upstream it only says "which cluster do I serve", and a pool homogeneous across one cluster is the common case. |
 | `upstreams[*].svm.chain` | string | `""` → treated as `"solana"`; inherited from `upstreamDefaults.svm.chain` | Which SVM chain this upstream serves. Must match the network-level `svm.chain`. |
 | `upstreams[*].svm.checkGenesisHash` | bool | `false` | Opts an **unknown** `(chain, cluster)` pair into `getGenesisHash` validation at bootstrap. Known Solana clusters (`mainnet-beta`, `devnet`, `testnet`) are always validated regardless of this flag: a mismatch **or a fetch failure** fails the upstream, catching nodes mis-pointed at the wrong cluster and refusing to register one that could not be verified. For unknown clusters the same check (with no table comparison) runs only when this flag is set, so private and local clusters with no published genesis hash still work. |
+| `upstreams[*].svm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Operator restriction on the slot window this upstream may serve. Each bound sets exactly one of `exactSlot`, `latestSlotMinus`, `firstAvailableSlotPlus`. Only declared bounds are enforced; the observed floor is probed only when a bound uses `firstAvailableSlotPlus`. Gated by `networks[*].svm.enforceBlockAvailability`. (<SourceLink file="common/config.go" lines="2616-2652" />) |
+| `upstreams[*].svm.blockAvailability.{lower,upper}.exactSlot` | `*int64` | nil | Fixed slot bound. Must be ≥ 0. |
+| `upstreams[*].svm.blockAvailability.{lower,upper}.latestSlotMinus` | `*int64` | nil | Bound = poller's `LatestSlot()` − N. Recomputed on each check. Cold poller (latest ≤ 0) fail-opens that side. |
+| `upstreams[*].svm.blockAvailability.{lower,upper}.firstAvailableSlotPlus` | `*int64` | nil | Bound = oldest stored block (`getBlocksWithLimit(0, 1)`) + N. Setting it is what opts the upstream in to polling the floor. Unobserved floor fail-opens that side — unknown is not slot 0. |
 | `upstreamDefaults` | `*UpstreamConfig` | nil | Project-level template. Gets its own `SetDefaults(nil)` first. Each upstream runs `ApplyDefaults` then `SetDefaults`. |
 | `proxyPools[*].id` | string | required | Pool name referenced by `upstreams[*].jsonRpc.proxyPool`. |
 | `proxyPools[*].urls` | `[]string` | required, min 1 | Proxy URLs. Accepted schemes: `http://`, `https://`, `socks5://` (case-insensitive prefix check — `socks4://` rejected at startup). |
@@ -270,7 +287,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 - **`failsafe`**: all-or-nothing — any `failsafe` entry on the upstream means none from defaults apply.
 - **`routing`**: all-or-nothing — same rule.
 - **EVM sub-fields** (`statePollerInterval`, `statePollerDebounce`, `maxAvailableRecentBlocks`, auto-splitting thresholds, `integrity`): per-field merge when both sides are non-nil.
-- **SVM sub-fields** (`chain`, `cluster`, `checkGenesisHash`): an upstream with no `svm` block inherits `upstreamDefaults.svm` **wholesale** (copied, not pointer-shared); one with a partial block fills only its empty fields. This is the field set that lets a homogeneous pool declare `chain`/`cluster` once instead of repeating it per upstream.
+- **SVM sub-fields** (`chain`, `cluster`, `checkGenesisHash`, `blockAvailability`): an upstream with no `svm` block inherits `upstreamDefaults.svm` **wholesale** (copied, not pointer-shared); one with a partial block fills only its empty fields, including copying `blockAvailability` when the upstream omitted it. This is the field set that lets a homogeneous pool declare `chain`/`cluster` (and a shared slot window) once instead of repeating it per upstream.
 - **`jsonRpc`**: shallow-copied from defaults only when the upstream has no `jsonRpc` block at all; even `jsonRpc: {}` blocks inheritance.
 
 **Block-availability bound kinds and probe types** (for `earliestBlockPlus` bounds):
@@ -844,8 +861,10 @@ SVM upstream gets its own slot/health poller automatically:
 
 ### Edge cases & gotchas
 
-1. **`ws://`/`wss://` pass config validation but fail at client creation** with
-   "websocket client not implemented yet" and retry forever. Use `http://`/`https://` instead.
+1. **`ws://`/`wss://` upstreams serve regular requests and feed subscriptions, but a plain
+   HTTP `eth_subscribe` is never forwarded to them** (the subscription would have no owner).
+   Clients subscribe through eRPC's own [WebSocket server](/operation/websocket)
+   (`server.webSocket.enabled: true`).
 2. **`allowMethods` without `ignoreMethods`** silently blocks all other methods via an
    injected `ignoreMethods: ["*"]`. To allow specific methods while keeping defaults,
    use `ignoreMethods` with explicit patterns instead.
@@ -915,6 +934,20 @@ SVM upstream gets its own slot/health poller automatically:
     removes an SVM upstream from selection until it recovers. See
     [SVM slot tracking & health](/reference/svm/slot-tracking).
 
+25. **SVM never gates on a vendor-reported floor by default.** An upstream's
+    floor is probed only when it declares `firstAvailableSlotPlus`. Otherwise every
+    slot-named read reaches the upstream; `exactSlot: 0` explicitly declares full history.
+    (<SourceLink file="erpc/networks.go" />)
+26. **SVM declared bounds fail-open when state is unknown.** A cold poller, an
+    unobserved floor, or a computed min>max range treats that
+    window as unbounded rather than refusing traffic. `firstAvailableSlotPlus` with an
+    unobserved floor is unbounded — unlike EVM's `earliestBlockPlus`, unknown is not slot 0.
+27. **`svm.blockAvailability` inherits from `upstreamDefaults.svm`.** Wholesale copy when
+    the upstream omits its `svm` block; per-field copy of `blockAvailability` when the
+    upstream has a partial `svm` block and left the field unset. Copies are deep — two
+    upstreams must not alias the same pointer. (<SourceLink file="common/defaults.go" lines="1850-1877" />)
+
+
 ### Observability
 
 | Metric | Type | Labels | When it fires |
@@ -931,8 +964,8 @@ SVM upstream gets its own slot/health poller automatically:
 | `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category, reason | 1 on cordon, 0 on uncordon |
 | `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Edge transitions (cordon/uncordon) only |
 | `erpc_upstream_cordon_duration_seconds` | histogram (1 s … 86 400 s) | project, network, upstream | Observed on each uncordon |
-| `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block above upper bound or not yet finalized |
-| `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block below lower bound / outside pruning window |
+| `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot above upper bound. SVM `confidence` is `"configured"` for declared `svm.blockAvailability.upper`. |
+| `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot below lower bound. SVM `confidence` is `"configured"` (declared `svm.blockAvailability`). |
 
 ### Source code entry points
 

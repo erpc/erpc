@@ -10538,8 +10538,14 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 5*time.Second)
 
-		pollerInterval := 2000 * time.Millisecond
-		pollerDebounce := 1000 * time.Millisecond
+		// The ticker must not fire during the test: the herd alone must drive
+		// every refresh after bootstrap, so the metric count is exact.
+		pollerInterval := 1 * time.Hour
+		// The debounce window must outlast the whole herd (≤1s jitter + ≤200ms
+		// updateMaxWait) plus the slow (1s) refresh. The window is counted from
+		// the start of a refresh, so a shorter one lets late herd members start
+		// a second refresh.
+		pollerDebounce := 4000 * time.Millisecond
 
 		fsCfg := &common.FailsafeConfig{
 			MatchMethod: "*",
@@ -10612,7 +10618,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 3.  Wait until the value becomes stale (> debounce), then unleash
 		//     a burst of concurrent PollLatestBlockNumber() calls.
 		// ------------------------------------------------------------------
-		time.Sleep((pollerDebounce * 2) + 200*time.Millisecond) // let cache go stale
+		time.Sleep(pollerDebounce + 200*time.Millisecond) // let cache go stale
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -10628,10 +10634,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		close(start)
 		wg.Wait()
 
-		// Stop ticker before final mock assertions
-		cancel() // stop poller ticker to avoid races with mock assertions
-
-		// Wait for the value to update to 20 (with timeout)
+		// Wait for the background refresh to apply block 20 (with timeout)
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			if poller.LatestBlock() == 20 {
@@ -10643,18 +10646,14 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// Cached value should be 20 (final success).
 		assert.Equal(t, int64(20), poller.LatestBlock())
 
-		// Stop the poller now to avoid an extra background cycle incrementing metrics
 		cancel()
 
-		// Metric counts successful cache refreshes (bootstrap + final success).
-		// It should not increase for failed attempts, so we expect exactly 2.
+		// Metric counts refresh executions: bootstrap + exactly one for the herd
+		// (its retries fail twice, then succeed within the same execution).
 		polledMetric, err := telemetry.MetricUpstreamLatestBlockPolled.
 			GetMetricWithLabelValues("prjA", "vendorA", "n/a", "rpc1")
 		require.NoError(t, err)
-		metricValue := promUtil.ToFloat64(polledMetric)
-		// Depending on timing, a background cycle may perform one more successful refresh
-		// before cancellation. Accept 2 or 3 (bootstrap + final success [+ optional one more]).
-		assert.True(t, metricValue == 2 || metricValue == 3, "expected metric to be 2 or 3, got %v", metricValue)
+		assert.Equal(t, float64(2), promUtil.ToFloat64(polledMetric))
 
 		// Only the failing mocks should have been hit exactly failAttempts times.
 		assert.Equal(t, int32(failAttempts), atomic.LoadInt32(&latestBlockPolls))
@@ -12239,7 +12238,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		cache := &common.MockCacheDal{}
 		network.cacheDal = cache
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x11"}],"id":1}`))
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x0000000000000000000000000000000000000011"}],"id":1}`))
 
 		jrr, err := common.NewJsonRpcResponse(req.ID(), []interface{}{}, nil)
 		require.NoError(t, err)
@@ -12274,7 +12273,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		cache := &common.MockCacheDal{}
 		network.cacheDal = cache
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x11"}],"id":1}`))
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x0000000000000000000000000000000000000011"}],"id":1}`))
 
 		cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Once()
 
@@ -12284,7 +12283,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"method":  "eth_getLogs",
-				"params":  []interface{}{map[string]interface{}{"address": "0x11"}},
+				"params":  []interface{}{map[string]interface{}{"address": "0x0000000000000000000000000000000000000011"}},
 				"id":      float64(1),
 			}).
 			Times(1).
@@ -12304,4 +12303,54 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		assert.Contains(t, rjrr.GetResultString(), `"logIndex":"0x1"`)
 		cache.AssertExpectations(t)
 	})
+}
+
+func newStubUpstream(id, tag string) common.Upstream {
+	if tag == "" {
+		return common.NewFakeUpstream(id)
+	}
+	return common.NewFakeUpstream(id, common.WithTags(tag))
+}
+
+func TestTierUpstreamsByGroup(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []common.Upstream
+		want []string
+	}{
+		{
+			name: "no fallback keeps order",
+			in:   []common.Upstream{newStubUpstream("a", ""), newStubUpstream("b", "")},
+			want: []string{"a", "b"},
+		},
+		{
+			name: "defaults before fallbacks, order kept within tier",
+			in: []common.Upstream{
+				newStubUpstream("fallback-hi", common.TagTierFallback),
+				newStubUpstream("default-lo", ""),
+				newStubUpstream("default-hi", ""),
+				newStubUpstream("fallback-lo", common.TagTierFallback),
+			},
+			want: []string{"default-lo", "default-hi", "fallback-hi", "fallback-lo"},
+		},
+		{
+			name: "only fallbacks",
+			in:   []common.Upstream{newStubUpstream("fb-1", common.TagTierFallback), newStubUpstream("fb-2", common.TagTierFallback)},
+			want: []string{"fb-1", "fb-2"},
+		},
+		{
+			name: "other tags stay in the default tier",
+			in: []common.Upstream{
+				newStubUpstream("fb", common.TagTierFallback),
+				newStubUpstream("custom", "experimental"),
+				newStubUpstream("def", ""),
+			},
+			want: []string{"custom", "def", "fb"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ids(tierUpstreamsByGroup(tc.in)))
+		})
+	}
 }

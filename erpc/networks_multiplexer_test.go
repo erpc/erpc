@@ -459,3 +459,22 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 
 	return network
 }
+
+// Non-retryable writes (EVM and SVM) never share an in-flight call; reads do.
+func TestNetwork_Multiplexer_SkipsNonRetryableWrites(t *testing.T) {
+	n := &Network{
+		cfg:              &common.NetworkConfig{Architecture: common.ArchitectureEvm},
+		inFlightRequests: &sync.Map{},
+	}
+	cases := map[string]bool{
+		"eth_newFilter":   true,
+		"sendTransaction": true,
+		"eth_call":        false,
+	}
+	for method, skip := range cases {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":[]}`))
+		mlx, _, err := n.handleMultiplexing(context.Background(), &log.Logger, req, time.Now())
+		require.NoError(t, err)
+		assert.Equal(t, skip, mlx == nil, method)
+	}
+}

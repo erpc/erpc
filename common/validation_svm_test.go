@@ -159,6 +159,102 @@ func TestSvmUpstreamConfig_Validate(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "upstream.*.svm.cluster")
 	})
+
+	t.Run("valid blockAvailability is accepted", func(t *testing.T) {
+		err := (&SvmUpstreamConfig{
+			Cluster: "mainnet-beta",
+			BlockAvailability: &SvmBlockAvailabilityConfig{
+				Lower: &SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(100000)},
+				Upper: &SvmAvailabilityBoundConfig{ExactSlot: int64Ptr(1 << 40)},
+			},
+		}).Validate(svmUps)
+		require.NoError(t, err)
+	})
+
+	t.Run("invalid blockAvailability surfaces through SvmUpstreamConfig.Validate", func(t *testing.T) {
+		err := (&SvmUpstreamConfig{
+			Cluster: "mainnet-beta",
+			BlockAvailability: &SvmBlockAvailabilityConfig{
+				Lower: &SvmAvailabilityBoundConfig{},
+			},
+		}).Validate(svmUps)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "upstream.*.svm.blockAvailability.lower")
+	})
+}
+
+func TestSvmAvailabilityBoundConfig_Validate(t *testing.T) {
+	t.Run("exactly one field is valid", func(t *testing.T) {
+		require.NoError(t, (&SvmAvailabilityBoundConfig{ExactSlot: int64Ptr(0)}).Validate())
+		require.NoError(t, (&SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(0)}).Validate())
+		require.NoError(t, (&SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: int64Ptr(10)}).Validate())
+	})
+
+	t.Run("zero fields rejected", func(t *testing.T) {
+		err := (&SvmAvailabilityBoundConfig{}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exactly one of")
+	})
+
+	t.Run("multiple fields rejected", func(t *testing.T) {
+		err := (&SvmAvailabilityBoundConfig{
+			ExactSlot:       int64Ptr(1),
+			LatestSlotMinus: int64Ptr(2),
+		}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mutually exclusive")
+	})
+
+	t.Run("negative values rejected", func(t *testing.T) {
+		err := (&SvmAvailabilityBoundConfig{ExactSlot: int64Ptr(-1)}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exactSlot")
+
+		err = (&SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(-1)}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "latestSlotMinus")
+
+		err = (&SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: int64Ptr(-1)}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "firstAvailableSlotPlus")
+	})
+}
+
+func TestSvmBlockAvailabilityConfig_Validate(t *testing.T) {
+	t.Run("lower exactSlot greater than upper exactSlot rejected", func(t *testing.T) {
+		err := (&SvmBlockAvailabilityConfig{
+			Lower: &SvmAvailabilityBoundConfig{ExactSlot: int64Ptr(200)},
+			Upper: &SvmAvailabilityBoundConfig{ExactSlot: int64Ptr(100)},
+		}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exactSlot")
+	})
+
+	t.Run("lower latestSlotMinus smaller than upper latestSlotMinus rejected", func(t *testing.T) {
+		err := (&SvmBlockAvailabilityConfig{
+			Lower: &SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(10)},
+			Upper: &SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(20)},
+		}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "latestSlotMinus")
+	})
+
+	t.Run("lower firstAvailableSlotPlus greater than upper firstAvailableSlotPlus rejected", func(t *testing.T) {
+		err := (&SvmBlockAvailabilityConfig{
+			Lower: &SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: int64Ptr(20)},
+			Upper: &SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: int64Ptr(10)},
+		}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "firstAvailableSlotPlus")
+	})
+
+	t.Run("mixed bound kinds skip cross-bound comparison", func(t *testing.T) {
+		err := (&SvmBlockAvailabilityConfig{
+			Lower: &SvmAvailabilityBoundConfig{LatestSlotMinus: int64Ptr(100000)},
+			Upper: &SvmAvailabilityBoundConfig{ExactSlot: int64Ptr(10)},
+		}).Validate()
+		require.NoError(t, err)
+	})
 }
 
 func TestValidateSvmUpstreamNetworkPairing(t *testing.T) {

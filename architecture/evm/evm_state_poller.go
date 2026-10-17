@@ -37,7 +37,7 @@ const (
 	// represent before it is treated as major and re-verified against a live
 	// eth_chainId (see majorHeadMoveThreshold). One minute is comfortably more
 	// chain than a healthy poller can miss between samples — the default state
-	// poller interval is 5s — while staying far below the height difference any
+	// poller interval is 30s — while staying far below the height difference any
 	// two unrelated chains exhibit.
 	chainIdVerifyChainProgress = 60 * time.Second
 
@@ -120,6 +120,9 @@ type EvmStatePoller struct {
 	// dropped and re-observed on the next suggestion (or verified poll). Small
 	// keep-fresh advances never touch this.
 	latestMajorVerifyInProgress sync.Mutex
+
+	// Single in-flight flag for RefreshLatestBlock's background poll.
+	latestRefreshInFlight atomic.Bool
 
 	// Earliest per probe tracking
 	earliestByProbe              map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
@@ -446,6 +449,30 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 	return 1 * time.Second
 }
 
+// resolveFinalizedDebounce widens the debounce for finalized polls to a fraction of the
+// chain's finality depth in time. Finalized moves once per finality window, so a poll at
+// the latest-block cadence mostly returns the number it already has; this bounds how far
+// the finalized block can trail to that fraction of the window instead.
+//
+// An upstream behind the network's corroborated finalized block keeps the regular
+// debounce: peers already saw the next finalized block, and a vendor whose load balancer
+// mixes stale and fresh backends needs every sample to catch up. Response finality uses
+// the serving upstream's own finalized block, and cache hits the lowest across upstreams.
+func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, debounce time.Duration) time.Duration {
+	if cfg == nil || cfg.FinalizedDebounceDepthMultiplier == nil {
+		return debounce
+	}
+	mult := *cfg.FinalizedDebounceDepthMultiplier
+	networkId := e.upstream.NetworkId()
+	finalized := e.finalizedBlockShared.GetValue()
+	depth := e.latestBlockShared.GetValue() - finalized
+	blockTime := e.tracker.GetNetworkBlockTime(networkId)
+	if mult <= 0 || finalized <= 0 || depth <= 0 || blockTime <= 0 || finalized < e.tracker.GetNetworkFinalizedBlock(networkId) {
+		return debounce
+	}
+	return max(debounce, time.Duration(float64(depth)*float64(blockTime)*mult))
+}
+
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
@@ -468,7 +495,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	)
 	defer span.End()
 
-	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
+	return e.latestBlockShared.TryUpdateIfLocallyStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		if e.logger.GetLevel() <= zerolog.TraceLevel {
 			e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
 		}
@@ -502,6 +529,13 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 				e.stateMu.Unlock()
 				return 0, nil
 			} else {
+				// An open circuit breaker short-circuits before tryForward
+				// records the failure, which would freeze the upstream's error
+				// rate; record it here. Other failures are already recorded.
+				if e.tracker != nil && common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+					e.tracker.RecordUpstreamRequest(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime)
+					e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime, err)
+				}
 				e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
 				return 0, err
 			}
@@ -529,6 +563,33 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			Msg("fetched latest block from upstream")
 		return blockNum, nil
 	})
+}
+
+// RefreshLatestBlock starts a background latest-block poll when the stored
+// head is older than the poll debounce and no refresh is already in flight,
+// so a head read on the request path does not wait for the next ticker poll.
+// It never blocks and spawns at most one goroutine per poller at a time.
+func (e *EvmStatePoller) RefreshLatestBlock() {
+	if e.IsObjectNull() || e.latestBlockShared == nil {
+		return
+	}
+	e.stateMu.RLock()
+	cfg, skip := e.cfg, e.skipLatestBlockCheck
+	e.stateMu.RUnlock()
+	if skip || !e.latestBlockShared.IsStale(e.resolveDebounce(cfg)) {
+		return
+	}
+	if !e.latestRefreshInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer e.latestRefreshInFlight.Store(false)
+		ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
+		defer cancel()
+		if _, err := e.PollLatestBlockNumber(ctx); err != nil {
+			e.logger.Debug().Err(err).Msg("on-demand latest block refresh failed in evm state poller")
+		}
+	}()
 }
 
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
@@ -759,7 +820,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	networkLabel := e.networkLabel
 	e.stateMu.RUnlock()
 
-	dbi := e.resolveDebounce(cfg)
+	dbi := e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))
 
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
@@ -794,6 +855,11 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 				e.stateMu.Unlock()
 				return 0, nil
 			} else {
+				// See PollLatestBlockNumber.
+				if e.tracker != nil && common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+					e.tracker.RecordUpstreamRequest(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateFinalized)
+					e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateFinalized, err)
+				}
 				e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
 				return 0, err
 			}

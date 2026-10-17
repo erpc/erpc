@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -283,6 +284,12 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			u.upstreamsMu.RUnlock()
 
 			if upstreamsCount < minReady {
+				// Past the threshold the answer is already "unavailable": a failing
+				// global upstream task (e.g. a revoked key) keeps hasOngoing true
+				// forever, so waiting would only hold the caller for waitTimeout.
+				if u.unservedPastThreshold(networkId) > 0 {
+					return u.errStillInitializing(networkId)
+				}
 				// Keep waiting if there is any ongoing per-network or unknown upstream work
 				summary := u.summarizeNetworkTasks(networkId)
 				if summary.hasOngoing {
@@ -331,19 +338,31 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 // a network first requested a minute ago is a minute old however long eRPC has
 // been running.
 func (u *UpstreamsRegistry) errStillInitializing(networkId string) error {
-	if NoUpstreamsAvailableAfter > 0 {
-		if v, ok := u.networkFirstPreparedAt.Load(networkId); ok {
-			if elapsed := time.Since(v.(time.Time)); elapsed >= NoUpstreamsAvailableAfter {
-				telemetry.MetricNetworkNoUpstreamsAvailableTotal.WithLabelValues(u.prjId, networkId).Inc()
-				u.logger.Warn().
-					Str("networkId", networkId).
-					Dur("initializingFor", elapsed).
-					Msg("no upstream could be initialized for network; reporting it as unavailable")
-				return common.NewErrNetworkNoUpstreamsAvailable(u.prjId, networkId)
-			}
-		}
+	if elapsed := u.unservedPastThreshold(networkId); elapsed > 0 {
+		telemetry.MetricNetworkNoUpstreamsAvailableTotal.WithLabelValues(u.prjId, networkId).Inc()
+		u.logger.Warn().
+			Str("networkId", networkId).
+			Dur("initializingFor", elapsed).
+			Msg("no upstream could be initialized for network; reporting it as unavailable")
+		return common.NewErrNetworkNoUpstreamsAvailable(u.prjId, networkId)
 	}
 	return common.NewErrNetworkInitializing(u.prjId, networkId)
+}
+
+// unservedPastThreshold returns how long networkId has been initializing when
+// that exceeds NoUpstreamsAvailableAfter, else 0.
+func (u *UpstreamsRegistry) unservedPastThreshold(networkId string) time.Duration {
+	if NoUpstreamsAvailableAfter <= 0 {
+		return 0
+	}
+	v, ok := u.networkFirstPreparedAt.Load(networkId)
+	if !ok {
+		return 0
+	}
+	if elapsed := time.Since(v.(time.Time)); elapsed >= NoUpstreamsAvailableAfter {
+		return elapsed
+	}
+	return 0
 }
 
 func (u *UpstreamsRegistry) GetNetworkShadowUpstreams(networkId string) []*Upstream {
@@ -423,6 +442,47 @@ func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId s
 	u.networkUpstreamsAtomic.Store(networkId, cp)
 	u.upstreamsMu.RUnlock()
 	return cp
+}
+
+// GetFallbackEscapeUpstreams returns the network's bootstrapped fallback-tier
+// upstreams that are not down for method and allow it. Selection-policy
+// cordons are deliberately ignored: the per-request escape exists to get past
+// them.
+func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, networkId, method string) []*Upstream {
+	all := u.GetNetworkUpstreams(ctx, networkId)
+	out := make([]*Upstream, 0, len(all))
+	for _, up := range all {
+		cfg := up.Config()
+		if cfg == nil || !cfg.HasTag(common.TagTierFallback) {
+			continue
+		}
+		if up.IsDown(method) {
+			continue
+		}
+		if allowed, err := up.ShouldHandleMethod(method); err != nil || !allowed {
+			continue
+		}
+		out = append(out, up)
+	}
+	return out
+}
+
+// GetWsUpstreams returns all WS-capable upstreams for a network (ws:// or wss:// endpoints).
+func (u *UpstreamsRegistry) GetWsUpstreams(ctx context.Context, networkId string) []*Upstream {
+	all := u.GetNetworkUpstreams(ctx, networkId)
+	var ws []*Upstream
+	for _, up := range all {
+		if cfg := up.Config(); cfg != nil && IsWsEndpoint(cfg.Endpoint) {
+			ws = append(ws, up)
+		}
+	}
+	return ws
+}
+
+// IsWsEndpoint reports whether endpoint uses the ws:// or wss:// scheme.
+func IsWsEndpoint(endpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	return err == nil && (parsed.Scheme == "ws" || parsed.Scheme == "wss")
 }
 
 func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {

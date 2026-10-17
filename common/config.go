@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"time"
 
 	"strings"
@@ -46,6 +47,7 @@ type Config struct {
 	Projects     []*ProjectConfig   `yaml:"projects,omitempty" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters,omitempty" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics,omitempty" json:"metrics"`
+	Indexer      *IndexerConfig     `yaml:"indexer,omitempty" json:"indexer"`
 	ProxyPools   []*ProxyPoolConfig `yaml:"proxyPools,omitempty" json:"proxyPools"`
 	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
 
@@ -82,6 +84,16 @@ var LegacyTranslateFn func(*Config) ([]string, error)
 // LegacyTranslateLogger lets the caller observe deprecation warnings
 // emitted by LegacyTranslateFn. If nil, warnings are dropped silently.
 var LegacyTranslateLogger func(warning string)
+
+// IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
+type IndexerConfig struct {
+	// Deprecated: ignored; the indexer no longer tracks a canonical chain.
+	// Kept so configs that still set it load under strict decoding.
+	CanonicalChainDepth int `yaml:"canonicalChainDepth,omitempty" json:"canonicalChainDepth"`
+	// DedupWindowSize is the per-filter seen-set capacity for log and
+	// pending-tx fan-out across upstreams. 0 uses the default (8192).
+	DedupWindowSize int `yaml:"dedupWindowSize,omitempty" json:"dedupWindowSize"`
+}
 
 // LoadConfig loads the configuration from the specified file.
 // It supports both YAML and TypeScript (.ts) files.
@@ -161,6 +173,8 @@ type ServerConfig struct {
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
 
+	WebSocket *WebSocketServerConfig `yaml:"webSocket,omitempty" json:"webSocket"`
+
 	// ExecutionHeaders controls the per-request diagnostic headers
 	// (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
 	// eRPC routed and resolved each request. Defaults to "all" — set
@@ -174,6 +188,26 @@ type ServerConfig struct {
 	// default. Credit-unit pricing is vendor-level configuration — see
 	// CreditUnitsProvider and UpstreamConfig.CreditUnits.
 	CostHeaders *bool `yaml:"costHeaders,omitempty" json:"costHeaders"`
+}
+
+type WebSocketServerConfig struct {
+	// Enabled accepts WebSocket upgrades on the HTTP port. Off by default:
+	// with it off an upgrade request is ordinary HTTP.
+	Enabled                       *bool     `yaml:"enabled,omitempty" json:"enabled"`
+	ReadBufferSize                int       `yaml:"readBufferSize,omitempty" json:"readBufferSize"`
+	WriteBufferSize               int       `yaml:"writeBufferSize,omitempty" json:"writeBufferSize"`
+	MaxMessageSize                int64     `yaml:"maxMessageSize,omitempty" json:"maxMessageSize"`
+	PingInterval                  *Duration `yaml:"pingInterval,omitempty" json:"pingInterval" tstype:"Duration"`
+	MaxSubscriptionsPerConnection int       `yaml:"maxSubscriptionsPerConnection,omitempty" json:"maxSubscriptionsPerConnection"`
+	// MaxConcurrentRequestsPerConnection bounds the messages a connection has
+	// in flight; further frames wait (backpressure) instead of being rejected.
+	// A batch is one message; its requests run concurrently, as over HTTP.
+	MaxConcurrentRequestsPerConnection int `yaml:"maxConcurrentRequestsPerConnection,omitempty" json:"maxConcurrentRequestsPerConnection"`
+	// SubscriptionBufferSize is the number of notifications queued per
+	// subscription for a client that is behind. On overflow newHeads and
+	// newPendingTransactions drop their oldest entry; logs close the
+	// connection instead (1013), so the client knows it missed data.
+	SubscriptionBufferSize int `yaml:"subscriptionBufferSize,omitempty" json:"subscriptionBufferSize"`
 }
 
 // ExecutionHeadersMode controls how much per-request execution detail is
@@ -715,6 +749,24 @@ type NetworkDefaults struct {
 	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm" tstype:"TsSvmNetworkConfigForDefaults"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 	CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
+	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
+}
+
+// FailoverConfig controls per-request escalation to fallback-tier upstreams,
+// independent of the selection policy.
+type FailoverConfig struct {
+	// OnDefaultsExhausted tries upstreams not tagged `tier:fallback` first and
+	// advances to the fallback tier within the same request only once every
+	// other upstream failed with an error retryable toward the network.
+	OnDefaultsExhausted *bool `yaml:"onDefaultsExhausted,omitempty" json:"onDefaultsExhausted"`
+}
+
+// Enabled reports whether any failover behaviour is configured.
+func (f *FailoverConfig) Enabled() bool {
+	if f == nil {
+		return false
+	}
+	return f.OnDefaultsExhausted != nil && *f.OnDefaultsExhausted
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -749,6 +801,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
 		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
 		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
+		Failover          *FailoverConfig          `yaml:"failover,omitempty"`
 	}
 
 	var old oldNetworkDefaults
@@ -765,6 +818,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Evm = old.Evm
 	n.Svm = old.Svm
+	n.Failover = old.Failover
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -847,6 +901,10 @@ func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
 		"overrides":          p.Overrides,
 	}, nil
 }
+
+// TagTierFallback marks an upstream as part of the fallback tier, used only
+// when the other upstreams are unavailable.
+const TagTierFallback = "tier:fallback"
 
 // RateLimitCountMode selects the accounting unit an upstream's rate-limit
 // budget charges per call.
@@ -1129,6 +1187,9 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	if c.Evm != nil {
 		copied.Evm = c.Evm.Copy()
 	}
+	if c.Svm != nil {
+		copied.Svm = c.Svm.Copy()
+	}
 	if c.Failsafe != nil {
 		copied.Failsafe = make([]*FailsafeConfig, len(c.Failsafe))
 		for i, failsafe := range c.Failsafe {
@@ -1283,7 +1344,7 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 	return copied
 }
 
-// GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+// GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
 // gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
 // knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
 // every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -1342,6 +1403,12 @@ type EvmUpstreamConfig struct {
 	// head comparison every request pinned at head+1 in that moment is rerouted even though the
 	// upstream would have answered it. 0 (default) keeps the exact head comparison.
 	HeadLagToleranceBlocks int64 `yaml:"headLagToleranceBlocks,omitempty" json:"headLagToleranceBlocks"`
+	// PinLatestTag sends this upstream the network head as a concrete block number wherever a
+	// state call (eth_call, eth_getBalance, ...) asks for "latest" or omits the block, and skips the
+	// upstream when its blockAvailability upper bound is below that head or the head is unknown.
+	// For an upstream whose own head lags the network: it answers only blocks it holds, and a block
+	// it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+	PinLatestTag *bool `yaml:"pinLatestTag,omitempty" json:"pinLatestTag"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
@@ -1364,13 +1431,21 @@ type EvmUpstreamConfig struct {
 	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
 }
 
+// EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
+// eth_getBlockReceipts, eth_getLogs, trace_block / debug_traceBlockByNumber) the
+// eth_query* executor issues when no native QueryService upstream answers. The
+// sub-requests go through the network like any request; the budget bounds the
+// work of one MIP-16 page.
 type EvmQueryShimConfig struct {
 	Enabled        *bool    `yaml:"enabled,omitempty" json:"enabled"`
 	AllowedMethods []string `yaml:"allowedMethods,omitempty" json:"allowedMethods"`
-	Concurrency    int      `yaml:"concurrency,omitempty" json:"concurrency"`
-	MaxBlockRange  int64    `yaml:"maxBlockRange,omitempty" json:"maxBlockRange"`
-	MaxLimit       int      `yaml:"maxLimit,omitempty" json:"maxLimit"`
-	DefaultLimit   int      `yaml:"defaultLimit,omitempty" json:"defaultLimit"`
+	// MaxBlocksPerPage is the budget of blocks one page may scan. A page that
+	// reaches it ends at the last scanned block.
+	MaxBlocksPerPage int64 `yaml:"maxBlocksPerPage,omitempty" json:"maxBlocksPerPage"`
+	// MaxPageDuration is the budget of time one page may scan. A page that
+	// reaches it ends at the last complete block, or fails with -32005 when no
+	// block completed.
+	MaxPageDuration Duration `yaml:"maxPageDuration,omitempty" json:"maxPageDuration" tstype:"Duration"`
 }
 
 func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
@@ -1378,10 +1453,8 @@ func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
 		return nil
 	}
 	copied := &EvmQueryShimConfig{
-		Concurrency:   c.Concurrency,
-		MaxBlockRange: c.MaxBlockRange,
-		MaxLimit:      c.MaxLimit,
-		DefaultLimit:  c.DefaultLimit,
+		MaxBlocksPerPage: c.MaxBlocksPerPage,
+		MaxPageDuration:  c.MaxPageDuration,
 	}
 	if c.Enabled != nil {
 		v := *c.Enabled
@@ -1392,6 +1465,23 @@ func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
 		copy(copied.AllowedMethods, c.AllowedMethods)
 	}
 	return copied
+}
+
+// AllowsMethod reports whether the shim is enabled for the eth_query* method:
+// enabled, and the method matches allowedMethods (empty allows all).
+func (c *EvmQueryShimConfig) AllowsMethod(method string) bool {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return false
+	}
+	if len(c.AllowedMethods) == 0 {
+		return true
+	}
+	for _, allowed := range c.AllowedMethods {
+		if match, err := WildcardMatch(allowed, method); err == nil && match {
+			return true
+		}
+	}
+	return false
 }
 
 // EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -1477,6 +1567,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 		v := *c.SkipSyncingCheck
 		copied.SkipSyncingCheck = &v
 	}
+	if c.PinLatestTag != nil {
+		v := *c.PinLatestTag
+		copied.PinLatestTag = &v
+	}
 	if c.DeprecatedIntegrity != nil {
 		copied.DeprecatedIntegrity = c.DeprecatedIntegrity.Copy()
 	}
@@ -1494,6 +1588,13 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 type FailsafeConfig struct {
 	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
 	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	// MatchCommitment scopes a network-scope policy by the Solana commitment
+	// erpc pins on the wire: the caller's value, else the svm.commitment default
+	// that injection writes, else "none". Empty = any. Values are OR-ed and
+	// exact (confirmed does not match processed). Non-SVM requests and SVM
+	// write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
+	// Rejected at upstream and connector scopes.
+	MatchCommitment []string `yaml:"matchCommitment,omitempty" json:"matchCommitment" tstype:"('none' | 'processed' | 'confirmed' | 'finalized')[]"`
 	// MatchRequestKind scopes this policy by who issued the request:
 	// "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
 	// the integrity module's canonical corroboration), or ""/"*" for both.
@@ -1539,6 +1640,10 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	if c.MatchFinality != nil {
 		copied.MatchFinality = make([]DataFinalityState, len(c.MatchFinality))
 		copy(copied.MatchFinality, c.MatchFinality)
+	}
+
+	if c.MatchCommitment != nil {
+		copied.MatchCommitment = slices.Clone(c.MatchCommitment)
 	}
 
 	if c.Retry != nil {
@@ -2267,12 +2372,15 @@ type NetworkConfig struct {
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 	StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty" json:"staticResponses,omitempty"`
+	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
 	// Integrity overrides the project-wide data-integrity configuration for this
 	// network. Merges over the project block (network wins).
 	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
 	// CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
 	// key as {networkId}:{suffix}:{blockRef} so two networks that share a
 	// chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+	// When {networkId}:{suffix} is itself a valid network id, colons in the
+	// network id are escaped; see CachePartitionKey.
 	CacheKeySuffix string `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
 }
 
@@ -2345,6 +2453,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
 		StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty"`
 		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
+		Failover          *FailoverConfig          `yaml:"failover,omitempty"`
 	}
 
 	var old oldNetworkConfig
@@ -2365,6 +2474,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.Methods = old.Methods
 	n.StaticResponses = old.StaticResponses
 	n.CacheKeySuffix = old.CacheKeySuffix
+	n.Failover = old.Failover
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -2512,6 +2622,74 @@ type SvmUpstreamConfig struct {
 	// no table comparison) runs only when this flag is set; otherwise it is skipped so
 	// private/local clusters with no published genesis hash still work.
 	CheckGenesisHash bool `yaml:"checkGenesisHash,omitempty" json:"checkGenesisHash"`
+
+	// BlockAvailability is an operator restriction on the slot window this
+	// upstream may serve. Only what the operator declares is enforced; the
+	// upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
+	// used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
+	// mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+	BlockAvailability *SvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
+}
+
+// SvmBlockAvailabilityConfig is the per-upstream declared slot window.
+// Presence of lower/upper implies the restriction is active. When both are
+// nil, it is effectively off.
+type SvmBlockAvailabilityConfig struct {
+	Lower *SvmAvailabilityBoundConfig `yaml:"lower,omitempty" json:"lower,omitempty"`
+	Upper *SvmAvailabilityBoundConfig `yaml:"upper,omitempty" json:"upper,omitempty"`
+}
+
+func (c *SvmBlockAvailabilityConfig) Copy() *SvmBlockAvailabilityConfig {
+	if c == nil {
+		return nil
+	}
+	out := &SvmBlockAvailabilityConfig{}
+	if c.Lower != nil {
+		out.Lower = c.Lower.Copy()
+	}
+	if c.Upper != nil {
+		out.Upper = c.Upper.Copy()
+	}
+	return out
+}
+
+// SvmAvailabilityBoundConfig is a single declared slot bound.
+// Exactly one field must be set.
+type SvmAvailabilityBoundConfig struct {
+	ExactSlot              *int64 `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
+	LatestSlotMinus        *int64 `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
+	FirstAvailableSlotPlus *int64 `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+}
+
+func (c *SvmAvailabilityBoundConfig) Copy() *SvmAvailabilityBoundConfig {
+	if c == nil {
+		return nil
+	}
+	out := &SvmAvailabilityBoundConfig{}
+	if c.ExactSlot != nil {
+		v := *c.ExactSlot
+		out.ExactSlot = &v
+	}
+	if c.LatestSlotMinus != nil {
+		v := *c.LatestSlotMinus
+		out.LatestSlotMinus = &v
+	}
+	if c.FirstAvailableSlotPlus != nil {
+		v := *c.FirstAvailableSlotPlus
+		out.FirstAvailableSlotPlus = &v
+	}
+	return out
+}
+
+func (s *SvmUpstreamConfig) Copy() *SvmUpstreamConfig {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.BlockAvailability != nil {
+		out.BlockAvailability = s.BlockAvailability.Copy()
+	}
+	return &out
 }
 
 type EvmNetworkConfig struct {
@@ -2522,8 +2700,7 @@ type EvmNetworkConfig struct {
 
 	// ServedTip configures how the network derives the "latest"/"finalized"
 	// block it advertises to clients (and enforces via block-availability).
-	// Nil or disabled selects the default mode (the corroborated latest across eligible
-	// upstreams, see ServedTipPick.Freshest); set Enabled to opt into the majority tip. See
+	// Nil uses the defaults: quorum 2, regression guard on, no guarantees. See
 	// EvmServedTipConfig.
 	ServedTip                  *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
 	GetLogsMaxAllowedRange     int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
@@ -2572,12 +2749,27 @@ type EvmNetworkConfig struct {
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
 
+	// StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
+	// logs filters before forwarding upstream. fromBlock has no meaning for a
+	// live subscription, and backends that prune history reject it.
+	// DEFAULT: false.
+	StripSubscribeFromBlockZero *bool `yaml:"stripSubscribeFromBlockZero,omitempty" json:"stripSubscribeFromBlockZero,omitempty"`
+
 	// DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
 	// the debounce interval for block polling. A value of 0.7 means debounce = 70% of
 	// the estimated block time, preferring fresher data at the cost of slightly more
 	// polling. Lower values reduce staleness risk; higher values reduce RPC calls.
 	// Default: 0.7 (30% under the estimated block time).
 	DynamicBlockTimeDebounceMultiplier *float64 `yaml:"dynamicBlockTimeDebounceMultiplier,omitempty" json:"dynamicBlockTimeDebounceMultiplier,omitempty"`
+
+	// FinalizedDebounceDepthMultiplier sets how stale an upstream's finalized block may
+	// get before the state poller fetches it again, as a fraction of the chain's
+	// finality depth in time: (latest - finalized) x EMA block time x multiplier. The
+	// result applies only when it is longer than the regular debounce. Finalized
+	// advances once per finality window, so polling it at the latest-block cadence
+	// mostly returns the same number. 0 disables it (finalized uses the regular debounce).
+	// Default: 0.05 (refresh about 20 times per finality window).
+	FinalizedDebounceDepthMultiplier *float64 `yaml:"finalizedDebounceDepthMultiplier,omitempty" json:"finalizedDebounceDepthMultiplier,omitempty"`
 
 	// BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
 	// retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
@@ -2604,6 +2796,17 @@ type EvmNetworkConfig struct {
 	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
 
+	// ShortCircuitFutureBlocks returns null for a numbered eth_getBlockByNumber
+	// above the highest latest head across every upstream of the network
+	// (regardless of selection policy, tier or syncing state), without
+	// dispatching it; it never fires while any upstream's head is unknown.
+	// Clients that poll the next block by number otherwise walk every routed
+	// upstream on each poll.
+	// The head is what the state poller and head subscriptions last reported, so
+	// a block an upstream produced since then gets null until eRPC sees it: only
+	// enable it where heads arrive promptly (e.g. over WebSocket).
+	ShortCircuitFutureBlocks *bool `yaml:"shortCircuitFutureBlocks,omitempty" json:"shortCircuitFutureBlocks,omitempty"`
+
 	// SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
 	// requests carrying the `safe` block tag. Matching upstreams define and
 	// serve `safe`; empty (without an inherited network default) keeps existing
@@ -2619,30 +2822,25 @@ type EvmNetworkConfig struct {
 // EvmServedTipConfig controls how the network derives the "latest"/"finalized"
 // block it advertises (and enforces) from its upstreams.
 //
-// In the default mode the served tip is the corroborated latest block across eligible
-// non-syncing upstreams (second-highest, or the only one) — which can still advertise a block a slightly-ahead
-// pair has, causing "block not found" churn when requests route to a
-// slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
-// served value is instead the freshest block a strict MAJORITY of the eligible
-// upstreams already have, so interpolated requests land on upstreams that can
-// serve the advertised block.
+// Both axes use one rule: among the eligible (selection-policy), non-syncing
+// upstreams, only the best voter rank present votes (live, then benched, then
+// static-capped, then benched and static-capped), and the served block is the
+// highest one at least Quorum of those voters already have. The health
+// tracker benches an upstream whose head stopped moving while another kept
+// advancing, until it catches up again.
 type EvmServedTipConfig struct {
-	// EnabledFor lists the block tags whose served value uses the cluster-min tip
-	// instead of the default corroborated head. Valid entries: "latest" and "finalized" (the
-	// "safe" tag follows "finalized"). Empty selects the default mode for all tags.
-	EnabledFor []string `yaml:"enabledFor,omitempty" json:"enabledFor,omitempty"`
-
-	// Deprecated: ClusterDelta configured the former cluster-based picker and is
-	// ignored — the majority order statistic needs no tuning. Kept only so
-	// existing configs keep parsing.
-	ClusterDelta int64 `yaml:"clusterDelta,omitempty" json:"clusterDelta,omitempty"`
+	// Quorum is how many eligible upstreams must already have a block before it
+	// is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
+	// uses DefaultServedTipQuorum (2). A ballot with fewer voters than the
+	// quorum serves the block all of them have.
+	Quorum ServedTipQuorum `yaml:"quorum,omitempty" json:"quorum,omitempty" tstype:"number | 'majority'"`
 
 	// GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
 	// "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
 	// serve the advertised latest. For a request on a matching method, "latest"
 	// resolves against the majority of only the upstreams that support it
 	// (membership auto-detected via ShouldHandleMethod — no per-upstream config).
-	// Empty means only the global (all-eligible) majority is computed.
+	// Empty means only the global ballot is computed.
 	GuaranteedMethods []string `yaml:"guaranteedMethods,omitempty" json:"guaranteedMethods,omitempty"`
 
 	// GuaranteedFor lists upstream SELECTORS (id or tag glob — the same
@@ -2655,53 +2853,32 @@ type EvmServedTipConfig struct {
 	GuaranteedFor []string `yaml:"guaranteedFor,omitempty" json:"guaranteedFor,omitempty"`
 
 	// MaxRegressionBlocks is how far below the corroborated LIVE upstream head
-	// (the second-highest live head) the majority pick may fall before it is
-	// treated as a poisoned ballot rather than as reality. While a pick is below
-	// that bound the network keeps serving its last corroborated pick
-	// (in-process, for at most one minute, then it fails open and serves the
-	// pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the
-	// same rollback tolerance the state poller and health tracker apply to a
+	// (the second-highest live head) the pick may fall before it is treated as
+	// a poisoned ballot rather than as reality. While a pick is below that
+	// bound the network keeps serving its last corroborated pick (in-process,
+	// for at most one minute, then it fails open and serves the pick as
+	// computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
+	// rollback tolerance the state poller and health tracker apply to a
 	// retreating head, so all three layers agree on what counts as a genuine
-	// deep correction. -1 disables the regression guard entirely (the symmetric
-	// opposite of trajectoryWindow: 0); no other negative value is accepted.
+	// deep correction. -1 disables the regression guard entirely; no other
+	// negative value is accepted.
 	MaxRegressionBlocks int64 `yaml:"maxRegressionBlocks,omitempty" json:"maxRegressionBlocks,omitempty"`
-
-	// TrajectoryWindow is how much recorded head history the trajectory referee
-	// needs before it may participate in the pick. The referee tracks where this
-	// network's head has been over the window and, when a stalled group holds
-	// the majority, serves the corroborated group that is actually where the
-	// chain should be by now (see architecture/evm's TipTrajectory: advisory,
-	// upward-only, in-process, and a no-op until every confidence condition
-	// holds). Unset uses DefaultServedTipTrajectoryWindow (10m); an explicit 0
-	// disables the referee entirely — nothing is recorded and the pick is the
-	// plain majority. Any other value must be between
-	// MinServedTipTrajectoryWindow and MaxServedTipTrajectoryWindow: below the
-	// minimum the window is self-defeating (it must be long enough that a stall
-	// cannot look like a trajectory), and above the maximum the sample ring can
-	// never span it, so the referee would stand down forever while looking
-	// configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
-	// bare number is parsed as MILLISECONDS.
-	TrajectoryWindow *Duration `yaml:"trajectoryWindow,omitempty" json:"trajectoryWindow,omitempty"`
 }
 
-// ServedTipEnabledFor reports whether the majority served tip is enabled for
-// the given block axis ("latest" or "finalized"). The "safe" tag resolves to the
-// finalized axis, so listing "safe" in EnabledFor enables it for "finalized".
-// Anything not listed uses the default corroborated head. Nil-receiver safe.
-func (c *EvmNetworkConfig) ServedTipEnabledFor(tag string) bool {
+// ShortCircuitFutureBlocksEnabled reports whether a numbered eth_getBlockByNumber
+// above every upstream's head returns null without dispatching. Nil-receiver
+// safe.
+func (c *EvmNetworkConfig) ShortCircuitFutureBlocksEnabled() bool {
+	return c != nil && c.ShortCircuitFutureBlocks != nil && *c.ShortCircuitFutureBlocks
+}
+
+// ServedTipQuorum is the network's configured served-tip quorum (zero = the
+// default). Nil-receiver safe.
+func (c *EvmNetworkConfig) ServedTipQuorum() ServedTipQuorum {
 	if c == nil || c.ServedTip == nil {
-		return false
+		return 0
 	}
-	for _, t := range c.ServedTip.EnabledFor {
-		if strings.EqualFold(t, tag) {
-			return true
-		}
-		// "safe" resolves to the finalized axis.
-		if strings.EqualFold(tag, "finalized") && strings.EqualFold(t, "safe") {
-			return true
-		}
-	}
-	return false
+	return c.ServedTip.Quorum
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -3167,11 +3344,46 @@ type RateLimitStoreConfig struct {
 
 // CachePartitionKey builds the JSON-RPC cache partition key.
 // Empty suffix keeps {networkId}:{ref}; a set suffix yields {networkId}:{suffix}:{ref}.
+// ':' and '\' inside suffix and ref are backslash-escaped so those segments
+// cannot be re-split into a different pair — an unsuffixed ref "systx:foo"
+// must not share a key with suffix "systx" and ref "foo". Segments without
+// those bytes are unchanged, including ordinary block numbers and the
+// reverse-index wildcard "*".
+//
+// Network ids are not escaped in the common case: every id contains ':', and
+// escaping them would orphan every historical unsuffixed key. The remaining
+// collision is a suffixed key whose networkId+":"+suffix is itself a valid
+// network id — svm:<cluster> plus suffix "bar" is the unsuffixed key of
+// svm:<cluster>:bar. Only that case escapes the network id's colons. EVM ids
+// (evm:<digits>) cannot grow a valid extra segment, so their suffixed keys
+// stay byte-for-byte.
 func CachePartitionKey(networkId, suffix, ref string) string {
+	ref = escapePartitionSegment(ref)
 	if suffix == "" {
 		return networkId + ":" + ref
 	}
-	return networkId + ":" + suffix + ":" + ref
+	if util.IsValidNetworkId(networkId + ":" + suffix) {
+		networkId = escapePartitionSegment(networkId)
+	}
+	return networkId + ":" + escapePartitionSegment(suffix) + ":" + ref
+}
+
+// escapePartitionSegment backslash-escapes ':' and '\'. Other bytes are copied
+// unchanged so historical keys stay put.
+func escapePartitionSegment(s string) string {
+	if !strings.ContainsAny(s, `:\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 1)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\', ':':
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func (c *NetworkConfig) NetworkId() string {

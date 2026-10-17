@@ -572,6 +572,8 @@ func (s *svmUpstreamStub) SvmStatePoller() common.SvmStatePoller   { return s.po
 type recordingSvmPoller struct {
 	lastSuggested          int64
 	lastFinalizedSuggested int64
+	floor                  int64
+	floorKnown             bool
 }
 
 func (r *recordingSvmPoller) Bootstrap(context.Context) error   { return nil }
@@ -585,6 +587,9 @@ func (r *recordingSvmPoller) IsHealthy() bool                   { return true }
 func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggested = slot }
 func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   { r.lastFinalizedSuggested = slot }
 func (r *recordingSvmPoller) SetDebounceInterval(time.Duration) {}
+func (r *recordingSvmPoller) FirstAvailableSlot() (int64, bool) {
+	return r.floor, r.floorKnown
+}
 
 func TestUpstreamPostForward_TrackContextSlot_SuggestsFromResponse(t *testing.T) {
 	t.Parallel()

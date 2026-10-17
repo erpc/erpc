@@ -582,7 +582,7 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 ### Request/response behavior
 
 - A successful auth attaches `User{Id, RateLimitBudget}` to the request; `User.Id` flows into log context and Prometheus labels on every downstream metric. [<SourceLink file="auth/registry.go" lines="74-76" />]
-- `ErrAuthUnauthorized` → HTTP 401. Carries `{strategy}` in `Details`. [<SourceLink file="common/errors.go" lines="524-542" />]
+- `ErrAuthUnauthorized` → HTTP 401. Carries `{strategy}` in `Details`; JWT parse denials also set `{reason}` (`token_expired` / `invalid_signature`) via `AuthUnauthorizedReason`, and `Message` is derived from that reason. [<SourceLink file="common/errors.go" lines="548-615" />]
 - `ErrAuthRateLimitRuleExceeded` → HTTP 429. Carries `{projectId, strategy, budget, rule, userId, clientIp}` in `Details`. The `rule` value is formatted as `"method:<rpc_method>"`. [<SourceLink file="common/errors.go" lines="545-568" />]
 - If no strategy's `Supports` returns true (e.g., a JWT token arrives but only `network` is configured), the response is `"no auth strategy matched"` — not a per-strategy auth failure. [<SourceLink file="auth/registry.go" lines="46-96" />]
 - For admin scope, when `adminCfg != nil` but `adminAuthRegistry == nil`, `AdminAuthenticate` returns a plain `fmt.Errorf` with no typed error code → HTTP 200 (not 401/500). When `adminCfg` is nil, the path returns `ErrAuthUnauthorized` → HTTP 401. [<SourceLink file="erpc/admin.go" lines="26-30" />]
@@ -628,6 +628,8 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 24. **Redis `addr`/`username`/`password`/`db` are cleared after `SetDefaults`.** After initialization, only `uri` is set; all discrete fields are zeroed. Config exports show only the URI (with credentials URL-encoded in it). Because `password` has `json:"-"`, a JSON export shows the URI but not the password field. [<SourceLink file="common/defaults.go" lines="1012-1015" />]
 25. **Admin auth registry DOES support rate-limit budgets.** Unlike the healthcheck scope, the admin `AuthRegistry` is created with the same `rateLimitersRegistry` as projects. Rate-limit budgets on admin auth strategies are applied when configured.
 26. **`verificationJwksUrl` must be absolute HTTP(S).** Non-empty values are parsed at startup; scheme must be `http` or `https` and a host is required. Scheme-less hosts, `file://`, and other schemes fail validation even when static `verificationKeys` are also set. [<SourceLink file="common/validation.go" />]
+
+27. **JWT `jwt.Parse` failures are classified into `AuthUnauthorizedReason`.** Bad signatures → `invalid_signature` / "invalid signature"; expired tokens (`ValidationErrorExpired`) → `token_expired` / "token expired". If both bits are set, signature wins — claims (including `exp`) are untrusted without a valid sig. Other `ValidationError` flags keep the jwt library text without a `reason` detail. Classification lives in auth (not `common`) to avoid importing `golang-jwt` into `common`. [<SourceLink file="auth/strategy_jwt.go" />, <SourceLink file="common/errors.go" lines="548-615" />]
 
 ### Observability
 

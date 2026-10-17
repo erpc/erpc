@@ -881,6 +881,36 @@ func (s *ServerConfig) SetDefaults() error {
 		s.CostHeaders = util.BoolPtr(false)
 	}
 
+	if s.WebSocket == nil {
+		s.WebSocket = &WebSocketServerConfig{}
+	}
+	if s.WebSocket.Enabled == nil {
+		s.WebSocket.Enabled = util.BoolPtr(false)
+	}
+	if s.WebSocket.ReadBufferSize == 0 {
+		s.WebSocket.ReadBufferSize = 4096
+	}
+	if s.WebSocket.WriteBufferSize == 0 {
+		s.WebSocket.WriteBufferSize = 4096
+	}
+	if s.WebSocket.MaxMessageSize == 0 {
+		s.WebSocket.MaxMessageSize = 1 * 1024 * 1024 // 1MB
+	}
+	if s.WebSocket.PingInterval == nil {
+		d := Duration(30 * time.Second)
+		s.WebSocket.PingInterval = &d
+	}
+	if s.WebSocket.MaxSubscriptionsPerConnection == 0 {
+		s.WebSocket.MaxSubscriptionsPerConnection = 100
+	}
+	if s.WebSocket.MaxConcurrentRequestsPerConnection == 0 {
+		// Same as the HTTP/2 per-connection stream limit on this listener.
+		s.WebSocket.MaxConcurrentRequestsPerConnection = 250
+	}
+	if s.WebSocket.SubscriptionBufferSize == 0 {
+		// Absorbs a block's worth of matching logs for a briefly slow client.
+		s.WebSocket.SubscriptionBufferSize = 256
+	}
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
 		// Only loopback by default; do not trust private subnets unless explicitly configured
@@ -1397,8 +1427,11 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
 	if strings.HasPrefix(upstream.Endpoint, "http://") ||
 		strings.HasPrefix(upstream.Endpoint, "https://") ||
+		strings.HasPrefix(upstream.Endpoint, "ws://") ||
+		strings.HasPrefix(upstream.Endpoint, "wss://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
-		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
+		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") ||
+		strings.HasPrefix(upstream.Endpoint, "grpcs://") {
 		return nil, nil
 	}
 
@@ -1824,8 +1857,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	// network identity: on an upstream it only says "which cluster do I serve",
 	// and a pool homogeneous across one cluster is the common case.
 	if u.Svm == nil && defaults.Svm != nil {
-		cp := *defaults.Svm
-		u.Svm = &cp
+		u.Svm = defaults.Svm.Copy()
 	} else if u.Svm != nil && defaults.Svm != nil {
 		if u.Svm.Chain == "" && defaults.Svm.Chain != "" {
 			u.Svm.Chain = defaults.Svm.Chain
@@ -1839,6 +1871,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		// inherited true is ever needed.
 		if defaults.Svm.CheckGenesisHash {
 			u.Svm.CheckGenesisHash = true
+		}
+		if u.Svm.BlockAvailability == nil && defaults.Svm.BlockAvailability != nil {
+			u.Svm.BlockAvailability = defaults.Svm.BlockAvailability.Copy()
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
@@ -2107,6 +2142,10 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
+	if e.PinLatestTag == nil && defaults != nil {
+		e.PinLatestTag = defaults.PinLatestTag
+	}
+
 	return nil
 }
 
@@ -2132,7 +2171,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			} else {
 				// Apply defaults to each failsafe config
 				for i, fs := range n.Failsafe {
-					// Find matching default by method/finality
+					// A default must cover every commitment selected by the network rule.
 					defaultFs := &FailsafeConfig{
 						MatchMethod: "*",
 					}
@@ -2149,7 +2188,17 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 						// Match finality (empty array means any finality)
 						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
 
-						if methodMatch && finalityMatch {
+						commitmentMatch := len(dfs.MatchCommitment) == 0
+						if !commitmentMatch && len(fs.MatchCommitment) > 0 {
+							commitmentMatch = true
+							for _, commitment := range fs.MatchCommitment {
+								if !slices.Contains(dfs.MatchCommitment, commitment) {
+									commitmentMatch = false
+									break
+								}
+							}
+						}
+						if methodMatch && finalityMatch && commitmentMatch {
 							defaultFs = dfs
 							break
 						}
@@ -2181,6 +2230,14 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			v := *defaults.Multiplexing
 			n.Multiplexing = &v
 		}
+		if n.Failover == nil && defaults.Failover != nil {
+			cp := *defaults.Failover
+			if defaults.Failover.OnDefaultsExhausted != nil {
+				v := *defaults.Failover.OnDefaultsExhausted
+				cp.OnDefaultsExhausted = &v
+			}
+			n.Failover = &cp
+		}
 		if n.Evm != nil && defaults.Evm != nil {
 			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 				n.Evm.Integrity = &EvmIntegrityConfig{}
@@ -2191,6 +2248,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.DynamicBlockTimeDebounceMultiplier == nil && defaults.Evm.DynamicBlockTimeDebounceMultiplier != nil {
 				n.Evm.DynamicBlockTimeDebounceMultiplier = defaults.Evm.DynamicBlockTimeDebounceMultiplier
+			}
+			if n.Evm.FinalizedDebounceDepthMultiplier == nil && defaults.Evm.FinalizedDebounceDepthMultiplier != nil {
+				n.Evm.FinalizedDebounceDepthMultiplier = defaults.Evm.FinalizedDebounceDepthMultiplier
 			}
 			if n.Evm.BlockUnavailableDelayMultiplier == nil && defaults.Evm.BlockUnavailableDelayMultiplier != nil {
 				n.Evm.BlockUnavailableDelayMultiplier = defaults.Evm.BlockUnavailableDelayMultiplier
@@ -2231,6 +2291,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
+			}
+			if n.Evm.ShortCircuitFutureBlocks == nil && defaults.Evm.ShortCircuitFutureBlocks != nil {
+				n.Evm.ShortCircuitFutureBlocks = defaults.Evm.ShortCircuitFutureBlocks
+			}
+			if n.Evm.StripSubscribeFromBlockZero == nil && defaults.Evm.StripSubscribeFromBlockZero != nil {
+				n.Evm.StripSubscribeFromBlockZero = defaults.Evm.StripSubscribeFromBlockZero
 			}
 		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm {
 			// Copy EVM defaults only onto networks that are (or can become) EVM.
@@ -2294,7 +2360,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 
 	if len(upstreams) > 0 {
 		anyUpstreamInFallbackTier := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-			return u.HasTag("tier:fallback")
+			return u.HasTag(TagTierFallback)
 		})
 		if anyUpstreamInFallbackTier && n.SelectionPolicy == nil {
 			defCfg := NewDefaultNetworkConfig(upstreams)
@@ -2381,6 +2447,7 @@ func migrateLegacyIntegrityChecks(n *NetworkConfig) {
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
+const DefaultFinalizedDebounceDepthMultiplier = 0.05
 const DefaultBlockUnavailableDelayMultiplier = 1.0
 
 // DefaultToleratedBlockHeadRollback is the tolerance (in blocks) applied when a
@@ -2391,37 +2458,12 @@ const DefaultBlockUnavailableDelayMultiplier = 1.0
 // and the health tracker so both layers converge on the same head.
 const DefaultToleratedBlockHeadRollback = 1024
 
-// DefaultServedTipTrajectoryWindow is how much head history the served-tip
-// trajectory referee needs before it may participate in a pick
-// (EvmServedTipConfig.TrajectoryWindow). Ten minutes is long enough that a
-// majority stall cannot masquerade as the trajectory (the referee's evidence is
-// the median of live heads, so a stall of half the window already flattens the
-// fit and stands the referee down), and short enough to be warm well within a
-// pod's lifetime.
-const DefaultServedTipTrajectoryWindow = 10 * time.Minute
-
-// ServedTipTrajectorySampleInterval and ServedTipTrajectoryMaxSamples are the
-// referee's recording cadence and its hard ring cap (architecture/evm's
-// tipSampleInterval / tipMaxBufferCapacity, which read them from here so the
-// config bounds below cannot drift from the mechanism they describe).
-const (
-	ServedTipTrajectorySampleInterval = 5 * time.Second
-	ServedTipTrajectoryMaxSamples     = 1024
-)
-
-// MinServedTipTrajectoryWindow / MaxServedTipTrajectoryWindow bound a configured
-// EvmServedTipConfig.TrajectoryWindow to the values that can actually work.
-//
-// Below a minute the window is self-defeating: it must be long enough that a
-// stall cannot look like a trajectory, and a fit over seconds of history is
-// noise. Above 80% of what the ring can span (cadence × capacity) the required
-// span is never reached, so the referee would stand down forever while looking
-// configured — the failure mode a range check exists to prevent, since nothing
-// in the metrics distinguishes "never warm" from "never needed".
-const (
-	MinServedTipTrajectoryWindow = time.Minute
-	MaxServedTipTrajectoryWindow = ServedTipTrajectorySampleInterval * ServedTipTrajectoryMaxSamples * 4 / 5
-)
+// DefaultServedTipQuorum is how many eligible upstreams must have a block
+// before the network serves it as "latest"/"finalized" (ServedTipQuorum).
+// Two keeps a lone far-ahead head out of every multi-upstream ballot, while a
+// ballot reduced to one voter (benched peers, a one-upstream network) still
+// serves that voter's head.
+const DefaultServedTipQuorum = 2
 
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
@@ -2468,6 +2510,11 @@ func DefaultEmptyResultAccept() []string {
 		"eth_getCode",
 		"eth_getStorageAt",
 		"eth_getTransactionCount",
+		// Solana: 0 is a full-history node's real first slot, and [] is a
+		// program with no matching accounts. Retrying either asks every
+		// upstream the same question and returns the same answer.
+		"getFirstAvailableBlock",
+		"getProgramAccounts",
 	}
 }
 
@@ -2579,6 +2626,10 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.DynamicBlockTimeDebounceMultiplier == nil {
 		d := DefaultDynamicBlockTimeDebounceMultiplier
 		e.DynamicBlockTimeDebounceMultiplier = &d
+	}
+	if e.FinalizedDebounceDepthMultiplier == nil {
+		d := DefaultFinalizedDebounceDepthMultiplier
+		e.FinalizedDebounceDepthMultiplier = &d
 	}
 	if e.BlockUnavailableDelayMultiplier == nil {
 		d := DefaultBlockUnavailableDelayMultiplier
@@ -2791,9 +2842,6 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		} else if defaults.EmptyResultIgnore != nil {
 			r.EmptyResultAccept = defaults.EmptyResultIgnore
 		}
-	}
-	if r.EmptyResultAccept == nil {
-		r.EmptyResultAccept = DefaultEmptyResultAccept()
 	}
 
 	// "Data not available yet" (empty/missing-data/block-unavailable) retries are all

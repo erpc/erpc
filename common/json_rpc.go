@@ -1216,6 +1216,10 @@ type JsonRpcRequest struct {
 	// UnmarshalJSON. Empty when the request was constructed programmatically.
 	idRaw []byte
 
+	// idAbsent records that the request had no "id" member: a notification
+	// (JSON-RPC 2.0 §4.1). "id": null is a request, not a notification.
+	idAbsent bool
+
 	// networkId holds the optional top-level "networkId" member, the body-side
 	// equivalent of the /<architecture>/<chainId> path segments. It is captured
 	// by the envelope parse so routing reads it from the same result as
@@ -1288,6 +1292,14 @@ func (r *JsonRpcRequest) RLockWithTrace(ctx context.Context) {
 	r.RLock()
 }
 
+// IsNotification reports whether the request had no "id" member, making it
+// a JSON-RPC 2.0 notification that must not be answered.
+func (r *JsonRpcRequest) IsNotification() bool {
+	r.RLock()
+	defer r.RUnlock()
+	return r.idAbsent
+}
+
 func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	r.RLock()
 	defer r.RUnlock()
@@ -1302,10 +1314,11 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	}
 
 	clone := &JsonRpcRequest{
-		JSONRPC: r.JSONRPC,
-		ID:      r.ID,
-		Method:  r.Method,
-		Params:  clonedParams,
+		JSONRPC:  r.JSONRPC,
+		ID:       r.ID,
+		Method:   r.Method,
+		Params:   clonedParams,
+		idAbsent: r.idAbsent,
 	}
 	// Carry idRaw forward so the cloned request still round-trips its id
 	// byte-for-byte through normalizeResponse. Without this, the clone falls
@@ -1357,8 +1370,8 @@ func (r *JsonRpcRequest) SetID(id interface{}) error {
 }
 
 // IDRawBytes returns a copy of the verbatim id bytes as received over the
-// wire, or nil if the request was constructed programmatically (e.g. via
-// NewJsonRpcRequest) or the request id was the literal `null`. Used by the
+// wire, `null` included, or nil if the request was constructed
+// programmatically (e.g. via NewJsonRpcRequest) or carried no id. Used by the
 // response path to round-trip the id back to the client without precision
 // loss for large integers or fractional ids.
 func (r *JsonRpcRequest) IDRawBytes() []byte {
@@ -1370,6 +1383,20 @@ func (r *JsonRpcRequest) IDRawBytes() []byte {
 	out := make([]byte, len(r.idRaw))
 	copy(out, r.idRaw)
 	return out
+}
+
+// ResponseID is the id an error response built outside the upstream path must
+// carry: the client's verbatim id bytes when the wire had them, else the typed
+// id. A `null` id answers `null` only when echoNull is set (Solana, as Agave
+// does); otherwise it answers the random id the request was given for
+// upstreams, which is what EVM clients have always received.
+func (r *JsonRpcRequest) ResponseID(echoNull bool) interface{} {
+	if raw := r.IDRawBytes(); raw != nil && (echoNull || string(raw) != "null") {
+		return json.RawMessage(raw)
+	}
+	r.RLock()
+	defer r.RUnlock()
+	return r.ID
 }
 
 // UnmarshalJSON is the one place a raw request body becomes a JsonRpcRequest.
@@ -1392,7 +1419,25 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	aux.JSONRPC = "2.0"
 
 	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
-		return err
+		// MIP-16 answers eth_query* params that are not an array with
+		// -32602, not a parse error: decode the envelope again with the
+		// params left raw and drop them, so the query parser rejects the
+		// request with the right code.
+		raw := &struct {
+			JSONRPC   string          `json:"jsonrpc,omitempty"`
+			ID        json.RawMessage `json:"id,omitempty"`
+			Method    uniqueString    `json:"method"`
+			Params    json.RawMessage `json:"params"`
+			NetworkID interface{}     `json:"networkId,omitempty"`
+		}{Method: uniqueString{member: "method"}}
+		if SonicCfg.Unmarshal(data, raw) != nil || !strings.HasPrefix(strings.ToLower(raw.Method.value), "eth_query") {
+			return err
+		}
+		if raw.JSONRPC != "" {
+			r.JSONRPC = raw.JSONRPC
+		}
+		r.Params = nil
+		aux.ID, aux.Method, aux.NetworkID = raw.ID, raw.Method, raw.NetworkID
 	}
 
 	// Absent and present-but-empty stay distinct on the wire: an object with
@@ -1403,19 +1448,18 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	}
 	r.Method = aux.Method.value
 	r.networkId, _ = aux.NetworkID.(string)
+	r.idAbsent = aux.ID == nil
 
 	if aux.ID != nil {
 		var id interface{}
 		if err := SonicCfg.Unmarshal(aux.ID, &id); err != nil {
 			return err
 		}
-		// Preserve verbatim id bytes for non-null ids so the response can
-		// echo them back without precision loss. Skip the literal `null`
-		// case so the existing random-id fallback below still applies.
-		if id != nil {
-			r.idRaw = make([]byte, len(aux.ID))
-			copy(r.idRaw, aux.ID)
-		}
+		// Preserve the verbatim id bytes, `null` included, so the response
+		// echoes exactly what the client sent. The typed ID below still gets a
+		// random value for a null id, because upstreams need a non-null id.
+		r.idRaw = make([]byte, len(aux.ID))
+		copy(r.idRaw, aux.ID)
 		switch v := id.(type) {
 		case float64:
 			// Sonic decodes every JSON number as float64, which cannot hold
@@ -1872,6 +1916,16 @@ func TranslateToJsonRpcException(err error) error {
 			0,
 			JsonRpcErrorUnsupportedException,
 			"method ignored by upstream: "+reason,
+			err,
+			nil,
+		)
+	}
+	// geth answers an unknown eth_unsubscribe id with its generic -32000.
+	if HasErrorCode(err, ErrCodeSubscriptionNotFound) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorCallException,
+			"subscription not found",
 			err,
 			nil,
 		)

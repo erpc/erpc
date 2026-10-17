@@ -56,16 +56,17 @@ func TestTrackerCorroboratedHeadConcurrentUpdatesDoNotRegress(t *testing.T) {
 	upstreams := []common.Upstream{a, b, c, d}
 
 	ntwMeta := tracker.getMetadata(metadataKey{nil, net})
-	ntwMeta.reporters = upstreams
 	for i, head := range []int64{99, 100, 99, 99} {
-		tracker.getMetadata(metadataKey{upstreams[i], net}).evmLatestBlockNumber.Store(head)
+		tracker.addHeadReporter(ntwMeta, net, upstreams[i]).evmLatestBlockNumber.Store(head)
 	}
 	ntwMeta.evmLatestBlockNumber.Store(99)
 
+	// d is registered after c, so registering d's report walks past c and
+	// parks inside the network's head critical section.
 	c.armed.Store(true)
 	firstDone := make(chan struct{})
 	go func() {
-		tracker.SetLatestBlockNumber(a, 101, 0)
+		tracker.SetLatestBlockNumber(d, 101, 0)
 		close(firstDone)
 	}()
 	<-c.reached

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"time"
 
@@ -148,11 +147,15 @@ func Init(
 	// 4) Expose Transports
 	//
 	logger.Info().Msg("initializing transports")
+	// Closed when the HTTP server has finished draining after appCtx is
+	// cancelled; nil (never waited on) when no HTTP server is configured.
+	var httpDrained <-chan struct{}
 	if cfg.Server != nil {
-		httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		if err != nil {
 			return err
 		}
+		httpDrained = httpServer.drained
 		go func() {
 			if err := httpServer.Start(&logger); err != nil {
 				if err != http.ErrServerClosed {
@@ -174,6 +177,7 @@ func Init(
 			}
 		}()
 	}
+	var metricsSrv *http.Server
 	if cfg.Metrics != nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
 		if cfg.Metrics.ErrorLabelMode != "" {
 			common.SetErrorLabelMode(cfg.Metrics.ErrorLabelMode)
@@ -182,10 +186,9 @@ func Init(
 			return fmt.Errorf("metrics.port is not configured")
 		}
 		logger.Info().Msgf("starting metrics server on port: %d", *cfg.Metrics.Port)
-		srv := &http.Server{
-			BaseContext: func(ln net.Listener) context.Context {
-				return appCtx
-			},
+		// No appCtx BaseContext: scrapes keep working after SIGTERM, until the
+		// shutdown below.
+		metricsSrv = &http.Server{
 			Addr: fmt.Sprintf(":%d", *cfg.Metrics.Port),
 			// promhttp.Handler() with the gatherer wrapped, so drop customizations
 			// also govern the stock collectors the manager does not own.
@@ -196,32 +199,40 @@ func Init(
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				logger.Error().Msgf("error starting metrics server: %s", err)
 				util.OsExit(util.ExitCodeHttpServerFailed)
 			}
 		}()
-		go func() {
-			<-appCtx.Done()
-			logger.Info().Msg("shutting down metrics server...")
-			shutdownCtx, cancel := context.WithTimeout(appCtx, 5*time.Second)
-			defer cancel()
-			if err := srv.Shutdown(shutdownCtx); err != nil {
-				logger.Error().Msgf("metrics server forced to shutdown: %s", err)
-			} else {
-				logger.Info().Msg("metrics server stopped")
-			}
-		}()
 	}
 
-	// Wait until the context is cancelled, then give the http server some time to finish draining.
+	// Wait until the context is cancelled, then for the http server to finish
+	// draining (waitBeforeShutdown, then Shutdown with its 30s budget) — main
+	// exits as soon as Init returns, which would kill every request still in
+	// flight — and only then give exporters waitAfterShutdown to flush. The
+	// metrics server stays up through all of it, so the scrapes inside
+	// waitAfterShutdown see every increment made during the drain.
 	<-appCtx.Done()
 	logger.Info().Msg("shutting down gracefully...")
+	if httpDrained != nil {
+		<-httpDrained
+	}
 	// Flush buffered integrity forensics before the process goes away; the S3
 	// exporter otherwise loses everything written since its last interval.
+	// Runs after the drain so catches recorded by its last requests are kept.
 	evm.CloseIntegrityExporters()
 	if cfg.Server != nil && cfg.Server.WaitAfterShutdown != nil {
 		time.Sleep(cfg.Server.WaitAfterShutdown.Duration())
+	}
+	if metricsSrv != nil {
+		logger.Info().Msg("shutting down metrics server...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+			logger.Error().Msgf("metrics server forced to shutdown: %s", err)
+		} else {
+			logger.Info().Msg("metrics server stopped")
+		}
 	}
 
 	return nil

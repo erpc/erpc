@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -99,10 +100,10 @@ func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRe
 		return nil, common.NewErrAuthUnauthorized("jwt", err.Error())
 	}
 
-	// Verify the signature
+	// Verify the signature (and standard claims such as exp via jwt.Parse).
 	token, err = jwt.Parse(ap.Jwt.Token, key)
 	if err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", "invalid signature")
+		return nil, errAuthUnauthorizedFromJwtParse(err)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
@@ -173,6 +174,25 @@ func (s *JwtStrategy) findVerificationKey(ctx context.Context, token *jwt.Token)
 	}
 
 	return nil, fmt.Errorf("no suitable verification key found")
+}
+
+// errAuthUnauthorizedFromJwtParse maps jwt.Parse errors onto
+// AuthUnauthorizedReason (message comes from the reason). Classification stays
+// here so common/ does not import golang-jwt.
+func errAuthUnauthorizedFromJwtParse(err error) error {
+	var ve *jwt.ValidationError
+	if errors.As(err, &ve) {
+		// Signature first: claims (including exp) are untrusted if the sig failed.
+		if ve.Errors&jwt.ValidationErrorSignatureInvalid != 0 {
+			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature)
+		}
+		if ve.Errors&jwt.ValidationErrorExpired != 0 {
+			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonTokenExpired)
+		}
+		// Other ValidationError flags (nbf, iat, malformed, …) keep jwt's text.
+		return common.NewErrAuthUnauthorized("jwt", err.Error())
+	}
+	return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature)
 }
 
 func (s *JwtStrategy) validateClaims(claims jwt.MapClaims) error {

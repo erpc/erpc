@@ -170,9 +170,21 @@ func NewNetwork(
 		failsafeExecutors: failsafeExecutors,
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
+	network.servedTipAll.label = "all"
 
 	if nwCfg.Architecture == "" {
 		nwCfg.Architecture = common.ArchitectureEvm
+	}
+
+	// Keyed per project since each project has its own upstreams; tolerates
+	// the same rollback as upstream state pollers.
+	if upstreamsRegistry != nil {
+		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
+			network.latestBlockShared = ssr.GetCounterInt64(
+				fmt.Sprintf("network/%s/%s/latestBlock", projectId, netId),
+				evm.DefaultToleratedBlockHeadRollback,
+			)
+		}
 	}
 
 	// Wire the architecture handler so per-network hooks dispatch correctly.

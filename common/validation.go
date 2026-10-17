@@ -65,6 +65,20 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if c.Indexer != nil {
+		if err := c.Indexer.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Validate rejects nonsensical values; zeros pass through and resolve to
+// internal defaults inside the indexer.
+func (i *IndexerConfig) Validate() error {
+	if i.DedupWindowSize < 0 {
+		return fmt.Errorf("indexer.dedupWindowSize must be >= 0 (0 uses the default)")
+	}
 	return nil
 }
 
@@ -91,6 +105,23 @@ func (s *ServerConfig) Validate() error {
 	}
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
+	}
+	if ws := s.WebSocket; ws != nil {
+		if ws.PingInterval == nil || *ws.PingInterval <= 0 {
+			return fmt.Errorf("server.webSocket.pingInterval must be greater than 0")
+		}
+		if ws.ReadBufferSize < 0 || ws.WriteBufferSize < 0 || ws.MaxMessageSize < 0 {
+			return fmt.Errorf("server.webSocket buffer and message sizes must not be negative")
+		}
+		if ws.MaxSubscriptionsPerConnection < 1 {
+			return fmt.Errorf("server.webSocket.maxSubscriptionsPerConnection must be at least 1")
+		}
+		if ws.MaxConcurrentRequestsPerConnection < 1 {
+			return fmt.Errorf("server.webSocket.maxConcurrentRequestsPerConnection must be at least 1")
+		}
+		if ws.SubscriptionBufferSize < 1 {
+			return fmt.Errorf("server.webSocket.subscriptionBufferSize must be at least 1")
+		}
 	}
 
 	// Validate trusted IP forwarders if provided (IPs or CIDRs). Support legacy + new field
@@ -563,16 +594,45 @@ func validateGrpcConnPoolSize(scope string, poolSize int) error {
 	return nil
 }
 
+// validateGrpcHealthCheckMount rejects a health check on an endpoint mounted
+// below a URL path. grpc-go opens the health Watch stream past every
+// interceptor, so it always calls bare `/grpc.health.v1.Health/Watch`, never
+// the mount; the answer would come from whatever serves the root.
+func validateGrpcHealthCheckMount(scope, endpoint, healthCheckService string) error {
+	if healthCheckService == "" {
+		return nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%s: invalid gRPC endpoint %s: %w", scope, util.RedactEndpoint(endpoint), err)
+	}
+	if strings.TrimRight(parsed.Path, "/") != "" {
+		return fmt.Errorf("%s.healthCheckService cannot be used with %s: the URL path mounts every call, but the gRPC health check always calls the root path", scope, util.RedactEndpoint(endpoint))
+	}
+	return nil
+}
+
 // Validate checks the gRPC cache-connector knobs. A zero PoolSize is valid and
 // means "use the built-in default".
 func (g *GrpcConnectorConfig) Validate() error {
-	return validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize)
+	if err := validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize); err != nil {
+		return err
+	}
+	for _, server := range g.Servers {
+		if err := validateGrpcHealthCheckMount("database.*.connector.grpc", server, g.HealthCheckService); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Validate checks the gRPC upstream knobs. A zero PoolSize is valid and means
 // "use the built-in default".
-func (g *GrpcUpstreamConfig) Validate() error {
-	return validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize)
+func (g *GrpcUpstreamConfig) Validate(endpoint string) error {
+	if err := validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize); err != nil {
+		return err
+	}
+	return validateGrpcHealthCheckMount("upstream.*.grpc", endpoint, g.HealthCheckService)
 }
 
 func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
@@ -582,6 +642,9 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	prefix := fmt.Sprintf("connector '%s'.%s[%d]", connectorId, field, index)
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
+	}
+	if len(fsCfg.MatchCommitment) > 0 {
+		return fmt.Errorf("%s: matchCommitment is not supported for connector-level failsafe", prefix)
 	}
 	return nil
 }
@@ -765,6 +828,9 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		for _, fs := range p.UpstreamDefaults.Failsafe {
 			if fs != nil && fs.Consensus != nil {
 				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
+			}
+			if fs != nil && len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.matchCommitment is only supported for network-level failsafe")
 			}
 		}
 	}
@@ -1035,6 +1101,9 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			if err := fs.Validate(); err != nil {
 				return err
 			}
+			if len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("upstream '%s': failsafe.matchCommitment is only supported for network-level failsafe", u.Id)
+			}
 			// Upstreams register in the background, so the executor's own
 			// rejection only logs and erpc keeps serving without the upstream.
 			if fs.Consensus != nil {
@@ -1048,7 +1117,7 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	if u.Grpc != nil {
-		if err := u.Grpc.Validate(); err != nil {
+		if err := u.Grpc.Validate(u.Endpoint); err != nil {
 			return err
 		}
 	}
@@ -1223,6 +1292,14 @@ func (f *FailsafeConfig) Validate() error {
 	case "", "*", "user", "internal":
 	default:
 		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+	}
+
+	for _, c := range f.MatchCommitment {
+		switch c {
+		case "none", "processed", "confirmed", "finalized":
+		default:
+			return fmt.Errorf("failsafe.matchCommitment '%s' is invalid, must be one of: none | processed | confirmed | finalized", c)
+		}
 	}
 
 	if f.Timeout != nil {
@@ -1590,27 +1667,11 @@ func (e *EvmNetworkConfig) Validate() error {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
 	if e.ServedTip != nil {
-		for _, tag := range e.ServedTip.EnabledFor {
-			switch strings.ToLower(strings.TrimSpace(tag)) {
-			case "latest", "finalized", "safe":
-			default:
-				return fmt.Errorf("network.*.evm.servedTip.enabledFor contains unknown tag %q (valid: latest, finalized, safe)", tag)
-			}
-		}
-		if e.ServedTip.ClusterDelta < 0 {
-			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
+		if q := e.ServedTip.Quorum; q < 0 && q != ServedTipQuorumMajority {
+			return fmt.Errorf("network.*.evm.servedTip.quorum must be an integer >= 1 or \"majority\"")
 		}
 		if e.ServedTip.MaxRegressionBlocks < -1 {
 			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0, or -1 to disable the regression guard (0 uses the default rollback tolerance)")
-		}
-		if w := e.ServedTip.TrajectoryWindow; w != nil && w.Duration() != 0 {
-			if d := w.Duration(); d < MinServedTipTrajectoryWindow || d > MaxServedTipTrajectoryWindow {
-				return fmt.Errorf(
-					"network.*.evm.servedTip.trajectoryWindow must be 0 (disables the trajectory referee) "+
-						"or between %s and %s, got %s — NOTE a bare number in YAML is parsed as MILLISECONDS, "+
-						"so write trajectoryWindow: \"10m\", not trajectoryWindow: 10",
-					MinServedTipTrajectoryWindow, MaxServedTipTrajectoryWindow, d)
-			}
 		}
 		for _, m := range e.ServedTip.GuaranteedMethods {
 			if err := ValidatePattern(m); err != nil {
@@ -1702,6 +1763,70 @@ func (s *SvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	}
 	if !isValidSvmSegment(s.Cluster) {
 		return fmt.Errorf("upstream.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	if s.BlockAvailability != nil {
+		if err := s.BlockAvailability.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *SvmBlockAvailabilityConfig) Validate() error {
+	if c.Lower != nil {
+		if err := c.Lower.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.lower is invalid: %w", err)
+		}
+	}
+	if c.Upper != nil {
+		if err := c.Upper.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.upper is invalid: %w", err)
+		}
+	}
+
+	if c.Lower != nil && c.Upper != nil && c.Lower.ExactSlot != nil && c.Upper.ExactSlot != nil {
+		if *c.Lower.ExactSlot > *c.Upper.ExactSlot {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.lower.exactSlot must be <= upper.exactSlot")
+		}
+	}
+	if c.Lower != nil && c.Upper != nil && c.Lower.LatestSlotMinus != nil && c.Upper.LatestSlotMinus != nil {
+		if *c.Lower.LatestSlotMinus < *c.Upper.LatestSlotMinus {
+			return fmt.Errorf("upstream.*.svm.blockAvailability: when both bounds are latestSlotMinus, lower.latestSlotMinus must be >= upper.latestSlotMinus")
+		}
+	}
+	if c.Lower != nil && c.Upper != nil && c.Lower.FirstAvailableSlotPlus != nil && c.Upper.FirstAvailableSlotPlus != nil {
+		if *c.Lower.FirstAvailableSlotPlus > *c.Upper.FirstAvailableSlotPlus {
+			return fmt.Errorf("upstream.*.svm.blockAvailability: when both bounds are firstAvailableSlotPlus, lower.firstAvailableSlotPlus must be <= upper.firstAvailableSlotPlus")
+		}
+	}
+	return nil
+}
+
+func (b *SvmAvailabilityBoundConfig) Validate() error {
+	setCount := 0
+	if b.ExactSlot != nil {
+		setCount++
+	}
+	if b.LatestSlotMinus != nil {
+		setCount++
+	}
+	if b.FirstAvailableSlotPlus != nil {
+		setCount++
+	}
+	if setCount == 0 {
+		return fmt.Errorf("bound must set exactly one of: exactSlot, latestSlotMinus, firstAvailableSlotPlus")
+	}
+	if setCount > 1 {
+		return fmt.Errorf("bound fields exactSlot, latestSlotMinus, firstAvailableSlotPlus are mutually exclusive")
+	}
+	if b.ExactSlot != nil && *b.ExactSlot < 0 {
+		return fmt.Errorf("bound.exactSlot must be >= 0")
+	}
+	if b.LatestSlotMinus != nil && *b.LatestSlotMinus < 0 {
+		return fmt.Errorf("bound.latestSlotMinus must be >= 0")
+	}
+	if b.FirstAvailableSlotPlus != nil && *b.FirstAvailableSlotPlus < 0 {
+		return fmt.Errorf("bound.firstAvailableSlotPlus must be >= 0")
 	}
 	return nil
 }

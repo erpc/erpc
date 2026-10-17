@@ -153,12 +153,14 @@ then marshals to YAML (default) or JSON. Useful for verifying what a TypeScript 
 actually produces. Log output is also suppressed.
 
 **Graceful shutdown.** On SIGINT/SIGTERM: `signal.NotifyContext` cancels `appCtx`.
-The HTTP server's goroutine wakes, sleeps `server.waitBeforeShutdown` (default 10 s —
-gives Kubernetes time to mark the pod NotReady), then calls `srv.Shutdown(30 s budget)`.
-The metrics server shuts down with a 5 s budget. The OTel tracer provider shuts down in
-a goroutine with a 5 s budget. `erpc.Init` blocks on `<-appCtx.Done()` then sleeps
-`server.waitAfterShutdown` (default 10 s) before returning, allowing in-flight requests
-to drain.
+The HTTP server's goroutine wakes, disables keep-alives, sleeps `server.waitBeforeShutdown`
+(default 10 s — gives Kubernetes time to mark the pod NotReady), then calls
+`srv.Shutdown(30 s budget)`, which GOAWAYs HTTP/2 (including h2c) connections and waits
+for in-flight requests. The metrics server shuts down with a 5 s budget. The OTel tracer
+provider shuts down in a goroutine with a 5 s budget. `erpc.Init` blocks on
+`<-appCtx.Done()`, then waits for the HTTP drain to finish, then sleeps
+`server.waitAfterShutdown` (default 10 s) before returning, so the process lives up to
+`waitBeforeShutdown + 30 s + waitAfterShutdown` after the signal.
 
 **pprof.** A `//go:build pprof` file registers standard `net/http/pprof` routes and
 starts a listener at `0.0.0.0:<port>` (default `6060`; override with `ERPC_PPROF_PORT`).

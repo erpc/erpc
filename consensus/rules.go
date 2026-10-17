@@ -221,9 +221,17 @@ var consensusRules = []consensusRule{
 			if g := a.getLeaderGroupNonError(); g != nil {
 				return &slotResult{Result: g.LargestResult}
 			}
-			// If leader only has an error, return that error; otherwise low participants
-			if gAny := a.getLeaderGroupAny(); gAny != nil && gAny.RepresentativeError != nil {
-				return &slotResult{Error: gAny.RepresentativeError}
+			// If the leader's own response is a consensus error, return that error.
+			// RepresentativeError is the lowest upstream id in the group, and a
+			// missing-data group can hold different codes and messages, so it is
+			// not the leader's. Infrastructure errors stay on the low-participants
+			// path: getLeaderGroupAny does not search those groups.
+			if gAny := a.getLeaderGroupAny(); gAny != nil {
+				for _, r := range gAny.Results {
+					if r != nil && r.Upstream == a.leaderUpstream && r.Err != nil {
+						return &slotResult{Error: r.Err}
+					}
+				}
 			}
 			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
