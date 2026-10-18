@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -1269,6 +1270,35 @@ func (r *NormalizedRequest) CopyHttpContextFrom(source *NormalizedRequest) {
 	if user := source.User(); user != nil {
 		r.SetUser(user)
 	}
+}
+
+// Detach returns a new request for the same call that shares no state with r:
+// its own envelope copy, directives copy, network and user, but a fresh last
+// valid response, last upstream and attempt log. A side request (a probe of an
+// excluded upstream) must use it, or its outcome leaks into the client's.
+func (r *NormalizedRequest) Detach() *NormalizedRequest {
+	// Under parseMu the envelope and the raw body cannot change: a parse
+	// publishes the envelope and only then clears the body.
+	r.parseMu.Lock()
+	jrq := r.jsonRpcRequest.Load()
+	var body []byte
+	if jrq == nil {
+		body = bytes.Clone(r.body)
+	}
+	r.parseMu.Unlock()
+
+	var d *NormalizedRequest
+	if jrq != nil {
+		d = NewNormalizedRequestFromJsonRpcRequest(jrq.Clone())
+	} else {
+		d = NewNormalizedRequest(body)
+	}
+	if dirs := r.Directives(); dirs != nil {
+		d.SetDirectives(dirs.Clone())
+	}
+	d.CopyHttpContextFrom(r)
+	d.SetNetwork(r.Network())
+	return d
 }
 
 func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
