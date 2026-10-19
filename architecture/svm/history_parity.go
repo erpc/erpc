@@ -61,6 +61,10 @@ func networkPreForward_getFirstAvailableBlock(ctx context.Context, upstreams []c
 // "this upstream does not have it, another may" verdict a pruned validator's
 // -32011 already produces, for the nodes that answer 200 instead of erroring.
 //
+// An upstream that already holds the pool's deepest known history (floor known
+// and <= PoolFirstAvailableSlot) is exempt: its incomplete answer is the pool's
+// best (see holdsDeepestHistory). Unknown floors keep the sweep going.
+//
 // The verdict is whole-request: the original request is re-sent to the next
 // upstream and this response is discarded. There is no splice or merge across
 // upstreams. The discarded response is still the request's last-valid response
@@ -140,18 +144,13 @@ func signatureStatusesNullToMissingData(ctx context.Context, u common.Upstream, 
 			nulls++
 		}
 	}
-	if nulls == 0 {
+	if nulls == 0 || holdsDeepestHistory(u, r) {
 		return nil
 	}
-	return common.NewErrEndpointMissingData(
-		common.NewErrJsonRpcExceptionInternal(
-			0,
-			common.JsonRpcErrorMissingData,
-			fmt.Sprintf("getSignatureStatuses with searchTransactionHistory returned %d null status(es) of %d", nulls, len(result.Value)),
-			nil,
-			map[string]interface{}{"method": "getSignatureStatuses", "nulls": nulls, "total": len(result.Value)},
-		),
+	return newHistoryParityMissingData(
 		u,
+		fmt.Sprintf("getSignatureStatuses with searchTransactionHistory returned %d null status(es) of %d", nulls, len(result.Value)),
+		map[string]interface{}{"method": "getSignatureStatuses", "nulls": nulls, "total": len(result.Value)},
 	)
 }
 
@@ -184,17 +183,59 @@ func signaturesForAddressShortPageToMissingData(ctx context.Context, u common.Up
 	if err := common.SonicCfg.Unmarshal(raw, &page); err != nil {
 		return nil
 	}
-	if int64(len(page)) >= limit {
+	if int64(len(page)) >= limit || holdsDeepestHistory(u, r) {
 		return nil
 	}
-	return common.NewErrEndpointMissingData(
-		common.NewErrJsonRpcExceptionInternal(
-			0,
-			common.JsonRpcErrorMissingData,
-			fmt.Sprintf("getSignaturesForAddress returned a short page (%d of limit %d)", len(page), limit),
-			nil,
-			map[string]interface{}{"method": "getSignaturesForAddress", "returned": len(page), "limit": limit},
-		),
+	return newHistoryParityMissingData(
+		u,
+		fmt.Sprintf("getSignaturesForAddress returned a short page (%d of limit %d)", len(page), limit),
+		map[string]interface{}{"method": "getSignaturesForAddress", "returned": len(page), "limit": limit},
+	)
+}
+
+// holdsDeepestHistory reports whether u's ledger floor is known and no higher
+// than the pool's floor (MIN across the request's selected upstreams), i.e. no
+// upstream in the pool can reach further back than u. Such an upstream's short
+// page / null status is the best answer the pool has, not a miss: sweeping on
+// would only offer the client a shallower answer, and the last-valid-response
+// slot is last-writer-wins, so a shallower upstream answering later would
+// REPLACE it.
+//
+// Fails open on every unknown: u's floor unobserved, or any pool member's floor
+// unobserved (PoolFirstAvailableSlot) — an unobserved archive may be deeper, so
+// the sweep continues exactly as before.
+func holdsDeepestHistory(u common.Upstream, r *common.NormalizedRequest) bool {
+	sup, ok := u.(common.SvmUpstream)
+	if !ok {
+		return false
+	}
+	poller := sup.SvmStatePoller()
+	if poller == nil || poller.IsObjectNull() {
+		return false
+	}
+	floor, known := poller.FirstAvailableSlot()
+	if !known {
+		return false
+	}
+	poolFloor, poolKnown := PoolFirstAvailableSlot(r.Upstreams())
+	return poolKnown && floor <= poolFloor
+}
+
+// newHistoryParityMissingData builds the incomplete-answer verdict: MissingData
+// (so the sweep continues to the next upstream) marked PERMANENT. Permanence
+// governs only the time-delayed re-sweep after a completed sweep, never
+// cross-upstream failover (that is retryableTowardNetwork, unaffected). Waiting
+// one block time cannot lengthen an address's history or make an unseen
+// signature land, so re-sweeping every upstream after a delay — until
+// EmptyResultMaxAttempts — would only multiply load for the same answer. The
+// client then receives the request's last-valid response.
+func newHistoryParityMissingData(u common.Upstream, msg string, details map[string]interface{}) error {
+	err := common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorMissingData, msg, nil, details),
 		u,
 	)
+	if me, ok := err.(*common.ErrEndpointMissingData); ok {
+		me.WithPermanentMissingData(true)
+	}
+	return err
 }
