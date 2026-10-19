@@ -6,6 +6,8 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // hedgeTimerPool reuses *time.Timer across requests. Each `RunHedged`
@@ -125,11 +127,14 @@ func RunHedged[R any](
 		}
 		go func() {
 			// A panic here would kill the process: no caller frame can recover a
-			// goroutine. Surface it as this attempt's error instead.
+			// goroutine. Log the stack internally and return a short error so
+			// file paths never reach JSON-RPC clients via err.Error().
 			r, err := func() (r R, err error) {
 				defer func() {
 					if rec := recover(); rec != nil {
-						err = fmt.Errorf("hedge attempt panic: %v\n%s", rec, debug.Stack())
+						log.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
+							Msg("failsafe: hedge attempt panicked")
+						err = fmt.Errorf("hedge attempt panic: %v", rec)
 					}
 				}()
 				return inner(siblingCtx)
