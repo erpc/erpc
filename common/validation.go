@@ -1086,6 +1086,9 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
+	if ca := u.CreditAllowance; ca != nil && (ca.Credits <= 0 || ca.ApiKey == "") {
+		return fmt.Errorf("upstream '%s': creditAllowance needs credits > 0 and apiKey", u.Id)
+	}
 	if u.Evm != nil {
 		if err := u.Evm.Validate(u); err != nil {
 			return err

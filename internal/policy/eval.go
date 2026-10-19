@@ -411,10 +411,34 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 			}
 		}
 
+		// creditPace — account credits used this billing period over the
+		// pro-rata `creditAllowance` (1.0 = on track to use it exactly).
+		// Present only when the upstream sets an allowance and its vendor
+		// has a usage reading; `creditPaceAbove` treats absence as not ahead.
+		if pace, ok := creditPace(u, evalCtx.Now); ok {
+			_ = obj.Set("creditPace", pace)
+		}
+
 		_ = arr.Set(strconv.Itoa(i), obj)
 	}
 	_ = arr.Set("length", vm.ToValue(len(ups)))
 	return arr
+}
+
+func creditPace(u common.Upstream, nowMs int64) (float64, bool) {
+	cfg := u.Config()
+	if cfg == nil || cfg.CreditAllowance == nil {
+		return 0, false
+	}
+	provider, ok := u.Vendor().(common.CreditUsageProvider)
+	if !ok {
+		return 0, false
+	}
+	usage, ok := provider.CreditUsage(u.Logger(), cfg.CreditAllowance)
+	if !ok {
+		return 0, false
+	}
+	return usage.Pace(cfg.CreditAllowance.Credits, time.UnixMilli(nowMs)), true
 }
 
 // resolveScoreMultipliers selects the first `routing.scoreMultipliers`

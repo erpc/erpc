@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -38,6 +39,37 @@ type CreditUnitsProvider interface {
 	// upstream, in the vendor's own units. Called once per attempt by the
 	// upstream Forward path when cost accounting is active.
 	CreditUnits(req *NormalizedRequest, upstream *UpstreamConfig) int64
+}
+
+// CreditUsageProvider is an OPTIONAL Vendor capability: report the credits
+// a vendor account used in its current billing period, account-wide. The
+// selection policy divides it by the pro-rata `creditAllowance` to get
+// `u.creditPace`. Implementations MUST NOT block: return the last fetched
+// value and refresh in the background; ok=false until a value exists.
+type CreditUsageProvider interface {
+	CreditUsage(logger *zerolog.Logger, allowance *CreditAllowanceConfig) (usage CreditUsage, ok bool)
+}
+
+// CreditUsage is one account usage reading. PeriodStart/PeriodEnd bound the
+// billing period the Used credits belong to.
+type CreditUsage struct {
+	Used        int64
+	PeriodStart time.Time
+	PeriodEnd   time.Time
+}
+
+// Pace is Used over the allowance pro-rated to `now`: 1.0 means on track to
+// spend exactly the allowance by period end, above 1.0 means ahead of it.
+func (c CreditUsage) Pace(allowance int64, now time.Time) float64 {
+	total := c.PeriodEnd.Sub(c.PeriodStart)
+	elapsed := now.Sub(c.PeriodStart)
+	if allowance <= 0 || total <= 0 || elapsed <= 0 {
+		return 0
+	}
+	if elapsed > total {
+		elapsed = total
+	}
+	return float64(c.Used) / (float64(allowance) * elapsed.Seconds() / total.Seconds())
 }
 
 // ResolveCreditUnits is the shared table-resolution convention most

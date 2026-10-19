@@ -969,6 +969,11 @@ type UpstreamConfig struct {
 	// once per provider via `providers[].settings.creditUnits`, which is
 	// copied onto every upstream the provider generates.
 	CreditUnits map[string]int64      `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
+	// CreditAllowance is the prepaid credit allowance of the vendor account
+	// this upstream bills to. When set and the vendor reports account usage
+	// (common.CreditUsageProvider), the selection policy sees `u.creditPace`:
+	// credits used this billing period over the pro-rata allowance so far.
+	CreditAllowance *CreditAllowanceConfig `yaml:"creditAllowance,omitempty" json:"creditAllowance,omitempty"`
 	Shadow      *ShadowUpstreamConfig `yaml:"shadow,omitempty" json:"shadow"`
 
 	// Routing holds per-upstream routing hints consumed by the selection
@@ -1205,6 +1210,7 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	if c.RateLimitAutoTune != nil {
 		copied.RateLimitAutoTune = c.RateLimitAutoTune.Copy()
 	}
+	copied.CreditAllowance = c.CreditAllowance.Copy()
 
 	if c.IgnoreMethods != nil {
 		copied.IgnoreMethods = make([]string, len(c.IgnoreMethods))
@@ -1297,6 +1303,30 @@ func (u *UpstreamConfig) MarshalYAML() (interface{}, error) {
 	cp := *u
 	cp.Endpoint = util.RedactEndpoint(u.Endpoint)
 	return (*UYAlias)(&cp), nil
+}
+
+// CreditAllowanceConfig is a vendor account's prepaid credit allowance per
+// billing period. ApiKey is the account's admin key; the vendor uses it to
+// read account-wide usage, calls from outside eRPC included.
+type CreditAllowanceConfig struct {
+	Credits int64  `yaml:"credits" json:"credits"`
+	ApiKey  string `yaml:"apiKey" json:"apiKey"`
+}
+
+func (c *CreditAllowanceConfig) Copy() *CreditAllowanceConfig {
+	if c == nil {
+		return nil
+	}
+	copied := *c
+	return &copied
+}
+
+func (c CreditAllowanceConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{"credits": c.Credits, "apiKey": "REDACTED"})
+}
+
+func (c CreditAllowanceConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{"credits": c.Credits, "apiKey": "REDACTED"}, nil
 }
 
 type RateLimitAutoTuneConfig struct {
