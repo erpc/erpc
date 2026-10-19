@@ -121,8 +121,8 @@ to tags is the only change; containment is automatic.
 ## 5. Lag isolation — request-time fence (the central change)
 
 **Today** block-head-lag exclusion is a *background* policy predicate
-(`.excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))`,
-[internal/policy/default_policy.js:43](../../internal/policy/default_policy.js))
+(`.excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)), { probe: false })`,
+[internal/policy/default_policy.js:46](../../internal/policy/default_policy.js))
 reading the *precomputed network-wide scalar* `BlockHeadLag`
 ([health/tracker.go:1339](../../health/tracker.go)). That decision is computed
 once per `(network, method, finality)` tick, request-independent, so a
