@@ -603,7 +603,7 @@ The 100 MiB `maxSize` guard prevents unbounded memory use during high-dispute pe
 - [Retry](/config/failsafe/retry) — wraps each consensus participant slot; each retry attempt is a fresh hedge race inside consensus.
 - [Hedge](/config/failsafe/hedge) — also wraps each participant slot; hedges individual upstream attempts within a slot.
 - [Timeout](/config/failsafe/timeout) — bounds the whole consensus race from outside.
-- [Consensus policies](/config/failsafe/consensus-policies) — pick a named consensus rule-set per request with a pre-round JS selector (role-gated grades, availability fallback, MissingData waivers), failing closed to the strictest policy.
+- [Consensus policies](/config/failsafe/consensus-policies) — pick a named consensus rule-set per request with a pre-round JS selector (strategy-gated grades, availability fallback, MissingData waivers), failing closed to the strictest policy.
 - [Selection & scoring](/config/projects/selection-policies) — decides which upstreams are drawn for participant slots.
 - [Rate limiters](/config/rate-limiters) — caps per-upstream cost from the extra fan-out requests.
 - [Survive provider outages](/use-cases/survive-provider-outages) — the reliability outcome consensus reinforces.

@@ -209,6 +209,29 @@ func TestUncordonAdmin_PreservesPostSnapshotDetectorCordon(t *testing.T) {
 		"availability present at snapshot must be cleared")
 }
 
+// A detector cordon during UncordonAdmin's clock wait does not take
+// adminCordonMu, so its set time can still fall on the recovery watermark.
+// The generation snapshot must keep it; the time watermark must not.
+func TestUncordonAdmin_RecoveryKeepsPostSnapshotDetectorCordon(t *testing.T) {
+	ctx := context.Background()
+	a := newCordonTestUpstream(t, "")
+	a.Cordon("*", "old availability", common.CordonClassAvailability)
+
+	gens := a.metricsTracker.CordonGens(a, "*")
+	snap := gens
+	a.uncordonSnap.Store(&snap)
+	a.Cordon("*", "new punishment after snapshot", common.CordonClassPunishment)
+
+	epoch := time.Now().UnixMilli() * int64(time.Millisecond)
+	a.operatorRecoveryVar().TryUpdate(ctx, epoch)
+
+	classes := a.metricsTracker.CordonClasses(a, "*")
+	require.Contains(t, classes, common.CordonClassPunishment,
+		"punishment cordoned after the snapshot must survive recovery")
+	require.NotContains(t, classes, common.CordonClassAvailability,
+		"availability present at the snapshot must be cleared")
+}
+
 // A CordonAdmin that arrives after UncordonAdmin has snapshotted generations
 // must publish a new shared timestamp and keep the operator bit when that
 // uncordon then publishes zero.
