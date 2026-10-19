@@ -133,6 +133,17 @@ func TestConsensusPolicyValidate_EmptyWaiver_v11(t *testing.T) {
 		assert.Contains(t, err.Error(), "also listed in ignoreFields")
 	})
 
+	t.Run("blockEvidenceFields nested under an ignored ancestor is rejected", func(t *testing.T) {
+		c := validEmptyWaiver()
+		c.BlockEvidenceFields = map[string][]string{"eth_getTransactionReceipt": {"receipt.blockNumber"}}
+		c.IgnoreFields = map[string][]string{
+			"eth_getTransactionReceipt": {"receipt"},
+		}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "also listed in ignoreFields")
+	})
+
 	t.Run("the empty-waiver also needs a never-waivable floor (R9)", func(t *testing.T) {
 		c := validEmptyWaiver()
 		// Drop the external floor; only the waivable internal quota remains.

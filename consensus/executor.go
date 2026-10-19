@@ -153,7 +153,10 @@ func (e *executor) Run(
 		keep := false
 		if anyEmptyOutsideRetentionOptIn(e.config.requiredParticipants) {
 			if method, err := originalReq.Method(); err == nil {
-				if _, ok := methodFields(e.config.blockEvidenceFields, method); ok {
+				// An existing key with an empty list cannot yield proof
+				// (winnerBlockEvidence returns nil), so it must not keep
+				// empty hedge-slot votes either.
+				if fields, ok := methodFields(e.config.blockEvidenceFields, method); ok && len(fields) > 0 {
 					keep = true
 				}
 			}
