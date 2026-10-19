@@ -66,6 +66,32 @@ func IsSweepIteration(ctx context.Context) bool {
 	return v
 }
 
+// wireParamsContextKey carries the JSON-RPC params one upstream attempt sends
+// for one request in place of its own. The request keeps its params, so the
+// cache key, response binding and every other upstream see the original question.
+type wireParamsContextKey struct{}
+
+// wireParams binds the override to its request: any other request sent with a
+// derived ctx on the same attempt (a probe, a state poll) keeps its own params.
+type wireParams struct {
+	req    *NormalizedRequest
+	params []interface{}
+}
+
+// WithWireParams returns ctx whose upstream attempt sends params for req on the wire.
+func WithWireParams(ctx context.Context, req *NormalizedRequest, params []interface{}) context.Context {
+	return context.WithValue(ctx, wireParamsContextKey{}, wireParams{req: req, params: params})
+}
+
+// WireParams returns the params an upstream client sends for req under ctx:
+// the attempt's override for exactly req when set, else req's own params.
+func WireParams(ctx context.Context, req *NormalizedRequest, params []interface{}) []interface{} {
+	if w, ok := ctx.Value(wireParamsContextKey{}).(wireParams); ok && w.req == req {
+		return w.params
+	}
+	return params
+}
+
 type directiveKeyNames struct {
 	header string
 	query  string
