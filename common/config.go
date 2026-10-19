@@ -968,13 +968,13 @@ type UpstreamConfig struct {
 	// vendor defaults ("*" = fallback for unlisted methods). Normally set
 	// once per provider via `providers[].settings.creditUnits`, which is
 	// copied onto every upstream the provider generates.
-	CreditUnits map[string]int64      `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
+	CreditUnits map[string]int64 `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
 	// CreditAllowance is the prepaid credit allowance of the vendor account
 	// this upstream bills to. When set and the vendor reports account usage
 	// (common.CreditUsageProvider), the selection policy sees `u.creditPace`:
 	// credits used this billing period over the pro-rata allowance so far.
 	CreditAllowance *CreditAllowanceConfig `yaml:"creditAllowance,omitempty" json:"creditAllowance,omitempty"`
-	Shadow      *ShadowUpstreamConfig `yaml:"shadow,omitempty" json:"shadow"`
+	Shadow          *ShadowUpstreamConfig  `yaml:"shadow,omitempty" json:"shadow"`
 
 	// Routing holds per-upstream routing hints consumed by the selection
 	// policy. `scoreMultipliers` bias this upstream's rank inside
