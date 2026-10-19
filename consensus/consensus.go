@@ -26,6 +26,12 @@ const defaultPolicyName = common.ConsensusDefaultPolicyName
 // shutdown can flush S3 batches and release file hubs (see CloseAll).
 var liveConsensuses sync.Map // *Consensus -> struct{}
 
+// inflightAnalyzers counts runAnalyzer goroutines. HTTP shutdown does not
+// wait for them: fire-and-forget rounds detach from the request context, and
+// the analyzer keeps exporting misbehavior after the handler returns.
+// CloseAll waits for this before closing exporters.
+var inflightAnalyzers sync.WaitGroup
+
 // Consensus is the entry point to the consensus executor. The network
 // executor calls (*Consensus).Run with a per-slot inner function; this
 // struct orchestrates participant fan-out, voting, and dispute
@@ -142,6 +148,7 @@ func (c *Consensus) Close() error {
 // graceful shutdown next to evm.CloseIntegrityExporters so S3 flush workers
 // and shared file hubs release before the process exits.
 func CloseAll() {
+	inflightAnalyzers.Wait()
 	liveConsensuses.Range(func(key, _ any) bool {
 		if c, ok := key.(*Consensus); ok {
 			_ = c.Close()
