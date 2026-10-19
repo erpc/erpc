@@ -211,35 +211,28 @@ func (s *Slot) tickOnce() {
 	}
 	s.mu.Unlock()
 
-	// 3. Run the eval (with optional timeout). Scores are the per-upstream
+	// 3. Run the eval. Scores are the per-upstream
 	// `score` values the JS attached during `sortByScore(...)` — we cache
 	// them on the slot so diagnostic tooling (admin endpoint, simulator)
 	// can read the engine's authoritative ranking without re-implementing
 	// the PREFER_FASTEST formula in Go. The chronological step log is
 	// captured only when the engine's debug flag is on (simulator always,
 	// eRPC when the logger is at DEBUG) — see `Engine.SetStepLogEnabled`.
-	var (
-		evalRes *EvalResult
-		evalErr error
-	)
+	//
+	// sobek cannot interrupt a running eval, so evalTimeout cannot cut one
+	// short: an eval past it is reported, and its result still replaces the
+	// older cache.
 	stepLogEnabled := s.engine.stepLogEnabled.Load()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
-	}()
-
-	if timeout > 0 {
-		select {
-		case <-done:
-		case <-time.After(timeout):
-			<-done // let the goroutine finish — sobek doesn't support interrupt mid-call cleanly
-			// Written after the goroutine's own write, which would race it and
-			// could erase the timeout.
-			evalErr = fmt.Errorf("%w after %s", ErrEvalTimeout, timeout)
-		}
-	} else {
-		<-done
+	evalStart := time.Now()
+	evalRes, evalErr := runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
+	if took := time.Since(evalStart); timeout > 0 && took > timeout {
+		telemetry.MetricSelectionEvalErrorsTotal.WithLabelValues(s.engine.projectID, s.networkLabel, s.method, "timeout").Inc()
+		s.engine.logger.Warn().
+			Str("network", s.networkID).
+			Str("method", s.method).
+			Dur("took", took).
+			Dur("evalTimeout", timeout).
+			Msg("selection policy eval exceeded evalTimeout")
 	}
 
 	decision := &Decision{
@@ -470,9 +463,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 
 	if d.Error != "" {
 		kind := "throw"
-		if strings.Contains(d.Error, "timed out") {
-			kind = "timeout"
-		} else if strings.Contains(d.Error, ErrInvalidReturn.Error()) {
+		if strings.Contains(d.Error, ErrInvalidReturn.Error()) {
 			kind = "invalid_return"
 		}
 		telemetry.MetricSelectionEvalErrorsTotal.WithLabelValues(project, s.networkLabel, s.method, kind).Inc()

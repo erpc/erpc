@@ -362,7 +362,7 @@ Defaults: <SourceLink file="common/defaults.go" lines="2512-2609" />
 | Field | Type | Default | Footguns |
 |---|---|---|---|
 | `evalInterval` | `Duration` | `15s` ([`common/defaults.go:L2532`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2532)) | `0` disables the ticker (frozen cache); tests only. Should be ≥ 3× `scoreMetricsWindowSize / 10` for stable quantile reads. |
-| `evalTimeout` | `Duration` | `100ms` ([`common/defaults.go:L2534-2535`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2534-2535)) | Exceeded → tick error logged, previous cache retained unchanged. Must be `< evalInterval`. |
+| `evalTimeout` | `Duration` | `100ms` ([`common/defaults.go:L3125-3126`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L3125-3126)) | Exceeded → warning logged and `timeout` counted; the eval cannot be interrupted, so its result is still applied. Must be `< evalInterval`. |
 | `evalScope` | `EvalScope` enum | `"network"` ([`common/defaults.go:L2556-2583`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2556-2583)) | `"network"` \| `"network-method"` \| `"network-finality"` \| `"network-method-finality"`. Narrower scopes multiply goroutines and JS evals. `scoreMultipliers.method`-specific entries **never match** in `"network"` scope because `ctx.method == "*"`. |
 | `evalPerMethod` | `*bool` | `nil` — **deprecated** | Pointer-bool alias for the method axis. `SetDefaults` nils it unconditionally and derives `evalScope` instead. Excluded from TS surface (`tstype:"-"`). |
 | `evalPerFinality` | `*bool` | `nil` — **deprecated** | Same mechanics as `evalPerMethod` for the finality axis. Niled by `SetDefaults`. |
@@ -767,7 +767,7 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 An upstream can have `position=0` in the wildcard slot and `position=1` in a per-method slot simultaneously (positions are per-slot).
 
 **`erpc_selection_eval_errors_total` `kind` values** (classified at [`internal/policy/slot.go:L460-L467`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go#L460-L467)):
-- `"timeout"` — JS eval exceeded `evalTimeout` (default 100 ms); previous cache retained.
+- `"timeout"` — JS eval exceeded `evalTimeout` (default 100 ms); its result is still applied.
 - `"throw"` — uncaught JS exception (runtime error, user-thrown error).
 - `"invalid_return"` — eval completed but returned a non-array, null/undefined, entries without `id`, or unknown upstream IDs.
 
