@@ -245,6 +245,7 @@ func newHistoryParityMissingData(u common.Upstream, msg string, details map[stri
 	)
 	if me, ok := err.(*common.ErrEndpointMissingData); ok {
 		me.WithPermanentMissingData(true)
+		me.WithHistoryParityContinuation(true)
 	}
 	return err
 }

@@ -157,7 +157,7 @@ func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
 
 		// Send multiple requests where upstream3 misbehaves
 		for reqNum := 0; reqNum <= 50; reqNum++ {
-			_, _, body := sendRequest(
+			statusCode, _, body := sendRequest(
 				fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":%d}`, reqNum),
 				nil, nil,
 			)
