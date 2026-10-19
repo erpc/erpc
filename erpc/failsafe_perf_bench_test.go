@@ -325,7 +325,7 @@ func BenchmarkPerf_Write_BroadcastFireAndForget(b *testing.B) {
 		Consensus: &common.ConsensusPolicyConfig{
 			MaxParticipants:    5,
 			AgreementThreshold: 1,
-			FireAndForget:      true,
+			FireAndForget:      util.BoolPtr(true),
 		},
 	}}, mocks)
 	defer bn.Close()
