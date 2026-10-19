@@ -101,6 +101,12 @@ export type PolicyEvalUpstream = {
     readonly config: UpstreamConfig;
     readonly metrics: PolicyEvalUpstreamMetrics;
     /**
+     * Account credits used this billing period over the pro-rata
+     * `creditAllowance` (1.0 = on track). Absent without an allowance or
+     * before the vendor's first usage reading.
+     */
+    readonly creditPace?: number;
+    /**
      * Per-method latency snapshot for this upstream — keyed by method
      * name, values are a minimal `{ requestsTotal, p50ms, …, p99ms }`
      * shape used by `latencyDeviationAbove` to compare apples-to-apples
@@ -569,6 +575,8 @@ declare global {
     function throttleRateAbove(rate: number): PolicyEvalPredicate;
     function throttleRateBelow(rate: number): PolicyEvalPredicate;
     function misbehaviorRateAbove(rate: number): PolicyEvalPredicate;
+    /** Out when account credit use runs ahead of the pro-rata allowance. */
+    function creditPaceAbove(pace: number): PolicyEvalPredicate;
     function latencyAbove(ms: number, quantile?: number): PolicyEvalPredicate;
     function latencyDeviationAbove(multiplier: number, optsOrQuantile?: number | LatencyDeviationOptions): PolicyEvalPredicate;
     function blockNumberLagAbove(blocks: number): PolicyEvalPredicate;
