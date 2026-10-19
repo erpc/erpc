@@ -12,9 +12,10 @@ import (
 
 // testNetwork is a simple test implementation of common.Network interface for this file
 type testNetwork struct {
-	cfg           *common.NetworkConfig
-	finalityState common.DataFinalityState
-	highestLatest int64
+	cfg               *common.NetworkConfig
+	finalityState     common.DataFinalityState
+	highestLatest     int64
+	refreshLatestCalls int
 }
 
 func (t *testNetwork) Architecture() common.NetworkArchitecture {
@@ -65,7 +66,9 @@ func (t *testNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return nil
 }
 
-func (t *testNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
+func (t *testNetwork) EvmRefreshLatestBlock(ctx context.Context) {
+	t.refreshLatestCalls++
+}
 
 func (t *testNetwork) GetMethodMetrics(method string) common.TrackedMetrics {
 	return nil
