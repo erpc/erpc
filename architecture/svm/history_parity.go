@@ -71,9 +71,18 @@ const solanaDefaultSignaturesLimit = 1000
 // (stored by the upstream layer before this hook runs), so when every upstream
 // is equally incomplete the client receives that answer rather than an error.
 //
+// Consensus participant slots (common.IsConsensusSlot) skip this hook: parallel
+// upstreams vote on the bodies they returned. Converting identical legitimate
+// short pages into MissingData would make consensus agree on an error and the
+// network layer would not fall back to last-valid-response. Cross-upstream retry
+// belongs to the serial sweep path, not consensus fan-out.
+//
 // Errors pass through untouched: -32011 / -32020 and friends are classified by
 // the error normalizer and fail over on their own.
 func upstreamPostForward_historyParity(ctx context.Context, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+	if common.IsConsensusSlot(ctx) {
+		return rs, nil
+	}
 	if rs == nil || r == nil {
 		return rs, nil
 	}

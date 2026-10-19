@@ -321,3 +321,31 @@ func TestPostForward_HistoryParity_DeepestHistoryIsAuthoritative(t *testing.T) {
 		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
 	})
 }
+
+// History parity is for serial sweep continuation only. Under consensus, identical
+// valid short pages must stay 200s so participants can agree; MissingData would
+// collapse to an agreed error with no last-valid-response fallback.
+func TestPostForward_HistoryParity_SkippedUnderConsensusSlot(t *testing.T) {
+	t.Parallel()
+	ctx := common.WithConsensusSlot(context.Background())
+	h := &SvmArchitectureHandler{}
+	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
+	pruned := upstreamWithFloor("pruned", 300000, 200000, true)
+
+	t.Run("getSignaturesForAddress short page is served", func(t *testing.T) {
+		t.Parallel()
+		req := reqOf(t, "getSignaturesForAddress", `["addr",{"limit":5}]`)
+		rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, sigPage(2)), nil, false)
+		require.NoError(t, err)
+		require.NotNil(t, rs)
+	})
+
+	t.Run("getSignatureStatuses null with history search is served", func(t *testing.T) {
+		t.Parallel()
+		const withNull = `{"context":{"slot":9},"value":[null]}`
+		req := reqOf(t, "getSignatureStatuses", `[["a"],{"searchTransactionHistory":true}]`)
+		rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, withNull), nil, false)
+		require.NoError(t, err)
+		require.NotNil(t, rs)
+	})
+}

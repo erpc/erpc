@@ -288,3 +288,32 @@ func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.
 		})
 	}
 }
+
+// When every consensus participant returns the same legitimately short page,
+// history parity must not turn those 200s into MissingData (consensus would
+// agree on an error and last-valid-response fallback is disabled).
+func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForSvmStatePoller("svm-cons-sigs-a.localhost", 1000, 990)
+	util.SetupMocksForSvmStatePoller("svm-cons-sigs-b.localhost", 1000, 990)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	shortBody := svmSigPage(2)
+	mockSvmMethod("svm-cons-sigs-a.localhost", "getSignaturesForAddress", shortBody)
+	mockSvmMethod("svm-cons-sigs-b.localhost", "getSignaturesForAddress", shortBody)
+
+	net := setupTestSvmNetworkWithConsensus(t, ctx, []*common.UpstreamConfig{
+		svmUpstreamConfig("a", "svm-cons-sigs-a.localhost"),
+		svmUpstreamConfig("b", "svm-cons-sigs-b.localhost"),
+	}, []common.DataFinalityState{common.DataFinalityStateRealtime})
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr",{"limit":5}]}`))
+	resp, err := svmProjectForward(ctx, net, req)
+	require.NoError(t, err, "identical short pages must consensus-agree as success, not MissingData")
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
+}
