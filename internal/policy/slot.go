@@ -233,8 +233,10 @@ func (s *Slot) tickOnce() {
 		select {
 		case <-done:
 		case <-time.After(timeout):
-			evalErr = fmt.Errorf("%w after %s", ErrEvalTimeout, timeout)
 			<-done // let the goroutine finish — sobek doesn't support interrupt mid-call cleanly
+			// Written after the goroutine's own write, which would race it and
+			// could erase the timeout.
+			evalErr = fmt.Errorf("%w after %s", ErrEvalTimeout, timeout)
 		}
 	} else {
 		<-done
