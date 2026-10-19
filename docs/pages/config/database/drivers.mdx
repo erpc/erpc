@@ -662,7 +662,7 @@ The RDS `db-XXXXXXXXXXXXXXXX` resource ID is the instance's resource ID (RDS con
 
 10. **gRPC head poller first fires at T+60s.** Block-head gauges are zero for the first 60 seconds. During this window the freshness gate fails open — cached realtime responses may be served. [`data/grpc.go:L302-L313`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L302-L313)
 
-11. **gRPC bootstrap fetch is not retried.** If `fetchGrpcServers` fails at startup, `NewGrpcConnector` returns an error. Individual per-server connection tasks ARE retried by the initializer. [`data/grpc.go:L88-L95`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L88-L95)
+11. **gRPC bootstrap fetch is not retried.** If `fetchGrpcServers` fails at startup, `NewGrpcConnector` returns an error. Individual per-server connection tasks ARE retried by the initializer. Bootstrap-discovered servers are also mount-checked at connector start (not only at config Validate), so a path-mounted URL plus `healthCheckService` fails there even when the YAML `servers` list was clean. [`data/grpc.go:L92-L109`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L92-L109)
 
 12. **gRPC freshness gate fails open for non-gRPC connectors.** Memory, Redis, PostgreSQL, and DynamoDB do not implement `CacheHeadReporter`. When `eth_blockNumber` or `eth_gasPrice` is fetched from one of these connectors, `shouldAcceptCachedResult` cannot determine response age and unconditionally accepts the cached result. [`architecture/evm/json_rpc_cache.go:L862-L920`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L862-L920)
 
