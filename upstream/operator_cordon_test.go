@@ -126,7 +126,7 @@ func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
 
 	// B holds an automatic cordon (consensus sit-out) while an operator
 	// cordons the same upstream from A.
-	b.Cordon("*", "misbehaving in consensus", common.CordonClassPunishment)
+	b.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
 	a.CordonAdmin(ctx, "operator")
 	require.Eventually(t, func() bool {
 		r, _ := b.CordonedReason("*")
@@ -134,20 +134,20 @@ func TestCordonAdmin_DetectorsCannotLiftAnOperatorCordon(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond)
 
 	// The sit-out ends on B: the operator cordon holds there and on A.
-	b.Uncordon("*", "end of consensus penalty", common.CordonClassPunishment)
+	b.UncordonClass("*", "end of consensus penalty", common.CordonClassPunishment)
 	require.True(t, cordoned(b)(), "consensus timer must not lift an operator cordon")
 	require.True(t, cordoned(a)())
 
 	// Operator lifts from A: UncordonAdmin is the fleet-wide override and
 	// clears every class bit (including a live punishment sitout) so
 	// availability cordons without an automatic recovery path can be lifted.
-	b.Cordon("*", "misbehaving in consensus", common.CordonClassPunishment)
+	b.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
 	a.UncordonAdmin(ctx, "resolved")
 	require.Eventually(t, notCordoned(b), 5*time.Second, 20*time.Millisecond, "UncordonAdmin clears all cordon classes fleet-wide")
 
 	// With no operator cordon held, detectors work as before.
-	b.Cordon("*", "misbehaving in consensus", common.CordonClassPunishment)
-	b.Uncordon("*", "end of consensus penalty", common.CordonClassPunishment)
+	b.CordonClass("*", "misbehaving in consensus", common.CordonClassPunishment)
+	b.UncordonClass("*", "end of consensus penalty", common.CordonClassPunishment)
 	require.True(t, notCordoned(b)())
 }
 
@@ -177,7 +177,7 @@ func TestUncordonAdmin_RecoveryEpochClearsPeerAvailability(t *testing.T) {
 	b := newCordonTestUpstream(t, m.Addr())
 
 	require.Equal(t, int64(0), a.operatorCordonVar().GetValue())
-	b.Cordon("*", "chain identity mismatch", common.CordonClassAvailability)
+	b.CordonClass("*", "chain identity mismatch", common.CordonClassAvailability)
 	require.True(t, cordoned(b)())
 	require.False(t, cordoned(a)())
 
@@ -193,11 +193,11 @@ func TestUncordonAdmin_RecoveryEpochClearsPeerAvailability(t *testing.T) {
 func TestUncordonAdmin_PreservesPostSnapshotDetectorCordon(t *testing.T) {
 	a := newCordonTestUpstream(t, "")
 
-	a.Cordon("*", "old availability", common.CordonClassAvailability)
+	a.CordonClass("*", "old availability", common.CordonClassAvailability)
 	require.True(t, cordoned(a)())
 
 	gens := a.metricsTracker.CordonGens(a, "*")
-	a.Cordon("*", "new punishment after snapshot", common.CordonClassPunishment)
+	a.CordonClass("*", "new punishment after snapshot", common.CordonClassPunishment)
 	require.Greater(t, a.metricsTracker.CordonGens(a, "*")[0], gens[0])
 
 	// Simulate the generation-gated clear UncordonAdmin performs after publish.
@@ -215,12 +215,12 @@ func TestUncordonAdmin_PreservesPostSnapshotDetectorCordon(t *testing.T) {
 func TestUncordonAdmin_RecoveryKeepsPostSnapshotDetectorCordon(t *testing.T) {
 	ctx := context.Background()
 	a := newCordonTestUpstream(t, "")
-	a.Cordon("*", "old availability", common.CordonClassAvailability)
+	a.CordonClass("*", "old availability", common.CordonClassAvailability)
 
 	gens := a.metricsTracker.CordonGens(a, "*")
 	snap := gens
 	a.uncordonSnap.Store(&snap)
-	a.Cordon("*", "new punishment after snapshot", common.CordonClassPunishment)
+	a.CordonClass("*", "new punishment after snapshot", common.CordonClassPunishment)
 
 	epoch := time.Now().UnixMilli() * int64(time.Millisecond)
 	a.operatorRecoveryVar().TryUpdate(ctx, epoch)
@@ -262,7 +262,7 @@ func TestUncordonAdmin_AllowsSequentialReCordonAfterClear(t *testing.T) {
 	ctx := context.Background()
 	a := newCordonTestUpstream(t, "")
 
-	a.Cordon("*", "availability", common.CordonClassAvailability)
+	a.CordonClass("*", "availability", common.CordonClassAvailability)
 	a.CordonAdmin(ctx, "incident")
 	require.True(t, cordoned(a)())
 

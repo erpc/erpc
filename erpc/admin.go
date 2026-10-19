@@ -676,9 +676,9 @@ func (e *ERPC) handleCordonUpstream(ctx context.Context, nq *common.NormalizedRe
 	}
 	switch {
 	case p.Method != "*" && cordon:
-		u.Cordon(p.Method, reason, common.CordonClassOperator)
+		u.CordonClass(p.Method, reason, common.CordonClassOperator)
 	case p.Method != "*":
-		u.Uncordon(p.Method, reason, common.CordonClassOperator)
+		u.UncordonClass(p.Method, reason, common.CordonClassOperator)
 	case cordon:
 		u.CordonAdmin(ctx, reason)
 	default:

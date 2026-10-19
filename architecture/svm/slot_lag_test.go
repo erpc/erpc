@@ -55,11 +55,11 @@ func (s *slotLagUpstream) Tracker() common.HealthTracker { return nil }
 func (s *slotLagUpstream) Forward(context.Context, *common.NormalizedRequest, bool, bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (s *slotLagUpstream) ShouldHandleMethod(string) (bool, error)     { return true, nil }
-func (s *slotLagUpstream) Cordon(string, string, common.CordonClass)   {}
-func (s *slotLagUpstream) Uncordon(string, string, common.CordonClass) {}
-func (s *slotLagUpstream) IgnoreMethod(string)                         {}
-func (s *slotLagUpstream) SvmStatePoller() common.SvmStatePoller       { return s.poller }
+func (s *slotLagUpstream) ShouldHandleMethod(string) (bool, error) { return true, nil }
+func (s *slotLagUpstream) Cordon(string, string)                   {}
+func (s *slotLagUpstream) Uncordon(string, string)                 {}
+func (s *slotLagUpstream) IgnoreMethod(string)                     {}
+func (s *slotLagUpstream) SvmStatePoller() common.SvmStatePoller   { return s.poller }
 
 func upstreamAt(id string, slot int64) common.Upstream {
 	return &slotLagUpstream{id: id, poller: &pollerAtSlot{slot: slot}}

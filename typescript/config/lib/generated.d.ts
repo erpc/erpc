@@ -1256,6 +1256,7 @@ export interface ConsensusPolicyConfig {
      * This is useful for write operations like eth_sendRawTransaction where you want to
      * broadcast the transaction to as many nodes as possible while still returning quickly.
      * Default is false (normal behavior - cancel remaining requests on short-circuit).
+     * An explicit false overlays a true base under extends; an omitted field does not.
      */
     fireAndForget?: boolean;
     /**
