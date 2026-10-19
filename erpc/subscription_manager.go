@@ -501,6 +501,14 @@ func (h *networkHandle) DedupEntriesAdded(delta int) {
 	telemetry.GaugeHandle(telemetry.MetricSubscriptionDedupEntries, h.nw.projectId, h.nw.Label()).Add(float64(delta))
 }
 
+func (h *networkHandle) HeadIndexed() {
+	telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, h.nw.projectId, h.nw.Label()).SetToCurrentTime()
+}
+
+func (h *networkHandle) Undelivered(kind indexer.EventKind) {
+	telemetry.CounterHandle(telemetry.MetricSubscriptionUndeliveredTotal, h.nw.projectId, h.nw.Label(), kind.String()).Inc()
+}
+
 // indexerNetworkKey names nw in the indexer and its adapters. Projects can
 // define the same network, each with its own upstreams, so the key includes
 // the project.
@@ -515,6 +523,14 @@ func indexerNetworkKey(nw *Network) string { return nw.projectId + "/" + nw.netw
 // network doesn't know is not delivered. A delivered head also advances the
 // network's delivered-head floor before clients see it.
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) bool {
+	deliver := h.suggestLatestBlock(sourceId, blockNumber)
+	if !deliver {
+		telemetry.CounterHandle(telemetry.MetricSubscriptionWithheldHeadsTotal, h.nw.projectId, h.nw.Label()).Inc()
+	}
+	return deliver
+}
+
+func (h *networkHandle) suggestLatestBlock(sourceId string, blockNumber int64) bool {
 	upstreamID, ok := strings.CutPrefix(sourceId, "ws:")
 	if !ok {
 		return true

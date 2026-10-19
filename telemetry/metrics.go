@@ -195,6 +195,24 @@ var (
 		Help:      "Event keys held by the network's logs and newPendingTransactions dedup windows; each filter's window holds at most indexer.dedupWindowSize keys (default 8192).",
 	}, []string{"project", "network"})
 
+	MetricSubscriptionWithheldHeadsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "subscription_withheld_heads_total",
+		Help:      "Upstream newHeads events not delivered to clients because the network did not accept the head.",
+	}, []string{"project", "network"})
+
+	MetricSubscriptionUndeliveredTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "subscription_undelivered_total",
+		Help:      "Upstream subscription events that passed dedup but matched no client subscription.",
+	}, []string{"project", "network", "kind"})
+
+	MetricNetworkSubscriptionLastHeadTimestamp = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_subscription_last_head_timestamp_seconds",
+		Help:      "Unix time the subscription indexer last accepted a new head for the network.",
+	}, []string{"project", "network"})
+
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
 	// freshest block at least servedTip.quorum eligible upstreams already have

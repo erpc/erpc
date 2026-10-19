@@ -31,6 +31,8 @@ func (fakeNetworkHandle) Id() string                            { return "evm:12
 func (fakeNetworkHandle) SuggestLatestBlock(string, int64) bool { return true }
 func (fakeNetworkHandle) DedupDropped(indexer.EventKind)        {}
 func (fakeNetworkHandle) DedupEntriesAdded(int)                 {}
+func (fakeNetworkHandle) HeadIndexed()                          {}
+func (fakeNetworkHandle) Undelivered(indexer.EventKind)         {}
 
 type fakeSink struct {
 	events chan indexer.StreamEvent
