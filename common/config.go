@@ -1935,12 +1935,23 @@ type ConsensusPolicyConfig struct {
 	// or field name for nested result objects (e.g., "nonce" for result.nonce).
 	// When multiple fields are specified, they act as tie-breakers in order.
 	PreferHighestValueFor map[string][]string `yaml:"preferHighestValueFor,omitempty" json:"preferHighestValueFor"`
+	// BlockEvidenceFields names, per method, the response field paths that
+	// carry the winner's own block number (e.g. eth_getTransactionByHash →
+	// ["blockNumber"]). It follows the same shape as PreferHighestValueFor:
+	// "result" for the direct result, or a field name for a nested result
+	// object. This is the block proof consumed by the empty-outside-retention
+	// waiver (requiredParticipants[].waiveAgreementOnEmptyOutsideRetention):
+	// the first resolved value is taken as the winner's block. A method not
+	// listed here has no proof, so the waiver never fires for it (dispute).
+	BlockEvidenceFields map[string][]string `yaml:"blockEvidenceFields,omitempty" json:"blockEvidenceFields,omitempty"`
 	// FireAndForget when true, allows consensus to return a response to the client immediately
 	// upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
 	// This is useful for write operations like eth_sendRawTransaction where you want to
 	// broadcast the transaction to as many nodes as possible while still returning quickly.
 	// Default is false (normal behavior - cancel remaining requests on short-circuit).
-	FireAndForget bool `yaml:"fireAndForget,omitempty" json:"fireAndForget"`
+	// Pointer so one-level `extends` can overlay an explicit false onto a true base
+	// (a bare bool cannot distinguish omit from false).
+	FireAndForget *bool `yaml:"fireAndForget,omitempty" json:"fireAndForget,omitempty"`
 
 	// MaxWaitOnResult caps how long consensus waits for additional participants
 	// AFTER at least one non-empty response has arrived. Use this to bound
@@ -1976,6 +1987,66 @@ type ConsensusPolicyConfig struct {
 	// handled by `lowParticipantsBehavior` / `agreementThreshold` exactly
 	// like any other low-participation tick. Empty (default) = disabled.
 	RequiredParticipants []*ConsensusRequiredParticipant `yaml:"requiredParticipants,omitempty" json:"requiredParticipants,omitempty"`
+
+	// Extends names a one-level base for this named policy: another entry in
+	// `policies`, or "default" for the inline consensus block. Resolved at
+	// load (SetDefaults): the base is copied, this policy's set fields overlay
+	// it (explicit requiredParticipants: [] clears quotas), then defaults run
+	// on the result. Without Extends a named policy starts from stock defaults,
+	// not the inline block — operators who want the shared hygiene say
+	// extends: default explicitly (feature §2). Only meaningful on named
+	// policies; ignored on the inline block.
+	Extends string `yaml:"extends,omitempty" json:"extends,omitempty"`
+
+	// CustomPolicy, when set, enables the pre-round consensus-policy selector.
+	// Its EvalFunction is freeform operator JS `(ctx) => string | null` run once
+	// per request before fan-out; the returned name selects one of the named
+	// `Policies` to govern the round. An empty/null result, an unknown name, or
+	// any eval failure falls closed to THIS (the enclosing/inline) config, which
+	// is therefore the strictest default. Nil (default) = selector disabled and
+	// the inline config governs every round.
+	CustomPolicy *ConsensusCustomPolicyConfig `yaml:"customPolicy,omitempty" json:"customPolicy,omitempty"`
+
+	// Policies is the set of named policies the selector can choose from. Each
+	// value is a full ConsensusPolicyConfig; the selector's returned name keys
+	// into this map. Names not present here resolve to the inline default
+	// (fail-closed). Nested CustomPolicy/Policies on a named policy are ignored —
+	// selection happens once, at the top level. Empty (default) = no named
+	// policies (only the inline default exists).
+	Policies map[string]*ConsensusPolicyConfig `yaml:"policies,omitempty" json:"policies,omitempty"`
+}
+
+// ConsensusDefaultPolicyName is the reserved label reported (metric +
+// X-ERPC-Consensus-Policy header) whenever a round runs under the inline
+// default policy — either because the eval returned null or because it fell
+// closed. It cannot be used as a key in consensus.policies, so the label
+// stays unambiguous between "selector chose the policy named default" and
+// "selector fell closed to the inline default".
+const ConsensusDefaultPolicyName = "default"
+
+// ConsensusDefaultEvalTimeout is the wall-clock cap applied when
+// customPolicy.evalTimeout is omitted (0). Kept in sync with
+// ConsensusPolicyConfig.SetDefaults so NewConsensus (used by tests and any
+// caller that skips SetDefaults) cannot disable the selector timeout by
+// accident.
+const ConsensusDefaultEvalTimeout = 50 * time.Millisecond
+
+// ConsensusCustomPolicyConfig configures the pre-round consensus-policy
+// selector. EvalFunction is the operator-supplied JS expression evaluating to
+// `(ctx) => string | null`; EvalTimeout caps its wall-clock per request (an
+// overrun fails closed to the default policy). See common/defaults.go for the
+// EvalTimeout default.
+type ConsensusCustomPolicyConfig struct {
+	EvalFunction string   `yaml:"evalFunction" json:"evalFunction"`
+	EvalTimeout  Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout,omitempty" tstype:"Duration"`
+}
+
+func (c *ConsensusCustomPolicyConfig) Copy() *ConsensusCustomPolicyConfig {
+	if c == nil {
+		return nil
+	}
+	copied := *c
+	return &copied
 }
 
 // ConsensusRequiredParticipant is one tag-quota entry for
@@ -1991,6 +2062,36 @@ type ConsensusRequiredParticipant struct {
 	Tag             string `yaml:"tag" json:"tag"`
 	MinParticipants int    `yaml:"minParticipants" json:"minParticipants"`
 	MinAgreement    int    `yaml:"minAgreement,omitempty" json:"minAgreement,omitempty"`
+	// WaiveAgreementOnMissingData, when true, waives this entry's MinAgreement
+	// winner-composition quota for a round in which at least MinAgreement
+	// distinct tag-matching participants returned ErrEndpointMissingData and
+	// no matching participant returned data. Sibling errors do not block the
+	// count; a matching successful result holds the quota so disagreement
+	// cannot be waived away. Default false = the quota is never waived (strict).
+	WaiveAgreementOnMissingData bool `yaml:"waiveAgreementOnMissingData,omitempty" json:"waiveAgreementOnMissingData,omitempty"`
+	// WaiveAgreementOnEmptyOutsideRetention, when true, waives this entry's
+	// MinAgreement quota for a round in which at least MinAgreement distinct
+	// tag-matching participants returned an EMPTY result, no matching
+	// participant returned a non-empty result, AND the winning group's block
+	// (extracted via the policy's blockEvidenceFields) is older than
+	// RetentionBlocks behind the observed chain head. This is the v1.1
+	// empty-waiver: it lets an abstainer that legitimately pruned old history
+	// (e.g. post-EIP-4444) fall out of the quota when the winner proves the
+	// data is outside the abstainer's retained range, without weakening the
+	// quota for recent data — a null on a recent block still holds the quota
+	// and disputes. A matching sibling that returned data also holds the
+	// quota (that is a real vote, not a prune). Sibling errors do not block
+	// the empty count. Requires RetentionBlocks > 0 and a policy-level
+	// blockEvidenceFields entry for the method. Default false = the quota is
+	// never waived on empty (strict).
+	WaiveAgreementOnEmptyOutsideRetention bool `yaml:"waiveAgreementOnEmptyOutsideRetention,omitempty" json:"waiveAgreementOnEmptyOutsideRetention,omitempty"`
+	// RetentionBlocks is the depth, in blocks behind the observed chain head,
+	// that this participant is expected to retain. It defines the boundary for
+	// WaiveAgreementOnEmptyOutsideRetention: a winner block is "outside
+	// retention" when head - winnerBlock > RetentionBlocks. Only meaningful when
+	// WaiveAgreementOnEmptyOutsideRetention is set. Default 0 = no retention
+	// boundary (the empty-waiver never fires).
+	RetentionBlocks int64 `yaml:"retentionBlocks,omitempty" json:"retentionBlocks,omitempty"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -2024,8 +2125,29 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 		}
 	}
 
+	if c.BlockEvidenceFields != nil {
+		copied.BlockEvidenceFields = make(map[string][]string, len(c.BlockEvidenceFields))
+		for method, fields := range c.BlockEvidenceFields {
+			copied.BlockEvidenceFields[method] = make([]string, len(fields))
+			copy(copied.BlockEvidenceFields[method], fields)
+		}
+	}
+
 	copied.MaxWaitOnResult = c.MaxWaitOnResult.Copy()
 	copied.MaxWaitOnEmpty = c.MaxWaitOnEmpty.Copy()
+
+	if c.FireAndForget != nil {
+		v := *c.FireAndForget
+		copied.FireAndForget = &v
+	}
+	if c.PreferNonEmpty != nil {
+		v := *c.PreferNonEmpty
+		copied.PreferNonEmpty = &v
+	}
+	if c.PreferLargerResponses != nil {
+		v := *c.PreferLargerResponses
+		copied.PreferLargerResponses = &v
+	}
 
 	if c.RequiredParticipants != nil {
 		copied.RequiredParticipants = make([]*ConsensusRequiredParticipant, len(c.RequiredParticipants))
@@ -2035,6 +2157,15 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 			}
 			rpCopy := *rp
 			copied.RequiredParticipants[i] = &rpCopy
+		}
+	}
+
+	copied.CustomPolicy = c.CustomPolicy.Copy()
+
+	if c.Policies != nil {
+		copied.Policies = make(map[string]*ConsensusPolicyConfig, len(c.Policies))
+		for name, p := range c.Policies {
+			copied.Policies[name] = p.Copy()
 		}
 	}
 
@@ -3033,6 +3164,13 @@ type AuthConfig struct {
 }
 
 type AuthStrategyConfig struct {
+	// Name identifies this strategy for operator logic that keys on which
+	// strategy authenticated the caller (e.g. consensus.customPolicy evals
+	// compare ctx.user.auth). Optional; unnamed strategies stamp "" on the
+	// user. Never accepted from client-controlled input — only this config
+	// field (feature §4.3).
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
 	IgnoreMethods   []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods,omitempty"`
 	AllowMethods    []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
 	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
