@@ -2701,6 +2701,20 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 }
 
 func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
+	// evm.pinLatestTag: this upstream is sent the network head in place of
+	// "latest"; the request keeps "latest" for the cache, the response and every
+	// other upstream. With the head unknown it is never sent "latest" at all.
+	if params, height, pinned := evm.PinLatestTag(execSpanCtx, n, u, req); pinned {
+		if height <= 0 {
+			var latest, finalized int64
+			if eu, ok := u.(common.EvmUpstream); ok {
+				latest, finalized = n.upstreamHeads(eu)
+			}
+			return nil, common.NewErrUpstreamBlockUnavailable(u.Id(), 0, latest, finalized)
+		}
+		execSpanCtx = common.WithWireParams(execSpanCtx, req, params)
+	}
+
 	h := n.architectureHandler
 	if h != nil {
 		if handled, resp, err := h.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
@@ -2937,11 +2951,15 @@ func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u commo
 		return nil, false
 	}
 
-	// Prefer the cached block number from normalization. Fall back to extracting
-	// from the request (defensive: handles paths that bypass json_rpc.go's
-	// normalization, and methods whose params haven't been pre-cached yet).
+	// An upstream that pins "latest" (evm.pinLatestTag) is sent the network head,
+	// so that head is the block it must hold. Otherwise prefer the cached block
+	// number from normalization, falling back to extracting from the request
+	// (defensive: handles paths that bypass json_rpc.go's normalization, and
+	// methods whose params haven't been pre-cached yet).
 	var bn int64
-	if v := req.EvmBlockNumber(); v != nil {
+	if _, height, pinned := evm.PinLatestTag(ctx, n, u, req); pinned {
+		bn = height
+	} else if v := req.EvmBlockNumber(); v != nil {
 		if n64, ok := v.(int64); ok {
 			bn = n64
 		}

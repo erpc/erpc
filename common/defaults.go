@@ -2142,6 +2142,10 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
+	if e.PinLatestTag == nil && defaults != nil {
+		e.PinLatestTag = defaults.PinLatestTag
+	}
+
 	return nil
 }
 

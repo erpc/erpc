@@ -1052,6 +1052,14 @@ export interface EvmUpstreamConfig {
    */
   headLagToleranceBlocks?: number /* int64 */;
   /**
+   * PinLatestTag sends this upstream the network head as a concrete block number wherever a
+   * state call (eth_call, eth_getBalance, ...) asks for "latest" or omits the block, and skips the
+   * upstream when its blockAvailability upper bound is below that head or the head is unknown.
+   * For an upstream whose own head lags the network: it answers only blocks it holds, and a block
+   * it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+   */
+  pinLatestTag?: boolean;
+  /**
    * Deprecated: never read at runtime. Configure data integrity via the network
    * `integrity` block instead. Retained only so existing YAML still parses.
    */
