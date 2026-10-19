@@ -19,6 +19,18 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
+// svmUpstreamConfigWithFloorPoll declares firstAvailableSlotPlus: 0 so the
+// state poller fetches getFirstAvailableBlock. Required after the floor became
+// opt-in — history-parity pool MIN / deepest-history logic needs observed floors.
+func svmUpstreamConfigWithFloorPoll(id, host string) *common.UpstreamConfig {
+	cfg := svmUpstreamConfig(id, host)
+	plus := int64(0)
+	cfg.Svm.BlockAvailability = &common.SvmBlockAvailabilityConfig{
+		Lower: &common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: &plus},
+	}
+	return cfg
+}
+
 // mockSvmMethod registers a persistent reply for `method` on host and returns a
 // counter of how many times the upstream actually answered it.
 func mockSvmMethod(host, method, body string) *atomic.Int64 {
@@ -62,8 +74,8 @@ func TestSvm_GetSignaturesForAddress_ShortPageContinuesToNextUpstream(t *testing
 	full := mockSvmMethod("svm-sigs-rpc2.localhost", "getSignaturesForAddress", svmSigPage(5))
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfig("rpc1", "svm-sigs-rpc1.localhost"),
-		svmUpstreamConfig("rpc2", "svm-sigs-rpc2.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc1", "svm-sigs-rpc1.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc2", "svm-sigs-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 	time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -121,8 +133,8 @@ func TestSvm_GetSignaturesForAddress_AllShortServesLastValidPage(t *testing.T) {
 	mockSvmMethod("svm-sigsall-rpc2.localhost", "getSignaturesForAddress", svmSigPage(2))
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfig("rpc1", "svm-sigsall-rpc1.localhost"),
-		svmUpstreamConfig("rpc2", "svm-sigsall-rpc2.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc1", "svm-sigsall-rpc1.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc2", "svm-sigsall-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 	time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -153,8 +165,8 @@ func TestSvm_GetSignatureStatuses_SearchHistoryNullContinuesToNextUpstream(t *te
 	archive := mockSvmMethod("svm-status-rpc2.localhost", "getSignatureStatuses", svmSigStatusFound)
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfig("rpc1", "svm-status-rpc1.localhost"),
-		svmUpstreamConfig("rpc2", "svm-status-rpc2.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc1", "svm-status-rpc1.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc2", "svm-status-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 	time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -206,8 +218,8 @@ func TestSvm_GetFirstAvailableBlock_PoolAnswersMinFloor(t *testing.T) {
 	defer cancel()
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfig("rpc1", "svm-floor-rpc1.localhost"),
-		svmUpstreamConfig("rpc2", "svm-floor-rpc2.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc1", "svm-floor-rpc1.localhost"),
+		svmUpstreamConfigWithFloorPoll("rpc2", "svm-floor-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 	time.Sleep(300 * time.Millisecond)
@@ -244,8 +256,8 @@ func TestSvm_GetSignaturesForAddress_DeepestUpstreamShortPageIsAuthoritative(t *
 
 			ids := map[string]string{"archive": archiveHost, "pruned": prunedHost}
 			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-				svmUpstreamConfig(order[0], ids[order[0]]),
-				svmUpstreamConfig(order[1], ids[order[1]]),
+				svmUpstreamConfigWithFloorPoll(order[0], ids[order[0]]),
+				svmUpstreamConfigWithFloorPoll(order[1], ids[order[1]]),
 			})
 			net.PinUpstreamOrderForTest(order[0], order[1])
 			time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -287,8 +299,8 @@ func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.
 
 			ids := map[string]string{"archive": archiveHost, "pruned": prunedHost}
 			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-				svmUpstreamConfig(order[0], ids[order[0]]),
-				svmUpstreamConfig(order[1], ids[order[1]]),
+				svmUpstreamConfigWithFloorPoll(order[0], ids[order[0]]),
+				svmUpstreamConfigWithFloorPoll(order[1], ids[order[1]]),
 			})
 			net.PinUpstreamOrderForTest(order[0], order[1])
 			time.Sleep(300 * time.Millisecond) // let the floor poll land
