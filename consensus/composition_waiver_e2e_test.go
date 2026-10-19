@@ -144,10 +144,10 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 			"exactly one empty_outside_retention waiver must be recorded")
 	})
 
-	// Case 1c: wait-cap shape — maxParticipants 4 but only 3 answers (one
-	// sibling never arrives). Sealing mimics wait-cap cancelling the rest so
-	// the empty waiver can evaluate (mp=4 must work without dropping to mp=3).
-	t.Run("1 empty internal + 2 archives with sealed short bag (wait-cap)", func(t *testing.T) {
+	// Case 1c: short bag — maxParticipants 4 but only 3 answers. Explicit
+	// seal (after every slot acknowledged) lets the empty waiver evaluate;
+	// wait-cap cancel alone must not seal.
+	t.Run("1 empty internal + 2 archives with sealed short bag", func(t *testing.T) {
 		cfg := newCfg()
 		cfg.maxParticipants = 4
 		before := waivedMetricValue()

@@ -379,7 +379,7 @@ block the count; a matching participant that returned data holds the quota.
 The waiver is safe by construction:
 
 - **Threshold = `minAgreement`.** Enough matching MissingData answers release the quota; fewer hold it strict → composition dispute.
-- **Round-complete only.** While any response can still arrive, a slower tagged upstream might return data, so the waiver holds off and the dispute stays provisional. After a wait-cap cancels remaining in-flight slots, the collection is **sealed** and waivers evaluate even if `collectedResponses < maxParticipants` (a down/hanging sibling must not force `maxParticipants: 3`). `fireAndForget` wait-cap does not cancel or seal — unanswered slots are still running, so waivers stay fail-closed.
+- **Round-complete only.** While any response can still arrive, a slower tagged upstream might return data, so the waiver holds off and the dispute stays provisional. Wait-cap cancel alone does **not** seal the bag — a result may already be buffered or the upstream call may ignore cancellation — so waivers stay fail-closed on a partial wait-capped collection.
 - **Never-decisive-masking.** The waiver only changes the outcome when releasing the entry makes the winner decisive; it can't hide a real disagreement.
 - **Floor enforced.** The `standard-waive-missing` policy keeps a never-waivable external floor (`minAgreement: 2`) — even with the internal quota waived, two externals must still agree.
 
@@ -432,7 +432,7 @@ deliberate relaxation of a hard quorum.
 9. **Two policies, one S3 path.** Sharing a `misbehaviorsDestination.path` without both `{timestampMs}` and `{policy}` in every `filePattern` is a startup error — otherwise the per-policy exporters can overwrite each other's S3 objects even in the same millisecond.
 10. **Named policies can't nest.** A `policies[<name>]` value that sets `customPolicy` or `policies` is rejected at startup. Selection happens once, at the top level.
 11. **`default` is reserved.** `policies["default"]` is rejected at startup — that name labels the fail-closed inline default in the `consensus_policy` metric and the `X-ERPC-Consensus-Policy` header, so a named policy can't reuse it.
-12. **Wait-cap seals the bag for waivers.** Composition disputes do not short-circuit while slots remain. When `maxWaitOnResult` / `maxWaitOnEmpty` fires and cancels stragglers, the analyzer seals the collection and re-runs winner determination so MissingData / empty-outside-retention waivers see a round-complete bag — even at `maxParticipants: 4` with only three answers (one upstream down). Without sealing, waivers would stay deferred forever and the round would ship a composition dispute.
+12. **Wait-cap does not seal for waivers.** Composition disputes do not short-circuit while slots remain. When `maxWaitOnResult` / `maxWaitOnEmpty` fires, remaining slots are cancelled for latency but MissingData / empty-outside-retention waivers stay fail-closed on that partial bag — cancellation is not a round-completion barrier (buffered or cancel-ignoring results can still arrive with data that would dispute the waiver).
 
 ### Observability
 
