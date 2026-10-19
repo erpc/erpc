@@ -221,7 +221,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			}
 			span.End()
 			// Per-check attempts/outcomes (pass/skip/reject/reject_recoverable/record_only/reconfirmed/
-			// off) — sum = total attempts. "pass" means an actual verification ran;
+			// off/panic) — sum = total attempts. "pass" means an actual verification ran;
 			// "skip" means the check couldn't evaluate (cold cache, missing wiring).
 			// Higher volume than the violation counter below.
 			for _, oc := range res.Outcomes {
