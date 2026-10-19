@@ -20,8 +20,8 @@ func init() {
 }
 
 // svmUpstreamConfigWithFloorPoll declares firstAvailableSlotPlus: 0 so the
-// state poller fetches getFirstAvailableBlock. Required after the floor became
-// opt-in — history-parity pool MIN / deepest-history logic needs observed floors.
+// state poller probes getBlocksWithLimit(0, 1). Required after the floor became
+// opt-in — history-parity deepest-history logic needs observed floors.
 func svmUpstreamConfigWithFloorPoll(id, host string) *common.UpstreamConfig {
 	cfg := svmUpstreamConfig(id, host)
 	plus := int64(0)
@@ -205,32 +205,6 @@ func TestSvm_GetSignatureStatuses_WithoutFlagNullIsServed(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(jrr.GetResultBytes()), `[null]`, "a null is a valid recent-status answer")
 	require.Zero(t, second.Load(), "no sweep without searchTransactionHistory")
-}
-
-func TestSvm_GetFirstAvailableBlock_PoolAnswersMinFloor(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	// Pruned validator at 200000 next to an archive at genesis.
-	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-floor-rpc1.localhost", 300000, 299900, 300000, 200000)
-	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-floor-rpc2.localhost", 300000, 299900, 300000, 0)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfigWithFloorPoll("rpc1", "svm-floor-rpc1.localhost"),
-		svmUpstreamConfigWithFloorPoll("rpc2", "svm-floor-rpc2.localhost"),
-	})
-	net.PinUpstreamOrderForTest("rpc1", "rpc2")
-	time.Sleep(300 * time.Millisecond)
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getFirstAvailableBlock","params":[]}`))
-	resp, err := svmProjectForward(ctx, net, req)
-	require.NoError(t, err)
-	jrr, err := resp.JsonRpcResponse()
-	require.NoError(t, err)
-	require.Equal(t, "0", string(jrr.GetResultBytes()),
-		"the pool floor is the archive's, not whichever upstream was picked first")
 }
 
 // The shortest page must never beat the most complete one. The archive (floor 0)

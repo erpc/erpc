@@ -26,113 +26,38 @@ func sigPage(n int) string {
 }
 
 // ---------------------------------------------------------------------------
-// getFirstAvailableBlock — pool-answered
+// PoolFirstAvailableSlot — used by holdsDeepestHistory (sig parity)
 // ---------------------------------------------------------------------------
 
-func TestNetworkPreForward_GetFirstAvailableBlock(t *testing.T) {
+func TestPoolFirstAvailableSlot(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	req := func() *common.NormalizedRequest { return reqOf(t, "getFirstAvailableBlock", `[]`) }
 
-	t.Run("mixed pruned validator and archive answers the MIN", func(t *testing.T) {
+	t.Run("mixed pruned and archive returns MIN", func(t *testing.T) {
 		t.Parallel()
 		pool := []common.Upstream{
 			upstreamWithFloor("validator", 300000, 200000, true),
 			upstreamWithFloor("archive", 300000, 0, true),
 		}
-		handled, resp, err := networkPreForward_getFirstAvailableBlock(ctx, pool, req())
-		require.NoError(t, err)
-		require.True(t, handled)
-		require.NotNil(t, resp)
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		require.Equal(t, "0", string(jrr.GetResultBytes()), "archive floor 0 is KNOWN and is the pool MIN")
+		slot, known := PoolFirstAvailableSlot(pool)
+		require.True(t, known)
+		require.Equal(t, int64(0), slot)
 	})
 
-	t.Run("all pruned answers the lowest pruned floor", func(t *testing.T) {
-		t.Parallel()
-		pool := []common.Upstream{
-			upstreamWithFloor("v1", 300000, 250000, true),
-			upstreamWithFloor("v2", 300000, 200000, true),
-		}
-		handled, resp, err := networkPreForward_getFirstAvailableBlock(ctx, pool, req())
-		require.NoError(t, err)
-		require.True(t, handled)
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		require.Equal(t, "200000", string(jrr.GetResultBytes()))
-	})
-
-	t.Run("one unknown floor fails open", func(t *testing.T) {
+	t.Run("one unknown floor is unknown pool floor", func(t *testing.T) {
 		t.Parallel()
 		pool := []common.Upstream{
 			upstreamWithFloor("validator", 300000, 200000, true),
 			upstreamWithFloor("archive", 300000, 0, false),
 		}
-		handled, resp, err := networkPreForward_getFirstAvailableBlock(ctx, pool, req())
-		require.NoError(t, err)
-		require.False(t, handled, "a partial MIN must not be advertised as pool truth")
-		require.Nil(t, resp)
+		_, known := PoolFirstAvailableSlot(pool)
+		require.False(t, known)
 	})
 
-	t.Run("uninspectable upstream fails open", func(t *testing.T) {
+	t.Run("empty pool is unknown", func(t *testing.T) {
 		t.Parallel()
-		pool := []common.Upstream{
-			upstreamWithFloor("validator", 300000, 200000, true),
-			&slotLagUpstream{id: "no-poller", poller: nil},
-		}
-		handled, _, err := networkPreForward_getFirstAvailableBlock(ctx, pool, req())
-		require.NoError(t, err)
-		require.False(t, handled)
+		_, known := PoolFirstAvailableSlot(nil)
+		require.False(t, known)
 	})
-
-	t.Run("single upstream forwards as today", func(t *testing.T) {
-		t.Parallel()
-		handled, _, err := networkPreForward_getFirstAvailableBlock(ctx,
-			[]common.Upstream{upstreamWithFloor("only", 300000, 200000, true)}, req())
-		require.NoError(t, err)
-		require.False(t, handled)
-	})
-
-	t.Run("empty pool forwards as today", func(t *testing.T) {
-		t.Parallel()
-		handled, _, err := networkPreForward_getFirstAvailableBlock(ctx, nil, req())
-		require.NoError(t, err)
-		require.False(t, handled)
-	})
-
-	t.Run("internal requests are never answered locally", func(t *testing.T) {
-		t.Parallel()
-		pool := []common.Upstream{
-			upstreamWithFloor("validator", 300000, 200000, true),
-			upstreamWithFloor("archive", 300000, 0, true),
-		}
-		r := req()
-		r.SetDirectives(&common.RequestDirectives{IsInternal: true})
-		handled, _, err := networkPreForward_getFirstAvailableBlock(ctx, pool, r)
-		require.NoError(t, err)
-		require.False(t, handled)
-	})
-
-	t.Run("dispatched through the handler", func(t *testing.T) {
-		t.Parallel()
-		h := &SvmArchitectureHandler{}
-		pool := []common.Upstream{
-			upstreamWithFloor("validator", 300000, 200000, true),
-			upstreamWithFloor("archive", 300000, 5, true),
-		}
-		handled, resp, err := h.HandleNetworkPreForward(ctx, &fakeNetwork{}, pool, req())
-		require.NoError(t, err)
-		require.True(t, handled)
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		require.Equal(t, "5", string(jrr.GetResultBytes()))
-	})
-}
-
-func TestNeverCache_GetFirstAvailableBlock(t *testing.T) {
-	t.Parallel()
-	require.True(t, neverCacheMethods["getFirstAvailableBlock"])
 }
 
 // ---------------------------------------------------------------------------
