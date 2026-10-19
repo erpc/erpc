@@ -82,10 +82,10 @@ func (*fakeUpstreamForPoller) Forward(context.Context, *common.NormalizedRequest
 	// fail gracefully rather than nil-deref in fetchHealth/fetchSlot.
 	return nil, fmt.Errorf("fakeUpstreamForPoller: no transport")
 }
-func (*fakeUpstreamForPoller) ShouldHandleMethod(string) (bool, error) { return true, nil }
-func (*fakeUpstreamForPoller) Cordon(string, string)                   {}
-func (*fakeUpstreamForPoller) Uncordon(string, string)                 {}
-func (*fakeUpstreamForPoller) IgnoreMethod(string)                     {}
+func (*fakeUpstreamForPoller) ShouldHandleMethod(string) (bool, error)     { return true, nil }
+func (*fakeUpstreamForPoller) Cordon(string, string, common.CordonClass)   {}
+func (*fakeUpstreamForPoller) Uncordon(string, string, common.CordonClass) {}
+func (*fakeUpstreamForPoller) IgnoreMethod(string)                         {}
 
 // scriptedResponse holds either a result payload or a JSON-RPC error. Exactly
 // one of the two fields is populated per canned response.
@@ -215,13 +215,13 @@ func (s *scriptedUpstream) callCount(key string) int {
 	return s.calls[key]
 }
 
-func (s *scriptedUpstream) Cordon(method, reason string) {
+func (s *scriptedUpstream) Cordon(method, reason string, class common.CordonClass) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cordonCalls = append(s.cordonCalls, cordonEvent{method, reason})
 }
 
-func (s *scriptedUpstream) Uncordon(method, reason string) {
+func (s *scriptedUpstream) Uncordon(method, reason string, class common.CordonClass) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.uncordonCalls = append(s.uncordonCalls, cordonEvent{method, reason})

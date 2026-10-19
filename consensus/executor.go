@@ -1462,11 +1462,11 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 	telemetry.MetricConsensusUpstreamPunished.WithLabelValues(labels.projectId, labels.networkId, upstreamId, labels.userId, labels.agentName).Inc()
 
 	// Cordon the upstream first
-	upstream.Cordon("*", "misbehaving in consensus")
+	upstream.Cordon("*", "misbehaving in consensus", common.CordonClassPunishment)
 
 	// Create the timer
 	timer := time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
-		upstream.Uncordon("*", "end of consensus penalty")
+		upstream.Uncordon("*", "end of consensus penalty", common.CordonClassPunishment)
 		e.misbehavingUpstreamsSitoutTimer.Delete(upstreamId)
 	})
 
