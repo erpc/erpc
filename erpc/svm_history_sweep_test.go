@@ -291,11 +291,11 @@ func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.
 }
 
 // When every consensus participant returns the same legitimately short page,
-// history parity must not turn those 200s into MissingData (consensus would
+// history sweep must not turn those 200s into MissingData (consensus would
 // agree on an error and last-valid-response fallback is disabled).
 // When rpc1 (shallow) and rpc2 (deepest) return the same legitimately short page,
 // rpc1's parity-continuation MissingData must not record wrong-empty misbehavior.
-func TestSvm_HistoryParity_NoMisbehaviorForIdenticalShortPages(t *testing.T) {
+func TestSvm_HistorySweep_NoMisbehaviorForIdenticalShortPages(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigsmb-rpc1.localhost", 1000, 990, 1000, 500)
@@ -357,7 +357,7 @@ func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
 	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
 }
 
-func TestSvm_SkipConsensus_HistoryParity_AllShortPagesUseLastValidResponse(t *testing.T) {
+func TestSvm_SkipConsensus_HistorySweep_AllShortPagesUseLastValidResponse(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForSvmStatePoller("svm-skipcons-sigs-a.localhost", 1000, 990)
@@ -387,7 +387,7 @@ func TestSvm_SkipConsensus_HistoryParity_AllShortPagesUseLastValidResponse(t *te
 	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
 }
 
-func TestSvm_SkipConsensus_HistoryParity_NullStatusesUseLastValidResponse(t *testing.T) {
+func TestSvm_SkipConsensus_HistorySweep_NullStatusesUseLastValidResponse(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForSvmStatePoller("svm-skipcons-st-a.localhost", 1000, 990)

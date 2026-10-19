@@ -2493,9 +2493,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if !ok || !common.HasErrorCode(upstreamErr, common.ErrCodeEndpointMissingData) {
 				return true
 			}
-			// SVM history parity uses MissingData to continue a sweep after an
+			// SVM history sweep uses MissingData to continue a sweep after an
 			// incomplete 200 — not evidence this upstream disagreed with the winner.
-			if common.IsHistoryParityContinuation(upstreamErr) {
+			if common.IsHistorySweepContinuation(upstreamErr) {
 				return true
 			}
 			upstream := key.(*upstream.Upstream)
