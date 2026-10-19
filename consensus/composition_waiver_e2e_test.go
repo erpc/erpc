@@ -34,6 +34,11 @@ func (n *headNetwork) Architecture() common.NetworkArchitecture             { re
 func (n *headNetwork) EvmHighestLatestBlockNumber(context.Context) int64    { return n.latest }
 func (n *headNetwork) EvmHighestFinalizedBlockNumber(context.Context) int64 { return 0 }
 func (n *headNetwork) EvmLeaderUpstream(context.Context) common.Upstream    { return nil }
+func (n *headNetwork) EvmRefreshLatestBlock(context.Context)               {}
+
+// Without this, a new EvmNetwork method makes the fake silently stop being an
+// EvmNetwork and chainHead falls back to participant pollers (fail-closed).
+var _ common.EvmNetwork = (*headNetwork)(nil)
 
 func (n *headNetwork) Config() *common.NetworkConfig {
 	if n.maxMode {
@@ -41,7 +46,7 @@ func (n *headNetwork) Config() *common.NetworkConfig {
 	}
 	return &common.NetworkConfig{
 		Evm: &common.EvmNetworkConfig{
-			ServedTip: &common.EvmServedTipConfig{EnabledFor: []string{"latest"}},
+			ServedTip: &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority},
 		},
 	}
 }

@@ -1302,17 +1302,17 @@ func (e *executor) waivedQuotas(ctx context.Context, analysis *consensusAnalysis
 }
 
 // chainHead returns the observed EVM "latest" block for the round, or 0 when
-// unknown. The network served tip is used only when majority served-tip mode
-// is on for "latest" (`evm.servedTip.enabledFor` includes that tag) — that
-// value is majority-corroborated across eligible upstreams, including ones
-// that did not participate in this round. Default max mode is a plain MAX of
-// self-reported poller latests, so a single inflator can raise it; trusting
-// that for this proof would reopen the fabrication hole the poller fallback
-// closes. When majority mode is off, or the majority tip is still 0, fall
-// back to the MIN poller latest among this round's own EVM participants
-// (at least two distinct upstreams with a positive latest). A zero head
-// from both sources means the empty-outside-retention waiver cannot prove
-// a block is outside range, so it holds the quota — fail closed.
+// unknown. The network served tip is used only when servedTip.quorum is
+// "majority" — that value is majority-corroborated across eligible upstreams,
+// including ones that did not participate in this round. Default quorum (2)
+// can still be a plain MAX of self-reported poller latests on small pools, so
+// a single inflator can raise it; trusting that for this proof would reopen
+// the fabrication hole the poller fallback closes. When majority quorum is
+// off, or the majority tip is still 0, fall back to the MIN poller latest
+// among this round's own EVM participants (at least two distinct upstreams
+// with a positive latest). A zero head from both sources means the
+// empty-outside-retention waiver cannot prove a block is outside range, so
+// it holds the quota — fail closed.
 func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis) int64 {
 	if analysis == nil {
 		return 0
@@ -1327,17 +1327,17 @@ func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis) i
 	return participantLatestBlock(analysis)
 }
 
-// majorityServedLatestEnabled reports whether this network's served "latest"
-// is the majority-mode tip. Nil config / default max mode returns false.
+// majorityServedLatestEnabled reports whether this network's served tip uses
+// quorum "majority". Nil config / default quorum returns false.
 func majorityServedLatestEnabled(net common.Network) bool {
 	if net == nil {
 		return false
 	}
 	cfg := net.Config()
-	if cfg == nil || cfg.Evm == nil {
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.ServedTip == nil {
 		return false
 	}
-	return cfg.Evm.ServedTipEnabledFor("latest")
+	return cfg.Evm.ServedTip.Quorum == common.ServedTipQuorumMajority
 }
 
 // logEmptyWaiverUnproven emits the fail-closed diagnostic when the
