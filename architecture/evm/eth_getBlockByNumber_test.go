@@ -65,8 +65,6 @@ func (t *testNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return nil
 }
 
-func (t *testNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
-
 func (t *testNetwork) GetMethodMetrics(method string) common.TrackedMetrics {
 	return nil
 }

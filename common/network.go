@@ -37,10 +37,6 @@ type EvmNetwork interface {
 	EvmHighestLatestBlockNumber(ctx context.Context) int64
 	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
 	EvmLeaderUpstream(ctx context.Context) Upstream
-	// EvmRefreshLatestBlock asks the pollers of the request's latest-head
-	// ballot for a fresh head in the background (see
-	// EvmStatePoller.RefreshLatestBlock); it never blocks.
-	EvmRefreshLatestBlock(ctx context.Context)
 }
 
 // SvmNetwork is the SVM-specific view of a Network. Production Network
@@ -87,14 +83,6 @@ func EvmLeaderUpstream(n Network, ctx context.Context) Upstream {
 		return e.EvmLeaderUpstream(ctx)
 	}
 	return nil
-}
-
-// EvmRefreshLatestBlock calls EvmNetwork.EvmRefreshLatestBlock when n is an
-// EVM network.
-func EvmRefreshLatestBlock(n Network, ctx context.Context) {
-	if e, ok := n.(EvmNetwork); ok {
-		e.EvmRefreshLatestBlock(ctx)
-	}
 }
 
 func IsValidArchitecture(architecture string) bool {

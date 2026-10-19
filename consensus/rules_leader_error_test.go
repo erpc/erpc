@@ -40,7 +40,6 @@ func (n *leaderNetwork) EvmHighestFinalizedBlockNumber(context.Context) int64 {
 	return 0
 }
 func (n *leaderNetwork) EvmLeaderUpstream(context.Context) common.Upstream { return n.leader }
-func (n *leaderNetwork) EvmRefreshLatestBlock(context.Context)             {}
 
 // Without this, a new EvmNetwork method makes the fake silently stop being an
 // EvmNetwork and the leader lookup returns nil.

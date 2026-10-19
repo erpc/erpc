@@ -14,20 +14,18 @@ import (
 // head without dispatching whenever enforce-highest-block is on and the head is
 // known: the post-forward hook below pins every response to that head EXACTLY,
 // so an upstream's answer is always discarded and the call buys nothing but
-// vendor cost and latency. Each answer also asks the ballot's pollers for a
-// debounced background refresh, so on a quiet network the head a client polls
-// for is not held at the ticker interval. An unknown head (cold pollers) and
-// enforce-highest-block=false keep forwarding.
+// vendor cost and latency. An answer never polls: the head moves with the
+// pollers' statePollerInterval and the heads other responses carry, so
+// eth_blockNumber traffic adds no upstream call. An unknown head (cold
+// pollers) and enforce-highest-block=false keep forwarding.
 func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	if dirs := nq.Directives(); dirs == nil || !dirs.EnforceHighestBlock {
 		return false, nil, nil
 	}
-	ctx = context.WithValue(ctx, common.RequestContextKey, nq)
-	tip := common.EvmHighestLatestBlockNumber(network, ctx)
+	tip := common.EvmHighestLatestBlockNumber(network, context.WithValue(ctx, common.RequestContextKey, nq))
 	if tip <= 0 {
 		return false, nil, nil
 	}
-	common.EvmRefreshLatestBlock(network, ctx)
 	hex, err := common.NormalizeHex(tip)
 	if err != nil {
 		return true, nil, err

@@ -758,42 +758,6 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	return n.servedTip(ctx, span, false)
 }
 
-// EvmRefreshLatestBlock asks the pollers that decide the request's latest head
-// for a background refresh: in routing order, only as many of the ballot's
-// voters (its best tipVoterRank) as the quorum needs, since a fresher head
-// anywhere else cannot move the served value. Two passes over the candidates,
-// counting then refreshing, keep a hot path such as eth_blockNumber free of
-// allocation.
-func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
-	best, voters := -1, 0
-	for u := range n.tipCandidateUpstreams(ctx) {
-		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok {
-			switch {
-			case best < 0 || rank < best:
-				best, voters = rank, 1
-			case rank == best:
-				voters++
-			}
-		}
-	}
-	if voters == 0 {
-		return
-	}
-	var q common.ServedTipQuorum
-	if n.cfg != nil {
-		q = n.cfg.Evm.ServedTipQuorum()
-	}
-	need := q.Of(voters)
-	for u := range n.tipCandidateUpstreams(ctx) {
-		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok && rank == best {
-			u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
-			if need--; need == 0 {
-				return
-			}
-		}
-	}
-}
-
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
 // `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
 // beyond every upstream's latest head.

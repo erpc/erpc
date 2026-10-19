@@ -297,7 +297,6 @@ func (m *mockEvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 }
 func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64)       {}
-func (m *mockEvmStatePoller) RefreshLatestBlock()                        {}
 func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePoller) IsObjectNull() bool                         { return m.isNull }
 
@@ -617,7 +616,6 @@ func (m *mockEvmStatePollerWithUpdate) IsBlockFinalized(blockNumber int64) (bool
 }
 func (m *mockEvmStatePollerWithUpdate) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerWithUpdate) SuggestLatestBlock(blockNumber int64)       {}
-func (m *mockEvmStatePollerWithUpdate) RefreshLatestBlock()                        {}
 func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                         { return false }
 
