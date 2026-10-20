@@ -1,18 +1,18 @@
 # Chain tracker: one chain feed, any source in, any transport out
 
-Status: ready for review, 2026-10-19. No code yet. Plan: [plan.md](plan.md). Supersedes the window, follower and fork-adoption parts of [data-integrity/chain-view.md](../data-integrity/chain-view.md).
+Status: ready for review, 2026-10-20; covers `main` through [#1287](https://github.com/erpc/erpc/pull/1287). No code yet. Plan: [plan.md](plan.md). Supersedes the window, follower and fork-adoption parts of [data-integrity/chain-view.md](../data-integrity/chain-view.md).
 
 Decisions:
 
 1. Logs come from `eth_getBlockReceipts`; `eth_getLogs` by block hash is the fallback while integrity is off.
-2. Any upstream can be a source, by opt-in per upstream; wss upstreams are sources by default. A source pushes when its transport can, and polls otherwise.
+2. Any upstream can be a source, by opt-in per upstream; wss upstreams are sources by default. A source pushes when its transport and its upstream can, and polls otherwise.
 3. Sources vote: the newest held header of each live authoritative source is one vote, and the branch with the most votes is canonical. Client and integrity answers never vote; settles and no-source asks vote only as §6 rules 5 and 6 say.
 4. Consumers read shared feed state from their own cursor; the core keeps no per-consumer queue. Reorgs, resume, slow consumers and catch-up are one code path.
 5. The window holds `maxBackfill` of chain time, at least `reorgWindow` blocks. Resumable taps catch up inside it; ws taps keep within `reorgWindow` blocks. A reorg inside a tap's range reaches it as Reverted; anything else ends it with its transport's signal.
 6. On a reorg, resumable transports resend from the fork point; ws `logs` gets `removed:true`, as geth does.
 7. Resumable transports resume from the last block they applied; a cursor the pod cannot place ends the stream, so a client never keeps a branch it was not told about.
 8. `newPendingTransactions` uses the same sources and taps, over a mempool feed.
-9. Polls and pending-transaction subscriptions stop 60s after the last tap closes. wss `newHeads` stays on, as today: it also keeps routing heads fresh.
+9. Polls and pending-transaction subscriptions stop 60s after the last tap closes. wss `newHeads` starts with the network, whether or not a WebSocket or gRPC server runs, and stays on: it also keeps routing heads fresh.
 10. Nothing needs a person: every degraded state has a detector, an automatic recovery and a time bound (§13). No switch stays set until a restart.
 11. Vendors serve a block's receipts as soon as they announce its head. Assumed, not measured at the tip; §10 covers a vendor that lags.
 
@@ -60,7 +60,7 @@ Block time: the mean header-time step over the last `reorgWindow` pins; until 2 
 | `EvmStatePoller` | per upstream, `statePollerInterval` (30s) + traffic | `eth_getBlockByNumber(latest)` | number, timestamp; drops hash, parentHash |
 | `chainFollower` (`integrity_chainfollower.go`) | per network+group, 1s ticker | `eth_getBlockByNumber(n)` per block, fresh | linked segment, 32 headers |
 | `blockStreamHub` (`erpc/block_stream.go`) | `OnLatestBlock` of every upstream | `eth_getBlockByNumber(n)` per block | highest number |
-| indexer + `wsupstream` | vendor wss pushes | none | indexer: last head number and hash |
+| indexer + `wsupstream` | vendor wss pushes; `newHeads` subscribed at startup while the WebSocket server is on | none | indexer: last head number and hash |
 
 Problems:
 
@@ -69,6 +69,7 @@ Problems:
 - A wss drop loses every event in the gap; a network with one wss upstream then delivers nothing.
 - `logs` uses N vendors × M filters upstream subscriptions; reorg semantics are each vendor's own.
 - An HTTP-only upstream can never serve subscriptions.
+- A wss upstream that refuses `newHeads` as unsupported feeds no subscription heads until its socket reconnects.
 - Each transport delivers its own way: indexer fan-out into per-subscription buffers for ws; a polling hub for gRPC.
 - One answer decides a pin: client and integrity answers rewrite pins (`chainView.observe`), and `ReconfirmPin` trusts whichever upstream routing picks.
 - Some degraded states last until a restart: auto-ignored methods, the poller give-up, the chain-identity cordon, the follower's retry of an unreconciled block.
@@ -91,7 +92,7 @@ flowchart LR
 
 | Layer | Home | Owns |
 |---|---|---|
-| Sources | `indexer/adapters/wsupstream`, `EvmStatePoller` | wss subscriptions, reconnect; latest-header poll |
+| Sources | `indexer/adapters/wsupstream`, `EvmStatePoller` | wss subscriptions, reconnect, silent-`newHeads` watch; latest-header poll |
 | Source reconciler | `erpc` network | which topics each source feeds |
 | Intake | network intake, `EvmStatePoller.ObserveHead` | parsing, header integrity, chain identity, head counter, liveness, authority |
 | Tracker and chain feed | `architecture/evm/chain_tracker.go`, from `integrity_chainview.go` | votes, fork choice, window, receipts |
@@ -179,6 +180,9 @@ func (t *Taps) Demand(networkId string) []Topic
 type Intake interface {
     Header(upstreamId string, raw json.RawMessage)
     PendingTx(upstreamId, variant string, raw json.RawMessage)
+    // Subscribed reports a push subscribe's answer for t: nil once it is
+    // live, else the upstream's error (§5.1, §11).
+    Subscribed(upstreamId string, t Topic, err error)
 }
 
 // Source feeds one upstream's observations over one transport.
@@ -225,12 +229,13 @@ Example, one wss push:
 - `upstreams[].evm.subscriptionSource`: unset is true for `ws`/`wss`, false otherwise.
 - Poll mode runs in the poller's goroutine. `fetchBlock("latest")` returns the header bytes it drops today; `TryUpdateIfLocallyStale` still merges polls with traffic.
 - A poll source never stops for good: after errors it backs off up to 60s and keeps polling.
+- A wss upstream that refuses `eth_subscribe newHeads` as unsupported (`ErrCodeEndpointUnsupported`) feeds `newHeads` by poll, under the poll rule of §5.2, until a subscribe succeeds. Its source asks again on each reconnect and every 10 min. Other failed subscribes retry with backoff up to 30s, as today.
 - A source on a new transport registers as an upstream, so intake can gate it.
 
 ### 5.2 Which topics each source feeds
 
 ```
-push u:  newHeads                       always, as today
+push u:  newHeads                       always, from network init
 poll u:  newHeads                       while demand has newHeads and authoritative(u)
 push u:  newPendingTransactions:<v>     while demand has it and authoritative(u)
 
@@ -240,9 +245,9 @@ authoritative(u) = u in tipCandidateUpstreams(ctx), ctx without a selector: the 
 ```
 
 - A primary source counts as live only while it is policy-eligible.
-- One reconciler per network, on one goroutine, calls `Set`: on demand changes, on liveness changes, and on a timer at the live bound.
+- One reconciler per network, on one goroutine, calls `Set`: at network init, whether or not a WebSocket or gRPC server runs; then on demand changes, liveness changes, subscribe answers (`Intake.Subscribed`), and on a timer at the live bound.
 - Idle: no demand for 60s → polls and pending-transaction subscriptions stop.
-- Silent subscription: a connected push source whose topic delivered no notification for 3 live bounds, while the newest known block moved above its last header, gets that topic subscribed again; after 3 silent resubscribes, its socket reconnects. Notifications count before intake, so a gated source is not silent, and a quiet chain makes no source silent.
+- Silent `newHeads`: a connected push source whose `newHeads` pushed nothing for 15s, while its own head counter stood above its last push when those 15s began, reconnects its socket (`watchHeads`). A halted chain or a lagging node trips neither half. Pushes count before intake, so a gated source is not silent. The source stops voting after the live bound, before the reconnect.
 - A pending-transaction topic with no message for 60s, while heads carry transactions, is subscribed again.
 
 ### 5.3 Intake
@@ -305,7 +310,8 @@ Every tracker fetch goes through one scheduler per (network, pod).
 | 3 fill | fill, cursor fetches, older receipts | at least 1 slot |
 
 - Limit: 16 fetches in flight per (network, pod). A sweep that ends in capacity errors on every upstream it tried (HTTP 429, `-32005`, compute units, a denied upstream permit) halves the share of the lowest busy class, never below 1 slot; 10 successes in a row in a class add 1 slot back. One throttled upstream is the selection policy's job (`ThrottledRate`).
-- One fetch makes one sweep over the upstreams the selection policy orders, or the one upstream it names: no hedge, no network retry, open breakers respected, timeout 10s. Failsafe config does not apply to it, an `internal` consensus policy included.
+- One fetch makes one sweep over the upstreams the selection policy orders, or the one upstream it names: no hedge, no network retry, timeout 10s. Failsafe config does not apply to it, an `internal` consensus policy included.
+- A sweep skips an upstream whose breaker is open, and tracker fetches never feed a breaker: tracker load, such as slow receipts of large blocks, must not open a breaker that blocks clients. Subscription calls bypass the breaker entirely, as today.
 - Tracker fetches skip project and network rate limits, which budget clients. Classes 1 and 2 take upstream rate permits as client requests do. Class 3 takes one only when one is free, so catch-up never crowds out clients; a denied permit counts as a capacity error. Upstream scores count every tracker fetch.
 - By-hash fetches use the cache. Every other tracker fetch skips cache reads, tags included, because a cached answer is not a fresh view.
 - The scheduler's backoff is the only retry: 200 ms, doubling, capped at 5 s, per key.
@@ -405,7 +411,7 @@ From cursor `c`, first matching case:
 - Auto-ignored methods (`IgnoreMethod`, `upstream/upstream.go:1233`) expire after 10 min, so a vendor that answered "unsupported" during a deploy serves again.
 - Logs travel as verbatim JSON. Receipt logs carry `blockTimestamp`; `integrity.Log` does not model it.
 - Matching uses `LogsFilter.Matches` (geth `filterLogs`), moved out of `integrity` into `architecture/evm/logfilter`. Integrity and the ws `logs` transport share it.
-- `fromBlock`/`toBlock` in client subscribe params are ignored, as for a live geth subscription.
+- A `logs` subscribe parses its filter as geth does (`address`, `topics`); one that does not parse fails with `-32602` before any fetch. `fromBlock`/`toBlock` are ignored, as for a live geth subscription.
 
 Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 
@@ -426,6 +432,7 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 
 - Sources: push transports only. A network with no push source refuses `newPendingTransactions` with `ErrNoSubscriptionSource`.
 - Feed: one ring per (network, variant) of the last 10,000 entries. A variant is one distinct set of subscribe params; at most 16 per network, then subscribe is refused with `ErrSubscriptionLimitExceeded`.
+- A subscribe that opens a new variant waits up to 10s for its push sources' first answers (`Intake.Subscribed`). When every authoritative push source answers with an error other than a capacity error, the subscribe fails with the first one, as the upstream sent it: `-32602` for bad params. Capacity errors, connection errors and timeouts open the subscription; each source retries with its backoff.
 - Dedup by transaction hash over 60s, at most 100,000 hashes per network.
 - A new tap starts after `Tail`. A tap wakes at most every 50 ms and reads everything after its sequence. Out of range skips to the newest. No reorgs, no resume.
 - Authority as for heads: fallback-tier sources subscribe only while they are authoritative, as `IngressSelector` does today.
@@ -455,9 +462,10 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 | Component | Failure | Detection | Automatic recovery | Bound |
 |---|---|---|---|---|
 | wss source | socket drops | disconnect | reconnect, jittered 1–30s backoff (today); others vote; fallbacks start; walks link the missed blocks | 30s |
-| wss source | socket alive, no notifications | none for 3 live bounds while newer blocks appear | not live; resubscribe; reconnect after 3 silent resubscribes | 12 live bounds |
+| wss source | socket alive, `newHeads` silent | no push for 15s while its own head counter stands above its last push | not live after the live bound; reconnect (`watchHeads`) | 30s after its head counter passes its last push |
+| wss source | `newHeads` refused as unsupported | `Intake.Subscribed` error | polls instead; asks again on each reconnect and every 10 min | 10 min |
 | any source | lags but keeps advancing | the newest known block stays above its vote | not live after the live bound; fallbacks and settles lead | live bound |
-| any source | the chain makes no blocks | nothing newer is known | stays live; nothing resubscribes | — |
+| any source | the chain makes no blocks | nothing newer is known | stays live; nothing reconnects or resubscribes | — |
 | poll source | errors, 429 | failed polls | backoff up to 60s; never stops for good | 60s |
 | other upstreams | poller give-up | `skipLatestBlockCheck` | expires | 10 min |
 | intake | chain-identity cordon | cordon reason | `eth_chainId` checked every 5 min; uncordon on a match | 5 min |
@@ -495,11 +503,13 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 | Fetch attempts | one sweep, then backoff from 200 ms to 5 s | — |
 | Tracker mailbox | fetch results and ticks never drop; headers: the newest per source | answers drop first |
 | Mempool | 10,000 entries per ring; 100,000 hashes over 60s per network; 16 variants per network | the oldest leave; subscribe refused |
-| Taps per connection | `maxSubscriptionsPerConnection` (100), as today | subscribe refused |
+| ws subscriptions per connection | `server.webSocket.maxSubscriptionsPerConnection` (100), as today | subscribe refused, `-32005` |
+| ws subscriptions per instance | `server.webSocket.maxSubscriptions`, as today; 0 = unlimited | subscribe refused, `-32005` |
+| ws connections | `server.webSocket.maxConnections` per instance and `maxConnectionsPerIP` per client IP, as today; 0 = unlimited | `429` before the upgrade |
 | ws write | 10s per message, as today | the connection closes |
 | gRPC send | 10s per message | the stream ends `UNAVAILABLE` |
 
-These are constants, not config. Distinct log filters have no cap: each costs one index lookup per block per address or topic it names.
+The `server.webSocket` limits stay config, as today; every other bound is a constant. Distinct log filters have no cap: each costs one index lookup per block per address or topic it names.
 
 ### 13.3 Invariants
 
@@ -560,9 +570,14 @@ Strict decoding rejects the deleted keys: a breaking config change, no aliases.
 | `erpc_chain_tracker_fetch_total{project,network,kind,class,outcome}` | new; kind: `header`, `receipts`, `logs`; outcome: `ok`, `error`, `capacity` |
 | `erpc_chain_tracker_fetch_slots{project,network,class}` | new gauge: current share per class |
 | `erpc_source_live{project,network,upstream}` | new gauge: 1 while live |
-| `erpc_source_resubscribe_total{project,network,upstream,topic}` | new |
-| `erpc_taps{project,network,transport,kind}` | new gauge: open taps |
+| `erpc_source_resubscribe_total{project,network,upstream,topic}` | new: silent pending-transaction topics (§5.2) |
+| `erpc_upstream_websocket_heads_stall_reconnects_total` | existing; counts silent-`newHeads` reconnects (§5.2) |
+| `erpc_taps{project,network,transport,kind}` | new gauge: open taps; replaces `erpc_websocket_subscriptions_active` |
 | `erpc_tap_out_of_range_total{project,network,transport,kind,reason}` | new; reason: `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `lag`; replaces `erpc_websocket_subscription_notifications_dropped_total` |
+| `erpc_websocket_send_queue_length` | deleted with the per-subscription buffers |
+| `erpc_network_subscription_last_head_timestamp_seconds` | existing; set on each head change of the network-wide tracker |
+| `erpc_subscription_withheld_heads_total` | deleted: `erpc_chain_tracker_source_heads_total{outcome="gated_*"}` counts the same heads per upstream and reason |
+| `erpc_subscription_undelivered_total` | deleted: taps read the feed, so no event goes undelivered |
 | `erpc_integrity_check_suspended_total{project,network,check}` | new |
 | `erpc_unexpected_panic_total` | existing; tracker, reconciler and tap loops report to it |
 | `erpc_integrity_aux_request_total` | `kind="chain_follow"` disappears |
@@ -582,11 +597,13 @@ Strict decoding rejects the deleted keys: a breaking config change, no aliases.
 | indexer `Sink`, `StreamEvent`, `IndexedEvent`, `EventIngress`, `EventEgress`, `IngressSelector`, `NetworkHandle` | replaced by `Intake`, `Source`, feeds and taps |
 | indexer `EnsureFilter`, `ReleaseFilter`, `subscribe`, `reconcile`, `partitionIngresses`, `Ingest`, `dedupe`, `fanOut`, `headMarker` | deleted |
 | `networkHandle.heads`, `headSource`, `deliversHeadsFrom`, `subIngressSelector`, `tierWsIngresses`, wsupstream `HeadsLive` | replaced by `authoritative(u)`, liveness, votes and the source reconciler |
+| `PrewarmUpstreamSubscriptions`, `prewarmInterval`, `bootstrapNetwork`, `SubscriptionManager.networks`, `bootstrapMu` | replaced by the source reconciler, which starts with each network (§5.2) |
+| wsupstream `headsUnsupported`: no `newHeads` until the socket reconnects | replaced by poll mode and a re-ask every 10 min (§5.1) |
 | wsupstream `EnsureFilter`, `RemoveFilter`, `FilterLive`, `stripFromBlockZero`, `isZeroBlockRef` | replaced by `Source.Set` |
 | wsclient `enqueue`, `isLossy`, `runWriter`, per-subscription buffers; `WsConnection.NotificationDropped` | replaced by taps and their wait bounds |
 | logs case of `DedupKeyForFilter`, logs dedup windows, `logRemoved` | deleted |
 | `nullingress` | deleted |
-| `IsInternal` | split: request kind `internal` for failsafe matching; policy bypass for state-poller and chainId probes only |
+| `IsInternal` | split: request kind `internal` for failsafe matching; the retry, hedge and breaker bypass for subscription calls, state-poller and chainId probes only; tracker fetches skip open breakers and never feed them (§7) |
 | permanent switches: `IgnoreMethod` entries, `skipLatestBlockCheck`, the chain-identity cordon | each expires (§13.1) |
 | `NoteObservedLatestBlock` call in the subscription manager | moved to the tracker's pin change |
 | `stateProberFor(...).onNewHead` call in `chainFollower.advance` | the integrity follow tap |
@@ -597,6 +614,7 @@ One home per fact:
 | Fact | Home |
 |---|---|
 | Which headers vote, which topics run | `authoritative(u)` and liveness, in network intake |
+| Silent `newHeads` | the wss source's `watchHeads`, against its own head counter |
 | Served tip: the number HTTP `latest` resolves to | `EvmHighestLatestBlockNumber` (`evm.servedTip.quorum`, head bench), unchanged; the network-wide tracker's pin changes floor it through `NoteObservedLatestBlock` |
 | Canonical chain | the tracker's votes and fork choice (§6) |
 | Pins, orphans, receipts | chain feed; only the tracker writes it |
@@ -615,6 +633,7 @@ One home per fact:
 - An upstream that does not gzip sends about 10× the receipts bytes.
 - Decision 11 is an assumption: a vendor that announces heads before its receipts are ready delays logs by one retry per block.
 - Each poll source costs one call per 0.7 block time per pod: about 3.6 calls/s per pod on monad.
+- wss upstreams subscribe `newHeads` at network init, even when no WebSocket or gRPC server runs: one push per block per upstream per pod.
 - With integrity on, a network where no upstream serves `eth_getBlockReceipts` refuses `logs` subscriptions; today vendor `logs` subscriptions serve it.
 - A network with one source follows that source: a fork it alone is on reaches clients until a second source or a settle outvotes it.
 - With no live source, one upstream's `latest` moves the head each block time, until an answer conflicts and a settle decides.
