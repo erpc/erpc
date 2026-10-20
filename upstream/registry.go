@@ -284,6 +284,12 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			u.upstreamsMu.RUnlock()
 
 			if upstreamsCount < minReady {
+				// Past the threshold the answer is already "unavailable": a failing
+				// global upstream task (e.g. a revoked key) keeps hasOngoing true
+				// forever, so waiting would only hold the caller for waitTimeout.
+				if u.unservedPastThreshold(networkId) > 0 {
+					return u.errStillInitializing(networkId)
+				}
 				// Keep waiting if there is any ongoing per-network or unknown upstream work
 				summary := u.summarizeNetworkTasks(networkId)
 				if summary.hasOngoing {
@@ -332,19 +338,31 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 // a network first requested a minute ago is a minute old however long eRPC has
 // been running.
 func (u *UpstreamsRegistry) errStillInitializing(networkId string) error {
-	if NoUpstreamsAvailableAfter > 0 {
-		if v, ok := u.networkFirstPreparedAt.Load(networkId); ok {
-			if elapsed := time.Since(v.(time.Time)); elapsed >= NoUpstreamsAvailableAfter {
-				telemetry.MetricNetworkNoUpstreamsAvailableTotal.WithLabelValues(u.prjId, networkId).Inc()
-				u.logger.Warn().
-					Str("networkId", networkId).
-					Dur("initializingFor", elapsed).
-					Msg("no upstream could be initialized for network; reporting it as unavailable")
-				return common.NewErrNetworkNoUpstreamsAvailable(u.prjId, networkId)
-			}
-		}
+	if elapsed := u.unservedPastThreshold(networkId); elapsed > 0 {
+		telemetry.MetricNetworkNoUpstreamsAvailableTotal.WithLabelValues(u.prjId, networkId).Inc()
+		u.logger.Warn().
+			Str("networkId", networkId).
+			Dur("initializingFor", elapsed).
+			Msg("no upstream could be initialized for network; reporting it as unavailable")
+		return common.NewErrNetworkNoUpstreamsAvailable(u.prjId, networkId)
 	}
 	return common.NewErrNetworkInitializing(u.prjId, networkId)
+}
+
+// unservedPastThreshold returns how long networkId has been initializing when
+// that exceeds NoUpstreamsAvailableAfter, else 0.
+func (u *UpstreamsRegistry) unservedPastThreshold(networkId string) time.Duration {
+	if NoUpstreamsAvailableAfter <= 0 {
+		return 0
+	}
+	v, ok := u.networkFirstPreparedAt.Load(networkId)
+	if !ok {
+		return 0
+	}
+	if elapsed := time.Since(v.(time.Time)); elapsed >= NoUpstreamsAvailableAfter {
+		return elapsed
+	}
+	return 0
 }
 
 func (u *UpstreamsRegistry) GetNetworkShadowUpstreams(networkId string) []*Upstream {

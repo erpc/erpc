@@ -116,6 +116,8 @@ func (m *mockNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return nil
 }
 
+func (m *mockNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
+
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
 type mockEvmUpstream struct {

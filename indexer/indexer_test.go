@@ -17,9 +17,11 @@ import (
 type fakeNetwork struct {
 	id string
 
-	mu          sync.Mutex
-	suggestedBy map[string][]int64  // sourceId -> block nums seen
-	held        map[string]struct{} // sourceIds whose heads are not delivered
+	mu           sync.Mutex
+	suggestedBy  map[string][]int64  // sourceId -> block nums seen
+	held         map[string]struct{} // sourceIds whose heads are not delivered
+	dedupDropped int
+	dedupEntries int
 }
 
 func newFakeNetwork(id string) *fakeNetwork {
@@ -36,6 +38,21 @@ func (n *fakeNetwork) SuggestLatestBlock(sourceId string, block int64) bool {
 	n.suggestedBy[sourceId] = append(n.suggestedBy[sourceId], block)
 	_, held := n.held[sourceId]
 	return !held
+}
+func (n *fakeNetwork) DedupDropped(EventKind) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.dedupDropped++
+}
+func (n *fakeNetwork) DedupEntriesAdded(delta int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.dedupEntries += delta
+}
+func (n *fakeNetwork) dedupCounts() (dropped, entries int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.dedupDropped, n.dedupEntries
 }
 
 type fakeEgress struct {
@@ -325,15 +342,25 @@ func TestIndexer_Log_RefcountFanOutAndTeardown(t *testing.T) {
 		t.Fatalf("EnsureFilter on ingress should be called exactly once, got %d", got)
 	}
 
+	// The same log from two upstreams: one window key, one dedup drop.
+	idx.Ingest(logEvent(h1, "ws:up1", logAddedJSON))
+	idx.Ingest(logEvent(h1, "ws:up2", logAddedJSON))
+	if dropped, entries := nw.dedupCounts(); dropped != 1 || entries != 1 {
+		t.Fatalf("want 1 dedup drop and 1 window key, got %d and %d", dropped, entries)
+	}
+
 	// First release decrements; still refcnt 1 → no tear-down.
 	idx.ReleaseFilter(context.Background(), "evm:1", "logs", h1)
 	if got := ing.removeCalls.Load(); got != 0 {
 		t.Fatalf("RemoveFilter must not fire while refcnt > 0, got %d calls", got)
 	}
-	// Second release drops to 0 → tear-down.
+	// Second release drops to 0 → tear-down, and its window is freed.
 	idx.ReleaseFilter(context.Background(), "evm:1", "logs", h1)
 	if got := ing.removeCalls.Load(); got != 1 {
 		t.Fatalf("RemoveFilter must fire exactly once at refcnt 0, got %d", got)
+	}
+	if _, entries := nw.dedupCounts(); entries != 0 {
+		t.Fatalf("released filter must leave no window keys, got %d", entries)
 	}
 }
 

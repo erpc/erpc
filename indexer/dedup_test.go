@@ -5,12 +5,17 @@ import (
 	"testing"
 )
 
+func mark(w *DedupWindow, key string, removed bool) bool {
+	deliver, _ := w.Mark(key, removed)
+	return deliver
+}
+
 func TestDedupWindow_MarkNewKey(t *testing.T) {
 	w := NewDedupWindow(4)
-	if !w.Mark("a", false) {
+	if !mark(w, "a", false) {
 		t.Fatalf("first Mark of a new key must return true")
 	}
-	if w.Mark("a", false) {
+	if mark(w, "a", false) {
 		t.Fatalf("second Mark of the same key and state must return false")
 	}
 }
@@ -28,7 +33,7 @@ func TestDedupWindow_StateChangeIsDelivered(t *testing.T) {
 		{false, true},  // re-add
 	}
 	for i, s := range steps {
-		if got := w.Mark("k", s.removed); got != s.want {
+		if got := mark(w, "k", s.removed); got != s.want {
 			t.Fatalf("step %d (removed=%v): got %v want %v", i, s.removed, got, s.want)
 		}
 	}
@@ -37,21 +42,27 @@ func TestDedupWindow_StateChangeIsDelivered(t *testing.T) {
 func TestDedupWindow_EvictsOldestPastCapacity(t *testing.T) {
 	w := NewDedupWindow(3)
 	for _, k := range []string{"a", "b", "c"} {
-		if !w.Mark(k, false) {
-			t.Fatalf("Mark(%q) must be true while window has room", k)
+		if deliver, added := w.Mark(k, false); !deliver || added != 1 {
+			t.Fatalf("Mark(%q) must deliver and add a key while window has room, got %v %d", k, deliver, added)
 		}
 	}
 	// Window: a, b, c. Adding "d" evicts "a"; window becomes b, c, d.
-	if !w.Mark("d", false) {
-		t.Fatalf("Mark(d) must be true")
+	if deliver, added := w.Mark("d", false); !deliver || added != 0 {
+		t.Fatalf("Mark(d) must deliver and keep the full window's size, got %v %d", deliver, added)
 	}
 	// "a" was evicted and is therefore newly markable.
-	if !w.Mark("a", false) {
+	if !mark(w, "a", false) {
 		t.Fatalf("a should be evicted and therefore newly markable")
 	}
 	// "c" has not been evicted yet — still a dupe.
-	if w.Mark("c", false) {
+	if mark(w, "c", false) {
 		t.Fatalf("c should still be in-window")
+	}
+	if n := w.Close(); n != 3 {
+		t.Fatalf("Close must report the 3 keys held, got %d", n)
+	}
+	if deliver, added := w.Mark("c", false); !deliver || added != 0 {
+		t.Fatalf("a closed window must deliver and hold nothing, got %v %d", deliver, added)
 	}
 }
 

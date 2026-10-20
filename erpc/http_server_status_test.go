@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"sync"
 	"testing"
@@ -258,4 +259,38 @@ func TestDetermineResponseStatusCode_NoUpstreamsAvailableIs404(t *testing.T) {
 	require.NoError(t, jerr)
 	require.Contains(t, string(encoded), "no RPC providers are available for network 'evm:534351'")
 	require.NotContains(t, string(encoded), "retry shortly")
+}
+
+// Solana clients (web3.js, @solana/kit) treat any non-200 as a transport
+// failure and never read the JSON-RPC code, so a malformed Solana request must
+// answer like Agave: HTTP 200 with -32700/-32600 in the body. EVM keeps 400,
+// and a bad URL path is a routing error on every architecture.
+func TestDetermineResponseStatusCode_SvmRequestErrorsAre200(t *testing.T) {
+	unmarshal := common.NewErrJsonRpcRequestUnmarshal(errors.New("bad json"), []byte(`{"jsonrpc":"2.0",`))
+	invalid := common.NewErrInvalidRequest(errors.New("method is required"))
+	badPath := common.NewErrInvalidUrlPath("no project", "/x")
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		nq   *common.NormalizedRequest
+		hint common.NetworkArchitecture
+		want int
+	}{
+		{name: "svm_url_unparseable_body", err: unmarshal, hint: common.ArchitectureSvm, want: http.StatusOK},
+		{name: "svm_url_invalid_request", err: invalid, hint: common.ArchitectureSvm, want: http.StatusOK},
+		{name: "svm_body_routed", err: invalid, want: http.StatusOK,
+			nq: common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":[],"networkId":"svm:mainnet-beta"}`))},
+		{name: "svm_bad_url_path", err: badPath, hint: common.ArchitectureSvm, want: http.StatusBadRequest},
+		{name: "evm_unparseable_body", err: unmarshal, hint: common.ArchitectureEvm, want: http.StatusBadRequest},
+		{name: "evm_invalid_request", err: invalid, hint: common.ArchitectureEvm, want: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.nq != nil {
+				_, _ = tc.nq.JsonRpcRequest()
+			}
+			body := buildErrorResponseBody(tc.nq, tc.err, tc.err, nil, tc.hint)
+			require.Equal(t, tc.want, determineResponseStatusCode(body, tc.hint))
+		})
+	}
 }

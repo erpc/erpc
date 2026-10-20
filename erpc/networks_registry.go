@@ -165,11 +165,11 @@ func NewNetwork(
 		rateLimitersRegistry: rateLimitersRegistry,
 		policyEngine:         policyEngine,
 
-		bootstrapOnce:     sync.Once{},
 		inFlightRequests:  &sync.Map{},
 		failsafeExecutors: failsafeExecutors,
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
+	network.servedTipAll.label = "all"
 
 	if nwCfg.Architecture == "" {
 		nwCfg.Architecture = common.ArchitectureEvm
@@ -296,6 +296,7 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 			if err != nil {
 				return err
 			}
+			network.startServedTipRefresh()
 			nr.logger.Debug().Str("networkId", networkId).Msg("network bootstrap completed")
 			return nil
 		},

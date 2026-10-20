@@ -65,7 +65,9 @@ type stubNetwork struct {
 	suggestions map[string][]int64
 }
 
-func (s *stubNetwork) Id() string { return s.id }
+func (s *stubNetwork) Id() string                     { return s.id }
+func (s *stubNetwork) DedupDropped(indexer.EventKind) {}
+func (s *stubNetwork) DedupEntriesAdded(int)          {}
 func (s *stubNetwork) SuggestLatestBlock(sourceID string, block int64) bool {
 	s.mu.Lock()
 	if s.suggestions == nil {

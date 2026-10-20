@@ -105,11 +105,17 @@ func TestPrepareUpstreamsForNetwork_ReportsNoProvidersOnceStale(t *testing.T) {
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeNetworkInitializing),
 		"a network that just started bootstrapping is still initializing, got: %v", err)
 
-	// Same network, same failure, five minutes older.
+	// Same network, same failure, five minutes older. The caller's full wait
+	// budget is available, yet the verdict must come without waiting it out:
+	// a still-failing upstream task must not hold every request for 30s.
 	reg.networkFirstPreparedAt.Store("evm:123", time.Now().Add(-6*time.Minute))
 
-	err = prepare()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	err = reg.PrepareUpstreamsForNetwork(ctx, "evm:123")
 	require.Error(t, err)
+	assert.Less(t, time.Since(start), time.Second, "a stale unserved network must fail fast")
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeNetworkNoUpstreamsAvailable),
 		"a network stuck with zero upstreams past the threshold is unavailable, got: %v", err)
 	assert.Contains(t, err.Error(), "evm:123")

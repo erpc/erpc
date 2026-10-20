@@ -273,6 +273,29 @@ server:
 
 The upgrade request must name a network (`/<project-id>/<architecture>/<chain-id>`, or a path that [domain aliasing](/operation/url) resolves to one); otherwise it is rejected with `400`. On shutdown eRPC closes every client connection with `1001` (going away) straight away so clients reconnect to another instance; in-flight requests get up to `server.waitBeforeShutdown` to answer first.
 
+## Cost frames
+
+A metering proxy in front of eRPC can read per-message cost the way it reads HTTP [cost headers](/operation/directives) (`server.costHeaders`). Opt in per connection by sending `X-ERPC-Cost-Frames: 1` on the upgrade request; it takes effect only while `server.costHeaders` is `true`. Otherwise output is plain JSON, as above.
+
+In cost-frame mode **every** text message eRPC sends starts with a header block in HTTP/1.1 wire form — zero or more `Name: value\r\n` lines, then `\r\n` — followed by the unchanged JSON body, all in one WebSocket message:
+
+```
+X-Erpc-Billable: 1\r\n
+X-Erpc-Calls: 1\r\n
+X-Erpc-Methods: eth_blockNumber\r\n
+X-Erpc-Network-Alias: ethereum\r\n
+X-Erpc-Network-Id: evm:1\r\n
+\r\n
+{"jsonrpc":"2.0","id":1,"result":"0x1234567"}
+```
+
+- **Responses** (single and batch) carry exactly the cost headers the same calls would get over HTTP (`X-ERPC-Calls`, `X-ERPC-Billable`, `X-ERPC-Methods`, `X-ERPC-Credits`, `X-ERPC-Credits-Total`, `X-ERPC-Credits-Version`, `X-ERPC-Network-Id`, `X-ERPC-Network-Alias`). A batch's `X-ERPC-Calls` counts every request in it, including id-less requests (JSON-RPC notifications) that get no reply entry.
+- **Calls that get no reply** — an id-less request, or a batch of only those — still ran, so they get a *metering-only* message: the header block for those calls followed by an empty body. A proxy meters it and never relays it.
+- **Messages that routed no call** — a batch that is not valid JSON, an empty batch — start with just `\r\n`.
+- **Subscription notifications** (`eth_subscription`) each carry `X-ERPC-Calls: 1`, `X-ERPC-Billable: 1`, `X-ERPC-Methods: eth_subscription`, `X-ERPC-Subscription: <newHeads|logs|newPendingTransactions>`, `X-ERPC-Network-Id` and `X-ERPC-Network-Alias`; no credits.
+
+Header names are case-insensitive, as in HTTP. Cost frames are not valid JSON-RPC: only send the header from a proxy that strips the block before the client sees the message.
+
 ## Indexer configuration
 
 `eth_subscribe` fan-out and deduplication are handled by an internal event indexer. Most deployments can leave this unset:
@@ -331,7 +354,7 @@ eRPC minimises the gap in three ways:
 
 - **Per-block cache keying for moving tags.** The realtime cache entry for a `latest` / `finalized` request is keyed by the block number the tag currently resolves to, so each tip advance is a distinct key rather than pinning every call within the TTL to the same cached payload.
 - **`enforceHighestBlock` response rewrite.** When the upstream returns a block number below the network's tracked tip, eRPC's [integrity check](/config/failsafe/integrity) fetches the specific higher block from another upstream and returns that instead (falling back to the highest valid block it has if none can serve it).
-- **Delivered-head floor.** When an upstream WebSocket delivers a `newHeads` notification, eRPC updates that upstream's tip tracker before fanning the head out to clients, and records it as a floor for the network's `latest`. A head reaches subscribers, and feeds the floor, only once the delivering upstream's tip tracker has accepted it; a head far ahead of the tracker is verified first and is not delivered, so subscribers resume with the next head. Held-back fallback heads are not delivered either. The floor is bounded: a value no live upstream comes close to (a stale or poisoned entry) is ignored rather than trusted, so it cannot pin the served tip. When `servedTip` is enabled for `latest`, it never lifts `latest` past [`servedTip.guaranteedFor`](/config/projects/networks) / `guaranteedMethods`. It does not apply to requests scoped with `use-upstream`. With shared state configured the floor is also propagated to other instances in the background, so they converge within the propagation delay rather than instantly.
+- **Delivered-head floor.** When an upstream WebSocket delivers a `newHeads` notification, eRPC updates that upstream's tip tracker before fanning the head out to clients, and records it as a floor for the network's `latest`. A head reaches subscribers, and feeds the floor, only once the delivering upstream's tip tracker has accepted it; a head far ahead of the tracker is verified first and is not delivered, so subscribers resume with the next head. Held-back fallback heads are not delivered either. With shared state configured the floor is also propagated to other instances in the background, so they converge within the propagation delay rather than instantly. How the floor bounds and orders against the served tip: [Block tracking](/reference/evm/block-tracking#websocket-delivered-head-floor).
 
 Even so, a transient single-block lag can reach a client when the chain produces a block faster than an in-flight HTTP round-trip completes. If your consumer treats single-block HTTP-vs-WS lag as a hard failure, widen its tolerance to match the chain's block time rather than expect eRPC (or any proxy) to eliminate it.
 

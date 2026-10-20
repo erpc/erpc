@@ -549,6 +549,26 @@ type ErrAuthUnauthorized struct{ BaseError }
 
 const ErrCodeAuthUnauthorized ErrorCode = "ErrAuthUnauthorized"
 
+// AuthUnauthorizedReason is a stable denial class for ErrAuthUnauthorized.
+// Message text is derived from the reason so callers do not invent labels.
+type AuthUnauthorizedReason string
+
+const (
+	AuthUnauthorizedReasonTokenExpired     AuthUnauthorizedReason = "token_expired"
+	AuthUnauthorizedReasonInvalidSignature AuthUnauthorizedReason = "invalid_signature"
+)
+
+func (r AuthUnauthorizedReason) Message() string {
+	switch r {
+	case AuthUnauthorizedReasonTokenExpired:
+		return "token expired"
+	case AuthUnauthorizedReasonInvalidSignature:
+		return "invalid signature"
+	default:
+		return string(r)
+	}
+}
+
 var NewErrAuthUnauthorized = func(strategy string, message string) error {
 	return &ErrAuthUnauthorized{
 		BaseError{
@@ -561,8 +581,35 @@ var NewErrAuthUnauthorized = func(strategy string, message string) error {
 	}
 }
 
+// NewErrAuthUnauthorizedReason builds ErrAuthUnauthorized with Message from reason.
+var NewErrAuthUnauthorizedReason = func(strategy string, reason AuthUnauthorizedReason) error {
+	return &ErrAuthUnauthorized{
+		BaseError{
+			Code:    ErrCodeAuthUnauthorized,
+			Message: reason.Message(),
+			Details: map[string]interface{}{
+				"strategy": strategy,
+				"reason":   reason,
+			},
+		},
+	}
+}
+
 func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
 	return http.StatusUnauthorized
+}
+
+func (e *ErrAuthUnauthorized) Reason() AuthUnauthorizedReason {
+	if e == nil || e.Details == nil {
+		return ""
+	}
+	if r, ok := e.Details["reason"].(AuthUnauthorizedReason); ok {
+		return r
+	}
+	if s, ok := e.Details["reason"].(string); ok {
+		return AuthUnauthorizedReason(s)
+	}
+	return ""
 }
 
 type ErrAuthRateLimitRuleExceeded struct{ BaseError }
@@ -2537,7 +2584,9 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 //     nothing to recover — terminal), OR
 //   - every child of a multi-error wrapper cause (ErrUpstreamsExhausted,
 //     ErrConsensusDispute, ErrConsensusLowParticipants, or any errors.Join
-//     bundle) is itself non-retryable, OR
+//     bundle) is itself non-retryable or an upstream's method verdict
+//     (unsupported or ignored): the sweep already asked every upstream, and
+//     asking again cannot change that answer, OR
 //   - any error along the linear Cause chain carries
 //     WithRetryableTowardNetwork(false).
 //
@@ -2572,7 +2621,7 @@ func IsRetryableTowardNetwork(err error) bool {
 		if ew, ok := cause.(interface{ Unwrap() []error }); ok {
 			if children := ew.Unwrap(); len(children) > 0 {
 				for _, child := range children {
-					if IsRetryableTowardNetwork(child) {
+					if IsRetryableTowardNetwork(child) && !isUpstreamMethodVerdict(child) {
 						return true
 					}
 				}
@@ -2604,6 +2653,28 @@ func IsRetryableTowardNetwork(err error) bool {
 	}
 
 	return true
+}
+
+// isUpstreamMethodVerdict reports whether err's single-cause chain says the
+// upstream does not serve the method (-32601 or ignoreMethods). Alone it
+// stays retryable toward the network, so a sweep moves on to an upstream
+// that may serve it.
+func isUpstreamMethodVerdict(err error) bool {
+	for cur := err; cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			return false
+		}
+		if base := cse.Base(); base != nil && (base.Code == ErrCodeEndpointUnsupported || base.Code == ErrCodeUpstreamMethodIgnored) {
+			return true
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			return false
+		}
+		cur = next
+	}
+	return false
 }
 
 // IsPermanentlyMissingData reports whether a MissingData verdict is permanent —

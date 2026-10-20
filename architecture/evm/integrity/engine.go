@@ -3,9 +3,11 @@ package integrity
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog/log"
 )
 
 // Input is everything Validate needs to check one upstream response.
@@ -92,7 +94,8 @@ type Result struct {
 // canonical fetch — a reorg, not corruption; served), "would_reject"
 // (observe-only mode suppressed a rejection and served the response anyway —
 // the count is the client-facing cost enforcement would incur), "off"
-// (disabled for this finality or check).
+// (disabled for this finality or check), "panic" (the check crashed on this
+// response; logged, no verdict, response served).
 type CheckOutcome struct {
 	CheckID string
 	Outcome string
@@ -162,7 +165,11 @@ func Validate(ctx context.Context, in Input) Result {
 			continue
 		}
 
-		v := c.Run(ctx, d, cfg)
+		v, panicked := runCheck(ctx, c, d, cfg)
+		if panicked {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "panic"})
+			continue
+		}
 		if v == nil {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "pass"})
 			continue
@@ -187,7 +194,7 @@ func Validate(ctx context.Context, in Input) Result {
 				case PinFresh:
 					// Skipped counts as cleared too: the adopted pin resolved the
 					// dispute and the check has nothing left to verify.
-					if v2 := c.Run(ctx, d, cfg); v2 == nil || v2 == Skipped {
+					if v2, _ := runCheck(ctx, c, d, cfg); v2 == nil || v2 == Skipped {
 						res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reconfirmed"})
 						continue
 					} else {
@@ -255,6 +262,20 @@ func Validate(ctx context.Context, in Input) Result {
 		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: fin.label(ctx, in, d), Verdict: "record_only"})
 	}
 	return res
+}
+
+// runCheck runs one check and turns a panic into "no verdict". Checks parse
+// upstream bytes, so a crash in one must cost that check's verdict, never the
+// request or the process.
+func runCheck(ctx context.Context, c *Check, d *Decoded, cfg CheckConfig) (v *Violation, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().Str("check", c.ID).Str("method", d.method).Interface("panic", r).
+				Str("stack", string(debug.Stack())).Msg("integrity: check panicked; no verdict for this response")
+			v, panicked = nil, true
+		}
+	}()
+	return c.Run(ctx, d, cfg), false
 }
 
 // finalityOnce caches the response block's finality for one Validate call.
