@@ -112,9 +112,8 @@ func (c *iamRateLimitClient) PipeAppend(pipeline envoyratelimitredis.Pipeline, r
 
 // PipeDo runs each command individually and returns on the first error,
 // matching clientImpl.PipeDo's implicit-pipelining path (driver_impl.go).
-// The envoy ratelimit library constructs one pipeline per DoLimit call
-// (a single INCRBY+EXPIRE pair for one key), so early-return on error
-// never abandons commands for a different key mid-pipeline.
+// One pipeline carries an INCRBY+EXPIRE pair per rule of one request; an
+// error fails that whole request, which the budget's onFailure then decides.
 func (c *iamRateLimitClient) PipeDo(pipeline envoyratelimitredis.Pipeline) error {
 	for _, action := range pipeline {
 		if err := c.pool.Do(action); err != nil {
