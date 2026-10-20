@@ -16,8 +16,10 @@ import (
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -41,8 +43,11 @@ var errNotConnected = errors.New("upstream websocket is not connected")
 type Adapter struct {
 	upstreamID string
 	networkID  string
-	wsClient   *clients.WsJsonRpcClient
-	logger     *zerolog.Logger
+	// projectID and networkLabel label the adapter's metrics.
+	projectID    string
+	networkLabel string
+	wsClient     *clients.WsJsonRpcClient
+	logger       *zerolog.Logger
 
 	// forward sends subscription RPCs through the upstream's Forward (rate
 	// limits, timeouts, metrics); replaced in tests.
@@ -106,11 +111,13 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts O
 	}
 	lg := logger.With().Str("upstreamId", up.Id()).Str("networkId", networkID).Logger()
 	return &Adapter{
-		upstreamID: up.Id(),
-		networkID:  networkID,
-		wsClient:   wsClient,
-		logger:     &lg,
-		filters:    make(map[string]*filterSub),
+		upstreamID:   up.Id(),
+		networkID:    networkID,
+		projectID:    up.ProjectId,
+		networkLabel: up.NetworkLabel(),
+		wsClient:     wsClient,
+		logger:       &lg,
+		filters:      make(map[string]*filterSub),
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, bypassMethodExclusion bool) (*common.NormalizedResponse, error) {
 			return up.Forward(ctx, nq, bypassMethodExclusion, false)
 		},
@@ -153,8 +160,14 @@ func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexe
 			a.resubCancel()
 		}
 		a.resubDone = false
+		if a.heads.id != "" {
+			a.liveGauge(indexer.SubTypeNewHeads).Dec()
+		}
 		a.heads.id = ""
 		for _, sub := range a.filters {
+			if sub.id != "" {
+				a.liveGauge(sub.subType).Dec()
+			}
 			sub.id = ""
 		}
 		a.subsMu.Unlock()
@@ -233,7 +246,7 @@ func (a *Adapter) RemoveFilter(ctx context.Context, subType, paramsHash string) 
 	delete(a.filters, key)
 	a.subsMu.Unlock()
 	if ok {
-		a.drop(ctx, &sub.upstreamSub)
+		a.drop(ctx, &sub.upstreamSub, sub.subType)
 	}
 	return nil
 }
@@ -351,6 +364,8 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 	commit := connUp && !sub.removed
 	if commit {
 		sub.id, sub.epoch = ws.ID, ws.Epoch
+		// params[0] is the eth_subscribe subscription type.
+		a.liveGauge(params[0].(string)).Inc()
 	}
 	a.subsMu.Unlock()
 
@@ -367,10 +382,13 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 
 // drop marks sub removed, so an in-flight subscribe releases its result
 // instead of committing it, and releases its live subscription if any.
-func (a *Adapter) drop(ctx context.Context, sub *upstreamSub) {
+func (a *Adapter) drop(ctx context.Context, sub *upstreamSub, kind string) {
 	a.subsMu.Lock()
 	id, epoch := sub.id, sub.epoch
 	sub.id, sub.removed = "", true
+	if id != "" {
+		a.liveGauge(kind).Dec()
+	}
 	a.subsMu.Unlock()
 	if id != "" {
 		a.release(ctx, id, epoch)
@@ -419,7 +437,21 @@ type notificationParams struct {
 	Result json.RawMessage `json:"result"`
 }
 
+// liveGauge is the upstream_subscriptions_active series of kind; changed
+// only under subsMu, wherever a subscription's id is set or cleared.
+func (a *Adapter) liveGauge(kind string) prometheus.Gauge {
+	return telemetry.GaugeHandle(telemetry.MetricUpstreamSubscriptionsActive, a.projectID, a.networkLabel, a.upstreamID, kind)
+}
+
+// countEvent counts a notification received from the upstream, before
+// parsing and dedup.
+func (a *Adapter) countEvent(kind string, raw []byte) {
+	telemetry.CounterHandle(telemetry.MetricUpstreamSubscriptionEventsTotal, a.projectID, a.networkLabel, a.upstreamID, kind).Inc()
+	telemetry.CounterHandle(telemetry.MetricUpstreamSubscriptionEventBytesTotal, a.projectID, a.networkLabel, a.upstreamID, kind).Add(float64(len(raw)))
+}
+
 func (a *Adapter) handleNewHeads(raw []byte) {
+	a.countEvent(indexer.SubTypeNewHeads, raw)
 	var outer notificationParams
 	if err := common.SonicCfg.Unmarshal(raw, &outer); err != nil {
 		a.logger.Warn().Err(err).Msg("failed to parse newHeads notification envelope")
@@ -448,6 +480,7 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 }
 
 func (a *Adapter) handleFilter(subType, paramsHash string, raw []byte) {
+	a.countEvent(subType, raw)
 	var outer notificationParams
 	if err := common.SonicCfg.Unmarshal(raw, &outer); err != nil {
 		a.logger.Warn().Err(err).Str("subType", subType).Msg("failed to parse filter notification envelope")

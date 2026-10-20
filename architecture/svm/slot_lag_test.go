@@ -13,8 +13,10 @@ import (
 // pollerAtSlot is a minimal SvmStatePoller used for slot-lag filter tests.
 // It reports a fixed finalized slot and stubs out everything else.
 type pollerAtSlot struct {
-	slot int64
-	null bool
+	slot       int64
+	null       bool
+	floor      int64
+	floorKnown bool
 }
 
 func (p *pollerAtSlot) Bootstrap(context.Context) error   { return nil }
@@ -28,6 +30,9 @@ func (p *pollerAtSlot) IsHealthy() bool                   { return true }
 func (p *pollerAtSlot) SuggestLatestSlot(int64)           {}
 func (p *pollerAtSlot) SuggestFinalizedSlot(int64)        {}
 func (p *pollerAtSlot) SetDebounceInterval(time.Duration) {}
+func (p *pollerAtSlot) FirstAvailableSlot() (int64, bool) {
+	return p.floor, p.floorKnown
+}
 
 // slotLagUpstream is a per-id SvmUpstream stub — svmUpstreamStub in
 // hooks_test.go has a fixed id so it can't be reused for multi-upstream

@@ -262,6 +262,13 @@ func TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded(t *testing.T) {
 	assert.Contains(t, order, "healthy-a")
 	assert.Contains(t, order, "healthy-b")
 
+	//    No probes either: probe responses never move a head, so probing a
+	//    lag-only exclusion would bill its vendor without re-admitting it.
+	for _, u := range network.policyEngine.GetExcluded(network.networkId, "*", "*") {
+		assert.NotEqual(t, "frozen", u.Id(),
+			"a lag-only exclusion must not be handed to the prober")
+	}
+
 	// 3) End-to-end routing: a real request never reaches the excluded node.
 	mockClean(t, upstreamHostFromID("healthy-a"), "eth_getBalance", "0xaaa")
 	mockClean(t, upstreamHostFromID("healthy-b"), "eth_getBalance", "0xbbb")

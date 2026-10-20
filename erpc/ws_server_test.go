@@ -1,12 +1,16 @@
 package erpc
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,9 +19,12 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -203,6 +210,21 @@ func sendAndReceive(t *testing.T, conn *websocket.Conn, req string) map[string]i
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(msg, &resp))
 	return resp
+}
+
+// readCostFrame reads one cost-frame message and splits it into its header
+// block and JSON body.
+func readCostFrame(t *testing.T, conn *websocket.Conn) (textproto.MIMEHeader, []byte) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	r := textproto.NewReader(bufio.NewReader(bytes.NewReader(msg)))
+	h, err := r.ReadMIMEHeader()
+	require.NoError(t, err, "message should start with a header block: %q", msg)
+	body, err := io.ReadAll(r.R)
+	require.NoError(t, err)
+	return h, body
 }
 
 // setupTestERPCServer boots an eRPC instance with the given config, returns
@@ -564,6 +586,89 @@ func TestWebSocket_ErrorHandling(t *testing.T) {
 		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
 		assert.NotNil(t, resp["error"], "should forward upstream error")
 	})
+
+	// An unknown method (-32601 from every upstream) answers after one sweep
+	// of the upstreams, over WebSocket and HTTP alike: no network retry or
+	// hedge re-asks them.
+	t.Run("UnknownMethodFailsFast", func(t *testing.T) {
+		util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.ResetGock()
+
+		var calls [2]atomic.Int32
+		for i, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+			gock.New(host).
+				Post("/").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_doesNotExist")
+				}).
+				Reply(200).
+				// gock runs filters for every host's mocks; Map runs once per reply.
+				Map(func(res *http.Response) *http.Response {
+					calls[i].Add(1)
+					return res
+				}).
+				Delay(50 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32601,
+						"message": "the method eth_doesNotExist does not exist/is not available",
+					},
+				})
+		}
+
+		// Production's network policy for "*": retries and a hedge.
+		cfg := httpOnlyConfig()
+		cfg.Projects[0].Upstreams = append(cfg.Projects[0].Upstreams, &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc2.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		})
+		cfg.Projects[0].Networks[0].Failsafe = []*common.FailsafeConfig{{
+			MatchMethod: "*",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 6},
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 1,
+				Delay:    &common.AdaptiveDuration{Base: common.Duration(500 * time.Millisecond)},
+			},
+		}}
+		addr, cleanup := setupTestERPCServer(t, cfg)
+		defer cleanup()
+
+		const req = `{"jsonrpc":"2.0","id":1,"method":"eth_doesNotExist","params":[]}`
+		assertOneSweep := func(t *testing.T, elapsed time.Duration, errObj interface{}) {
+			t.Helper()
+			e, ok := errObj.(map[string]interface{})
+			require.True(t, ok, "expected an error, got %v", errObj)
+			assert.Equal(t, float64(-32601), e["code"])
+			assert.Less(t, elapsed, 500*time.Millisecond, "unknown method must not be retried or hedged")
+			assert.Equal(t, int32(1), calls[0].Load(), "rpc1 asked once")
+			assert.Equal(t, int32(1), calls[1].Load(), "rpc2 asked once")
+			calls[0].Store(0)
+			calls[1].Store(0)
+		}
+
+		conn := dialWs(t, addr)
+		defer conn.Close()
+		// The first request bootstraps the network; keep that out of the timing.
+		warm := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":0,"method":"eth_getBlockByNumber","params":["latest",false]}`)
+		require.NotNil(t, warm["result"], "warm-up failed: %v", warm)
+		start := time.Now()
+		resp := sendAndReceive(t, conn, req)
+		assertOneSweep(t, time.Since(start), resp["error"])
+
+		start = time.Now()
+		cleanClient := &http.Client{Transport: &http.Transport{}}
+		httpResp, err := cleanClient.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json", strings.NewReader(req))
+		require.NoError(t, err)
+		defer httpResp.Body.Close()
+		var body map[string]interface{}
+		require.NoError(t, json.NewDecoder(httpResp.Body).Decode(&body))
+		assertOneSweep(t, time.Since(start), body["error"])
+	})
 }
 
 //
@@ -705,6 +810,152 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		assert.Equal(t, true, unsubResp["result"])
 	})
 
+	// With server.costHeaders on, a client that opts in with
+	// X-ERPC-Cost-Frames: 1 gets every message prefixed with its cost header
+	// block; a client that does not gets plain JSON.
+	t.Run("CostFrames", func(t *testing.T) {
+		notifCh := make(chan struct{}, 1)
+		mockUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
+			standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
+				switch method {
+				case "eth_subscribe":
+					subId := "0xdeadbeef12345678"
+					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": subId})
+					go func() {
+						time.Sleep(200 * time.Millisecond)
+						mockWriteJSON(conn, map[string]interface{}{
+							"jsonrpc": "2.0",
+							"method":  "eth_subscription",
+							"params": map[string]interface{}{
+								"subscription": subId,
+								"result":       map[string]interface{}{"number": "0x101", "hash": "0xaaa"},
+							},
+						})
+						select {
+						case notifCh <- struct{}{}:
+						default:
+						}
+					}()
+				case "eth_getBalance":
+					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0xabc123"})
+				default:
+					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x1"})
+				}
+			})
+		})
+		defer mockUpstream.Close()
+
+		setupGock()
+		defer util.ResetGock()
+
+		cfg := standardWsConfig("ws" + strings.TrimPrefix(mockUpstream.URL, "http"))
+		cfg.Server.CostHeaders = util.BoolPtr(true)
+		addr, cleanup := setupTestERPCServer(t, cfg)
+		defer cleanup()
+
+		time.Sleep(2 * time.Second)
+
+		conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", addr),
+			http.Header{"X-ERPC-Cost-Frames": {"1"}})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		send := func(req string) (textproto.MIMEHeader, []byte) {
+			t.Helper()
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(req)))
+			return readCostFrame(t, conn)
+		}
+		assertNetwork := func(h textproto.MIMEHeader) {
+			t.Helper()
+			assert.Equal(t, "evm:123", h.Get("X-ERPC-Network-Id"))
+			assert.Equal(t, "evm:123", h.Get("X-ERPC-Network-Alias"))
+		}
+
+		// newHeads: the subscribe reply, then each notification as 1 billable call.
+		h, body := send(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "eth_subscribe", h.Get("X-ERPC-Methods"))
+		var subResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &subResp))
+		clientSubId, ok := subResp["result"].(string)
+		require.True(t, ok, "subscription ID should be a string: %s", body)
+
+		select {
+		case <-notifCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for upstream to send notification")
+		}
+		h, body = readCostFrame(t, conn)
+		assert.Equal(t, textproto.MIMEHeader{
+			"X-Erpc-Calls":         {"1"},
+			"X-Erpc-Billable":      {"1"},
+			"X-Erpc-Methods":       {"eth_subscription"},
+			"X-Erpc-Subscription":  {"newHeads"},
+			"X-Erpc-Network-Id":    {"evm:123"},
+			"X-Erpc-Network-Alias": {"evm:123"},
+		}, h)
+		var notif map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &notif))
+		assert.Equal(t, "eth_subscription", notif["method"])
+		assert.Equal(t, clientSubId, notif["params"].(map[string]interface{})["subscription"])
+
+		// A single call.
+		h, body = send(`{"jsonrpc":"2.0","id":2,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "1", h.Get("X-ERPC-Billable"))
+		assert.Equal(t, "eth_getBalance", h.Get("X-ERPC-Methods"))
+		assertNetwork(h)
+		var single map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &single))
+		assert.Equal(t, "0xabc123", single["result"])
+
+		// A batch: one block for the whole batch.
+		h, body = send(`[{"jsonrpc":"2.0","id":3,"method":"eth_getBalance","params":["0xaaaa","latest"]},{"jsonrpc":"2.0","id":4,"method":"eth_getBalance","params":["0xbbbb","latest"]}]`)
+		assert.Equal(t, "2", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "2", h.Get("X-ERPC-Billable"))
+		assert.Equal(t, "eth_getBalance", h.Get("X-ERPC-Methods"))
+		assertNetwork(h)
+		var batch []map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &batch))
+		assert.Len(t, batch, 2)
+
+		// A batch that is not JSON routed nothing: empty block.
+		h, body = send(`[{"jsonrpc":"2.0",`)
+		assert.Empty(t, h)
+		var parseErr map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &parseErr))
+		assert.NotNil(t, parseErr["error"])
+
+		// A single unparsable request is a call HTTP would count, unbilled.
+		h, body = send(`{not valid json`)
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "0", h.Get("X-ERPC-Billable"))
+		var invalid map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &invalid))
+		assert.NotNil(t, invalid["error"])
+
+		// An id-less call gets no reply but still ran: a metering-only
+		// message, the block with an empty body.
+		h, body = send(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xcccc","latest"]}`)
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "1", h.Get("X-ERPC-Billable"))
+		assert.Equal(t, "eth_getBalance", h.Get("X-ERPC-Methods"))
+		assert.Empty(t, body)
+
+		// Without the header: plain JSON, and nothing for the id-less call,
+		// so the next message is the reply to id 5.
+		plain := dialWs(t, addr)
+		defer plain.Close()
+		require.NoError(t, plain.WriteMessage(websocket.TextMessage,
+			[]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xcccc","latest"]}`)))
+		resp := sendAndReceive(t, plain, `{"jsonrpc":"2.0","id":5,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+		assert.Equal(t, float64(5), resp["id"])
+		assert.Equal(t, "0xabc123", resp["result"])
+		plain.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_, extra, err := plain.ReadMessage()
+		assert.Error(t, err, "no message for the id-less call, got %q", extra)
+	})
+
 	// Verifies eth_subscribe returns an error when no WS upstream is configured
 	t.Run("SubscribeWithNoWsUpstreamFails", func(t *testing.T) {
 		setupGock()
@@ -720,7 +971,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		assert.NotNil(t, resp["error"], "should return error when no WS upstream available")
 	})
 
-	// Verifies eth_unsubscribe with a nonexistent ID returns an error
+	// Verifies eth_unsubscribe with a nonexistent ID fails as geth's does
 	t.Run("UnsubscribeUnknownIDFails", func(t *testing.T) {
 		setupGock()
 		defer util.ResetGock()
@@ -732,7 +983,10 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer conn.Close()
 
 		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_unsubscribe","params":["0xnonexistent"]}`)
-		assert.NotNil(t, resp["error"], "should return error for unknown subscription ID")
+		errObj, ok := resp["error"].(map[string]interface{})
+		require.True(t, ok, "should return error for unknown subscription ID: %v", resp)
+		assert.Equal(t, float64(-32000), errObj["code"])
+		assert.Equal(t, "subscription not found", errObj["message"])
 	})
 
 	// Verifies client disconnect cleanly removes the client from the fan-out
@@ -1443,6 +1697,18 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	defer cleanup()
 	time.Sleep(2 * time.Second)
 
+	counter := func(c *prometheus.CounterVec, labels ...string) float64 {
+		return testutil.ToFloat64(c.WithLabelValues(labels...))
+	}
+	ingress := func() float64 {
+		return counter(telemetry.MetricUpstreamSubscriptionEventsTotal, "test_ws", "evm:123", "ws-upstream-0", "logs") +
+			counter(telemetry.MetricUpstreamSubscriptionEventsTotal, "test_ws", "evm:123", "ws-upstream-1", "logs")
+	}
+	ingressBefore := ingress()
+	dedupBefore := counter(telemetry.MetricSubscriptionDedupDroppedTotal, "test_ws", "evm:123", "logs")
+	sentBefore := counter(telemetry.MetricWebsocketNotificationsSentTotal, "test_ws", "evm:123", "logs")
+	bytesBefore := counter(telemetry.MetricWebsocketNotificationBytesTotal, "test_ws", "evm:123", "logs")
+
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{}]}`)
@@ -1465,6 +1731,15 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(800 * time.Millisecond))
 	_, _, err = conn.ReadMessage()
 	assert.Error(t, err, "duplicate log from second upstream must be deduped by blockHash+txHash+logIndex")
+
+	// Each upstream logs subscribe sends the same log once: all but the
+	// first event in are dedup drops, and one notification goes out.
+	in := float64(atomic.LoadInt64(&subscribeCount))
+	assert.Equal(t, in, ingress()-ingressBefore)
+	assert.Equal(t, in-1, counter(telemetry.MetricSubscriptionDedupDroppedTotal, "test_ws", "evm:123", "logs")-dedupBefore)
+	assert.Equal(t, 1.0, counter(telemetry.MetricWebsocketNotificationsSentTotal, "test_ws", "evm:123", "logs")-sentBefore)
+	assert.Equal(t, float64(len(msg)), counter(telemetry.MetricWebsocketNotificationBytesTotal, "test_ws", "evm:123", "logs")-bytesBefore)
+	assert.GreaterOrEqual(t, testutil.ToFloat64(telemetry.MetricSubscriptionDedupEntries.WithLabelValues("test_ws", "evm:123")), 1.0)
 }
 
 // TestWebSocket_ReconnectAfterUnsubscribe: an upstream reconnect after the

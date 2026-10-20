@@ -165,7 +165,10 @@ func (qe *EvmQueryExecutor) nativeUpstreams(ctx context.Context, method string) 
 		if !servesNativeQuery(u) {
 			continue
 		}
-		if ok, err := u.ShouldHandleMethod(method); err != nil || ok {
+		// Fail closed on matcher errors — same as servesAll and
+		// GetFallbackEscapeUpstreams. Treating err != nil as eligible
+		// would bypass IgnoreMethods whenever a pattern fails to compile.
+		if ok, err := u.ShouldHandleMethod(method); err == nil && ok {
 			out = append(out, u)
 		}
 	}

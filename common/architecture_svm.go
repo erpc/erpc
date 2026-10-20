@@ -46,6 +46,13 @@ type SvmStatePoller interface {
 	MaxShredInsertSlotLag() int64
 	IsHealthy() bool
 
+	// FirstAvailableSlot is the upstream's REPORTED ledger floor, a hint rather
+	// than availability. It is polled only when the upstream's operator declares
+	// a firstAvailableSlotPlus bound. known=false means never observed (or not
+	// polled) and MUST be read as "no constraint", never as "nothing
+	// available".
+	FirstAvailableSlot() (slot int64, known bool)
+
 	SuggestLatestSlot(slot int64)
 	SuggestFinalizedSlot(slot int64)
 }

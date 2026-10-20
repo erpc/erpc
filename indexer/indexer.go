@@ -166,6 +166,7 @@ func (i *Indexer) EnsureFilter(ctx context.Context, networkId, subType string, p
 		f.refs--
 		if f.refs == 0 {
 			delete(ns.filters, paramsHash)
+			ns.handle.DedupEntriesAdded(-f.dedup.Close())
 		}
 		ns.filterMu.Unlock()
 		return paramsHash, err
@@ -361,6 +362,7 @@ func (i *Indexer) ReleaseFilter(ctx context.Context, networkId, subType, paramsH
 	ns.filterMu.Lock()
 	if f.refs == 0 {
 		delete(ns.filters, paramsHash)
+		ns.handle.DedupEntriesAdded(-f.dedup.Close())
 	}
 	ns.filterMu.Unlock()
 }
@@ -414,6 +416,7 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 		defer ns.headMu.Unlock()
 	}
 	if !i.dedupe(ns, &ev, removed) {
+		ns.handle.DedupDropped(ev.Kind)
 		return
 	}
 
@@ -445,7 +448,11 @@ func (i *Indexer) dedupe(ns *networkState, ev *StreamEvent, removed bool) bool {
 		if key == "" {
 			return true
 		}
-		return f.dedup.Mark(key, removed)
+		deliver, added := f.dedup.Mark(key, removed)
+		if added != 0 {
+			ns.handle.DedupEntriesAdded(added)
+		}
+		return deliver
 	default:
 		return true
 	}

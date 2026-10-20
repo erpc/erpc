@@ -3,12 +3,12 @@ package erpc
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
@@ -23,10 +23,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the semantics of Network.EvmHighestLatestBlockNumber in
-// served-tip mode: the MAJORITY order statistic — the freshest block a strict
-// majority of eligible upstreams already have (common.PickServedTip). Each case
-// is designed so MAX(tips) != majority to make regressions visible.
+// These tests pin the semantics of Network.EvmHighestLatestBlockNumber: the
+// quorum order statistic — the freshest block at least servedTip.quorum
+// eligible, non-benched upstreams already have (common.PickServedTip). Most
+// cases run quorum "majority" and are designed so MAX(tips) != the pick to
+// make regressions visible.
 
 // servedTipFixture is a compact description of one upstream's poller state
 // at test time. Used to drive the lighter setupServedTipNetwork helper.
@@ -37,7 +38,7 @@ type servedTipFixture struct {
 	// upperExactBlock, when > 0, configures blockAvailability.upper.exactBlock —
 	// the upstream still polls latestBlock as its head, but only SERVES up to
 	// this block, so its effective latest is the bound rather than a head
-	// observation (the celo "legacy" upstream shape).
+	// observation (a "legacy" upstream that serves only a frozen historical range).
 	upperExactBlock int64
 	// upperLatestMinus, when set, configures blockAvailability.upper.latestBlockMinus
 	// — a bound DERIVED from the upstream's own head, so it tracks the chain at
@@ -56,9 +57,10 @@ type servedTipFixture struct {
 // via gock to answer eth_chainId so initial validation succeeds. After
 // bootstrap, SuggestLatestBlock and SetSyncingState are applied per fixture.
 //
-// Returns the network and the upstream slice in input order.
+// Returns the network and the upstream slice in input order. The fixture runs
+// quorum "majority" on both axes.
 func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
-	return setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{EnabledFor: []string{"latest", "finalized"}})
+	return setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
 }
 
 func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
@@ -114,6 +116,9 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+	// The head bench state machine shares the guard's clock, so
+	// pinServedTipClock drives both.
+	metricsTracker.SetClockForTest(func() time.Time { return servedTipClock() })
 
 	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(
@@ -353,10 +358,9 @@ func TestServedTip_AllSyncing_ReturnsZero(t *testing.T) {
 
 // ----- opt-in gating + eligible-set sourcing -------------------------------
 
-// With the served-tip feature DISABLED (the default, nil config), the network
-// head is the corroborated head across eligible upstreams: the second-highest,
-// not the majority pick and not the raw max.
-func TestServedTip_DisabledByDefault_ReturnsCorroboratedHead(t *testing.T) {
+// The default config (nil servedTip = quorum 2) serves the second-highest head:
+// not MAX and not the majority pick.
+func TestServedTip_DefaultQuorum_ServesSecondHighest(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -368,17 +372,17 @@ func TestServedTip_DisabledByDefault_ReturnsCorroboratedHead(t *testing.T) {
 		{id: "u1", chainID: 123, latestBlock: 100},
 		{id: "u2", chainID: 123, latestBlock: 99},
 		{id: "u3", chainID: 123, latestBlock: 98},
-	}, nil) // nil ServedTip config => feature disabled
+	}, nil)
 
 	served := network.EvmHighestLatestBlockNumber(ctx)
 	assert.Equal(t, int64(99), served,
-		"default mode serves the second-highest head, not MAX(tips)=100")
+		"the default quorum serves the second-highest head, not MAX(tips)=100")
 }
 
 // A lone upstream reporting another chain's height must not define the network
-// head in default mode either: "latest" interpolation, the eth_blockNumber
-// floor, and the cache's known-highest-block all read this accessor.
-func TestServedTip_DisabledByDefault_LoneFarAheadUpstreamDoesNotDefineHead(t *testing.T) {
+// head on the default config: "latest" interpolation, eth_blockNumber and the
+// cache's known-highest-block all read this accessor.
+func TestServedTip_DefaultQuorum_LoneFarAheadUpstreamDoesNotDefineHead(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -394,7 +398,9 @@ func TestServedTip_DisabledByDefault_LoneFarAheadUpstreamDoesNotDefineHead(t *te
 
 	assert.Equal(t, int64(32_610_710), network.EvmHighestLatestBlockNumber(ctx),
 		"the rogue's head is not corroborated")
-	assert.Equal(t, int64(62_381_379), network.evmHeadReference(ctx, false).Max,
+	ceiling, known := network.futureBlockCeiling(ctx)
+	assert.True(t, known)
+	assert.Equal(t, int64(62_381_379), ceiling,
 		"the raw max stays visible for the future-block short-circuit")
 }
 
@@ -451,7 +457,7 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 		"without a guaranteed method, served = dominant cluster min 99 (u3=90 is an outlier)")
 
 	nwB, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
-		EnabledFor:        []string{"latest"},
+		Quorum:            common.ServedTipQuorumMajority,
 		GuaranteedMethods: []string{"trace_block"},
 	})
 	assert.Equal(t, int64(90), nwB.EvmHighestLatestBlockNumber(ctx),
@@ -462,8 +468,8 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 // served `latest`/`finalized` decision: when a request targets a subset of
 // upstreams (by tag here), the tip is computed AMONG that subset so a
 // more-ahead group (e.g. base flashblocks) never defines `latest` for a
-// request pinned to the other group. Selector scoping is stateless — it must
-// not advance/read the network-wide monotonic counter.
+// request pinned to the other group. Selector scoping is stateless — a
+// selector that forms no group creates no lane.
 func TestServedTip_SelectorScoped(t *testing.T) {
 	withSel := func(ctx context.Context, sel string) context.Context {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
@@ -535,15 +541,15 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 			"fast* -> the fast group's own tip")
 		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "!fast*")),
 			"!fast* -> the complement (slow) group's own tip")
-		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"a pattern and its negation create exactly two lanes")
 
 		// Each partition is named by common.LaneName of its matched id set:
 		// {fast-1,fast-2} -> "fast", {slow-1,slow-2} -> "slow". A single vendor
 		// prefix is never a lane (the partition needs >=2 upstreams).
 		lanes := map[string]bool{}
-		nw.servedTipPartitions.Range(func(_, v any) bool {
-			lanes[v.(*servedTipPartition).lane] = true
+		nw.servedTipLanes.Range(func(_, v any) bool {
+			lanes[v.(*servedTipLane).label] = true
 			return true
 		})
 		assert.True(t, lanes["fast"] && lanes["slow"],
@@ -555,7 +561,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		for _, sel := range []string{"fast-*", "family:fast", "slow*", "family:slow", "!fast*"} {
 			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
 		}
-		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"equivalent selectors (same matched set) must dedup, not create new lanes")
 
 		// Non-group selectors NEVER materialize: match-all, single-node,
@@ -563,7 +569,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		for _, sel := range []string{"*", "fast-1", "slow-1", "ghost*", "does-not-exist", "(fast*|slow*)"} {
 			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
 		}
-		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+		assert.Equal(t, int32(2), nw.servedTipLaneCount.Load(),
 			"match-all / single-node / no-match / boolean selectors must not create state (DDoS-safe)")
 	})
 }
@@ -587,14 +593,14 @@ func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 	})
 
 	require.Equal(t, int64(100), network.EvmHighestLatestBlockNumber(ctx))
-	require.Negative(t, network.servedLatestAnchor.age(),
+	require.Negative(t, network.servedTipAll.latest.age(),
 		"first observation alone must not stamp the watchdog")
 
 	for _, u := range ups {
 		u.EvmStatePoller().SuggestLatestBlock(105)
 	}
 	require.Equal(t, int64(105), network.EvmHighestLatestBlockNumber(ctx))
-	age := network.servedLatestAnchor.age()
+	age := network.servedTipAll.latest.age()
 	require.GreaterOrEqual(t, age, time.Duration(0),
 		"watchdog must stamp once the served value moves")
 	require.Less(t, age, 5*time.Second)
@@ -677,7 +683,7 @@ func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
 // A halted chain that resumes with a burst (sequencer outage ending, L2 batch
 // landing) must be served the moment a majority reports the jump. The old
 // velocity gate had to be tuned (slack/buffer) to permit exactly this, and a
-// mis-tuned gate freezing on the jump is what wedged prod; statelessness has
+// mis-tuned gate freezing on the jump is the frozen-tip regression; statelessness has
 // no window to outrun.
 func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 	util.ResetGock()
@@ -705,13 +711,13 @@ func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
 		"the post-halt burst must be served on the first pick that sees it")
 }
 
-// ─── Availability bounds are not head observations (2026-08 celo) ────────────
+// ─── Availability bounds are not head observations ──────────────────────────
 
 // A blockAvailability.upper bound is a SERVING-RANGE declaration, not a view of
 // the chain head, so it must not appear on the ballot while any live head does.
 // Two upstreams pinned at `upper.exactBlock` (their pollers sitting at the live
 // tip) used to outvote the live heads as soon as the eligible set shrank —
-// exactly how celo served September-2023 state on 2026-08-11.
+// pulling "latest" down to a block years in the past.
 func TestServedTip_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -776,7 +782,7 @@ func TestServedTip_LatestBlockMinusUpstreamsStillVote(t *testing.T) {
 		served, canServe, len(ups))
 }
 
-// The guaranteed-method floor was the second door onto the incident value: its
+// The guaranteed-method floor was the second door onto the capped value: its
 // ballot took raw effective heads and ran AFTER the guard, so a static cap that
 // the network ballot had just refused came back as a "floor" and was served.
 // The floor now builds its per-method ballot with the same rule.
@@ -788,23 +794,23 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	const legacyCap = int64(21_615_999)
+	const legacyCap = int64(50_000)
 	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
-		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
-		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
-		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
-		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+		{id: "leader", chainID: 123, latestBlock: 100_000},
+		{id: "peer-a", chainID: 123, latestBlock: 99_996},
+		{id: "peer-b", chainID: 123, latestBlock: 99_968},
+		{id: "legacy-1", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
+		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
 	}, &common.EvmServedTipConfig{
-		EnabledFor:        []string{"latest"},
+		Quorum:            common.ServedTipQuorumMajority,
 		GuaranteedMethods: []string{"eth_getLogs"},
 	})
 
 	require.Greater(t, network.EvmHighestLatestBlockNumber(ctx), legacyCap,
 		"precondition: with the full fleet eligible the tip is a live head")
 
-	// The incident ballot: one live upstream lag-excluded.
-	network.PinUpstreamOrderForTest("celo-mainnet-nirvana", "quicknode-celo", "celo-mainnet-nirvana-legacy", "quicknode-celo-legacy")
+	// The failing ballot: one live upstream lag-excluded.
+	network.PinUpstreamOrderForTest("peer-a", "peer-b", "legacy-1", "legacy-2")
 
 	assert.Greater(t, network.EvmHighestLatestBlockNumber(ctx), legacyCap,
 		"the guaranteed-method floor must not re-admit the serving range the ballot filter removed")
@@ -814,10 +820,10 @@ func TestServedTip_GuaranteedMethodFloorCannotReadmitTheCap(t *testing.T) {
 // ballot (no live head → it holds its last corroborated pick), and the
 // guaranteed-method floor — which runs AFTER the guard — then recomputes that
 // same collapsed instant and drags the served value back to the cap. Each fix
-// was correct alone; together they still served 21,615,999.
+// was correct alone; together they still served the cap.
 //
 // The live upstreams here go SYNCING rather than being un-pinned: that is the
-// production shape (lag-excluded, cordoned, mid-restart upstreams stay
+// realistic shape (lag-excluded, cordoned, mid-restart upstreams stay
 // REGISTERED), and registration is what tells the floor that a cap-only ballot
 // is transient rather than the operator's configuration.
 func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) {
@@ -829,15 +835,15 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 	defer cancel()
 	advance := pinServedTipClock(t)
 
-	const legacyCap = int64(21_615_999)
+	const legacyCap = int64(50_000)
 	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
-		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
-		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
-		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
-		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
+		{id: "leader", chainID: 123, latestBlock: 100_000},
+		{id: "peer-a", chainID: 123, latestBlock: 99_996},
+		{id: "peer-b", chainID: 123, latestBlock: 99_968},
+		{id: "legacy-1", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
+		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
 	}, &common.EvmServedTipConfig{
-		EnabledFor:        []string{"latest"},
+		Quorum:            common.ServedTipQuorumMajority,
 		GuaranteedMethods: []string{"eth_getLogs"},
 	})
 
@@ -845,7 +851,7 @@ func TestServedTip_GuaranteedMethodFloor_DoesNotUndoTheGuardsHold(t *testing.T) 
 	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
 
 	// Every live upstream drops out of the ballot at once; only the two
-	// 2023-capped ones remain servable, and they support eth_getLogs.
+	// capped ones remain servable, and they support eth_getLogs.
 	for _, u := range ups[:3] {
 		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 	}
@@ -878,7 +884,7 @@ func TestServedTip_GuaranteedMethodFloor_CapsStillSetTheFloorWhenAloneOnAMethod(
 		{id: "archive-1", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
 		{id: "archive-2", chainID: 123, latestBlock: 10_000, upperExactBlock: 5_000},
 	}, &common.EvmServedTipConfig{
-		EnabledFor:        []string{"latest"},
+		Quorum:            common.ServedTipQuorumMajority,
 		GuaranteedMethods: []string{"trace_block"},
 	})
 
@@ -977,7 +983,7 @@ func TestServedTip_AllInputsFiltered_FailsOpenToZero(t *testing.T) {
 // servedTipRegressionCount reads the guard's counter for a network/axis/outcome.
 func servedTipRegressionCount(n *Network, axis, outcome string) float64 {
 	return promUtil.ToFloat64(telemetry.MetricNetworkServedTipRegressionTotal.
-		WithLabelValues(n.projectId, n.Label(), servedTipLaneAll, axis, outcome))
+		WithLabelValues(n.projectId, n.Label(), "all", axis, outcome))
 }
 
 // pinServedTipClock freezes the guard's clock for the duration of a test and
@@ -1003,8 +1009,8 @@ func pinServedTipClock(t *testing.T) func(time.Duration) {
 // A pick that drops more than the tolerance below the freshest live head is a
 // poisoned ballot, not a chain that moved: the last corroborated pick is served
 // instead. Here the two upstreams stuck at block 5 become the majority the
-// moment the healthy pair leaves the eligible set — the same shape as celo's
-// bound-capped pair, reached without any bounds at all (which is why the guard
+// moment the healthy pair leaves the eligible set — the same shape as two
+// bound-capped upstreams, reached without any bounds at all (which is why the guard
 // exists independently of the bounds filter).
 func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
 	util.ResetGock()
@@ -1040,8 +1046,8 @@ func TestServedTip_RegressionGuard_HoldsLastCorroboratedPick(t *testing.T) {
 
 // The guard is a bounded pause, never a wedge: once the regression outlasts
 // servedTipRegressionTTL, reality is the better explanation and the pick is
-// served as computed. This is the property whose absence (a clamp that could
-// hold forever) froze the fleet in 2026-06.
+// served as computed. Without this property a clamp could hold forever and
+// freeze the tip.
 func TestServedTip_RegressionGuard_FailsOpenAfterTTL(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1101,7 +1107,7 @@ func TestServedTip_RegressionGuard_SmallReorgPassesThrough(t *testing.T) {
 		"a regression inside the tolerance is reality and must pass through")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
 		"a tolerated regression is not a guard trip")
-	assert.Equal(t, int64(9_500), network.servedLatestAnchor.lastGoodValue.Load(),
+	assert.Equal(t, int64(9_500), network.servedTipAll.latest.lastGoodValue.Load(),
 		"the tolerated pick becomes the new corroborated value")
 }
 
@@ -1130,11 +1136,11 @@ func TestServedTip_RegressionGuard_SkippedWithoutLiveHead(t *testing.T) {
 		"no live head → no reference → the guard must not interfere")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"),
 		"the guard cannot trip without a live head to compare against")
-	assert.Zero(t, network.servedLatestAnchor.lastGoodValue.Load(),
+	assert.Zero(t, network.servedTipAll.latest.lastGoodValue.Load(),
 		"an uncorroborated cap must never be remembered as a good pick")
 }
 
-// THE remaining door onto the celo incident value, and the reason the guard no
+// THE remaining door onto the capped value, and the reason the guard no
 // longer stands down without a live head: when EVERY live upstream leaves the
 // eligible set while the bound-capped ones stay, the ballot legitimately falls
 // back to the caps — and a guard that requires a live reference is absent on the
@@ -1150,27 +1156,27 @@ func TestServedTip_RegressionGuard_HoldsWhenEveryLiveUpstreamLeaves(t *testing.T
 	defer cancel()
 	advance := pinServedTipClock(t)
 
-	const legacyCap = int64(21_615_999)
+	const legacyCap = int64(50_000)
 	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
-		{id: "prism-celo", chainID: 123, latestBlock: 74_550_978},
-		{id: "celo-mainnet-nirvana", chainID: 123, latestBlock: 74_550_974},
-		{id: "quicknode-celo", chainID: 123, latestBlock: 74_550_946},
-		{id: "celo-mainnet-nirvana-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
-		{id: "quicknode-celo-legacy", chainID: 123, latestBlock: 74_550_978, upperExactBlock: legacyCap},
-	}, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
+		{id: "leader", chainID: 123, latestBlock: 100_000},
+		{id: "peer-a", chainID: 123, latestBlock: 99_996},
+		{id: "peer-b", chainID: 123, latestBlock: 99_968},
+		{id: "legacy-1", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
+		{id: "legacy-2", chainID: 123, latestBlock: 100_000, upperExactBlock: legacyCap},
+	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
 
 	healthy := network.EvmHighestLatestBlockNumber(ctx)
 	require.Greater(t, healthy, legacyCap, "precondition: the live heads carry the ballot")
 	beforeHeld := servedTipRegressionCount(network, "latest", "held")
 	beforeOpen := servedTipRegressionCount(network, "latest", "failed_open")
 
-	// All three live upstreams drop out at once (a vendor incident, a policy
-	// exclusion sweep): only the two 2023-capped ones remain eligible.
-	network.PinUpstreamOrderForTest("celo-mainnet-nirvana-legacy", "quicknode-celo-legacy")
+	// All three live upstreams drop out at once (a provider outage, a policy
+	// exclusion sweep): only the two capped ones remain eligible.
+	network.PinUpstreamOrderForTest("legacy-1", "legacy-2")
 
 	assert.Equal(t, healthy, network.EvmHighestLatestBlockNumber(ctx),
 		"with no live head left the guard must hold its last corroborated pick, "+
-			"not hand `latest` to a September-2023 serving range")
+			"not hand `latest` to a historical serving range")
 	assert.Equal(t, beforeHeld+1, servedTipRegressionCount(network, "latest", "held"))
 
 	advance(servedTipRegressionTTL + time.Second)
@@ -1204,7 +1210,7 @@ func TestServedTip_RegressionGuard_SingleRogueUpstreamDoesNotDisarmIt(t *testing
 
 	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx),
 		"the majority pick ignores the rogue, as it always did")
-	require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load(),
+	require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load(),
 		"and the guard must be ARMED by that honest pick, not silently disabled by the rogue")
 
 	// Armed means it still protects: lose the honest majority to a stuck pair.
@@ -1264,7 +1270,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 			eligible(id, true)
 		}
 		require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
-		require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load())
+		require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load())
 
 		// Both rogues return, two honest upstreams drop out: the ballot is
 		// [100M, 100M, 10000] and the majority pick IS the fantasy.
@@ -1275,7 +1281,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		advance(time.Second)
 		require.Equal(t, int64(100_000_000), network.EvmHighestLatestBlockNumber(ctx),
 			"precondition: the majority of this eligible set really is far-future")
-		assert.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load(),
+		assert.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load(),
 			"an uncorroborated leap must never become the value the guard holds the network to")
 
 		eligible("h2", true)
@@ -1296,7 +1302,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, eligible, advance := fantasyFleet(t, ctx)
-		anchor := &network.servedLatestAnchor
+		anchor := &network.servedTipAll.latest
 
 		// 1. Armed at the honest head.
 		for _, id := range []string{"h1", "h2", "h3"} {
@@ -1355,7 +1361,7 @@ func TestServedTip_RegressionGuard_DoesNotCommitAFantasyPick(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network, eligible, advance := fantasyFleet(t, ctx)
-		anchor := &network.servedLatestAnchor
+		anchor := &network.servedTipAll.latest
 
 		// The very first evaluation this process ever makes is majority-rogue.
 		eligible("rogue-1", true)
@@ -1404,8 +1410,8 @@ func TestServedTip_RegressionGuard_AHoldNeverLowersTheTip(t *testing.T) {
 
 	// The ballot's own corroborated head is 10_000, so a pick of 5_000 trips the
 	// guard — but the memory (100) is far below the pick.
-	served := network.guardServedTipRegression("latest", "", &anchor, 5_000,
-		servedTipReference{Corroborated: 10_000, Max: 10_000})
+	served := network.guardServedTipRegression("latest", "all", &anchor,
+		common.ServedTipPick{Tip: 5_000, Freshest: 10_000, Max: 10_000}, true)
 
 	assert.GreaterOrEqual(t, served, int64(5_000),
 		"a hold must never serve a block LOWER than the pick it was suppressing")
@@ -1431,12 +1437,12 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 	})
 
 	var anchor servedTipAnchor
-	ref := servedTipReference{Corroborated: 10_000, Max: 10_000}
-	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "", &anchor, 10_000, ref),
+	ballot := common.ServedTipPick{Tip: 10_000, Freshest: 10_000, Max: 10_000}
+	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "all", &anchor, ballot, true),
 		"arm the guard first; that evaluation is the one allowed to allocate")
 
 	allocs := testing.AllocsPerRun(200, func() {
-		network.guardServedTipRegression("latest", "", &anchor, 10_000, ref)
+		network.guardServedTipRegression("latest", "all", &anchor, ballot, true)
 	})
 	assert.Zero(t, allocs, "the throttled healthy path must not allocate at all")
 
@@ -1444,11 +1450,11 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 	// refreshed again.
 	advance(2 * time.Second)
 	before := anchor.lastGoodAt.Load()
-	network.guardServedTipRegression("latest", "", &anchor, 10_000, ref)
+	network.guardServedTipRegression("latest", "all", &anchor, ballot, true)
 	assert.NotEqual(t, before, anchor.lastGoodAt.Load(), "the TTL clock still advances")
 }
 
-// The off switch, symmetric with trajectoryWindow: 0.
+// The off switch.
 func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1464,7 +1470,7 @@ func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
 		{id: "live-3", chainID: 123, latestBlock: 10_000},
 		{id: "stuck-1", chainID: 123, latestBlock: 5},
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
-	}, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}, MaxRegressionBlocks: -1})
+	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority, MaxRegressionBlocks: -1})
 
 	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
 	before := servedTipRegressionCount(network, "latest", "held")
@@ -1473,7 +1479,7 @@ func TestServedTip_RegressionGuard_DisabledByNegativeOne(t *testing.T) {
 	assert.Equal(t, int64(5), network.EvmHighestLatestBlockNumber(ctx),
 		"maxRegressionBlocks: -1 means the operator gets the raw pick, poisoned or not")
 	assert.Equal(t, before, servedTipRegressionCount(network, "latest", "held"))
-	assert.Zero(t, network.servedLatestAnchor.lastGoodValue.Load(),
+	assert.Zero(t, network.servedTipAll.latest.lastGoodValue.Load(),
 		"a disabled guard records nothing either")
 }
 
@@ -1502,60 +1508,8 @@ func TestServedTip_LagGaugeNeverReadsNegative(t *testing.T) {
 		"precondition: the guard is holding above the ballot's freshest corroborated view")
 
 	lag := promUtil.ToFloat64(telemetry.MetricNetworkServedTipLagBlocks.
-		WithLabelValues(network.projectId, network.Label(), servedTipLaneAll, "latest"))
+		WithLabelValues(network.projectId, network.Label(), "all", "latest"))
 	assert.GreaterOrEqual(t, lag, float64(0), "the deliberate-lag gauge must never read negative")
-}
-
-// ─── Long-term trajectory referee ────────────────────────────────────────────
-//
-// Every mechanism above is a snapshot of one instant, and a majority stall
-// defeats all of them at once: when N upstreams freeze while staying eligible,
-// the majority IS the stale group and the 2 upstreams holding the real head are
-// outvoted. These tests pin the referee that breaks that tie from the network's
-// own 10-minute head trajectory — and, just as importantly, pin how narrowly it
-// is allowed to act.
-
-const (
-	// servedTipSampleInterval mirrors the tracker's unexported sample throttle
-	// (architecture/evm: tipSampleInterval) — the cadence a warm-up must tick
-	// at for the buffer to fill.
-	servedTipSampleInterval = 5 * time.Second
-
-	// servedTipMaxSampleGap mirrors architecture/evm's tipMaxSampleGap.
-	servedTipMaxSampleGap = time.Minute
-
-	// The warm-up track: 100 blocks per 5s sample = 20 blocks/s, a fast-L2
-	// cadence that makes one stalled sample worth 100 blocks and keeps the
-	// scenarios legible. 130 samples ≈ 10m45s, just past the default window.
-	trajectoryStartHead       = int64(1_000_000)
-	trajectoryBlocksPerSample = int64(100)
-	trajectoryWarmSamples     = 130
-)
-
-// servedTipTrajectoryCount reads the referee's counter for a network/axis/outcome.
-func servedTipTrajectoryCount(n *Network, axis, outcome string) float64 {
-	return promUtil.ToFloat64(telemetry.MetricNetworkServedTipTrajectoryTotal.
-		WithLabelValues(n.projectId, n.Label(), servedTipLaneAll, axis, outcome))
-}
-
-// servedTipIsOverriding reports whether the network-wide latest lane is
-// CURRENTLY being overridden by the referee — the state the transition log and
-// counter are driven from.
-func servedTipIsOverriding(n *Network) bool {
-	return n.servedLatestAnchor.refereeState.Load() == servedTipRefereeOverriding
-}
-
-// setupTrajectoryNetwork builds a `count`-upstream network with the pinned
-// served-tip clock, and returns the clock's advance function.
-func setupTrajectoryNetwork(t *testing.T, ctx context.Context, count int, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream, func(time.Duration)) {
-	t.Helper()
-	advance := pinServedTipClock(t)
-	fixtures := make([]servedTipFixture, count)
-	for i := range fixtures {
-		fixtures[i] = servedTipFixture{id: "u" + strconv.Itoa(i+1), chainID: 123, latestBlock: trajectoryStartHead}
-	}
-	network, ups := setupServedTipNetworkWith(t, ctx, fixtures, stCfg)
-	return network, ups, advance
 }
 
 // suggestServedTipHead moves an upstream's poller head up to `head` in steps no
@@ -1580,403 +1534,747 @@ func suggestServedTipHead(u *upstream.Upstream, head int64) {
 	}
 }
 
-// warmServedTipTrajectory drives `samples` real evaluations one sample interval
-// apart with every upstream advancing together, so the network's tracker sees a
-// clean linear head track through the ordinary request path. Returns the head
-// every upstream ends on (the clock sits on the last sample).
-func warmServedTipTrajectory(t *testing.T, ctx context.Context, network *Network, ups []*upstream.Upstream, advance func(time.Duration), samples int) int64 {
-	t.Helper()
-	head := trajectoryStartHead
-	for i := 0; i < samples; i++ {
-		for _, u := range ups {
-			u.EvmStatePoller().SuggestLatestBlock(head)
+// ─── Stalled heads are benched ───────────────────────────────────────────────
+//
+// The erpc#1253 shape end to end, on the default config, through
+// real pollers, the real health tracker and the real Network: two upstreams,
+// one stops advancing. With quorum 2 the stalled one would hold
+// "latest" (and eth_call interpolation and eth_blockNumber) at its height for
+// the whole outage, and as the lag reference it would read lag 0 so routing
+// never drops it. The tracker benches it once it has sat below a peer that kept
+// moving for its stall window.
+func TestServedTip_StalledHeadIsBenched(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// stallAfter mirrors the tracker's stall window: three poll periods, never
+	// under 30s. A poll period is the longer of the poll interval and the
+	// debounce; an unset debounce follows the network block time, which stays 0
+	// in subtests that report no block timestamps.
+	stallAfter := func(u *upstream.Upstream, blockTime time.Duration) time.Duration {
+		cfg := u.Config().Evm
+		debounce := blockTime
+		if d := cfg.StatePollerDebounce.Duration(); d > 0 {
+			debounce = d
 		}
-		require.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx),
-			"warm-up sample %d: an agreeing fleet must serve its agreed head", i)
-		if i < samples-1 {
-			advance(servedTipSampleInterval)
-			head += trajectoryBlocksPerSample
+		return max(30*time.Second, 3*max(cfg.StatePollerInterval.Duration(), debounce))
+	}
+	// report mirrors one production poll: the tracker gets the block and its
+	// timestamp first, then the poller's counter (whose OnValue reports ts 0
+	// and changes nothing). The counter moves one block at a time so no step
+	// is a major head move deferred to an asynchronous chain-identity check.
+	report := func(tr *health.Tracker, u *upstream.Upstream, head, ts int64) {
+		tr.SetLatestBlockNumber(u, head, ts)
+		for b := u.EvmStatePoller().LatestBlock() + 1; b <= head; b++ {
+			u.EvmStatePoller().SuggestLatestBlock(b)
 		}
 	}
-	return head
-}
-
-// stallMajority freezes every upstream except the first `fresh` of them, which
-// keep the warm-up track for `samples` more evaluations. Returns the head the
-// fresh group ends on and the last served value.
-func stallMajority(t *testing.T, ctx context.Context, network *Network, ups []*upstream.Upstream, advance func(time.Duration), head int64, fresh int, samples int) (int64, int64) {
-	t.Helper()
-	served := int64(0)
-	for i := 0; i < samples; i++ {
-		advance(servedTipSampleInterval)
-		head += trajectoryBlocksPerSample
-		for _, u := range ups[:fresh] {
-			u.EvmStatePoller().SuggestLatestBlock(head)
-		}
-		served = network.EvmHighestLatestBlockNumber(ctx)
+	lagOf := func(n *Network, u *upstream.Upstream) int64 {
+		return n.metricsTracker.GetUpstreamMethodMetrics(u, "*", common.DataFinalityStateAll).BlockHeadLag.Load()
 	}
-	return head, served
-}
+	interpolatedLatest := func(n *Network) int64 {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`))
+		req.SetNetwork(n)
+		jrq, err := req.JsonRpcRequest()
+		require.NoError(t, err)
+		evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+		blk, ok := jrq.Params[1].(string)
+		require.True(t, ok, "latest must be interpolated to a hex block, got %v", jrq.Params[1])
+		v, err := common.HexToInt64(blk)
+		require.NoError(t, err)
+		return v
+	}
+	blockNumber := func(n *Network) int64 {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		req.SetNetwork(n)
+		req.SetDirectives(&common.RequestDirectives{EnforceHighestBlock: true})
+		resp, err := n.Forward(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, resp.Upstream(), "eth_blockNumber must be answered from the served head without dispatching")
+		_, bn, err := evm.ExtractBlockReferenceFromResponse(ctx, resp)
+		require.NoError(t, err)
+		return bn
+	}
+	// served asserts every reader of "latest" agrees on `want`.
+	served := func(t *testing.T, n *Network, want int64, msg string) {
+		t.Helper()
+		require.Equal(t, want, n.EvmHighestLatestBlockNumber(ctx), "latest: %s", msg)
+		require.Equal(t, want, interpolatedLatest(n), "eth_call latest interpolation: %s", msg)
+		require.Equal(t, want, blockNumber(n), "eth_blockNumber: %s", msg)
+	}
 
-// THE headline case, and the requirement the referee exists for: in an N-vs-2
-// split where the 2 sit at the higher block, use the 2. Three upstreams freeze
-// inside the lag-exclusion threshold (a shared-counter freeze, a stuck vendor
-// region) while two keep the chain's head; the strict majority is now the stale
-// group, so the plain majority pick — and every instantaneous rule — serves a
-// block the chain left minutes ago.
-func TestServedTip_TrajectoryReferee_StalledMajorityLosesToFreshMinority(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
+	t.Run("stall, bench, replay, rejoin", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 1_000},
+			{id: "stalled", chainID: 123, latestBlock: 1_000},
+		}, nil)
+		live, stalled := ups[0], ups[1]
+		tr := network.metricsTracker
+		finalizedOf := func() int64 { return network.EvmHighestFinalizedBlockNumber(ctx) }
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		// Both report finalized heads; stalled's stays frozen with its head.
+		const stalledFinalized = int64(990)
+		setServedTipFinalized(t, live, stalledFinalized)
+		setServedTipFinalized(t, stalled, stalledFinalized)
 
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
+		// Healthy: both move together.
+		head := int64(1_000)
+		for range 5 {
+			advance(2 * time.Second)
+			head += 2
+			live.EvmStatePoller().SuggestLatestBlock(head)
+			stalled.EvmStatePoller().SuggestLatestBlock(head)
+		}
+		served(t, network, head, "a healthy pair")
+		stalledAt := head
 
-	beforeOverride := servedTipTrajectoryCount(network, "latest", "override")
-	beforeHeld := servedTipRegressionCount(network, "latest", "held")
+		// stalled stops advancing; live keeps moving, finalized included.
+		// Inside the stall window nothing changes: quorum 2 still serves the
+		// lower heads on both axes.
+		window := stallAfter(stalled, 0)
+		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+			advance(2 * time.Second)
+			head += 2
+			live.EvmStatePoller().SuggestLatestBlock(head)
+			setServedTipFinalized(t, live, head-10)
+		}
+		require.False(t, tr.IsHeadBenched(stalled), "a peer below for less than its stall window is not benched")
+		served(t, network, stalledAt, "inside the stall window")
+		require.Equal(t, stalledFinalized, finalizedOf(), "finalized: quorum 2 holds the stalled one's finalized inside the stall window")
+		require.Zero(t, lagOf(network, stalled), "inside the stall window the lower head is still the lag reference")
 
-	fresh, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
+		// Past the stall window, the next head live reports benches stalled.
+		advance(4 * time.Second)
+		head += 2
+		live.EvmStatePoller().SuggestLatestBlock(head)
+		setServedTipFinalized(t, live, head-10)
+		require.True(t, tr.IsHeadBenched(stalled), "a head below a moving peer for its stall window is benched")
+		require.False(t, tr.IsHeadBenched(live))
+		served(t, network, head, "a benched head leaves the ballot")
+		require.Equal(t, head-10, finalizedOf(), "finalized: a benched head leaves the finalized ballot too")
+		require.Equal(t, head-stalledAt, lagOf(network, stalled),
+			"the benched head is measured against the live one, so blockNumberLagAbove can route around it")
+		require.Zero(t, lagOf(network, live))
 
-	// What the plain majority pick WOULD be over the very same ballot: the
-	// frozen head, held by 3 of the 5 upstreams.
-	majority := common.PickServedTip([]common.ServedTipInput{
-		{UpstreamID: "u1", BlockNumber: fresh},
-		{UpstreamID: "u2", BlockNumber: fresh},
-		{UpstreamID: "u3", BlockNumber: frozen},
-		{UpstreamID: "u4", BlockNumber: frozen},
-		{UpstreamID: "u5", BlockNumber: frozen},
-	}).Tip
-	require.Equal(t, frozen, majority,
-		"precondition: the stalled group holds the majority, so the plain pick is the stale head")
+		// stalled comes back and replays: moving, but behind. It stays benched
+		// and "latest" never drops back to it.
+		last := head
+		for replay := stalledAt; replay < head-10; replay += 20 {
+			advance(time.Second)
+			head++
+			live.EvmStatePoller().SuggestLatestBlock(head)
+			stalled.EvmStatePoller().SuggestLatestBlock(replay)
+			require.True(t, tr.IsHeadBenched(stalled), "a replaying head stays benched until it catches up (at %d, live %d)", replay, head)
+			got := network.EvmHighestLatestBlockNumber(ctx)
+			require.GreaterOrEqual(t, got, last, "latest must never regress while a benched head replays")
+			last = got
+		}
+		served(t, network, head, "while the benched head replays")
 
-	assert.Equal(t, fresh, served,
-		"the corroborated pair that is where the chain should be by now must define the tip; "+
-			"the plain majority would have served %d, %d blocks behind", majority, fresh-majority)
-	assert.Greater(t, servedTipTrajectoryCount(network, "latest", "override"), beforeOverride,
-		"an override is an intervention and must be counted")
-	assert.Equal(t, beforeHeld, servedTipRegressionCount(network, "latest", "held"),
-		"raising the tip to the live pair is not a regression; the guard must stay out of it")
-}
+		// stalled catches up on both axes: it rejoins and its lag is 0 again.
+		advance(time.Second)
+		stalled.EvmStatePoller().SuggestLatestBlock(head)
+		require.False(t, tr.IsHeadBenched(stalled), "a benched head that caught up rejoins")
+		require.Zero(t, lagOf(network, stalled))
+		served(t, network, head, "after the rejoin")
+		setServedTipFinalized(t, live, head-10)
+		setServedTipFinalized(t, stalled, head-10)
+		require.Equal(t, head-10, finalizedOf(), "finalized after the rejoin")
+	})
 
-// A routine transient: two of four upstreams fall behind for 15 seconds (a
-// poller hiccup, a vendor blip) and catch up. Nothing is wrong with the fleet,
-// and the value every upstream can serve is the lagged head — an intervention
-// here would advertise a block only half the fleet has, for minutes. This shape
-// is why corroboration has to be earned over time rather than in one instant.
-func TestServedTip_TrajectoryReferee_TransientHalfFleetLagIsNotAnOverride(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 4, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-	head := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
-	lagged := head
-
-	before := servedTipTrajectoryCount(network, "latest", "override")
-
-	// Three ticks in which only u1/u2 advance: u3/u4 end 300 blocks (15s of this
-	// 20 blocks/s chain) behind — past the 200-block cluster width, so the fleet
-	// reads as two groups of two.
-	fresh, served := stallMajority(t, ctx, network, ups, advance, head, 2, 3)
-
-	assert.Equal(t, lagged, served,
-		"a 15-second divergence must keep serving the value all four upstreams have (fresh pair was at %d)", fresh)
-	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"),
-		"and must not be counted as an intervention")
-}
-
-// A PERMANENTLY split fleet (the flashblocks shape: two upstreams always ~300
-// blocks ahead, both halves advancing at the same velocity) is a normal
-// topology, not a stall. The trajectory is fitted to the MEDIAN of the live
-// heads, so no permanently-offset group is ever closer to it than the median's
-// own — the referee has nothing to correct and stays silent forever.
-func TestServedTip_TrajectoryReferee_PermanentlySplitFleetIsSilent(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 4, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-	before := servedTipTrajectoryCount(network, "latest", "override")
-
-	head := trajectoryStartHead
-	for i := 0; i < trajectoryWarmSamples+40; i++ {
-		for j, u := range ups {
-			target := head
-			if j < 2 {
-				target = head + 300 // the always-ahead pair
+	t.Run("chain halt benches nobody", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "a", chainID: 123, latestBlock: 2_000},
+			{id: "b", chainID: 123, latestBlock: 2_000},
+		}, nil)
+		tr := network.metricsTracker
+		// Every poll returns the same head, with the same old block timestamp,
+		// for ten minutes.
+		haltedTs := servedTipClock().Add(-10 * time.Minute).Unix()
+		for range 60 {
+			advance(10 * time.Second)
+			for _, u := range ups {
+				report(tr, u, 2_000, haltedTs)
 			}
-			suggestServedTipHead(u, target)
-		}
-		network.EvmHighestLatestBlockNumber(ctx)
-		advance(servedTipSampleInterval)
-		head += trajectoryBlocksPerSample
-	}
-
-	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"),
-		"a permanently split fleet must never trigger an override")
-}
-
-// The referee's intervention EXPIRES on its own. Once the group it elected stops
-// advancing, that group can no longer have produced the chain progress the fit
-// describes, and the override ends without any operator action — the property
-// that makes an upward-only referee unable to pin a tip the way the 2026-06
-// clamp did.
-func TestServedTip_TrajectoryReferee_OverrideSelfExpires(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
-	fresh, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
-	require.Equal(t, fresh, served, "precondition: the referee is holding the tip on the corroborated pair")
-
-	require.True(t, servedTipIsOverriding(network), "precondition: the referee reports itself as overriding")
-
-	// Now the whole chain stops: nobody advances, including the elected pair.
-	for i := 0; i < 240; i++ {
-		advance(servedTipSampleInterval)
-		network.EvmHighestLatestBlockNumber(ctx)
-		if !servedTipIsOverriding(network) {
-			t.Logf("override expired after %v of a fully halted chain", time.Duration(i+1)*servedTipSampleInterval)
-			return
-		}
-	}
-	t.Fatalf("the override never expired over %v of a halted chain", 240*servedTipSampleInterval)
-}
-
-// The inverse split, and the reason a group is elected by its DISTANCE to the
-// trajectory rather than by its freshness: two upstreams running far past where
-// the chain can possibly be (wrong chain, garbage endpoint) must lose to the
-// healthy group, however corroborated they are with each other.
-func TestServedTip_TrajectoryReferee_RunawayMinorityLoses(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// maxRegressionBlocks is widened so the branch's regression guard (which
-	// measures against the RAW max live head, and would hold the tip the moment
-	// any upstream runs 1024 blocks ahead) stays out of the way: what is under
-	// test here is the referee's own election.
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{
-		EnabledFor:          []string{"latest"},
-		MaxRegressionBlocks: 100_000,
-	})
-	head := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
-
-	beforeOverride := servedTipTrajectoryCount(network, "latest", "override")
-	beforeFallback := servedTipTrajectoryCount(network, "latest", "fallback")
-
-	// Two upstreams run 20k blocks (≈16 minutes of this chain) ahead; the other
-	// three stay exactly on the track.
-	advance(servedTipSampleInterval)
-	head += trajectoryBlocksPerSample
-	for _, u := range ups {
-		suggestServedTipHead(u, head)
-	}
-	for _, u := range ups[:2] {
-		suggestServedTipHead(u, head+20_000)
-	}
-
-	assert.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx),
-		"the runaway pair is nowhere near the trajectory; the healthy majority keeps the tip")
-	assert.Equal(t, beforeOverride, servedTipTrajectoryCount(network, "latest", "override"),
-		"no override happened")
-	assert.Equal(t, beforeFallback, servedTipTrajectoryCount(network, "latest", "fallback"),
-		"the healthy group is elected outright, so this is not even a near miss")
-}
-
-// Warm-up inertness: until the tracker has a window's worth of history the
-// referee is a no-op and the network behaves exactly as it does without it.
-// This is also the boot behaviour of every pod after every deploy.
-func TestServedTip_TrajectoryReferee_ColdProcessIsInert(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-	// Half a window: enough samples for a fit, nowhere near enough span.
-	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples/2)
-
-	before := servedTipTrajectoryCount(network, "latest", "override")
-	_, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
-
-	assert.Equal(t, frozen, served,
-		"a cold tracker must leave the plain majority pick untouched")
-	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"))
-}
-
-// Staleness: the fit describes the present only if the track is continuous. A
-// gap larger than the tracker's tolerance is exactly where a halt or a burst
-// hides, so extrapolating across one is guessing — and the referee stands down.
-// The paired sub-tests differ ONLY in the size of that gap.
-func TestServedTip_TrajectoryReferee_StaleTrackFailsOpen(t *testing.T) {
-	// After `gap` of silence the fresh pair returns exactly on the trajectory
-	// (20 blocks/s) and then HOLDS it for longer than the dwell — i.e. the
-	// referee's evidence is otherwise perfect, and the only difference between
-	// the sub-tests is whether the hole in the track is inside the tolerance.
-	run := func(t *testing.T, gap time.Duration) (served, frozen, fresh int64, overrides float64) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-		frozen = warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
-		before := servedTipTrajectoryCount(network, "latest", "override")
-
-		advance(gap)
-		fresh = frozen + trajectoryBlocksPerSample*int64(gap/servedTipSampleInterval)
-		for _, u := range ups[:2] {
-			suggestServedTipHead(u, fresh)
-		}
-		served = network.EvmHighestLatestBlockNumber(ctx)
-
-		// Eight more samples (40s) of the pair tracking the chain: enough dwell
-		// for a group that is genuinely where the head should be.
-		for i := 0; i < 8; i++ {
-			advance(servedTipSampleInterval)
-			fresh += trajectoryBlocksPerSample
-			for _, u := range ups[:2] {
-				suggestServedTipHead(u, fresh)
-			}
-			served = network.EvmHighestLatestBlockNumber(ctx)
-		}
-		return served, frozen, fresh, servedTipTrajectoryCount(network, "latest", "override") - before
-	}
-
-	t.Run("ContinuousTrackOverrides", func(t *testing.T) {
-		served, _, fresh, overrides := run(t, servedTipMaxSampleGap-5*time.Second)
-		assert.Equal(t, fresh, served, "an unbroken track lets the referee act")
-		assert.Positive(t, overrides)
-	})
-
-	t.Run("GappedTrackFailsOpen", func(t *testing.T) {
-		served, frozen, _, overrides := run(t, servedTipMaxSampleGap+time.Second)
-		assert.Equal(t, frozen, served,
-			"one sample past the gap tolerance the same evidence must be refused")
-		assert.Zero(t, overrides)
-	})
-}
-
-// A chain that pauses and bursts (an L2 landing batches) has a large residual
-// spread of its own, which widens the referee's tolerance automatically — and a
-// legitimate fleet-wide jump keeps every head in ONE cluster, where the referee
-// has nothing to choose between. Neither may produce a false override.
-func TestServedTip_TrajectoryReferee_PauseThenBurstDoesNotFalsePositive(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-
-	// Same average velocity as the linear warm-up, delivered in batches: nine
-	// samples of nothing, then 1000 blocks at once.
-	head := trajectoryStartHead
-	for i := 0; i < trajectoryWarmSamples; i++ {
-		if i%10 == 9 {
-			head += trajectoryBlocksPerSample * 10
 		}
 		for _, u := range ups {
+			require.False(t, tr.IsHeadBenched(u), "%s: nobody moved, so nobody is below a moving peer", u.Id())
+			require.Zero(t, lagOf(network, u))
+		}
+		served(t, network, 2_000, "a halted chain")
+	})
+
+	t.Run("static far-future upstream is never served, benches nobody, and never blocks a rejoin", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "honest-a", chainID: 123, latestBlock: 3_000},
+			{id: "honest-b", chainID: 123, latestBlock: 3_000},
+			{id: "rogue", chainID: 123, latestBlock: 3_000},
+		}, nil)
+		a, b, rogue := ups[0], ups[1], ups[2]
+		tr := network.metricsTracker
+		suggestServedTipHead(rogue, 103_000)
+		require.Equal(t, int64(103_000), rogue.EvmStatePoller().LatestBlock())
+
+		head := int64(3_000)
+		for range 60 {
+			advance(10 * time.Second)
+			head++
+			a.EvmStatePoller().SuggestLatestBlock(head)
+			b.EvmStatePoller().SuggestLatestBlock(head)
+			tr.SetLatestBlockNumber(rogue, 103_000, 0)
+			require.False(t, tr.IsHeadBenched(a), "a static head above never benches the moving ones")
+			require.False(t, tr.IsHeadBenched(b), "a static head above never benches the moving ones")
+		}
+		require.False(t, tr.IsHeadBenched(rogue))
+		require.Zero(t, lagOf(network, a), "the rogue is not the lag reference")
+		served(t, network, head, "a lone far-future head is never served")
+
+		// b stalls past its window and is benched; the rogue stays a voter.
+		for elapsed := time.Duration(0); elapsed <= stallAfter(b, 0); elapsed += 10 * time.Second {
+			advance(10 * time.Second)
+			head++
+			a.EvmStatePoller().SuggestLatestBlock(head)
+		}
+		require.True(t, tr.IsHeadBenched(b))
+		served(t, network, head, "quorum 2 over {a, rogue} still serves the honest head")
+
+		// b catches up with a. The rogue's head is out of anyone's reach, so it
+		// must not be the rejoin bar.
+		advance(time.Second)
+		b.EvmStatePoller().SuggestLatestBlock(head)
+		require.False(t, tr.IsHeadBenched(b), "a caught-up head rejoins even with a far-future voter above it")
+		require.Zero(t, lagOf(network, b))
+		served(t, network, head, "after the rejoin")
+	})
+
+	t.Run("moving far-future upstream never benches a stalled honest one", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "honest", chainID: 123, latestBlock: 4_000},
+			{id: "rogue", chainID: 123, latestBlock: 4_000},
+		}, nil)
+		honest, rogue := ups[0], ups[1]
+		tr := network.metricsTracker
+		rogueHead := int64(104_000)
+		suggestServedTipHead(rogue, rogueHead)
+
+		// honest's poller dies for well past its stall window while the
+		// wrong-chain head keeps advancing: a lead no chain produced in that
+		// time is another chain, not a stall.
+		for range 30 {
+			advance(10 * time.Second)
+			rogueHead += 5
+			tr.SetLatestBlockNumber(rogue, rogueHead, 0)
+		}
+		require.False(t, tr.IsHeadBenched(honest), "an implausible lead must not bench the honest head")
+		require.Zero(t, lagOf(network, honest), "the rogue is not the lag reference")
+		served(t, network, 4_000, "a lone moving far-future head is never served")
+	})
+
+	t.Run("a process that starts mid-stall benches the stalled head", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 47_880_000},
+			{id: "stalled-a", chainID: 123, latestBlock: 1_800_000},
+			{id: "stalled-b", chainID: 123, latestBlock: 1_800_000},
+		}, nil)
+		live, stalls := ups[0], ups[1:]
+		tr := network.metricsTracker
+		const stalledAt = int64(1_800_000)
+		// The stalled heads' block was produced two years before this process.
+		// Each has two non-benched peers and only live is younger, so the time
+		// rule never fires: only the height rule can bench them, and with the
+		// network block time unknown (the corroborated head is the stalled
+		// one) that rule needs live's own block time.
+		stalledTs := servedTipClock().Add(-2 * 365 * 24 * time.Hour).Unix()
+		head := int64(47_880_000)
+		poll := func(d time.Duration) {
+			advance(d)
+			for _, u := range stalls {
+				report(tr, u, stalledAt, stalledTs)
+			}
+			head += int64(d / (2 * time.Second))
+			report(tr, live, head, servedTipClock().Unix())
+		}
+		for _, u := range stalls {
+			report(tr, u, stalledAt, stalledTs)
+		}
+		served(t, network, stalledAt, "at boot quorum 2 serves the stalled head")
+
+		// Three timestamped head changes: live's block time is not known yet.
+		for range 3 {
+			poll(2 * time.Second)
+		}
+		for _, u := range ups {
+			require.False(t, tr.IsHeadBenched(u), "%s: nobody is benched before live's block time is known", u.Id())
+		}
+		served(t, network, stalledAt, "before live's block time is known")
+
+		// The fourth settles it; the stall window runs from there.
+		poll(2 * time.Second)
+		window := stallAfter(stalls[0], 0)
+		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+			poll(2 * time.Second)
+		}
+		for _, u := range stalls {
+			require.False(t, tr.IsHeadBenched(u), "%s: not benched inside its stall window", u.Id())
+		}
+		served(t, network, stalledAt, "inside the stall window")
+
+		poll(4 * time.Second)
+		for _, u := range stalls {
+			require.True(t, tr.IsHeadBenched(u), "%s: a head frozen since before the process started is benched after its stall window", u.Id())
+		}
+		require.False(t, tr.IsHeadBenched(live))
+		served(t, network, head, "the stalled heads leave the ballot")
+		require.Equal(t, head-stalledAt, lagOf(network, stalls[0]), "the benched head is measured against the live one")
+		require.Zero(t, lagOf(network, live))
+	})
+
+	t.Run("a node replaying far behind the tip is benched while it moves", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 100_000},
+			{id: "replaying", chainID: 123, latestBlock: 99_400},
+		}, nil)
+		live, replaying := ups[0], ups[1]
+		tr := network.metricsTracker
+		// A 2s chain. replaying restarted from a snapshot 600 blocks (20 min)
+		// old and replays 4 blocks per 2s, so it moves on every poll. Once the
+		// block time is known, every other move of each upstream arrives
+		// without its block timestamp, as a peer pod's poll does through
+		// shared state.
+		start := servedTipClock().Unix()
+		tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
+		head, behind := int64(100_000), int64(99_400)
+		polls := 0
+		poll := func(d time.Duration) {
+			advance(d)
+			polls++
+			ts := func(n int64) int64 {
+				if polls > 4 && polls%2 == 0 {
+					return 0
+				}
+				return tsOf(n)
+			}
+			behind = min(behind+int64(d/(500*time.Millisecond)), head)
+			report(tr, replaying, behind, ts(behind))
+			head += int64(d / (2 * time.Second))
+			report(tr, live, head, ts(head))
+		}
+		report(tr, replaying, behind, tsOf(behind))
+		report(tr, live, head, tsOf(head))
+		served(t, network, behind, "at boot quorum 2 serves the replaying head")
+
+		window := stallAfter(replaying, 2*time.Second)
+		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+			poll(2 * time.Second)
+		}
+		require.False(t, tr.IsHeadBenched(replaying), "not benched inside its stall window")
+		served(t, network, behind, "inside the stall window quorum 2 serves the replaying head")
+
+		// Its own moves never reset the window: its head block stays a stall
+		// window older than live's.
+		poll(4 * time.Second)
+		require.True(t, tr.IsHeadBenched(replaying), "a head replaying far behind a live peer for its stall window is benched")
+		require.False(t, tr.IsHeadBenched(live))
+		served(t, network, head, "the replaying head leaves the ballot")
+		require.Equal(t, head-behind, lagOf(network, replaying), "a benched head that moves lags by its real distance")
+		require.Greater(t, lagOf(network, replaying), int64(16), "past the default blockNumberLagAbove, so routing leaves it")
+
+		// It gains 3 blocks a poll. It rejoins on the report that reaches live's
+		// head, not before, and "latest" never drops back to it meanwhile.
+		last := head
+		for polls := 0; tr.IsHeadBenched(replaying); polls++ {
+			require.Less(t, polls, 400, "a replaying head rejoins once it catches up")
+			poll(2 * time.Second)
+			got := network.EvmHighestLatestBlockNumber(ctx)
+			require.GreaterOrEqual(t, got, last, "latest never regresses while it replays")
+			last = got
+		}
+		require.Equal(t, head-1, behind, "it rejoins on reaching live's head; live then moved one on")
+
+		// Back at the tip it trails live by one block, far less than its stall
+		// window of chain time: it votes again and is never benched.
+		for range 3 * int(window/(2*time.Second)) {
+			poll(2 * time.Second)
+			require.False(t, tr.IsHeadBenched(replaying), "a node one block behind is never benched (at %d, live %d)", behind, head)
+		}
+		require.Equal(t, head-1, behind)
+		require.Zero(t, lagOf(network, replaying), "the lower voter is the lag reference again")
+		served(t, network, behind, "quorum 2 serves the lower of two heads at the tip")
+	})
+
+	t.Run("a staleness verdict ends when the node catches up, so a plausible rogue cannot keep it", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 50_000},
+			{id: "trailing", chainID: 123, latestBlock: 49_940},
+			{id: "rogue", chainID: 123, latestBlock: 50_000},
+		}, nil)
+		live, trailing, rogue := ups[0], ups[1], ups[2]
+		tr := network.metricsTracker
+		// A 2s chain. trailing keeps pace 60 blocks (120s) back, more than its
+		// 90s stall window of chain time, so its own timestamps prove it stale.
+		start := servedTipClock().Unix()
+		tsOf := func(n int64) int64 { return start + (n-50_000)*2 }
+		head := int64(50_000)
+		for range 5 {
+			advance(2 * time.Second)
+			head++
+			report(tr, trailing, head-60, tsOf(head-60))
+			report(tr, live, head, tsOf(head))
+			report(tr, rogue, head, tsOf(head))
+		}
+		require.False(t, tr.IsHeadBenched(trailing), "not benched inside its stall window")
+
+		// It catches up through a peer pod's poll (no timestamp). Then the
+		// rogue claims a head 60 blocks above the tip and keeps moving: a lead
+		// a stall window of blocks ahead, but no proof trailing is stale.
+		advance(2 * time.Second)
+		head++
+		report(tr, trailing, head, 0)
+		report(tr, live, head, tsOf(head))
+		report(tr, rogue, head, tsOf(head))
+		for range 3 * int(stallAfter(trailing, 2*time.Second)/(2*time.Second)) {
+			advance(2 * time.Second)
+			head++
+			report(tr, trailing, head, 0)
+			report(tr, live, head, tsOf(head))
+			report(tr, rogue, head+60, tsOf(head+60))
+			require.False(t, tr.IsHeadBenched(trailing), "a node at the tip is never benched by a verdict it disproved (head %d)", head)
+		}
+		require.Zero(t, lagOf(network, trailing))
+		served(t, network, head, "the rogue's lone head above the tip is never served")
+	})
+
+	t.Run("a benched replay that reaches a voter as stale as itself stays benched", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 100_000},
+			{id: "restored", chainID: 123, latestBlock: 99_200},
+			{id: "peer-replay", chainID: 123, latestBlock: 99_300},
+		}, nil)
+		live, restored, peerReplay := ups[0], ups[1], ups[2]
+		tr := network.metricsTracker
+		// A 2s chain. Two nodes replay from old snapshots. restored gains 4
+		// blocks per 2s with its own block timestamps, so it is proven stale
+		// and benched. peer-replay gains 3, and each of its moves reaches this
+		// process without a timestamp (a peer pod's poll), so nothing proves
+		// it stale: it stays a voter and sets the bar restored must reach.
+		start := servedTipClock().Unix()
+		tsOf := func(n int64) int64 { return start + (n-100_000)*2 }
+		head, r, p := int64(100_000), int64(99_200), int64(99_300)
+		window := stallAfter(restored, 2*time.Second)
+		last, wasBenched := int64(0), false
+		for polls := 0; !wasBenched || tr.IsHeadBenched(restored); polls++ {
+			require.Less(t, polls, 1000, "restored rejoins once it replays to the tip")
+			advance(2 * time.Second)
+			r = min(r+4, head)
+			report(tr, restored, r, tsOf(r))
+			p = min(p+3, head)
+			report(tr, peerReplay, p, 0)
+			head++
+			report(tr, live, head, tsOf(head))
+			wasBenched = wasBenched || tr.IsHeadBenched(restored)
+			if wasBenched && (head-r)*2 >= 2*int64(window/time.Second) {
+				require.True(t, tr.IsHeadBenched(restored), "a benched head two stall windows behind the tip stays benched, even once it reaches a stale voter (restored %d, peer-replay %d, live %d)", r, p, head)
+			}
+			got := network.EvmHighestLatestBlockNumber(ctx)
+			require.GreaterOrEqual(t, got, last, "latest never regresses (restored %d, peer-replay %d, live %d)", r, p, head)
+			last = got
+		}
+		require.Less(t, head-r, int64(window/(2*time.Second))+2, "it rejoins once within a stall window of chain time of the tip")
+		served(t, network, r, "after the rejoin quorum 2 serves the restored head")
+	})
+
+	t.Run("heads frozen above a chain that restarted lower are benched and routed around", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "fork-a", chainID: 123, latestBlock: 9_060},
+			{id: "fork-b", chainID: 123, latestBlock: 9_060},
+			{id: "canon-a", chainID: 123, latestBlock: 9_000},
+			{id: "canon-b", chainID: 123, latestBlock: 9_000},
+		}, nil)
+		forks, canons := ups[:2], ups[2:]
+		tr := network.metricsTracker
+		const forkAt = int64(9_060)
+		forkTs := servedTipClock().Add(-10 * time.Minute).Unix()
+		canon := int64(9_000)
+		poll := func(d time.Duration) {
+			advance(d)
+			for _, u := range forks {
+				report(tr, u, forkAt, forkTs)
+			}
+			canon += int64(d / (2 * time.Second))
+			for _, u := range canons {
+				report(tr, u, canon, servedTipClock().Unix())
+			}
+		}
+
+		// The corroborated head is a frozen fork's, so the network block time
+		// stays unknown.
+		window := stallAfter(forks[0], 0)
+		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+			poll(2 * time.Second)
+		}
+		for _, u := range forks {
+			require.False(t, tr.IsHeadBenched(u), "%s: not benched inside its stall window", u.Id())
+		}
+		served(t, network, forkAt, "inside the stall window quorum 2 still serves the frozen pair")
+
+		// The forks re-report first in each poll, so the bench lands before the
+		// canonical pair moves: the canonical head at bench time is `canon` now.
+		benchedAt := canon
+		poll(4 * time.Second)
+		for _, u := range forks {
+			require.True(t, tr.IsHeadBenched(u), "%s: a head whose block is far older than its moving peers' is benched", u.Id())
+		}
+		for _, u := range canons {
+			require.False(t, tr.IsHeadBenched(u), "%s", u.Id())
+			require.Zero(t, lagOf(network, u), "%s: the canonical pair is the lag reference", u.Id())
+		}
+		served(t, network, canon, "both forks benched: the canonical pair defines latest")
+
+		// The canonical chain passes the frozen height. The frozen head still
+		// lags by what the chain made since its bench, not by the one block it
+		// now trails: its blocks up to forkAt are the dead fork's.
+		for canon <= forkAt {
+			poll(2 * time.Second)
+		}
+		for _, u := range forks {
+			require.True(t, tr.IsHeadBenched(u), "%s: a frozen head never rejoins", u.Id())
+		}
+		lag := lagOf(network, forks[0])
+		require.Equal(t, canon-benchedAt, lag, "a frozen benched head lags by what the chain made since its bench")
+		require.Greater(t, lag, int64(16), "past the default blockNumberLagAbove, so routing leaves the frozen head")
+		served(t, network, canon, "as the canonical chain moves on")
+	})
+
+	t.Run("benching a pair frozen far above the chain trips no regression hold", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "fork-a", chainID: 123, latestBlock: 20_000},
+			{id: "fork-b", chainID: 123, latestBlock: 20_000},
+			{id: "canon-a", chainID: 123, latestBlock: 9_000},
+			{id: "canon-b", chainID: 123, latestBlock: 8_999},
+		}, nil)
+		forks, canons := ups[:2], ups[2:]
+		tr := network.metricsTracker
+		forkTs := servedTipClock().Add(-10 * time.Minute).Unix()
+		canon := int64(9_000)
+		poll := func(d time.Duration) {
+			advance(d)
+			for _, u := range forks {
+				report(tr, u, 20_000, forkTs)
+			}
+			canon += int64(d / (2 * time.Second))
+			// The canonical pair stays one block apart, so its highest head is
+			// not the quorum pick.
+			report(tr, canons[0], canon, servedTipClock().Unix())
+			report(tr, canons[1], canon-1, servedTipClock().Unix())
+		}
+
+		window := stallAfter(forks[0], 0)
+		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+			poll(2 * time.Second)
+		}
+		served(t, network, 20_000, "inside the stall window the frozen pair carries quorum 2, and the guard remembers it")
+		held := servedTipRegressionCount(network, "latest", "held")
+		failedOpen := servedTipRegressionCount(network, "latest", "failed_open")
+
+		poll(4 * time.Second)
+		for _, u := range forks {
+			require.True(t, tr.IsHeadBenched(u), "%s", u.Id())
+		}
+		served(t, network, canon-1, "the live voters agree with the pick: the guard must not hold the frozen pair's height, nor serve canon-a's head alone")
+		for end := servedTipClock().Add(servedTipRegressionTTL + 2*time.Second); servedTipClock().Before(end); {
+			poll(2 * time.Second)
+			served(t, network, canon-1, "while the remembered height ages out")
+		}
+		assert.Equal(t, held, servedTipRegressionCount(network, "latest", "held"), "a bench is not a regression")
+		assert.Equal(t, failedOpen, servedTipRegressionCount(network, "latest", "failed_open"), "a guard that never held does not fail open")
+	})
+
+	t.Run("one moving wrong-chain peer cannot bench a halted fleet by block age", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "a", chainID: 123, latestBlock: 5_000},
+			{id: "b", chainID: 123, latestBlock: 5_000},
+			{id: "rogue", chainID: 123, latestBlock: 1_000},
+		}, nil)
+		a, b, rogue := ups[0], ups[1], ups[2]
+		tr := network.metricsTracker
+		haltedTs := servedTipClock().Add(-10 * time.Minute).Unix()
+		rogueHead := int64(1_000)
+		for range 300 {
+			advance(2 * time.Second)
+			report(tr, a, 5_000, haltedTs)
+			report(tr, b, 5_000, haltedTs)
+			rogueHead++
+			report(tr, rogue, rogueHead, servedTipClock().Unix())
+			require.False(t, tr.IsHeadBenched(a), "one younger peer is not enough while two peers exist")
+			require.False(t, tr.IsHeadBenched(b), "one younger peer is not enough while two peers exist")
+		}
+		require.Zero(t, lagOf(network, a))
+		require.Zero(t, lagOf(network, b))
+		served(t, network, 5_000, "a halted fleet beside one moving wrong-chain peer")
+	})
+
+	t.Run("an endpoint serving another chain with the same chain id is benched by block age", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "chain", chainID: 123, latestBlock: 47_900_000},
+			{id: "other", chainID: 123, latestBlock: 1_823_000},
+		}, nil)
+		chain, other := ups[0], ups[1]
+		tr := network.metricsTracker
+		// Two chains share the chain id: ours makes a block every 2s, the other
+		// (an on-demand rollup testnet) one every 5 minutes, both with fresh
+		// timestamps. 46M blocks apart, no lead is plausible, so only block
+		// age can tell them apart.
+		const gap = 5 * time.Minute
+		window := stallAfter(other, 0)
+		require.Less(t, 2*window, gap, "the other chain's gap must outlast its bench delay")
+		head, otherHead := int64(47_900_000), int64(1_823_000)
+		report(tr, chain, head, servedTipClock().Unix())
+		report(tr, other, otherHead, servedTipClock().Unix())
+		served(t, network, otherHead, "until block age tells the chains apart, quorum 2 serves the lower head")
+
+		for elapsed := time.Duration(0); elapsed < gap; elapsed += 2 * time.Second {
+			advance(2 * time.Second)
+			head++
+			report(tr, chain, head, servedTipClock().Unix())
+		}
+		require.True(t, tr.IsHeadBenched(other), "a head whose block stays a stall window older than its peer's is benched")
+		require.False(t, tr.IsHeadBenched(chain))
+		served(t, network, head, "the chain that keeps producing blocks defines latest")
+		require.Greater(t, lagOf(network, other), int64(16), "past the default blockNumberLagAbove, so routing leaves it")
+
+		// Its next block never brings it back: it cannot reach our head.
+		advance(2 * time.Second)
+		head++
+		report(tr, other, otherHead+1, servedTipClock().Unix())
+		report(tr, chain, head, servedTipClock().Unix())
+		require.True(t, tr.IsHeadBenched(other))
+		served(t, network, head, "after the other chain's next block")
+	})
+
+	t.Run("a static head at a slow chain's tip is not benched while peers catch up", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "tip", chainID: 123, latestBlock: 6_000},
+			{id: "c1", chainID: 123, latestBlock: 5_000},
+			{id: "c2", chainID: 123, latestBlock: 5_000},
+		}, nil)
+		tip, catchers := ups[0], ups[1:]
+		tr := network.metricsTracker
+		start := servedTipClock()
+		tipTs := start.Add(-50 * time.Second).Unix()
+		// A 60s-block chain: the catchers replay blocks produced ~20h ago.
+		tsOf := func(n int64) int64 { return start.Add(-20*time.Hour).Unix() + (n-5_000)*60 }
+		c := int64(5_000)
+		for range 30 {
+			advance(10 * time.Second)
+			report(tr, tip, 6_000, tipTs)
+			c += 5
+			for _, u := range catchers {
+				report(tr, u, c, tsOf(c))
+			}
+			require.False(t, tr.IsHeadBenched(tip), "peers below with older blocks never prove the tip stalled (at %d)", c)
+		}
+		served(t, network, c, "quorum 2 serves the catching-up pair")
+	})
+
+	t.Run("quorum majority: three of five stall", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live-a", chainID: 123, latestBlock: 7_000},
+			{id: "live-b", chainID: 123, latestBlock: 7_000},
+			{id: "stalled-a", chainID: 123, latestBlock: 7_000},
+			{id: "stalled-b", chainID: 123, latestBlock: 7_000},
+			{id: "stalled-c", chainID: 123, latestBlock: 7_000},
+		}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorumMajority})
+		lives, stalls := ups[:2], ups[2:]
+		tr := network.metricsTracker
+
+		head := int64(7_000)
+		for range 5 {
+			advance(2 * time.Second)
+			head += 2
+			for _, u := range ups {
+				u.EvmStatePoller().SuggestLatestBlock(head)
+			}
+		}
+		served(t, network, head, "a healthy fleet")
+		stalledAt := head
+
+		window := stallAfter(stalls[0], 0)
+		for elapsed := time.Duration(0); elapsed+2*time.Second < window; elapsed += 2 * time.Second {
+			advance(2 * time.Second)
+			head += 2
+			for _, u := range lives {
+				u.EvmStatePoller().SuggestLatestBlock(head)
+			}
+		}
+		for _, u := range stalls {
+			require.False(t, tr.IsHeadBenched(u), "%s: inside its stall window", u.Id())
+		}
+		served(t, network, stalledAt, "inside the stall window the stalled majority (3 of 5) holds latest")
+
+		advance(4 * time.Second)
+		head += 2
+		for _, u := range lives {
 			u.EvmStatePoller().SuggestLatestBlock(head)
 		}
-		require.Equal(t, head, network.EvmHighestLatestBlockNumber(ctx))
-		advance(servedTipSampleInterval)
-	}
+		for _, u := range stalls {
+			require.True(t, tr.IsHeadBenched(u), "%s: benched after its stall window", u.Id())
+			require.Equal(t, head-stalledAt, lagOf(network, u), "%s", u.Id())
+		}
+		for _, u := range lives {
+			require.False(t, tr.IsHeadBenched(u), "%s", u.Id())
+		}
+		served(t, network, head, "the live pair is the majority of the non-benched voters")
 
-	beforeOverride := servedTipTrajectoryCount(network, "latest", "override")
-	beforeFallback := servedTipTrajectoryCount(network, "latest", "fallback")
+		advance(time.Second)
+		stalls[0].EvmStatePoller().SuggestLatestBlock(head)
+		require.False(t, tr.IsHeadBenched(stalls[0]), "a stalled head that caught up rejoins")
+		require.Zero(t, lagOf(network, stalls[0]))
+		for _, u := range stalls[1:] {
+			require.True(t, tr.IsHeadBenched(u), "%s", u.Id())
+		}
+		served(t, network, head, "after one rejoins")
+	})
 
-	// The whole fleet lands the next batch, with ordinary propagation skew.
-	head += 5_000
-	for i, u := range ups {
-		suggestServedTipHead(u, head-int64(i%2)*50)
-	}
-	served := network.EvmHighestLatestBlockNumber(ctx)
+	t.Run("a benched head still votes when every other voter leaves", func(t *testing.T) {
+		advance := pinServedTipClock(t)
+		network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+			{id: "live", chainID: 123, latestBlock: 8_000},
+			{id: "stalled", chainID: 123, latestBlock: 8_000},
+		}, nil)
+		live, stalled := ups[0], ups[1]
+		tr := network.metricsTracker
+		const stalledAt = int64(8_000)
+		head := stalledAt
+		for elapsed := time.Duration(0); elapsed <= stallAfter(stalled, 0); elapsed += 2 * time.Second {
+			advance(2 * time.Second)
+			head += 2
+			live.EvmStatePoller().SuggestLatestBlock(head)
+		}
+		require.True(t, tr.IsHeadBenched(stalled), "precondition: stalled is benched")
+		served(t, network, head, "precondition: live defines latest")
 
-	assert.Equal(t, head, served,
-		"a legitimate fleet-wide burst is one cluster; the majority pick stands")
-	assert.Equal(t, beforeOverride, servedTipTrajectoryCount(network, "latest", "override"))
-	assert.Equal(t, beforeFallback, servedTipTrajectoryCount(network, "latest", "fallback"),
-		"a fleet in one cluster does not even register a disagreement")
-}
-
-// Corroboration, not agreement with the model: a single upstream sitting
-// exactly where the trajectory says the head is proves nothing — it is the one
-// endpoint that could be wrong in the same direction as everyone else being
-// stuck. A group of one is never electable.
-func TestServedTip_TrajectoryReferee_SingletonIsNotCorroboration(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
-
-	before := servedTipTrajectoryCount(network, "latest", "override")
-	_, served := stallMajority(t, ctx, network, ups, advance, frozen, 1, 24)
-
-	assert.Equal(t, frozen, served,
-		"one on-trajectory witness cannot move the tip, however well it fits")
-	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"))
-}
-
-// Composition with the regression guard: the referee runs first and the guard
-// judges whatever comes out of it. Once a stall has handed the tip to the fresh
-// pair, losing that pair from the eligible set drops the majority pick far below
-// the best live head — and the guard holds the last corroborated value exactly
-// as it does for any other poisoned ballot.
-func TestServedTip_TrajectoryReferee_ComposesWithRegressionGuard(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"latest"}})
-	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
-	fresh, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
-	require.Equal(t, fresh, served, "precondition: the referee is holding the tip on the fresh pair")
-	require.Greater(t, fresh-frozen, int64(common.DefaultToleratedBlockHeadRollback),
-		"precondition: the stall is deeper than the regression tolerance")
-
-	before := servedTipRegressionCount(network, "latest", "held")
-
-	// One fresh upstream leaves the eligible set: the remaining ballot is
-	// [fresh, frozen, frozen] — a lone fresh head is no group, so the referee
-	// stands down and the majority pick collapses onto the stalled pair.
-	network.PinUpstreamOrderForTest("u1", "u3", "u4")
-
-	assert.Equal(t, fresh, network.EvmHighestLatestBlockNumber(ctx),
-		"the guard must hold the last corroborated pick, as it does for any poisoned ballot")
-	assert.Equal(t, before+1, servedTipRegressionCount(network, "latest", "held"))
+		live.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+		require.Equal(t, stalledAt, network.EvmHighestLatestBlockNumber(ctx),
+			"with no non-benched voter left, latest fails open to the benched head instead of 0")
+	})
 }
 
 // ─── The finalized axis is not a second-class citizen ────────────────────────
@@ -2026,53 +2324,37 @@ func TestServedTip_Finalized_BoundCappedUpstreamsDoNotVote(t *testing.T) {
 		"the capped pair's effective finalized is their 5000 bound, which is a serving range, not a finalized head")
 }
 
-// The regression guard and the trajectory referee, both on the finalized axis,
-// in one run: warm a finalized head track, stall the majority (the referee must
-// serve the corroborated fresh pair), then lose one of that pair from the
-// eligible set (the guard must hold what it last saw corroborated).
-func TestServedTip_Finalized_RefereeAndGuardEndToEnd(t *testing.T) {
+// The regression guard on the finalized axis: one of the fresh pair leaves the
+// eligible set, the ballot collapses onto heads far below, and the guard holds
+// the last corroborated finalized tip.
+func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	pinServedTipClock(t)
 
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{EnabledFor: []string{"finalized"}})
-
-	head := trajectoryStartHead
-	for i := 0; i < trajectoryWarmSamples; i++ {
-		for _, u := range ups {
-			setServedTipFinalized(t, u, head)
+	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 1_010_000},
+		{id: "u2", chainID: 123, latestBlock: 1_010_000},
+		{id: "u3", chainID: 123, latestBlock: 1_010_000},
+		{id: "u4", chainID: 123, latestBlock: 1_010_000},
+	}, nil)
+	for i, u := range ups {
+		fin := int64(1_000_000)
+		if i < 2 {
+			fin = 1_002_400
 		}
-		require.Equal(t, head, network.EvmHighestFinalizedBlockNumber(ctx),
-			"warm-up sample %d: an agreeing fleet serves its agreed finalized head", i)
-		advance(servedTipSampleInterval)
-		head += trajectoryBlocksPerSample
+		setServedTipFinalized(t, u, fin)
 	}
-	frozen := head - trajectoryBlocksPerSample
+	require.Equal(t, int64(1_002_400), network.EvmHighestFinalizedBlockNumber(ctx),
+		"quorum 2: the fresh pair defines the finalized tip")
 
-	// The stall: three finalized heads freeze, two keep tracking the chain.
-	var served int64
-	for i := 0; i < 24; i++ {
-		for _, u := range ups[:2] {
-			setServedTipFinalized(t, u, head)
-		}
-		served = network.EvmHighestFinalizedBlockNumber(ctx)
-		advance(servedTipSampleInterval)
-		head += trajectoryBlocksPerSample
-	}
-	fresh := head - trajectoryBlocksPerSample
-	require.Equal(t, fresh, served,
-		"the corroborated fresh pair must define the finalized tip; the plain majority would serve %d", frozen)
-	assert.Positive(t, servedTipTrajectoryCount(network, "finalized", "override"),
-		"the finalized axis gets its own counter series")
-
-	// One of the fresh pair leaves: the ballot collapses onto the stalled trio
-	// and the guard holds the last corroborated finalized tip.
 	before := servedTipRegressionCount(network, "finalized", "held")
 	network.PinUpstreamOrderForTest("u1", "u3", "u4")
-	assert.Equal(t, fresh, network.EvmHighestFinalizedBlockNumber(ctx),
+	assert.Equal(t, int64(1_002_400), network.EvmHighestFinalizedBlockNumber(ctx),
 		"the guard protects the finalized axis exactly as it protects latest")
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "finalized", "held"))
 }
@@ -2099,7 +2381,7 @@ func TestServedTip_RegressionGuard_HeldValueIsClampedToTheLiveHead(t *testing.T)
 		{id: "stuck-2", chainID: 123, latestBlock: 5},
 	})
 	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
-	require.Equal(t, int64(10_000), network.servedLatestAnchor.lastGoodValue.Load())
+	require.Equal(t, int64(10_000), network.servedTipAll.latest.lastGoodValue.Load())
 
 	// Every upstream that had 10_000 drops out. The ballot is [9000, 5, 5] → 5,
 	// which the guard suppresses — but it may not serve its remembered 10_000
@@ -2150,68 +2432,4 @@ func TestServedTip_MetricsCountTransitionsNotEvaluations(t *testing.T) {
 		network.EvmHighestLatestBlockNumber(ctx)
 	}
 	assert.Equal(t, beforeOpen+1, servedTipRegressionCount(network, "latest", "failed_open"))
-}
-
-// An override the guaranteed-method floor immediately nullifies did not happen:
-// the referee raised the pick, the floor put it back, the served value is the
-// majority pick — counting or logging that would page someone about nothing.
-func TestServedTip_OverrideNullifiedByTheFloorIsNotCounted(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// u5 is the only trace_block-capable upstream and it is one of the stalled
-	// trio, so its supporting set floors the tip back at the frozen head.
-	advance := pinServedTipClock(t)
-	fixtures := make([]servedTipFixture, 5)
-	for i := range fixtures {
-		fixtures[i] = servedTipFixture{id: "u" + strconv.Itoa(i+1), chainID: 123, latestBlock: trajectoryStartHead}
-		if i < 4 {
-			fixtures[i].ignoreMethods = []string{"trace_block"}
-		}
-	}
-	network, ups := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
-		EnabledFor:        []string{"latest"},
-		GuaranteedMethods: []string{"trace_block"},
-	})
-
-	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
-	before := servedTipTrajectoryCount(network, "latest", "override")
-
-	_, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
-
-	assert.Equal(t, frozen, served,
-		"the floor holds the tip at what the trace_block upstream can serve")
-	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"),
-		"an override the floor nullified must not be counted as an intervention")
-}
-
-// The off switch is a real off switch: trajectoryWindow: 0 records nothing and
-// decides nothing, so the network serves the plain majority pick — the stale
-// head — through the exact scenario the referee exists to fix.
-func TestServedTip_TrajectoryReferee_DisabledByZeroWindow(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, ups, advance := setupTrajectoryNetwork(t, ctx, 5, &common.EvmServedTipConfig{
-		EnabledFor:       []string{"latest"},
-		TrajectoryWindow: common.Duration(0).Ptr(),
-	})
-	frozen := warmServedTipTrajectory(t, ctx, network, ups, advance, trajectoryWarmSamples)
-
-	before := servedTipTrajectoryCount(network, "latest", "override")
-	_, served := stallMajority(t, ctx, network, ups, advance, frozen, 2, 24)
-
-	assert.Equal(t, frozen, served,
-		"with the referee off the stalled majority defines the tip again")
-	assert.Equal(t, before, servedTipTrajectoryCount(network, "latest", "override"))
-	assert.Zero(t, network.servedLatestAnchor.trajectory.SampleCount(),
-		"a disabled referee must not even record a head track")
 }

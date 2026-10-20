@@ -108,7 +108,7 @@ https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
 
 **Foreground latency budget.** `TryUpdateIfStale` is used by the EVM state poller to debounce expensive RPC calls. It launches the upstream RPC in a background goroutine and waits at most `updateMaxWait` for the result. If the RPC finishes within that window the fresh value is returned synchronously; otherwise the stale local value is returned immediately and the RPC completes asynchronously. The foreground path never acquires the distributed lock.
 
-**Rollback handling.** All counter updates enforce a rollback policy. `latestBlock`, `finalizedBlock`, and `servedLatestBlock`/`servedFinalizedBlock` use `ignoreRollbackOf = 1024` — decreases up to 1024 blocks are silently discarded as noise from lagging upstreams; larger gaps (genuine reorgs or provider resets) are accepted and trigger the `OnLargeRollback` callback. `earliestBlock` uses `ignoreRollbackOf = 0` — all decreases are accepted because node pruning genuinely shifts the historical anchor.
+**Rollback handling.** All counter updates enforce a rollback policy. `latestBlock`, `finalizedBlock`, and the network-level delivered-head counter use `ignoreRollbackOf = 1024` — decreases up to 1024 blocks are silently discarded as noise from lagging upstreams; larger gaps (genuine reorgs or provider resets) are accepted and trigger the `OnLargeRollback` callback. `earliestBlock` uses `ignoreRollbackOf = 0` — all decreases are accepted because node pruning genuinely shifts the historical anchor.
 
 **Timestamp vector clock and conflict resolution.** Each counter state is serialised as `{"v":<int64>,"t":<unix_ms>,"b":"<instance_id>"}`. The `t` field doubles as both a vector clock for conflict resolution and a staleness indicator. `allocateUpdatedAtMs` ensures local timestamps are strictly monotonic even under concurrent goroutines (a CAS spin-loop). Remote state is only adopted when `st.UpdatedAt > currentTs`, providing idempotency and protection against out-of-order network delivery. When a remote update has a newer timestamp but a value that would imply a small rollback (within `ignoreRollbackOf`), `advanceTimestampPast` is called to advance the local timestamp past the remote's so the local (higher) value wins the next reconciliation cycle.
 
@@ -144,7 +144,7 @@ https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
 
 **Bootstrap task retry.** If `WatchCounterInt64` fails at startup (connector not ready, network error), `initCounterSync` marks the watch task as failed and the `Initializer` retries it in the background. During this window the counter operates in local-only mode. Source: <SourceLink file="data/shared_state_registry.go" lines="168-222" />
 
-**Served-tip partitions.** Beyond per-upstream counters, eRPC also maintains network-wide `servedLatestBlock` and `servedFinalizedBlock` counters, plus per-tag-group partitions for tag-aware routing. The partition key is `"grp:" + hex(sha256(sorted_upstream_ids)[:8])` so equivalent selectors map to the same key. A cap of 16 partitions per network prevents cardinality explosion from pathological configs. Once the cap is reached, new tag-group selectors fall back to the stateless subnet-minimum.
+**Served tip.** The served tip itself is not shared: each instance computes it from the shared per-upstream counters (see [Block tracking](/reference/evm/block-tracking)). The only network-level counter is `network/<project>/<network>/latestBlock`: the highest head any instance has delivered to a WebSocket `newHeads` subscriber, used as a bounded floor for `latest`. Per-group served-tip lanes are in-process telemetry, not shared state.
 
 **Fallback when absent.** `erpc/erpc.go:L49-L66` synthesises an in-memory registry if `sharedState == nil`; the same `GetCounterInt64` API works identically but no cross-pod propagation occurs. Init failures are non-fatal: `erpc/init.go` logs a warning and continues with a synthesised in-memory registry. A broken Redis config therefore produces degraded per-pod behavior, not a hard startup failure.
 
@@ -340,7 +340,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 
 - **Block-number reads** (`latestBlock`, `finalizedBlock`) used by the upstream selector and tag-aware routing come from the in-process atomic copy — zero latency on the request path.
 - **Block-number refreshes** are debounced via `TryUpdateIfStale`; the foreground caller waits at most `updateMaxWait` (default 50 ms). If the refresh completes within that window the fresh value influences the current request; otherwise the stale value is used and the refresh completes asynchronously for the next request.
-- **Served-tip counters** (`servedLatestBlock`, `servedFinalizedBlock`) are updated after a response is selected and do not add latency. They gate the "never serve older than seen" invariant that prevents block-number regressions across requests in a scaled fleet.
+- **Delivered-head counter** (`network/<project>/<network>/latestBlock`) is updated before a `newHeads` notification is delivered and does not add request latency. Other instances honor it as a floor for `latest` only within `maxRetryableBlockDistance` of their freshest live head.
 - A broken or unreachable shared-state connector degrades to per-pod local state — no error is returned to the client; routing quality degrades silently.
 - **Operator cordons** (`erpc_cordonUpstream`) are one more shared counter per upstream (`operatorCordon`, value = cordon time in unix-ms, `0` = lifted), with the same propagation, bootstrap fetch and local-first semantics as the block counters. See [Cordoning](/operation/cordoning).
 
@@ -367,7 +367,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 9. **DynamoDB `PublishCounterInt64` is a no-op.** Cross-pod latency is bounded by `statePollInterval` (default 5 s). Using DynamoDB means significantly higher convergence latency than Redis or PostgreSQL. Source: <SourceLink file="data/dynamodb.go" lines="825-829" />
 10. **`WatchCounterInt64` channel closed on shutdown.** `RedisPubSubManager.stop()` closes all subscriber channels on app shutdown; the registry goroutine observing the channel receives `ok=false` and marks the watch task as failed. This is benign since the app context is also cancelled at that point. Source: <SourceLink file="data/shared_state_registry.go" lines="200-207" />
 11. **`clusterKey` propagation order.** Explicit `database.sharedState.clusterKey` wins over the inherited top-level `clusterKey`. Source: <SourceLink file="common/defaults.go" lines="803-805" />
-12. **Served-tip partition cap at 16 per network.** Once reached, new tag-group selectors fall back to stateless subnet-minimum rather than getting a monotonic counter. Source: <SourceLink file="erpc/networks.go" lines="80-84" />
+12. **The served tip is per instance.** Pods compute it from the same shared per-upstream heads; nothing about the pick itself is stored. Source: <SourceLink file="erpc/networks.go" lines="55-78" />
 13. **init.go treats shared-state failure as a warning, not fatal.** A broken Redis config produces degraded per-pod behavior, not a hard startup failure. Source: <SourceLink file="erpc/init.go" lines="93-97" />
 14. **`database.sharedState` nil means `SetDefaults` is never called on it.** The synthesised config at `erpc/erpc.go:L49-L66` exists only in local scope and does not write back to `cfg.Database.SharedState`. Source: <SourceLink file="common/defaults.go" lines="837-840" />
 15. **Connector `id` auto-assignment differs between shared-state and other scopes.** Shared-state connector id defaults to `string(driver)` (e.g. `"redis"`), not `"shared-state-redis"`. Source: <SourceLink file="common/defaults.go" lines="799-801" />
@@ -411,7 +411,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 - [`data/shared_state_variable.go:L364-L707`](https://github.com/erpc/erpc/blob/main/data/shared_state_variable.go#L364-L707) — `TryUpdate`, `TryUpdateIfStale`, `scheduleBackgroundPushCurrent`, lock ordering, rollback handling, timestamp CAS helpers
 - [`data/shared_state_registry.go:L102-L222`](https://github.com/erpc/erpc/blob/main/data/shared_state_registry.go#L102-L222) — `GetCounterInt64`: idempotent counter creation, bootstrap tasks, `WatchCounterInt64` goroutine
 - [`data/redis_pubsub_manager.go:L155-L460`](https://github.com/erpc/erpc/blob/main/data/redis_pubsub_manager.go#L155-L460) — `RedisPubSubManager`: single `PSubscribe("counter:*")`, reconnect backoff, periodic poll fallback, copy-on-write subscriber slice
-- [`erpc/networks.go:L55-L96`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L55-L96) — served-tip partition key derivation and 16-partition cap
+- [`erpc/networks.go:L55-L111`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L55-L111) — delivered-head shared counter (`latestBlockShared`, `NoteObservedLatestBlock`)
 - [`erpc/erpc.go:L49-L66`](https://github.com/erpc/erpc/blob/main/erpc/erpc.go#L49-L66) — in-memory fallback synthesis when `sharedState == nil`
 - [`common/defaults.go:L789-L828`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L789-L828) — `SharedStateConfig.SetDefaults`; all default values including connector id override
 - [`data/shared_state_sources.go`](https://github.com/erpc/erpc/blob/main/data/shared_state_sources.go) — named constants for the `source` field in logs and traces (`UpdateSourceRemoteSync`, `UpdateSourceTryUpdate`, etc.)
@@ -420,7 +420,7 @@ The shared-state layer has no effect on JSON-RPC request or response shapes visi
 ### Related pages
 
 - [Connectors](/config/database) — the backing store options (Redis, PostgreSQL, DynamoDB, memory) that power shared state.
-- [Tag-aware routing](/config/projects/selection-policies) — uses `servedLatestBlock`/`servedFinalizedBlock` partition counters that shared state keeps monotonic across pods.
+- [Tag-aware routing](/config/projects/selection-policies) — `use-upstream` selectors scope the served tip to the matched upstreams; no shared counter is involved.
 - [EVM state poller](/reference/evm) — the consumer that calls `TryUpdateIfStale` per upstream; registers `OnValue`/`OnLargeRollback` callbacks.
 - [Survive provider outages](/use-cases/survive-provider-outages) — routing quality under failover depends on consistent block-height awareness across pods.
 - [Deployment](/deployment) — horizontal scaling guidance where shared state becomes necessary.

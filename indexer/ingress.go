@@ -8,7 +8,8 @@ type Sink interface {
 	Ingest(ev StreamEvent)
 }
 
-// NetworkHandle is the part of a network an ingress may touch.
+// NetworkHandle is the part of a network the indexer and its ingresses
+// touch.
 type NetworkHandle interface {
 	Id() string
 	// SuggestLatestBlock reports a head observed by source and whether
@@ -16,6 +17,11 @@ type NetworkHandle interface {
 	// every source's observation counts and the network tip moves before
 	// clients see the head; a head it does not deliver is dropped.
 	SuggestLatestBlock(sourceId string, blockNumber int64) (deliver bool)
+	// DedupDropped reports an event dropped as a duplicate. Indexer only.
+	DedupDropped(kind EventKind)
+	// DedupEntriesAdded reports that the network's filter dedup windows
+	// gained delta keys (negative when a filter is dropped). Indexer only.
+	DedupEntriesAdded(delta int)
 }
 
 // EventIngress turns a transport-specific subscription into StreamEvents

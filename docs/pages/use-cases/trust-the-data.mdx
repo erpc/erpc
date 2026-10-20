@@ -133,9 +133,9 @@ tables and exact defaults live in each page's agent section.
 
 **Hook dispatch model.** Four hook entry-points in [`architecture/evm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/hooks.go):
 
-- `HandleProjectPreForward` — runs at project layer before cache and upstream selection; handles `eth_blockNumber`, `eth_call`, `eth_chainId`, `eth_getLogs`, `trace_filter`/`arbtrace_filter`.
-- `HandleNetworkPreForward` — runs after upstream selection, can short-circuit; handles `eth_getLogs`, `eth_chainId`, `trace_filter`/`arbtrace_filter`.
-- `HandleNetworkPostForward` — called after response comes back at network layer; handles `eth_getBlockByNumber`, `eth_getLogs`, `eth_sendRawTransaction`, `trace_filter`/`arbtrace_filter`.
+- `HandleProjectPreForward` — runs at project layer before cache and upstream selection; handles `eth_call`, `eth_estimateGas`, `eth_chainId`, `eth_getLogs`, `trace_filter`/`arbtrace_filter`.
+- `HandleNetworkPreForward` — runs after upstream selection, can short-circuit; handles `eth_getLogs`, `eth_chainId`, `eth_blockNumber` (answered from the served tip), `trace_filter`/`arbtrace_filter`.
+- `HandleNetworkPostForward` — called after response comes back at network layer; handles `eth_blockNumber` (pinned to the served tip), `eth_getBlockByNumber`, `eth_getLogs`, `eth_sendRawTransaction`, `trace_filter`/`arbtrace_filter`.
 - `HandleUpstreamPostForward` — richest hook, called per-upstream; checks `MarkEmptyAsErrorMethods`, applies per-method validation, marks unexpected empties as `ErrEndpointMissingData`.
 
 **Block tag normalization.** [`NormalizeHttpJsonRpc`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc.go#L92) runs on every incoming JSON-RPC request: caches the numeric block number on the request, and when the tag is `"latest"` or `"finalized"` and the network has a known head, replaces the tag with a concrete `0x…` hex. Tags `"safe"` and `"pending"` are intentionally passed through unchanged. The `X-ERPC-Skip-Interpolation` directive or `skipInterpolation` request directive suppresses mutations while still caching the numeric block number.

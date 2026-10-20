@@ -21,15 +21,15 @@ The result: provider outages stop reaching your users, historical data is never 
 
 The request pipeline runs in a fixed order. An HTTP request arrives at `erpc/http_server.go`, is parsed (batch requests fan out concurrently), and forwarded through `RequestProcessor.ProcessUnary` (`erpc/request_processor.go:35-67`). That function resolves the project, validates the JSON-RPC body, authenticates the consumer, resolves the network, applies `DirectiveDefaults`, and calls `project.Forward`.
 
-**Project layer** (`erpc/projects.go`): acquires a project-level rate limit permit, fires `HandleProjectPreForward` (EVM hook for `eth_blockNumber`, `eth_call`, `eth_chainId`, `eth_getLogs`, `trace_filter` — may short-circuit with an early response), then delegates to `network.Forward`.
+**Project layer** (`erpc/projects.go`): acquires a project-level rate limit permit, fires `HandleProjectPreForward` (EVM hook for `eth_call`, `eth_estimateGas`, `eth_chainId`, `eth_getLogs`, `trace_filter` — may short-circuit with an early response), then delegates to `network.Forward`.
 
 **Network layer** (`erpc/networks.go:931-1603`): in order —
 1. Static response check — matched entries return immediately without touching any upstream.
 2. Multiplexing — identical in-flight requests are deduplicated; followers wait for the leader's result.
 3. Cache read — a non-null hit is returned immediately and closes the multiplexer.
 4. Upstream ordering — the policy engine scores upstreams on latency, error rate, throttling, and block lag, returning them in score order.
-5. EVM pre-forward hook — range splitting for `eth_getLogs`, shortcircuit for `eth_chainId`.
-6. Future-block short-circuit — `eth_getBlockByNumber` requests for blocks beyond all upstream heads return a truthful `null` immediately.
+5. EVM pre-forward hook — range splitting for `eth_getLogs`, shortcircuit for `eth_chainId`, and `eth_blockNumber` answered from the served tip.
+6. Future-block short-circuit — with `evm.shortCircuitFutureBlocks: true`, `eth_getBlockByNumber` requests for blocks beyond all upstream heads return a truthful `null` immediately.
 7. Block-tag normalization — `"latest"` and `"finalized"` are replaced with concrete hex block numbers before the request reaches any upstream.
 8. Failsafe execution — the selected executor runs `timeout(retry(hedge(runUpstreamSweep)))`, or `timeout(consensus(retry(hedge(tryOneUpstream))))` when consensus is enabled.
 9. Async cache write — on a successful non-null response, the result is written to cache in a background goroutine with a 10-second deadline using the application context (not the request context, so client disconnects do not abort the write).

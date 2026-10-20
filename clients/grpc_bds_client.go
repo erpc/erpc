@@ -653,7 +653,7 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 		if filterParams["fromBlock"] != nil || filterParams["toBlock"] != nil {
 			return nil, fmt.Errorf("eth_getLogs blockHash cannot be combined with fromBlock/toBlock")
 		}
-		blockHash, err = parseHexBytes(bhStr)
+		blockHash, err = util.ParseBlockHashHexToBytes(bhStr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse blockHash: %w", err)
 		}

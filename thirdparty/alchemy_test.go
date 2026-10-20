@@ -69,7 +69,7 @@ func TestAlchemyVendor_SuccessfulFetchPromotesOverFallback(t *testing.T) {
 	fetched := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"result":{"data":[{"networkChainId":424242,"kebabCaseId":"custom-net"}]}}`))
+		_, _ = w.Write([]byte(`{"result":{"data":[{"networkChainId":424242,"kebabCaseId":"custom-net"},{"networkChainId":6900,"kebabCaseId":"anime-sepolia"}]}}`))
 		select {
 		case fetched <- struct{}{}:
 		default:
@@ -92,6 +92,9 @@ func TestAlchemyVendor_SuccessfulFetchPromotesOverFallback(t *testing.T) {
 	supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:424242")
 	require.NoError(t, err)
 	assert.False(t, supported, "first call returns built-in static map; async refresh hasn't published yet")
+	supported, err = vendor.SupportsNetwork(ctx, &logger, settings, "evm:6900")
+	require.NoError(t, err)
+	assert.False(t, supported, "chain 6900 is Nibiru mainnet, not Alchemy's anime-sepolia")
 
 	// Wait for async refresh to hit the mock server, then re-query.
 	select {
@@ -103,6 +106,9 @@ func TestAlchemyVendor_SuccessfulFetchPromotesOverFallback(t *testing.T) {
 		ok, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:424242")
 		return err == nil && ok
 	}, 5*time.Second, 50*time.Millisecond, "async-refreshed snapshot should promote custom chain over fallback")
+	supported, err = vendor.SupportsNetwork(ctx, &logger, settings, "evm:6900")
+	require.NoError(t, err)
+	assert.False(t, supported, "live API's 6900 entry must not survive the merge")
 
 	// After the refresh, static-default chains are NOT in the snapshot, but
 	// the alchemy resolveNetworks function falls back to the default map

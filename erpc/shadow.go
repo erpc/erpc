@@ -14,46 +14,6 @@ import (
 	"github.com/erpc/erpc/upstream"
 )
 
-// Tag-selector parameter position for the state methods the mirror rewrites
-// when ShadowUpstreamConfig.PinBlockTag is on. Methods absent here are
-// forwarded untouched — for eth_getBlockByNumber and friends, pinning the tag
-// would change the QUESTION, not just the evaluation height.
-var shadowTagParamIndex = map[string]int{
-	"eth_call":                1,
-	"eth_getBalance":          1,
-	"eth_getCode":             1,
-	"eth_getTransactionCount": 1,
-	"eth_getStorageAt":        2,
-}
-
-// pinBlockTagInBody rewrites params[idx] from "latest" to the given concrete
-// height in a JSON-RPC request body. Returns the rewritten body and whether a
-// rewrite happened; any parse trouble or a non-"latest" selector returns the
-// body unchanged (fail-open, like every other shadow-path guard).
-func pinBlockTagInBody(body []byte, idx int, height int64) ([]byte, bool) {
-	if len(body) == 0 || height <= 0 {
-		return body, false
-	}
-	var req map[string]interface{}
-	if err := common.SonicCfg.Unmarshal(body, &req); err != nil {
-		return body, false
-	}
-	params, ok := req["params"].([]interface{})
-	if !ok || len(params) <= idx {
-		return body, false
-	}
-	tag, ok := params[idx].(string)
-	if !ok || tag != "latest" {
-		return body, false
-	}
-	params[idx] = fmt.Sprintf("0x%x", height)
-	out, err := common.SonicCfg.Marshal(req)
-	if err != nil {
-		return body, false
-	}
-	return out, true
-}
-
 func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Network, shadowUpstreams []*upstream.Upstream, resp *common.NormalizedResponse) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -217,7 +177,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			// mismatch on every block boundary. No usable height means no pin
 			// (fail-open, like every other guard on this path).
 			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag {
-				if idx, ok := shadowTagParamIndex[method]; ok {
+				if idx, ok := evm.LatestTagParamIndex(method); ok {
 					height := int64(0)
 					if bn, ok2 := resp.EvmBlockNumber().(int64); ok2 && bn > 0 {
 						height = bn
@@ -225,7 +185,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 						height = primaryHead
 					}
 					if height > 0 {
-						if pinned, changed := pinBlockTagInBody(shadowReq.Body(), idx, height); changed {
+						if pinned, changed := evm.PinBlockTagInBody(shadowReq.Body(), idx, height); changed {
 							repinned := common.NewNormalizedRequest(pinned)
 							if dirs := origReq.Directives(); dirs != nil {
 								repinned.SetDirectives(dirs.Clone())
