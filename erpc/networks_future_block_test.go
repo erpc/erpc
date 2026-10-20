@@ -50,6 +50,7 @@ func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 		{id: "fb2", chainID: 123, latestBlock: 99},
 		{id: "fb3", chainID: 123, latestBlock: 98},
 	})
+	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
 	mockGetBlockByNumberNonNull("fb1", "fb2", "fb3")
 
 	// max observed head = 100; block 105 (0x69) is beyond every upstream.
@@ -115,8 +116,8 @@ func TestForward_FutureBlock_MixedStaticCapDispatchesWithinAvailableRange(t *tes
 	assert.Contains(t, jrr.GetResultString(), "0x270f")
 }
 
-// The short-circuit is gated on served-tip being enabled for the latest axis
-// (so the head is trustworthy). With served-tip disabled it must stay off.
+// The short-circuit is opt-in via evm.shortCircuitFutureBlocks; the default
+// config (here: nil servedTip, no flag) must dispatch.
 func TestForward_FutureBlock_ServedTipDisabled_Dispatches(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()

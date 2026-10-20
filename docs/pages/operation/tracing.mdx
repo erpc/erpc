@@ -575,6 +575,7 @@ only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start`
 | `Network.Forward` | normal | `erpc/networks.go:L943` |
 | `Network.GetFinality` | detail | `erpc/networks.go:L1646` |
 | `Network.NormalizeResponse` | detail | `erpc/networks.go:L2235` |
+| `Network.PostForward.eth_blockNumber` | detail | `architecture/evm/eth_blockNumber.go:L69` |
 | `Network.PostForward.eth_getBlockByNumber` | detail | `architecture/evm/eth_getBlockByNumber.go:L44` |
 | `Network.PostForward.eth_sendRawTransaction` | detail | `architecture/evm/eth_sendRawTransaction.go:L280` |
 | `Network.PostForwardHook` | detail | `architecture/evm/hooks.go:L64` |
@@ -596,7 +597,6 @@ only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start`
 | `PostgreSQLConnector.getWithWildcard` | detail | `data/postgresql.go:L1006` |
 | `Project.Forward` | detail | `erpc/projects.go:L103` |
 | `Project.PreForwardHook` | detail | `architecture/evm/hooks.go:L14` |
-| `Project.PreForwardHook.eth_blockNumber` | detail | `architecture/evm/eth_blockNumber.go:L16` |
 | `Project.PreForwardHook.eth_chainId` | detail | `architecture/evm/eth_chainId.go:L30` |
 | `Project.executeShadowRequest` | detail | `erpc/shadow.go:L82` |
 | `Query.Execute` | detail | `erpc/query_executor.go:L45` |
