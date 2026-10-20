@@ -22,6 +22,8 @@ type fakeNetwork struct {
 	held         map[string]struct{} // sourceIds whose heads are not delivered
 	dedupDropped int
 	dedupEntries int
+	headsIndexed int
+	undelivered  int
 }
 
 func newFakeNetwork(id string) *fakeNetwork {
@@ -48,6 +50,21 @@ func (n *fakeNetwork) DedupEntriesAdded(delta int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.dedupEntries += delta
+}
+func (n *fakeNetwork) HeadIndexed() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.headsIndexed++
+}
+func (n *fakeNetwork) Undelivered(EventKind) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.undelivered++
+}
+func (n *fakeNetwork) deliveryCounts() (headsIndexed, undelivered int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.headsIndexed, n.undelivered
 }
 func (n *fakeNetwork) dedupCounts() (dropped, entries int) {
 	n.mu.Lock()
@@ -362,6 +379,38 @@ func TestIndexer_Log_RefcountFanOutAndTeardown(t *testing.T) {
 	if _, entries := nw.dedupCounts(); entries != 0 {
 		t.Fatalf("released filter must leave no window keys, got %d", entries)
 	}
+}
+
+func TestIndexer_ReportsIndexedHeadsAndUndeliveredEvents(t *testing.T) {
+	idx := newIndexer(t)
+	nw := newFakeNetwork("evm:1")
+	nw.held = map[string]struct{}{"ws:fb": {}}
+	idx.RegisterNetwork(nw)
+	head := func(src string, num int64, hash string) StreamEvent {
+		return StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: src, Block: BlockRef{Number: num, Hash: hash}}
+	}
+	want := func(headsIndexed, undelivered int) {
+		t.Helper()
+		if h, u := nw.deliveryCounts(); h != headsIndexed || u != undelivered {
+			t.Fatalf("want %d indexed heads and %d undelivered, got %d and %d", headsIndexed, undelivered, h, u)
+		}
+	}
+
+	// No client subscribes to heads yet.
+	idx.Ingest(head("ws:up1", 100, "0xA"))
+	want(1, 1)
+
+	idx.Attach(&fakeEgress{name: "eg1", acceptAllHeads: true})
+	idx.Ingest(head("ws:up1", 101, "0xB"))
+	want(2, 1)
+	// A duplicate and a withheld head are neither indexed nor undelivered.
+	idx.Ingest(head("ws:up2", 101, "0xB"))
+	idx.Ingest(head("ws:fb", 102, "0xC"))
+	want(2, 1)
+
+	// A log for a filter no client holds.
+	idx.Ingest(logEvent("orphan", "ws:up1", logAddedJSON))
+	want(2, 2)
 }
 
 // newLogFilter registers "evm:1", ensures an empty logs filter and attaches

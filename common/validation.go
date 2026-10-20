@@ -122,6 +122,9 @@ func (s *ServerConfig) Validate() error {
 		if ws.SubscriptionBufferSize < 1 {
 			return fmt.Errorf("server.webSocket.subscriptionBufferSize must be at least 1")
 		}
+		if ws.MaxConnections < 0 || ws.MaxConnectionsPerIP < 0 || ws.MaxSubscriptions < 0 {
+			return fmt.Errorf("server.webSocket.maxConnections, maxConnectionsPerIP and maxSubscriptions must not be negative")
+		}
 	}
 
 	// Validate trusted IP forwarders if provided (IPs or CIDRs). Support legacy + new field

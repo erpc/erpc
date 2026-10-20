@@ -208,6 +208,16 @@ type WebSocketServerConfig struct {
 	// newPendingTransactions drop their oldest entry; logs close the
 	// connection instead (1013), so the client knows it missed data.
 	SubscriptionBufferSize int `yaml:"subscriptionBufferSize,omitempty" json:"subscriptionBufferSize"`
+	// MaxConnections caps concurrent client connections on this instance
+	// (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+	// unknown or spoofed.
+	MaxConnections int `yaml:"maxConnections,omitempty" json:"maxConnections"`
+	// MaxConnectionsPerIP caps concurrent client connections from one
+	// resolved client IP (0 = unlimited); see trustedIPForwarders.
+	MaxConnectionsPerIP int `yaml:"maxConnectionsPerIP,omitempty" json:"maxConnectionsPerIP"`
+	// MaxSubscriptions caps active subscriptions across all connections on
+	// this instance (0 = unlimited).
+	MaxSubscriptions int `yaml:"maxSubscriptions,omitempty" json:"maxSubscriptions"`
 }
 
 // ExecutionHeadersMode controls how much per-request execution detail is

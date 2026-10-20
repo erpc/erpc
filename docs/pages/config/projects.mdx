@@ -213,7 +213,7 @@ All metrics use the `erpc_` namespace.
 | `erpc_rate_limits_total` | `project`, `network`, `vendor`, `upstream`, `category`, `finality`, `user`, `agent_name`, `budget`, `scope`, `auth`, `origin` | Unified deny counter. Project layer: `origin="project"`, `auth=""`. Auth layer: `origin="auth"`, `auth="<type>:<index>"`. |
 | `erpc_rate_limiter_budget_max_count` | `budget`, `method`, `scope` | Gauge. |
 | `erpc_rate_limiter_failopen_total` | `project`, `network`, `user`, `agent_name`, `budget`, `category`, `reason` | Reasons: `admission_full` / `limit_timeout`. Monitor this to detect hard-enforcement gaps. |
-| `erpc_auth_failed_total` | `project`, `network`, `strategy`, `reason`, `agent_name` | Incremented inside auth strategies. |
+| `erpc_auth_failed_total` | `project`, `network`, `strategy`, `reason`, `agent_name` | Incremented when `ErrAuthUnauthorized` is returned to the client. |
 | `erpc_shadow_response_identical_total` | — | Shadow traffic comparison outcomes. |
 | `erpc_shadow_response_mismatch_total` | — | Mismatches log at error level with both hashes. |
 | `erpc_shadow_response_error_total` | — | Shadow request error outcomes. |
