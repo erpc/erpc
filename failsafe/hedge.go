@@ -2,6 +2,8 @@ package failsafe
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -122,7 +124,16 @@ func RunHedged[R any](
 			hooks.OnFire(idx, 0)
 		}
 		go func() {
-			r, err := inner(siblingCtx)
+			// A panic here would kill the process: no caller frame can recover a
+			// goroutine. Surface it as this attempt's error instead.
+			r, err := func() (r R, err error) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						err = fmt.Errorf("hedge attempt panic: %v\n%s", rec, debug.Stack())
+					}
+				}()
+				return inner(siblingCtx)
+			}()
 			select {
 			case resultCh <- hedgeResult[R]{r: r, err: err}:
 			default:

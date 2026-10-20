@@ -142,7 +142,7 @@ Both axes, every config. `EvmHighestLatestBlockNumber` / `EvmHighestFinalizedBlo
 4. **Pick** (`PickServedTip`): the highest block at least `servedTip.quorum` voters already have — the q-th highest head, or the lowest when fewer than q vote.
 5. The [regression guard](#regression-guard), then the [WebSocket delivered-head floor](#websocket-delivered-head-floor) (network-wide `latest` only), then the [guarantee floors](#guarantee-subsets).
 
-The result is the value served, recorded on the request's [lane](#selector-scoped-served-tip) and [exported as gauges](/reference/metrics#area-3-block-number-and-tip-tracking). Nothing is persisted or predicted. Source: <SourceLink file="erpc/networks.go" lines="870-942" />, <SourceLink file="erpc/networks.go" lines="430-506" />, <SourceLink file="common/served_tip.go" lines="112-157" />
+The result is the value served, recorded on the request's [lane](#selector-scoped-served-tip) and [exported as gauges](/reference/metrics#area-3-block-number-and-tip-tracking). The network-wide lane is also evaluated every second, both axes, so its gauges, advance age and guard memory stay current on a network with little traffic; use-upstream lanes are evaluated only by their requests. Nothing is persisted or predicted. Source: <SourceLink file="erpc/networks.go" lines="870-942" />, <SourceLink file="erpc/networks.go" lines="430-506" />, <SourceLink file="common/served_tip.go" lines="112-157" />, <SourceLink file="erpc/networks_served_tip_refresh.go" lines="9-42" />
 
 **Quorum.** `servedTip.quorum` is an integer ≥ 1 or `"majority"` (`floor(N/2)+1` of N voters), capped at N ([config](/config/projects/networks#config-schema)). Which head is served (heads sorted descending):
 
