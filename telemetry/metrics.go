@@ -221,8 +221,9 @@ var (
 	// last observed the served-tip VALUE change, exported at pick time. This
 	// is the universal stuck-tip detector: regardless of WHICH mechanism would
 	// freeze the tip (a failure mode nobody predicted included), a healthy
-	// network advances every block or two, so `age >> block time` on a network
-	// with live traffic is always alert-worthy. Absent until the process
+	// network advances every block or two, so `age >> block time` on the
+	// network-wide lane, which is evaluated every second whatever the
+	// traffic, is always alert-worthy. Absent until the process
 	// observes its first change.
 	MetricNetworkServedTipAdvanceAgeSeconds = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
