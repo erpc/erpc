@@ -267,7 +267,7 @@ metrics:
 10. **`erpc_ristretto_cache_current_cost` requires `memory.emitMetrics: true`.** Without this flag the gauge is registered and appears in `/metrics` but always returns 0. It is the only metric in the system requiring an explicit opt-in to be meaningful. (<SourceLink file="data/memory.go" lines="71" />)
 11. **`erpc_upstream_cordoned` `category` label is the cordon scope (method string or `"*"`), not a request-category label.** Do not join this `category` with `category` from request-accounting metrics. (<SourceLink file="health/tracker.go" lines="458-465" />)
 12. **`erpc_upstream_cordoned` `vendor` label is `"n/a"` when no vendor is configured.** Dashboard JOINs between cordon metrics and upstream request metrics must handle the `"n/a"` value for unvendored upstreams. (<SourceLink file="upstream/upstream.go" lines="275-286" />)
-13. **`erpc_auth_failed_total` always has `strategy="database"`.** Only the database auth strategy emits this counter. For other strategies, monitor failures via `erpc_network_failed_request_total{error=~"ErrAuthUnauthorized.*"}`. (<SourceLink file="auth/strategy_database.go" lines="467-472" />)
+13. **`erpc_auth_failed_total` increments when `ErrAuthUnauthorized` is sent to the client.** Closed `reason` per strategy via `NewErrAuthUnauthorized`; intermediate multi-strategy rejects are not counted. `agent_name` is always `"unknown"`. (<SourceLink file="auth/auth_metrics.go" />)
 14. **`erpc_upstream_attempt_outcome_total` `is_hedge`/`is_retry` are literal `"true"`/`"false"` strings.** Use `{is_hedge="true"}` in PromQL, not `{is_hedge="1"}`. (<SourceLink file="upstream/upstream.go" lines="80-85" />)
 15. **`erpc_network_evm_block_range_requested_total` `bucket` label is unbounded.** When tip is known, `ComputeBlockHeatmapBucket` produces human-readable relative labels (`"TIP"`, `"L100k"`, `"100k-200k"`, etc.). This counter is not covered by the idle sweep — cardinality grows permanently. (<SourceLink file="erpc/block_heatmap.go" lines="87-175" />)
 16. **`erpc_selection_*` metrics carry a `method` label.** Untrusted callers injecting hundreds of distinct method names create unbounded selection-gauge series. Consider a Prometheus relabeling drop rule for the `method` label in untrusted deployments.
@@ -499,7 +499,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Failed authentication attempt. `strategy` is always `"database"` — only the database auth strategy emits this counter. |
+| `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Client-facing auth denial. Closed `reason` set; `agent_name` always `unknown`; no `user` label. |
 
 #### Area 16: Panics
 
@@ -592,6 +592,6 @@ either way.
 - [Failsafe: Retry](/config/failsafe/retry) — `erpc_network_retry_attempt_total` with its `reason` label tracks retry behavior.
 - [Selection policies](/config/projects/selection-policies) — the `erpc_selection_*` family tracks tick-by-tick upstream ranking.
 - [Cache](/config/database) — `erpc_cache_get_*` and `erpc_cache_set_*` families cover all cache connector activity.
-- [Auth](/config/auth) — `erpc_auth_failed_total` for database-strategy failures.
+- [Auth](/config/auth) — `erpc_auth_failed_total` for all auth strategy failures.
 
 </AISection>
