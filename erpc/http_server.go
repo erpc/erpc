@@ -59,6 +59,7 @@ type HttpServer struct {
 	resolvedResponseHeaders map[string]string
 	subscriptionManager     *SubscriptionManager
 	activeWsConns           sync.Map // connId -> *WsConnection
+	wsConnLimiter           *wsConnLimiter
 	reqMaxTimeout           time.Duration
 }
 
@@ -116,6 +117,9 @@ func NewHttpServer(
 	}
 
 	if cfg != nil {
+		if ws := cfg.WebSocket; ws != nil {
+			srv.wsConnLimiter = newWsConnLimiter(ws.MaxConnections, ws.MaxConnectionsPerIP)
+		}
 		srv.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
 		var forwarders []string
 		forwarders = append(forwarders, cfg.TrustedIPForwarders...)
@@ -608,6 +612,18 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
 
+				// Subscription methods need a client WebSocket connection to
+				// deliver notifications to, so they are served only on the
+				// WebSocket path (handleWebSocket, which returns before this
+				// loop). Over HTTP they would sweep the upstreams and fail with
+				// an opaque error; reject them as unsupported (-32601) up front.
+				if IsSubscriptionMethod(method) {
+					err := common.NewErrNotImplemented(method + " is only supported over a WebSocket connection")
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
+				}
+
 				shouldHandleMethod, err := isMethodAllowed(project, method)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
@@ -976,7 +992,11 @@ func (s *HttpServer) parseUrlPath(
 		isHealthCheck = true
 		segments = segments[:len(segments)-1] // Remove healthcheck segment
 	} else if len(segments) == 0 || (len(segments) == 1 && segments[0] == "") {
-		if !(isPost || isOptions) {
+		// A bare root path is a healthcheck only when it is not a WebSocket
+		// upgrade. Otherwise wss://host/ (common with domain aliasing) would be
+		// classified as health and 404'd on the projects listener / mis-served
+		// as health on the primary, never reaching the WS dispatch.
+		if !(isPost || isOptions) && !isWebSocketUpgradeRequest(r, s.webSocketEnabled()) {
 			isHealthCheck = true
 			segments = nil
 		}
@@ -1958,6 +1978,76 @@ func handleErrorResponse(
 			attribute.Int("response_status", statusCode),
 		),
 	)
+}
+
+// prewarmInterval is how often the prewarm reconciler re-scans for WS-capable
+// networks that still need their newHeads subscription established. Var (not
+// const) so tests can compress it.
+var prewarmInterval = 15 * time.Second
+
+// PrewarmUpstreamSubscriptions proactively establishes the upstream newHeads
+// subscription for every WS-capable network, without waiting for a client
+// eth_subscribe. This keeps the EVM state poller's latest-block tip fed by
+// pushed heads (cheap) instead of falling back to RPC-polling `latest` every
+// cycle (expensive) — so an instance that never receives a client subscription still
+// polls efficiently.
+//
+// It runs as a reconciler because networks initialize asynchronously (the
+// registry's background initializer tasks): each tick it attempts to bootstrap
+// any network not yet warmed, until ctx is cancelled. bootstrapNetwork is
+// idempotent per network, so re-scans are cheap. Networks with no WS upstreams
+// are skipped permanently — the state poller handles head tracking for
+// HTTP-only networks via RPC polling. No-op while the WebSocket server is
+// disabled.
+func (s *HttpServer) PrewarmUpstreamSubscriptions(ctx context.Context) {
+	if s.subscriptionManager == nil || s.erpc == nil || !s.webSocketEnabled() {
+		return
+	}
+
+	// indexer network key (project/network) -> bootstrapped or definitively
+	// skipped (HTTP-only).
+	settled := make(map[string]struct{})
+
+	reconcile := func() {
+		for _, prj := range s.erpc.GetProjects() {
+			for _, nw := range prj.GetNetworks() {
+				id := nw.Id()
+				key := indexerNetworkKey(nw)
+				if _, done := settled[key]; done {
+					continue
+				}
+				err := s.subscriptionManager.bootstrapNetwork(ctx, nw)
+				switch {
+				case err == nil:
+					settled[key] = struct{}{}
+					s.logger.Info().Str("networkId", id).
+						Msg("prewarmed upstream newHeads subscription")
+				case common.HasErrorCode(err, common.ErrCodeNoWsUpstreamAvailable):
+					// HTTP-only network — nothing to prewarm; don't retry.
+					settled[key] = struct{}{}
+					s.logger.Debug().Str("networkId", id).
+						Msg("no WS upstreams; skipping subscription prewarm")
+				default:
+					// Transient (network still initializing, upstreams not ready,
+					// circuit breaker open). Leave unsettled; retried next tick.
+					s.logger.Debug().Err(err).Str("networkId", id).
+						Msg("subscription prewarm not ready yet, will retry")
+				}
+			}
+		}
+	}
+
+	reconcile() // immediate first pass
+	ticker := time.NewTicker(prewarmInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reconcile()
+		}
+	}
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {

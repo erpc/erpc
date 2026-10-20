@@ -419,8 +419,13 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 		ns.handle.DedupDropped(ev.Kind)
 		return
 	}
+	if ev.Kind == KindNewHead {
+		ns.handle.HeadIndexed()
+	}
 
-	i.fanOut(IndexedEvent{StreamEvent: ev, Removed: removed})
+	if !i.fanOut(IndexedEvent{StreamEvent: ev, Removed: removed}) {
+		ns.handle.Undelivered(ev.Kind)
+	}
 }
 
 // dedupe reports whether ev should be delivered. Heads are compared to the
@@ -458,13 +463,17 @@ func (i *Indexer) dedupe(ns *networkState, ev *StreamEvent, removed bool) bool {
 	}
 }
 
-func (i *Indexer) fanOut(ev IndexedEvent) {
+// fanOut delivers ev to every interested egress and reports whether there
+// was one.
+func (i *Indexer) fanOut(ev IndexedEvent) (delivered bool) {
 	i.egresses.Range(func(_, v any) bool {
 		eg := v.(EventEgress)
 		if !eg.InterestedIn(ev.Kind, ev.NetworkId, ev.FilterHash) {
 			return true
 		}
 		eg.Deliver(ev)
+		delivered = true
 		return true
 	})
+	return delivered
 }

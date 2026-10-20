@@ -1905,6 +1905,20 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	// The client can free a slot by unsubscribing; -32603 would read as a server fault.
+	if HasErrorCode(err, ErrCodeSubscriptionLimitExceeded) {
+		reason := "subscription limit exceeded"
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorCapacityExceeded,
+			reason,
+			err,
+			nil,
+		)
+	}
 	if HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
 		var reason string
 		if se, ok := err.(StandardError); ok {
@@ -1979,6 +1993,26 @@ func TranslateToJsonRpcException(err error) error {
 			0,
 			JsonRpcErrorEvmLargeRange,
 			"getLogs request exceeded max allowed range",
+			err,
+			nil,
+		)
+	}
+	// A method eRPC declines to serve (filter lifecycle methods under a
+	// multi-upstream pool, eth_accounts/eth_sign, subscriptions over HTTP) is
+	// "method not supported", not an internal fault. Without this it falls
+	// through to -32603, which clients read as a transient server error: ethers
+	// only downgrades filters to polling when the error classifies as
+	// UNSUPPORTED_OPERATION (code -32601 / a "not found|supported" message), so a
+	// -32603 leaves it re-arming the same call on every block forever.
+	if HasErrorCode(err, ErrCodeNotImplemented) {
+		reason := "method not supported"
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorUnsupportedException,
+			reason,
 			err,
 			nil,
 		)

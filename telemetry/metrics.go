@@ -135,6 +135,16 @@ var (
 		Help:      "Whether the upstream WebSocket connection is currently established (1) or down/wedged (0).",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	// MetricUpstreamWebsocketHeadsStallReconnectsTotal counts reconnects
+	// forced because an upstream's newHeads subscription went silent while
+	// the same upstream's polled head kept advancing. Any increase means a
+	// node dropped a live subscription without closing it.
+	MetricUpstreamWebsocketHeadsStallReconnectsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_websocket_heads_stall_reconnects_total",
+		Help:      "Upstream WebSocket reconnects forced by a silent newHeads subscription while the upstream head advanced.",
+	}, []string{"project", "network", "upstream"})
+
 	MetricWebsocketSubscriptionNotificationsDroppedTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "websocket_subscription_notifications_dropped_total",
@@ -193,6 +203,24 @@ var (
 		Namespace: "erpc",
 		Name:      "subscription_dedup_entries",
 		Help:      "Event keys held by the network's logs and newPendingTransactions dedup windows; each filter's window holds at most indexer.dedupWindowSize keys (default 8192).",
+	}, []string{"project", "network"})
+
+	MetricSubscriptionWithheldHeadsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "subscription_withheld_heads_total",
+		Help:      "Upstream newHeads events not delivered to clients because the network did not accept the head.",
+	}, []string{"project", "network"})
+
+	MetricSubscriptionUndeliveredTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "subscription_undelivered_total",
+		Help:      "Upstream subscription events that passed dedup but matched no client subscription.",
+	}, []string{"project", "network", "kind"})
+
+	MetricNetworkSubscriptionLastHeadTimestamp = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_subscription_last_head_timestamp_seconds",
+		Help:      "Unix time the subscription indexer last accepted a new head for the network.",
 	}, []string{"project", "network"})
 
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
@@ -260,6 +288,15 @@ var (
 		Name:      "upstream_head_benched_total",
 		Help:      "Times an upstream's head was benched out of the served-tip ballots and the network lag reference: it stayed behind peers that kept advancing for its stall window.",
 	}, []string{"project", "vendor", "network", "upstream"})
+
+	// MetricWebsocketRejectedTotal counts client WebSocket connections and
+	// subscriptions refused by the instance-wide caps, by reason:
+	// conn_global, conn_per_ip or sub_global.
+	MetricWebsocketRejectedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "websocket_rejected_total",
+		Help:      "Client WebSocket connections and subscriptions refused by server.webSocket caps, by reason (conn_global, conn_per_ip, sub_global).",
+	}, []string{"project", "reason"})
 
 	MetricUpstreamCordoned = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",

@@ -214,6 +214,21 @@ func (c *WsJsonRpcClient) Epoch() uint64 {
 	return c.epoch.Load()
 }
 
+// Done is closed once the client has shut down for good.
+func (c *WsJsonRpcClient) Done() <-chan struct{} { return c.appCtx.Done() }
+
+// Reconnect closes connection epoch, if still current; readLoop then tears
+// it down and re-dials, firing the disconnect and reconnect callbacks.
+func (c *WsJsonRpcClient) Reconnect(epoch uint64) {
+	c.connMu.Lock()
+	conn := c.conn
+	current := conn != nil && c.epoch.Load() == epoch
+	c.connMu.Unlock()
+	if current {
+		_ = conn.Close()
+	}
+}
+
 func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartDetailSpan(ctx, "WsJsonRpcClient.SendRequest",
 		trace.WithAttributes(
@@ -613,7 +628,7 @@ func (c *WsJsonRpcClient) handleMessage(message []byte, epoch uint64) {
 		var subID string
 		if p.sub != nil && common.SonicCfg.Unmarshal(msg.Result, &subID) == nil && subID != "" {
 			if abandoned {
-				go c.unsubscribeOrphan(subID, epoch)
+				go c.UnsubscribeOrphan(subID, epoch)
 				return
 			}
 			// The id outlives the frame it was decoded from.
@@ -655,7 +670,7 @@ func (c *WsJsonRpcClient) handleNotification(method string, params []byte, epoch
 		// Nothing owns it: cancel it, unless a subscribe in flight may be
 		// about to claim it. Each later notification retries the cancel.
 		if notifParams.Subscription != "" && !c.subscribeInFlight() {
-			go c.unsubscribeOrphan(strings.Clone(notifParams.Subscription), epoch)
+			go c.UnsubscribeOrphan(strings.Clone(notifParams.Subscription), epoch)
 		}
 		return
 	}
@@ -689,9 +704,9 @@ func (c *WsJsonRpcClient) writeToConn(conn *websocket.Conn, messageType int, dat
 	return conn.WriteMessage(messageType, data)
 }
 
-// unsubscribeOrphan cancels a subscription the upstream created after its
-// caller gave up. Fire-and-forget: the response is dropped as unknown.
-func (c *WsJsonRpcClient) unsubscribeOrphan(subID string, epoch uint64) {
+// UnsubscribeOrphan cancels a subscription of connection epoch that nobody
+// owns any more. Fire-and-forget: the response is dropped as unknown.
+func (c *WsJsonRpcClient) UnsubscribeOrphan(subID string, epoch uint64) {
 	body, err := common.SonicCfg.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      c.wireIDCounter.Add(1),
