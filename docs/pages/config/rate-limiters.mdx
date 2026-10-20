@@ -125,9 +125,9 @@ In Redis mode, counters are shared across all instances. When Redis cannot decid
 request, `store.onFailure` does.
 
 **Over-limit cache.** Once Redis reports a rule's key over its limit, each replica keeps
-that key in a 4 MiB in-process cache until the window ends. Later requests on that key
-are denied without a Redis call, even when Redis is down; other rules in the request still
-go to Redis. Source: <SourceLink file="upstream/ratelimiter_registry.go" />
+that key in a 4 MiB in-process cache until the window ends, and denies it from there.
+Other rules in the same request still go to Redis; if every matching key is cached, no
+Redis call is made, so the denial holds while Redis is down. Source: <SourceLink file="upstream/ratelimiter_registry.go" />
 
 **Redis store failures.** Four conditions leave a request undecided by Redis:
 
