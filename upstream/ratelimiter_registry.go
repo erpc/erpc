@@ -140,7 +140,8 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 		client,
 		nil,
 		utils.NewTimeSourceImpl(),
-		rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404
+		// Locked: concurrent DoLimit calls draw expiry jitter from it.
+		rand.New(utils.NewLockedSource(time.Now().UnixNano())), // #nosec G404
 		5,
 		nil,
 		defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
@@ -187,6 +188,20 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 		}
 		if admissionCap > 0 {
 			budget.admission = make(chan struct{}, admissionCap)
+		}
+		if r.cfg.Store != nil && r.cfg.Store.Driver == "redis" {
+			budget.onFailure = r.cfg.Store.OnFailure
+			if budget.onFailure == common.RateLimitStoreFailureLocal {
+				budget.localFactor = r.cfg.Store.LocalLimitFactor
+				budget.local = NewMemoryRateLimitCache(
+					utils.NewTimeSourceImpl(),
+					rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404
+					0,
+					defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
+					defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix),
+					r.statsManager,
+				)
+			}
 		}
 		// Pre-resolve metric handles for the hot path.
 		budget.inflightGauge = telemetry.MetricRateLimiterRemoteInflight.WithLabelValues(budgetCfg.Id)

@@ -3350,7 +3350,28 @@ type RateLimitStoreConfig struct {
 	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
 	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
 	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
+	// OnFailure decides a request the redis store could not: not connected,
+	// erroring, slower than redis.getTimeout, or at its in-flight cap.
+	OnFailure RateLimitStoreFailureMode `yaml:"onFailure,omitempty" json:"onFailure,omitempty"`
+	// LocalLimitFactor scales every maxCount for the in-process limiter that
+	// onFailure: local decides with. It counts this replica only, so set it
+	// near 1/replicas. Required for local; must be > 0 and <= 1.
+	LocalLimitFactor float64 `yaml:"localLimitFactor,omitempty" json:"localLimitFactor,omitempty"`
 }
+
+// RateLimitStoreFailureMode is what a redis-backed budget does with a request
+// its store could not decide.
+type RateLimitStoreFailureMode string
+
+const (
+	// RateLimitStoreFailureAllow (default) admits the request.
+	RateLimitStoreFailureAllow RateLimitStoreFailureMode = "allow"
+	// RateLimitStoreFailureDeny rejects the request as rate limited.
+	RateLimitStoreFailureDeny RateLimitStoreFailureMode = "deny"
+	// RateLimitStoreFailureLocal decides it with an in-process limiter that
+	// counts every request, at maxCount × localLimitFactor.
+	RateLimitStoreFailureLocal RateLimitStoreFailureMode = "local"
+)
 
 // CachePartitionKey builds the JSON-RPC cache partition key.
 // Empty suffix keeps {networkId}:{ref}; a set suffix yields {networkId}:{suffix}:{ref}.
