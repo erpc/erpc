@@ -85,10 +85,15 @@ type consensusAnalysis struct {
 	// Use for "how many more can arrive" math; use totalParticipants for
 	// vote counting.
 	collectedResponses int
-	validParticipants  int
-	originalRequest    *common.NormalizedRequest
-	leaderUpstream     common.Upstream
-	method             string // The RPC method being called (e.g., "eth_getTransactionCount")
+	// collectionSealed marks the bag round-complete for waivers even when
+	// collectedResponses < maxParticipants. Only set when every participant
+	// slot has produced a terminal acknowledgement — cancellation alone must
+	// not seal (cancel-ignoring / already-buffered results can still arrive).
+	collectionSealed  bool
+	validParticipants int
+	originalRequest   *common.NormalizedRequest
+	leaderUpstream    common.Upstream
+	method            string // The RPC method being called (e.g., "eth_getTransactionCount")
 
 	// Cached computed values
 	cachedBestNonEmpty *responseGroup
@@ -259,8 +264,23 @@ func dedupeByUpstream(responses []*execResult) []*execResult {
 // totalParticipants: a deduplicated duplicate consumed a participant slot —
 // counting it as still-arriving capacity would suppress short-circuits (and
 // hold composition-dispute rounds open) after every slot already answered.
+//
+// A sealed collection reports false even when collectedResponses <
+// maxParticipants — used only when every slot has already acknowledged.
 func (a *consensusAnalysis) hasRemaining() bool {
+	if a == nil || a.collectionSealed {
+		return false
+	}
 	return a.config.maxParticipants > a.collectedResponses
+}
+
+// sealCollection marks the response bag final for waiver evaluation.
+// Callers must only seal after every participant slot has produced a
+// terminal result/acknowledgement — not merely after cancelling stragglers.
+func (a *consensusAnalysis) sealCollection() {
+	if a != nil {
+		a.collectionSealed = true
+	}
 }
 
 func (a *consensusAnalysis) participants() []common.ParticipantInfo {
