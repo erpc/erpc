@@ -69,9 +69,11 @@ var rlStoreArchs = []rlStoreArch{
 	},
 }
 
-// A budget of 3/hour on a real Redis client, walked through a healthy, slow,
+// A budget of 5/hour on a real Redis client, walked through a healthy, slow,
 // dead and restarted store, on each architecture, at network and upstream
-// level, under each onFailure mode. Requests run one at a time.
+// level, under each onFailure mode. Requests run one at a time. The slow and
+// dead phases stay under 5 in Redis, so the over-limit cache never decides
+// for them.
 func TestNetwork_RateLimitStoreFailureFollowsOnFailure(t *testing.T) {
 	type phases struct{ healthy, slow, down, recovered int }
 	const healthy, slow, down, recovered = 1, 3, 1, 2
@@ -82,10 +84,12 @@ func TestNetwork_RateLimitStoreFailureFollowsOnFailure(t *testing.T) {
 		decision string
 	}{
 		// Failed checks are admitted. Recovered: the slow calls still landed
-		// in Redis (1+3 > 3), so Redis denies again.
+		// in Redis and the restart probe adds one (1+3+1 = 5), so Redis
+		// denies again.
 		{common.RateLimitStoreFailureAllow, phases{1, 3, 1, 0}, "allow"},
 		{common.RateLimitStoreFailureDeny, phases{1, 0, 0, 0}, "deny"},
-		// The local counter saw the healthy request: 2 more fit in 3/hour.
+		// The local counter (factor 0.6: 3/hour) saw the healthy request: 2
+		// more fit.
 		{common.RateLimitStoreFailureLocal, phases{1, 2, 0, 0}, "local_"},
 	}
 	for _, a := range rlStoreArchs {
@@ -184,13 +188,13 @@ func setupRateLimitStoreNetwork(t *testing.T, a rlStoreArch, level, budget, redi
 		OnFailure:      mode,
 	}
 	if mode == common.RateLimitStoreFailureLocal {
-		store.LocalLimitFactor = 1
+		store.LocalLimitFactor = 0.6
 	}
 	rlCfg := &common.RateLimiterConfig{
 		Store: store,
 		Budgets: []*common.RateLimitBudgetConfig{{
 			Id:    budget,
-			Rules: []*common.RateLimitRuleConfig{{Method: "*", MaxCount: 3, Period: common.RateLimitPeriodHour}},
+			Rules: []*common.RateLimitRuleConfig{{Method: "*", MaxCount: 5, Period: common.RateLimitPeriodHour}},
 		}},
 	}
 	require.NoError(t, rlCfg.SetDefaults())

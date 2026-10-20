@@ -71,7 +71,9 @@ func perHour(max uint32) *common.RateLimitRuleConfig {
 }
 
 // A redis budget walked through a healthy, slow, saturated and dead store,
-// under each onFailure mode. Limit 10/hour; 5 requests land while healthy.
+// under each onFailure mode. 5 requests land while healthy. The remote limit
+// (1000/hour) stays out of reach, so the over-limit cache never decides here;
+// local mode counts at factor 0.01, i.e. 10/hour.
 func TestRateLimiterRedis_StoreFailureFollowsOnFailure(t *testing.T) {
 	cases := []struct {
 		mode common.RateLimitStoreFailureMode
@@ -106,9 +108,9 @@ func TestRateLimiterRedis_StoreFailureFollowsOnFailure(t *testing.T) {
 			budget := newRedisBudget(t, proxy.Addr(), func(s *common.RateLimitStoreConfig) {
 				s.OnFailure = tc.mode
 				if tc.mode == common.RateLimitStoreFailureLocal {
-					s.LocalLimitFactor = 1
+					s.LocalLimitFactor = 0.01
 				}
-			}, perHour(10))
+			}, perHour(1000))
 
 			require.Equal(t, int64(5), admitted(t, budget, 5, false), "healthy store admits within the limit")
 
@@ -152,4 +154,16 @@ func TestRateLimiterRedis_ManyRulesShareOneAdmissionSlot(t *testing.T) {
 	// The tightest rule still decides: eth_call allows 2 per hour.
 	proxy.SetDelay(0)
 	require.Equal(t, int64(1), admitted(t, budget, 2, false), "eth_call 2/hour rule enforced in the batch")
+}
+
+// A key Redis reported over its limit is denied from the local cache until
+// its window ends: no Redis call, so it holds even with Redis dead under the
+// default onFailure allow.
+func TestRateLimiterRedis_OverLimitKeyDeniesWithoutRedis(t *testing.T) {
+	m := miniredis.RunT(t)
+	budget := newRedisBudget(t, m.Addr(), nil, perHour(2))
+
+	require.Equal(t, int64(2), admitted(t, budget, 3, false), "third request is over the limit")
+	m.Close()
+	require.Equal(t, int64(0), admitted(t, budget, 5, false), "cached over-limit key denies without Redis")
 }

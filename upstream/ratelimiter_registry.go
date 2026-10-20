@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coocood/freecache"
 	gostats "github.com/lyft/gostats"
 	"github.com/rs/zerolog"
 
@@ -23,6 +24,10 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 )
+
+// overLimitCacheBytes sizes the per-replica over-limit key cache; freecache's
+// floor is 512 KiB and a key is ~100 bytes.
+const overLimitCacheBytes = 4 << 20
 
 type RateLimitersRegistry struct {
 	appCtx          context.Context
@@ -143,7 +148,9 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 		// Locked: concurrent DoLimit calls draw expiry jitter from it.
 		rand.New(utils.NewLockedSource(time.Now().UnixNano())), // #nosec G404
 		5,
-		nil,
+		// Remembers keys over their limit until the window ends, so denials
+		// skip Redis. Eviction only costs a Redis call.
+		freecache.NewCache(overLimitCacheBytes),
 		defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
 		defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix),
 		mgr,
