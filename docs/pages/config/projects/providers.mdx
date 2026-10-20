@@ -274,12 +274,12 @@ Dynamic-only discovery from `networksUrl`; no static fallback → cold start ret
 
 #### drpc
 
-Remote catalog (default `https://lb.drpc.org/networks`) with a 150-chain static fallback; after a successful fetch the fallback is **fully replaced** (no merge). **Forces `autoIgnoreUnsupportedMethods: false`** on every config (even preset endpoints) because dRPC transiently returns method-not-found responses that must stay retryable. URL: `https://lb.drpc.org/ogrpc?network={name}&dkey={apiKey}`. Catalog filters to premium EVM JSON-RPC chains only (`blockchain_type=="eth" && api_type=="jsonrpc" && has_premium`); when multiple names map to one chain id, the highest `priority` value wins. Error mapping: message `"token is invalid"` → `ErrEndpointUnauthorized`; `"ChainException: Unexpected error (code=40000)"` or `"invalid block range"` → `ErrEndpointMissingData`.
+Remote catalog (default `https://lb.drpc.live/networks`) with a 150-chain static fallback; after a successful fetch the fallback is **fully replaced** (no merge). **Forces `autoIgnoreUnsupportedMethods: false`** on every config (even preset endpoints) because dRPC transiently returns method-not-found responses that must stay retryable. URL: `https://lb.drpc.live/ogrpc?network={name}&dkey={apiKey}`. Catalog filters to premium EVM JSON-RPC chains only (`blockchain_type=="eth" && api_type=="jsonrpc" && has_premium`); when multiple names map to one chain id, the highest `priority` value wins. Error mapping: message `"token is invalid"` → `ErrEndpointUnauthorized`; `"ChainException: Unexpected error (code=40000)"` or `"invalid block range"` → `ErrEndpointMissingData`.
 
 | key | required | default |
 |---|---|---|
 | `apiKey` | yes | — |
-| `chainsUrl` | no | `https://lb.drpc.org/networks` |
+| `chainsUrl` | no | `https://lb.drpc.live/networks` |
 | `recheckInterval` | no | `24h` |
 | `creditUnits` | no | dRPC's flat CU table |
 

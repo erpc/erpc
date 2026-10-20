@@ -54,7 +54,7 @@ func TestDrpcVendor_ColdStartFallback_GenerateConfigs(t *testing.T) {
 	configs, err := vendor.GenerateConfigs(ctx, &logger, upstream, settings)
 	require.NoError(t, err)
 	require.Len(t, configs, 1)
-	assert.Contains(t, configs[0].Endpoint, "lb.drpc.org")
+	assert.Contains(t, configs[0].Endpoint, "lb.drpc.live")
 	assert.Contains(t, configs[0].Endpoint, "ethereum")
 	assert.Contains(t, configs[0].Endpoint, "test-key")
 }
@@ -124,4 +124,24 @@ func swapDrpcNetworksURL(t *testing.T, newURL string) string {
 	prev := drpcNetworksURL
 	drpcNetworksURL = newURL
 	return prev
+}
+
+func TestDrpcVendor_OwnsUpstream(t *testing.T) {
+	vendor := CreateDrpcVendor()
+	cases := []struct {
+		endpoint string
+		owned    bool
+	}{
+		{"drpc://key", true},
+		{"evm+drpc://key", true},
+		{"https://lb.drpc.live/ogrpc?network=ethereum&dkey=key", true},
+		{"https://lb.drpc.org/ogrpc?network=ethereum&dkey=key", true},
+		{"https://example.com/rpc", false},
+	}
+	for _, c := range cases {
+		t.Run(c.endpoint, func(t *testing.T) {
+			got := vendor.OwnsUpstream(&common.UpstreamConfig{Endpoint: c.endpoint})
+			assert.Equal(t, c.owned, got)
+		})
+	}
 }
