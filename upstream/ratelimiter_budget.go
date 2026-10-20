@@ -159,7 +159,6 @@ func (b *RateLimiterBudget) AdjustBudgetByFactor(rule *RateLimitRule, factor flo
 	return prev, next, true
 }
 
-
 // getCache returns the current cache from the registry (thread-safe)
 func (b *RateLimiterBudget) getCache() limiter.RateLimitCache {
 	return b.registry.GetCache()
