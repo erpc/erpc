@@ -1073,6 +1073,22 @@ export interface EvmUpstreamConfig {
    */
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
+  /**
+   * Multicall3 packs eth_calls bound for this upstream that share a block into one
+   * Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+   * per pack. Nil (default) sends every eth_call alone.
+   */
+  multicall3?: EvmMulticall3Config;
+}
+/**
+ * EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+ * and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+ * A call the pack cannot answer exactly (multicall failed, inner call reverted
+ * or returned nothing) is sent alone, as it would be without packing.
+ */
+export interface EvmMulticall3Config {
+  maxWait?: Duration;
+  maxCalls?: number /* int */;
 }
 /**
  * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,

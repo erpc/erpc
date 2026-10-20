@@ -1177,6 +1177,14 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			return err
 		}
 	}
+	if m := e.Multicall3; m != nil {
+		if m.MaxWait <= 0 {
+			return fmt.Errorf("upstream.*.evm.multicall3.maxWait must be greater than 0")
+		}
+		if m.MaxCalls < 2 {
+			return fmt.Errorf("upstream.*.evm.multicall3.maxCalls must be at least 2")
+		}
+	}
 
 	return nil
 }

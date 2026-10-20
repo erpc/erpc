@@ -211,6 +211,7 @@ type Upstream struct {
 	evmStatePoller       common.EvmStatePoller
 	svmStatePoller       common.SvmStatePoller
 	statePollerOnce      sync.Once
+	evmMulticall3        *evm.Multicall3Batcher
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 	// Highest block at which the integrity state probe PROVED this upstream
@@ -315,6 +316,10 @@ func NewUpstream(
 		return nil, err
 	} else {
 		pup.Client = client
+	}
+
+	if ec := pup.config.Evm; ec != nil && ec.Multicall3 != nil {
+		pup.evmMulticall3 = evm.NewMulticall3Batcher(ec.Multicall3)
 	}
 
 	lg.Debug().Msgf("prepared upstream")

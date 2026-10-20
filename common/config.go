@@ -1429,6 +1429,19 @@ type EvmUpstreamConfig struct {
 	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 
 	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+	// Multicall3 packs eth_calls bound for this upstream that share a block into one
+	// Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+	// per pack. Nil (default) sends every eth_call alone.
+	Multicall3 *EvmMulticall3Config `yaml:"multicall3,omitempty" json:"multicall3"`
+}
+
+// EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+// and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+// A call the pack cannot answer exactly (multicall failed, inner call reverted
+// or returned nothing) is sent alone, as it would be without packing.
+type EvmMulticall3Config struct {
+	MaxWait  Duration `yaml:"maxWait,omitempty" json:"maxWait" tstype:"Duration"`
+	MaxCalls int      `yaml:"maxCalls,omitempty" json:"maxCalls"`
 }
 
 // EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
@@ -1580,6 +1593,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	}
 	if c.QueryShim != nil {
 		copied.QueryShim = c.QueryShim.Copy()
+	}
+	if c.Multicall3 != nil {
+		v := *c.Multicall3
+		copied.Multicall3 = &v
 	}
 
 	return copied

@@ -10,6 +10,7 @@ import (
 	"math"
 	"strconv"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 )
@@ -92,6 +93,11 @@ func (u *Upstream) EvmFinalizedBlock() (int64, error) {
 
 func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
 	return u.evmStatePoller
+}
+
+// EvmMulticall3Batcher returns the eth_call packer, nil when evm.multicall3 is off.
+func (u *Upstream) EvmMulticall3Batcher() *evm.Multicall3Batcher {
+	return u.evmMulticall3
 }
 
 // EvmStateProvenBlock returns the highest block at which the integrity state
