@@ -44,6 +44,7 @@ type mc3TestNode struct {
 	mode       atomic.Value // "ok" | "error" | "garbage"
 	mu         sync.Mutex
 	multicalls int
+	gasOfPacks map[string]int
 	singles    map[string]int
 }
 
@@ -52,6 +53,7 @@ func (f *mc3TestNode) reset(mode string) {
 	defer f.mu.Unlock()
 	f.mode.Store(mode)
 	f.multicalls = 0
+	f.gasOfPacks = map[string]int{}
 	f.singles = map[string]int{}
 }
 
@@ -110,6 +112,8 @@ func (f *mc3TestNode) answer(method string, params []interface{}) (interface{}, 
 
 	f.mu.Lock()
 	f.multicalls++
+	gas, _ := call["gas"].(string)
+	f.gasOfPacks[gas]++
 	f.mu.Unlock()
 	switch f.mode.Load().(string) {
 	case "error":
@@ -203,8 +207,8 @@ func TestMulticall3Packing(t *testing.T) {
 
 	var seq atomic.Int64
 	type call struct {
-		to, block, from string
-		data            string
+		to, block, from, gas string
+		data                 string
 	}
 	newCall := func(to, block string) call {
 		return call{to: to, block: block, data: fmt.Sprintf("0x%08x", seq.Add(1))}
@@ -220,10 +224,14 @@ func TestMulticall3Packing(t *testing.T) {
 			wg.Add(1)
 			go func(i int, c call) {
 				defer wg.Done()
-				obj := fmt.Sprintf(`{"to":"%s","data":"%s"}`, c.to, c.data)
+				obj := fmt.Sprintf(`"to":"%s","data":"%s"`, c.to, c.data)
 				if c.from != "" {
-					obj = fmt.Sprintf(`{"from":"%s","to":"%s","data":"%s"}`, c.from, c.to, c.data)
+					obj += fmt.Sprintf(`,"from":"%s"`, c.from)
 				}
+				if c.gas != "" {
+					obj += fmt.Sprintf(`,"gas":"%s"`, c.gas)
+				}
+				obj = "{" + obj + "}"
 				status, _, body := sendRequest(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_call","params":[%s,"%s"]}`, i+1, obj, c.block), nil, nil)
 				require.Equal(t, http.StatusOK, status, body)
 				require.NoError(t, json.Unmarshal([]byte(body), &out[i]), body)
@@ -274,6 +282,23 @@ func TestMulticall3Packing(t *testing.T) {
 			assert.Equal(t, map[string]int{mc3TestEcho: 4}, singles)
 		})
 	}
+
+	t.Run("calls with a gas limit pack only with calls of the same limit", func(t *testing.T) {
+		node.reset("ok")
+		withGas := func() call {
+			c := newCall(mc3TestEcho, "latest")
+			c.gas = "0x2faf080"
+			return c
+		}
+		calls := []call{withGas(), withGas(), withGas(), newCall(mc3TestEcho, "latest"), newCall(mc3TestEcho, "latest")}
+		answers := sendAll(calls)
+
+		assertEchoed(t, calls, answers)
+		node.mu.Lock()
+		defer node.mu.Unlock()
+		assert.Equal(t, map[string]int{"0x2faf080": 1, "": 1}, node.gasOfPacks)
+		assert.Empty(t, node.singles)
+	})
 
 	t.Run("lone and unpackable calls are sent alone without a multicall", func(t *testing.T) {
 		node.reset("ok")

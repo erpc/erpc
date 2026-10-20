@@ -47,8 +47,12 @@ type Multicall3Batcher struct {
 	absentAtOrBelow atomic.Int64
 }
 
+// A pack shares one block and one gas limit. With the callers' own gas limit on
+// the multicall, an inner call gets less gas than it would alone: one that runs
+// out fails inside the pack and is sent alone, so packing never adds gas.
 type multicall3Batch struct {
 	block   interface{}
+	gas     string
 	entries []*multicall3Entry
 	timer   *time.Timer
 }
@@ -116,14 +120,14 @@ func upstreamPreForward_eth_call(ctx context.Context, n common.Network, u common
 // submit waits for the pack nrq joins and returns its return data when the pack
 // answered it, else the outcome that sends it alone.
 func (b *Multicall3Batcher) submit(ctx context.Context, n common.Network, u common.Upstream, nrq *common.NormalizedRequest) ([]byte, string) {
-	target, data, block, ok := multicall3CallOf(ctx, nrq)
+	target, data, block, gas, ok := multicall3CallOf(ctx, nrq)
 	if !ok {
 		return nil, multicall3Ineligible
 	}
 	if bn := multicall3BlockNumber(block); bn > 0 && bn <= b.absentAtOrBelow.Load() {
 		return nil, multicall3Ineligible
 	}
-	keyBytes, err := json.Marshal(block)
+	keyBytes, err := json.Marshal([]interface{}{block, gas})
 	if err != nil {
 		return nil, multicall3Ineligible
 	}
@@ -133,7 +137,7 @@ func (b *Multicall3Batcher) submit(ctx context.Context, n common.Network, u comm
 	b.mu.Lock()
 	bt := b.open[key]
 	if bt == nil {
-		bt = &multicall3Batch{block: block}
+		bt = &multicall3Batch{block: block, gas: gas}
 		b.open[key] = bt
 		bt.timer = time.AfterFunc(b.maxWait, func() { b.flush(key, bt, n, u) })
 	}
@@ -183,7 +187,7 @@ func (b *Multicall3Batcher) send(bt *multicall3Batch, n common.Network, u common
 	}
 
 	telemetry.MetricUpstreamMulticall3BatchSize.WithLabelValues(n.ProjectId(), live[0].req.NetworkLabel(), u.Id(), u.VendorName()).Observe(float64(len(live)))
-	results, ok := b.aggregate(live, bt.block, n, u)
+	results, ok := b.aggregate(live, bt, n, u)
 	for i, e := range live {
 		switch {
 		case !ok:
@@ -202,14 +206,15 @@ func (b *Multicall3Batcher) send(bt *multicall3Batch, n common.Network, u common
 
 // aggregate sends the pack as one eth_call through the upstream, so its rate
 // limits, retries and credit accounting count it once.
-func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, block interface{}, n common.Network, u common.Upstream) ([]aggregate3Result, bool) {
-	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
-		map[string]interface{}{
-			"to":   multicall3Address,
-			"data": "0x" + hex.EncodeToString(encodeAggregate3(entries)),
-		},
-		block,
-	})
+func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3Batch, n common.Network, u common.Upstream) ([]aggregate3Result, bool) {
+	call := map[string]interface{}{
+		"to":   multicall3Address,
+		"data": "0x" + hex.EncodeToString(encodeAggregate3(entries)),
+	}
+	if bt.gas != "" {
+		call["gas"] = bt.gas
+	}
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{call, bt.block})
 	if err := jrq.SetID(util.RandomID()); err != nil {
 		return nil, false
 	}
@@ -246,7 +251,7 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, block interfac
 	}
 	if len(raw) == 0 {
 		// No code at the Multicall3 address: the block predates its deployment.
-		if bn := multicall3BlockNumber(block); bn > 0 {
+		if bn := multicall3BlockNumber(bt.block); bn > 0 {
 			for cur := b.absentAtOrBelow.Load(); bn > cur && !b.absentAtOrBelow.CompareAndSwap(cur, bn); cur = b.absentAtOrBelow.Load() {
 			}
 		}
@@ -276,24 +281,24 @@ func multicall3Context(entries []*multicall3Entry) (context.Context, context.Can
 	return context.WithDeadline(base, last)
 }
 
-// multicall3CallOf returns the target, calldata and wire block of an eth_call
-// that Multicall3 can run exactly: a plain {to, data|input} call with no sender,
-// gas, value or state override, since Multicall3 cannot carry those.
-func multicall3CallOf(ctx context.Context, nrq *common.NormalizedRequest) (target, data []byte, block interface{}, ok bool) {
+// multicall3CallOf returns the target, calldata, wire block and gas limit of an
+// eth_call that Multicall3 can run exactly: {to, data|input, gas?} with no
+// sender, value or state override, since Multicall3 cannot carry those.
+func multicall3CallOf(ctx context.Context, nrq *common.NormalizedRequest) (target, data []byte, block interface{}, gas string, ok bool) {
 	jrq, err := nrq.JsonRpcRequest(ctx)
 	if err != nil || jrq == nil {
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 	jrq.RLock()
 	defer jrq.RUnlock()
 
 	params := common.WireParams(ctx, nrq, jrq.Params)
 	if len(params) != 2 || params[1] == nil {
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 	call, isMap := params[0].(map[string]interface{})
 	if !isMap {
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 	var to, input string
 	for k, v := range call {
@@ -302,30 +307,32 @@ func multicall3CallOf(ctx context.Context, nrq *common.NormalizedRequest) (targe
 		}
 		s, isStr := v.(string)
 		if !isStr {
-			return nil, nil, nil, false
+			return nil, nil, nil, "", false
 		}
 		switch k {
 		case "to":
 			to = s
+		case "gas":
+			gas = s
 		case "data", "input":
 			if input != "" && !strings.EqualFold(input, s) {
-				return nil, nil, nil, false
+				return nil, nil, nil, "", false
 			}
 			input = s
 		default:
-			return nil, nil, nil, false
+			return nil, nil, nil, "", false
 		}
 	}
 	target, err = common.HexToBytes(to)
 	if err != nil || len(target) != 20 {
-		return nil, nil, nil, false
+		return nil, nil, nil, "", false
 	}
 	if input != "" {
 		if data, err = common.HexToBytes(input); err != nil {
-			return nil, nil, nil, false
+			return nil, nil, nil, "", false
 		}
 	}
-	return target, data, params[1], true
+	return target, data, params[1], gas, true
 }
 
 func multicall3BlockNumber(block interface{}) int64 {
