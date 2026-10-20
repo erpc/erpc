@@ -1184,6 +1184,11 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 		if m.MaxCalls < 2 {
 			return fmt.Errorf("upstream.*.evm.multicall3.maxCalls must be at least 2")
 		}
+		for _, a := range m.BypassContracts {
+			if raw, err := HexToBytes(a); err != nil || len(raw) != 20 {
+				return fmt.Errorf("upstream.*.evm.multicall3.bypassContracts entry '%s' is not a 20-byte hex address", a)
+			}
+		}
 	}
 
 	return nil

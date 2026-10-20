@@ -29,6 +29,7 @@ const (
 	multicall3Empty      = "empty"
 	multicall3Failed     = "failed"
 	multicall3Ineligible = "ineligible"
+	multicall3Bypassed   = "bypassed"
 	multicall3Canceled   = "canceled"
 )
 
@@ -45,6 +46,16 @@ type Multicall3Batcher struct {
 	// Highest block at which Multicall3 had no code on this upstream; calls at
 	// or below it are not packed.
 	absentAtOrBelow atomic.Int64
+
+	// Contracts whose calls are never packed: configured (bypassContracts), or
+	// learned when a call to them reverted inside a pack and then succeeded alone
+	// (typically a contract that rejects a contract caller). Learned entries last
+	// for the process; they only ever send calls alone, as without packing.
+	bypass        map[[20]byte]struct{}
+	learnedBypass sync.Map // [20]byte -> struct{}
+	// Calls that reverted inside a pack and are being sent alone, by request,
+	// until the upstream post-forward hook sees how the call alone ended.
+	awaitingAlone sync.Map // *common.NormalizedRequest -> [20]byte
 }
 
 // A pack shares one block and one gas limit. With the callers' own gas limit on
@@ -76,11 +87,28 @@ type aggregate3Result struct {
 }
 
 func NewMulticall3Batcher(cfg *common.EvmMulticall3Config) *Multicall3Batcher {
-	return &Multicall3Batcher{
+	b := &Multicall3Batcher{
 		maxWait:  cfg.MaxWait.Duration(),
 		maxCalls: cfg.MaxCalls,
 		open:     make(map[string]*multicall3Batch),
+		bypass:   make(map[[20]byte]struct{}, len(cfg.BypassContracts)),
 	}
+	for _, a := range cfg.BypassContracts {
+		// Validated as 20-byte hex addresses at config load.
+		if raw, err := common.HexToBytes(a); err == nil && len(raw) == 20 {
+			b.bypass[[20]byte(raw)] = struct{}{}
+		}
+	}
+	return b
+}
+
+func (b *Multicall3Batcher) bypassed(target []byte) bool {
+	addr := [20]byte(target)
+	if _, ok := b.bypass[addr]; ok {
+		return true
+	}
+	_, ok := b.learnedBypass.Load(addr)
+	return ok
 }
 
 type multicall3Upstream interface {
@@ -117,12 +145,39 @@ func upstreamPreForward_eth_call(ctx context.Context, n common.Network, u common
 	return resp != nil, resp, nil
 }
 
+// upstreamPostForward_eth_call learns a bypass when a call that reverted inside
+// a pack succeeded alone: the contract answers differently to Multicall3.
+func upstreamPostForward_eth_call(u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error) {
+	mu, ok := u.(multicall3Upstream)
+	if !ok {
+		return
+	}
+	b := mu.EvmMulticall3Batcher()
+	if b == nil {
+		return
+	}
+	v, ok := b.awaitingAlone.LoadAndDelete(rq)
+	if !ok || re != nil || rs == nil {
+		return
+	}
+	if jrr, err := rs.JsonRpcResponse(); err != nil || jrr == nil || jrr.Error != nil {
+		return
+	}
+	addr := v.([20]byte)
+	if _, known := b.learnedBypass.LoadOrStore(addr, struct{}{}); !known && u.Logger() != nil {
+		u.Logger().Info().Str("contract", "0x"+hex.EncodeToString(addr[:])).Msg("multicall3: contract reverts inside a pack but not alone; its calls are no longer packed")
+	}
+}
+
 // submit waits for the pack nrq joins and returns its return data when the pack
 // answered it, else the outcome that sends it alone.
 func (b *Multicall3Batcher) submit(ctx context.Context, n common.Network, u common.Upstream, nrq *common.NormalizedRequest) ([]byte, string) {
 	target, data, block, gas, ok := multicall3CallOf(ctx, nrq)
 	if !ok {
 		return nil, multicall3Ineligible
+	}
+	if b.bypassed(target) {
+		return nil, multicall3Bypassed
 	}
 	if bn := multicall3BlockNumber(block); bn > 0 && bn <= b.absentAtOrBelow.Load() {
 		return nil, multicall3Ineligible
@@ -154,6 +209,9 @@ func (b *Multicall3Batcher) submit(ctx context.Context, n common.Network, u comm
 
 	select {
 	case r := <-e.result:
+		if r.outcome == multicall3Reverted {
+			b.awaitingAlone.Store(nrq, [20]byte(target))
+		}
 		return r.returnData, r.outcome
 	case <-ctx.Done():
 		return nil, multicall3Canceled

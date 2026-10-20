@@ -1442,6 +1442,12 @@ type EvmUpstreamConfig struct {
 type EvmMulticall3Config struct {
 	MaxWait  Duration `yaml:"maxWait,omitempty" json:"maxWait" tstype:"Duration"`
 	MaxCalls int      `yaml:"maxCalls,omitempty" json:"maxCalls"`
+	// BypassContracts are target addresses whose calls are never packed, for
+	// contracts that answer differently when the caller is Multicall3 instead
+	// of the zero address (msg.sender or caller-code checks) without reverting.
+	// Contracts that revert inside a pack but succeed alone are learned at
+	// runtime and need no entry.
+	BypassContracts []string `yaml:"bypassContracts,omitempty" json:"bypassContracts"`
 }
 
 // EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
@@ -1596,6 +1602,7 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	}
 	if c.Multicall3 != nil {
 		v := *c.Multicall3
+		v.BypassContracts = slices.Clone(c.Multicall3.BypassContracts)
 		copied.Multicall3 = &v
 	}
 

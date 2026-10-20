@@ -145,6 +145,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	if methodLower == "eth_sendrawtransaction" {
 		return upstreamPostForward_eth_sendRawTransaction(ctx, n, u, rq, rs, re)
 	}
+	if methodLower == "eth_call" {
+		upstreamPostForward_eth_call(u, rq, rs, re)
+	}
 
 	// For all other methods, skip validation if there's already an error
 	if re != nil {

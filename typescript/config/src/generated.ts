@@ -1089,6 +1089,14 @@ export interface EvmUpstreamConfig {
 export interface EvmMulticall3Config {
   maxWait?: Duration;
   maxCalls?: number /* int */;
+  /**
+   * BypassContracts are target addresses whose calls are never packed, for
+   * contracts that answer differently when the caller is Multicall3 instead
+   * of the zero address (msg.sender or caller-code checks) without reverting.
+   * Contracts that revert inside a pack but succeed alone are learned at
+   * runtime and need no entry.
+   */
+  bypassContracts?: string[];
 }
 /**
  * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,

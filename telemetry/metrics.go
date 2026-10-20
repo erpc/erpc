@@ -779,7 +779,7 @@ var (
 	MetricUpstreamMulticall3CallsTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_multicall3_calls_total",
-		Help:      "eth_calls seen by an upstream with multicall3 packing, by outcome: packed (answered by a multicall), alone (no other call to pack with), reverted/empty/failed (multicall could not answer it exactly, sent alone), ineligible (not packable, sent alone), canceled (attempt ended while waiting).",
+		Help:      "eth_calls seen by an upstream with multicall3 packing, by outcome: packed (answered by a multicall), alone (no other call to pack with), reverted/empty/failed (multicall could not answer it exactly, sent alone), ineligible (not packable, sent alone), bypassed (target in bypassContracts or learned, sent alone), canceled (attempt ended while waiting).",
 	}, []string{"project", "network", "upstream", "vendor", "outcome"})
 
 	MetricUpstreamMulticall3BatchSize = DefineLabeledHistogram(prometheus.HistogramOpts{

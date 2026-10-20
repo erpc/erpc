@@ -25,6 +25,7 @@ const (
 	mc3TestRevert = "0x2222222222222222222222222222222222222222" // always reverts
 	mc3TestEmpty  = "0x3333333333333333333333333333333333333333" // returns nothing
 	mc3TestSender = "0x4444444444444444444444444444444444444444" // reverts only when the caller is Multicall3
+	mc3TestBypass = "0x6666666666666666666666666666666666666666" // returns its calldata; listed in bypassContracts
 	mc3TestDeploy = 0x10                                         // Multicall3 has no code at or below this block
 )
 
@@ -41,11 +42,12 @@ var mc3TestABI = func() abi.ABI {
 // mc3TestNode is a fake EVM vendor: it runs eth_calls (single and through a real
 // aggregate3 ABI codec) and counts what it was sent.
 type mc3TestNode struct {
-	mode       atomic.Value // "ok" | "error" | "garbage"
-	mu         sync.Mutex
-	multicalls int
-	gasOfPacks map[string]int
-	singles    map[string]int
+	mode          atomic.Value // "ok" | "error" | "garbage"
+	mu            sync.Mutex
+	multicalls    int
+	gasOfPacks    map[string]int
+	packedTargets map[string]int
+	singles       map[string]int
 }
 
 func (f *mc3TestNode) reset(mode string) {
@@ -54,6 +56,7 @@ func (f *mc3TestNode) reset(mode string) {
 	f.mode.Store(mode)
 	f.multicalls = 0
 	f.gasOfPacks = map[string]int{}
+	f.packedTargets = map[string]int{}
 	f.singles = map[string]int{}
 }
 
@@ -69,7 +72,7 @@ func (f *mc3TestNode) counts() (int, map[string]int) {
 
 func (f *mc3TestNode) run(to string, data []byte, viaMulticall bool) ([]byte, bool) {
 	switch strings.ToLower(to) {
-	case mc3TestEcho:
+	case mc3TestEcho, mc3TestBypass:
 		return data, true
 	case mc3TestEmpty:
 		return nil, true
@@ -144,7 +147,11 @@ func (f *mc3TestNode) answer(method string, params []interface{}) (interface{}, 
 	calls := *abi.ConvertType(args[0], new([]call3)).(*[]call3)
 	results := make([]result3, len(calls))
 	for i, c := range calls {
-		out, ok := f.run(strings.ToLower(c.Target.Hex()), c.CallData, true)
+		target := strings.ToLower(c.Target.Hex())
+		f.mu.Lock()
+		f.packedTargets[target]++
+		f.mu.Unlock()
+		out, ok := f.run(target, c.CallData, true)
 		results[i] = result3{Success: ok, ReturnData: out}
 	}
 	packed, err := method3.Outputs.Pack(results)
@@ -195,8 +202,12 @@ func TestMulticall3Packing(t *testing.T) {
 				Type:     common.UpstreamTypeEvm,
 				Endpoint: srv.URL,
 				Evm: &common.EvmUpstreamConfig{
-					ChainId:    123,
-					Multicall3: &common.EvmMulticall3Config{MaxWait: common.Duration(300 * time.Millisecond), MaxCalls: 50},
+					ChainId: 123,
+					Multicall3: &common.EvmMulticall3Config{
+						MaxWait:         common.Duration(300 * time.Millisecond),
+						MaxCalls:        50,
+						BypassContracts: []string{mc3TestBypass},
+					},
 				},
 			}},
 		}},
@@ -268,6 +279,23 @@ func TestMulticall3Packing(t *testing.T) {
 		assert.Equal(t, 1, multicalls)
 		assert.Equal(t, map[string]int{mc3TestRevert: singles[mc3TestRevert], mc3TestEmpty: 1, mc3TestSender: 1}, singles)
 		assert.GreaterOrEqual(t, singles[mc3TestRevert], 1)
+	})
+
+	t.Run("bypassed contracts are sent alone: configured, and learned from a pack revert", func(t *testing.T) {
+		// The previous subtest saw mc3TestSender revert inside the pack and
+		// succeed alone, so it is learned.
+		node.reset("ok")
+		calls := []call{newCall(mc3TestEcho, "latest"), newCall(mc3TestEcho, "latest"), newCall(mc3TestSender, "latest"), newCall(mc3TestBypass, "latest")}
+		answers := sendAll(calls)
+
+		assertEchoed(t, calls, answers)
+		assert.Equal(t, calls[3].data, answers[3].Result)
+		multicalls, singles := node.counts()
+		assert.Equal(t, 1, multicalls)
+		assert.Equal(t, map[string]int{mc3TestSender: 1, mc3TestBypass: 1}, singles)
+		node.mu.Lock()
+		defer node.mu.Unlock()
+		assert.Equal(t, map[string]int{mc3TestEcho: 2}, node.packedTargets)
 	})
 
 	for _, mode := range []string{"error", "garbage"} {
