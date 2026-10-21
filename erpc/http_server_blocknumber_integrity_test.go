@@ -452,7 +452,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 		// The request is explicitly pinned to the lagging upstream. Per the
 		// selector-scoped served-tip semantics (#912, honored by max-mode
-		// tipCandidateUpstreams when the ctx carries the request), "latest"
+		// EvmRoutableUpstreams when the ctx carries the request), "latest"
 		// must be decided AMONG the pinned subset — advertising the
 		// network-wide tip promises a block rpc1 cannot serve.
 		got, _ := bniSend(t, send, map[string]string{"X-ERPC-Use-Upstream": "rpc1"}, nil)
