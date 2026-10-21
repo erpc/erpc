@@ -31,7 +31,7 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	var polled atomic.Int64
 	a.polledHead = polled.Load
 	conn1 := <-server.newConn
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+	startHeadsSource(t, a, sink)
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	stalls := telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal.WithLabelValues("test-project", "evm:123", "test-ws-upstream")
@@ -63,7 +63,7 @@ func TestAdapterKeepsSilentNewHeadsWhenChainHalts(t *testing.T) {
 	var polled atomic.Int64
 	a.polledHead = polled.Load
 	conn1 := <-server.newConn
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+	startHeadsSource(t, a, sink)
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)

@@ -1,12 +1,14 @@
-// Package wsupstream adapts a WebSocket JSON-RPC upstream into an
-// indexer.EventIngress: it owns the upstream eth_subscribe/eth_unsubscribe
-// calls and resubscribes after every reconnect.
+// Package wsupstream adapts a WebSocket JSON-RPC upstream into a source
+// (indexer.Source: newHeads into intake) and an indexer.EventIngress (logs
+// and pending transactions): it owns the upstream eth_subscribe and
+// eth_unsubscribe calls and resubscribes after every reconnect.
 package wsupstream
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,9 +43,15 @@ var (
 // upstream already reports over RPC; a var so tests can shorten it.
 var headsWatchInterval = 15 * time.Second
 
+// HeadsReaskInterval is how long a newHeads refused as unsupported waits
+// before it is asked again on the same connection; a var so tests can
+// shorten it.
+var HeadsReaskInterval = util.NewDuration(10 * time.Minute)
+
 var errNotConnected = errors.New("upstream websocket is not connected")
 
-// Adapter is the EventIngress of one WS upstream on one network.
+// Adapter is the source and the EventIngress of one WS upstream on one
+// network.
 type Adapter struct {
 	upstreamID string
 	networkID  string
@@ -70,10 +78,13 @@ type Adapter struct {
 	headsSeen  atomic.Uint64
 	lastHead   atomic.Int64
 
-	// intake takes every newHeads push; sink takes filter events and a
-	// payload-free head event that rechecks where filters belong.
+	// intake takes every newHeads push and subscribe answer; sink takes
+	// filter events and a payload-free head event that rechecks where
+	// filters belong. sink is set by Start, before Set subscribes anything.
 	intake indexer.Intake
 	sink   indexer.Sink
+
+	hooksOnce sync.Once
 
 	// subsMu guards all mutable state below. Never held across an RPC.
 	subsMu sync.Mutex
@@ -85,6 +96,12 @@ type Adapter struct {
 	resubDone  bool
 	resubAgain bool
 	heads      upstreamSub
+	// headsWanted is what Set asked for; headsRefused is set while the
+	// upstream refused newHeads as unsupported, until headsReask fires or
+	// the connection drops.
+	headsWanted  bool
+	headsRefused bool
+	headsReask   *time.Timer
 	// filters (by filterKey) survive disconnects to be resubscribed.
 	filters map[string]*filterSub
 }
@@ -106,6 +123,9 @@ type Options struct {
 	// StripSubscribeFromBlockZero removes a zero fromBlock from logs
 	// filters; see common.EvmNetworkConfig.StripSubscribeFromBlockZero.
 	StripSubscribeFromBlockZero bool
+	// NetworkLabel labels the adapter's metrics; the network knows it
+	// before its upstreams do.
+	NetworkLabel string
 }
 
 type filterSub struct {
@@ -127,7 +147,7 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 		upstreamID:   up.Id(),
 		networkID:    networkID,
 		projectID:    up.ProjectId,
-		networkLabel: up.NetworkLabel(),
+		networkLabel: opts.NetworkLabel,
 		wsClient:     wsClient,
 		logger:       &lg,
 		filters:      make(map[string]*filterSub),
@@ -150,45 +170,108 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 
 func (a *Adapter) Name() string { return "ws:" + a.upstreamID }
 
-// Start registers the connection hooks and subscribes newHeads in the
-// background, detached from ctx.
+// Start takes the indexer's sink and registers the connection hooks;
+// filters added later subscribe in the background, detached from ctx.
 func (a *Adapter) Start(_ context.Context, _ indexer.NetworkHandle, sink indexer.Sink) error {
 	a.sink = sink
+	a.attach()
+	a.startResubscribe()
+	return nil
+}
 
-	// One adapter per client: each project has its own clients, an
-	// upstream belongs to one network, and a network is bootstrapped once.
-	cbID := a.Name()
-	a.wsClient.SetOnReconnect(cbID, func() {
-		a.logger.Info().Msg("upstream websocket reconnected, resubscribing")
+// Set subscribes newHeads while topics include it and drops it otherwise;
+// other topics still come through EnsureFilter.
+func (a *Adapter) Set(topics []indexer.Topic) {
+	want := slices.Contains(topics, indexer.TopicNewHeads)
+	a.subsMu.Lock()
+	if want == a.headsWanted {
+		a.subsMu.Unlock()
+		return
+	}
+	a.headsWanted = want
+	if want {
+		a.heads.removed = false
+	} else {
+		a.stopReaskLocked()
+		a.headsRefused = false
+	}
+	a.subsMu.Unlock()
+	if want {
+		a.attach()
+		a.startResubscribe()
+		return
+	}
+	a.drop(context.Background(), &a.heads, indexer.SubTypeNewHeads)
+}
+
+var _ indexer.Source = (*Adapter)(nil)
+
+// attach registers the connection hooks and the silent-newHeads watch once.
+// One adapter per client: each project has its own clients, an upstream
+// belongs to one network, and a network creates its sources once.
+func (a *Adapter) attach() {
+	a.hooksOnce.Do(func() {
+		cbID := a.Name()
+		a.wsClient.SetOnReconnect(cbID, func() {
+			a.logger.Info().Msg("upstream websocket reconnected, resubscribing")
+			a.startResubscribe()
+		})
+		a.wsClient.SetOnDisconnect(cbID, func() {
+			a.logger.Info().Msg("upstream websocket disconnected, will resubscribe on reconnect")
+			// The subscriptions died with the connection; forget them so the
+			// next connection resubscribes everything, newHeads included.
+			a.subsMu.Lock()
+			if a.resubCancel != nil {
+				a.resubCancel()
+			}
+			a.resubDone = false
+			if a.heads.id != "" {
+				a.liveGauge(indexer.SubTypeNewHeads).Dec()
+			}
+			a.heads.id = ""
+			a.headsRefused = false
+			a.stopReaskLocked()
+			for _, sub := range a.filters {
+				if sub.id != "" {
+					a.liveGauge(sub.subType).Dec()
+				}
+				sub.id = ""
+			}
+			a.subsMu.Unlock()
+		})
+		if a.polledHead != nil {
+			go a.watchHeads()
+		}
+	})
+}
+
+func (a *Adapter) stopReaskLocked() {
+	if a.headsReask != nil {
+		a.headsReask.Stop()
+		a.headsReask = nil
+	}
+}
+
+// refuseHeadsLocked records an unsupported newHeads answer and asks again
+// after HeadsReaskInterval.
+func (a *Adapter) refuseHeadsLocked() {
+	a.headsRefused = true
+	a.stopReaskLocked()
+	var t *time.Timer
+	// The caller holds subsMu until t is stored, so the callback reads it
+	// only after.
+	t = time.AfterFunc(HeadsReaskInterval.Load(), func() {
+		a.subsMu.Lock()
+		if a.headsReask != t {
+			a.subsMu.Unlock()
+			return
+		}
+		a.headsRefused = false
+		a.headsReask = nil
+		a.subsMu.Unlock()
 		a.startResubscribe()
 	})
-	a.wsClient.SetOnDisconnect(cbID, func() {
-		a.logger.Info().Msg("upstream websocket disconnected, will resubscribe on reconnect")
-		// The subscriptions died with the connection; forget them so the
-		// next connection resubscribes everything.
-		a.subsMu.Lock()
-		if a.resubCancel != nil {
-			a.resubCancel()
-		}
-		a.resubDone = false
-		if a.heads.id != "" {
-			a.liveGauge(indexer.SubTypeNewHeads).Dec()
-		}
-		a.heads.id = ""
-		for _, sub := range a.filters {
-			if sub.id != "" {
-				a.liveGauge(sub.subType).Dec()
-			}
-			sub.id = ""
-		}
-		a.subsMu.Unlock()
-	})
-
-	a.startResubscribe()
-	if a.polledHead != nil {
-		go a.watchHeads()
-	}
-	return nil
+	a.headsReask = t
 }
 
 // watchHeads reconnects when the newHeads subscription stays silent for a
@@ -305,13 +388,15 @@ func filterKey(subType, paramsHash string) string {
 // reconnect.
 func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 	backoff := a.retryMin
-	headsUnsupported := false
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		done := true
-		if !headsUnsupported {
+		a.subsMu.Lock()
+		askHeads := a.headsWanted && !a.headsRefused
+		a.subsMu.Unlock()
+		if askHeads {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			a.heads.mu.Lock()
 			err := a.subscribeLocked(attemptCtx, &a.heads, []interface{}{indexer.SubTypeNewHeads}, a.handleNewHeads)
@@ -320,13 +405,22 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 			switch {
 			case err == nil:
 			case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
-				// Retrying can't change the answer; the state poller tracks
-				// the head, and a later resubscribe asks again.
-				headsUnsupported = true
-				a.logger.Warn().Err(err).Msg("upstream does not support newHeads, not retrying on this connection")
+				// Retrying can't change the answer soon: the source polls
+				// meanwhile, and the next connection or headsReask asks again.
+				a.subsMu.Lock()
+				// A dropped connection cancelled ctx under subsMu; its
+				// answer must not mute the next connection.
+				if ctx.Err() == nil && a.headsWanted {
+					a.refuseHeadsLocked()
+				}
+				a.subsMu.Unlock()
+				a.logger.Warn().Err(err).Dur("reaskIn", HeadsReaskInterval.Load()).Msg("upstream does not support newHeads, polling it meanwhile")
 			default:
 				done = false
 				a.logger.Warn().Err(err).Msg("failed to subscribe newHeads, will retry")
+			}
+			if ctx.Err() == nil {
+				a.intake.Subscribed(a.upstreamID, indexer.TopicNewHeads, err)
 			}
 		}
 
@@ -521,7 +615,9 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 		}
 	}
 	a.intake.Header(a.upstreamID, outer.Result)
-	a.sink.Ingest(indexer.StreamEvent{Kind: indexer.KindNewHead, NetworkId: a.networkID, SourceId: a.Name()})
+	if a.sink != nil {
+		a.sink.Ingest(indexer.StreamEvent{Kind: indexer.KindNewHead, NetworkId: a.networkID, SourceId: a.Name()})
+	}
 }
 
 func (a *Adapter) handleFilter(subType, paramsHash string, raw []byte) {

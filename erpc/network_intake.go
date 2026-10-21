@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 )
 
 // networkIntake is the network's side of every source: each header is
@@ -25,6 +26,9 @@ type networkIntake struct {
 
 	mu      sync.Mutex
 	sources map[string]*sourceState // upstream id -> state
+	// primaryLeads: some primary source has been live and policy-eligible
+	// for primaryLeadAfter; fallback-tier sources are not authoritative.
+	primaryLeads bool
 }
 
 type sourceState struct {
@@ -33,13 +37,27 @@ type sourceState struct {
 	// zero while it is not.
 	behindSince time.Time
 	live        bool
+	// liveSince is when the source last became live; eligibleSince when a
+	// primary source last entered the policy's eligible set. Zero while not.
+	liveSince     time.Time
+	eligibleSince time.Time
 }
+
+// primaryLeadAfter is how long a primary source must stay live and eligible,
+// without a break, before fallback-tier sources stop being authoritative.
+var primaryLeadAfter = util.NewDuration(60 * time.Second)
 
 func newNetworkIntake(nw *Network) *networkIntake {
 	return &networkIntake{nw: nw, sources: make(map[string]*sourceState)}
 }
 
 var _ indexer.Intake = (*networkIntake)(nil)
+
+// Subscribed takes a push source's subscribe answer; the reconciler decides
+// what it changes.
+func (in *networkIntake) Subscribed(upstreamId string, t indexer.Topic, err error) {
+	in.nw.sources.subscribed(upstreamId, t, err)
+}
 
 // Header takes one source header.
 func (in *networkIntake) Header(upstreamId string, raw json.RawMessage) {
@@ -116,7 +134,7 @@ func (in *networkIntake) accept(upstreamId string, cur indexer.Cursor) {
 	changed := in.evaluateLocked(upstreamId, s, newest, bound, now)
 	in.mu.Unlock()
 	if changed {
-		evm.LivenessChanged(in.nw)
+		in.changed()
 	}
 }
 
@@ -136,11 +154,20 @@ func (in *networkIntake) evaluateLocked(upstreamId string, s *sourceState, newes
 	}
 	s.live = live
 	v := 0.0
+	s.liveSince = time.Time{}
 	if live {
 		v = 1
+		s.liveSince = now
 	}
 	telemetry.GaugeHandle(telemetry.MetricSourceLive, in.nw.projectId, in.nw.Label(), upstreamId).Set(v)
 	return true
+}
+
+// changed tells the trackers to count votes again and the reconciler to
+// recheck which topics run: liveness or authority moved.
+func (in *networkIntake) changed() {
+	evm.LivenessChanged(in.nw)
+	in.nw.sources.wake()
 }
 
 func (in *networkIntake) live(upstreamId string) bool {
@@ -151,26 +178,60 @@ func (in *networkIntake) live(upstreamId string) bool {
 }
 
 // authoritative: upstreamId is in the selection policy's eligible set, and,
-// with failover on, outside the fallback tier or no eligible primary source
-// is live.
+// with failover on, outside the fallback tier or no primary source leads.
 func (in *networkIntake) authoritative(upstreamId string) bool {
-	var self common.Upstream
-	primaryLive := false
-	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
-		if c.Id() == upstreamId {
-			self = c
-		}
-		if !isFallbackTier(c) && in.live(c.Id()) {
-			primaryLive = true
-		}
-	}
-	if self == nil {
+	primary, eligible, leads := in.authority(upstreamId, time.Now())
+	if !eligible {
 		return false
 	}
-	if in.nw.cfg == nil || !in.nw.cfg.Failover.Enabled() || !isFallbackTier(self) {
+	if in.nw.cfg == nil || !in.nw.cfg.Failover.Enabled() || primary {
 		return true
 	}
-	return !primaryLive
+	return !leads
+}
+
+// authority reads the policy's eligible set now: whether upstreamId is in
+// it and outside the fallback tier, and whether some primary source has
+// been live and eligible for primaryLeadAfter. A primary counts as live
+// only while it is eligible.
+func (in *networkIntake) authority(upstreamId string, now time.Time) (primary, eligible, leads bool) {
+	primaries := make(map[string]struct{})
+	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
+		isPrimary := !isFallbackTier(c)
+		if c.Id() == upstreamId {
+			primary, eligible = isPrimary, true
+		}
+		if isPrimary {
+			primaries[c.Id()] = struct{}{}
+		}
+	}
+	in.mu.Lock()
+	for id, s := range in.sources {
+		if _, ok := primaries[id]; !ok {
+			s.eligibleSince = time.Time{}
+			continue
+		}
+		if s.eligibleSince.IsZero() {
+			s.eligibleSince = now
+		}
+		if s.live && now.Sub(later(s.liveSince, s.eligibleSince)) >= primaryLeadAfter.Load() {
+			leads = true
+		}
+	}
+	flipped := leads != in.primaryLeads
+	in.primaryLeads = leads
+	in.mu.Unlock()
+	if flipped {
+		in.changed()
+	}
+	return primary, eligible, leads
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // livenessInterval is how often, in live bounds, liveness is re-evaluated
@@ -212,8 +273,11 @@ func (in *networkIntake) tick() {
 	}
 	in.mu.Unlock()
 	if changed {
-		evm.LivenessChanged(in.nw)
+		in.changed()
 	}
+	// A primary's lead begins with time alone, without a header or a
+	// liveness change; authority notices it.
+	in.authority("", now)
 }
 
 // votes is the one predicate for whether a source's vote counts: the

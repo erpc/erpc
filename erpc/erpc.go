@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -20,6 +21,9 @@ type ERPC struct {
 	projectsRegistry  *ProjectsRegistry
 	adminAuthRegistry *auth.AuthRegistry
 	logger            *zerolog.Logger
+	// idx carries logs and newPendingTransactions to client WebSocket
+	// subscriptions; networks register their wss upstreams with it at init.
+	idx *indexer.Indexer
 }
 
 func NewERPC(
@@ -67,6 +71,12 @@ func NewERPC(
 		}
 	}
 	vendorsRegistry := thirdparty.NewVendorsRegistry()
+	indexerLogger := logger.With().Str("component", "indexer").Logger()
+	indexerOpts := indexer.Options{}
+	if cfg.Indexer != nil {
+		indexerOpts.DedupWindowSize = cfg.Indexer.DedupWindowSize
+	}
+	idx := indexer.New(&indexerLogger, indexerOpts)
 	projectRegistry, err := NewProjectsRegistry(
 		appCtx,
 		logger,
@@ -78,6 +88,7 @@ func NewERPC(
 		vendorsRegistry,
 		proxyPoolRegistry,
 		cfg.UserScript,
+		idx,
 	)
 	if err != nil {
 		return nil, err
@@ -106,6 +117,7 @@ func NewERPC(
 		projectsRegistry:  projectRegistry,
 		adminAuthRegistry: adminAuthRegistry,
 		logger:            logger,
+		idx:               idx,
 	}, nil
 }
 

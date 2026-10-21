@@ -97,6 +97,7 @@ func TestProject_Forward(t *testing.T) {
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
 			nil, // userScript
+			nil, // indexer
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -210,6 +211,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
 			nil, // userScript
+			nil, // indexer
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -319,6 +321,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
 			nil, // userScript
+			nil, // indexer
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -442,6 +445,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
 			nil, // userScript
+			nil, // indexer
 		)
 		if err != nil {
 			t.Fatalf("failed to create ProjectsRegistry: %v", err)
@@ -559,6 +563,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
 			nil, // userScript
+			nil, // indexer
 		)
 		if err != nil {
 			t.Fatal(err)

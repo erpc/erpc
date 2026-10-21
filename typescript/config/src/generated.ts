@@ -1076,6 +1076,12 @@ export interface EvmUpstreamConfig {
    */
   pinLatestTag?: boolean;
   /**
+   * SubscriptionSource makes this upstream a chain-tracker source: it feeds
+   * newHeads by push over ws/wss, by polling eth_getBlockByNumber(latest)
+   * otherwise. Unset: true for ws/wss endpoints, false otherwise.
+   */
+  subscriptionSource?: boolean;
+  /**
    * Deprecated: never read at runtime. Configure data integrity via the network
    * `integrity` block instead. Retained only so existing YAML still parses.
    */

@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -28,6 +29,7 @@ type NetworksRegistry struct {
 	svmJsonRpcCache      *svm.SvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	policyEngine         *policy.Engine
+	idx                  *indexer.Indexer
 	preparedNetworks     sync.Map // map[string]*Network
 	aliasToNetworkId     map[string]aliasEntry
 	aliasMu              *sync.RWMutex
@@ -49,6 +51,7 @@ func NewNetworksRegistry(
 	svmJsonRpcCache *svm.SvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	policyEngine *policy.Engine,
+	idx *indexer.Indexer,
 	logger *zerolog.Logger,
 ) *NetworksRegistry {
 	lg := logger.With().Str("component", "networksRegistry").Logger()
@@ -61,6 +64,7 @@ func NewNetworksRegistry(
 		svmJsonRpcCache:      svmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		policyEngine:         policyEngine,
+		idx:                  idx,
 		preparedNetworks:     sync.Map{},
 		aliasToNetworkId:     map[string]aliasEntry{},
 		aliasMu:              &sync.RWMutex{},
@@ -199,6 +203,8 @@ func NewNetwork(
 		network.intake = newNetworkIntake(network)
 		network.chainTracker = evm.StartChainTrackers(appCtx, network)
 		go network.intake.run(appCtx)
+		network.sources = newSourceReconciler(network)
+		network.taps = indexer.NewTaps(func(string) { network.sources.demandChanged() })
 	}
 
 	return network, nil
@@ -300,6 +306,7 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 				return err
 			}
 			nr.preparedNetworks.Store(networkId, network)
+			network.sources.start(nr.appCtx, nr.idx)
 			err = network.Bootstrap(ctx)
 			if err != nil {
 				return err

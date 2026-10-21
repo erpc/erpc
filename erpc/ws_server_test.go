@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
@@ -272,7 +274,7 @@ func startTestERPCServer(t *testing.T, cfg *common.Config) (*HttpServer, string,
 
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -330,6 +332,32 @@ func mockHead(n int64) map[string]interface{} {
 		"hash":       fmt.Sprintf("0x%064x", n),
 		"parentHash": fmt.Sprintf("0x%064x", n-1),
 		"timestamp":  fmt.Sprintf("0x%x", 1_700_000_000+n),
+	}
+}
+
+// pushMockHeads pushes mockHead(from), from+1, … on subId, one per receive
+// from trigger, or every 200ms with a nil trigger, until the connection
+// closes; it signals sent, if set, after each push.
+func pushMockHeads(conn *websocket.Conn, subId string, from int64, trigger <-chan struct{}, sent chan<- struct{}) {
+	for n := from; ; n++ {
+		if trigger == nil {
+			time.Sleep(200 * time.Millisecond)
+		} else if _, ok := <-trigger; !ok {
+			return
+		}
+		if mockWriteJSON(conn, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "eth_subscription",
+			"params":  map[string]interface{}{"subscription": subId, "result": mockHead(n)},
+		}) != nil {
+			return
+		}
+		if sent != nil {
+			select {
+			case sent <- struct{}{}:
+			default:
+			}
+		}
 	}
 }
 
@@ -752,21 +780,9 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 					subId := "0xdeadbeef12345678"
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": subId})
 
-					go func() {
-						time.Sleep(200 * time.Millisecond)
-						mockWriteJSON(conn, map[string]interface{}{
-							"jsonrpc": "2.0",
-							"method":  "eth_subscription",
-							"params": map[string]interface{}{
-								"subscription": subId,
-								"result":       mockHead(0x101),
-							},
-						})
-						select {
-						case notifCh <- struct{}{}:
-						default:
-						}
-					}()
+					// newHeads is subscribed at network init, before any
+					// client, so the chain keeps moving.
+					go pushMockHeads(conn, subId, 0x101, nil, notifCh)
 				case "eth_unsubscribe":
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": true})
 				default:
@@ -825,27 +841,16 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 	// block; a client that does not gets plain JSON.
 	t.Run("CostFrames", func(t *testing.T) {
 		notifCh := make(chan struct{}, 1)
+		// One head, pushed once the client subscribed, so the frames that
+		// follow are the replies.
+		pushOne := make(chan struct{}, 1)
 		mockUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
 			standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
 				switch method {
 				case "eth_subscribe":
 					subId := "0xdeadbeef12345678"
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": subId})
-					go func() {
-						time.Sleep(200 * time.Millisecond)
-						mockWriteJSON(conn, map[string]interface{}{
-							"jsonrpc": "2.0",
-							"method":  "eth_subscription",
-							"params": map[string]interface{}{
-								"subscription": subId,
-								"result":       mockHead(0x101),
-							},
-						})
-						select {
-						case notifCh <- struct{}{}:
-						default:
-						}
-					}()
+					go pushMockHeads(conn, subId, 0x101, pushOne, notifCh)
 				case "eth_getBalance":
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0xabc123"})
 				default:
@@ -885,6 +890,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		h, body := send(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
 		assert.Equal(t, "eth_subscribe", h.Get("X-ERPC-Methods"))
+		pushOne <- struct{}{}
 		var subResp map[string]interface{}
 		require.NoError(t, json.Unmarshal(body, &subResp))
 		clientSubId, ok := subResp["result"].(string)
@@ -966,8 +972,9 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		assert.Error(t, err, "no message for the id-less call, got %q", extra)
 	})
 
-	// Verifies eth_subscribe returns an error when no WS upstream is configured
-	t.Run("SubscribeWithNoWsUpstreamFails", func(t *testing.T) {
+	// An HTTP-only network whose upstream is not a subscription source has
+	// nothing to feed newHeads.
+	t.Run("SubscribeWithoutSubscriptionSourceFails", func(t *testing.T) {
 		setupGock()
 		defer util.ResetGock()
 
@@ -978,7 +985,8 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer conn.Close()
 
 		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
-		assert.NotNil(t, resp["error"], "should return error when no WS upstream available")
+		require.NotNil(t, resp["error"], "should return error when no upstream is a subscription source")
+		assert.Contains(t, fmt.Sprint(resp["error"]), "needs a subscription source")
 	})
 
 	// Verifies eth_unsubscribe with a nonexistent ID fails as geth's does
@@ -1225,21 +1233,10 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 					subMu.Unlock()
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": upstreamSubId})
 
-					// Send a notification only on first subscribe to avoid duplicates
+					// Only the first subscribe pushes, so a second upstream
+					// subscription would show as missing heads.
 					if count == 1 {
-						go func() {
-							time.Sleep(500 * time.Millisecond)
-							mockWriteJSON(conn, map[string]interface{}{
-								"jsonrpc": "2.0",
-								"method":  "eth_subscription",
-								"params": map[string]interface{}{
-									"subscription": upstreamSubId,
-									// One block past the mocked poller head (256); a
-									// major jump would be held for verification.
-									"result": mockHead(0x101),
-								},
-							})
-						}()
+						go pushMockHeads(conn, upstreamSubId, 0x101, nil, nil)
 					}
 				case "eth_unsubscribe":
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": true})
@@ -1576,6 +1573,9 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 		})
 	}
 
+	// Both upstreams push block 0x123 once the client subscribed: newHeads is
+	// subscribed at network init, before any client.
+	release := make(chan struct{})
 	makeMock := func() *httptest.Server {
 		return mockWsUpstream(t, func(conn *websocket.Conn) {
 			standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
@@ -1583,7 +1583,7 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 				case "eth_subscribe":
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": upSubId})
 					go func() {
-						time.Sleep(300 * time.Millisecond)
+						<-release
 						deliverNotification(conn)
 					}()
 				default:
@@ -1610,6 +1610,7 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 	defer conn.Close()
 	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 	require.NotNil(t, resp["result"], "subscribe should succeed with multiple WS upstreams")
+	close(release)
 
 	// Both upstreams delivered block 0x123, so both pollers must know it.
 	prj, err := srv.erpc.GetProject("test_ws")
@@ -1850,4 +1851,571 @@ func TestWebSocket_InternalRequestIdsAreUnique(t *testing.T) {
 		assert.False(t, seen[id], "internal id %d duplicated", id)
 		seen[id] = true
 	}
+}
+
+//
+// --- Tests: subscription sources ---
+//
+
+// mockChain is one simulated chain that mock vendors serve. A gated chain
+// moves only after a polled vendor served its head, so a poll source sees
+// every block whatever the scheduler does.
+type mockChain struct {
+	mu       sync.Mutex
+	head     int64
+	served   int64
+	gated    bool
+	paused   bool
+	watchers []chan int64
+}
+
+func newMockChain(head int64, gated bool) *mockChain {
+	return &mockChain{head: head, served: head - 1, gated: gated}
+}
+
+func (c *mockChain) Head() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.head
+}
+
+// latest answers a latest poll; markServed opens the gate.
+func (c *mockChain) latest(markServed bool) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if markServed {
+		c.served = c.head
+	}
+	return c.head
+}
+
+func (c *mockChain) setPaused(p bool) {
+	c.mu.Lock()
+	c.paused = p
+	c.mu.Unlock()
+}
+
+func (c *mockChain) setGated(g bool) {
+	c.mu.Lock()
+	c.gated = g
+	c.served = c.head - 1
+	c.mu.Unlock()
+}
+
+// advance adds a block and tells every watcher.
+func (c *mockChain) advance() int64 {
+	c.mu.Lock()
+	c.head++
+	n := c.head
+	watchers := slices.Clone(c.watchers)
+	c.mu.Unlock()
+	for _, w := range watchers {
+		select {
+		case w <- n:
+		default:
+		}
+	}
+	return n
+}
+
+func (c *mockChain) watch() <-chan int64 {
+	ch := make(chan int64, 256)
+	c.mu.Lock()
+	c.watchers = append(c.watchers, ch)
+	c.mu.Unlock()
+	return ch
+}
+
+// run adds a block every interval until ctx ends, unless paused or gated.
+func (c *mockChain) run(ctx context.Context, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		c.mu.Lock()
+		hold := c.paused || (c.gated && c.served < c.head)
+		c.mu.Unlock()
+		if !hold {
+			c.advance()
+		}
+	}
+}
+
+// block is block n as a vendor serves it, transactions included.
+func (c *mockChain) block(n int64) map[string]interface{} {
+	h := mockHead(n)
+	h["transactions"] = []interface{}{fmt.Sprintf("0x%064x", n+1_000_000)}
+	h["miner"] = "0x0000000000000000000000000000000000000001"
+	return h
+}
+
+// answerBlock answers eth_getBlockByNumber from the chain; latest polls are
+// counted in polls.
+func (c *mockChain) answerBlock(params []interface{}, markServed bool, polls *atomic.Int64) interface{} {
+	tag, _ := params[0].(string)
+	head := c.Head()
+	var n int64
+	switch tag {
+	case "latest":
+		polls.Add(1)
+		n = c.latest(markServed)
+	case "finalized", "safe":
+		n = head - 5
+	default:
+		v, err := common.HexToInt64(tag)
+		if err != nil || v > head {
+			return nil
+		}
+		n = v
+	}
+	return c.block(n)
+}
+
+// mockHttpVendor is an HTTP JSON-RPC vendor of chain.
+type mockHttpVendor struct {
+	chain       *mockChain
+	latestPolls atomic.Int64
+}
+
+func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httptest.Server) {
+	t.Helper()
+	v := &mockHttpVendor{chain: chain}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		answer := func(req map[string]interface{}) map[string]interface{} {
+			params, _ := req["params"].([]interface{})
+			var result interface{} = "0x1"
+			switch req["method"] {
+			case "eth_chainId":
+				result = "0x7b"
+			case "eth_syncing":
+				result = false
+			case "eth_blockNumber":
+				result = fmt.Sprintf("0x%x", chain.Head())
+			case "eth_getBlockByNumber":
+				result = chain.answerBlock(params, true, &v.latestPolls)
+			}
+			return map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": result}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")) {
+			var reqs []map[string]interface{}
+			_ = json.Unmarshal(body, &reqs)
+			out := make([]map[string]interface{}, 0, len(reqs))
+			for _, req := range reqs {
+				out = append(out, answer(req))
+			}
+			_ = json.NewEncoder(w).Encode(out)
+			return
+		}
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+		_ = json.NewEncoder(w).Encode(answer(req))
+	}))
+	t.Cleanup(srv.Close)
+	return v, srv
+}
+
+// mockWsVendor is a WebSocket vendor of chain that pushes each new head on
+// its newHeads subscription.
+type mockWsVendor struct {
+	chain *mockChain
+	// refuseHeads answers newHeads subscribes as unsupported.
+	refuseHeads bool
+	// staleRPC answers latest with the first block, so only pushes move
+	// the upstream's head.
+	staleRPC    bool
+	pushing     atomic.Bool
+	subscribes  atomic.Int32
+	latestPolls atomic.Int64
+}
+
+func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVendor)) (*mockWsVendor, string) {
+	t.Helper()
+	v := &mockWsVendor{chain: chain}
+	v.pushing.Store(true)
+	if configure != nil {
+		configure(v)
+	}
+	first := chain.Head()
+	srv := mockWsUpstream(t, func(conn *websocket.Conn) {
+		done := make(chan struct{})
+		defer close(done)
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req map[string]interface{}
+			if json.Unmarshal(msg, &req) != nil {
+				continue
+			}
+			id := req["id"]
+			params, _ := req["params"].([]interface{})
+			reply := map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x1"}
+			switch req["method"] {
+			case "eth_chainId":
+				reply["result"] = "0x7b"
+			case "eth_syncing":
+				reply["result"] = false
+			case "eth_blockNumber":
+				reply["result"] = fmt.Sprintf("0x%x", first)
+			case "eth_getBlockByNumber":
+				if tag, _ := params[0].(string); v.staleRPC && tag == "latest" {
+					reply["result"] = chain.block(first)
+				} else {
+					reply["result"] = chain.answerBlock(params, v.refuseHeads, &v.latestPolls)
+				}
+			case "eth_unsubscribe":
+				reply["result"] = true
+			case "eth_subscribe":
+				if params[0] != "newHeads" {
+					reply["result"] = "0xother"
+					break
+				}
+				v.subscribes.Add(1)
+				if v.refuseHeads {
+					delete(reply, "result")
+					reply["error"] = map[string]interface{}{"code": -32601, "message": "the method eth_subscribe does not exist/is not available"}
+					break
+				}
+				subID := fmt.Sprintf("0xheads%d", v.subscribes.Load())
+				reply["result"] = subID
+				heads := chain.watch()
+				go func() {
+					for {
+						select {
+						case <-done:
+							return
+						case n := <-heads:
+							if v.pushing.Load() {
+								mockWriteJSON(conn, map[string]interface{}{
+									"jsonrpc": "2.0",
+									"method":  "eth_subscription",
+									"params":  map[string]interface{}{"subscription": subID, "result": chain.block(n)},
+								})
+							}
+						}
+					}
+				}()
+			}
+			mockWriteJSON(conn, reply)
+		}
+	})
+	t.Cleanup(srv.Close)
+	return v, "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+// sourcesConfig is one project, test_ws, with one evm network of chain 123.
+func sourcesConfig(network func(nw *common.NetworkConfig), ups ...*common.UpstreamConfig) *common.Config {
+	nw := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	if network != nil {
+		network(nw)
+	}
+	return &common.Config{
+		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
+		Projects: []*common.ProjectConfig{{
+			Id:        "test_ws",
+			Networks:  []*common.NetworkConfig{nw},
+			Upstreams: ups,
+		}},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+}
+
+// sourceUpstream polls at 100ms while it is a poll source.
+func sourceUpstream(id, endpoint string, source *bool) *common.UpstreamConfig {
+	return &common.UpstreamConfig{
+		Id:       id,
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: endpoint,
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			SubscriptionSource:  source,
+			StatePollerDebounce: common.Duration(100 * time.Millisecond),
+		},
+	}
+}
+
+func subscribeNewHeads(t *testing.T, conn *websocket.Conn) string {
+	t.Helper()
+	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+	require.Nil(t, resp["error"], "subscribe failed: %v", resp["error"])
+	id, ok := resp["result"].(string)
+	require.True(t, ok, "no subscription id: %v", resp)
+	return id
+}
+
+// nextNewHead reads the next newHeads notification: its number and payload.
+func nextNewHead(t *testing.T, conn *websocket.Conn, timeout time.Duration) (int64, map[string]interface{}) {
+	t.Helper()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(timeout)))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err, "no newHeads notification within %s", timeout)
+	var notif struct {
+		Method string `json:"method"`
+		Params struct {
+			Result map[string]interface{} `json:"result"`
+		} `json:"params"`
+	}
+	require.NoError(t, json.Unmarshal(msg, &notif), "%s", msg)
+	require.Equal(t, "eth_subscription", notif.Method, "%s", msg)
+	numHex, _ := notif.Params.Result["number"].(string)
+	n, err := common.HexToInt64(numHex)
+	require.NoError(t, err, "%s", msg)
+	return n, notif.Params.Result
+}
+
+// requireContiguous reads count heads and requires each to follow the one
+// before; it returns the last.
+func requireContiguous(t *testing.T, conn *websocket.Conn, count int, prev int64) int64 {
+	t.Helper()
+	for range count {
+		n, _ := nextNewHead(t, conn, 10*time.Second)
+		if prev != 0 {
+			require.Equal(t, prev+1, n, "heads must arrive once each, in order")
+		}
+		prev = n
+	}
+	return prev
+}
+
+// pollsSettle waits until vendor polls stop for a whole window.
+func pollsSettle(t *testing.T, polls *atomic.Int64, window time.Duration, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		before := polls.Load()
+		time.Sleep(window)
+		return polls.Load() == before
+	}, 10*time.Second, 10*time.Millisecond, msg)
+}
+
+// An HTTP-only network whose upstream is a subscription source feeds
+// newHeads by polling: heads arrive in order, projected without
+// transactions.
+func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+
+	chain := newMockChain(0x100, true)
+	_, srv := newMockHttpVendor(t, chain)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go chain.run(ctx, 150*time.Millisecond)
+
+	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true))))
+	defer cleanup()
+	conn := dialWs(t, addr)
+	defer conn.Close()
+	subscribeNewHeads(t, conn)
+
+	var prev int64
+	for range 5 {
+		n, head := nextNewHead(t, conn, 10*time.Second)
+		if prev != 0 {
+			require.Equal(t, prev+1, n, "polled heads arrive in order")
+		}
+		prev = n
+		assert.Equal(t, fmt.Sprintf("0x%064x", n), head["hash"])
+		assert.NotContains(t, head, "transactions", "newHeads is projected")
+	}
+}
+
+// A network with a wss source and an HTTP poll source: each head reaches
+// the client once.
+func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+
+	chain := newMockChain(0x100, false)
+	httpVendor, srv := newMockHttpVendor(t, chain)
+	_, wsURL := newMockWsVendor(t, chain, nil)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go chain.run(ctx, 200*time.Millisecond)
+
+	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil,
+		sourceUpstream("rpc-http", srv.URL, util.BoolPtr(true)),
+		sourceUpstream("rpc-ws", wsURL, nil),
+	))
+	defer cleanup()
+	conn := dialWs(t, addr)
+	defer conn.Close()
+	subscribeNewHeads(t, conn)
+
+	polledBefore := httpVendor.latestPolls.Load()
+	requireContiguous(t, conn, 8, 0)
+	assert.Greater(t, httpVendor.latestPolls.Load(), polledBefore+2, "the HTTP source polls while a client wants heads")
+}
+
+// With failover on, a fallback-tier poll source polls only while no primary
+// source has been live for primaryLeadAfter; the client's heads stay
+// contiguous across both hand-overs.
+func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+	prevLead := primaryLeadAfter.Load()
+	primaryLeadAfter.Store(1500 * time.Millisecond)
+	defer primaryLeadAfter.Store(prevLead)
+
+	chain := newMockChain(0x100, false)
+	fallback, srv := newMockHttpVendor(t, chain)
+	primary, wsURL := newMockWsVendor(t, chain, nil)
+
+	fallbackCfg := sourceUpstream("rpc-fallback", srv.URL, util.BoolPtr(true))
+	fallbackCfg.Tags = []string{common.TagTierFallback}
+	primaryCfg := sourceUpstream("rpc-primary", wsURL, nil)
+	// The primary's own polls let the network see blocks it stops pushing.
+	primaryCfg.Evm.StatePollerInterval = common.Duration(300 * time.Millisecond)
+	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.Failover = &common.FailoverConfig{OnDefaultsExhausted: util.BoolPtr(true)}
+		// Every upstream eligible; the identity function itself would select the rich default.
+		nw.SelectionPolicy = &common.SelectionPolicyConfig{EvalFunc: `(upstreams, ctx) => upstreams.filter(u => true)`}
+		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 1}
+	}, primaryCfg, fallbackCfg)
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+	conn := dialWs(t, addr)
+	defer conn.Close()
+	subscribeNewHeads(t, conn)
+
+	// The chain starts after the subscribe, so no primary leads yet.
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go chain.run(ctx, 200*time.Millisecond)
+
+	last := requireContiguous(t, conn, 3, 0)
+	assert.Greater(t, fallback.latestPolls.Load(), int64(2), "the fallback polls while no primary leads")
+
+	pollsSettle(t, &fallback.latestPolls, 700*time.Millisecond, "the fallback stops polling once the primary leads")
+	last = requireContiguous(t, conn, 3, last)
+
+	// The primary goes silent once its pushes are out; the next block is
+	// seen only over RPC.
+	chain.setPaused(true)
+	time.Sleep(300 * time.Millisecond)
+	primary.pushing.Store(false)
+	if h := chain.Head(); h > last {
+		last = requireContiguous(t, conn, int(h-last), last)
+	}
+	stalled := fallback.latestPolls.Load()
+	chain.advance()
+	last = requireContiguous(t, conn, 1, last)
+	assert.Greater(t, fallback.latestPolls.Load(), stalled, "the fallback polls again once the primary is not live")
+
+	chain.setGated(true)
+	chain.setPaused(false)
+	requireContiguous(t, conn, 4, last)
+}
+
+// Polls stop sourceIdleStop after the last client leaves; a later client
+// gets only heads from after it subscribed.
+func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+	prevIdle := sourceIdleStop.Load()
+	sourceIdleStop.Store(500 * time.Millisecond)
+	defer sourceIdleStop.Store(prevIdle)
+
+	chain := newMockChain(0x100, true)
+	vendor, srv := newMockHttpVendor(t, chain)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go chain.run(ctx, 150*time.Millisecond)
+
+	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true))))
+	defer cleanup()
+	first := dialWs(t, addr)
+	subscribeNewHeads(t, first)
+	seen := requireContiguous(t, first, 3, 0)
+	require.NoError(t, first.Close())
+
+	pollsSettle(t, &vendor.latestPolls, 700*time.Millisecond, "polls stop after the idle delay")
+	idleAt := chain.Head()
+
+	second := dialWs(t, addr)
+	defer second.Close()
+	subscribeNewHeads(t, second)
+	n, _ := nextNewHead(t, second, 10*time.Second)
+	assert.Greater(t, n, seen, "the new client starts after the first one's heads")
+	assert.GreaterOrEqual(t, n, idleAt, "the new client gets no head from before it subscribed")
+	requireContiguous(t, second, 2, n)
+}
+
+// With the WebSocket server off, each project's network subscribes newHeads
+// on its wss upstream at init, and HTTP eth_blockNumber follows the pushes.
+func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+
+	chain := newMockChain(0x100, false)
+	stale := func(v *mockWsVendor) { v.staleRPC = true }
+	vendorA, urlA := newMockWsVendor(t, chain, stale)
+	vendorB, urlB := newMockWsVendor(t, chain, stale)
+
+	cfg := sourcesConfig(nil, sourceUpstream("ws-a", urlA, nil))
+	second := *cfg.Projects[0]
+	second.Id = "test_ws2"
+	second.Networks = []*common.NetworkConfig{{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}}
+	second.Upstreams = []*common.UpstreamConfig{sourceUpstream("ws-b", urlB, nil)}
+	cfg.Projects = append(cfg.Projects, &second)
+	cfg.Server.WebSocket = &common.WebSocketServerConfig{Enabled: util.BoolPtr(false)}
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	require.Eventually(t, func() bool { return vendorA.subscribes.Load() > 0 && vendorB.subscribes.Load() > 0 },
+		10*time.Second, 20*time.Millisecond, "each project subscribes newHeads on its own upstream without any client")
+
+	for range 3 {
+		chain.advance()
+	}
+	want := fmt.Sprintf("0x%x", chain.Head())
+	for _, project := range []string{"test_ws", "test_ws2"} {
+		require.Eventually(t, func() bool {
+			resp, err := http.Post(fmt.Sprintf("http://%s/%s/evm/123", addr, project), "application/json",
+				strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+			if err != nil {
+				return false
+			}
+			defer resp.Body.Close()
+			var out map[string]interface{}
+			if json.NewDecoder(resp.Body).Decode(&out) != nil {
+				return false
+			}
+			return out["result"] == want
+		}, 10*time.Second, 50*time.Millisecond, "%s: eth_blockNumber follows the pushed heads", project)
+	}
+}
+
+// A wss upstream that refuses newHeads as unsupported feeds them by poll,
+// and is asked again once per re-ask interval.
+func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+	prevReask := wsupstream.HeadsReaskInterval.Load()
+	wsupstream.HeadsReaskInterval.Store(time.Second)
+	defer wsupstream.HeadsReaskInterval.Store(prevReask)
+
+	chain := newMockChain(0x100, true)
+	vendor, wsURL := newMockWsVendor(t, chain, func(v *mockWsVendor) { v.refuseHeads = true })
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go chain.run(ctx, 150*time.Millisecond)
+
+	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-ws", wsURL, nil)))
+	defer cleanup()
+	conn := dialWs(t, addr)
+	defer conn.Close()
+	subscribeNewHeads(t, conn)
+
+	requireContiguous(t, conn, 3, 0)
+	require.Eventually(t, func() bool { return vendor.subscribes.Load() >= 2 }, 5*time.Second, 10*time.Millisecond,
+		"newHeads is asked again after the re-ask interval")
+	asked := vendor.subscribes.Load()
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, asked, vendor.subscribes.Load(), "asked once per interval, not retried with backoff")
 }

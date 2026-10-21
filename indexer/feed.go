@@ -59,6 +59,9 @@ const TopicNewHeads Topic = SubTypeNewHeads
 // Intake is what sources report into; erpc implements it per network.
 type Intake interface {
 	Header(upstreamId string, raw json.RawMessage)
+	// Subscribed reports a push subscribe's answer for t: nil once it is
+	// live, else the upstream's error.
+	Subscribed(upstreamId string, t Topic, err error)
 }
 
 // Source feeds one upstream's observations over one transport.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -473,17 +472,11 @@ func (u *UpstreamsRegistry) GetWsUpstreams(ctx context.Context, networkId string
 	all := u.GetNetworkUpstreams(ctx, networkId)
 	var ws []*Upstream
 	for _, up := range all {
-		if cfg := up.Config(); cfg != nil && IsWsEndpoint(cfg.Endpoint) {
+		if cfg := up.Config(); cfg != nil && util.IsWsEndpoint(cfg.Endpoint) {
 			ws = append(ws, up)
 		}
 	}
 	return ws
-}
-
-// IsWsEndpoint reports whether endpoint uses the ws:// or wss:// scheme.
-func IsWsEndpoint(endpoint string) bool {
-	parsed, err := url.Parse(endpoint)
-	return err == nil && (parsed.Scheme == "ws" || parsed.Scheme == "wss")
 }
 
 func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {

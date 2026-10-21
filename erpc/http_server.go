@@ -24,7 +24,6 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
@@ -69,7 +68,6 @@ func NewHttpServer(
 	cfg *common.ServerConfig,
 	healthCheckCfg *common.HealthCheckConfig,
 	adminCfg *common.AdminConfig,
-	indexerCfg *common.IndexerConfig,
 	erpc *ERPC,
 ) (*HttpServer, error) {
 	reqMaxTimeout := 150 * time.Second
@@ -95,12 +93,6 @@ func NewHttpServer(
 	gzipPool := util.NewGzipReaderPool()
 
 	subMgrLogger := logger.With().Str("component", "subscriptions").Logger()
-	indexerLogger := logger.With().Str("component", "indexer").Logger()
-	indexerOpts := indexer.Options{}
-	if indexerCfg != nil {
-		indexerOpts.DedupWindowSize = indexerCfg.DedupWindowSize
-	}
-	idx := indexer.New(&indexerLogger, indexerOpts)
 
 	srv := &HttpServer{
 		logger:              logger,
@@ -112,7 +104,7 @@ func NewHttpServer(
 		draining:            &draining,
 		drained:             make(chan struct{}),
 		gzipPool:            gzipPool,
-		subscriptionManager: NewSubscriptionManager(&subMgrLogger, idx),
+		subscriptionManager: NewSubscriptionManager(&subMgrLogger, erpc.idx),
 		reqMaxTimeout:       reqMaxTimeout,
 	}
 
@@ -1978,76 +1970,6 @@ func handleErrorResponse(
 			attribute.Int("response_status", statusCode),
 		),
 	)
-}
-
-// prewarmInterval is how often the prewarm reconciler re-scans for WS-capable
-// networks that still need their newHeads subscription established. Var (not
-// const) so tests can compress it.
-var prewarmInterval = 15 * time.Second
-
-// PrewarmUpstreamSubscriptions proactively establishes the upstream newHeads
-// subscription for every WS-capable network, without waiting for a client
-// eth_subscribe. This keeps the EVM state poller's latest-block tip fed by
-// pushed heads (cheap) instead of falling back to RPC-polling `latest` every
-// cycle (expensive) — so an instance that never receives a client subscription still
-// polls efficiently.
-//
-// It runs as a reconciler because networks initialize asynchronously (the
-// registry's background initializer tasks): each tick it attempts to bootstrap
-// any network not yet warmed, until ctx is cancelled. bootstrapNetwork is
-// idempotent per network, so re-scans are cheap. Networks with no WS upstreams
-// are skipped permanently — the state poller handles head tracking for
-// HTTP-only networks via RPC polling. No-op while the WebSocket server is
-// disabled.
-func (s *HttpServer) PrewarmUpstreamSubscriptions(ctx context.Context) {
-	if s.subscriptionManager == nil || s.erpc == nil || !s.webSocketEnabled() {
-		return
-	}
-
-	// indexer network key (project/network) -> bootstrapped or definitively
-	// skipped (HTTP-only).
-	settled := make(map[string]struct{})
-
-	reconcile := func() {
-		for _, prj := range s.erpc.GetProjects() {
-			for _, nw := range prj.GetNetworks() {
-				id := nw.Id()
-				key := indexerNetworkKey(nw)
-				if _, done := settled[key]; done {
-					continue
-				}
-				err := s.subscriptionManager.bootstrapNetwork(ctx, nw)
-				switch {
-				case err == nil:
-					settled[key] = struct{}{}
-					s.logger.Info().Str("networkId", id).
-						Msg("prewarmed upstream newHeads subscription")
-				case common.HasErrorCode(err, common.ErrCodeNoWsUpstreamAvailable):
-					// HTTP-only network — nothing to prewarm; don't retry.
-					settled[key] = struct{}{}
-					s.logger.Debug().Str("networkId", id).
-						Msg("no WS upstreams; skipping subscription prewarm")
-				default:
-					// Transient (network still initializing, upstreams not ready,
-					// circuit breaker open). Leave unsettled; retried next tick.
-					s.logger.Debug().Err(err).Str("networkId", id).
-						Msg("subscription prewarm not ready yet, will retry")
-				}
-			}
-		}
-	}
-
-	reconcile() // immediate first pass
-	ticker := time.NewTicker(prewarmInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			reconcile()
-		}
-	}
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {

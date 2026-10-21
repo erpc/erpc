@@ -46,6 +46,8 @@ func (s *fakeSink) Ingest(ev indexer.StreamEvent) {
 
 func (s *fakeSink) Header(_ string, raw json.RawMessage) { s.heads <- raw }
 
+func (s *fakeSink) Subscribed(string, indexer.Topic, error) {}
+
 // notifyServer is a WS upstream that answers eth_subscribe with ids from a
 // per-connection counter ("0x1", "0x2", …, as real nodes do), follows each
 // logs subscribe response with one notification for it, answers any other
@@ -202,6 +204,14 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 	return a, sink
 }
 
+// startHeadsSource starts a as the network starts a wss source: an indexer
+// ingress that feeds newHeads.
+func startHeadsSource(t *testing.T, a *Adapter, sink *fakeSink) {
+	t.Helper()
+	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+	a.Set([]indexer.Topic{indexer.TopicNewHeads})
+}
+
 // subscribedHeads reports whether a is connected with a live newHeads
 // subscription.
 func subscribedHeads(a *Adapter) func() bool {
@@ -275,7 +285,7 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 		return send(ctx, nq, bypass)
 	}
 
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+	startHeadsSource(t, a, sink)
 
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
 		"adapter never subscribed newHeads despite the failures stopping after %d", failuresPerEpoch)
@@ -312,7 +322,7 @@ func TestAdapterResubscribesAllFiltersAfterReconnect(t *testing.T) {
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	conn1 := <-server.newConn
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+	startHeadsSource(t, a, sink)
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	const numFilters = 8
@@ -417,7 +427,7 @@ func TestAdapterRetriesFailedEnsureFilter(t *testing.T) {
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	<-server.newConn
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+	startHeadsSource(t, a, sink)
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	var failuresLeft atomic.Int64

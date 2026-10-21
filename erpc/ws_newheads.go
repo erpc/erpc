@@ -29,7 +29,8 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 // ctx or a failed write; out of range, lag, a panic or any other error
 // restart it after the head, so the client sees a jump in numbers, as with
 // geth, and never a silent subscription.
-func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, feed *evm.ChainTracker) {
+func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, nw *Network) {
+	feed := nw.chainTracker
 	window := uint64(feed.ReorgWindow())
 	emit := func(b indexer.Batch) error {
 		if len(b.Reverted) == 0 && len(b.Applied) > 0 {
@@ -50,7 +51,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		return nil
 	}
 	for {
-		err := sm.taps.RunChain(ctx, sub.NetworkID, "ws", indexer.SubTypeNewHeads, feed, nil, indexer.ReadOpts{}, emit)
+		err := nw.taps.RunChain(ctx, sub.NetworkID, "ws", indexer.SubTypeNewHeads, feed, nil, indexer.ReadOpts{}, emit)
 		var writeErr wsWriteError
 		if ctx.Err() != nil || errors.As(err, &writeErr) {
 			return

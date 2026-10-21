@@ -19,7 +19,7 @@ func TestAdapterGivesUpNewHeadsWhenUnsupported(t *testing.T) {
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	conn1 := <-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+	startHeadsSource(t, a, sink)
 
 	params := logsParams("0xabc")
 	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))

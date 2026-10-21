@@ -21,6 +21,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
@@ -84,9 +85,12 @@ type Network struct {
 	queryTraceSource atomic.Int32
 
 	// chainTracker is the network-wide tracker; intake feeds it from the
-	// sources. Both nil on non-EVM networks.
+	// sources, which the reconciler sets; taps read it and are the demand.
+	// All nil on non-EVM networks.
 	chainTracker *evm.ChainTracker
 	intake       *networkIntake
+	sources      *sourceReconciler
+	taps         *indexer.Taps
 }
 
 // NoteObservedLatestBlock records a head about to be delivered on a WebSocket

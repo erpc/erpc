@@ -1162,6 +1162,11 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if e.StatePollerInterval == 0 {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")
 	}
+	// Shadow upstreams never join the network's upstreams, so intake would
+	// drop every header they feed.
+	if e.SubscriptionSource != nil && *e.SubscriptionSource && u.Shadow != nil && u.Shadow.Enabled {
+		return fmt.Errorf("upstream '%s': evm.subscriptionSource cannot be true on a shadow upstream", u.Id)
+	}
 	// NodeType deprecated; keep syntax validation for back-compat only
 	if e.NodeType != "" {
 		allowed := []EvmNodeType{

@@ -11,7 +11,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
-	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -29,21 +28,16 @@ const unsubscribeTimeout = 5 * time.Second
 // SubscriptionManager serves eth_subscribe and eth_unsubscribe on client
 // WebSocket connections. newHeads subscriptions are taps on the network-wide
 // chain tracker; logs and newPendingTransactions go through the indexer,
-// whose upstream ingresses are registered the first time a client
-// subscribes on a network.
+// whose upstream ingresses each network's source reconciler registers.
 type SubscriptionManager struct {
 	logger *zerolog.Logger
 	idx    *indexer.Indexer
-	taps   *indexer.Taps
 	heads  newHeadsPayloads
 
 	// connMu guards conns and every WsConnection.subsClosed, so no adapter
 	// is created for a connection after CleanupConnection.
 	connMu sync.Mutex
 	conns  map[string]*connEntry // connId -> entry
-
-	networks    sync.Map // indexerNetworkKey -> struct{}, once bootstrapped
-	bootstrapMu sync.Mutex
 
 	// activeSubs counts client subscriptions on this instance for
 	// server.webSocket.maxSubscriptions.
@@ -59,7 +53,6 @@ func NewSubscriptionManager(logger *zerolog.Logger, idx *indexer.Indexer) *Subsc
 	return &SubscriptionManager{
 		logger: logger,
 		idx:    idx,
-		taps:   indexer.NewTaps(nil),
 		conns:  make(map[string]*connEntry),
 	}
 }
@@ -92,10 +85,6 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, err
 	}
 	nq.SetNetwork(nw)
-
-	if err := sm.bootstrapNetwork(ctx, nw); err != nil {
-		return nil, err
-	}
 
 	conn := sm.getOrCreateConn(wsc, nw.Label())
 	if conn == nil {
@@ -130,6 +119,10 @@ func (sm *SubscriptionManager) Subscribe(
 	}
 
 	subType := indexer.ExtractSubscriptionType(jrReq.Params)
+	if err := nw.requireSubscriptionSource(ctx, subType); err != nil {
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+		return nil, err
+	}
 	clientSubID, err := indexer.GenerateClientSubID()
 	if err != nil {
 		err = fmt.Errorf("failed to generate subscription ID: %w", err)
@@ -163,7 +156,7 @@ func (sm *SubscriptionManager) Subscribe(
 		tapCtx, stop := context.WithCancel(context.Background())
 		if addErr = conn.adapter.AddTapSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			sub := wsclient.Subscription{ClientSubID: clientSubID, Kind: kind, NetworkID: key}
-			go sm.runNewHeads(tapCtx, wsc, sub, nw.chainTracker)
+			go sm.runNewHeads(tapCtx, wsc, sub, nw)
 		} else {
 			stop()
 		}
@@ -297,51 +290,6 @@ func (sm *SubscriptionManager) releaseFilter(ctx context.Context, networkID stri
 	if kind != indexer.KindNewHead && filterHash != "" {
 		sm.idx.ReleaseFilter(ctx, networkID, kind.String(), filterHash)
 	}
-}
-
-// bootstrapNetwork registers the network with the indexer, with an ingress
-// per WebSocket upstream, once.
-func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network) error {
-	networkID := nw.networkId
-	key := indexerNetworkKey(nw)
-	if _, ok := sm.networks.Load(key); ok {
-		return nil
-	}
-	sm.bootstrapMu.Lock()
-	defer sm.bootstrapMu.Unlock()
-	if _, ok := sm.networks.Load(key); ok {
-		return nil
-	}
-
-	wsUpstreams := nw.upstreamsRegistry.GetWsUpstreams(ctx, networkID)
-	if len(wsUpstreams) == 0 {
-		return common.NewErrNoWsUpstreamAvailable(networkID)
-	}
-
-	var adapterOpts wsupstream.Options
-	if cfg := nw.cfg; cfg != nil && cfg.Evm != nil && cfg.Evm.StripSubscribeFromBlockZero != nil {
-		adapterOpts.StripSubscribeFromBlockZero = *cfg.Evm.StripSubscribeFromBlockZero
-	}
-	adapters := make(map[string]*wsupstream.Adapter, len(wsUpstreams))
-	for _, up := range wsUpstreams {
-		if adapter := wsupstream.New(up, key, nw.intake, sm.logger, adapterOpts); adapter != nil {
-			adapters[up.Id()] = adapter
-		}
-	}
-	sm.idx.RegisterNetwork(&networkHandle{nw: nw})
-	sm.idx.RegisterNetworkSelector(key, &subIngressSelector{nw: nw})
-	for _, up := range wsUpstreams {
-		adapter := adapters[up.Id()]
-		if adapter == nil {
-			continue
-		}
-		if err := sm.idx.AddIngress(ctx, key, adapter); err != nil {
-			sm.logger.Warn().Err(err).Str("upstreamId", up.Id()).
-				Msg("failed to register upstream ingress with indexer")
-		}
-	}
-	sm.networks.Store(key, struct{}{})
-	return nil
 }
 
 // subIngressSelector picks the ingresses that carry a filter subscription.

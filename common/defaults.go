@@ -2068,6 +2068,10 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.StatePollerDebounce == 0 && defaults != nil && defaults.StatePollerDebounce != 0 {
 		e.StatePollerDebounce = defaults.StatePollerDebounce
 	}
+	if e.SubscriptionSource == nil && defaults != nil && defaults.SubscriptionSource != nil {
+		v := *defaults.SubscriptionSource
+		e.SubscriptionSource = &v
+	}
 	if e.NodeType == "" {
 		if defaults != nil && defaults.NodeType != "" {
 			e.NodeType = defaults.NodeType

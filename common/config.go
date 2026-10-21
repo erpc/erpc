@@ -1419,6 +1419,10 @@ type EvmUpstreamConfig struct {
 	// For an upstream whose own head lags the network: it answers only blocks it holds, and a block
 	// it lacks fails as missing data so the next upstream answers, instead of an older "latest".
 	PinLatestTag *bool `yaml:"pinLatestTag,omitempty" json:"pinLatestTag"`
+	// SubscriptionSource makes this upstream a chain-tracker source: it feeds
+	// newHeads by push over ws/wss, by polling eth_getBlockByNumber(latest)
+	// otherwise. Unset: true for ws/wss endpoints, false otherwise.
+	SubscriptionSource *bool `yaml:"subscriptionSource,omitempty" json:"subscriptionSource"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
@@ -1600,6 +1604,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 		v := *c.PinLatestTag
 		copied.PinLatestTag = &v
 	}
+	if c.SubscriptionSource != nil {
+		v := *c.SubscriptionSource
+		copied.SubscriptionSource = &v
+	}
 	if c.DeprecatedIntegrity != nil {
 		copied.DeprecatedIntegrity = c.DeprecatedIntegrity.Copy()
 	}
@@ -1617,6 +1625,15 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	}
 
 	return copied
+}
+
+// IsSubscriptionSource reports whether the upstream feeds the chain tracker:
+// evm.subscriptionSource, or, unset, whether its endpoint is ws/wss.
+func (u *UpstreamConfig) IsSubscriptionSource() bool {
+	if u.Evm != nil && u.Evm.SubscriptionSource != nil {
+		return *u.Evm.SubscriptionSource
+	}
+	return util.IsWsEndpoint(u.Endpoint)
 }
 
 type FailsafeConfig struct {

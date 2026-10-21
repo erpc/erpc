@@ -541,7 +541,7 @@ func TestSvm_MixedProjectWithEvm(t *testing.T) {
 		[]*common.ProjectConfig{prjCfg},
 		ssr, nil, nil, rateLimiters,
 		thirdparty.NewVendorsRegistry(),
-		nil, nil,
+		nil, nil, nil,
 	)
 	require.NoError(t, err)
 	reg.Bootstrap(ctx)

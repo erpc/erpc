@@ -3167,23 +3167,24 @@ func (e *ErrSubscriptionNotFound) ErrorStatusCode() int {
 	return http.StatusNotFound
 }
 
-type ErrNoWsUpstreamAvailable struct{ BaseError }
+type ErrNoSubscriptionSource struct{ BaseError }
 
-const ErrCodeNoWsUpstreamAvailable ErrorCode = "ErrNoWsUpstreamAvailable"
+const ErrCodeNoSubscriptionSource ErrorCode = "ErrNoSubscriptionSource"
 
-var NewErrNoWsUpstreamAvailable = func(networkId string) error {
-	return &ErrNoWsUpstreamAvailable{
+var NewErrNoSubscriptionSource = func(networkId, subType string) error {
+	return &ErrNoSubscriptionSource{
 		BaseError{
-			Code:    ErrCodeNoWsUpstreamAvailable,
-			Message: fmt.Sprintf("eth_subscribe requires a WebSocket-capable upstream, none configured for network %s", networkId),
+			Code:    ErrCodeNoSubscriptionSource,
+			Message: fmt.Sprintf("eth_subscribe %s needs a subscription source, none configured for network %s", subType, networkId),
 			Details: map[string]interface{}{
 				"networkId": networkId,
+				"subType":   subType,
 			},
 		},
 	}
 }
 
-func (e *ErrNoWsUpstreamAvailable) ErrorStatusCode() int {
+func (e *ErrNoSubscriptionSource) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 

@@ -1,11 +1,13 @@
 package evm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -45,9 +48,23 @@ const (
 	// chainIdVerifyMinBlocks keeps the derived threshold off zero on a chain
 	// whose measured block time is longer than the window itself.
 	chainIdVerifyMinBlocks = 2
+
+	// pollSourceBlockTimeShare is the poll source's cadence in block times.
+	pollSourceBlockTimeShare = 0.7
 )
 
-var _ common.EvmStatePoller = &EvmStatePoller{}
+// Poll source and expiry bounds; vars so tests can shorten them.
+var (
+	pollSourceMaxCadence  = 12 * time.Second
+	pollSourceMaxBackoff  = 60 * time.Second
+	latestBlockSkipExpiry = 10 * time.Minute
+	chainIdCordonRecheck  = 5 * time.Minute
+)
+
+var (
+	_ common.EvmStatePoller = &EvmStatePoller{}
+	_ indexer.Source        = &EvmStatePoller{}
+)
 
 type EvmStatePoller struct {
 	Enabled bool
@@ -103,10 +120,26 @@ type EvmStatePoller struct {
 
 	// The reason to not use latestBlockTimestamp is to avoid thundering herd,
 	// when a node is actively syncing and timestamp is always way in the past.
+	// skipLatestBlockCheck expires latestBlockSkipExpiry after skipLatestSince.
 	skipLatestBlockCheck      bool
+	skipLatestSince           time.Time
 	latestBlockFailureCount   int
 	latestBlockSuccessfulOnce bool
 	latestBlockShared         data.CounterInt64SharedVariable
+
+	// pollSrc is set once the network binds this poller as a poll source;
+	// while pollHeads is on, each latest poll feeds its intake, at the poll
+	// source's cadence. pollFailures counts failed polls in a row; pollWake
+	// starts a poll at once.
+	pollSrc      atomic.Pointer[pollSource]
+	pollHeads    atomic.Bool
+	pollFailures atomic.Int32
+	pollWake     chan struct{}
+
+	// chainIdRecheckArmed is set while a chain-identity cordon waits for its
+	// next eth_chainId check; chainIdCordonReason is the cordon's reason.
+	chainIdRecheckArmed atomic.Bool
+	chainIdCordonReason atomic.Value // string
 
 	sharedStateRegistry data.SharedStateRegistry
 
@@ -171,6 +204,7 @@ func NewEvmStatePoller(
 		earliestByProbe:              make(map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable),
 		earliestSchedulerStarted:     make(map[common.EvmAvailabilityProbeType]bool),
 		earliestInitialDetectionDone: make(map[common.EvmAvailabilityProbeType]bool),
+		pollWake:                     make(chan struct{}, 1),
 	}
 
 	lbs.OnValue(func(value int64) {
@@ -220,43 +254,47 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	}
 	e.Enabled = true
 
+	// The one poll loop: every statePollerInterval, or at the poll source's
+	// cadence while it feeds newHeads.
 	go (func() {
-		ticker := time.NewTicker(interval.Duration())
-		defer ticker.Stop()
 		for {
+			timer := time.NewTimer(e.nextPollDelay(interval.Duration()))
 			select {
 			case <-e.appCtx.Done():
+				timer.Stop()
 				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
 				return
-			case <-ticker.C:
-				// Calculate timeout based on shared state config:
-				// 1. Wait for distributed lock (up to lockTtl)
-				// 2. Buffer for operations (fetch block, update remote)
-				const operationBuffer = 15 * time.Second
-				lockTtl := e.sharedStateRegistry.GetLockTtl()
-				timeout := lockTtl + operationBuffer
+			case <-e.pollWake:
+				timer.Stop()
+			case <-timer.C:
+			}
+			// Calculate timeout based on shared state config:
+			// 1. Wait for distributed lock (up to lockTtl)
+			// 2. Buffer for operations (fetch block, update remote)
+			const operationBuffer = 15 * time.Second
+			lockTtl := e.sharedStateRegistry.GetLockTtl()
+			timeout := lockTtl + operationBuffer
 
-				// Ensure minimum timeout for basic operations
-				if timeout < 30*time.Second {
-					timeout = 30 * time.Second
-				}
+			// Ensure minimum timeout for basic operations
+			if timeout < 30*time.Second {
+				timeout = 30 * time.Second
+			}
 
-				e.logger.Debug().
-					Dur("lockTtl", lockTtl).
-					Dur("timeout", timeout).
-					Msg("calculated poll timeout based on shared state config")
+			e.logger.Debug().
+				Dur("lockTtl", lockTtl).
+				Dur("timeout", timeout).
+				Msg("calculated poll timeout based on shared state config")
 
-				nctx, cancel := context.WithTimeout(e.appCtx, timeout)
-				err := e.Poll(nctx)
-				subCtxErr := nctx.Err()
-				cancel()
-				if err != nil {
-					if errors.Is(subCtxErr, context.Canceled) {
-						e.logger.Info().Err(err).
-							Msgf("shutting down evm state poller due to context cancellation (e.g. app exiting)")
-					} else {
-						e.logger.Warn().Err(err).Msgf("failed to poll evm state")
-					}
+			nctx, cancel := context.WithTimeout(e.appCtx, timeout)
+			err := e.Poll(nctx)
+			subCtxErr := nctx.Err()
+			cancel()
+			if err != nil {
+				if errors.Is(subCtxErr, context.Canceled) {
+					e.logger.Info().Err(err).
+						Msgf("shutting down evm state poller due to context cancellation (e.g. app exiting)")
+				} else {
+					e.logger.Warn().Err(err).Msgf("failed to poll evm state")
 				}
 			}
 		}
@@ -476,8 +514,11 @@ func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, 
 
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
+// While this poller is a poll source, each fetched header also goes to its
+// intake, and the give-up after failed polls does not apply.
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
-	if e.shouldSkipLatestBlockCheck() {
+	src := e.activePollSource()
+	if src == nil && e.shouldSkipLatestBlockCheck() {
 		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
 	}
@@ -486,8 +527,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	networkLabel := e.networkLabel
 	e.stateMu.RUnlock()
 
-	dbi := e.resolveDebounce(cfg)
-	e.logger.Trace().Int64("debounceMs", dbi.Milliseconds()).Msg("attempt to poll latest block number")
+	dbi := e.latestDebounce(cfg)
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
 		trace.WithAttributes(
 			attribute.String("upstream.id", e.upstream.Id()),
@@ -506,8 +546,11 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			networkLabel,
 			e.upstream.Id(),
 		).Inc()
-		blockNum, blockTimestamp, err := e.fetchBlock(ctx, "latest")
+		blockNum, blockTimestamp, header, err := e.fetchBlock(ctx, "latest")
 		if err != nil || blockNum == 0 {
+			if src != nil {
+				e.pollFailures.Add(1)
+			}
 			if err == nil ||
 				common.HasErrorCode(err,
 					common.ErrCodeUpstreamRequestSkipped,
@@ -520,9 +563,10 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 				// Only skip after multiple consecutive failures if we've never had a success
 				if !e.latestBlockSuccessfulOnce {
 					e.latestBlockFailureCount++
-					if e.latestBlockFailureCount >= 10 {
+					if e.latestBlockFailureCount >= 10 && src == nil {
 						e.skipLatestBlockCheck = true
-						e.logger.Warn().Err(err).Msgf("upstream does not support fetching latest block number in evm state poller after %d consecutive failures, will give up", e.latestBlockFailureCount)
+						e.skipLatestSince = time.Now()
+						e.logger.Warn().Err(err).Dur("retryIn", latestBlockSkipExpiry).Msgf("upstream does not support fetching latest block number in evm state poller after %d consecutive failures, pausing latest polls", e.latestBlockFailureCount)
 					} else {
 						e.logger.Debug().Err(err).Msgf("upstream does not seem to support fetching latest block number in evm state poller after %d consecutive failures, will retry again", e.latestBlockFailureCount)
 					}
@@ -558,6 +602,14 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
 		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
 
+		if src != nil {
+			e.pollFailures.Store(0)
+			// Verified above: the counter takes the height first, so intake
+			// does not verify the same jump again.
+			e.latestBlockShared.TryUpdate(e.appCtx, blockNum)
+			src.intake.Header(e.upstream.Id(), header)
+		}
+
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
 			Int64("blockTimestamp", blockTimestamp).
@@ -575,9 +627,9 @@ func (e *EvmStatePoller) RefreshLatestBlock() {
 		return
 	}
 	e.stateMu.RLock()
-	cfg, skip := e.cfg, e.skipLatestBlockCheck
+	cfg := e.cfg
 	e.stateMu.RUnlock()
-	if skip || !e.latestBlockShared.IsStale(e.resolveDebounce(cfg)) {
+	if (e.activePollSource() == nil && e.shouldSkipLatestBlockCheck()) || !e.latestBlockShared.IsStale(e.latestDebounce(cfg)) {
 		return
 	}
 	if !e.latestRefreshInFlight.CompareAndSwap(false, true) {
@@ -647,6 +699,82 @@ func (e *EvmStatePoller) ObserveHead(raw json.RawMessage) (accepted bool) {
 	}
 	e.SuggestLatestBlock(n)
 	return e.LatestBlock() >= n
+}
+
+// pollSource is where a poll source's headers go, and the chain's block
+// time that sets its cadence.
+type pollSource struct {
+	intake    indexer.Intake
+	blockTime func() time.Duration
+}
+
+// BindIntake makes this poller a poll source of intake; Set turns it on and
+// off. blockTime is the chain's block time.
+func (e *EvmStatePoller) BindIntake(intake indexer.Intake, blockTime func() time.Duration) {
+	e.pollSrc.Store(&pollSource{intake: intake, blockTime: blockTime})
+}
+
+// Set polls latest at the poll source's cadence while topics include
+// newHeads, feeding each header to the bound intake; empty returns to
+// statePollerInterval.
+func (e *EvmStatePoller) Set(topics []indexer.Topic) {
+	on := slices.Contains(topics, indexer.TopicNewHeads) && e.pollSrc.Load() != nil
+	if e.pollHeads.Swap(on) == on || !on {
+		return
+	}
+	e.pollFailures.Store(0)
+	select {
+	case e.pollWake <- struct{}{}:
+	default:
+	}
+}
+
+// activePollSource is the bound source while it feeds newHeads, else nil.
+func (e *EvmStatePoller) activePollSource() *pollSource {
+	if !e.pollHeads.Load() {
+		return nil
+	}
+	return e.pollSrc.Load()
+}
+
+// pollCadence is block time × 0.7, at most pollSourceMaxCadence;
+// statePollerDebounce overrides it.
+func (e *EvmStatePoller) pollCadence() time.Duration {
+	e.stateMu.RLock()
+	dbi := e.debounceInterval
+	e.stateMu.RUnlock()
+	if dbi != 0 {
+		return dbi
+	}
+	bt := defaultBlockTime
+	if src := e.pollSrc.Load(); src != nil && src.blockTime != nil {
+		if b := src.blockTime(); b > 0 {
+			bt = b
+		}
+	}
+	return min(time.Duration(float64(bt)*pollSourceBlockTimeShare), pollSourceMaxCadence)
+}
+
+// nextPollDelay is the poll loop's wait: interval, or while a poll source,
+// its cadence doubled per failed poll in a row up to pollSourceMaxBackoff.
+func (e *EvmStatePoller) nextPollDelay(interval time.Duration) time.Duration {
+	if e.activePollSource() == nil {
+		return interval
+	}
+	d := min(e.pollCadence(), interval)
+	if n := e.pollFailures.Load(); n > 0 {
+		d = min(d<<min(n, 16), pollSourceMaxBackoff)
+	}
+	return d
+}
+
+// latestDebounce is how fresh a latest poll keeps the counter: the poll
+// cadence while a poll source, so every scheduled poll fetches.
+func (e *EvmStatePoller) latestDebounce(cfg *common.EvmNetworkConfig) time.Duration {
+	if e.activePollSource() != nil {
+		return e.pollCadence()
+	}
+	return e.resolveDebounce(cfg)
 }
 
 // verifyThenSuggestLatestBlock validates a MAJOR suggested forward jump with a
@@ -767,28 +895,12 @@ func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag s
 	if current <= 0 || absInt64(polled-current) <= e.majorHeadMoveThreshold() {
 		return true
 	}
-	cfgChainId := int64(0)
-	if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil {
-		cfgChainId = cfg.Evm.ChainId
+	mismatch, err := e.checkChainId(ctx)
+	if mismatch != nil {
+		e.cordonForChainIdMismatch(tag, current, polled, mismatch)
+		return false
 	}
-	if cfgChainId <= 0 {
-		// Chain identity not pinned yet (auto-detection still in flight) —
-		// nothing trustworthy to verify against.
-		return true
-	}
-	eu, ok := e.upstream.(common.EvmUpstream)
-	if !ok {
-		return true
-	}
-	detected, err := eu.EvmGetChainId(ctx)
 	if err != nil {
-		// The gRPC BDS client surfaces a cross-wired server as a typed
-		// mismatch (it compares the ChainId response itself) — treat that as
-		// proof, same as a differing answer below.
-		if common.HasErrorCode(err, common.ErrCodeEndpointChainIdMismatch) {
-			e.cordonForChainIdMismatch(tag, current, polled, err)
-			return false
-		}
 		e.logger.Warn().Err(err).
 			Str("tag", tag).
 			Int64("currentValue", current).
@@ -796,23 +908,79 @@ func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag s
 			Msg("major head move: chainId re-validation failed, dropping sample until next poll")
 		return false
 	}
-	if detected != strconv.FormatInt(cfgChainId, 10) {
-		e.cordonForChainIdMismatch(tag, current, polled, fmt.Errorf("eth_chainId returned %s but upstream is configured for chainId %d", detected, cfgChainId))
-		return false
-	}
 	return true
 }
 
+// checkChainId asks the upstream for eth_chainId. mismatch is set when the
+// answer proves another chain; err when the answer proves nothing. Both nil
+// when it matches, or when the chain identity is not pinned yet.
+func (e *EvmStatePoller) checkChainId(ctx context.Context) (mismatch, err error) {
+	cfgChainId := int64(0)
+	if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil {
+		cfgChainId = cfg.Evm.ChainId
+	}
+	if cfgChainId <= 0 {
+		// Chain identity not pinned yet (auto-detection still in flight) —
+		// nothing trustworthy to verify against.
+		return nil, nil
+	}
+	eu, ok := e.upstream.(common.EvmUpstream)
+	if !ok {
+		return nil, nil
+	}
+	detected, err := eu.EvmGetChainId(ctx)
+	if err != nil {
+		// The gRPC BDS client surfaces a cross-wired server as a typed
+		// mismatch (it compares the ChainId response itself) — treat that as
+		// proof, same as a differing answer below.
+		if common.HasErrorCode(err, common.ErrCodeEndpointChainIdMismatch) {
+			return err, nil
+		}
+		return nil, err
+	}
+	if detected != strconv.FormatInt(cfgChainId, 10) {
+		return fmt.Errorf("eth_chainId returned %s but upstream is configured for chainId %d", detected, cfgChainId), nil
+	}
+	return nil, nil
+}
+
 // cordonForChainIdMismatch fails loud on a proven cross-wired endpoint: the
-// sample is rejected and the upstream is cordoned (admins uncordon via the
-// existing erpc_uncordonUpstream admin method once the endpoint is fixed).
+// sample is rejected and the upstream is cordoned until eth_chainId matches
+// again, checked every chainIdCordonRecheck.
 func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled int64, cause error) {
 	e.logger.Error().Err(cause).
 		Str("tag", tag).
 		Int64("currentValue", current).
 		Int64("polledValue", polled).
 		Msg("major head move REJECTED: upstream answers for a different chain — cordoning upstream")
-	e.upstream.Cordon("*", fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error()))
+	reason := fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error())
+	e.chainIdCordonReason.Store(reason)
+	e.upstream.Cordon("*", reason)
+	if e.chainIdRecheckArmed.CompareAndSwap(false, true) {
+		time.AfterFunc(chainIdCordonRecheck, e.recheckChainIdCordon)
+	}
+}
+
+// recheckChainIdCordon lifts the chain-identity cordon once eth_chainId
+// matches, as the consensus sit-out lifts its own; otherwise it checks again
+// after chainIdCordonRecheck.
+func (e *EvmStatePoller) recheckChainIdCordon() {
+	if e.appCtx.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
+	mismatch, err := e.checkChainId(ctx)
+	cancel()
+	if mismatch != nil || err != nil {
+		e.logger.Warn().Err(errors.Join(mismatch, err)).Dur("retryIn", chainIdCordonRecheck).
+			Msg("upstream still fails the chain-identity check, keeping it cordoned")
+		time.AfterFunc(chainIdCordonRecheck, e.recheckChainIdCordon)
+		return
+	}
+	e.chainIdRecheckArmed.Store(false)
+	reason, _ := e.chainIdCordonReason.Load().(string)
+	e.upstream.Uncordon("*", reason)
+	e.logger.Info().Msg("upstream answers for its configured chain again, uncordoned")
 }
 
 func absInt64(v int64) int64 {
@@ -851,7 +1019,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		).Inc()
 
 		// Actually fetch from upstream
-		blockNum, _, err := e.fetchBlock(ctx, "finalized")
+		blockNum, _, _, err := e.fetchBlock(ctx, "finalized")
 		if err != nil || blockNum == 0 {
 			if err == nil ||
 				common.HasErrorCode(err,
@@ -1358,9 +1526,16 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return diag
 }
 
+// shouldSkipLatestBlockCheck reports the give-up after failed latest polls;
+// it lapses latestBlockSkipExpiry after it was set, with a fresh count.
 func (e *EvmStatePoller) shouldSkipLatestBlockCheck() bool {
-	e.stateMu.RLock()
-	defer e.stateMu.RUnlock()
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if e.skipLatestBlockCheck && time.Since(e.skipLatestSince) >= latestBlockSkipExpiry {
+		e.skipLatestBlockCheck = false
+		e.latestBlockFailureCount = 0
+		e.logger.Info().Msg("retrying latest block polls after the give-up expired")
+	}
 	return e.skipLatestBlockCheck
 }
 
@@ -1371,7 +1546,9 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 	return e.skipFinalizedCheck
 }
 
-func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, int64, error) {
+// fetchBlock returns the number and timestamp of the block at blockTag, and,
+// for latest, the header as the upstream sent it.
+func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, int64, json.RawMessage, error) {
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
@@ -1380,23 +1557,23 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		defer resp.Release()
 	}
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	if jrr == nil || jrr.Error != nil {
-		return 0, 0, jrr.Error
+		return 0, 0, nil, jrr.Error
 	}
 
 	if jrr.IsResultEmptyish(ctx) {
-		return 0, 0, nil
+		return 0, 0, nil, nil
 	}
 
 	numberStr, err := jrr.PeekStringByPath(ctx, "number")
 	if err != nil {
-		return 0, 0, &common.BaseError{
+		return 0, 0, nil, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot get block number from block data",
 			Details: map[string]interface{}{
@@ -1409,7 +1586,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	numberStr = string(append([]byte(nil), numberStr...))
 	blockNum, err := common.HexToInt64(numberStr)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 
 	// Extract timestamp using shared function
@@ -1423,7 +1600,12 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		blockTimestamp = 0
 	}
 
-	return blockNum, blockTimestamp, nil
+	var header json.RawMessage
+	if blockTag == "latest" {
+		// resp is released on return.
+		header = bytes.Clone(jrr.GetResultBytes())
+	}
+	return blockNum, blockTimestamp, header, nil
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {

@@ -204,8 +204,12 @@ func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
 }
 
 // With failover on, a fallback's head votes only while no eligible primary
-// is a live source. Its own poller sees every head regardless.
+// leads as a live source. Its own poller sees every head regardless. A
+// primary leads at once here; the 60s lead runs in TestWebSocket_FallbackPollsUntilPrimaryLeads.
 func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
+	prevLead := primaryLeadAfter.Load()
+	primaryLeadAfter.Store(0)
+	t.Cleanup(func() { primaryLeadAfter.Store(prevLead) })
 	setup := func(t *testing.T, ctx context.Context, noPolicy bool) (*Network, map[string]*upstream.Upstream) {
 		network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
 			primaryLatest:  "0x3e8", // 1000
