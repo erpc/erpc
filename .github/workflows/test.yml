@@ -43,9 +43,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
-          cd "${{ runner.temp }}/coverage"
-          { echo 'mode: atomic'; grep -hv '^mode:' *.out; } > coverage.txt
-          TOTAL=$(go tool cover -func=coverage.txt | awk '/^total:/ {print $NF}')
+          DIR="${{ runner.temp }}/coverage"
+          # Every shard profiles all packages, so blocks repeat across files:
+          # keep one row per block, summing its hit counts.
+          awk 'FNR==1 {next} {split($0, f, " "); k=f[1] " " f[2]; n[k]+=f[3]} END {print "mode: atomic"; for (k in n) print k, n[k]}' "$DIR"/*.out > "$DIR/coverage.txt"
+          TOTAL=$(go tool cover -func="$DIR/coverage.txt" | awk '/^total:/ {print $NF}')
           echo "Total coverage: $TOTAL" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() && github.event_name == 'push' }}
