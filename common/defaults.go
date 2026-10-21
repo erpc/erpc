@@ -2146,6 +2146,19 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		e.PinLatestTag = defaults.PinLatestTag
 	}
 
+	if e.Multicall3 == nil && defaults != nil && defaults.Multicall3 != nil {
+		v := *defaults.Multicall3
+		e.Multicall3 = &v
+	}
+	if e.Multicall3 != nil {
+		if e.Multicall3.MaxWait == 0 {
+			e.Multicall3.MaxWait = Duration(10 * time.Millisecond)
+		}
+		if e.Multicall3.MaxCalls == 0 {
+			e.Multicall3.MaxCalls = 20
+		}
+	}
+
 	return nil
 }
 

@@ -1194,6 +1194,19 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			return err
 		}
 	}
+	if m := e.Multicall3; m != nil {
+		if m.MaxWait <= 0 {
+			return fmt.Errorf("upstream.*.evm.multicall3.maxWait must be greater than 0")
+		}
+		if m.MaxCalls < 2 {
+			return fmt.Errorf("upstream.*.evm.multicall3.maxCalls must be at least 2")
+		}
+		for _, a := range m.BypassContracts {
+			if raw, err := HexToBytes(a); err != nil || len(raw) != 20 {
+				return fmt.Errorf("upstream.*.evm.multicall3.bypassContracts entry '%s' is not a 20-byte hex address", a)
+			}
+		}
+	}
 
 	return nil
 }
