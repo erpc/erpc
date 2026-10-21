@@ -44,11 +44,11 @@ func (r *integrityResolver) IsFinalized(ctx context.Context, blockNumber int64) 
 // CanonicalReceipts serves a block's receipts from the ChainView: a hit returns the
 // cached receipts with no fetch; a miss fetches them once (by hash, deduped) and
 // caches. Callers pass a block HASH so the corroboration is race-free.
-func (r *integrityResolver) CanonicalReceipts(ctx context.Context, blockRef string) ([]integrity.Receipt, bool) {
+func (r *integrityResolver) CanonicalReceipts(ctx context.Context, blockHash string, blockNumber int64) ([]integrity.Receipt, bool) {
 	if r.view == nil {
 		return nil, false
 	}
-	return r.view.receiptsByHash(ctx, blockRef)
+	return r.view.receiptsByHash(ctx, blockHash, blockNumber)
 }
 
 // CanonicalHeader serves a header from the ChainView (deduped + pinned). A 32-byte

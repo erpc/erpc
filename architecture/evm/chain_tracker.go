@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -935,9 +936,10 @@ func (t *ChainTracker) CachedReceipts(blockHash string) ([]integrity.Receipt, bo
 // (§6 rule 6), and the pin it leaves is returned. PinFresh only ever carries
 // a pin that equals the fresh answer.
 //
-// Within reconfirmCooldown it returns the current pin as PinRateLimited,
-// which carries no new evidence, so the engine degrades the verdict instead
-// of rejecting on a pin it could not re-check.
+// Within reconfirmCooldown, or while the fetch's key is in backoff, it
+// returns the current pin as PinRateLimited, which carries no new evidence,
+// so the engine degrades the verdict instead of rejecting on a pin it could
+// not re-check.
 func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, integrity.PinConfirmation) {
 	if number < 0 {
 		return "", integrity.PinUnverifiable
@@ -952,8 +954,11 @@ func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, 
 	if recent && pinned && time.Since(at) < reconfirmCooldown {
 		return pin, integrity.PinRateLimited
 	}
-	h, ok := t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", number), auxKindHeader)
-	if !ok {
+	h, err := t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", number), auxKindHeader, fetchReconfirm)
+	if errors.Is(err, errFetchBackoff) {
+		return pin, integrity.PinRateLimited
+	}
+	if err != nil {
 		return "", integrity.PinUnverifiable
 	}
 	t.voteAsk(ctx, h)
@@ -981,8 +986,8 @@ func (t *ChainTracker) headerByHash(ctx context.Context, hash string) (*integrit
 	if h, ok := t.held.Load(key); ok {
 		return h.(*chainHeader).parsed, true
 	}
-	h, ok := t.fetchHeader(ctx, classHead, "eth_getBlockByHash", key, auxKindHeader)
-	if !ok {
+	h, err := t.fetchHeader(ctx, classHead, "eth_getBlockByHash", key, auxKindHeader, fetchClient)
+	if err != nil {
 		return nil, false
 	}
 	return h.parsed, true
@@ -994,19 +999,20 @@ func (t *ChainTracker) headerByNumber(ctx context.Context, number int64, blockRe
 	if h, ok := t.HeaderAt(number); ok {
 		return h, true
 	}
-	h, ok := t.fetchHeader(ctx, t.fetchClassAt(number, classHead), "eth_getBlockByNumber", blockRef, auxKindHeader)
-	if !ok {
+	h, err := t.fetchHeader(ctx, t.fetchClassAt(number, classHead), "eth_getBlockByNumber", blockRef, auxKindHeader, fetchClient)
+	if err != nil {
 		return nil, false
 	}
 	return h.parsed, true
 }
 
-// receiptsByHash returns a block's receipts, fetching them on a miss.
-func (t *ChainTracker) receiptsByHash(ctx context.Context, blockHash string) ([]integrity.Receipt, bool) {
+// receiptsByHash returns a block's receipts, fetching them on a miss. number
+// is the block's number when the caller knows it, else -1.
+func (t *ChainTracker) receiptsByHash(ctx context.Context, blockHash string, number int64) ([]integrity.Receipt, bool) {
 	if r, ok := t.CachedReceipts(blockHash); ok {
 		return r, true
 	}
-	return t.resolveReceipts(ctx, blockHash)
+	return t.resolveReceipts(ctx, blockHash, number)
 }
 
 // fetchClassAt is near for a height within the window below the head, or
@@ -1043,18 +1049,32 @@ const (
 
 // resolveTag fetches the header a block tag names, such as "finalized".
 func (t *ChainTracker) resolveTag(ctx context.Context, tag string) (*integrity.Header, bool) {
-	h, ok := t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", tag, auxKindHeader)
-	if !ok {
+	h, err := t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", tag, auxKindHeader, fetchClient)
+	if err != nil {
 		return nil, false
 	}
 	return h.parsed, true
 }
 
+// headerFetch says who asks for a header and so how its fetch behaves.
+type headerFetch uint8
+
+const (
+	// fetchTracker: the tracker's own work; waits out the key's backoff.
+	fetchTracker headerFetch = iota
+	// fetchClient: a check on a client request path; never waits out the
+	// key's backoff.
+	fetchClient
+	// fetchReconfirm: as fetchClient, and never from the cache, even at a
+	// finalized height: the cached entry may be what seeded the pin.
+	fetchReconfirm
+)
+
 // fetchHeader fetches a header through the scheduler, group-scoped; the
 // scheduler hands the answer to the tracker without a vote.
-func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method, blockRef, kind string) (*chainHeader, bool) {
+func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method, blockRef, kind string, by headerFetch) (*chainHeader, error) {
 	if t.network == nil {
-		return nil, false
+		return nil, errNoTrackerSweep
 	}
 	res := t.fetch.fetch(ctx, t, fetchSpec{
 		class:    class,
@@ -1063,6 +1083,8 @@ func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method
 		method:   method,
 		params:   `["` + blockRef + `",false]`,
 		byHash:   method == "eth_getBlockByHash",
+		final:    by != fetchReconfirm && method == "eth_getBlockByNumber" && t.atOrBelowFinalized(blockRef),
+		client:   by != fetchTracker,
 		decode: func(result []byte) (any, error) {
 			h, err := parseChainHeader(result)
 			if err != nil {
@@ -1077,13 +1099,36 @@ func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method
 			return h, nil
 		},
 	})
+	if errors.Is(res.err, errFetchBackoff) {
+		return nil, res.err
+	}
 	h, _ := res.val.(*chainHeader)
 	num := int64(-1)
 	if h != nil {
 		num = int64(h.number)
 	}
 	t.emitAux(kind, method, t.finalityLabel(num), h != nil)
-	return h, h != nil
+	if h == nil {
+		if res.err == nil {
+			return nil, errFetchUndecoded
+		}
+		return nil, res.err
+	}
+	return h, nil
+}
+
+// atOrBelowFinalized reports whether a hex block number is at or below the
+// network's finalized height, where the block can no longer change.
+func (t *ChainTracker) atOrBelowFinalized(blockRef string) bool {
+	if t.finalized == nil {
+		return false
+	}
+	n, err := common.HexToInt64(blockRef)
+	if err != nil {
+		return false
+	}
+	fin := t.finalized()
+	return fin > 0 && n <= fin
 }
 
 // headerMatchesRef reports whether a fetched header is the block the request
@@ -1121,8 +1166,10 @@ func (t *ChainTracker) fetched(res fetchResult) {
 }
 
 // resolveReceipts fetches a block's receipts by hash through the
-// scheduler, group-scoped; the scheduler hands them to the tracker.
-func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string) ([]integrity.Receipt, bool) {
+// scheduler, group-scoped; the scheduler hands them to the tracker. Only a
+// block known to lie within reorgWindow of the head is tip receipts; any
+// other is fill.
+func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, number int64) ([]integrity.Receipt, bool) {
 	if t.network == nil {
 		return nil, false
 	}
@@ -1130,9 +1177,12 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string) ([
 	if !ok {
 		return nil, false
 	}
-	class := classTipReceipts
 	if h, ok := t.held.Load(key); ok {
-		class = t.fetchClassAt(int64(h.(*chainHeader).number), classTipReceipts)
+		number = int64(h.(*chainHeader).number)
+	}
+	class := classFill
+	if number >= 0 {
+		class = t.fetchClassAt(number, classTipReceipts)
 	}
 	res := t.fetch.fetch(ctx, t, fetchSpec{
 		class:    class,
@@ -1141,6 +1191,7 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string) ([
 		method:   "eth_getBlockReceipts",
 		params:   `["` + key + `"]`,
 		byHash:   true,
+		client:   true,
 		decode: func(result []byte) (any, error) {
 			var receipts []integrity.Receipt
 			if err := common.SonicCfg.Unmarshal(result, &receipts); err != nil {
@@ -1156,6 +1207,9 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string) ([
 			return fetchedReceipts{key: key, receipts: receipts}, nil
 		},
 	})
+	if errors.Is(res.err, errFetchBackoff) {
+		return nil, false
+	}
 	v, ok := res.val.(fetchedReceipts)
 	num := int64(-1)
 	if ok {

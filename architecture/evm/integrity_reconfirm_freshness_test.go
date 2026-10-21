@@ -131,17 +131,40 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		assert.Zero(t, net.calls)
 	})
 
-	// Only by-hash fetches read the cache (spec §7): a by-number answer from
-	// the cache is not a fresh view of the chain at that height.
-	t.Run("by-number corroboration fetches skip the cache", func(t *testing.T) {
+	// A by-number answer from the cache is not a fresh view of the chain at
+	// that height, unless the height is finalized: such a block cannot change,
+	// and forcing those reads to upstreams once collapsed the corroboration
+	// cache hit-rate.
+	byNumber := func(t *testing.T, finalized int64) *common.RequestDirectives {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
-
+		c := newChainTracker(t.Context(), net, 32, "", "", func() int64 { return finalized }, newFetchScheduler(t.Context(), net))
 		_, ok := c.headerByNumber(context.Background(), height, fmt.Sprintf("0x%x", height))
 		require.True(t, ok)
 		d := net.lastDirectives()
 		require.NotNil(t, d)
-		assert.Equal(t, "true", d.SkipCacheRead, "a by-number tracker fetch must reach upstreams")
+		return d
+	}
+
+	t.Run("by-number corroboration fetches above the finalized height skip the cache", func(t *testing.T) {
+		assert.Equal(t, "true", byNumber(t, height-1).SkipCacheRead, "a by-number tracker fetch must reach upstreams")
+	})
+
+	t.Run("by-number corroboration fetches at the finalized height use the cache", func(t *testing.T) {
+		assert.Empty(t, byNumber(t, height).SkipCacheRead, "a finalized block cannot change, so the cache serves it")
+	})
+
+	t.Run("a re-confirmation at a finalized height still bypasses the cache", func(t *testing.T) {
+		net := newCapturingNetwork(t, height, canonical)
+		c := newChainTracker(t.Context(), net, 32, "", "", func() int64 { return height }, newFetchScheduler(t.Context(), net))
+		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
+		net.sourcesVote.Store(false)
+		c.lastCountedVote.Store(0)
+
+		_, status := c.ReconfirmPin(context.Background(), height)
+		require.Equal(t, integrity.PinFresh, status)
+		d := net.lastDirectives()
+		require.NotNil(t, d)
+		assert.Equal(t, "true", d.SkipCacheRead)
 	})
 
 	t.Run("by-hash header fetches still use the cache", func(t *testing.T) {

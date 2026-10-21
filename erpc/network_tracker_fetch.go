@@ -5,15 +5,23 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// trackerAttemptSlack is added to an upstream's even share of what remains
+// of a sweep, so an upstream that answers near its share is not cut off.
+var trackerAttemptSlack = time.Second
 
 // SweepUpstreams makes one chain tracker fetch (spec §7): one pass over the
 // upstreams the selection policy orders, or over the one upstream named. No
-// failsafe policy, multiplexer, project or network rate limit applies, and
-// upstreams whose breaker is open are skipped. The cache is read only when
-// req's directives allow it. A failed pass returns ErrUpstreamsExhausted
-// carrying each tried upstream's error.
-func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, upstreamId string) (*common.NormalizedResponse, error) {
+// failsafe policy, project or network rate limit applies, and upstreams
+// whose breaker is open are skipped. Each attempt gets an even share of what
+// remains of ctx plus trackerAttemptSlack, so one slow upstream cannot end
+// the sweep. The cache is read only when req's directives allow it; a fresh
+// answer is written to it as Forward writes one. A network-wide sweep leads
+// the in-flight multiplexer, so identical client requests join it. A failed
+// pass returns ErrUpstreamsExhausted carrying each tried upstream's error.
+func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, upstreamId string) (resp *common.NormalizedResponse, err error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
 	req.SetCacheDal(n.cacheDal)
@@ -24,8 +32,8 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
 	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
-		if resp, err := n.cacheDal.Get(ctx, req); err == nil && resp != nil && !resp.IsObjectNull(ctx) {
-			return resp, nil
+		if cached, err := n.cacheDal.Get(ctx, req); err == nil && cached != nil && !cached.IsObjectNull(ctx) {
+			return cached, nil
 		}
 	}
 
@@ -38,7 +46,34 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 		return nil, err
 	}
 
+	if d := req.Directives(); upstreamId == "" && (d == nil || d.UseUpstream == "") {
+		if mlx := n.leadMultiplexer(ctx, req); mlx != nil {
+			// Followers get only a usable answer; on anything else they
+			// forward on their own, with their own failsafe policies.
+			defer func() {
+				var shared *common.NormalizedResponse
+				if err == nil && !resp.IsResultEmptyish(ctx) {
+					shared = resp
+				}
+				mlx.Close(ctx, shared, nil)
+				n.cleanupMultiplexer(mlx)
+			}()
+		}
+	}
+
+	resp, err = n.sweep(ctx, req, method, ups, startTime)
+	if err == nil && n.cacheDal != nil {
+		lg := n.logger.With().Str("method", method).Logger()
+		n.storeInCache(ctx, trace.SpanContextFromContext(ctx), &lg, method, req, resp)
+	}
+	return resp, err
+}
+
+// sweep tries ups in order and returns the first non-empty answer, else the
+// last empty one.
+func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, method string, ups []common.Upstream, startTime time.Time) (*common.NormalizedResponse, error) {
 	finality := req.Finality(ctx)
+	deadline, bounded := ctx.Deadline()
 	var best *common.NormalizedResponse
 	for _, u := range ups {
 		if ctx.Err() != nil {
@@ -52,10 +87,16 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 		if skipErr, _ := n.checkUpstreamBlockAvailability(ctx, u, req, method); skipErr != nil {
 			continue
 		}
-		r, err := n.doForward(ctx, u, req, req.ShouldSkipCacheRead(""), false)
-		if err == nil {
-			err = n.normalizeResponse(ctx, req, r)
+		actx, cancel := ctx, context.CancelFunc(func() {})
+		if bounded {
+			remaining := time.Until(deadline)
+			actx, cancel = context.WithTimeout(ctx, min(remaining, remaining/time.Duration(len(ups))+trackerAttemptSlack))
 		}
+		r, err := n.doForward(actx, u, req, req.ShouldSkipCacheRead(""), false)
+		if err == nil {
+			err = n.normalizeResponse(actx, req, r)
+		}
+		cancel()
 		req.MarkUpstreamCompleted(ctx, u, r, err)
 		if err != nil {
 			if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {

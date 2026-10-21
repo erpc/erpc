@@ -226,14 +226,18 @@ type UpstreamPolicies uint8
 const (
 	// UpstreamPoliciesConfigured: every configured policy; client traffic.
 	UpstreamPoliciesConfigured UpstreamPolicies = iota
-	// UpstreamPoliciesTimeoutOnly: subscription calls, state-poller and
-	// chainId probes. No retry or hedge, which would send a subscribe twice,
-	// and no breaker; the per-attempt timeout applies.
+	// UpstreamPoliciesTimeoutOnly: subscription calls and integrity state
+	// probes. No retry or hedge, which would send a subscribe twice, and no
+	// breaker; the per-attempt timeout applies.
 	UpstreamPoliciesTimeoutOnly
 	// UpstreamPoliciesTracker: chain tracker fetches. No configured policy
 	// applies; an open breaker refuses them, and they never feed it, so
 	// tracker load cannot open a breaker that blocks clients.
 	UpstreamPoliciesTracker
+	// UpstreamPoliciesTrackerFill: catch-up tracker fetches. As
+	// UpstreamPoliciesTracker, and they take an upstream rate permit only
+	// while the budget stays more than half free, so they yield to clients.
+	UpstreamPoliciesTrackerFill
 )
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
@@ -355,15 +359,6 @@ func (r *NormalizedRequest) UpstreamPolicies() UpstreamPolicies {
 		return UpstreamPoliciesConfigured
 	}
 	return d.UpstreamPolicies
-}
-
-// NewProbeRequest builds a request erpc sends to one upstream for its own
-// bookkeeping: subscription calls, state-poller and chainId probes. No
-// upstream retry, hedge or breaker applies to it.
-func NewProbeRequest(body []byte) *NormalizedRequest {
-	r := NewNormalizedRequest(body)
-	r.SetDirectives(&RequestDirectives{UpstreamPolicies: UpstreamPoliciesTimeoutOnly})
-	return r
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {

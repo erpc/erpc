@@ -1642,7 +1642,7 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 // fetchBlock returns the number and timestamp of the block at blockTag, and,
 // for latest, the header as the upstream sent it.
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, int64, json.RawMessage, error) {
-	pr := common.NewProbeRequest([]byte(
+	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
@@ -1702,7 +1702,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
-	pr := common.NewProbeRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
 
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {
@@ -1838,7 +1838,7 @@ func (e *EvmStatePoller) checkBlockHeaderProbe(ctx context.Context, block int64)
 	}
 	// Build request eth_getBlockByNumber with hex number
 	hex := fmt.Sprintf("0x%x", uint64(block))
-	pr := common.NewProbeRequest([]byte(
+	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`,
 			util.RandomID(), hex,
 		),
@@ -1868,7 +1868,7 @@ func (e *EvmStatePoller) fetchBlockHashByNumber(ctx context.Context, block int64
 		return "", false, nil
 	}
 	hex := fmt.Sprintf("0x%x", uint64(block))
-	pr := common.NewProbeRequest([]byte(
+	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`,
 			util.RandomID(), hex,
 		),
@@ -1905,7 +1905,7 @@ func (e *EvmStatePoller) checkEventLogsProbe(ctx context.Context, block int64) (
 	if !ok {
 		return false, false, nil
 	}
-	pr := common.NewProbeRequest([]byte(
+	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getLogs","params":[{"blockHash":"%s"}]}`,
 			util.RandomID(), hash,
 		),
@@ -1975,7 +1975,7 @@ func (e *EvmStatePoller) checkCallStateProbe(ctx context.Context, block int64) (
 		chainId = upCfg.Evm.ChainId
 	}
 	canary := integrity.ChainStateContextProbe(chainId)
-	pr := common.NewProbeRequest([]byte(
+	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_call","params":[{"to":"%s","data":"%s"},"%s"]}`,
 			util.RandomID(), canary.To, canary.Data, hex,
 		),
@@ -2007,7 +2007,7 @@ func (e *EvmStatePoller) checkCallStateProbe(ctx context.Context, block int64) (
 // evidence.
 func (e *EvmStatePoller) checkBalanceStateProbe(ctx context.Context, block int64) (bool, bool, error) {
 	hex := fmt.Sprintf("0x%x", uint64(block))
-	pr := common.NewProbeRequest([]byte(
+	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","%s"]}`,
 			util.RandomID(), hex,
 		),
@@ -2061,7 +2061,7 @@ func (e *EvmStatePoller) checkTraceDataProbe(ctx context.Context, block int64) (
 		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
-		pr := common.NewProbeRequest([]byte(methodPayload))
+		pr := common.NewNormalizedRequest([]byte(methodPayload))
 		resp, err := e.upstream.Forward(cctx, pr, true, false)
 		if resp != nil {
 			defer resp.Release()

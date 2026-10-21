@@ -25,6 +25,7 @@ var (
 	fetchBackoffPrune  = 1024
 	errNoTrackerSweep  = errors.New("network cannot sweep upstreams for the chain tracker")
 	errFetchUndecoded  = errors.New("tracker fetch answer does not decode")
+	errFetchBackoff    = errors.New("tracker fetch key is in backoff")
 	errSchedulerClosed = errors.New("chain fetch scheduler closed")
 )
 
@@ -54,7 +55,9 @@ type fetchSpec struct {
 	upstream string // "" sweeps the selection order
 	method   string
 	params   string // JSON array
-	byHash   bool   // only by-hash fetches may read the cache
+	byHash   bool
+	final    bool // a by-number fetch at or below the network's finalized height
+	client   bool // on a client request path: never waits out the key's backoff
 	decode   func(result []byte) (any, error)
 }
 
@@ -68,14 +71,18 @@ func (s fetchSpec) key() fetchKey {
 }
 
 // directives keep the integrity engine off the fetch and select the
-// tracker's upstream policies; any answer that is not addressed by hash
-// must be fresh.
+// tracker's upstream policies, which for fill yield rate permits to
+// clients. Only an answer that cannot change may come from the cache: one
+// addressed by hash, or a block at or below the finalized height.
 func (s fetchSpec) directives() *common.RequestDirectives {
 	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker}
+	if s.class == classFill {
+		d.UpstreamPolicies = common.UpstreamPoliciesTrackerFill
+	}
 	if s.upstream == "" {
 		d.UseUpstream = s.selector
 	}
-	if !s.byHash {
+	if !s.byHash && !s.final {
 		d.SkipCacheRead = "true"
 	}
 	return d
@@ -94,6 +101,7 @@ type fetchRequest struct {
 	waiters   int
 	trackers  []*ChainTracker
 	started   bool
+	halvings  uint64 // the scheduler's halvings when the sweep started
 	res       fetchResult
 	done      chan struct{} // closed once res is set
 }
@@ -118,6 +126,7 @@ type fetchScheduler struct {
 	inflight [fetchClasses]int
 	share    [fetchClasses]int
 	streak   [fetchClasses]int
+	halvings uint64
 	backoff  map[fetchKey]fetchBackoff
 	timer    *time.Timer
 	gauges   bool
@@ -151,17 +160,27 @@ type fetchWaiter struct {
 
 // submit queues spec, or joins the request already queued or in flight for
 // its key. It never blocks. t, when set, gets a successful result in its
-// mailbox whether or not the waiter stays.
+// mailbox whether or not the waiter stays. A client spec whose key waits
+// out a backoff fails at once with errFetchBackoff.
 func (s *fetchScheduler) submit(t *ChainTracker, spec fetchSpec) *fetchWaiter {
 	key := spec.key()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		r := &fetchRequest{key: key, spec: spec, res: fetchResult{err: errSchedulerClosed}, done: make(chan struct{})}
-		close(r.done)
-		return &fetchWaiter{s: s, r: r}
+		return s.doneWaiter(key, spec, errSchedulerClosed)
 	}
 	r := s.pending[key]
+	if spec.client && (r == nil || !r.started) {
+		var notBefore time.Time
+		if r != nil {
+			notBefore = r.notBefore
+		} else if b, ok := s.backoff[key]; ok {
+			notBefore = b.next
+		}
+		if notBefore.After(time.Now()) {
+			return s.doneWaiter(key, spec, errFetchBackoff)
+		}
+	}
 	if r == nil {
 		r = &fetchRequest{key: key, spec: spec, done: make(chan struct{})}
 		if b, ok := s.backoff[key]; ok {
@@ -179,6 +198,13 @@ func (s *fetchScheduler) submit(t *ChainTracker, spec fetchSpec) *fetchWaiter {
 		r.trackers = append(r.trackers, t)
 	}
 	s.pumpLocked()
+	return &fetchWaiter{s: s, r: r}
+}
+
+// doneWaiter holds a request that ended before it was queued.
+func (s *fetchScheduler) doneWaiter(key fetchKey, spec fetchSpec, err error) *fetchWaiter {
+	r := &fetchRequest{key: key, spec: spec, res: fetchResult{err: err}, done: make(chan struct{})}
+	close(r.done)
 	return &fetchWaiter{s: s, r: r}
 }
 
@@ -246,7 +272,7 @@ func (s *fetchScheduler) pumpLocked() {
 				i++
 				continue
 			}
-			if !s.mayStartLocked(c, total, now) {
+			if !s.mayStartLocked(c, total) {
 				break
 			}
 			q = slices.Delete(q, i, i+1)
@@ -268,31 +294,22 @@ func (s *fetchScheduler) pumpLocked() {
 }
 
 // mayStartLocked: within the limit and the class's share, and leaving one
-// slot for every other class that has a startable request and none in
-// flight.
-func (s *fetchScheduler) mayStartLocked(c fetchClass, total int, now time.Time) bool {
+// slot for every other class with none in flight, whether or not it has
+// work yet. A busy class so holds at most fetchSlots-(fetchClasses-1).
+func (s *fetchScheduler) mayStartLocked(c fetchClass, total int) bool {
 	if total >= fetchSlots || s.inflight[c] >= s.share[c] {
 		return false
 	}
 	if s.inflight[c] == 0 {
 		return true
 	}
-	reserve := 0
+	free := fetchSlots - total
 	for o := range fetchClasses {
-		if o != c && s.inflight[o] == 0 && s.startableLocked(o, now) {
-			reserve++
+		if o != c && s.inflight[o] == 0 {
+			free--
 		}
 	}
-	return total < fetchSlots-reserve
-}
-
-func (s *fetchScheduler) startableLocked(c fetchClass, now time.Time) bool {
-	for _, r := range s.queues[c] {
-		if !r.notBefore.After(now) {
-			return true
-		}
-	}
-	return false
+	return free > 0
 }
 
 func (s *fetchScheduler) startLocked(r *fetchRequest) {
@@ -303,6 +320,7 @@ func (s *fetchScheduler) startLocked(r *fetchRequest) {
 		}
 	}
 	r.started = true
+	r.halvings = s.halvings
 	s.inflight[r.spec.class]++
 	go s.run(r)
 }
@@ -327,7 +345,7 @@ func (s *fetchScheduler) run(r *fetchRequest) {
 	case "capacity":
 		s.streak[c] = 0
 		s.backOffLocked(r.key)
-		s.halveLowestBusyLocked()
+		s.halveLowestBusyLocked(r.halvings)
 	default:
 		s.streak[c] = 0
 		s.backOffLocked(r.key)
@@ -443,12 +461,18 @@ func (s *fetchScheduler) backOffLocked(key fetchKey) {
 }
 
 // halveLowestBusyLocked halves the share of the lowest class with work,
-// never below one slot.
-func (s *fetchScheduler) halveLowestBusyLocked() {
+// never below one slot. Sweeps that fail together halve once: only a sweep
+// that started after the last halving (seen) halves, and only while the
+// class fills at least half its share, so the share is what binds.
+func (s *fetchScheduler) halveLowestBusyLocked(seen uint64) {
+	if seen != s.halvings {
+		return
+	}
 	for c := fetchClasses - 1; ; c-- {
 		if s.inflight[c] > 0 || len(s.queues[c]) > 0 {
-			if s.share[c] > 1 {
+			if s.share[c] > 1 && 2*s.inflight[c] >= s.share[c] {
 				s.share[c] = max(1, s.share[c]/2)
+				s.halvings++
 				s.setSlotsGaugeLocked(c)
 			}
 			return

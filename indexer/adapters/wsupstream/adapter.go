@@ -572,9 +572,9 @@ func (a *Adapter) release(ctx context.Context, id string, epoch uint64) {
 	}
 }
 
-// send forwards a subscription RPC through the upstream as a probe request,
-// so upstream-scope retry and hedge policies never send it twice: a
-// duplicate eth_subscribe would leave an orphan subscription.
+// send forwards a subscription RPC through the upstream. It is marked
+// internal and timeout-only so upstream-scope retry and hedge policies never
+// send it twice: a duplicate eth_subscribe would leave an orphan subscription.
 func (a *Adapter) send(ctx context.Context, method string, params []interface{}) error {
 	body, err := common.SonicCfg.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -585,7 +585,8 @@ func (a *Adapter) send(ctx context.Context, method string, params []interface{})
 	if err != nil {
 		return err
 	}
-	nq := common.NewProbeRequest(body)
+	nq := common.NewNormalizedRequest(body)
+	nq.SetDirectives(&common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTimeoutOnly})
 	_, err = a.forward(ctx, nq, false)
 	return err
 }

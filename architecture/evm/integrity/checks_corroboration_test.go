@@ -21,7 +21,7 @@ type mockResolver struct {
 func (m mockResolver) IsFinalized(ctx context.Context, bn int64) (bool, bool) {
 	return m.finalized, m.known
 }
-func (m mockResolver) CanonicalReceipts(ctx context.Context, ref string) ([]Receipt, bool) {
+func (m mockResolver) CanonicalReceipts(ctx context.Context, ref string, _ int64) ([]Receipt, bool) {
 	if m.fetches != nil {
 		*m.fetches++
 	}

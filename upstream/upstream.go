@@ -634,7 +634,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitCost(nrq))
+			acquire := limitersBudget.TryAcquirePermit
+			if nrq.UpstreamPolicies() == common.UpstreamPoliciesTrackerFill {
+				acquire = limitersBudget.TryAcquireSparePermit
+			}
+			allowed, err := acquire(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream", u.rateLimitCost(nrq))
 			if err != nil {
 				common.SetTraceSpanError(span, err)
 				return nil, err

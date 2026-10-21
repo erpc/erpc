@@ -18,7 +18,7 @@ import (
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	// Always make a real upstream call here. End-user requests can be short-circuited
 	// via higher-level hooks (e.g. project/network pre-forward for eth_chainId).
-	pr := common.NewProbeRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
+	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
 	resp, err := u.Forward(ctx, pr, true, false)
 	if resp != nil {

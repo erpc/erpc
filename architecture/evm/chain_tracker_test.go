@@ -144,7 +144,7 @@ func TestChainTracker_Receipts(t *testing.T) {
 	t.Run("receipts cache hit serves without fetching", func(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil)) // nil network: any fetch would fail
 		putReceipts(c, testHash("b", 1), []integrity.Receipt{{TransactionHash: "0xaa", BlockHash: testHash("b", 1)}})
-		got, ok := c.receiptsByHash(context.Background(), testHash("B", 1))
+		got, ok := c.receiptsByHash(context.Background(), testHash("B", 1), 1)
 		require.True(t, ok)
 		require.Len(t, got, 1)
 		assert.Equal(t, "0xaa", got[0].TransactionHash)
@@ -152,7 +152,7 @@ func TestChainTracker_Receipts(t *testing.T) {
 
 	t.Run("receipts cache miss with no network fails closed", func(t *testing.T) {
 		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil))
-		_, ok := c.receiptsByHash(context.Background(), testHash("e", 1))
+		_, ok := c.receiptsByHash(context.Background(), testHash("e", 1), 1)
 		assert.False(t, ok)
 	})
 
@@ -161,7 +161,7 @@ func TestChainTracker_Receipts(t *testing.T) {
 		for i := range c.window + cacheSlack + 2 {
 			putReceipts(c, testHash("b", uint64(i)), []integrity.Receipt{{TransactionHash: "0xaa"}})
 		}
-		_, ok := c.receiptsByHash(context.Background(), testHash("b", 0)) // oldest → evicted, nil network
+		_, ok := c.receiptsByHash(context.Background(), testHash("b", 0), 0) // oldest → evicted, nil network
 		assert.False(t, ok, "oldest receipts should be evicted")
 	})
 }

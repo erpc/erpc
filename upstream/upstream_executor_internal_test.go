@@ -33,7 +33,7 @@ func TestUpstreamExecutor_InternalRequestsSkipBreaker(t *testing.T) {
 		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 		req := common.NewNormalizedRequest(body)
 		if internal {
-			req = common.NewProbeRequest(body)
+			req.SetDirectives(&common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTimeoutOnly})
 		}
 		_, err = ex.Run(context.Background(), req, inner)
 		require.Error(t, err)

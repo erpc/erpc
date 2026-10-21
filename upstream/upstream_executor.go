@@ -129,9 +129,9 @@ func (e *upstreamExecutor) Run(
 	case common.UpstreamPoliciesTimeoutOnly:
 		resp, err := e.callWithTimeout(ctx, req, inner, false)
 		return resp, e.wrapTimeout(err, startTime)
-	case common.UpstreamPoliciesTracker:
+	case common.UpstreamPoliciesTracker, common.UpstreamPoliciesTrackerFill:
 		// The network's tracker sweep skips upstreams whose breaker is open,
-		// before they spend a rate permit.
+		// before they spend a rate permit, and bounds each attempt itself.
 		return inner(ctx, false)
 	}
 

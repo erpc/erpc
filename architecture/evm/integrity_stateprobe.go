@@ -323,15 +323,16 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 }
 
 // forwardTo sends one probe to EXACTLY the given upstream: cache bypassed (the
-// cache would answer instead of the node — the circular-evidence trap), and
-// marked internal so the integrity engine does not recurse into validating the
-// probe's own response.
+// cache would answer instead of the node — the circular-evidence trap), marked
+// internal so the integrity engine does not recurse into validating the
+// probe's own response, and timeout-only: no upstream retry, hedge or breaker.
 func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body string) (string, error) {
 	req := common.NewNormalizedRequest([]byte(body))
 	req.SetDirectives(&common.RequestDirectives{
-		IsInternal:    true,
-		UseUpstream:   u.Id(),
-		SkipCacheRead: "true",
+		IsInternal:       true,
+		UpstreamPolicies: common.UpstreamPoliciesTimeoutOnly,
+		UseUpstream:      u.Id(),
+		SkipCacheRead:    "true",
 	})
 	req.SetNetwork(p.network)
 	resp, err := p.network.Forward(ctx, req)

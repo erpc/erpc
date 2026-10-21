@@ -2453,35 +2453,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if resp != nil {
 		if n.cacheDal != nil {
-			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
-			// TODO For other architectures we might need a different approach
-			_, _ = resp.JsonRpcResponse(ctx)
-			resp.AddRef()
-
-			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
-				defer (func() {
-					if rec := recover(); rec != nil {
-						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-							"cache-set",
-							fmt.Sprintf("network:%s method:%s", n.networkId, method),
-							common.ErrorFingerprint(rec),
-						).Inc()
-						lg.Error().
-							Interface("panic", rec).
-							Str("stack", string(debug.Stack())).
-							Msgf("unexpected panic on cache-set")
-					}
-				})()
-				defer resp.DoneRef()
-
-				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
-				defer timeoutCtxCancel()
-				tracedCtx := trace.ContextWithSpanContext(timeoutCtx, forwardSpan.SpanContext())
-				err := n.cacheDal.Set(tracedCtx, req, resp)
-				if err != nil {
-					lg.Warn().Err(err).Msgf("could not store response in cache")
-				}
-			})(resp, forwardSpan)
+			n.storeInCache(ctx, forwardSpan.SpanContext(), &lg, method, req, resp)
 		}
 
 		// Per-request execution counters + full upstream-attempt trace.
@@ -2565,6 +2537,39 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	return resp, nil
+}
+
+// storeInCache writes resp to the cache in the background; the cache
+// policies decide by the request's finality what is kept and for how long.
+func (n *Network) storeInCache(ctx context.Context, spanCtx trace.SpanContext, lg *zerolog.Logger, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
+	// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
+	// TODO For other architectures we might need a different approach
+	_, _ = resp.JsonRpcResponse(ctx)
+	resp.AddRef()
+
+	go func() {
+		defer (func() {
+			if rec := recover(); rec != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"cache-set",
+					fmt.Sprintf("network:%s method:%s", n.networkId, method),
+					common.ErrorFingerprint(rec),
+				).Inc()
+				lg.Error().
+					Interface("panic", rec).
+					Str("stack", string(debug.Stack())).
+					Msgf("unexpected panic on cache-set")
+			}
+		})()
+		defer resp.DoneRef()
+
+		timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
+		defer timeoutCtxCancel()
+		tracedCtx := trace.ContextWithSpanContext(timeoutCtx, spanCtx)
+		if err := n.cacheDal.Set(tracedCtx, req, resp); err != nil {
+			lg.Warn().Err(err).Msgf("could not store response in cache")
+		}
+	}()
 }
 
 func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
@@ -3204,9 +3209,29 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 			return nil, resp, nil
 		}
 
-		// Shouldn't reach here normally, but if we do, retry
-		lg.Warn().Str("hash", mlxHash).Msg("multiplexer follower got nil response and no error, retrying")
+		// A leader that shares only a usable answer (a chain tracker fetch)
+		// closed without one: lead or join anew, with this request's own
+		// failsafe policies.
+		lg.Debug().Str("hash", mlxHash).Msg("multiplexer leader shared no response, forwarding anew")
 	}
+}
+
+// leadMultiplexer registers req as the leader of its in-flight key so
+// concurrent identical requests join it. It returns nil when multiplexing is
+// off or another request already leads the key; it never follows one.
+func (n *Network) leadMultiplexer(ctx context.Context, req *common.NormalizedRequest) *Multiplexer {
+	if !n.cfg.MultiplexingEnabled() {
+		return nil
+	}
+	hash, err := n.multiplexKey(ctx, req)
+	if err != nil || hash == "" {
+		return nil
+	}
+	mlx := NewMultiplexer(hash)
+	if _, loaded := n.inFlightRequests.LoadOrStore(hash, mlx); loaded {
+		return nil
+	}
+	return mlx
 }
 
 func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {

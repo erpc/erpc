@@ -163,8 +163,8 @@ func (f *chainFollower) reconcile(ctx context.Context, h *chainHeader) (int, boo
 			t.voteAsk(ctx, h)
 			return depth, true
 		}
-		parent, ok := t.fetchHeader(ctx, classHead, "eth_getBlockByHash", "0x"+hex.EncodeToString(cur.parentHash[:]), auxKindHeader)
-		if !ok || parent.number+1 != cur.number {
+		parent, err := t.fetchHeader(ctx, classHead, "eth_getBlockByHash", "0x"+hex.EncodeToString(cur.parentHash[:]), auxKindHeader, fetchTracker)
+		if err != nil || parent.number+1 != cur.number {
 			return 0, false
 		}
 		cur = parent
@@ -175,5 +175,6 @@ func (f *chainFollower) reconcile(ctx context.Context, h *chainHeader) (int, boo
 // fetchFollowHeader gets block n for the follower, the interim no-source
 // ask (class 1).
 func (t *ChainTracker) fetchFollowHeader(ctx context.Context, n int64) (*chainHeader, bool) {
-	return t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), auxKindFollow)
+	h, err := t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), auxKindFollow, fetchTracker)
+	return h, err == nil
 }

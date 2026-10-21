@@ -196,6 +196,18 @@ var requestPermit = PermitCost{Hits: 1, Mode: common.RateLimitCountModeRequest}
 // the matching rules are enforced as one pool shared by every method. What a
 // rule actually charges is resolved per rule in resolveCost.
 func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string, cost ...PermitCost) (bool, error) {
+	return b.tryAcquirePermit(ctx, projectId, req, method, vendor, upstreamId, authLabel, origin, false, cost...)
+}
+
+// TryAcquireSparePermit is TryAcquirePermit for work that yields to clients:
+// it is allowed only while every matching rule keeps more than half of its
+// capacity free after the hit. A denied spare permit still counts its hit:
+// the limiter cache cannot read a counter without adding to it.
+func (b *RateLimiterBudget) TryAcquireSparePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string, cost ...PermitCost) (bool, error) {
+	return b.tryAcquirePermit(ctx, projectId, req, method, vendor, upstreamId, authLabel, origin, true, cost...)
+}
+
+func (b *RateLimiterBudget) tryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string, spare bool, cost ...PermitCost) (bool, error) {
 	permit := requestPermit
 	if len(cost) > 0 {
 		permit = cost[0]
@@ -250,7 +262,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 
 	// Single rule: evaluate directly without goroutine overhead
 	if len(rules) == 1 {
-		allowed := b.evaluateRule(ctx, rules[0], method, clientIP, userLabel, networkLabel, permit)
+		allowed := b.evaluateRule(ctx, rules[0], method, clientIP, userLabel, networkLabel, permit, spare)
 		if !allowed {
 			telemetry.CounterHandle(
 				telemetry.MetricRateLimitsTotal,
@@ -272,7 +284,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 				resultCh <- ruleResult{rule: r, allowed: true}
 				return
 			}
-			allowed := b.evaluateRule(ctx, r, method, clientIP, userLabel, networkLabel, permit)
+			allowed := b.evaluateRule(ctx, r, method, clientIP, userLabel, networkLabel, permit, spare)
 			if !allowed {
 				blocked.Store(true)
 			}
@@ -326,8 +338,9 @@ func (b *RateLimiterBudget) resolveCost(rule *RateLimitRule, method string, perm
 }
 
 // evaluateRule checks a single rate limit rule against the cache.
-// Returns true if allowed, false if over limit.
-func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string, permit PermitCost) bool {
+// Returns true if allowed, false if over limit, or when spare, if the hit
+// leaves half or less of the rule's capacity free.
+func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string, permit PermitCost, spare bool) bool {
 	cache := b.getCache()
 	if cache == nil {
 		return true // Fail-open when no cache is available
@@ -402,12 +415,18 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 	isOverLimit := len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT
 	if isOverLimit {
 		doSpan.SetAttributes(attribute.String("result", "over_limit"))
-	} else {
-		doSpan.SetAttributes(attribute.String("result", "ok"))
+		doSpan.End()
+		return false
 	}
+	if spare && len(statuses) > 0 && statuses[0].CurrentLimit != nil &&
+		2*uint64(statuses[0].LimitRemaining) <= uint64(statuses[0].CurrentLimit.RequestsPerUnit) {
+		doSpan.SetAttributes(attribute.String("result", "no_spare"))
+		doSpan.End()
+		return false
+	}
+	doSpan.SetAttributes(attribute.String("result", "ok"))
 	doSpan.End()
-
-	return !isOverLimit
+	return true
 }
 
 // statsKeySuffix returns the pre-computed suffix for stats key.

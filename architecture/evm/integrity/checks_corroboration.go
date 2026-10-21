@@ -50,7 +50,7 @@ func init() {
 			if resolver == nil {
 				return Skipped // corroboration unavailable — no-op
 			}
-			block, ok := resolver.CanonicalReceipts(ctx, want.BlockHash)
+			block, ok := resolver.CanonicalReceipts(ctx, want.BlockHash, d.BlockNumber())
 			if !ok || len(block) == 0 {
 				// Canonical unavailable OR empty. An empty by-hash receipts response
 				// is what a tip-lagged corroboration node returns for a brand-new
