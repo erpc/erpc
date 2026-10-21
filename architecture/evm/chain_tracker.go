@@ -328,8 +328,14 @@ func newChainTracker(ctx context.Context, n common.Network, window int, backfill
 	s := &feedState{changed: make(chan struct{})}
 	t.state.Store(s)
 	t.trees.Store(&treeState{state: s, changed: make(chan struct{})})
-	go t.run(ctx)
+	fetch.bg.Go(func() { t.run(ctx) })
 	return t
+}
+
+// Wait waits, once the network's ctx ended, until no goroutine of the
+// network's trackers and their fetches runs.
+func (t *ChainTracker) Wait() {
+	t.fetch.bg.Wait()
 }
 
 // clear empties the tracker's own state.
@@ -836,18 +842,44 @@ func (t *ChainTracker) decide() (path []*node, key string, tied, conflict bool) 
 		if s.inflight {
 			return nil, key, false, false
 		}
-		counted := base
-		for _, a := range s.answers {
-			if t.alive(a) && !t.walking(a) {
+		if answers := t.settleAnswers(s); len(answers) > 0 {
+			counted := base
+			for _, a := range answers {
 				counted = append(counted, voter{n: a})
 			}
-		}
-		if len(counted) > len(base) {
 			path, tie = t.pick(counted)
 		}
 	}
 	conflict = len(base) == 1 && base[0].n == t.ask.vote && t.ask.conflict
 	return path, key, len(tie) > 0, conflict
+}
+
+// settleAnswers are the answers of s that count: held, and walked.
+func (t *ChainTracker) settleAnswers(s *settleState) []*node {
+	var out []*node
+	for _, a := range s.answers {
+		if t.alive(a) && !t.walking(a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// decidedAnswers are the answers of the decided settle while the decision
+// it was asked for stands, over the counted votes base; none otherwise.
+func (t *ChainTracker) decidedAnswers(base []voter) []*node {
+	s := t.settle
+	if s == nil || !s.decided {
+		return nil
+	}
+	var tie []*node
+	if len(base) > 0 {
+		_, tie = t.pick(base)
+	}
+	if settleKey(base, tie) != s.key {
+		return nil
+	}
+	return t.settleAnswers(s)
 }
 
 // choose moves the pins to rule 4's path; a tie, or a no-source answer
@@ -1110,21 +1142,36 @@ func (t *ChainTracker) publish() {
 // sendIndex is the delivery gate over path: the highest pin backed by the
 // delivery quorum of counted source votes, a vote backing every pin on its
 // branch at or below it; -1 while no pin is. A pin one source alone votes
-// for, such as a cold pod's first header, so waits for a second vote.
+// for, such as a cold pod's first header, so waits for a second vote. A
+// decided settle's answer on the pinned branch backs the whole branch the
+// settle chose, so a split the settle decided flows at once.
 func (t *ChainTracker) sendIndex(path []*node) int {
 	if len(path) == 0 {
 		return -1
 	}
 	need := t.deliveryQuorum()
-	base := path[0].h.number
+	base, head := path[0].h.number, len(path)-1
 	var backed []int
-	for _, v := range t.baseVotes() {
-		for a := v.n; a != nil && a.h.number >= base; a = a.parent {
-			if i := a.h.number - base; i < uint64(len(path)) && path[i] == a {
-				backed = append(backed, int(i))
-				break
+	// backs adds the highest pin n backs; branch: n backs the whole path
+	// when it holds the pinned branch.
+	backs := func(n *node, branch bool) {
+		for a := n; a != nil && a.h.number >= base; a = a.parent {
+			if d := a.h.number - base; d < uint64(len(path)) && path[d] == a {
+				i := int(d)
+				if branch && (a == n || i == head) {
+					i = head
+				}
+				backed = append(backed, i)
+				return
 			}
 		}
+	}
+	votes := t.baseVotes()
+	for _, v := range votes {
+		backs(v.n, false)
+	}
+	for _, a := range t.decidedAnswers(votes) {
+		backs(a, true)
 	}
 	if len(backed) < need {
 		return -1
@@ -2136,9 +2183,9 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 		// The state prober rides on the follow tap: its pinned headers are
 		// the anchor for judging an upstream's state claims.
 		if cfg.Integrity.StateProbe.IsEnabled() {
-			startStateProber(n, t, cfg.Integrity.StateProbe)
+			startStateProber(nt.ctx, n, t, cfg.Integrity.StateProbe)
 		}
-		go t.follow(nt.ctx)
+		nt.fetch.bg.Go(func() { t.follow(nt.ctx) })
 	}
 	return t
 }

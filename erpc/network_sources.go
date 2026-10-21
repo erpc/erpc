@@ -83,7 +83,7 @@ func (r *sourceReconciler) start(ctx context.Context, idx *indexer.Indexer) {
 			idx.RegisterNetwork(&networkHandle{nw: r.nw})
 			idx.RegisterNetworkSelector(key, &subIngressSelector{nw: r.nw})
 		}
-		go r.run(ctx, idx)
+		r.nw.bg.Go(func() { r.run(ctx, idx) })
 	})
 }
 

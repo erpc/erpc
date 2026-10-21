@@ -40,8 +40,9 @@ var (
 	chaosHeadsWatch    = time.Second
 	chaosStatePoll     = 300 * time.Millisecond
 	chaosSeedBudget    = 30 * time.Second
-	chaosVendorBudget  = uint32(100) // requests per second per upstream
-	chaosMailboxBurst  = 1500        // above the tracker's mailbox header cap of 1024
+	chaosSettleRound   = chaosBlock // a settle's asks and walks on local vendors
+	chaosVendorBudget  = uint32(40) // requests per second per upstream; client load under -race exceeds 4x this
+	chaosMailboxBurst  = 1500       // above the tracker's mailbox header cap of 1024
 	chaosFinalizedLag  = uint64(64)
 	chaosHistoryBlocks = 40
 )
@@ -612,7 +613,6 @@ func (v *simVendor) serveWS(w http.ResponseWriter, r *http.Request) {
 		delete(v.conns, conn)
 		c.mu.Unlock()
 		_ = conn.Close()
-		mockWriteMus.Delete(conn)
 	}()
 	for {
 		_, msg, err := conn.ReadMessage()
@@ -868,6 +868,7 @@ func newChaosSeed(t *testing.T, seed int64, pollSources bool) *chaosSeed {
 	fn := s.hook.on
 	evm.TrackerMessageHook.Store(&fn)
 	t.Cleanup(func() { evm.TrackerMessageHook.Store(nil) })
+	t.Cleanup(s.stopERPC)
 	return s
 }
 
@@ -931,14 +932,24 @@ func (s *chaosSeed) startERPC() {
 	s.nw.Store(nw)
 }
 
+// stopERPC stops the running instance, if any, and waits for its
+// network's goroutines; a failed seed stops it in cleanup, so nothing it
+// runs outlives the seed into later tests.
 func (s *chaosSeed) stopERPC() {
+	if s.srv == nil {
+		return
+	}
 	_ = s.srv.Shutdown(&zerolog.Logger{})
 	s.cancel()
+	s.srv = nil
 	s.mu.Lock()
 	clients := slices.Clone(s.clients)
 	s.mu.Unlock()
 	for _, cl := range clients {
 		_ = cl.conn.Close()
+	}
+	if nw := s.nw.Load(); nw != nil {
+		nw.wait()
 	}
 }
 
@@ -1343,7 +1354,7 @@ func (s *chaosSeed) clientLoad() {
 	limit := until.Add(10 * chaosBlock)
 	var sent, limited atomic.Int64
 	var wg sync.WaitGroup
-	for range 32 {
+	for range 64 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1362,7 +1373,8 @@ func (s *chaosSeed) clientLoad() {
 }
 
 func (s *chaosSeed) split() {
-	// The HTTP vendors are no sources here: only the 2 wss vendors vote.
+	// The HTTP vendors are no sources here: only the 2 wss vendors vote,
+	// and http-a is the one upstream that answers a settle.
 	settled := telemetry.MetricChainTrackerSettleTotal.WithLabelValues("test_ws", "evm:123", "decided")
 	before := testutil.ToFloat64(settled)
 	s.httpB.setDown(true)
@@ -1370,18 +1382,43 @@ func (s *chaosSeed) split() {
 	c.mu.Lock()
 	tip := c.tipLocked()
 	// ws-b's sibling of the next canonical block, pushed as it lands.
-	c.canon = append(c.canon, c.childLocked(tip, time.Now(), false))
+	canon := c.childLocked(tip, time.Now(), false)
+	c.canon = append(c.canon, canon)
 	f := &simFork{tip: c.childLocked(tip, time.Now(), true), grows: true}
 	s.wsB.fork = f
 	c.mu.Unlock()
 	c.refresh()
+	// ws-b stays live on its growing fork; the settle alone must release
+	// the branch it decided to the clients.
+	require.Eventually(s.t, func() bool { return testutil.ToFloat64(settled) > before }, 5*chaosBlock, 5*time.Millisecond, "a settle decides the 1-vs-1 split")
+	require.Eventually(s.t, func() bool { return s.clientsHave(canon) }, chaosSettleRound, 5*time.Millisecond,
+		"clients receive block %d of the settled branch within one settle round while ws-b votes its fork", canon.number)
 	s.blocks(5)
 	s.setFork(nil, s.wsB)
 	s.httpB.setDown(false)
 	s.blocks(2)
 	decided := testutil.ToFloat64(settled) - before
-	require.Positive(s.t, decided, "a settle decides the 1-vs-1 split")
 	s.occur(fSplit, fmt.Sprintf("ws-a vs ws-b at %d, %v settles decided by http-a", tip.number+1, decided))
+}
+
+// clientsHave reports whether every open client that is not reading slowly
+// holds b.
+func (s *chaosSeed) clientsHave(b *simBlock) bool {
+	s.mu.Lock()
+	clients := slices.Clone(s.clients)
+	s.mu.Unlock()
+	for _, cl := range clients {
+		if cl.slow != nil && cl.slow() {
+			continue
+		}
+		cl.mu.Lock()
+		open, h := cl.ended.IsZero(), cl.chain[b.number]
+		cl.mu.Unlock()
+		if open && h != b.hash {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *chaosSeed) nonLinking() {

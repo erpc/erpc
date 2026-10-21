@@ -163,7 +163,7 @@ func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
 
 	rounds := stateProbeDisprovedStreak + 2
 	for i := 0; i < rounds; i++ {
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 	}
 
 	want := rounds - stateProbeDisprovedStreak + 1 // one record per round past the debounce

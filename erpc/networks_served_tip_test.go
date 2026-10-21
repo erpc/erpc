@@ -65,6 +65,9 @@ func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedT
 
 func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
 	t.Helper()
+	// The network's goroutines read package variables later tests swap.
+	ctx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
 
 	if len(fixtures) == 0 {
 		t.Fatal("setupServedTipNetwork requires at least one fixture")
@@ -172,6 +175,10 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 		nil,
 	)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		cancel()
+		network.wait()
+	})
 
 	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(200 * time.Millisecond)
@@ -992,13 +999,14 @@ func pinServedTipClock(t *testing.T) func(time.Duration) {
 	t.Helper()
 	var mu sync.Mutex
 	now := time.Now()
-	prev := servedTipClock
-	servedTipClock = func() time.Time {
+	prev := servedTipNow.Load()
+	clock := func() time.Time {
 		mu.Lock()
 		defer mu.Unlock()
 		return now
 	}
-	t.Cleanup(func() { servedTipClock = prev })
+	servedTipNow.Store(&clock)
+	t.Cleanup(func() { servedTipNow.Store(prev) })
 	return func(d time.Duration) {
 		mu.Lock()
 		defer mu.Unlock()

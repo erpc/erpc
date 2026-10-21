@@ -12,6 +12,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
 
@@ -114,11 +115,13 @@ type fetchBackoff struct {
 
 // fetchScheduler runs every tracker fetch of one network on this pod:
 // at most fetchSlots in flight, a share per class, single flight per key,
-// backoff per key. Its lifetime is the network's ctx.
+// backoff per key. Its lifetime is the network's ctx; bg holds every
+// goroutine of the network's trackers and fetches.
 type fetchScheduler struct {
 	ctx     context.Context
 	network common.Network
 	sweep   func(ctx context.Context, req *common.NormalizedRequest, upstreamId string) (*common.NormalizedResponse, error)
+	bg      util.Goroutines
 
 	mu       sync.Mutex
 	closed   bool
@@ -347,7 +350,12 @@ func (s *fetchScheduler) startLocked(r *fetchRequest) {
 	r.started = true
 	r.halvings = s.halvings
 	s.inflight[r.spec.class]++
-	go s.run(r)
+	if !s.bg.Go(func() { s.run(r) }) {
+		s.inflight[r.spec.class]--
+		delete(s.pending, r.key)
+		r.res = fetchResult{err: errSchedulerClosed}
+		close(r.done)
+	}
 }
 
 func (s *fetchScheduler) run(r *fetchRequest) {

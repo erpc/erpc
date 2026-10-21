@@ -269,7 +269,7 @@ func (t *ChainTracker) extended(r *node, e *extension, h *chainHeader) {
 // and done runs on the tracker's goroutine with the answer.
 func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, from string, err error)) {
 	w := t.fetch.submit(nil, spec)
-	go func() {
+	t.fetch.bg.Go(func() {
 		res := w.wait(t.ctx)
 		h, _ := res.val.(*chainHeader)
 		err := res.err
@@ -277,7 +277,7 @@ func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, fr
 			err = errFetchUndecoded
 		}
 		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(h, res.upstream, err) }})
-	}()
+	})
 }
 
 // heldOrHold returns the held node for h, holding it first when new.

@@ -91,10 +91,11 @@ type stateProber struct {
 
 // stateProbers is the per-network registry (the prober is network-scoped even
 // though follower views are group-scoped — one probe pass covers every
-// upstream, whichever view's verified header anchors it).
+// upstream, whichever view's verified header anchors it). A prober leaves it
+// when its network's ctx ends.
 var stateProbers sync.Map // networkId -> *stateProber
 
-func startStateProber(n common.Network, v *ChainTracker, cfg *common.IntegrityStateProbeConfig) {
+func startStateProber(ctx context.Context, n common.Network, v *ChainTracker, cfg *common.IntegrityStateProbeConfig) {
 	interval := stateProbeMinInterval
 	if cfg != nil && cfg.Interval > 0 {
 		interval = cfg.Interval.Duration()
@@ -114,7 +115,9 @@ func startStateProber(n common.Network, v *ChainTracker, cfg *common.IntegritySt
 	if _, loaded := stateProbers.LoadOrStore(n.Id(), p); loaded {
 		return // another view won the race; one prober per network
 	}
-	go p.run()
+	if !v.fetch.bg.Go(func() { p.run(ctx) }) {
+		stateProbers.CompareAndDelete(n.Id(), p)
+	}
 }
 
 // stateProberFor returns the network's running prober (nil = probing off for
@@ -143,13 +146,19 @@ func (p *stateProber) onNewHead(n int64) {
 	}
 }
 
-func (p *stateProber) run() {
-	for n := range p.work {
-		p.probeAll(n)
+func (p *stateProber) run(ctx context.Context) {
+	defer stateProbers.CompareAndDelete(p.network.Id(), p)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case n := <-p.work:
+			p.probeAll(ctx, n)
+		}
 	}
 }
 
-func (p *stateProber) probeAll(headN int64) {
+func (p *stateProber) probeAll(ctx context.Context, headN int64) {
 	header, ok := p.view.HeaderAt(headN)
 	if !ok || header == nil {
 		return // verified header gone (reorg unwound it) — nothing to anchor on
@@ -160,7 +169,7 @@ func (p *stateProber) probeAll(headN int64) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	for _, u := range enum.EvmAllUpstreams(ctx) {

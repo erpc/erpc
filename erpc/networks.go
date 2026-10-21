@@ -86,11 +86,22 @@ type Network struct {
 
 	// chainTracker is the network-wide tracker; intake feeds it from the
 	// sources, which the reconciler sets; taps read it and are the demand.
-	// All nil on non-EVM networks.
+	// All nil on non-EVM networks. bg runs the intake, reconciler and tap
+	// loops.
 	chainTracker *evm.ChainTracker
 	intake       *networkIntake
 	sources      *sourceReconciler
 	taps         *indexer.Taps
+	bg           util.Goroutines
+}
+
+// wait waits, once the app ctx ended, until no goroutine of the network's
+// intake, reconciler, taps, trackers or tracker fetches runs.
+func (n *Network) wait() {
+	n.bg.Wait()
+	if n.chainTracker != nil {
+		n.chainTracker.Wait()
+	}
 }
 
 // NoteObservedLatestBlock records a head about to be delivered on a WebSocket
@@ -196,8 +207,16 @@ const (
 // impossible.
 const servedTipRegressionTTL = time.Minute
 
-// servedTipClock is the regression guard's clock, swapped in tests.
-var servedTipClock = time.Now
+// servedTipNow is the regression guard's clock while set; tests swap it
+// while network goroutines read it.
+var servedTipNow atomic.Pointer[func() time.Time]
+
+func servedTipClock() time.Time {
+	if now := servedTipNow.Load(); now != nil {
+		return (*now)()
+	}
+	return time.Now()
+}
 
 // observe records v as the latest served value, stamping the anchor when the
 // value changed since the last observation.

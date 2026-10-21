@@ -207,7 +207,7 @@ func NewNetwork(
 			evm.DemandChanged(network)
 		})
 		network.chainTracker = evm.StartChainTrackers(appCtx, network)
-		go network.intake.run(appCtx)
+		network.bg.Go(func() { network.intake.run(appCtx) })
 	}
 
 	return network, nil

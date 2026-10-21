@@ -153,10 +153,12 @@ func (sm *SubscriptionManager) Subscribe(
 		addErr = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
 			"newHeads subscriptions need an evm network", nil, nil)
 	case kind == indexer.KindNewHead:
-		tapCtx, stop := context.WithCancel(context.Background())
+		// The tap ends with its client or its network, whichever ends first;
+		// once the network ended, bg refuses it and the tap is moot.
+		tapCtx, stop := context.WithCancel(nw.appCtx)
 		if addErr = conn.adapter.AddTapSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			sub := wsclient.Subscription{ClientSubID: clientSubID, Kind: kind, NetworkID: key}
-			go sm.runNewHeads(tapCtx, wsc, sub, nw)
+			nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, nw) })
 		} else {
 			stop()
 		}

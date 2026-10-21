@@ -90,7 +90,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head, trieNode
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
 	})
 
@@ -102,7 +102,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head+4, trieNode
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock(),
 			"executing AHEAD of the pin means the pin was ignored — never proven")
 	})
@@ -111,7 +111,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head-7, trieNode // claims head, executes 7 back
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock(),
 			"a node executing pinned calls in an older context must never be proven at the pin")
 	})
@@ -120,7 +120,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head, []byte("some-other-trie")
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock(),
 			"the context call is spoofable in principle; the proof layer must hold on its own")
 	})
@@ -129,7 +129,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofErr = head, "the method eth_getProof does not exist/is not available"
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
 		_, remembered := p.proofUnsupported.Load("u1")
 		assert.True(t, remembered, "unsupported must be remembered, not rediscovered every block")
@@ -140,7 +140,7 @@ func TestStateProber(t *testing.T) {
 		pn.upstream.Config().IgnoreMethods = []string{"eth_getProof"}
 		pn.execContext, pn.proofErr = head, "must not be forwarded"
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head)
+		p.probeAll(context.Background(), head)
 		assert.EqualValues(t, head, pn.upstream.EvmStateProvenBlock())
 		_, remembered := p.proofUnsupported.Load("u1")
 		assert.True(t, remembered, "an ignored method is remembered as unsupported, not re-asked every block")
@@ -150,7 +150,7 @@ func TestStateProber(t *testing.T) {
 		pn := newProbeNetwork(t)
 		pn.execContext, pn.proofNode = head, trieNode
 		p, _ := proberFor(pn, head, stateRoot)
-		p.probeAll(head + 5) // a height the follower never verified
+		p.probeAll(context.Background(), head+5) // a height the follower never verified
 		assert.EqualValues(t, 0, pn.upstream.EvmStateProvenBlock())
 	})
 }

@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
@@ -42,15 +44,20 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-// mockWriteMus serialises writes per mock-upstream connection: gorilla
-// supports one concurrent writer, and several mock handlers push
-// notifications from a goroutine while the read loop answers requests.
-var mockWriteMus sync.Map // *websocket.Conn -> *sync.Mutex
+// mockWriteMus holds one write mutex per mock-upstream connection for as
+// long as the connection exists: gorilla supports one concurrent writer,
+// and mock handlers and pushes may still write after the read loop ended,
+// so dropping the mutex earlier would let two writers in at once.
+var mockWriteMus sync.Map // weak.Pointer[websocket.Conn] -> *sync.Mutex
 
 // mockWriteJSON is the only way mock upstream handlers write to their
 // connection.
 func mockWriteJSON(conn *websocket.Conn, v interface{}) error {
-	muRaw, _ := mockWriteMus.LoadOrStore(conn, &sync.Mutex{})
+	key := weak.Make(conn)
+	muRaw, loaded := mockWriteMus.LoadOrStore(key, &sync.Mutex{})
+	if !loaded {
+		runtime.AddCleanup(conn, func(k weak.Pointer[websocket.Conn]) { mockWriteMus.Delete(k) }, key)
+	}
 	mu := muRaw.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
@@ -69,7 +76,6 @@ func mockWsUpstream(t *testing.T, handler func(conn *websocket.Conn)) *httptest.
 			return
 		}
 		defer c.Close()
-		defer mockWriteMus.Delete(c)
 		handler(c)
 	}))
 	return srv
