@@ -46,6 +46,7 @@ type mc3TestNode struct {
 	mu            sync.Mutex
 	multicalls    int
 	gasOfPacks    map[string]int
+	fromOfPacks   map[string]int
 	packedTargets map[string]int
 	singles       map[string]int
 }
@@ -56,6 +57,7 @@ func (f *mc3TestNode) reset(mode string) {
 	f.mode.Store(mode)
 	f.multicalls = 0
 	f.gasOfPacks = map[string]int{}
+	f.fromOfPacks = map[string]int{}
 	f.packedTargets = map[string]int{}
 	f.singles = map[string]int{}
 }
@@ -117,6 +119,8 @@ func (f *mc3TestNode) answer(method string, params []interface{}) (interface{}, 
 	f.multicalls++
 	gas, _ := call["gas"].(string)
 	f.gasOfPacks[gas]++
+	from, _ := call["from"].(string)
+	f.fromOfPacks[from]++
 	f.mu.Unlock()
 	switch f.mode.Load().(string) {
 	case "error":
@@ -311,20 +315,31 @@ func TestMulticall3Packing(t *testing.T) {
 		})
 	}
 
-	t.Run("calls with a gas limit pack only with calls of the same limit", func(t *testing.T) {
+	t.Run("calls pack only with calls of the same gas limit and sender", func(t *testing.T) {
 		node.reset("ok")
 		withGas := func() call {
 			c := newCall(mc3TestEcho, "latest")
 			c.gas = "0x2faf080"
 			return c
 		}
-		calls := []call{withGas(), withGas(), withGas(), newCall(mc3TestEcho, "latest"), newCall(mc3TestEcho, "latest")}
+		zero := "0x" + strings.Repeat("0", 40)
+		fromZero := func() call {
+			c := newCall(mc3TestEcho, "latest")
+			c.from = zero
+			return c
+		}
+		calls := []call{
+			withGas(), withGas(), withGas(),
+			newCall(mc3TestEcho, "latest"), newCall(mc3TestEcho, "latest"),
+			fromZero(), fromZero(),
+		}
 		answers := sendAll(calls)
 
 		assertEchoed(t, calls, answers)
 		node.mu.Lock()
 		defer node.mu.Unlock()
-		assert.Equal(t, map[string]int{"0x2faf080": 1, "": 1}, node.gasOfPacks)
+		assert.Equal(t, map[string]int{"0x2faf080": 1, "": 2}, node.gasOfPacks)
+		assert.Equal(t, map[string]int{"": 2, zero: 1}, node.fromOfPacks)
 		assert.Empty(t, node.singles)
 	})
 
