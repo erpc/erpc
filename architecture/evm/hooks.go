@@ -35,6 +35,8 @@ func HandleProjectPreForward(ctx context.Context, network common.Network, nq *co
 		return projectPreForward_defaultLatestBlock(ctx, network, nq)
 	case "eth_chainid":
 		return projectPreForward_eth_chainId(ctx, network, nq)
+	case "net_listening":
+		return projectPreForward_net_listening(ctx, network, nq)
 	case "eth_getlogs":
 		return projectPreForward_eth_getLogs(ctx, network, nq)
 	case "trace_filter", "arbtrace_filter":
