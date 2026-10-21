@@ -2783,6 +2783,11 @@ type EvmNetworkConfig struct {
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
 
+	// LocalAnswers turns off eRPC's own answer for a method on this network:
+	// `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+	// method in LocalAnswerMethods is answered by eRPC unless set false here.
+	LocalAnswers map[string]bool `yaml:"localAnswers,omitempty" json:"localAnswers,omitempty"`
+
 	// StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
 	// logs filters before forwarding upstream. fromBlock has no meaning for a
 	// live subscription, and backends that prune history reject it.
