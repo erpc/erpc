@@ -3,6 +3,8 @@ package common
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/go-logr/zerologr"
@@ -205,24 +207,55 @@ func createTracingGRPCExporter(ctx context.Context, cfg *TracingConfig) (*otlptr
 }
 
 func createTracingHTTPExporter(ctx context.Context, cfg *TracingConfig) (*otlptrace.Exporter, error) {
-	secureOption := otlptracehttp.WithInsecure()
-	if cfg.TLS != nil && cfg.TLS.Enabled {
+	tlsEnabled := cfg.TLS != nil && cfg.TLS.Enabled
+	opts, err := tracingHTTPEndpointOptions(cfg.Endpoint, tlsEnabled)
+	if err != nil {
+		return nil, err
+	}
+	if tlsEnabled {
 		tlsConfig, err := CreateTLSConfig(cfg.TLS)
 		if err != nil {
 			return nil, err
 		}
-		secureOption = otlptracehttp.WithTLSClientConfig(tlsConfig)
-	}
-
-	opts := []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(cfg.Endpoint),
-		secureOption,
+		opts = append(opts, otlptracehttp.WithTLSClientConfig(tlsConfig))
 	}
 	if len(cfg.Headers) > 0 {
 		opts = append(opts, otlptracehttp.WithHeaders(cfg.Headers))
 	}
 
 	return otlptracehttp.New(ctx, opts...)
+}
+
+// tracingHTTPEndpointOptions accepts "host:port" or a full URL. WithEndpoint
+// takes host:port only; a scheme in it makes every export URL unparsable.
+// A URL's scheme decides TLS; host:port falls back to tls.enabled. A URL
+// without a path keeps the exporter's default /v1/traces.
+func tracingHTTPEndpointOptions(endpoint string, tlsEnabled bool) ([]otlptracehttp.Option, error) {
+	if !strings.Contains(endpoint, "://") {
+		opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
+		if !tlsEnabled {
+			opts = append(opts, otlptracehttp.WithInsecure())
+		}
+		return opts, nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid tracing endpoint %q: %w", endpoint, err)
+	}
+	if u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, fmt.Errorf("invalid tracing endpoint %q: want http(s)://host:port[/path] or host:port", endpoint)
+	}
+	if u.Scheme == "http" && tlsEnabled {
+		return nil, fmt.Errorf("invalid tracing endpoint %q: tls.enabled needs an https:// endpoint", endpoint)
+	}
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(u.Host)}
+	if u.Scheme == "http" {
+		opts = append(opts, otlptracehttp.WithInsecure())
+	}
+	if u.Path != "" && u.Path != "/" {
+		opts = append(opts, otlptracehttp.WithURLPath(u.Path))
+	}
+	return opts, nil
 }
 
 func createTracingSampler(cfg *TracingConfig) sdktrace.Sampler {
