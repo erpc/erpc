@@ -198,13 +198,13 @@ func NewNetwork(
 	}
 
 	if nwCfg.Architecture == common.ArchitectureEvm {
-		// Intake first: trackers ask it whether votes count from their
-		// first message on.
+		// Intake, sources and taps first: trackers ask intake whether votes
+		// count from their first message on, and intake reaches the sources.
 		network.intake = newNetworkIntake(network)
-		network.chainTracker = evm.StartChainTrackers(appCtx, network)
-		go network.intake.run(appCtx)
 		network.sources = newSourceReconciler(network)
 		network.taps = indexer.NewTaps(func(string) { network.sources.demandChanged() })
+		network.chainTracker = evm.StartChainTrackers(appCtx, network)
+		go network.intake.run(appCtx)
 	}
 
 	return network, nil

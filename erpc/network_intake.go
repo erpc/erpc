@@ -41,6 +41,9 @@ type sourceState struct {
 	// primary source last entered the policy's eligible set. Zero while not.
 	liveSince     time.Time
 	eligibleSince time.Time
+	// eligibleNow is authority's per-pass mark, under in.mu: a primary in
+	// the eligible set it read.
+	eligibleNow bool
 }
 
 // primaryLeadAfter is how long a primary source must stay live and eligible,
@@ -55,8 +58,8 @@ var _ indexer.Intake = (*networkIntake)(nil)
 
 // Subscribed takes a push source's subscribe answer; the reconciler decides
 // what it changes.
-func (in *networkIntake) Subscribed(upstreamId string, t indexer.Topic, err error) {
-	in.nw.sources.subscribed(upstreamId, t, err)
+func (in *networkIntake) Subscribed(_ string, t indexer.Topic, err error) {
+	in.nw.sources.subscribed(t, err)
 }
 
 // Header takes one source header.
@@ -180,7 +183,7 @@ func (in *networkIntake) live(upstreamId string) bool {
 // authoritative: upstreamId is in the selection policy's eligible set, and,
 // with failover on, outside the fallback tier or no primary source leads.
 func (in *networkIntake) authoritative(upstreamId string) bool {
-	primary, eligible, leads := in.authority(upstreamId, time.Now())
+	primary, eligible, leads := in.authority(upstreamId)
 	if !eligible {
 		return false
 	}
@@ -193,21 +196,25 @@ func (in *networkIntake) authoritative(upstreamId string) bool {
 // authority reads the policy's eligible set now: whether upstreamId is in
 // it and outside the fallback tier, and whether some primary source has
 // been live and eligible for primaryLeadAfter. A primary counts as live
-// only while it is eligible.
-func (in *networkIntake) authority(upstreamId string, now time.Time) (primary, eligible, leads bool) {
-	primaries := make(map[string]struct{})
+// only while it is eligible. The set is read under in.mu, so a caller
+// holding an older set cannot overwrite eligibleSince after a newer one.
+func (in *networkIntake) authority(upstreamId string) (primary, eligible, leads bool) {
+	in.mu.Lock()
+	now := time.Now()
+	for _, s := range in.sources {
+		s.eligibleNow = false
+	}
 	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
 		isPrimary := !isFallbackTier(c)
 		if c.Id() == upstreamId {
 			primary, eligible = isPrimary, true
 		}
-		if isPrimary {
-			primaries[c.Id()] = struct{}{}
+		if s := in.sources[c.Id()]; s != nil && isPrimary {
+			s.eligibleNow = true
 		}
 	}
-	in.mu.Lock()
-	for id, s := range in.sources {
-		if _, ok := primaries[id]; !ok {
+	for _, s := range in.sources {
+		if !s.eligibleNow {
 			s.eligibleSince = time.Time{}
 			continue
 		}
@@ -277,7 +284,7 @@ func (in *networkIntake) tick() {
 	}
 	// A primary's lead begins with time alone, without a header or a
 	// liveness change; authority notices it.
-	in.authority("", now)
+	in.authority("")
 }
 
 // votes is the one predicate for whether a source's vote counts: the

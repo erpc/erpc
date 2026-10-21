@@ -100,6 +100,46 @@ func (i *Indexer) AddIngress(ctx context.Context, networkId string, ing EventIng
 	return ing.Start(ctx, ns.handle, i)
 }
 
+// RemoveIngress drops an ingress from a network: each filter on it is
+// removed from it, and the filters move to the ingresses the selector picks
+// now.
+func (i *Indexer) RemoveIngress(ctx context.Context, networkId, name string) {
+	nsRaw, ok := i.networks.Load(networkId)
+	if !ok {
+		return
+	}
+	ns := nsRaw.(*networkState)
+	ns.ingressMu.Lock()
+	ing := ns.ingresses[name]
+	delete(ns.ingresses, name)
+	ns.ingressMu.Unlock()
+	if ing == nil {
+		return
+	}
+	ns.filterMu.RLock()
+	filters := make(map[string]*filterState, len(ns.filters))
+	for hash, f := range ns.filters {
+		filters[hash] = f
+	}
+	ns.filterMu.RUnlock()
+	ings, sel := ns.snapshotIngresses()
+	for hash, f := range filters {
+		f.mu.Lock()
+		if _, on := f.on[name]; on {
+			delete(f.on, name)
+			if err := ing.RemoveFilter(ctx, f.subType, hash); err != nil {
+				i.logger.Warn().Err(err).Str("ingress", name).Str("networkId", networkId).
+					Str("subType", f.subType).Str("paramsHash", hash).
+					Msg("ingress RemoveFilter failed")
+			}
+		}
+		if f.subscribed {
+			i.reconcileFilter(ctx, ns, ings, sel, hash, f)
+		}
+		f.mu.Unlock()
+	}
+}
+
 // Attach registers an egress until the returned detach is called.
 func (i *Indexer) Attach(eg EventEgress) (detach func()) {
 	i.egresses.Store(eg.Name(), eg)
@@ -175,6 +215,9 @@ func (i *Indexer) subscribe(ctx context.Context, ns *networkState, f *filterStat
 	for _, tier := range [][]EventIngress{defaults, fallbacks} {
 		subscribed := false
 		for _, ing := range tier {
+			if !ns.registered(ing.Name()) {
+				continue
+			}
 			f.on[ing.Name()] = struct{}{}
 			if err := ing.EnsureFilter(ctx, f.subType, paramsHash, f.params); err != nil {
 				errs = append(errs, err)
@@ -204,6 +247,16 @@ func (ns *networkState) snapshotIngresses() (map[string]EventIngress, IngressSel
 		ings[name] = ing
 	}
 	return ings, ns.selector
+}
+
+// registered reports whether the named ingress is still on the network.
+// Callers check it under a filter's mu, so an ingress RemoveIngress dropped
+// is never put back on the filter after RemoveIngress cleared it.
+func (ns *networkState) registered(name string) bool {
+	ns.ingressMu.RLock()
+	defer ns.ingressMu.RUnlock()
+	_, ok := ns.ingresses[name]
+	return ok
 }
 
 // triggerReconcile starts a reconcile of ns's filters unless one is running
@@ -258,7 +311,7 @@ func (i *Indexer) reconcileFilter(ctx context.Context, ns *networkState, ings ma
 	}
 
 	for name, ing := range want {
-		if _, ok := f.on[name]; ok {
+		if _, ok := f.on[name]; ok || !ns.registered(name) {
 			continue
 		}
 		f.on[name] = struct{}{}

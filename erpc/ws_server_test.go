@@ -985,8 +985,9 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 		defer conn.Close()
 
 		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
-		require.NotNil(t, resp["error"], "should return error when no upstream is a subscription source")
-		assert.Contains(t, fmt.Sprint(resp["error"]), "needs a subscription source")
+		errObj, ok := resp["error"].(map[string]interface{})
+		require.True(t, ok, "should return error when no upstream is a subscription source: %v", resp)
+		assert.EqualValues(t, common.JsonRpcErrorUnsupportedException, errObj["code"], "ErrNoSubscriptionSource maps to -32601")
 	})
 
 	// Verifies eth_unsubscribe with a nonexistent ID fails as geth's does
@@ -2313,7 +2314,8 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 }
 
 // Polls stop sourceIdleStop after the last client leaves; a later client
-// gets only heads from after it subscribed.
+// gets only heads newer than where polls stopped, though the chain moved on
+// while nobody polled.
 func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -2331,19 +2333,29 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	defer cleanup()
 	first := dialWs(t, addr)
 	subscribeNewHeads(t, first)
-	seen := requireContiguous(t, first, 3, 0)
+	requireContiguous(t, first, 3, 0)
 	require.NoError(t, first.Close())
 
 	pollsSettle(t, &vendor.latestPolls, 700*time.Millisecond, "polls stop after the idle delay")
 	idleAt := chain.Head()
 
+	// Nobody polls while the chain moves on.
+	chain.setPaused(true)
+	chain.setGated(false)
+	for range 5 {
+		chain.advance()
+	}
+	polled := vendor.latestPolls.Load()
+	time.Sleep(300 * time.Millisecond)
+	require.Equal(t, polled, vendor.latestPolls.Load(), "no polls while idle")
+	chain.setPaused(false)
+
 	second := dialWs(t, addr)
 	defer second.Close()
 	subscribeNewHeads(t, second)
 	n, _ := nextNewHead(t, second, 10*time.Second)
-	assert.Greater(t, n, seen, "the new client starts after the first one's heads")
-	assert.GreaterOrEqual(t, n, idleAt, "the new client gets no head from before it subscribed")
-	requireContiguous(t, second, 2, n)
+	assert.Greater(t, n, idleAt, "the new client gets no head from before polls stopped")
+	requireContiguous(t, second, 3, n)
 }
 
 // With the WebSocket server off, each project's network subscribes newHeads
@@ -2415,7 +2427,9 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 	requireContiguous(t, conn, 3, 0)
 	require.Eventually(t, func() bool { return vendor.subscribes.Load() >= 2 }, 5*time.Second, 10*time.Millisecond,
 		"newHeads is asked again after the re-ask interval")
+	// Just after a re-ask: over 2.5 intervals come exactly 2 more.
 	asked := vendor.subscribes.Load()
-	time.Sleep(300 * time.Millisecond)
-	assert.Equal(t, asked, vendor.subscribes.Load(), "asked once per interval, not retried with backoff")
+	time.Sleep(2500 * time.Millisecond)
+	assert.Equal(t, asked+2, vendor.subscribes.Load(), "asked once per interval, not retried with backoff")
+	requireContiguous(t, conn, 2, 0)
 }

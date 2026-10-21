@@ -136,10 +136,13 @@ type EvmStatePoller struct {
 	pollFailures atomic.Int32
 	pollWake     chan struct{}
 
-	// chainIdRecheckArmed is set while a chain-identity cordon waits for its
-	// next eth_chainId check; chainIdCordonReason is the cordon's reason.
-	chainIdRecheckArmed atomic.Bool
-	chainIdCordonReason atomic.Value // string
+	// chainIdRecheck is the pending eth_chainId check of a chain-identity
+	// cordon, nil while none; chainIdRecheckUnwatch stops watching appCtx
+	// for it. chainIdCordonReason is the cordon's reason.
+	chainIdRecheckMu      sync.Mutex
+	chainIdRecheck        *time.Timer
+	chainIdRecheckUnwatch func() bool
+	chainIdCordonReason   atomic.Value // string
 
 	sharedStateRegistry data.SharedStateRegistry
 
@@ -228,25 +231,24 @@ func NewEvmStatePoller(
 
 func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	cfg := e.upstream.Config()
-	interval := cfg.Evm.StatePollerInterval
+	if cfg.Evm != nil && cfg.Evm.StatePollerDebounce != 0 {
+		// Guarded by stateMu: live poll goroutines read this via
+		// resolveDebounce while Bootstrap may run again concurrently.
+		e.stateMu.Lock()
+		e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
+		e.stateMu.Unlock()
+	}
+	interval := cfg.Evm.StatePollerInterval.Duration()
 	if interval == 0 {
+		// Only the full state poll is off: Set still starts the loop for a
+		// poll source.
 		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
 		return nil
 	}
 
-	if cfg.Evm != nil {
-		if cfg.Evm.StatePollerDebounce != 0 {
-			// Guarded by stateMu: live poll goroutines read this via
-			// resolveDebounce while Bootstrap may run again concurrently.
-			e.stateMu.Lock()
-			e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
-			e.stateMu.Unlock()
-		}
-	}
-
 	e.logger.Debug().Msgf("bootstrapping evm state poller to track upstream latest/finalized blocks and syncing states")
 
-	if !e.started.CompareAndSwap(false, true) {
+	if !e.startLoop(interval) {
 		// A ticker goroutine is already running for this poller. Do not spawn
 		// another one — just refresh the state once so the caller still gets
 		// an up-to-date view.
@@ -254,58 +256,89 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	}
 	e.Enabled = true
 
-	// The one poll loop: every statePollerInterval, or at the poll source's
-	// cadence while it feeds newHeads.
-	go (func() {
-		for {
-			timer := time.NewTimer(e.nextPollDelay(interval.Duration()))
-			select {
-			case <-e.appCtx.Done():
-				timer.Stop()
-				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
-				return
-			case <-e.pollWake:
-				timer.Stop()
-			case <-timer.C:
-			}
-			// Calculate timeout based on shared state config:
-			// 1. Wait for distributed lock (up to lockTtl)
-			// 2. Buffer for operations (fetch block, update remote)
-			const operationBuffer = 15 * time.Second
-			lockTtl := e.sharedStateRegistry.GetLockTtl()
-			timeout := lockTtl + operationBuffer
-
-			// Ensure minimum timeout for basic operations
-			if timeout < 30*time.Second {
-				timeout = 30 * time.Second
-			}
-
-			e.logger.Debug().
-				Dur("lockTtl", lockTtl).
-				Dur("timeout", timeout).
-				Msg("calculated poll timeout based on shared state config")
-
-			nctx, cancel := context.WithTimeout(e.appCtx, timeout)
-			err := e.Poll(nctx)
-			subCtxErr := nctx.Err()
-			cancel()
-			if err != nil {
-				if errors.Is(subCtxErr, context.Canceled) {
-					e.logger.Info().Err(err).
-						Msgf("shutting down evm state poller due to context cancellation (e.g. app exiting)")
-				} else {
-					e.logger.Warn().Err(err).Msgf("failed to poll evm state")
-				}
-			}
-		}
-	})()
-
 	err := e.Poll(ctx)
 	if err == nil {
 		e.logger.Info().Msgf("bootstrapped evm state poller to track upstream latest/finalized blocks and syncing states")
 	}
 
 	return err
+}
+
+// startLoop starts the poller's one poll loop unless it runs already; it
+// runs until appCtx ends. Bootstrap and Set may both start it, since the
+// started flag guards a loop with no other stop.
+func (e *EvmStatePoller) startLoop(interval time.Duration) bool {
+	if !e.started.CompareAndSwap(false, true) {
+		return false
+	}
+	go e.pollLoop(interval)
+	return true
+}
+
+// pollLoop runs a full state poll every interval (none while it is 0), and
+// while a poll source, a latest poll at its cadence in between.
+func (e *EvmStatePoller) pollLoop(interval time.Duration) {
+	lastFull := time.Now()
+	for {
+		var timer *time.Timer
+		var fire <-chan time.Time
+		if d, ok := e.nextPollDelay(interval, lastFull); ok {
+			timer = time.NewTimer(d)
+			fire = timer.C
+		}
+		select {
+		case <-e.appCtx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
+			return
+		case <-e.pollWake:
+		case <-fire:
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+		full := interval > 0 && time.Since(lastFull) >= interval
+		if !full && e.activePollSource() == nil {
+			continue
+		}
+		// Calculate timeout based on shared state config:
+		// 1. Wait for distributed lock (up to lockTtl)
+		// 2. Buffer for operations (fetch block, update remote)
+		const operationBuffer = 15 * time.Second
+		lockTtl := e.sharedStateRegistry.GetLockTtl()
+		timeout := lockTtl + operationBuffer
+
+		// Ensure minimum timeout for basic operations
+		if timeout < 30*time.Second {
+			timeout = 30 * time.Second
+		}
+
+		e.logger.Debug().
+			Dur("lockTtl", lockTtl).
+			Dur("timeout", timeout).
+			Msg("calculated poll timeout based on shared state config")
+
+		nctx, cancel := context.WithTimeout(e.appCtx, timeout)
+		var err error
+		if full {
+			lastFull = time.Now()
+			err = e.Poll(nctx)
+		} else {
+			_, err = e.PollLatestBlockNumber(nctx)
+		}
+		subCtxErr := nctx.Err()
+		cancel()
+		if err != nil {
+			if errors.Is(subCtxErr, context.Canceled) {
+				e.logger.Info().Err(err).
+					Msgf("shutting down evm state poller due to context cancellation (e.g. app exiting)")
+			} else {
+				e.logger.Warn().Err(err).Msgf("failed to poll evm state")
+			}
+		}
+	}
 }
 
 func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
@@ -514,8 +547,9 @@ func (e *EvmStatePoller) resolveFinalizedDebounce(cfg *common.EvmNetworkConfig, 
 
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
-// While this poller is a poll source, each fetched header also goes to its
-// intake, and the give-up after failed polls does not apply.
+// While this poller is a poll source, each fetched header goes to its intake
+// and the counter moves only there, after the header passed its checks; the
+// give-up after failed polls does not apply.
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
 	src := e.activePollSource()
 	if src == nil && e.shouldSkipLatestBlockCheck() {
@@ -592,6 +626,23 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.latestBlockFailureCount = 0
 		e.stateMu.Unlock()
 
+		if src != nil {
+			e.pollFailures.Store(0)
+			// Intake parses, verifies a major jump and moves the counter
+			// through ObserveHead; the fetch itself must not move it.
+			src.intake.Header(e.upstream.Id(), header)
+			counter := e.latestBlockShared.GetValue()
+			if counter >= blockNum {
+				e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
+			}
+			e.logger.Debug().
+				Int64("blockNumber", blockNum).
+				Int64("blockTimestamp", blockTimestamp).
+				Int64("counter", counter).
+				Msg("fetched latest block from upstream for its poll source")
+			return counter, nil
+		}
+
 		// A major move must pass a fresh chain-identity check before entering
 		// the shared counter / tracker (see verifyChainIdOnMajorHeadMove).
 		if !e.verifyChainIdOnMajorHeadMove(ctx, "latest", e.latestBlockShared.GetValue(), blockNum) {
@@ -601,14 +652,6 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		// Directly update tracker with the correct timestamp for this locally-fetched block
 		// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
 		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
-
-		if src != nil {
-			e.pollFailures.Store(0)
-			// Verified above: the counter takes the height first, so intake
-			// does not verify the same jump again.
-			e.latestBlockShared.TryUpdate(e.appCtx, blockNum)
-			src.intake.Header(e.upstream.Id(), header)
-		}
 
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
@@ -716,13 +759,17 @@ func (e *EvmStatePoller) BindIntake(intake indexer.Intake, blockTime func() time
 
 // Set polls latest at the poll source's cadence while topics include
 // newHeads, feeding each header to the bound intake; empty returns to
-// statePollerInterval.
+// statePollerInterval. It starts the poll loop when Bootstrap did not, as
+// with statePollerInterval 0.
 func (e *EvmStatePoller) Set(topics []indexer.Topic) {
 	on := slices.Contains(topics, indexer.TopicNewHeads) && e.pollSrc.Load() != nil
 	if e.pollHeads.Swap(on) == on || !on {
 		return
 	}
 	e.pollFailures.Store(0)
+	if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil {
+		e.startLoop(cfg.Evm.StatePollerInterval.Duration())
+	}
 	select {
 	case e.pollWake <- struct{}{}:
 	default:
@@ -755,24 +802,37 @@ func (e *EvmStatePoller) pollCadence() time.Duration {
 	return min(time.Duration(float64(bt)*pollSourceBlockTimeShare), pollSourceMaxCadence)
 }
 
-// nextPollDelay is the poll loop's wait: interval, or while a poll source,
-// its cadence doubled per failed poll in a row up to pollSourceMaxBackoff.
-func (e *EvmStatePoller) nextPollDelay(interval time.Duration) time.Duration {
-	if e.activePollSource() == nil {
-		return interval
+// nextPollDelay is the poll loop's wait: until the next full state poll,
+// interval after lastFull (none while interval is 0), or sooner while a poll
+// source, its pollSourceDelay. false: nothing is due until a wake.
+func (e *EvmStatePoller) nextPollDelay(interval time.Duration, lastFull time.Time) (d time.Duration, ok bool) {
+	if interval > 0 {
+		d, ok = max(interval-time.Since(lastFull), 0), true
 	}
-	d := min(e.pollCadence(), interval)
+	if e.activePollSource() != nil {
+		if p := e.pollSourceDelay(); !ok || p < d {
+			d, ok = p, true
+		}
+	}
+	return d, ok
+}
+
+// pollSourceDelay is a poll source's wait between latest polls: its
+// cadence, doubled per failed poll in a row up to pollSourceMaxBackoff.
+func (e *EvmStatePoller) pollSourceDelay() time.Duration {
+	d := e.pollCadence()
 	if n := e.pollFailures.Load(); n > 0 {
-		d = min(d<<min(n, 16), pollSourceMaxBackoff)
+		d = max(d, min(d<<min(n, 16), pollSourceMaxBackoff))
 	}
 	return d
 }
 
-// latestDebounce is how fresh a latest poll keeps the counter: the poll
-// cadence while a poll source, so every scheduled poll fetches.
+// latestDebounce is how fresh a latest poll keeps the counter: while a poll
+// source, its backed-off pollSourceDelay, so every scheduled poll fetches
+// and client traffic cannot poll faster.
 func (e *EvmStatePoller) latestDebounce(cfg *common.EvmNetworkConfig) time.Duration {
 	if e.activePollSource() != nil {
-		return e.pollCadence()
+		return e.pollSourceDelay()
 	}
 	return e.resolveDebounce(cfg)
 }
@@ -954,16 +1014,28 @@ func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled in
 		Int64("polledValue", polled).
 		Msg("major head move REJECTED: upstream answers for a different chain — cordoning upstream")
 	reason := fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error())
+	e.chainIdRecheckMu.Lock()
+	defer e.chainIdRecheckMu.Unlock()
 	e.chainIdCordonReason.Store(reason)
 	e.upstream.Cordon("*", reason)
-	if e.chainIdRecheckArmed.CompareAndSwap(false, true) {
-		time.AfterFunc(chainIdCordonRecheck, e.recheckChainIdCordon)
+	if e.chainIdRecheck != nil || e.appCtx.Err() != nil {
+		return
 	}
+	e.chainIdRecheck = time.AfterFunc(chainIdCordonRecheck, e.recheckChainIdCordon)
+	e.chainIdRecheckUnwatch = context.AfterFunc(e.appCtx, func() {
+		e.chainIdRecheckMu.Lock()
+		defer e.chainIdRecheckMu.Unlock()
+		if e.chainIdRecheck != nil {
+			e.chainIdRecheck.Stop()
+			e.chainIdRecheck = nil
+		}
+	})
 }
 
 // recheckChainIdCordon lifts the chain-identity cordon once eth_chainId
-// matches, as the consensus sit-out lifts its own; otherwise it checks again
-// after chainIdCordonRecheck.
+// matches, as the consensus sit-out lifts its own, unless a cordon with
+// another reason replaced it. A mismatch cordons again if something lifted
+// the cordon meanwhile; until a match it checks every chainIdCordonRecheck.
 func (e *EvmStatePoller) recheckChainIdCordon() {
 	if e.appCtx.Err() != nil {
 		return
@@ -971,16 +1043,30 @@ func (e *EvmStatePoller) recheckChainIdCordon() {
 	ctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
 	mismatch, err := e.checkChainId(ctx)
 	cancel()
-	if mismatch != nil || err != nil {
-		e.logger.Warn().Err(errors.Join(mismatch, err)).Dur("retryIn", chainIdCordonRecheck).
-			Msg("upstream still fails the chain-identity check, keeping it cordoned")
-		time.AfterFunc(chainIdCordonRecheck, e.recheckChainIdCordon)
+
+	e.chainIdRecheckMu.Lock()
+	defer e.chainIdRecheckMu.Unlock()
+	if e.chainIdRecheck == nil {
 		return
 	}
-	e.chainIdRecheckArmed.Store(false)
 	reason, _ := e.chainIdCordonReason.Load().(string)
-	e.upstream.Uncordon("*", reason)
-	e.logger.Info().Msg("upstream answers for its configured chain again, uncordoned")
+	current, cordoned := e.tracker.CordonedReason(e.upstream, "*")
+	if mismatch != nil || err != nil {
+		if mismatch != nil && !cordoned {
+			e.upstream.Cordon("*", reason)
+			e.logger.Warn().Err(mismatch).Msg("upstream still answers for another chain after its cordon was lifted, cordoning it again")
+		}
+		e.logger.Warn().Err(errors.Join(mismatch, err)).Dur("retryIn", chainIdCordonRecheck).
+			Msg("upstream still fails the chain-identity check, keeping it cordoned")
+		e.chainIdRecheck.Reset(chainIdCordonRecheck)
+		return
+	}
+	e.chainIdRecheck = nil
+	e.chainIdRecheckUnwatch()
+	if cordoned && current == reason {
+		e.upstream.Uncordon("*", reason)
+		e.logger.Info().Msg("upstream answers for its configured chain again, uncordoned")
+	}
 }
 
 func absInt64(v int64) int64 {
@@ -1529,8 +1615,15 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 // shouldSkipLatestBlockCheck reports the give-up after failed latest polls;
 // it lapses latestBlockSkipExpiry after it was set, with a fresh count.
 func (e *EvmStatePoller) shouldSkipLatestBlockCheck() bool {
+	e.stateMu.RLock()
+	skip, expired := e.skipLatestBlockCheck, e.skipLatestBlockCheck && time.Since(e.skipLatestSince) >= latestBlockSkipExpiry
+	e.stateMu.RUnlock()
+	if !expired {
+		return skip
+	}
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	// Another caller may have lifted it, or a new give-up started, meanwhile.
 	if e.skipLatestBlockCheck && time.Since(e.skipLatestSince) >= latestBlockSkipExpiry {
 		e.skipLatestBlockCheck = false
 		e.latestBlockFailureCount = 0

@@ -47,9 +47,6 @@ type sourceReconciler struct {
 	demandSeen time.Time
 
 	mu sync.Mutex
-	// refused holds the push sources whose newHeads the upstream refused as
-	// unsupported.
-	refused map[string]bool
 	// heads: some upstream is a subscription source; push: some upstream
 	// carries logs and pending transactions until they move to sources.
 	heads, push bool
@@ -72,7 +69,6 @@ func newSourceReconciler(nw *Network) *sourceReconciler {
 		wakeCh:  make(chan struct{}, 1),
 		syncCh:  make(chan chan struct{}),
 		sources: make(map[string]*source),
-		refused: make(map[string]bool),
 	}
 }
 
@@ -113,24 +109,13 @@ func (r *sourceReconciler) demandChanged() {
 }
 
 // subscribed takes a push source's subscribe answer for t. Only an
-// unsupported newHeads, and its later success, change a topic.
-func (r *sourceReconciler) subscribed(upstreamId string, t indexer.Topic, err error) {
+// unsupported newHeads, and its later success, change a topic; the push
+// source holds which one it is.
+func (r *sourceReconciler) subscribed(t indexer.Topic, err error) {
 	if r == nil || t != indexer.TopicNewHeads {
 		return
 	}
-	refused := common.HasErrorCode(err, common.ErrCodeEndpointUnsupported)
-	if err != nil && !refused {
-		return
-	}
-	r.mu.Lock()
-	changed := r.refused[upstreamId] != refused
-	if refused {
-		r.refused[upstreamId] = true
-	} else {
-		delete(r.refused, upstreamId)
-	}
-	r.mu.Unlock()
-	if changed {
+	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
 		r.wake()
 	}
 }
@@ -154,20 +139,31 @@ func (r *sourceReconciler) sync(ctx context.Context) error {
 func (r *sourceReconciler) run(ctx context.Context, idx *indexer.Indexer) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
+	var done []chan struct{}
 	for {
-		var done chan struct{}
 		select {
 		case <-ctx.Done():
 			r.stopAll()
 			return
 		case <-r.wakeCh:
 		case <-timer.C:
-		case done = <-r.syncCh:
+		case d := <-r.syncCh:
+			done = append(done, d)
+		}
+		// Every caller queued by now shares this pass.
+		for drained := false; !drained; {
+			select {
+			case d := <-r.syncCh:
+				done = append(done, d)
+			default:
+				drained = true
+			}
 		}
 		next := r.pass(ctx, idx)
-		if done != nil {
-			close(done)
+		for _, d := range done {
+			close(d)
 		}
+		done = done[:0]
 		timer.Reset(next)
 	}
 }
@@ -189,9 +185,17 @@ func (r *sourceReconciler) pass(ctx context.Context, idx *indexer.Indexer) (next
 	}()
 
 	now := time.Now()
-	for _, u := range r.nw.upstreamsRegistry.GetNetworkUpstreams(ctx, r.nw.networkId) {
+	ups := r.nw.upstreamsRegistry.GetNetworkUpstreams(ctx, r.nw.networkId)
+	present := make(map[string]struct{}, len(ups))
+	for _, u := range ups {
+		present[u.Id()] = struct{}{}
 		if r.sources[u.Id()] == nil {
 			r.sources[u.Id()] = r.newSource(ctx, idx, u)
+		}
+	}
+	for id, s := range r.sources {
+		if _, ok := present[id]; !ok {
+			r.dropSource(ctx, idx, s)
 		}
 	}
 
@@ -210,28 +214,21 @@ func (r *sourceReconciler) pass(ctx context.Context, idx *indexer.Indexer) (next
 		}
 	}
 
-	r.mu.Lock()
-	refused := make(map[string]bool, len(r.refused))
-	for id := range r.refused {
-		refused[id] = true
-	}
-	r.mu.Unlock()
-
 	heads, push := false, false
 	for _, s := range r.sources {
 		heads = heads || s.isSource
 		push = push || s.push != nil
 		if s.push != nil && s.isSource && !s.pushOn {
-			s.pushOn = true
 			s.push.Set([]indexer.Topic{indexer.TopicNewHeads})
+			s.pushOn = true
 		}
 		if s.poll == nil {
 			continue
 		}
-		pollOn := polling && (s.push == nil || refused[s.id]) && r.nw.intake.authoritative(s.id)
+		pollOn := polling && (s.push == nil || s.push.HeadsRefused()) && r.nw.intake.authoritative(s.id)
 		if pollOn != s.pollOn {
-			s.pollOn = pollOn
 			s.poll.Set(topicsIf(pollOn))
+			s.pollOn = pollOn
 			r.nw.logger.Debug().Str("upstreamId", s.id).Bool("polling", pollOn).Msg("poll source changed")
 		}
 	}
@@ -275,6 +272,22 @@ func (r *sourceReconciler) newSource(ctx context.Context, idx *indexer.Indexer, 
 		}
 	}
 	return s
+}
+
+// dropSource stops a source whose upstream left the network and removes
+// its ingress; it stays known until both stopped, so a panic retries it.
+func (r *sourceReconciler) dropSource(ctx context.Context, idx *indexer.Indexer, s *source) {
+	if s.pushOn {
+		s.push.Set(nil)
+	}
+	if s.pollOn {
+		s.poll.Set(nil)
+	}
+	if s.push != nil && idx != nil {
+		idx.RemoveIngress(ctx, indexerNetworkKey(r.nw), s.push.Name())
+	}
+	delete(r.sources, s.id)
+	r.nw.logger.Debug().Str("upstreamId", s.id).Msg("subscription source left the network")
 }
 
 // stopAll stops every poll and push subscription when the network ends.

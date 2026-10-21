@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
@@ -171,9 +172,13 @@ func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
 		byId[u.Id()] = u
 	}
 
+	// The client last applied block 1000, so its tap does not race the
+	// headers below for its start, as one from f.Head in its goroutine would.
+	start, err := evm.ParseHeader(tipHead("a", 1000))
+	require.NoError(t, err)
 	got := make(chan uint64, 16)
 	go func() {
-		_ = indexer.NewTaps(nil).RunChain(ctx, network.networkId, "test", indexer.SubTypeNewHeads, network.chainTracker, nil, indexer.ReadOpts{},
+		_ = indexer.NewTaps(nil).RunChain(ctx, network.networkId, "test", indexer.SubTypeNewHeads, network.chainTracker, &start, indexer.ReadOpts{},
 			func(b indexer.Batch) error {
 				for _, blk := range b.Applied {
 					got <- blk.Number

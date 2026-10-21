@@ -96,9 +96,9 @@ type Adapter struct {
 	resubDone  bool
 	resubAgain bool
 	heads      upstreamSub
-	// headsWanted is what Set asked for; headsRefused is set while the
-	// upstream refused newHeads as unsupported, until headsReask fires or
-	// the connection drops.
+	// headsWanted is what Set asked for. headsRefused is set from the
+	// upstream's unsupported answer to newHeads until a subscribe succeeds
+	// or Set drops newHeads; headsReask, while set, holds off asking again.
 	headsWanted  bool
 	headsRefused bool
 	headsReask   *time.Timer
@@ -229,7 +229,8 @@ func (a *Adapter) attach() {
 				a.liveGauge(indexer.SubTypeNewHeads).Dec()
 			}
 			a.heads.id = ""
-			a.headsRefused = false
+			// The next connection asks again; headsRefused stays until
+			// it answers.
 			a.stopReaskLocked()
 			for _, sub := range a.filters {
 				if sub.id != "" {
@@ -266,12 +267,19 @@ func (a *Adapter) refuseHeadsLocked() {
 			a.subsMu.Unlock()
 			return
 		}
-		a.headsRefused = false
 		a.headsReask = nil
 		a.subsMu.Unlock()
 		a.startResubscribe()
 	})
 	a.headsReask = t
+}
+
+// HeadsRefused reports whether the upstream refused newHeads as unsupported
+// and no subscribe has succeeded since.
+func (a *Adapter) HeadsRefused() bool {
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	return a.headsRefused
 }
 
 // watchHeads reconnects when the newHeads subscription stays silent for a
@@ -394,7 +402,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		}
 		done := true
 		a.subsMu.Lock()
-		askHeads := a.headsWanted && !a.headsRefused
+		askHeads := a.headsWanted && a.headsReask == nil
 		a.subsMu.Unlock()
 		if askHeads {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
@@ -404,6 +412,9 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 			cancel()
 			switch {
 			case err == nil:
+				a.subsMu.Lock()
+				a.headsRefused = false
+				a.subsMu.Unlock()
 			case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
 				// Retrying can't change the answer soon: the source polls
 				// meanwhile, and the next connection or headsReask asks again.
