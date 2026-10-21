@@ -1652,6 +1652,87 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 	return nil
 }
 
+// selectionOrder is the selection policy's order of the upstreams for req:
+// the engine's order, or registration order until its first tick, without
+// upstreams whose method config excludes the method.
+func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequest, method string) []common.Upstream {
+	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
+	var upsList []common.Upstream
+	if n.policyEngine != nil {
+		// Pass the request's actual finality so per-finality slots
+		// (when EvalPerFinality is on) resolve to the bucket-specific
+		// ordering. Networks not configured per-finality see "*" and
+		// resolve to the wildcard slot regardless.
+		finality := req.Finality(ctx).String()
+		// When the boundary axis (EvalPerBoundary) is on, scope selection to
+		// the request's block-availability lane — the set of upstreams whose
+		// configured bounds can serve this block. laneIDs stays nil when the
+		// axis is off or the request has no resolvable block number, in which
+		// case GetOrderedInLane behaves exactly like GetOrdered.
+		var laneIDs []string
+		if n.policyEngine.PerBoundaryEnabled(n.networkId) {
+			laneIDs = n.eligibleUpstreamIDsForBoundary(ctx, method, req)
+			if common.IsTracingDetailed && len(laneIDs) > 0 {
+				upstreamSpan.SetAttributes(attribute.Int("upstreams.lane_size", len(laneIDs)))
+			}
+		}
+		upsList = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
+	}
+	if len(upsList) == 0 {
+		// Cold-start fallback: serve the raw registration order until the
+		// engine's first tick completes for this slot.
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			upsList = append(upsList, u)
+		}
+	}
+	// Enforce method eligibility at selection time: an upstream whose
+	// ignoreMethods/allowMethods config (including entries added by
+	// autoIgnoreUnsupportedMethods) excludes this method would only be
+	// skipped at forward time anyway — but letting it into the request's
+	// upstream list makes it consume retry/hedge/consensus attempts and
+	// emit instant "method ignored" skips; under consensus fan-out those
+	// skips become phantom participants. When EVERY upstream ignores the
+	// method, keep the full list so the request fails with the descriptive
+	// per-upstream "method ignored" error instead of a generic
+	// "no upstreams found".
+	if eligible, dropped := filterMethodEligible(upsList, method); dropped > 0 && len(eligible) > 0 {
+		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
+		upsList = eligible
+	}
+	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
+	if common.IsTracingDetailed {
+		ids := make([]string, len(upsList))
+		for i, u := range upsList {
+			ids[i] = u.Id()
+		}
+		upstreamSpan.SetAttributes(
+			attribute.String("upstreams.sorted", strings.Join(ids, ", ")),
+		)
+	}
+	upstreamSpan.End()
+	return upsList
+}
+
+// preferUpstreams reorders ups by hints only, every upstream staying
+// eligible: upstreams whose poller has the block first, then failover tiers.
+func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream) []common.Upstream {
+	// For a specific block, try upstreams whose poller already has it first.
+	// Ordering hints only: every upstream stays eligible.
+	if n.Architecture() == common.ArchitectureEvm {
+		if bn := requestBlockNumber(ctx, req); bn > 0 {
+			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
+			upsList = preferTipLeaderForNearTipGetBlock(upsList, method, bn)
+		}
+	}
+
+	// Failover tiering: try default-tier upstreams before fallback-tier ones,
+	// keeping score order within each tier.
+	if n.cfg.Failover.Enabled() {
+		upsList = tierUpstreamsByGroup(upsList)
+	}
+	return upsList
+}
+
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
@@ -1763,60 +1844,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
-	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
-	var upsList []common.Upstream
-	if n.policyEngine != nil {
-		// Pass the request's actual finality so per-finality slots
-		// (when EvalPerFinality is on) resolve to the bucket-specific
-		// ordering. Networks not configured per-finality see "*" and
-		// resolve to the wildcard slot regardless.
-		finality := req.Finality(ctx).String()
-		// When the boundary axis (EvalPerBoundary) is on, scope selection to
-		// the request's block-availability lane — the set of upstreams whose
-		// configured bounds can serve this block. laneIDs stays nil when the
-		// axis is off or the request has no resolvable block number, in which
-		// case GetOrderedInLane behaves exactly like GetOrdered.
-		var laneIDs []string
-		if n.policyEngine.PerBoundaryEnabled(n.networkId) {
-			laneIDs = n.eligibleUpstreamIDsForBoundary(ctx, method, req)
-			if common.IsTracingDetailed && len(laneIDs) > 0 {
-				upstreamSpan.SetAttributes(attribute.Int("upstreams.lane_size", len(laneIDs)))
-			}
-		}
-		upsList = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
-	}
-	if len(upsList) == 0 {
-		// Cold-start fallback: serve the raw registration order until the
-		// engine's first tick completes for this slot.
-		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-			upsList = append(upsList, u)
-		}
-	}
-	// Enforce method eligibility at selection time: an upstream whose
-	// ignoreMethods/allowMethods config (including entries added by
-	// autoIgnoreUnsupportedMethods) excludes this method would only be
-	// skipped at forward time anyway — but letting it into the request's
-	// upstream list makes it consume retry/hedge/consensus attempts and
-	// emit instant "method ignored" skips; under consensus fan-out those
-	// skips become phantom participants. When EVERY upstream ignores the
-	// method, keep the full list so the request fails with the descriptive
-	// per-upstream "method ignored" error instead of a generic
-	// "no upstreams found".
-	if eligible, dropped := filterMethodEligible(upsList, method); dropped > 0 && len(eligible) > 0 {
-		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
-		upsList = eligible
-	}
-	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
-	if common.IsTracingDetailed {
-		ids := make([]string, len(upsList))
-		for i, u := range upsList {
-			ids[i] = u.Id()
-		}
-		upstreamSpan.SetAttributes(
-			attribute.String("upstreams.sorted", strings.Join(ids, ", ")),
-		)
-	}
-	upstreamSpan.End()
+	upsList := n.selectionOrder(ctx, req, method)
 
 	if len(upsList) == 0 {
 		err := common.NewErrNoUpstreamsFound(n.projectId, n.networkId)
@@ -1827,20 +1855,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
-	// For a specific block, try upstreams whose poller already has it first.
-	// Ordering hints only: every upstream stays eligible.
-	if n.Architecture() == common.ArchitectureEvm {
-		if bn := requestBlockNumber(ctx, req); bn > 0 {
-			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
-			upsList = preferTipLeaderForNearTipGetBlock(upsList, method, bn)
-		}
-	}
-
-	// Failover tiering: try default-tier upstreams before fallback-tier ones,
-	// keeping score order within each tier.
-	if n.cfg.Failover.Enabled() {
-		upsList = tierUpstreamsByGroup(upsList)
-	}
+	upsList = n.preferUpstreams(ctx, req, method, upsList)
 
 	// Architecture-specific pruning of the upstream list. Currently only SVM
 	// uses this hook; both filters are gated on ArchitectureSvm so EVM networks

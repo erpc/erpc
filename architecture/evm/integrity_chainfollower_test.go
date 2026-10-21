@@ -90,7 +90,8 @@ func (f *fakeChain) network(t *testing.T) *mockNetwork {
 
 func followerFor(t *testing.T, chain *fakeChain, head *int64) (*ChainTracker, *chainFollower) {
 	t.Helper()
-	v := newChainTracker(t.Context(), chain.network(t), 32, "", "", nil)
+	net := chain.network(t)
+	v := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
 	f := newChainFollower(v, func(ctx context.Context) int64 { return *head }, nil)
 	return v, f
 }
@@ -214,7 +215,8 @@ func TestFollowedRangeNeverClaimsEvictedHeights(t *testing.T) {
 	chain := newFakeChain()
 	chain.build(100, 200, "a", testHash("9", 0))
 	head := int64(100)
-	v := newChainTracker(t.Context(), chain.network(t), 8, "", "", nil) // small window to force eviction
+	net := chain.network(t)
+	v := newChainTracker(t.Context(), net, 8, "", "", nil, newFetchScheduler(t.Context(), net)) // small window to force eviction
 	f := newChainFollower(v, func(ctx context.Context) int64 { return head }, nil)
 
 	f.advance(context.Background()) // bootstrap at 100

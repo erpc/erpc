@@ -185,11 +185,14 @@ type RequestDirectives struct {
 	// Instruct the proxy to bypass method exclusion checks.
 	ByPassMethodExclusion bool `json:"-"`
 
-	// IsInternal flags a request as constructed by an internal subsystem
-	// (state poller, chainId probe, vendor detection). Internal requests
-	// bypass retry, hedge, and breaker policies; only the per-attempt
-	// timeout still applies. Never set from HTTP headers.
+	// IsInternal marks a request erpc builds for itself as request kind
+	// "internal" for failsafe matching (matchRequestKind), and keeps the
+	// integrity engine from validating it. Never set from HTTP headers.
 	IsInternal bool `json:"-"`
+
+	// UpstreamPolicies says which upstream failsafe policies apply. Never
+	// set from HTTP headers.
+	UpstreamPolicies UpstreamPolicies `json:"-"`
 
 	// Instruct the normalization layer to avoid mutating JSON-RPC params for block tag interpolation.
 	// When true, the system will still compute and cache block references (for finality/metrics),
@@ -216,6 +219,22 @@ type RequestDirectives struct {
 	// name. Honored only when the effective integrity headerMode permits it.
 	IntegritySelector string `json:"integritySelector,omitempty"`
 }
+
+// UpstreamPolicies selects the upstream failsafe policies a request takes.
+type UpstreamPolicies uint8
+
+const (
+	// UpstreamPoliciesConfigured: every configured policy; client traffic.
+	UpstreamPoliciesConfigured UpstreamPolicies = iota
+	// UpstreamPoliciesTimeoutOnly: subscription calls, state-poller and
+	// chainId probes. No retry or hedge, which would send a subscribe twice,
+	// and no breaker; the per-attempt timeout applies.
+	UpstreamPoliciesTimeoutOnly
+	// UpstreamPoliciesTracker: chain tracker fetches. No configured policy
+	// applies; an open breaker refuses them, and they never feed it, so
+	// tracker load cannot open a breaker that blocks clients.
+	UpstreamPoliciesTracker
+)
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
 	if d == nil {
@@ -326,19 +345,25 @@ func (r *NormalizedRequest) CreditUnitsByVendor() map[string]int64 {
 	return r.ExecState().CreditUnitsByVendor()
 }
 
-// IsInternal returns true when the request was constructed by an
-// internal subsystem (state poller, chainId probe, vendor detection).
-// Internal requests bypass retry, hedge, and breaker policies; only
-// the per-attempt timeout still applies.
-func (r *NormalizedRequest) IsInternal() bool {
+// UpstreamPolicies returns which upstream failsafe policies apply to r.
+func (r *NormalizedRequest) UpstreamPolicies() UpstreamPolicies {
 	if r == nil {
-		return false
+		return UpstreamPoliciesConfigured
 	}
 	d := r.Directives()
 	if d == nil {
-		return false
+		return UpstreamPoliciesConfigured
 	}
-	return d.IsInternal
+	return d.UpstreamPolicies
+}
+
+// NewProbeRequest builds a request erpc sends to one upstream for its own
+// bookkeeping: subscription calls, state-poller and chainId probes. No
+// upstream retry, hedge or breaker applies to it.
+func NewProbeRequest(body []byte) *NormalizedRequest {
+	r := NewNormalizedRequest(body)
+	r.SetDirectives(&RequestDirectives{UpstreamPolicies: UpstreamPoliciesTimeoutOnly})
+	return r
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {

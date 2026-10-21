@@ -69,9 +69,8 @@ type ChainTracker struct {
 	reconfirmMu   sync.Mutex
 	reconfirmedAt map[int64]time.Time
 
-	flightMu  sync.Mutex
-	hInflight map[string]*flight[*chainHeader]
-	rInflight map[string]*flight[[]integrity.Receipt]
+	// fetch runs every fetch of this tracker; one per network.
+	fetch *fetchScheduler
 
 	// lastCountedVote is when a source vote that counts last arrived, in
 	// unix nanoseconds.
@@ -239,18 +238,17 @@ func (m *mailbox) take() []trackerMsg {
 	return q
 }
 
-func newChainTracker(ctx context.Context, n common.Network, window int, selector, group string, finalized func() int64) *ChainTracker {
+func newChainTracker(ctx context.Context, n common.Network, window int, selector, group string, finalized func() int64, fetch *fetchScheduler) *ChainTracker {
 	t := &ChainTracker{
 		network:       n,
 		selector:      selector,
 		group:         group,
 		window:        window,
 		finalized:     finalized,
+		fetch:         fetch,
 		mb:            mailbox{wake: make(chan struct{}, 1)},
 		wants:         make(map[uint64]indexer.ReadOpts),
 		reconfirmedAt: make(map[int64]time.Time),
-		hInflight:     make(map[string]*flight[*chainHeader]),
-		rInflight:     make(map[string]*flight[[]integrity.Receipt]),
 		nodes:         make(map[[32]byte]*node),
 		waiting:       make(map[[32]byte][]*node),
 		votes:         make(map[string]*node),
@@ -954,11 +952,7 @@ func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, 
 	if recent && pinned && time.Since(at) < reconfirmCooldown {
 		return pin, integrity.PinRateLimited
 	}
-	h, ok := doOnce(&t.flightMu, t.hInflight, fmt.Sprintf("reconfirm:%d", number), func() (*chainHeader, bool) {
-		// Fresh: this is the pin-vs-response tie-break, so it must reach
-		// upstreams rather than replay the cached entry.
-		return t.fetchHeader(ctx, "eth_getBlockByNumber", fmt.Sprintf("0x%x", number), true, auxKindHeader)
-	})
+	h, ok := t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", number), auxKindHeader)
 	if !ok {
 		return "", integrity.PinUnverifiable
 	}
@@ -978,47 +972,16 @@ func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, 
 	return pin, integrity.PinRateLimited
 }
 
-// flight coalesces concurrent misses for one key into a single fetch.
-type flight[T any] struct {
-	wg  sync.WaitGroup
-	val T
-	ok  bool
-}
-
-func doOnce[T any](mu *sync.Mutex, inflight map[string]*flight[T], key string, fn func() (T, bool)) (T, bool) {
-	mu.Lock()
-	if f, ok := inflight[key]; ok {
-		mu.Unlock()
-		f.wg.Wait()
-		return f.val, f.ok
-	}
-	f := &flight[T]{}
-	f.wg.Add(1)
-	inflight[key] = f
-	mu.Unlock()
-
-	defer func() {
-		mu.Lock()
-		delete(inflight, key)
-		mu.Unlock()
-		f.wg.Done()
-	}()
-
-	f.val, f.ok = fn()
-	return f.val, f.ok
-}
-
-// headerByHash returns the held header for a hash, fetching it once on a
-// miss.
+// headerByHash returns the held header for a hash, fetching it on a miss.
 func (t *ChainTracker) headerByHash(ctx context.Context, hash string) (*integrity.Header, bool) {
-	if key, ok := hashKey(hash); ok {
-		if h, ok := t.held.Load(key); ok {
-			return h.(*chainHeader).parsed, true
-		}
+	key, ok := hashKey(hash)
+	if !ok {
+		return nil, false
 	}
-	h, ok := doOnce(&t.flightMu, t.hInflight, hash, func() (*chainHeader, bool) {
-		return t.fetchHeader(ctx, "eth_getBlockByHash", hash, false, auxKindHeader)
-	})
+	if h, ok := t.held.Load(key); ok {
+		return h.(*chainHeader).parsed, true
+	}
+	h, ok := t.fetchHeader(ctx, classHead, "eth_getBlockByHash", key, auxKindHeader)
 	if !ok {
 		return nil, false
 	}
@@ -1026,42 +989,33 @@ func (t *ChainTracker) headerByHash(ctx context.Context, hash string) (*integrit
 }
 
 // headerByNumber returns the pinned header at a number, fetching the block
-// by number once on a miss.
+// by number on a miss.
 func (t *ChainTracker) headerByNumber(ctx context.Context, number int64, blockRef string) (*integrity.Header, bool) {
 	if h, ok := t.HeaderAt(number); ok {
 		return h, true
 	}
-	h, ok := doOnce(&t.flightMu, t.hInflight, fmt.Sprintf("n:%d", number), func() (*chainHeader, bool) {
-		return t.fetchHeader(ctx, "eth_getBlockByNumber", blockRef, false, auxKindHeader)
-	})
+	h, ok := t.fetchHeader(ctx, t.fetchClassAt(number, classHead), "eth_getBlockByNumber", blockRef, auxKindHeader)
 	if !ok {
 		return nil, false
 	}
 	return h.parsed, true
 }
 
-// receiptsByHash returns a block's receipts, fetching them once on a miss.
+// receiptsByHash returns a block's receipts, fetching them on a miss.
 func (t *ChainTracker) receiptsByHash(ctx context.Context, blockHash string) ([]integrity.Receipt, bool) {
 	if r, ok := t.CachedReceipts(blockHash); ok {
 		return r, true
 	}
-	return doOnce(&t.flightMu, t.rInflight, blockHash, func() ([]integrity.Receipt, bool) {
-		return t.resolveReceipts(ctx, blockHash)
-	})
+	return t.resolveReceipts(ctx, blockHash)
 }
 
-// fetchDirectives marks the fetch internal (no recursion into the engine)
-// and pins it to the tracker's group. fresh=true skips cache reads, for
-// anything that re-checks a disputed pin.
-func (t *ChainTracker) fetchDirectives(fresh bool) *common.RequestDirectives {
-	d := &common.RequestDirectives{IsInternal: true}
-	if t.selector != "" {
-		d.UseUpstream = t.selector
+// fetchClassAt is near for a height within the window below the head, or
+// with no head or height known; fill for anything older.
+func (t *ChainTracker) fetchClassAt(number int64, near fetchClass) fetchClass {
+	if head := t.state.Load().head(); head != nil && number >= 0 && uint64(number)+uint64(t.window) < head.number {
+		return classFill
 	}
-	if fresh {
-		d.SkipCacheRead = "true"
-	}
-	return d
+	return near
 }
 
 // finalityLabel classifies a fetched block against the group's finalized
@@ -1087,54 +1041,49 @@ const (
 	auxKindFollow = "chain_follow"
 )
 
-func (t *ChainTracker) resolveHeader(ctx context.Context, method, blockRef string, fresh bool) (*integrity.Header, bool) {
-	h, ok := t.fetchHeader(ctx, method, blockRef, fresh, auxKindHeader)
+// resolveTag fetches the header a block tag names, such as "finalized".
+func (t *ChainTracker) resolveTag(ctx context.Context, tag string) (*integrity.Header, bool) {
+	h, ok := t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", tag, auxKindHeader)
 	if !ok {
 		return nil, false
 	}
 	return h.parsed, true
 }
 
-// fetchHeader fetches a header through the network (group-scoped) and hands
-// the answer to the tracker, without a vote.
-func (t *ChainTracker) fetchHeader(ctx context.Context, method, blockRef string, fresh bool, kind string) (*chainHeader, bool) {
+// fetchHeader fetches a header through the scheduler, group-scoped; the
+// scheduler hands the answer to the tracker without a vote.
+func (t *ChainTracker) fetchHeader(ctx context.Context, class fetchClass, method, blockRef, kind string) (*chainHeader, bool) {
 	if t.network == nil {
 		return nil, false
 	}
-	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"%s","params":["%s",false]}`, method, blockRef)))
-	req.SetDirectives(t.fetchDirectives(fresh))
-	req.SetNetwork(t.network)
-
-	resp, err := t.network.Forward(ctx, req)
-	var h *chainHeader
-	upstreamId := ""
-	if err == nil && resp != nil {
-		if u := resp.Upstream(); u != nil {
-			upstreamId = u.Id()
-		}
-		if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
-			if parsed, perr := parseChainHeader(bytes.Clone(jrr.GetResultBytes())); perr == nil {
-				h = parsed
+	res := t.fetch.fetch(ctx, t, fetchSpec{
+		class:    class,
+		kind:     "header",
+		selector: t.selector,
+		method:   method,
+		params:   `["` + blockRef + `",false]`,
+		byHash:   method == "eth_getBlockByHash",
+		decode: func(result []byte) (any, error) {
+			h, err := parseChainHeader(result)
+			if err != nil {
+				return nil, err
 			}
-		}
-	}
-	// A by-hash fetch must return that hash, a by-number fetch that number;
-	// a node answering with another block would otherwise be held under the
-	// wrong key.
-	if h != nil && !headerMatchesRef(h, method, blockRef) {
-		h = nil
-	}
+			// A by-hash fetch must return that hash, a by-number fetch that
+			// number; a node answering with another block would otherwise be
+			// held under the wrong key.
+			if !headerMatchesRef(h, method, blockRef) {
+				return nil, errFetchUndecoded
+			}
+			return h, nil
+		},
+	})
+	h, _ := res.val.(*chainHeader)
 	num := int64(-1)
 	if h != nil {
 		num = int64(h.number)
 	}
 	t.emitAux(kind, method, t.finalityLabel(num), h != nil)
-	if h == nil {
-		return nil, false
-	}
-	t.observeFetched(upstreamId, h)
-	return h, true
+	return h, h != nil
 }
 
 // headerMatchesRef reports whether a fetched header is the block the request
@@ -1153,8 +1102,26 @@ func headerMatchesRef(h *chainHeader, method, blockRef string) bool {
 	return true
 }
 
-// resolveReceipts fetches a block's receipts by hash, group-scoped, and
-// hands them to the tracker.
+// fetchedReceipts is a receipts answer the tracker holds under its block
+// hash.
+type fetchedReceipts struct {
+	key      string
+	receipts []integrity.Receipt
+}
+
+// fetched hands a tracker fetch's answer to the mailbox, where it is never
+// shed.
+func (t *ChainTracker) fetched(res fetchResult) {
+	switch v := res.val.(type) {
+	case *chainHeader:
+		t.observeFetched(res.upstream, v)
+	case fetchedReceipts:
+		t.mb.put(trackerMsg{kind: msgReceipts, key: v.key, receipts: v.receipts})
+	}
+}
+
+// resolveReceipts fetches a block's receipts by hash through the
+// scheduler, group-scoped; the scheduler hands them to the tracker.
 func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string) ([]integrity.Receipt, bool) {
 	if t.network == nil {
 		return nil, false
@@ -1163,40 +1130,39 @@ func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string) ([
 	if !ok {
 		return nil, false
 	}
-	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["%s"]}`, blockHash)))
-	req.SetDirectives(t.fetchDirectives(false))
-	req.SetNetwork(t.network)
-
-	resp, err := t.network.Forward(ctx, req)
-	var receipts []integrity.Receipt
-	num := int64(-1)
-	got := false
-	if err == nil && resp != nil {
-		if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
-			if common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &receipts) == nil {
-				got = true
-				if len(receipts) > 0 {
-					num, _ = common.HexToInt64(receipts[0].BlockNumber)
-				}
+	class := classTipReceipts
+	if h, ok := t.held.Load(key); ok {
+		class = t.fetchClassAt(int64(h.(*chainHeader).number), classTipReceipts)
+	}
+	res := t.fetch.fetch(ctx, t, fetchSpec{
+		class:    class,
+		kind:     "receipts",
+		selector: t.selector,
+		method:   "eth_getBlockReceipts",
+		params:   `["` + key + `"]`,
+		byHash:   true,
+		decode: func(result []byte) (any, error) {
+			var receipts []integrity.Receipt
+			if err := common.SonicCfg.Unmarshal(result, &receipts); err != nil {
+				return nil, err
 			}
-		}
+			// A node may answer a by-hash receipts request with another
+			// block's receipts (a losing fork at that height): "canonical
+			// unavailable", never evidence. An empty answer held under the
+			// hash would blind corroboration for that block for good.
+			if len(receipts) == 0 || !receiptsMatchBlock(receipts, key) {
+				return nil, errFetchUndecoded
+			}
+			return fetchedReceipts{key: key, receipts: receipts}, nil
+		},
+	})
+	v, ok := res.val.(fetchedReceipts)
+	num := int64(-1)
+	if ok {
+		num, _ = common.HexToInt64(v.receipts[0].BlockNumber)
 	}
-	// A node may answer a by-hash receipts request with another block's
-	// receipts (a losing fork at that height); that is "canonical
-	// unavailable", never evidence, and is not cached.
-	if got && !receiptsMatchBlock(receipts, blockHash) {
-		got = false
-		receipts = nil
-	}
-	t.emitAux("canonical_receipts", "eth_getBlockReceipts", t.finalityLabel(num), got)
-	if !got || len(receipts) == 0 {
-		// An empty answer cached under the hash would blind corroboration
-		// for that block for good.
-		return nil, false
-	}
-	t.mb.put(trackerMsg{kind: msgReceipts, key: key, receipts: receipts})
-	return receipts, true
+	t.emitAux("canonical_receipts", "eth_getBlockReceipts", t.finalityLabel(num), ok)
+	return v.receipts, ok
 }
 
 // receiptsMatchBlock reports whether every receipt claims the expected block
@@ -1381,6 +1347,7 @@ func HasVerifiedEmptyTraceBlock(req *common.NormalizedRequest) bool {
 type networkTrackers struct {
 	ctx    context.Context
 	window int
+	fetch  *fetchScheduler
 	mu     sync.Mutex
 	groups map[string]*ChainTracker // group key ("" network-wide) -> tracker
 }
@@ -1396,7 +1363,7 @@ func StartChainTrackers(ctx context.Context, n common.Network) *ChainTracker {
 		ct = *cfg.Evm.ChainTracker
 	}
 	ct.SetDefaults()
-	nt := &networkTrackers{ctx: ctx, window: ct.ReorgWindow, groups: make(map[string]*ChainTracker)}
+	nt := &networkTrackers{ctx: ctx, window: ct.ReorgWindow, fetch: newFetchScheduler(ctx, n), groups: make(map[string]*ChainTracker)}
 	if v, loaded := chainTrackers.LoadOrStore(n, nt); loaded {
 		nt = v.(*networkTrackers)
 	} else {
@@ -1428,7 +1395,7 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 	if t := nt.groups[groupKey]; t != nil {
 		return t
 	}
-	t := newChainTracker(nt.ctx, n, nt.window, selector, lane, networkFinalized(n))
+	t := newChainTracker(nt.ctx, n, nt.window, selector, lane, networkFinalized(n), nt.fetch)
 	nt.groups[groupKey] = t
 	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
 		newChainFollower(t, networkLatest(n), cfg.Integrity.Follow).start(nt.ctx)

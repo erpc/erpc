@@ -112,9 +112,8 @@ func hedgeFromCtx(ctx context.Context) bool {
 	return false
 }
 
-// Run applies retry / hedge / breaker / timeout to `inner`. Internal
-// requests (req.IsInternal()) bypass retry, hedge, and breaker — only
-// the per-attempt timeout still applies.
+// Run applies retry / hedge / breaker / timeout to `inner`, as the request's
+// UpstreamPolicies allow.
 func (e *upstreamExecutor) Run(
 	ctx context.Context,
 	req *common.NormalizedRequest,
@@ -126,11 +125,14 @@ func (e *upstreamExecutor) Run(
 
 	startTime := time.Now()
 
-	// Internal requests bypass retry+hedge+breaker. The per-attempt
-	// timeout still wraps inner.
-	if req != nil && req.IsInternal() {
+	switch req.UpstreamPolicies() {
+	case common.UpstreamPoliciesTimeoutOnly:
 		resp, err := e.callWithTimeout(ctx, req, inner, false)
 		return resp, e.wrapTimeout(err, startTime)
+	case common.UpstreamPoliciesTracker:
+		// The network's tracker sweep skips upstreams whose breaker is open,
+		// before they spend a rate permit.
+		return inner(ctx, false)
 	}
 
 	// Retry loop wraps hedge wrapper.
@@ -381,8 +383,8 @@ func (e *upstreamExecutor) callBreakerWithTimeout(
 }
 
 // upstreamBreakerEligible decides whether (req, isHedge) should contribute
-// to the breaker counters. Hedge attempts and internal probes are excluded.
-// Composite requests are also excluded.
+// to the breaker counters. Hedge attempts and composite requests are
+// excluded; requests that skip the breaker never reach it.
 func upstreamBreakerEligible(req *common.NormalizedRequest, isHedge bool) bool {
 	if isHedge {
 		return false
@@ -390,13 +392,7 @@ func upstreamBreakerEligible(req *common.NormalizedRequest, isHedge bool) bool {
 	if req == nil {
 		return true
 	}
-	if req.IsInternal() {
-		return false
-	}
-	if req.IsCompositeRequest() {
-		return false
-	}
-	return true
+	return !req.IsCompositeRequest()
 }
 
 // upstreamBreakerOutcome classifies a (resp, err) pair for the upstream

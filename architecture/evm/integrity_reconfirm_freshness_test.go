@@ -75,7 +75,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 	// pinnedOnOrphan pins the losing fork at height and height+1 by a source
 	// vote, then lets every source stop counting (none live).
 	pinnedOnOrphan := func(t *testing.T, net *capturingNetwork) *ChainTracker {
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
 		net.sourcesVote.Store(false)
 		c.lastCountedVote.Store(0)
@@ -122,7 +122,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 
 	t.Run("a source that voted within the live bound answers without a fetch", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "0", uint64(height), uint64(height), testHash("f", uint64(height-1)))
 
 		hash, status := c.ReconfirmPin(context.Background(), height)
@@ -131,23 +131,22 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		assert.Zero(t, net.calls)
 	})
 
-	// The bypass is scoped to the tie-break. Ordinary corroboration fetches stay
-	// cache-backed: they are pure cost, and starving that cache once collapsed
-	// polygon's corroboration hit-rate.
-	t.Run("ordinary corroboration fetches still use the cache", func(t *testing.T) {
+	// Only by-hash fetches read the cache (spec §7): a by-number answer from
+	// the cache is not a fresh view of the chain at that height.
+	t.Run("by-number corroboration fetches skip the cache", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
 
 		_, ok := c.headerByNumber(context.Background(), height, fmt.Sprintf("0x%x", height))
 		require.True(t, ok)
 		d := net.lastDirectives()
 		require.NotNil(t, d)
-		assert.Empty(t, d.SkipCacheRead, "corroboration reads should not force a cache miss")
+		assert.Equal(t, "true", d.SkipCacheRead, "a by-number tracker fetch must reach upstreams")
 	})
 
 	t.Run("by-hash header fetches still use the cache", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
 
 		_, _ = c.headerByHash(context.Background(), canonical)
 		if d := net.lastDirectives(); d != nil {

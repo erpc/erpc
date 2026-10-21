@@ -64,7 +64,7 @@ func TestByHashAuxFetchDoesNotMoveThePin(t *testing.T) {
 	t.Run("an orphan resolved by hash leaves the pin untouched", func(t *testing.T) {
 		net := newByRefNetwork(t)
 		net.byHash[orphan] = heightHex // the orphan claims height 42
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "c", 42, 42, testHash("f", 41)) // the fork we are following
 
 		h, ok := c.headerByHash(context.Background(), orphan)
@@ -81,7 +81,7 @@ func TestByHashAuxFetchDoesNotMoveThePin(t *testing.T) {
 	t.Run("the orphan header is still held for corroboration", func(t *testing.T) {
 		net := newByRefNetwork(t)
 		net.byHash[orphan] = heightHex
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
 
 		_, ok := c.headerByHash(context.Background(), orphan)
 		require.True(t, ok)
@@ -93,7 +93,7 @@ func TestByHashAuxFetchDoesNotMoveThePin(t *testing.T) {
 
 	t.Run("a by-number fetch is held but does not pin", func(t *testing.T) {
 		net := newByRefNetwork(t)
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil, newFetchScheduler(t.Context(), net))
 
 		_, ok := c.headerByNumber(context.Background(), height, heightHex)
 		require.True(t, ok)

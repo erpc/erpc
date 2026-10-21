@@ -244,6 +244,18 @@ var (
 		Help:      "Times a chain tracker reset to empty after 3 panics in a row.",
 	}, []string{"project", "network"})
 
+	MetricChainTrackerFetchTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_fetch_total",
+		Help:      "Chain tracker fetches by kind, scheduler class and outcome (ok, error, capacity: every upstream tried refused for capacity).",
+	}, []string{"project", "network", "kind", "class", "outcome"})
+
+	MetricChainTrackerFetchSlots = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_fetch_slots",
+		Help:      "Current share of the chain fetch scheduler's slots per class.",
+	}, []string{"project", "network", "class"})
+
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
 	// freshest block at least servedTip.quorum eligible upstreams already have

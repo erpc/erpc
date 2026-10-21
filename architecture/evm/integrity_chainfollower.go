@@ -163,8 +163,7 @@ func (f *chainFollower) reconcile(ctx context.Context, h *chainHeader) (int, boo
 			t.voteAsk(ctx, h)
 			return depth, true
 		}
-		// Fresh: this is exactly the tie-break the cache cannot be trusted for.
-		parent, ok := t.fetchHeader(ctx, "eth_getBlockByHash", "0x"+hex.EncodeToString(cur.parentHash[:]), true, auxKindHeader)
+		parent, ok := t.fetchHeader(ctx, classHead, "eth_getBlockByHash", "0x"+hex.EncodeToString(cur.parentHash[:]), auxKindHeader)
 		if !ok || parent.number+1 != cur.number {
 			return 0, false
 		}
@@ -173,15 +172,8 @@ func (f *chainFollower) reconcile(ctx context.Context, h *chainHeader) (int, boo
 	return 0, false
 }
 
-// fetchFollowHeader gets block n for the follower. Unfinalized heights are
-// read fresh: unfinalized entries are cached without a ttl, so a cached read
-// can hand back a block the chain has already abandoned.
+// fetchFollowHeader gets block n for the follower, the interim no-source
+// ask (class 1).
 func (t *ChainTracker) fetchFollowHeader(ctx context.Context, n int64) (*chainHeader, bool) {
-	fresh := true
-	if t.finalized != nil {
-		if fin := t.finalized(); fin > 0 && n <= fin {
-			fresh = false
-		}
-	}
-	return t.fetchHeader(ctx, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), fresh, auxKindFollow)
+	return t.fetchHeader(ctx, classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), auxKindFollow)
 }

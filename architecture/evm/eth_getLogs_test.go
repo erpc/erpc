@@ -77,6 +77,11 @@ func (m *mockNetwork) Forward(
 	return respRaw, err
 }
 
+// SweepUpstreams serves tracker fetches from the same mocked Forward.
+func (m *mockNetwork) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, _ string) (*common.NormalizedResponse, error) {
+	return m.Forward(ctx, req)
+}
+
 func (m *mockNetwork) Config() *common.NetworkConfig {
 	args := m.Called()
 	return args.Get(0).(*common.NetworkConfig)

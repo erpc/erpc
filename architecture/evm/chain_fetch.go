@@ -1,0 +1,501 @@
+package evm
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"runtime/debug"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/rs/zerolog/log"
+)
+
+// Scheduler bounds (spec §7, §13.2); variables so tests run fast.
+var (
+	fetchSlots         = 16
+	fetchTimeout       = 10 * time.Second
+	fetchBackoffMin    = 200 * time.Millisecond
+	fetchBackoffMax    = 5 * time.Second
+	fetchSlotRecovery  = 10 // successes in a row in a class that add a slot back
+	fetchBackoffPrune  = 1024
+	errNoTrackerSweep  = errors.New("network cannot sweep upstreams for the chain tracker")
+	errFetchUndecoded  = errors.New("tracker fetch answer does not decode")
+	errSchedulerClosed = errors.New("chain fetch scheduler closed")
+)
+
+// fetchClass orders tracker fetches: a lower class starts first, and every
+// class keeps at least one slot.
+type fetchClass uint8
+
+const (
+	classHead        fetchClass = iota // walks, settles, no-source asks
+	classTipReceipts                   // receipts within reorgWindow of the head
+	classFill                          // fill, cursor fetches, older receipts
+	fetchClasses
+)
+
+var fetchClassLabels = [fetchClasses]string{"head", "tip_receipts", "fill"}
+
+type fetchKey struct {
+	selector, upstream, method, params string
+}
+
+// fetchSpec is one tracker fetch. decode turns the answer into what the
+// tracker holds; an error fails the fetch.
+type fetchSpec struct {
+	class    fetchClass
+	kind     string // metric label: header, receipts
+	selector string // use-upstream selector of a group tracker
+	upstream string // "" sweeps the selection order
+	method   string
+	params   string // JSON array
+	byHash   bool   // only by-hash fetches may read the cache
+	decode   func(result []byte) (any, error)
+}
+
+// key single-flights fetches; one that names an upstream is shared by every
+// tracker of the network.
+func (s fetchSpec) key() fetchKey {
+	if s.upstream != "" {
+		return fetchKey{upstream: s.upstream, method: s.method, params: s.params}
+	}
+	return fetchKey{selector: s.selector, method: s.method, params: s.params}
+}
+
+// directives keep the integrity engine off the fetch and select the
+// tracker's upstream policies; any answer that is not addressed by hash
+// must be fresh.
+func (s fetchSpec) directives() *common.RequestDirectives {
+	d := &common.RequestDirectives{IsInternal: true, UpstreamPolicies: common.UpstreamPoliciesTracker}
+	if s.upstream == "" {
+		d.UseUpstream = s.selector
+	}
+	if !s.byHash {
+		d.SkipCacheRead = "true"
+	}
+	return d
+}
+
+type fetchResult struct {
+	upstream string
+	val      any
+	err      error
+}
+
+type fetchRequest struct {
+	key       fetchKey
+	spec      fetchSpec
+	notBefore time.Time
+	waiters   int
+	trackers  []*ChainTracker
+	started   bool
+	res       fetchResult
+	done      chan struct{} // closed once res is set
+}
+
+type fetchBackoff struct {
+	next  time.Time
+	delay time.Duration
+}
+
+// fetchScheduler runs every tracker fetch of one network on this pod:
+// at most fetchSlots in flight, a share per class, single flight per key,
+// backoff per key. Its lifetime is the network's ctx.
+type fetchScheduler struct {
+	ctx     context.Context
+	network common.Network
+	sweep   func(ctx context.Context, req *common.NormalizedRequest, upstreamId string) (*common.NormalizedResponse, error)
+
+	mu       sync.Mutex
+	closed   bool
+	pending  map[fetchKey]*fetchRequest // queued or in flight
+	queues   [fetchClasses][]*fetchRequest
+	inflight [fetchClasses]int
+	share    [fetchClasses]int
+	streak   [fetchClasses]int
+	backoff  map[fetchKey]fetchBackoff
+	timer    *time.Timer
+	gauges   bool
+}
+
+func newFetchScheduler(ctx context.Context, n common.Network) *fetchScheduler {
+	s := &fetchScheduler{
+		ctx:     ctx,
+		network: n,
+		pending: make(map[fetchKey]*fetchRequest),
+		backoff: make(map[fetchKey]fetchBackoff),
+	}
+	for c := range s.share {
+		s.share[c] = fetchSlots
+	}
+	if sw, ok := n.(interface {
+		SweepUpstreams(context.Context, *common.NormalizedRequest, string) (*common.NormalizedResponse, error)
+	}); ok {
+		s.sweep = sw.SweepUpstreams
+	}
+	context.AfterFunc(ctx, s.close)
+	return s
+}
+
+// fetchWaiter is one submitter's hold on a request.
+type fetchWaiter struct {
+	s    *fetchScheduler
+	r    *fetchRequest
+	left bool // guarded by s.mu
+}
+
+// submit queues spec, or joins the request already queued or in flight for
+// its key. It never blocks. t, when set, gets a successful result in its
+// mailbox whether or not the waiter stays.
+func (s *fetchScheduler) submit(t *ChainTracker, spec fetchSpec) *fetchWaiter {
+	key := spec.key()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		r := &fetchRequest{key: key, spec: spec, res: fetchResult{err: errSchedulerClosed}, done: make(chan struct{})}
+		close(r.done)
+		return &fetchWaiter{s: s, r: r}
+	}
+	r := s.pending[key]
+	if r == nil {
+		r = &fetchRequest{key: key, spec: spec, done: make(chan struct{})}
+		if b, ok := s.backoff[key]; ok {
+			r.notBefore = b.next
+		}
+		s.pending[key] = r
+		s.queues[spec.class] = append(s.queues[spec.class], r)
+	} else if !r.started && spec.class < r.spec.class {
+		s.unqueueLocked(r)
+		r.spec.class = spec.class
+		s.queues[spec.class] = append(s.queues[spec.class], r)
+	}
+	r.waiters++
+	if t != nil && !slices.Contains(r.trackers, t) {
+		r.trackers = append(r.trackers, t)
+	}
+	s.pumpLocked()
+	return &fetchWaiter{s: s, r: r}
+}
+
+// fetch submits spec for t and waits for its result, bounded by ctx.
+func (s *fetchScheduler) fetch(ctx context.Context, t *ChainTracker, spec fetchSpec) fetchResult {
+	return s.submit(t, spec).wait(ctx)
+}
+
+// wait returns the request's result; when ctx ends first the waiter leaves.
+func (w *fetchWaiter) wait(ctx context.Context) fetchResult {
+	select {
+	case <-w.r.done:
+		return w.r.res
+	case <-ctx.Done():
+		w.leave()
+		return fetchResult{err: context.Cause(ctx)}
+	}
+}
+
+// leave drops the waiter; a queued request drops with its last waiter.
+func (w *fetchWaiter) leave() {
+	s := w.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w.left {
+		return
+	}
+	w.left = true
+	r := w.r
+	r.waiters--
+	if r.waiters > 0 || r.started || s.pending[r.key] != r {
+		return
+	}
+	delete(s.pending, r.key)
+	s.unqueueLocked(r)
+}
+
+func (s *fetchScheduler) unqueueLocked(r *fetchRequest) {
+	q := s.queues[r.spec.class]
+	if i := slices.Index(q, r); i >= 0 {
+		s.queues[r.spec.class] = slices.Delete(q, i, i+1)
+	}
+}
+
+// pumpLocked starts every queued request a slot allows, lowest class
+// first, and arms the timer for the earliest one still in backoff.
+func (s *fetchScheduler) pumpLocked() {
+	if s.closed {
+		return
+	}
+	now := time.Now()
+	total := 0
+	for _, n := range s.inflight {
+		total += n
+	}
+	var wakeAt time.Time
+	for c := range fetchClasses {
+		q := s.queues[c]
+		for i := 0; i < len(q); {
+			r := q[i]
+			if r.notBefore.After(now) {
+				if wakeAt.IsZero() || r.notBefore.Before(wakeAt) {
+					wakeAt = r.notBefore
+				}
+				i++
+				continue
+			}
+			if !s.mayStartLocked(c, total, now) {
+				break
+			}
+			q = slices.Delete(q, i, i+1)
+			s.startLocked(r)
+			total++
+		}
+		s.queues[c] = q
+	}
+	if !wakeAt.IsZero() {
+		if s.timer != nil {
+			s.timer.Stop()
+		}
+		s.timer = time.AfterFunc(time.Until(wakeAt), func() {
+			s.mu.Lock()
+			s.pumpLocked()
+			s.mu.Unlock()
+		})
+	}
+}
+
+// mayStartLocked: within the limit and the class's share, and leaving one
+// slot for every other class that has a startable request and none in
+// flight.
+func (s *fetchScheduler) mayStartLocked(c fetchClass, total int, now time.Time) bool {
+	if total >= fetchSlots || s.inflight[c] >= s.share[c] {
+		return false
+	}
+	if s.inflight[c] == 0 {
+		return true
+	}
+	reserve := 0
+	for o := range fetchClasses {
+		if o != c && s.inflight[o] == 0 && s.startableLocked(o, now) {
+			reserve++
+		}
+	}
+	return total < fetchSlots-reserve
+}
+
+func (s *fetchScheduler) startableLocked(c fetchClass, now time.Time) bool {
+	for _, r := range s.queues[c] {
+		if !r.notBefore.After(now) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *fetchScheduler) startLocked(r *fetchRequest) {
+	if !s.gauges {
+		s.gauges = true
+		for c := range fetchClasses {
+			s.setSlotsGaugeLocked(c)
+		}
+	}
+	r.started = true
+	s.inflight[r.spec.class]++
+	go s.run(r)
+}
+
+func (s *fetchScheduler) run(r *fetchRequest) {
+	res := s.do(r)
+	outcome := fetchOutcome(res.err)
+	c := r.spec.class
+
+	s.mu.Lock()
+	switch outcome {
+	case "ok":
+		delete(s.backoff, r.key)
+		s.streak[c]++
+		if s.streak[c] >= fetchSlotRecovery {
+			s.streak[c] = 0
+			if s.share[c] < fetchSlots {
+				s.share[c]++
+				s.setSlotsGaugeLocked(c)
+			}
+		}
+	case "capacity":
+		s.streak[c] = 0
+		s.backOffLocked(r.key)
+		s.halveLowestBusyLocked()
+	default:
+		s.streak[c] = 0
+		s.backOffLocked(r.key)
+	}
+	s.inflight[c]--
+	if s.pending[r.key] == r {
+		delete(s.pending, r.key)
+	}
+	trackers := r.trackers
+	s.pumpLocked()
+	s.mu.Unlock()
+
+	telemetry.CounterHandle(telemetry.MetricChainTrackerFetchTotal,
+		s.projectId(), s.networkLabel(), r.spec.kind, fetchClassLabels[c], outcome).Inc()
+	if res.err == nil {
+		for _, t := range trackers {
+			t.fetched(res)
+		}
+	}
+	r.res = res
+	close(r.done)
+}
+
+// do makes the request's one sweep. A panic in it fails the fetch.
+func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+				"chain-fetch",
+				fmt.Sprintf("project:%s network:%s method:%s", s.projectId(), s.networkLabel(), r.spec.method),
+				common.ErrorFingerprint(rec),
+			).Inc()
+			log.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
+				Str("network", s.networkLabel()).Str("method", r.spec.method).Msg("chain tracker fetch panicked")
+			res = fetchResult{err: fmt.Errorf("chain tracker fetch panicked: %v", rec)}
+		}
+	}()
+	if s.sweep == nil {
+		return fetchResult{err: errNoTrackerSweep}
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, fetchTimeout)
+	defer cancel()
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + r.spec.method + `","params":` + r.spec.params + `}`))
+	req.SetDirectives(r.spec.directives())
+	resp, err := s.sweep(ctx, req, r.spec.upstream)
+	if err != nil {
+		return fetchResult{err: err}
+	}
+	if resp == nil {
+		return fetchResult{err: errFetchUndecoded}
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil {
+		return fetchResult{err: err}
+	}
+	if jrr == nil || jrr.Error != nil {
+		return fetchResult{err: errFetchUndecoded}
+	}
+	upstreamId := ""
+	if u := resp.Upstream(); u != nil {
+		upstreamId = u.Id()
+	}
+	val, err := r.spec.decode(bytes.Clone(jrr.GetResultBytes()))
+	if err != nil {
+		return fetchResult{upstream: upstreamId, err: err}
+	}
+	return fetchResult{upstream: upstreamId, val: val}
+}
+
+// fetchOutcome is capacity when every upstream the sweep tried refused for
+// capacity: a vendor 429, -32005 or compute units, or a denied upstream
+// permit. Breaker-open and unavailable upstreams were never tried.
+func fetchOutcome(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	var ex *common.ErrUpstreamsExhausted
+	if !errors.As(err, &ex) {
+		return "error"
+	}
+	tried := 0
+	for _, e := range ex.Errors() {
+		if !common.HasErrorCode(e, common.ErrCodeEndpointCapacityExceeded, common.ErrCodeUpstreamRateLimitRuleExceeded) {
+			return "error"
+		}
+		tried++
+	}
+	if tried == 0 {
+		return "error"
+	}
+	return "capacity"
+}
+
+// backOffLocked spaces the key's next attempt: 200 ms, doubling to 5 s. A
+// failure long after the last one starts over.
+func (s *fetchScheduler) backOffLocked(key fetchKey) {
+	now := time.Now()
+	b := s.backoff[key]
+	if b.delay == 0 || now.Sub(b.next) > fetchBackoffMax {
+		b.delay = fetchBackoffMin
+	} else {
+		b.delay = min(2*b.delay, fetchBackoffMax)
+	}
+	b.next = now.Add(b.delay)
+	s.backoff[key] = b
+	if len(s.backoff) > fetchBackoffPrune {
+		for k, o := range s.backoff {
+			if now.Sub(o.next) > fetchBackoffMax {
+				delete(s.backoff, k)
+			}
+		}
+	}
+}
+
+// halveLowestBusyLocked halves the share of the lowest class with work,
+// never below one slot.
+func (s *fetchScheduler) halveLowestBusyLocked() {
+	for c := fetchClasses - 1; ; c-- {
+		if s.inflight[c] > 0 || len(s.queues[c]) > 0 {
+			if s.share[c] > 1 {
+				s.share[c] = max(1, s.share[c]/2)
+				s.setSlotsGaugeLocked(c)
+			}
+			return
+		}
+		if c == 0 {
+			return
+		}
+	}
+}
+
+func (s *fetchScheduler) setSlotsGaugeLocked(c fetchClass) {
+	telemetry.GaugeHandle(telemetry.MetricChainTrackerFetchSlots,
+		s.projectId(), s.networkLabel(), fetchClassLabels[c]).Set(float64(s.share[c]))
+}
+
+// close fails every queued request once the network's ctx ends.
+func (s *fetchScheduler) close() {
+	s.mu.Lock()
+	s.closed = true
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	var dropped []*fetchRequest
+	for c := range s.queues {
+		dropped = append(dropped, s.queues[c]...)
+		s.queues[c] = nil
+	}
+	for _, r := range dropped {
+		delete(s.pending, r.key)
+	}
+	s.mu.Unlock()
+	for _, r := range dropped {
+		r.res = fetchResult{err: errSchedulerClosed}
+		close(r.done)
+	}
+}
+
+func (s *fetchScheduler) projectId() string {
+	if s.network == nil {
+		return ""
+	}
+	return s.network.ProjectId()
+}
+
+func (s *fetchScheduler) networkLabel() string {
+	if s.network == nil {
+		return ""
+	}
+	return s.network.Label()
+}

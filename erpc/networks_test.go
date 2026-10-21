@@ -10448,7 +10448,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 1. RPC stubs
 		//------------------------------------------------------------
 		var latestBlockPolls int32
-		const failAttempts = 2
+		const failAttempts = 1
 		const herd = 1000
 
 		gock.New("http://rpc1.localhost").
@@ -10475,7 +10475,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0xa"}}`)) // Block 10
 
-		// eth_getBlockByNumber("latest") - Then fail with retryable error
+		// eth_getBlockByNumber("latest") - Then fail once with a retryable error
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(failAttempts). // Fail for the next failAttempts
@@ -10548,14 +10548,15 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// a second refresh.
 		pollerDebounce := 4000 * time.Millisecond
 
+		// The upstream's retry policy must not apply: state-poller requests
+		// bypass upstream retry, hedge and breaker.
 		fsCfg := &common.FailsafeConfig{
 			MatchMethod: "*",
 			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: failAttempts + 1, // allow 2 failures then 1 success within a single call
+				MaxAttempts: 2,
 			},
 		}
 
-		//   -- upstream will retry --
 		upCfg := &common.UpstreamConfig{
 			Id:         "rpc1",
 			Type:       common.UpstreamTypeEvm,
@@ -10635,28 +10636,20 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		close(start)
 		wg.Wait()
 
-		// Wait for the background refresh to apply block 20 (with timeout)
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if poller.LatestBlock() == 20 {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		// Cached value should be 20 (final success).
-		assert.Equal(t, int64(20), poller.LatestBlock())
+		// The herd's one refresh failed and was not retried: the cached value
+		// stays at 10, and the success mock is never reached.
+		time.Sleep(1500 * time.Millisecond)
+		assert.Equal(t, int64(10), poller.LatestBlock())
 
 		cancel()
 
-		// Metric counts refresh executions: bootstrap + exactly one for the herd
-		// (its retries fail twice, then succeed within the same execution).
+		// Metric counts refresh executions: bootstrap + exactly one for the herd.
 		polledMetric, err := telemetry.MetricUpstreamLatestBlockPolled.
 			GetMetricWithLabelValues("prjA", "vendorA", "n/a", "rpc1")
 		require.NoError(t, err)
 		assert.Equal(t, float64(2), promUtil.ToFloat64(polledMetric))
 
-		// Only the failing mocks should have been hit exactly failAttempts times.
+		// The herd made exactly one upstream call: the failing one.
 		assert.Equal(t, int32(failAttempts), atomic.LoadInt32(&latestBlockPolls))
 
 		// No pending or unmatched mocks remain

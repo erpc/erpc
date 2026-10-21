@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Internal requests (e.g. the wsupstream adapter's subscription RPCs) must not
+// Subscription calls (the wsupstream adapter's subscription RPCs) must not
 // feed the upstream breaker; the same failure from a client request opens it.
 func TestUpstreamExecutor_InternalRequestsSkipBreaker(t *testing.T) {
 	lg := zerolog.Nop()
@@ -30,9 +30,10 @@ func TestUpstreamExecutor_InternalRequestsSkipBreaker(t *testing.T) {
 			},
 		}, &lg)
 		require.NoError(t, err)
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`))
+		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		req := common.NewNormalizedRequest(body)
 		if internal {
-			req.SetDirectives(&common.RequestDirectives{IsInternal: true})
+			req = common.NewProbeRequest(body)
 		}
 		_, err = ex.Run(context.Background(), req, inner)
 		require.Error(t, err)
