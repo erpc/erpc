@@ -137,17 +137,19 @@ ws.send(JSON.stringify({
 
 ### Subscription features
 
-- **Resilient delivery** — `newHeads` is subscribed on every connected WebSocket upstream of the network, and each block is delivered from whichever upstream announces it first. With [`failover.onDefaultsExhausted`](/config/projects/networks#failover) enabled, heads from upstreams tagged `tier:fallback` are delivered only while no other upstream that the selection policy routes to has a live `newHeads` subscription, so clients are not told of a block only a fallback has while the primaries are up. A held-back head still updates that fallback's tip tracker. How quickly fallback heads take over when the primaries fail follows the selection policy's `evalInterval`. `logs` and `newPendingTransactions` are subscribed on every WebSocket upstream; with [`failover.onDefaultsExhausted`](/config/projects/networks#failover) enabled, on every one outside `tier:fallback` that the selection policy routes to, and on the `tier:fallback` upstreams only while none of those has the subscription live. This is rechecked on every head, so the fallbacks take over when the primaries drop a subscription (or the policy excludes them) and hand it back once a primary has it live again; a subscribe that fails is retried in the background.
-- **No surprise disconnects** — upstream reconnects, scoring changes and brief outages never close your connection; eRPC re-subscribes upstream behind the scenes. eRPC closes a connection only on shutdown (`1001`), when the client stops answering pings, or when a `logs` subscription overflows its buffer (see below).
-- **Deduplication** — even though multiple upstreams are subscribed in parallel, you only receive each block, log or pending tx once. Logs are identified by `blockHash`, `transactionHash` and `logIndex`; a log missing any of them is passed through without deduplication.
+- **Resilient delivery** — `newHeads` is subscribed on every connected WebSocket upstream of the network, and each block is delivered from whichever upstream announces it first. With [`failover.onDefaultsExhausted`](/config/projects/networks#failover) enabled, heads from upstreams tagged `tier:fallback` are delivered only while no other upstream that the selection policy routes to has a live `newHeads` subscription, so clients are not told of a block only a fallback has while the primaries are up. A held-back head still updates that fallback's tip tracker. How quickly fallback heads take over when the primaries fail follows the selection policy's `evalInterval`. `newPendingTransactions` is subscribed on every WebSocket upstream; with [`failover.onDefaultsExhausted`](/config/projects/networks#failover) enabled, on every one outside `tier:fallback` that the selection policy routes to, and on the `tier:fallback` upstreams only while none of those has the subscription live. This is rechecked on every head, so the fallbacks take over when the primaries drop a subscription (or the policy excludes them) and hand it back once a primary has it live again; a subscribe that fails is retried in the background.
+- **No surprise disconnects** — upstream reconnects, scoring changes and brief outages never close your connection; eRPC re-subscribes upstream behind the scenes. eRPC closes a connection only on shutdown (`1001`), when the client stops answering pings, or with `1013` when a `logs` subscription cannot continue (see below).
+- **Deduplication** — even though multiple upstreams are subscribed in parallel, you only receive each block or pending tx once.
 - **Shared subscriptions** — clients subscribing to the same event on the same network share one upstream subscription per upstream. Each client gets its own subscription ID and receives every notification independently.
-- **Slow-client safety** — every subscription has its own buffer of `server.webSocket.subscriptionBufferSize` notifications, so a slow reader never blocks other clients or upstream delivery. When it overflows, `newHeads` and `newPendingTransactions` drop the oldest queued notification; a `logs` subscription closes the connection with `1013` instead, so the client knows it missed data and can re-subscribe and backfill with `eth_getLogs`. Drops are counted in `erpc_websocket_subscription_notifications_dropped_total`.
+- **Slow-client safety** — a slow reader never blocks other clients or upstream delivery. A `logs` subscription more than `chainTracker.reorgWindow` blocks behind closes the connection with `1013`, so the client knows it may have missed logs and can re-subscribe and backfill with `eth_getLogs`.
 - **Connection-scoped IDs** — eRPC issues its own subscription IDs, so they stay the same across upstream reconnects and upstream switches. They belong to the connection that created them: `eth_unsubscribe` only works on that connection, and subscriptions end when it closes.
 - **Rate limiting** — subscribe/unsubscribe calls count against the same project and network rate limits as regular RPC.
 
-### Reorg handling for `logs` subscriptions
+### `logs` subscriptions
 
-When a block containing one of your matched logs is reorged out, the upstream node re-sends that log with `"removed": true` on the same subscription. eRPC passes these notifications through unchanged, so you get the same semantics as a direct WebSocket connection to a node. If a log is removed and later re-added (the chain switches back), each transition is delivered once, even when several upstreams report it.
+eRPC builds `logs` notifications from each block's `eth_getBlockReceipts`, fetched once per block when the block's `logsBloom` may match a subscribed filter; no upstream `logs` subscription is made. The filter takes `address` and `topics` as geth does; `fromBlock` and `toBlock` are ignored. A filter that does not parse fails with `-32602`.
+
+When a reorg drops a block with matched logs, eRPC sends those logs again with `"removed": true`, newest first, then the logs of the new branch. A block whose receipts no upstream serves for 60s closes the connections of its `logs` subscriptions with `1013`, spread over 60s.
 
 ```javascript
 ws.onmessage = (event) => {
@@ -163,8 +165,8 @@ ws.onmessage = (event) => {
 
 `eth_subscribe` returns a JSON-RPC error when:
 
-- the network has no WebSocket upstream, or none of the selected upstreams is connected and accepts the subscription;
-- the subscription type is not supported (`-32602`);
+- the network has no subscription source for the type; for `logs`, no upstream serves `eth_getBlockReceipts` (or `eth_getLogs` with integrity off), or every such fetch has failed for 60s;
+- the subscription type is not supported, or a `logs` filter does not parse (`-32602`);
 - the connection already has `server.webSocket.maxSubscriptionsPerConnection` active subscriptions (`-32005`);
 - the instance already has `server.webSocket.maxSubscriptions` active subscriptions (`-32005`);
 - the request is rate limited.
@@ -343,24 +345,6 @@ export default createConfig({
 </Callout>
 
 ## Subscription compatibility knobs
-
-### Stripping `fromBlock: "0x0"` from `eth_subscribe` logs filters
-
-Some JSON-RPC clients include `fromBlock: "0x0"` in the `eth_subscribe("logs", {…})` filter as a "from genesis" marker. `eth_subscribe` is a live-stream RPC — `fromBlock` has no standardised meaning there — and on backends that prune historical data the subscribe call fails outright. eRPC can strip the field per-network so the live stream succeeds; historical logs stay retrievable via `eth_getLogs` in the normal way.
-
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          # Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
-          # before forwarding to upstream. Non-zero fromBlocks pass through.
-          stripSubscribeFromBlockZero: true
-```
-
-Only a string `fromBlock` that parses to zero (`"0x0"`, `"0"`, `"0x00"`, …) is stripped — any other value passes through unchanged. Leave unset for chains where upstreams handle the field correctly. The field can also be set once under `networkDefaults.evm`.
 
 ### HTTP / WebSocket tip-sync considerations for strict consumers
 

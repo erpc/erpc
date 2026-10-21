@@ -93,6 +93,10 @@ type ChainTracker struct {
 	// following is true while the tracker's integrity follow tap runs.
 	following atomic.Bool
 
+	// receiptsFailing is when every receipts and logs fetch since the last
+	// success started failing, in unix nanoseconds; 0 after a success.
+	receiptsFailing atomic.Int64
+
 	// Owned by the tracker's goroutine.
 	nodes    map[[32]byte]*node
 	waiting  map[[32]byte][]*node // held roots by the parent hash they lack
@@ -123,6 +127,8 @@ type ChainTracker struct {
 	// receiptsDirty: the pins, a job or held receipts changed since the
 	// receipts were last planned.
 	receiptsDirty bool
+	// probe is armed while receipts fail: the outage's head-block fetches.
+	probe         *time.Timer
 	anchorNumbers []int64
 	panics        int
 	stack         []*node // walkTree's scratch
@@ -1624,6 +1630,15 @@ func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 // Tip returns the head now, without waiting.
 func (t *ChainTracker) Tip() (indexer.Cursor, bool) {
 	if h := t.state.Load().head(); h != nil {
+		return h.cursor(), true
+	}
+	return indexer.Cursor{}, false
+}
+
+// SendTip returns the highest pin taps may send now (the delivery gate),
+// without waiting.
+func (t *ChainTracker) SendTip() (indexer.Cursor, bool) {
+	if h := t.state.Load().sendHead(); h != nil {
 		return h.cursor(), true
 	}
 	return indexer.Cursor{}, false

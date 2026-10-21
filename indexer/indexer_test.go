@@ -3,7 +3,6 @@ package indexer
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,27 +16,17 @@ import (
 type fakeNetwork struct {
 	id string
 
-	mu           sync.Mutex
-	dedupDropped int
-	dedupEntries int
-	undelivered  int
+	mu          sync.Mutex
+	undelivered int
 }
 
 func newFakeNetwork(id string) *fakeNetwork {
 	return &fakeNetwork{id: id}
 }
 
-func (n *fakeNetwork) Id() string { return n.id }
-func (n *fakeNetwork) DedupDropped(EventKind) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.dedupDropped++
-}
-func (n *fakeNetwork) DedupEntriesAdded(delta int) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.dedupEntries += delta
-}
+func (n *fakeNetwork) Id() string             { return n.id }
+func (n *fakeNetwork) DedupDropped(EventKind) {}
+func (n *fakeNetwork) DedupEntriesAdded(int)  {}
 func (n *fakeNetwork) Undelivered(EventKind) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -47,11 +36,6 @@ func (n *fakeNetwork) undeliveredCount() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.undelivered
-}
-func (n *fakeNetwork) dedupCounts() (dropped, entries int) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.dedupDropped, n.dedupEntries
 }
 
 type fakeEgress struct {
@@ -156,164 +140,16 @@ func newIndexer(t *testing.T) *Indexer {
 	return New(&logger, Options{})
 }
 
-func TestIndexer_Log_RefcountFanOutAndTeardown(t *testing.T) {
-	idx := newIndexer(t)
-	nw := newFakeNetwork("evm:1")
-	idx.RegisterNetwork(nw)
-	ing := &fakeIngress{name: "ws:up1"}
-	if err := idx.AddIngress(context.Background(), "evm:1", ing); err != nil {
-		t.Fatal(err)
-	}
-
-	params := []interface{}{"logs", map[string]interface{}{"topics": []string{"0x1"}}}
-	h1, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", params)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Second subscriber on same filter: refcount bumps, no new ingress call.
-	h2, _ := idx.EnsureFilter(context.Background(), "evm:1", "logs", params)
-	if h1 != h2 {
-		t.Fatalf("same params must hash identically, got %q vs %q", h1, h2)
-	}
-	if got := ing.ensureCalls.Load(); got != 1 {
-		t.Fatalf("EnsureFilter on ingress should be called exactly once, got %d", got)
-	}
-
-	// The same log from two upstreams: one window key, one dedup drop.
-	idx.Ingest(logEvent(h1, "ws:up1", logAddedJSON))
-	idx.Ingest(logEvent(h1, "ws:up2", logAddedJSON))
-	if dropped, entries := nw.dedupCounts(); dropped != 1 || entries != 1 {
-		t.Fatalf("want 1 dedup drop and 1 window key, got %d and %d", dropped, entries)
-	}
-
-	// First release decrements; still refcnt 1 → no tear-down.
-	idx.ReleaseFilter(context.Background(), "evm:1", "logs", h1)
-	if got := ing.removeCalls.Load(); got != 0 {
-		t.Fatalf("RemoveFilter must not fire while refcnt > 0, got %d calls", got)
-	}
-	// Second release drops to 0 → tear-down, and its window is freed.
-	idx.ReleaseFilter(context.Background(), "evm:1", "logs", h1)
-	if got := ing.removeCalls.Load(); got != 1 {
-		t.Fatalf("RemoveFilter must fire exactly once at refcnt 0, got %d", got)
-	}
-	if _, entries := nw.dedupCounts(); entries != 0 {
-		t.Fatalf("released filter must leave no window keys, got %d", entries)
-	}
-}
-
 func TestIndexer_ReportsUndeliveredEvents(t *testing.T) {
 	idx := newIndexer(t)
 	nw := newFakeNetwork("evm:1")
 	idx.RegisterNetwork(nw)
 
-	// A log for a filter no client holds.
-	idx.Ingest(logEvent("orphan", "ws:up1", logAddedJSON))
+	// A pending transaction for a filter no client holds.
+	idx.Ingest(StreamEvent{Kind: KindPendingTx, NetworkId: "evm:1", SourceId: "ws:up1", FilterHash: "orphan",
+		Payload: json.RawMessage(`"0xbeef"`)})
 	if got := nw.undeliveredCount(); got != 1 {
 		t.Fatalf("want 1 undelivered event, got %d", got)
-	}
-}
-
-// newLogFilter registers "evm:1", ensures an empty logs filter and attaches
-// an egress interested in it. Helper for log dedup tests.
-func newLogFilter(t *testing.T) (*Indexer, string, *fakeEgress) {
-	t.Helper()
-	idx := newIndexer(t)
-	idx.RegisterNetwork(newFakeNetwork("evm:1"))
-	if err := idx.AddIngress(context.Background(), "evm:1", &fakeIngress{name: "ws:up1"}); err != nil {
-		t.Fatal(err)
-	}
-	h, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs", map[string]interface{}{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	eg := &fakeEgress{name: "eg1", filters: map[string]struct{}{h: {}}}
-	idx.Attach(eg)
-	return idx, h, eg
-}
-
-func logEvent(filterHash, source, payload string) StreamEvent {
-	return StreamEvent{
-		Kind: KindLog, NetworkId: "evm:1", SourceId: source, FilterHash: filterHash,
-		Payload: json.RawMessage(payload),
-	}
-}
-
-const (
-	logAddedJSON   = `{"blockHash":"0xB","transactionHash":"0xT","logIndex":"0x0","removed":false}`
-	logRemovedJSON = `{"blockHash":"0xB","transactionHash":"0xT","logIndex":"0x0","removed":true}`
-)
-
-func TestIndexer_Log_DuplicateAddsFromManyUpstreamsDeliverOnce(t *testing.T) {
-	idx, h, eg := newLogFilter(t)
-	for i := 0; i < 4; i++ {
-		idx.Ingest(logEvent(h, fmt.Sprintf("ws:up%d", i), logAddedJSON))
-	}
-	if got := eg.count(); got != 1 {
-		t.Fatalf("same log from N upstreams must deliver once, got %d", got)
-	}
-}
-
-// Reorg A→B→A where the log's block comes back with the same hash: the
-// client must see add, remove, add — the final re-add must not be
-// swallowed as a duplicate of the first add.
-func TestIndexer_Log_AddRemoveReAddDeliversEach(t *testing.T) {
-	idx, h, eg := newLogFilter(t)
-	for _, p := range []string{logAddedJSON, logRemovedJSON, logAddedJSON} {
-		// Two upstreams each report every transition.
-		idx.Ingest(logEvent(h, "ws:up1", p))
-		idx.Ingest(logEvent(h, "ws:up2", p))
-	}
-	eg.mu.Lock()
-	defer eg.mu.Unlock()
-	if len(eg.received) != 3 {
-		t.Fatalf("add, remove, re-add must deliver 3 events, got %d", len(eg.received))
-	}
-	want := []bool{false, true, false}
-	for i, ev := range eg.received {
-		if ev.Removed != want[i] {
-			t.Fatalf("event %d: Removed=%v, want %v", i, ev.Removed, want[i])
-		}
-	}
-}
-
-func TestIndexer_Log_DuplicateRemovesDeliverOnce(t *testing.T) {
-	idx, h, eg := newLogFilter(t)
-	idx.Ingest(logEvent(h, "ws:up1", logAddedJSON))
-	idx.Ingest(logEvent(h, "ws:up1", logRemovedJSON))
-	idx.Ingest(logEvent(h, "ws:up2", logRemovedJSON))
-	idx.Ingest(logEvent(h, "ws:up3", logRemovedJSON))
-	if got := eg.count(); got != 2 {
-		t.Fatalf("duplicate removes must collapse: want 2 deliveries, got %d", got)
-	}
-}
-
-// Logs whose identity can't be established must pass through rather than
-// collapse onto one shared key.
-func TestIndexer_Log_MissingIdentityFieldsPassThrough(t *testing.T) {
-	idx, h, eg := newLogFilter(t)
-	idx.Ingest(logEvent(h, "ws:up1", `{"data":"0x01"}`))
-	idx.Ingest(logEvent(h, "ws:up1", `{"data":"0x02"}`))
-	idx.Ingest(logEvent(h, "ws:up1", `{"blockHash":"0xB","logIndex":"0x0"}`))
-	if got := eg.count(); got != 3 {
-		t.Fatalf("logs without full identity must all pass through, got %d", got)
-	}
-}
-
-// Hex on the wire is case-insensitive: the same log reported with
-// differently-cased hashes by two upstreams is one log. The delivered
-// payload is untouched.
-func TestIndexer_Log_DedupIgnoresHexCase(t *testing.T) {
-	idx, h, eg := newLogFilter(t)
-	upper := `{"blockHash":"0xABCD","transactionHash":"0xEF01","logIndex":"0xA"}`
-	idx.Ingest(logEvent(h, "ws:up1", upper))
-	idx.Ingest(logEvent(h, "ws:up2", `{"blockHash":"0xabcd","transactionHash":"0xef01","logIndex":"0xa"}`))
-	eg.mu.Lock()
-	defer eg.mu.Unlock()
-	if len(eg.received) != 1 {
-		t.Fatalf("case-only differences must dedupe, got %d deliveries", len(eg.received))
-	}
-	if string(eg.received[0].Payload) != upper {
-		t.Fatalf("payload must pass through verbatim, got %s", eg.received[0].Payload)
 	}
 }
 

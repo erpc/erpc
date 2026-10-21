@@ -193,8 +193,9 @@ func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
 }
 
 // eth_unsubscribe only reaches the caller's own subscriptions. The pressure
-// gauges follow subscribe, unsubscribe and close back to zero, and a logs
-// filter whose last client disconnects is released upstream.
+// gauges follow subscribe, unsubscribe and close back to zero, and a
+// newPendingTransactions filter whose last client disconnects is released
+// upstream.
 func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -229,19 +230,19 @@ func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 	// The upstream may still be connecting; a failed filter subscribe is
 	// answered with an error and can be retried.
 	require.Eventually(t, func() bool {
-		resp = sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":3,"method":"eth_subscribe","params":["logs",{}]}`)
+		resp = sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":3,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
 		_, ok := resp["result"].(string)
 		return ok
-	}, 5*time.Second, 100*time.Millisecond, "logs subscribe must succeed")
-	_, clientSubs, upstreamSubs := wsGauges("logs")
+	}, 5*time.Second, 100*time.Millisecond, "newPendingTransactions subscribe must succeed")
+	_, clientSubs, upstreamSubs := wsGauges("newPendingTransactions")
 	assert.Equal(t, 1.0, clientSubs)
-	assert.Equal(t, 1.0, upstreamSubs, "one logs filter must be live upstream")
+	assert.Equal(t, 1.0, upstreamSubs, "one newPendingTransactions filter must be live upstream")
 
 	// Closing without eth_unsubscribe leaves cleanup to CleanupConnection.
 	require.NoError(t, connA.Close())
 	require.NoError(t, connB.Close())
 	require.Eventually(t, func() bool {
-		conns, clientSubs, upstreamSubs := wsGauges("logs")
+		conns, clientSubs, upstreamSubs := wsGauges("newPendingTransactions")
 		return conns == 0 && clientSubs == 0 && upstreamSubs == 0
 	}, 5*time.Second, 50*time.Millisecond, "closed connections must release every gauge and the upstream filter")
 }

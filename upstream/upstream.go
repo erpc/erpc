@@ -1301,19 +1301,34 @@ func (u *Upstream) recordRemoteRateLimit(ctx context.Context, method string, nrq
 	}
 }
 
-func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
+// methodSupport is what the upstream's config says of a method: handled, and
+// whether an allowMethods entry names it.
+type methodSupport struct {
+	handled, allowListed bool
+}
+
+// ShouldHandleMethod applies ignoreMethods, then allowMethods, then an
+// unexpired auto-ignore entry, which never overrides an allowMethods entry.
+func (u *Upstream) ShouldHandleMethod(method string) (bool, error) {
+	s, err := u.configMethodSupport(method)
+	if err != nil || !s.handled || s.allowListed {
+		return s.handled, err
+	}
 	if until, ok := u.autoIgnored.Load(method); ok {
 		if time.Now().Before(until.(time.Time)) {
 			return false, nil
 		}
 		u.autoIgnored.CompareAndDelete(method, until)
 	}
-	cfg := u.Config()
-	if s, ok := u.supportedMethods.Load(method); ok {
-		return s.(bool), nil
-	}
+	return true, nil
+}
 
-	v = true
+func (u *Upstream) configMethodSupport(method string) (methodSupport, error) {
+	if s, ok := u.supportedMethods.Load(method); ok {
+		return s.(methodSupport), nil
+	}
+	cfg := u.Config()
+	s := methodSupport{handled: true}
 
 	// First check if method is ignored, and then check if it is explicitly mentioned to be allowed.
 	// This order allows an upstream for example to define "ignore all except eth_getLogs".
@@ -1321,36 +1336,32 @@ func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
 	u.cfgMu.RLock()
 	defer u.cfgMu.RUnlock()
 
-	if cfg.IgnoreMethods != nil {
-		for _, m := range cfg.IgnoreMethods {
-			match, err := common.WildcardMatch(m, method)
-			if err != nil {
-				return false, err
-			}
-			if match {
-				v = false
-				break
-			}
+	for _, m := range cfg.IgnoreMethods {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return methodSupport{}, err
+		}
+		if match {
+			s.handled = false
+			break
 		}
 	}
 
-	if cfg.AllowMethods != nil {
-		for _, m := range cfg.AllowMethods {
-			match, err := common.WildcardMatch(m, method)
-			if err != nil {
-				return false, err
-			}
-			if match {
-				v = true
-				break
-			}
+	for _, m := range cfg.AllowMethods {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return methodSupport{}, err
+		}
+		if match {
+			s = methodSupport{handled: true, allowListed: true}
+			break
 		}
 	}
 
-	u.supportedMethods.Store(method, v)
-	u.logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
+	u.supportedMethods.Store(method, s)
+	u.logger.Debug().Bool("allowed", s.handled).Str("method", method).Msg("method support result")
 
-	return v, nil
+	return s, nil
 }
 
 func (u *Upstream) detectFeatures(ctx context.Context) error {

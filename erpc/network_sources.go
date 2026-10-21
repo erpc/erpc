@@ -251,9 +251,6 @@ func (r *sourceReconciler) newSource(ctx context.Context, idx *indexer.Indexer, 
 	s := &source{id: u.Id(), isSource: cfg.IsSubscriptionSource()}
 	if util.IsWsEndpoint(cfg.Endpoint) {
 		opts := wsupstream.Options{NetworkLabel: r.nw.Label()}
-		if c := r.nw.cfg; c != nil && c.Evm != nil && c.Evm.StripSubscribeFromBlockZero != nil {
-			opts.StripSubscribeFromBlockZero = *c.Evm.StripSubscribeFromBlockZero
-		}
 		key := indexerNetworkKey(r.nw)
 		if a := wsupstream.New(u, key, r.nw.intake, r.nw.logger, opts); a != nil {
 			s.push = a
@@ -303,7 +300,8 @@ func (r *sourceReconciler) stopAll() {
 
 // requireSubscriptionSource fails with ErrNoSubscriptionSource when nothing
 // on the network can feed subType, after the sources caught up with the
-// network's upstreams.
+// network's upstreams. logs need heads and a feed that serves receipts or
+// their fallback (spec §10).
 func (n *Network) requireSubscriptionSource(ctx context.Context, subType string) error {
 	if n.sources == nil {
 		return common.NewErrNoSubscriptionSource(n.networkId, subType)
@@ -318,7 +316,9 @@ func (n *Network) requireSubscriptionSource(ctx context.Context, subType string)
 	switch subType {
 	case indexer.SubTypeNewHeads:
 		ok = heads
-	case indexer.SubTypeLogs, indexer.SubTypeNewPendingTransactions:
+	case indexer.SubTypeLogs:
+		ok = heads && n.chainTracker != nil && n.chainTracker.ServesLogs()
+	case indexer.SubTypeNewPendingTransactions:
 		ok = push
 	default:
 		return nil

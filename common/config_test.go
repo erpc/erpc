@@ -1289,14 +1289,6 @@ func TestFailoverConfig_Enabled(t *testing.T) {
 	assert.True(t, (&FailoverConfig{OnDefaultsExhausted: &enabled}).Enabled())
 }
 
-func TestNetworkConfig_SetDefaults_StripSubscribeFromBlockZeroInheritsFromDefaults(t *testing.T) {
-	strip := true
-	defaults := &NetworkDefaults{Evm: &EvmNetworkConfig{StripSubscribeFromBlockZero: &strip}}
-	n := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
-	assert.NoError(t, n.SetDefaults(nil, defaults))
-	assert.Equal(t, &strip, n.Evm.StripSubscribeFromBlockZero)
-}
-
 func TestNetworkConfig_SetDefaults_ShortCircuitFutureBlocksInheritsFromDefaults(t *testing.T) {
 	enabled, disabled := true, false
 	defaults := &NetworkDefaults{Evm: &EvmNetworkConfig{ShortCircuitFutureBlocks: &enabled}}

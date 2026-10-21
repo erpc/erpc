@@ -2316,9 +2316,6 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.ShortCircuitFutureBlocks == nil && defaults.Evm.ShortCircuitFutureBlocks != nil {
 				n.Evm.ShortCircuitFutureBlocks = defaults.Evm.ShortCircuitFutureBlocks
 			}
-			if n.Evm.StripSubscribeFromBlockZero == nil && defaults.Evm.StripSubscribeFromBlockZero != nil {
-				n.Evm.StripSubscribeFromBlockZero = defaults.Evm.StripSubscribeFromBlockZero
-			}
 		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm {
 			// Copy EVM defaults only onto networks that are (or can become) EVM.
 			// Without the SVM guard, a mixed project with networkDefaults.evm

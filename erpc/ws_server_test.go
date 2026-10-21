@@ -29,7 +29,6 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/h2non/gock"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -1656,126 +1655,126 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 	assert.Error(t, err, "duplicate block from second upstream must be deduped")
 }
 
-// TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe: a logs subscription
-// is made on every WS upstream and its notifications are deduplicated by
-// blockHash + txHash + logIndex.
+// TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe is the no-fault
+// baseline of ws logs from the chain feed: 2 filters over 12 blocks with
+// transactions, one eth_getBlockReceipts per block, no upstream eth_subscribe
+// logs, and after 8 matching blocks no fetch for a block no filter may
+// match. A filter that does not parse fails with -32602 before any fetch;
+// a network where no upstream serves receipts or eth_getLogs refuses logs
+// with ErrNoSubscriptionSource.
 func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
-	subscribeCount := int64(0)
-	logSubId := "0xlogsub"
-
-	deliverLog := func(conn *websocket.Conn, blockHash, txHash, logIndex string) {
-		mockWriteJSON(conn, map[string]interface{}{
-			"jsonrpc": "2.0",
-			"method":  "eth_subscription",
-			"params": map[string]interface{}{
-				"subscription": logSubId,
-				"result": map[string]interface{}{
-					"address":          "0xabc",
-					"blockHash":        blockHash,
-					"transactionHash":  txHash,
-					"logIndex":         logIndex,
-					"removed":          false,
-					"topics":           []string{},
-					"data":             "0x",
-					"blockNumber":      "0x123",
-					"transactionIndex": "0x0",
-				},
-			},
-		})
+	tick := func(s *chaosSeed, n int) {
+		for range n {
+			s.chain.tick()
+			time.Sleep(chaosBlock)
+		}
+	}
+	receiptsAndLogsCalls := func(s *chaosSeed) (calls int64) {
+		s.chain.mu.Lock()
+		defer s.chain.mu.Unlock()
+		for _, v := range s.vendors {
+			for _, n := range v.receiptsCalls {
+				calls += int64(n)
+			}
+			calls += v.getLogsCalls.Load() + v.logsSubscribe.Load()
+		}
+		return calls
 	}
 
-	makeMock := func() *httptest.Server {
-		return mockWsUpstream(t, func(conn *websocket.Conn) {
-			standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
-				switch method {
-				case "eth_subscribe":
-					params, _ := req["params"].([]interface{})
-					if len(params) > 0 && params[0] == "logs" {
-						atomic.AddInt64(&subscribeCount, 1)
-						mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": logSubId})
-						go func() {
-							time.Sleep(300 * time.Millisecond)
-							// Both upstreams deliver the same log.
-							deliverLog(conn, "0xblock1", "0xtx1", "0x0")
-						}()
-					} else {
-						mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0xothersub"})
-					}
-				default:
-					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x1"})
+	t.Run("baseline", func(t *testing.T) {
+		s := newChaosSeed(t, 5, true)
+		s.startERPC()
+		defer s.stopERPC()
+		tick(s, 3)
+
+		// No logs tap yet: the feed fetches no receipts, so any receipts,
+		// eth_getLogs or logs subscribe call would come from the bad filter.
+		malformed, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+		require.NoError(t, err)
+		defer malformed.Close()
+		resp := sendAndReceive(t, malformed, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{"address":"0x123"}]}`)
+		errObj, ok := resp["error"].(map[string]interface{})
+		require.True(t, ok, "a malformed address fails: %v", resp)
+		assert.EqualValues(t, common.JsonRpcErrorInvalidArgument, errObj["code"])
+		tick(s, 2)
+		assert.Zero(t, receiptsAndLogsCalls(s), "a filter that does not parse makes no upstream call")
+
+		s.dialLogs("base")
+		tick(s, 3)
+
+		s.chain.mu.Lock()
+		from := s.chain.tipLocked().number + 1
+		plan := []simKind{}
+		for range 8 {
+			plan = append(plan, simMatching)
+		}
+		plan = append(plan, simQuiet)
+		for range 4 {
+			plan = append(plan, simMatching)
+		}
+		s.chain.plan = plan
+		s.chain.mu.Unlock()
+		tick(s, len(plan)+2)
+
+		tip := s.chain.tip()
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, from, from+uint64(len(plan))-1)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
 				}
-			})
-		})
-	}
-	mock1 := makeMock()
-	defer mock1.Close()
-	mock2 := makeMock()
-	defer mock2.Close()
+			}
+			return true
+		}, 10*time.Second, 20*time.Millisecond, "both clients hold the matching logs of every planned block")
+		require.Len(t, s.openLogs(), len(simFilters))
+		for i, kind := range plan {
+			b := s.chain.canonAt(from + uint64(i))
+			require.NotNil(t, b)
+			require.Equal(t, kind, b.kind)
+			want := 1
+			if kind == simQuiet {
+				want = 0
+			}
+			assert.Equal(t, want, s.receiptsCallsOf(b.hash), "receipts calls for block %d (%d of the plan)", b.number, i+1)
+			for f := range simFilters {
+				assert.Equal(t, kind == simMatching, len(b.matched(f)) > 0, "block %d holds logs of filter %d only when planned to match", b.number, f)
+			}
+		}
+		for _, v := range s.vendors {
+			assert.Zero(t, v.logsSubscribe.Load(), "%s gets no eth_subscribe logs", v.id)
+			assert.Zero(t, v.getLogsCalls.Load(), "%s gets no eth_getLogs while receipts serve", v.id)
+		}
+		t.Logf("planned blocks %d..%d, head %d", from, from+uint64(len(plan))-1, tip.number)
+	})
 
-	setupGock()
-	defer util.ResetGock()
-
-	url1 := "ws" + strings.TrimPrefix(mock1.URL, "http")
-	url2 := "ws" + strings.TrimPrefix(mock2.URL, "http")
-	addr, cleanup := setupTestERPCServer(t, multiWsConfig(url1, url2))
-	defer cleanup()
-	time.Sleep(2 * time.Second)
-
-	counter := func(c *prometheus.CounterVec, labels ...string) float64 {
-		return testutil.ToFloat64(c.WithLabelValues(labels...))
-	}
-	ingress := func() float64 {
-		return counter(telemetry.MetricUpstreamSubscriptionEventsTotal, "test_ws", "evm:123", "ws-upstream-0", "logs") +
-			counter(telemetry.MetricUpstreamSubscriptionEventsTotal, "test_ws", "evm:123", "ws-upstream-1", "logs")
-	}
-	ingressBefore := ingress()
-	dedupBefore := counter(telemetry.MetricSubscriptionDedupDroppedTotal, "test_ws", "evm:123", "logs")
-	sentBefore := counter(telemetry.MetricWebsocketNotificationsSentTotal, "test_ws", "evm:123", "logs")
-	bytesBefore := counter(telemetry.MetricWebsocketNotificationBytesTotal, "test_ws", "evm:123", "logs")
-
-	conn := dialWs(t, addr)
-	defer conn.Close()
-	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{}]}`)
-	require.NotNil(t, resp["result"])
-
-	// Wait for both upstreams to be subscribed.
-	require.Eventually(t, func() bool {
-		return atomic.LoadInt64(&subscribeCount) >= 2
-	}, 5*time.Second, 100*time.Millisecond, "both WS upstreams should be subscribed for logs")
-
-	// Client should receive exactly one log notification (deduped).
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, msg, err := conn.ReadMessage()
-	require.NoError(t, err, "should receive deduped log notification")
-	var notif map[string]interface{}
-	require.NoError(t, json.Unmarshal(msg, &notif))
-	assert.Equal(t, "eth_subscription", notif["method"])
-
-	// Duplicate from second upstream must be deduped.
-	conn.SetReadDeadline(time.Now().Add(800 * time.Millisecond))
-	_, _, err = conn.ReadMessage()
-	assert.Error(t, err, "duplicate log from second upstream must be deduped by blockHash+txHash+logIndex")
-
-	// Each upstream logs subscribe sends the same log once: all but the
-	// first event in are dedup drops, and one notification goes out.
-	in := float64(atomic.LoadInt64(&subscribeCount))
-	assert.Equal(t, in, ingress()-ingressBefore)
-	assert.Equal(t, in-1, counter(telemetry.MetricSubscriptionDedupDroppedTotal, "test_ws", "evm:123", "logs")-dedupBefore)
-	assert.Equal(t, 1.0, counter(telemetry.MetricWebsocketNotificationsSentTotal, "test_ws", "evm:123", "logs")-sentBefore)
-	assert.Equal(t, float64(len(msg)), counter(telemetry.MetricWebsocketNotificationBytesTotal, "test_ws", "evm:123", "logs")-bytesBefore)
-	assert.GreaterOrEqual(t, testutil.ToFloat64(telemetry.MetricSubscriptionDedupEntries.WithLabelValues("test_ws", "evm:123")), 1.0)
+	t.Run("no upstream serves receipts or eth_getLogs", func(t *testing.T) {
+		s := newChaosSeed(t, 6, true)
+		s.ignore = []string{"eth_getBlockReceipts", "eth_getLogs"}
+		s.startERPC()
+		defer s.stopERPC()
+		tick(s, 3)
+		conn, rerr := s.subscribeLogs(0)
+		require.Nil(t, conn)
+		require.NotNil(t, rerr, "logs subscribe is refused")
+		assert.EqualValues(t, common.JsonRpcErrorUnsupportedException, rerr["code"], "ErrNoSubscriptionSource maps to -32601: %v", rerr)
+		assert.Contains(t, fmt.Sprint(rerr), "subscription source", "the refusal names the missing source: %v", rerr)
+		assert.Zero(t, receiptsAndLogsCalls(s), "no receipts, eth_getLogs or upstream logs subscription")
+	})
 }
 
 // TestWebSocket_ReconnectAfterUnsubscribe: an upstream reconnect after the
-// last logs subscriber left must not touch the released filter.
+// last newPendingTransactions subscriber left must not touch the released
+// filter.
 func TestWebSocket_ReconnectAfterUnsubscribe(t *testing.T) {
-	logSubId := "0xunsublog"
+	txSubId := "0xunsubtx"
 	mockUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
 		standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
 			if method == "eth_subscribe" {
 				params, _ := req["params"].([]interface{})
-				if len(params) > 0 && params[0] == "logs" {
-					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": logSubId})
+				if len(params) > 0 && params[0] == "newPendingTransactions" {
+					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": txSubId})
 					return
 				}
 			}
@@ -1795,8 +1794,8 @@ func TestWebSocket_ReconnectAfterUnsubscribe(t *testing.T) {
 	conn := dialWs(t, addr)
 	defer conn.Close()
 
-	// Subscribe to logs (creates filter sub group).
-	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{}]}`)
+	// Subscribe to newPendingTransactions (creates filter sub group).
+	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
 	require.NotNil(t, resp["result"])
 	clientSubId := resp["result"].(string)
 

@@ -1746,13 +1746,6 @@ export interface EvmNetworkConfig {
      */
     markEmptyAsErrorMethods?: string[];
     /**
-     * StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
-     * logs filters before forwarding upstream. fromBlock has no meaning for a
-     * live subscription, and backends that prune history reject it.
-     * DEFAULT: false.
-     */
-    stripSubscribeFromBlockZero?: boolean;
-    /**
      * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
      * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
      * the estimated block time, preferring fresher data at the cost of slightly more

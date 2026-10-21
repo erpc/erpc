@@ -60,6 +60,9 @@ const (
 	OutOfRangeCursorUnknown  = "cursor_unknown"
 	// OutOfRangeLag: a transport's wait bound ended the tap (spec §9.2).
 	OutOfRangeLag = "lag"
+	// OutOfRangeReceiptsTimeout: a logs tap waited too long on one block's
+	// receipts (spec §9.2).
+	OutOfRangeReceiptsTimeout = "receipts_timeout"
 )
 
 // OutOfRangeError is ErrOutOfRange with its reason.

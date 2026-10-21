@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
@@ -26,9 +27,10 @@ const (
 const unsubscribeTimeout = 5 * time.Second
 
 // SubscriptionManager serves eth_subscribe and eth_unsubscribe on client
-// WebSocket connections. newHeads subscriptions are taps on the network-wide
-// chain tracker; logs and newPendingTransactions go through the indexer,
-// whose upstream ingresses each network's source reconciler registers.
+// WebSocket connections. newHeads and logs subscriptions are taps on the
+// network-wide chain tracker; newPendingTransactions go through the
+// indexer, whose upstream ingresses each network's source reconciler
+// registers.
 type SubscriptionManager struct {
 	logger *zerolog.Logger
 	idx    *indexer.Indexer
@@ -119,6 +121,13 @@ func (sm *SubscriptionManager) Subscribe(
 	}
 
 	subType := indexer.ExtractSubscriptionType(jrReq.Params)
+	var logsFilter *logfilter.LogsFilter
+	if subType == indexer.SubTypeLogs {
+		if logsFilter, err = parseLogsSubscribe(jrReq.Params); err != nil {
+			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+			return nil, err
+		}
+	}
 	if err := nw.requireSubscriptionSource(ctx, subType); err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, err
@@ -149,16 +158,20 @@ func (sm *SubscriptionManager) Subscribe(
 	wsc.subscriptionsGauge(kind).Inc()
 	var addErr error
 	switch {
-	case kind == indexer.KindNewHead && nw.chainTracker == nil:
+	case (kind == indexer.KindNewHead || kind == indexer.KindLog) && nw.chainTracker == nil:
 		addErr = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
-			"newHeads subscriptions need an evm network", nil, nil)
-	case kind == indexer.KindNewHead:
+			subType+" subscriptions need an evm network", nil, nil)
+	case kind == indexer.KindNewHead || kind == indexer.KindLog:
 		// The tap ends with its client or its network, whichever ends first;
 		// once the network ended, bg refuses it and the tap is moot.
 		tapCtx, stop := context.WithCancel(nw.appCtx)
 		if addErr = conn.adapter.AddTapSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			sub := wsclient.Subscription{ClientSubID: clientSubID, Kind: kind, NetworkID: key}
-			nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, nw) })
+			if kind == indexer.KindLog {
+				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, nw, logsFilter) })
+			} else {
+				nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, nw) })
+			}
 		} else {
 			stop()
 		}
@@ -286,10 +299,10 @@ func (sm *SubscriptionManager) reserveSub(maxTotal int) bool {
 	return true
 }
 
-// releaseFilter drops a subscription's filter reference; newHeads
+// releaseFilter drops a subscription's filter reference; tap
 // subscriptions hold none.
 func (sm *SubscriptionManager) releaseFilter(ctx context.Context, networkID string, kind indexer.EventKind, filterHash string) {
-	if kind != indexer.KindNewHead && filterHash != "" {
+	if filterHash != "" {
 		sm.idx.ReleaseFilter(ctx, networkID, kind.String(), filterHash)
 	}
 }
@@ -345,16 +358,14 @@ func (sm *SubscriptionManager) resolveSubscription(ctx context.Context, networkI
 	switch subType {
 	case indexer.SubTypeNewHeads:
 		return indexer.KindNewHead, "", nil
-	case indexer.SubTypeLogs, indexer.SubTypeNewPendingTransactions:
+	case indexer.SubTypeLogs:
+		return indexer.KindLog, "", nil
+	case indexer.SubTypeNewPendingTransactions:
 		hash, err := sm.idx.EnsureFilter(ctx, networkID, subType, params)
 		if err != nil {
 			return 0, "", err
 		}
-		kind := indexer.KindLog
-		if subType == indexer.SubTypeNewPendingTransactions {
-			kind = indexer.KindPendingTx
-		}
-		return kind, hash, nil
+		return indexer.KindPendingTx, hash, nil
 	default:
 		return 0, "", common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
 			fmt.Sprintf("unsupported subscription type: %q", subType), nil, nil)

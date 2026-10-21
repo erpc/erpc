@@ -82,6 +82,9 @@ func (m *mockNetwork) SweepUpstreams(ctx context.Context, req *common.Normalized
 	return m.Forward(ctx, req)
 }
 
+func (m *mockNetwork) StoreTrackerAnswer(context.Context, *common.NormalizedRequest, *common.NormalizedResponse) {
+}
+
 func (m *mockNetwork) Config() *common.NetworkConfig {
 	args := m.Called()
 	return args.Get(0).(*common.NetworkConfig)

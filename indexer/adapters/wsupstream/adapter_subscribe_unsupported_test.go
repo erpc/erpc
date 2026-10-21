@@ -21,8 +21,8 @@ func TestAdapterGivesUpNewHeadsWhenUnsupported(t *testing.T) {
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
 	startHeadsSource(t, a, sink)
 
-	params := logsParams("0xabc")
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
+	params := txParams("0xabc")
+	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, indexer.BuildParamsKey(params), params))
 
 	var headsSubscribes int
 	deadline := time.After(time.Second)

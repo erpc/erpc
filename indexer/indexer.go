@@ -441,24 +441,21 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 		return
 	}
 
-	// The upstream's removed flag is trusted as-is.
-	removed := ev.Kind == KindLog && logRemoved(ev.Payload)
-
-	if !i.dedupe(ns, &ev, removed) {
+	if !i.dedupe(ns, &ev) {
 		ns.handle.DedupDropped(ev.Kind)
 		return
 	}
 
-	if !i.fanOut(IndexedEvent{StreamEvent: ev, Removed: removed}) {
+	if !i.fanOut(IndexedEvent{StreamEvent: ev}) {
 		ns.handle.Undelivered(ev.Kind)
 	}
 }
 
-// dedupe reports whether ev should be delivered: filter events go through
-// their filter's DedupWindow.
-func (i *Indexer) dedupe(ns *networkState, ev *StreamEvent, removed bool) bool {
+// dedupe reports whether ev should be delivered: pending transactions go
+// through their filter's DedupWindow.
+func (i *Indexer) dedupe(ns *networkState, ev *StreamEvent) bool {
 	switch ev.Kind {
-	case KindLog, KindPendingTx:
+	case KindPendingTx:
 		ns.filterMu.RLock()
 		f := ns.filters[ev.FilterHash]
 		ns.filterMu.RUnlock()
@@ -469,7 +466,7 @@ func (i *Indexer) dedupe(ns *networkState, ev *StreamEvent, removed bool) bool {
 		if key == "" {
 			return true
 		}
-		deliver, added := f.dedup.Mark(key, removed)
+		deliver, added := f.dedup.Mark(key)
 		if added != 0 {
 			ns.handle.DedupEntriesAdded(added)
 		}

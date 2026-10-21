@@ -40,8 +40,8 @@ func TestAdapterEnsureFilterKeepsStructuredError(t *testing.T) {
 		return nil, upstreamErr
 	}
 
-	params := logsParams("0xabc")
-	ensureErr := a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params)
+	params := txParams("0xabc")
+	ensureErr := a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, indexer.BuildParamsKey(params), params)
 	require.Error(t, ensureErr)
 	err := errors.Join(ensureErr) // indexer.subscribe's shape
 

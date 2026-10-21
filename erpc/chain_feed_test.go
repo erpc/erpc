@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -19,12 +21,15 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	gethcommon "github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
@@ -51,6 +56,11 @@ func chaosBlocksFor(d time.Duration) int {
 	return int((d + 12*time.Second - 1) / (12 * time.Second))
 }
 
+// chaosScaled is spec duration d on the chaos chain.
+func chaosScaled(d time.Duration) time.Duration {
+	return time.Duration(chaosBlocksFor(d)) * chaosBlock
+}
+
 const (
 	fReorgSmall   = "reorg of 1-3 blocks"
 	fMinorityFork = "one vendor on a minority fork for 20 blocks"
@@ -71,35 +81,72 @@ const (
 	fMailbox      = "burst that fills the mailbox"
 	fPanicOnce    = "header that makes the tracker panic once"
 	fPanicThrice  = "header that makes the tracker panic 3 times in a row"
+
+	fNullReceipts   = "null receipts"
+	fTruncReceipts  = "receipts that drop the last 10 receipts, from 2 upstreams of one vendor"
+	fLateReceipts   = "receipts 2 block times late"
+	fNoReceipts     = "one vendor without eth_getBlockReceipts"
+	fReceiptsDown13 = "receipts failing on every vendor for 13s"
+	fBlockDown60    = "one block failing on every vendor for 60s"
+	fReceiptsDown90 = "every receipts and logs fetch failing for 90s"
+	fWrongBloom     = "one vendor whose receipts have a wrong bloom"
+	fChainBloom     = "every vendor's receipts carry a bloom other than the header's"
 )
 
 var chaosFaults = []string{
 	fReorgSmall, fMinorityFork, fAheadFork, fDeepReorg, fSilent, fLagging, fDown, fAllDown, fHalt,
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice,
+	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom,
 }
 
 // TestChainFeed_ConvergesUnderFaults runs real eRPC against 4 mocked vendors
-// of one simulated chain (2 wss, 2 HTTP) while a seeded schedule injects
-// network, node and reorg faults. Each ws newHeads client applies what it
-// receives as a geth client does; its chain must end equal to the
-// simulated canonical chain, it never sees a block off the canonical
-// chain, and it never waits more than 3 live bounds while a vendor serves.
+// of one simulated chain (2 wss, 2 HTTP; 2 upstreams per vendor) while a
+// seeded schedule injects network, node, reorg and receipts faults. Each ws
+// newHeads client applies what it receives as a geth client does; its
+// chain must end equal to the simulated canonical chain, it never sees a
+// block off the canonical chain, and it never waits more than 3 live
+// bounds while a vendor serves. Each ws logs client on one of 2 filters
+// applies its logs, removed:true included; its logs must end equal to the
+// canonical chain's matching logs, and only the 60s block, the 90s outage,
+// the 2-minute outage of every vendor and a reorg deeper than the window
+// may close it with 1013.
 func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 	origWatch := wsupstream.HeadsWatchInterval.Load()
 	wsupstream.HeadsWatchInterval.Store(chaosHeadsWatch)
-	t.Cleanup(func() { wsupstream.HeadsWatchInterval.Store(origWatch) })
+	scale := []struct {
+		d *util.Duration
+		v time.Duration
+	}{
+		{evm.LogsFallbackAfter, chaosScaled(5 * time.Second)},
+		{evm.ReceiptsOutageAfter, chaosScaled(60 * time.Second)},
+		{evm.ReceiptsProbeCeiling, chaosScaled(12 * time.Second)},
+		{logsReceiptsWait, chaosScaled(60 * time.Second)},
+		{logsCloseSpread, chaosScaled(60 * time.Second)},
+	}
+	orig := make([]time.Duration, len(scale))
+	for i, sc := range scale {
+		orig[i] = sc.d.Load()
+		sc.d.Store(sc.v)
+	}
+	t.Cleanup(func() {
+		wsupstream.HeadsWatchInterval.Store(origWatch)
+		for i, sc := range scale {
+			sc.d.Store(orig[i])
+		}
+	})
 
 	// Each plan's faults happen in its seed's order, on vendors its seed
-	// picks; together the 4 plans cover every fault.
+	// picks; together the plans cover every fault.
 	plans := []struct {
 		seed        int64
 		pollSources bool
 		faults      []string
 	}{
-		{11, true, []string{fMinorityFork, fAheadFork, f429, fLate, fMailbox, fPanicOnce}},
-		{23, true, []string{fDown, fLagging, fDeepReorg, fSilent, fPanicThrice, fNonLinking}},
-		{37, true, []string{fAllDown, fHalt, fLoad, fOrphanCached, fRestart}},
-		{41, false, []string{fSplit, fLate, fDeepReorg}},
+		{11, true, []string{fMinorityFork, fAheadFork, f429, fLate, fMailbox, fPanicOnce, fTruncReceipts, fWrongBloom}},
+		{23, true, []string{fDown, fLagging, fDeepReorg, fPanicThrice, fNonLinking, fReceiptsDown13}},
+		{37, true, []string{fAllDown, fHalt, fLoad, fOrphanCached, fRestart, fChainBloom, fNullReceipts}},
+		{41, false, []string{fSplit, fLate, fDeepReorg, fBlockDown60, fReceiptsDown90, fNoReceipts}},
+		{53, true, []string{fSilent, fLate, fLateReceipts}},
 	}
 	covered := make(map[string][]int64)
 	for _, p := range plans {
@@ -113,6 +160,9 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 			for f := range s.occurred {
 				covered[f] = append(covered[f], p.seed)
 			}
+			for f := range s.paths {
+				covered[f] = append(covered[f], p.seed)
+			}
 		})
 		if !ok {
 			return
@@ -121,11 +171,42 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 	for _, f := range chaosFaults {
 		require.NotEmpty(t, covered[f], "fault %q occurred in no seed", f)
 	}
+	for _, p := range chaosPaths {
+		require.NotEmpty(t, covered[p], "receipts path %q ran in no seed", p)
+	}
 }
 
 //
 // --- simulated chain ---
 //
+
+// simKind is what a block holds: no transactions, logs no test filter
+// matches, or logs both test filters match.
+type simKind uint8
+
+const (
+	simEmpty simKind = iota
+	simQuiet
+	simMatching
+)
+
+// Logs of simulated blocks use these addresses and topic0s; the test
+// filters are {address: simAddrs[0]} and {topics: [simTopics[1]]}.
+var (
+	simAddrs  = []string{"0x00000000000000000000000000000000000000a1", "0x00000000000000000000000000000000000000a2", "0x00000000000000000000000000000000000000a3", "0x00000000000000000000000000000000000000a4"}
+	simTopics = []string{"0x" + strings.Repeat("0", 63) + "1", "0x" + strings.Repeat("0", 63) + "2", "0x" + strings.Repeat("0", 63) + "3"}
+	// simFilters are the two filters logs clients subscribe, and what each
+	// matches.
+	simFilters = []struct {
+		params  string
+		matches func(simLog) bool
+	}{
+		{`{"address":"` + simAddrs[0] + `"}`, func(l simLog) bool { return l.addr == 0 }},
+		{`{"topics":["` + simTopics[1] + `"]}`, func(l simLog) bool { return l.topic == 1 }},
+	}
+)
+
+type simLog struct{ addr, topic int }
 
 type simBlock struct {
 	number   uint64
@@ -133,33 +214,123 @@ type simBlock struct {
 	parent   *simBlock
 	ts       uint64
 	minority bool // never canonical: a fork only some vendors serve
+	kind     simKind
+	tag      string     // seed/minted: names the block's transactions
+	txs      [][]simLog // per transaction, its logs
+	raw      json.RawMessage
 }
 
-func (b *simBlock) json() map[string]interface{} {
-	var parent [32]byte
-	if b.parent != nil {
-		parent = b.parent.hash
+func (b *simBlock) json() json.RawMessage { return b.raw }
+
+// simContent draws a block's transactions from r: none for an empty block,
+// 12-16 otherwise with 1-2 logs each. A quiet block's logs avoid both
+// filters; a matching block holds a log of each.
+func simContent(r *rand.Rand, kind simKind) [][]simLog {
+	if kind == simEmpty {
+		return nil
 	}
-	const emptyTrie = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+	txs := make([][]simLog, 12+r.IntN(5))
+	for i := range txs {
+		for range 1 + r.IntN(2) {
+			l := simLog{addr: r.IntN(len(simAddrs)), topic: r.IntN(len(simTopics))}
+			if kind == simQuiet {
+				l = simLog{addr: 2 + r.IntN(2), topic: []int{0, 2}[r.IntN(2)]}
+			}
+			txs[i] = append(txs[i], l)
+		}
+	}
+	if kind == simMatching {
+		txs[0][0] = simLog{addr: 0, topic: 1}
+	}
+	return txs
+}
+
+// simLogBloom adds a transaction's logs to bloom. Every log carries a
+// second topic unique to its transaction, so receipts missing any
+// transaction never match the header's bloom.
+func simLogBloom(bloom []byte, tag string, tx int, logs []simLog) {
+	for _, l := range logs {
+		a, _ := hex.DecodeString(simAddrs[l.addr][2:])
+		tp, _ := hex.DecodeString(simTopics[l.topic][2:])
+		own, _ := hex.DecodeString(simTxTopic(tag, tx)[2:])
+		logfilter.BloomAdd(bloom, a)
+		logfilter.BloomAdd(bloom, tp)
+		logfilter.BloomAdd(bloom, own)
+	}
+}
+
+func simTxTopic(tag string, tx int) string {
+	h := sha256.Sum256(fmt.Appendf(nil, "topic/%s/%d", tag, tx))
+	return "0x" + hex.EncodeToString(h[:])
+}
+
+func simTxHash(block [32]byte, i int) string {
+	h := sha256.Sum256(fmt.Appendf(nil, "%x/%d", block, i))
+	return "0x" + hex.EncodeToString(h[:])
+}
+
+// receipts are the block's receipts as a vendor answers them; badBloom
+// zeroes every receipt's logsBloom, drop leaves out the last receipts.
+func (b *simBlock) receipts(badBloom bool, drop int) []map[string]interface{} {
+	key := "0x" + hex.EncodeToString(b.hash[:])
+	n := max(0, len(b.txs)-drop)
+	out := make([]map[string]interface{}, 0, n)
+	logIndex := 0
+	for i, tx := range b.txs[:n] {
+		bloom := make([]byte, logfilter.BloomLen)
+		if !badBloom {
+			simLogBloom(bloom, b.tag, i, tx)
+		}
+		logs := make([]map[string]interface{}, 0, len(tx))
+		for _, l := range tx {
+			logs = append(logs, b.logJSON(i, logIndex, l))
+			logIndex++
+		}
+		out = append(out, map[string]interface{}{
+			"blockHash": key, "blockNumber": fmt.Sprintf("0x%x", b.number),
+			"transactionHash": simTxHash(b.hash, i), "transactionIndex": fmt.Sprintf("0x%x", i),
+			"status": "0x1", "cumulativeGasUsed": "0x5208", "gasUsed": "0x5208", "type": "0x0",
+			"logsBloom": "0x" + hex.EncodeToString(bloom), "logs": logs,
+		})
+	}
+	return out
+}
+
+func (b *simBlock) logJSON(tx, logIndex int, l simLog) map[string]interface{} {
 	return map[string]interface{}{
-		"number":           fmt.Sprintf("0x%x", b.number),
-		"hash":             "0x" + hex.EncodeToString(b.hash[:]),
-		"parentHash":       "0x" + hex.EncodeToString(parent[:]),
-		"timestamp":        fmt.Sprintf("0x%x", b.ts),
-		"logsBloom":        "0x" + strings.Repeat("0", 512),
-		"transactionsRoot": emptyTrie,
-		"receiptsRoot":     emptyTrie,
-		"sha3Uncles":       "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
-		"miner":            "0x0000000000000000000000000000000000000001",
-		"gasLimit":         "0x1c9c380",
-		"gasUsed":          "0x0",
-		"baseFeePerGas":    "0x7",
-		"difficulty":       "0x0",
-		"extraData":        "0x",
-		"size":             "0x220",
-		"transactions":     []interface{}{},
-		"uncles":           []interface{}{},
+		"address": simAddrs[l.addr], "topics": []string{simTopics[l.topic], simTxTopic(b.tag, tx)}, "data": "0x",
+		"blockHash": "0x" + hex.EncodeToString(b.hash[:]), "blockNumber": fmt.Sprintf("0x%x", b.number),
+		"transactionHash": simTxHash(b.hash, tx), "transactionIndex": fmt.Sprintf("0x%x", tx),
+		"logIndex": fmt.Sprintf("0x%x", logIndex), "removed": false,
 	}
+}
+
+// logsOf are the block's logs as eth_getLogs by blockHash answers them.
+func (b *simBlock) logsOf() []map[string]interface{} {
+	var out []map[string]interface{}
+	logIndex := 0
+	for i, tx := range b.txs {
+		for _, l := range tx {
+			out = append(out, b.logJSON(i, logIndex, l))
+			logIndex++
+		}
+	}
+	return out
+}
+
+// matched are the logIndexes of the block's logs that filter f matches.
+func (b *simBlock) matched(f int) []int {
+	var out []int
+	logIndex := 0
+	for _, tx := range b.txs {
+		for _, l := range tx {
+			if simFilters[f].matches(l) {
+				out = append(out, logIndex)
+			}
+			logIndex++
+		}
+	}
+	return out
 }
 
 // simFork is a branch some vendors serve instead of the canonical chain;
@@ -176,16 +347,30 @@ type simFork struct {
 type simChain struct {
 	mu       sync.Mutex
 	seed     int64
+	rng      *rand.Rand
 	minted   uint64
 	canon    []*simBlock
 	byHash   map[[32]byte]*simBlock
 	halted   bool
 	lastDeep time.Time
 	vendors  []*simVendor
+	// plan, while not empty, is the kind of the next blocks minted.
+	plan []simKind
+
+	// Receipts faults on every vendor: receipts calls fail until
+	// receiptsDown, eth_getLogs calls until logsDown; badBloom gives every
+	// receipt a wrong logsBloom. failNext makes the next matching block
+	// minted failHash, whose receipts and logs fail until failUntil.
+	receiptsDown time.Time
+	logsDown     time.Time
+	badBloom     bool
+	failNext     bool
+	failHash     [32]byte
+	failUntil    time.Time
 }
 
 func newSimChain(seed int64) *simChain {
-	c := &simChain{seed: seed, byHash: make(map[[32]byte]*simBlock)}
+	c := &simChain{seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 1)), byHash: make(map[[32]byte]*simBlock)}
 	start := time.Now().Add(-time.Duration(chaosHistoryBlocks) * chaosBlock)
 	var parent *simBlock
 	for i := range chaosHistoryBlocks {
@@ -196,19 +381,73 @@ func newSimChain(seed int64) *simChain {
 	return c
 }
 
+// mintLocked makes a block whose header hashes to its hash
+// (blockHashRecompute), its logsBloom the OR of its logs.
 func (c *simChain) mintLocked(parent *simBlock, number uint64, at time.Time, minority bool) *simBlock {
 	c.minted++
 	var ph [32]byte
 	if parent != nil {
 		ph = parent.hash
 	}
-	h := sha256.Sum256(fmt.Appendf(nil, "%d/%d/%d/%x", c.seed, c.minted, number, ph))
 	ts := uint64(at.Unix())
 	if parent != nil && ts < parent.ts {
 		ts = parent.ts
 	}
-	b := &simBlock{number: number, hash: h, parent: parent, ts: ts, minority: minority}
-	c.byHash[h] = b
+	kind := simKind(0)
+	if len(c.plan) > 0 {
+		kind, c.plan = c.plan[0], c.plan[1:]
+	} else {
+		switch r := c.rng.IntN(8); {
+		case r == 0:
+			kind = simEmpty
+		case r <= 2:
+			kind = simQuiet
+		default:
+			kind = simMatching
+		}
+	}
+	txs := simContent(c.rng, kind)
+	bloom := make([]byte, logfilter.BloomLen)
+	tag := fmt.Sprintf("%d/%d", c.seed, c.minted)
+	for i, tx := range txs {
+		simLogBloom(bloom, tag, i, tx)
+	}
+	hdr := &gethtypes.Header{
+		ParentHash:  gethcommon.Hash(ph),
+		UncleHash:   gethtypes.EmptyUncleHash,
+		Coinbase:    gethcommon.HexToAddress("0x0000000000000000000000000000000000000001"),
+		TxHash:      gethtypes.EmptyTxsHash,
+		ReceiptHash: gethtypes.EmptyReceiptsHash,
+		Bloom:       gethtypes.BytesToBloom(bloom),
+		Difficulty:  big.NewInt(0),
+		Number:      new(big.Int).SetUint64(number),
+		GasLimit:    30_000_000,
+		Time:        ts,
+		Extra:       fmt.Appendf(nil, "%d/%d", c.seed, c.minted),
+		BaseFee:     big.NewInt(7),
+	}
+	if len(txs) > 0 {
+		hdr.TxHash = gethcommon.Hash(sha256.Sum256(fmt.Appendf(nil, "txs/%d/%d", c.seed, c.minted)))
+		hdr.ReceiptHash = gethcommon.Hash(sha256.Sum256(fmt.Appendf(nil, "receipts/%d/%d", c.seed, c.minted)))
+		hdr.GasUsed = uint64(len(txs)) * 21000
+	}
+	raw, err := hdr.MarshalJSON()
+	if err != nil {
+		panic(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	fields["size"] = json.RawMessage(`"0x220"`)
+	fields["transactions"] = json.RawMessage(`[]`)
+	fields["uncles"] = json.RawMessage(`[]`)
+	raw, _ = json.Marshal(fields)
+	b := &simBlock{number: number, hash: [32]byte(hdr.Hash()), parent: parent, ts: ts, minority: minority, kind: kind, tag: tag, txs: txs, raw: raw}
+	c.byHash[b.hash] = b
+	if c.failNext && kind == simMatching && !minority {
+		c.failNext, c.failHash = false, b.hash
+	}
 	return b
 }
 
@@ -333,10 +572,11 @@ type simRPCError struct {
 // simVendor is one mocked vendor of the chain: its view of the chain and
 // the faults it currently has. View and faults are guarded by chain.mu.
 type simVendor struct {
-	id    string
-	ws    bool
-	chain *simChain
-	url   string
+	id     string
+	vendor string // upstreams of one vendor share it
+	ws     bool
+	chain  *simChain
+	url    string
 
 	tip           *simBlock
 	seen          map[[32]byte]bool
@@ -349,20 +589,36 @@ type simVendor struct {
 	holdUntil     time.Time
 	conns         map[*websocket.Conn]string // newHeads subscription id, "" before one
 
-	connects    atomic.Int64
-	subscribes  atomic.Int64
-	refused     atomic.Int64
-	throttled   atomic.Int64
-	lateAnswers atomic.Int64
-	lagAnswers  atomic.Int64
-	minorityOut atomic.Int64
+	// Receipts faults: null answers, answers without their last 10
+	// receipts, answers late by lateReceipts, -32601 for
+	// eth_getBlockReceipts, receipts with a wrong logsBloom.
+	nullReceipts  bool
+	truncReceipts bool
+	lateReceipts  time.Duration
+	noReceipts    bool
+	wrongBloom    bool
+
+	connects      atomic.Int64
+	subscribes    atomic.Int64
+	logsSubscribe atomic.Int64 // eth_subscribe logs: never expected
+	refused       atomic.Int64
+	throttled     atomic.Int64
+	lateAnswers   atomic.Int64
+	lagAnswers    atomic.Int64
+	minorityOut   atomic.Int64
+	getLogsCalls  atomic.Int64
 
 	byNumberMu sync.Mutex
 	byNumber   map[uint64]int
+	// receiptsCalls counts eth_getBlockReceipts calls per block, served
+	// the blocks answered with their full receipts.
+	receiptsCalls map[[32]byte]int
+	served        map[[32]byte]bool
 }
 
-func (c *simChain) addVendor(t *testing.T, id string, ws bool) *simVendor {
-	v := &simVendor{id: id, ws: ws, chain: c, seen: make(map[[32]byte]bool), conns: make(map[*websocket.Conn]string), byNumber: make(map[uint64]int)}
+func (c *simChain) addVendor(t *testing.T, id, vendor string, ws bool) *simVendor {
+	v := &simVendor{id: id, vendor: vendor, ws: ws, chain: c, seen: make(map[[32]byte]bool), conns: make(map[*websocket.Conn]string),
+		byNumber: make(map[uint64]int), receiptsCalls: make(map[[32]byte]int), served: make(map[[32]byte]bool)}
 	c.mu.Lock()
 	v.setTipLocked(c.tipLocked())
 	c.vendors = append(c.vendors, v)
@@ -458,6 +714,9 @@ func (v *simVendor) answer(method string, params []interface{}) (interface{}, *s
 	c := v.chain
 	c.mu.Lock()
 	late := v.late
+	if method == "eth_getBlockReceipts" || method == "eth_getLogs" {
+		late += v.lateReceipts
+	}
 	c.mu.Unlock()
 	if late > 0 {
 		v.lateAnswers.Add(1)
@@ -490,6 +749,8 @@ func (v *simVendor) answer(method string, params []interface{}) (interface{}, *s
 		return fmt.Sprintf("0x%x", v.tip.number), nil
 	case "eth_getBalance":
 		return "0x0", nil
+	case "eth_getBlockReceipts", "eth_getLogs":
+		return v.receiptsLocked(method, params)
 	case "eth_getBlockByHash":
 		hs, _ := params[0].(string)
 		var h [32]byte
@@ -538,6 +799,65 @@ func (v *simVendor) answer(method string, params []interface{}) (interface{}, *s
 		return b.json(), nil
 	}
 	return "0x0", nil
+}
+
+// receiptsLocked answers eth_getBlockReceipts by hash or eth_getLogs by
+// blockHash under the chain's and the vendor's receipts faults.
+func (v *simVendor) receiptsLocked(method string, params []interface{}) (interface{}, *simRPCError) {
+	c := v.chain
+	var hs string
+	if method == "eth_getLogs" {
+		v.getLogsCalls.Add(1)
+		if f, ok := params[0].(map[string]interface{}); ok {
+			hs, _ = f["blockHash"].(string)
+		}
+	} else {
+		hs, _ = params[0].(string)
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(strings.ToLower(hs), "0x"))
+	if err != nil || len(raw) != 32 {
+		return nil, &simRPCError{-32602, "invalid block hash"}
+	}
+	h := [32]byte(raw)
+	now := time.Now()
+	if method == "eth_getBlockReceipts" {
+		v.receiptsCalls[h]++
+		if v.noReceipts {
+			return nil, &simRPCError{-32601, "the method eth_getBlockReceipts does not exist/is not available"}
+		}
+	}
+	switch {
+	case h == c.failHash && now.Before(c.failUntil),
+		method == "eth_getBlockReceipts" && now.Before(c.receiptsDown),
+		method == "eth_getLogs" && now.Before(c.logsDown):
+		return nil, &simRPCError{-32603, "receipts unavailable"}
+	}
+	b := c.byHash[h]
+	if b == nil || !v.seen[h] {
+		return nil, nil
+	}
+	if method == "eth_getLogs" {
+		return b.logsOf(), nil
+	}
+	if v.nullReceipts {
+		return nil, nil
+	}
+	drop := 0
+	if v.truncReceipts {
+		drop = 10
+	}
+	if drop == 0 && !v.wrongBloom && !c.badBloom {
+		v.served[h] = true
+	}
+	return b.receipts(v.wrongBloom || c.badBloom, drop), nil
+}
+
+// receiptsCallsOf is how many eth_getBlockReceipts calls the vendor got for
+// block h.
+func (v *simVendor) receiptsCallsOf(h [32]byte) int {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	return v.receiptsCalls[h]
 }
 
 func (v *simVendor) byNumberCalls(n uint64) int {
@@ -636,6 +956,9 @@ func (v *simVendor) handleWS(conn *websocket.Conn, req map[string]interface{}) {
 		v.throttled.Add(1)
 		_ = mockWriteJSON(conn, simReply(req["id"], nil, &simRPCError{-32005, "rate limit exceeded"}))
 	case method == "eth_subscribe":
+		if len(params) > 0 && params[0] == "logs" {
+			v.logsSubscribe.Add(1)
+		}
 		if len(params) == 0 || params[0] != "newHeads" {
 			_ = mockWriteJSON(conn, simReply(req["id"], "0xother", nil))
 			return
@@ -821,11 +1144,219 @@ func (cl *chaosClient) apply(s *chaosSeed, n uint64, h [32]byte) {
 	cl.notes = append(cl.notes, clientNote{at: now, number: n, hash: h})
 }
 
+// simLogKey names one log: its block and its index in the block.
+type simLogKey struct {
+	block [32]byte
+	index uint64
+}
+
+// chaosLogsClient is one ws logs subscription on simFilters[filter]. It
+// applies each log as a geth client does: removed:true drops a log it
+// holds, any other log is added.
+type chaosLogsClient struct {
+	name   string
+	filter int
+	conn   *websocket.Conn
+
+	mu        sync.Mutex
+	held      map[simLogKey]uint64 // log -> its block number
+	first     uint64               // lowest block of an added log, 0 before one
+	high      uint64               // highest block of an added log
+	added     int
+	ended     time.Time
+	endTip    uint64
+	closeCode int  // the server's close code, 0 when it did not close
+	byTest    bool // the test closed it
+	problems  []string
+}
+
+// subscribeLogs dials a ws connection and subscribes simFilters[filter]; on
+// a refusal it returns the JSON-RPC error and closes the connection.
+func (s *chaosSeed) subscribeLogs(filter int) (*websocket.Conn, map[string]interface{}) {
+	conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", s.addr), nil)
+	require.NoError(s.t, err)
+	require.NoError(s.t, conn.WriteMessage(websocket.TextMessage,
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",`+simFilters[filter].params+`]}`)))
+	require.NoError(s.t, conn.SetReadDeadline(time.Now().Add(15*time.Second)))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(s.t, err)
+	var resp map[string]interface{}
+	require.NoError(s.t, json.Unmarshal(msg, &resp))
+	if e, ok := resp["error"].(map[string]interface{}); ok {
+		_ = conn.Close()
+		return nil, e
+	}
+	require.IsType(s.t, "", resp["result"], "logs subscribe answer %s", msg)
+	return conn, nil
+}
+
+// dialLogs opens a logs client on each filter, retrying while subscribes
+// are refused.
+func (s *chaosSeed) dialLogs(name string) {
+	for f := range simFilters {
+		var conn *websocket.Conn
+		require.Eventually(s.t, func() bool {
+			conn, _ = s.subscribeLogs(f)
+			return conn != nil
+		}, 15*time.Second, chaosBlock, "logs subscribe on filter %d is accepted", f)
+		cl := &chaosLogsClient{name: fmt.Sprintf("%s/%d", name, f), filter: f, conn: conn, held: make(map[simLogKey]uint64)}
+		s.mu.Lock()
+		s.logs = append(s.logs, cl)
+		s.mu.Unlock()
+		go cl.read(s)
+	}
+}
+
+// openLogs are the logs clients still open.
+func (s *chaosSeed) openLogs() []*chaosLogsClient {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*chaosLogsClient
+	for _, cl := range s.logs {
+		cl.mu.Lock()
+		if cl.ended.IsZero() {
+			out = append(out, cl)
+		}
+		cl.mu.Unlock()
+	}
+	return out
+}
+
+// closed1013 counts the logs clients the server closed with 1013 since t.
+func (s *chaosSeed) closed1013(since time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, cl := range s.logs {
+		cl.mu.Lock()
+		if cl.closeCode == websocket.CloseTryAgainLater && cl.ended.After(since) {
+			n++
+		}
+		cl.mu.Unlock()
+	}
+	return n
+}
+
+func (cl *chaosLogsClient) read(s *chaosSeed) {
+	for {
+		_ = cl.conn.SetReadDeadline(time.Now().Add(time.Minute))
+		_, msg, err := cl.conn.ReadMessage()
+		if err != nil {
+			cl.mu.Lock()
+			cl.ended, cl.endTip = time.Now(), s.chain.tip().number
+			var ce *websocket.CloseError
+			if errors.As(err, &ce) {
+				cl.closeCode = ce.Code
+			}
+			cl.mu.Unlock()
+			return
+		}
+		var note struct {
+			Method string `json:"method"`
+			Params struct {
+				Result struct {
+					BlockHash   string `json:"blockHash"`
+					BlockNumber string `json:"blockNumber"`
+					LogIndex    string `json:"logIndex"`
+					Removed     bool   `json:"removed"`
+				} `json:"result"`
+			} `json:"params"`
+		}
+		r := &note.Params.Result
+		if json.Unmarshal(msg, &note) != nil || note.Method != "eth_subscription" {
+			cl.problem("unexpected message %s", msg)
+			continue
+		}
+		raw, err1 := hex.DecodeString(strings.TrimPrefix(r.BlockHash, "0x"))
+		n, err2 := common.HexToInt64(r.BlockNumber)
+		idx, err3 := common.HexToInt64(r.LogIndex)
+		if err1 != nil || err2 != nil || err3 != nil || len(raw) != 32 {
+			cl.problem("malformed log %s", msg)
+			continue
+		}
+		cl.apply(s, simLogKey{block: [32]byte(raw), index: uint64(idx)}, uint64(n), r.Removed)
+	}
+}
+
+func (cl *chaosLogsClient) problem(format string, args ...interface{}) {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	cl.problems = append(cl.problems, fmt.Sprintf(format, args...))
+}
+
+func (cl *chaosLogsClient) apply(s *chaosSeed, k simLogKey, n uint64, removed bool) {
+	b := s.chain.block(k.block)
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	switch {
+	case b == nil || b.number != n:
+		cl.problems = append(cl.problems, fmt.Sprintf("log of block %d %x: no such block", n, k.block[:4]))
+		return
+	case b.minority:
+		cl.problems = append(cl.problems, fmt.Sprintf("log of block %d %x: a minority fork reached the client", n, k.block[:4]))
+	case !slices.Contains(b.matched(cl.filter), int(k.index)):
+		cl.problems = append(cl.problems, fmt.Sprintf("log %d of block %d: the filter does not match it", k.index, n))
+	}
+	_, held := cl.held[k]
+	switch {
+	case removed && !held:
+		cl.problems = append(cl.problems, fmt.Sprintf("removed:true for log %d of block %d, never sent", k.index, n))
+	case removed:
+		delete(cl.held, k)
+	case held:
+		cl.problems = append(cl.problems, fmt.Sprintf("log %d of block %d sent twice", k.index, n))
+	default:
+		cl.held[k] = n
+		cl.added++
+		if cl.first == 0 || n < cl.first {
+			cl.first = n
+		}
+		cl.high = max(cl.high, n)
+	}
+}
+
+// logsDiffLocked compares the client's logs of blocks lo..hi with the
+// canonical chain's logs its filter matches; "" when equal.
+func (cl *chaosLogsClient) logsDiffLocked(s *chaosSeed, lo, hi uint64) string {
+	want := make(map[simLogKey]uint64)
+	for n := lo; n <= hi; n++ {
+		b := s.chain.canonAt(n)
+		if b == nil {
+			return fmt.Sprintf("no canonical block %d", n)
+		}
+		for _, i := range b.matched(cl.filter) {
+			want[simLogKey{block: b.hash, index: uint64(i)}] = n
+		}
+	}
+	for k, n := range cl.held {
+		if n < lo || n > hi {
+			continue
+		}
+		if _, ok := want[k]; !ok {
+			return fmt.Sprintf("holds log %d of block %d %x, not canonical", k.index, n, k.block[:4])
+		}
+		delete(want, k)
+	}
+	for k, n := range want {
+		return fmt.Sprintf("misses log %d of block %d %x", k.index, n, k.block[:4])
+	}
+	return ""
+}
+
 //
 // --- one seed ---
 //
 
 type interval struct{ from, to time.Time }
+
+// closeWindow is when a fault may close logs clients with 1013. fork is the
+// first block a reorg deeper than the window orphaned, 0 for a fault that
+// orphans none: a client it closed keeps the orphans' logs, never told
+// removed, and is judged below it.
+type closeWindow struct {
+	interval
+	fork uint64
+}
 
 type chaosSeed struct {
 	t           *testing.T
@@ -845,8 +1376,13 @@ type chaosSeed struct {
 
 	mu       sync.Mutex
 	clients  []*chaosClient
-	quiet    []interval // no vendor serves the chain
+	logs     []*chaosLogsClient
+	quiet    []interval    // no vendor serves the chain
+	closeOK  []closeWindow // a logs client may be closed with 1013
 	occurred map[string]string
+	paths    map[string]string
+	// ignore are methods every upstream ignores.
+	ignore []string
 
 	breakerMu     sync.Mutex
 	breakerOpened string
@@ -857,12 +1393,13 @@ type chaosSeed struct {
 }
 
 func newChaosSeed(t *testing.T, seed int64, pollSources bool) *chaosSeed {
-	s := &chaosSeed{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 0)), pollSources: pollSources, occurred: make(map[string]string)}
+	s := &chaosSeed{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 0)), pollSources: pollSources,
+		occurred: make(map[string]string), paths: make(map[string]string)}
 	s.chain = newSimChain(seed)
-	s.wsA = s.chain.addVendor(t, "ws-a", true)
-	s.wsB = s.chain.addVendor(t, "ws-b", true)
-	s.httpA = s.chain.addVendor(t, "http-a", false)
-	s.httpB = s.chain.addVendor(t, "http-b", false)
+	s.wsA = s.chain.addVendor(t, "ws-a", "vendor-a", true)
+	s.wsB = s.chain.addVendor(t, "ws-b", "vendor-b", true)
+	s.httpA = s.chain.addVendor(t, "http-a", "vendor-a", false)
+	s.httpB = s.chain.addVendor(t, "http-b", "vendor-b", false)
 	s.vendors = []*simVendor{s.wsA, s.wsB, s.httpA, s.httpB}
 	s.hook = &chaosHook{s: s, first: make(map[*evm.ChainTracker]indexer.Cursor), firstFrom: make(map[*evm.ChainTracker]string)}
 	fn := s.hook.on
@@ -883,6 +1420,8 @@ func (s *chaosSeed) config() *common.Config {
 		u := sourceUpstream(v.id, v.url, source)
 		u.Evm.StatePollerInterval = common.Duration(chaosStatePoll)
 		u.RateLimitBudget = "budget-" + v.id
+		u.VendorName = v.vendor
+		u.IgnoreMethods = s.ignore
 		u.Failsafe = []*common.FailsafeConfig{{
 			MatchMethod: "*",
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
@@ -943,9 +1482,15 @@ func (s *chaosSeed) stopERPC() {
 	s.cancel()
 	s.srv = nil
 	s.mu.Lock()
-	clients := slices.Clone(s.clients)
+	clients, logs := slices.Clone(s.clients), slices.Clone(s.logs)
 	s.mu.Unlock()
 	for _, cl := range clients {
+		_ = cl.conn.Close()
+	}
+	for _, cl := range logs {
+		cl.mu.Lock()
+		cl.byTest = cl.ended.IsZero()
+		cl.mu.Unlock()
 		_ = cl.conn.Close()
 	}
 	if nw := s.nw.Load(); nw != nil {
@@ -1049,6 +1594,7 @@ func (s *chaosSeed) run(faults []string) {
 	}
 	s.dialClient("first", nil)
 	s.dialClient("slow", slow)
+	s.dialLogs("first")
 	s.blocks(4)
 
 	var bg sync.WaitGroup
@@ -1060,6 +1606,7 @@ func (s *chaosSeed) run(faults []string) {
 			s.dialClient("late-1", nil)
 		case len(order) - 1:
 			s.dialClient("late-2", nil)
+			s.dialLogs("late")
 		}
 		if s.rng.IntN(2) == 0 {
 			s.reorgSmall()
@@ -1079,6 +1626,8 @@ func (s *chaosSeed) run(faults []string) {
 		s.reorgSmall()
 	}
 
+	s.checkSkips()
+
 	// Every vendor serves the canonical chain again; clients catch up.
 	s.blocks(8)
 	stop()
@@ -1097,9 +1646,83 @@ func (s *chaosSeed) run(faults []string) {
 		}
 		return true
 	}, 15*time.Second, 20*time.Millisecond, "every open client reaches the canonical head %d", tip.number)
+	diff := "not checked"
+	for deadline := time.Now().Add(15 * time.Second); diff != "" && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		diff = ""
+		for _, cl := range s.openLogs() {
+			cl.mu.Lock()
+			if cl.first != 0 {
+				if d := cl.logsDiffLocked(s, cl.first, tip.number); d != "" {
+					diff = cl.name + ": " + d
+				}
+			}
+			cl.mu.Unlock()
+		}
+	}
+	require.Empty(s.t, diff, "every open logs client holds the canonical logs up to %d", tip.number)
 	end := time.Now()
 	s.stopERPC()
 	s.judge(end)
+}
+
+// checkSkips mints 9 blocks with matching logs, then a quiet block no
+// filter may match and an empty block: once 8 matching blocks with
+// transactions passed the bloom check in a row, neither is fetched.
+func (s *chaosSeed) checkSkips() {
+	c := s.chain
+	c.mu.Lock()
+	plan := make([]simKind, 0, 11)
+	for range 9 {
+		plan = append(plan, simMatching)
+	}
+	c.plan = append(plan, simQuiet, simEmpty)
+	from := c.tipLocked().number
+	c.mu.Unlock()
+	s.blocks(14)
+	quiet, empty := s.chain.canonAt(from+10), s.chain.canonAt(from+11)
+	require.True(s.t, quiet != nil && quiet.kind == simQuiet && empty != nil && empty.kind == simEmpty,
+		"the planned quiet and empty blocks follow %d", from)
+	require.Zero(s.t, s.receiptsCallsOf(quiet.hash), "a block no filter may match is not fetched after 8 matching blocks")
+	require.Zero(s.t, s.receiptsCallsOf(empty.hash), "a block without transactions is never fetched")
+	s.path(pathBloomSkip, fmt.Sprintf("quiet block %d not fetched", quiet.number))
+	s.path(pathEmptySkip, fmt.Sprintf("empty block %d not fetched", empty.number))
+}
+
+func (s *chaosSeed) receiptsCallsOf(h [32]byte) int {
+	n := 0
+	for _, v := range s.vendors {
+		n += v.receiptsCallsOf(h)
+	}
+	return n
+}
+
+// vendorOf are the upstreams of vendor name.
+func (s *chaosSeed) vendorOf(name string) []*simVendor {
+	var out []*simVendor
+	for _, v := range s.vendors {
+		if v.vendor == name {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// Receipts paths of the chain feed each seed may run (spec §10).
+const (
+	pathRotation  = "vendor rotation after a wrong answer"
+	pathBloomOff  = "bloom check off for the network, then on"
+	pathFallback  = "eth_getLogs fallback"
+	pathBloomSkip = "bloom skip"
+	pathEmptySkip = "empty block skip"
+)
+
+var chaosPaths = []string{pathRotation, pathBloomOff, pathFallback, pathBloomSkip, pathEmptySkip}
+
+func (s *chaosSeed) path(p, evidence string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paths[p] = evidence
+	s.t.Logf("receipts path %q: %s", p, evidence)
 }
 
 func (s *chaosSeed) inject(f string) {
@@ -1136,6 +1759,24 @@ func (s *chaosSeed) inject(f string) {
 		s.mailboxBurst()
 	case fPanicOnce:
 		s.panicOnce()
+	case fNullReceipts:
+		s.nullReceipts()
+	case fTruncReceipts:
+		s.truncReceipts()
+	case fLateReceipts:
+		s.lateReceipts()
+	case fNoReceipts:
+		s.noReceipts()
+	case fReceiptsDown13:
+		s.receiptsDown13()
+	case fBlockDown60:
+		s.blockDown60()
+	case fReceiptsDown90:
+		s.receiptsDown90()
+	case fWrongBloom:
+		s.wrongBloom()
+	case fChainBloom:
+		s.chainBloom()
 	case fPanicThrice:
 		s.panicThrice()
 	default:
@@ -1201,11 +1842,20 @@ func (s *chaosSeed) aheadFork() {
 	s.occur(fAheadFork, fmt.Sprintf("%s led the canonical head by %d blocks on its fork", v.id, lead))
 }
 
+// deepReorg: the logs taps' fork may leave the window, so they end with
+// their transport's signal, 1013 (spec §13.1); new ones replace them.
 func (s *chaosSeed) deepReorg() {
 	depth := chaosReorgWindow + 4
+	from := time.Now()
 	tip := s.chain.reorg(depth)
-	s.blocks(4)
-	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d", depth, chaosReorgWindow, tip.number))
+	s.allowCloses(from, time.Now(), tip.number-uint64(depth))
+	// Closes spread over logsCloseSpread: count them once it has passed.
+	time.Sleep(time.Until(from.Add(logsCloseBound())))
+	closed := s.closed1013(from)
+	if closed > 0 {
+		s.dialLogs("after-deep-reorg")
+	}
+	s.occur(fDeepReorg, fmt.Sprintf("depth %d > reorgWindow %d, new head %d; %d logs clients closed with 1013", depth, chaosReorgWindow, tip.number, closed))
 }
 
 func (s *chaosSeed) silentVendor() {
@@ -1266,6 +1916,9 @@ func (s *chaosSeed) vendorDown(v *simVendor) {
 	s.occur(fDown, fmt.Sprintf("%s down for 50 blocks, refused %d", v.id, v.refused.Load()))
 }
 
+// allDown also fails every receipts and logs fetch for longer than the 90s
+// outage, so it may close logs clients with 1013 as that one does; new ones
+// replace them.
 func (s *chaosSeed) allDown() {
 	from := time.Now()
 	for _, v := range s.vendors {
@@ -1275,9 +1928,15 @@ func (s *chaosSeed) allDown() {
 	for _, v := range s.vendors {
 		v.setDown(false)
 	}
-	s.addQuiet(interval{from, time.Now()})
-	s.blocks(4)
-	s.occur(fAllDown, fmt.Sprintf("all 4 vendors down for %d blocks", chaosBlocksFor(2*time.Minute)))
+	up := time.Now()
+	s.addQuiet(interval{from, up})
+	s.allowCloses(from, up, 0)
+	time.Sleep(time.Until(up.Add(logsCloseBound())))
+	closed := s.closed1013(from)
+	if closed > 0 {
+		s.dialLogs("after-all-down")
+	}
+	s.occur(fAllDown, fmt.Sprintf("all 4 vendors down for %d blocks; %d logs clients closed with 1013", chaosBlocksFor(2*time.Minute), closed))
 }
 
 func (s *chaosSeed) wsCounts() []int64 {
@@ -1488,6 +2147,7 @@ func (s *chaosSeed) restart() {
 	c.mu.Unlock()
 	writePushes(pushes)
 	s.dialClient("restart-2", nil)
+	s.dialLogs("restart")
 	s.blocks(3)
 	s.setFork(nil, m)
 	s.addQuiet(interval{from, time.Now()})
@@ -1744,7 +2404,46 @@ func (s *chaosSeed) judge(end time.Time) {
 	}
 	s.mu.Lock()
 	clients, quiet := slices.Clone(s.clients), slices.Clone(s.quiet)
+	logs, closeOK := slices.Clone(s.logs), slices.Clone(s.closeOK)
 	s.mu.Unlock()
+	for _, cl := range logs {
+		cl.mu.Lock()
+		require.Empty(t, cl.problems, "logs client %s", cl.name)
+		closed := !cl.byTest && cl.closeCode == websocket.CloseTryAgainLater
+		var fork uint64
+		if closed {
+			allowed := false
+			for _, w := range closeOK {
+				if !cl.ended.Before(w.from) && !cl.ended.After(w.to) {
+					allowed = true
+					if w.fork != 0 && (fork == 0 || w.fork < fork) {
+						fork = w.fork
+					}
+				}
+			}
+			require.True(t, allowed, "logs client %s closed with 1013 at %s with no fault that calls for it", cl.name, cl.ended.Format(time.StampMilli))
+		}
+		// Clients open at the end were judged up to the head. A client that
+		// ended earlier is judged where a reorg after its end can no
+		// longer reach: 3 blocks, or past the window when 1013 closed it,
+		// and below the fork of the deep reorg that closed it.
+		if cl.first != 0 && cl.ended.Before(end) {
+			reach := uint64(4)
+			if closed {
+				reach = uint64(chaosReorgWindow) + 5
+			}
+			if cl.endTip > reach && cl.endTip-reach >= cl.first {
+				to := min(cl.high, cl.endTip-reach)
+				if fork != 0 {
+					to = min(to, fork-1)
+				}
+				if to >= cl.first {
+					require.Empty(t, cl.logsDiffLocked(s, cl.first, to), "logs client %s, blocks %d..%d", cl.name, cl.first, to)
+				}
+			}
+		}
+		cl.mu.Unlock()
+	}
 	for _, cl := range clients {
 		cl.mu.Lock()
 		require.Empty(t, cl.problems, "client %s", cl.name)
@@ -1786,6 +2485,312 @@ func (s *chaosSeed) judge(end time.Time) {
 		}
 		cl.mu.Unlock()
 	}
+}
+
+//
+// --- receipts faults ---
+//
+
+// logsCloseBound is how long after a receipts fault ends logs clients may
+// still be closed with 1013: the receipts wait, the close spread, slack.
+func logsCloseBound() time.Duration {
+	return logsReceiptsWait.Load() + logsCloseSpread.Load() + 5*chaosBlock
+}
+
+func (s *chaosSeed) allowCloses(from, to time.Time, fork uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeOK = append(s.closeOK, closeWindow{interval{from, to.Add(logsCloseBound())}, fork})
+}
+
+// setVendor applies fn to every upstream of vendor name.
+func (s *chaosSeed) setVendor(name string, fn func(v *simVendor)) {
+	s.chain.mu.Lock()
+	defer s.chain.mu.Unlock()
+	for _, v := range s.vendorOf(name) {
+		fn(v)
+	}
+}
+
+func otherVendor(name string) string {
+	if name == "vendor-a" {
+		return "vendor-b"
+	}
+	return "vendor-a"
+}
+
+// rotated counts the canonical blocks from..to that vendor bad was asked
+// for and the other vendor then served in full.
+func (s *chaosSeed) rotated(bad string, from, to uint64) int {
+	badUps, goodUps := s.vendorOf(bad), s.vendorOf(otherVendor(bad))
+	c := s.chain
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for k := from; k <= to; k++ {
+		b := c.canonAtLocked(k)
+		if b == nil {
+			continue
+		}
+		asked, served := false, false
+		for _, v := range badUps {
+			asked = asked || v.receiptsCalls[b.hash] > 0
+		}
+		for _, v := range goodUps {
+			served = served || v.served[b.hash]
+		}
+		if asked && served {
+			n++
+		}
+	}
+	return n
+}
+
+// callsTo sums the receipts calls vendor name got for canonical blocks
+// from..to.
+func (s *chaosSeed) callsTo(name string, from, to uint64) int {
+	n := 0
+	for k := from; k <= to; k++ {
+		if b := s.chain.canonAt(k); b != nil {
+			for _, v := range s.vendorOf(name) {
+				n += v.receiptsCallsOf(b.hash)
+			}
+		}
+	}
+	return n
+}
+
+// receiptsVendor is the vendor of the first upstream a receipts sweep asks
+// now: the selection order, past upstreams whose vendor is down. A fault set
+// on any other vendor is never exercised while the first one answers.
+func (s *chaosSeed) receiptsVendor() string {
+	nw := s.nw.Load()
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x` + strings.Repeat("0", 64) + `"]}`))
+	req.SetNetwork(nw)
+	byId := make(map[string]*simVendor, len(s.vendors))
+	for _, v := range s.vendors {
+		byId[v.id] = v
+	}
+	for _, u := range nw.trackerUpstreams(context.Background(), req, "eth_getBlockReceipts", "") {
+		if v := byId[u.Id()]; v != nil && !v.isDown() {
+			return v.vendor
+		}
+	}
+	s.t.Fatalf("no upstream serves a receipts sweep")
+	return ""
+}
+
+// faultyVendor gives the receipts fault set to the vendor a sweep asks
+// first, for at least 10 and at most 30 blocks: until that vendor was asked
+// and, when rotates, the other vendor served a block it was asked for. It
+// returns the vendor, the blocks of the fault, the receipts calls the vendor
+// got in them, and how many blocks rotated.
+func (s *chaosSeed) faultyVendor(rotates bool, set func(v *simVendor, on bool)) (name string, from, to uint64, calls, rotated int) {
+	require.NotEmpty(s.t, s.openLogs(), "logs clients are open, so receipts are wanted")
+	name = s.receiptsVendor()
+	from = s.chain.tip().number + 1
+	s.setVendor(name, func(v *simVendor) { set(v, true) })
+	for i := 0; i < 30; i += 2 {
+		s.blocks(2)
+		to = s.chain.tip().number
+		calls, rotated = s.callsTo(name, from, to), s.rotated(name, from, to)
+		if i >= 10 && calls > 0 && (!rotates || rotated > 0) {
+			break
+		}
+	}
+	s.setVendor(name, func(v *simVendor) { set(v, false) })
+	require.Positive(s.t, calls, "%s, first in the receipts sweep, is asked for blocks %d..%d during its fault", name, from, to)
+	if rotates {
+		require.Positive(s.t, rotated, "blocks %s answered wrong in %d..%d are refetched from %s", name, from, to, otherVendor(name))
+	}
+	return name, from, to, calls, rotated
+}
+
+func (s *chaosSeed) nullReceipts() {
+	name, from, to, calls, _ := s.faultyVendor(false, func(v *simVendor, on bool) { v.nullReceipts = on })
+	s.occur(fNullReceipts, fmt.Sprintf("%s answered null to %d receipts calls, blocks %d..%d", name, calls, from, to))
+}
+
+func (s *chaosSeed) truncReceipts() {
+	name, from, to, _, rotated := s.faultyVendor(true, func(v *simVendor, on bool) { v.truncReceipts = on })
+	s.path(pathRotation, fmt.Sprintf("%d truncated blocks refetched from %s", rotated, otherVendor(name)))
+	s.occur(fTruncReceipts, fmt.Sprintf("%s's 2 upstreams dropped the last 10 receipts, blocks %d..%d; %d refetched from the other vendor", name, from, to, rotated))
+}
+
+func (s *chaosSeed) wrongBloom() {
+	name, from, to, _, rotated := s.faultyVendor(true, func(v *simVendor, on bool) { v.wrongBloom = on })
+	s.path(pathRotation, fmt.Sprintf("%d wrong-bloom blocks refetched from %s", rotated, otherVendor(name)))
+	s.occur(fWrongBloom, fmt.Sprintf("%s answered a wrong bloom, blocks %d..%d; %d refetched from the other vendor", name, from, to, rotated))
+}
+
+func (s *chaosSeed) noReceipts() {
+	name, from, to, calls, _ := s.faultyVendor(false, func(v *simVendor, on bool) { v.noReceipts = on })
+	s.occur(fNoReceipts, fmt.Sprintf("%s refused %d eth_getBlockReceipts calls, blocks %d..%d", name, calls, from, to))
+}
+
+func (s *chaosSeed) lateReceipts() {
+	var before int64
+	s.chain.mu.Lock()
+	for _, v := range s.vendors {
+		before += v.lateAnswers.Load()
+		v.lateReceipts = 2 * chaosBlock
+	}
+	s.chain.mu.Unlock()
+	s.blocks(10)
+	var after int64
+	s.chain.mu.Lock()
+	for _, v := range s.vendors {
+		v.lateReceipts = 0
+		after += v.lateAnswers.Load()
+	}
+	s.chain.mu.Unlock()
+	require.Positive(s.t, after-before, "vendors answer receipts late")
+	s.occur(fLateReceipts, fmt.Sprintf("%d receipts answers 2 block times late", after-before))
+}
+
+func (s *chaosSeed) getLogsCalls() int64 {
+	var n int64
+	for _, v := range s.vendors {
+		n += v.getLogsCalls.Load()
+	}
+	return n
+}
+
+// receiptsDown13 fails receipts on every vendor for 13s, scaled, on blocks
+// with matching logs. Scaled, 13s is 2 block times, and a job's retry waits
+// out the key's backoff, so the outage holds, at most 20 blocks, until a
+// job has failed for LogsFallbackAfter and switched to eth_getLogs.
+func (s *chaosSeed) receiptsDown13() {
+	require.NotEmpty(s.t, s.openLogs(), "logs clients are open, so receipts are wanted")
+	before := s.getLogsCalls()
+	from := time.Now()
+	c := s.chain
+	c.mu.Lock()
+	c.plan = []simKind{simMatching, simMatching, simMatching}
+	c.receiptsDown = from.Add(chaosScaled(13 * time.Second))
+	c.mu.Unlock()
+	var calls int64
+	for range 20 {
+		s.blocks(1)
+		if calls = s.getLogsCalls() - before; calls > 0 {
+			break
+		}
+		c.mu.Lock()
+		if until := time.Now().Add(chaosBlock); until.After(c.receiptsDown) {
+			c.receiptsDown = until
+		}
+		c.mu.Unlock()
+	}
+	c.mu.Lock()
+	held := c.receiptsDown.Sub(from)
+	c.mu.Unlock()
+	require.Positive(s.t, calls, "receipts failing past %s on every vendor switch blocks to eth_getLogs", evm.LogsFallbackAfter.Load())
+	s.blocks(4)
+	s.path(pathFallback, fmt.Sprintf("%d eth_getLogs calls by blockHash", calls))
+	s.occur(fReceiptsDown13, fmt.Sprintf("receipts failed on every vendor for %s; %d eth_getLogs calls", held.Round(time.Millisecond), calls))
+}
+
+// awaitCloses waits until every logs client of open was closed with 1013,
+// then opens new ones.
+func (s *chaosSeed) awaitCloses(open []*chaosLogsClient, name string) {
+	require.Eventually(s.t, func() bool {
+		for _, cl := range open {
+			cl.mu.Lock()
+			closed := cl.closeCode == websocket.CloseTryAgainLater
+			cl.mu.Unlock()
+			if !closed {
+				return false
+			}
+		}
+		return true
+	}, logsCloseBound()+5*time.Second, 20*time.Millisecond, "every logs client is closed with 1013")
+	s.dialLogs(name)
+}
+
+func (s *chaosSeed) blockDown60() {
+	from := time.Now()
+	open := s.openLogs()
+	c := s.chain
+	c.mu.Lock()
+	c.failNext, c.failUntil = true, time.Now().Add(time.Hour)
+	c.mu.Unlock()
+	var b *simBlock
+	require.Eventually(s.t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.failNext {
+			return false
+		}
+		b = c.byHash[c.failHash]
+		c.failUntil = time.Now().Add(chaosScaled(60*time.Second) + 2*chaosBlock)
+		return true
+	}, 10*time.Second, 5*time.Millisecond, "a block with matching logs is minted")
+	c.mu.Lock()
+	until := c.failUntil
+	c.mu.Unlock()
+	s.allowCloses(from, until, 0)
+	time.Sleep(time.Until(until))
+	s.awaitCloses(open, "after-block")
+	s.occur(fBlockDown60, fmt.Sprintf("block %d failed on every vendor for %s; %d logs clients closed with 1013", b.number, chaosScaled(60*time.Second), s.closed1013(from)))
+}
+
+func (s *chaosSeed) receiptsDown90() {
+	from := time.Now()
+	open := s.openLogs()
+	until := from.Add(chaosScaled(90 * time.Second))
+	s.chain.mu.Lock()
+	s.chain.receiptsDown, s.chain.logsDown = until, until
+	s.chain.mu.Unlock()
+	s.allowCloses(from, until, 0)
+	var refusedAt time.Time
+	var refusal map[string]interface{}
+	for time.Now().Before(until) && refusedAt.IsZero() {
+		conn, e := s.subscribeLogs(0)
+		if conn != nil {
+			_ = conn.Close()
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		refusedAt, refusal = time.Now(), e
+	}
+	require.False(s.t, refusedAt.IsZero(), "a logs subscribe is refused while every receipts and logs fetch fails")
+	require.GreaterOrEqual(s.t, refusedAt.Sub(from), evm.ReceiptsOutageAfter.Load(), "logs subscribes are refused only after %s of failures", evm.ReceiptsOutageAfter.Load())
+	require.EqualValues(s.t, common.JsonRpcErrorUnsupportedException, refusal["code"], "the refusal is ErrNoSubscriptionSource: %v", refusal)
+	time.Sleep(time.Until(until))
+	s.awaitCloses(open, "after-outage")
+	s.occur(fReceiptsDown90, fmt.Sprintf("every receipts and logs fetch failed for %s; subscribe refused after %s; %d logs clients closed with 1013",
+		chaosScaled(90*time.Second), refusedAt.Sub(from).Round(time.Millisecond), s.closed1013(from)))
+}
+
+// chainBloom gives every vendor's receipts a bloom other than the header's:
+// the network's check turns off and their logs reach clients; checkSkips
+// later proves it turned on again.
+func (s *chaosSeed) chainBloom() {
+	c := s.chain
+	c.mu.Lock()
+	c.badBloom = true
+	from := c.tipLocked().number + 1
+	c.mu.Unlock()
+	s.blocks(4)
+	var got uint64
+	require.Eventually(s.t, func() bool {
+		to := s.chain.tip().number
+		for _, cl := range s.openLogs() {
+			cl.mu.Lock()
+			for k, n := range cl.held {
+				if n >= from && n <= to && s.chain.canonAt(n) != nil && s.chain.canonAt(n).hash == k.block {
+					got = n
+				}
+			}
+			cl.mu.Unlock()
+		}
+		return got != 0
+	}, 30*chaosBlock, 20*time.Millisecond, "logs of blocks whose receipts no vendor answers with the header's bloom reach clients")
+	c.mu.Lock()
+	c.badBloom = false
+	c.mu.Unlock()
+	s.path(pathBloomOff, fmt.Sprintf("logs of block %d delivered from mismatching receipts", got))
+	s.occur(fChainBloom, fmt.Sprintf("every vendor's receipts mismatched from block %d; check off, logs of block %d delivered", from, got))
 }
 
 func httptestServer(t *testing.T, h http.Handler) string {

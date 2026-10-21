@@ -3,6 +3,8 @@
 package logfilter
 
 import (
+	"encoding/hex"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -127,6 +129,89 @@ func Parse(params []any) *LogsFilter {
 
 	f.index()
 	return f
+}
+
+// ParseSubscribe parses the filter of an eth_subscribe logs request as geth
+// does: absent or an object whose address is a 20-byte hex value or a list
+// of them, and whose topics hold at most 4 positions, each null, a 32-byte
+// hex value or a list of them. fromBlock and toBlock are ignored, as for a
+// live geth subscription.
+func ParseSubscribe(filter any) (*LogsFilter, error) {
+	if filter == nil {
+		filter = map[string]any{}
+	}
+	obj, ok := filter.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("logs filter must be an object")
+	}
+	switch a := obj["address"].(type) {
+	case nil:
+	case string:
+		if !isHexBytes(a, 20) {
+			return nil, fmt.Errorf("invalid address %q", a)
+		}
+	case []any:
+		for _, v := range a {
+			if s, ok := v.(string); !ok || !isHexBytes(s, 20) {
+				return nil, fmt.Errorf("invalid address %v", v)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("invalid address %v", a)
+	}
+	var topics []any
+	switch ts := obj["topics"].(type) {
+	case nil:
+	case []any:
+		if len(ts) > 4 {
+			return nil, fmt.Errorf("too many topic positions: %d", len(ts))
+		}
+		topics = make([]any, len(ts))
+		for i, pos := range ts {
+			switch p := pos.(type) {
+			case nil:
+			case string:
+				if !isHexBytes(p, 32) {
+					return nil, fmt.Errorf("invalid topic %q", p)
+				}
+				topics[i] = p
+			case []any:
+				topics[i] = p
+				for _, v := range p {
+					if v == nil {
+						// geth: a null in a position's list matches any topic.
+						topics[i] = nil
+						continue
+					}
+					if s, ok := v.(string); !ok || !isHexBytes(s, 32) {
+						return nil, fmt.Errorf("invalid topic %v", v)
+					}
+				}
+			default:
+				return nil, fmt.Errorf("invalid topic %v", p)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("invalid topics %v", ts)
+	}
+	live := map[string]any{"address": obj["address"]}
+	if topics != nil {
+		live["topics"] = topics
+	}
+	f := Parse([]any{live})
+	if f == nil {
+		return nil, fmt.Errorf("invalid logs filter")
+	}
+	return f, nil
+}
+
+// isHexBytes reports whether s is 0x-prefixed hex of exactly n bytes.
+func isHexBytes(s string, n int) bool {
+	if len(s) != 2+2*n || (s[:2] != "0x" && s[:2] != "0X") {
+		return false
+	}
+	_, err := hex.DecodeString(s[2:])
+	return err == nil
 }
 
 // index precomputes the bloom bits of every value and the filter's key.

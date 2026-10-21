@@ -17,10 +17,11 @@ var trackerAttemptSlack = time.Second
 // failsafe policy, project or network rate limit applies, and upstreams
 // whose breaker is open are skipped. Each attempt gets an even share of what
 // remains of ctx plus trackerAttemptSlack, so one slow upstream cannot end
-// the sweep. The cache is read only when req's directives allow it; a fresh
-// answer is written to it as Forward writes one. A network-wide sweep leads
-// the in-flight multiplexer, so identical client requests join it. A failed
-// pass returns ErrUpstreamsExhausted carrying each tried upstream's error.
+// the sweep. The cache is read only when req's directives allow it; the
+// answer reaches it only through StoreTrackerAnswer, once the tracker's
+// checks passed. A network-wide sweep leads the in-flight multiplexer, so
+// identical client requests join it. A failed pass returns
+// ErrUpstreamsExhausted carrying each tried upstream's error.
 func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, upstreamId string) (resp *common.NormalizedResponse, err error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
@@ -61,12 +62,22 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 		}
 	}
 
-	resp, err = n.sweep(ctx, req, method, ups, startTime)
-	if err == nil && n.cacheDal != nil {
-		lg := n.logger.With().Str("method", method).Logger()
-		n.storeInCache(ctx, trace.SpanContextFromContext(ctx), &lg, method, req, resp)
+	return n.sweep(ctx, req, method, ups, startTime)
+}
+
+// StoreTrackerAnswer writes a tracker fetch's answer to the cache, as
+// Forward writes one; the scheduler calls it only after the answer passed
+// the tracker's answer and bloom checks.
+func (n *Network) StoreTrackerAnswer(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
+	if n.cacheDal == nil || resp == nil || resp.FromCache() {
+		return
 	}
-	return resp, err
+	method, err := req.Method()
+	if err != nil {
+		return
+	}
+	lg := n.logger.With().Str("method", method).Logger()
+	n.storeInCache(ctx, trace.SpanContextFromContext(ctx), &lg, method, req, resp)
 }
 
 // sweep tries ups in order and returns the first non-empty answer, else the

@@ -41,12 +41,7 @@ type StreamEvent struct {
 	Payload json.RawMessage
 }
 
-// IndexedEvent is a deduplicated StreamEvent as delivered to egresses. The
-// indexer never synthesizes events: reorged-out logs reach clients only as
-// the upstream's own removed:true notifications.
+// IndexedEvent is a deduplicated StreamEvent as delivered to egresses.
 type IndexedEvent struct {
 	StreamEvent
-
-	// Removed is the log payload's "removed" flag; false for other kinds.
-	Removed bool
 }

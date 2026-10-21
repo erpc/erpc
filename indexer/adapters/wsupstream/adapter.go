@@ -1,6 +1,6 @@
 // Package wsupstream adapts a WebSocket JSON-RPC upstream into a source
-// (indexer.Source: newHeads into intake) and an indexer.EventIngress (logs
-// and pending transactions): it owns the upstream eth_subscribe and
+// (indexer.Source: newHeads into intake) and an indexer.EventIngress
+// (pending transactions): it owns the upstream eth_subscribe and
 // eth_unsubscribe calls and resubscribes after every reconnect.
 package wsupstream
 
@@ -8,9 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,9 +68,6 @@ type Adapter struct {
 	retryMax time.Duration
 	// attemptTimeout bounds each subscribe attempt and unsubscribe.
 	attemptTimeout time.Duration
-
-	stripSubscribeFromBlockZero bool
-
 	// polledHead is the upstream's latest block as polled over RPC, 0 if
 	// unknown; nil disables watchHeads.
 	polledHead func() int64
@@ -120,9 +116,6 @@ type upstreamSub struct {
 
 // Options are the network-level settings of an Adapter.
 type Options struct {
-	// StripSubscribeFromBlockZero removes a zero fromBlock from logs
-	// filters; see common.EvmNetworkConfig.StripSubscribeFromBlockZero.
-	StripSubscribeFromBlockZero bool
 	// NetworkLabel labels the adapter's metrics; the network knows it
 	// before its upstreams do.
 	NetworkLabel string
@@ -155,10 +148,9 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, bypassMethodExclusion bool) (*common.NormalizedResponse, error) {
 			return up.Forward(ctx, nq, bypassMethodExclusion, false)
 		},
-		retryMin:                    resubRetryMin,
-		retryMax:                    resubRetryMax,
-		attemptTimeout:              resubAttemptTimeout,
-		stripSubscribeFromBlockZero: opts.StripSubscribeFromBlockZero,
+		retryMin:       resubRetryMin,
+		retryMax:       resubRetryMax,
+		attemptTimeout: resubAttemptTimeout,
 		polledHead: func() int64 {
 			if p := up.EvmStatePoller(); p != nil && !p.IsObjectNull() {
 				return p.LatestBlock()
@@ -334,10 +326,15 @@ func (a *Adapter) startResubscribe() {
 	go a.resubscribeWithRetry(ctx)
 }
 
-// EnsureFilter subscribes a filter; a no-op if it is already subscribed. On
-// failure the filter is kept and retried in the background, like every
-// other subscription of this upstream, until RemoveFilter.
+// EnsureFilter subscribes a newPendingTransactions filter; a no-op if it
+// is already subscribed. On failure the filter is kept and retried in the
+// background, like every other subscription of this upstream, until
+// RemoveFilter. logs come from the chain feed, never from an upstream
+// subscription.
 func (a *Adapter) EnsureFilter(ctx context.Context, subType, paramsHash string, params []interface{}) error {
+	if subType != indexer.SubTypeNewPendingTransactions {
+		return fmt.Errorf("upstream subscriptions serve only %s, not %q", indexer.SubTypeNewPendingTransactions, subType)
+	}
 	key := filterKey(subType, paramsHash)
 
 	a.subsMu.Lock()
@@ -478,15 +475,6 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 
 func (a *Adapter) subscribeFilterLocked(ctx context.Context, sub *filterSub) error {
 	outParams := append([]interface{}{sub.subType}, sub.params[1:]...)
-	if a.stripSubscribeFromBlockZero {
-		if cleaned, changed := stripFromBlockZero(outParams); changed {
-			a.logger.Debug().
-				Str("subType", sub.subType).
-				Str("paramsHash", sub.paramsHash).
-				Msg("stripped zero fromBlock from eth_subscribe filter")
-			outParams = cleaned
-		}
-	}
 	return a.subscribeLocked(ctx, &sub.upstreamSub, outParams, func(params []byte) {
 		a.handleFilter(sub.subType, sub.paramsHash, params)
 	})
@@ -638,56 +626,11 @@ func (a *Adapter) handleFilter(subType, paramsHash string, raw []byte) {
 		a.logger.Warn().Err(err).Str("subType", subType).Msg("failed to parse filter notification envelope")
 		return
 	}
-	kind := indexer.KindLog
-	if subType == indexer.SubTypeNewPendingTransactions {
-		kind = indexer.KindPendingTx
-	}
 	a.sink.Ingest(indexer.StreamEvent{
-		Kind:       kind,
+		Kind:       indexer.KindPendingTx,
 		NetworkId:  a.networkID,
 		SourceId:   a.Name(),
 		FilterHash: paramsHash,
 		Payload:    outer.Result,
 	})
-}
-
-// stripFromBlockZero returns a copy of params without fromBlock in filter
-// objects whose fromBlock is zero. params is not mutated, so it stays valid
-// for the paramsHash and later resubscribes.
-func stripFromBlockZero(params []interface{}) ([]interface{}, bool) {
-	out := make([]interface{}, len(params))
-	changed := false
-	for i, p := range params {
-		f, ok := p.(map[string]interface{})
-		if !ok {
-			out[i] = p
-			continue
-		}
-		fb, hasFrom := f["fromBlock"]
-		if !hasFrom {
-			out[i] = f
-			continue
-		}
-		s, isStr := fb.(string)
-		if !isStr || !isZeroBlockRef(s) {
-			out[i] = f
-			continue
-		}
-		clean := make(map[string]interface{}, len(f))
-		for k, v := range f {
-			if k == "fromBlock" {
-				continue
-			}
-			clean[k] = v
-		}
-		out[i] = clean
-		changed = true
-	}
-	return out, changed
-}
-
-// isZeroBlockRef reports whether s is a zero integer literal ("0", "0x0", ...).
-func isZeroBlockRef(s string) bool {
-	n, err := strconv.ParseInt(strings.TrimSpace(s), 0, 64)
-	return err == nil && n == 0
 }

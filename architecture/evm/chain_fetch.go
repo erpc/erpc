@@ -122,6 +122,7 @@ type fetchScheduler struct {
 	ctx     context.Context
 	network common.Network
 	sweep   func(ctx context.Context, req *common.NormalizedRequest, upstreamId string) (*common.NormalizedResponse, error)
+	store   func(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse)
 	bg      util.Goroutines
 
 	mu       sync.Mutex
@@ -153,8 +154,9 @@ func newFetchScheduler(ctx context.Context, n common.Network) *fetchScheduler {
 	}
 	if sw, ok := n.(interface {
 		SweepUpstreams(context.Context, *common.NormalizedRequest, string) (*common.NormalizedResponse, error)
+		StoreTrackerAnswer(context.Context, *common.NormalizedRequest, *common.NormalizedResponse)
 	}); ok {
-		s.sweep = sw.SweepUpstreams
+		s.sweep, s.store = sw.SweepUpstreams, sw.StoreTrackerAnswer
 	}
 	context.AfterFunc(ctx, s.close)
 	return s
@@ -450,6 +452,8 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	if err != nil {
 		return fetchResult{upstream: upstreamId, err: err}
 	}
+	// Only an answer that passed the tracker's checks may reach the cache.
+	s.store(ctx, req, resp)
 	return fetchResult{upstream: upstreamId, val: val}
 }
 

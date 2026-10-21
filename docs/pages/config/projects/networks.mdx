@@ -52,54 +52,6 @@ Illustrative, not a tuned production config — declare Ethereum with a human-re
 }]`}
 />
 
-## `eth_subscribe`
-
-Some JSON-RPC clients include `fromBlock: "0x0"` in the `eth_subscribe("logs", {…})` filter as a "from genesis" marker. `eth_subscribe` is a live-stream RPC — `fromBlock` has no standardised meaning there — and on backends that prune historical data the subscribe call fails outright. Enable `stripSubscribeFromBlockZero` on the network to drop the field before forwarding so the live stream succeeds; historical logs stay retrievable via `eth_getLogs` in the normal way.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          # Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
-          # before forwarding to upstream WebSockets. Only a value that
-          # parses to zero is stripped — other fromBlocks pass through.
-          stripSubscribeFromBlockZero: true  # default: false
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      networks: [
-        {
-          architecture: "evm",
-          evm: {
-            chainId: 1,
-            // Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
-            // before forwarding to upstream WebSockets. Only a value that
-            // parses to zero is stripped — other fromBlocks pass through.
-            stripSubscribeFromBlockZero: true,  // default: false
-          },
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-Leave unset for chains where upstreams handle `fromBlock: "0x0"` in an `eth_subscribe` filter correctly (most do — the flag is a targeted workaround, not a universal default). It can also be set once for every network under `networkDefaults.evm`.
-
 ## Future-block polling
 
 Clients that follow a chain by number (for example rollup nodes reading L1) poll `eth_getBlockByNumber` for the block after the head and treat `null` as "not produced yet". No upstream has that block, so each one returns `null` in turn and every poll walks every routed upstream, fallbacks included. Enable `shortCircuitFutureBlocks` to return `null` for a numbered `eth_getBlockByNumber` above the latest head of every upstream of the network (static availability caps included), without dispatching it. A block at or below the last head any upstream reported is still dispatched, and the request is dispatched as usual while any upstream's head is unknown. Only this flag turns it on.

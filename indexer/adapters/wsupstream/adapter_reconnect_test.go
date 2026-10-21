@@ -128,8 +128,8 @@ func (nc *notifyConn) serve(gate chan struct{}, rejectNewHeads bool) {
 			continue
 		}
 		nc.write(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":"` + req.SubID + `"}`)
-		if req.Params[0] == indexer.SubTypeLogs {
-			nc.sendLog(req.SubID, 1)
+		if req.Params[0] == indexer.SubTypeNewPendingTransactions {
+			nc.sendTx(req.SubID, 1)
 		}
 	}
 }
@@ -146,9 +146,9 @@ func (nc *notifyConn) sendNewHead(subID string, num int64) {
 		subID, num, num, num-1))
 }
 
-func (nc *notifyConn) sendLog(subID string, num int64) {
-	nc.write(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":{"blockNumber":"0x%x","blockHash":"0xhash%x"}}}`,
-		subID, num, num))
+func (nc *notifyConn) sendTx(subID string, num int64) {
+	nc.write(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":%q,"result":"0xtx%x"}}`,
+		subID, num))
 }
 
 // nextRequest returns the next request with method, skipping others.
@@ -225,8 +225,9 @@ func subscribedHeads(a *Adapter) func() bool {
 	}
 }
 
-func logsParams(address string) []interface{} {
-	return []interface{}{indexer.SubTypeLogs, map[string]interface{}{"address": address}}
+// txParams is a newPendingTransactions filter; tag tells filters apart.
+func txParams(tag string) []interface{} {
+	return []interface{}{indexer.SubTypeNewPendingTransactions, map[string]interface{}{"tag": tag}}
 }
 
 // nextHead returns the number of the next header the adapter hands intake.
@@ -327,8 +328,8 @@ func TestAdapterResubscribesAllFiltersAfterReconnect(t *testing.T) {
 
 	const numFilters = 8
 	for i := 0; i < numFilters; i++ {
-		params := logsParams(fmt.Sprintf("0x%x", i))
-		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
+		params := txParams(fmt.Sprintf("0x%x", i))
+		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, indexer.BuildParamsKey(params), params))
 	}
 
 	_ = conn1.conn.UnderlyingConn().Close()
@@ -341,13 +342,13 @@ func TestAdapterResubscribesAllFiltersAfterReconnect(t *testing.T) {
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	for id, subType := range subscribes {
-		if subType == indexer.SubTypeLogs {
-			conn2.sendLog(id, 2)
+		if subType == indexer.SubTypeNewPendingTransactions {
+			conn2.sendTx(id, 2)
 		}
 	}
 	delivered := make(map[string]bool)
 	for len(delivered) < numFilters {
-		delivered[nextEvent(t, sink, indexer.KindLog).FilterHash] = true
+		delivered[nextEvent(t, sink, indexer.KindPendingTx).FilterHash] = true
 	}
 
 	select {
@@ -368,9 +369,9 @@ func TestAdapterDeliversFirstNotificationAfterSubscribe(t *testing.T) {
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
 	a.sink = sink
 
-	params := logsParams("0xabc")
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params))
-	assert.Equal(t, indexer.BuildParamsKey(params), nextEvent(t, sink, indexer.KindLog).FilterHash)
+	params := txParams("0xabc")
+	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, indexer.BuildParamsKey(params), params))
+	assert.Equal(t, indexer.BuildParamsKey(params), nextEvent(t, sink, indexer.KindPendingTx).FilterHash)
 }
 
 // TestAdapterRemoveFilterDuringSubscribe: RemoveFilter while the subscribe
@@ -383,13 +384,15 @@ func TestAdapterRemoveFilterDuringSubscribe(t *testing.T) {
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
 	a.sink = sink
 
-	params := logsParams("0xabc")
+	params := txParams("0xabc")
 	hash := indexer.BuildParamsKey(params)
 	ensured := make(chan error, 1)
-	go func() { ensured <- a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params) }()
+	go func() {
+		ensured <- a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params)
+	}()
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
+	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
 	server.gate <- struct{}{}
 	require.NoError(t, <-ensured)
 
@@ -409,11 +412,11 @@ func TestAdapterEnsureFilterWhileDisconnected(t *testing.T) {
 	server.srv.Close()
 	a, _ := newTestAdapter(t, u)
 
-	params := logsParams("0xabc")
+	params := txParams("0xabc")
 	hash := indexer.BuildParamsKey(params)
-	err := a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params)
+	err := a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params)
 	require.ErrorIs(t, err, errNotConnected)
-	assert.False(t, a.FilterLive(indexer.SubTypeLogs, hash))
+	assert.False(t, a.FilterLive(indexer.SubTypeNewPendingTransactions, hash))
 	a.subsMu.Lock()
 	assert.Len(t, a.filters, 1)
 	a.subsMu.Unlock()
@@ -440,14 +443,14 @@ func TestAdapterRetriesFailedEnsureFilter(t *testing.T) {
 		return send(ctx, nq, bypass)
 	}
 
-	params := logsParams("0xabc")
+	params := txParams("0xabc")
 	hash := indexer.BuildParamsKey(params)
-	require.Error(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
-	require.Eventually(t, func() bool { return a.FilterLive(indexer.SubTypeLogs, hash) },
+	require.Error(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
+	require.Eventually(t, func() bool { return a.FilterLive(indexer.SubTypeNewPendingTransactions, hash) },
 		3*time.Second, 10*time.Millisecond, "the failed filter must be retried until live")
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
-	assert.False(t, a.FilterLive(indexer.SubTypeLogs, hash))
+	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
+	assert.False(t, a.FilterLive(indexer.SubTypeNewPendingTransactions, hash))
 }
 
 // Cancelling a subscription upstream must not depend on the caller's
@@ -468,14 +471,14 @@ func TestAdapterRemoveFilterWithCancelledContextUnsubscribes(t *testing.T) {
 		return send(ctx, nq, bypass)
 	}
 
-	params := logsParams("0xabc")
+	params := txParams("0xabc")
 	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
+	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeLogs, hash))
+	require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeNewPendingTransactions, hash))
 	unsub := conn.nextRequest(t, methodEthUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 }
@@ -489,9 +492,9 @@ func TestAdapterReleaseHonoursLiveCallerDeadline(t *testing.T) {
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
 	a.sink = sink
 
-	params := logsParams("0xabc")
+	params := txParams("0xabc")
 	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
+	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
 	_ = conn.nextRequest(t, methodEthSubscribe)
 
 	// The upstream never answers the unsubscribe.
@@ -502,7 +505,7 @@ func TestAdapterReleaseHonoursLiveCallerDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeLogs, hash))
+	require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeNewPendingTransactions, hash))
 	assert.Less(t, time.Since(start), 2*time.Second, "release must stop at the caller's deadline, not the attempt timeout")
 }
 
@@ -528,16 +531,16 @@ func TestAdapterFailedUnsubscribeIsRetried(t *testing.T) {
 	a.sink = sink
 	failed := failFirstUnsubscribe(a)
 
-	params := logsParams("0xabc")
+	params := txParams("0xabc")
 	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params))
+	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
-	nextEvent(t, sink, indexer.KindLog)
+	nextEvent(t, sink, indexer.KindPendingTx)
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
+	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
 	require.True(t, failed.Load())
 
-	conn.sendLog(subID, 2) // the upstream subscription is still live
+	conn.sendTx(subID, 2) // the upstream subscription is still live
 	unsub := conn.nextRequest(t, methodEthUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 	select {
@@ -559,17 +562,19 @@ func TestAdapterFailedReleaseOfUncommittedSubscribeIsRetried(t *testing.T) {
 	a.sink = sink
 	failed := failFirstUnsubscribe(a)
 
-	params := logsParams("0xabc")
+	params := txParams("0xabc")
 	hash := indexer.BuildParamsKey(params)
 	done := make(chan error, 1)
-	go func() { done <- a.EnsureFilter(context.Background(), indexer.SubTypeLogs, hash, params) }()
+	go func() {
+		done <- a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params)
+	}()
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeLogs, hash))
+	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
 	close(gate)
 	require.NoError(t, <-done)
 	require.True(t, failed.Load())
 
-	conn.sendLog(subID, 2)
+	conn.sendTx(subID, 2)
 	unsub := conn.nextRequest(t, methodEthUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 }
@@ -599,9 +604,9 @@ func TestAdapterEnsureFilterIsBounded(t *testing.T) {
 		return nil, ctx.Err()
 	}
 
-	params := logsParams("0xabc")
+	params := txParams("0xabc")
 	start := time.Now()
-	err := a.EnsureFilter(context.Background(), indexer.SubTypeLogs, indexer.BuildParamsKey(params), params)
+	err := a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, indexer.BuildParamsKey(params), params)
 	require.Error(t, err)
 	assert.Less(t, time.Since(start), 3*time.Second, "EnsureFilter must stop at the attempt timeout")
 }

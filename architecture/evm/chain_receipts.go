@@ -17,6 +17,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 )
 
 // Bloom check and receipts bounds (spec §10); variables so tests run fast.
@@ -26,7 +27,19 @@ var (
 	bloomOneVendorOffRun = 8 // mismatching blocks in a row that turn it off on a one-vendor network
 	bloomVendorsOffRun   = 2 // blocks in a row that 2 or more vendors mismatch, and none matches
 	bloomSeenCap         = 1024
-	logsFallbackAfter    = 5 * time.Second
+)
+
+// Receipts timings (spec §10); exported so end-to-end tests can scale them.
+var (
+	// LogsFallbackAfter: receipts failing this long on every upstream switch
+	// a block to eth_getLogs while integrity is off.
+	LogsFallbackAfter = util.NewDuration(5 * time.Second)
+	// ReceiptsOutageAfter: every receipts and logs fetch failing this long
+	// refuses new logs subscribes until one succeeds.
+	ReceiptsOutageAfter = util.NewDuration(60 * time.Second)
+	// ReceiptsProbeCeiling caps the spacing of the outage's head-block
+	// fetches, which otherwise run every block time.
+	ReceiptsProbeCeiling = util.NewDuration(12 * time.Second)
 )
 
 var (
@@ -619,7 +632,7 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.cancel != nil {
 		j.cancel()
 	}
-	if !j.logs && t.fetch.bloom.prof().logsFallback && !j.failingSince.IsZero() && time.Since(j.failingSince) >= logsFallbackAfter {
+	if !j.logs && t.fetch.bloom.prof().logsFallback && !j.failingSince.IsZero() && time.Since(j.failingSince) >= LogsFallbackAfter.Load() {
 		j.logs = true
 		j.newRound()
 	}
@@ -661,11 +674,13 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 	switch {
 	case res.err == nil:
 		r := res.val.(*heldReceipts)
+		t.noteReceiptsFetch(true)
 		t.holdReceipts(r)
 		t.endJob(j, r)
 	case errors.Is(res.err, errSchedulerClosed) || t.ctx.Err() != nil:
 		t.endJob(j, nil)
 	default:
+		t.noteReceiptsFetch(false)
 		if errors.Is(res.err, errBloomMismatch) {
 			t.countBloomMismatch(res.upstream, spec.method, j.h)
 			j.mismatched[t.vendorOf(res.upstream)] = true
@@ -680,6 +695,95 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		}
 		t.runJob(j)
 	}
+}
+
+// noteReceiptsFetch records a receipts or logs fetch's outcome on the
+// tracker's goroutine: a success ends an outage; the first failure after
+// one arms the probe for when the outage begins.
+func (t *ChainTracker) noteReceiptsFetch(ok bool) {
+	if ok {
+		t.receiptsFailing.Store(0)
+		if t.probe != nil {
+			t.probe.Stop()
+			t.probe = nil
+		}
+		return
+	}
+	if t.receiptsFailing.Load() != 0 {
+		return
+	}
+	t.receiptsFailing.Store(time.Now().UnixNano())
+	t.armProbe(ReceiptsOutageAfter.Load())
+}
+
+func (t *ChainTracker) armProbe(after time.Duration) {
+	if t.probe != nil {
+		t.probe.Stop()
+	}
+	t.probe = time.AfterFunc(after, func() {
+		if t.ctx.Err() == nil {
+			t.mb.put(trackerMsg{kind: msgCall, fn: t.runProbe})
+		}
+	})
+}
+
+// runProbe is one fetch of the head block's receipts during an outage
+// (spec §10), or its logs when no upstream serves receipts; the next one
+// follows a block time later, at most ReceiptsProbeCeiling, until one
+// succeeds.
+func (t *ChainTracker) runProbe() {
+	if t.receiptsFailing.Load() == 0 {
+		return
+	}
+	next := min(t.BlockTime(), ReceiptsProbeCeiling.Load())
+	head := t.head()
+	receipts, logs := t.usableMethods()
+	if head == nil || !t.canFetch() || !receipts && !logs {
+		t.armProbe(next)
+		return
+	}
+	spec := t.receiptsSpec(classTipReceipts, head.hash, head, !receipts)
+	w := t.fetch.submit(nil, spec)
+	t.fetch.bg.Go(func() {
+		res := w.wait(t.ctx)
+		t.mb.put(trackerMsg{kind: msgCall, fn: func() {
+			switch {
+			case res.err == nil:
+				t.noteReceiptsFetch(true)
+				t.holdReceipts(res.val.(*heldReceipts))
+			case t.ctx.Err() == nil:
+				t.armProbe(next)
+			}
+		}})
+	})
+}
+
+// usableMethods reports whether an upstream of the group serves
+// eth_getBlockReceipts, and, with integrity off, eth_getLogs.
+func (t *ChainTracker) usableMethods() (receipts, logs bool) {
+	fallback := t.fetch.bloom.prof().logsFallback
+	for _, u := range t.receiptsUpstreams() {
+		if ok, _ := u.ShouldHandleMethod("eth_getBlockReceipts"); ok {
+			receipts = true
+		}
+		if fallback {
+			if ok, _ := u.ShouldHandleMethod("eth_getLogs"); ok {
+				logs = true
+			}
+		}
+	}
+	return receipts, logs
+}
+
+// ServesLogs reports whether logs subscribes may start (spec §10): an
+// upstream serves a usable method, and the fetches of those methods have
+// not all failed for ReceiptsOutageAfter.
+func (t *ChainTracker) ServesLogs() bool {
+	if receipts, logs := t.usableMethods(); !receipts && !logs {
+		return false
+	}
+	since := t.receiptsFailing.Load()
+	return since == 0 || time.Since(time.Unix(0, since)) < ReceiptsOutageAfter.Load()
 }
 
 // endJob ends j: r, when set, is the receipts its waiters read.
