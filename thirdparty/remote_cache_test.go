@@ -148,9 +148,13 @@ func TestRemoteDataCache_SingleFlight(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load(), "second trigger while the first is in flight is a no-op")
 
 	// Once idle, a new trigger runs again.
-	primeRemoteCache(t, c, "k", 3)
-	v, _ := c.Lookup("k", time.Hour)
-	assert.Equal(t, 3, v)
+	c.TriggerAsyncRefresh(&logger, "k", func(ctx context.Context) (int, error) {
+		return 3, nil
+	})
+	require.Eventually(t, func() bool {
+		v, fresh := c.Lookup("k", time.Hour)
+		return fresh && v == 3
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestRemoteDataCache_PanicRecovered(t *testing.T) {

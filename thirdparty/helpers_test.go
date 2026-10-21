@@ -13,17 +13,25 @@ import (
 )
 
 // primeRemoteCache publishes val under key through the cache's real async
-// refresh path and waits until a lookup sees it as fresh.
+// refresh path and waits until that refresh has stored it. A key that is
+// already fresh would pass a freshness check before the new value lands.
 func primeRemoteCache[T any](t *testing.T, c *RemoteDataCache[T], key string, val T) {
 	t.Helper()
 	logger := zerolog.Nop()
-	c.TriggerAsyncRefresh(&logger, key, func(ctx context.Context) (T, error) {
-		return val, nil
-	})
+	ran := make(chan struct{})
 	require.Eventually(t, func() bool {
-		_, fresh := c.Lookup(key, time.Hour)
-		return fresh
+		select {
+		case <-ran:
+			return true
+		default:
+		}
+		c.TriggerAsyncRefresh(&logger, key, func(ctx context.Context) (T, error) {
+			close(ran)
+			return val, nil
+		})
+		return false
 	}, 5*time.Second, 10*time.Millisecond)
+	waitRefreshesIdle(t, c)
 }
 
 // waitRefreshesIdle blocks until no async refresh is running on c, so tests
