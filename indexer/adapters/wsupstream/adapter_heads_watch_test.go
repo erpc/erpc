@@ -15,9 +15,9 @@ import (
 )
 
 func compressHeadsWatch(t *testing.T) {
-	orig := headsWatchInterval
-	headsWatchInterval = 50 * time.Millisecond
-	t.Cleanup(func() { headsWatchInterval = orig })
+	orig := HeadsWatchInterval.Load()
+	HeadsWatchInterval.Store(50 * time.Millisecond)
+	t.Cleanup(func() { HeadsWatchInterval.Store(orig) })
 }
 
 // TestAdapterReconnectsSilentNewHeads: a newHeads subscription that goes

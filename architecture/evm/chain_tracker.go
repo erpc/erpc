@@ -43,6 +43,12 @@ var (
 // tracker resets to empty.
 const trackerPanicsToReset = 3
 
+// TrackerMessageHook, when set, runs on a tracker's goroutine before each
+// message is applied, with the message's header when it carries one; a
+// panic in it is the message's panic. Tests use it to stall or panic a
+// tracker; production never sets it.
+var TrackerMessageHook atomic.Pointer[func(t *ChainTracker, upstreamId string, header *indexer.Cursor)]
+
 // ChainTracker is fork choice for one (network, group) on one goroutine, and
 // the only writer of its chain feed: headers by hash, pins, receipts. Votes
 // move the pins (spec §6); answers are only held.
@@ -101,6 +107,9 @@ type ChainTracker struct {
 	maxHeld  *chainHeader
 	wakeAt   time.Time
 	wake     *time.Timer
+	// since is when the tracker started or last reset: for one live bound
+	// after it, sources that never reported count toward the delivery gate.
+	since time.Time
 
 	receiptsOrder []receiptsEntry
 	anchorNumbers []int64
@@ -127,6 +136,7 @@ type node struct {
 type feedState struct {
 	base      uint64 // number of pins[0]
 	pins      []*chainHeader
+	send      int           // index in pins of the sendable head; -1 none
 	blockTime time.Duration // mean header-time step over the pins; 0 unknown
 	changed   chan struct{} // closed once a newer state is published
 }
@@ -136,6 +146,15 @@ func (s *feedState) head() *chainHeader {
 		return nil
 	}
 	return s.pins[len(s.pins)-1]
+}
+
+// sendHead is the highest pin taps may send (the delivery gate), nil while
+// none is.
+func (s *feedState) sendHead() *chainHeader {
+	if s.send < 0 || s.send >= len(s.pins) {
+		return nil
+	}
+	return s.pins[s.send]
 }
 
 func (s *feedState) pinAt(n uint64) *chainHeader {
@@ -325,6 +344,7 @@ func (t *ChainTracker) clear() {
 	t.askSeq++
 	t.settle, t.settleIn = nil, 0
 	t.pins, t.maxHeld = nil, nil
+	t.since = time.Now()
 	t.treesDirty = true
 }
 
@@ -413,6 +433,18 @@ func (t *ChainTracker) handle(msg trackerMsg) {
 }
 
 func (t *ChainTracker) receive(msg trackerMsg) {
+	if hook := TrackerMessageHook.Load(); hook != nil {
+		var cur *indexer.Cursor
+		if msg.hdr != nil {
+			c := msg.hdr.cursor()
+			cur = &c
+		} else if msg.raw != nil {
+			if c, err := ParseHeader(msg.raw); err == nil {
+				cur = &c
+			}
+		}
+		(*hook)(t, msg.upstream, cur)
+	}
 	switch msg.kind {
 	case msgHeader, msgFetched:
 		t.handleHeader(msg)
@@ -472,6 +504,7 @@ func (t *ChainTracker) update() bool {
 	}, nil)
 	ok = t.guard("fill", t.extendRoots, nil) && ok
 	ok = t.guard("ask", t.maybeAsk, nil) && ok
+	ok = t.guard("send", t.gateSend, nil) && ok
 	ok = t.guard("trees", t.publishTrees, nil) && ok
 	return t.guard("wake", t.rearm, nil) && ok
 }
@@ -936,6 +969,7 @@ func (t *ChainTracker) apply(path []*node) {
 		return
 	}
 	s := newFeedState(path, t.window)
+	s.send = t.sendIndex(path)
 	t.pins, t.treesDirty = path, true
 	if t.selector == "" && pub.head() != head {
 		t.noteLatest(head.number)
@@ -1068,8 +1102,62 @@ func newFeedState(pins []*node, window int) *feedState {
 }
 
 func (t *ChainTracker) publish() {
-	old := t.state.Swap(newFeedState(t.pins, t.window))
-	close(old.changed)
+	s := newFeedState(t.pins, t.window)
+	s.send = t.sendIndex(t.pins)
+	close(t.state.Swap(s).changed)
+}
+
+// sendIndex is the delivery gate over path: the highest pin backed by the
+// delivery quorum of counted source votes, a vote backing every pin on its
+// branch at or below it; -1 while no pin is. A pin one source alone votes
+// for, such as a cold pod's first header, so waits for a second vote.
+func (t *ChainTracker) sendIndex(path []*node) int {
+	if len(path) == 0 {
+		return -1
+	}
+	need := t.deliveryQuorum()
+	base := path[0].h.number
+	var backed []int
+	for _, v := range t.baseVotes() {
+		for a := v.n; a != nil && a.h.number >= base; a = a.parent {
+			if i := a.h.number - base; i < uint64(len(path)) && path[i] == a {
+				backed = append(backed, int(i))
+				break
+			}
+		}
+	}
+	if len(backed) < need {
+		return -1
+	}
+	slices.Sort(backed)
+	return backed[len(backed)-need]
+}
+
+// deliveryQuorum is how many counted source votes a pin needs before taps
+// send it; the network intake owns it. A network without intake needs one.
+func (t *ChainTracker) deliveryQuorum() int {
+	if n, ok := t.network.(interface {
+		EvmDeliveryQuorum(selector string, since time.Time) int
+	}); ok {
+		return n.EvmDeliveryQuorum(t.selector, t.since)
+	}
+	return 1
+}
+
+// gateSend republishes the pins when the delivery gate moved while they
+// stayed: a vote moved up the pinned branch, liveness changed, or the cold
+// window ended.
+func (t *ChainTracker) gateSend() {
+	pub := t.state.Load()
+	if len(pub.pins) == 0 {
+		return
+	}
+	send := t.sendIndex(t.pins)
+	if send == pub.send {
+		return
+	}
+	s := &feedState{base: pub.base, pins: pub.pins, send: send, blockTime: pub.blockTime, changed: make(chan struct{})}
+	close(t.state.Swap(s).changed)
 }
 
 // meanBlockTime is the mean header-time step over the last window pins
@@ -1158,12 +1246,13 @@ func (t *ChainTracker) handleReceipts(key string, receipts []integrity.Receipt) 
 
 // --- indexer.ChainFeed ---
 
-// Head is a new tap's start: the head while a source is live, else the
-// next head change; fill moving the pins' base is not one. After a wait it
-// returns the new head's parent, so the new head is the tap's first block.
+// Head is a new tap's start: the sendable head (the delivery gate) while a
+// source is live, else its next change; fill moving the pins' base is not
+// one. After a wait it returns the new sendable head's parent, so that
+// head is the tap's first block.
 func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
 	s := t.state.Load()
-	prev := s.head()
+	prev := s.sendHead()
 	if prev != nil && t.sourceLive() {
 		return prev.cursor(), nil
 	}
@@ -1174,7 +1263,7 @@ func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
 		case <-s.changed:
 		}
 		s = t.state.Load()
-		if h := s.head(); h != nil && h != prev {
+		if h := s.sendHead(); h != nil && h != prev {
 			if h.number == 0 {
 				return h.cursor(), nil
 			}
@@ -1288,12 +1377,12 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor) (in
 	return indexer.Batch{}, readFetch, nil
 }
 
-// applied is the pins from number from to the head, at most reorgWindow
-// of them; empty while from is above the head. from is at least the
-// lowest pin.
+// applied is the pins from number from to the sendable head (the delivery
+// gate), at most reorgWindow of them; empty while from is above it. from
+// is at least the lowest pin.
 func (t *ChainTracker) applied(s *feedState, from uint64) indexer.Batch {
-	head := s.head()
-	if from > head.number {
+	head := s.sendHead()
+	if head == nil || from > head.number {
 		return indexer.Batch{}
 	}
 	last := min(head.number, from+uint64(t.window)-1)
@@ -1307,33 +1396,34 @@ func (t *ChainTracker) applied(s *feedState, from uint64) indexer.Batch {
 
 // revert places a held cursor h. Down its parents it meets a pin, or the
 // parent of the lowest pin, the fork point: h's branch reverts down to it
-// and the pins above it apply. A branch that only extends the head waits
-// for the head instead. Or it meets its tree's root: unlinked.
+// and the sendable pins above it apply. A branch that only extends the
+// head, or a fork point at or above the sendable head, waits instead. Or
+// it meets its tree's root: unlinked.
 func (t *ChainTracker) revert(s *feedState, tr *treeState, h *chainHeader) (indexer.Batch, readStep, error) {
 	var reverted []indexer.Block
 	for x := h; ; {
 		reverted = append(reverted, x.block())
-		if x.number == s.base && x.parentHash == s.pins[0].parentHash {
-			b := t.applied(s, s.base)
-			b.Reverted = reverted
-			return b, readWaitPins, nil
-		}
-		if x.number == 0 {
+		var b indexer.Batch
+		switch p := s.pinAt(x.number - 1); {
+		case x.number == s.base && x.parentHash == s.pins[0].parentHash:
+			b = t.applied(s, s.base)
+		case x.number == 0:
 			return t.unlinked(tr, x)
-		}
-		if p := s.pinAt(x.number - 1); p != nil && p.hash == x.parentHash {
-			if p == s.head() {
-				return indexer.Batch{}, readWaitPins, nil
+		case p != nil && p.hash == x.parentHash:
+			b = t.applied(s, p.number+1)
+		default:
+			parent := t.heldHeader(x.parentHash)
+			if parent == nil || parent.number+1 != x.number {
+				return t.unlinked(tr, x)
 			}
-			b := t.applied(s, p.number+1)
-			b.Reverted = reverted
-			return b, readWaitPins, nil
+			x = parent
+			continue
 		}
-		parent := t.heldHeader(x.parentHash)
-		if parent == nil || parent.number+1 != x.number {
-			return t.unlinked(tr, x)
+		if len(b.Applied) == 0 {
+			return indexer.Batch{}, readWaitPins, nil
 		}
-		x = parent
+		b.Reverted = reverted
+		return b, readWaitPins, nil
 	}
 }
 
@@ -1428,6 +1518,10 @@ func (t *ChainTracker) Tip() (indexer.Cursor, bool) {
 	}
 	return indexer.Cursor{}, false
 }
+
+// Changed is closed once the tracker publishes a newer state: the pins, and
+// with them the block time and the live bound, may have moved.
+func (t *ChainTracker) Changed() <-chan struct{} { return t.state.Load().changed }
 
 // ReorgWindow is the tracker's window in blocks.
 func (t *ChainTracker) ReorgWindow() int { return t.window }

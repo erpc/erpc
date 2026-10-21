@@ -590,9 +590,10 @@ func (t *ChainTracker) conflicts(nd *node) bool {
 	return !isAncestor(t.pins[len(t.pins)-1], nd)
 }
 
-// rearm ticks the tracker at its next deadline: the next no-source ask, or
-// the end of an undecided settle's backoff. It runs after every message,
-// so a deadline that fires never hides a later one.
+// rearm ticks the tracker at its next deadline: the next no-source ask, the
+// end of an undecided settle's backoff, or the end of the cold window, when
+// sources that never reported stop counting for the delivery gate. It runs
+// after every message, so a deadline that fires never hides a later one.
 func (t *ChainTracker) rearm() {
 	now := time.Now()
 	var at time.Time
@@ -603,6 +604,9 @@ func (t *ChainTracker) rearm() {
 	}
 	if s := t.settle; s != nil && !s.inflight && !s.decided && s.retryAt.After(now) && (at.IsZero() || s.retryAt.Before(at)) {
 		at = s.retryAt
+	}
+	if cold := t.since.Add(t.LiveBound()); cold.After(now) && (at.IsZero() || cold.Before(at)) {
+		at = cold
 	}
 	if at.Equal(t.wakeAt) {
 		return

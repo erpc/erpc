@@ -52,7 +52,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		return nil
 	}
 	for {
-		err := nw.taps.RunChain(ctx, sub.NetworkID, "ws", indexer.SubTypeNewHeads, feed, nil, indexer.ReadOpts{}, emit)
+		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, feed, nil, indexer.ReadOpts{}, emit)
 		var writeErr wsWriteError
 		if ctx.Err() != nil || errors.As(err, &writeErr) {
 			return

@@ -267,17 +267,28 @@ func later(a, b time.Time) time.Time {
 var livenessInterval = func(bound time.Duration) time.Duration { return bound / 4 }
 
 // run re-evaluates liveness until ctx ends, so a silent or lagging source
-// stops voting within the live bound.
+// stops voting within the live bound. The bound shrinks once pins date the
+// block time (from 12s to the chain's), so each pin change may bring the
+// next evaluation forward.
 func (in *networkIntake) run(ctx context.Context) {
+	tr := in.nw.chainTracker
+	next := time.Now().Add(livenessInterval(tr.LiveBound()))
 	for {
-		timer := time.NewTimer(livenessInterval(in.nw.chainTracker.LiveBound()))
+		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
+		case <-tr.Changed():
+			timer.Stop()
+			if due := time.Now().Add(livenessInterval(tr.LiveBound())); due.Before(next) {
+				next = due
+			}
+			continue
 		case <-timer.C:
 		}
 		in.tick()
+		next = time.Now().Add(livenessInterval(tr.LiveBound()))
 	}
 }
 
@@ -343,6 +354,43 @@ func (n *Network) EvmAnySourceLive() bool {
 	return n.intake != nil && n.intake.anyLive()
 }
 
+// EvmDeliveryQuorum is how many counted source votes a pin of the tracker
+// of selector needs before taps send it: the served-tip quorum of the
+// voting sources. Voting are the sources whose votes count now and, within
+// one live bound of since (the tracker's start or reset), the sources that
+// have not reported yet, so a cold pod's first header waits for a second.
+// After that a silent source does not count, so a one-source network flows.
+func (n *Network) EvmDeliveryQuorum(selector string, since time.Time) int {
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	if n.intake == nil {
+		return q.Of(0)
+	}
+	return q.Of(n.intake.votingSources(selector, time.Since(since) < n.chainTracker.LiveBound()))
+}
+
+// votingSources counts the sources of the tracker of selector whose votes
+// count now; cold adds the sources that have not reported a header yet.
+func (in *networkIntake) votingSources(selector string, cold bool) int {
+	voting := 0
+	for _, id := range in.authoritativeIn(selector) {
+		in.mu.Lock()
+		s := in.sources[id]
+		live := s != nil && s.live
+		in.mu.Unlock()
+		if live {
+			voting++
+			continue
+		}
+		if u := in.upstream(id); s == nil && cold && u != nil && u.Config().IsSubscriptionSource() {
+			voting++
+		}
+	}
+	return voting
+}
+
 // EvmAuthoritativeUpstreams lists the upstreams a tracker of selector asks
 // for latest (settles, no-source asks), in selection order.
 func (n *Network) EvmAuthoritativeUpstreams(selector string) []string {
@@ -354,10 +402,12 @@ func (n *Network) EvmAuthoritativeUpstreams(selector string) []string {
 
 // EvmHeadsDemanded reports whether an open tap needs newHeads.
 func (n *Network) EvmHeadsDemanded() bool {
-	return n.taps != nil && slices.Contains(n.taps.Demand(indexerNetworkKey(n)), indexer.TopicNewHeads)
+	return n.taps != nil && slices.Contains(n.taps.Demand(n.Label()), indexer.TopicNewHeads)
 }
 
-// EvmTaps is the network's taps and the key its demand is counted under.
+// EvmTaps is the network's taps and the key its demand is counted under:
+// the network label, which also labels the tap metrics (spec §15). Taps
+// belong to one project's network, so the label alone is unique in them.
 func (n *Network) EvmTaps() (*indexer.Taps, string) {
-	return n.taps, indexerNetworkKey(n)
+	return n.taps, n.Label()
 }

@@ -39,9 +39,9 @@ var (
 	resubRetryMax = 30 * time.Second
 )
 
-// headsWatchInterval is how long newHeads may stay silent about a block the
+// HeadsWatchInterval is how long newHeads may stay silent about a block the
 // upstream already reports over RPC; a var so tests can shorten it.
-var headsWatchInterval = 15 * time.Second
+var HeadsWatchInterval = util.NewDuration(15 * time.Second)
 
 // HeadsReaskInterval is how long a newHeads refused as unsupported waits
 // before it is asked again on the same connection; a var so tests can
@@ -287,7 +287,7 @@ func (a *Adapter) HeadsRefused() bool {
 // it began: pings keep such a connection up, so nothing else notices the
 // dead subscription. A halted chain or a lagging node trips neither half.
 func (a *Adapter) watchHeads() {
-	ticker := time.NewTicker(headsWatchInterval)
+	ticker := time.NewTicker(HeadsWatchInterval.Load())
 	defer ticker.Stop()
 	var prevID string
 	var prevEpoch, prevSeen uint64

@@ -226,9 +226,10 @@ type UpstreamPolicies uint8
 const (
 	// UpstreamPoliciesConfigured: every configured policy; client traffic.
 	UpstreamPoliciesConfigured UpstreamPolicies = iota
-	// UpstreamPoliciesTimeoutOnly: subscription calls and integrity state
-	// probes. No retry or hedge, which would send a subscribe twice, and no
-	// breaker; the per-attempt timeout applies.
+	// UpstreamPoliciesTimeoutOnly: subscription calls, state-poller and
+	// chainId probes, integrity state probes. No retry or hedge, which would
+	// send a subscribe twice, and no breaker, so probing a down vendor never
+	// opens one clients depend on; the per-attempt timeout applies.
 	UpstreamPoliciesTimeoutOnly
 	// UpstreamPoliciesTracker: chain tracker fetches. No configured policy
 	// applies; an open breaker refuses them, and they never feed it, so
@@ -239,6 +240,14 @@ const (
 	// while the budget stays more than half free, so they yield to clients.
 	UpstreamPoliciesTrackerFill
 )
+
+// NewProbeRequest is a request an upstream's own state poller or chainId
+// probe sends: UpstreamPoliciesTimeoutOnly.
+func NewProbeRequest(body []byte) *NormalizedRequest {
+	r := NewNormalizedRequest(body)
+	r.SetDirectives(&RequestDirectives{UpstreamPolicies: UpstreamPoliciesTimeoutOnly})
+	return r
+}
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
 	if d == nil {

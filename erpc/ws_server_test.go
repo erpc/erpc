@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/indexer"
@@ -270,7 +271,14 @@ func startTestERPCServer(t *testing.T, cfg *common.Config) (*HttpServer, string,
 	})
 	require.NoError(t, err)
 
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	// As init.go does: a configured EVM cache is built before the instance.
+	var evmCache *evm.EvmJsonRpcCache
+	if cfg.Database != nil && cfg.Database.EvmJsonRpcCache != nil {
+		evmCache, err = evm.NewEvmJsonRpcCache(ctx, &logger, cfg.Database.EvmJsonRpcCache)
+		require.NoError(t, err)
+	}
+
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, evmCache, nil, cfg)
 	require.NoError(t, err)
 
 	erpcInstance.Bootstrap(ctx)
@@ -2285,7 +2293,7 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	subscribeNewHeads(t, conn)
-	tapLabels := []string{"test_ws", "test_ws/evm:123", "ws", indexer.SubTypeNewHeads}
+	tapLabels := []string{"test_ws", "evm:123", "ws", indexer.SubTypeNewHeads}
 	openTaps := func() float64 { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) }
 	lagged := telemetry.MetricTapOutOfRangeTotal.WithLabelValues(append(tapLabels, indexer.OutOfRangeLag)...)
 	require.Eventually(t, func() bool { return openTaps() == 1 }, 5*time.Second, 10*time.Millisecond, "one tap per subscription")
