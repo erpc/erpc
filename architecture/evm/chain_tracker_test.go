@@ -38,7 +38,7 @@ func voteChain(t *testing.T, c *ChainTracker, src, tag string, from, to uint64, 
 
 func TestChainTracker(t *testing.T) {
 	t.Run("a vote pins its block", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		_, ok := c.HashAt(1)
 		assert.False(t, ok)
 		voteChain(t, c, "a", "a", 1, 1, testHash("f", 0))
@@ -48,7 +48,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("a vote on another branch moves the pins and drops descendants", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "a", 5, 7, testHash("f", 4))
 		// The source now votes for another block at 5: its tree has the vote.
 		voteChain(t, c, "a", "b", 5, 5, testHash("f", 4))
@@ -62,7 +62,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("an ancestor of the current vote does not move it back", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "a", 5, 6, testHash("f", 4))
 		c.Observe("a", testHeader(5, testHash("a", 5), testHash("f", 4)), true)
 		c.sync(context.Background())
@@ -72,7 +72,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("the majority branch wins; a tie keeps the pins", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "a", 10, 11, testHash("f", 9))
 		voteChain(t, c, "b", "a", 10, 11, testHash("f", 9))
 		// c and then d follow a fork at 11.
@@ -92,7 +92,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("a malformed header is dropped", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		c.Observe("a", json.RawMessage(`{"number":"0x3","hash":"","parentHash":"0x1"}`), true)
 		c.Observe("a", json.RawMessage(`{"number":"0x3","hash":"0xabc","parentHash":"0x1"}`), true)
 		c.sync(context.Background())
@@ -101,7 +101,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("evicts below the head minus the window", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 2, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 2, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "a", 1, 5, testHash("f", 0))
 		for _, gone := range []int64{1, 2} {
 			_, ok := c.HashAt(gone)
@@ -115,7 +115,7 @@ func TestChainTracker(t *testing.T) {
 	// A held header is served without a fetch: with a nil network any fetch
 	// would fail, so a hit must come from what the tracker holds.
 	t.Run("held headers serve without fetching", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "b", 0x10, 0x10, testHash("f", 0xf))
 
 		byHash, ok := c.headerByHash(context.Background(), testHash("b", 0x10))
@@ -128,7 +128,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("cache miss with no network fails closed", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		_, ok := c.headerByHash(context.Background(), testHash("e", 1))
 		assert.False(t, ok)
 	})
@@ -142,7 +142,7 @@ func putReceipts(c *ChainTracker, blockHash string, receipts []integrity.Receipt
 
 func TestChainTracker_Receipts(t *testing.T) {
 	t.Run("receipts cache hit serves without fetching", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil)) // nil network: any fetch would fail
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil)) // nil network: any fetch would fail
 		putReceipts(c, testHash("b", 1), []integrity.Receipt{{TransactionHash: "0xaa", BlockHash: testHash("b", 1)}})
 		got, ok := c.receiptsByHash(context.Background(), testHash("B", 1), 1)
 		require.True(t, ok)
@@ -151,14 +151,14 @@ func TestChainTracker_Receipts(t *testing.T) {
 	})
 
 	t.Run("receipts cache miss with no network fails closed", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		_, ok := c.receiptsByHash(context.Background(), testHash("e", 1), 1)
 		assert.False(t, ok)
 	})
 
 	t.Run("receipts evicted with the window", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 2, "", "", nil, newFetchScheduler(t.Context(), nil))
-		for i := range c.window + cacheSlack + 2 {
+		c := newChainTracker(t.Context(), nil, 2, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		for i := range c.receiptsCap() + 1 {
 			putReceipts(c, testHash("b", uint64(i)), []integrity.Receipt{{TransactionHash: "0xaa"}})
 		}
 		_, ok := c.receiptsByHash(context.Background(), testHash("b", 0), 0) // oldest → evicted, nil network
@@ -172,7 +172,7 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 		c.sync(context.Background())
 	}
 	t.Run("finalized block → anchored", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		anchors(c, 0x20, fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s","transactionHash":"0xaa"}`, testHash("b", 0x10)))
 		v, ok := c.HashAt(0x10)
 		require.True(t, ok)
@@ -180,21 +180,21 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 	})
 
 	t.Run("unfinalized block → not anchored (tip-thrash safety)", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		anchors(c, 0x20, fmt.Sprintf(`{"blockNumber":"0x30","blockHash":"%s"}`, testHash("c", 0x30)))
 		_, ok := c.HashAt(0x30)
 		assert.False(t, ok)
 	})
 
 	t.Run("finality unknown (fin<=0) → no-op", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		anchors(c, 0, fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s"}`, testHash("b", 0x10)))
 		_, ok := c.HashAt(0x10)
 		assert.False(t, ok)
 	})
 
 	t.Run("array response (block receipts) → each finalized anchor", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		h := testHash("b", 0x10)
 		anchors(c, 0x20, fmt.Sprintf(`[{"blockNumber":"0x10","blockHash":"%s"},{"blockNumber":"0x11","blockHash":"%s"}]`, h, h))
 		v, ok := c.HashAt(0x10)
@@ -227,12 +227,12 @@ func TestChainTracker_GroupScoping(t *testing.T) {
 }
 
 func TestChainTracker_FinalityLabel(t *testing.T) {
-	c := newChainTracker(t.Context(), nil, 8, "", "", func() int64 { return 100 }, newFetchScheduler(t.Context(), nil))
+	c := newChainTracker(t.Context(), nil, 8, 0, "", "", func() int64 { return 100 }, newFetchScheduler(t.Context(), nil))
 	assert.Equal(t, "finalized", c.finalityLabel(50))
 	assert.Equal(t, "finalized", c.finalityLabel(100))
 	assert.Equal(t, "unfinalized", c.finalityLabel(150))
 	assert.Equal(t, "unknown", c.finalityLabel(-1))
-	assert.Equal(t, "unknown", newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil)).finalityLabel(50))
+	assert.Equal(t, "unknown", newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil)).finalityLabel(50))
 }
 
 // Answers are held, never voted: a client's block response, by number or by
@@ -246,7 +246,7 @@ func TestObserveBlockView(t *testing.T) {
 	}
 
 	t.Run("answers are held but never move the pins", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "a", 0x10, 0x11, testHash("f", 0xf))
 
 		observeBlockView(context.Background(), c, nil, blockResponse("eth_getBlockByHash", 0x10, testHash("e", 0x10), testHash("f", 0xf)))
@@ -265,7 +265,7 @@ func TestObserveBlockView(t *testing.T) {
 	})
 
 	t.Run("an answer for an unseen number creates no pin", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		observeBlockView(context.Background(), c, nil, blockResponse("eth_getBlockByNumber", 0x20, testHash("c", 0x20), testHash("c", 0x1f)))
 		c.sync(context.Background())
 		_, ok := c.HashAt(0x20)
@@ -333,7 +333,7 @@ func TestHeaderMatchesRef(t *testing.T) {
 // responses in ~700ms on mainnet 25589196 (2026-07-22).
 func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
 	pinned := func(t *testing.T) *ChainTracker {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		voteChain(t, c, "a", "a", 0x10, 0x10, testHash("f", 0xf))
 		c.lastCountedVote.Store(0) // no source voted within the live bound
 		return c
@@ -371,7 +371,7 @@ func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
 	})
 
 	t.Run("a negative number is unverifiable", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		_, status := c.ReconfirmPin(context.Background(), -1)
 		assert.Equal(t, integrity.PinUnverifiable, status)
 	})

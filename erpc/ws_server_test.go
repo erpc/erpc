@@ -1880,6 +1880,13 @@ func (c *mockChain) Head() int64 {
 	return c.head
 }
 
+// Served is the last head a latest poll served.
+func (c *mockChain) Served() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.served
+}
+
 // latest answers a latest poll; markServed opens the gate.
 func (c *mockChain) latest(markServed bool) int64 {
 	c.mu.Lock()
@@ -2337,7 +2344,9 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	require.NoError(t, first.Close())
 
 	pollsSettle(t, &vendor.latestPolls, 700*time.Millisecond, "polls stop after the idle delay")
-	idleAt := chain.Head()
+	// The last head a poll served is where the pod's head stopped; the gated
+	// chain may have added one block after it.
+	idleAt := chain.Served()
 
 	// Nobody polls while the chain moves on.
 	chain.setPaused(true)

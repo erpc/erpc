@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -199,7 +198,7 @@ func (r *sourceReconciler) pass(ctx context.Context, idx *indexer.Indexer) (next
 		}
 	}
 
-	demanded := slices.Contains(r.nw.taps.Demand(indexerNetworkKey(r.nw)), indexer.TopicNewHeads)
+	demanded := r.nw.EvmHeadsDemanded()
 	if demanded {
 		r.demandSeen = now
 	} else if at := r.demandChangedAt.Load(); at != 0 && time.Unix(0, at).After(r.demandSeen) {

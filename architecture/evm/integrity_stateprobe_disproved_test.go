@@ -153,7 +153,7 @@ func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
 		return nil, fmt.Errorf("method not found")
 	}
 
-	v := newChainTracker(context.Background(), net, 32, "", "", nil, newFetchScheduler(context.Background(), net))
+	v := newChainTracker(context.Background(), net, 32, 0, "", "", nil, newFetchScheduler(context.Background(), net))
 	voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 	p := &stateProber{
 		network: net, view: v, interval: 0,

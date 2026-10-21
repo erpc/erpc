@@ -493,7 +493,9 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
-	var traceCalls, blockCalls atomic.Int32
+	// pinnedBlockCalls counts fetches of block 0x3e8 by number; the tracker
+	// asks for latest and fills other heights in the background.
+	var traceCalls, pinnedBlockCalls atomic.Int32
 	var empty atomic.Bool
 	var latestNum atomic.Int64
 	latestNum.Store(0x3e8)
@@ -521,8 +523,10 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_chainId") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x7b"}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":false}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
-			blockCalls.Add(1)
 			n := blockRef(util.SafeReadBody(r.Request))
+			if n == 0x3e8 {
+				pinnedBlockCalls.Add(1)
+			}
 			if n < 0 {
 				n = latestNum.Load()
 			}
@@ -542,7 +546,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{Checks: map[string]*common.IntegrityCheckConfig{"traceBlockGasReconciliation": {Enabled: util.BoolPtr(true)}}, Follow: &common.IntegrityFollowConfig{Enabled: util.BoolPtr(true), Interval: common.Duration(20 * time.Millisecond)}}}, Failsafe: []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond)}, Hedge: &common.HedgePolicyConfig{Delay: common.NewStaticDuration(250 * time.Millisecond), MaxCount: 1}}}}
+	cfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{Checks: map[string]*common.IntegrityCheckConfig{"traceBlockGasReconciliation": {Enabled: util.BoolPtr(true)}}, Follow: &common.IntegrityFollowConfig{Enabled: util.BoolPtr(true)}}}, Failsafe: []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultDelay: common.Duration(250 * time.Millisecond)}, Hedge: &common.HedgePolicyConfig{Delay: common.NewStaticDuration(250 * time.Millisecond), MaxCount: 1}}}}
 	ups := []*common.UpstreamConfig{{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}, {Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}}
 	require.NoError(t, cfg.SetDefaults(ups, nil))
 	n := setupTestNetwork(t, ctx, ups, cfg)
@@ -559,8 +563,9 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	resp.Release()
 	require.Eventually(t, func() bool { return evm.HasVerifiedEmptyTraceBlock(warm) }, 2*time.Second, 10*time.Millisecond)
 	empty.Store(true)
-	for _, ref := range []string{"0x3e8", "latest", "0x3e7"} {
-		beforeTrace, beforeBlock := traceCalls.Load(), blockCalls.Load()
+	// Fill holds the pinned chain below 0x3e8 too; 0x100 lies below the window.
+	for _, ref := range []string{"0x3e8", "latest", "0x100"} {
+		beforeTrace, beforeBlock := traceCalls.Load(), pinnedBlockCalls.Load()
 		start := time.Now()
 		resp, err = n.Forward(ctx, request(ref))
 		require.NoError(t, err)
@@ -572,14 +577,15 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		calls := traceCalls.Load() - beforeTrace
 		if ref == "0x3e8" {
 			require.Equal(t, int32(1), calls)
-			require.Equal(t, beforeBlock, blockCalls.Load())
+			require.Equal(t, beforeBlock, pinnedBlockCalls.Load(), "the held pin proves the block: no fetch of it")
 			require.Less(t, time.Since(start), 250*time.Millisecond)
 		} else {
 			require.Greater(t, calls, int32(1))
 		}
-		t.Logf("ref=%s traceCalls=%d auxiliaryCalls=%d elapsed=%v", ref, calls, blockCalls.Load()-beforeBlock, time.Since(start))
+		t.Logf("ref=%s traceCalls=%d pinnedBlockCalls=%d elapsed=%v", ref, calls, pinnedBlockCalls.Load()-beforeBlock, time.Since(start))
 	}
-	// The follower pins the next heights once the network head reaches them.
+	// With no source, the follow tap's demand makes the tracker ask for
+	// latest each block time: the pins follow the network head.
 	latestNum.Store(0x3ea)
 	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 		u.EvmStatePoller().SuggestLatestBlock(0x3ea)

@@ -244,6 +244,12 @@ var (
 		Help:      "Times a chain tracker reset to empty after 3 panics in a row.",
 	}, []string{"project", "network"})
 
+	MetricChainTrackerSettleTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_settle_total",
+		Help:      "Chain tracker settles (latest asked from upstreams that do not vote, to break a tie), by outcome (decided, undecided).",
+	}, []string{"project", "network", "outcome"})
+
 	MetricChainTrackerFetchTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_fetch_total",
@@ -537,42 +543,27 @@ var (
 		Help:      "Total state-trie probes by kind (context/proof) and outcome (match/mismatch/unsupported/error).",
 	}, []string{"project", "vendor", "network", "upstream", "probe", "outcome"})
 
-	// MetricIntegrityFollowHead is the highest block of the CONTIGUOUS,
-	// parent-linked segment the ChainView follower has verified block by block
-	// (not the network head — see MetricIntegrityFollowLag for the difference).
-	MetricIntegrityFollowHead = DefineGauge(prometheus.GaugeOpts{
+	// MetricChainTrackerHead is the head of a chain tracker: the highest pin.
+	MetricChainTrackerHead = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
-		Name:      "integrity_follow_head",
-		Help:      "Highest block of the contiguous parent-linked chain segment verified by the integrity follower.",
+		Name:      "chain_tracker_head",
+		Help:      "Head (highest pinned block) of a chain tracker.",
 	}, []string{"project", "network", "group"})
 
-	// MetricIntegrityFollowLag is how far the followed chain trails the network
-	// head. Steady-state should hover near zero; a growing lag means the
-	// follower cannot keep up (fetch failures, or a chain faster than
-	// maxBlocksPerTick).
-	MetricIntegrityFollowLag = DefineGauge(prometheus.GaugeOpts{
+	// MetricChainTrackerLag is how far a tracker's head trails the network's
+	// served tip.
+	MetricChainTrackerLag = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
-		Name:      "integrity_follow_lag",
-		Help:      "Blocks between the network head and the integrity follower's verified chain head.",
+		Name:      "chain_tracker_lag",
+		Help:      "Blocks between the network's served tip and a chain tracker's head.",
 	}, []string{"project", "network", "group"})
 
-	// MetricIntegrityFollowStall counts follower advances abandoned this tick,
-	// by reason. "unreconciled" means a forked block found no common ancestor
-	// within the reorg window — the follower is holding a chain the network no
-	// longer extends, which needs operator attention (window too small, or an
-	// upstream serving unrelated history).
-	MetricIntegrityFollowStall = DefineCounter(prometheus.CounterOpts{
+	// MetricChainTrackerReorgDepth observes how many pinned blocks each reorg
+	// of a chain tracker reverted. A depth of 1-2 is routine chain churn; a
+	// deep tail means evm.chainTracker.reorgWindow needs to cover it.
+	MetricChainTrackerReorgDepth = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "integrity_follow_stall_total",
-		Help:      "Total integrity follower advances abandoned, by reason (unreconciled = no common ancestor within the reorg window).",
-	}, []string{"project", "network", "group", "reason"})
-
-	// MetricIntegrityReorgDepth observes how many pinned blocks each reorg of
-	// a chain tracker reverted. A depth of 1-2 is routine chain churn; a deep
-	// tail means evm.chainTracker.reorgWindow needs to cover it.
-	MetricIntegrityReorgDepth = DefineLabeledHistogram(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "integrity_reorg_depth",
+		Name:      "chain_tracker_reorg_depth",
 		Help:      "Depth (pinned blocks reverted) of each reorg a chain tracker followed.",
 		Buckets:   []float64{1, 2, 3, 5, 8, 13, 21, 34, 64, 128, 256},
 	}, []string{"project", "network", "group"})

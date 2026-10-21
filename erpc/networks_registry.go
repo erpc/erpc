@@ -202,7 +202,10 @@ func NewNetwork(
 		// count from their first message on, and intake reaches the sources.
 		network.intake = newNetworkIntake(network)
 		network.sources = newSourceReconciler(network)
-		network.taps = indexer.NewTaps(func(string) { network.sources.demandChanged() })
+		network.taps = indexer.NewTaps(func(string) {
+			network.sources.demandChanged()
+			evm.DemandChanged(network)
+		})
 		network.chainTracker = evm.StartChainTrackers(appCtx, network)
 		go network.intake.run(appCtx)
 	}

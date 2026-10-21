@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -184,13 +185,33 @@ func (in *networkIntake) live(upstreamId string) bool {
 // with failover on, outside the fallback tier or no primary source leads.
 func (in *networkIntake) authoritative(upstreamId string) bool {
 	primary, eligible, leads := in.authority(upstreamId)
-	if !eligible {
-		return false
+	return eligible && in.admits(primary, leads)
+}
+
+// admits is the tier half of authority: with failover on, a fallback-tier
+// upstream is authoritative only while no primary source leads.
+func (in *networkIntake) admits(primary, leads bool) bool {
+	return in.nw.cfg == nil || !in.nw.cfg.Failover.Enabled() || primary || !leads
+}
+
+// authoritativeIn lists, in the policy's selection order, the authoritative
+// upstreams; for a group selector, the eligible upstreams it matches, whose
+// headers vote before the authority gate.
+func (in *networkIntake) authoritativeIn(selector string) []string {
+	_, _, leads := in.authority("")
+	var out []string
+	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
+		if selector != "" {
+			if m, _ := common.UpstreamMatchesSelector(selector, c); m {
+				out = append(out, c.Id())
+			}
+			continue
+		}
+		if in.admits(!isFallbackTier(c), leads) {
+			out = append(out, c.Id())
+		}
 	}
-	if in.nw.cfg == nil || !in.nw.cfg.Failover.Enabled() || primary {
-		return true
-	}
-	return !leads
+	return out
 }
 
 // authority reads the policy's eligible set now: whether upstreamId is in
@@ -304,13 +325,39 @@ func (in *networkIntake) anyLive() bool {
 	return false
 }
 
-// EvmSourceVotes reports whether upstreamId's vote counts now; the trackers
-// count only these votes.
-func (n *Network) EvmSourceVotes(upstreamId string) bool {
-	return n.intake != nil && n.intake.votes(upstreamId)
+// EvmSourceVotes reports whether upstreamId's vote counts now in the tracker
+// of selector ("" network-wide); the trackers count only these votes. A
+// group tracker's upstreams vote while live, before the authority gate.
+func (n *Network) EvmSourceVotes(upstreamId, selector string) bool {
+	if n.intake == nil {
+		return false
+	}
+	if selector != "" {
+		return n.intake.live(upstreamId)
+	}
+	return n.intake.votes(upstreamId)
 }
 
 // EvmAnySourceLive reports whether any of the network's sources is live.
 func (n *Network) EvmAnySourceLive() bool {
 	return n.intake != nil && n.intake.anyLive()
+}
+
+// EvmAuthoritativeUpstreams lists the upstreams a tracker of selector asks
+// for latest (settles, no-source asks), in selection order.
+func (n *Network) EvmAuthoritativeUpstreams(selector string) []string {
+	if n.intake == nil {
+		return nil
+	}
+	return n.intake.authoritativeIn(selector)
+}
+
+// EvmHeadsDemanded reports whether an open tap needs newHeads.
+func (n *Network) EvmHeadsDemanded() bool {
+	return n.taps != nil && slices.Contains(n.taps.Demand(indexerNetworkKey(n)), indexer.TopicNewHeads)
+}
+
+// EvmTaps is the network's taps and the key its demand is counted under.
+func (n *Network) EvmTaps() (*indexer.Taps, string) {
+	return n.taps, indexerNetworkKey(n)
 }

@@ -2345,10 +2345,9 @@ export interface IntegritySettings {
    */
   stateProbe?: IntegrityStateProbeConfig;
   /**
-   * Follow turns the ChainView into an actual chain follower: it walks the
-   * chain forward block by block, requires each block to name its
-   * predecessor's hash, and reconciles reorgs by finding the common ancestor.
-   * Off by default — it costs one eth_getBlockByNumber per block per network.
+   * Follow opens one integrity follow tap per chain tracker: it holds
+   * demand, so source polls run without clients, and it drives the state
+   * prober on each new head. Off by default.
    */
   follow?: IntegrityFollowConfig;
   /**
@@ -2360,28 +2359,13 @@ export interface IntegritySettings {
   misbehaviorsDestination?: MisbehaviorsDestinationConfig;
 }
 /**
- * IntegrityFollowConfig configures the ChainView chain follower.
- * Following gives the module a CONTIGUOUS, parent-linked view of the chain
- * instead of the sparse scatter of heights that client traffic happens to
- * touch. That is what lets it answer "is this block canonical" from a verified
- * chain rather than from whichever source was observed first, and it is the
- * precondition for any check that compares consecutive headers.
+ * IntegrityFollowConfig configures the integrity follow tap.
  */
 export interface IntegrityFollowConfig {
   /**
-   * Enabled turns the follower on for this network. Default false.
+   * Enabled opens the follow tap for this network. Default false.
    */
   enabled?: boolean;
-  /**
-   * Interval is how often to check for new blocks (default 1s). Keep it below
-   * the chain's block time or the follower will run a step behind.
-   */
-  interval?: Duration;
-  /**
-   * MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
-   * follower starting far behind converges steadily instead of bursting.
-   */
-  maxBlocksPerTick?: number /* int */;
 }
 /**
  * IntegrityStateProbeConfig configures the per-upstream state-trie probes.
