@@ -111,6 +111,8 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 		return upstreamPreForward_eth_getLogs(ctx, n, u, r)
 	case "eth_chainid":
 		return upstreamPreForward_eth_chainId(ctx, n, u, r)
+	case "eth_call":
+		return upstreamPreForward_eth_call(ctx, n, u, r)
 	case "trace_filter", "arbtrace_filter":
 		return upstreamPreForward_trace_filter(ctx, n, u, r)
 	default:
@@ -142,6 +144,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// Special case: eth_sendRawTransaction needs to handle errors for idempotency
 	if methodLower == "eth_sendrawtransaction" {
 		return upstreamPostForward_eth_sendRawTransaction(ctx, n, u, rq, rs, re)
+	}
+	if methodLower == "eth_call" {
+		upstreamPostForward_eth_call(u, rq, rs, re)
 	}
 
 	// For all other methods, skip validation if there's already an error

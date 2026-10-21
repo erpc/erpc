@@ -812,6 +812,20 @@ var (
 		Help:      "Total vendor credit units accrued by upstream attempts, per (project, network, upstream, vendor, method, finality). Vendor-owned units, not money; not comparable across vendors.",
 	}, []string{"project", "network", "upstream", "vendor", "category", "finality"})
 
+	// Vendor requests saved by packing = sum(outcome="packed") - count(batch_size).
+	MetricUpstreamMulticall3CallsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_multicall3_calls_total",
+		Help:      "eth_calls seen by an upstream with multicall3 packing, by outcome: packed (answered by a multicall), alone (no other call to pack with), reverted/empty/failed (multicall could not answer it exactly, sent alone), ineligible (not packable, sent alone), bypassed (target in bypassContracts or learned, sent alone), canceled (attempt ended while waiting).",
+	}, []string{"project", "network", "upstream", "vendor", "outcome"})
+
+	MetricUpstreamMulticall3BatchSize = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "upstream_multicall3_batch_size",
+		Help:      "eth_calls carried by each multicall3 request sent to an upstream.",
+		Buckets:   []float64{2, 3, 5, 8, 13, 20, 50, 100},
+	}, []string{"project", "network", "upstream", "vendor"})
+
 	// MetricNetworkRetryAttemptTotal counts retry attempts at the
 	// network scope, labeled by the reason for retry (empty_result /
 	// pending_tx / retryable_error / block_unavailable / missing_data).
