@@ -22,6 +22,11 @@ type NetworkHandle interface {
 	// DedupEntriesAdded reports that the network's filter dedup windows
 	// gained delta keys (negative when a filter is dropped). Indexer only.
 	DedupEntriesAdded(delta int)
+	// HeadIndexed reports a new head that passed dedup. Indexer only.
+	HeadIndexed()
+	// Undelivered reports an event that passed dedup but matched no client
+	// subscription. Indexer only.
+	Undelivered(kind EventKind)
 }
 
 // EventIngress turns a transport-specific subscription into StreamEvents

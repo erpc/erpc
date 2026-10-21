@@ -208,6 +208,16 @@ type WebSocketServerConfig struct {
 	// newPendingTransactions drop their oldest entry; logs close the
 	// connection instead (1013), so the client knows it missed data.
 	SubscriptionBufferSize int `yaml:"subscriptionBufferSize,omitempty" json:"subscriptionBufferSize"`
+	// MaxConnections caps concurrent client connections on this instance
+	// (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+	// unknown or spoofed.
+	MaxConnections int `yaml:"maxConnections,omitempty" json:"maxConnections"`
+	// MaxConnectionsPerIP caps concurrent client connections from one
+	// resolved client IP (0 = unlimited); see trustedIPForwarders.
+	MaxConnectionsPerIP int `yaml:"maxConnectionsPerIP,omitempty" json:"maxConnectionsPerIP"`
+	// MaxSubscriptions caps active subscriptions across all connections on
+	// this instance (0 = unlimited).
+	MaxSubscriptions int `yaml:"maxSubscriptions,omitempty" json:"maxSubscriptions"`
 }
 
 // ExecutionHeadersMode controls how much per-request execution detail is
@@ -1429,6 +1439,25 @@ type EvmUpstreamConfig struct {
 	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 
 	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+	// Multicall3 packs eth_calls bound for this upstream that share a block into one
+	// Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+	// per pack. Nil (default) sends every eth_call alone.
+	Multicall3 *EvmMulticall3Config `yaml:"multicall3,omitempty" json:"multicall3"`
+}
+
+// EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+// and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+// A call the pack cannot answer exactly (multicall failed, inner call reverted
+// or returned nothing) is sent alone, as it would be without packing.
+type EvmMulticall3Config struct {
+	MaxWait  Duration `yaml:"maxWait,omitempty" json:"maxWait" tstype:"Duration"`
+	MaxCalls int      `yaml:"maxCalls,omitempty" json:"maxCalls"`
+	// BypassContracts are target addresses whose calls are never packed, for
+	// contracts that answer differently when the caller is Multicall3 instead
+	// of the zero address (msg.sender or caller-code checks) without reverting.
+	// Contracts that revert inside a pack but succeed alone are learned at
+	// runtime and need no entry.
+	BypassContracts []string `yaml:"bypassContracts,omitempty" json:"bypassContracts"`
 }
 
 // EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
@@ -1580,6 +1609,11 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	}
 	if c.QueryShim != nil {
 		copied.QueryShim = c.QueryShim.Copy()
+	}
+	if c.Multicall3 != nil {
+		v := *c.Multicall3
+		v.BypassContracts = slices.Clone(c.Multicall3.BypassContracts)
+		copied.Multicall3 = &v
 	}
 
 	return copied

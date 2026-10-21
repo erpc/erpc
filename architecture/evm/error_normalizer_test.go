@@ -620,3 +620,23 @@ func TestExtractJsonRpcError_HyperEvmPrecompileStateGap(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractJsonRpcError_TooManySubscriptions_IsCapacityExceeded(t *testing.T) {
+	t.Parallel()
+
+	r := &http.Response{StatusCode: 200, Header: http.Header{}}
+	jrErr := common.NewErrJsonRpcExceptionExternal(
+		-32006,
+		"Too many subscriptions on the connection",
+		"Exceeded max limit of 32",
+	)
+	jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+	err := ExtractJsonRpcError(r, nil, jr, nil)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
+		t.Fatalf("expected ErrEndpointCapacityExceeded, got %T: %v", err, err)
+	}
+}

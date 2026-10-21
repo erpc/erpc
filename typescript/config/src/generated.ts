@@ -311,6 +311,22 @@ export interface WebSocketServerConfig {
    * connection instead (1013), so the client knows it missed data.
    */
   subscriptionBufferSize?: number /* int */;
+  /**
+   * MaxConnections caps concurrent client connections on this instance
+   * (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+   * unknown or spoofed.
+   */
+  maxConnections?: number /* int */;
+  /**
+   * MaxConnectionsPerIP caps concurrent client connections from one
+   * resolved client IP (0 = unlimited); see trustedIPForwarders.
+   */
+  maxConnectionsPerIP?: number /* int */;
+  /**
+   * MaxSubscriptions caps active subscriptions across all connections on
+   * this instance (0 = unlimited).
+   */
+  maxSubscriptions?: number /* int */;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -1073,6 +1089,30 @@ export interface EvmUpstreamConfig {
    */
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
+  /**
+   * Multicall3 packs eth_calls bound for this upstream that share a block into one
+   * Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+   * per pack. Nil (default) sends every eth_call alone.
+   */
+  multicall3?: EvmMulticall3Config;
+}
+/**
+ * EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+ * and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+ * A call the pack cannot answer exactly (multicall failed, inner call reverted
+ * or returned nothing) is sent alone, as it would be without packing.
+ */
+export interface EvmMulticall3Config {
+  maxWait?: Duration;
+  maxCalls?: number /* int */;
+  /**
+   * BypassContracts are target addresses whose calls are never packed, for
+   * contracts that answer differently when the caller is Multicall3 instead
+   * of the zero address (msg.sender or caller-code checks) without reverting.
+   * Contracts that revert inside a pack but succeed alone are learned at
+   * runtime and need no entry.
+   */
+  bypassContracts?: string[];
 }
 /**
  * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,

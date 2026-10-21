@@ -51,12 +51,12 @@ func (s *NetworkStrategy) Supports(ap *AuthPayload) bool {
 func (s *NetworkStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	// Use the client IP resolved by the HTTP ingress and stored on the normalized request
 	if req == nil {
-		return nil, common.NewErrAuthUnauthorized("network", "request context is missing")
+		return nil, common.NewErrAuthUnauthorized("network", "missing_request", "request context is missing")
 	}
 	ipStr := req.ClientIP()
 	clientIP := net.ParseIP(ipStr)
 	if clientIP == nil {
-		return nil, common.NewErrAuthUnauthorized("network", fmt.Sprintf("invalid or missing client IP: %s", ipStr))
+		return nil, common.NewErrAuthUnauthorized("network", "invalid_client_ip", fmt.Sprintf("invalid or missing client IP: %s", ipStr))
 	}
 
 	// Check if localhost is allowed
@@ -93,7 +93,7 @@ func (s *NetworkStrategy) Authenticate(ctx context.Context, req *common.Normaliz
 		}
 	}
 
-	return nil, common.NewErrAuthUnauthorized("network", fmt.Sprintf("IP %s is not allowed", clientIP.String()))
+	return nil, common.NewErrAuthUnauthorized("network", "ip_not_allowed", fmt.Sprintf("IP %s is not allowed", clientIP.String()))
 }
 
 func isLocalhost(ip net.IP) bool {

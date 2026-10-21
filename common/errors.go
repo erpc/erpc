@@ -582,13 +582,16 @@ func (r AuthUnauthorizedReason) Message() string {
 	}
 }
 
-var NewErrAuthUnauthorized = func(strategy string, message string) error {
+// NewErrAuthUnauthorized builds ErrAuthUnauthorized with a closed reason label
+// for metrics (Details.reason) and a separate client-facing message.
+var NewErrAuthUnauthorized = func(strategy, reason, message string) error {
 	return &ErrAuthUnauthorized{
 		BaseError{
 			Code:    ErrCodeAuthUnauthorized,
 			Message: message,
 			Details: map[string]interface{}{
 				"strategy": strategy,
+				"reason":   reason,
 			},
 		},
 	}
@@ -596,16 +599,7 @@ var NewErrAuthUnauthorized = func(strategy string, message string) error {
 
 // NewErrAuthUnauthorizedReason builds ErrAuthUnauthorized with Message from reason.
 var NewErrAuthUnauthorizedReason = func(strategy string, reason AuthUnauthorizedReason) error {
-	return &ErrAuthUnauthorized{
-		BaseError{
-			Code:    ErrCodeAuthUnauthorized,
-			Message: reason.Message(),
-			Details: map[string]interface{}{
-				"strategy": strategy,
-				"reason":   reason,
-			},
-		},
-	}
+	return NewErrAuthUnauthorized(strategy, string(reason), reason.Message())
 }
 
 func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
@@ -747,10 +741,12 @@ func (e *ErrUnknownNetworkArchitecture) ErrorStatusCode() int {
 
 type ErrNotImplemented struct{ BaseError }
 
+const ErrCodeNotImplemented ErrorCode = "ErrNotImplemented"
+
 var NewErrNotImplemented = func(msg string) error {
 	return &ErrNotImplemented{
 		BaseError{
-			Code:    "ErrNotImplemented",
+			Code:    ErrCodeNotImplemented,
 			Message: msg,
 		},
 	}
@@ -2771,6 +2767,11 @@ func IsRetryableTowardsUpstream(err error) bool {
 		ErrCodeUpstreamMethodIgnored,
 		ErrCodeEndpointUnsupported,
 
+		// Method the network cannot serve in this configuration (stateful method
+		// under multiple upstreams, eth_accounts/eth_sign) -> No Retry: this is a
+		// deterministic pre-forward rejection, not a transient upstream fault.
+		ErrCodeNotImplemented,
+
 		// Do not try when 3rd-party providers run out of monthly capacity or billing issues
 		ErrCodeEndpointBillingIssue,
 
@@ -2831,6 +2832,8 @@ func IsClientError(err error) bool {
 		ErrCodeGetLogsExceededMaxAllowedAddresses,
 		ErrCodeGetLogsExceededMaxAllowedTopics,
 		ErrCodeGetLogsExceededMaxAllowedResponseSize,
+		ErrCodeSubscriptionNotFound,
+		ErrCodeSubscriptionLimitExceeded,
 	))
 }
 
@@ -3234,6 +3237,20 @@ var NewErrSubscriptionLimitExceeded = func(max int) error {
 			Message: "maximum subscriptions per connection exceeded",
 			Details: map[string]interface{}{
 				"maxPerConnection": max,
+			},
+		},
+	}
+}
+
+// NewErrInstanceSubscriptionLimitExceeded is the instance-wide counterpart
+// of NewErrSubscriptionLimitExceeded (server.webSocket.maxSubscriptions).
+var NewErrInstanceSubscriptionLimitExceeded = func(max int) error {
+	return &ErrSubscriptionLimitExceeded{
+		BaseError{
+			Code:    ErrCodeSubscriptionLimitExceeded,
+			Message: "maximum subscriptions per instance exceeded",
+			Details: map[string]interface{}{
+				"maxPerInstance": max,
 			},
 		},
 	}
