@@ -182,7 +182,8 @@ func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
 // ~110 back and then split, 9 of 20 answers 9-15 blocks back, all with a
 // current head). Where clients' "latest" eth_calls reach upstreams as the tag,
 // each stale answer is one misbehavior record, so a split fleet scores in
-// proportion and its healthy sibling stays clean. Where eRPC sends a number
+// proportion, while a healthy sibling that jitters a few blocks under the
+// shared head stays clean. Where eRPC sends a number
 // instead (the default translateLatestTag, or the upstream's pinLatestTag),
 // the tag is never probed.
 func TestStateProber_StaleLatestTag(t *testing.T) {
@@ -209,9 +210,16 @@ func TestStateProber_StaleLatestTag(t *testing.T) {
 			executed := head // every node runs pinned calls at the pin
 			if jrq.Params[1] == "latest" {
 				latestCalls[id]++
-				executed = head + 1
-				if id == "stale" || id == "pinned-stale" || (id == "split" && latestCalls[id]%2 == 0) {
+				odd := latestCalls[id]%2 == 1
+				switch {
+				case id == "stale" || id == "pinned-stale":
 					executed = head - 110
+				case id == "split" && !odd:
+					executed = head - stateProbeLatestToleranceBlocks - 1
+				case id == "healthy" && !odd:
+					executed = head - stateProbeLatestToleranceBlocks
+				default:
+					executed = head + 1
 				}
 			}
 			ret := fmt.Sprintf(`"0x%064x"`, executed)

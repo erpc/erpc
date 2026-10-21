@@ -269,9 +269,16 @@ func (p *stateProber) probeContext(ctx context.Context, u common.Upstream, n int
 	return probeMatch
 }
 
-// probeLatest asks which block the upstream's EVM executes in at "latest". Its
-// head is read first, so a node that keeps up answers at or above it: healthy
-// vendors measured 0 to +3 on Ethereum, Base, Arbitrum and HyperEVM.
+// stateProbeLatestToleranceBlocks is how far "latest" may run behind the
+// upstream's head before it counts as stale. The head is the highest block any
+// replica saw from any node behind the upstream's URL, so a healthy fleet can
+// answer a block or two under it: healthy vendors measured -1 to +3 on
+// Ethereum, Base, Arbitrum and HyperEVM; stale ones -7 and further. Like the
+// streak, it only rules out jitter, so it is a constant and not config.
+const stateProbeLatestToleranceBlocks = 3
+
+// probeLatest asks which block the upstream's EVM executes in at "latest",
+// against the head read just before the call.
 func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) probeOutcome {
 	eu, isEvm := u.(common.EvmUpstream)
 	if !isEvm {
@@ -285,7 +292,7 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) probeO
 	if !ok {
 		return probeUnknown
 	}
-	if got < head {
+	if got < head-stateProbeLatestToleranceBlocks {
 		p.count(u, "latest", "stale")
 		log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
 			Int64("head", head).Int64("executedBlock", got).
