@@ -237,7 +237,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 	// The local limiter counts every request, so it is warm when the store fails.
 	var localStatuses []*pb.RateLimitResponse_DescriptorStatus
 	if b.local != nil {
-		localStatuses = b.local.DoLimit(ctx, rlReq, b.scaledLimits(limits))
+		localStatuses = b.local.DoLimit(ctx, rlReq, b.scaledLimits(rlReq, limits))
 	}
 
 	statuses, failure := b.doLimit(ctx, rlReq, limits)
@@ -306,12 +306,16 @@ func (b *RateLimiterBudget) buildLimitRequest(rules []*RateLimitRule, method, cl
 	return &pb.RateLimitRequest{Domain: b.Id, Descriptors: descriptors}, limits, charged
 }
 
-// scaledLimits returns limits at maxCount × localFactor, at least 1.
-func (b *RateLimiterBudget) scaledLimits(limits []*config.RateLimit) []*config.RateLimit {
+// scaledLimits returns limits at maxCount × localFactor, raised to the
+// request's own hits so a credit rule never scales below one call's cost, and
+// capped at maxCount.
+func (b *RateLimiterBudget) scaledLimits(rlReq *pb.RateLimitRequest, limits []*config.RateLimit) []*config.RateLimit {
 	scaled := make([]*config.RateLimit, len(limits))
 	for i, l := range limits {
-		n := uint32(math.Ceil(float64(l.Limit.RequestsPerUnit) * b.localFactor))
-		scaled[i] = config.NewRateLimit(max(n, 1), l.Limit.Unit, l.Stats, false, false, "", nil, false)
+		maxCount := l.Limit.RequestsPerUnit
+		n := uint32(math.Ceil(float64(maxCount) * b.localFactor))
+		n = min(max(n, uint32(rlReq.Descriptors[i].GetHitsAddend().GetValue()), 1), maxCount)
+		scaled[i] = config.NewRateLimit(n, l.Limit.Unit, l.Stats, false, false, "", nil, false)
 	}
 	return scaled
 }

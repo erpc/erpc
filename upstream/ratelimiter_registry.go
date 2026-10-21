@@ -133,8 +133,11 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 			"single",
 			url,
 			poolSize,
-			5*time.Millisecond,
-			32,
+			// No implicit pipelining: each check is already one explicit
+			// pipeline, and radix's window would only delay it (5ms window
+			// measured +23ms per 4-command check).
+			0,
+			0,
 			nil,
 			false,
 			nil,
@@ -302,20 +305,13 @@ func defaultCacheKeyPrefix(val string) string {
 // remoteAdmissionCap derives the per-budget concurrent in-flight cap from the
 // Redis connection pool size.
 //
-// Sizing rationale (envoyproxy/ratelimit + radix.v3):
-//   - Each rate-limit check sends a small pipeline (typically INCRBY+EXPIRE).
-//   - radix collects these via implicit pipelining (window=5ms, limit=32) so a
-//     single pool connection can have up to 32 commands "in flight" at once,
-//     i.e. effectively connPoolSize × 16 concurrent rate-limit checks per
-//     budget when Redis is healthy.
-//   - We multiply pool size by 32 to leave generous headroom in healthy state.
-//     Beyond that we'd rather load-shed (fail-open) than queue more goroutines:
-//     queueing here was the root cause of the 2026-05-07 cronos receipts
-//     death-spiral.
-//   - Per-budget cap (not global) so a single hot budget can't starve others.
-//
-// A floor of 256 ensures a small/misconfigured pool doesn't accidentally pin
-// every request into the load-shed path on bursty traffic.
+// This is a goroutine ceiling, not Redis capacity: each check is one explicit
+// pipeline holding one pool connection for one round trip, so pool checkout is
+// the real backpressure. ×32 leaves headroom so healthy traffic never sheds;
+// beyond it we would rather let onFailure decide than queue goroutines, the
+// root cause of the 2026-05-07 cronos receipts death spiral. Per budget, so
+// one hot budget cannot starve others. The 256 floor keeps a small pool from
+// shedding bursty traffic.
 func remoteAdmissionCap(connPoolSize int) int {
 	const minCap = 256
 	if connPoolSize <= 0 {

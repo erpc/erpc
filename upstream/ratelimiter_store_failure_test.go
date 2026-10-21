@@ -167,3 +167,25 @@ func TestRateLimiterRedis_OverLimitKeyDeniesWithoutRedis(t *testing.T) {
 	m.Close()
 	require.Equal(t, int64(0), admitted(t, budget, 5, false), "cached over-limit key denies without Redis")
 }
+
+// onFailure: local never scales a credit rule below one call's cost: 600
+// credits × 0.1 is 60, under a 200-credit call, so the local limit is 200.
+func TestRateLimiterRedis_LocalCreditLimitFitsOneCall(t *testing.T) {
+	m := miniredis.RunT(t)
+	budget := newRedisBudget(t, m.Addr(), func(s *common.RateLimitStoreConfig) {
+		s.OnFailure = common.RateLimitStoreFailureLocal
+		s.LocalLimitFactor = 0.1
+	}, &common.RateLimitRuleConfig{Method: "*", MaxCount: 600, Period: common.RateLimitPeriodHour, CountMode: common.RateLimitCountModeCredit})
+	m.Close()
+
+	call := PermitCost{Hits: 200, Mode: common.RateLimitCountModeCredit}
+	got := 0
+	for range 3 {
+		ok, err := budget.TryAcquirePermit(context.Background(), "p", nil, "eth_call", "", "", "", "upstream", call)
+		require.NoError(t, err)
+		if ok {
+			got++
+		}
+	}
+	require.Equal(t, 1, got, "local limit fits exactly one 200-credit call")
+}

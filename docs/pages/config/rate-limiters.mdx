@@ -183,7 +183,7 @@ Where `nearLimitThreshold = floor(maxCount × nearLimitRatio)`. Default ratio 0.
 
 **Memory store eviction.** Each shard prunes lazily: on every `DoLimit` call, if the shard's last-prune timestamp differs from the current unix second, all buckets with `expiry ≤ now` are deleted. This is O(#buckets) per shard — not O(#keys). Source: <SourceLink file="upstream/ratelimiter_mem_cache.go" lines="91-100" />
 
-**Admission cap derivation.** `remoteAdmissionCap = max(256, connPoolSize × 32)`. The ×32 multiplier accounts for radix's implicit pipelining window (up to 32 commands per connection). Pool of 8 → cap 256 (floor). Pool of 64 → cap 2048. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="281-291" />
+**Admission cap derivation.** `remoteAdmissionCap = max(256, connPoolSize × 32)`. It caps goroutines, not Redis capacity: each check sends one explicit pipeline and holds one pool connection for one round trip, with radix's implicit pipelining off. Pool of 8 → cap 256 (floor). Pool of 64 → cap 2048. Source: <SourceLink file="upstream/ratelimiter_registry.go" />
 
 **Auto-tuner minimum sample floor.** The tuner skips adjustment when `totalCount < 10` — insufficient signal. Counters are reset at the start of `maybeAdjust` regardless, so a sustained pattern of exactly 9 requests per period will perpetually reset the clock. Source: <SourceLink file="upstream/ratelimiter_autotuner.go" lines="83-142" />
 
@@ -227,7 +227,7 @@ limiter. Remove `waitTime` from any existing config to suppress the warning.
 | `rateLimiters.store.nearLimitRatio` | float32 | `0.8` | Envoy near-limit threshold fraction (`nearLimitThreshold = floor(maxCount × nearLimitRatio)`). **Has no effect on eRPC blocking decisions** — eRPC only checks `OVER_LIMIT`; `NEAR_LIMIT` is never returned to callers. Only alters internal Envoy stats counters, which are not exported to Prometheus. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="74" /> |
 | `rateLimiters.store.cacheKeyPrefix` | string | `"erpc_rl_"` | Prefix for all Redis/memory cache keys. **Footgun:** two eRPC deployments sharing the same Redis with the same prefix will merge their counters. Use distinct prefixes per deployment (`"erpc_prod_"`, `"erpc_staging_"`). Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="76" /> |
 | `rateLimiters.store.onFailure` | string | `"allow"` | Redis only. `allow` \| `deny` \| `local`: what a request gets when Redis cannot decide it (not connected, error, `admission_full`, `limit_timeout`). See *Redis store failures* above. Source: <SourceLink file="upstream/ratelimiter_budget.go" /> |
-| `rateLimiters.store.localLimitFactor` | float | — | Required with `onFailure: local`, `(0, 1]`. The in-process limit is `ceil(maxCount × localLimitFactor)`, minimum 1. Set near `1/replicas`. Source: <SourceLink file="upstream/ratelimiter_budget.go" /> |
+| `rateLimiters.store.localLimitFactor` | float | — | Required with `onFailure: local`, `(0, 1]`. The in-process limit is `min(maxCount, max(ceil(maxCount × localLimitFactor), hits))`, so a credit rule always fits one call (600 × 0.1 with a 200-credit call → 200). Set near `1/replicas`. Source: <SourceLink file="upstream/ratelimiter_budget.go" /> |
 
 #### `rateLimiters.budgets[]`
 
@@ -295,15 +295,12 @@ Redis slowdowns:
     driver: redis
     redis:
       uri: "\${REDIS_URL}"
-      # 200ms gives the radix pipeline window (5ms) plus RTT comfortable
-      # headroom while still fast-failing during real outages.
-      # Never set below ~50ms on pipelined clients: the pipeline window
-      # itself takes ~5ms and a too-tight cap triggers constant fail-opens.
+      # 200ms covers RTT with headroom while still fast-failing during
+      # real outages. Each check is one round trip; implicit pipelining
+      # is off, so no batching window adds to it.
       getTimeout: 200ms
-      # Default is 8 — not enough for 12+ machine fleets.
-      # With radix implicit pipelining (window=5ms, limit=32),
-      # effective in-flight = poolSize × 32: poolSize=64 supports
-      # ~2k concurrent checks/machine without queueing.
+      # Default is 8 — not enough for 12+ machine fleets. Each in-flight
+      # check holds one connection; past the pool, checks wait for one.
       connPoolSize: 64
     # Use distinct prefixes per environment — two deployments sharing the
     # same Redis and same prefix will silently merge their counters.

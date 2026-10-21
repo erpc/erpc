@@ -149,10 +149,19 @@ func TestNetwork_RateLimitStoreFailureFollowsOnFailure(t *testing.T) {
 
 					require.NoError(t, redis.Restart())
 					// The pool redials on its own; wait until Redis decides again.
+					// A check slower than getTimeout while it redials fails too, so
+					// wait out every failure reason, not just store_error.
+					anyFailure := func() float64 {
+						sum := 0.0
+						for _, r := range []string{"store_error", "limit_timeout", "admission_full", "store_unavailable"} {
+							sum += failures(r)
+						}
+						return sum
+					}
 					require.Eventually(t, func() bool {
-						b := failures("store_error")
+						b := anyFailure()
 						admitted(1)
-						return failures("store_error") == b
+						return anyFailure() == b
 					}, 10*time.Second, 50*time.Millisecond, "restarted store must decide again")
 					require.Equal(t, m.want.recovered, admitted(recovered), "restarted store")
 				})
