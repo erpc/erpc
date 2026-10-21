@@ -178,7 +178,7 @@ func (t *ChainTracker) outside(e *extension, r *node, h *chainHeader, pinTree bo
 	default:
 		e.capped = true
 	}
-	e.walk = 0
+	e.walk, t.treesDirty = 0, true
 	return true
 }
 
@@ -206,7 +206,7 @@ func (t *ChainTracker) windowRef() *chainHeader {
 
 func (t *ChainTracker) extend(r *node, e *extension, pinTree bool) {
 	if r.h.number == 0 {
-		e.atBase, e.walk = true, 0
+		e.atBase, e.walk, t.treesDirty = true, 0, true
 		return
 	}
 	// The parent is no newer than r: when even r's time puts its height
@@ -235,7 +235,7 @@ func (t *ChainTracker) extend(r *node, e *extension, pinTree bool) {
 		case err == nil && h.hash == want:
 			// The parent's hash under another number: no answer joins this
 			// root, so its extension ends and it stays a root.
-			e.atBase, e.walk = true, 0
+			e.atBase, e.walk, t.treesDirty = true, 0, true
 		case !e.byHash:
 			e.byHash = true
 		case e.walk > 0:

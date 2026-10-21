@@ -14,7 +14,7 @@ import (
 
 // errNewHeadsLag ends a newHeads tap that fell more than reorgWindow blocks
 // behind the head with nothing to revert; it restarts after the head.
-var errNewHeadsLag = errors.New("newHeads subscription fell behind the head")
+var errNewHeadsLag = indexer.OutOfRangeError{Reason: indexer.OutOfRangeLag}
 
 // newHeadsRestartDelay spaces restarts of a tap that keeps failing.
 var newHeadsRestartDelay = 100 * time.Millisecond
@@ -25,10 +25,11 @@ type wsWriteError struct{ err error }
 func (e wsWriteError) Error() string { return e.err.Error() }
 
 // runNewHeads is one ws newHeads subscription: a tap on the network-wide
-// tracker that writes each applied block, oldest first. It ends only with
-// ctx or a failed write; out of range, lag, a panic or any other error
-// restart it after the head, so the client sees a jump in numbers, as with
-// geth, and never a silent subscription.
+// tracker that writes each applied block, oldest first, so after a reorg
+// the client gets each head of the new branch. It ends only with ctx or a
+// failed write; out of range, lag, a panic or any other error restart it
+// after the head, so the client sees a jump in numbers, as with geth, and
+// never a silent subscription.
 func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, nw *Network) {
 	feed := nw.chainTracker
 	window := uint64(feed.ReorgWindow())
@@ -56,7 +57,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		if ctx.Err() != nil || errors.As(err, &writeErr) {
 			return
 		}
-		if !errors.Is(err, indexer.ErrOutOfRange) && !errors.Is(err, errNewHeadsLag) {
+		if !errors.Is(err, indexer.ErrOutOfRange) {
 			sm.logger.Warn().Err(err).Str("clientSubId", sub.ClientSubID).Msg("newHeads tap ended, restarting after the head")
 			select {
 			case <-ctx.Done():

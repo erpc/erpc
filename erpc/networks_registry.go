@@ -202,7 +202,7 @@ func NewNetwork(
 		// count from their first message on, and intake reaches the sources.
 		network.intake = newNetworkIntake(network)
 		network.sources = newSourceReconciler(network)
-		network.taps = indexer.NewTaps(func(string) {
+		network.taps = indexer.NewTaps(projectId, func(string) {
 			network.sources.demandChanged()
 			evm.DemandChanged(network)
 		})

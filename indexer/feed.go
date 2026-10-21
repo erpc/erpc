@@ -50,6 +50,21 @@ type ChainFeed interface {
 
 var ErrOutOfRange = errors.New("cursor out of range")
 
+// Why a tap's cursor went out of range; erpc_tap_out_of_range_total labels.
+const (
+	OutOfRangeBelowWindow    = "below_window"
+	OutOfRangeForkLeftWindow = "fork_left_window"
+	OutOfRangeCursorUnknown  = "cursor_unknown"
+	// OutOfRangeLag: a transport's wait bound ended the tap (spec §9.2).
+	OutOfRangeLag = "lag"
+)
+
+// OutOfRangeError is ErrOutOfRange with its reason.
+type OutOfRangeError struct{ Reason string }
+
+func (e OutOfRangeError) Error() string        { return ErrOutOfRange.Error() + ": " + e.Reason }
+func (e OutOfRangeError) Is(target error) bool { return target == ErrOutOfRange }
+
 // Topic is what a source feeds: newHeads, or
 // newPendingTransactions:<variant>.
 type Topic string

@@ -1868,10 +1868,34 @@ type mockChain struct {
 	gated    bool
 	paused   bool
 	watchers []chan int64
+	// branch is the reorg count of each height; 0 is the first branch.
+	branch map[int64]int64
 }
 
 func newMockChain(head int64, gated bool) *mockChain {
-	return &mockChain{head: head, served: head - 1, gated: gated}
+	return &mockChain{head: head, served: head - 1, gated: gated, branch: make(map[int64]int64)}
+}
+
+// Hash is block n's hash on the canonical branch.
+func (c *mockChain) Hash(n int64) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hashLocked(n)
+}
+
+func (c *mockChain) hashLocked(n int64) string {
+	return fmt.Sprintf("0x%048x%016x", c.branch[n], n)
+}
+
+// reorg replaces the top depth blocks with a new branch, adds a block on
+// it and tells every watcher; it returns the new head.
+func (c *mockChain) reorg(depth int64) int64 {
+	c.mu.Lock()
+	for n := c.head - depth + 1; n <= c.head; n++ {
+		c.branch[n]++
+	}
+	c.mu.Unlock()
+	return c.advance()
 }
 
 func (c *mockChain) Head() int64 {
@@ -1949,6 +1973,9 @@ func (c *mockChain) run(ctx context.Context, every time.Duration) {
 // block is block n as a vendor serves it, transactions included.
 func (c *mockChain) block(n int64) map[string]interface{} {
 	h := mockHead(n)
+	c.mu.Lock()
+	h["hash"], h["parentHash"] = c.hashLocked(n), c.hashLocked(n-1)
+	c.mu.Unlock()
 	h["transactions"] = []interface{}{fmt.Sprintf("0x%064x", n+1_000_000)}
 	h["miner"] = "0x0000000000000000000000000000000000000001"
 	return h
@@ -2227,7 +2254,9 @@ func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 }
 
 // A network with a wss source and an HTTP poll source: each head reaches
-// the client once.
+// the client once. A 2-block reorg on both vendors then reaches the client
+// as each head of the new branch, oldest first, and the client's chain
+// ends equal to the vendors'.
 func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -2248,9 +2277,57 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	defer conn.Close()
 	subscribeNewHeads(t, conn)
 
+	// The client applies each head as a geth client does: a number it
+	// already has replaces that number and every number above it.
+	client := make(map[int64]string)
+	var first, last int64
+	apply := func(n int64, head map[string]interface{}) {
+		for k := range client {
+			if k >= n {
+				delete(client, k)
+			}
+		}
+		client[n], _ = head["hash"].(string)
+		if first == 0 {
+			first = n
+		}
+		last = n
+	}
+	next := func(msg string) {
+		n, head := nextNewHead(t, conn, 10*time.Second)
+		if last != 0 {
+			require.Equal(t, last+1, n, msg)
+		}
+		apply(n, head)
+	}
+
 	polledBefore := httpVendor.latestPolls.Load()
-	requireContiguous(t, conn, 8, 0)
+	for range 8 {
+		next("heads must arrive once each, in order")
+	}
 	assert.Greater(t, httpVendor.latestPolls.Load(), polledBefore+2, "the HTTP source polls while a client wants heads")
+
+	// Hold the chain past one tick, so the client reaches its head before
+	// the reorg.
+	chain.setPaused(true)
+	time.Sleep(300 * time.Millisecond)
+	for last < chain.Head() {
+		next("heads must arrive once each, in order")
+	}
+	tip := chain.reorg(2)
+	for _, want := range []int64{tip - 2, tip - 1, tip} {
+		n, head := nextNewHead(t, conn, 10*time.Second)
+		require.Equal(t, want, n, "after a reorg each head of the new branch arrives, oldest first")
+		require.Equal(t, chain.Hash(n), head["hash"], "block %d is the new branch's", n)
+		apply(n, head)
+	}
+	chain.setPaused(false)
+	for range 3 {
+		next("heads continue in order after the reorg")
+	}
+	for n := first; n <= last; n++ {
+		require.Equal(t, chain.Hash(n), client[n], "the client's block %d is the vendors' canonical one", n)
+	}
 }
 
 // With failover on, a fallback-tier poll source polls only while no primary

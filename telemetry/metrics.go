@@ -262,6 +262,18 @@ var (
 		Help:      "Current share of the chain fetch scheduler's slots per class.",
 	}, []string{"project", "network", "class"})
 
+	MetricTaps = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "taps",
+		Help:      "Open taps: consumers reading a chain feed from their own cursor.",
+	}, []string{"project", "network", "transport", "kind"})
+
+	MetricTapOutOfRangeTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "tap_out_of_range_total",
+		Help:      "Taps ended because their cursor went out of range, by reason (below_window, fork_left_window, cursor_unknown, lag).",
+	}, []string{"project", "network", "transport", "kind", "reason"})
+
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
 	// freshest block at least servedTip.quorum eligible upstreams already have

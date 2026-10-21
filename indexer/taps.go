@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -13,16 +14,18 @@ import (
 // Taps runs read loops: read, emit, repeat. It counts open taps per network
 // and topic, so sources know what to feed.
 type Taps struct {
+	projectId      string
 	onDemandChange func(networkId string)
 
 	mu   sync.Mutex
 	open map[string]map[Topic]int // networkId -> topic -> open taps
 }
 
-// NewTaps returns an empty Taps. onDemandChange, if set, is called whenever a
-// network's demand gains or loses a topic; it must never block.
-func NewTaps(onDemandChange func(networkId string)) *Taps {
-	return &Taps{onDemandChange: onDemandChange, open: make(map[string]map[Topic]int)}
+// NewTaps returns an empty Taps of one project; projectId labels metrics.
+// onDemandChange, if set, is called whenever a network's demand gains or
+// loses a topic; it must never block.
+func NewTaps(projectId string, onDemandChange func(networkId string)) *Taps {
+	return &Taps{projectId: projectId, onDemandChange: onDemandChange, open: make(map[string]map[Topic]int)}
 }
 
 // RunChain runs one tap on f until ctx ends, emit fails, or f returns an
@@ -31,6 +34,16 @@ func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 	f ChainFeed, start *Cursor, o ReadOpts, emit func(Batch) error) (err error) {
 	t.add(networkId, TopicNewHeads)
 	defer t.remove(networkId, TopicNewHeads)
+	open := telemetry.GaugeHandle(telemetry.MetricTaps, t.projectId, networkId, transport, kind)
+	open.Inc()
+	defer open.Dec()
+	defer func() {
+		var oor OutOfRangeError
+		if errors.As(err, &oor) {
+			telemetry.CounterHandle(telemetry.MetricTapOutOfRangeTotal,
+				t.projectId, networkId, transport, kind, oor.Reason).Inc()
+		}
+	}()
 	defer func() {
 		if rec := recover(); rec != nil {
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(

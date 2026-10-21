@@ -58,7 +58,7 @@ func parseChainHeader(raw json.RawMessage) (*chainHeader, error) {
 	if h.TransactionsRoot != "" && !isHexBytes(h.TransactionsRoot, 32) {
 		return nil, fmt.Errorf("%w: transactionsRoot %q", errMalformedHeader, h.TransactionsRoot)
 	}
-	ch.hashHex = "0x" + hex.EncodeToString(ch.hash[:])
+	ch.hashHex = hexHash(ch.hash)
 	return ch, nil
 }
 
@@ -117,7 +117,15 @@ func hashKey(s string) (string, bool) {
 	if !decodeHex32(s, &h) {
 		return "", false
 	}
-	return "0x" + hex.EncodeToString(h[:]), true
+	return hexHash(h), true
+}
+
+// hexHash is the lowercase 0x-prefixed form held headers are keyed by.
+func hexHash(h [32]byte) string {
+	var buf [66]byte
+	buf[0], buf[1] = '0', 'x'
+	hex.Encode(buf[2:], h[:])
+	return string(buf[:])
 }
 
 var newHeadsDropped = []string{"transactions", "uncles", "withdrawals", "size"}
