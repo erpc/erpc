@@ -63,10 +63,15 @@ func (n *capturingNetwork) directivesFor(ref string) *common.RequestDirectives {
 	return ds[len(ds)-1]
 }
 
-func (n *capturingNetwork) callsFor(ref string) int {
+// calls is every fetch so far, of any ref.
+func (n *capturingNetwork) calls() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return len(n.dirs[ref])
+	total := 0
+	for _, ds := range n.dirs {
+		total += len(ds)
+	}
+	return total
 }
 
 // A pin re-confirmation exists to answer ONE question: "is the pin I am holding
@@ -129,15 +134,18 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		assert.Equal(t, orphan, hash)
 	})
 
-	t.Run("a source that voted within the live bound answers without a settle", func(t *testing.T) {
+	t.Run("a source that voted within the live bound answers without a fetch", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
 		c := newChainTracker(t.Context(), net, 32, 0, "", "", nil, newFetchScheduler(t.Context(), net))
-		voteChain(t, c, "a", "0", uint64(height), uint64(height), testHash("f", uint64(height-1)))
+		// From genesis, so fill has nothing to fetch: any fetch is the
+		// re-confirmation's.
+		voteChain(t, c, "a", "0", 0, uint64(height), testHash("f", 0))
 
 		hash, status := c.ReconfirmPin(context.Background(), height)
 		assert.Equal(t, integrity.PinFresh, status)
 		assert.Equal(t, orphan, hash)
-		assert.Zero(t, net.callsFor("latest"))
+		c.sync(context.Background())
+		assert.Zero(t, net.calls())
 	})
 
 	// A by-number answer from the cache is not a fresh view of the chain at

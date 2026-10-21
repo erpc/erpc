@@ -1880,13 +1880,6 @@ func (c *mockChain) Head() int64 {
 	return c.head
 }
 
-// Served is the last head a latest poll served.
-func (c *mockChain) Served() int64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.served
-}
-
 // latest answers a latest poll; markServed opens the gate.
 func (c *mockChain) latest(markServed bool) int64 {
 	c.mu.Lock()
@@ -2320,9 +2313,10 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	requireContiguous(t, conn, 4, last)
 }
 
-// Polls stop sourceIdleStop after the last client leaves; a later client
-// gets only heads newer than where polls stopped, though the chain moved on
-// while nobody polled.
+// Polls stop sourceIdleStop after the last client leaves. A later client
+// starts right after the pod's head where polls stopped: the idle source
+// stays live (nothing newer is known), and walks link the blocks the chain
+// made while nobody polled.
 func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -2336,20 +2330,24 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	defer stop()
 	go chain.run(ctx, 150*time.Millisecond)
 
-	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true))))
-	defer cleanup()
+	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true))))
+	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
+	prj, err := erpcSrv.erpc.GetProject("test_ws")
+	require.NoError(t, err)
+	nw, err := prj.GetNetwork(ctx, "evm:123")
+	require.NoError(t, err)
 	first := dialWs(t, addr)
 	subscribeNewHeads(t, first)
 	requireContiguous(t, first, 3, 0)
 	require.NoError(t, first.Close())
 
 	pollsSettle(t, &vendor.latestPolls, 700*time.Millisecond, "polls stop after the idle delay")
-	// The last head a poll served is where the pod's head stopped; the gated
-	// chain may have added one block after it.
-	idleAt := chain.Served()
 
 	// Nobody polls while the chain moves on.
 	chain.setPaused(true)
+	tip, ok := nw.chainTracker.Tip()
+	require.True(t, ok)
+	idleAt := int64(tip.Number)
 	chain.setGated(false)
 	for range 5 {
 		chain.advance()
@@ -2363,7 +2361,7 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	defer second.Close()
 	subscribeNewHeads(t, second)
 	n, _ := nextNewHead(t, second, 10*time.Second)
-	assert.Greater(t, n, idleAt, "the new client gets no head from before polls stopped")
+	assert.Equal(t, idleAt+1, n, "the new client starts right after the pod's head where polls stopped")
 	requireContiguous(t, second, 3, n)
 }
 

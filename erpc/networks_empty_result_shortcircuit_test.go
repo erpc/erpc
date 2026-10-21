@@ -493,9 +493,9 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
-	// pinnedBlockCalls counts fetches of block 0x3e8 by number; the tracker
-	// asks for latest and fills other heights in the background.
-	var traceCalls, pinnedBlockCalls atomic.Int32
+	// numberedBlockCalls counts every block fetch by number; the tracker's
+	// own asks name latest.
+	var traceCalls, numberedBlockCalls atomic.Int32
 	var empty atomic.Bool
 	var latestNum atomic.Int64
 	latestNum.Store(0x3e8)
@@ -524,8 +524,8 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":false}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
 			n := blockRef(util.SafeReadBody(r.Request))
-			if n == 0x3e8 {
-				pinnedBlockCalls.Add(1)
+			if n >= 0 {
+				numberedBlockCalls.Add(1)
 			}
 			if n < 0 {
 				n = latestNum.Load()
@@ -562,10 +562,17 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	require.NoError(t, err)
 	resp.Release()
 	require.Eventually(t, func() bool { return evm.HasVerifiedEmptyTraceBlock(warm) }, 2*time.Second, 10*time.Millisecond)
+	// Fill holds the pinned chain down to maxBackfill below the head (5m at
+	// one block a second); once it is done, no block is fetched by number.
+	require.Eventually(t, func() bool {
+		from, _, ok := evm.ChainTrackerOf(ctx, n, "").FollowedRange()
+		return ok && from == 0x3e8-300
+	}, 10*time.Second, 10*time.Millisecond)
 	empty.Store(true)
-	// Fill holds the pinned chain below 0x3e8 too; 0x100 lies below the window.
-	for _, ref := range []string{"0x3e8", "latest", "0x100"} {
-		beforeTrace, beforeBlock := traceCalls.Load(), pinnedBlockCalls.Load()
+	// 0x3e8 and 0x3e7 are pinned with no transactions; latest is a tag and
+	// 0x100 lies below the window, so neither is proven.
+	for _, ref := range []string{"0x3e8", "0x3e7", "latest", "0x100"} {
+		beforeTrace, beforeBlock := traceCalls.Load(), numberedBlockCalls.Load()
 		start := time.Now()
 		resp, err = n.Forward(ctx, request(ref))
 		require.NoError(t, err)
@@ -575,14 +582,14 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		require.True(t, strings.HasPrefix(strings.TrimSpace(jrr.GetResultString()), "["))
 		resp.Release()
 		calls := traceCalls.Load() - beforeTrace
-		if ref == "0x3e8" {
+		if ref == "0x3e8" || ref == "0x3e7" {
 			require.Equal(t, int32(1), calls)
-			require.Equal(t, beforeBlock, pinnedBlockCalls.Load(), "the held pin proves the block: no fetch of it")
+			require.Equal(t, beforeBlock, numberedBlockCalls.Load(), "the held pin proves the block: no block fetch at all")
 			require.Less(t, time.Since(start), 250*time.Millisecond)
 		} else {
 			require.Greater(t, calls, int32(1))
 		}
-		t.Logf("ref=%s traceCalls=%d pinnedBlockCalls=%d elapsed=%v", ref, calls, pinnedBlockCalls.Load()-beforeBlock, time.Since(start))
+		t.Logf("ref=%s traceCalls=%d numberedBlockCalls=%d elapsed=%v", ref, calls, numberedBlockCalls.Load()-beforeBlock, time.Since(start))
 	}
 	// With no source, the follow tap's demand makes the tracker ask for
 	// latest each block time: the pins follow the network head.

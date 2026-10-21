@@ -170,16 +170,8 @@ func (s *fetchScheduler) submit(t *ChainTracker, spec fetchSpec) *fetchWaiter {
 		return s.doneWaiter(key, spec, errSchedulerClosed)
 	}
 	r := s.pending[key]
-	if spec.client && (r == nil || !r.started) {
-		var notBefore time.Time
-		if r != nil {
-			notBefore = r.notBefore
-		} else if b, ok := s.backoff[key]; ok {
-			notBefore = b.next
-		}
-		if notBefore.After(time.Now()) {
-			return s.doneWaiter(key, spec, errFetchBackoff)
-		}
+	if spec.client && s.waitsLocked(key, r) {
+		return s.doneWaiter(key, spec, errFetchBackoff)
 	}
 	if r == nil {
 		r = &fetchRequest{key: key, spec: spec, done: make(chan struct{})}
@@ -206,6 +198,30 @@ func (s *fetchScheduler) doneWaiter(key fetchKey, spec fetchSpec, err error) *fe
 	r := &fetchRequest{key: key, spec: spec, res: fetchResult{err: err}, done: make(chan struct{})}
 	close(r.done)
 	return &fetchWaiter{s: s, r: r}
+}
+
+// waitsBackoff reports whether a fetch of spec would wait out its key's
+// backoff before it starts.
+func (s *fetchScheduler) waitsBackoff(spec fetchSpec) bool {
+	key := spec.key()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.waitsLocked(key, s.pending[key])
+}
+
+// waitsLocked: r, the request queued for key if any, has not started and
+// the key's backoff runs past now.
+func (s *fetchScheduler) waitsLocked(key fetchKey, r *fetchRequest) bool {
+	if r != nil && r.started {
+		return false
+	}
+	var notBefore time.Time
+	if r != nil {
+		notBefore = r.notBefore
+	} else if b, ok := s.backoff[key]; ok {
+		notBefore = b.next
+	}
+	return notBefore.After(time.Now())
 }
 
 // fetch submits spec for t and waits for its result, bounded by ctx.

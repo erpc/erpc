@@ -266,6 +266,22 @@ export interface WebSocketServerConfig {
      * connection instead (1013), so the client knows it missed data.
      */
     subscriptionBufferSize?: number;
+    /**
+     * MaxConnections caps concurrent client connections on this instance
+     * (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+     * unknown or spoofed.
+     */
+    maxConnections?: number;
+    /**
+     * MaxConnectionsPerIP caps concurrent client connections from one
+     * resolved client IP (0 = unlimited); see trustedIPForwarders.
+     */
+    maxConnectionsPerIP?: number;
+    /**
+     * MaxSubscriptions caps active subscriptions across all connections on
+     * this instance (0 = unlimited).
+     */
+    maxSubscriptions?: number;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -1033,6 +1049,12 @@ export interface EvmUpstreamConfig {
      */
     pinLatestTag?: boolean;
     /**
+     * SubscriptionSource makes this upstream a chain-tracker source: it feeds
+     * newHeads by push over ws/wss, by polling eth_getBlockByNumber(latest)
+     * otherwise. Unset: true for ws/wss endpoints, false otherwise.
+     */
+    subscriptionSource?: boolean;
+    /**
      * Deprecated: never read at runtime. Configure data integrity via the network
      * `integrity` block instead. Retained only so existing YAML still parses.
      */
@@ -1046,6 +1068,30 @@ export interface EvmUpstreamConfig {
      */
     maxAvailableRecentBlocks?: number;
     queryShim?: EvmQueryShimConfig;
+    /**
+     * Multicall3 packs eth_calls bound for this upstream that share a block into one
+     * Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+     * per pack. Nil (default) sends every eth_call alone.
+     */
+    multicall3?: EvmMulticall3Config;
+}
+/**
+ * EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+ * and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+ * A call the pack cannot answer exactly (multicall failed, inner call reverted
+ * or returned nothing) is sent alone, as it would be without packing.
+ */
+export interface EvmMulticall3Config {
+    maxWait?: Duration;
+    maxCalls?: number;
+    /**
+     * BypassContracts are target addresses whose calls are never packed, for
+     * contracts that answer differently when the caller is Multicall3 instead
+     * of the zero address (msg.sender or caller-code checks) without reverting.
+     * Contracts that revert inside a pack but succeed alone are learned at
+     * runtime and need no entry.
+     */
+    bypassContracts?: string[];
 }
 /**
  * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
@@ -1641,6 +1687,11 @@ export interface EvmNetworkConfig {
      * EvmServedTipConfig.
      */
     servedTip?: EvmServedTipConfig;
+    /**
+     * ChainTracker configures the network's chain trackers: how far back they
+     * hold the chain and follow reorgs.
+     */
+    chainTracker?: EvmChainTrackerConfig;
     getLogsMaxAllowedRange?: number;
     getLogsMaxAllowedAddresses?: number;
     getLogsMaxAllowedTopics?: number;
@@ -1766,6 +1817,22 @@ export interface EvmNetworkConfig {
      * provider-defined routing. This does not affect eth_query* or gRPC Query.
      */
     safeBlockSource?: string;
+}
+/**
+ * EvmChainTrackerConfig sizes the window a chain tracker holds.
+ */
+export interface EvmChainTrackerConfig {
+    /**
+     * ReorgWindow is the floor of the window in blocks, the window of group
+     * trackers, and the deepest reorg a tracker walks and replays (default
+     * 32). Raise it for deep-reorg chains (e.g. polygon 256).
+     */
+    reorgWindow?: number;
+    /**
+     * MaxBackfill is how much chain time, compared on header timestamps, the
+     * network-wide tracker holds for resumable taps (default 5m).
+     */
+    maxBackfill?: Duration;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -2234,12 +2301,6 @@ export interface IntegritySettings {
      */
     invalidBehavior?: IntegrityInvalidBehaviorConfig;
     /**
-     * ReorgWindow is how many blocks back from the tip the integrity ChainView
-     * keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
-     * deep-reorg chains (e.g. polygon 256).
-     */
-    reorgWindow?: number;
-    /**
      * ObserveOnly runs every enabled check but never lets a verdict touch the
      * response: violations that WOULD have been rejected are recorded with the
      * outcome "would_reject" and served anyway. This is the safe way to enable
@@ -2271,10 +2332,9 @@ export interface IntegritySettings {
      */
     stateProbe?: IntegrityStateProbeConfig;
     /**
-     * Follow turns the ChainView into an actual chain follower: it walks the
-     * chain forward block by block, requires each block to name its
-     * predecessor's hash, and reconciles reorgs by finding the common ancestor.
-     * Off by default — it costs one eth_getBlockByNumber per block per network.
+     * Follow opens one integrity follow tap per chain tracker: it holds
+     * demand, so source polls run without clients, and it drives the state
+     * prober on each new head. Off by default.
      */
     follow?: IntegrityFollowConfig;
     /**
@@ -2286,28 +2346,13 @@ export interface IntegritySettings {
     misbehaviorsDestination?: MisbehaviorsDestinationConfig;
 }
 /**
- * IntegrityFollowConfig configures the ChainView chain follower.
- * Following gives the module a CONTIGUOUS, parent-linked view of the chain
- * instead of the sparse scatter of heights that client traffic happens to
- * touch. That is what lets it answer "is this block canonical" from a verified
- * chain rather than from whichever source was observed first, and it is the
- * precondition for any check that compares consecutive headers.
+ * IntegrityFollowConfig configures the integrity follow tap.
  */
 export interface IntegrityFollowConfig {
     /**
-     * Enabled turns the follower on for this network. Default false.
+     * Enabled opens the follow tap for this network. Default false.
      */
     enabled?: boolean;
-    /**
-     * Interval is how often to check for new blocks (default 1s). Keep it below
-     * the chain's block time or the follower will run a step behind.
-     */
-    interval?: Duration;
-    /**
-     * MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
-     * follower starting far behind converges steadily instead of bursting.
-     */
-    maxBlocksPerTick?: number;
 }
 /**
  * IntegrityStateProbeConfig configures the per-upstream state-trie probes.
