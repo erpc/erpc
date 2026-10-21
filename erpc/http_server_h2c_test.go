@@ -270,6 +270,9 @@ func TestHttpServer_H2C_ShutdownGoAwaysAndDrainsInFlightStream(t *testing.T) {
 	_, err = bodyW.Write([]byte(reqBody[:20]))
 	require.NoError(t, err)
 	time.Sleep(200 * time.Millisecond)
+	// CanTakeNewRequest is the GOAWAY signal below; it must hold before Shutdown
+	// so a full stream limit can't pass for a GOAWAY.
+	require.True(t, cc.CanTakeNewRequest(), "h2c connection refused new streams before Shutdown started")
 
 	sigterm()
 
@@ -289,7 +292,9 @@ func TestHttpServer_H2C_ShutdownGoAwaysAndDrainsInFlightStream(t *testing.T) {
 	default:
 	}
 
-	require.Eventually(t, func() bool { return cc.State().Closing }, 3*time.Second, 10*time.Millisecond,
+	// State().Closing misses a received GOAWAY in go1.27's x/net wrapper
+	// (golang/go#82365); CanTakeNewRequest reports it under both clients.
+	require.Eventually(t, func() bool { return !cc.CanTakeNewRequest() }, 3*time.Second, 10*time.Millisecond,
 		"h2c connection never received GOAWAY after Shutdown started")
 
 	newCtx, cancelNew := context.WithTimeout(context.Background(), 2*time.Second)

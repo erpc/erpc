@@ -1418,7 +1418,7 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	}
 	aux.JSONRPC = "2.0"
 
-	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
+	if err := SonicCfg.Unmarshal(data, aux); err != nil {
 		// MIP-16 answers eth_query* params that are not an array with
 		// -32602, not a parse error: decode the envelope again with the
 		// params left raw and drop them, so the query parser rejects the
