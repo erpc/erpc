@@ -46,6 +46,9 @@ type ChainFeed interface {
 	// Want registers a tap's ReadOpts until release; the feed fetches
 	// receipts when a block is pinned and any registered MayMatch wants it.
 	Want(o ReadOpts) (release func())
+	// LogsHead is the highest pin up to which every block's receipts are
+	// held or not needed; ws logs taps measure lag from it.
+	LogsHead() Cursor
 }
 
 var ErrOutOfRange = errors.New("cursor out of range")

@@ -52,13 +52,14 @@ type fetchKey struct {
 // tracker holds; an error fails the fetch.
 type fetchSpec struct {
 	class    fetchClass
-	kind     string // metric label: header, receipts
+	kind     string // metric label: header, receipts, logs
 	selector string // use-upstream selector of a group tracker
 	upstream string // "" sweeps the selection order
 	method   string
 	params   string // JSON array
 	byHash   bool
 	final    bool // a by-number fetch at or below the network's finalized height
+	fresh    bool // a refetch after a wrong answer: never from the cache
 	client   bool // on a client request path: never waits out the key's backoff
 	decode   func(result []byte) (any, error)
 }
@@ -84,7 +85,7 @@ func (s fetchSpec) directives() *common.RequestDirectives {
 	if s.upstream == "" {
 		d.UseUpstream = s.selector
 	}
-	if !s.byHash && !s.final {
+	if !s.byHash && !s.final || s.fresh {
 		d.SkipCacheRead = "true"
 	}
 	return d
@@ -134,6 +135,9 @@ type fetchScheduler struct {
 	backoff  map[fetchKey]fetchBackoff
 	timer    *time.Timer
 	gauges   bool
+
+	// bloom is the network's receipts bloom check, shared by its trackers.
+	bloom *bloomGate
 }
 
 func newFetchScheduler(ctx context.Context, n common.Network) *fetchScheduler {
@@ -142,6 +146,7 @@ func newFetchScheduler(ctx context.Context, n common.Network) *fetchScheduler {
 		network: n,
 		pending: make(map[fetchKey]*fetchRequest),
 		backoff: make(map[fetchKey]fetchBackoff),
+		bloom:   newBloomGate(n),
 	}
 	for c := range s.share {
 		s.share[c] = fetchSlots

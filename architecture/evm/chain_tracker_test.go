@@ -135,8 +135,22 @@ func TestChainTracker(t *testing.T) {
 }
 
 func putReceipts(c *ChainTracker, blockHash string, receipts []integrity.Receipt) {
-	key, _ := hashKey(blockHash)
-	c.mb.put(trackerMsg{kind: msgReceipts, key: key, receipts: receipts})
+	var hash [32]byte
+	if !decodeHex32(blockHash, &hash) {
+		panic("bad block hash " + blockHash)
+	}
+	for i := range receipts {
+		receipts[i].BlockHash = blockHash
+	}
+	raw, err := json.Marshal(receipts)
+	if err != nil {
+		panic(err)
+	}
+	r, err := parseReceipts(raw, hash, nil)
+	if err != nil {
+		panic(err)
+	}
+	c.mb.put(trackerMsg{kind: msgReceipts, held: r})
 	c.sync(context.Background())
 }
 
@@ -279,28 +293,27 @@ func TestObserveBlockView(t *testing.T) {
 // rejecting every honest receipt for the real block for hours.
 func TestReceiptsMatchBlock(t *testing.T) {
 	h := "0x8C242a174154a5b2077aD649c1d8e38A01fa1e93aaaaaaaaaaaaaaaaaaaaaaaa"
+	var hash [32]byte
+	require.True(t, decodeHex32(h, &hash))
+	check := func(body string) error {
+		_, err := parseReceipts([]byte(body), hash, nil)
+		return err
+	}
 	t.Run("all receipts on the requested hash (case-insensitive) → ok", func(t *testing.T) {
-		assert.True(t, receiptsMatchBlock([]integrity.Receipt{
-			{TransactionHash: "0x1", BlockHash: strings.ToLower(h)},
-			{TransactionHash: "0x2", BlockHash: h},
-		}, h))
+		assert.NoError(t, check(`[{"transactionHash":"0x1","blockHash":"`+strings.ToLower(h)+`"},{"transactionHash":"0x2","blockHash":"`+h+`"}]`))
 	})
 	t.Run("another fork's receipts → refuse", func(t *testing.T) {
-		assert.False(t, receiptsMatchBlock([]integrity.Receipt{
-			{TransactionHash: "0x1", BlockHash: "0xotherfork"},
-		}, h))
+		assert.ErrorIs(t, check(`[{"transactionHash":"0x1","blockHash":"0xotherfork"}]`), errReceiptsAnswer)
 	})
 	t.Run("mixed set → refuse", func(t *testing.T) {
-		assert.False(t, receiptsMatchBlock([]integrity.Receipt{
-			{TransactionHash: "0x1", BlockHash: h},
-			{TransactionHash: "0x2", BlockHash: "0xotherfork"},
-		}, h))
+		assert.ErrorIs(t, check(`[{"transactionHash":"0x1","blockHash":"`+h+`"},{"transactionHash":"0x2","blockHash":"0xotherfork"}]`), errReceiptsAnswer)
 	})
 	t.Run("receipts without blockHash can't prove membership → refuse", func(t *testing.T) {
-		assert.False(t, receiptsMatchBlock([]integrity.Receipt{{TransactionHash: "0x1"}}, h))
+		assert.ErrorIs(t, check(`[{"transactionHash":"0x1"}]`), errReceiptsAnswer)
 	})
-	t.Run("empty set is trivially consistent (emptiness handled by the caller)", func(t *testing.T) {
-		assert.True(t, receiptsMatchBlock(nil, h))
+	t.Run("null or empty for a block not known to be empty → refuse, never no logs", func(t *testing.T) {
+		assert.ErrorIs(t, check(`null`), errReceiptsAnswer)
+		assert.ErrorIs(t, check(`[]`), errReceiptsAnswer)
 	})
 }
 

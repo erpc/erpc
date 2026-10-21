@@ -203,6 +203,7 @@ type Upstream struct {
 	networkId            atomic.Value
 	networkLabel         atomic.Value
 	supportedMethods     sync.Map
+	autoIgnored          sync.Map // method -> time.Time until which it stays ignored
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
 	failsafeExecutors    []*upstreamExecutor
@@ -1246,17 +1247,18 @@ func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller com
 	return available, nil
 }
 
+// autoIgnoreExpiry is how long a method the upstream answered as
+// unsupported stays ignored, so a vendor that refused it during a deploy
+// serves it again (spec §10, §13.1).
+var autoIgnoreExpiry = 10 * time.Minute
+
 func (u *Upstream) IgnoreMethod(method string) {
 	ai := u.config.AutoIgnoreUnsupportedMethods
 	if ai == nil || !*ai {
 		return
 	}
-	u.logger.Warn().Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
-
-	u.cfgMu.Lock()
-	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
-	u.cfgMu.Unlock()
-	u.supportedMethods.Store(method, false)
+	u.logger.Warn().Str("method", method).Dur("for", autoIgnoreExpiry).Msg("upstream does not support method, ignoring it for a while")
+	u.autoIgnored.Store(method, time.Now().Add(autoIgnoreExpiry))
 }
 
 func (u *Upstream) initRateLimitAutoTuner() {
@@ -1300,6 +1302,12 @@ func (u *Upstream) recordRemoteRateLimit(ctx context.Context, method string, nrq
 }
 
 func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
+	if until, ok := u.autoIgnored.Load(method); ok {
+		if time.Now().Before(until.(time.Time)) {
+			return false, nil
+		}
+		u.autoIgnored.CompareAndDelete(method, until)
+	}
 	cfg := u.Config()
 	if s, ok := u.supportedMethods.Load(method); ok {
 		return s.(bool), nil

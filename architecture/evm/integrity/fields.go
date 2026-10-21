@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"strings"
 
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
-	"golang.org/x/crypto/sha3"
 )
 
 // EVM byte lengths shared by the shape checks. One home, so the per-field
@@ -14,7 +14,7 @@ import (
 const (
 	addressLen = 20  // 20-byte address
 	hashLen    = 32  // 32-byte hash / topic
-	bloomLen   = 256 // 2048-bit logs bloom
+	bloomLen   = logfilter.BloomLen
 	maxTopics  = 4   // LOG0..LOG4
 )
 
@@ -32,6 +32,12 @@ func checkByteLen(field, value string, want int) *Violation {
 		return failf("%s: length invalid: %d bytes (want %d)", field, len(b), want)
 	}
 	return nil
+}
+
+// normHex canonicalizes a hex string for set-membership comparison ("0X1A" ==
+// "0x1a").
+func normHex(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 // eqHex compares two hex strings case-insensitively and 0x-prefix tolerantly.
@@ -71,31 +77,17 @@ func bloomFromLogs(logs []Log) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			bloomAdd(bloom, ab)
+			logfilter.BloomAdd(bloom, ab)
 		}
 		for _, t := range l.Topics {
 			tb, err := common.HexToBytes(t)
 			if err != nil {
 				return nil, err
 			}
-			bloomAdd(bloom, tb)
+			logfilter.BloomAdd(bloom, tb)
 		}
 	}
 	return bloom, nil
-}
-
-// bloomAdd sets the three keccak-derived bit positions for value into a 2048-bit
-// (256-byte, big-endian) bloom filter.
-func bloomAdd(bloom, value []byte) {
-	var h [32]byte
-	hw := sha3.NewLegacyKeccak256()
-	_, _ = hw.Write(value)
-	_ = hw.Sum(h[:0])
-	for i := 0; i < 6; i += 2 {
-		bitpos := (uint16(h[i])<<8 | uint16(h[i+1])) & 0x7FF
-		byteIndex := bloomLen - 1 - int(bitpos>>3)
-		bloom[byteIndex] |= byte(1 << (bitpos & 7))
-	}
 }
 
 // bloomsEqual reports whether a hex bloom equals a recomputed bloom byte slice.

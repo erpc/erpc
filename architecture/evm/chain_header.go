@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm/integrity"
@@ -22,6 +24,13 @@ type chainHeader struct {
 	hashHex    string // lowercase, 0x-prefixed
 	raw        json.RawMessage
 	parsed     *integrity.Header
+	bloom      []byte // logsBloom; nil when the header carries none
+	// emptyTxs: transactionsRoot is the empty-trie root, so the block has
+	// no transactions and no receipts.
+	emptyTxs bool
+
+	recompute  sync.Once
+	recomputes bool // the header hashes to its hash (blockHashRecompute)
 }
 
 var errMalformedHeader = errors.New("malformed block header")
@@ -52,12 +61,16 @@ func parseChainHeader(raw json.RawMessage) (*chainHeader, error) {
 		}
 		ch.timestamp = uint64(ts)
 	}
-	if h.LogsBloom != "" && !isHexBytes(h.LogsBloom, 256) {
-		return nil, fmt.Errorf("%w: logsBloom", errMalformedHeader)
+	if h.LogsBloom != "" {
+		if !isHexBytes(h.LogsBloom, 256) {
+			return nil, fmt.Errorf("%w: logsBloom", errMalformedHeader)
+		}
+		ch.bloom, _ = hex.DecodeString(h.LogsBloom[2:])
 	}
 	if h.TransactionsRoot != "" && !isHexBytes(h.TransactionsRoot, 32) {
 		return nil, fmt.Errorf("%w: transactionsRoot %q", errMalformedHeader, h.TransactionsRoot)
 	}
+	ch.emptyTxs = strings.EqualFold(h.TransactionsRoot, integrity.EmptyTrieRoot)
 	ch.hashHex = hexHash(ch.hash)
 	return ch, nil
 }
@@ -78,6 +91,16 @@ func (h *chainHeader) cursor() indexer.Cursor {
 
 func (h *chainHeader) block() indexer.Block {
 	return indexer.Block{Number: h.number, Hash: h.hash, ParentHash: h.parentHash, Header: h.raw}
+}
+
+// hashRecomputes reports whether the header's JSON hashes to its hash
+// (blockHashRecompute); computed once, on first use.
+func (h *chainHeader) hashRecomputes() bool {
+	h.recompute.Do(func() {
+		got, ok := integrity.RecomputeBlockHash(h.raw)
+		h.recomputes = ok && strings.EqualFold(got, h.hashHex)
+	})
+	return h.recomputes
 }
 
 func trimHexPrefix(s string) (string, bool) {

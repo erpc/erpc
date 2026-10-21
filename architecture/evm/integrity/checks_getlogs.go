@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 )
 
@@ -47,7 +48,7 @@ func init() {
 				if l.Removed {
 					continue // reorg-removed marker, not a filter member
 				}
-				if !f.Matches(l) {
+				if !f.Matches(l.Address, l.Topics) {
 					return failf("log %s (block %s, logIndex %s) does not match the request filter", l.TransactionHash, l.BlockNumber, l.LogIndex)
 				}
 				if f.BlockHash != "" && l.BlockHash != "" && !eqHex(l.BlockHash, f.BlockHash) {
@@ -158,7 +159,7 @@ func init() {
 				missing := 0
 				for i := range expected {
 					for j := range expected[i].Logs {
-						if !expected[i].Logs[j].Removed && f.Matches(&expected[i].Logs[j]) {
+						if l := &expected[i].Logs[j]; !l.Removed && f.Matches(l.Address, l.Topics) {
 							missing++
 						}
 					}
@@ -178,12 +179,12 @@ func init() {
 // block hash): the filter applied to the canonical logs must yield exactly the
 // response's set, with identical content per logIndex. Returns Skipped when
 // the data is not comparable (malformed indexes) — never rejects on our own data.
-func compareBlockLogs(f *LogsFilter, blockHash string, canonical []Receipt, got []*Log) *Violation {
+func compareBlockLogs(f *logfilter.LogsFilter, blockHash string, canonical []Receipt, got []*Log) *Violation {
 	expected := map[int64]*Log{}
 	for i := range canonical {
 		for j := range canonical[i].Logs {
 			l := &canonical[i].Logs[j]
-			if l.Removed || !f.Matches(l) {
+			if l.Removed || !f.Matches(l.Address, l.Topics) {
 				continue
 			}
 			idx, err := common.HexToInt64(l.LogIndex)

@@ -72,12 +72,13 @@ type ChainTracker struct {
 	// held, receipts and anchors are read by any goroutine; only the
 	// tracker's goroutine writes them.
 	held     sync.Map // lowercase hash -> *chainHeader
-	receipts sync.Map // lowercase block hash -> []integrity.Receipt
+	receipts sync.Map // lowercase block hash -> *heldReceipts
 	anchors  sync.Map // int64 -> lowercase hash: finalized narrow anchors
 
-	wantMu sync.Mutex
-	wants  map[uint64]indexer.ReadOpts
-	wantID uint64
+	wantMu      sync.Mutex
+	wants       map[uint64]indexer.ReadOpts
+	wantID      uint64
+	wantVersion atomic.Uint64 // moves on each Want and release
 
 	reconfirmMu   sync.Mutex
 	reconfirmedAt map[int64]time.Time
@@ -112,6 +113,16 @@ type ChainTracker struct {
 	since time.Time
 
 	receiptsOrder []receiptsEntry
+	jobs          map[[32]byte]*receiptsJob // receipts fetches by block hash
+	// needs caches feedNeeds per block while the registry (needsVersion)
+	// and the bloom skip (needsTrusted) stay; needsWants is that registry.
+	needs        map[[32]byte]bool
+	needsWants   []func([]byte) bool
+	needsVersion uint64
+	needsTrusted bool
+	// receiptsDirty: the pins, a job or held receipts changed since the
+	// receipts were last planned.
+	receiptsDirty bool
 	anchorNumbers []int64
 	panics        int
 	stack         []*node // walkTree's scratch
@@ -139,6 +150,7 @@ type feedState struct {
 	send      int           // index in pins of the sendable head; -1 none
 	blockTime time.Duration // mean header-time step over the pins; 0 unknown
 	changed   chan struct{} // closed once a newer state is published
+	logs      indexer.Cursor // the logs head (spec §1)
 }
 
 func (s *feedState) head() *chainHeader {
@@ -213,8 +225,7 @@ type trackerMsg struct {
 	raw      json.RawMessage
 	hdr      *chainHeader // set when the sender already parsed raw
 	anchors  []anchor
-	key      string
-	receipts []integrity.Receipt
+	held     *heldReceipts
 	done     chan struct{}
 	fn       func()
 	settled  chan settleOutcome
@@ -352,6 +363,12 @@ func (t *ChainTracker) clear() {
 	t.pins, t.maxHeld = nil, nil
 	t.since = time.Now()
 	t.treesDirty = true
+	for _, j := range t.jobs {
+		t.endJob(j, nil)
+	}
+	t.jobs = make(map[[32]byte]*receiptsJob)
+	t.needs = make(map[[32]byte]bool)
+	t.receiptsDirty = true
 }
 
 // Observe is the tracker's only input of headers. vote is true for a source
@@ -457,7 +474,7 @@ func (t *ChainTracker) receive(msg trackerMsg) {
 	case msgAnchors:
 		t.handleAnchors(msg.anchors)
 	case msgReceipts:
-		t.handleReceipts(msg.key, msg.receipts)
+		t.holdReceipts(msg.held)
 	case msgCall:
 		msg.fn()
 	case msgSettle:
@@ -512,6 +529,7 @@ func (t *ChainTracker) update() bool {
 	ok = t.guard("ask", t.maybeAsk, nil) && ok
 	ok = t.guard("send", t.gateSend, nil) && ok
 	ok = t.guard("trees", t.publishTrees, nil) && ok
+	ok = t.guard("receipts", t.planReceipts, nil) && ok
 	return t.guard("wake", t.rearm, nil) && ok
 }
 
@@ -1002,7 +1020,8 @@ func (t *ChainTracker) apply(path []*node) {
 	}
 	s := newFeedState(path, t.window)
 	s.send = t.sendIndex(path)
-	t.pins, t.treesDirty = path, true
+	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
+	s.logs = t.logsHeadOf(s)
 	if t.selector == "" && pub.head() != head {
 		t.noteLatest(head.number)
 	}
@@ -1106,19 +1125,7 @@ func (t *ChainTracker) evict() {
 			t.drop(n)
 		}
 	}
-	if ref.number < uint64(t.window) {
-		return
-	}
-	lo := int64(ref.number - uint64(t.window))
-	kept := t.receiptsOrder[:0]
-	for _, e := range t.receiptsOrder {
-		if e.number >= 0 && e.number < lo {
-			t.receipts.Delete(e.key)
-			continue
-		}
-		kept = append(kept, e)
-	}
-	t.receiptsOrder = kept
+	t.evictReceipts()
 }
 
 func newFeedState(pins []*node, window int) *feedState {
@@ -1136,6 +1143,7 @@ func newFeedState(pins []*node, window int) *feedState {
 func (t *ChainTracker) publish() {
 	s := newFeedState(t.pins, t.window)
 	s.send = t.sendIndex(t.pins)
+	s.logs = t.logsHeadOf(s)
 	close(t.state.Swap(s).changed)
 }
 
@@ -1204,6 +1212,7 @@ func (t *ChainTracker) gateSend() {
 		return
 	}
 	s := &feedState{base: pub.base, pins: pub.pins, send: send, blockTime: pub.blockTime, changed: make(chan struct{})}
+	s.logs = t.logsHeadOf(s)
 	close(t.state.Swap(s).changed)
 }
 
@@ -1264,33 +1273,6 @@ func (t *ChainTracker) receiptsCap() int {
 	return (t.window + 1) * (1 + maxOrphansPerHeight)
 }
 
-func (t *ChainTracker) handleReceipts(key string, receipts []integrity.Receipt) {
-	if _, seen := t.receipts.Load(key); !seen {
-		number := int64(-1)
-		if len(receipts) > 0 {
-			if n, err := common.HexToInt64(receipts[0].BlockNumber); err == nil {
-				number = n
-			}
-		}
-		t.receiptsOrder = append(t.receiptsOrder, receiptsEntry{key: key, number: number})
-	}
-	t.receipts.Store(key, receipts)
-	if ref := t.head(); ref != nil && ref.number >= uint64(t.window) {
-		lo := int64(ref.number - uint64(t.window))
-		t.receiptsOrder = slices.DeleteFunc(t.receiptsOrder, func(e receiptsEntry) bool {
-			if e.number >= 0 && e.number < lo {
-				t.receipts.Delete(e.key)
-				return true
-			}
-			return false
-		})
-	}
-	for len(t.receiptsOrder) > t.receiptsCap() {
-		t.receipts.Delete(t.receiptsOrder[0].key)
-		t.receiptsOrder = t.receiptsOrder[1:]
-	}
-}
-
 // --- indexer.ChainFeed ---
 
 // Head is a new tap's start: the sendable head (the delivery gate) while a
@@ -1347,16 +1329,36 @@ func (t *ChainTracker) sourceLive() bool {
 //
 // Read waits only on the state the tracker publishes, and the tracker
 // never waits on a Read.
-func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, _ indexer.ReadOpts) (indexer.Batch, error) {
+//
+// With o.MayMatch, every block the tap needs carries its receipts: Applied
+// ends before the first block whose receipts are not held yet, and Read
+// waits for them, fetched by hash, as it does for the receipts of Reverted
+// blocks. A new head alone does not restart that wait.
+func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts) (indexer.Batch, error) {
 	fetched := false
 	var retryAt time.Time
+	rr := &readReceipts{o: o, got: make(map[[32]byte]*heldReceipts)}
+	var job *receiptsJob
+	var stalled *chainHeader // a block whose job ended without receipts
+	defer func() { t.leaveJob(job) }()
 	for {
 		s, tr := t.state.Load(), t.trees.Load()
-		b, step, err := t.readAt(s, tr, c)
+		rr.missing = nil
+		b, step, err := t.readAt(s, tr, c, rr)
 		if err != nil || len(b.Applied) > 0 || len(b.Reverted) > 0 {
 			return b, err
 		}
 		var retry <-chan time.Time
+		var receipts <-chan struct{}
+		if m := rr.missing; m != nil && m != stalled {
+			if job == nil || job.h != m {
+				t.leaveJob(job)
+				if job = t.joinJob(ctx, m); job == nil {
+					return indexer.Batch{}, ctx.Err()
+				}
+			}
+			receipts = job.done
+		}
 		if step == readFetch {
 			if wait := time.Until(retryAt); wait > 0 {
 				retry = time.After(wait)
@@ -1376,11 +1378,46 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, _ indexer.Rea
 		case <-ctx.Done():
 			return indexer.Batch{}, ctx.Err()
 		case <-s.changed:
+			stalled = nil
 		case <-trees:
 		case <-retry:
+		case <-receipts:
+			if job.res != nil {
+				rr.got[job.h.hash] = job.res
+			} else {
+				stalled = job.h
+			}
+			job = nil
+			continue
 		}
 		fetched = false
 	}
+}
+
+// readReceipts is what one Read asks of receipts: the tap's ReadOpts, the
+// receipts fetched for it that the feed does not hold, and the first block
+// whose receipts it lacks.
+type readReceipts struct {
+	o       indexer.ReadOpts
+	got     map[[32]byte]*heldReceipts
+	missing *chainHeader
+}
+
+// lacks reports whether the tap needs h's receipts and has none; with
+// them, blk carries them.
+func (rr *readReceipts) lacks(t *ChainTracker, h *chainHeader, blk *indexer.Block) bool {
+	if !t.tapNeeds(rr.o, h) {
+		return false
+	}
+	r := rr.got[h.hash]
+	if r == nil {
+		r = t.heldReceiptsOf(h.hash)
+	}
+	if r == nil {
+		return true
+	}
+	blk.Receipts = r.raw
+	return false
 }
 
 // readStep is what a Read without a batch does next.
@@ -1393,16 +1430,16 @@ const (
 )
 
 // readAt is one pass of Read's cases over one published state.
-func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor) (indexer.Batch, readStep, error) {
+func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr *readReceipts) (indexer.Batch, readStep, error) {
 	head := s.head()
 	if head == nil {
 		return indexer.Batch{}, readWaitPins, nil
 	}
 	if p := s.pinAt(c.Number); p != nil && p.hash == c.Hash {
-		return t.applied(s, c.Number+1), readWaitPins, nil
+		return t.applied(s, c.Number+1, rr), readWaitPins, nil
 	}
 	if c.Number+1 == s.base && s.pins[0].parentHash == c.Hash {
-		return t.applied(s, s.base), readWaitPins, nil
+		return t.applied(s, s.base, rr), readWaitPins, nil
 	}
 	held := t.heldHeader(c.Hash)
 	if held != nil && held.number != c.Number {
@@ -1416,7 +1453,7 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor) (in
 		return indexer.Batch{}, readWaitPins, indexer.OutOfRangeError{Reason: indexer.OutOfRangeBelowWindow}
 	}
 	if held != nil {
-		return t.revert(s, tr, held)
+		return t.revert(s, tr, held, rr)
 	}
 	if c.Number > head.number || c.Number < s.base {
 		return indexer.Batch{}, readWaitTrees, nil
@@ -1425,9 +1462,10 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor) (in
 }
 
 // applied is the pins from number from to the sendable head (the delivery
-// gate), at most reorgWindow of them; empty while from is above it. from
-// is at least the lowest pin.
-func (t *ChainTracker) applied(s *feedState, from uint64) indexer.Batch {
+// gate), at most reorgWindow of them, ending before the first block whose
+// receipts the tap needs and lacks; empty while from is above the sendable
+// head. from is at least the lowest pin.
+func (t *ChainTracker) applied(s *feedState, from uint64, rr *readReceipts) indexer.Batch {
 	head := s.sendHead()
 	if head == nil || from > head.number {
 		return indexer.Batch{}
@@ -1435,9 +1473,21 @@ func (t *ChainTracker) applied(s *feedState, from uint64) indexer.Batch {
 	last := min(head.number, from+uint64(t.window)-1)
 	b := indexer.Batch{Applied: make([]indexer.Block, 0, last-from+1)}
 	for n := from; n <= last; n++ {
-		b.Applied = append(b.Applied, s.pinAt(n).block())
+		p := s.pinAt(n)
+		blk := p.block()
+		if rr.lacks(t, p, &blk) {
+			if len(b.Applied) == 0 {
+				rr.missing = p
+			}
+			break
+		}
+		b.Applied = append(b.Applied, blk)
 	}
-	b.Next = s.pinAt(last).cursor()
+	if len(b.Applied) == 0 {
+		return indexer.Batch{}
+	}
+	end := b.Applied[len(b.Applied)-1]
+	b.Next = indexer.Cursor{Number: end.Number, Hash: end.Hash}
 	return b
 }
 
@@ -1446,18 +1496,23 @@ func (t *ChainTracker) applied(s *feedState, from uint64) indexer.Batch {
 // and the sendable pins above it apply. A branch that only extends the
 // head, or a fork point at or above the sendable head, waits instead. Or
 // it meets its tree's root: unlinked.
-func (t *ChainTracker) revert(s *feedState, tr *treeState, h *chainHeader) (indexer.Batch, readStep, error) {
+func (t *ChainTracker) revert(s *feedState, tr *treeState, h *chainHeader, rr *readReceipts) (indexer.Batch, readStep, error) {
 	var reverted []indexer.Block
 	for x := h; ; {
-		reverted = append(reverted, x.block())
+		blk := x.block()
+		if rr.lacks(t, x, &blk) {
+			rr.missing = x
+			return indexer.Batch{}, readWaitPins, nil
+		}
+		reverted = append(reverted, blk)
 		var b indexer.Batch
 		switch p := s.pinAt(x.number - 1); {
 		case x.number == s.base && x.parentHash == s.pins[0].parentHash:
-			b = t.applied(s, s.base)
+			b = t.applied(s, s.base, rr)
 		case x.number == 0:
 			return t.unlinked(tr, x)
 		case p != nil && p.hash == x.parentHash:
-			b = t.applied(s, p.number+1)
+			b = t.applied(s, p.number+1, rr)
 		default:
 			parent := t.heldHeader(x.parentHash)
 			if parent == nil || parent.number+1 != x.number {
@@ -1544,17 +1599,25 @@ func (t *ChainTracker) fetchCursor(ctx context.Context, c indexer.Cursor) (retry
 	return time.Time{}, nil
 }
 
-// Want registers o until release.
+// Want registers o until release; the tracker then fetches, at pin time,
+// the receipts of each block o.MayMatch wants (spec §10).
 func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
 	t.wantMu.Lock()
 	t.wantID++
 	id := t.wantID
 	t.wants[id] = o
 	t.wantMu.Unlock()
+	t.wantVersion.Add(1)
+	t.mb.put(trackerMsg{kind: msgTick})
+	var once sync.Once
 	return func() {
-		t.wantMu.Lock()
-		delete(t.wants, id)
-		t.wantMu.Unlock()
+		once.Do(func() {
+			t.wantMu.Lock()
+			delete(t.wants, id)
+			t.wantMu.Unlock()
+			t.wantVersion.Add(1)
+			t.mb.put(trackerMsg{kind: msgTick})
+		})
 	}
 }
 
@@ -1635,17 +1698,18 @@ func (t *ChainTracker) HeaderAt(number int64) (*integrity.Header, bool) {
 	return nil, false
 }
 
-// CachedReceipts is a held-data read of a block's receipts by hash.
+// CachedReceipts is a held-data read of a block's receipts by hash. Logs
+// held from the eth_getLogs fallback are not receipts integrity can check.
 func (t *ChainTracker) CachedReceipts(blockHash string) ([]integrity.Receipt, bool) {
-	key, ok := hashKey(blockHash)
-	if !ok {
+	var hash [32]byte
+	if !decodeHex32(blockHash, &hash) {
 		return nil, false
 	}
-	r, ok := t.receipts.Load(key)
-	if !ok {
+	r := t.heldReceiptsOf(hash)
+	if r == nil || r.fromLogs {
 		return nil, false
 	}
-	return r.([]integrity.Receipt), true
+	return r.integrityView(), true
 }
 
 // ReconfirmPin reports the pin at number once it is current. While a source
@@ -1868,87 +1932,56 @@ func headerMatchesRef(h *chainHeader, method, blockRef string) bool {
 	return true
 }
 
-// fetchedReceipts is a receipts answer the tracker holds under its block
-// hash.
-type fetchedReceipts struct {
-	key      string
-	receipts []integrity.Receipt
-}
-
 // fetched hands a tracker fetch's answer to the mailbox, where it is never
 // shed.
 func (t *ChainTracker) fetched(res fetchResult) {
 	switch v := res.val.(type) {
 	case *chainHeader:
 		t.observeFetched(res.upstream, v)
-	case fetchedReceipts:
-		t.mb.put(trackerMsg{kind: msgReceipts, key: v.key, receipts: v.receipts})
+	case *heldReceipts:
+		t.mb.put(trackerMsg{kind: msgReceipts, held: v})
 	}
 }
 
 // resolveReceipts fetches a block's receipts by hash through the
-// scheduler, group-scoped; the scheduler hands them to the tracker. Only a
-// block known to lie within reorgWindow of the head is tip receipts; any
-// other is fill.
+// scheduler, group-scoped, with the answer and bloom checks of the feed's
+// own fetches; the scheduler hands them to the tracker. Only a block known
+// to lie within reorgWindow of the head is tip receipts; any other is fill.
 func (t *ChainTracker) resolveReceipts(ctx context.Context, blockHash string, number int64) ([]integrity.Receipt, bool) {
 	if t.network == nil {
 		return nil, false
 	}
-	key, ok := hashKey(blockHash)
-	if !ok {
+	var hash [32]byte
+	if !decodeHex32(blockHash, &hash) {
 		return nil, false
 	}
-	if h, ok := t.held.Load(key); ok {
-		number = int64(h.(*chainHeader).number)
+	h := t.heldHeader(hash)
+	if h != nil {
+		number = int64(h.number)
 	}
 	class := classFill
 	if number >= 0 {
 		class = t.fetchClassAt(number, classTipReceipts)
 	}
-	res := t.fetch.fetch(ctx, t, fetchSpec{
-		class:    class,
-		kind:     "receipts",
-		selector: t.selector,
-		method:   "eth_getBlockReceipts",
-		params:   `["` + key + `"]`,
-		byHash:   true,
-		client:   true,
-		decode: func(result []byte) (any, error) {
-			var receipts []integrity.Receipt
-			if err := common.SonicCfg.Unmarshal(result, &receipts); err != nil {
-				return nil, err
-			}
-			// A node may answer a by-hash receipts request with another
-			// block's receipts (a losing fork at that height): "canonical
-			// unavailable", never evidence. An empty answer held under the
-			// hash would blind corroboration for that block for good.
-			if len(receipts) == 0 || !receiptsMatchBlock(receipts, key) {
-				return nil, errFetchUndecoded
-			}
-			return fetchedReceipts{key: key, receipts: receipts}, nil
-		},
-	})
+	spec := t.receiptsSpec(class, hash, h, false)
+	spec.client = true
+	res := t.fetch.fetch(ctx, t, spec)
 	if errors.Is(res.err, errFetchBackoff) {
 		return nil, false
 	}
-	v, ok := res.val.(fetchedReceipts)
+	if errors.Is(res.err, errBloomMismatch) && h != nil {
+		t.countBloomMismatch(res.upstream, spec.method, h)
+	}
+	r, ok := res.val.(*heldReceipts)
 	num := int64(-1)
 	if ok {
-		num, _ = common.HexToInt64(v.receipts[0].BlockNumber)
+		num = r.number
 	}
 	t.emitAux("canonical_receipts", "eth_getBlockReceipts", t.finalityLabel(num), ok)
-	return v.receipts, ok
-}
-
-// receiptsMatchBlock reports whether every receipt claims the expected block
-// hash. Receipts without a blockHash can't prove membership.
-func receiptsMatchBlock(receipts []integrity.Receipt, blockHash string) bool {
-	for i := range receipts {
-		if !strings.EqualFold(receipts[i].BlockHash, blockHash) {
-			return false
-		}
+	if !ok {
+		return nil, false
 	}
-	return true
+	return r.integrityView(), true
 }
 
 // emitAux records an auxiliary fetch, labeled with the group, the method and

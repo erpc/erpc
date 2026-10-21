@@ -1,6 +1,9 @@
 package integrity
 
-import "github.com/erpc/erpc/common"
+import (
+	"github.com/erpc/erpc/architecture/evm/logfilter"
+	"github.com/erpc/erpc/common"
+)
 
 // Lowercased method names this package understands. Checks reference these and
 // the engine matches the request method (lowercased) against them.
@@ -104,7 +107,7 @@ type Decoded struct {
 	receipts []Receipt
 	logs     []Log
 
-	filter     *LogsFilter
+	filter     *logfilter.LogsFilter
 	filterDone bool
 
 	blockTraces   []TraceEntry
@@ -121,9 +124,9 @@ func newDecoded(method string, raw []byte) *Decoded {
 
 // LogsFilter returns the parsed eth_getLogs request filter, or nil when the
 // request params are unavailable/unparseable (callers must skip, not reject).
-func (d *Decoded) LogsFilter() *LogsFilter {
+func (d *Decoded) LogsFilter() *logfilter.LogsFilter {
 	if !d.filterDone {
-		d.filter = parseLogsFilter(d.reqParams)
+		d.filter = logfilter.Parse(d.reqParams)
 		d.filterDone = true
 	}
 	return d.filter
