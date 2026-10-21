@@ -138,11 +138,6 @@ func (s *feedState) head() *chainHeader {
 	return s.pins[len(s.pins)-1]
 }
 
-// end is the last pin a Read applies: the head (spec §9.1).
-func (s *feedState) end() *chainHeader {
-	return s.head()
-}
-
 func (s *feedState) pinAt(n uint64) *chainHeader {
 	if len(s.pins) == 0 || n < s.base || n-s.base >= uint64(len(s.pins)) {
 		return nil
@@ -151,12 +146,25 @@ func (s *feedState) pinAt(n uint64) *chainHeader {
 }
 
 // treeState is what a Read whose cursor is outside the pins waits on: the
-// roots whose walk or fill ended for good without joining another tree.
-// The tracker publishes it after each message that held or dropped a
-// header or ended an extension.
+// roots whose walk or fill ended for good without joining another tree,
+// and the root of the pins' tree, computed over state. The tracker
+// publishes it after each message that held or dropped a header, ended an
+// extension or moved the pins.
 type treeState struct {
+	state   *feedState
 	ended   map[[32]byte]struct{}
+	pinRoot *chainHeader  // nil while nothing is pinned
 	changed chan struct{} // closed once a newer state is published
+}
+
+// pinsMayJoin reports whether the pins' fill still runs above root's
+// height, so it may yet join root's tree.
+func (tr *treeState) pinsMayJoin(root *chainHeader) bool {
+	if tr.pinRoot == nil {
+		return false
+	}
+	_, ended := tr.ended[tr.pinRoot.hash]
+	return !ended && tr.pinRoot.number > root.number
 }
 
 type voteKind uint8
@@ -298,8 +306,9 @@ func newChainTracker(ctx context.Context, n common.Network, window int, backfill
 		reconfirmedAt: make(map[int64]time.Time),
 	}
 	t.clear()
-	t.state.Store(&feedState{changed: make(chan struct{})})
-	t.trees.Store(&treeState{changed: make(chan struct{})})
+	s := &feedState{changed: make(chan struct{})}
+	t.state.Store(s)
+	t.trees.Store(&treeState{state: s, changed: make(chan struct{})})
 	go t.run(ctx)
 	return t
 }
@@ -468,15 +477,19 @@ func (t *ChainTracker) update() bool {
 }
 
 // publishTrees publishes the roots whose extension ended, once a header
-// was held or dropped or an extension ended. A tracker that cannot fetch
-// extends no root.
+// was held or dropped, an extension ended or the pins moved. A tracker
+// that cannot fetch extends no root.
 func (t *ChainTracker) publishTrees() {
-	if !t.treesDirty {
+	pub := t.state.Load()
+	if !t.treesDirty && t.trees.Load().state == pub {
 		return
 	}
 	t.treesDirty = false
 	pinRoot := t.pinRoot()
-	s := &treeState{ended: make(map[[32]byte]struct{}), changed: make(chan struct{})}
+	s := &treeState{state: pub, ended: make(map[[32]byte]struct{}), changed: make(chan struct{})}
+	if pinRoot != nil {
+		s.pinRoot = pinRoot.h
+	}
 	for r, e := range t.exts {
 		if e.atBase || e.capped && r != pinRoot || !t.canFetch() {
 			s.ended[r.h.hash] = struct{}{}
@@ -638,8 +651,9 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 }
 
 // capOrphans keeps at most maxOrphansPerHeight unpinned headers at a
-// height, dropping the oldest that no counted vote points to; keep, just
-// held, stays.
+// height, dropping the oldest childless one that no counted vote points
+// to; keep, just held, stays. An orphan with held children stays, so a
+// drop never cuts a tree inside the window.
 func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 	orphans := 0
 	for _, n := range t.heights[number] {
@@ -655,7 +669,7 @@ func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 		if orphans <= maxOrphansPerHeight {
 			return
 		}
-		if n != keep && !t.pinned(n) && !slices.ContainsFunc(counted, func(v voter) bool { return v.n == n }) {
+		if n != keep && len(n.children) == 0 && !t.pinned(n) && !slices.ContainsFunc(counted, func(v voter) bool { return v.n == n }) {
 			t.drop(n)
 			orphans--
 		}
@@ -663,7 +677,8 @@ func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 }
 
 // drop releases a held header. Its children become roots at the window's
-// edge: fill does not fetch the dropped parent again.
+// edge: fill does not fetch the dropped parent again. Only eviction drops
+// a header with children.
 func (t *ChainTracker) drop(n *node) {
 	delete(t.nodes, n.h.hash)
 	t.held.Delete(n.h.hashHex)
@@ -1179,33 +1194,43 @@ func (t *ChainTracker) sourceLive() bool {
 
 // Read returns the next non-empty batch from c (spec §9.1), by the first
 // case that matches:
-//   - c below the window: out of range;
 //   - c pinned, or the parent of the lowest pin: the pins above it;
+//   - c held, or fetched, under another number: out of range;
+//   - c below the window: out of range;
 //   - c held in the pins' tree: c's branch reverted down to the fork
 //     point, the pins above the fork point applied;
-//   - c held in another tree: a wait while fill links it; out of range
-//     when that tree's fill ends first;
+//   - c held in another tree: a wait while fill may link it; out of range
+//     once that tree's fill ended and the pins' fill ended or passed
+//     below it;
 //   - c not held, above the head: a wait for the head;
 //   - c not held, inside the window: a wait for fill down to c.Number,
-//     then c fetched by hash: found, it is held and filled as above; not
-//     found, out of range.
+//     then c fetched by hash: found, it is held and filled as above, or
+//     out of range when the window no longer holds it; null from every
+//     upstream, out of range; any other failure, fetched again after the
+//     key's backoff.
 //
 // Read waits only on the state the tracker publishes, and the tracker
 // never waits on a Read.
 func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, _ indexer.ReadOpts) (indexer.Batch, error) {
 	fetched := false
+	var retryAt time.Time
 	for {
 		s, tr := t.state.Load(), t.trees.Load()
 		b, step, err := t.readAt(s, tr, c)
 		if err != nil || len(b.Applied) > 0 || len(b.Reverted) > 0 {
 			return b, err
 		}
-		if step == readFetch && !fetched {
-			fetched = true
-			if err := t.fetchCursor(ctx, c); err != nil {
-				return indexer.Batch{}, err
+		var retry <-chan time.Time
+		if step == readFetch {
+			if wait := time.Until(retryAt); wait > 0 {
+				retry = time.After(wait)
+			} else if !fetched {
+				if retryAt, err = t.fetchCursor(ctx, c); err != nil {
+					return indexer.Batch{}, err
+				}
+				fetched = retryAt.IsZero()
+				continue
 			}
-			continue
 		}
 		trees := tr.changed
 		if step == readWaitPins {
@@ -1216,6 +1241,7 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, _ indexer.Rea
 			return indexer.Batch{}, ctx.Err()
 		case <-s.changed:
 		case <-trees:
+		case <-retry:
 		}
 		fetched = false
 	}
@@ -1242,30 +1268,35 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor) (in
 	if c.Number+1 == s.base && s.pins[0].parentHash == c.Hash {
 		return t.applied(s, s.base), readWaitPins, nil
 	}
+	held := t.heldHeader(c.Hash)
+	if held != nil && held.number != c.Number {
+		return indexer.Batch{}, readWaitPins, indexer.OutOfRangeError{Reason: indexer.OutOfRangeCursorUnknown}
+	}
+	if tr.state != s {
+		// The trees of these pins are not published yet.
+		return indexer.Batch{}, readWaitTrees, nil
+	}
 	if c.Number < s.base && t.baseFinal(s, tr) {
 		return indexer.Batch{}, readWaitPins, indexer.OutOfRangeError{Reason: indexer.OutOfRangeBelowWindow}
 	}
-	if h := t.heldHeader(c.Hash); h != nil {
-		return t.revert(s, tr, h)
+	if held != nil {
+		return t.revert(s, tr, held)
 	}
-	switch {
-	case c.Number > head.number:
-		return indexer.Batch{}, readWaitPins, nil
-	case c.Number < s.base:
+	if c.Number > head.number || c.Number < s.base {
 		return indexer.Batch{}, readWaitTrees, nil
 	}
 	return indexer.Batch{}, readFetch, nil
 }
 
-// applied is the pins from number from to the end a Read applies, at most
-// reorgWindow of them; empty while from is above that end. from is at
-// least the lowest pin.
+// applied is the pins from number from to the head, at most reorgWindow
+// of them; empty while from is above the head. from is at least the
+// lowest pin.
 func (t *ChainTracker) applied(s *feedState, from uint64) indexer.Batch {
-	end := s.end()
-	if from > end.number {
+	head := s.head()
+	if from > head.number {
 		return indexer.Batch{}
 	}
-	last := min(end.number, from+uint64(t.window)-1)
+	last := min(head.number, from+uint64(t.window)-1)
 	b := indexer.Batch{Applied: make([]indexer.Block, 0, last-from+1)}
 	for n := from; n <= last; n++ {
 		b.Applied = append(b.Applied, s.pinAt(n).block())
@@ -1274,15 +1305,19 @@ func (t *ChainTracker) applied(s *feedState, from uint64) indexer.Batch {
 	return b
 }
 
-// revert places a held cursor h. Down its parents it meets a pin, the
-// fork point: h's branch reverts down to it and the pins above it apply.
-// A branch that only extends the head waits for the head instead. Or it
-// meets its tree's root: it waits while fill may link that tree, and is
-// out of range once the root's extension ended.
+// revert places a held cursor h. Down its parents it meets a pin, or the
+// parent of the lowest pin, the fork point: h's branch reverts down to it
+// and the pins above it apply. A branch that only extends the head waits
+// for the head instead. Or it meets its tree's root: unlinked.
 func (t *ChainTracker) revert(s *feedState, tr *treeState, h *chainHeader) (indexer.Batch, readStep, error) {
 	var reverted []indexer.Block
 	for x := h; ; {
 		reverted = append(reverted, x.block())
+		if x.number == s.base && x.parentHash == s.pins[0].parentHash {
+			b := t.applied(s, s.base)
+			b.Reverted = reverted
+			return b, readWaitPins, nil
+		}
 		if x.number == 0 {
 			return t.unlinked(tr, x)
 		}
@@ -1303,9 +1338,11 @@ func (t *ChainTracker) revert(s *feedState, tr *treeState, h *chainHeader) (inde
 }
 
 // unlinked is a held cursor whose tree, rooted at root, does not hold the
-// pins: fill may still link it, unless its extension ended (spec §9.1).
+// pins: it waits while either tree's fill may still join them, and is out
+// of range once root's fill ended and the pins' fill ended or passed below
+// root (spec §9.1).
 func (t *ChainTracker) unlinked(tr *treeState, root *chainHeader) (indexer.Batch, readStep, error) {
-	if _, ended := tr.ended[root.hash]; ended {
+	if _, ended := tr.ended[root.hash]; ended && !tr.pinsMayJoin(root) {
 		return indexer.Batch{}, readWaitPins, indexer.OutOfRangeError{Reason: indexer.OutOfRangeForkLeftWindow}
 	}
 	return indexer.Batch{}, readWaitTrees, nil
@@ -1328,28 +1365,46 @@ func (t *ChainTracker) heldHeader(h [32]byte) *chainHeader {
 }
 
 // fetchCursor fetches a Read's cursor by hash in class 3; the scheduler
-// hands a found header to the tracker, and the Read goes on once the
+// hands a found header to the tracker, and fetchCursor returns once the
 // tracker handled it. The fetch is the Read's own: queued, it drops when
-// its last Read leaves. Not found is out of range; a fetch every upstream
-// refused for capacity is asked again after the next change.
-func (t *ChainTracker) fetchCursor(ctx context.Context, c indexer.Cursor) error {
+// its last Read leaves. Only a null answer is out of range; on any other
+// failure it returns when the Read may fetch again: the end of the key's
+// backoff.
+func (t *ChainTracker) fetchCursor(ctx context.Context, c indexer.Cursor) (retryAt time.Time, err error) {
 	unknown := indexer.OutOfRangeError{Reason: indexer.OutOfRangeCursorUnknown}
 	if !t.canFetch() {
-		return unknown
+		return time.Time{}, unknown
 	}
-	res := t.fetch.submit(t, t.headerSpec(classFill, "eth_getBlockByHash", hexHash(c.Hash), "", false)).wait(ctx)
+	spec := t.headerSpec(classFill, "eth_getBlockByHash", hexHash(c.Hash), "", false)
+	res := t.fetch.submit(t, spec).wait(ctx)
 	switch {
 	case ctx.Err() != nil:
-		return ctx.Err()
-	case res.err == nil:
-		t.sync(ctx)
-		return ctx.Err()
+		return time.Time{}, ctx.Err()
+	case errors.Is(res.err, errFetchNotFound):
+		return time.Time{}, unknown
 	case errors.Is(res.err, errSchedulerClosed):
-		return res.err
-	case fetchOutcome(res.err) == "capacity":
-		return nil
+		return time.Time{}, res.err
+	case res.err != nil:
+		if end := t.fetch.backoffEnd(spec); end.After(time.Now()) {
+			return end, nil
+		}
+		return time.Now(), nil
 	}
-	return unknown
+	if res.val.(*chainHeader).number != c.Number {
+		return time.Time{}, unknown
+	}
+	t.sync(ctx)
+	if ctx.Err() != nil {
+		return time.Time{}, ctx.Err()
+	}
+	// The tracker holds no answer outside the window, so a cursor it did
+	// not hold at or below the head is gone for good.
+	if t.heldHeader(c.Hash) == nil {
+		if head := t.state.Load().head(); head == nil || c.Number <= head.number {
+			return time.Time{}, indexer.OutOfRangeError{Reason: indexer.OutOfRangeBelowWindow}
+		}
+	}
+	return time.Time{}, nil
 }
 
 // Want registers o until release.
@@ -1599,6 +1654,9 @@ func (t *ChainTracker) headerSpec(class fetchClass, method, blockRef, upstream s
 		final:    method == "eth_getBlockByNumber" && t.atOrBelowFinalized(blockRef),
 		client:   client,
 		decode: func(result []byte) (any, error) {
+			if r := bytes.TrimSpace(result); len(r) == 0 || bytes.Equal(r, []byte("null")) {
+				return nil, errFetchNotFound
+			}
 			h, err := parseChainHeader(result)
 			if err != nil {
 				return nil, err

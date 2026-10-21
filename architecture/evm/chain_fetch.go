@@ -25,6 +25,7 @@ var (
 	fetchBackoffPrune  = 1024
 	errNoTrackerSweep  = errors.New("network cannot sweep upstreams for the chain tracker")
 	errFetchUndecoded  = errors.New("tracker fetch answer does not decode")
+	errFetchNotFound   = errors.New("tracker fetch answered null: no such block")
 	errFetchBackoff    = errors.New("tracker fetch key is in backoff")
 	errSchedulerClosed = errors.New("chain fetch scheduler closed")
 )
@@ -207,6 +208,14 @@ func (s *fetchScheduler) waitsBackoff(spec fetchSpec) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.waitsLocked(key, s.pending[key])
+}
+
+// backoffEnd is when spec's key may be fetched again; zero when it may now.
+func (s *fetchScheduler) backoffEnd(spec fetchSpec) time.Time {
+	key := spec.key()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.backoff[key].next
 }
 
 // waitsLocked: r, the request queued for key if any, has not started and

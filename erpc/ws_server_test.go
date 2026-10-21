@@ -20,6 +20,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
@@ -1929,8 +1930,13 @@ func (c *mockChain) setGated(g bool) {
 
 // advance adds a block and tells every watcher.
 func (c *mockChain) advance() int64 {
+	return c.jump(1)
+}
+
+// jump adds blocks at once and tells every watcher only the new head.
+func (c *mockChain) jump(blocks int64) int64 {
 	c.mu.Lock()
-	c.head++
+	c.head += blocks
 	n := c.head
 	watchers := slices.Clone(c.watchers)
 	c.mu.Unlock()
@@ -2256,7 +2262,10 @@ func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 // A network with a wss source and an HTTP poll source: each head reaches
 // the client once. A 2-block reorg on both vendors then reaches the client
 // as each head of the new branch, oldest first, and the client's chain
-// ends equal to the vendors'.
+// ends equal to the vendors'. A jump of more than reorgWindow blocks then
+// restarts the client's tap after the head, counted as lag, and heads go
+// on from there. One tap is open while the client is subscribed, none
+// after it leaves.
 func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -2276,6 +2285,10 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	subscribeNewHeads(t, conn)
+	tapLabels := []string{"test_ws", "test_ws/evm:123", "ws", indexer.SubTypeNewHeads}
+	openTaps := func() float64 { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) }
+	lagged := telemetry.MetricTapOutOfRangeTotal.WithLabelValues(append(tapLabels, indexer.OutOfRangeLag)...)
+	require.Eventually(t, func() bool { return openTaps() == 1 }, 5*time.Second, 10*time.Millisecond, "one tap per subscription")
 
 	// The client applies each head as a geth client does: a number it
 	// already has replaces that number and every number above it.
@@ -2328,6 +2341,32 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 	for n := first; n <= last; n++ {
 		require.Equal(t, chain.Hash(n), client[n], "the client's block %d is the vendors' canonical one", n)
 	}
+
+	// The sources stall, then return more than reorgWindow (default 32)
+	// blocks ahead: the tracker re-anchors there and fills back down to the
+	// client's cursor, so the client's next batch starts too far behind.
+	lagBefore := testutil.ToFloat64(lagged)
+	chain.setPaused(true)
+	time.Sleep(300 * time.Millisecond)
+	for last < chain.Head() {
+		next("heads must arrive once each, in order")
+	}
+	jumped := chain.jump(40)
+	require.Eventually(t, func() bool { return testutil.ToFloat64(lagged) == lagBefore+1 }, 15*time.Second, 10*time.Millisecond,
+		"a client more than reorgWindow behind restarts once, as lag")
+	chain.setPaused(false)
+	n, head := nextNewHead(t, conn, 10*time.Second)
+	require.Equal(t, jumped+1, n, "the restarted client continues after the head")
+	require.Equal(t, chain.Hash(n), head["hash"])
+	last = n
+	for range 2 {
+		next("heads continue in order after the restart")
+	}
+	assert.Equal(t, lagBefore+1, testutil.ToFloat64(lagged), "one lag restart")
+	assert.Equal(t, 1.0, openTaps(), "the restarted tap is the subscription's one tap")
+
+	require.NoError(t, conn.Close())
+	require.Eventually(t, func() bool { return openTaps() == 0 }, 5*time.Second, 10*time.Millisecond, "the tap closes with the client")
 }
 
 // With failover on, a fallback-tier poll source polls only while no primary
