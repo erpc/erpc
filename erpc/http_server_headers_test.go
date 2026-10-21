@@ -62,6 +62,16 @@ func TestHttpServer_HeadersCoverage(t *testing.T) {
 		assert.Contains(t, []int{200, 400}, statusCode)
 		assertCounterHeadersPresent(t, headers)
 	})
+
+	t.Run("null body is a parse error, not a panic", func(t *testing.T) {
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, _, body := sendRequest(`null`, nil, nil)
+		assert.Equal(t, 400, statusCode, "body=%s", body)
+		assert.Contains(t, body, "-32700")
+		assert.NotContains(t, body, "panic")
+	})
 }
 
 // TestExecState_CounterAggregation verifies that totals (Attempts /
