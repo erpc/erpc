@@ -2,6 +2,7 @@
   <img src="https://i.imgur.com/sa4MhlS.png" alt="eRPC Hero" />
 </p>
 
+[![GitHub Stars](https://img.shields.io/github/stars/erpc/erpc?style=flat&logo=github&label=star&colorA=000000&colorB=000000)](https://github.com/erpc/erpc/stargazers)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/erpc/erpc/release.yml?branch=main&style=flat&colorA=000000&colorB=000000)](https://github.com/erpc/erpc/actions/workflows/release.yml)
 [![Docs](https://img.shields.io/badge/docs-get%20started-brightgreen?style=flat&colorA=000000&colorB=000000)](https://docs.erpc.cloud/)
 [![License](https://img.shields.io/github/license/erpc/erpc?style=flat&colorA=000000&colorB=000000)](https://github.com/erpc/erpc/blob/main/LICENSE)

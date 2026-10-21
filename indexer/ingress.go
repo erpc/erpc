@@ -14,9 +14,13 @@ type NetworkHandle interface {
 	Id() string
 	// SuggestLatestBlock reports a head observed by source and whether
 	// clients may receive it. It is called before dedup and fan-out, so
-	// every source's observation counts and the network tip moves before
-	// clients see the head; a head it does not deliver is dropped.
+	// every source's observation reaches its poller; a head it does not
+	// deliver is dropped.
 	SuggestLatestBlock(sourceId string, blockNumber int64) (deliver bool)
+	// DeliveringHead reports a head about to reach its first client
+	// subscription, so "latest" can be floored to it before the client sees
+	// it. A head no client subscribed to is never reported. Indexer only.
+	DeliveringHead(blockNumber int64)
 	// DedupDropped reports an event dropped as a duplicate. Indexer only.
 	DedupDropped(kind EventKind)
 	// DedupEntriesAdded reports that the network's filter dedup windows
