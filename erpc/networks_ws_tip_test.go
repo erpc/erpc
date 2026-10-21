@@ -100,9 +100,20 @@ func TestNoteObservedLatestBlock_FloorsEvmHighestLatest(t *testing.T) {
 	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
 }
 
-// End-to-end through networkHandle.SuggestLatestBlock, which runs before
-// fan-out.
-func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *testing.T) {
+// ingestHead mirrors indexer.Ingest for a head a client subscribed to: the
+// head reaches its source's poller and, when delivered, floors "latest"
+// before the client sees it.
+func ingestHead(h *networkHandle, sourceId string, blockNumber int64) bool {
+	deliver := h.SuggestLatestBlock(sourceId, blockNumber)
+	if deliver {
+		h.DeliveringHead(blockNumber)
+	}
+	return deliver
+}
+
+// A WS head always advances its upstream's poller; only a head a client is
+// about to receive moves the delivered-head floor.
+func TestNetworkHandle_SuggestLatestBlock_AdvancesPollerFloorOnlyOnDelivery(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -114,19 +125,23 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 	require.Equal(t, int64(90677358), network.EvmHighestLatestBlockNumber(ctx))
 
 	handle := &networkHandle{nw: network}
-	handle.SuggestLatestBlock("ws:rpc2", 90677359)
-
+	floor := network.deliveredLatestBlock.Load()
+	require.True(t, handle.SuggestLatestBlock("ws:rpc2", 90677359))
 	assert.Equal(t, int64(90677359), u.EvmStatePoller().LatestBlock(),
 		"per-upstream poller must advance")
-	assert.Equal(t, int64(90677359), network.EvmHighestLatestBlockNumber(ctx),
-		"network tip must advance before any client would see the WS head")
+	assert.Equal(t, floor, network.deliveredLatestBlock.Load(),
+		"a head no client received must leave the floor alone")
+
+	handle.DeliveringHead(90677359)
 	assert.GreaterOrEqual(t, network.deliveredLatestBlock.Load(), int64(90677359),
-		"process-local high-water mark must cover the delivered WS tip")
+		"the floor must cover a head before a client receives it")
 }
 
-// Clients receive heads from whichever source delivers first, so a head from
-// a cordoned fallback lifts "latest" too; an unknown source does not.
-func TestNetworkHandle_SuggestLatestBlock_EveryKnownSourceLiftsLatest(t *testing.T) {
+// A head from one WS source must not lift "latest" past the upstreams that
+// poll (they would then fail it as ErrUpstreamBlockUnavailable) unless a
+// client receives it; then it floors "latest" whichever known source sent it.
+// An unknown source never does.
+func TestNetworkHandle_SuggestLatestBlock_LiftsLatestOnlyForDeliveredHeads(t *testing.T) {
 	defer util.ResetGock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -145,14 +160,19 @@ func TestNetworkHandle_SuggestLatestBlock_EveryKnownSourceLiftsLatest(t *testing
 	require.NotNil(t, fallback)
 
 	handle := &networkHandle{nw: network}
-	handle.SuggestLatestBlock("ws:unknown", 1020)
+	assert.False(t, ingestHead(handle, "ws:unknown", 1020))
 	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
 		"an unknown source must not lift latest")
 
-	handle.SuggestLatestBlock("ws:fallback-1", 1010)
+	// No client subscribed: a prewarmed subscription's head.
+	require.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
 	assert.Equal(t, int64(1010), fallback.EvmStatePoller().LatestBlock())
-	assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx),
-		"a head a client can receive from the cordoned fallback floors latest")
+	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
+		"a head no client received must not lift latest")
+
+	assert.True(t, ingestHead(handle, "ws:fallback-1", 1011))
+	assert.Equal(t, int64(1011), network.EvmHighestLatestBlockNumber(ctx),
+		"a head a client receives from the cordoned fallback floors latest")
 }
 
 type fakeHeadSource bool
@@ -188,13 +208,13 @@ func TestNetworkHandle_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 			"primary-2":  fakeHeadSource(true),
 			"fallback-1": fakeHeadSource(true),
 		}}
-		assert.False(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		assert.False(t, ingestHead(handle, "ws:fallback-1", 1010))
 		assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
 			"the fallback's poller still sees its head")
 		assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
 			"a held head must not lift latest")
 
-		assert.True(t, handle.SuggestLatestBlock("ws:primary-2", 1001))
+		assert.True(t, ingestHead(handle, "ws:primary-2", 1001))
 		assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
 	})
 
@@ -210,7 +230,7 @@ func TestNetworkHandle_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 			{"primary-1": fakeHeadSource(false), "fallback-1": fakeHeadSource(true)},
 		} {
 			handle := &networkHandle{nw: network, heads: heads}
-			assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+			assert.True(t, ingestHead(handle, "ws:fallback-1", 1010))
 		}
 		assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx))
 	})
@@ -226,13 +246,13 @@ func TestNetworkHandle_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 			"primary-2":  fakeHeadSource(true),
 			"fallback-1": fakeHeadSource(true),
 		}}
-		require.False(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		require.False(t, ingestHead(handle, "ws:fallback-1", 1010))
 
 		ups["primary-1"].Cordon("*", "test")
 		ups["primary-2"].Cordon("*", "test")
 		policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-		assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1011))
+		assert.True(t, ingestHead(handle, "ws:fallback-1", 1011))
 		assert.Equal(t, int64(1011), network.EvmHighestLatestBlockNumber(ctx))
 	})
 
