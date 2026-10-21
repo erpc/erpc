@@ -12,10 +12,10 @@ import (
 // length validation that was copy-pasted across the receipt and block
 // validators lives in exactly one place.
 const (
-	addressLen = 20  // 20-byte address
-	hashLen    = 32  // 32-byte hash / topic
+	addressLen = 20 // 20-byte address
+	hashLen    = 32 // 32-byte hash / topic
 	bloomLen   = logfilter.BloomLen
-	maxTopics  = 4   // LOG0..LOG4
+	maxTopics  = 4 // LOG0..LOG4
 )
 
 // checkByteLen returns a Violation if a present hex field does not decode to

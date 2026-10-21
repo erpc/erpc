@@ -147,9 +147,9 @@ type node struct {
 type feedState struct {
 	base      uint64 // number of pins[0]
 	pins      []*chainHeader
-	send      int           // index in pins of the sendable head; -1 none
-	blockTime time.Duration // mean header-time step over the pins; 0 unknown
-	changed   chan struct{} // closed once a newer state is published
+	send      int            // index in pins of the sendable head; -1 none
+	blockTime time.Duration  // mean header-time step over the pins; 0 unknown
+	changed   chan struct{}  // closed once a newer state is published
 	logs      indexer.Cursor // the logs head (spec §1)
 }
 
