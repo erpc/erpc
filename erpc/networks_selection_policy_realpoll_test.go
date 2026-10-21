@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +55,9 @@ import (
 type realPollFixture struct {
 	id     string
 	latest int64
+	// pollEvery is the upstream's statePollerInterval; zero keeps background
+	// polling off (1h) so tests drive polls explicitly.
+	pollEvery time.Duration
 }
 
 // mockPollerHostWithLatest mocks one upstream host's state-poller RPCs with a
@@ -104,15 +108,17 @@ func setupRealPollLagNetwork(t *testing.T, ctx context.Context, fixtures []realP
 			finalized = 1
 		}
 		mockPollerHostWithLatest(host, f.latest, finalized)
+		pollEvery := f.pollEvery
+		if pollEvery == 0 {
+			pollEvery = time.Hour
+		}
 		upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       f.id,
 			Endpoint: host,
 			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-				// No background polling — tests drive PollLatestBlockNumber
-				// explicitly for determinism.
-				StatePollerInterval: common.Duration(time.Hour),
+				ChainId:             123,
+				StatePollerInterval: common.Duration(pollEvery),
 				// Tiny (non-zero) debounce so each explicit re-poll actually
 				// re-fetches instead of returning the cached value. A zero
 				// debounce would fall through resolveDebounce to a ~block-time
@@ -309,4 +315,71 @@ func TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded(t *testing.T) {
 	assert.NotContains(t, excluded, "u3")
 	assert.ElementsMatch(t, []string{"u1", "u2", "u3"}, order,
 		"all three within-tolerance upstreams must stay in rotation")
+}
+
+// TestNetworkPolicy_RealPoll_SlowPolledUpstreamAtTipStaysIn: an upstream
+// polled every 10s on a 0.4s chain, always at the tip when asked, read up to
+// 25 blocks behind late in each poll window, because peers polled every 500ms
+// kept moving the network head past its stored one. A policy ticking every
+// 10s too then read the same phase on every tick and excluded it for good on
+// some processes. A healthy slow-polled upstream must stay in; one whose
+// reports stop must still be excluded once a poll period has passed.
+func TestNetworkPolicy_RealPoll_SlowPolledUpstreamAtTipStaysIn(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
+		{id: "fast-a", latest: 1000},
+		{id: "fast-b", latest: 1000},
+		{id: "slow", latest: 1000, pollEvery: 10 * time.Second},
+	})
+	tr := network.metricsTracker
+	var nowNs atomic.Int64
+	nowNs.Store(time.Now().UnixNano())
+	tr.SetClockForTest(func() time.Time { return time.Unix(0, nowNs.Load()) })
+	fastA, fastB, slow := upstreamByID(t, network, "fast-a"), upstreamByID(t, network, "fast-b"), upstreamByID(t, network, "slow")
+
+	// One 0.4s block per step; the fast pair reports every block, slow every
+	// 25th (10s). Fast reports first, as their 500ms polls land first. Block
+	// timestamps continue from the mocked poll's head block.
+	const ts0 = int64(0x6702a8f0)
+	step, slowReports := 0, true
+	runTo := func(last int) {
+		for ; step < last; step++ {
+			i := int64(step + 1)
+			nowNs.Add(int64(400 * time.Millisecond))
+			head, ts := 1000+i, ts0+i*2/5
+			tr.SetLatestBlockNumber(fastA, head, ts)
+			tr.SetLatestBlockNumber(fastB, head, ts)
+			if slowReports && i%25 == 0 {
+				tr.SetLatestBlockNumber(slow, head, ts)
+			}
+		}
+	}
+	tick := func() (order, excluded []string) {
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+		return policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
+	}
+	runTo(70)
+	require.NotZero(t, tr.GetNetworkBlockTime(network.networkId), "precondition: the block-time EMA must have settled")
+
+	// 8s after slow's report at step 50: the tip is 20 blocks past its stored
+	// head, all of it made since slow was last asked.
+	assert.LessOrEqual(t, blockHeadLagOf(t, network, "slow"), int64(1),
+		"blocks made since the last poll are not lag")
+	order, excluded := tick()
+	assert.NotContains(t, excluded, "slow", "a slow-polled upstream at the tip must stay in rotation")
+	assert.Contains(t, order, "slow")
+
+	// Slow stops reporting. 26s after its last report the chain made 65
+	// blocks; one poll period (25 blocks) is credited, the rest is lag.
+	slowReports = false
+	runTo(115)
+	assert.GreaterOrEqual(t, blockHeadLagOf(t, network, "slow"), int64(39),
+		"a report missing past one poll period counts as lag again")
+	_, excluded = tick()
+	assert.Contains(t, excluded, "slow", "an upstream whose reports stopped must be excluded")
 }
