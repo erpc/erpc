@@ -319,9 +319,12 @@ func TestSvmStatePoller_Poll_FansOutAllFiveCalls(t *testing.T) {
 	if !p.IsHealthy() {
 		t.Error("IsHealthy should be true: getHealth ok + lag within threshold")
 	}
-	if floor, known := p.FirstAvailableSlot(); !known || floor != 200 {
-		t.Errorf("FirstAvailableSlot = (%d, %v), want (200, true)", floor, known)
-	}
+	// The floor fetch may finish after Poll's bounded foreground wait under
+	// -race; it still lands via the async closure.
+	require.Eventually(t, func() bool {
+		floor, known := p.FirstAvailableSlot()
+		return known && floor == 200
+	}, 5*time.Second, 10*time.Millisecond, "FirstAvailableSlot must become (200, true)")
 }
 
 // The ledger floor is the one poll whose absence must never cost us an
@@ -408,8 +411,13 @@ func TestSvmStatePoller_FirstAvailableSlot_ZeroIsKnown(t *testing.T) {
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
 
-	floor, known := p.FirstAvailableSlot()
-	require.True(t, known, "an observed floor of 0 must read as KNOWN")
+	// Under -race the foreground wait can time out while the fetch completes
+	// asynchronously; the closure then marks the floor known.
+	require.Eventually(t, func() bool {
+		_, known := p.FirstAvailableSlot()
+		return known
+	}, 5*time.Second, 10*time.Millisecond, "an observed floor of 0 must read as KNOWN")
+	floor, _ := p.FirstAvailableSlot()
 	require.Zero(t, floor)
 }
 
@@ -770,7 +778,9 @@ func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
 	scriptAllFour(up)
 	p := newPollerWithUpstream(t, up)
 
-	const debounce = 100 * time.Millisecond
+	// Wide enough that a loaded -race run cannot age the stamps made right
+	// before each Poll out of the gate window.
+	const debounce = 400 * time.Millisecond
 	p.SetDebounceInterval(debounce)
 
 	// Expected cumulative getSlot fetches after the i-th poll: polls 1-4 are
