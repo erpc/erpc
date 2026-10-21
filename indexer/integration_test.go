@@ -70,6 +70,7 @@ func (s *stubNetwork) DedupDropped(indexer.EventKind) {}
 func (s *stubNetwork) DedupEntriesAdded(int)          {}
 func (s *stubNetwork) HeadIndexed()                   {}
 func (s *stubNetwork) Undelivered(indexer.EventKind)  {}
+func (s *stubNetwork) DeliveringHead(int64)           {}
 func (s *stubNetwork) SuggestLatestBlock(sourceID string, block int64) bool {
 	s.mu.Lock()
 	if s.suggestions == nil {

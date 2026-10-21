@@ -24,6 +24,7 @@ type fakeNetwork struct {
 	dedupEntries int
 	headsIndexed int
 	undelivered  int
+	delivering   []int64 // heads reported before reaching a client
 }
 
 func newFakeNetwork(id string) *fakeNetwork {
@@ -61,10 +62,15 @@ func (n *fakeNetwork) Undelivered(EventKind) {
 	defer n.mu.Unlock()
 	n.undelivered++
 }
-func (n *fakeNetwork) deliveryCounts() (headsIndexed, undelivered int) {
+func (n *fakeNetwork) DeliveringHead(block int64) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.headsIndexed, n.undelivered
+	n.delivering = append(n.delivering, block)
+}
+func (n *fakeNetwork) deliveryCounts() (headsIndexed, undelivered int, delivering []int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.headsIndexed, n.undelivered, append([]int64(nil), n.delivering...)
 }
 func (n *fakeNetwork) dedupCounts() (dropped, entries int) {
 	n.mu.Lock()
@@ -381,6 +387,8 @@ func TestIndexer_Log_RefcountFanOutAndTeardown(t *testing.T) {
 	}
 }
 
+// Only heads a client receives are reported as delivering, once each: a head
+// no client subscribed to must not floor the network's "latest".
 func TestIndexer_ReportsIndexedHeadsAndUndeliveredEvents(t *testing.T) {
 	idx := newIndexer(t)
 	nw := newFakeNetwork("evm:1")
@@ -389,10 +397,12 @@ func TestIndexer_ReportsIndexedHeadsAndUndeliveredEvents(t *testing.T) {
 	head := func(src string, num int64, hash string) StreamEvent {
 		return StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: src, Block: BlockRef{Number: num, Hash: hash}}
 	}
-	want := func(headsIndexed, undelivered int) {
+	want := func(headsIndexed, undelivered int, delivering ...int64) {
 		t.Helper()
-		if h, u := nw.deliveryCounts(); h != headsIndexed || u != undelivered {
-			t.Fatalf("want %d indexed heads and %d undelivered, got %d and %d", headsIndexed, undelivered, h, u)
+		h, u, d := nw.deliveryCounts()
+		if h != headsIndexed || u != undelivered || fmt.Sprint(d) != fmt.Sprint(delivering) {
+			t.Fatalf("want %d indexed heads, %d undelivered, delivering %v; got %d, %d, %v",
+				headsIndexed, undelivered, delivering, h, u, d)
 		}
 	}
 
@@ -401,16 +411,17 @@ func TestIndexer_ReportsIndexedHeadsAndUndeliveredEvents(t *testing.T) {
 	want(1, 1)
 
 	idx.Attach(&fakeEgress{name: "eg1", acceptAllHeads: true})
+	idx.Attach(&fakeEgress{name: "eg2", acceptAllHeads: true})
 	idx.Ingest(head("ws:up1", 101, "0xB"))
-	want(2, 1)
+	want(2, 1, 101)
 	// A duplicate and a withheld head are neither indexed nor undelivered.
 	idx.Ingest(head("ws:up2", 101, "0xB"))
 	idx.Ingest(head("ws:fb", 102, "0xC"))
-	want(2, 1)
+	want(2, 1, 101)
 
 	// A log for a filter no client holds.
 	idx.Ingest(logEvent("orphan", "ws:up1", logAddedJSON))
-	want(2, 2)
+	want(2, 2, 101)
 }
 
 // newLogFilter registers "evm:1", ensures an empty logs filter and attaches
