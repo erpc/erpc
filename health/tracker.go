@@ -84,12 +84,11 @@ type NetworkMetadata struct {
 	headTsFloor     int64
 	headStale       bool
 	headBenched     atomic.Bool
-	// headReportedAt and finalizedReportedAt are when this upstream last
-	// reported its latest and finalized heads, changed or not (see
-	// presumedHead). On upstream entries only; guarded by the network entry's
-	// headMu.
-	headReportedAt      time.Time
-	finalizedReportedAt time.Time
+	// headReport and finalizedReport are this upstream's last latest and
+	// finalized reports, changed or not (see headReport). On upstream entries
+	// only; guarded by the network entry's headMu.
+	headReport      headReport
+	finalizedReport headReport
 
 	// Dynamic block time via EMA on on-chain block timestamps: on the network
 	// entry from the corroborated head, on an upstream entry from that
@@ -1488,19 +1487,35 @@ func pollPeriod(ups common.Upstream, blockTime time.Duration) time.Duration {
 	return max(period, debounce)
 }
 
-// presumedHead is the head an upstream is presumed to hold now: the head it
-// last reported plus the blocks the chain made since that report, for at most
-// one poll period. A stored head ages between polls by design; counting that
-// age as lag makes a healthy upstream polled every 10s on a 0.4s chain look
-// 25 blocks behind late in each poll window, and a policy ticking at the same
-// period then reads that same phase on every tick: excluded for good on some
-// processes, never on others. A report missing past one period counts as lag
-// again. Unknown block time leaves the head as reported.
-func presumedHead(head int64, reportedAt, now time.Time, period, blockTime time.Duration) int64 {
-	if head <= 0 || blockTime <= 0 || reportedAt.IsZero() {
+// headReport is an upstream's last head report on one axis: when it came and
+// the network head right after it. A stored head ages between polls by
+// design; counting that age as lag made a healthy upstream polled every 10s
+// on a 0.4s chain read 25 blocks behind late in each poll window, and a
+// policy ticking at the same period read that same phase on every tick:
+// excluded for good on some processes, never on others. So for one poll
+// period after a report, what the network head made since counts as made by
+// the upstream too: its lag stays what it was at the report. Past the period
+// the credit freezes and a missing report counts as lag again.
+type headReport struct {
+	at      time.Time
+	network int64
+	credit  int64
+}
+
+func (r *headReport) reported(now time.Time, network int64) {
+	r.at, r.network, r.credit = now, network, 0
+}
+
+// presumed is the head the upstream is presumed to hold at now, given the
+// network head then.
+func (r *headReport) presumed(head, network int64, now time.Time, period time.Duration) int64 {
+	if r.at.IsZero() || head <= 0 {
 		return head
 	}
-	return head + int64(min(max(now.Sub(reportedAt), 0), period)/blockTime)
+	if now.Sub(r.at) <= period {
+		r.credit = max(0, network-r.network)
+	}
+	return head + r.credit
 }
 
 // evaluateHeadBench runs the head bench state machine over every reporter of
@@ -1706,7 +1721,6 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	ntwMeta := t.getMetadata(metadataKey{nil, net})
 	ntwMeta.headMu.Lock()
 	defer ntwMeta.headMu.Unlock()
-	upsMeta.headReportedAt = t.now()
 
 	oldUpsVal := upsMeta.evmLatestBlockNumber.Load()
 	headChanged := false
@@ -1804,12 +1818,13 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// the network made since, even once the network passes its height (its
 	// blocks may be a dead fork). A benched head that moves again (replaying)
 	// lags by its real distance. A head that is not benched lags by what the
-	// chain made beyond its last report (presumedHead).
+	// network made beyond its last report (headReport).
 	now, blockTime := t.now(), time.Duration(ntwMeta.evmBlockTime.Load())
+	upsMeta.headReport.reported(now, ntwBn)
 	lagHead := func(ups common.Upstream, meta *NetworkMetadata) int64 {
 		h := meta.evmLatestBlockNumber.Load()
 		if !meta.headBenched.Load() {
-			return presumedHead(h, meta.headReportedAt, now, pollPeriod(ups, blockTime), blockTime)
+			return meta.headReport.presumed(h, ntwBn, now, pollPeriod(ups, blockTime))
 		}
 		if meta.headBenchRef > 0 && !meta.movedSinceBench() {
 			return min(h, meta.headBenchRef)
@@ -1985,7 +2000,6 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	ntwMeta := t.getMetadata(metadataKey{nil, net})
 	ntwMeta.headMu.Lock()
 	defer ntwMeta.headMu.Unlock()
-	upsMeta.finalizedReportedAt = t.now()
 
 	oldUpsVal := upsMeta.evmFinalizedBlockNumber.Load()
 	if blockNumber > oldUpsVal {
@@ -2005,28 +2019,27 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	}
 
 	t.addHeadReporter(ntwMeta, net, upstream)
-	ntwVal, rederived := t.rederiveNetworkFinalized(ntwMeta, net, netLabel, &lg)
+	ntwVal, _ := t.rederiveNetworkFinalized(ntwMeta, net, netLabel, &lg)
 	if ntwVal <= 0 {
 		lg.Warn().Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
 		return
 	}
 
-	// Recompute finalization lag for this upstream
+	// The re-derivation above credited this upstream against its previous
+	// report; its lag now is the one at this report.
+	upsMeta.finalizedReport.reported(t.now(), ntwVal)
 	upsLag := blocksBehind(ntwVal, upsMeta.evmFinalizedBlockNumber.Load())
 
 	// Update Prometheus for this upstream
 	gLag := t.getFinalizationLagGauge(t.projectId, vendor, netLabel, id)
 	gLag.Set(float64(upsLag))
 
-	if !rederived {
-		// The network value held, so only this upstream's lag can have moved.
-		t.updateSingleUpstreamLag(
-			id,
-			net,
-			upsLag,
-			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
-		)
-	}
+	t.updateSingleUpstreamLag(
+		id,
+		net,
+		upsLag,
+		func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
+	)
 
 	// Same {*, All} wildcard-aggregate guarantee as SetLatestBlockNumber (see
 	// the comment there): the dedup index may not carry the "*" rollup, so
@@ -2063,7 +2076,7 @@ func (t *Tracker) rederiveNetworkFinalized(ntwMeta *NetworkMetadata, net, netLab
 			if meta.headBenched.Load() {
 				return f
 			}
-			return presumedHead(f, meta.finalizedReportedAt, now, pollPeriod(ups, blockTime), blockTime)
+			return meta.finalizedReport.presumed(f, ntwVal, now, pollPeriod(ups, blockTime))
 		},
 		func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
 		t.getFinalizationLagGauge,

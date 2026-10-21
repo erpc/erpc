@@ -364,7 +364,6 @@ func TestNetworkPolicy_RealPoll_SlowPolledUpstreamAtTipStaysIn(t *testing.T) {
 		return policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
 	}
 	runTo(70)
-	require.NotZero(t, tr.GetNetworkBlockTime(network.networkId), "precondition: the block-time EMA must have settled")
 
 	// 8s after slow's report at step 50: the tip is 20 blocks past its stored
 	// head, all of it made since slow was last asked.
