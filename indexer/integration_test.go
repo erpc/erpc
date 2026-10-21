@@ -25,17 +25,21 @@ func TestIntegration_NullIngress_EndToEnd(t *testing.T) {
 	if err := idx.AddIngress(context.Background(), "evm:1", ing); err != nil {
 		t.Fatalf("AddIngress: %v", err)
 	}
+	hash, err := idx.EnsureFilter(context.Background(), "evm:1", indexer.SubTypeNewPendingTransactions,
+		[]interface{}{indexer.SubTypeNewPendingTransactions})
+	if err != nil {
+		t.Fatalf("EnsureFilter: %v", err)
+	}
 
-	// Egress that records newHeads.
-	eg := &recordingEgress{interested: func(k indexer.EventKind, _, _ string) bool {
-		return k == indexer.KindNewHead
+	eg := &recordingEgress{interested: func(k indexer.EventKind, _, filterHash string) bool {
+		return k == indexer.KindPendingTx && filterHash == hash
 	}}
 	idx.Attach(eg)
 
-	// Push two distinct heads and a dup — expect 2 deliveries.
-	ing.Push(headEvent("evm:1", "null:test", 100, "0xA", "0x0"))
-	ing.Push(headEvent("evm:1", "null:test", 100, "0xA", "0x0")) // dup
-	ing.Push(headEvent("evm:1", "null:test", 101, "0xB", "0xA"))
+	// Push two distinct transactions and a dup — expect 2 deliveries.
+	ing.Push(pendingTxEvent("evm:1", "null:test", hash, "0xa"))
+	ing.Push(pendingTxEvent("evm:1", "null:test", hash, "0xa")) // dup
+	ing.Push(pendingTxEvent("evm:1", "null:test", hash, "0xb"))
 
 	deadline := time.After(2 * time.Second)
 	for {
@@ -48,37 +52,20 @@ func TestIntegration_NullIngress_EndToEnd(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+	time.Sleep(50 * time.Millisecond)
 	if got := eg.count(); got != 2 {
 		t.Fatalf("want 2 deliveries (dup suppressed), got %d", got)
-	}
-	nw.mu.Lock()
-	defer nw.mu.Unlock()
-	if n := len(nw.suggestions["null:test"]); n < 2 {
-		t.Fatalf("SuggestLatestBlock should fire on every observation (incl. dup), got %d", n)
 	}
 }
 
 type stubNetwork struct {
 	id string
-
-	mu          sync.Mutex
-	suggestions map[string][]int64
 }
 
 func (s *stubNetwork) Id() string                     { return s.id }
 func (s *stubNetwork) DedupDropped(indexer.EventKind) {}
 func (s *stubNetwork) DedupEntriesAdded(int)          {}
-func (s *stubNetwork) HeadIndexed()                   {}
 func (s *stubNetwork) Undelivered(indexer.EventKind)  {}
-func (s *stubNetwork) SuggestLatestBlock(sourceID string, block int64) bool {
-	s.mu.Lock()
-	if s.suggestions == nil {
-		s.suggestions = make(map[string][]int64)
-	}
-	s.suggestions[sourceID] = append(s.suggestions[sourceID], block)
-	s.mu.Unlock()
-	return true
-}
 
 type recordingEgress struct {
 	interested func(indexer.EventKind, string, string) bool
@@ -102,13 +89,12 @@ func (r *recordingEgress) count() int {
 	return len(r.recv)
 }
 
-func headEvent(networkID, sourceID string, num int64, hash, parent string) indexer.StreamEvent {
-	payload := json.RawMessage(`{"number":"0x0","hash":"` + hash + `","parentHash":"` + parent + `"}`)
+func pendingTxEvent(networkID, sourceID, filterHash, txHash string) indexer.StreamEvent {
 	return indexer.StreamEvent{
-		Kind:      indexer.KindNewHead,
-		NetworkId: networkID,
-		SourceId:  sourceID,
-		Block:     indexer.BlockRef{Number: num, Hash: hash},
-		Payload:   payload,
+		Kind:       indexer.KindPendingTx,
+		NetworkId:  networkID,
+		SourceId:   sourceID,
+		FilterHash: filterHash,
+		Payload:    json.RawMessage(`"` + txHash + `"`),
 	}
 }

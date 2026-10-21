@@ -70,8 +70,10 @@ type Adapter struct {
 	headsSeen  atomic.Uint64
 	lastHead   atomic.Int64
 
-	nw   indexer.NetworkHandle
-	sink indexer.Sink
+	// intake takes every newHeads push; sink takes filter events and a
+	// payload-free head event that rechecks where filters belong.
+	intake indexer.Intake
+	sink   indexer.Sink
 
 	// subsMu guards all mutable state below. Never held across an RPC.
 	subsMu sync.Mutex
@@ -114,7 +116,8 @@ type filterSub struct {
 }
 
 // New returns the adapter of up, or nil if up is not a WebSocket upstream.
-func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts Options) *Adapter {
+// Its newHeads pushes go to intake.
+func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger *zerolog.Logger, opts Options) *Adapter {
 	wsClient, ok := up.Client.(*clients.WsJsonRpcClient)
 	if !ok {
 		return nil
@@ -128,6 +131,7 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts O
 		wsClient:     wsClient,
 		logger:       &lg,
 		filters:      make(map[string]*filterSub),
+		intake:       intake,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, bypassMethodExclusion bool) (*common.NormalizedResponse, error) {
 			return up.Forward(ctx, nq, bypassMethodExclusion, false)
 		},
@@ -146,18 +150,9 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts O
 
 func (a *Adapter) Name() string { return "ws:" + a.upstreamID }
 
-// HeadsLive reports whether the newHeads subscription is live on the
-// current connection.
-func (a *Adapter) HeadsLive() bool {
-	a.subsMu.Lock()
-	defer a.subsMu.Unlock()
-	return a.heads.id != ""
-}
-
 // Start registers the connection hooks and subscribes newHeads in the
 // background, detached from ctx.
-func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexer.Sink) error {
-	a.nw = nw
+func (a *Adapter) Start(_ context.Context, _ indexer.NetworkHandle, sink indexer.Sink) error {
 	a.sink = sink
 
 	// One adapter per client: each project has its own clients, an
@@ -515,28 +510,18 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 		a.logger.Warn().Err(err).Msg("failed to parse newHeads notification envelope")
 		return
 	}
+	// Counted before intake: a source whose heads intake gates is not silent.
+	a.headsSeen.Add(1)
 	var header struct {
 		Number string `json:"number"`
-		Hash   string `json:"hash"`
 	}
-	if err := common.SonicCfg.Unmarshal(outer.Result, &header); err != nil {
-		a.logger.Warn().Err(err).Msg("failed to parse newHeads result")
-		return
+	if err := common.SonicCfg.Unmarshal(outer.Result, &header); err == nil {
+		if num, err := common.HexToInt64(header.Number); err == nil {
+			a.lastHead.Store(num)
+		}
 	}
-	num, err := common.HexToInt64(header.Number)
-	if err != nil {
-		a.logger.Warn().Err(err).Str("number", header.Number).Msg("failed to parse block number")
-		return
-	}
-	a.lastHead.Store(num)
-	a.headsSeen.Add(1)
-	a.sink.Ingest(indexer.StreamEvent{
-		Kind:      indexer.KindNewHead,
-		NetworkId: a.networkID,
-		SourceId:  a.Name(),
-		Block:     indexer.BlockRef{Number: num, Hash: header.Hash},
-		Payload:   outer.Result,
-	})
+	a.intake.Header(a.upstreamID, outer.Result)
+	a.sink.Ingest(indexer.StreamEvent{Kind: indexer.KindNewHead, NetworkId: a.networkID, SourceId: a.Name()})
 }
 
 func (a *Adapter) handleFilter(subType, paramsHash string, raw []byte) {

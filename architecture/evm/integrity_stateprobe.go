@@ -63,7 +63,7 @@ const stateProbeMinInterval = 2 * time.Second
 
 type stateProber struct {
 	network  common.Network
-	view     *chainView // the follower view whose verified headers anchor the probes
+	view     *ChainTracker // the tracker whose pinned headers anchor the probes
 	interval time.Duration
 	ctxProbe *integrity.StateContextProbe // per-architecture "which block are you in"
 
@@ -94,7 +94,7 @@ type stateProber struct {
 // upstream, whichever view's verified header anchors it).
 var stateProbers sync.Map // networkId -> *stateProber
 
-func startStateProber(n common.Network, v *chainView, cfg *common.IntegrityStateProbeConfig) {
+func startStateProber(n common.Network, v *ChainTracker, cfg *common.IntegrityStateProbeConfig) {
 	interval := stateProbeMinInterval
 	if cfg != nil && cfg.Interval > 0 {
 		interval = cfg.Interval.Duration()

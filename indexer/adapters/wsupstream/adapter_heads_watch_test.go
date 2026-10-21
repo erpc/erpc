@@ -8,7 +8,6 @@ import (
 
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
@@ -39,7 +38,7 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	stallsBefore := testutil.ToFloat64(stalls)
 
 	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
-	require.Equal(t, int64(100), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
+	require.Equal(t, int64(100), nextHead(t, sink))
 	polled.Store(105)
 
 	var conn2 *notifyConn
@@ -51,7 +50,7 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	require.Equal(t, stallsBefore+1, testutil.ToFloat64(stalls), "a forced reconnect is counted")
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 	conn2.sendNewHead(conn2.nextRequest(t, methodEthSubscribe).SubID, 106)
-	require.Equal(t, int64(106), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
+	require.Equal(t, int64(106), nextHead(t, sink))
 }
 
 // TestAdapterKeepsSilentNewHeadsWhenChainHalts: silence while the upstream
@@ -68,7 +67,7 @@ func TestAdapterKeepsSilentNewHeadsWhenChainHalts(t *testing.T) {
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
-	require.Equal(t, int64(100), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
+	require.Equal(t, int64(100), nextHead(t, sink))
 	polled.Store(100)
 
 	select {

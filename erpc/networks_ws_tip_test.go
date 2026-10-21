@@ -2,6 +2,8 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -100,9 +103,25 @@ func TestNoteObservedLatestBlock_FloorsEvmHighestLatest(t *testing.T) {
 	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
 }
 
-// End-to-end through networkHandle.SuggestLatestBlock, which runs before
-// fan-out.
-func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *testing.T) {
+func tipHash(tag string, n uint64) string {
+	return fmt.Sprintf("0x%s%0*x", tag, 64-len(tag), n)
+}
+
+// tipHead is block n of the linear chain tagged tag.
+func tipHead(tag string, n uint64) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`,
+		n, tipHash(tag, n), tipHash(tag, n-1), 1_700_000_000+n))
+}
+
+func eventuallyLatest(t *testing.T, ctx context.Context, network *Network, want int64, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return network.EvmHighestLatestBlockNumber(ctx) == want },
+		2*time.Second, 10*time.Millisecond, msg)
+}
+
+// A source header moves its upstream's poller at once, and the network tip
+// once the network-wide tracker pins it.
+func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -113,61 +132,86 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 	time.Sleep(50 * time.Millisecond)
 	require.Equal(t, int64(90677358), network.EvmHighestLatestBlockNumber(ctx))
 
-	handle := &networkHandle{nw: network}
-	handle.SuggestLatestBlock("ws:rpc2", 90677359)
+	network.intake.Header("rpc2", tipHead("a", 90677359))
 
-	assert.Equal(t, int64(90677359), u.EvmStatePoller().LatestBlock(),
-		"per-upstream poller must advance")
-	assert.Equal(t, int64(90677359), network.EvmHighestLatestBlockNumber(ctx),
-		"network tip must advance before any client would see the WS head")
-	assert.GreaterOrEqual(t, network.deliveredLatestBlock.Load(), int64(90677359),
-		"process-local high-water mark must cover the delivered WS tip")
+	assert.Equal(t, int64(90677359), u.EvmStatePoller().LatestBlock(), "per-upstream poller must advance")
+	eventuallyLatest(t, ctx, network, 90677359, "the pinned head lifts the network tip")
+	require.Eventually(t, func() bool { return network.deliveredLatestBlock.Load() >= 90677359 },
+		2*time.Second, 10*time.Millisecond, "the tracker's pin change moves the delivered-head floor")
 }
 
-// Clients receive heads from whichever source delivers first, so a head from
-// a cordoned fallback lifts "latest" too; an unknown source does not.
-func TestNetworkHandle_SuggestLatestBlock_EveryKnownSourceLiftsLatest(t *testing.T) {
+// An unknown source lifts nothing; an eligible one does.
+func TestNetworkIntake_EligibleSourceLiftsLatest(t *testing.T) {
 	defer util.ResetGock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
-		primaryLatest:  "0x3e8", // 1000
-		fallbackLatest: "0x3e8",
-	})
+	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
 	require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
-	var fallback *upstream.Upstream
-	for _, u := range ups {
-		if u.Id() == "fallback-1" {
-			fallback = u
-		}
-	}
-	require.NotNil(t, fallback)
 
-	handle := &networkHandle{nw: network}
-	handle.SuggestLatestBlock("ws:unknown", 1020)
-	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
-		"an unknown source must not lift latest")
+	network.intake.Header("unknown", tipHead("a", 1020))
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx), "an unknown source must not lift latest")
 
-	handle.SuggestLatestBlock("ws:fallback-1", 1010)
-	assert.Equal(t, int64(1010), fallback.EvmStatePoller().LatestBlock())
-	assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx),
-		"a head a client can receive from the cordoned fallback floors latest")
+	network.intake.Header("primary-1", tipHead("a", 1001))
+	eventuallyLatest(t, ctx, network, 1001, "an eligible source's head floors latest")
 }
 
-type fakeHeadSource bool
+// An upstream the selection policy excludes never reaches clients: its own
+// poller sees its heads, but they never vote, so no tap receives them.
+func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
+	defer util.ResetGock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-func (f fakeHeadSource) HeadsLive() bool { return bool(f) }
+	// The default policy cordons the fallback tier while the primaries are healthy.
+	network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
+	byId := map[string]*upstream.Upstream{}
+	for _, u := range ups {
+		byId[u.Id()] = u
+	}
 
-// With failover on, a fallback's head reaches clients (and lifts latest) only
-// when no primary the policy routes to is streaming heads itself. The
-// fallback's own poller sees every head regardless.
-func TestNetworkHandle_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
-	setup := func(t *testing.T, ctx context.Context) (*Network, map[string]*upstream.Upstream) {
+	got := make(chan uint64, 16)
+	go func() {
+		_ = indexer.NewTaps(nil).RunChain(ctx, network.networkId, "test", indexer.SubTypeNewHeads, network.chainTracker, nil, indexer.ReadOpts{},
+			func(b indexer.Batch) error {
+				for _, blk := range b.Applied {
+					got <- blk.Number
+				}
+				return nil
+			})
+	}()
+
+	network.intake.Header("fallback-1", tipHead("b", 1010))
+	assert.Equal(t, int64(1010), byId["fallback-1"].EvmStatePoller().LatestBlock(), "its own poller still sees the head")
+	network.intake.Header("primary-1", tipHead("a", 1001))
+	network.intake.Header("primary-1", tipHead("a", 1002))
+
+	for _, want := range []uint64{1001, 1002} {
+		select {
+		case n := <-got:
+			require.Equal(t, want, n)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the client never received block %d", want)
+		}
+	}
+	select {
+	case n := <-got:
+		t.Fatalf("the client received block %d, which only the excluded upstream has", n)
+	case <-time.After(300 * time.Millisecond):
+	}
+	assert.Equal(t, int64(1002), network.EvmHighestLatestBlockNumber(ctx))
+}
+
+// With failover on, a fallback's head votes only while no eligible primary
+// is a live source. Its own poller sees every head regardless.
+func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
+	setup := func(t *testing.T, ctx context.Context, noPolicy bool) (*Network, map[string]*upstream.Upstream) {
 		network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
 			primaryLatest:  "0x3e8", // 1000
 			fallbackLatest: "0x3e8",
 			enableFailover: true,
+			noPolicy:       noPolicy,
 		})
 		require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
 		byId := make(map[string]*upstream.Upstream, len(ups))
@@ -181,59 +225,47 @@ func TestNetworkHandle_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 		defer util.ResetGock()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network, ups := setup(t, ctx)
+		network, ups := setup(t, ctx, true)
 
-		handle := &networkHandle{nw: network, heads: map[string]headSource{
-			"primary-1":  fakeHeadSource(false),
-			"primary-2":  fakeHeadSource(true),
-			"fallback-1": fakeHeadSource(true),
-		}}
-		assert.False(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		network.intake.Header("primary-2", tipHead("a", 1000))
+		network.intake.Header("fallback-1", tipHead("b", 1010))
 		assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
 			"the fallback's poller still sees its head")
-		assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
-			"a held head must not lift latest")
+		time.Sleep(100 * time.Millisecond)
+		assert.Less(t, network.deliveredLatestBlock.Load(), int64(1010), "a held head must not lift latest")
 
-		assert.True(t, handle.SuggestLatestBlock("ws:primary-2", 1001))
-		assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
+		network.intake.Header("primary-2", tipHead("a", 1001))
+		eventuallyLatest(t, ctx, network, 1001, "the primary's head lifts latest")
 	})
 
 	t.Run("DeliveredWhenNoPrimaryStreams", func(t *testing.T) {
 		defer util.ResetGock()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network, _ := setup(t, ctx)
+		network, _ := setup(t, ctx, true)
 
-		// Primaries connected over HTTP only, or with no live subscription.
-		for _, heads := range []map[string]headSource{
-			{"fallback-1": fakeHeadSource(true)},
-			{"primary-1": fakeHeadSource(false), "fallback-1": fakeHeadSource(true)},
-		} {
-			handle := &networkHandle{nw: network, heads: heads}
-			assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
-		}
-		assert.Equal(t, int64(1010), network.EvmHighestLatestBlockNumber(ctx))
+		network.intake.Header("fallback-1", tipHead("b", 1010))
+		eventuallyLatest(t, ctx, network, 1010, "with no primary source, the fallback votes")
 	})
 
 	t.Run("DeliveredWhenPolicyExcludesPrimaries", func(t *testing.T) {
 		defer util.ResetGock()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network, ups := setup(t, ctx)
+		network, ups := setup(t, ctx, false)
 
-		handle := &networkHandle{nw: network, heads: map[string]headSource{
-			"primary-1":  fakeHeadSource(true),
-			"primary-2":  fakeHeadSource(true),
-			"fallback-1": fakeHeadSource(true),
-		}}
-		require.False(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		network.intake.Header("primary-1", tipHead("a", 1000))
+		network.intake.Header("primary-2", tipHead("a", 1000))
+		network.intake.Header("fallback-1", tipHead("b", 1010))
+		time.Sleep(100 * time.Millisecond)
+		require.Less(t, network.deliveredLatestBlock.Load(), int64(1010))
 
 		ups["primary-1"].Cordon("*", "test")
 		ups["primary-2"].Cordon("*", "test")
 		policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-		assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1011))
-		assert.Equal(t, int64(1011), network.EvmHighestLatestBlockNumber(ctx))
+		network.intake.Header("fallback-1", tipHead("b", 1011))
+		eventuallyLatest(t, ctx, network, 1011, "excluded primaries no longer hold the fallback back")
 	})
 
 	t.Run("DeliveredWithFailoverOff", func(t *testing.T) {
@@ -243,13 +275,12 @@ func TestNetworkHandle_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
 		network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
 			primaryLatest:  "0x3e8",
 			fallbackLatest: "0x3e8",
+			noPolicy:       true,
 		})
 
-		handle := &networkHandle{nw: network, heads: map[string]headSource{
-			"primary-1":  fakeHeadSource(true),
-			"fallback-1": fakeHeadSource(true),
-		}}
-		assert.True(t, handle.SuggestLatestBlock("ws:fallback-1", 1010))
+		network.intake.Header("primary-1", tipHead("a", 1000))
+		network.intake.Header("fallback-1", tipHead("a", 1001))
+		eventuallyLatest(t, ctx, network, 1001, "without failover every eligible source votes")
 	})
 }
 
@@ -326,11 +357,9 @@ func TestTierWsIngresses(t *testing.T) {
 }
 
 // A head far past the poller's (a major jump) is verified asynchronously
-// before the poller takes it. Until then it must not reach clients: once
-// delivered it would also advance the indexer's head dedup marker, and a
-// head from an endpoint now answering for another chain would suppress
-// every real head below it.
-func TestNetworkHandle_SuggestLatestBlock_WithholdsUnacceptedMajorJump(t *testing.T) {
+// before the poller takes it. Until then it must not vote: a head from an
+// endpoint now answering for another chain must never reach clients.
+func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -346,28 +375,28 @@ func TestNetworkHandle_SuggestLatestBlock_WithholdsUnacceptedMajorJump(t *testin
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
 		Reply(200).JSON([]byte(`{"result":"0x1"}`))
 
-	handle := &networkHandle{nw: network}
-	assert.False(t, handle.SuggestLatestBlock("ws:rpc2", 5_000_000), "an unaccepted major jump must not reach clients")
+	network.intake.Header("rpc2", tipHead("e", 5_000_000))
 	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail)
 	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
 	assert.Less(t, network.deliveredLatestBlock.Load(), int64(5_000_000))
-	assert.True(t, handle.SuggestLatestBlock("ws:rpc2", 1001))
-	assert.True(t, handle.SuggestLatestBlock("ws:rpc2", 1002))
+	network.intake.Header("rpc2", tipHead("a", 1001))
+	network.intake.Header("rpc2", tipHead("a", 1002))
+	require.Eventually(t, func() bool { return network.deliveredLatestBlock.Load() == 1002 },
+		2*time.Second, 10*time.Millisecond)
 }
 
-// Heads are delivered only once a tip tracker has accepted them, so a head
-// from a source the network can't verify (no such upstream, or one with no
-// tracker) is withheld and leaves the delivered-head floor alone.
-func TestNetworkHandle_SuggestLatestBlock_WithholdsUnverifiableSource(t *testing.T) {
+// A head from a source the network does not know never votes and leaves the
+// delivered-head floor alone.
+func TestNetworkIntake_WithholdsUnverifiableSource(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	network, _ := setupWsTipNetwork(t, ctx, "rpc3", "http://rpc3.localhost")
-	handle := &networkHandle{nw: network}
 	floor := network.deliveredLatestBlock.Load()
 
-	assert.False(t, handle.SuggestLatestBlock("ws:not-in-this-network", 5_000_000))
+	network.intake.Header("not-in-this-network", tipHead("a", 5_000_000))
+	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, floor, network.deliveredLatestBlock.Load())
 }

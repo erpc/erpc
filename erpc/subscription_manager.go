@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,11 +27,15 @@ const (
 const unsubscribeTimeout = 5 * time.Second
 
 // SubscriptionManager serves eth_subscribe and eth_unsubscribe on client
-// WebSocket connections through the indexer. A network's upstream ingresses
-// are registered the first time a client subscribes on it.
+// WebSocket connections. newHeads subscriptions are taps on the network-wide
+// chain tracker; logs and newPendingTransactions go through the indexer,
+// whose upstream ingresses are registered the first time a client
+// subscribes on a network.
 type SubscriptionManager struct {
 	logger *zerolog.Logger
 	idx    *indexer.Indexer
+	taps   *indexer.Taps
+	heads  newHeadsPayloads
 
 	// connMu guards conns and every WsConnection.subsClosed, so no adapter
 	// is created for a connection after CleanupConnection.
@@ -56,6 +59,7 @@ func NewSubscriptionManager(logger *zerolog.Logger, idx *indexer.Indexer) *Subsc
 	return &SubscriptionManager{
 		logger: logger,
 		idx:    idx,
+		taps:   indexer.NewTaps(nil),
 		conns:  make(map[string]*connEntry),
 	}
 }
@@ -150,7 +154,23 @@ func (sm *SubscriptionManager) Subscribe(
 	// Counted before it is visible, so a racing cleanup never takes the
 	// gauge below zero.
 	wsc.subscriptionsGauge(kind).Inc()
-	if err := conn.adapter.AddSubscription(clientSubID, key, kind, filterHash, maxSubs); err != nil {
+	var addErr error
+	switch {
+	case kind == indexer.KindNewHead && nw.chainTracker == nil:
+		addErr = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
+			"newHeads subscriptions need an evm network", nil, nil)
+	case kind == indexer.KindNewHead:
+		tapCtx, stop := context.WithCancel(context.Background())
+		if addErr = conn.adapter.AddTapSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
+			sub := wsclient.Subscription{ClientSubID: clientSubID, Kind: kind, NetworkID: key}
+			go sm.runNewHeads(tapCtx, wsc, sub, nw.chainTracker)
+		} else {
+			stop()
+		}
+	default:
+		addErr = conn.adapter.AddSubscription(clientSubID, key, kind, filterHash, maxSubs)
+	}
+	if err := addErr; err != nil {
 		wsc.subscriptionsGauge(kind).Dec()
 		sm.activeSubs.Add(-1)
 		sm.releaseFilter(ctx, key, kind, filterHash)
@@ -303,14 +323,12 @@ func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network
 		adapterOpts.StripSubscribeFromBlockZero = *cfg.Evm.StripSubscribeFromBlockZero
 	}
 	adapters := make(map[string]*wsupstream.Adapter, len(wsUpstreams))
-	heads := make(map[string]headSource, len(wsUpstreams))
 	for _, up := range wsUpstreams {
-		if adapter := wsupstream.New(up, key, sm.logger, adapterOpts); adapter != nil {
+		if adapter := wsupstream.New(up, key, nw.intake, sm.logger, adapterOpts); adapter != nil {
 			adapters[up.Id()] = adapter
-			heads[up.Id()] = adapter
 		}
 	}
-	sm.idx.RegisterNetwork(&networkHandle{nw: nw, heads: heads})
+	sm.idx.RegisterNetwork(&networkHandle{nw: nw})
 	sm.idx.RegisterNetworkSelector(key, &subIngressSelector{nw: nw})
 	for _, up := range wsUpstreams {
 		adapter := adapters[up.Id()]
@@ -480,15 +498,6 @@ func (sm *SubscriptionManager) recordFailureMetrics(
 // networkHandle adapts *Network to indexer.NetworkHandle.
 type networkHandle struct {
 	nw *Network
-	// heads are the network's WebSocket ingresses by upstream id; fixed once
-	// the network is registered.
-	heads map[string]headSource
-}
-
-// headSource is an ingress that streams newHeads.
-type headSource interface {
-	// HeadsLive reports whether its newHeads subscription is live.
-	HeadsLive() bool
 }
 
 func (h *networkHandle) Id() string { return indexerNetworkKey(h.nw) }
@@ -501,10 +510,6 @@ func (h *networkHandle) DedupEntriesAdded(delta int) {
 	telemetry.GaugeHandle(telemetry.MetricSubscriptionDedupEntries, h.nw.projectId, h.nw.Label()).Add(float64(delta))
 }
 
-func (h *networkHandle) HeadIndexed() {
-	telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, h.nw.projectId, h.nw.Label()).SetToCurrentTime()
-}
-
 func (h *networkHandle) Undelivered(kind indexer.EventKind) {
 	telemetry.CounterHandle(telemetry.MetricSubscriptionUndeliveredTotal, h.nw.projectId, h.nw.Label(), kind.String()).Inc()
 }
@@ -513,66 +518,6 @@ func (h *networkHandle) Undelivered(kind indexer.EventKind) {
 // define the same network, each with its own upstreams, so the key includes
 // the project.
 func indexerNetworkKey(nw *Network) string { return nw.projectId + "/" + nw.networkId }
-
-// SuggestLatestBlock passes a head from the ingress "ws:<upstreamId>" to
-// that upstream's state poller and reports whether clients may receive it:
-// only once the poller has accepted it (a major jump is verified
-// asynchronously first, so that head is not delivered) and the fallback-tier
-// gate allows it (see deliversHeadsFrom). A head from an upstream with no
-// poller (not bootstrapped, e.g. its chain could not be verified) or one the
-// network doesn't know is not delivered. A delivered head also advances the
-// network's delivered-head floor before clients see it.
-func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) bool {
-	deliver := h.suggestLatestBlock(sourceId, blockNumber)
-	if !deliver {
-		telemetry.CounterHandle(telemetry.MetricSubscriptionWithheldHeadsTotal, h.nw.projectId, h.nw.Label()).Inc()
-	}
-	return deliver
-}
-
-func (h *networkHandle) suggestLatestBlock(sourceId string, blockNumber int64) bool {
-	upstreamID, ok := strings.CutPrefix(sourceId, "ws:")
-	if !ok {
-		return true
-	}
-	ctx := context.Background()
-	for _, u := range h.nw.upstreamsRegistry.GetNetworkUpstreams(ctx, h.nw.networkId) {
-		if u.Id() != upstreamID {
-			continue
-		}
-		deliver := h.deliversHeadsFrom(ctx, u)
-		poller := u.EvmStatePoller()
-		if poller == nil || poller.IsObjectNull() {
-			return false
-		}
-		poller.SuggestLatestBlock(blockNumber)
-		if !deliver || poller.LatestBlock() < blockNumber {
-			return false
-		}
-		h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
-		return true
-	}
-	return false
-}
-
-// deliversHeadsFrom reports whether clients may receive u's heads. With
-// failover on, a fallback-tier upstream's heads are held back while some
-// upstream outside that tier, which the selection policy routes to, has a
-// live newHeads subscription of its own: clients are not told of a block
-// only a fallback has while the primaries are up. Whether they are up is the
-// policy's verdict, as for reads. Without such a primary (none eligible, or
-// none streaming heads) the fallbacks' heads are delivered.
-func (h *networkHandle) deliversHeadsFrom(ctx context.Context, u common.Upstream) bool {
-	if h.nw.cfg == nil || !h.nw.cfg.Failover.Enabled() || !isFallbackTier(u) {
-		return true
-	}
-	for c := range h.nw.tipCandidateUpstreams(ctx) {
-		if s := h.heads[c.Id()]; s != nil && !isFallbackTier(c) && s.HeadsLive() {
-			return false
-		}
-	}
-	return true
-}
 
 var (
 	_ wsclient.NotificationWriter = (*WsConnection)(nil)

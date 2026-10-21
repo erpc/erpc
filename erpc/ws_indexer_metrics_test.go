@@ -32,7 +32,7 @@ func pushingHeadsUpstream(t *testing.T) *httptest.Server {
 					"method":  "eth_subscription",
 					"params": map[string]interface{}{
 						"subscription": subID,
-						"result":       map[string]interface{}{"number": "0x101", "hash": "0xaaa"},
+						"result":       mockHead(0x101),
 					},
 				})
 			}()

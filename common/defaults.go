@@ -2299,6 +2299,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				cp := *defaults.Evm.ServedTip
 				n.Evm.ServedTip = &cp
 			}
+			if n.Evm.ChainTracker == nil && defaults.Evm.ChainTracker != nil {
+				cp := *defaults.Evm.ChainTracker
+				n.Evm.ChainTracker = &cp
+			}
 			if n.Evm.SafeBlockSource == "" {
 				n.Evm.SafeBlockSource = defaults.Evm.SafeBlockSource
 			}
@@ -2629,6 +2633,20 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 	return nil
 }
 
+const (
+	DefaultChainTrackerReorgWindow = 32
+	DefaultChainTrackerMaxBackfill = Duration(5 * time.Minute)
+)
+
+// EffectiveReorgWindow returns the configured reorg window, or the default
+// for a nil or unset config.
+func (c *EvmChainTrackerConfig) EffectiveReorgWindow() int {
+	if c == nil || c.ReorgWindow <= 0 {
+		return DefaultChainTrackerReorgWindow
+	}
+	return c.ReorgWindow
+}
+
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
@@ -2656,6 +2674,18 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.MaxFutureBlockRetryDistance != nil {
 		log.Warn().Msg("config: evm.maxFutureBlockRetryDistance is deprecated and ignored; use evm.emptyResultConfidence (blockHead|finalizedBlock) instead")
 		e.MaxFutureBlockRetryDistance = nil
+	}
+	if e.ChainTracker == nil {
+		e.ChainTracker = &EvmChainTrackerConfig{}
+	} else {
+		cp := *e.ChainTracker
+		e.ChainTracker = &cp
+	}
+	if e.ChainTracker.ReorgWindow == 0 {
+		e.ChainTracker.ReorgWindow = DefaultChainTrackerReorgWindow
+	}
+	if e.ChainTracker.MaxBackfill == 0 {
+		e.ChainTracker.MaxBackfill = DefaultChainTrackerMaxBackfill
 	}
 	if e.Integrity == nil {
 		e.Integrity = &EvmIntegrityConfig{}

@@ -39,7 +39,7 @@ func (f *fakeChain) build(from, to int64, tag string, parentOfFirst string) {
 	defer f.mu.Unlock()
 	prev := parentOfFirst
 	for n := from; n <= to; n++ {
-		h := fmt.Sprintf("0x%s%058x", tag, n)
+		h := testHash(tag, uint64(n))
 		b := fakeBlock{num: n, hash: h, parent: prev}
 		f.byNumber[n] = b
 		f.byHash[h] = b
@@ -76,7 +76,7 @@ func (f *fakeChain) network(t *testing.T) *mockNetwork {
 				return common.NewNormalizedResponse().WithJsonRpcResponse(
 					common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(`null`), nil)), nil
 			}
-			body := fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s"}`, b.num, b.hash, b.parent)
+			body := string(testHeader(uint64(b.num), b.hash, b.parent))
 			return common.NewNormalizedResponse().WithJsonRpcResponse(
 				common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(body), nil)), nil
 		},
@@ -88,9 +88,9 @@ func (f *fakeChain) network(t *testing.T) *mockNetwork {
 	return n
 }
 
-func followerFor(t *testing.T, chain *fakeChain, head *int64) (*chainView, *chainFollower) {
+func followerFor(t *testing.T, chain *fakeChain, head *int64) (*ChainTracker, *chainFollower) {
 	t.Helper()
-	v := newChainView(chain.network(t), 32, "", "", nil)
+	v := newChainTracker(t.Context(), chain.network(t), 32, "", "", nil)
 	f := newChainFollower(v, func(ctx context.Context) int64 { return *head }, nil)
 	return v, f
 }
@@ -99,7 +99,7 @@ func followerFor(t *testing.T, chain *fakeChain, head *int64) (*chainView, *chai
 // point of following rather than passively sampling whatever traffic touches.
 func TestChainFollowerBuildsALinkedChain(t *testing.T) {
 	chain := newFakeChain()
-	chain.build(100, 110, "a", "0xgenesis")
+	chain.build(100, 110, "a", testHash("9", 0))
 	head := int64(100)
 	v, f := followerFor(t, chain, &head)
 
@@ -128,7 +128,7 @@ func TestChainFollowerBuildsALinkedChain(t *testing.T) {
 // ancestor, unwind the abandoned branch, adopt the new one.
 func TestChainFollowerReconcilesAReorg(t *testing.T) {
 	chain := newFakeChain()
-	chain.build(100, 105, "a", "0xgenesis")
+	chain.build(100, 105, "a", testHash("9", 0))
 	// Bootstrap at 100 and walk up, so the follower actually holds 100..105 —
 	// bootstrapping straight at the head would leave nothing beneath it to
 	// reconcile against.
@@ -165,7 +165,7 @@ func TestChainFollowerReconcilesAReorg(t *testing.T) {
 // unverified one, so reconciliation must refuse.
 func TestChainFollowerRefusesUnrelatedHistory(t *testing.T) {
 	chain := newFakeChain()
-	chain.build(100, 105, "a", "0xgenesis")
+	chain.build(100, 105, "a", testHash("9", 0))
 	head := int64(100)
 	v, f := followerFor(t, chain, &head)
 	f.advance(context.Background()) // bootstrap at 100
@@ -175,7 +175,7 @@ func TestChainFollowerRefusesUnrelatedHistory(t *testing.T) {
 
 	// An entirely different history over the same heights, rooted far below the
 	// window and never joining ours.
-	chain.build(60, 107, "c", "0xotherworld")
+	chain.build(60, 107, "c", testHash("8", 0))
 	head = 107
 
 	f.advance(context.Background())
@@ -190,14 +190,14 @@ func TestChainFollowerRefusesUnrelatedHistory(t *testing.T) {
 		"unrelated history must never be adopted as the followed chain")
 }
 
-func mustHashAt(t *testing.T, v *chainView, n int64) string {
+func mustHashAt(t *testing.T, v *ChainTracker, n int64) string {
 	t.Helper()
 	h, ok := v.HashAt(n)
 	require.True(t, ok, "expected a pin at height %d", n)
 	return h
 }
 
-func mustFollowHead(t *testing.T, v *chainView) int64 {
+func mustFollowHead(t *testing.T, v *ChainTracker) int64 {
 	t.Helper()
 	_, to, ok := v.FollowedRange()
 	require.True(t, ok)
@@ -212,9 +212,9 @@ func mustFollowHead(t *testing.T, v *chainView) int64 {
 // ordinary traffic — possibly on another fork.
 func TestFollowedRangeNeverClaimsEvictedHeights(t *testing.T) {
 	chain := newFakeChain()
-	chain.build(100, 200, "a", "0xgenesis")
+	chain.build(100, 200, "a", testHash("9", 0))
 	head := int64(100)
-	v := newChainView(chain.network(t), 8, "", "", nil) // small window to force eviction
+	v := newChainTracker(t.Context(), chain.network(t), 8, "", "", nil) // small window to force eviction
 	f := newChainFollower(v, func(ctx context.Context) int64 { return head }, nil)
 
 	f.advance(context.Background()) // bootstrap at 100

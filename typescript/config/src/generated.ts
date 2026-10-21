@@ -1700,6 +1700,11 @@ export interface EvmNetworkConfig {
    * EvmServedTipConfig.
    */
   servedTip?: EvmServedTipConfig;
+  /**
+   * ChainTracker configures the network's chain trackers: how far back they
+   * hold the chain and follow reorgs.
+   */
+  chainTracker?: EvmChainTrackerConfig;
   getLogsMaxAllowedRange?: number /* int64 */;
   getLogsMaxAllowedAddresses?: number /* int64 */;
   getLogsMaxAllowedTopics?: number /* int64 */;
@@ -1825,6 +1830,22 @@ export interface EvmNetworkConfig {
    * provider-defined routing. This does not affect eth_query* or gRPC Query.
    */
   safeBlockSource?: string;
+}
+/**
+ * EvmChainTrackerConfig sizes the window a chain tracker holds.
+ */
+export interface EvmChainTrackerConfig {
+  /**
+   * ReorgWindow is the floor of the window in blocks, the window of group
+   * trackers, and the deepest reorg a tracker walks and replays (default
+   * 32). Raise it for deep-reorg chains (e.g. polygon 256).
+   */
+  reorgWindow?: number /* int */;
+  /**
+   * MaxBackfill is how much chain time, compared on header timestamps, the
+   * network-wide tracker holds for resumable taps (default 5m).
+   */
+  maxBackfill?: Duration;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -2286,12 +2307,6 @@ export interface IntegritySettings {
    * (override per check via checks.<id>.onFailure).
    */
   invalidBehavior?: IntegrityInvalidBehaviorConfig;
-  /**
-   * ReorgWindow is how many blocks back from the tip the integrity ChainView
-   * keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
-   * deep-reorg chains (e.g. polygon 256).
-   */
-  reorgWindow?: number /* int */;
   /**
    * ObserveOnly runs every enabled check but never lets a verdict touch the
    * response: violations that WOULD have been rejected are recorded with the

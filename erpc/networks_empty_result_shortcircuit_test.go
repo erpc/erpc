@@ -501,7 +501,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":false}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
 			blockCalls.Add(1)
-			r.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x3e8","hash":"0xabc","parentHash":"0xdef","gasUsed":"0x0","transactions":` + transactions.Load().(string) + `,"timestamp":"0x6702a8f0"}}`))
+			r.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x3e8","hash":"0x` + strings.Repeat("ab", 32) + `","parentHash":"0x` + strings.Repeat("cd", 32) + `","gasUsed":"0x0","transactions":` + transactions.Load().(string) + `,"timestamp":"0x6702a8f0"}}`))
 			return r
 		}).BodyString(`{}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "debug_traceBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
@@ -553,40 +553,16 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		}
 		t.Logf("ref=%s traceCalls=%d auxiliaryCalls=%d elapsed=%v", ref, calls, blockCalls.Load()-beforeBlock, time.Since(start))
 	}
-	transactions.Store(`null`)
+	// The held header is immutable per hash (first held wins): a later answer
+	// for the same hash with other transactions changes nothing.
+	transactions.Store(`["0xtx"]`)
 	blockReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`))
 	resp, err = n.Forward(ctx, blockReq)
 	require.NoError(t, err)
 	resp.Release()
-	require.False(t, evm.HasVerifiedEmptyTraceBlock(warm))
-	beforeMissing := traceCalls.Load()
-	resp, err = n.Forward(ctx, request("0x3e8"))
-	require.NoError(t, err)
-	resp.Release()
-	require.Greater(t, traceCalls.Load()-beforeMissing, int32(1))
-	t.Logf("null transactions traceCalls=%d", traceCalls.Load()-beforeMissing)
-	transactions.Store(`["0xtx"]`)
-	blockReq = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":3,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`))
-	resp, err = n.Forward(ctx, blockReq)
-	require.NoError(t, err)
-	resp.Release()
-	beforeNonempty := traceCalls.Load()
-	resp, err = n.Forward(ctx, request("0x3e8"))
-	require.NoError(t, err)
-	jrr, err := resp.JsonRpcResponse()
-	require.NoError(t, err)
-	require.Contains(t, jrr.GetResultString(), "CALL")
-	resp.Release()
-	require.Equal(t, int32(2), traceCalls.Load()-beforeNonempty)
-	t.Logf("known nonempty traceCalls=%d", traceCalls.Load()-beforeNonempty)
-	transactions.Store(`null`)
-	resp, err = n.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":4,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`)))
-	require.NoError(t, err)
-	resp.Release()
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, evm.HasVerifiedEmptyTraceBlock(warm))
 	transactions.Store(`[]`)
-	resp, err = n.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":5,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`)))
-	require.NoError(t, err)
-	resp.Release()
 	for _, tc := range []struct {
 		name    string
 		list    []string

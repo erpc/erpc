@@ -37,7 +37,6 @@ func TestAdapterGivesUpNewHeadsWhenUnsupported(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, headsSubscribes, "newHeads must not be retried after an unsupported rejection")
-	require.False(t, a.HeadsLive())
 	a.subsMu.Lock()
 	settled := a.resubDone
 	a.subsMu.Unlock()

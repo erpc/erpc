@@ -1700,6 +1700,14 @@ func (e *EvmNetworkConfig) Validate() error {
 			}
 		}
 	}
+	if ct := e.ChainTracker; ct != nil {
+		if ct.ReorgWindow < 0 {
+			return fmt.Errorf("network.*.evm.chainTracker.reorgWindow must be >= 0")
+		}
+		if ct.MaxBackfill < 0 {
+			return fmt.Errorf("network.*.evm.chainTracker.maxBackfill must be >= 0")
+		}
+	}
 	if e.SafeBlockSource != "" {
 		if err := ValidatePattern(e.SafeBlockSource); err != nil {
 			return fmt.Errorf("network.*.evm.safeBlockSource has invalid selector %q: %w", e.SafeBlockSource, err)
@@ -1999,9 +2007,6 @@ func (s *IntegritySettings) validate() error {
 	}
 	if b := s.Budget; b != nil && (b.MaxPerSecond < 0 || b.MaxConcurrent < 0) {
 		return fmt.Errorf("integrity.budget.maxPerSecond/maxConcurrent must be >= 0")
-	}
-	if s.ReorgWindow < 0 {
-		return fmt.Errorf("integrity.reorgWindow must be >= 0")
 	}
 	if s.MisbehaviorsDestination != nil {
 		if err := s.MisbehaviorsDestination.Validate(); err != nil {

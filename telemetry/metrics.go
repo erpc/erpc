@@ -205,12 +205,6 @@ var (
 		Help:      "Event keys held by the network's logs and newPendingTransactions dedup windows; each filter's window holds at most indexer.dedupWindowSize keys (default 8192).",
 	}, []string{"project", "network"})
 
-	MetricSubscriptionWithheldHeadsTotal = DefineCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "subscription_withheld_heads_total",
-		Help:      "Upstream newHeads events not delivered to clients because the network did not accept the head.",
-	}, []string{"project", "network"})
-
 	MetricSubscriptionUndeliveredTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "subscription_undelivered_total",
@@ -220,7 +214,34 @@ var (
 	MetricNetworkSubscriptionLastHeadTimestamp = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_subscription_last_head_timestamp_seconds",
-		Help:      "Unix time the subscription indexer last accepted a new head for the network.",
+		Help:      "Unix time the network-wide chain tracker's head last changed.",
+	}, []string{"project", "network"})
+
+	// MetricChainTrackerSourceHeadsTotal counts every source header intake
+	// handled, by outcome: voted, duplicate, malformed, gated_identity,
+	// gated_integrity, gated_authority.
+	MetricChainTrackerSourceHeadsTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_source_heads_total",
+		Help:      "Source headers handled by network intake, by outcome.",
+	}, []string{"project", "network", "upstream", "outcome"})
+
+	MetricSourceLive = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "source_live",
+		Help:      "1 while the source is live: its accepted header has not trailed the newest known block for longer than the live bound.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricChainTrackerReanchorTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_reanchor_total",
+		Help:      "Times a chain tracker's pins moved to another tree of held headers.",
+	}, []string{"project", "network"})
+
+	MetricChainTrackerResetTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_reset_total",
+		Help:      "Times a chain tracker reset to empty after 3 panics in a row.",
 	}, []string{"project", "network"})
 
 	// MetricNetworkServedTipBlockNumber is the block number the network actually

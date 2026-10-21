@@ -174,7 +174,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			if dirs != nil {
 				selector = dirs.UseUpstream
 			}
-			view := groupChainView(ctx, n, selector)
+			view := ChainTrackerOf(ctx, n, selector)
 			input := integrity.Input{
 				Method:      methodLower,
 				Upstream:    u,
@@ -299,11 +299,11 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				rq.ClearLastValidResponseIf(rs)
 				return rs, validationErr
 			}
-			// Feed the ChainView with this validated response: block responses
-			// populate pin+header; narrow responses (receipts/tx) pin the number→hash
-			// for FINALIZED blocks only (tip-thrash safety).
+			// Hand the validated response to the tracker: block responses are
+			// held as answers; narrow responses (receipts/tx) give anchors for
+			// FINALIZED blocks only (tip-thrash safety).
 			if isBlockMethod(methodLower) {
-				observeBlockView(ctx, view, rs, methodLower)
+				observeBlockView(ctx, view, u, rs)
 			} else if isAnchoredNarrowMethod(methodLower) {
 				observeNarrowView(ctx, view, u, rs)
 			}

@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -628,6 +629,24 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 		Int64("previousValue", currentValue).
 		Int64("newValue", newValue).
 		Msg("latest block suggestion applied")
+}
+
+// ObserveHead is the per-upstream part of intake for a source header: the
+// height goes through SuggestLatestBlock, so a major jump is verified before
+// it moves the counter. accepted: the counter holds the header's height now.
+func (e *EvmStatePoller) ObserveHead(raw json.RawMessage) (accepted bool) {
+	var h struct {
+		Number string `json:"number"`
+	}
+	if common.SonicCfg.Unmarshal(raw, &h) != nil {
+		return false
+	}
+	n, err := common.HexToInt64(h.Number)
+	if err != nil || n < 0 {
+		return false
+	}
+	e.SuggestLatestBlock(n)
+	return e.LatestBlock() >= n
 }
 
 // verifyThenSuggestLatestBlock validates a MAJOR suggested forward jump with a

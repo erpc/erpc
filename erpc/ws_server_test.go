@@ -323,6 +323,17 @@ func standardMockWsHandler(conn *websocket.Conn, customHandler func(method strin
 }
 
 //
+// mockHead is block n of the chain the mock WS upstreams push: a header that
+// passes intake parsing.
+func mockHead(n int64) map[string]interface{} {
+	return map[string]interface{}{
+		"number":     fmt.Sprintf("0x%x", n),
+		"hash":       fmt.Sprintf("0x%064x", n),
+		"parentHash": fmt.Sprintf("0x%064x", n-1),
+		"timestamp":  fmt.Sprintf("0x%x", 1_700_000_000+n),
+	}
+}
+
 // --- Tests: basic JSON-RPC over WebSocket ---
 //
 
@@ -749,7 +760,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 							"method":  "eth_subscription",
 							"params": map[string]interface{}{
 								"subscription": subId,
-								"result":       map[string]interface{}{"number": "0x101", "hash": "0xaaa"},
+								"result":       mockHead(0x101),
 							},
 						})
 						select {
@@ -828,7 +839,7 @@ func TestWebSocket_Subscriptions(t *testing.T) {
 							"method":  "eth_subscription",
 							"params": map[string]interface{}{
 								"subscription": subId,
-								"result":       map[string]interface{}{"number": "0x101", "hash": "0xaaa"},
+								"result":       mockHead(0x101),
 							},
 						})
 						select {
@@ -1226,7 +1237,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 									"subscription": upstreamSubId,
 									// One block past the mocked poller head (256); a
 									// major jump would be held for verification.
-									"result": map[string]interface{}{"number": "0x101"},
+									"result": mockHead(0x101),
 								},
 							})
 						}()
@@ -1555,16 +1566,13 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 	// Two WS upstreams that both deliver the same block.
 	upSubId := "0xupsub"
 
-	deliverNotification := func(conn *websocket.Conn, blockHash string) {
+	deliverNotification := func(conn *websocket.Conn) {
 		mockWriteJSON(conn, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"method":  "eth_subscription",
 			"params": map[string]interface{}{
 				"subscription": upSubId,
-				"result": map[string]interface{}{
-					"number": "0x123",
-					"hash":   blockHash,
-				},
+				"result":       mockHead(0x123),
 			},
 		})
 	}
@@ -1577,7 +1585,7 @@ func TestWebSocket_EveryUpstreamHeadReachesItsPoller(t *testing.T) {
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": upSubId})
 					go func() {
 						time.Sleep(300 * time.Millisecond)
-						deliverNotification(conn, "0xsamehash")
+						deliverNotification(conn)
 					}()
 				default:
 					mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x1"})

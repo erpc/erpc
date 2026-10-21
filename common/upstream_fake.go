@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -299,6 +300,23 @@ func (p *FakeEvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 
 func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	p.latestBlockNumber = blockNumber
+}
+
+func (p *FakeEvmStatePoller) ObserveHead(raw json.RawMessage) bool {
+	var h struct {
+		Number string `json:"number"`
+	}
+	if SonicCfg.Unmarshal(raw, &h) != nil {
+		return false
+	}
+	n, err := HexToInt64(h.Number)
+	if err != nil {
+		return false
+	}
+	if n > p.latestBlockNumber {
+		p.latestBlockNumber = n
+	}
+	return true
 }
 
 func (p *FakeEvmStatePoller) RefreshLatestBlock() {}

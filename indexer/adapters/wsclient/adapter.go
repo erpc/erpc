@@ -64,8 +64,17 @@ type clientSub struct {
 	networkID  string
 	filterHash string // "" for newHeads
 
-	notify chan json.RawMessage
-	done   chan struct{} // closed by whoever removes the sub from Adapter.subs
+	notify chan json.RawMessage // nil for a tap subscription
+	done   chan struct{}        // closed by whoever removes the sub from Adapter.subs
+	// stop ends a tap subscription's read loop; nil for buffered ones.
+	stop func()
+}
+
+func (sub *clientSub) end() {
+	close(sub.done)
+	if sub.stop != nil {
+		sub.stop()
+	}
 }
 
 // New creates the adapter of a client connection. writer is called from
@@ -159,6 +168,23 @@ func (a *Adapter) AddSubscription(clientSubID, networkID string, kind indexer.Ev
 	return nil
 }
 
+// AddTapSubscription registers a subscription whose notifications a tap
+// writes itself; stop ends that tap when the subscription is removed. Limits
+// and errors are those of AddSubscription.
+func (a *Adapter) AddTapSubscription(clientSubID, networkID string, kind indexer.EventKind, maxSubs int, stop func()) error {
+	sub := &clientSub{id: clientSubID, kind: kind, networkID: networkID, done: make(chan struct{}), stop: stop}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.drained {
+		return ErrClosed
+	}
+	if len(a.subs) >= maxSubs {
+		return ErrLimitExceeded
+	}
+	a.subs[clientSubID] = sub
+	return nil
+}
+
 // RemoveSubscription removes a subscription, stops its writer, and returns
 // what the caller needs to release its filter.
 func (a *Adapter) RemoveSubscription(clientSubID string) (kind indexer.EventKind, networkID, filterHash string, existed bool) {
@@ -178,7 +204,7 @@ func (a *Adapter) RemoveSubscription(clientSubID string) (kind indexer.EventKind
 	}
 	a.mu.Unlock()
 
-	close(sub.done)
+	sub.end()
 	return sub.kind, sub.networkID, sub.filterHash, true
 }
 
@@ -195,7 +221,7 @@ func (a *Adapter) Drain() []Subscription {
 
 	out := make([]Subscription, 0, len(subs))
 	for _, sub := range subs {
-		close(sub.done)
+		sub.end()
 		out = append(out, sub.snapshot())
 	}
 	return out

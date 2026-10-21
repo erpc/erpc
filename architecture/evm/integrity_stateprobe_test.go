@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -64,11 +65,11 @@ func newProbeNetwork(t *testing.T) *probeNetwork {
 	return pn
 }
 
-func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *chainView) {
-	v := newChainView(pn, 32, "", "", nil)
-	v.adoptFollowed(headN, &integrity.Header{
-		Number: fmt.Sprintf("0x%x", headN), Hash: "0xhead", ParentHash: "0xpar", StateRoot: stateRoot,
-	})
+func proberFor(pn *probeNetwork, headN int64, stateRoot string) (*stateProber, *ChainTracker) {
+	v := newChainTracker(context.Background(), pn, 32, "", "", nil)
+	v.Observe("a", json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","stateRoot":"%s"}`,
+		headN, testHash("e", uint64(headN)), testHash("f", uint64(headN-1)), stateRoot)), true)
+	v.sync(context.Background())
 	p := &stateProber{
 		network: pn, view: v, interval: 0,
 		ctxProbe:  integrity.ChainStateContextProbe(1),

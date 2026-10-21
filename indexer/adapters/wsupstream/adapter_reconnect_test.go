@@ -27,18 +27,24 @@ import (
 
 type fakeNetworkHandle struct{}
 
-func (fakeNetworkHandle) Id() string                            { return "evm:123" }
-func (fakeNetworkHandle) SuggestLatestBlock(string, int64) bool { return true }
-func (fakeNetworkHandle) DedupDropped(indexer.EventKind)        {}
-func (fakeNetworkHandle) DedupEntriesAdded(int)                 {}
-func (fakeNetworkHandle) HeadIndexed()                          {}
-func (fakeNetworkHandle) Undelivered(indexer.EventKind)         {}
+func (fakeNetworkHandle) Id() string                     { return "evm:123" }
+func (fakeNetworkHandle) DedupDropped(indexer.EventKind) {}
+func (fakeNetworkHandle) DedupEntriesAdded(int)          {}
+func (fakeNetworkHandle) Undelivered(indexer.EventKind)  {}
 
+// fakeSink is the adapter's indexer sink and its intake.
 type fakeSink struct {
 	events chan indexer.StreamEvent
+	heads  chan json.RawMessage
 }
 
-func (s *fakeSink) Ingest(ev indexer.StreamEvent) { s.events <- ev }
+func (s *fakeSink) Ingest(ev indexer.StreamEvent) {
+	if ev.Kind != indexer.KindNewHead {
+		s.events <- ev
+	}
+}
+
+func (s *fakeSink) Header(_ string, raw json.RawMessage) { s.heads <- raw }
 
 // notifyServer is a WS upstream that answers eth_subscribe with ids from a
 // per-connection counter ("0x1", "0x2", …, as real nodes do), follows each
@@ -176,6 +182,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), u, nil, evm.NewJsonRpcErrorExtractor())
 	require.NoError(t, err)
 	wsc := ci.(*clients.WsJsonRpcClient)
+	sink := &fakeSink{events: make(chan indexer.StreamEvent, 64), heads: make(chan json.RawMessage, 64)}
 	a := &Adapter{
 		upstreamID:   "test-ws-upstream",
 		networkID:    "evm:123",
@@ -184,6 +191,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 		wsClient:     wsc,
 		logger:       &logger,
 		filters:      make(map[string]*filterSub),
+		intake:       sink,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
 			return wsc.SendRequest(ctx, nq)
 		},
@@ -191,7 +199,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 		retryMax:       resubRetryMax,
 		attemptTimeout: resubAttemptTimeout,
 	}
-	return a, &fakeSink{events: make(chan indexer.StreamEvent, 64)}
+	return a, sink
 }
 
 // subscribedHeads reports whether a is connected with a live newHeads
@@ -209,6 +217,24 @@ func subscribedHeads(a *Adapter) func() bool {
 
 func logsParams(address string) []interface{} {
 	return []interface{}{indexer.SubTypeLogs, map[string]interface{}{"address": address}}
+}
+
+// nextHead returns the number of the next header the adapter hands intake.
+func nextHead(t *testing.T, sink *fakeSink) int64 {
+	t.Helper()
+	select {
+	case raw := <-sink.heads:
+		var h struct {
+			Number string `json:"number"`
+		}
+		require.NoError(t, json.Unmarshal(raw, &h))
+		n, err := common.HexToInt64(h.Number)
+		require.NoError(t, err)
+		return n
+	case <-time.After(3 * time.Second):
+		t.Fatal("no head reached intake")
+		return 0
+	}
 }
 
 func nextEvent(t *testing.T, sink *fakeSink, kind indexer.EventKind) indexer.StreamEvent {
@@ -249,17 +275,15 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 		return send(ctx, nq, bypass)
 	}
 
-	require.False(t, a.HeadsLive(), "no heads before the subscribe succeeds")
 	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
 
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
 		"adapter never subscribed newHeads despite the failures stopping after %d", failuresPerEpoch)
-	require.True(t, a.HeadsLive())
 	require.GreaterOrEqual(t, forwardCalls.Load(), int64(failuresPerEpoch+1),
 		"expected the subscribe to be retried through failures")
 
 	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
-	require.Equal(t, int64(100), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
+	require.Equal(t, int64(100), nextHead(t, sink))
 
 	// Ungraceful upstream death: kill the TCP connection with no close
 	// handshake. The adapter must clear its stale subscription, then retry
@@ -276,7 +300,7 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
 		"adapter never re-established the newHeads subscription after reconnect")
 	conn2.sendNewHead(conn2.nextRequest(t, methodEthSubscribe).SubID, 101)
-	require.Equal(t, int64(101), nextEvent(t, sink, indexer.KindNewHead).Block.Number)
+	require.Equal(t, int64(101), nextHead(t, sink))
 }
 
 // TestAdapterResubscribesAllFiltersAfterReconnect: subscription ids come

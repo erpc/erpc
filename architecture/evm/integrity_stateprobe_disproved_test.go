@@ -153,10 +153,8 @@ func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
 		return nil, fmt.Errorf("method not found")
 	}
 
-	v := newChainView(net, 32, "", "", nil)
-	v.adoptFollowed(head, &integrity.Header{
-		Number: fmt.Sprintf("0x%x", head), Hash: "0xhead", ParentHash: "0xpar",
-	})
+	v := newChainTracker(context.Background(), net, 32, "", "", nil)
+	voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 	p := &stateProber{
 		network: net, view: v, interval: 0,
 		ctxProbe:  integrity.ChainStateContextProbe(0),

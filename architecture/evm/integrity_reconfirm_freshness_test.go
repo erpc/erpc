@@ -33,7 +33,7 @@ func newCapturingNetwork(t *testing.T, number int64, hash string) *capturingNetw
 			n.dirs = append(n.dirs, req.Directives())
 			n.calls++
 			n.mu.Unlock()
-			body := fmt.Sprintf(`{"number":"%s","hash":"%s","parentHash":"0xpar"}`, n.num, n.hash)
+			body := fmt.Sprintf(`{"number":"%s","hash":"%s","parentHash":"%s"}`, n.num, n.hash, testHash("f", uint64(number-1)))
 			return common.NewNormalizedResponse().WithJsonRpcResponse(
 				common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(body), nil),
 			), nil
@@ -64,12 +64,12 @@ func (n *capturingNetwork) lastDirectives() *common.RequestDirectives {
 // adjudicated a false positive against settled canonical).
 func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 	const height = int64(0x10)
-	orphan, canonical := "0xorphanfork", "0xcanonicalfork"
+	orphan, canonical := testHash("0", uint64(height)), testHash("c", uint64(height))
 
 	t.Run("the re-confirmation bypasses the cache", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainView(net, 32, "", "", nil)
-		c.observe(height, orphan, nil) // pin holds the losing fork
+		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		voteChain(t, c, "a", "0", uint64(height), uint64(height), testHash("f", uint64(height-1))) // pin holds the losing fork
 
 		hash, status := c.ReconfirmPin(context.Background(), height)
 
@@ -81,20 +81,28 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 			"a pin re-confirmation that reads the cache is an echo of the disputed value, not corroboration")
 	})
 
-	t.Run("and the refreshed pin adopts the current fork", func(t *testing.T) {
+	t.Run("the answer is held, and only votes move the pin", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainView(net, 32, "", "", nil)
-		c.observe(height, orphan, nil)
-		c.observe(height+1, "0xdescendant", nil) // built on the orphan
+		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
 
 		_, status := c.ReconfirmPin(context.Background(), height)
 		require.Equal(t, integrity.PinFresh, status)
+		c.sync(context.Background())
 
 		got, ok := c.HashAt(height)
 		require.True(t, ok)
-		assert.Equal(t, canonical, got, "the pin must adopt the fork the network actually serves")
+		assert.Equal(t, orphan, got, "an answer never moves the pin")
+		_, held := c.held.Load(canonical)
+		assert.True(t, held)
+
+		// Once the source votes for the canonical fork, the pins follow it.
+		c.Observe("a", testHeader(uint64(height), canonical, testHash("f", uint64(height-1))), true)
+		c.sync(context.Background())
+		got, _ = c.HashAt(height)
+		assert.Equal(t, canonical, got)
 		_, stillThere := c.HashAt(height + 1)
-		assert.False(t, stillThere, "descendants of the abandoned fork must be rolled back")
+		assert.False(t, stillThere, "descendants of the abandoned fork leave the pins")
 	})
 
 	// The bypass is scoped to the tie-break. Ordinary corroboration fetches stay
@@ -102,7 +110,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 	// polygon's corroboration hit-rate.
 	t.Run("ordinary corroboration fetches still use the cache", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainView(net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil)
 
 		_, ok := c.headerByNumber(context.Background(), height, fmt.Sprintf("0x%x", height))
 		require.True(t, ok)
@@ -113,7 +121,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 
 	t.Run("by-hash header fetches still use the cache", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainView(net, 32, "", "", nil)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil)
 
 		_, _ = c.headerByHash(context.Background(), canonical)
 		if d := net.lastDirectives(); d != nil {

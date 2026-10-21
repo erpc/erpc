@@ -2736,12 +2736,15 @@ type EvmNetworkConfig struct {
 	// block it advertises to clients (and enforces via block-availability).
 	// Nil uses the defaults: quorum 2, regression guard on, no guarantees. See
 	// EvmServedTipConfig.
-	ServedTip                  *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
-	GetLogsMaxAllowedRange     int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
-	GetLogsMaxAllowedAddresses int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
-	GetLogsMaxAllowedTopics    int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
-	GetLogsSplitOnError        *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
-	GetLogsSplitConcurrency    int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	ServedTip *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
+	// ChainTracker configures the network's chain trackers: how far back they
+	// hold the chain and follow reorgs.
+	ChainTracker               *EvmChainTrackerConfig `yaml:"chainTracker,omitempty" json:"chainTracker,omitempty"`
+	GetLogsMaxAllowedRange     int64                  `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
+	GetLogsMaxAllowedAddresses int64                  `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
+	GetLogsMaxAllowedTopics    int64                  `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
+	GetLogsSplitOnError        *bool                  `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
+	GetLogsSplitConcurrency    int                    `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
 	// GetLogsMaxResponseBytes caps the total size of a MERGED eth_getLogs response —
 	// the sum of every sub-response a split assembles, not the size of any one piece.
 	// Splitting exists to get past an upstream's per-request limits, so once a request
@@ -2851,6 +2854,17 @@ type EvmNetworkConfig struct {
 	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
 	// numeric distance band is gone — use emptyResultConfidence instead.
 	MaxFutureBlockRetryDistance *int64 `yaml:"maxFutureBlockRetryDistance,omitempty" json:"-"`
+}
+
+// EvmChainTrackerConfig sizes the window a chain tracker holds.
+type EvmChainTrackerConfig struct {
+	// ReorgWindow is the floor of the window in blocks, the window of group
+	// trackers, and the deepest reorg a tracker walks and replays (default
+	// 32). Raise it for deep-reorg chains (e.g. polygon 256).
+	ReorgWindow int `yaml:"reorgWindow,omitempty" json:"reorgWindow,omitempty"`
+	// MaxBackfill is how much chain time, compared on header timestamps, the
+	// network-wide tracker holds for resumable taps (default 5m).
+	MaxBackfill Duration `yaml:"maxBackfill,omitempty" json:"maxBackfill,omitempty" tstype:"Duration"`
 }
 
 // EvmServedTipConfig controls how the network derives the "latest"/"finalized"

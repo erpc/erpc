@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -81,6 +82,11 @@ type Network struct {
 	// shim on this network (queryTraceSource* values), so a network whose
 	// upstreams lack trace_block asks debug_traceBlockByNumber directly.
 	queryTraceSource atomic.Int32
+
+	// chainTracker is the network-wide tracker; intake feeds it from the
+	// sources. Both nil on non-EVM networks.
+	chainTracker *evm.ChainTracker
+	intake       *networkIntake
 }
 
 // NoteObservedLatestBlock records a head about to be delivered on a WebSocket
@@ -3371,6 +3377,13 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 						ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
 					case "latest":
 						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+						// An answer, never a vote: held by the tracker of
+						// the request's group.
+						selector := ""
+						if d := req.Directives(); d != nil {
+							selector = d.UseUpstream
+						}
+						evm.ChainTrackerOf(ctx, n, selector).Observe(ups.Id(), bytes.Clone(jrs.GetResultBytes()), false)
 					}
 				}
 			}

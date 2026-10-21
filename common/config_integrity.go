@@ -41,10 +41,6 @@ type IntegritySettings struct {
 	// hardReject | off. Deterministic checks ignore it and always hardReject
 	// (override per check via checks.<id>.onFailure).
 	InvalidBehavior *IntegrityInvalidBehaviorConfig `yaml:"invalidBehavior,omitempty" json:"invalidBehavior,omitempty"`
-	// ReorgWindow is how many blocks back from the tip the integrity ChainView
-	// keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
-	// deep-reorg chains (e.g. polygon 256).
-	ReorgWindow int `yaml:"reorgWindow,omitempty" json:"reorgWindow,omitempty"`
 	// ObserveOnly runs every enabled check but never lets a verdict touch the
 	// response: violations that WOULD have been rejected are recorded with the
 	// outcome "would_reject" and served anyway. This is the safe way to enable
@@ -212,9 +208,6 @@ func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
 	if over.StateProbe != nil {
 		out.StateProbe = over.StateProbe
 	}
-	if over.ReorgWindow != 0 {
-		out.ReorgWindow = over.ReorgWindow
-	}
 	if over.ObserveOnly != nil {
 		out.ObserveOnly = over.ObserveOnly
 	}
@@ -253,7 +246,6 @@ func (c *IntegritySettings) Copy() *IntegritySettings {
 		Level:                   c.Level,
 		Budget:                  c.Budget.Copy(),
 		InvalidBehavior:         c.InvalidBehavior.Copy(),
-		ReorgWindow:             c.ReorgWindow,
 		ObserveOnly:             c.ObserveOnly,
 		AutoCorrectWhenPossible: c.AutoCorrectWhenPossible,
 		Follow:                  c.Follow.Copy(),

@@ -193,6 +193,12 @@ func NewNetwork(
 		network.architectureHandler = handler
 	}
 
+	if nwCfg.Architecture == common.ArchitectureEvm {
+		network.chainTracker = evm.StartChainTrackers(appCtx, network)
+		network.intake = newNetworkIntake(network, network.chainTracker)
+		go network.intake.run(appCtx)
+	}
+
 	return network, nil
 }
 

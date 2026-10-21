@@ -16,14 +16,14 @@ import (
 type integrityResolver struct {
 	network  common.Network
 	upstream common.Upstream
-	view     *chainView
+	view     *ChainTracker
 }
 
 func newIntegrityResolver(ctx context.Context, n common.Network, u common.Upstream, selector string) integrity.Resolver {
 	if n == nil {
 		return nil
 	}
-	return &integrityResolver{network: n, upstream: u, view: groupChainView(ctx, n, selector)}
+	return &integrityResolver{network: n, upstream: u, view: ChainTrackerOf(ctx, n, selector)}
 }
 
 func (r *integrityResolver) IsFinalized(ctx context.Context, blockNumber int64) (bool, bool) {

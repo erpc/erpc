@@ -18,29 +18,16 @@ type fakeNetwork struct {
 	id string
 
 	mu           sync.Mutex
-	suggestedBy  map[string][]int64  // sourceId -> block nums seen
-	held         map[string]struct{} // sourceIds whose heads are not delivered
 	dedupDropped int
 	dedupEntries int
-	headsIndexed int
 	undelivered  int
 }
 
 func newFakeNetwork(id string) *fakeNetwork {
-	return &fakeNetwork{
-		id:          id,
-		suggestedBy: make(map[string][]int64),
-	}
+	return &fakeNetwork{id: id}
 }
 
 func (n *fakeNetwork) Id() string { return n.id }
-func (n *fakeNetwork) SuggestLatestBlock(sourceId string, block int64) bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.suggestedBy[sourceId] = append(n.suggestedBy[sourceId], block)
-	_, held := n.held[sourceId]
-	return !held
-}
 func (n *fakeNetwork) DedupDropped(EventKind) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -51,20 +38,15 @@ func (n *fakeNetwork) DedupEntriesAdded(delta int) {
 	defer n.mu.Unlock()
 	n.dedupEntries += delta
 }
-func (n *fakeNetwork) HeadIndexed() {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.headsIndexed++
-}
 func (n *fakeNetwork) Undelivered(EventKind) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.undelivered++
 }
-func (n *fakeNetwork) deliveryCounts() (headsIndexed, undelivered int) {
+func (n *fakeNetwork) undeliveredCount() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.headsIndexed, n.undelivered
+	return n.undelivered
 }
 func (n *fakeNetwork) dedupCounts() (dropped, entries int) {
 	n.mu.Lock()
@@ -73,9 +55,8 @@ func (n *fakeNetwork) dedupCounts() (dropped, entries int) {
 }
 
 type fakeEgress struct {
-	name           string
-	filters        map[string]struct{} // filterHash -> interested
-	acceptAllHeads bool
+	name    string
+	filters map[string]struct{} // filterHash -> interested
 	// hook, when set, runs at the start of every Deliver.
 	hook func(IndexedEvent)
 
@@ -85,9 +66,6 @@ type fakeEgress struct {
 
 func (e *fakeEgress) Name() string { return e.name }
 func (e *fakeEgress) InterestedIn(kind EventKind, networkId, filterHash string) bool {
-	if kind == KindNewHead {
-		return e.acceptAllHeads
-	}
 	_, ok := e.filters[filterHash]
 	return ok
 }
@@ -178,164 +156,6 @@ func newIndexer(t *testing.T) *Indexer {
 	return New(&logger, Options{})
 }
 
-func TestIndexer_NewHead_FanOutAndDedup(t *testing.T) {
-	idx := newIndexer(t)
-	nw := newFakeNetwork("evm:1")
-	idx.RegisterNetwork(nw)
-	eg := &fakeEgress{name: "eg1", filters: map[string]struct{}{}, acceptAllHeads: true}
-	idx.Attach(eg)
-
-	ev := StreamEvent{
-		Kind:      KindNewHead,
-		NetworkId: "evm:1",
-		SourceId:  "ws:up1",
-		Block:     BlockRef{Number: 100, Hash: "0xAAA"},
-	}
-	idx.Ingest(ev)
-	idx.Ingest(ev) // dup
-
-	if got := eg.count(); got != 1 {
-		t.Fatalf("want 1 delivery after dup, got %d", got)
-	}
-	// Second unique head advances.
-	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up1", Block: BlockRef{Number: 101, Hash: "0xBBB"}})
-	if got := eg.count(); got != 2 {
-		t.Fatalf("want 2 after advance, got %d", got)
-	}
-}
-
-// Several sources delivering the same head at the same instant must reach
-// the egress exactly once.
-func TestIndexer_NewHead_ConcurrentIngestDedupe(t *testing.T) {
-	idx := newIndexer(t)
-	nw := newFakeNetwork("evm:1")
-	idx.RegisterNetwork(nw)
-	eg := &fakeEgress{name: "eg1", filters: map[string]struct{}{}, acceptAllHeads: true}
-	idx.Attach(eg)
-
-	const sources = 8
-	ev := StreamEvent{
-		Kind:      KindNewHead,
-		NetworkId: "evm:1",
-		Block:     BlockRef{Number: 100, Hash: "0xAAA"},
-	}
-
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for i := 0; i < sources; i++ {
-		wg.Add(1)
-		ev := ev
-		ev.SourceId = fmt.Sprintf("ws:up%d", i)
-		go func() {
-			defer wg.Done()
-			<-start
-			idx.Ingest(ev)
-		}()
-	}
-	close(start)
-	wg.Wait()
-
-	if got := eg.count(); got != 1 {
-		t.Fatalf("concurrent ingest of identical head must dedupe to 1 delivery, got %d", got)
-	}
-}
-
-// A newer head from one source must not overtake an older head another
-// source is still delivering.
-func TestIndexer_NewHead_ConcurrentSourcesDeliverInOrder(t *testing.T) {
-	idx := newIndexer(t)
-	idx.RegisterNetwork(newFakeNetwork("evm:1"))
-	delivering, release := make(chan struct{}), make(chan struct{})
-	eg := &fakeEgress{name: "eg1", acceptAllHeads: true, hook: func(ev IndexedEvent) {
-		if ev.Block.Number == 100 {
-			close(delivering)
-			<-release
-		}
-	}}
-	idx.Attach(eg)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up1", Block: BlockRef{Number: 100, Hash: "0xA"}})
-	}()
-	<-delivering
-	go func() {
-		defer wg.Done()
-		idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up2", Block: BlockRef{Number: 101, Hash: "0xB"}})
-	}()
-	time.Sleep(20 * time.Millisecond) // let the second head reach the indexer
-	close(release)
-	wg.Wait()
-
-	eg.mu.Lock()
-	defer eg.mu.Unlock()
-	if len(eg.received) != 2 || eg.received[0].Block.Number != 100 || eg.received[1].Block.Number != 101 {
-		t.Fatalf("heads must be delivered in order, got %+v", eg.received)
-	}
-}
-
-func TestIndexer_NewHead_DedupIgnoresHashCase(t *testing.T) {
-	idx := newIndexer(t)
-	idx.RegisterNetwork(newFakeNetwork("evm:1"))
-	eg := &fakeEgress{name: "eg1", acceptAllHeads: true}
-	idx.Attach(eg)
-
-	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up1", Block: BlockRef{Number: 100, Hash: "0xABC"}})
-	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up2", Block: BlockRef{Number: 100, Hash: "0xabc"}})
-	if got := eg.count(); got != 1 {
-		t.Fatalf("same head with differently-cased hash must dedupe, got %d", got)
-	}
-}
-
-func TestIndexer_NewHead_StalerDroppedKeepsStatePollerFed(t *testing.T) {
-	idx := newIndexer(t)
-	nw := newFakeNetwork("evm:1")
-	idx.RegisterNetwork(nw)
-	eg := &fakeEgress{name: "eg1", acceptAllHeads: true}
-	idx.Attach(eg)
-
-	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up1", Block: BlockRef{Number: 100, Hash: "0xAAA"}})
-	// A sibling source sees a newer head; different source, same block —
-	// state poller must still receive the update even though fan-out dedupes.
-	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up2", Block: BlockRef{Number: 100, Hash: "0xAAA"}})
-
-	if got := eg.count(); got != 1 {
-		t.Fatalf("duplicate head fan-out: want 1, got %d", got)
-	}
-	nw.mu.Lock()
-	defer nw.mu.Unlock()
-	if len(nw.suggestedBy["ws:up1"]) != 1 || len(nw.suggestedBy["ws:up2"]) != 1 {
-		t.Fatalf("each source must see its own SuggestLatestBlock, got %v", nw.suggestedBy)
-	}
-}
-
-// A head the network does not deliver is still observed, and does not
-// advance the dedup marker past the heads the other sources deliver.
-func TestIndexer_NewHead_HeldSourceObservedNotDelivered(t *testing.T) {
-	idx := newIndexer(t)
-	nw := newFakeNetwork("evm:1")
-	nw.held = map[string]struct{}{"ws:fb": {}}
-	idx.RegisterNetwork(nw)
-	eg := &fakeEgress{name: "eg1", acceptAllHeads: true}
-	idx.Attach(eg)
-
-	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:fb", Block: BlockRef{Number: 101, Hash: "0xBBB"}})
-	if got := eg.count(); got != 0 {
-		t.Fatalf("held head delivered: got %d", got)
-	}
-	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:up1", Block: BlockRef{Number: 101, Hash: "0xBBB"}})
-	if got := eg.count(); got != 1 {
-		t.Fatalf("the delivering source's head must go out: want 1, got %d", got)
-	}
-	nw.mu.Lock()
-	defer nw.mu.Unlock()
-	if len(nw.suggestedBy["ws:fb"]) != 1 {
-		t.Fatalf("held source must still be observed, got %v", nw.suggestedBy)
-	}
-}
-
 func TestIndexer_Log_RefcountFanOutAndTeardown(t *testing.T) {
 	idx := newIndexer(t)
 	nw := newFakeNetwork("evm:1")
@@ -381,36 +201,16 @@ func TestIndexer_Log_RefcountFanOutAndTeardown(t *testing.T) {
 	}
 }
 
-func TestIndexer_ReportsIndexedHeadsAndUndeliveredEvents(t *testing.T) {
+func TestIndexer_ReportsUndeliveredEvents(t *testing.T) {
 	idx := newIndexer(t)
 	nw := newFakeNetwork("evm:1")
-	nw.held = map[string]struct{}{"ws:fb": {}}
 	idx.RegisterNetwork(nw)
-	head := func(src string, num int64, hash string) StreamEvent {
-		return StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: src, Block: BlockRef{Number: num, Hash: hash}}
-	}
-	want := func(headsIndexed, undelivered int) {
-		t.Helper()
-		if h, u := nw.deliveryCounts(); h != headsIndexed || u != undelivered {
-			t.Fatalf("want %d indexed heads and %d undelivered, got %d and %d", headsIndexed, undelivered, h, u)
-		}
-	}
-
-	// No client subscribes to heads yet.
-	idx.Ingest(head("ws:up1", 100, "0xA"))
-	want(1, 1)
-
-	idx.Attach(&fakeEgress{name: "eg1", acceptAllHeads: true})
-	idx.Ingest(head("ws:up1", 101, "0xB"))
-	want(2, 1)
-	// A duplicate and a withheld head are neither indexed nor undelivered.
-	idx.Ingest(head("ws:up2", 101, "0xB"))
-	idx.Ingest(head("ws:fb", 102, "0xC"))
-	want(2, 1)
 
 	// A log for a filter no client holds.
 	idx.Ingest(logEvent("orphan", "ws:up1", logAddedJSON))
-	want(2, 2)
+	if got := nw.undeliveredCount(); got != 1 {
+		t.Fatalf("want 1 undelivered event, got %d", got)
+	}
 }
 
 // newLogFilter registers "evm:1", ensures an empty logs filter and attaches
@@ -858,7 +658,7 @@ func TestIndexer_Reconcile_RunsOnHeadsAndSkipsReleased(t *testing.T) {
 	}
 	a.setErr(errTest("a lost it"))
 
-	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:c", Block: BlockRef{Number: 1, Hash: "0x1"}})
+	idx.Ingest(StreamEvent{Kind: KindNewHead, NetworkId: "evm:1", SourceId: "ws:c"})
 	deadline := time.Now().Add(2 * time.Second)
 	for c.ensureCalls.Load() != 1 {
 		if time.Now().After(deadline) {

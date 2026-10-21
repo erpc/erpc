@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -136,6 +137,11 @@ type EvmStatePoller interface {
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)
 	SuggestLatestBlock(blockNumber int64)
+	// ObserveHead runs a source header through the upstream's part of
+	// intake: the chain-identity gate and the head counter, as
+	// SuggestLatestBlock does for heights. accepted: the counter holds the
+	// header's height now.
+	ObserveHead(raw json.RawMessage) (accepted bool)
 	// RefreshLatestBlock polls the latest block in the background when the
 	// stored head is older than the poll debounce; non-blocking, one in flight.
 	RefreshLatestBlock()

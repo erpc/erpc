@@ -26,16 +26,6 @@ func (k EventKind) String() string {
 	}
 }
 
-// BlockRef identifies a block. It is zero for events without one.
-type BlockRef struct {
-	Number int64
-	Hash   string
-}
-
-func (b BlockRef) Zero() bool {
-	return b.Number == 0 && b.Hash == ""
-}
-
 // StreamEvent is what an ingress emits, before dedup: sources covering the
 // same network may emit the same event.
 type StreamEvent struct {
@@ -43,11 +33,11 @@ type StreamEvent struct {
 	NetworkId string
 	// SourceId is the Name() of the ingress that produced the event.
 	SourceId string
-	Block    BlockRef
 	// FilterHash is the BuildParamsKey of the filter the event belongs to;
 	// empty for KindNewHead.
 	FilterHash string
-	// Payload is the upstream's notification result, verbatim.
+	// Payload is the upstream's notification result, verbatim; empty for
+	// KindNewHead.
 	Payload json.RawMessage
 }
 

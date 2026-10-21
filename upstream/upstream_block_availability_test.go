@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -63,6 +64,7 @@ func (m *mockEvmStatePollerEnhanced) IsBlockFinalized(blockNumber int64) (bool, 
 }
 func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)       {}
+func (m *mockEvmStatePollerEnhanced) ObserveHead(json.RawMessage) bool           { return false }
 func (m *mockEvmStatePollerEnhanced) RefreshLatestBlock()                        {}
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
@@ -626,6 +628,7 @@ func (m *mockEvmStatePollerWithCustomBehavior) IsBlockFinalized(blockNumber int6
 }
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)       {}
+func (m *mockEvmStatePollerWithCustomBehavior) ObserveHead(json.RawMessage) bool           { return false }
 func (m *mockEvmStatePollerWithCustomBehavior) RefreshLatestBlock()                        {}
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }

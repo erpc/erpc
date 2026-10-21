@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -28,26 +27,14 @@ type Indexer struct {
 	egresses sync.Map // egress Name() -> EventEgress
 }
 
-// headMarker is the most recently delivered head of a network.
-type headMarker struct {
-	num  int64
-	hash string
-}
-
 // networkState holds a network's NetworkHandle, the ingresses feeding it,
-// the newHeads dedup marker, and the dedup windows for each active filter.
+// and the dedup windows for each active filter.
 type networkState struct {
 	handle NetworkHandle
 
 	ingressMu sync.RWMutex
 	ingresses map[string]EventIngress // Name() -> ingress
 	selector  IngressSelector         // nil: every ingress is a default
-
-	// headMu serialises newHeads dedup and fan-out, so concurrent sources
-	// can neither deliver the same head twice nor deliver heads out of
-	// order. Egress Deliver is non-blocking by contract.
-	headMu   sync.Mutex
-	lastHead *headMarker // guarded by headMu; nil until the first head
 
 	filterMu sync.RWMutex
 	filters  map[string]*filterState // paramsHash -> state
@@ -386,8 +373,9 @@ func (i *Indexer) removeFromIngresses(ctx context.Context, ns *networkState, sub
 	}
 }
 
-// Ingest reports heads to the NetworkHandle, dedupes, and fans out to every
-// interested egress.
+// Ingest dedupes filter events and fans them out to every interested
+// egress. A KindNewHead event carries no payload: heads reach clients through
+// the chain feed, and here each one only rechecks where the filters belong.
 func (i *Indexer) Ingest(ev StreamEvent) {
 	nsRaw, ok := i.networks.Load(ev.NetworkId)
 	if !ok {
@@ -395,32 +383,17 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 	}
 	ns := nsRaw.(*networkState)
 
-	// Each head, delivered or not, rechecks where the filters belong.
 	if ev.Kind == KindNewHead {
 		i.triggerReconcile(ns)
-	}
-
-	// Before dedup, so every source's head counts even if another source
-	// already delivered it.
-	if ev.Kind == KindNewHead && !ev.Block.Zero() && ev.SourceId != "" {
-		if !ns.handle.SuggestLatestBlock(ev.SourceId, ev.Block.Number) {
-			return
-		}
+		return
 	}
 
 	// The upstream's removed flag is trusted as-is.
 	removed := ev.Kind == KindLog && logRemoved(ev.Payload)
 
-	if ev.Kind == KindNewHead {
-		ns.headMu.Lock()
-		defer ns.headMu.Unlock()
-	}
 	if !i.dedupe(ns, &ev, removed) {
 		ns.handle.DedupDropped(ev.Kind)
 		return
-	}
-	if ev.Kind == KindNewHead {
-		ns.handle.HeadIndexed()
 	}
 
 	if !i.fanOut(IndexedEvent{StreamEvent: ev, Removed: removed}) {
@@ -428,20 +401,10 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 	}
 }
 
-// dedupe reports whether ev should be delivered. Heads are compared to the
-// last delivered head; filter events go through their filter's DedupWindow.
+// dedupe reports whether ev should be delivered: filter events go through
+// their filter's DedupWindow.
 func (i *Indexer) dedupe(ns *networkState, ev *StreamEvent, removed bool) bool {
 	switch ev.Kind {
-	case KindNewHead:
-		// Caller holds headMu. A different hash at the same height is a
-		// reorg and is delivered.
-		if prev := ns.lastHead; prev != nil {
-			if ev.Block.Number < prev.num || (ev.Block.Number == prev.num && strings.EqualFold(prev.hash, ev.Block.Hash)) {
-				return false
-			}
-		}
-		ns.lastHead = &headMarker{num: ev.Block.Number, hash: strings.Clone(ev.Block.Hash)}
-		return true
 	case KindLog, KindPendingTx:
 		ns.filterMu.RLock()
 		f := ns.filters[ev.FilterHash]
