@@ -532,6 +532,8 @@ func TestUpstreamForward_CircuitBreakerOpensAndBlocks(t *testing.T) {
 		Failsafe: []*common.FailsafeConfig{{CircuitBreaker: breakerCfg()}},
 	}, sc)
 
+	transitions := telemetry.MetricUpstreamBreakerStateChange.WithLabelValues("prj", "cb-forward", "closed_to_open")
+	before := testutil.ToFloat64(transitions)
 	assert.Equal(t, failsafe.StateClosed, u.CircuitBreakerState())
 	_, err := u.Forward(env.ctx, fwdReq("eth_call"), false, false)
 	require.Error(t, err)
@@ -547,7 +549,7 @@ func TestUpstreamForward_CircuitBreakerOpensAndBlocks(t *testing.T) {
 
 	// The transition hook wired by NewUpstream feeds the breaker metric (async).
 	require.Eventually(t, func() bool {
-		return testutil.ToFloat64(telemetry.MetricUpstreamBreakerStateChange.WithLabelValues("prj", "cb-forward", "closed_to_open")) == 1
+		return testutil.ToFloat64(transitions) == before+1
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
