@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/indexer"
@@ -15,10 +16,19 @@ import (
 // behind the head with nothing to revert; it restarts after the head.
 var errNewHeadsLag = errors.New("newHeads subscription fell behind the head")
 
+// newHeadsRestartDelay spaces restarts of a tap that keeps failing.
+var newHeadsRestartDelay = 100 * time.Millisecond
+
+// wsWriteError is a failed write to the client: the subscription ends.
+type wsWriteError struct{ err error }
+
+func (e wsWriteError) Error() string { return e.err.Error() }
+
 // runNewHeads is one ws newHeads subscription: a tap on the network-wide
-// tracker that writes each applied block, oldest first. Out of range and
-// lag restart it after the head, so the client sees a jump in numbers, as
-// with geth.
+// tracker that writes each applied block, oldest first. It ends only with
+// ctx or a failed write; out of range, lag, a panic or any other error
+// restart it after the head, so the client sees a jump in numbers, as with
+// geth, and never a silent subscription.
 func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, feed *evm.ChainTracker) {
 	window := uint64(feed.ReorgWindow())
 	emit := func(b indexer.Batch) error {
@@ -34,15 +44,24 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 				continue
 			}
 			if err := wsc.WriteSubscriptionNotification(sub, payload, 0); err != nil {
-				return err
+				return wsWriteError{err}
 			}
 		}
 		return nil
 	}
-	for ctx.Err() == nil {
+	for {
 		err := sm.taps.RunChain(ctx, sub.NetworkID, "ws", indexer.SubTypeNewHeads, feed, nil, indexer.ReadOpts{}, emit)
-		if !errors.Is(err, indexer.ErrOutOfRange) && !errors.Is(err, errNewHeadsLag) {
+		var writeErr wsWriteError
+		if ctx.Err() != nil || errors.As(err, &writeErr) {
 			return
+		}
+		if !errors.Is(err, indexer.ErrOutOfRange) && !errors.Is(err, errNewHeadsLag) {
+			sm.logger.Warn().Err(err).Str("clientSubId", sub.ClientSubID).Msg("newHeads tap ended, restarting after the head")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(newHeadsRestartDelay):
+			}
 		}
 	}
 }
@@ -50,36 +69,36 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 // newHeadsPayloadsKept bounds the projected blocks kept for reuse.
 const newHeadsPayloadsKept = 256
 
-// newHeadsPayloads projects each block once for every ws subscription.
+// newHeadsPayloads projects each block once for every ws subscription:
+// concurrent taps on one block wait for the one projection.
 type newHeadsPayloads struct {
 	mu    sync.Mutex
-	byKey map[[32]byte]json.RawMessage
+	byKey map[[32]byte]*newHeadsPayload
 	order [][32]byte
+}
+
+type newHeadsPayload struct {
+	once    sync.Once
+	payload json.RawMessage
+	err     error
 }
 
 func (p *newHeadsPayloads) get(b indexer.Block) (json.RawMessage, error) {
 	p.mu.Lock()
-	payload, ok := p.byKey[b.Hash]
-	p.mu.Unlock()
-	if ok {
-		return payload, nil
-	}
-	payload, err := evm.NewHeadsPayload(b.Header)
-	if err != nil {
-		return nil, err
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.byKey == nil {
-		p.byKey = make(map[[32]byte]json.RawMessage, newHeadsPayloadsKept)
+		p.byKey = make(map[[32]byte]*newHeadsPayload, newHeadsPayloadsKept)
 	}
-	if _, ok := p.byKey[b.Hash]; !ok {
-		p.byKey[b.Hash] = payload
+	e := p.byKey[b.Hash]
+	if e == nil {
+		e = &newHeadsPayload{}
+		p.byKey[b.Hash] = e
 		p.order = append(p.order, b.Hash)
 		if len(p.order) > newHeadsPayloadsKept {
 			delete(p.byKey, p.order[0])
 			p.order = p.order[1:]
 		}
 	}
-	return payload, nil
+	p.mu.Unlock()
+	e.once.Do(func() { e.payload, e.err = evm.NewHeadsPayload(b.Header) })
+	return e.payload, e.err
 }

@@ -16,12 +16,12 @@ import (
 )
 
 // networkIntake is the network's side of every source: each header is
-// parsed (check 0), passed through its upstream's identity gate and head
-// counter (checks 2 and 3), then voted in the trackers while its source is
-// authoritative (check 4). It also owns the sources' liveness.
+// parsed (check 0) and passed through its upstream's identity gate and head
+// counter (checks 2 and 3); an accepted header becomes its source's vote.
+// Intake owns the one predicate that decides whether a vote counts:
+// liveness and authority (check 4).
 type networkIntake struct {
-	nw      *Network
-	tracker *evm.ChainTracker
+	nw *Network
 
 	mu      sync.Mutex
 	sources map[string]*sourceState // upstream id -> state
@@ -35,8 +35,8 @@ type sourceState struct {
 	live        bool
 }
 
-func newNetworkIntake(nw *Network, tracker *evm.ChainTracker) *networkIntake {
-	return &networkIntake{nw: nw, tracker: tracker, sources: make(map[string]*sourceState)}
+func newNetworkIntake(nw *Network) *networkIntake {
+	return &networkIntake{nw: nw, sources: make(map[string]*sourceState)}
 }
 
 var _ indexer.Intake = (*networkIntake)(nil)
@@ -50,7 +50,6 @@ func (in *networkIntake) Header(upstreamId string, raw json.RawMessage) {
 	}
 	u := in.upstream(upstreamId)
 	if u == nil {
-		in.count(upstreamId, "gated_identity")
 		return
 	}
 	in.mu.Lock()
@@ -67,9 +66,8 @@ func (in *networkIntake) Header(upstreamId string, raw json.RawMessage) {
 		return
 	}
 	in.accept(upstreamId, cur)
-	vote := in.authoritative(upstreamId)
-	evm.ObserveSourceHeader(in.nw, u, raw, vote)
-	if vote {
+	evm.ObserveSourceHeader(in.nw, u, raw)
+	if in.votes(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
 		in.count(upstreamId, "gated_authority")
@@ -97,7 +95,7 @@ func (in *networkIntake) upstream(id string) *upstream.Upstream {
 // tip; never a single vote.
 func (in *networkIntake) newestKnown() uint64 {
 	newest := uint64(0)
-	if tip, ok := in.tracker.Tip(); ok {
+	if tip, ok := in.nw.chainTracker.Tip(); ok {
 		newest = tip.Number
 	}
 	if served := in.nw.EvmHighestLatestBlockNumber(context.Background()); served > 0 {
@@ -107,7 +105,7 @@ func (in *networkIntake) newestKnown() uint64 {
 }
 
 func (in *networkIntake) accept(upstreamId string, cur indexer.Cursor) {
-	newest, bound, now := in.newestKnown(), in.tracker.LiveBound(), time.Now()
+	newest, bound, now := in.newestKnown(), in.nw.chainTracker.LiveBound(), time.Now()
 	in.mu.Lock()
 	s := in.sources[upstreamId]
 	if s == nil {
@@ -183,7 +181,7 @@ var livenessInterval = func(bound time.Duration) time.Duration { return bound / 
 // stops voting within the live bound.
 func (in *networkIntake) run(ctx context.Context) {
 	for {
-		timer := time.NewTimer(livenessInterval(in.tracker.LiveBound()))
+		timer := time.NewTimer(livenessInterval(in.nw.chainTracker.LiveBound()))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -206,7 +204,7 @@ func (in *networkIntake) tick() {
 				Msg("unexpected panic while evaluating source liveness")
 		}
 	}()
-	newest, bound, now := in.newestKnown(), in.tracker.LiveBound(), time.Now()
+	newest, bound, now := in.newestKnown(), in.nw.chainTracker.LiveBound(), time.Now()
 	changed := false
 	in.mu.Lock()
 	for id, s := range in.sources {
@@ -218,8 +216,30 @@ func (in *networkIntake) tick() {
 	}
 }
 
-// EvmSourceVotes reports whether upstreamId's vote counts now: it is a live
-// source and authoritative.
+// votes is the one predicate for whether a source's vote counts: the
+// source is live and authoritative now.
+func (in *networkIntake) votes(upstreamId string) bool {
+	return in.live(upstreamId) && in.authoritative(upstreamId)
+}
+
+func (in *networkIntake) anyLive() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	for _, s := range in.sources {
+		if s.live {
+			return true
+		}
+	}
+	return false
+}
+
+// EvmSourceVotes reports whether upstreamId's vote counts now; the trackers
+// count only these votes.
 func (n *Network) EvmSourceVotes(upstreamId string) bool {
-	return n.intake != nil && n.intake.live(upstreamId) && n.intake.authoritative(upstreamId)
+	return n.intake != nil && n.intake.votes(upstreamId)
+}
+
+// EvmAnySourceLive reports whether any of the network's sources is live.
+func (n *Network) EvmAnySourceLive() bool {
+	return n.intake != nil && n.intake.anyLive()
 }

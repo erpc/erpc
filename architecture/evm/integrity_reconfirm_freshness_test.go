@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
@@ -22,11 +23,16 @@ type capturingNetwork struct {
 	hash  string
 	num   string
 	calls int
+	// sourcesVote is the intake's predicate: while false no source vote counts.
+	sourcesVote atomic.Bool
 }
+
+func (n *capturingNetwork) EvmSourceVotes(string) bool { return n.sourcesVote.Load() }
 
 func newCapturingNetwork(t *testing.T, number int64, hash string) *capturingNetwork {
 	t.Helper()
 	n := &capturingNetwork{hash: hash, num: fmt.Sprintf("0x%x", number)}
+	n.sourcesVote.Store(true)
 	n.On("Forward", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n.mu.Lock()
@@ -66,10 +72,19 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 	const height = int64(0x10)
 	orphan, canonical := testHash("0", uint64(height)), testHash("c", uint64(height))
 
+	// pinnedOnOrphan pins the losing fork at height and height+1 by a source
+	// vote, then lets every source stop counting (none live).
+	pinnedOnOrphan := func(t *testing.T, net *capturingNetwork) *ChainTracker {
+		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
+		net.sourcesVote.Store(false)
+		c.lastCountedVote.Store(0)
+		return c
+	}
+
 	t.Run("the re-confirmation bypasses the cache", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
-		voteChain(t, c, "a", "0", uint64(height), uint64(height), testHash("f", uint64(height-1))) // pin holds the losing fork
+		c := pinnedOnOrphan(t, net)
 
 		hash, status := c.ReconfirmPin(context.Background(), height)
 
@@ -81,28 +96,39 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 			"a pin re-confirmation that reads the cache is an echo of the disputed value, not corroboration")
 	})
 
-	t.Run("the answer is held, and only votes move the pin", func(t *testing.T) {
+	t.Run("with no counted source, the fresh answer is the ask vote and moves the pin", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
-		c := newChainTracker(t.Context(), net, 32, "", "", nil)
-		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
+		c := pinnedOnOrphan(t, net)
 
 		_, status := c.ReconfirmPin(context.Background(), height)
 		require.Equal(t, integrity.PinFresh, status)
-		c.sync(context.Background())
 
 		got, ok := c.HashAt(height)
 		require.True(t, ok)
-		assert.Equal(t, orphan, got, "an answer never moves the pin")
-		_, held := c.held.Load(canonical)
-		assert.True(t, held)
-
-		// Once the source votes for the canonical fork, the pins follow it.
-		c.Observe("a", testHeader(uint64(height), canonical, testHash("f", uint64(height-1))), true)
-		c.sync(context.Background())
-		got, _ = c.HashAt(height)
-		assert.Equal(t, canonical, got)
+		assert.Equal(t, canonical, got, "the pin must adopt the fork the network actually serves")
 		_, stillThere := c.HashAt(height + 1)
-		assert.False(t, stillThere, "descendants of the abandoned fork leave the pins")
+		assert.False(t, stillThere, "descendants of the abandoned fork must leave the pins")
+	})
+
+	t.Run("a counted source vote keeps its pin: never PinFresh for another hash", func(t *testing.T) {
+		net := newCapturingNetwork(t, height, canonical)
+		c := pinnedOnOrphan(t, net)
+		net.sourcesVote.Store(true) // the source counts, but voted long ago
+
+		hash, status := c.ReconfirmPin(context.Background(), height)
+		assert.Equal(t, integrity.PinRateLimited, status)
+		assert.Equal(t, orphan, hash)
+	})
+
+	t.Run("a source that voted within the live bound answers without a fetch", func(t *testing.T) {
+		net := newCapturingNetwork(t, height, canonical)
+		c := newChainTracker(t.Context(), net, 32, "", "", nil)
+		voteChain(t, c, "a", "0", uint64(height), uint64(height), testHash("f", uint64(height-1)))
+
+		hash, status := c.ReconfirmPin(context.Background(), height)
+		assert.Equal(t, integrity.PinFresh, status)
+		assert.Equal(t, orphan, hash)
+		assert.Zero(t, net.calls)
 	})
 
 	// The bypass is scoped to the tie-break. Ordinary corroboration fetches stay

@@ -3383,7 +3383,9 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 						if d := req.Directives(); d != nil {
 							selector = d.UseUpstream
 						}
-						evm.ChainTrackerOf(ctx, n, selector).Observe(ups.Id(), bytes.Clone(jrs.GetResultBytes()), false)
+						if t := evm.ChainTrackerOf(ctx, n, selector); t != nil {
+							t.Observe(ups.Id(), bytes.Clone(jrs.GetResultBytes()), false)
+						}
 					}
 				}
 			}

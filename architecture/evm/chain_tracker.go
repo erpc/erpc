@@ -73,6 +73,10 @@ type ChainTracker struct {
 	hInflight map[string]*flight[*chainHeader]
 	rInflight map[string]*flight[[]integrity.Receipt]
 
+	// lastCountedVote is when a source vote that counts last arrived, in
+	// unix nanoseconds.
+	lastCountedVote atomic.Int64
+
 	// Owned by the tracker's goroutine.
 	nodes         map[[32]byte]*node
 	waiting       map[[32]byte][]*node // held roots by the parent hash they lack
@@ -125,7 +129,8 @@ const (
 type msgKind uint8
 
 const (
-	msgHeader msgKind = iota
+	msgHeader  msgKind = iota // a source vote, an ask vote or a client answer
+	msgFetched                // a tracker fetch's answer; never shed
 	msgAnchors
 	msgReceipts
 	msgTick
@@ -149,27 +154,40 @@ type anchor struct {
 	hash   string
 }
 
-// mailbox never blocks a sender and never drops anything but headers: when
-// headers fill it, answers drop first, then each source keeps only its
-// newest header.
+// mailbox never blocks a sender. It sheds only client answers and source
+// headers: when they fill it, answers drop first, then each source keeps
+// only its newest header. Fetch results, asks, anchors and receipts never
+// drop; at most one tick waits.
 type mailbox struct {
-	mu      sync.Mutex
-	queue   []trackerMsg
-	headers int
-	wake    chan struct{}
+	mu    sync.Mutex
+	queue []trackerMsg
+	shed  int // sheddable messages queued
+	tick  bool
+	wake  chan struct{}
+}
+
+func sheddable(msg trackerMsg) bool {
+	return msg.kind == msgHeader && msg.vote != voteAsk
 }
 
 func (m *mailbox) put(msg trackerMsg) {
 	m.mu.Lock()
-	if msg.kind == msgHeader {
-		if m.headers >= mailboxHeaderCap {
-			m.shedLocked()
-		}
-		if m.headers >= mailboxHeaderCap && msg.vote == voteNone {
+	switch {
+	case msg.kind == msgTick:
+		if m.tick {
 			m.mu.Unlock()
 			return
 		}
-		m.headers++
+		m.tick = true
+	case sheddable(msg):
+		if m.shed >= mailboxHeaderCap {
+			m.shedLocked()
+		}
+		if m.shed >= mailboxHeaderCap && msg.vote == voteNone {
+			m.mu.Unlock()
+			return
+		}
+		m.shed++
 	}
 	m.queue = append(m.queue, msg)
 	m.mu.Unlock()
@@ -179,51 +197,49 @@ func (m *mailbox) put(msg trackerMsg) {
 	}
 }
 
+// shedLocked drops queued client answers, then, while still full, every
+// source header a newer one of the same source supersedes.
 func (m *mailbox) shedLocked() {
 	kept := m.queue[:0]
 	for _, msg := range m.queue {
-		if msg.kind == msgHeader && msg.vote == voteNone {
-			m.headers--
+		if sheddable(msg) && msg.vote == voteNone {
+			m.shed--
 			continue
 		}
 		kept = append(kept, msg)
 	}
 	m.queue = kept
-	if m.headers < mailboxHeaderCap {
+	if m.shed < mailboxHeaderCap {
 		return
 	}
-	type voter struct {
-		upstream string
-		vote     voteKind
-	}
-	newest := make(map[voter]bool)
+	newest := make(map[string]bool)
+	superseded := make([]bool, len(m.queue))
 	for i := len(m.queue) - 1; i >= 0; i-- {
-		msg := m.queue[i]
-		if msg.kind != msgHeader {
-			continue
+		if msg := m.queue[i]; sheddable(msg) {
+			superseded[i] = newest[msg.upstream]
+			newest[msg.upstream] = true
 		}
-		k := voter{msg.upstream, msg.vote}
-		if newest[k] {
-			m.queue[i].kind = msgTick // superseded: a tick only recounts
-			m.headers--
-			continue
-		}
-		newest[k] = true
 	}
+	kept = m.queue[:0]
+	for i, msg := range m.queue {
+		if superseded[i] {
+			m.shed--
+			continue
+		}
+		kept = append(kept, msg)
+	}
+	m.queue = kept
 }
 
 func (m *mailbox) take() []trackerMsg {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	q := m.queue
-	m.queue, m.headers = nil, 0
+	m.queue, m.shed, m.tick = nil, 0, false
 	return q
 }
 
 func newChainTracker(ctx context.Context, n common.Network, window int, selector, group string, finalized func() int64) *ChainTracker {
-	if window <= 0 {
-		window = common.DefaultChainTrackerReorgWindow
-	}
 	t := &ChainTracker{
 		network:       n,
 		selector:      selector,
@@ -262,6 +278,10 @@ func (t *ChainTracker) LivenessChanged() {
 
 func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
 	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteNone, hdr: h})
+}
+
+func (t *ChainTracker) observeFetched(upstreamId string, h *chainHeader) {
+	t.mb.put(trackerMsg{kind: msgFetched, upstream: upstreamId, vote: voteNone, hdr: h})
 }
 
 // voteAsk makes h the no-source vote and waits until the tracker applied it.
@@ -324,7 +344,7 @@ func (t *ChainTracker) handle(msg trackerMsg) {
 		}
 	}()
 	switch msg.kind {
-	case msgHeader:
+	case msgHeader, msgFetched:
 		t.handleHeader(msg)
 	case msgAnchors:
 		t.handleAnchors(msg.anchors)
@@ -346,7 +366,9 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	}
 	nd := t.nodes[h.hash]
 	if nd == nil {
-		if !t.mayHold(h) {
+		// Rule 1: every vote is held; a vote whose parent is not held is a
+		// root. Only answers must lie inside the window.
+		if msg.vote == voteNone && !t.inWindow(h) {
 			return
 		}
 		nd = t.hold(h)
@@ -356,6 +378,9 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 		// Rule 3: an ancestor of the current vote does not move it back.
 		if cur := t.votes[msg.upstream]; cur == nil || !isAncestor(nd, cur) {
 			t.votes[msg.upstream] = nd
+		}
+		if t.counts(msg.upstream) {
+			t.lastCountedVote.Store(time.Now().UnixNano())
 		}
 	case voteAsk:
 		t.askVote = nd
@@ -368,14 +393,23 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	t.choose()
 }
 
-// mayHold reports whether h lies inside the window: at most reorgWindow
-// blocks below the head and above it. Without pins every header is held.
-func (t *ChainTracker) mayHold(h *chainHeader) bool {
+// inWindow reports whether h lies at most reorgWindow blocks below or above
+// the head. Without pins every header is.
+func (t *ChainTracker) inWindow(h *chainHeader) bool {
 	if len(t.pins) == 0 {
 		return true
 	}
 	head := t.pins[len(t.pins)-1].h.number
 	return h.number+uint64(t.window) >= head && h.number <= head+uint64(t.window)
+}
+
+// counts is the network intake's predicate for a source's vote: live and
+// authoritative now. A network without intake counts every vote.
+func (t *ChainTracker) counts(upstreamId string) bool {
+	if n, ok := t.network.(interface{ EvmSourceVotes(string) bool }); ok {
+		return n.EvmSourceVotes(upstreamId)
+	}
+	return true
 }
 
 // hold adds h to the held trees: under its parent when held, and over every
@@ -434,13 +468,9 @@ func (t *ChainTracker) pinned(n *node) bool {
 // countedVotes are the votes of live authoritative sources, or the
 // no-source vote while none of those votes.
 func (t *ChainTracker) countedVotes() []*node {
-	var counts func(string) bool
-	if n, ok := t.network.(interface{ EvmSourceVotes(string) bool }); ok {
-		counts = n.EvmSourceVotes
-	}
 	out := make([]*node, 0, len(t.votes)+1)
 	for u, v := range t.votes {
-		if counts == nil || counts(u) {
+		if t.counts(u) {
 			out = append(out, v)
 		}
 	}
@@ -531,44 +561,76 @@ func (t *ChainTracker) choose() {
 	t.apply(path)
 }
 
-// apply makes path the pins: the network-wide tracker moves the network's
-// latest block first, then taps wake.
+// apply makes path the pins in one step: the pins inside the window are
+// computed first, compared with the published state, then committed and
+// published together. The network-wide tracker moves the network's latest
+// block before taps wake.
 func (t *ChainTracker) apply(path []*node) {
-	old := t.pins
-	if len(old) == len(path) && (len(old) == 0 || old[0] == path[0] && old[len(old)-1] == path[len(path)-1]) {
+	head := path[len(path)-1].h
+	lo := uint64(0)
+	if head.number >= uint64(t.window) {
+		lo = head.number - uint64(t.window)
+	}
+	i := 0
+	for i < len(path)-1 && path[i].h.number < lo {
+		i++
+	}
+	path = path[i:]
+	pub := t.state.Load()
+	if len(pub.pins) == len(path) && pub.pins[0] == path[0].h && pub.head() == head {
 		return
 	}
-	onPath := func(n *node) bool {
-		i := int(n.h.number) - int(path[0].h.number)
-		return i >= 0 && i < len(path) && path[i] == n
-	}
-	if len(old) > 0 {
-		fork := -1
-		for i := len(old) - 1; i >= 0; i-- {
-			if onPath(old[i]) {
-				fork = i
-				break
-			}
-		}
-		if fork < 0 {
-			telemetry.CounterHandle(telemetry.MetricChainTrackerReanchorTotal, t.projectId(), t.networkLabel()).Inc()
-		} else if reverted := len(old) - 1 - fork; reverted > 0 {
-			telemetry.MetricIntegrityReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
-				Observe(float64(reverted))
-		}
-	}
+	s := newFeedState(path, t.window)
 	t.pins = path
-	t.evict()
-	head := t.pins[len(t.pins)-1].h
-	if t.selector == "" && (len(old) == 0 || old[len(old)-1].h != head) {
-		if noter, ok := t.network.(interface {
-			NoteObservedLatestBlock(context.Context, int64)
-		}); ok {
-			noter.NoteObservedLatestBlock(context.Background(), int64(head.number))
-		}
-		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
+	if t.selector == "" && pub.head() != head {
+		t.noteLatest(head.number)
 	}
-	t.publish()
+	old := t.state.Swap(s)
+	close(old.changed)
+
+	t.recordMove(pub.pins, path)
+	t.evict()
+}
+
+// noteLatest floors the network's latest block at n; a panic there never
+// splits the pins from the published state.
+func (t *ChainTracker) noteLatest(n uint64) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues("chain-tracker-note",
+				fmt.Sprintf("project:%s network:%s", t.projectId(), t.networkLabel()), common.ErrorFingerprint(rec)).Inc()
+		}
+	}()
+	if noter, ok := t.network.(interface {
+		NoteObservedLatestBlock(context.Context, int64)
+	}); ok {
+		noter.NoteObservedLatestBlock(context.Background(), int64(n))
+	}
+	telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, t.projectId(), t.networkLabel()).SetToCurrentTime()
+}
+
+// recordMove counts a re-anchor, or the depth of a reorg, from old to path.
+func (t *ChainTracker) recordMove(old []*chainHeader, path []*node) {
+	if len(old) == 0 {
+		return
+	}
+	base := path[0].h.number
+	onPath := func(h *chainHeader) bool {
+		return h.number >= base && h.number-base < uint64(len(path)) && path[h.number-base].h == h
+	}
+	fork := -1
+	for i := len(old) - 1; i >= 0; i-- {
+		if onPath(old[i]) {
+			fork = i
+			break
+		}
+	}
+	if fork < 0 {
+		telemetry.CounterHandle(telemetry.MetricChainTrackerReanchorTotal, t.projectId(), t.networkLabel()).Inc()
+	} else if reverted := len(old) - 1 - fork; reverted > 0 {
+		telemetry.MetricIntegrityReorgDepth.WithLabelValues(t.projectId(), t.networkLabel(), t.group).
+			Observe(float64(reverted))
+	}
 }
 
 // evict drops every held header more than reorgWindow blocks below the
@@ -614,24 +676,23 @@ func (t *ChainTracker) evict() {
 	if t.askVote != nil && t.askVote.h.number < lo {
 		t.askVote = nil
 	}
-	i := 0
-	for i < len(t.pins) && t.pins[i].h.number < lo {
-		i++
-	}
-	t.pins = t.pins[i:]
 	t.evictAnchors(int64(lo))
 }
 
-func (t *ChainTracker) publish() {
-	s := &feedState{pins: make([]*chainHeader, len(t.pins)), changed: make(chan struct{})}
-	for i, n := range t.pins {
+func newFeedState(pins []*node, window int) *feedState {
+	s := &feedState{pins: make([]*chainHeader, len(pins)), changed: make(chan struct{})}
+	for i, n := range pins {
 		s.pins[i] = n.h
 	}
 	if len(s.pins) > 0 {
 		s.base = s.pins[0].number
 	}
-	s.blockTime = meanBlockTime(s.pins, t.window)
-	old := t.state.Swap(s)
+	s.blockTime = meanBlockTime(s.pins, window)
+	return s
+}
+
+func (t *ChainTracker) publish() {
+	old := t.state.Swap(newFeedState(t.pins, t.window))
 	close(old.changed)
 }
 
@@ -708,24 +769,37 @@ func (t *ChainTracker) handleReceipts(key string, receipts []integrity.Receipt) 
 
 // --- indexer.ChainFeed ---
 
-// Head returns the head, or, with nothing pinned yet, waits for the first
-// pin and returns its parent, so the first pinned block is the tap's first.
+// Head is a new tap's start: the head while a source is live, else the
+// next pin change. After a wait it returns the new head's parent, so the
+// new head is the tap's first block.
 func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
+	s := t.state.Load()
+	if h := s.head(); h != nil && t.sourceLive() {
+		return h.cursor(), nil
+	}
 	for {
-		s := t.state.Load()
-		if h := s.head(); h != nil {
-			return h.cursor(), nil
-		}
 		select {
 		case <-ctx.Done():
 			return indexer.Cursor{}, ctx.Err()
 		case <-s.changed:
 		}
-		if s = t.state.Load(); len(s.pins) > 0 {
-			root := s.pins[0]
-			return indexer.Cursor{Number: root.number - 1, Hash: root.parentHash}, nil
+		s = t.state.Load()
+		if h := s.head(); h != nil {
+			if h.number == 0 {
+				return h.cursor(), nil
+			}
+			return indexer.Cursor{Number: h.number - 1, Hash: h.parentHash}, nil
 		}
 	}
+}
+
+// sourceLive reports whether any of the network's sources is live; a
+// network without intake counts as live.
+func (t *ChainTracker) sourceLive() bool {
+	if n, ok := t.network.(interface{ EvmAnySourceLive() bool }); ok {
+		return n.EvmAnySourceLive()
+	}
+	return true
 }
 
 // Read returns the pins after c, at most reorgWindow of them, waiting for
@@ -857,8 +931,11 @@ func (t *ChainTracker) CachedReceipts(blockHash string) ([]integrity.Receipt, bo
 	return r.([]integrity.Receipt), true
 }
 
-// ReconfirmPin fetches the block at number fresh and reports its hash. The
-// answer is held, not voted: only votes move pins.
+// ReconfirmPin reports the pin at number once it is current. While a source
+// that counts voted within the live bound, the pin is current as it is.
+// Otherwise the block is fetched fresh and becomes the no-source vote
+// (§6 rule 6), and the pin it leaves is returned. PinFresh only ever carries
+// a pin that equals the fresh answer.
 //
 // Within reconfirmCooldown it returns the current pin as PinRateLimited,
 // which carries no new evidence, so the engine degrades the verdict instead
@@ -867,10 +944,14 @@ func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, 
 	if number < 0 {
 		return "", integrity.PinUnverifiable
 	}
+	pin, pinned := t.HashAt(number)
+	if pinned && time.Since(time.Unix(0, t.lastCountedVote.Load())) < t.LiveBound() {
+		return pin, integrity.PinFresh
+	}
 	t.reconfirmMu.Lock()
 	at, recent := t.reconfirmedAt[number]
 	t.reconfirmMu.Unlock()
-	if pin, pinned := t.HashAt(number); recent && pinned && time.Since(at) < reconfirmCooldown {
+	if recent && pinned && time.Since(at) < reconfirmCooldown {
 		return pin, integrity.PinRateLimited
 	}
 	h, ok := doOnce(&t.flightMu, t.hInflight, fmt.Sprintf("reconfirm:%d", number), func() (*chainHeader, bool) {
@@ -881,6 +962,7 @@ func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, 
 	if !ok {
 		return "", integrity.PinUnverifiable
 	}
+	t.voteAsk(ctx, h)
 	t.reconfirmMu.Lock()
 	t.reconfirmedAt[number] = time.Now()
 	for n := range t.reconfirmedAt {
@@ -889,7 +971,11 @@ func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, 
 		}
 	}
 	t.reconfirmMu.Unlock()
-	return h.hashHex, integrity.PinFresh
+	if pin, pinned = t.HashAt(number); pinned && pin == h.hashHex {
+		return pin, integrity.PinFresh
+	}
+	// A counted source vote keeps another branch pinned: no fresh verdict.
+	return pin, integrity.PinRateLimited
 }
 
 // flight coalesces concurrent misses for one key into a single fetch.
@@ -1047,7 +1133,7 @@ func (t *ChainTracker) fetchHeader(ctx context.Context, method, blockRef string,
 	if h == nil {
 		return nil, false
 	}
-	t.observeAnswer(upstreamId, h)
+	t.observeFetched(upstreamId, h)
 	return h, true
 }
 
@@ -1294,37 +1380,43 @@ func HasVerifiedEmptyTraceBlock(req *common.NormalizedRequest) bool {
 
 type networkTrackers struct {
 	ctx    context.Context
+	window int
 	mu     sync.Mutex
 	groups map[string]*ChainTracker // group key ("" network-wide) -> tracker
 }
 
 var chainTrackers sync.Map // common.Network -> *networkTrackers
 
-func trackersOf(n common.Network, ctx context.Context) *networkTrackers {
+// StartChainTrackers starts the network-wide tracker of n and registers n
+// for group trackers; all of them stop, and n leaves the registry, when ctx
+// ends.
+func StartChainTrackers(ctx context.Context, n common.Network) *ChainTracker {
+	ct := common.EvmChainTrackerConfig{}
+	if cfg := n.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.ChainTracker != nil {
+		ct = *cfg.Evm.ChainTracker
+	}
+	ct.SetDefaults()
+	nt := &networkTrackers{ctx: ctx, window: ct.ReorgWindow, groups: make(map[string]*ChainTracker)}
+	if v, loaded := chainTrackers.LoadOrStore(n, nt); loaded {
+		nt = v.(*networkTrackers)
+	} else {
+		context.AfterFunc(ctx, func() { chainTrackers.CompareAndDelete(n, nt) })
+	}
+	return nt.get(n, "", "", "")
+}
+
+func registeredTrackers(n common.Network) *networkTrackers {
 	if v, ok := chainTrackers.Load(n); ok {
 		return v.(*networkTrackers)
 	}
-	v, _ := chainTrackers.LoadOrStore(n, &networkTrackers{ctx: ctx, groups: make(map[string]*ChainTracker)})
-	return v.(*networkTrackers)
-}
-
-// StartChainTrackers starts the network-wide tracker of n; it and every
-// group tracker of n stop with ctx.
-func StartChainTrackers(ctx context.Context, n common.Network) *ChainTracker {
-	return trackersOf(n, ctx).get(n, "", "", "")
-}
-
-// NetworkChainTracker returns the network-wide tracker of n.
-func NetworkChainTracker(n common.Network) *ChainTracker {
-	return trackersOf(n, context.Background()).get(n, "", "", "")
+	return nil
 }
 
 func lookupChainTracker(n common.Network, groupKey string) *ChainTracker {
-	v, ok := chainTrackers.Load(n)
-	if !ok {
+	nt := registeredTrackers(n)
+	if nt == nil {
 		return nil
 	}
-	nt := v.(*networkTrackers)
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
 	return nt.groups[groupKey]
@@ -1336,11 +1428,7 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 	if t := nt.groups[groupKey]; t != nil {
 		return t
 	}
-	window := common.DefaultChainTrackerReorgWindow
-	if cfg := n.Config(); cfg != nil && cfg.Evm != nil {
-		window = cfg.Evm.ChainTracker.EffectiveReorgWindow()
-	}
-	t := newChainTracker(nt.ctx, n, window, selector, lane, networkFinalized(n))
+	t := newChainTracker(nt.ctx, n, nt.window, selector, lane, networkFinalized(n))
 	nt.groups[groupKey] = t
 	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() {
 		newChainFollower(t, networkLatest(n), cfg.Integrity.Follow).start(nt.ctx)
@@ -1356,9 +1444,13 @@ func (nt *networkTrackers) get(n common.Network, groupKey, selector, lane string
 // ChainTrackerOf returns the tracker of n's node group for a use-upstream
 // selector, the same grouping as latest-block tracking
 // (EvmUpstreamGroupForSelector). A selector that carves out no real
-// sub-group yields the network-wide tracker.
+// sub-group yields the network-wide tracker. nil while n has no trackers.
 func ChainTrackerOf(ctx context.Context, n common.Network, selector string) *ChainTracker {
 	if n == nil {
+		return nil
+	}
+	nt := registeredTrackers(n)
+	if nt == nil {
 		return nil
 	}
 	var groupKey, lane string
@@ -1374,17 +1466,22 @@ func ChainTrackerOf(ctx context.Context, n common.Network, selector string) *Cha
 	if groupKey == "" {
 		selector = ""
 	}
-	return trackersOf(n, context.Background()).get(n, groupKey, selector, lane)
+	return nt.get(n, groupKey, selector, lane)
 }
 
-// ObserveSourceHeader hands a source header that passed intake to the
-// network-wide tracker and to every group tracker whose selector matches u.
-func ObserveSourceHeader(n common.Network, u common.Upstream, raw json.RawMessage, vote bool) {
-	nt := trackersOf(n, context.Background())
+// ObserveSourceHeader hands an accepted source header to the network-wide
+// tracker and to every group tracker whose selector matches u, as u's vote.
+// Whether that vote counts is decided when the trackers count votes.
+func ObserveSourceHeader(n common.Network, u common.Upstream, raw json.RawMessage) {
+	nt := registeredTrackers(n)
+	if nt == nil {
+		return
+	}
 	nt.mu.Lock()
 	targets := make([]*ChainTracker, 0, len(nt.groups))
 	for _, t := range nt.groups {
 		if t.selector == "" {
+			targets = append(targets, t)
 			continue
 		}
 		if m, _ := common.UpstreamMatchesSelector(t.selector, u); m {
@@ -1392,9 +1489,8 @@ func ObserveSourceHeader(n common.Network, u common.Upstream, raw json.RawMessag
 		}
 	}
 	nt.mu.Unlock()
-	nt.get(n, "", "", "").Observe(u.Id(), raw, vote)
 	for _, t := range targets {
-		t.Observe(u.Id(), raw, vote)
+		t.Observe(u.Id(), raw, true)
 	}
 }
 

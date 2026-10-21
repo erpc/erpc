@@ -555,13 +555,13 @@ var (
 		Help:      "Total integrity follower advances abandoned, by reason (unreconciled = no common ancestor within the reorg window).",
 	}, []string{"project", "network", "group", "reason"})
 
-	// MetricIntegrityReorgDepth observes how many blocks each reconciled reorg
-	// replaced. A depth of 1-2 is routine chain churn; a deep tail means the
-	// reorgWindow needs to cover it or reconciliation will start failing.
+	// MetricIntegrityReorgDepth observes how many pinned blocks each reorg of
+	// a chain tracker reverted. A depth of 1-2 is routine chain churn; a deep
+	// tail means evm.chainTracker.reorgWindow needs to cover it.
 	MetricIntegrityReorgDepth = DefineLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "integrity_reorg_depth",
-		Help:      "Depth (blocks replaced) of each reorg reconciled by the integrity chain follower.",
+		Help:      "Depth (pinned blocks reverted) of each reorg a chain tracker followed.",
 		Buckets:   []float64{1, 2, 3, 5, 8, 13, 21, 34, 64, 128, 256},
 	}, []string{"project", "network", "group"})
 

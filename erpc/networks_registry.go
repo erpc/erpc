@@ -194,8 +194,10 @@ func NewNetwork(
 	}
 
 	if nwCfg.Architecture == common.ArchitectureEvm {
+		// Intake first: trackers ask it whether votes count from their
+		// first message on.
+		network.intake = newNetworkIntake(network)
 		network.chainTracker = evm.StartChainTrackers(appCtx, network)
-		network.intake = newNetworkIntake(network, network.chainTracker)
 		go network.intake.run(appCtx)
 	}
 

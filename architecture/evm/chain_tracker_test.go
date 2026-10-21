@@ -112,11 +112,6 @@ func TestChainTracker(t *testing.T) {
 		assert.Equal(t, testHash("a", 5), v)
 	})
 
-	t.Run("zero window falls back to default", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 0, "", "", nil)
-		assert.Equal(t, common.DefaultChainTrackerReorgWindow, c.window)
-	})
-
 	// A held header is served without a fetch: with a nil network any fetch
 	// would fail, so a hit must come from what the tracker holds.
 	t.Run("held headers serve without fetching", func(t *testing.T) {
@@ -341,6 +336,7 @@ func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
 	pinned := func(t *testing.T) *ChainTracker {
 		c := newChainTracker(t.Context(), nil, 32, "", "", nil)
 		voteChain(t, c, "a", "a", 0x10, 0x10, testHash("f", 0xf))
+		c.lastCountedVote.Store(0) // no source voted within the live bound
 		return c
 	}
 	setReconfirmedAt := func(c *ChainTracker, at time.Time) {

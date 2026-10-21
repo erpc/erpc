@@ -2633,18 +2633,14 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 	return nil
 }
 
-const (
-	DefaultChainTrackerReorgWindow = 32
-	DefaultChainTrackerMaxBackfill = Duration(5 * time.Minute)
-)
-
-// EffectiveReorgWindow returns the configured reorg window, or the default
-// for a nil or unset config.
-func (c *EvmChainTrackerConfig) EffectiveReorgWindow() int {
-	if c == nil || c.ReorgWindow <= 0 {
-		return DefaultChainTrackerReorgWindow
+// SetDefaults fills the reorg window (32 blocks) and maxBackfill (5m).
+func (c *EvmChainTrackerConfig) SetDefaults() {
+	if c.ReorgWindow == 0 {
+		c.ReorgWindow = 32
 	}
-	return c.ReorgWindow
+	if c.MaxBackfill == 0 {
+		c.MaxBackfill = Duration(5 * time.Minute)
+	}
 }
 
 func (e *EvmNetworkConfig) SetDefaults() error {
@@ -2681,12 +2677,7 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		cp := *e.ChainTracker
 		e.ChainTracker = &cp
 	}
-	if e.ChainTracker.ReorgWindow == 0 {
-		e.ChainTracker.ReorgWindow = DefaultChainTrackerReorgWindow
-	}
-	if e.ChainTracker.MaxBackfill == 0 {
-		e.ChainTracker.MaxBackfill = DefaultChainTrackerMaxBackfill
-	}
+	e.ChainTracker.SetDefaults()
 	if e.Integrity == nil {
 		e.Integrity = &EvmIntegrityConfig{}
 	}

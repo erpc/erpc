@@ -322,7 +322,6 @@ func standardMockWsHandler(conn *websocket.Conn, customHandler func(method strin
 	}
 }
 
-//
 // mockHead is block n of the chain the mock WS upstreams push: a header that
 // passes intake parsing.
 func mockHead(n int64) map[string]interface{} {

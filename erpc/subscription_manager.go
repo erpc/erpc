@@ -347,9 +347,8 @@ func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network
 // subIngressSelector picks the ingresses that carry a filter subscription.
 // With failover on, the defaults are the upstreams outside the fallback tier
 // that the selection policy routes to, and the fallback-tier upstreams stand
-// in for them (see indexer.IngressSelector): the same rule newHeads follows
-// (see networkHandle.deliversHeadsFrom). Without failover every WebSocket
-// upstream is a default.
+// in for them (see indexer.IngressSelector). Without failover every
+// WebSocket upstream is a default.
 type subIngressSelector struct {
 	nw *Network
 }

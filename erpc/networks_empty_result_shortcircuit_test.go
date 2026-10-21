@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -494,20 +495,45 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	defer util.ResetGock()
 	var traceCalls, blockCalls atomic.Int32
 	var empty atomic.Bool
-	var transactions atomic.Value
-	transactions.Store(`[]`)
+	var latestNum atomic.Int64
+	latestNum.Store(0x3e8)
+	// Blocks are held as first answered, so each transactions shape is its
+	// own height: 0x3e8 empty, 0x3e9 null transactions, 0x3ea one transaction.
+	txFor := func(n int64) string {
+		switch n {
+		case 0x3e9:
+			return `null`
+		case 0x3ea:
+			return `["0xtx"]`
+		}
+		return `[]`
+	}
+	refRe := regexp.MustCompile(`"params":\["(0x[0-9a-fA-F]+)"`)
+	blockRef := func(body string) int64 {
+		m := refRe.FindStringSubmatch(body)
+		if m == nil {
+			return -1
+		}
+		n, _ := common.HexToInt64(m[1])
+		return n
+	}
 	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_chainId") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x7b"}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":false}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
 			blockCalls.Add(1)
-			r.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x3e8","hash":"0x` + strings.Repeat("ab", 32) + `","parentHash":"0x` + strings.Repeat("cd", 32) + `","gasUsed":"0x0","transactions":` + transactions.Load().(string) + `,"timestamp":"0x6702a8f0"}}`))
+			n := blockRef(util.SafeReadBody(r.Request))
+			if n < 0 {
+				n = latestNum.Load()
+			}
+			r.Body = io.NopCloser(strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","gasUsed":"0x0","transactions":%s,"timestamp":"0x%x"}}`,
+				n, n, n-1, txFor(n), 0x6702a8f0+n)))
 			return r
 		}).BodyString(`{}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "debug_traceBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
 			traceCalls.Add(1)
 			result := `[{"result":{"type":"CALL","gasUsed":"0x0"}}]`
-			if empty.Load() && (transactions.Load().(string) != `["0xtx"]` || host == "http://rpc1.localhost") {
+			if empty.Load() && (blockRef(util.SafeReadBody(r.Request)) != 0x3ea || host == "http://rpc1.localhost") {
 				result = "[" + strings.Repeat(" ", 128) + "]"
 			}
 			r.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":` + result + `}`))
@@ -553,16 +579,32 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		}
 		t.Logf("ref=%s traceCalls=%d auxiliaryCalls=%d elapsed=%v", ref, calls, blockCalls.Load()-beforeBlock, time.Since(start))
 	}
-	// The held header is immutable per hash (first held wins): a later answer
-	// for the same hash with other transactions changes nothing.
-	transactions.Store(`["0xtx"]`)
-	blockReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_getBlockByNumber","params":["0x3e8",false]}`))
-	resp, err = n.Forward(ctx, blockReq)
+	// The follower pins the next heights once the network head reaches them.
+	latestNum.Store(0x3ea)
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		u.EvmStatePoller().SuggestLatestBlock(0x3ea)
+	}
+	require.Eventually(t, func() bool {
+		_, ok := evm.ChainTrackerOf(ctx, n, "").HashAt(0x3ea)
+		return ok
+	}, 2*time.Second, 10*time.Millisecond)
+	nullTxs := request("0x3e9")
+	require.False(t, evm.HasVerifiedEmptyTraceBlock(nullTxs), "null transactions prove nothing")
+	beforeMissing := traceCalls.Load()
+	resp, err = n.Forward(ctx, nullTxs)
 	require.NoError(t, err)
 	resp.Release()
-	time.Sleep(50 * time.Millisecond)
-	require.True(t, evm.HasVerifiedEmptyTraceBlock(warm))
-	transactions.Store(`[]`)
+	require.Greater(t, traceCalls.Load()-beforeMissing, int32(1))
+	t.Logf("null transactions traceCalls=%d", traceCalls.Load()-beforeMissing)
+	beforeNonempty := traceCalls.Load()
+	resp, err = n.Forward(ctx, request("0x3ea"))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Contains(t, jrr.GetResultString(), "CALL")
+	resp.Release()
+	require.Equal(t, int32(2), traceCalls.Load()-beforeNonempty)
+	t.Logf("known nonempty traceCalls=%d", traceCalls.Load()-beforeNonempty)
 	for _, tc := range []struct {
 		name    string
 		list    []string
