@@ -1754,6 +1754,12 @@ export interface EvmNetworkConfig {
    */
   markEmptyAsErrorMethods?: string[];
   /**
+   * LocalAnswers turns off eRPC's own answer for a method on this network:
+   * `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+   * method in LocalAnswerMethods is answered by eRPC unless set false here.
+   */
+  localAnswers?: { [key: string]: boolean};
+  /**
    * StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
    * logs filters before forwarding upstream. fromBlock has no meaning for a
    * live subscription, and backends that prune history reject it.
@@ -2492,6 +2498,17 @@ export type JsonRpcErrorExtractor = any;
  * Similar to http.HandlerFunc style adapters.
  */
 export type JsonRpcErrorExtractorFunc = any;
+
+//////////
+// source: evm_local_answers.go
+
+/**
+ * EvmRoutableUpstreamsProvider is the optional surface a network exposes its
+ * routable upstreams through: the selection policy's eligible set in routing
+ * order, narrowed to the request's use-upstream selector. Asserted narrowly,
+ * like EvmStateProvenWriter, so EvmNetwork implementations need not change.
+ */
+export type EvmRoutableUpstreamsProvider = any;
 
 //////////
 // source: exec_state.go

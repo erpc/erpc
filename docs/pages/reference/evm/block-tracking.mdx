@@ -136,7 +136,7 @@ On a 12 s Ethereum Mainnet chain this yields ~8.4 s debounce — fresh enough to
 
 Both axes, every config. `EvmHighestLatestBlockNumber` / `EvmHighestFinalizedBlockNumber` run one pipeline per evaluation (`servedTip`):
 
-1. **Candidates** (`tipCandidateUpstreams`): the selection policy's eligible upstreams in routing order (all registered upstreams until the policy's first decision), narrowed to the request's `use-upstream` selector when present.
+1. **Candidates** (`EvmRoutableUpstreams`): the selection policy's eligible upstreams in routing order (all registered upstreams until the policy's first decision), narrowed to the request's `use-upstream` selector when present.
 2. **Voter rank** (`tipVoterRank`): each candidate with a head on the axis ranks live 0, benched 1, static cap 2, benched static cap 3. A static cap is a `blockAvailability.upper.exactBlock` the chain has passed: a serving range, not a head observation (`latestBlockMinus` upstreams are live). A candidate that is syncing per `eth_syncing`, has no state poller or has no head yet does not vote.
 3. **Ballot** (`evmTipBallot`): only the heads of the best voter rank present vote. A benched head votes only when no non-benched live head exists; a static cap only when no live head exists.
 4. **Pick** (`PickServedTip`): the highest block at least `servedTip.quorum` voters already have — the q-th highest head, or the lowest when fewer than q vote.
@@ -194,7 +194,7 @@ With `enforceHighestBlock` on (the default) and the served head known, eRPC answ
 
 #### Selector-scoped served tip
 
-With a `use-upstream` selector, `tipCandidateUpstreams` narrows the candidates to the matching upstreams; the pick is the same rule over that subset. `servedTipLaneFor` returns the request's lane: the network-wide lane (`lane="all"`) without a selector, a group's own lane for a simple group selector, else none. A lane holds no pick state: only its gauge label, advance-age anchor and regression-guard memory. A selector without a lane gets the same pick with no guard and no gauges; only the network-wide lane gets the WebSocket floor. Which selectors form a lane, naming and the 16-lane cap: [Lanes](/reference/lanes). Source: <SourceLink file="erpc/networks.go" lines="564-655" />
+With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to the matching upstreams; the pick is the same rule over that subset. `servedTipLaneFor` returns the request's lane: the network-wide lane (`lane="all"`) without a selector, a group's own lane for a simple group selector, else none. A lane holds no pick state: only its gauge label, advance-age anchor and regression-guard memory. A selector without a lane gets the same pick with no guard and no gauges; only the network-wide lane gets the WebSocket floor. Which selectors form a lane, naming and the 16-lane cap: [Lanes](/reference/lanes). Source: <SourceLink file="erpc/networks.go" lines="564-655" />
 
 #### Syncing, finality and earliest block
 
@@ -403,7 +403,7 @@ Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_b
 - [`architecture/evm/evm_state_poller.go:L145-L204`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L145-L204) — `Bootstrap`, `Poll`, `PollLatestBlockNumber`, `PollFinalizedBlockNumber`; debounce resolution; syncing state machine
 - [`common/served_tip.go:L36-L157`](https://github.com/erpc/erpc/blob/main/common/served_tip.go#L36-L157) — `ServedTipQuorum`, `PickServedTip`
 - [`erpc/networks.go:L430-L506`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L430-L506) — `tipVoterRank`, `evmTipBallot`
-- [`erpc/networks.go:L564-L655`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L564-L655) — `tipCandidateUpstreams`, `requestSelector`, `servedTipLaneFor`
+- [`erpc/networks.go:L564-L655`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L564-L655) — `EvmRoutableUpstreams`, `requestSelector`, `servedTipLaneFor`
 - [`erpc/networks.go:L748-L795`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L748-L795) — `EvmHighestLatestBlockNumber`, `EvmRefreshLatestBlock`
 - [`erpc/networks.go:L870-L1102`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L870-L1102) — `servedTip`, `guardServedTipRegression`
 - [`erpc/networks.go:L1369-L1532`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1369-L1532) — `EvmHighestFinalizedBlockNumber`, `applyDeliveredHeadFloor`, `guaranteedFloor`, `guaranteedSubsetTip`, `anyRegisteredLiveHead`, `observeServedTipMetrics`

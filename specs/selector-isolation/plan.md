@@ -117,7 +117,7 @@ Foundation for the lag fence; no behavior change yet.
 ## Phase 3 — Selector-scoped served tip
 
 ### 3.1 Pure path (glob / id / untargeted)
-- `tipCandidateUpstreams` ([erpc/networks.go](../../erpc/networks.go))
+- `EvmRoutableUpstreams` ([erpc/networks.go](../../erpc/networks.go))
   gains a selector filter.
 - Untargeted → existing network counter (unchanged).
 - Glob/id → stateless cluster-min over filtered inputs; optional per-pod
