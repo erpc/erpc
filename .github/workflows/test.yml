@@ -16,6 +16,9 @@ permissions:
 jobs:
   units:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
+    permissions:
+      contents: read
+      id-token: write # Codecov OIDC upload
     timeout-minutes: 30
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -35,7 +38,23 @@ jobs:
       - name: Build
         run: make build
       - name: Test with the Go CLI
-        run: make test-fast
+        run: make test-fast COVER_DIR=${{ runner.temp }}/coverage
+      - name: Merge coverage profiles
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          cd "${{ runner.temp }}/coverage"
+          { echo 'mode: atomic'; grep -hv '^mode:' *.out; } > coverage.txt
+          TOTAL=$(go tool cover -func=coverage.txt | awk '/^total:/ {print $NF}')
+          echo "Total coverage: $TOTAL" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: ${{ runner.temp }}/coverage/coverage.txt
+          disable_search: true
+          fail_ci_if_error: true
 
   security:
     runs-on: ubuntu-24.04
