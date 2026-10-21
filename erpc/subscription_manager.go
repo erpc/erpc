@@ -509,6 +509,14 @@ func (h *networkHandle) Undelivered(kind indexer.EventKind) {
 	telemetry.CounterHandle(telemetry.MetricSubscriptionUndeliveredTotal, h.nw.projectId, h.nw.Label(), kind.String()).Inc()
 }
 
+// DeliveringHead floors "latest" to a head a client is about to receive. Only
+// such heads count: a head no client subscribed to (a prewarmed subscription)
+// would otherwise lift "latest" past the upstreams that poll, and their
+// blockAvailability upper bound would then mark them unable to serve it.
+func (h *networkHandle) DeliveringHead(blockNumber int64) {
+	h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
+}
+
 // indexerNetworkKey names nw in the indexer and its adapters. Projects can
 // define the same network, each with its own upstreams, so the key includes
 // the project.
@@ -520,8 +528,7 @@ func indexerNetworkKey(nw *Network) string { return nw.projectId + "/" + nw.netw
 // asynchronously first, so that head is not delivered) and the fallback-tier
 // gate allows it (see deliversHeadsFrom). A head from an upstream with no
 // poller (not bootstrapped, e.g. its chain could not be verified) or one the
-// network doesn't know is not delivered. A delivered head also advances the
-// network's delivered-head floor before clients see it.
+// network doesn't know is not delivered.
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) bool {
 	deliver := h.suggestLatestBlock(sourceId, blockNumber)
 	if !deliver {
@@ -546,11 +553,7 @@ func (h *networkHandle) suggestLatestBlock(sourceId string, blockNumber int64) b
 			return false
 		}
 		poller.SuggestLatestBlock(blockNumber)
-		if !deliver || poller.LatestBlock() < blockNumber {
-			return false
-		}
-		h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
-		return true
+		return deliver && poller.LatestBlock() >= blockNumber
 	}
 	return false
 }

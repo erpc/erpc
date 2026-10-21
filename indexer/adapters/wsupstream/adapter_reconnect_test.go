@@ -33,6 +33,7 @@ func (fakeNetworkHandle) DedupDropped(indexer.EventKind)        {}
 func (fakeNetworkHandle) DedupEntriesAdded(int)                 {}
 func (fakeNetworkHandle) HeadIndexed()                          {}
 func (fakeNetworkHandle) Undelivered(indexer.EventKind)         {}
+func (fakeNetworkHandle) DeliveringHead(int64)                  {}
 
 type fakeSink struct {
 	events chan indexer.StreamEvent
