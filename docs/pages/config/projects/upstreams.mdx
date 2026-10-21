@@ -135,8 +135,12 @@ so a "block slightly ahead" is classified retryable rather than short-circuited.
 relative to the detected earliest block (`earliestBlockPlus`), or fixed (`exactBlock`).
 When a request targets a block outside the window, eRPC skips the upstream and tries
 the next rather than failing the request. The network layer turns an unavailable-block
-skip into `ErrUpstreamBlockUnavailable`, retryable when the block is within 128 blocks
-of the tip (configurable via `networks[].evm.maxRetryableBlockDistance`).
+skip into `ErrUpstreamBlockUnavailable`. An upper-bound skip is retried only when the
+bound moves (`latestBlockMinus`, `earliestBlockPlus` with `updateRate`), the block is a
+fixed number, and it sits within 128 blocks of the bound (configurable via
+`networks[].evm.maxRetryableBlockDistance`); otherwise the skip is final and the
+request fails at once. SVM applies the same rule; an open `getBlocks` end or a
+`getBlocksWithLimit` follows the tip, so its skip is always final.
 (<SourceLink file="erpc/networks.go" lines="1919-1987" />)
 
 **SVM slot availability.** Solana upstreams declare the same kind of window as
@@ -278,7 +282,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `proxyPools[*].id` | string | required | Pool name referenced by `upstreams[*].jsonRpc.proxyPool`. |
 | `proxyPools[*].urls` | `[]string` | required, min 1 | Proxy URLs. Accepted schemes: `http://`, `https://`, `socks5://` (case-insensitive prefix check — `socks4://` rejected at startup). |
 | `networks[*].evm.enforceBlockAvailability` | `*bool` | nil → enabled by default | Network-level override for block availability enforcement. |
-| `networks[*].evm.maxRetryableBlockDistance` | `*int64` | nil → `128` | Block-ahead distance within which `ErrUpstreamBlockUnavailable` is retryable vs terminal. |
+| `networks[*].evm.maxRetryableBlockDistance` | `*int64` | nil → `128` | Distance above a moving upper bound within which `ErrUpstreamBlockUnavailable` is retryable vs final. |
 
 **`upstreamDefaults` inheritance semantics — scalar vs composite fields differ critically:**
 

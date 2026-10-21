@@ -275,6 +275,31 @@ func TestCheckUpstreamDeclaredSlotBounds_UpperRetryable(t *testing.T) {
 		require.True(t, common.IsPermanentlyMissingData(err))
 	})
 
+	t.Run("tip-ended range above a moving upper is not retryable", func(t *testing.T) {
+		// An open end is the tip, and latestSlotMinus is tip-10: both advance
+		// together, so the 10-slot gap never closes. Retrying would wait out
+		// EmptyResultMaxAttempts and fail anyway.
+		moving := upWithBounds("u", 1000, 0, true, declaredCfg("u",
+			nil,
+			&common.SvmAvailabilityBoundConfig{LatestSlotMinus: i64(10)},
+		))
+		for _, c := range []struct{ method, params string }{
+			{"getBlocks", `[900]`},
+			{"getBlocks", `[900, null]`},
+			{"getBlocksWithLimit", `[900, 50]`},
+		} {
+			err, retryable := CheckUpstreamDeclaredSlotBounds(ctx, moving, reqOf(t, c.method, c.params))
+			require.Error(t, err, "%s %s", c.method, c.params)
+			require.False(t, retryable, "%s %s: the end moves with the bound", c.method, c.params)
+			require.True(t, common.IsPermanentlyMissingData(err))
+		}
+
+		// A named end stays put, so the same cap reopens for it within 5 slots.
+		err, retryable := CheckUpstreamDeclaredSlotBounds(ctx, moving, reqOf(t, "getBlocks", `[900, 995]`))
+		require.Error(t, err)
+		require.True(t, retryable)
+	})
+
 	t.Run("slot at upper is servable", func(t *testing.T) {
 		err, _ := CheckUpstreamDeclaredSlotBounds(ctx, up, reqOf(t, "getBlock", `[1000]`))
 		require.NoError(t, err)
