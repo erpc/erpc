@@ -155,26 +155,35 @@ func (t *ChainTracker) walkTree(r *node, fn func(*node)) {
 	t.stack = stack[:0]
 }
 
-// keeps is the window (§8) for h in a tree whose highest header is top:
+// keeps is the window (§9) for h in a tree whose highest header is top:
 // inside the window below the head (the highest held header while nothing
-// is pinned), and, for a tree without the pins, at most reorgWindow blocks
-// below its own top, so a tree far above the head stays small. top is
-// read only for a tree without the pins.
+// is pinned). A tree without the pins keeps a header more than
+// reorgWindow above the head only within reorgWindow below its own top, so
+// a tree far above the head stays small; below that the window alone
+// bounds it, so a branch a re-anchor left keeps its fork point for fill to
+// join. top is read only for a tree without the pins.
 func (t *ChainTracker) keeps(top, h *chainHeader, pinTree bool) bool {
-	if ref := t.windowRef(); ref != nil && !t.holds(ref, h) {
+	ref := t.windowRef()
+	if ref != nil && !t.holds(ref, h) {
 		return false
 	}
-	return pinTree || h.number+uint64(t.window) >= top.number
+	return pinTree || (ref != nil && h.number <= ref.number+uint64(t.window)) || t.nearTop(top, h)
+}
+
+// nearTop reports whether h lies within reorgWindow below top.
+func (t *ChainTracker) nearTop(top, h *chainHeader) bool {
+	return h.number+uint64(t.window) >= top.number
 }
 
 // outside ends the walk or fill e of root r when h, the next header down,
 // lies outside the window: for good below the head's window, and capped
-// below the floor of a tree without the pins.
+// reorgWindow below the top of a tree without the pins, which bounds the
+// fetches of a tree that may never join.
 func (t *ChainTracker) outside(e *extension, r *node, h *chainHeader, pinTree bool) bool {
 	switch {
 	case !t.keeps(nil, h, true):
 		e.atBase = true
-	case pinTree || t.keeps(t.treeTop(r), h, false):
+	case pinTree || t.nearTop(t.treeTop(r), h):
 		return false
 	default:
 		e.capped = true
