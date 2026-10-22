@@ -226,6 +226,7 @@ pprof — build with `-tags pprof` to activate.
 | `ERPC_NOMETRICS` | `init()` (build tag `!test`) | When `"1"`, swaps the Prometheus default registry with a no-op. Irreversible within the process. |
 | `ERPC_PPROF_PORT` | `init()` (build tag `pprof`) | pprof listener port; default `6060`. Only effective when built with `-tags pprof`. Binds `0.0.0.0` — all interfaces. |
 | `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION` | config analyzer | When `"true"`, skips validation of non-HTTP and local (loopback/localhost) upstream endpoints in `erpc validate`. [<SourceLink file="erpc/config_analyzer.go" lines="1024-1031" />] |
+| `ERPC_NOSTAR` | npm launcher (`npx start-erpc`, `@erpc-cloud/cli`) | When `"1"`, the launcher skips its one-time stderr line asking for a GitHub star. The line is also skipped when `CI` is set or stderr is not a TTY, and is shown at most once per machine (marker file `$XDG_CONFIG_HOME/erpc/star-prompt-shown`, default `~/.config/erpc/`). The Go binary ignores this variable. [`typescript/cli/src/star-prompt.ts`](https://github.com/erpc/erpc/blob/main/typescript/cli/src/star-prompt.ts) |
 | `INSTANCE_ID` | shared-state + consensus | First in the instance-identity chain. Used as `UpdatedBy` in shared-state writes and as `{instanceId}` in consensus dispute-log filenames. |
 | `POD_NAME` | shared-state + consensus | Second in the chain (Kubernetes pod name). |
 | `HOSTNAME` | shared-state + consensus | Third in the chain (OS hostname). |
