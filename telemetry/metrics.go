@@ -1098,7 +1098,7 @@ var (
 	// at a relaxed grade — that is the signal that the strict composition
 	// could not be met, available immediately rather than after a rate
 	// window has accumulated.
-	MetricConsensusPolicyServed = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricConsensusPolicyServed = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_policy_served_total",
 		Help:      "Total number of consensus rounds served, by acceptance policy.",
