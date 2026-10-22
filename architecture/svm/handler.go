@@ -107,6 +107,9 @@ func (h *SvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, 
 	// this never walks a multi-megabyte getBlock payload. Silent on miss.
 	if err == nil {
 		upstreamPostForward_trackContextSlot(ctx, network, upstream, req, resp)
+		// History sweep: a 200 answer that is provably incomplete for what the
+		// caller asked becomes MissingData so the sweep tries the next upstream.
+		return upstreamPostForward_historySweep(ctx, upstream, req, resp)
 	}
 	return resp, err
 }
