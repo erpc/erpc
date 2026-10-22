@@ -2688,18 +2688,21 @@ func (c *SvmBlockAvailabilityConfig) Copy() *SvmBlockAvailabilityConfig {
 }
 
 // SvmAvailabilityBoundConfig is a single declared slot bound.
-// Exactly one field must be set.
+// Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+// UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+// anchors on is re-probed. Unset keeps the 30s default.
 type SvmAvailabilityBoundConfig struct {
-	ExactSlot              *int64 `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
-	LatestSlotMinus        *int64 `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
-	FirstAvailableSlotPlus *int64 `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+	ExactSlot              *int64   `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
+	LatestSlotMinus        *int64   `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
+	FirstAvailableSlotPlus *int64   `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+	UpdateRate             Duration `yaml:"updateRate,omitempty" json:"updateRate,omitempty" tstype:"Duration"`
 }
 
 func (c *SvmAvailabilityBoundConfig) Copy() *SvmAvailabilityBoundConfig {
 	if c == nil {
 		return nil
 	}
-	out := &SvmAvailabilityBoundConfig{}
+	out := &SvmAvailabilityBoundConfig{UpdateRate: c.UpdateRate}
 	if c.ExactSlot != nil {
 		v := *c.ExactSlot
 		out.ExactSlot = &v

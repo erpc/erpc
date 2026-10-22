@@ -1664,9 +1664,9 @@ export interface SvmUpstreamConfig {
   /**
    * BlockAvailability is an operator restriction on the slot window this
    * upstream may serve. Only what the operator declares is enforced; the
-   * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
-   * used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
-   * mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+   * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
+   * every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
+   * earliestBlockPlus. Unknown floor = unbounded.
    */
   blockAvailability?: SvmBlockAvailabilityConfig;
 }
@@ -1681,12 +1681,15 @@ export interface SvmBlockAvailabilityConfig {
 }
 /**
  * SvmAvailabilityBoundConfig is a single declared slot bound.
- * Exactly one field must be set.
+ * Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+ * UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+ * anchors on is re-probed. Unset keeps the 30s default.
  */
 export interface SvmAvailabilityBoundConfig {
   exactSlot?: number /* int64 */;
   latestSlotMinus?: number /* int64 */;
   firstAvailableSlotPlus?: number /* int64 */;
+  updateRate?: Duration;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;

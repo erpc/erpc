@@ -553,28 +553,55 @@ func TestSvmStatePoller_FirstAvailableSlot_AboveOwnLatestRejected(t *testing.T) 
 
 // The floor moves O(1) slot per slot while sitting O(100k) slots below the
 // head, so it is polled on its own staleness window rather than every tick.
+// A firstAvailableSlotPlus bound's updateRate sets that window; nothing else
+// does.
 func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.T) {
 	t.Parallel()
-	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
-	up.script("getSlot:processed", []byte(`1000`))
-	up.script("getSlot:finalized", []byte(`990`))
-	up.script("getMaxShredInsertSlot", []byte(`1002`))
-	up.script("oldestBlock", []byte(`[200]`))
-
-	p := newPollerWithUpstream(t, up)
-	const polls = 2 * healthPollEveryNTicks
-	for range polls {
-		require.NoError(t, p.Poll(context.Background()))
+	plus := int64(0)
+	exact := int64(0)
+	withRate := func(b *common.SvmAvailabilityBoundConfig) *common.UpstreamConfig {
+		return &common.UpstreamConfig{
+			Id: "test-poller", Type: common.UpstreamTypeSvm, Endpoint: "http://x",
+			Svm: &common.SvmUpstreamConfig{BlockAvailability: &common.SvmBlockAvailabilityConfig{Lower: b}},
+		}
 	}
+	cases := map[string]struct {
+		cfg       *common.UpstreamConfig
+		wantFloor int
+	}{
+		"default 30s window": {nil, 1},
+		"firstAvailableSlotPlus updateRate 1ns": {
+			withRate(&common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: &plus, UpdateRate: common.Duration(time.Nanosecond)}),
+			2 * healthPollEveryNTicks,
+		},
+		"updateRate on a bound without the floor is ignored": {
+			withRate(&common.SvmAvailabilityBoundConfig{ExactSlot: &exact, UpdateRate: common.Duration(time.Nanosecond)}),
+			1,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			up := newScriptedUpstream()
+			up.cfg = tc.cfg
+			up.script("getHealth", []byte(`"ok"`))
+			up.script("getSlot:processed", []byte(`1000`))
+			up.script("getSlot:finalized", []byte(`990`))
+			up.script("getMaxShredInsertSlot", []byte(`1002`))
+			up.script("oldestBlock", []byte(`[200]`))
 
-	// getHealth is tick-throttled (healthPollEveryNTicks); the floor is
-	// independently debounced by DefaultFirstAvailableSlotStaleness, so it
-	// stays at one fetch across this burst.
-	require.Equal(t, polls/healthPollEveryNTicks, up.callCount("getHealth"),
-		"getHealth runs every Nth poll")
-	require.Equal(t, 1, up.callCount("oldestBlock"),
-		"the floor is debounced by its own staleness window, not by the poll gate")
+			p := newPollerWithUpstream(t, up)
+			const polls = 2 * healthPollEveryNTicks
+			for range polls {
+				require.NoError(t, p.Poll(context.Background()))
+				time.Sleep(time.Millisecond)
+			}
+
+			require.Equal(t, polls/healthPollEveryNTicks, up.callCount("getHealth"),
+				"getHealth runs every Nth poll")
+			require.Equal(t, tc.wantFloor, up.callCount("oldestBlock"),
+				"the floor is debounced by its own staleness window, not by the poll gate")
+		})
+	}
 }
 
 func TestSvmStatePoller_Poll_HealthFailureFlipsHealthy(t *testing.T) {

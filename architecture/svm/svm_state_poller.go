@@ -66,8 +66,9 @@ const maxConsecutiveSlotPollSkips = 4
 // needs a different health-detection latency than ~2s.
 const healthPollEveryNTicks = 5
 
-// DefaultFirstAvailableSlotStaleness is the minimum interval between floor
-// probes (getBlocksWithLimit(0, 1)) per upstream.
+// DefaultFirstAvailableSlotStaleness is the default minimum interval between
+// floor probes (getBlocksWithLimit(0, 1)) per upstream. A firstAvailableSlotPlus
+// bound's updateRate overrides it (floorStaleness).
 //
 // Deliberately ~75x the slot time. The floor sits O(100k) slots below the head
 // and rises at most one slot per slot, so freshness buys nothing measurable.
@@ -608,8 +609,9 @@ func (e *SvmStatePoller) IsHealthy() bool {
 // on a cold poller and leave firstAvailableSlotPlus enforcing from genesis if
 // the async fetch later fails.
 func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
-	wasStale := e.firstAvailableSlotShared.IsStale(DefaultFirstAvailableSlotStaleness)
-	slot, err := e.firstAvailableSlotShared.TryUpdateIfStale(ctx, DefaultFirstAvailableSlotStaleness,
+	staleness := e.floorStaleness()
+	wasStale := e.firstAvailableSlotShared.IsStale(staleness)
+	slot, err := e.firstAvailableSlotShared.TryUpdateIfStale(ctx, staleness,
 		func(ctx context.Context) (slot int64, err error) {
 			// The shared counter may run this on its own goroutine, outside
 			// Poll's recoverPanic; a panicking transport must not crash the process.
@@ -676,6 +678,30 @@ func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
 	// does not treat markFreshAttempt as a peer observation. Async success
 	// clears pending via the closure / OnValue.
 	e.firstAvailableSlotPending.Store(true)
+}
+
+// floorStaleness is the smallest updateRate set on a firstAvailableSlotPlus
+// bound of this upstream, else DefaultFirstAvailableSlotStaleness. Same field
+// and same min-of-bounds rule as EVM's earliestBlockPlus probe schedule.
+func (e *SvmStatePoller) floorStaleness() time.Duration {
+	rate := DefaultFirstAvailableSlotStaleness
+	if e.upstream == nil {
+		return rate
+	}
+	cfg := e.upstream.Config()
+	if cfg == nil || cfg.Svm == nil || cfg.Svm.BlockAvailability == nil {
+		return rate
+	}
+	set := false
+	for _, b := range []*common.SvmAvailabilityBoundConfig{cfg.Svm.BlockAvailability.Lower, cfg.Svm.BlockAvailability.Upper} {
+		if b == nil || b.FirstAvailableSlotPlus == nil || b.UpdateRate <= 0 {
+			continue
+		}
+		if r := b.UpdateRate.Duration(); !set || r < rate {
+			rate, set = r, true
+		}
+	}
+	return rate
 }
 
 // fetchFirstAvailableSlot reads the oldest block this upstream can actually
