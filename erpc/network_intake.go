@@ -19,10 +19,11 @@ import (
 )
 
 // networkIntake is the network's side of every source: each header is
-// parsed (check 0) and passed through its upstream's identity gate and head
-// counter (checks 2 and 3); an accepted header becomes its source's vote.
-// Intake owns the one predicate that decides whether a vote counts:
-// liveness and authority (check 4).
+// parsed (check 0), checked for integrity while it is on (check 1), and
+// passed through its upstream's identity gate and head counter (checks 2
+// and 3); an accepted header becomes its source's vote. Intake owns the one
+// predicate that decides whether a vote counts: liveness and authority
+// (check 4).
 type networkIntake struct {
 	nw *Network
 
@@ -34,7 +35,18 @@ type networkIntake struct {
 	// authorities is the authoritative upstreams as authority last read
 	// them, for per-transaction checks that take no lock.
 	authorities atomic.Pointer[[]string]
+	// rejected are the newest headers integrity held back, oldest first;
+	// a check suspended for the network lets them in again.
+	rejected []rejectedHeader
 }
+
+type rejectedHeader struct {
+	upstreamId string
+	raw        json.RawMessage
+}
+
+// rejectedKept bounds the headers integrity held back that intake keeps.
+const rejectedKept = 64
 
 type sourceState struct {
 	last indexer.Cursor // newest accepted header
@@ -81,6 +93,12 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 
 // Header takes one source header.
 func (in *networkIntake) Header(upstreamId string, raw json.RawMessage) {
+	in.header(upstreamId, raw, false)
+}
+
+// header is Header; replay: raw is a header integrity held back before a
+// check was suspended, so it moves its source's newest header only forward.
+func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay bool) {
 	cur, err := evm.ParseHeader(raw)
 	if err != nil {
 		in.count(upstreamId, "malformed")
@@ -98,18 +116,67 @@ func (in *networkIntake) Header(upstreamId string, raw json.RawMessage) {
 		in.count(upstreamId, "duplicate")
 		return
 	}
+	if !evm.CheckSourceHeader(in.nw, u, raw) {
+		in.mu.Lock()
+		in.rejected = append(in.rejected, rejectedHeader{upstreamId, raw})
+		if over := len(in.rejected) - rejectedKept; over > 0 {
+			in.rejected = slices.Delete(in.rejected, 0, over)
+		}
+		in.mu.Unlock()
+		in.count(upstreamId, "gated_integrity")
+		return
+	}
 	poller := u.EvmStatePoller()
 	if poller == nil || poller.IsObjectNull() || !poller.ObserveHead(raw) {
 		in.count(upstreamId, "gated_identity")
 		return
 	}
-	in.accept(upstreamId, cur)
+	if !replay || in.newer(upstreamId, cur) {
+		in.accept(upstreamId, cur)
+	}
 	evm.ObserveSourceHeader(in.nw, u, raw)
 	if in.votes(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
 		in.count(upstreamId, "gated_authority")
 	}
+}
+
+// newer reports whether cur is above the source's newest accepted header.
+func (in *networkIntake) newer(upstreamId string, cur indexer.Cursor) bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	s := in.sources[upstreamId]
+	return s == nil || cur.Number > s.last.Number
+}
+
+// replayRejected runs the headers integrity held back through intake
+// again, oldest first, on its own goroutine: a check was suspended for the
+// network, so those headers are kept (spec §12).
+func (in *networkIntake) replayRejected() {
+	in.mu.Lock()
+	held := in.rejected
+	in.rejected = nil
+	in.mu.Unlock()
+	if len(held) == 0 {
+		return
+	}
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"network-intake-replay",
+					fmt.Sprintf("project:%s network:%s", in.nw.projectId, in.nw.networkId),
+					common.ErrorFingerprint(rec),
+				).Inc()
+				in.nw.logger.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
+					Msg("unexpected panic while replaying source headers")
+			}
+		}()
+		for _, r := range held {
+			in.header(r.upstreamId, r.raw, true)
+		}
+	}()
 }
 
 func (in *networkIntake) count(upstreamId, outcome string) {

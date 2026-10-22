@@ -395,6 +395,8 @@ func (t *ChainTracker) endSettle(s *settleState) {
 	default:
 		s.decided, t.settleIn = true, 0
 		telemetry.CounterHandle(telemetry.MetricChainTrackerSettleTotal, t.projectId(), t.networkLabel(), "decided").Inc()
+		// The decided answers back their branch now: waiters read that.
+		t.gateSend()
 		s.notify(settleDecided)
 	}
 }

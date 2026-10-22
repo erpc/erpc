@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -214,8 +216,14 @@ func receiptOneLog(logIndex string) string {
 	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","transactionHash":"0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e","transactionIndex":"0x0","logs":[{"address":"0x27b26e88f007ec9109648c6da522fcaba06c74d7","data":"0x","logIndex":"%s"}]}}`, logIndex)
 }
 
+// blockReceiptsOneLog is the block's receipts as a node serves them, with
+// the logsBloom of the one log: integrity checks the tracker's corroboration
+// fetch too.
 func blockReceiptsOneLog(logIndex string) string {
-	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","transactionHash":"0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e","transactionIndex":"0x0","logs":[{"address":"0x27b26e88f007ec9109648c6da522fcaba06c74d7","data":"0x","logIndex":"%s"}]}]}`, logIndex)
+	bloom := make([]byte, logfilter.BloomLen)
+	addr, _ := hex.DecodeString("27b26e88f007ec9109648c6da522fcaba06c74d7")
+	logfilter.BloomAdd(bloom, addr)
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","transactionHash":"0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e","transactionIndex":"0x0","logsBloom":"0x%s","logs":[{"address":"0x27b26e88f007ec9109648c6da522fcaba06c74d7","data":"0x","logIndex":"%s"}]}]}`, hex.EncodeToString(bloom), logIndex)
 }
 
 func mockMethod(url, method, body string) {

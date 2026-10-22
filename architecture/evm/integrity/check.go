@@ -128,3 +128,19 @@ func register(c *Check) {
 func checksFor(method string) []*Check {
 	return registry[method]
 }
+
+// HeaderChecks are the checks a bare header can satisfy (spec §12): intake
+// runs them on every source header, and only they can be suspended when no
+// upstream passes them.
+var HeaderChecks = []string{"headerFieldShapes", "headerConsensusInvariants", "blockHashRecompute", "baseFeeDerivation", "timestampMonotonicity"}
+
+// HeaderCheckSet narrows cs to HeaderChecks.
+func HeaderCheckSet(cs CheckSet) CheckSet {
+	out := CheckSet{}
+	for _, id := range HeaderChecks {
+		if cfg := cs.For(id); cfg.Enabled {
+			out[id] = cfg
+		}
+	}
+	return out
+}

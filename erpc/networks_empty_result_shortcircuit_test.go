@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
@@ -504,16 +505,18 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	var empty atomic.Bool
 	var latestNum atomic.Int64
 	latestNum.Store(0x3e8)
-	// Blocks are held as first answered, so each transactions shape is its
-	// own height: 0x3e8 empty, 0x3e9 null transactions, 0x3ea one transaction.
-	txFor := func(n int64) string {
+	// Headers carry no transactions array, as source headers do: only
+	// transactionsRoot and gasUsed prove a block empty. Blocks are held as
+	// first answered, so each root is its own height: 0x3e8 the empty-trie
+	// root, 0x3e9 no root, 0x3ea a root with one transaction.
+	rootFor := func(n int64) string {
 		switch n {
 		case 0x3e9:
-			return `null`
+			return ``
 		case 0x3ea:
-			return `["0xtx"]`
+			return `"transactionsRoot":"0x` + strings.Repeat("ab", 32) + `",`
 		}
-		return `[]`
+		return `"transactionsRoot":"` + integrity.EmptyTrieRoot + `",`
 	}
 	refRe := regexp.MustCompile(`"params":\["(0x[0-9a-fA-F]+)"`)
 	blockRef := func(body string) int64 {
@@ -535,8 +538,8 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 			if n < 0 {
 				n = latestNum.Load()
 			}
-			r.Body = io.NopCloser(strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","gasUsed":"0x0","transactions":%s,"timestamp":"0x%x"}}`,
-				n, n, n-1, txFor(n), 0x6702a8f0+n)))
+			r.Body = io.NopCloser(strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","gasUsed":"0x0",%s"timestamp":"0x%x"}}`,
+				n, n, n-1, rootFor(n), 0x6702a8f0+n)))
 			return r
 		}).BodyString(`{}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "debug_traceBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
@@ -608,16 +611,17 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		_, ok := evm.ChainTrackerOf(ctx, n, "").HashAt(0x3ea)
 		return ok
 	}, 2*time.Second, 10*time.Millisecond)
-	nullTxs := request("0x3e9")
-	require.False(t, evm.HasVerifiedEmptyTraceBlock(nullTxs), "null transactions prove nothing")
+	noRoot := request("0x3e9")
+	require.False(t, evm.HasVerifiedEmptyTraceBlock(noRoot), "a header without transactionsRoot proves nothing")
 	beforeMissing := traceCalls.Load()
-	resp, err = n.Forward(fctx(ctx), nullTxs)
+	resp, err = n.Forward(fctx(ctx), noRoot)
 	require.NoError(t, err)
 	resp.Release()
 	require.Greater(t, traceCalls.Load()-beforeMissing, int32(1))
-	t.Logf("null transactions traceCalls=%d", traceCalls.Load()-beforeMissing)
+	t.Logf("no transactionsRoot traceCalls=%d", traceCalls.Load()-beforeMissing)
 	beforeNonempty := traceCalls.Load()
 	resp, err = n.Forward(fctx(ctx), request("0x3ea"))
+	require.False(t, evm.HasVerifiedEmptyTraceBlock(request("0x3ea")), "a transactionsRoot of one transaction proves the block is not empty")
 	require.NoError(t, err)
 	jrr, err := resp.JsonRpcResponse()
 	require.NoError(t, err)

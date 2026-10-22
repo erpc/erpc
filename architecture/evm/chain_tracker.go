@@ -89,9 +89,9 @@ type ChainTracker struct {
 	// fetch runs every fetch of this tracker; one per network.
 	fetch *fetchScheduler
 
-	// lastCountedVote is when a source vote that counts last arrived, in
-	// unix nanoseconds.
-	lastCountedVote atomic.Int64
+	// backing is the delivery gate's count over the published pins, for
+	// ReconfirmPin; stored with each publish and each gate change.
+	backing atomic.Pointer[pinBacking]
 
 	// following is true while the tracker's integrity follow tap runs.
 	following atomic.Bool
@@ -591,9 +591,6 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	// one stays.
 	t.pending[msg.upstream] = nd
 	t.walkFrom(nd, msg.upstream)
-	if t.counts(msg.upstream) {
-		t.lastCountedVote.Store(time.Now().UnixNano())
-	}
 }
 
 // promote moves each pending vote whose walk ended. An ancestor of the
@@ -1028,7 +1025,8 @@ func (t *ChainTracker) apply(path []*node) {
 		return
 	}
 	s := newFeedState(path, t.window)
-	s.send = t.sendIndex(path)
+	b := t.backingOf(path)
+	s.send = b.send()
 	t.pins, t.treesDirty, t.receiptsDirty = path, true, true
 	s.logs = t.logsHeadOf(s)
 	if t.selector == "" && pub.head() != head {
@@ -1038,6 +1036,7 @@ func (t *ChainTracker) apply(path []*node) {
 		t.txHeadAt.Store(time.Now().UnixNano())
 	}
 	old := t.state.Swap(s)
+	t.backing.Store(b)
 	close(old.changed)
 
 	t.recordMove(pub.pins, path)
@@ -1154,24 +1153,56 @@ func newFeedState(pins []*node, window int) *feedState {
 
 func (t *ChainTracker) publish() {
 	s := newFeedState(t.pins, t.window)
-	s.send = t.sendIndex(t.pins)
+	b := t.backingOf(t.pins)
+	s.send = b.send()
 	s.logs = t.logsHeadOf(s)
-	close(t.state.Swap(s).changed)
+	old := t.state.Swap(s)
+	t.backing.Store(b)
+	close(old.changed)
 }
 
-// sendIndex is the delivery gate over path: the highest pin backed by the
-// delivery quorum of counted source votes, a vote backing every pin on its
-// branch at or below it; -1 while no pin is. A pin one source alone votes
-// for, such as a cold pod's first header, so waits for a second vote. A
-// decided settle's answer on the pinned branch backs the whole branch the
-// settle chose, so a split the settle decided flows at once.
-func (t *ChainTracker) sendIndex(path []*node) int {
-	if len(path) == 0 {
+// pinBacking is the delivery gate's count over the pins: for each counted
+// source vote and decided settle answer, the index of the highest pin it
+// backs, a vote backing every pin on its branch at or below it.
+type pinBacking struct {
+	base   uint64
+	backed []int // sorted
+	need   int   // the delivery quorum
+}
+
+// send is the delivery gate: the index of the highest pin backed by the
+// delivery quorum; -1 while no pin is. A pin one source alone votes for,
+// such as a cold pod's first header, so waits for a second vote.
+func (b *pinBacking) send() int {
+	if len(b.backed) < b.need || len(b.backed) == 0 {
 		return -1
 	}
-	need := t.deliveryQuorum()
+	return b.backed[len(b.backed)-b.need]
+}
+
+// backers is how many counted votes and decided answers back the pin at
+// n; every one backs a pin below the pins.
+func (b *pinBacking) backers(n uint64) int {
+	if n < b.base {
+		return len(b.backed)
+	}
+	if n-b.base > 1<<31 {
+		return 0
+	}
+	first, _ := slices.BinarySearch(b.backed, int(n-b.base))
+	return len(b.backed) - first
+}
+
+// backingOf counts the votes backing each pin of path. A decided settle's
+// answer on the pinned branch backs the whole branch the settle chose, so
+// a split the settle decided flows at once.
+func (t *ChainTracker) backingOf(path []*node) *pinBacking {
+	b := &pinBacking{need: t.deliveryQuorum()}
+	if len(path) == 0 {
+		return b
+	}
 	base, head := path[0].h.number, len(path)-1
-	var backed []int
+	b.base = base
 	// backs adds the highest pin n backs; branch: n backs the whole path
 	// when it holds the pinned branch.
 	backs := func(n *node, branch bool) {
@@ -1181,7 +1212,7 @@ func (t *ChainTracker) sendIndex(path []*node) int {
 				if branch && (a == n || i == head) {
 					i = head
 				}
-				backed = append(backed, i)
+				b.backed = append(b.backed, i)
 				return
 			}
 		}
@@ -1193,11 +1224,8 @@ func (t *ChainTracker) sendIndex(path []*node) int {
 	for _, a := range t.decidedAnswers(votes) {
 		backs(a, true)
 	}
-	if len(backed) < need {
-		return -1
-	}
-	slices.Sort(backed)
-	return backed[len(backed)-need]
+	slices.Sort(b.backed)
+	return b
 }
 
 // deliveryQuorum is how many counted source votes a pin needs before taps
@@ -1219,7 +1247,9 @@ func (t *ChainTracker) gateSend() {
 	if len(pub.pins) == 0 {
 		return
 	}
-	send := t.sendIndex(t.pins)
+	b := t.backingOf(t.pins)
+	t.backing.Store(b)
+	send := b.send()
 	if send == pub.send {
 		return
 	}
@@ -1728,6 +1758,18 @@ func (t *ChainTracker) HeaderAt(number int64) (*integrity.Header, bool) {
 	return nil, false
 }
 
+// HeaderByHash is a held header by hash, pinned or not. It never fetches.
+func (t *ChainTracker) HeaderByHash(hash string) (*integrity.Header, bool) {
+	key, ok := hashKey(hash)
+	if !ok {
+		return nil, false
+	}
+	if h, ok := t.held.Load(key); ok {
+		return h.(*chainHeader).parsed, true
+	}
+	return nil, false
+}
+
 // CachedReceipts is a held-data read of a block's receipts by hash. Logs
 // held from the eth_getLogs fallback are not receipts integrity can check.
 func (t *ChainTracker) CachedReceipts(blockHash string) ([]integrity.Receipt, bool) {
@@ -1742,25 +1784,48 @@ func (t *ChainTracker) CachedReceipts(blockHash string) ([]integrity.Receipt, bo
 	return r.integrityView(), true
 }
 
-// ReconfirmPin reports the pin at number once it is current. While a source
-// that counts voted within the live bound, the pin is current as it is.
-// Otherwise the tracker settles first (§6 rule 5) and the pin it leaves is
-// returned: PinFresh only when the settle decided, so never for a hash the
-// tracker did not pin.
+// heldHistory is what a check on eRPC's own data reads (a tracker fetch, a
+// source header): the tracker's held headers and receipts, and never its
+// pins, since that data is what moves them. It fetches nothing (spec §7).
+type heldHistory struct{ t *ChainTracker }
+
+func (h heldHistory) HashAt(int64) (string, bool) { return "", false }
+func (h heldHistory) FollowedRange() (int64, int64, bool) {
+	return h.t.FollowedRange()
+}
+func (h heldHistory) HeaderAt(number int64) (*integrity.Header, bool) { return h.t.HeaderAt(number) }
+func (h heldHistory) HeaderByHash(hash string) (*integrity.Header, bool) {
+	return h.t.HeaderByHash(hash)
+}
+func (h heldHistory) CachedReceipts(blockHash string) ([]integrity.Receipt, bool) {
+	return h.t.CachedReceipts(blockHash)
+}
+
+var (
+	_ integrity.ChainSegment = heldHistory{}
+	_ integrity.ReceiptCache = heldHistory{}
+)
+
+// ReconfirmPin reports the pin at number once it is current: at once while
+// as many counted source votes back it as the delivery gate needs (the
+// served-tip quorum of the voting sources), and never fewer than 2, so a
+// pin resting on one source's vote never licenses a hard reject. Otherwise
+// the tracker settles first (§6 rule 5) and the pin it leaves is returned:
+// PinFresh only when the settle decided, so never for a hash the tracker
+// did not pin.
 //
-// Within reconfirmCooldown, when the settle's answers still tie, or when
-// the settle would wait on a backoff (a fetch key's or the last undecided
-// settle's), it returns the current pin at once as PinRateLimited, which
-// carries no new evidence, so the engine degrades the verdict instead of
-// rejecting on a pin it could not re-check. Its settle asks are client
-// fetches. A settle no upstream answered is PinUnverifiable, which keeps
-// the strict verdict.
+// Within reconfirmCooldown, and whenever the settle did not decide (its
+// answers tie, it would wait on a backoff, or no upstream answered), it
+// returns the current pin as PinRateLimited, which carries no new
+// evidence, so the engine degrades the verdict instead of rejecting on a
+// pin it could not re-check. Its settle asks are client fetches. Only a
+// number with no pin is PinUnverifiable.
 func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, integrity.PinConfirmation) {
 	if number < 0 {
 		return "", integrity.PinUnverifiable
 	}
 	pin, pinned := t.HashAt(number)
-	if pinned && time.Since(time.Unix(0, t.lastCountedVote.Load())) < t.LiveBound() {
+	if pinned && t.pinBacked(number) {
 		return pin, integrity.PinFresh
 	}
 	t.reconfirmMu.Lock()
@@ -1778,13 +1843,24 @@ func (t *ChainTracker) ReconfirmPin(ctx context.Context, number int64) (string, 
 		}
 	}
 	t.reconfirmMu.Unlock()
-	if pin, pinned = t.HashAt(number); !pinned || outcome == settleUnanswered {
+	pin, pinned = t.HashAt(number)
+	switch {
+	case !pinned:
 		return "", integrity.PinUnverifiable
-	}
-	if outcome == settleDecided {
+	case outcome == settleDecided:
 		return pin, integrity.PinFresh
 	}
 	return pin, integrity.PinRateLimited
+}
+
+// pinBacked reports whether the published pin at number has the backing
+// ReconfirmPin needs: the delivery quorum, and at least 2.
+func (t *ChainTracker) pinBacked(number int64) bool {
+	b := t.backing.Load()
+	if b == nil {
+		return false
+	}
+	return b.backers(uint64(number)) >= max(2, b.need)
 }
 
 // settleNow asks the tracker for a settle and waits for its outcome,
@@ -1806,8 +1882,8 @@ func (t *ChainTracker) headerByHash(ctx context.Context, hash string) (*integrit
 	if !ok {
 		return nil, false
 	}
-	if h, ok := t.held.Load(key); ok {
-		return h.(*chainHeader).parsed, true
+	if h, ok := t.HeaderByHash(key); ok {
+		return h, true
 	}
 	h, err := t.fetchHeader(ctx, classHead, "eth_getBlockByHash", key)
 	if err != nil {
@@ -2132,7 +2208,11 @@ func (t *ChainTracker) observeNarrowAnchors(fin int64, result []byte) {
 }
 
 // HasVerifiedEmptyTraceBlock reports whether the pinned header at the
-// request's block proves it has no transactions and used no gas. It never
+// request's block proves it has no transactions and used no gas: its
+// transactionsRoot is the empty-trie root and its gasUsed is 0. Header
+// fields alone prove it, since source headers carry no transactions; a
+// chain whose profile turns transactionsRootRecompute off may leave system
+// transactions out of the root, so it proves nothing there. It never
 // fetches.
 func HasVerifiedEmptyTraceBlock(req *common.NormalizedRequest) bool {
 	if req == nil || req.Network() == nil {
@@ -2172,11 +2252,11 @@ func HasVerifiedEmptyTraceBlock(req *common.NormalizedRequest) bool {
 	if t == nil {
 		return false
 	}
-	header, ok := t.HeaderAt(number)
-	if !ok || header.RawTransactions == nil || len(header.RawTransactions) != 0 {
+	h := t.state.Load().pinAt(uint64(number))
+	if h == nil || !h.emptyTxs || t.fetch.bloom.prof().emptyOff {
 		return false
 	}
-	gas, err := common.HexToInt64(header.GasUsed)
+	gas, err := common.HexToInt64(h.parsed.GasUsed)
 	return err == nil && gas == 0
 }
 
@@ -2187,8 +2267,10 @@ type networkTrackers struct {
 	window   int
 	backfill time.Duration
 	fetch    *fetchScheduler
-	mu       sync.Mutex
-	groups   map[string]*ChainTracker // group key ("" network-wide) -> tracker
+	// suspend is the network's unanimous-failure state of header checks.
+	suspend *checkSuspensions
+	mu      sync.Mutex
+	groups  map[string]*ChainTracker // group key ("" network-wide) -> tracker
 }
 
 var chainTrackers sync.Map // common.Network -> *networkTrackers
@@ -2203,6 +2285,7 @@ func StartChainTrackers(ctx context.Context, n common.Network) *ChainTracker {
 	}
 	ct.SetDefaults()
 	nt := &networkTrackers{ctx: ctx, window: ct.ReorgWindow, backfill: ct.MaxBackfill.Duration(), fetch: newFetchScheduler(ctx, n), groups: make(map[string]*ChainTracker)}
+	nt.suspend = newCheckSuspensions(n, func() *ChainTracker { return lookupChainTracker(n, "") })
 	if v, loaded := chainTrackers.LoadOrStore(n, nt); loaded {
 		nt = v.(*networkTrackers)
 	} else {

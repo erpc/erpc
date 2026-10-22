@@ -92,7 +92,6 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		c := newChainTracker(t.Context(), net, 32, 0, "", "", nil, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
 		net.sourcesVote.Store(false)
-		c.lastCountedVote.Store(0)
 		return c
 	}
 
@@ -134,18 +133,31 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		assert.Equal(t, orphan, hash)
 	})
 
-	t.Run("a source that voted within the live bound answers without a fetch", func(t *testing.T) {
+	t.Run("a pin the counted votes of 2 sources back answers without a fetch", func(t *testing.T) {
 		net := newCapturingNetwork(t, height, canonical)
 		c := newChainTracker(t.Context(), net, 32, 0, "", "", nil, newFetchScheduler(t.Context(), net))
 		// From genesis, so fill has nothing to fetch: any fetch is the
 		// re-confirmation's.
 		voteChain(t, c, "a", "0", 0, uint64(height), testHash("f", 0))
+		voteChain(t, c, "b", "0", 0, uint64(height), testHash("f", 0))
 
 		hash, status := c.ReconfirmPin(context.Background(), height)
 		assert.Equal(t, integrity.PinFresh, status)
 		assert.Equal(t, orphan, hash)
 		c.sync(context.Background())
 		assert.Zero(t, net.calls())
+	})
+
+	// One source's vote alone never licenses a hard reject: the pin it backs
+	// settles first.
+	t.Run("a pin one source's vote backs settles before it is fresh", func(t *testing.T) {
+		net := newCapturingNetwork(t, height, canonical)
+		c := newChainTracker(t.Context(), net, 32, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		voteChain(t, c, "a", "0", 0, uint64(height), testHash("f", 0))
+
+		_, status := c.ReconfirmPin(context.Background(), height)
+		assert.NotEqual(t, integrity.PinFresh, status, "a settle answer for another hash ties with the one vote")
+		assert.NotNil(t, net.directivesFor("latest"), "the re-confirmation settled")
 	})
 
 	// A by-number answer from the cache is not a fresh view of the chain at
@@ -175,7 +187,6 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		c := newChainTracker(t.Context(), net, 32, 0, "", "", func() int64 { return height }, newFetchScheduler(t.Context(), net))
 		voteChain(t, c, "a", "0", uint64(height), uint64(height)+1, testHash("f", uint64(height-1)))
 		net.sourcesVote.Store(false)
-		c.lastCountedVote.Store(0)
 
 		_, status := c.ReconfirmPin(context.Background(), height)
 		require.Equal(t, integrity.PinFresh, status)

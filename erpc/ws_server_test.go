@@ -1811,7 +1811,7 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	}
 
 	t.Run("baseline", func(t *testing.T) {
-		s := newChaosSeed(t, 5, true)
+		s := newChaosSeed(t, 5, true, chaosOpts{})
 		s.startERPC()
 		defer s.stopERPC()
 		tick(s, 3)
@@ -1896,7 +1896,7 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 	})
 
 	t.Run("no upstream serves receipts or eth_getLogs", func(t *testing.T) {
-		s := newChaosSeed(t, 6, true)
+		s := newChaosSeed(t, 6, true, chaosOpts{})
 		s.ignore = []string{"eth_getBlockReceipts", "eth_getLogs"}
 		s.startERPC()
 		defer s.stopERPC()
@@ -1907,6 +1907,46 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		assert.EqualValues(t, common.JsonRpcErrorUnsupportedException, rerr["code"], "ErrNoSubscriptionSource maps to -32601: %v", rerr)
 		assert.Contains(t, fmt.Sprint(rerr), "subscription source", "the refusal names the missing source: %v", rerr)
 		assert.Zero(t, receiptsAndLogsCalls(s), "no receipts, eth_getLogs or upstream logs subscription")
+	})
+
+	// With integrity on, eth_getLogs by blockHash stands in only while no
+	// upstream serves receipts; its logs pass the bloom check and
+	// logIndexContiguity.
+	t.Run("integrity on, no upstream serves receipts: logs by eth_getLogs", func(t *testing.T) {
+		s := newChaosSeed(t, 7, true, chaosOpts{integrity: true})
+		s.ignore = []string{"eth_getBlockReceipts"}
+		s.startERPC()
+		defer s.stopERPC()
+		tick(s, 3)
+		s.dialLogs("fallback")
+		tick(s, 2)
+		from := s.chain.tip().number + 1
+		s.chain.mu.Lock()
+		s.chain.plan = []simKind{simMatching, simMatching, simQuiet, simMatching}
+		s.chain.mu.Unlock()
+		tick(s, 6)
+		require.Eventually(t, func() bool {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				d := cl.logsDiffLocked(s, from, from+3)
+				cl.mu.Unlock()
+				if d != "" {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 20*time.Millisecond, "both clients hold the matching logs of every planned block")
+		require.Len(t, s.openLogs(), len(simFilters))
+		for _, cl := range s.openLogs() {
+			cl.mu.Lock()
+			assert.Empty(t, cl.problems, "logs client %s", cl.name)
+			cl.mu.Unlock()
+		}
+		var getLogs int64
+		for _, v := range s.vendors {
+			getLogs += v.getLogsCalls.Load()
+		}
+		assert.Positive(t, getLogs, "logs come from eth_getLogs by blockHash")
 	})
 }
 

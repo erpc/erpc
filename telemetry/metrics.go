@@ -516,6 +516,15 @@ var (
 		Help:      "Total data-integrity check violations, by check id, verdict (reject = failed over; soft_flag = recorded but served) and target-block finality (finalized/unfinalized/unknown — separates genuine finalized/deterministic catches from reorg-prone unfinalized ones).",
 	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict", "finality"})
 
+	// MetricIntegrityCheckSuspendedTotal counts header checks suspended for a
+	// network because no header at 2 heights in a row passed them, from any
+	// upstream (spec §12).
+	MetricIntegrityCheckSuspendedTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_check_suspended_total",
+		Help:      "Header integrity checks suspended for a network because no upstream's header passed them at 2 heights in a row.",
+	}, []string{"project", "network", "check"})
+
 	// MetricUpstreamStateProvenBlock is the highest block at which the state
 	// probe PROVED the upstream holds that block's state (execution-context
 	// call and/or getProof verified against the follower's verified header).

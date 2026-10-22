@@ -1,6 +1,10 @@
 package integrity
 
-import "context"
+import (
+	"context"
+
+	"github.com/erpc/erpc/common"
+)
 
 // History remembers number→hash for recently-observed blocks so continuity
 // checks can link a new block against earlier observations. It is implemented
@@ -69,24 +73,28 @@ func historyFrom(ctx context.Context) History {
 	return h
 }
 
-// ChainSegment optionally extends History with the CONTIGUOUS, parent-linked
-// chain segment a follower has verified block by block.
+// ChainSegment optionally extends History with the headers the chain tracker
+// holds: its pins, one parentHash-linked chain, and every held header by
+// hash.
 //
 // It exists to keep a hard line between two very different kinds of knowledge.
-// HashAt answers from whatever the view happens to hold, including sparse pins
-// learned from passing traffic — fine for "have I seen this height", useless as
-// a basis for reasoning about adjacency. A check that compares a block to its
-// PARENT (base-fee derivation, timestamp ordering, gas-limit drift) is only
-// sound when the parent is genuinely the block before it on one verified
-// chain — otherwise it would compare across a fork boundary and reject honest
-// data. Checks therefore ask for the segment first and skip when the height
-// they need is outside it.
+// HashAt answers from whatever the view happens to hold, including finalized
+// anchors learned from passing traffic — fine for "have I seen this height",
+// useless as a basis for reasoning about adjacency. A check that compares a
+// block to its PARENT (base-fee derivation, timestamp ordering) is only sound
+// when the parent is the block its parentHash names — a parent found by
+// number may sit on another fork, and comparing across that boundary would
+// reject honest data. Checks therefore find the parent by hash and skip when
+// it is not held.
 type ChainSegment interface {
-	// FollowedRange is the inclusive verified segment; ok=false when nothing
-	// has been followed (the follower is off or still bootstrapping).
+	// FollowedRange is the inclusive range of the pins; ok=false while
+	// nothing is pinned.
 	FollowedRange() (from, to int64, ok bool)
-	// HeaderAt returns the header committed at a height within that segment.
+	// HeaderAt returns the pinned header at a height within that range.
 	HeaderAt(number int64) (*Header, bool)
+	// HeaderByHash returns a held header, pinned or not. Held data only:
+	// it never fetches.
+	HeaderByHash(hash string) (*Header, bool)
 }
 
 // segmentFrom returns the verified chain segment, if the History implementation
@@ -96,18 +104,20 @@ func segmentFrom(ctx context.Context) ChainSegment {
 	return seg
 }
 
-// parentInSegment returns the header for number-1 when BOTH it and number sit
-// inside the verified segment, so the caller knows the two are genuinely
-// adjacent on one chain. Any other situation returns false and the caller must
-// skip rather than guess.
-func parentInSegment(ctx context.Context, number int64) (*Header, bool) {
+// parentInSegment returns the parent of h, block number, among the held
+// headers: the one its parentHash names, never the one at number-1. A
+// parent that is not held returns false and the caller skips.
+func parentInSegment(ctx context.Context, h *Header, number int64) (*Header, bool) {
 	seg := segmentFrom(ctx)
-	if seg == nil || number <= 0 {
+	if seg == nil || number <= 0 || h.ParentHash == "" {
 		return nil, false
 	}
-	from, to, ok := seg.FollowedRange()
-	if !ok || number < from+1 || number > to {
+	p, ok := seg.HeaderByHash(h.ParentHash)
+	if !ok || p == nil {
 		return nil, false
 	}
-	return seg.HeaderAt(number - 1)
+	if pn, err := common.HexToInt64(p.Number); err != nil || pn != number-1 {
+		return nil, false
+	}
+	return p, true
 }

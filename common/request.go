@@ -186,8 +186,9 @@ type RequestDirectives struct {
 	ByPassMethodExclusion bool `json:"-"`
 
 	// IsInternal marks a request erpc builds for itself as request kind
-	// "internal" for failsafe matching (matchRequestKind), and keeps the
-	// integrity engine from validating it. Never set from HTTP headers.
+	// "internal" for failsafe matching (matchRequestKind); the integrity
+	// engine checks its answer against held data only, never fetching more.
+	// Never set from HTTP headers.
 	IsInternal bool `json:"-"`
 
 	// UpstreamPolicies says which upstream failsafe policies apply. Never

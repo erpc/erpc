@@ -206,6 +206,7 @@ func NewNetwork(
 		})
 		network.mempool = mempool.New(projectId, network.Label())
 		network.chainTracker = evm.StartChainTrackers(appCtx, network)
+		evm.OnCheckSuspended(network, network.intake.replayRejected)
 		network.bg.Go(func() { network.intake.run(appCtx) })
 	}
 

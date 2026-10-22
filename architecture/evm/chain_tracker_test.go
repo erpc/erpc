@@ -347,8 +347,7 @@ func TestHeaderMatchesRef(t *testing.T) {
 func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
 	pinned := func(t *testing.T) *ChainTracker {
 		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
-		voteChain(t, c, "a", "a", 0x10, 0x10, testHash("f", 0xf))
-		c.lastCountedVote.Store(0) // no source voted within the live bound
+		voteChain(t, c, "a", "a", 0x10, 0x10, testHash("f", 0xf)) // one source backs the pin
 		return c
 	}
 	setReconfirmedAt := func(c *ChainTracker, at time.Time) {
@@ -367,19 +366,31 @@ func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
 		assert.Equal(t, testHash("a", 0x10), hash, "the pin is still returned, for context")
 	})
 
-	t.Run("an expired cooldown is not rate-limited (falls through to a fetch)", func(t *testing.T) {
+	t.Run("an expired cooldown is not rate-limited (falls through to a settle)", func(t *testing.T) {
 		c := pinned(t)
-		setReconfirmedAt(c, time.Now().Add(-2*reconfirmCooldown))
+		before := time.Now().Add(-2 * reconfirmCooldown)
+		setReconfirmedAt(c, before)
 
-		// No network wired, so the fetch cannot resolve — the point is that it
-		// reports PinUnverifiable rather than short-circuiting as rate-limited.
+		// No network wired, so the settle cannot resolve — the point is that
+		// it ran, rather than short-circuiting as rate-limited.
 		_, status := c.ReconfirmPin(context.Background(), 0x10)
-		assert.Equal(t, integrity.PinUnverifiable, status)
+		assert.Equal(t, integrity.PinRateLimited, status)
+		c.reconfirmMu.Lock()
+		at := c.reconfirmedAt[0x10]
+		c.reconfirmMu.Unlock()
+		assert.True(t, at.After(before), "the re-confirmation settled again")
 	})
 
-	t.Run("an unfetchable pin is PinUnverifiable, which keeps the strict verdict", func(t *testing.T) {
+	t.Run("a pin one source backs is never a hard reject, even unfetchable", func(t *testing.T) {
 		c := pinned(t)
 		_, status := c.ReconfirmPin(context.Background(), 0x10)
+		assert.Equal(t, integrity.PinRateLimited, status,
+			"an unanswered settle over a pin resting on one vote must degrade the verdict")
+	})
+
+	t.Run("a number with no pin is PinUnverifiable, which keeps the strict verdict", func(t *testing.T) {
+		c := pinned(t)
+		_, status := c.ReconfirmPin(context.Background(), 0x20)
 		assert.Equal(t, integrity.PinUnverifiable, status)
 	})
 

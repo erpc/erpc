@@ -90,8 +90,12 @@ type bloomProfile struct {
 	// the root may miss committed system transactions and their receipts.
 	emptyOff bool
 	// logsFallback: integrity is off, so eth_getLogs by blockHash may
-	// stand in for receipts that keep failing.
+	// stand in for receipts that keep failing. With integrity on it stands
+	// in only while no upstream serves eth_getBlockReceipts.
 	logsFallback bool
+	// logIndexes: integrity checks logIndexContiguity, so logs from
+	// eth_getLogs by blockHash must run 0..N-1 as receipts' do.
+	logIndexes bool
 }
 
 func newBloomGate(n common.Network) *bloomGate {
@@ -120,6 +124,7 @@ func (g *bloomGate) prof() *bloomProfile {
 		}
 		cs, _, _, _ := resolveIntegrity(n, nil)
 		g.profile.logsFallback = len(cs) == 0
+		g.profile.logIndexes = cs.For("logIndexContiguity").Enabled
 	})
 	return &g.profile
 }
@@ -262,6 +267,7 @@ type logLite struct {
 	BlockNumber      string   `json:"blockNumber"`
 	TransactionHash  string   `json:"transactionHash"`
 	TransactionIndex string   `json:"transactionIndex"`
+	LogIndex         string   `json:"logIndex"`
 }
 
 // method is the method that answered r.
@@ -381,12 +387,13 @@ type synthReceipt struct {
 }
 
 // parseLogs is the answer check of an eth_getLogs answer by blockHash, the
-// receipts fallback while integrity is off: non-null, and every log names
-// hash. No logs reads as "no logs" only when the bloom check proves it
-// (checking, with h's judgedBloom) or h's transactionsRoot is the
-// empty-trie root. Its logs are grouped into receipts by transaction; the
-// bloom verdict compares the bloom of the logs with h's judgedBloom.
-func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking bool) (*heldReceipts, error) {
+// receipts fallback: non-null, and every log names hash; with logIndexes,
+// their logIndexes run 0..N-1 (logIndexContiguity). No logs reads as "no
+// logs" only when the bloom check proves it (checking, with h's
+// judgedBloom) or h's transactionsRoot is the empty-trie root. Its logs are
+// grouped into receipts by transaction; the bloom verdict compares the
+// bloom of the logs with h's judgedBloom.
+func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexes bool) (*heldReceipts, error) {
 	if isNullResult(result) {
 		return nil, fmt.Errorf("%w: null", errReceiptsAnswer)
 	}
@@ -406,6 +413,7 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking bool) (*he
 	}
 	bloomBad := false
 	synth := []synthReceipt{}
+	indexes := make([]string, 0, len(raws))
 	for i, raw := range raws {
 		l, err := r.addLog(raw)
 		if err != nil {
@@ -429,6 +437,12 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking bool) (*he
 				TransactionHash: l.TransactionHash, TransactionIndex: l.TransactionIndex})
 		}
 		synth[len(synth)-1].Logs = append(synth[len(synth)-1].Logs, raw)
+		indexes = append(indexes, l.LogIndex)
+	}
+	if logIndexes {
+		if err := integrity.LogIndexesContiguous(len(indexes), func(i int) string { return indexes[i] }); err != nil {
+			return nil, fmt.Errorf("%w: %v", errReceiptsAnswer, err)
+		}
 	}
 	raw, err := common.SonicCfg.Marshal(synth)
 	if err != nil {
@@ -570,7 +584,7 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 	if logs {
 		spec.kind, spec.method, spec.params = "logs", "eth_getLogs", `[{"blockHash":"`+key+`"}]`
 		parse = func(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
-			return parseLogs(result, hash, h, gate.checking())
+			return parseLogs(result, hash, h, gate.checking(), gate.prof().logIndexes)
 		}
 	}
 	spec.decode = func(result []byte) (any, error) {
@@ -674,6 +688,10 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.started.IsZero() {
 		j.started = time.Now()
 	} else if !j.logs && t.fetch.bloom.prof().logsFallback && time.Since(j.started) >= LogsFallbackAfter.Load() {
+		j.logs = true
+		j.newRound()
+	}
+	if receipts, logs := t.usableMethods(); !j.logs && !receipts && logs {
 		j.logs = true
 		j.newRound()
 	}
@@ -807,10 +825,13 @@ func (t *ChainTracker) runProbe() {
 }
 
 // usableMethods reports whether an upstream of the group serves
-// eth_getBlockReceipts, and, with integrity off, eth_getLogs.
+// eth_getBlockReceipts, and whether eth_getLogs by blockHash may stand in:
+// with integrity off, or with integrity on while no upstream serves
+// receipts. That stand-in proves less than receipts: logs carry no
+// receiptsRoot to check, only the header's bloom and their logIndexes.
 func (t *ChainTracker) usableMethods() (receipts, logs bool) {
 	receipts = len(t.methodUpstreams("eth_getBlockReceipts")) > 0
-	logs = t.fetch.bloom.prof().logsFallback && len(t.methodUpstreams("eth_getLogs")) > 0
+	logs = (t.fetch.bloom.prof().logsFallback || !receipts) && len(t.methodUpstreams("eth_getLogs")) > 0
 	return receipts, logs
 }
 

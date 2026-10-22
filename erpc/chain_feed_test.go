@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
@@ -30,6 +31,7 @@ import (
 	"github.com/erpc/erpc/util"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -97,12 +99,20 @@ const (
 	fWrongBloom     = "one vendor whose receipts have a wrong bloom"
 	fChainBloom     = "every vendor's receipts carry a bloom other than the header's"
 	fBloomFollower  = "client asking the receipts the tracker fetches while the first answer has a wrong bloom"
+
+	fForgedLog      = "one vendor serves receipts with a forged log"
+	fForgedHash     = "one vendor pushes headers with a wrong hash, first at 2 heights in a row"
+	fReorg3         = "a 3-block reorg"
+	fClientGetLogs  = "client eth_getLogs for a block a logs tap fetched"
+	fBadBaseFee     = "every vendor serves headers whose base fee breaks baseFeeDerivation"
+	fBadBaseFeeLone = "a network with one vendor serves headers whose base fee breaks baseFeeDerivation"
 )
 
 var chaosFaults = []string{
 	fReorgSmall, fMinorityFork, fAheadFork, fDeepReorg, fSilent, fLagging, fDown, fAllDown, fHalt,
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice, fPendingSilent,
 	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower,
+	fForgedLog, fForgedHash, fReorg3, fClientGetLogs, fBadBaseFee, fBadBaseFeeLone,
 }
 
 // TestChainFeed_ConvergesUnderFaults runs real eRPC against 4 mocked vendors
@@ -119,6 +129,10 @@ var chaosFaults = []string{
 func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 	origWatch := wsupstream.HeadsWatchInterval.Load()
 	wsupstream.HeadsWatchInterval.Store(chaosHeadsWatch)
+	// A suspended check runs observe-only after 40 blocks here, so a seed
+	// sees it suspended, then observe-only, within its budget.
+	origSuspend := evm.CheckSuspendBlocks.Load()
+	evm.CheckSuspendBlocks.Store(chaosSuspendBlocks)
 	scale := []struct {
 		d *util.Duration
 		v time.Duration
@@ -137,6 +151,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		wsupstream.HeadsWatchInterval.Store(origWatch)
+		evm.CheckSuspendBlocks.Store(origSuspend)
 		for i, sc := range scale {
 			sc.d.Store(orig[i])
 		}
@@ -147,18 +162,22 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 	plans := []struct {
 		seed        int64
 		pollSources bool
+		opts        chaosOpts
 		faults      []string
 	}{
-		{11, true, []string{fMinorityFork, fAheadFork, f429, fLate, fMailbox, fPanicOnce, fTruncReceipts, fWrongBloom}},
-		{23, true, []string{fDown, fLagging, fDeepReorg, fPanicThrice, fNonLinking, fReceiptsDown13}},
-		{37, true, []string{fAllDown, fHalt, fLoad, fOrphanCached, fRestart, fChainBloom, fNullReceipts}},
-		{41, false, []string{fSplit, fLate, fDeepReorg, fBlockDown60, fReceiptsDown90, fNoReceipts}},
-		{53, true, []string{fSilent, fLate, fLateReceipts, fBloomFollower, fPendingSilent}},
+		{11, true, chaosOpts{}, []string{fMinorityFork, fAheadFork, f429, fLate, fMailbox, fPanicOnce, fTruncReceipts, fWrongBloom}},
+		{23, true, chaosOpts{}, []string{fDown, fLagging, fDeepReorg, fPanicThrice, fNonLinking, fReceiptsDown13}},
+		{37, true, chaosOpts{}, []string{fAllDown, fHalt, fLoad, fOrphanCached, fRestart, fChainBloom, fNullReceipts}},
+		{41, false, chaosOpts{}, []string{fSplit, fLate, fDeepReorg, fBlockDown60, fReceiptsDown90, fNoReceipts}},
+		{53, true, chaosOpts{}, []string{fSilent, fLate, fLateReceipts, fBloomFollower, fPendingSilent}},
+		{61, true, chaosOpts{integrity: true}, []string{fForgedLog, fForgedHash, fReorg3, fClientGetLogs}},
+		{67, true, chaosOpts{integrity: true, badBaseFee: true}, []string{fBadBaseFee}},
+		{71, true, chaosOpts{integrity: true, badBaseFee: true, oneVendor: true}, []string{fBadBaseFeeLone}},
 	}
 	covered := make(map[string][]int64)
 	for _, p := range plans {
 		ok := t.Run(fmt.Sprintf("seed=%d", p.seed), func(t *testing.T) {
-			s := newChaosSeed(t, p.seed, p.pollSources)
+			s := newChaosSeed(t, p.seed, p.pollSources, p.opts)
 			start := time.Now()
 			s.run(p.faults)
 			elapsed := time.Since(start)
@@ -383,6 +402,9 @@ type simChain struct {
 	// the transaction hashes ever pushed.
 	txRng       *rand.Rand
 	pendingSent map[string]bool
+	// badBaseFee: every block's base fee is 1000 + its number, which no
+	// parent derives (baseFeeDerivation); set before the first block.
+	badBaseFee bool
 }
 
 // simTrap is one block's held first receipts call.
@@ -391,9 +413,9 @@ type simTrap struct {
 	during     int // other receipts calls for the block while it was held
 }
 
-func newSimChain(seed int64) *simChain {
+func newSimChain(seed int64, badBaseFee bool) *simChain {
 	c := &simChain{seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 1)), byHash: make(map[[32]byte]*simBlock),
-		txRng: rand.New(rand.NewPCG(uint64(seed), 2)), pendingSent: make(map[string]bool)}
+		txRng: rand.New(rand.NewPCG(uint64(seed), 2)), pendingSent: make(map[string]bool), badBaseFee: badBaseFee}
 	start := time.Now().Add(-time.Duration(chaosHistoryBlocks) * chaosBlock)
 	var parent *simBlock
 	for i := range chaosHistoryBlocks {
@@ -449,11 +471,15 @@ func (c *simChain) mintLocked(parent *simBlock, number uint64, at time.Time, min
 		Extra:       fmt.Appendf(nil, "%d/%d", c.seed, c.minted),
 		BaseFee:     big.NewInt(7),
 	}
+	if c.badBaseFee {
+		hdr.BaseFee = big.NewInt(1000 + int64(number))
+	}
 	if len(txs) > 0 {
 		hdr.TxHash = gethcommon.Hash(sha256.Sum256(fmt.Appendf(nil, "txs/%d/%d", c.seed, c.minted)))
-		hdr.ReceiptHash = gethcommon.Hash(sha256.Sum256(fmt.Appendf(nil, "receipts/%d/%d", c.seed, c.minted)))
+		hdr.ReceiptHash = simReceiptsRoot(tag, txs)
 		hdr.GasUsed = uint64(len(txs)) * 21000
 	}
+	hash := [32]byte(hdr.Hash())
 	raw, err := hdr.MarshalJSON()
 	if err != nil {
 		panic(err)
@@ -463,15 +489,64 @@ func (c *simChain) mintLocked(parent *simBlock, number uint64, at time.Time, min
 		panic(err)
 	}
 	fields["size"] = json.RawMessage(`"0x220"`)
-	fields["transactions"] = json.RawMessage(`[]`)
+	txHashes := make([]string, len(txs))
+	for i := range txs {
+		txHashes[i] = simTxHash(hash, i)
+	}
+	fields["transactions"], _ = json.Marshal(txHashes)
 	fields["uncles"] = json.RawMessage(`[]`)
 	raw, _ = json.Marshal(fields)
-	b := &simBlock{number: number, hash: [32]byte(hdr.Hash()), parent: parent, ts: ts, minority: minority, kind: kind, tag: tag, txs: txs, raw: raw}
+	b := &simBlock{number: number, hash: hash, parent: parent, ts: ts, minority: minority, kind: kind, tag: tag, txs: txs, raw: raw}
 	c.byHash[b.hash] = b
 	if c.failNext && kind == simMatching && !minority {
 		c.failNext, c.failHash = false, b.hash
 	}
 	return b
+}
+
+// simReceiptsRoot is the receiptsRoot of the receipts a vendor serves for a
+// block with txs (receiptsRootRecompute).
+func simReceiptsRoot(tag string, txs [][]simLog) gethcommon.Hash {
+	rs := make(gethtypes.Receipts, len(txs))
+	for i, tx := range txs {
+		bloom := make([]byte, logfilter.BloomLen)
+		simLogBloom(bloom, tag, i, tx)
+		logs := make([]*gethtypes.Log, len(tx))
+		for k, l := range tx {
+			logs[k] = &gethtypes.Log{
+				Address: gethcommon.HexToAddress(simAddrs[l.addr]),
+				Topics:  []gethcommon.Hash{gethcommon.HexToHash(simTopics[l.topic]), gethcommon.HexToHash(simTxTopic(tag, i))},
+				Data:    []byte{},
+			}
+		}
+		rs[i] = &gethtypes.Receipt{Type: gethtypes.LegacyTxType, Status: gethtypes.ReceiptStatusSuccessful, CumulativeGasUsed: 0x5208, Bloom: gethtypes.BytesToBloom(bloom), Logs: logs}
+	}
+	return gethtypes.DeriveSha(rs, trie.NewStackTrie(nil))
+}
+
+// simForgedData is the data of a forged log: no block of the chain holds it.
+const simForgedData = "0xbad0"
+
+// forgeFirstLog replaces the data of the first log in receipts.
+func forgeFirstLog(receipts []map[string]interface{}) {
+	for _, r := range receipts {
+		if logs, _ := r["logs"].([]map[string]interface{}); len(logs) > 0 {
+			logs[0]["data"] = simForgedData
+			return
+		}
+	}
+}
+
+// forgeHash is raw with a hash it does not hash to (blockHashRecompute).
+func forgeHash(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	h := sha256.Sum256(fields["hash"])
+	fields["hash"], _ = json.Marshal("0x" + hex.EncodeToString(h[:]))
+	out, _ := json.Marshal(fields)
+	return out
 }
 
 func (c *simChain) childLocked(parent *simBlock, at time.Time, minority bool) *simBlock {
@@ -593,7 +668,7 @@ func (c *simChain) reorg(depth int) *simBlock {
 type simPush struct {
 	conn *websocket.Conn
 	sub  string
-	blk  *simBlock
+	raw  json.RawMessage
 }
 
 // refresh moves each vendor's tip to what its state serves and pushes
@@ -621,7 +696,7 @@ func writePushes(pushes []simPush) {
 		_ = mockWriteJSON(p.conn, map[string]interface{}{
 			"jsonrpc": "2.0",
 			"method":  "eth_subscription",
-			"params":  map[string]interface{}{"subscription": p.sub, "result": p.blk.json()},
+			"params":  map[string]interface{}{"subscription": p.sub, "result": p.raw},
 		})
 	}
 }
@@ -665,6 +740,11 @@ type simVendor struct {
 	lateReceipts  time.Duration
 	noReceipts    bool
 	wrongBloom    bool
+	forgedLog     bool
+	// forgeHashes is how many of the vendor's next pushes carry a wrong
+	// hash; forged counts those pushed.
+	forgeHashes int
+	forged      int
 
 	connects          atomic.Int64
 	subscribes        atomic.Int64
@@ -728,8 +808,16 @@ func (v *simVendor) pushesLocked(out []simPush) []simPush {
 	}
 	for conn, sub := range v.conns {
 		if sub != "" {
-			out = append(out, simPush{conn: conn, sub: sub, blk: v.tip})
+			raw := v.tip.json()
+			if v.forgeHashes > 0 {
+				raw = forgeHash(raw)
+			}
+			out = append(out, simPush{conn: conn, sub: sub, raw: raw})
 		}
+	}
+	if v.forgeHashes > 0 && len(out) > 0 {
+		v.forgeHashes--
+		v.forged++
 	}
 	return out
 }
@@ -921,10 +1009,14 @@ func (v *simVendor) receiptsLocked(method string, params []interface{}) (interfa
 	if v.truncReceipts {
 		drop = 10
 	}
-	if drop == 0 && !v.wrongBloom && !c.badBloom {
+	if drop == 0 && !v.wrongBloom && !c.badBloom && !v.forgedLog {
 		v.served[h] = true
 	}
-	return b.receipts(v.wrongBloom || c.badBloom, drop), nil
+	out := b.receipts(v.wrongBloom || c.badBloom, drop)
+	if v.forgedLog {
+		forgeFirstLog(out)
+	}
+	return out, nil
 }
 
 // trapped answers a block's first receipts call while the chain's trap is
@@ -1123,7 +1215,7 @@ func (v *simVendor) burst(n int) int {
 			if i%2 == 1 {
 				b = v.tip.parent
 			}
-			pushes = append(pushes, simPush{conn: conn, sub: sub, blk: b})
+			pushes = append(pushes, simPush{conn: conn, sub: sub, raw: b.json()})
 		}
 	}
 	c.mu.Unlock()
@@ -1459,6 +1551,7 @@ func (cl *chaosLogsClient) read(s *chaosSeed) {
 					BlockHash   string `json:"blockHash"`
 					BlockNumber string `json:"blockNumber"`
 					LogIndex    string `json:"logIndex"`
+					Data        string `json:"data"`
 					Removed     bool   `json:"removed"`
 				} `json:"result"`
 			} `json:"params"`
@@ -1478,6 +1571,9 @@ func (cl *chaosLogsClient) read(s *chaosSeed) {
 		if err1 != nil || err2 != nil || err3 != nil || len(raw) != 32 {
 			cl.problem("malformed log %s", msg)
 			continue
+		}
+		if r.Data != "0x" {
+			cl.problem("log %s of block %s carries data %s no block of the chain holds", r.LogIndex, r.BlockNumber, r.Data)
 		}
 		cl.apply(s, simLogKey{block: [32]byte(raw), index: uint64(idx)}, uint64(n), r.Removed)
 	}
@@ -1569,10 +1665,13 @@ type chaosSeed struct {
 	rng         *rand.Rand
 	pollSources bool
 	chain       *simChain
-	wsA, wsB    *simVendor
-	httpA       *simVendor
-	httpB       *simVendor
-	vendors     []*simVendor
+	opts        chaosOpts
+	// baseline is each metric this seed judges, as the seed began.
+	baseline chaosMetrics
+	wsA, wsB *simVendor
+	httpA    *simVendor
+	httpB    *simVendor
+	vendors  []*simVendor
 
 	srv    *HttpServer
 	addr   string
@@ -1601,6 +1700,10 @@ type chaosSeed struct {
 
 	faultMu sync.Mutex
 	spans   []faultSpan
+
+	// violators are the upstreams that serve forged data, the only ones
+	// integrity may count violations against.
+	violators map[string]bool
 }
 
 // faultSpan is when one fault ran; to is zero while it runs.
@@ -1646,15 +1749,32 @@ func (s *chaosSeed) faultsSince(since time.Time) string {
 	return strings.Join(out, ", ")
 }
 
-func newChaosSeed(t *testing.T, seed int64, pollSources bool) *chaosSeed {
-	s := &chaosSeed{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 0)), pollSources: pollSources,
+// chaosOpts shape one seed: integrity on (checks configured as an operator
+// would: level authoritative, baseFeeDerivation enabled for the simulated
+// chain), a chain whose base fee no parent derives, a network of one
+// vendor.
+type chaosOpts struct {
+	integrity  bool
+	badBaseFee bool
+	oneVendor  bool
+}
+
+func newChaosSeed(t *testing.T, seed int64, pollSources bool, opts chaosOpts) *chaosSeed {
+	s := &chaosSeed{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 0)), pollSources: pollSources, opts: opts,
 		occurred: make(map[string]string), paths: make(map[string]string)}
-	s.chain = newSimChain(seed)
-	s.wsA = s.chain.addVendor(t, "ws-a", "vendor-a", true)
-	s.wsB = s.chain.addVendor(t, "ws-b", "vendor-b", true)
-	s.httpA = s.chain.addVendor(t, "http-a", "vendor-a", false)
-	s.httpB = s.chain.addVendor(t, "http-b", "vendor-b", false)
-	s.vendors = []*simVendor{s.wsA, s.wsB, s.httpA, s.httpB}
+	s.chain = newSimChain(seed, opts.badBaseFee)
+	if opts.oneVendor {
+		s.wsA = s.chain.addVendor(t, "ws-a", "vendor-a", true)
+		s.httpA = s.chain.addVendor(t, "http-a", "vendor-a", false)
+		s.vendors = []*simVendor{s.wsA, s.httpA}
+	} else {
+		s.wsA = s.chain.addVendor(t, "ws-a", "vendor-a", true)
+		s.wsB = s.chain.addVendor(t, "ws-b", "vendor-b", true)
+		s.httpA = s.chain.addVendor(t, "http-a", "vendor-a", false)
+		s.httpB = s.chain.addVendor(t, "http-b", "vendor-b", false)
+		s.vendors = []*simVendor{s.wsA, s.wsB, s.httpA, s.httpB}
+	}
+	s.baseline = s.metrics()
 	s.hook = &chaosHook{s: s, first: make(map[*evm.ChainTracker]indexer.Cursor), firstFrom: make(map[*evm.ChainTracker]string)}
 	fn := s.hook.on
 	evm.TrackerMessageHook.Store(&fn)
@@ -1694,6 +1814,12 @@ func (s *chaosSeed) config() *common.Config {
 	}
 	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
 		nw.Evm.ChainTracker = &common.EvmChainTrackerConfig{ReorgWindow: chaosReorgWindow, MaxBackfill: common.Duration(chaosMaxBackfill)}
+		if s.opts.integrity {
+			nw.Integrity = &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
+				Level:  "authoritative",
+				Checks: map[string]*common.IntegrityCheckConfig{"baseFeeDerivation": {Enabled: util.BoolPtr(true)}},
+			}}
+		}
 	}, ups...)
 	cfg.RateLimiters = &common.RateLimiterConfig{Budgets: budgets}
 	cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: &common.CacheConfig{
@@ -2043,6 +2169,16 @@ func (s *chaosSeed) inject(f string) {
 		s.panicThrice()
 	case fPendingSilent:
 		s.pendingSilentVendor()
+	case fForgedLog:
+		s.forgedLog()
+	case fForgedHash:
+		s.forgedHash()
+	case fReorg3:
+		s.reorg3()
+	case fClientGetLogs:
+		s.clientGetLogs()
+	case fBadBaseFee, fBadBaseFeeLone:
+		s.badBaseFee(f)
 	default:
 		s.t.Fatalf("unknown fault %q", f)
 	}
@@ -2755,6 +2891,7 @@ func (s *chaosSeed) judge(end time.Time) {
 	require.Empty(t, p.problems, "pending-transaction client")
 	require.NotZero(t, p.received, "the pending-transaction client got no transaction")
 	t.Logf("pending-transaction client: %d transactions over %d subscriptions", p.received, p.sessions)
+	s.judgeIntegrity()
 }
 
 //
@@ -2874,6 +3011,217 @@ func (s *chaosSeed) faultyVendor(rotates bool, set func(v *simVendor, on bool)) 
 		require.Positive(s.t, rotated, "blocks %s answered wrong in %d..%d are refetched from %s", name, from, to, otherVendor(name))
 	}
 	return name, from, to, calls, rotated
+}
+
+//
+// --- integrity faults ---
+//
+
+// chaosSuspendBlocks is evm.CheckSuspendBlocks on the chaos chain.
+const chaosSuspendBlocks = 40
+
+// chaosMetrics are the integrity counters a seed judges.
+type chaosMetrics struct {
+	violations map[string]float64 // per upstream
+	suspended  map[string]float64 // per header check
+	gated      float64            // source headers integrity held back
+}
+
+// metricSum sums the counters of c whose labels hold every value of match.
+func metricSum(c prometheus.Collector, match map[string]string) float64 {
+	ch := make(chan prometheus.Metric, 256)
+	go func() {
+		c.Collect(ch)
+		close(ch)
+	}()
+	sum := 0.0
+	for m := range ch {
+		var pb dto.Metric
+		if m.Write(&pb) != nil {
+			continue
+		}
+		have := make(map[string]string, len(pb.GetLabel()))
+		for _, l := range pb.GetLabel() {
+			have[l.GetName()] = l.GetValue()
+		}
+		ok := true
+		for k, v := range match {
+			ok = ok && have[k] == v
+		}
+		if ok {
+			sum += pb.GetCounter().GetValue()
+		}
+	}
+	return sum
+}
+
+func chaosLabels(kv ...string) map[string]string {
+	m := map[string]string{"project": "test_ws", "network": "evm:123"}
+	for i := 0; i+1 < len(kv); i += 2 {
+		m[kv[i]] = kv[i+1]
+	}
+	return m
+}
+
+func (s *chaosSeed) metrics() chaosMetrics {
+	m := chaosMetrics{violations: make(map[string]float64), suspended: make(map[string]float64)}
+	for _, id := range []string{"ws-a", "ws-b", "http-a", "http-b"} {
+		m.violations[id] = metricSum(telemetry.MetricIntegrityViolation, chaosLabels("upstream", id))
+	}
+	for _, id := range integrity.HeaderChecks {
+		m.suspended[id] = metricSum(telemetry.MetricIntegrityCheckSuspendedTotal, chaosLabels("check", id))
+	}
+	m.gated = metricSum(telemetry.MetricChainTrackerSourceHeadsTotal, chaosLabels("outcome", "gated_integrity"))
+	return m
+}
+
+func (s *chaosSeed) violator(upstreamId string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.violators == nil {
+		s.violators = make(map[string]bool)
+	}
+	s.violators[upstreamId] = true
+}
+
+// forgedLog: the vendor a receipts sweep asks first serves receipts whose
+// first log carries data no block holds; receiptsRootRecompute rejects
+// them, and the other vendor serves the block.
+func (s *chaosSeed) forgedLog() {
+	name, from, to, calls, rotated := s.faultyVendor(true, func(v *simVendor, on bool) { v.forgedLog = on })
+	rose := 0.0
+	for _, v := range s.vendorOf(name) {
+		s.violator(v.id)
+		rose += metricSum(telemetry.MetricIntegrityViolation, chaosLabels("upstream", v.id)) - s.baseline.violations[v.id]
+	}
+	require.Positive(s.t, rose, "integrity counts the forged receipts against %s", name)
+	s.occur(fForgedLog, fmt.Sprintf("%s forged a log in %d receipts answers, blocks %d..%d; %d refetched from the other vendor", name, calls, from, to, rotated))
+}
+
+// forgedHash: one wss vendor pushes its next 2 heads with a wrong hash,
+// then, 4 blocks later, one more; intake drops each before the head
+// counter, and no client sees one.
+func (s *chaosSeed) forgedHash() {
+	v := s.pick(s.wsA, s.wsB)
+	s.violator(v.id)
+	gated := func() float64 {
+		return metricSum(telemetry.MetricChainTrackerSourceHeadsTotal, chaosLabels("upstream", v.id, "outcome", "gated_integrity"))
+	}
+	violations := func() float64 {
+		return metricSum(telemetry.MetricIntegrityViolation, chaosLabels("upstream", v.id, "check", "blockHashRecompute"))
+	}
+	gated0, violations0 := gated(), violations()
+	forge := func(n int) {
+		s.chain.mu.Lock()
+		v.forgeHashes = n
+		s.chain.mu.Unlock()
+		require.Eventually(s.t, func() bool {
+			s.chain.mu.Lock()
+			defer s.chain.mu.Unlock()
+			return v.forgeHashes == 0
+		}, 20*chaosBlock, 10*time.Millisecond, "%s pushes its forged heads", v.id)
+	}
+	forge(2)
+	s.blocks(4)
+	forge(1)
+	s.blocks(2)
+	s.chain.mu.Lock()
+	forged := v.forged
+	s.chain.mu.Unlock()
+	require.Equal(s.t, float64(forged), gated()-gated0, "intake holds back every forged head of %s", v.id)
+	require.Equal(s.t, float64(forged), violations()-violations0, "each forged head counts against %s", v.id)
+	s.occur(fForgedHash, fmt.Sprintf("%s pushed %d heads with a wrong hash, the first 2 in a row", v.id, forged))
+}
+
+func (s *chaosSeed) reorg3() {
+	tip := s.chain.reorg(3)
+	s.blocks(3)
+	s.occur(fReorg3, fmt.Sprintf("new head %d", tip.number))
+}
+
+// clientGetLogs: a client asks eth_getLogs for a block whose receipts the
+// feed holds for a logs tap; getLogsCompleteness compares them with no
+// canonical_receipts fetch.
+func (s *chaosSeed) clientGetLogs() {
+	tr := s.tracker()
+	var b *simBlock
+	require.Eventually(s.t, func() bool {
+		tip := s.chain.tip()
+		for x := tip; x != nil && x.number+8 > tip.number; x = x.parent {
+			if x.kind == simMatching {
+				if _, ok := tr.CachedReceipts("0x" + hex.EncodeToString(x.hash[:])); ok {
+					b = x
+					return true
+				}
+			}
+		}
+		return false
+	}, 20*chaosBlock, 10*time.Millisecond, "the feed holds a recent matching block's receipts")
+	passed := func() float64 {
+		return metricSum(telemetry.MetricIntegrityCheck, chaosLabels("check", "getLogsCompleteness", "outcome", "pass"))
+	}
+	fetched := func() float64 {
+		return metricSum(telemetry.MetricIntegrityAuxRequest, chaosLabels("kind", "canonical_receipts"))
+	}
+	passed0, fetched0 := passed(), fetched()
+	resp, code, err := s.rpc("eth_getLogs", map[string]interface{}{"blockHash": "0x" + hex.EncodeToString(b.hash[:])})
+	require.NoError(s.t, err)
+	require.Equal(s.t, http.StatusOK, code, "eth_getLogs answer %v", resp)
+	logs, _ := resp["result"].([]interface{})
+	require.Len(s.t, logs, len(b.logsOf()), "the client gets block %d's logs", b.number)
+	require.Positive(s.t, passed()-passed0, "getLogsCompleteness verified the answer against the held receipts")
+	require.Equal(s.t, fetched0, fetched(), "no canonical_receipts fetch")
+	s.occur(fClientGetLogs, fmt.Sprintf("block %d: %d logs verified against the feed's receipts", b.number, len(logs)))
+}
+
+// badBaseFee: every header of the chain carries a base fee its parent does
+// not derive. No header passes baseFeeDerivation at 2 heights, so the
+// check is suspended and heads keep flowing; chaosSuspendBlocks later it
+// runs observe-only, still suspended, and holds back no header.
+func (s *chaosSeed) badBaseFee(fault string) {
+	suspended := func() float64 {
+		return metricSum(telemetry.MetricIntegrityCheckSuspendedTotal, chaosLabels("check", "baseFeeDerivation"))
+	}
+	wouldReject := func() float64 {
+		return metricSum(telemetry.MetricIntegrityCheck, chaosLabels("check", "baseFeeDerivation", "outcome", "would_reject"))
+	}
+	before := s.baseline.suspended["baseFeeDerivation"]
+	require.Eventually(s.t, func() bool { return suspended() > before }, 60*chaosBlock, 10*time.Millisecond, "baseFeeDerivation is suspended")
+	s.blocks(1)
+	gated0, observed0 := s.metrics().gated, wouldReject()
+	from := s.chain.tip().number
+	s.blocks(chaosSuspendBlocks + 10)
+	require.Equal(s.t, before+1, suspended(), "the check stays suspended")
+	require.Positive(s.t, wouldReject()-observed0, "after %d blocks the check runs observe-only", chaosSuspendBlocks)
+	require.Equal(s.t, gated0, s.metrics().gated, "no header held back while the check is suspended")
+	s.occur(fault, fmt.Sprintf("suspended by block %d; observe-only by %d", from, s.chain.tip().number))
+}
+
+// judgeIntegrity: with integrity on, a check is suspended only where no
+// upstream passes it, and violations count only against the upstreams
+// that served forged data.
+func (s *chaosSeed) judgeIntegrity() {
+	if !s.opts.integrity {
+		return
+	}
+	now := s.metrics()
+	for _, id := range integrity.HeaderChecks {
+		want := 0.0
+		if s.opts.badBaseFee && id == "baseFeeDerivation" {
+			want = 1
+		}
+		require.Equal(s.t, want, now.suspended[id]-s.baseline.suspended[id], "suspensions of %s", id)
+	}
+	if s.opts.badBaseFee {
+		return // every upstream served the base fee the check rejected
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.vendors {
+		if !s.violators[v.id] {
+			require.Zero(s.t, now.violations[v.id]-s.baseline.violations[v.id], "integrity violations of %s, which served no forged data", v.id)
+		}
+	}
 }
 
 func (s *chaosSeed) nullReceipts() {
