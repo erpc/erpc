@@ -193,9 +193,9 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{67, true, chaosOpts{integrity: true, badBaseFee: true}, []string{fBadBaseFee}},
 		{71, true, chaosOpts{integrity: true, badBaseFee: true, oneVendor: true}, []string{fBadBaseFeeLone}},
 		{73, true, chaosOpts{integrity: true, strict: true}, []string{fSlowWalk}},
-		// A window of 30 blocks holds the deep reorg's fork point, and not
-		// the cursor streamOutOfRange takes 40 blocks below the head.
-		{79, true, chaosOpts{grpc: true, maxBackfill: 6 * time.Second}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fReorg3, fDeepReorg}},
+		// A window of 10s holds the deep reorg's fork point, 20 blocks
+		// down, even when load slows block production 2x.
+		{79, true, chaosOpts{grpc: true, maxBackfill: 10 * time.Second}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fReorg3, fDeepReorg}},
 	}
 	before := erpcGoroutines()
 	covered := make(map[string][]int64)
@@ -1957,7 +1957,7 @@ func (s *chaosSeed) config() *common.Config {
 		})
 	}
 	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
-		nw.Evm.ChainTracker = &common.EvmChainTrackerConfig{ReorgWindow: chaosReorgWindow, MaxBackfill: common.Duration(cmp.Or(s.opts.maxBackfill, chaosMaxBackfill))}
+		nw.Evm.ChainTracker = &common.EvmChainTrackerConfig{ReorgWindow: chaosReorgWindow, MaxBackfill: common.Duration(s.maxBackfill())}
 		if s.opts.integrity {
 			nw.Integrity = &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
 				Level:  "authoritative",
@@ -1980,6 +1980,10 @@ func (s *chaosSeed) config() *common.Config {
 		}},
 	}}
 	return cfg
+}
+
+func (s *chaosSeed) maxBackfill() time.Duration {
+	return cmp.Or(s.opts.maxBackfill, chaosMaxBackfill)
 }
 
 // startERPC boots the primary eRPC instance and, in the gRPC seed, its

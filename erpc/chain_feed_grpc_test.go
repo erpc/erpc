@@ -440,18 +440,23 @@ func openOnce(g *grpcInstance, req *bdsevm.StreamBlocksRequest, within time.Dura
 	return got, err
 }
 
-// streamOutOfRange resumes from a canonical header far below the window,
-// and from an orphan no vendor ever served, on either instance: each ends
-// with OUT_OF_RANGE and sends nothing. A resume with one field alone is
-// INVALID_ARGUMENT.
+// streamOutOfRange resumes from a canonical header older than the window,
+// by header time and by reorgWindow, and from an orphan no vendor ever
+// served, on either instance: each ends with OUT_OF_RANGE and sends
+// nothing. A resume with one field alone is INVALID_ARGUMENT.
 func (s *chaosSeed) streamOutOfRange() {
 	c := s.chain
 	c.mu.Lock()
 	tip := c.tipLocked()
-	old := c.canonAtLocked(tip.number - uint64(2*chaosReorgWindow) - 8)
-	if old == nil {
-		old = c.canon[0]
+	// Header times are whole seconds: 2s clear of the window's edge.
+	edge := tip.ts - uint64(s.maxBackfill()/time.Second) - 2
+	var old *simBlock
+	for _, b := range c.canon {
+		if b.ts < edge && b.number+uint64(chaosReorgWindow) < tip.number {
+			old = b
+		}
 	}
+	require.NotNil(s.t, old, "the chain holds a header older than the window")
 	orphan := c.childLocked(c.canonAtLocked(tip.number-3), time.Now(), true)
 	c.mu.Unlock()
 	var got []string
