@@ -2871,7 +2871,10 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	stalled := fallback.latestPolls.Load()
 	chain.advance()
 	last = requireContiguous(t, conn, 1, last)
-	assert.Greater(t, fallback.latestPolls.Load(), stalled, "the fallback polls again once the primary is not live")
+	// The no-source ask (§6 rule 6) may deliver the block before the
+	// vendor counts the fallback's first poll.
+	require.Eventually(t, func() bool { return fallback.latestPolls.Load() > stalled }, 2*time.Second, 10*time.Millisecond,
+		"the fallback polls again once the primary is not live")
 	require.Eventually(t, pendingOn(1, 1), 10*time.Second, 10*time.Millisecond,
 		"the fallback subscribes newPendingTransactions again once the primary is not live")
 
