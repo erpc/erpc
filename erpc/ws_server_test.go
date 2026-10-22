@@ -1699,6 +1699,9 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		tick(s, 2)
 		assert.Zero(t, receiptsAndLogsCalls(s), "a filter that does not parse makes no upstream call")
 
+		sent := telemetry.MetricWebsocketNotificationsSentTotal.WithLabelValues("test_ws", "evm:123", "logs")
+		sentBytes := telemetry.MetricWebsocketNotificationBytesTotal.WithLabelValues("test_ws", "evm:123", "logs")
+		sentBefore, bytesBefore := testutil.ToFloat64(sent), testutil.ToFloat64(sentBytes)
 		s.dialLogs("base")
 		tick(s, 3)
 
@@ -1746,6 +1749,20 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			assert.Zero(t, v.logsSubscribe.Load(), "%s gets no eth_subscribe logs", v.id)
 			assert.Zero(t, v.getLogsCalls.Load(), "%s gets no eth_getLogs while receipts serve", v.id)
 		}
+		// The counters move after the write returns, so after the client
+		// may have read it.
+		received := func() (notes, size int) {
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				notes, size = notes+cl.notes, size+cl.noteBytes
+				cl.mu.Unlock()
+			}
+			return notes, size
+		}
+		require.Eventually(t, func() bool {
+			notes, size := received()
+			return notes > 0 && float64(notes) == testutil.ToFloat64(sent)-sentBefore && float64(size) == testutil.ToFloat64(sentBytes)-bytesBefore
+		}, 5*time.Second, 20*time.Millisecond, "logs notifications sent and their bytes equal what the clients received")
 		t.Logf("planned blocks %d..%d, head %d", from, from+uint64(len(plan))-1, tip.number)
 	})
 

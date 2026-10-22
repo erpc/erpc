@@ -15,14 +15,15 @@ var trackerAttemptSlack = time.Second
 // SweepUpstreams makes one chain tracker fetch (spec §7): one pass over the
 // upstreams the selection policy orders, or over the one upstream named. No
 // failsafe policy, project or network rate limit applies, and upstreams
-// whose breaker is open are skipped. Each attempt gets an even share of what
-// remains of ctx plus trackerAttemptSlack, so one slow upstream cannot end
-// the sweep. The cache is read only when req's directives allow it; the
-// answer reaches it only through StoreTrackerAnswer, once the tracker's
-// checks passed. A network-wide sweep leads the in-flight multiplexer, so
-// identical client requests join it. A failed pass returns
+// whose breaker is open or that do not serve the method are skipped. Each
+// attempt gets an even share of what remains of ctx plus
+// trackerAttemptSlack, so one slow upstream cannot end the sweep. The cache
+// is read only when req's directives allow it. check is the tracker's
+// answer check: an answer it fails is returned with its error, never
+// cached and never shared. A network-wide sweep leads the in-flight
+// multiplexer, so identical client requests join it. A failed pass returns
 // ErrUpstreamsExhausted carrying each tried upstream's error.
-func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, upstreamId string) (resp *common.NormalizedResponse, err error) {
+func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, upstreamId string, check func(*common.NormalizedResponse) error) (resp *common.NormalizedResponse, err error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
 	req.SetCacheDal(n.cacheDal)
@@ -34,7 +35,7 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 
 	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
 		if cached, err := n.cacheDal.Get(ctx, req); err == nil && cached != nil && !cached.IsObjectNull(ctx) {
-			return cached, nil
+			return cached, check(cached)
 		}
 	}
 
@@ -49,8 +50,9 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 
 	if d := req.Directives(); upstreamId == "" && (d == nil || d.UseUpstream == "") {
 		if mlx := n.leadMultiplexer(ctx, req); mlx != nil {
-			// Followers get only a usable answer; on anything else they
-			// forward on their own, with their own failsafe policies.
+			// Followers get only an answer that passed check; on anything
+			// else they forward on their own, with their own failsafe
+			// policies.
 			defer func() {
 				var shared *common.NormalizedResponse
 				if err == nil && !resp.IsResultEmptyish(ctx) {
@@ -62,22 +64,17 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 		}
 	}
 
-	return n.sweep(ctx, req, method, ups, startTime)
-}
-
-// StoreTrackerAnswer writes a tracker fetch's answer to the cache, as
-// Forward writes one; the scheduler calls it only after the answer passed
-// the tracker's answer and bloom checks.
-func (n *Network) StoreTrackerAnswer(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
-	if n.cacheDal == nil || resp == nil || resp.FromCache() {
-		return
+	if resp, err = n.sweep(ctx, req, method, ups, startTime); err != nil {
+		return nil, err
 	}
-	method, err := req.Method()
-	if err != nil {
-		return
+	if err = check(resp); err != nil {
+		return resp, err
 	}
-	lg := n.logger.With().Str("method", method).Logger()
-	n.storeInCache(ctx, trace.SpanContextFromContext(ctx), &lg, method, req, resp)
+	if n.cacheDal != nil && !resp.FromCache() {
+		lg := n.logger.With().Str("method", method).Logger()
+		n.storeInCache(ctx, trace.SpanContextFromContext(ctx), &lg, method, req, resp)
+	}
+	return resp, nil
 }
 
 // sweep tries ups in order and returns the first non-empty answer, else the
@@ -144,29 +141,34 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 }
 
 // trackerUpstreams is the named upstream, or the selection order narrowed to
-// the request's use-upstream selector.
+// the request's use-upstream selector; only upstreams that serve method.
 func (n *Network) trackerUpstreams(ctx context.Context, req *common.NormalizedRequest, method, upstreamId string) []common.Upstream {
+	var ups []common.Upstream
 	if upstreamId != "" {
 		for _, u := range n.AllUpstreams() {
 			if u.Id() == upstreamId {
-				return []common.Upstream{u}
+				ups = []common.Upstream{u}
+				break
 			}
 		}
-		return nil
+	} else {
+		ups = n.preferUpstreams(ctx, req, method, n.selectionOrder(ctx, req, method))
 	}
-	ups := n.preferUpstreams(ctx, req, method, n.selectionOrder(ctx, req, method))
 	sel := ""
-	if d := req.Directives(); d != nil {
+	if d := req.Directives(); d != nil && upstreamId == "" {
 		sel = d.UseUpstream
-	}
-	if sel == "" {
-		return ups
 	}
 	out := make([]common.Upstream, 0, len(ups))
 	for _, u := range ups {
-		if ok, _ := common.UpstreamMatchesSelector(sel, u); ok {
-			out = append(out, u)
+		if ok, _ := u.ShouldHandleMethod(method); !ok {
+			continue
 		}
+		if sel != "" {
+			if ok, _ := common.UpstreamMatchesSelector(sel, u); !ok {
+				continue
+			}
+		}
+		out = append(out, u)
 	}
 	return out
 }

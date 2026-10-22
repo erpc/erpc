@@ -121,9 +121,10 @@ type fetchBackoff struct {
 type fetchScheduler struct {
 	ctx     context.Context
 	network common.Network
-	sweep   func(ctx context.Context, req *common.NormalizedRequest, upstreamId string) (*common.NormalizedResponse, error)
-	store   func(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse)
-	bg      util.Goroutines
+	// sweep runs check on the answer before identical client requests that
+	// joined the sweep get it, and caches only an answer check passed.
+	sweep func(ctx context.Context, req *common.NormalizedRequest, upstreamId string, check func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error)
+	bg    util.Goroutines
 
 	mu       sync.Mutex
 	closed   bool
@@ -153,10 +154,9 @@ func newFetchScheduler(ctx context.Context, n common.Network) *fetchScheduler {
 		s.share[c] = fetchSlots
 	}
 	if sw, ok := n.(interface {
-		SweepUpstreams(context.Context, *common.NormalizedRequest, string) (*common.NormalizedResponse, error)
-		StoreTrackerAnswer(context.Context, *common.NormalizedRequest, *common.NormalizedResponse)
+		SweepUpstreams(context.Context, *common.NormalizedRequest, string, func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error)
 	}); ok {
-		s.sweep, s.store = sw.SweepUpstreams, sw.StoreTrackerAnswer
+		s.sweep = sw.SweepUpstreams
 	}
 	context.AfterFunc(ctx, s.close)
 	return s
@@ -430,30 +430,28 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	defer cancel()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + r.spec.method + `","params":` + r.spec.params + `}`))
 	req.SetDirectives(r.spec.directives())
-	resp, err := s.sweep(ctx, req, r.spec.upstream)
-	if err != nil {
-		return fetchResult{err: err}
-	}
-	if resp == nil {
-		return fetchResult{err: errFetchUndecoded}
-	}
-	jrr, err := resp.JsonRpcResponse(ctx)
-	if err != nil {
-		return fetchResult{err: err}
-	}
-	if jrr == nil || jrr.Error != nil {
-		return fetchResult{err: errFetchUndecoded}
-	}
-	upstreamId := ""
-	if u := resp.Upstream(); u != nil {
-		upstreamId = u.Id()
-	}
-	val, err := r.spec.decode(bytes.Clone(jrr.GetResultBytes()))
+	var (
+		upstreamId string
+		val        any
+	)
+	// A cached answer names no upstream: no vendor answered it.
+	_, err := s.sweep(ctx, req, r.spec.upstream, func(resp *common.NormalizedResponse) error {
+		if u := resp.Upstream(); u != nil && !resp.FromCache() {
+			upstreamId = u.Id()
+		}
+		jrr, err := resp.JsonRpcResponse(ctx)
+		if err != nil {
+			return err
+		}
+		if jrr == nil || jrr.Error != nil {
+			return errFetchUndecoded
+		}
+		val, err = r.spec.decode(bytes.Clone(jrr.GetResultBytes()))
+		return err
+	})
 	if err != nil {
 		return fetchResult{upstream: upstreamId, err: err}
 	}
-	// Only an answer that passed the tracker's checks may reach the cache.
-	s.store(ctx, req, resp)
 	return fetchResult{upstream: upstreamId, val: val}
 }
 

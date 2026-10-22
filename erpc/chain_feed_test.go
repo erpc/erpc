@@ -91,12 +91,13 @@ const (
 	fReceiptsDown90 = "every receipts and logs fetch failing for 90s"
 	fWrongBloom     = "one vendor whose receipts have a wrong bloom"
 	fChainBloom     = "every vendor's receipts carry a bloom other than the header's"
+	fBloomFollower  = "client asking the receipts the tracker fetches while the first answer has a wrong bloom"
 )
 
 var chaosFaults = []string{
 	fReorgSmall, fMinorityFork, fAheadFork, fDeepReorg, fSilent, fLagging, fDown, fAllDown, fHalt,
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice,
-	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom,
+	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower,
 }
 
 // TestChainFeed_ConvergesUnderFaults runs real eRPC against 4 mocked vendors
@@ -146,7 +147,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{23, true, []string{fDown, fLagging, fDeepReorg, fPanicThrice, fNonLinking, fReceiptsDown13}},
 		{37, true, []string{fAllDown, fHalt, fLoad, fOrphanCached, fRestart, fChainBloom, fNullReceipts}},
 		{41, false, []string{fSplit, fLate, fDeepReorg, fBlockDown60, fReceiptsDown90, fNoReceipts}},
-		{53, true, []string{fSilent, fLate, fLateReceipts}},
+		{53, true, []string{fSilent, fLate, fLateReceipts, fBloomFollower}},
 	}
 	covered := make(map[string][]int64)
 	for _, p := range plans {
@@ -367,6 +368,16 @@ type simChain struct {
 	failNext     bool
 	failHash     [32]byte
 	failUntil    time.Time
+	// trapOn holds the first eth_getBlockReceipts call of each block with
+	// transactions for 2 block times and answers it with a wrong bloom.
+	trapOn bool
+	traps  map[[32]byte]*simTrap
+}
+
+// simTrap is one block's held first receipts call.
+type simTrap struct {
+	answeredAt time.Time
+	during     int // other receipts calls for the block while it was held
 }
 
 func newSimChain(seed int64) *simChain {
@@ -718,6 +729,11 @@ func (v *simVendor) answer(method string, params []interface{}) (interface{}, *s
 		late += v.lateReceipts
 	}
 	c.mu.Unlock()
+	if method == "eth_getBlockReceipts" {
+		if res, ok := v.trapped(params); ok {
+			return res, nil
+		}
+	}
 	if late > 0 {
 		v.lateAnswers.Add(1)
 		time.Sleep(late)
@@ -850,6 +866,39 @@ func (v *simVendor) receiptsLocked(method string, params []interface{}) (interfa
 		v.served[h] = true
 	}
 	return b.receipts(v.wrongBloom || c.badBloom, drop), nil
+}
+
+// trapped answers a block's first receipts call while the chain's trap is
+// on: after 2 block times, with a wrong bloom.
+func (v *simVendor) trapped(params []interface{}) (interface{}, bool) {
+	if len(params) == 0 {
+		return nil, false
+	}
+	hs, _ := params[0].(string)
+	raw, err := hex.DecodeString(strings.TrimPrefix(strings.ToLower(hs), "0x"))
+	if err != nil || len(raw) != 32 {
+		return nil, false
+	}
+	h := [32]byte(raw)
+	c := v.chain
+	c.mu.Lock()
+	tr, b := c.traps[h], c.byHash[h]
+	if tr != nil && tr.answeredAt.IsZero() {
+		tr.during++
+	}
+	if !c.trapOn || tr != nil || b == nil || len(b.txs) == 0 || !v.seen[h] || v.down || v.noReceipts {
+		c.mu.Unlock()
+		return nil, false
+	}
+	tr = &simTrap{}
+	c.traps[h] = tr
+	c.mu.Unlock()
+	time.Sleep(2 * chaosBlock)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tr.answeredAt = time.Now()
+	v.receiptsCalls[h]++
+	return b.receipts(true, 0), true
 }
 
 // receiptsCallsOf is how many eth_getBlockReceipts calls the vendor got for
@@ -1167,6 +1216,8 @@ type chaosLogsClient struct {
 	endTip    uint64
 	closeCode int  // the server's close code, 0 when it did not close
 	byTest    bool // the test closed it
+	notes     int  // notifications received
+	noteBytes int  // their message lengths
 	problems  []string
 }
 
@@ -1267,6 +1318,10 @@ func (cl *chaosLogsClient) read(s *chaosSeed) {
 			cl.problem("unexpected message %s", msg)
 			continue
 		}
+		cl.mu.Lock()
+		cl.notes++
+		cl.noteBytes += len(msg)
+		cl.mu.Unlock()
 		raw, err1 := hex.DecodeString(strings.TrimPrefix(r.BlockHash, "0x"))
 		n, err2 := common.HexToInt64(r.BlockNumber)
 		idx, err3 := common.HexToInt64(r.LogIndex)
@@ -1777,6 +1832,8 @@ func (s *chaosSeed) inject(f string) {
 		s.wrongBloom()
 	case fChainBloom:
 		s.chainBloom()
+	case fBloomFollower:
+		s.bloomFollower()
 	case fPanicThrice:
 		s.panicThrice()
 	default:
@@ -2797,4 +2854,65 @@ func httptestServer(t *testing.T, h http.Handler) string {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// bloomFollower holds each block's first receipts call and answers it with
+// a wrong bloom. While the tracker's sweep for a block waits on it, a
+// client asks the same receipts: it joins the sweep, and gets only an
+// answer whose blooms are the block's.
+func (s *chaosSeed) bloomFollower() {
+	require.NotEmpty(s.t, s.openLogs(), "logs clients are open, so receipts are wanted")
+	c := s.chain
+	c.mu.Lock()
+	c.trapOn, c.traps = true, make(map[[32]byte]*simTrap)
+	c.mu.Unlock()
+	asked := make(map[[32]byte]bool)
+	joined, failed := 0, 0
+	for deadline := time.Now().Add(40 * chaosBlock); joined < 2 && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		var b *simBlock
+		c.mu.Lock()
+		for h, tr := range c.traps {
+			if !asked[h] && tr.answeredAt.IsZero() {
+				b = c.byHash[h]
+				break
+			}
+		}
+		c.mu.Unlock()
+		if b == nil {
+			continue
+		}
+		asked[b.hash] = true
+		sent := time.Now()
+		out, _, err := s.rpc("eth_getBlockReceipts", "0x"+hex.EncodeToString(b.hash[:]))
+		require.NoError(s.t, err)
+		c.mu.Lock()
+		tr := c.traps[b.hash]
+		answeredAt, during := tr.answeredAt, tr.during
+		c.mu.Unlock()
+		if out["result"] == nil {
+			failed++
+			continue
+		}
+		var got []struct {
+			LogsBloom string `json:"logsBloom"`
+		}
+		raw, _ := json.Marshal(out["result"])
+		require.NoError(s.t, json.Unmarshal(raw, &got), "receipts answer %s", raw)
+		want := b.receipts(false, 0)
+		require.Len(s.t, got, len(want), "block %d's receipts reach the client in full", b.number)
+		for i := range want {
+			require.Equal(s.t, want[i]["logsBloom"], got[i].LogsBloom, "block %d receipt %d reaches the client with the block's bloom", b.number, i)
+		}
+		// Sent early in the hold, and no other call reached a vendor
+		// while it lasted: the client waited on the tracker's sweep.
+		if during == 0 && answeredAt.Sub(sent) > chaosBlock {
+			joined++
+		}
+	}
+	c.mu.Lock()
+	c.trapOn = false
+	held := len(c.traps)
+	c.mu.Unlock()
+	require.Positive(s.t, joined, "a client joins the tracker's receipts sweep while its first answer is held (%d blocks held)", held)
+	s.occur(fBloomFollower, fmt.Sprintf("%d blocks' first receipts answers held with a wrong bloom; %d client requests joined the tracker's sweep and got the right blooms; %d got an error", held, joined, failed))
 }

@@ -70,9 +70,16 @@ type bloomGate struct {
 	mu     sync.Mutex
 	txRun  int
 	onRun  int
-	misses []int // per mismatching block in a row: how many vendors mismatched
+	misses []bloomMiss // per mismatching block in a row
 	seen   map[[32]byte]bloomVerdict
 	order  [][32]byte
+}
+
+// bloomMiss is one mismatching block of a run: the most vendors seen
+// mismatching on it.
+type bloomMiss struct {
+	hash    [32]byte
+	vendors int
 }
 
 // bloomProfile is what the network's config says of the check.
@@ -176,32 +183,38 @@ func (g *bloomGate) matched(h *chainHeader) {
 }
 
 // mismatched records a block no answer matched: vendors of the network's
-// networkVendors mismatched on it. It reports whether the check turned
-// off: on a network of 2 or more vendors once 2 or more vendors mismatch
-// on bloomVendorsOffRun blocks in a row, on a one-vendor network after
+// networkVendors mismatched on it. A repeat verdict on a block of the run
+// keeps the most vendors seen. It reports whether the check turned off: on
+// a network of 2 or more vendors once 2 or more vendors mismatch on
+// bloomVendorsOffRun blocks in a row, on a one-vendor network after
 // bloomOneVendorOffRun blocks in a row.
 func (g *bloomGate) mismatched(h *chainHeader, vendors, networkVendors int) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.newLocked(h.hash, bloomMismatch) {
-		return false
-	}
-	g.txRun = 0
-	g.trusted.Store(false)
-	if !g.on.Load() {
-		g.onRun = 0
-		return false
-	}
-	g.misses = append(g.misses, vendors)
-	if len(g.misses) > bloomOneVendorOffRun {
-		g.misses = g.misses[1:]
+		i := slices.IndexFunc(g.misses, func(m bloomMiss) bool { return m.hash == h.hash })
+		if i < 0 || g.misses[i].vendors >= vendors {
+			return false
+		}
+		g.misses[i].vendors = vendors
+	} else {
+		g.txRun = 0
+		g.trusted.Store(false)
+		if !g.on.Load() {
+			g.onRun = 0
+			return false
+		}
+		g.misses = append(g.misses, bloomMiss{hash: h.hash, vendors: vendors})
+		if len(g.misses) > bloomOneVendorOffRun {
+			g.misses = g.misses[1:]
+		}
 	}
 	off := false
 	if networkVendors <= 1 {
 		off = len(g.misses) >= bloomOneVendorOffRun
 	} else {
 		run := 0
-		for i := len(g.misses) - 1; i >= 0 && g.misses[i] >= 2; i-- {
+		for i := len(g.misses) - 1; i >= 0 && g.misses[i].vendors >= 2; i-- {
 			run++
 		}
 		off = run >= bloomVendorsOffRun
@@ -251,6 +264,14 @@ type logLite struct {
 	TransactionIndex string   `json:"transactionIndex"`
 }
 
+// method is the method that answered r.
+func (r *heldReceipts) method() string {
+	if r.fromLogs {
+		return "eth_getLogs"
+	}
+	return "eth_getBlockReceipts"
+}
+
 func newHeldReceipts(hash [32]byte, h *chainHeader, raw json.RawMessage) *heldReceipts {
 	r := &heldReceipts{hash: hash, h: h, number: -1, raw: raw,
 		byAddr: make(map[string][]int32), byTopic0: make(map[string][]int32)}
@@ -287,10 +308,20 @@ func isNullResult(result []byte) bool {
 	return len(r) == 0 || bytes.Equal(r, []byte("null"))
 }
 
+// judgedBloom is h's logsBloom when an answer's bloom may be judged
+// against it: held, on a header whose hash recomputes, so the bloom is the
+// block's. Otherwise nil: a mismatch may be the header's fault.
+func judgedBloom(h *chainHeader) []byte {
+	if h == nil || h.bloom == nil || !h.hashRecomputes() {
+		return nil
+	}
+	return h.bloom
+}
+
 // parseReceipts is the answer check of an eth_getBlockReceipts answer for
 // block hash (spec §10): non-null, every receipt names hash, and non-empty
 // unless h's transactionsRoot is the empty-trie root. Anything else fails
-// the fetch; it never reads as "no logs". With h's logsBloom held, the
+// the fetch; it never reads as "no logs". With h's judgedBloom, the
 // verdict compares the OR of the receipt blooms with it.
 func parseReceipts(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
 	if isNullResult(result) {
@@ -306,7 +337,7 @@ func parseReceipts(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts,
 	key := hexHash(hash)
 	r := newHeldReceipts(hash, h, result)
 	var bloom []byte
-	if h != nil && h.bloom != nil {
+	if judgedBloom(h) != nil {
 		bloom = make([]byte, logfilter.BloomLen)
 	}
 	bloomBad := false
@@ -350,10 +381,12 @@ type synthReceipt struct {
 }
 
 // parseLogs is the answer check of an eth_getLogs answer by blockHash, the
-// receipts fallback while integrity is off: non-null, every log names hash.
-// Its logs are grouped into receipts by transaction; the bloom verdict
-// compares the bloom of the logs with h's logsBloom.
-func parseLogs(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
+// receipts fallback while integrity is off: non-null, and every log names
+// hash. No logs reads as "no logs" only when the bloom check proves it
+// (checking, with h's judgedBloom) or h's transactionsRoot is the
+// empty-trie root. Its logs are grouped into receipts by transaction; the
+// bloom verdict compares the bloom of the logs with h's judgedBloom.
+func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking bool) (*heldReceipts, error) {
 	if isNullResult(result) {
 		return nil, fmt.Errorf("%w: null", errReceiptsAnswer)
 	}
@@ -361,11 +394,14 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, err
 	if err := common.SonicCfg.Unmarshal(result, &raws); err != nil {
 		return nil, fmt.Errorf("%w: %v", errReceiptsAnswer, err)
 	}
+	if len(raws) == 0 && !(checking && judgedBloom(h) != nil) && (h == nil || !h.emptyTxs) {
+		return nil, fmt.Errorf("%w: no logs, and neither the bloom nor the transactions root proves none", errReceiptsAnswer)
+	}
 	key := hexHash(hash)
 	r := newHeldReceipts(hash, h, nil)
 	r.fromLogs = true
 	var bloom []byte
-	if h != nil && h.bloom != nil {
+	if judgedBloom(h) != nil {
 		bloom = make([]byte, logfilter.BloomLen)
 	}
 	bloomBad := false
@@ -529,12 +565,14 @@ func (t *ChainTracker) receiptsSpec(class fetchClass, hash [32]byte, h *chainHea
 		params:   `["` + key + `"]`,
 		byHash:   true,
 	}
+	gate := t.fetch.bloom
 	parse := parseReceipts
 	if logs {
 		spec.kind, spec.method, spec.params = "logs", "eth_getLogs", `[{"blockHash":"`+key+`"}]`
-		parse = parseLogs
+		parse = func(result []byte, hash [32]byte, h *chainHeader) (*heldReceipts, error) {
+			return parseLogs(result, hash, h, gate.checking())
+		}
 	}
-	gate := t.fetch.bloom
 	spec.decode = func(result []byte) (any, error) {
 		hdr := h
 		if hdr == nil {
@@ -571,7 +609,7 @@ func (t *ChainTracker) holdReceipts(r *heldReceipts) {
 	case bloomMatch:
 		t.fetch.bloom.matched(r.h)
 	case bloomMismatch:
-		t.fetch.bloom.mismatched(r.h, 1, t.vendorCount())
+		t.fetch.bloom.mismatched(r.h, 1, t.vendorCount(r.method()))
 	}
 	t.receiptsDirty = true
 }
@@ -606,10 +644,11 @@ type receiptsJob struct {
 	cancel  context.CancelFunc
 	attempt uint64
 	logs    bool // switched to the eth_getLogs fallback
-	// failingSince is when the first attempt since the job started failed.
-	failingSince time.Time
-	mismatched   map[string]bool // vendors whose answer mismatched, this round
-	tried        map[string]bool // upstreams asked by name, this round
+	fresh   bool // a cached answer failed the checks: never read the cache again
+	// started is when the job's first attempt was submitted.
+	started    time.Time
+	mismatched map[string]bool // vendors whose answer mismatched, this round
+	tried      map[string]bool // upstreams asked by name, this round
 }
 
 func (t *ChainTracker) startJob(h *chainHeader, keep bool) *receiptsJob {
@@ -632,16 +671,19 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.cancel != nil {
 		j.cancel()
 	}
-	if !j.logs && t.fetch.bloom.prof().logsFallback && !j.failingSince.IsZero() && time.Since(j.failingSince) >= LogsFallbackAfter.Load() {
+	if j.started.IsZero() {
+		j.started = time.Now()
+	} else if !j.logs && t.fetch.bloom.prof().logsFallback && time.Since(j.started) >= LogsFallbackAfter.Load() {
 		j.logs = true
 		j.newRound()
 	}
 	spec := t.receiptsSpec(t.fetchClassAt(int64(j.h.number), classTipReceipts), j.h.hash, j.h, j.logs)
+	spec.fresh = j.fresh
 	if len(j.mismatched) > 0 {
 		// A wrong answer may sit in the cache under this key.
 		spec.fresh = true
-		if spec.upstream = t.nextVendorUpstream(j); spec.upstream == "" {
-			t.fetch.bloom.mismatched(j.h, len(j.mismatched), t.vendorCount())
+		if spec.upstream = t.nextVendorUpstream(j, spec.method); spec.upstream == "" {
+			t.fetch.bloom.mismatched(j.h, len(j.mismatched), t.vendorCount(spec.method))
 			j.newRound()
 		}
 	}
@@ -656,11 +698,12 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 	})
 }
 
-// nextVendorUpstream is the first upstream of a vendor that has not
-// mismatched on the job's block this round, and that was not asked yet.
-func (t *ChainTracker) nextVendorUpstream(j *receiptsJob) string {
-	for _, u := range t.receiptsUpstreams() {
-		if !j.mismatched[u.VendorName()] && !j.tried[u.Id()] {
+// nextVendorUpstream is the first upstream serving method of a vendor that
+// has not mismatched on the job's block this round, and that was not asked
+// yet. An upstream that names no vendor is skipped only once asked.
+func (t *ChainTracker) nextVendorUpstream(j *receiptsJob, method string) string {
+	for _, u := range t.methodUpstreams(method) {
+		if v := u.VendorName(); (v == "" || !j.mismatched[v]) && !j.tried[u.Id()] {
 			return u.Id()
 		}
 	}
@@ -679,6 +722,11 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 		t.endJob(j, r)
 	case errors.Is(res.err, errSchedulerClosed) || t.ctx.Err() != nil:
 		t.endJob(j, nil)
+	case res.upstream == "" && (errors.Is(res.err, errBloomMismatch) || errors.Is(res.err, errReceiptsAnswer)):
+		// A cached answer failed the checks: no vendor answered it, so
+		// nothing counts; the next attempt skips the cache.
+		j.fresh = true
+		t.runJob(j)
 	default:
 		t.noteReceiptsFetch(false)
 		if errors.Is(res.err, errBloomMismatch) {
@@ -689,9 +737,6 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 			if u != "" {
 				j.tried[u] = true
 			}
-		}
-		if j.failingSince.IsZero() {
-			j.failingSince = time.Now()
 		}
 		t.runJob(j)
 	}
@@ -728,11 +773,13 @@ func (t *ChainTracker) armProbe(after time.Duration) {
 }
 
 // runProbe is one fetch of the head block's receipts during an outage
-// (spec §10), or its logs when no upstream serves receipts; the next one
-// follows a block time later, at most ReceiptsProbeCeiling, until one
-// succeeds.
+// (spec §10), or its logs when no upstream serves receipts or, with
+// integrity off, once receipts have failed for LogsFallbackAfter, as a job
+// switches; the next one follows a block time later, at most
+// ReceiptsProbeCeiling, until one succeeds.
 func (t *ChainTracker) runProbe() {
-	if t.receiptsFailing.Load() == 0 {
+	since := t.receiptsFailing.Load()
+	if since == 0 {
 		return
 	}
 	next := min(t.BlockTime(), ReceiptsProbeCeiling.Load())
@@ -742,7 +789,8 @@ func (t *ChainTracker) runProbe() {
 		t.armProbe(next)
 		return
 	}
-	spec := t.receiptsSpec(classTipReceipts, head.hash, head, !receipts)
+	useLogs := !receipts || logs && time.Since(time.Unix(0, since)) >= LogsFallbackAfter.Load()
+	spec := t.receiptsSpec(classTipReceipts, head.hash, head, useLogs)
 	w := t.fetch.submit(nil, spec)
 	t.fetch.bg.Go(func() {
 		res := w.wait(t.ctx)
@@ -761,17 +809,8 @@ func (t *ChainTracker) runProbe() {
 // usableMethods reports whether an upstream of the group serves
 // eth_getBlockReceipts, and, with integrity off, eth_getLogs.
 func (t *ChainTracker) usableMethods() (receipts, logs bool) {
-	fallback := t.fetch.bloom.prof().logsFallback
-	for _, u := range t.receiptsUpstreams() {
-		if ok, _ := u.ShouldHandleMethod("eth_getBlockReceipts"); ok {
-			receipts = true
-		}
-		if fallback {
-			if ok, _ := u.ShouldHandleMethod("eth_getLogs"); ok {
-				logs = true
-			}
-		}
-	}
+	receipts = len(t.methodUpstreams("eth_getBlockReceipts")) > 0
+	logs = t.fetch.bloom.prof().logsFallback && len(t.methodUpstreams("eth_getLogs")) > 0
 	return receipts, logs
 }
 
@@ -798,8 +837,12 @@ func (t *ChainTracker) endJob(j *receiptsJob, r *heldReceipts) {
 }
 
 // countBloomMismatch counts a mismatching answer against its upstream, as
-// integrity counts a bloomMatch violation, and in its misbehavior score.
+// integrity counts a bloomMatch violation, and in its misbehavior score. A
+// cached answer names no upstream, and counts against none.
 func (t *ChainTracker) countBloomMismatch(upstreamId, method string, h *chainHeader) {
+	if upstreamId == "" {
+		return
+	}
 	u := t.upstreamOf(upstreamId)
 	vendor := ""
 	if u != nil {
@@ -837,6 +880,18 @@ func (t *ChainTracker) receiptsUpstreams() []common.Upstream {
 	return out
 }
 
+// methodUpstreams are the group's upstreams that serve method.
+func (t *ChainTracker) methodUpstreams(method string) []common.Upstream {
+	ups := t.receiptsUpstreams()
+	out := ups[:0:0]
+	for _, u := range ups {
+		if ok, _ := u.ShouldHandleMethod(method); ok {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
 func (t *ChainTracker) upstreamOf(id string) common.Upstream {
 	for _, u := range t.receiptsUpstreams() {
 		if u.Id() == id {
@@ -853,10 +908,11 @@ func (t *ChainTracker) vendorOf(upstreamId string) string {
 	return ""
 }
 
-// vendorCount is how many vendors the group's upstreams belong to.
-func (t *ChainTracker) vendorCount() int {
+// vendorCount is how many vendors the group's upstreams that serve method
+// belong to.
+func (t *ChainTracker) vendorCount(method string) int {
 	vendors := make(map[string]struct{})
-	for _, u := range t.receiptsUpstreams() {
+	for _, u := range t.methodUpstreams(method) {
 		vendors[u.VendorName()] = struct{}{}
 	}
 	return len(vendors)
