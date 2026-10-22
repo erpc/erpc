@@ -9,26 +9,18 @@ import (
 
 // RecordAuthFailed increments erpc_auth_failed_total for ErrAuthUnauthorized
 // about to be returned to the client; no-ops for other errors.
-func RecordAuthFailed(req *common.NormalizedRequest, err error) {
+// Auth is project-scoped, so network is always "n/a".
+func RecordAuthFailed(projectId string, err error) {
 	if !common.HasErrorCode(err, common.ErrCodeAuthUnauthorized) {
 		return
 	}
-	strategy, reason := authFailureLabels(err)
-	project := "n/a"
-	network := "n/a"
-	if req != nil {
-		if n := req.Network(); n != nil {
-			project = n.ProjectId()
-			if lbl := n.Label(); lbl != "" {
-				network = lbl
-			} else {
-				network = n.Id()
-			}
-		}
+	if projectId == "" {
+		projectId = "n/a"
 	}
+	strategy, reason := authFailureLabels(err)
 	telemetry.MetricAuthFailedTotal.WithLabelValues(
-		project,
-		network,
+		projectId,
+		"n/a",
 		strategy,
 		reason,
 		"unknown",
