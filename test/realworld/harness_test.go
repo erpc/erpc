@@ -624,12 +624,29 @@ type netSpec struct {
 	// minimal: no network entry, and upstreams with only id and endpoint
 	// (K2).
 	minimal bool
-	ups     []upSpec
+	// evm and extra are merged into the network's evm block and entry
+	// (servedTip, shortCircuitFutureBlocks, failover, …).
+	evm, extra map[string]interface{}
+	// cache: the network's answers are cached, finalized ones in
+	// cacheFinal (no expiry), unfinalized ones in cacheRecent.
+	cache bool
+	ups   []upSpec
 }
 
 // upSpec is one upstream; every pod names the same endpoint, as pods of
 // one deployment do, so they share its shared-state keys.
-type upSpec struct{ id, endpoint, vendor string }
+type upSpec struct {
+	id, endpoint, vendor string
+	tags                 []string
+}
+
+// The evmJsonRpcCache connectors of networks with cache: permanent
+// (finalized) and recent (unfinalized) entries, told apart by the
+// connector label of erpc_cache_set_success_total.
+const (
+	cacheFinal  = "final"
+	cacheRecent = "recent"
+)
 
 // clusterKey prefixes every shared-state key of the pods.
 const clusterKey = "realworld"
@@ -640,6 +657,7 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 	type m = map[string]interface{}
 	projects := map[string]m{}
 	var order []string
+	var policies []m
 	for _, n := range nets {
 		pr := projects[n.project]
 		if pr == nil {
@@ -648,20 +666,36 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 			order = append(order, n.project)
 		}
 		if !n.minimal {
-			nw := m{"architecture": "evm", "evm": m{
+			evm := m{
 				"chainId":      n.chainID,
 				"chainTracker": m{"reorgWindow": reorgWindow, "maxBackfill": maxBackfill.String()},
-			}}
+			}
+			for k, v := range n.evm {
+				evm[k] = v
+			}
+			nw := m{"architecture": "evm", "evm": evm}
 			if n.integrity {
 				nw["integrity"] = m{"level": "authoritative"}
 			}
+			for k, v := range n.extra {
+				nw[k] = v
+			}
 			pr["networks"] = append(pr["networks"].([]m), nw)
+		}
+		if n.cache {
+			network := fmt.Sprintf("evm:%d", n.chainID)
+			policies = append(policies,
+				m{"network": network, "method": "*", "finality": "finalized", "connector": cacheFinal},
+				m{"network": network, "method": "*", "finality": "unfinalized", "connector": cacheRecent, "ttl": "1m"})
 		}
 		for _, u := range n.ups {
 			up := m{"id": u.id, "endpoint": u.endpoint}
 			if !n.minimal {
 				up["vendorName"] = u.vendor
 				up["evm"] = m{"chainId": n.chainID}
+				if len(u.tags) > 0 {
+					up["tags"] = u.tags
+				}
 			}
 			pr["upstreams"] = append(pr["upstreams"].([]m), up)
 		}
@@ -684,13 +718,27 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 		"metrics":  m{"enabled": true, "listenV4": true, "hostV4": "127.0.0.1", "port": p.metricsPort},
 		"projects": prs,
 	}
+	db := m{}
 	if redis != nil {
-		cfg["database"] = m{"sharedState": m{
+		db["sharedState"] = m{
 			"clusterKey": clusterKey,
 			"connector": m{"id": "shared", "driver": "redis", "redis": m{
 				"uri": fmt.Sprintf("redis://127.0.0.1:%d/0", redis.port),
 			}},
-		}}
+		}
+	}
+	if len(policies) > 0 {
+		mem := m{"maxItems": 100000, "maxTotalSize": "256MB"}
+		db["evmJsonRpcCache"] = m{
+			"connectors": []m{
+				{"id": cacheFinal, "driver": "memory", "memory": mem},
+				{"id": cacheRecent, "driver": "memory", "memory": mem},
+			},
+			"policies": policies,
+		}
+	}
+	if len(db) > 0 {
+		cfg["database"] = db
 	}
 	out, err := yaml.Marshal(cfg)
 	if err != nil {

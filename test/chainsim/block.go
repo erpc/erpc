@@ -130,6 +130,12 @@ func (b *Block) ParentHash() Hash {
 	return b.Parent.Hash
 }
 
+// Minority reports whether the block was minted on a minority fork.
+func (b *Block) Minority() bool { return b.minority }
+
+// TxCount is how many transactions the block holds.
+func (b *Block) TxCount() int { return len(b.txs) }
+
 // JSON is the header as eth_getBlockByNumber(n, false) answers it.
 func (b *Block) JSON() json.RawMessage { return b.raw }
 
@@ -296,6 +302,18 @@ func forgeHash(raw json.RawMessage) json.RawMessage {
 	}
 	h := sha256.Sum256(fields["hash"])
 	fields["hash"], _ = json.Marshal("0x" + hex.EncodeToString(h[:]))
+	out, _ := json.Marshal(fields)
+	return out
+}
+
+// withNumber is raw with its number field set to n: a header that claims
+// a height it is not at.
+func withNumber(raw json.RawMessage, n uint64) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	fields["number"], _ = json.Marshal(hexU(n))
 	out, _ := json.Marshal(fields)
 	return out
 }

@@ -35,11 +35,25 @@ func TestRealWorld(t *testing.T) {
 		}
 		_ = os.RemoveAll(root)
 	})
-	shared := []spec{x1(), c1(), c3(), u3(), u8(false), u8(true), u9(), n5(), k2(), d1(), d2()}
+	phases := []struct {
+		name  string
+		chain int64
+		specs []spec
+	}{
+		{"shared", 9101, []spec{x1(), c1(), c3(), u3(), u8(false), u8(true), u9(), n5(), k2(), d1(), d2()}},
+		{"n4", 9201, []spec{n4()}},
+		{"x4", 9301, []spec{x4()}},
+		{"u3-lone", 9501, []spec{u3Lone()}},
+		{"n4-lone", 9601, []spec{n4Lone()}},
+		{"voters", 9701, []spec{n3(), u10(), u11(), u18(), k6()}},
+		{"x9", 9801, []spec{x9()}},
+	}
 	if alone := os.Getenv("REALWORLD_ALONE"); alone != "" {
 		known := map[string]spec{}
-		for _, sp := range append(shared, n4(), x4(), u3Lone(), n4Lone()) {
-			known[sp.name] = sp
+		for _, ph := range phases {
+			for _, sp := range ph.specs {
+				known[sp.name] = sp
+			}
 		}
 		for i, name := range strings.Split(alone, ",") {
 			sp, ok := known[name]
@@ -50,19 +64,9 @@ func TestRealWorld(t *testing.T) {
 		}
 		return
 	}
-	phases := os.Getenv("REALWORLD_PHASES")
-	for _, ph := range []struct {
-		name  string
-		chain int64
-		specs []spec
-	}{
-		{"shared", 9101, shared},
-		{"n4", 9201, []spec{n4()}},
-		{"x4", 9301, []spec{x4()}},
-		{"u3-lone", 9501, []spec{u3Lone()}},
-		{"n4-lone", 9601, []spec{n4Lone()}},
-	} {
-		if phases == "" || slices.Contains(strings.Split(phases, ","), ph.name) {
+	only := os.Getenv("REALWORLD_PHASES")
+	for _, ph := range phases {
+		if only == "" || slices.Contains(strings.Split(only, ","), ph.name) {
 			r.phase(t, ph.name, ph.chain, ph.specs)
 		}
 	}
@@ -213,7 +217,7 @@ func u3() spec {
 // U3-lone: U3 on a single-instance deployment (one pod, shared state in
 // memory), where only the dead socket itself can report ws-a's head.
 func u3Lone() spec {
-	return spec{name: "U3-lone", lone: true, bound: healthyDelivery, body: halfOpenWsA}
+	return spec{name: "U3-lone", pods: 1, memory: true, bound: healthyDelivery, body: halfOpenWsA}
 }
 
 func halfOpenWsA(s *scenario) {
@@ -457,7 +461,7 @@ const (
 // newHeads tap restarts past reorgWindow, the stream ends UNAVAILABLE after
 // its send wait, and no other tap waits.
 func d1() spec {
-	return spec{name: "D1", headerPad: slowHeaderPad, bound: healthyDelivery, body: func(s *scenario) {
+	return spec{name: "D1", sim: chainsim.Config{HeaderPad: slowHeaderPad}, bound: healthyDelivery, body: func(s *scenario) {
 		sh := s.addHeads("p1-heads-slow", 0, true, "ws:jump")
 		sg := s.addGrpc("p1-grpc-slow", 0, 0, true, "grpc:Unavailable")
 		s.blocks(25)
@@ -550,7 +554,7 @@ func n4() spec {
 // memory): no peer tells the cut pod the chain moved on. Its streams still
 // end UNAVAILABLE within the read wait and resume on it once healed.
 func n4Lone() spec {
-	return spec{name: "N4-lone", lone: true, bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"}, body: cutPod1}
+	return spec{name: "N4-lone", pods: 1, memory: true, bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"}, body: cutPod1}
 }
 
 func cutPod1(s *scenario) {

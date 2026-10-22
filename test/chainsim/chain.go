@@ -9,10 +9,12 @@ import (
 )
 
 const (
-	// HistoryBlocks are minted at start, one block time apart, ending now.
+	// HistoryBlocks are minted at start, one block time apart, ending now,
+	// unless Config.History says otherwise.
 	HistoryBlocks = 64
 	firstNumber   = 0x1000
-	// FinalizedLag is how far below its head a vendor's finalized block is.
+	// FinalizedLag is how far below its head a vendor's finalized block is,
+	// unless Faults.FinalityDepth says otherwise.
 	FinalizedLag = 64
 )
 
@@ -24,6 +26,10 @@ type Config struct {
 	// HeaderPad pads every header's extraData by this many bytes, so few
 	// headers fill a client's socket and flow-control windows.
 	HeaderPad int
+	// History is how many blocks are minted at start; 0 is HistoryBlocks.
+	History int
+	// NoFinalized: the chain has no finalized tag; every vendor refuses it.
+	NoFinalized bool
 }
 
 // Chain is one simulated chain: its canonical branch, every block ever
@@ -53,9 +59,13 @@ type Fork struct{ tip *Block }
 func NewChain(cfg Config) *Chain {
 	c := &Chain{cfg: cfg, rng: rand.New(rand.NewPCG(cfg.Seed, uint64(cfg.ChainID))), byHash: make(map[Hash]*Block),
 		forks: make(map[*Fork]bool), stop: make(chan struct{}), done: make(chan struct{})}
-	start := time.Now().Add(-HistoryBlocks * cfg.BlockTime)
+	history := cfg.History
+	if history == 0 {
+		history = HistoryBlocks
+	}
+	start := time.Now().Add(-time.Duration(history) * cfg.BlockTime)
 	var parent *Block
-	for i := range HistoryBlocks {
+	for i := range history {
 		b := c.mintLocked(parent, firstNumber+uint64(i), start.Add(time.Duration(i)*cfg.BlockTime), false)
 		c.canon = append(c.canon, b)
 		parent = b

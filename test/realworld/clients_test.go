@@ -84,6 +84,11 @@ type clientBase struct {
 	// slow clients stop reading on purpose; delivery bounds skip them.
 	slow bool
 	tr   *transcript
+	// selector is the client's use-upstream lane ("" the network-wide
+	// one): its connection and its oracle checks carry it.
+	selector string
+	// pinned clients redial their own pod, never another.
+	pinned bool
 
 	mu          sync.Mutex
 	pod         int
@@ -136,7 +141,9 @@ func (c *clientBase) silence() (pod int, since time.Duration, ok bool) {
 func (c *clientBase) otherPod() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pod = (c.pod + 1) % len(c.s.h.pods)
+	if !c.pinned {
+		c.pod = (c.pod + 1) % len(c.s.h.pods)
+	}
 	return c.pod
 }
 
@@ -345,7 +352,11 @@ func (c *headsClient) open(ctx context.Context, pod int) (<-chan json.RawMessage
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if !c.slow {
-		cl, err := rpc.DialOptions(dctx, url)
+		var opts []rpc.ClientOption
+		if c.selector != "" {
+			opts = append(opts, rpc.WithHeader("X-ERPC-Use-Upstream", c.selector))
+		}
+		cl, err := rpc.DialOptions(dctx, url, opts...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -458,6 +469,9 @@ func (c *headsClient) onHead(pod int, raw json.RawMessage, connStart time.Time, 
 	}
 	c.deliver(pod, b, connStart)
 	c.s.checkHead(c, pod, n, h.Hash, now)
+	if c.s.onHead != nil {
+		c.s.onHead(c.s, c, pod, n, h.Hash)
+	}
 }
 
 // mismatch records a by-number answer that differs from a delivered header.

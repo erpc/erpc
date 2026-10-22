@@ -42,10 +42,30 @@ type spec struct {
 	// late: vendor keys whose upstreams register only once the network
 	// serves on every pod; their heads vote from the first one.
 	late []string
-	// lone: one pod with in-memory shared state and no redis, as a
-	// single-instance deployment runs; its phase holds lone specs only.
-	lone      bool
-	headerPad int
+	// pods is how many pods the phase boots (0 is 2); memory: no redis,
+	// each pod keeps its shared state in memory. A phase reads its first
+	// spec's.
+	pods   int
+	memory bool
+	// sim configures the chain; ChainID and Seed come from the phase, a
+	// zero BlockTime is blockTime.
+	sim chainsim.Config
+	// faults are vendor faults set before any pod boots, by vendor key.
+	faults map[string]chainsim.Faults
+	// tags are upstream tags by vendor key; evm and network are merged into
+	// the network's evm block and network entry; cache gives the network an
+	// evmJsonRpcCache with a permanent and a recent connector (cacheFinal,
+	// cacheRecent).
+	tags    map[string][]string
+	evm     map[string]interface{}
+	network map[string]interface{}
+	cache   bool
+	// headless are pods the oracle never asks eth_blockNumber, so its reads
+	// never make their pollers fetch a head; numbered pods are headless and
+	// get numbered calls only: no by-hash, logs by number.
+	headless, numbered []int
+	// onHead runs for each header a newHeads client receives.
+	onHead func(s *scenario, c *headsClient, pod int, n uint64, h hash)
 	// bound is the delivery bound for clients that read (§ per scenario).
 	bound time.Duration
 	// allow names the ends and jumps the scenario's faults may cause.
@@ -65,8 +85,10 @@ type scenario struct {
 	proxies map[string]*proxy
 	net     *netSpec
 	dir     string
-	rpcs    []*rpc.Client
-	tr      *transcript
+	// rpcs are HTTP clients per pod, by use-upstream selector ("" none).
+	rpcs  map[string][]*rpc.Client
+	httpc *http.Client
+	tr    *transcript
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -111,7 +133,7 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		sp.vendors = baseVendors
 	}
 	s := &scenario{spec: sp, h: h, vendors: map[string]*chainsim.Vendor{}, proxies: map[string]*proxy{},
-		memo: map[string]*memoEntry{}, allowSet: map[string]bool{}}
+		memo: map[string]*memoEntry{}, allowSet: map[string]bool{}, rpcs: map[string][]*rpc.Client{}}
 	for _, a := range sp.allow {
 		s.allowSet[a] = true
 	}
@@ -120,8 +142,14 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		h.t.Fatal(err)
 	}
 	s.tr = newTranscript(s.dir, "scenario")
-	s.chain = chainsim.NewChain(chainsim.Config{ChainID: chainID, BlockTime: blockTime, Seed: uint64(chainID), HeaderPad: sp.headerPad})
-	s.net = &netSpec{project: sp.project, chainID: chainID, integrity: sp.integrity, minimal: sp.minimal}
+	cfg := sp.sim
+	cfg.ChainID, cfg.Seed = chainID, uint64(chainID)
+	if cfg.BlockTime == 0 {
+		cfg.BlockTime = blockTime
+	}
+	s.chain = chainsim.NewChain(cfg)
+	s.net = &netSpec{project: sp.project, chainID: chainID, integrity: sp.integrity, minimal: sp.minimal,
+		evm: sp.evm, extra: sp.network, cache: sp.cache}
 	slug := strings.ToLower(strings.ReplaceAll(sp.name, "/", "-"))
 	for _, vs := range sp.vendors {
 		id := slug + "-" + vs.key
@@ -131,7 +159,10 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		}
 		px := h.newProxy(id, v.Addr(), vs.ws)
 		s.vendors[vs.key], s.proxies[vs.key] = v, px
-		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name})
+		if f, ok := sp.faults[vs.key]; ok {
+			v.SetFaults(f)
+		}
+		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name, tags: sp.tags[vs.key]})
 	}
 	s.chain.Start()
 	for _, key := range sp.late {
@@ -171,8 +202,7 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 		if err := r.host.waitQuiet(t.Logf); err != nil {
 			t.Fatal(err)
 		}
-		lone := specs[0].lone
-		h := newHarness(t, filepath.Join(r.root, name), !lone)
+		h := newHarness(t, filepath.Join(r.root, name), !specs[0].memory)
 		h.host = r.host
 		var scs []*scenario
 		var nets []*netSpec
@@ -181,9 +211,9 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 			scs = append(scs, sc)
 			nets = append(nets, sc.net)
 		}
-		pods := 2
-		if lone {
-			pods = 1
+		pods := specs[0].pods
+		if pods == 0 {
+			pods = 2
 		}
 		h.startPods(pods, nets)
 		for _, sc := range scs {
@@ -222,14 +252,7 @@ func (s *scenario) execute(t *testing.T) {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	defer s.chain.Close()
 	defer s.cancel()
-	httpc := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 64}, Timeout: httpCheckWait}
-	for _, p := range s.h.pods {
-		c, err := rpc.DialOptions(s.ctx, p.httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(httpc))
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.rpcs = append(s.rpcs, c)
-	}
+	s.httpc = &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 64}, Timeout: httpCheckWait}
 	for _, p := range s.h.pods {
 		s.waitServing(p.idx)
 	}
@@ -294,28 +317,83 @@ func (s *scenario) watchStalls() {
 	}
 }
 
-// waitServing waits until pod idx serves the scenario network's head.
+// waitServing waits until pod idx serves the scenario network's head: 5
+// blocks below the second-highest vendor view, as quorum 2 serves; a
+// headless pod is asked that block by number.
 func (s *scenario) waitServing(idx int) {
-	want := s.chain.Tip().Number - 5
+	want := s.vendorHead(1) - 5
 	deadline := time.Now().Add(podBootWait)
 	for {
-		var bn hexutil.Uint64
-		err := s.call(idx, &bn, "eth_blockNumber")
-		if err == nil && uint64(bn) >= want {
-			s.tr.logf("pod-%d serves %d", idx+1, bn)
-			return
+		var got string
+		var err error
+		if s.isHeadless(idx) {
+			got = s.blockAnswer(idx, "", "eth_getBlockByNumber", hexutil.EncodeUint64(want), false)
+			if got == s.chain.CanonAt(want).Hash.Hex() {
+				s.tr.logf("pod-%d serves %d by number", idx+1, want)
+				return
+			}
+		} else {
+			var bn hexutil.Uint64
+			err = s.call(idx, &bn, "eth_blockNumber")
+			if err == nil && uint64(bn) >= want {
+				s.tr.logf("pod-%d serves %d", idx+1, bn)
+				return
+			}
+			got = fmt.Sprint(uint64(bn))
 		}
 		if time.Now().After(deadline) {
-			s.t.Fatalf("pod-%d does not serve %s: eth_blockNumber %d, err %v", idx+1, s.network(), bn, err)
+			s.t.Fatalf("pod-%d does not serve %s: wants %d, got %s, err %v", idx+1, s.network(), want, got, err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
+// vendorHead is the (rank+1)-th highest head the vendors serve.
+func (s *scenario) vendorHead(rank int) uint64 {
+	var hs []uint64
+	for _, v := range s.vendors {
+		hs = append(hs, v.Head().Number)
+	}
+	sort.Slice(hs, func(i, j int) bool { return hs[i] > hs[j] })
+	return hs[min(rank, len(hs)-1)]
+}
+
+func (s *scenario) isNumbered(pod int) bool { return slices.Contains(s.numbered, pod) }
+
+func (s *scenario) isHeadless(pod int) bool {
+	return s.isNumbered(pod) || slices.Contains(s.headless, pod)
+}
+
+// client is the HTTP client of pod for use-upstream selector sel ("" none).
+func (s *scenario) client(pod int, sel string) *rpc.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cs := s.rpcs[sel]
+	if cs == nil {
+		for _, p := range s.h.pods {
+			opts := []rpc.ClientOption{rpc.WithHTTPClient(s.httpc)}
+			if sel != "" {
+				opts = append(opts, rpc.WithHeader("X-ERPC-Use-Upstream", sel))
+			}
+			c, err := rpc.DialOptions(context.Background(), p.httpURL(s.project, s.chain.ID()), opts...)
+			if err != nil {
+				panic(err) // an HTTP URL only fails to parse
+			}
+			cs = append(cs, c)
+		}
+		s.rpcs[sel] = cs
+	}
+	return cs[pod]
+}
+
 func (s *scenario) call(pod int, result interface{}, method string, args ...interface{}) error {
+	return s.callAs(pod, "", result, method, args...)
+}
+
+func (s *scenario) callAs(pod int, sel string, result interface{}, method string, args ...interface{}) error {
 	ctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
 	defer cancel()
-	return s.rpcs[pod].CallContext(ctx, result, method, args...)
+	return s.client(pod, sel).CallContext(ctx, result, method, args...)
 }
 
 //
@@ -339,6 +417,20 @@ func (s *scenario) initBase(c *clientBase, name string, pod int, slow bool, allo
 func (s *scenario) addHeads(name string, pod int, slow bool, allow ...string) *headsClient {
 	c := &headsClient{}
 	s.initBase(&c.clientBase, name, pod, slow, allow)
+	s.mu.Lock()
+	s.heads = append(s.heads, c)
+	s.mu.Unlock()
+	s.wg.Add(1)
+	go func() { defer s.wg.Done(); c.run(s.ctx) }()
+	return c
+}
+
+// addHeadsOn opens a ws newHeads client on use-upstream lane sel ("" the
+// network-wide one); a pinned one redials its own pod after an end.
+func (s *scenario) addHeadsOn(name string, pod int, sel string, pinned bool, allow ...string) *headsClient {
+	c := &headsClient{}
+	s.initBase(&c.clientBase, name, pod, false, allow)
+	c.selector, c.pinned = sel, pinned
 	s.mu.Lock()
 	s.heads = append(s.heads, c)
 	s.mu.Unlock()
@@ -377,11 +469,17 @@ const grpcSwitchBlocks = 15
 // (one per filter), 2 gRPC streams that resume on the other pod.
 func (s *scenario) baseClients() {
 	for _, p := range s.h.pods {
-		for i := range 2 {
-			s.addHeads(fmt.Sprintf("p%d-heads-%d", p.idx+1, i+1), p.idx, false)
-			s.addLogs(fmt.Sprintf("p%d-logs-%d", p.idx+1, i+1), p.idx, i)
-			s.addGrpc(fmt.Sprintf("p%d-grpc-%d", p.idx+1, i+1), p.idx, grpcSwitchBlocks, false)
-		}
+		s.podClients(p.idx, grpcSwitchBlocks)
+	}
+}
+
+// podClients are baseline B's clients of one pod only; its gRPC streams
+// resume on another pod every switchEvery blocks (0 never).
+func (s *scenario) podClients(pod, switchEvery int) {
+	for i := range 2 {
+		s.addHeads(fmt.Sprintf("p%d-heads-%d", pod+1, i+1), pod, false)
+		s.addLogs(fmt.Sprintf("p%d-logs-%d", pod+1, i+1), pod, i)
+		s.addGrpc(fmt.Sprintf("p%d-grpc-%d", pod+1, i+1), pod, switchEvery, false)
 	}
 }
 
@@ -389,7 +487,7 @@ func (s *scenario) baseClients() {
 // --- faults and time ---
 //
 
-func (s *scenario) blocks(n int) { time.Sleep(time.Duration(n) * blockTime) }
+func (s *scenario) blocks(n int) { time.Sleep(time.Duration(n) * s.chain.BlockTime()) }
 
 func (s *scenario) logf(format string, args ...interface{}) {
 	s.tr.logf(format, args...)
@@ -496,10 +594,17 @@ func (s *scenario) memoize(key string, fn func() string) string {
 	return e.val
 }
 
+// first reports whether this is the first call with key.
+func (s *scenario) first(key string) bool {
+	ran := false
+	s.memoize(key, func() string { ran = true; return "" })
+	return ran
+}
+
 // blockAnswer is a block answer's hash, "null", or the error.
-func (s *scenario) blockAnswer(pod int, method string, args ...interface{}) string {
+func (s *scenario) blockAnswer(pod int, sel string, method string, args ...interface{}) string {
 	var raw json.RawMessage
-	if err := s.call(pod, &raw, method, args...); err != nil {
+	if err := s.callAs(pod, sel, &raw, method, args...); err != nil {
 		return "error: " + err.Error()
 	}
 	if len(raw) == 0 || string(raw) == "null" {
@@ -514,28 +619,35 @@ func (s *scenario) blockAnswer(pod int, method string, args ...interface{}) stri
 	return h.Hash.Hex()
 }
 
-// checkHead applies the oracle to a newHeads delivery on pod: the same
-// pod's eth_blockNumber covers it at once; by hash it is on every pod; by
-// number it is on every pod, or a later reorg tells the client otherwise.
+// checkHead applies the oracle to a newHeads delivery on pod, through the
+// client's use-upstream selector: the same pod's eth_blockNumber covers it
+// at once; by hash it is on every pod; by number it is on every pod, or a
+// later reorg tells the client otherwise. Numbered pods get the by-number
+// check only.
 func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivered time.Time) {
 	s.checks.Add(1)
 	go func() {
 		defer s.checks.Done()
 		start := time.Now()
-		var bn hexutil.Uint64
-		err := s.call(pod, &bn, "eth_blockNumber")
-		if (err != nil || uint64(bn) < n) && !s.excused(pod, start, time.Now()) {
-			s.violate(c.name, "pod-%d: eth_blockNumber %d (err %v) below the delivered head %d", pod+1, bn, err, n)
+		sel := c.selector
+		if !s.isHeadless(pod) {
+			var bn hexutil.Uint64
+			err := s.callAs(pod, sel, &bn, "eth_blockNumber")
+			if (err != nil || uint64(bn) < n) && !s.excused(pod, start, time.Now()) {
+				s.violate(c.name, "pod-%d: eth_blockNumber %d (err %v) below the delivered head %d", pod+1, bn, err, n)
+			}
 		}
 		for target := range s.h.pods {
-			got := s.memoize(fmt.Sprintf("hash/%d/%s", target, h.Hex()), func() string {
-				return s.blockAnswer(target, "eth_getBlockByHash", h.Hex(), false)
-			})
-			if got != h.Hex() && !s.excused(target, start, time.Now()) {
-				s.violate(c.name, "pod-%d: eth_getBlockByHash(%s) delivered on pod-%d answered %s", target+1, short(h), pod+1, got)
+			if !s.isNumbered(target) {
+				got := s.memoize(fmt.Sprintf("hash/%d/%s/%s", target, sel, h.Hex()), func() string {
+					return s.blockAnswer(target, sel, "eth_getBlockByHash", h.Hex(), false)
+				})
+				if got != h.Hex() && !s.excused(target, start, time.Now()) {
+					s.violate(c.name, "pod-%d: eth_getBlockByHash(%s) delivered on pod-%d answered %s", target+1, short(h), pod+1, got)
+				}
 			}
-			got = s.memoize(fmt.Sprintf("number/%d/%d/%s", target, n, h.Hex()), func() string {
-				return s.blockAnswer(target, "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+			got := s.memoize(fmt.Sprintf("number/%d/%s/%d/%s", target, sel, n, h.Hex()), func() string {
+				return s.blockAnswer(target, sel, "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 			})
 			if got != h.Hex() && !s.excused(target, start, time.Now()) {
 				c.mismatch(pendingNumber{target: target, number: n, hash: h, got: got, delivered: delivered})
@@ -545,16 +657,25 @@ func (s *scenario) checkHead(c *headsClient, pod int, n uint64, h hash, delivere
 }
 
 // checkLog applies the oracle to a delivered log: eth_getLogs by its block
-// hash returns it on every pod.
+// hash returns it on every pod; on a numbered pod, by its block number.
 func (s *scenario) checkLog(c *logsClient, pod int, l chainsim.Log) {
 	s.checks.Add(1)
 	go func() {
 		defer s.checks.Done()
 		start := time.Now()
 		for target := range s.h.pods {
+			by := "blockHash"
+			if s.isNumbered(target) {
+				by = "number"
+			}
 			got := s.memoize(fmt.Sprintf("logs/%d/%s/%d", target, l.BlockHash.Hex(), c.filter), func() string {
 				q := chainsim.Filters[c.filter].Params()
-				q["blockHash"] = l.BlockHash.Hex()
+				if by == "number" {
+					q["fromBlock"] = hexutil.EncodeUint64(l.BlockNumber)
+					q["toBlock"] = hexutil.EncodeUint64(l.BlockNumber)
+				} else {
+					q["blockHash"] = l.BlockHash.Hex()
+				}
 				var logs []logJSON
 				if err := s.call(target, &logs, "eth_getLogs", q); err != nil {
 					return "error: " + err.Error()
@@ -569,7 +690,7 @@ func (s *scenario) checkLog(c *logsClient, pod int, l chainsim.Log) {
 				return b.String()
 			})
 			if !strings.Contains(got, fmt.Sprintf(",%d,", l.LogIndex)) && !s.excused(target, start, time.Now()) {
-				s.violate(c.name, "pod-%d: eth_getLogs by blockHash %s (block %d) misses log %d delivered on pod-%d: %s", target+1, short(l.BlockHash), l.BlockNumber, l.LogIndex, pod+1, got)
+				s.violate(c.name, "pod-%d: eth_getLogs by %s %s (block %d) misses log %d delivered on pod-%d: %s", target+1, by, short(l.BlockHash), l.BlockNumber, l.LogIndex, pod+1, got)
 			}
 		}
 	}()

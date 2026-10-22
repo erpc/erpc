@@ -37,6 +37,9 @@ type Faults struct {
 	Slow          time.Duration // every answer waits this long
 	SilentHeads   bool          // newHeads subscriptions stay open and push nothing
 	SilentPending bool          // newPendingTransactions subscriptions push nothing
+	Ahead         uint64        // eth_blockNumber and the latest tag claim a head this far above its own
+	Syncing       bool          // eth_syncing answers in progress; still serves what it holds
+	FinalityDepth uint64        // finalized tag this far below its head; 0 is FinalizedLag
 }
 
 // Stats are what a vendor counted since it started.
@@ -64,6 +67,8 @@ type Vendor struct {
 	conns  map[*wsConn]bool
 	// held closes when ChainIDHeld clears; nil while it is off.
 	held chan struct{}
+	// numberCalls are when eth_getBlockByNumber asked each explicit number.
+	numberCalls map[uint64][]time.Time
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls atomic.Int64
 	subSeq                                                               atomic.Int64
@@ -134,7 +139,8 @@ func (c *Chain) AddVendor(id, name string, ws bool) (*Vendor, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := &Vendor{ID: id, Name: name, WS: ws, chain: c, ln: ln, seen: make(map[Hash]bool), conns: make(map[*wsConn]bool)}
+	v := &Vendor{ID: id, Name: name, WS: ws, chain: c, ln: ln, seen: make(map[Hash]bool), conns: make(map[*wsConn]bool),
+		numberCalls: make(map[uint64][]time.Time)}
 	v.srv = &http.Server{Handler: v, ReadHeaderTimeout: 10 * time.Second}
 	c.mu.Lock()
 	v.setTipLocked(c.tipLocked())
@@ -199,6 +205,20 @@ func (v *Vendor) Head() *Block {
 	v.chain.mu.Lock()
 	defer v.chain.mu.Unlock()
 	return v.tip
+}
+
+// NumberCalls counts the eth_getBlockByNumber calls for explicit number n
+// the vendor answered in [from, to].
+func (v *Vendor) NumberCalls(n uint64, from, to time.Time) int {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	k := 0
+	for _, at := range v.numberCalls[n] {
+		if !at.Before(from) && !at.After(to) {
+			k++
+		}
+	}
+	return k
 }
 
 // Stats are the vendor's counters.
@@ -490,9 +510,15 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 	case "net_version":
 		return fmt.Sprint(c.cfg.ChainID), nil
 	case "eth_syncing":
+		if f.Syncing {
+			return map[string]interface{}{"startingBlock": hexU(c.canon[0].Number), "currentBlock": hexU(v.tip.Number),
+				"highestBlock": hexU(c.tipLocked().Number + 1000)}, nil
+		}
 		return false, nil
 	case "eth_blockNumber":
-		return hexU(v.tip.Number), nil
+		return hexU(v.tip.Number + f.Ahead), nil
+	case "eth_call":
+		return v.callLocked(params)
 	case "eth_getBlockByHash":
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
@@ -511,11 +537,21 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			if f.RefuseLatest {
 				return nil, &rpcError{-32000, "latest block unavailable"}
 			}
+			if f.Ahead > 0 {
+				return withNumber(v.tip.JSON(), v.tip.Number+f.Ahead), nil
+			}
 			b = v.tip
 		case "finalized", "safe":
+			if c.cfg.NoFinalized {
+				return nil, &rpcError{-32602, "invalid block number tag " + tag}
+			}
+			depth := uint64(FinalizedLag)
+			if f.FinalityDepth > 0 {
+				depth = f.FinalityDepth
+			}
 			n := c.canon[0].Number
-			if v.tip.Number > FinalizedLag && v.tip.Number-FinalizedLag > n {
-				n = v.tip.Number - FinalizedLag
+			if v.tip.Number > depth && v.tip.Number-depth > n {
+				n = v.tip.Number - depth
 			}
 			b = v.byNumberLocked(n)
 		case "earliest":
@@ -525,6 +561,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			if !ok {
 				return nil, &rpcError{-32602, "invalid block number"}
 			}
+			v.numberCalls[n] = append(v.numberCalls[n], time.Now())
 			if f.NullHeld {
 				return nil, nil
 			}
@@ -556,8 +593,73 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 	case "eth_getLogs":
 		v.receiptsCalls.Add(1)
 		return v.logsLocked(params)
+	case "eth_getBlockTransactionCountByNumber":
+		tag, _ := firstString(params)
+		n, ok := parseNumber(tag)
+		if !ok {
+			return nil, &rpcError{-32602, "invalid block number"}
+		}
+		b := v.byNumberLocked(n)
+		if b == nil {
+			return nil, nil
+		}
+		return hexU(uint64(len(b.txs))), nil
 	}
 	return "0x0", nil
+}
+
+// Multicall3 and its getBlockNumber() selector: the call returns the
+// number of the block it executes at.
+var (
+	Multicall3        = gethcommon.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11")
+	GetBlockNumberSig = "0x42cbb15c"
+)
+
+// callLocked answers eth_call: Multicall3 getBlockNumber() at the block the
+// call names (latest, a number, or an EIP-1898 object) on the vendor's
+// branch; any other call "0x0".
+func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
+	if len(params) == 0 {
+		return nil, &rpcError{-32602, "missing call"}
+	}
+	tx, _ := params[0].(map[string]interface{})
+	to, _ := tx["to"].(string)
+	data, _ := tx["data"].(string)
+	if data == "" {
+		data, _ = tx["input"].(string)
+	}
+	if !strings.EqualFold(to, Multicall3.Hex()) || !strings.EqualFold(data, GetBlockNumberSig) {
+		return "0x0", nil
+	}
+	at := v.tip
+	if len(params) > 1 {
+		switch ref := params[1].(type) {
+		case string:
+			switch ref {
+			case "latest", "pending":
+			default:
+				n, ok := parseNumber(ref)
+				if !ok {
+					return nil, &rpcError{-32602, "invalid block number"}
+				}
+				at = v.byNumberLocked(n)
+			}
+		case map[string]interface{}:
+			if s, ok := ref["blockNumber"].(string); ok {
+				n, _ := parseNumber(s)
+				at = v.byNumberLocked(n)
+			} else if s, ok := ref["blockHash"].(string); ok {
+				h, _ := parseHash(s)
+				if at = v.chain.byHash[h]; at != nil && !v.seen[h] {
+					at = nil
+				}
+			}
+		}
+	}
+	if at == nil {
+		return nil, &rpcError{-32000, "header not found"}
+	}
+	return fmt.Sprintf("0x%064x", at.Number), nil
 }
 
 // logsLocked answers eth_getLogs by blockHash or by range on the vendor's
