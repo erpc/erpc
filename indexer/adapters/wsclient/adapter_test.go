@@ -109,6 +109,7 @@ func TestAdapter_BurstWithinBufferIsDelivered(t *testing.T) {
 	w := &fakeWriter{}
 	a := newTestAdapter(w, 256)
 	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindLog, "f", 10))
+	a.Open("s1")
 	defer a.Drain()
 
 	deliver(a, indexer.KindLog, "f", 200)
@@ -126,6 +127,7 @@ func TestAdapter_NewHeadsOverflowDropsOldest(t *testing.T) {
 	w := &fakeWriter{block: make(chan struct{})}
 	a := newTestAdapter(w, 2)
 	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindNewHead, "", 10))
+	a.Open("s1")
 	defer a.Drain()
 
 	// The writer takes one event and blocks on it; two more fill the buffer.
@@ -149,6 +151,7 @@ func TestAdapter_LogsOverflowIsReportedNotEvicted(t *testing.T) {
 	w := &fakeWriter{block: make(chan struct{})}
 	a := newTestAdapter(w, 2)
 	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindLog, "f", 10))
+	a.Open("s1")
 	defer a.Drain()
 
 	deliver(a, indexer.KindLog, "f", 1)
@@ -173,6 +176,7 @@ func TestAdapter_RemovedSubOverflowIsNotReported(t *testing.T) {
 	defer close(w.block)
 	a := newTestAdapter(w, 2)
 	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindLog, "f", 10))
+	a.Open("s1")
 	defer a.Drain()
 
 	deliver(a, indexer.KindLog, "f", 1)

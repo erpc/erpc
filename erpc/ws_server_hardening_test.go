@@ -438,7 +438,7 @@ func TestWebSocket_PanickedRequestRepliesWithItsId(t *testing.T) {
 	}
 	startedAt := time.Now()
 
-	out, _ := wsc.handleRequest(t.Context(), []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_chainId"}`), &startedAt, false)
+	out, _, _ := wsc.handleRequest(t.Context(), []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_chainId"}`), &startedAt, false)
 	require.NotNil(t, out)
 	body, err := common.SonicCfg.Marshal(out)
 	require.NoError(t, err)

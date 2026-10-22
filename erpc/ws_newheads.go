@@ -26,14 +26,20 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 
 // runNewHeads is one ws newHeads subscription: a tap on the network-wide
 // tracker that writes each applied block, oldest first, so after a reorg
-// the client gets each head of the new branch. It ends only with ctx or a
-// failed write; out of range, lag, a panic or any other error restart it
-// after the head, so the client sees a jump in numbers, as with geth, and
-// never a silent subscription.
-func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, nw *Network) {
+// the client gets each head of the new branch. It reads from subscribe
+// time but writes only once opened, after the client has its id. It ends
+// only with ctx or a failed write; out of range, lag, a panic or any other
+// error restart it after the head, so the client sees a jump in numbers,
+// as with geth, and never a silent subscription.
+func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network) {
 	feed := nw.chainTracker
 	window := uint64(feed.ReorgWindow())
 	emit := func(b indexer.Batch) error {
+		select {
+		case <-opened:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		if len(b.Reverted) == 0 && len(b.Applied) > 0 {
 			if tip, ok := feed.Tip(); ok && tip.Number > b.Applied[0].Number-1+window {
 				return errNewHeadsLag

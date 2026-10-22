@@ -1156,6 +1156,7 @@ func (s *chaosSeed) dialClient(name string, slow func() bool) *chaosClient {
 	}
 	require.NoError(s.t, json.Unmarshal(msg, &resp))
 	require.Empty(s.t, resp.Error, "subscribe failed: %s", msg)
+	require.NotEmpty(s.t, resp.Result, "client %s: the first message is the subscription id, as geth sends it: %s", name, msg)
 	cl.conn = conn
 	cl.subscribed = time.Now()
 	cl.lastTaps = newHeadsTapEnds()
@@ -1244,8 +1245,8 @@ func (cl *chaosClient) apply(s *chaosSeed, n uint64, h [32]byte) {
 			n > cl.last+1+uint64(chaosReorgWindow)
 		if deep || behind {
 			cl.floor = n
-		} else {
 			s.t.Logf("client %s: jump %d → %d after a restart; %s", cl.name, cl.last, n, why)
+		} else {
 			cl.problems = append(cl.problems, fmt.Sprintf("jump %d → %d with no fault that calls for a restart; %s", cl.last, n, why))
 		}
 	}
@@ -1515,7 +1516,6 @@ type chaosSeed struct {
 	loadFrom      time.Time
 
 	hook *chaosHook
-}
 
 	faultMu sync.Mutex
 	spans   []faultSpan
@@ -1562,6 +1562,7 @@ func (s *chaosSeed) faultsSince(since time.Time) string {
 		return "none"
 	}
 	return strings.Join(out, ", ")
+}
 
 func newChaosSeed(t *testing.T, seed int64, pollSources bool) *chaosSeed {
 	s := &chaosSeed{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 0)), pollSources: pollSources,

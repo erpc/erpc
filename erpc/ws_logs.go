@@ -53,7 +53,7 @@ func parseLogsSubscribe(params []interface{}) (*logfilter.LogsFilter, error) {
 // than ctx or a failed write closes the connection with 1013 after a
 // random delay within logsCloseSpread, so the client reconnects knowing it
 // may have missed logs.
-func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, nw *Network, f *logfilter.LogsFilter) {
+func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, f *logfilter.LogsFilter) {
 	feed := nw.chainTracker
 	window := uint64(feed.ReorgWindow())
 	write := func(log json.RawMessage) error {
@@ -68,6 +68,12 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	// sent log).
 	sentFrom, sent := uint64(0), false
 	emit := func(b indexer.Batch) error {
+		// Nothing is written before the client has the subscription id.
+		select {
+		case <-opened:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		if len(b.Applied) > 0 {
 			if lh := feed.LogsHead(); lh.Number > b.Applied[0].Number-1+window {
 				return errLogsLag

@@ -66,6 +66,10 @@ type clientSub struct {
 
 	notify chan json.RawMessage // nil for a tap subscription
 	done   chan struct{}        // closed by whoever removes the sub from Adapter.subs
+	// opened is closed once the client has the subscription id: nothing is
+	// written before it, as geth sends the id first.
+	opened   chan struct{}
+	openOnce sync.Once
 	// stop ends a tap subscription's read loop; nil for buffered ones.
 	stop func()
 }
@@ -74,6 +78,17 @@ func (sub *clientSub) end() {
 	close(sub.done)
 	if sub.stop != nil {
 		sub.stop()
+	}
+}
+
+// Open lets clientSubID's notifications flow, once the response carrying
+// its id is written.
+func (a *Adapter) Open(clientSubID string) {
+	a.mu.RLock()
+	sub := a.subs[clientSubID]
+	a.mu.RUnlock()
+	if sub != nil {
+		sub.openOnce.Do(func() { close(sub.opened) })
 	}
 }
 
@@ -132,9 +147,10 @@ func (a *Adapter) deliverTo(sub *clientSub, payload json.RawMessage) {
 	}
 }
 
-// AddSubscription registers a subscription and starts its writer. It fails
-// with ErrLimitExceeded when the connection already holds maxSubs, and with
-// ErrClosed once the adapter was drained.
+// AddSubscription registers a subscription and starts its writer, which
+// writes once Open is called. It fails with ErrLimitExceeded when the
+// connection already holds maxSubs, and with ErrClosed once the adapter
+// was drained.
 func (a *Adapter) AddSubscription(clientSubID, networkID string, kind indexer.EventKind, filterHash string, maxSubs int) error {
 	sub := &clientSub{
 		id:         clientSubID,
@@ -143,6 +159,7 @@ func (a *Adapter) AddSubscription(clientSubID, networkID string, kind indexer.Ev
 		filterHash: filterHash,
 		notify:     make(chan json.RawMessage, a.bufferSize),
 		done:       make(chan struct{}),
+		opened:     make(chan struct{}),
 	}
 
 	a.mu.Lock()
@@ -169,20 +186,21 @@ func (a *Adapter) AddSubscription(clientSubID, networkID string, kind indexer.Ev
 }
 
 // AddTapSubscription registers a subscription whose notifications a tap
-// writes itself; stop ends that tap when the subscription is removed. Limits
-// and errors are those of AddSubscription.
-func (a *Adapter) AddTapSubscription(clientSubID, networkID string, kind indexer.EventKind, maxSubs int, stop func()) error {
-	sub := &clientSub{id: clientSubID, kind: kind, networkID: networkID, done: make(chan struct{}), stop: stop}
+// writes itself, after opened is closed by Open; stop ends that tap when
+// the subscription is removed. Limits and errors are those of
+// AddSubscription.
+func (a *Adapter) AddTapSubscription(clientSubID, networkID string, kind indexer.EventKind, maxSubs int, stop func()) (opened <-chan struct{}, err error) {
+	sub := &clientSub{id: clientSubID, kind: kind, networkID: networkID, done: make(chan struct{}), opened: make(chan struct{}), stop: stop}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.drained {
-		return ErrClosed
+		return nil, ErrClosed
 	}
 	if len(a.subs) >= maxSubs {
-		return ErrLimitExceeded
+		return nil, ErrLimitExceeded
 	}
 	a.subs[clientSubID] = sub
-	return nil
+	return sub.opened, nil
 }
 
 // RemoveSubscription removes a subscription, stops its writer, and returns
@@ -252,6 +270,11 @@ func (a *Adapter) Count() int {
 }
 
 func (a *Adapter) runWriter(sub *clientSub) {
+	select {
+	case <-sub.done:
+		return
+	case <-sub.opened:
+	}
 	for {
 		select {
 		case <-sub.done:

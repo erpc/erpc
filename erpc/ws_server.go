@@ -286,21 +286,30 @@ func (wsc *WsConnection) handleMessage(raw []byte) {
 		return
 	}
 
-	out, notification := wsc.handleRequest(ctx, raw, &startedAt, false)
+	out, notification, open := wsc.handleRequest(ctx, raw, &startedAt, false)
 	if notification {
 		wsc.writeMeteringOnly(wsc.costBlock(ctx, []interface{}{out}))
 		if r, ok := out.(*common.NormalizedResponse); ok {
 			go r.Release()
 		}
+		if open != nil {
+			open()
+		}
 		return
 	}
+	var err error
 	switch v := out.(type) {
 	case *common.NormalizedResponse:
-		wsc.writeNormalizedResponse(v)
+		err = wsc.writeNormalizedResponse(v)
 	default:
-		if err := wsc.writeJSON(wsc.costBlock(ctx, []interface{}{v}), v); err != nil {
+		if err = wsc.writeJSON(wsc.costBlock(ctx, []interface{}{v}), v); err != nil {
 			wsc.logger.Debug().Err(err).Str("connId", wsc.id).Msg("failed to write error response")
 		}
+	}
+	// A failed write closes the connection, whose cleanup ends the
+	// subscription; it never writes.
+	if open != nil && err == nil {
+		open()
 	}
 }
 
@@ -308,8 +317,8 @@ func (wsc *WsConnection) handleMessage(raw []byte) {
 // HTTP handler and returns the response or error body to write.
 // Subscription methods are rejected in batches. A panic becomes an error
 // response carrying the request's id, since WebSocket clients match replies
-// by id.
-func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedAt *time.Time, inBatch bool) (out interface{}, notification bool) {
+// by id. A new subscription comes with open, to call once out is written.
+func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedAt *time.Time, inBatch bool) (out interface{}, notification bool, open func()) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
@@ -343,7 +352,7 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 	}
 
 	if err := nq.Validate(); err != nil {
-		return fail(err, &common.TRUE), notification
+		return fail(err, &common.TRUE), notification, nil
 	}
 	// A valid request without an id is a notification: it runs, but gets no
 	// reply (JSON-RPC 2.0 §4.1). Invalid requests are still answered.
@@ -355,28 +364,28 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 	headers := wsc.httpReq.Header
 	queryArgs := wsc.httpReq.URL.Query()
 	if err := applyForwardHeaders(project, nq, headers); err != nil {
-		return fail(err, &common.TRUE), notification
+		return fail(err, &common.TRUE), notification, nil
 	}
 
 	method, _ := nq.Method()
 	allowed, err := isMethodAllowed(project, method)
 	if err != nil {
-		return fail(err, &common.TRUE), notification
+		return fail(err, &common.TRUE), notification, nil
 	}
 	if !allowed {
-		return unsupported(fmt.Sprintf("method not supported: %s", method)), notification
+		return unsupported(fmt.Sprintf("method not supported: %s", method)), notification, nil
 	}
 	if inBatch && IsSubscriptionMethod(method) {
-		return unsupported("subscription methods (eth_subscribe, eth_unsubscribe) are not supported in batch requests"), notification
+		return unsupported("subscription methods (eth_subscribe, eth_unsubscribe) are not supported in batch requests"), notification, nil
 	}
 
 	ap, err := auth.NewPayloadFromHttp(method, wsc.httpReq.RemoteAddr, headers, queryArgs)
 	if err != nil {
-		return fail(err, &common.TRUE), notification
+		return fail(err, &common.TRUE), notification, nil
 	}
 	user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 	if err != nil {
-		return fail(err, wsc.server.serverCfg.IncludeErrorDetails), notification
+		return fail(err, wsc.server.serverCfg.IncludeErrorDetails), notification, nil
 	}
 	nq.SetUser(user)
 	if project.Config.TrustUserIdHeader && nq.User() == nil {
@@ -385,7 +394,7 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 
 	nw, err := project.GetNetwork(requestCtx, wsc.networkId)
 	if err != nil {
-		return fail(err, wsc.server.serverCfg.IncludeErrorDetails), notification
+		return fail(err, wsc.server.serverCfg.IncludeErrorDetails), notification, nil
 	}
 	nq.SetNetwork(nw)
 	applyRequestDirectives(project, nw, nq, headers, queryArgs)
@@ -393,7 +402,7 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 	var resp *common.NormalizedResponse
 	switch {
 	case IsSubscribeMethod(method):
-		resp, err = wsc.server.subscriptionManager.Subscribe(requestCtx, wsc, nq, project, wsc.networkId)
+		resp, open, err = wsc.server.subscriptionManager.Subscribe(requestCtx, wsc, nq, project, wsc.networkId)
 	case IsSubscriptionMethod(method):
 		resp, err = wsc.server.subscriptionManager.Unsubscribe(requestCtx, wsc, nq, project, wsc.networkId)
 	default:
@@ -403,11 +412,11 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 		if resp != nil {
 			go resp.Release()
 		}
-		return fail(err, wsc.server.serverCfg.IncludeErrorDetails), notification
+		return fail(err, wsc.server.serverCfg.IncludeErrorDetails), notification, nil
 	}
 
 	common.EndRequestSpan(requestCtx, resp, nil)
-	return resp, notification
+	return resp, notification, open
 }
 
 func (wsc *WsConnection) handleBatch(ctx context.Context, raw []byte, startedAt *time.Time) {
@@ -430,7 +439,8 @@ func (wsc *WsConnection) handleBatch(ctx context.Context, raw []byte, startedAt 
 		wg.Add(1)
 		go func(index int, reqRaw json.RawMessage) {
 			defer wg.Done()
-			responses[index], notifications[index] = wsc.handleRequest(ctx, reqRaw, startedAt, true)
+			// Batches refuse subscribe, so nothing opens here.
+			responses[index], notifications[index], _ = wsc.handleRequest(ctx, reqRaw, startedAt, true)
 		}(i, reqBody)
 	}
 
@@ -589,7 +599,7 @@ func (wsc *WsConnection) writeError(code int, message string) {
 	})
 }
 
-func (wsc *WsConnection) writeNormalizedResponse(resp *common.NormalizedResponse) {
+func (wsc *WsConnection) writeNormalizedResponse(resp *common.NormalizedResponse) error {
 	// Release even when the write never starts (connection closed or broken).
 	defer func() { go resp.Release() }()
 	err := wsc.writeMessage(wsc.costBlock(wsc.ctx, []interface{}{resp}), func(w io.Writer) error {
@@ -599,6 +609,7 @@ func (wsc *WsConnection) writeNormalizedResponse(resp *common.NormalizedResponse
 	if err != nil {
 		wsc.logger.Debug().Err(err).Str("connId", wsc.id).Msg("failed to write websocket response")
 	}
+	return err
 }
 
 func (wsc *WsConnection) writeBatchResponse(costs []byte, responses []interface{}) {

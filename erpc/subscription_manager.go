@@ -70,42 +70,44 @@ func IsSubscribeMethod(method string) bool {
 }
 
 // Subscribe handles eth_subscribe: it ensures the upstream subscription
-// exists and registers a new client subscription on the connection.
+// exists and registers a new client subscription on the connection. The
+// subscription writes nothing until the caller calls open, once the
+// response carrying its id is written.
 func (sm *SubscriptionManager) Subscribe(
 	ctx context.Context,
 	wsc *WsConnection,
 	nq *common.NormalizedRequest,
 	project *PreparedProject,
 	networkId string,
-) (*common.NormalizedResponse, error) {
+) (resp *common.NormalizedResponse, open func(), err error) {
 	start := time.Now()
 	method := MethodEthSubscribe
 	lg := sm.logger.With().Str("connId", wsc.id).Str("networkId", networkId).Logger()
 
 	nw, err := project.GetNetwork(ctx, networkId)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	nq.SetNetwork(nw)
 
 	conn := sm.getOrCreateConn(wsc, nw.Label())
 	if conn == nil {
-		return nil, wsclient.ErrClosed
+		return nil, nil, wsclient.ErrClosed
 	}
 	// Fail fast before touching upstream filters; AddSubscription below
 	// enforces the limit atomically.
 	maxSubs := wsc.server.serverCfg.WebSocket.MaxSubscriptionsPerConnection
 	if conn.adapter.Count() >= maxSubs {
-		return nil, common.NewErrSubscriptionLimitExceeded(maxSubs)
+		return nil, nil, common.NewErrSubscriptionLimitExceeded(maxSubs)
 	}
 	maxTotal := wsc.server.serverCfg.WebSocket.MaxSubscriptions
 	if maxTotal > 0 && sm.activeSubs.Load() >= int64(maxTotal) {
 		telemetry.CounterHandle(telemetry.MetricWebsocketRejectedTotal, project.Config.Id, wsRejectSubGlobal).Inc()
-		return nil, common.NewErrInstanceSubscriptionLimitExceeded(maxTotal)
+		return nil, nil, common.NewErrInstanceSubscriptionLimitExceeded(maxTotal)
 	}
 
 	if err := sm.acquireRateLimits(ctx, project, nw, nq); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	reqFinality := nq.Finality(ctx)
@@ -117,7 +119,7 @@ func (sm *SubscriptionManager) Subscribe(
 	jrReq, err := nq.JsonRpcRequest()
 	if err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
+		return nil, nil, err
 	}
 
 	subType := indexer.ExtractSubscriptionType(jrReq.Params)
@@ -125,25 +127,25 @@ func (sm *SubscriptionManager) Subscribe(
 	if subType == indexer.SubTypeLogs {
 		if logsFilter, err = parseLogsSubscribe(jrReq.Params); err != nil {
 			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if err := nw.requireSubscriptionSource(ctx, subType); err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
+		return nil, nil, err
 	}
 	clientSubID, err := indexer.GenerateClientSubID()
 	if err != nil {
 		err = fmt.Errorf("failed to generate subscription ID: %w", err)
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
+		return nil, nil, err
 	}
 
 	key := indexerNetworkKey(nw)
 	kind, filterHash, err := sm.resolveSubscription(ctx, key, subType, jrReq.Params)
 	if err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
+		return nil, nil, err
 	}
 
 	if !sm.reserveSub(maxTotal) {
@@ -151,7 +153,7 @@ func (sm *SubscriptionManager) Subscribe(
 		telemetry.CounterHandle(telemetry.MetricWebsocketRejectedTotal, project.Config.Id, wsRejectSubGlobal).Inc()
 		err := common.NewErrInstanceSubscriptionLimitExceeded(maxTotal)
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
+		return nil, nil, err
 	}
 	// Counted before it is visible, so a racing cleanup never takes the
 	// gauge below zero.
@@ -165,12 +167,13 @@ func (sm *SubscriptionManager) Subscribe(
 		// The tap ends with its client or its network, whichever ends first;
 		// once the network ended, bg refuses it and the tap is moot.
 		tapCtx, stop := context.WithCancel(nw.appCtx)
-		if addErr = conn.adapter.AddTapSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
+		var opened <-chan struct{}
+		if opened, addErr = conn.adapter.AddTapSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			sub := wsclient.Subscription{ClientSubID: clientSubID, Kind: kind, NetworkID: key}
 			if kind == indexer.KindLog {
-				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, nw, logsFilter) })
+				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, opened, nw, logsFilter) })
 			} else {
-				nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, nw) })
+				nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, opened, nw) })
 			}
 		} else {
 			stop()
@@ -186,7 +189,7 @@ func (sm *SubscriptionManager) Subscribe(
 			err = common.NewErrSubscriptionLimitExceeded(maxSubs)
 		}
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
+		return nil, nil, err
 	}
 
 	lg.Info().
@@ -195,7 +198,7 @@ func (sm *SubscriptionManager) Subscribe(
 		Msg("subscription established")
 
 	sm.recordSuccessMetrics(project, nw, method, reqFinality, start, nq)
-	return newJsonRpcResultResponse(nq, jrReq, []byte(`"`+clientSubID+`"`)), nil
+	return newJsonRpcResultResponse(nq, jrReq, []byte(`"`+clientSubID+`"`)), func() { conn.adapter.Open(clientSubID) }, nil
 }
 
 // Unsubscribe handles an eth_unsubscribe request.
