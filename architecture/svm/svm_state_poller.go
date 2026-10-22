@@ -66,21 +66,17 @@ const maxConsecutiveSlotPollSkips = 4
 // needs a different health-detection latency than ~2s.
 const healthPollEveryNTicks = 5
 
-// DefaultFirstAvailableSlotStaleness is the default minimum interval between
-// floor probes (getBlocksWithLimit(0, 1)) per upstream. A firstAvailableSlotPlus
-// bound's updateRate overrides it (floorStaleness).
+// floorRetryInterval spaces floor probes (getBlocksWithLimit(0, 1)) per
+// upstream until the first observation lands. After that the floor is frozen,
+// as EVM's earliestBlockPlus is at updateRate 0, unless a firstAvailableSlotPlus
+// bound's updateRate asks for re-probes (floorUpdateRate).
 //
-// Deliberately ~75x the slot time. The floor sits O(100k) slots below the head
-// and rises at most one slot per slot, so freshness buys nothing measurable.
-// It also needs NO staleness margin on the comparison: a stale floor is always
-// LOWER than the true floor, so it can only under-exclude — one wasted round
-// trip the sweep already absorbs — and never wrongly exclude. That is the
-// opposite of indexedTipStalenessMargin, whose bound moves TOWARD the
-// requested slot and therefore does need slack.
-//
-// The only thing this window bounds is recovery after a floor DROP (a node
-// re-provisioned with longer history behind a stable endpoint).
-const DefaultFirstAvailableSlotStaleness = 30 * time.Second
+// Freezing is safe for routing: a pruning node's floor only rises, so a frozen
+// floor is LOWER than the true one. It can only under-exclude — one wasted round
+// trip the sweep already absorbs — and never wrongly exclude. A floor DROP (a
+// node re-provisioned with longer history behind a stable endpoint) is seen
+// only on restart or with updateRate set.
+const floorRetryInterval = 30 * time.Second
 
 // Static request payloads — avoid allocating on every tick.
 var (
@@ -609,7 +605,13 @@ func (e *SvmStatePoller) IsHealthy() bool {
 // on a cold poller and leave firstAvailableSlotPlus enforcing from genesis if
 // the async fetch later fails.
 func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
-	staleness := e.floorStaleness()
+	staleness := e.floorUpdateRate()
+	if staleness == 0 {
+		if e.firstAvailableSlotKnown.Load() {
+			return
+		}
+		staleness = floorRetryInterval
+	}
 	wasStale := e.firstAvailableSlotShared.IsStale(staleness)
 	slot, err := e.firstAvailableSlotShared.TryUpdateIfStale(ctx, staleness,
 		func(ctx context.Context) (slot int64, err error) {
@@ -680,25 +682,24 @@ func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
 	e.firstAvailableSlotPending.Store(true)
 }
 
-// floorStaleness is the smallest updateRate set on a firstAvailableSlotPlus
-// bound of this upstream, else DefaultFirstAvailableSlotStaleness. Same field
-// and same min-of-bounds rule as EVM's earliestBlockPlus probe schedule.
-func (e *SvmStatePoller) floorStaleness() time.Duration {
-	rate := DefaultFirstAvailableSlotStaleness
+// floorUpdateRate is the smallest updateRate set on a firstAvailableSlotPlus
+// bound of this upstream, else 0 (freeze after the first observation). Same
+// field, default and min-of-bounds rule as EVM's earliestBlockPlus schedule.
+func (e *SvmStatePoller) floorUpdateRate() time.Duration {
 	if e.upstream == nil {
-		return rate
+		return 0
 	}
 	cfg := e.upstream.Config()
 	if cfg == nil || cfg.Svm == nil || cfg.Svm.BlockAvailability == nil {
-		return rate
+		return 0
 	}
-	set := false
+	var rate time.Duration
 	for _, b := range []*common.SvmAvailabilityBoundConfig{cfg.Svm.BlockAvailability.Lower, cfg.Svm.BlockAvailability.Upper} {
 		if b == nil || b.FirstAvailableSlotPlus == nil || b.UpdateRate <= 0 {
 			continue
 		}
-		if r := b.UpdateRate.Duration(); !set || r < rate {
-			rate, set = r, true
+		if r := b.UpdateRate.Duration(); rate == 0 || r < rate {
+			rate = r
 		}
 	}
 	return rate

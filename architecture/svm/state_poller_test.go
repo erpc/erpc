@@ -552,9 +552,9 @@ func TestSvmStatePoller_FirstAvailableSlot_AboveOwnLatestRejected(t *testing.T) 
 }
 
 // The floor moves O(1) slot per slot while sitting O(100k) slots below the
-// head, so it is polled on its own staleness window rather than every tick.
-// A firstAvailableSlotPlus bound's updateRate sets that window; nothing else
-// does.
+// head, so by default it is probed once and then frozen, as EVM's
+// earliestBlockPlus is at updateRate 0. A firstAvailableSlotPlus bound's
+// updateRate re-probes it on that cadence; nothing else does.
 func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.T) {
 	t.Parallel()
 	plus := int64(0)
@@ -569,7 +569,7 @@ func TestSvmStatePoller_FirstAvailableSlot_PolledLessOftenThanHealth(t *testing.
 		cfg       *common.UpstreamConfig
 		wantFloor int
 	}{
-		"default 30s window": {nil, 1},
+		"default: frozen after first observation": {nil, 1},
 		"firstAvailableSlotPlus updateRate 1ns": {
 			withRate(&common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: &plus, UpdateRate: common.Duration(time.Nanosecond)}),
 			2 * healthPollEveryNTicks,

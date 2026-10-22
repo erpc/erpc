@@ -1683,7 +1683,7 @@ export interface SvmBlockAvailabilityConfig {
  * SvmAvailabilityBoundConfig is a single declared slot bound.
  * Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
  * UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
- * anchors on is re-probed. Unset keeps the 30s default.
+ * anchors on is re-probed. 0 freezes it after the first observation, as EVM.
  */
 export interface SvmAvailabilityBoundConfig {
   exactSlot?: number /* int64 */;
