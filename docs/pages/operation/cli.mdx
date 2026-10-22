@@ -206,8 +206,10 @@ pprof — build with `-tags pprof` to activate.
 | `tracing` | \*TracingConfig | nil | OTel tracing; defaults when set: protocol=grpc, endpoint=localhost:4317, sampleRate=1.0, serviceName=erpc. |
 | `metrics.enabled` | \*bool | `true` (non-test builds) | If `false` or nil, metrics server is not started. In test builds the default is nil. |
 | `metrics.port` | \*int | `4001` | Prometheus scrape port. |
-| `metrics.hostV4` | \*string | `"0.0.0.0"` | IPv4 bind address for the metrics server. |
+| `metrics.hostV4` | \*string | `"0.0.0.0"` | IPv4 bind address for the metrics server (honoured like `server.httpHostV4`). |
+| `metrics.listenV4` | \*bool | `true` | Enables the IPv4 metrics listener; requires `hostV4`. |
 | `metrics.hostV6` | \*string | `"[::]"` | IPv6 bind address. |
+| `metrics.listenV6` | \*bool | `nil` (off) | Opt-in IPv6 metrics listener; requires `hostV6`. |
 | `metrics.errorLabelMode` | LabelMode | `"compact"` | Controls the `error` label on request-error counters. `"compact"` condenses codes; `"verbose"` emits full class names. |
 | `metrics.histogramBuckets` | string | `""` (built-in defaults) | Comma-separated float64 bucket boundaries. Non-float values are rejected by validation. |
 | `metrics.customizations` | []\*MetricsCustomizationConfig | nil | Ordered `{subject, action, labels, buckets}` entries controlling family exposure, per-family label sets, and per-family histogram buckets. `subject` is a metric name without the `erpc_` prefix, optionally ending in `*`; rules are applied by specificity, not order. |

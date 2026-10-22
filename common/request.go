@@ -949,6 +949,12 @@ func (r *NormalizedRequest) resolveJsonRpc(ctx ...context.Context) (*JsonRpcRequ
 
 	rpcReq := new(JsonRpcRequest)
 	if err := SonicCfg.Unmarshal(r.body, rpcReq); err != nil {
+		// An unrepresentable id is a well-formed body with an unacceptable
+		// member, so it keeps its own code (-32600) instead of becoming a
+		// parse error (-32700).
+		if HasErrorCode(err, ErrCodeJsonRpcRequestInvalidId) {
+			return nil, err
+		}
 		return nil, NewErrJsonRpcRequestUnmarshal(err, r.body)
 	}
 

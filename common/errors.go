@@ -1161,7 +1161,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamHedgeCancelled) {
 				cancelled++
 				continue
-			} else if HasErrorCode(e, ErrCodeEndpointClientSideException, ErrCodeJsonRpcRequestUnmarshal, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
+			} else if HasErrorCode(e, ErrCodeEndpointClientSideException, ErrCodeJsonRpcRequestUnmarshal, ErrCodeJsonRpcRequestInvalidId, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
 				client++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointTransportFailure) {
@@ -1727,6 +1727,33 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error, body []byte) error {
 }
 
 func (e *ErrJsonRpcRequestUnmarshal) ErrorStatusCode() int { return 400 }
+
+// ErrJsonRpcRequestInvalidId is a numeric request id eRPC cannot hold exactly as
+// an int64 (fractional, exponent-form, or outside the int64 range). Sonic decodes
+// every JSON number as float64, so without this check the id was silently cast
+// (1.5 -> 1, 1e19 -> MinInt64) and distinct client ids collapsed onto one internal
+// id. It is an Invalid Request (-32600) rather than a parse error: the body is
+// well-formed JSON, the id member is what is unacceptable.
+type ErrJsonRpcRequestInvalidId struct {
+	BaseError
+}
+
+const ErrCodeJsonRpcRequestInvalidId ErrorCode = "ErrJsonRpcRequestInvalidId"
+
+var NewErrJsonRpcRequestInvalidId = func(idRaw []byte) error {
+	return &ErrJsonRpcRequestInvalidId{
+		BaseError{
+			Code:    ErrCodeJsonRpcRequestInvalidId,
+			Message: fmt.Sprintf("json-rpc request id %s cannot be represented as a 64-bit integer", idRaw),
+			Details: map[string]interface{}{
+				"retryableTowardNetwork": false,
+				"id":                     string(idRaw),
+			},
+		},
+	}
+}
+
+func (e *ErrJsonRpcRequestInvalidId) ErrorStatusCode() int { return 400 }
 
 type ErrJsonRpcRequestUnresolvableMethod struct {
 	BaseError
@@ -2773,6 +2800,7 @@ func IsRetryableTowardsUpstream(err error) bool {
 
 		// 400 / 404 / 405 / 413 -> No Retry
 		ErrCodeJsonRpcRequestUnmarshal,
+		ErrCodeJsonRpcRequestInvalidId,
 
 		// Invalid/malformed request (e.g. eth_getLogs fromBlock > toBlock, bad
 		// params, missing method) -> No Retry: no upstream will accept it, so
@@ -2823,6 +2851,7 @@ func IsClientError(err error) bool {
 		err,
 		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
+		ErrCodeJsonRpcRequestInvalidId,
 		ErrCodeInvalidRequest,
 		ErrCodeGetLogsExceededMaxAllowedRange,
 		ErrCodeGetLogsExceededMaxAllowedAddresses,

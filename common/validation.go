@@ -175,6 +175,12 @@ func (m *MetricsConfig) Validate() error {
 		if m.HostV4 == nil && m.HostV6 == nil {
 			return fmt.Errorf("metrics.hostV4 or metrics.hostV6 is required when metrics.enabled is true")
 		}
+		if m.ListenV4 != nil && *m.ListenV4 && m.HostV4 == nil {
+			return fmt.Errorf("metrics.listenV4 is true but metrics.hostV4 is not set")
+		}
+		if m.ListenV6 != nil && *m.ListenV6 && m.HostV6 == nil {
+			return fmt.Errorf("metrics.listenV6 is true but metrics.hostV6 is not set")
+		}
 		if m.Port == nil {
 			return fmt.Errorf("metrics.port is required when metrics.enabled is true")
 		}
