@@ -267,7 +267,7 @@ metrics:
 10. **`erpc_ristretto_cache_current_cost` requires `memory.emitMetrics: true`.** Without this flag the gauge is registered and appears in `/metrics` but always returns 0. It is the only metric in the system requiring an explicit opt-in to be meaningful. (<SourceLink file="data/memory.go" lines="71" />)
 11. **`erpc_upstream_cordoned` `category` label is the cordon scope (method string or `"*"`), not a request-category label.** Do not join this `category` with `category` from request-accounting metrics. (<SourceLink file="health/tracker.go" lines="458-465" />)
 12. **`erpc_upstream_cordoned` `vendor` label is `"n/a"` when no vendor is configured.** Dashboard JOINs between cordon metrics and upstream request metrics must handle the `"n/a"` value for unvendored upstreams. (<SourceLink file="upstream/upstream.go" lines="275-286" />)
-13. **`erpc_auth_failed_total` always has `strategy="database"`.** Only the database auth strategy emits this counter. For other strategies, monitor failures via `erpc_network_failed_request_total{error=~"ErrAuthUnauthorized.*"}`. (<SourceLink file="auth/strategy_database.go" lines="467-472" />)
+13. **`erpc_auth_failed_total` increments when `ErrAuthUnauthorized` is sent to the client.** Closed `reason` per strategy via `NewErrAuthUnauthorized`; intermediate multi-strategy rejects are not counted. `agent_name` is always `"unknown"`. (<SourceLink file="auth/auth_metrics.go" />)
 14. **`erpc_upstream_attempt_outcome_total` `is_hedge`/`is_retry` are literal `"true"`/`"false"` strings.** Use `{is_hedge="true"}` in PromQL, not `{is_hedge="1"}`. (<SourceLink file="upstream/upstream.go" lines="80-85" />)
 15. **`erpc_network_evm_block_range_requested_total` `bucket` label is unbounded.** When tip is known, `ComputeBlockHeatmapBucket` produces human-readable relative labels (`"TIP"`, `"L100k"`, `"100k-200k"`, etc.). This counter is not covered by the idle sweep — cardinality grows permanently. (<SourceLink file="erpc/block_heatmap.go" lines="87-175" />)
 16. **`erpc_selection_*` metrics carry a `method` label.** Untrusted callers injecting hundreds of distinct method names create unbounded selection-gauge series. Consider a Prometheus relabeling drop rule for the `method` label in untrusted deployments.
@@ -313,6 +313,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_network_multiplexed_request_total` | counter | project, network, category, finality, user, agent_name | Request de-duplicated into an identical in-flight request. |
 | `erpc_network_fallback_escape_total` | counter | project, network, category | The per-request fallback escape (`failover.onDefaultsExhausted`) retried a request on `tier:fallback` upstreams. Expected zero in steady state. |
 | `erpc_upstream_websocket_connected` | gauge | project, vendor, network, upstream | `1` while the upstream's WebSocket connection is established, `0` while it reconnects. |
+| `erpc_upstream_websocket_heads_stall_reconnects_total` | counter | project, network, upstream | Reconnects forced because the upstream's newHeads subscription went silent while its polled head kept advancing. Any increase means a node dropped a live subscription without closing it. |
 | `erpc_websocket_subscription_notifications_dropped_total` | counter | project, network, kind | Client subscription notifications dropped because the subscription's buffer (`server.webSocket.subscriptionBufferSize`) was full. For `kind="logs"` the connection is also closed with `1013`. |
 | `erpc_websocket_connections_active` | gauge | project | Open client WebSocket connections. |
 | `erpc_websocket_subscriptions_active` | gauge | project, network, kind | Open client `eth_subscribe` subscriptions; drops on `eth_unsubscribe` and when the connection closes. |
@@ -324,6 +325,10 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_upstream_subscription_event_bytes_total` | counter | project, network, upstream, kind | Bytes of those notifications. |
 | `erpc_subscription_dedup_dropped_total` | counter | project, network, kind | Upstream events dropped as duplicates of one already delivered (the same head or log from several upstreams). |
 | `erpc_subscription_dedup_entries` | gauge | project, network | Keys held by the network's `logs` / `newPendingTransactions` dedup windows; each filter holds at most `indexer.dedupWindowSize` (default 8192). |
+| `erpc_subscription_withheld_heads_total` | counter | project, network | Upstream heads not delivered to clients because the network did not accept them, e.g. a `tier:fallback` head while a primary streams heads, or a head the upstream's poller has not accepted yet. |
+| `erpc_subscription_undelivered_total` | counter | project, network, kind | Upstream events that passed dedup but matched no client subscription. Sustained growth on `logs` / `newPendingTransactions` means upstream subscriptions nobody consumes; on `newHeads` it only means no client subscribes to heads. |
+| `erpc_network_subscription_last_head_timestamp_seconds` | gauge | project, network | Unix time the subscription indexer last accepted a new head. Alert on `time() - this` well past the block time while clients are subscribed: the `newHeads` stream has stalled. |
+| `erpc_websocket_rejected_total` | counter | project, reason | Client WebSocket connection or subscription refused by an instance-wide cap. `reason` ∈ `"conn_global"` (`server.webSocket.maxConnections`), `"conn_per_ip"` (`maxConnectionsPerIP`), `"sub_global"` (`maxSubscriptions`). |
 | `erpc_network_static_response_served_total` | counter | project, network, category | Served from a configured static response; no upstream touched. |
 | `erpc_network_timeout_fired_total` | counter | project, network, category, finality, scope | Timeout policy killed a request. `scope` ∈ `"network"`, `"upstream"`. Suppressed when retry-exhausted error wins. |
 | `erpc_network_retry_attempt_total` | counter | project, network, category, reason, finality | Network-scope retry. `reason` ∈ `"empty_result"`, `"pending_tx"`, `"retryable_error"`, `"block_unavailable"`, `"missing_data"`. |
@@ -350,7 +355,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Request skipped: requested lower bound below upstream's available range. Same `confidence` values. |
 | `erpc_network_latest_block_timestamp_distance_seconds` | gauge | project, network, origin | `now − latest block timestamp`. `origin` ∈ `"evm_state_poller"`, `"network_response"`. |
 | `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | EMA block-time estimate (α=0.1, min 3 samples). Returns 0 until 3 samples. Bounded 10ms–120s. |
-| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | The tip actually served per `axis` (`latest`/`finalized`): the [served-tip pick](/reference/evm/block-tracking#served-tip) after the regression guard, the WebSocket delivered-head floor (network-wide `latest` only) and the guarantee floors. Set on every evaluation with a known tip, with or without a `servedTip` block. `lane="all"` = network-wide; a named lane = a [use-upstream group](/reference/lanes); a request without a lane writes nothing. Keeps its last value while no upstream has a head. |
+| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | The tip actually served per `axis` (`latest`/`finalized`): the [served-tip pick](/reference/evm/block-tracking#served-tip) after the regression guard, the WebSocket delivered-head floor (network-wide `latest` only) and the guarantee floors. Set on every evaluation with a known tip, with or without a `servedTip` block. `lane="all"` = network-wide, evaluated at least every second; a named lane = a [use-upstream group](/reference/lanes), evaluated only by its requests; a request without a lane writes nothing. Keeps its last value while no upstream has a head. |
 | `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | `Freshest − served`, clamped at 0. `Freshest` is the second-highest head on the ballot (the only one when one votes), so a lone far-ahead head never inflates it. Reads 0 at quorum ≤ 2 unless a guarantee floor sits below the pick, and 0 while the guard or the WebSocket floor lifts the tip. Keeps its last value while no upstream has a head. |
 | `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since this process saw the served value change, written at each evaluation; absent until the first change. Keeps rising while no upstream has a head: the stuck-tip signal. |
 | `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | [Regression-guard](/reference/evm/block-tracking#regression-guard) transitions, not evaluations. `outcome` ∈ `"held"` (serving the last corroborated pick), `"failed_open"` (the hold outlasted 1 minute). Any increase is alert-worthy. |
@@ -499,7 +504,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Failed authentication attempt. `strategy` is always `"database"` — only the database auth strategy emits this counter. |
+| `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Client-facing auth denial. Closed `reason` set; `agent_name` always `unknown`; no `user` label. |
 
 #### Area 16: Panics
 
@@ -592,6 +597,6 @@ either way.
 - [Failsafe: Retry](/config/failsafe/retry) — `erpc_network_retry_attempt_total` with its `reason` label tracks retry behavior.
 - [Selection policies](/config/projects/selection-policies) — the `erpc_selection_*` family tracks tick-by-tick upstream ranking.
 - [Cache](/config/database) — `erpc_cache_get_*` and `erpc_cache_set_*` families cover all cache connector activity.
-- [Auth](/config/auth) — `erpc_auth_failed_total` for database-strategy failures.
+- [Auth](/config/auth) — `erpc_auth_failed_total` for all auth strategy failures.
 
 </AISection>

@@ -211,6 +211,7 @@ type Upstream struct {
 	evmStatePoller       common.EvmStatePoller
 	svmStatePoller       common.SvmStatePoller
 	statePollerOnce      sync.Once
+	evmMulticall3        *evm.Multicall3Batcher
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 	// Highest block at which the integrity state probe PROVED this upstream
@@ -317,6 +318,10 @@ func NewUpstream(
 		pup.Client = client
 	}
 
+	if ec := pup.config.Evm; ec != nil && ec.Multicall3 != nil {
+		pup.evmMulticall3 = evm.NewMulticall3Batcher(ec.Multicall3)
+	}
+
 	lg.Debug().Msgf("prepared upstream")
 
 	return pup, nil
@@ -421,13 +426,15 @@ func (u *Upstream) Config() *common.UpstreamConfig {
 }
 
 // IsDown reports whether the circuit breaker of the failsafe policy that
-// would serve method is open. Breakers scoped to other methods don't count.
-func (u *Upstream) IsDown(method string) bool {
+// would serve method at finality is open. Breakers scoped to other methods
+// or finalities don't count. Pass the request's real finality (not Unknown)
+// when checking escape/health paths so a finalized/realtime-scoped open
+// breaker is not missed.
+func (u *Upstream) IsDown(method string, finality common.DataFinalityState) bool {
 	if u == nil {
 		return true
 	}
-	req := common.NewNormalizedRequestFromJsonRpcRequest(common.NewJsonRpcRequest(method, nil))
-	fe := u.getFailsafeExecutor(req)
+	fe := u.failsafeExecutorFor(method, finality)
 	if fe == nil {
 		return false
 	}
@@ -519,8 +526,13 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 
 func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamExecutor {
 	method, _ := req.Method()
-	finality := req.Finality(context.Background())
+	return u.failsafeExecutorFor(method, req.Finality(context.Background()))
+}
 
+// failsafeExecutorFor picks the policy the same way getFailsafeExecutor does,
+// so health checks that only have method+finality (not a full request) still
+// see the breaker the real call would hit.
+func (u *Upstream) failsafeExecutorFor(method string, finality common.DataFinalityState) *upstreamExecutor {
 	// 4-tier priority: method+finality > method > finality > catch-all.
 	for _, fe := range u.failsafeExecutors {
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()

@@ -30,11 +30,13 @@ func HandleProjectPreForward(ctx context.Context, network common.Network, nq *co
 		return false, nil, err
 	}
 
+	if handled, resp, err := projectPreForward_localAnswer(ctx, network, nq, method); handled {
+		return true, resp, err
+	}
+
 	switch strings.ToLower(method) {
 	case "eth_call", "eth_estimategas":
 		return projectPreForward_defaultLatestBlock(ctx, network, nq)
-	case "eth_chainid":
-		return projectPreForward_eth_chainId(ctx, network, nq)
 	case "eth_getlogs":
 		return projectPreForward_eth_getLogs(ctx, network, nq)
 	case "trace_filter", "arbtrace_filter":
@@ -58,8 +60,6 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, upstre
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
 		return networkPreForward_eth_getLogs(ctx, network, upstreams, nq)
-	case "eth_chainid":
-		return networkPreForward_eth_chainId(ctx, network, upstreams, nq)
 	case "eth_blocknumber":
 		return networkPreForward_eth_blockNumber(ctx, network, nq)
 	case "trace_filter", "arbtrace_filter":
@@ -109,8 +109,8 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 	switch methodLower {
 	case "eth_getlogs":
 		return upstreamPreForward_eth_getLogs(ctx, n, u, r)
-	case "eth_chainid":
-		return upstreamPreForward_eth_chainId(ctx, n, u, r)
+	case "eth_call":
+		return upstreamPreForward_eth_call(ctx, n, u, r)
 	case "trace_filter", "arbtrace_filter":
 		return upstreamPreForward_trace_filter(ctx, n, u, r)
 	default:
@@ -142,6 +142,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// Special case: eth_sendRawTransaction needs to handle errors for idempotency
 	if methodLower == "eth_sendrawtransaction" {
 		return upstreamPostForward_eth_sendRawTransaction(ctx, n, u, rq, rs, re)
+	}
+	if methodLower == "eth_call" {
+		upstreamPostForward_eth_call(u, rq, rs, re)
 	}
 
 	// For all other methods, skip validation if there's already an error
@@ -221,7 +224,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			}
 			span.End()
 			// Per-check attempts/outcomes (pass/skip/reject/reject_recoverable/record_only/reconfirmed/
-			// off) — sum = total attempts. "pass" means an actual verification ran;
+			// off/panic) — sum = total attempts. "pass" means an actual verification ran;
 			// "skip" means the check couldn't evaluate (cold cache, missing wiring).
 			// Higher volume than the violation counter below.
 			for _, oc := range res.Outcomes {

@@ -66,20 +66,17 @@ const maxConsecutiveSlotPollSkips = 4
 // needs a different health-detection latency than ~2s.
 const healthPollEveryNTicks = 5
 
-// DefaultFirstAvailableSlotStaleness is the minimum interval between floor
-// probes (getBlocksWithLimit(0, 1)) per upstream.
+// floorRetryInterval spaces floor probes (getBlocksWithLimit(0, 1)) per
+// upstream until the first observation lands. After that the floor is frozen,
+// as EVM's earliestBlockPlus is at updateRate 0, unless a firstAvailableSlotPlus
+// bound's updateRate asks for re-probes (floorUpdateRate).
 //
-// Deliberately ~75x the slot time. The floor sits O(100k) slots below the head
-// and rises at most one slot per slot, so freshness buys nothing measurable.
-// It also needs NO staleness margin on the comparison: a stale floor is always
-// LOWER than the true floor, so it can only under-exclude — one wasted round
-// trip the sweep already absorbs — and never wrongly exclude. That is the
-// opposite of indexedTipStalenessMargin, whose bound moves TOWARD the
-// requested slot and therefore does need slack.
-//
-// The only thing this window bounds is recovery after a floor DROP (a node
-// re-provisioned with longer history behind a stable endpoint).
-const DefaultFirstAvailableSlotStaleness = 30 * time.Second
+// Freezing is safe for routing: a pruning node's floor only rises, so a frozen
+// floor is LOWER than the true one. It can only under-exclude — one wasted round
+// trip the sweep already absorbs — and never wrongly exclude. A floor DROP (a
+// node re-provisioned with longer history behind a stable endpoint) is seen
+// only on restart or with updateRate set.
+const floorRetryInterval = 30 * time.Second
 
 // Static request payloads — avoid allocating on every tick.
 var (
@@ -221,13 +218,8 @@ func NewSvmStatePoller(
 	// (a peer's floor of 0 into a zero-valued counter). Those paths are closed
 	// by refreshFirstAvailableSlot's not-stale fast path — but ONLY when no
 	// local refresh is still pending a real observation (see
-	// firstAvailableSlotPending). Gated on declaresFirstAvailableSlotPlus so a
-	// propagated shared counter (same id/endpoint key, different config) cannot
-	// export the floor gauge or mark this poller known without opt-in.
+	// firstAvailableSlotPending).
 	firstAvailableShared.OnValue(func(v int64) {
-		if !e.declaresFirstAvailableSlotPlus() {
-			return
-		}
 		e.firstAvailableSlotPending.Store(false)
 		e.firstAvailableSlotKnown.Store(true)
 		e.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot).Set(float64(v))
@@ -276,12 +268,16 @@ func (e *SvmStatePoller) IsObjectNull() bool {
 // down the whole erpc process (which serves every other network too).
 func (e *SvmStatePoller) recoverPanic(where string) {
 	if r := recover(); r != nil {
-		e.logger.Error().
-			Interface("panic", r).
-			Str("where", where).
-			Bytes("stack", debug.Stack()).
-			Msg("recovered from panic in svm state poller")
+		e.recoverPanicValue(where, r)
 	}
+}
+
+func (e *SvmStatePoller) recoverPanicValue(where string, r interface{}) {
+	e.logger.Error().
+		Interface("panic", r).
+		Str("where", where).
+		Bytes("stack", debug.Stack()).
+		Msg("recovered from panic in svm state poller")
 }
 
 func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
@@ -489,10 +485,9 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 		e.nextHealthPoll = e.pollCount
 	}
 
-	// The floor is probed ONLY for an upstream whose operator declared a
-	// firstAvailableSlotPlus bound (see declaresFirstAvailableSlotPlus), the
-	// same opt-in as EVM's earliestBlockPlus. An upstream with no such bound
-	// costs no extra call and carries no observed floor at all.
+	// The floor is probed for every upstream: history routing compares floors
+	// across the pool (history_sweep.go), and a declared firstAvailableSlotPlus
+	// bound anchors on it. Observing it gates nothing by itself.
 	//
 	// It runs AFTER the fan-out joins, not inside it, because its
 	// edge validation compares the sampled floor against this upstream's own
@@ -502,12 +497,10 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	// path while the value is fresh, and when it does refresh, the foreground
 	// wait is capped by SharedStateConfig.UpdateMaxWait with the fetch
 	// continuing asynchronously.
-	if e.declaresFirstAvailableSlotPlus() {
-		func() {
-			defer e.recoverPanic("fetchFirstAvailableSlot")
-			e.refreshFirstAvailableSlot(ctx)
-		}()
-	}
+	func() {
+		defer e.recoverPanic("fetchFirstAvailableSlot")
+		e.refreshFirstAvailableSlot(ctx)
+	}()
 
 	// A health verdict nobody routes on is not a defense; publish it.
 	e.applyHealthToRouting()
@@ -595,24 +588,6 @@ func (e *SvmStatePoller) IsHealthy() bool {
 	return true
 }
 
-// declaresFirstAvailableSlotPlus reports whether this upstream's operator-
-// declared svm.blockAvailability uses a firstAvailableSlotPlus bound on either
-// side — the only way an observed floor is consulted. Same spirit as EVM's
-// earliestBlockPlus: the floor is polled because a declared bound needs it as
-// its anchor, never by default.
-func (e *SvmStatePoller) declaresFirstAvailableSlotPlus() bool {
-	if e.upstream == nil {
-		return false
-	}
-	cfg := e.upstream.Config()
-	if cfg == nil || cfg.Svm == nil || cfg.Svm.BlockAvailability == nil {
-		return false
-	}
-	ba := cfg.Svm.BlockAvailability
-	return (ba.Lower != nil && ba.Lower.FirstAvailableSlotPlus != nil) ||
-		(ba.Upper != nil && ba.Upper.FirstAvailableSlotPlus != nil)
-}
-
 // refreshFirstAvailableSlot re-reads this upstream's ledger floor, debounced by
 // the counter itself rather than by the poll gate. TryUpdateIfStale returns on
 // a fast path when the value is fresh, so calling it every tick costs one
@@ -630,10 +605,25 @@ func (e *SvmStatePoller) declaresFirstAvailableSlotPlus() bool {
 // on a cold poller and leave firstAvailableSlotPlus enforcing from genesis if
 // the async fetch later fails.
 func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
-	wasStale := e.firstAvailableSlotShared.IsStale(DefaultFirstAvailableSlotStaleness)
-	slot, err := e.firstAvailableSlotShared.TryUpdateIfStale(ctx, DefaultFirstAvailableSlotStaleness,
-		func(ctx context.Context) (int64, error) {
-			slot, err := e.fetchFirstAvailableSlot(ctx)
+	staleness := e.floorUpdateRate()
+	if staleness == 0 {
+		if e.firstAvailableSlotKnown.Load() {
+			return
+		}
+		staleness = floorRetryInterval
+	}
+	wasStale := e.firstAvailableSlotShared.IsStale(staleness)
+	slot, err := e.firstAvailableSlotShared.TryUpdateIfStale(ctx, staleness,
+		func(ctx context.Context) (slot int64, err error) {
+			// The shared counter may run this on its own goroutine, outside
+			// Poll's recoverPanic; a panicking transport must not crash the process.
+			defer func() {
+				if r := recover(); r != nil {
+					e.recoverPanicValue("fetchFirstAvailableSlot", r)
+					slot, err = 0, fmt.Errorf("panic in floor probe: %v", r)
+				}
+			}()
+			slot, err = e.fetchFirstAvailableSlot(ctx)
 			if err != nil {
 				// Includes -32601 from an upstream that does not implement the
 				// method, and null/empty results. Returning the error leaves
@@ -690,6 +680,29 @@ func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
 	// does not treat markFreshAttempt as a peer observation. Async success
 	// clears pending via the closure / OnValue.
 	e.firstAvailableSlotPending.Store(true)
+}
+
+// floorUpdateRate is the smallest updateRate set on a firstAvailableSlotPlus
+// bound of this upstream, else 0 (freeze after the first observation). Same
+// field, default and min-of-bounds rule as EVM's earliestBlockPlus schedule.
+func (e *SvmStatePoller) floorUpdateRate() time.Duration {
+	if e.upstream == nil {
+		return 0
+	}
+	cfg := e.upstream.Config()
+	if cfg == nil || cfg.Svm == nil || cfg.Svm.BlockAvailability == nil {
+		return 0
+	}
+	var rate time.Duration
+	for _, b := range []*common.SvmAvailabilityBoundConfig{cfg.Svm.BlockAvailability.Lower, cfg.Svm.BlockAvailability.Upper} {
+		if b == nil || b.FirstAvailableSlotPlus == nil || b.UpdateRate <= 0 {
+			continue
+		}
+		if r := b.UpdateRate.Duration(); rate == 0 || r < rate {
+			rate = r
+		}
+	}
+	return rate
 }
 
 // fetchFirstAvailableSlot reads the oldest block this upstream can actually

@@ -161,6 +161,19 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			return capErr
 		}
 
+		// jsonrpsee per-connection eth_subscribe cap (reth -32006): a full socket, not an unhealthy upstream.
+		if strings.Contains(msg, "Too many subscriptions") {
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
 		if r.StatusCode == 402 ||
 			strings.Contains(msg, "reached the free tier") ||
 			strings.Contains(msg, "Monthly capacity limit") ||
@@ -327,6 +340,27 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				}
 			}
 			return execErr
+		}
+		// Aurora (Borealis engine) answers debug_trace* with -32603 for two
+		// per-transaction outcomes that no other node can change:
+		//   "no EVM execution in transaction 0x…": a NEAR-native transaction
+		//     surfaced in the EVM block, so there is nothing to trace;
+		//   "EVM tracing failed in transaction 0x… due to ContractError {…}":
+		//     the engine's own verdict for that transaction.
+		// As a server-side exception every request was retried until the
+		// failsafe gave up (12 attempts each) and the caller saw
+		// ErrUpstreamsExhausted instead of the real reason.
+		if strings.Contains(msg, "no EVM execution in transaction") ||
+			strings.Contains(msg, "EVM tracing failed in transaction") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCallException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		}
 		// EVM HALTS reported as "EVM error: <HaltReason>".
 		//
