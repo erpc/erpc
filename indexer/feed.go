@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 // Cursor is the number and hash of the last block a tap applied.
@@ -71,15 +72,58 @@ type OutOfRangeError struct{ Reason string }
 func (e OutOfRangeError) Error() string        { return ErrOutOfRange.Error() + ": " + e.Reason }
 func (e OutOfRangeError) Is(target error) bool { return target == ErrOutOfRange }
 
+// MempoolFeed is the reader side of one network's pending transactions.
+type MempoolFeed interface {
+	Tail(variant string) uint64 // newest sequence; a new tap starts after it
+	// Read waits for payloads after seq, bounded by ctx.
+	// ErrOutOfRange: seq left the ring.
+	Read(ctx context.Context, variant string, after uint64) (txs []json.RawMessage, next uint64, err error)
+}
+
 // Topic is what a source feeds: newHeads, or
 // newPendingTransactions:<variant>.
 type Topic string
 
 const TopicNewHeads Topic = SubTypeNewHeads
 
+const pendingTxTopicPrefix = SubTypeNewPendingTransactions + ":"
+
+// PendingTxTopic is the topic of one pending-transaction variant.
+func PendingTxTopic(variant string) Topic { return Topic(pendingTxTopicPrefix + variant) }
+
+// PendingTxVariant is t's variant, if t is a pending-transaction topic.
+func (t Topic) PendingTxVariant() (variant string, ok bool) {
+	return strings.CutPrefix(string(t), pendingTxTopicPrefix)
+}
+
+// PendingTxVariantOf names the variant of newPendingTransactions subscribe
+// params: the params after the subscription type, as JSON with sorted keys,
+// so equal params from any client are one variant.
+func PendingTxVariantOf(params []interface{}) (string, error) {
+	rest := []interface{}{}
+	if len(params) > 1 {
+		rest = params[1:]
+	}
+	b, err := json.Marshal(rest)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// PendingTxParams are the eth_subscribe params of variant.
+func PendingTxParams(variant string) ([]interface{}, error) {
+	var rest []interface{}
+	if err := json.Unmarshal([]byte(variant), &rest); err != nil {
+		return nil, err
+	}
+	return append([]interface{}{SubTypeNewPendingTransactions}, rest...), nil
+}
+
 // Intake is what sources report into; erpc implements it per network.
 type Intake interface {
 	Header(upstreamId string, raw json.RawMessage)
+	PendingTx(upstreamId, variant string, raw json.RawMessage)
 	// Subscribed reports a push subscribe's answer for t: nil once it is
 	// live, else the upstream's error.
 	Subscribed(upstreamId string, t Topic, err error)

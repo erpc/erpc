@@ -68,6 +68,9 @@ type ChainTracker struct {
 	mb    mailbox
 	state atomic.Pointer[feedState]
 	trees atomic.Pointer[treeState]
+	// txHeadAt is when the head last moved to a block with transactions,
+	// in unix nanoseconds; 0 before one.
+	txHeadAt atomic.Int64
 
 	// held, receipts and anchors are read by any goroutine; only the
 	// tracker's goroutine writes them.
@@ -1031,6 +1034,9 @@ func (t *ChainTracker) apply(path []*node) {
 	if t.selector == "" && pub.head() != head {
 		t.noteLatest(head.number)
 	}
+	if pub.head() != head && !head.emptyTxs {
+		t.txHeadAt.Store(time.Now().UnixNano())
+	}
 	old := t.state.Swap(s)
 	close(old.changed)
 
@@ -1647,6 +1653,15 @@ func (t *ChainTracker) SendTip() (indexer.Cursor, bool) {
 // Changed is closed once the tracker publishes a newer state: the pins, and
 // with them the block time and the live bound, may have moved.
 func (t *ChainTracker) Changed() <-chan struct{} { return t.state.Load().changed }
+
+// TxHeadAt is when the head last moved to a block with transactions; zero
+// before one. Pending-transaction sources stay silent only while it is old.
+func (t *ChainTracker) TxHeadAt() time.Time {
+	if at := t.txHeadAt.Load(); at != 0 {
+		return time.Unix(0, at)
+	}
+	return time.Time{}
+}
 
 // ReorgWindow is the tracker's window in blocks.
 func (t *ChainTracker) ReorgWindow() int { return t.window }

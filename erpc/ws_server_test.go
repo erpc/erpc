@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1309,6 +1310,116 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		assert.Equal(t, clientSubId1, p1["subscription"])
 		assert.Equal(t, clientSubId2, p2["subscription"])
 	})
+
+	// Two wss sources push the same pending transactions; the client gets
+	// each once, in order.
+	t.Run("TwoSourcesPushOnePendingTransactionOnce", func(t *testing.T) {
+		setupGock()
+		defer util.ResetGock()
+		chain := newMockChain(0x100, false)
+		a, urlA := newMockWsVendor(t, chain, nil)
+		b, urlB := newMockWsVendor(t, chain, nil)
+		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, nil), sourceUpstream("rpc-b", urlB, nil)))
+		defer cleanup()
+		conn := dialWs(t, addr)
+		defer conn.Close()
+
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
+		subID, ok := resp["result"].(string)
+		require.True(t, ok, "subscribe failed: %v", resp)
+		require.Eventually(t, func() bool { return a.pendingLive() == 1 && b.pendingLive() == 1 },
+			5*time.Second, 10*time.Millisecond, "each source subscribes the topic once")
+
+		tx1, tx2 := "0x"+strings.Repeat("a1", 32), "0x"+strings.Repeat("b2", 32)
+		for _, tx := range []string{tx1, tx2} {
+			a.pushTx(tx)
+			b.pushTx(tx)
+		}
+		assert.Equal(t, tx1, nextPendingTx(t, conn, subID, 5*time.Second))
+		assert.Equal(t, tx2, nextPendingTx(t, conn, subID, 5*time.Second))
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
+		_, msg, err := conn.ReadMessage()
+		require.Error(t, err, "each transaction reaches the client once, got %s", msg)
+	})
+
+	// Every source refuses a new variant as bad params: the client gets the
+	// upstream's -32602.
+	t.Run("EverySourceRefusesNewVariant", func(t *testing.T) {
+		setupGock()
+		defer util.ResetGock()
+		chain := newMockChain(0x100, false)
+		refuse := func(v *mockWsVendor) {
+			v.refusePending = func(int32) map[string]interface{} {
+				return map[string]interface{}{"code": -32602, "message": "invalid argument 1: unknown field"}
+			}
+		}
+		a, urlA := newMockWsVendor(t, chain, refuse)
+		b, urlB := newMockWsVendor(t, chain, refuse)
+		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, nil), sourceUpstream("rpc-b", urlB, nil)))
+		defer cleanup()
+		conn := dialWs(t, addr)
+		defer conn.Close()
+
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions",{"bogus":true}]}`)
+		errObj, ok := resp["error"].(map[string]interface{})
+		require.True(t, ok, "subscribe must fail: %v", resp)
+		assert.EqualValues(t, -32602, errObj["code"], "%v", errObj)
+		assert.GreaterOrEqual(t, a.pendingSubscribes.Load(), int32(1))
+		assert.GreaterOrEqual(t, b.pendingSubscribes.Load(), int32(1))
+	})
+
+	// Every source answers a new variant with a capacity error: the
+	// subscribe opens, and the sources' retry delivers.
+	t.Run("CapacityAnswersOpenAndRetryDelivers", func(t *testing.T) {
+		setupGock()
+		defer util.ResetGock()
+		chain := newMockChain(0x100, false)
+		busyOnce := func(v *mockWsVendor) {
+			v.refusePending = func(n int32) map[string]interface{} {
+				if n == 1 {
+					return map[string]interface{}{"code": -32005, "message": "limit exceeded"}
+				}
+				return nil
+			}
+		}
+		a, urlA := newMockWsVendor(t, chain, busyOnce)
+		b, urlB := newMockWsVendor(t, chain, busyOnce)
+		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, nil), sourceUpstream("rpc-b", urlB, nil)))
+		defer cleanup()
+		conn := dialWs(t, addr)
+		defer conn.Close()
+
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
+		subID, ok := resp["result"].(string)
+		require.True(t, ok, "capacity answers open the subscription: %v", resp)
+		assert.Zero(t, a.pendingLive()+b.pendingLive(), "no source took the topic yet")
+		require.Eventually(t, func() bool { return a.pendingLive() == 1 && b.pendingLive() == 1 },
+			10*time.Second, 10*time.Millisecond, "each source retries until the topic is live")
+
+		tx := "0x" + strings.Repeat("c3", 32)
+		a.pushTx(tx)
+		assert.Equal(t, tx, nextPendingTx(t, conn, subID, 5*time.Second))
+	})
+}
+
+// nextPendingTx reads the next notification of subscription subID and
+// returns its transaction hash.
+func nextPendingTx(t *testing.T, conn *websocket.Conn, subID string, timeout time.Duration) string {
+	t.Helper()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(timeout)))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err, "no newPendingTransactions notification within %s", timeout)
+	var notif struct {
+		Method string `json:"method"`
+		Params struct {
+			Subscription string `json:"subscription"`
+			Result       string `json:"result"`
+		} `json:"params"`
+	}
+	require.NoError(t, json.Unmarshal(msg, &notif), "%s", msg)
+	require.Equal(t, "eth_subscription", notif.Method, "%s", msg)
+	require.Equal(t, subID, notif.Params.Subscription, "%s", msg)
+	return notif.Params.Result
 }
 
 //
@@ -2085,22 +2196,51 @@ func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httpte
 }
 
 // mockWsVendor is a WebSocket vendor of chain that pushes each new head on
-// its newHeads subscription.
+// its newHeads subscription, and the transactions pushTx names on its
+// newPendingTransactions subscriptions.
 type mockWsVendor struct {
 	chain *mockChain
 	// refuseHeads answers newHeads subscribes as unsupported.
 	refuseHeads bool
 	// staleRPC answers latest with the first block, so only pushes move
 	// the upstream's head.
-	staleRPC    bool
-	pushing     atomic.Bool
-	subscribes  atomic.Int32
-	latestPolls atomic.Int64
+	staleRPC bool
+	// refusePending, if set, gives the JSON-RPC error answering the n-th
+	// newPendingTransactions subscribe (from 1), nil to accept it.
+	refusePending func(n int32) map[string]interface{}
+	pushing       atomic.Bool
+	subscribes    atomic.Int32
+	latestPolls   atomic.Int64
+
+	pendingSubscribes atomic.Int32
+	pendingMu         sync.Mutex
+	pendingSubs       map[string]*websocket.Conn // live newPendingTransactions subscriptions
+}
+
+// pendingLive counts the vendor's live newPendingTransactions subscriptions.
+func (v *mockWsVendor) pendingLive() int {
+	v.pendingMu.Lock()
+	defer v.pendingMu.Unlock()
+	return len(v.pendingSubs)
+}
+
+// pushTx pushes hash on every live newPendingTransactions subscription.
+func (v *mockWsVendor) pushTx(hash string) {
+	v.pendingMu.Lock()
+	subs := maps.Clone(v.pendingSubs)
+	v.pendingMu.Unlock()
+	for id, conn := range subs {
+		mockWriteJSON(conn, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "eth_subscription",
+			"params":  map[string]interface{}{"subscription": id, "result": hash},
+		})
+	}
 }
 
 func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVendor)) (*mockWsVendor, string) {
 	t.Helper()
-	v := &mockWsVendor{chain: chain}
+	v := &mockWsVendor{chain: chain, pendingSubs: make(map[string]*websocket.Conn)}
 	v.pushing.Store(true)
 	if configure != nil {
 		configure(v)
@@ -2109,6 +2249,15 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 	srv := mockWsUpstream(t, func(conn *websocket.Conn) {
 		done := make(chan struct{})
 		defer close(done)
+		defer func() {
+			v.pendingMu.Lock()
+			for id, c := range v.pendingSubs {
+				if c == conn {
+					delete(v.pendingSubs, id)
+				}
+			}
+			v.pendingMu.Unlock()
+		}()
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
@@ -2135,8 +2284,29 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 					reply["result"] = chain.answerBlock(params, v.refuseHeads, &v.latestPolls)
 				}
 			case "eth_unsubscribe":
+				if id, ok := params[0].(string); ok {
+					v.pendingMu.Lock()
+					delete(v.pendingSubs, id)
+					v.pendingMu.Unlock()
+				}
 				reply["result"] = true
 			case "eth_subscribe":
+				if params[0] == "newPendingTransactions" {
+					n := v.pendingSubscribes.Add(1)
+					if v.refusePending != nil {
+						if e := v.refusePending(n); e != nil {
+							delete(reply, "result")
+							reply["error"] = e
+							break
+						}
+					}
+					subID := fmt.Sprintf("0xtx%d", n)
+					v.pendingMu.Lock()
+					v.pendingSubs[subID] = conn
+					v.pendingMu.Unlock()
+					reply["result"] = subID
+					break
+				}
 				if params[0] != "newHeads" {
 					reply["result"] = "0xother"
 					break
@@ -2401,7 +2571,8 @@ func TestWebSocket_PushAndPollSourcesDeliverEachHeadOnce(t *testing.T) {
 
 // With failover on, a fallback-tier poll source polls only while no primary
 // source has been live for primaryLeadAfter; the client's heads stay
-// contiguous across both hand-overs.
+// contiguous across both hand-overs. A fallback-tier wss source subscribes
+// newPendingTransactions only while it is authoritative too.
 func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -2412,9 +2583,14 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	chain := newMockChain(0x100, false)
 	fallback, srv := newMockHttpVendor(t, chain)
 	primary, wsURL := newMockWsVendor(t, chain, nil)
+	// Its heads would vote while it is authoritative; only its pending
+	// subscription is under test.
+	wsFallback, wsFallbackURL := newMockWsVendor(t, chain, func(v *mockWsVendor) { v.pushing.Store(false) })
 
 	fallbackCfg := sourceUpstream("rpc-fallback", srv.URL, util.BoolPtr(true))
 	fallbackCfg.Tags = []string{common.TagTierFallback}
+	wsFallbackCfg := sourceUpstream("rpc-fallback-ws", wsFallbackURL, nil)
+	wsFallbackCfg.Tags = []string{common.TagTierFallback}
 	primaryCfg := sourceUpstream("rpc-primary", wsURL, nil)
 	// The primary's own polls let the network see blocks it stops pushing.
 	primaryCfg.Evm.StatePollerInterval = common.Duration(300 * time.Millisecond)
@@ -2423,12 +2599,21 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 		// Every upstream eligible; the identity function itself would select the rich default.
 		nw.SelectionPolicy = &common.SelectionPolicyConfig{EvalFunc: `(upstreams, ctx) => upstreams.filter(u => true)`}
 		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 1}
-	}, primaryCfg, fallbackCfg)
+	}, primaryCfg, fallbackCfg, wsFallbackCfg)
 	addr, cleanup := setupTestERPCServer(t, cfg)
 	defer cleanup()
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	subscribeNewHeads(t, conn)
+	pending := dialWs(t, addr)
+	defer pending.Close()
+	resp := sendAndReceive(t, pending, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
+	require.NotNil(t, resp["result"], "subscribe failed: %v", resp)
+	pendingOn := func(primaryLive, fallbackLive int) func() bool {
+		return func() bool { return primary.pendingLive() == primaryLive && wsFallback.pendingLive() == fallbackLive }
+	}
+	require.Eventually(t, pendingOn(1, 1), 5*time.Second, 10*time.Millisecond,
+		"while no primary leads, the fallback subscribes newPendingTransactions too")
 
 	// The chain starts after the subscribe, so no primary leads yet.
 	ctx, stop := context.WithCancel(context.Background())
@@ -2439,6 +2624,8 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	assert.Greater(t, fallback.latestPolls.Load(), int64(2), "the fallback polls while no primary leads")
 
 	pollsSettle(t, &fallback.latestPolls, 700*time.Millisecond, "the fallback stops polling once the primary leads")
+	require.Eventually(t, pendingOn(1, 0), 5*time.Second, 10*time.Millisecond,
+		"the fallback drops newPendingTransactions once the primary leads")
 	last = requireContiguous(t, conn, 3, last)
 
 	// The primary goes silent once its pushes are out; the next block is
@@ -2453,6 +2640,8 @@ func TestWebSocket_FallbackPollsUntilPrimaryLeads(t *testing.T) {
 	chain.advance()
 	last = requireContiguous(t, conn, 1, last)
 	assert.Greater(t, fallback.latestPolls.Load(), stalled, "the fallback polls again once the primary is not live")
+	require.Eventually(t, pendingOn(1, 1), 10*time.Second, 10*time.Millisecond,
+		"the fallback subscribes newPendingTransactions again once the primary is not live")
 
 	chain.setGated(true)
 	chain.setPaused(false)

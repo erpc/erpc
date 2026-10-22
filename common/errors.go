@@ -3218,6 +3218,20 @@ var NewErrInstanceSubscriptionLimitExceeded = func(max int) error {
 	}
 }
 
+// NewErrPendingVariantLimitExceeded refuses a newPendingTransactions
+// subscribe whose params would open more than max variants on a network.
+var NewErrPendingVariantLimitExceeded = func(max int) error {
+	return &ErrSubscriptionLimitExceeded{
+		BaseError{
+			Code:    ErrCodeSubscriptionLimitExceeded,
+			Message: "maximum distinct newPendingTransactions params per network exceeded",
+			Details: map[string]interface{}{
+				"maxVariantsPerNetwork": max,
+			},
+		},
+	}
+}
+
 func (e *ErrSubscriptionLimitExceeded) ErrorStatusCode() int {
 	return http.StatusTooManyRequests
 }

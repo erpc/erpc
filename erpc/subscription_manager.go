@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
+	"github.com/erpc/erpc/indexer/mempool"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -28,9 +29,8 @@ const unsubscribeTimeout = 5 * time.Second
 
 // SubscriptionManager serves eth_subscribe and eth_unsubscribe on client
 // WebSocket connections. newHeads and logs subscriptions are taps on the
-// network-wide chain tracker; newPendingTransactions go through the
-// indexer, whose upstream ingresses each network's source reconciler
-// registers.
+// network-wide chain tracker; newPendingTransactions are taps on the
+// network's mempool feed.
 type SubscriptionManager struct {
 	logger *zerolog.Logger
 	idx    *indexer.Indexer
@@ -147,8 +147,17 @@ func (sm *SubscriptionManager) Subscribe(
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, nil, err
 	}
+	var variant string
+	releaseVariant := func() {}
+	if kind == indexer.KindPendingTx {
+		if variant, releaseVariant, err = sm.openPendingVariant(ctx, nw, jrReq.Params); err != nil {
+			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+			return nil, nil, err
+		}
+	}
 
 	if !sm.reserveSub(maxTotal) {
+		releaseVariant()
 		sm.releaseFilter(ctx, key, kind, filterHash)
 		telemetry.CounterHandle(telemetry.MetricWebsocketRejectedTotal, project.Config.Id, wsRejectSubGlobal).Inc()
 		err := common.NewErrInstanceSubscriptionLimitExceeded(maxTotal)
@@ -163,16 +172,25 @@ func (sm *SubscriptionManager) Subscribe(
 	case (kind == indexer.KindNewHead || kind == indexer.KindLog) && nw.chainTracker == nil:
 		addErr = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
 			subType+" subscriptions need an evm network", nil, nil)
-	case kind == indexer.KindNewHead || kind == indexer.KindLog:
+	case kind == indexer.KindNewHead || kind == indexer.KindLog || kind == indexer.KindPendingTx:
 		// The tap ends with its client or its network, whichever ends first;
 		// once the network ended, bg refuses it and the tap is moot.
 		tapCtx, stop := context.WithCancel(nw.appCtx)
 		var opened <-chan struct{}
 		if opened, addErr = conn.adapter.AddTapSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
 			sub := wsclient.Subscription{ClientSubID: clientSubID, Kind: kind, NetworkID: key}
-			if kind == indexer.KindLog {
+			switch kind {
+			case indexer.KindLog:
 				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, opened, nw, logsFilter) })
-			} else {
+			case indexer.KindPendingTx:
+				release := releaseVariant
+				releaseVariant = func() {}
+				from := nw.mempool.Tail(variant)
+				nw.bg.Go(func() {
+					defer release()
+					sm.runPendingTxs(tapCtx, wsc, sub, opened, nw, variant, from)
+				})
+			default:
 				nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, opened, nw) })
 			}
 		} else {
@@ -182,6 +200,7 @@ func (sm *SubscriptionManager) Subscribe(
 		addErr = conn.adapter.AddSubscription(clientSubID, key, kind, filterHash, maxSubs)
 	}
 	if err := addErr; err != nil {
+		releaseVariant()
 		wsc.subscriptionsGauge(kind).Dec()
 		sm.activeSubs.Add(-1)
 		sm.releaseFilter(ctx, key, kind, filterHash)
@@ -364,15 +383,39 @@ func (sm *SubscriptionManager) resolveSubscription(ctx context.Context, networkI
 	case indexer.SubTypeLogs:
 		return indexer.KindLog, "", nil
 	case indexer.SubTypeNewPendingTransactions:
-		hash, err := sm.idx.EnsureFilter(ctx, networkID, subType, params)
-		if err != nil {
-			return 0, "", err
-		}
-		return indexer.KindPendingTx, hash, nil
+		return indexer.KindPendingTx, "", nil
 	default:
 		return 0, "", common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
 			fmt.Sprintf("unsupported subscription type: %q", subType), nil, nil)
 	}
+}
+
+// openPendingVariant opens the variant of newPendingTransactions params on
+// nw's mempool feed until release. A subscribe that opens it waits for its
+// push sources' first answers and fails with the first refusal when every
+// one refused (spec §11).
+func (sm *SubscriptionManager) openPendingVariant(ctx context.Context, nw *Network, params []interface{}) (variant string, release func(), err error) {
+	if nw.mempool == nil {
+		return "", nil, common.NewErrNoSubscriptionSource(nw.networkId, indexer.SubTypeNewPendingTransactions)
+	}
+	if variant, err = indexer.PendingTxVariantOf(params); err != nil {
+		return "", nil, common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
+			"invalid newPendingTransactions params: "+err.Error(), nil, nil)
+	}
+	release, opened, err := nw.mempool.Acquire(variant)
+	if errors.Is(err, mempool.ErrVariantLimit) {
+		return "", nil, common.NewErrPendingVariantLimitExceeded(mempool.MaxVariants)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if opened {
+		if err := nw.sources.awaitPending(ctx, indexer.PendingTxTopic(variant)); err != nil {
+			release()
+			return "", nil, err
+		}
+	}
+	return variant, release, nil
 }
 
 // getOrCreateConn returns the connection's entry, attaching a new egress

@@ -40,8 +40,10 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		// Lag counts from the sendable head: a delivery gate holding the
+		// tracker head back is not the tap falling behind.
 		if len(b.Reverted) == 0 && len(b.Applied) > 0 {
-			if tip, ok := feed.Tip(); ok && tip.Number > b.Applied[0].Number-1+window {
+			if send, ok := feed.SendTip(); ok && send.Number > b.Applied[0].Number-1+window {
 				return errNewHeadsLag
 			}
 		}

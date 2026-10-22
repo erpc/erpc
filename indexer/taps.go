@@ -2,14 +2,21 @@ package indexer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 )
+
+// MempoolWakeEvery is the shortest time between two reads of a mempool
+// tap, so a busy mempool reaches it in batches; a var so tests can change it.
+var MempoolWakeEvery = util.NewDuration(50 * time.Millisecond)
 
 // Taps runs read loops: read, emit, repeat. It counts open taps per network
 // and topic, so sources know what to feed.
@@ -76,6 +83,59 @@ func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 			return err
 		}
 		c = b.Next
+	}
+}
+
+// RunMempool runs one tap on f's variant from after its Tail until ctx
+// ends, emit fails, or f returns an error other than ErrOutOfRange: out of
+// range skips to the newest. transport labels metrics.
+func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant string,
+	f MempoolFeed, emit func([]json.RawMessage) error) (err error) {
+	kind := SubTypeNewPendingTransactions
+	topic := PendingTxTopic(variant)
+	t.add(networkId, topic)
+	defer t.remove(networkId, topic)
+	open := telemetry.GaugeHandle(telemetry.MetricTaps, t.projectId, networkId, transport, kind)
+	open.Inc()
+	defer open.Dec()
+	defer func() {
+		if rec := recover(); rec != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+				"tap",
+				fmt.Sprintf("network:%s transport:%s kind:%s", networkId, transport, kind),
+				common.ErrorFingerprint(rec),
+			).Inc()
+			err = fmt.Errorf("tap panicked: %v", rec)
+		}
+	}()
+
+	seq := f.Tail(variant)
+	var last time.Time
+	for {
+		if wait := MempoolWakeEvery.Load() - time.Since(last); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		txs, next, err := f.Read(ctx, variant, seq)
+		if errors.Is(err, ErrOutOfRange) {
+			telemetry.CounterHandle(telemetry.MetricTapOutOfRangeTotal,
+				t.projectId, networkId, transport, kind, OutOfRangeLag).Inc()
+			seq = f.Tail(variant)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		last = time.Now()
+		if err := emit(txs); err != nil {
+			return err
+		}
+		seq = next
 	}
 }
 

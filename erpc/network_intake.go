@@ -59,8 +59,18 @@ var _ indexer.Intake = (*networkIntake)(nil)
 
 // Subscribed takes a push source's subscribe answer; the reconciler decides
 // what it changes.
-func (in *networkIntake) Subscribed(_ string, t indexer.Topic, err error) {
-	in.nw.sources.subscribed(t, err)
+func (in *networkIntake) Subscribed(upstreamId string, t indexer.Topic, err error) {
+	in.nw.sources.subscribed(upstreamId, t, err)
+}
+
+// PendingTx takes one pending transaction of a push source: it counts for
+// the topic's silence first, then passes check 4 into the mempool feed.
+func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessage) {
+	in.nw.sources.heard(upstreamId, indexer.PendingTxTopic(variant))
+	if in.nw.mempool == nil || !in.authoritative(upstreamId) {
+		return
+	}
+	in.nw.mempool.Add(variant, raw)
 }
 
 // Header takes one source header.

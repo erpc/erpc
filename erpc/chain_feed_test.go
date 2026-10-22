@@ -83,6 +83,9 @@ const (
 	fMailbox      = "burst that fills the mailbox"
 	fPanicOnce    = "header that makes the tracker panic once"
 	fPanicThrice  = "header that makes the tracker panic 3 times in a row"
+	// fPendingSilent: one wss vendor's pending-transaction stream goes
+	// silent with its socket open, while its heads keep flowing.
+	fPendingSilent = "pending-transaction stream silent with its socket open"
 
 	fNullReceipts   = "null receipts"
 	fTruncReceipts  = "receipts that drop the last 10 receipts, from 2 upstreams of one vendor"
@@ -98,7 +101,7 @@ const (
 
 var chaosFaults = []string{
 	fReorgSmall, fMinorityFork, fAheadFork, fDeepReorg, fSilent, fLagging, fDown, fAllDown, fHalt,
-	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice,
+	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice, fPendingSilent,
 	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower,
 }
 
@@ -125,6 +128,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{evm.ReceiptsProbeCeiling, chaosScaled(12 * time.Second)},
 		{logsReceiptsWait, chaosScaled(60 * time.Second)},
 		{logsCloseSpread, chaosScaled(60 * time.Second)},
+		{pendingSilentAfter, chaosScaled(60 * time.Second)},
 	}
 	orig := make([]time.Duration, len(scale))
 	for i, sc := range scale {
@@ -149,7 +153,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{23, true, []string{fDown, fLagging, fDeepReorg, fPanicThrice, fNonLinking, fReceiptsDown13}},
 		{37, true, []string{fAllDown, fHalt, fLoad, fOrphanCached, fRestart, fChainBloom, fNullReceipts}},
 		{41, false, []string{fSplit, fLate, fDeepReorg, fBlockDown60, fReceiptsDown90, fNoReceipts}},
-		{53, true, []string{fSilent, fLate, fLateReceipts, fBloomFollower}},
+		{53, true, []string{fSilent, fLate, fLateReceipts, fBloomFollower, fPendingSilent}},
 	}
 	covered := make(map[string][]int64)
 	for _, p := range plans {
@@ -374,6 +378,11 @@ type simChain struct {
 	// transactions for 2 block times and answers it with a wrong bloom.
 	trapOn bool
 	traps  map[[32]byte]*simTrap
+
+	// txRng drops and repeats pending-transaction pushes; pendingSent are
+	// the transaction hashes ever pushed.
+	txRng       *rand.Rand
+	pendingSent map[string]bool
 }
 
 // simTrap is one block's held first receipts call.
@@ -383,7 +392,8 @@ type simTrap struct {
 }
 
 func newSimChain(seed int64) *simChain {
-	c := &simChain{seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 1)), byHash: make(map[[32]byte]*simBlock)}
+	c := &simChain{seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 1)), byHash: make(map[[32]byte]*simBlock),
+		txRng: rand.New(rand.NewPCG(uint64(seed), 2)), pendingSent: make(map[string]bool)}
 	start := time.Now().Add(-time.Duration(chaosHistoryBlocks) * chaosBlock)
 	var parent *simBlock
 	for i := range chaosHistoryBlocks {
@@ -497,12 +507,16 @@ func (c *simChain) block(h [32]byte) *simBlock {
 }
 
 // tick adds a canonical block unless the chain halted, grows every growing
-// fork, and lets each vendor follow.
+// fork, and lets each vendor follow. Each wss vendor first pushes the new
+// block's transactions as pending ones, dropping and repeating some.
 func (c *simChain) tick() {
 	c.mu.Lock()
 	now := time.Now()
+	var txs []simTxPush
 	if !c.halted {
-		c.canon = append(c.canon, c.childLocked(c.tipLocked(), now, false))
+		b := c.childLocked(c.tipLocked(), now, false)
+		c.canon = append(c.canon, b)
+		txs = c.pendingPushesLocked(b)
 	}
 	grown := make(map[*simFork]bool)
 	for _, v := range c.vendors {
@@ -512,7 +526,46 @@ func (c *simChain) tick() {
 		}
 	}
 	c.mu.Unlock()
+	for _, p := range txs {
+		_ = mockWriteJSON(p.conn, map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "eth_subscription",
+			"params":  map[string]interface{}{"subscription": p.sub, "result": p.hash},
+		})
+	}
 	c.refresh()
+}
+
+type simTxPush struct {
+	conn *websocket.Conn
+	sub  string
+	hash string
+}
+
+// pendingPushesLocked are b's transactions on every live pending
+// subscription of every wss vendor up and not silent: a quarter of the
+// pushes dropped, a quarter sent twice.
+func (c *simChain) pendingPushesLocked(b *simBlock) []simTxPush {
+	var out []simTxPush
+	for i := range b.txs {
+		h := simTxHash(b.hash, i)
+		c.pendingSent[h] = true
+		for _, v := range c.vendors {
+			if !v.ws || v.down || v.pendingSilent {
+				continue
+			}
+			for sub, conn := range v.pendingSubs {
+				switch c.txRng.IntN(4) {
+				case 0:
+				case 1:
+					out = append(out, simTxPush{conn, sub, h}, simTxPush{conn, sub, h})
+				default:
+					out = append(out, simTxPush{conn, sub, h})
+				}
+			}
+		}
+	}
+	return out
 }
 
 // reorg replaces the top depth canonical blocks with a new branch one
@@ -601,6 +654,8 @@ type simVendor struct {
 	throttleUntil time.Time
 	holdUntil     time.Time
 	conns         map[*websocket.Conn]string // newHeads subscription id, "" before one
+	pendingSubs   map[string]*websocket.Conn // live newPendingTransactions subscriptions
+	pendingSilent bool
 
 	// Receipts faults: null answers, answers without their last 10
 	// receipts, answers late by lateReceipts, -32601 for
@@ -611,15 +666,16 @@ type simVendor struct {
 	noReceipts    bool
 	wrongBloom    bool
 
-	connects      atomic.Int64
-	subscribes    atomic.Int64
-	logsSubscribe atomic.Int64 // eth_subscribe logs: never expected
-	refused       atomic.Int64
-	throttled     atomic.Int64
-	lateAnswers   atomic.Int64
-	lagAnswers    atomic.Int64
-	minorityOut   atomic.Int64
-	getLogsCalls  atomic.Int64
+	connects          atomic.Int64
+	subscribes        atomic.Int64
+	pendingSubscribes atomic.Int64 // newPendingTransactions subscribes
+	logsSubscribe     atomic.Int64 // eth_subscribe logs: never expected
+	refused           atomic.Int64
+	throttled         atomic.Int64
+	lateAnswers       atomic.Int64
+	lagAnswers        atomic.Int64
+	minorityOut       atomic.Int64
+	getLogsCalls      atomic.Int64
 
 	byNumberMu sync.Mutex
 	byNumber   map[uint64]int
@@ -631,7 +687,8 @@ type simVendor struct {
 
 func (c *simChain) addVendor(t *testing.T, id, vendor string, ws bool) *simVendor {
 	v := &simVendor{id: id, vendor: vendor, ws: ws, chain: c, seen: make(map[[32]byte]bool), conns: make(map[*websocket.Conn]string),
-		byNumber: make(map[uint64]int), receiptsCalls: make(map[[32]byte]int), served: make(map[[32]byte]bool)}
+		pendingSubs: make(map[string]*websocket.Conn),
+		byNumber:    make(map[uint64]int), receiptsCalls: make(map[[32]byte]int), served: make(map[[32]byte]bool)}
 	c.mu.Lock()
 	v.setTipLocked(c.tipLocked())
 	c.vendors = append(c.vendors, v)
@@ -982,6 +1039,11 @@ func (v *simVendor) serveWS(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		c.mu.Lock()
 		delete(v.conns, conn)
+		for sub, sc := range v.pendingSubs {
+			if sc == conn {
+				delete(v.pendingSubs, sub)
+			}
+		}
 		c.mu.Unlock()
 		_ = conn.Close()
 	}()
@@ -1010,6 +1072,16 @@ func (v *simVendor) handleWS(conn *websocket.Conn, req map[string]interface{}) {
 		if len(params) > 0 && params[0] == "logs" {
 			v.logsSubscribe.Add(1)
 		}
+		if len(params) > 0 && params[0] == "newPendingTransactions" {
+			sub := fmt.Sprintf("0x%stx%d", strings.ReplaceAll(v.id, "-", ""), v.pendingSubscribes.Add(1))
+			c.mu.Lock()
+			if _, ok := v.conns[conn]; ok {
+				v.pendingSubs[sub] = conn
+			}
+			c.mu.Unlock()
+			_ = mockWriteJSON(conn, simReply(req["id"], sub, nil))
+			return
+		}
 		if len(params) == 0 || params[0] != "newHeads" {
 			_ = mockWriteJSON(conn, simReply(req["id"], "0xother", nil))
 			return
@@ -1022,6 +1094,13 @@ func (v *simVendor) handleWS(conn *websocket.Conn, req map[string]interface{}) {
 		c.mu.Unlock()
 		_ = mockWriteJSON(conn, simReply(req["id"], sub, nil))
 	case method == "eth_unsubscribe":
+		if len(params) > 0 {
+			if sub, ok := params[0].(string); ok {
+				c.mu.Lock()
+				delete(v.pendingSubs, sub)
+				c.mu.Unlock()
+			}
+		}
 		_ = mockWriteJSON(conn, simReply(req["id"], true, nil))
 	default:
 		res, rerr := v.answer(method, params)
@@ -1509,6 +1588,9 @@ type chaosSeed struct {
 	paths    map[string]string
 	// ignore are methods every upstream ignores.
 	ignore []string
+	// liveAddr is addr for goroutines other than the run's.
+	liveAddr string
+	pending  *chaosPendingClient
 
 	breakerMu     sync.Mutex
 	breakerOpened string
@@ -1631,6 +1713,9 @@ func (s *chaosSeed) config() *common.Config {
 func (s *chaosSeed) startERPC() {
 	srv, addr, cancel := startTestERPCServer(s.t, s.config())
 	s.srv, s.addr, s.cancel = srv, addr, cancel
+	s.mu.Lock()
+	s.liveAddr = addr
+	s.mu.Unlock()
 	var nw *Network
 	require.Eventually(s.t, func() bool {
 		n, err := srv.erpc.GetNetwork(context.Background(), "test_ws", "evm:123")
@@ -1767,6 +1852,8 @@ func (s *chaosSeed) run(faults []string) {
 	s.dialClient("first", nil)
 	s.dialClient("slow", slow)
 	s.dialLogs("first")
+	s.pending = &chaosPendingClient{done: make(chan struct{})}
+	go s.pending.run(ctx, s)
 	s.blocks(4)
 
 	var bg sync.WaitGroup
@@ -1804,6 +1891,7 @@ func (s *chaosSeed) run(faults []string) {
 	s.blocks(8)
 	stop()
 	<-producing
+	<-s.pending.done
 	tip := s.chain.tip()
 	require.Eventually(s.t, func() bool {
 		s.mu.Lock()
@@ -1953,6 +2041,8 @@ func (s *chaosSeed) inject(f string) {
 		s.bloomFollower()
 	case fPanicThrice:
 		s.panicThrice()
+	case fPendingSilent:
+		s.pendingSilentVendor()
 	default:
 		s.t.Fatalf("unknown fault %q", f)
 	}
@@ -2659,6 +2749,12 @@ func (s *chaosSeed) judge(end time.Time) {
 		}
 		cl.mu.Unlock()
 	}
+	p := s.pending
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	require.Empty(t, p.problems, "pending-transaction client")
+	require.NotZero(t, p.received, "the pending-transaction client got no transaction")
+	t.Logf("pending-transaction client: %d transactions over %d subscriptions", p.received, p.sessions)
 }
 
 //
@@ -3032,4 +3128,137 @@ func (s *chaosSeed) bloomFollower() {
 	c.mu.Unlock()
 	require.Positive(s.t, joined, "a client joins the tracker's receipts sweep while its first answer is held (%d blocks held)", held)
 	s.occur(fBloomFollower, fmt.Sprintf("%d blocks' first receipts answers held with a wrong bloom; %d client requests joined the tracker's sweep and got the right blooms; %d got an error", held, joined, failed))
+}
+
+//
+// --- pending transactions ---
+//
+
+// chaosPendingClient is the seed's ws newPendingTransactions client. It
+// subscribes again whenever its connection ends (an eRPC restart); each
+// subscription must get every transaction at most once, and only ones a
+// vendor pushed.
+type chaosPendingClient struct {
+	done chan struct{}
+
+	mu       sync.Mutex
+	received int
+	sessions int
+	problems []string
+}
+
+func (p *chaosPendingClient) problem(format string, args ...interface{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.problems = append(p.problems, fmt.Sprintf(format, args...))
+}
+
+func (p *chaosPendingClient) run(ctx context.Context, s *chaosSeed) {
+	defer close(p.done)
+	for ctx.Err() == nil {
+		s.mu.Lock()
+		addr := s.liveAddr
+		s.mu.Unlock()
+		conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", addr), nil)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+			case <-time.After(50 * time.Millisecond):
+			}
+			continue
+		}
+		unblock := context.AfterFunc(ctx, func() { _ = conn.Close() })
+		if p.subscribe(conn) {
+			p.read(s, conn)
+		}
+		unblock()
+		_ = conn.Close()
+	}
+}
+
+func (p *chaosPendingClient) subscribe(conn *websocket.Conn) bool {
+	if conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`)) != nil {
+		return false
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		return false
+	}
+	var resp struct {
+		Result string `json:"result"`
+	}
+	if json.Unmarshal(msg, &resp) != nil || resp.Result == "" {
+		// A refusal while the instance starts; the next connection retries.
+		time.Sleep(50 * time.Millisecond)
+		return false
+	}
+	p.mu.Lock()
+	p.sessions++
+	p.mu.Unlock()
+	return true
+}
+
+func (p *chaosPendingClient) read(s *chaosSeed, conn *websocket.Conn) {
+	seen := make(map[string]bool)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(time.Minute))
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var note struct {
+			Method string `json:"method"`
+			Params struct {
+				Result string `json:"result"`
+			} `json:"params"`
+		}
+		if json.Unmarshal(msg, &note) != nil || note.Method != "eth_subscription" {
+			p.problem("unexpected message %s", msg)
+			continue
+		}
+		h := note.Params.Result
+		s.chain.mu.Lock()
+		sent := s.chain.pendingSent[h]
+		s.chain.mu.Unlock()
+		switch {
+		case !sent:
+			p.problem("transaction %s no vendor pushed", h)
+		case seen[h]:
+			p.problem("transaction %s reached the client twice", h)
+		}
+		seen[h] = true
+		p.mu.Lock()
+		p.received++
+		p.mu.Unlock()
+	}
+}
+
+// pendingSilentVendor silences one wss vendor's pending-transaction pushes
+// while its heads, which carry transactions, keep flowing: after
+// pendingSilentAfter the source subscribes the topic again.
+func (s *chaosSeed) pendingSilentVendor() {
+	v := s.pick(s.wsA, s.wsB)
+	if v.isDown() {
+		v = map[*simVendor]*simVendor{s.wsA: s.wsB, s.wsB: s.wsA}[v]
+	}
+	topic := string(indexer.PendingTxTopic("[]"))
+	resubs := func() float64 {
+		return testutil.ToFloat64(telemetry.MetricSourceResubscribeTotal.WithLabelValues("test_ws", "evm:123", v.id, topic))
+	}
+	before, subs := resubs(), v.pendingSubscribes.Load()
+	from := time.Now()
+	s.chain.mu.Lock()
+	v.pendingSilent = true
+	s.chain.mu.Unlock()
+	require.Eventually(s.t, func() bool { return resubs() > before }, 10*time.Second, 20*time.Millisecond,
+		"%s's silent pending-transaction topic is subscribed again", v.id)
+	took := time.Since(from)
+	s.chain.mu.Lock()
+	v.pendingSilent = false
+	s.chain.mu.Unlock()
+	require.GreaterOrEqual(s.t, took, pendingSilentAfter.Load(), "only a topic silent for pendingSilentAfter is subscribed again")
+	require.Eventually(s.t, func() bool { return v.pendingSubscribes.Load() > subs }, 5*time.Second, 20*time.Millisecond,
+		"%s gets the new subscribe", v.id)
+	s.occur(fPendingSilent, fmt.Sprintf("%s silent; subscribed again after %s", v.id, took.Round(time.Millisecond)))
 }

@@ -194,11 +194,14 @@ func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
 
 // eth_unsubscribe only reaches the caller's own subscriptions. The pressure
 // gauges follow subscribe, unsubscribe and close back to zero, and a
-// newPendingTransactions filter whose last client disconnects is released
-// upstream.
+// newPendingTransactions topic whose last client disconnects is released
+// upstream after the idle delay.
 func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
+	prevIdle := sourceIdleStop.Load()
+	sourceIdleStop.Store(300 * time.Millisecond)
+	defer sourceIdleStop.Store(prevIdle)
 
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig(subscribingWsUpstream(t)))
 	defer cleanup()
@@ -227,16 +230,17 @@ func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 	_, clientSubs, _ = wsGauges("newHeads")
 	assert.Equal(t, 0.0, clientSubs, "unsubscribe must drop the client subscription gauge")
 
-	// The upstream may still be connecting; a failed filter subscribe is
-	// answered with an error and can be retried.
-	require.Eventually(t, func() bool {
-		resp = sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":3,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
-		_, ok := resp["result"].(string)
-		return ok
-	}, 5*time.Second, 100*time.Millisecond, "newPendingTransactions subscribe must succeed")
-	_, clientSubs, upstreamSubs := wsGauges("newPendingTransactions")
+	// The upstream may still be connecting: the subscribe opens, and the
+	// source subscribes the topic once connected.
+	resp = sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":3,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
+	_, ok = resp["result"].(string)
+	require.True(t, ok, "newPendingTransactions subscribe must succeed: %v", resp)
+	_, clientSubs, _ = wsGauges("newPendingTransactions")
 	assert.Equal(t, 1.0, clientSubs)
-	assert.Equal(t, 1.0, upstreamSubs, "one newPendingTransactions filter must be live upstream")
+	require.Eventually(t, func() bool {
+		_, _, upstreamSubs := wsGauges("newPendingTransactions")
+		return upstreamSubs == 1
+	}, 5*time.Second, 50*time.Millisecond, "one newPendingTransactions topic must be live upstream")
 
 	// Closing without eth_unsubscribe leaves cleanup to CleanupConnection.
 	require.NoError(t, connA.Close())

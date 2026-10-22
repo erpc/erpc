@@ -202,7 +202,7 @@ var (
 	MetricSubscriptionDedupEntries = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "subscription_dedup_entries",
-		Help:      "Event keys held by the network's newPendingTransactions dedup windows; each filter's window holds at most indexer.dedupWindowSize keys (default 8192).",
+		Help:      "Transaction hashes held by the network's mempool feed dedup set: those added within 60s, at most 100,000 per network.",
 	}, []string{"project", "network"})
 
 	MetricSubscriptionUndeliveredTotal = DefineCounter(prometheus.CounterOpts{
@@ -231,6 +231,12 @@ var (
 		Name:      "source_live",
 		Help:      "1 while the source is live: its accepted header has not trailed the newest known block for longer than the live bound.",
 	}, []string{"project", "network", "upstream"})
+
+	MetricSourceResubscribeTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "source_resubscribe_total",
+		Help:      "Pending-transaction topics a push source subscribed again after 60s without a message while heads carried transactions.",
+	}, []string{"project", "network", "upstream", "topic"})
 
 	MetricChainTrackerReanchorTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

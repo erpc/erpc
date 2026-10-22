@@ -48,6 +48,8 @@ func (s *fakeSink) Header(_ string, raw json.RawMessage) { s.heads <- raw }
 
 func (s *fakeSink) Subscribed(string, indexer.Topic, error) {}
 
+func (s *fakeSink) PendingTx(string, string, json.RawMessage) {}
+
 // notifyServer is a WS upstream that answers eth_subscribe with ids from a
 // per-connection counter ("0x1", "0x2", …, as real nodes do), follows each
 // logs subscribe response with one notification for it, answers any other

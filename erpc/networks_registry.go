@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
+	"github.com/erpc/erpc/indexer/mempool"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -206,6 +207,7 @@ func NewNetwork(
 			network.sources.demandChanged()
 			evm.DemandChanged(network)
 		})
+		network.mempool = mempool.New(projectId, network.Label())
 		network.chainTracker = evm.StartChainTrackers(appCtx, network)
 		network.bg.Go(func() { network.intake.run(appCtx) })
 	}
@@ -309,7 +311,7 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 				return err
 			}
 			nr.preparedNetworks.Store(networkId, network)
-			network.sources.start(nr.appCtx, nr.idx)
+			network.sources.start(nr.appCtx)
 			err = network.Bootstrap(ctx)
 			if err != nil {
 				return err
