@@ -595,6 +595,12 @@ func TestExtractJsonRpcError_HyperEvmPrecompileStateGap(t *testing.T) {
 			wantCode: common.ErrCodeEndpointExecutionException, wantNormalized: common.JsonRpcErrorTransactionRejected, wantRetryableNw: false},
 		{name: "eth_sendRawTransaction keeps transaction-rejected handling", method: "eth_sendRawTransaction", message: hyperEvmPrecompileStateGap,
 			wantCode: common.ErrCodeEndpointExecutionException, wantNormalized: common.JsonRpcErrorTransactionRejected, wantRetryableNw: true},
+		// Pruned-state answers from Alchemy (base eth_getProof) and Nirvana (base eth_getCode/eth_call):
+		// another archive upstream can serve them, so fail over instead of retrying as a server fault.
+		{name: "eth_getProof no state found", method: "eth_getProof", message: "no state found for block number 52938851",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_getCode state pruned", method: "eth_getCode", message: "state at block #51672341 is pruned",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
 	}
 
 	for _, tc := range cases {
