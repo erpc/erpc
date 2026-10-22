@@ -2507,7 +2507,8 @@ const DefaultEmptyResultMaxAttempts = 2
 //   - Point state reads where the zero value is a real value, not absence:
 //     eth_call (empty/0x return), eth_getBalance (0x0 = zero balance),
 //     eth_getCode (0x = EOA / no code), eth_getStorageAt (0x0 = empty slot),
-//     eth_getTransactionCount (0x0 = nonce zero / no txns).
+//     eth_getTransactionCount (0x0 = nonce zero / no txns), and the block
+//     counts (0x0 = an empty block, or any post-merge block's uncle count).
 //
 // Methods deliberately EXCLUDED — for these, empty/null means "not found
 // yet, try another upstream": eth_getBlockByNumber, eth_getBlockByHash,
@@ -2524,6 +2525,10 @@ func DefaultEmptyResultAccept() []string {
 		"eth_getCode",
 		"eth_getStorageAt",
 		"eth_getTransactionCount",
+		"eth_getBlockTransactionCountByHash",
+		"eth_getBlockTransactionCountByNumber",
+		"eth_getUncleCountByBlockHash",
+		"eth_getUncleCountByBlockNumber",
 		// Solana: 0 is a full-history node's real first slot, and [] is a
 		// program with no matching accounts. Retrying either asks every
 		// upstream the same question and returns the same answer.
