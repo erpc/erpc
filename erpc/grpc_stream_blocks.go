@@ -28,6 +28,11 @@ var (
 	errStreamBlocksSlow    = errors.New("the client took no block within the send wait")
 )
 
+// streamBlocksAuthMethod is the method consumer auth checks a StreamBlocks
+// open against: the stream serves blocks by number, so allowlists that
+// name eth_getBlockByNumber admit it.
+const streamBlocksAuthMethod = "eth_getBlockByNumber"
+
 // streamEncodeError is a held header the stream cannot encode: sending
 // past it would break the parentHash linkage the client relies on.
 type streamEncodeError struct {
@@ -42,14 +47,15 @@ func (e streamEncodeError) Error() string {
 // StreamBlocks is one tap on the network-wide chain tracker (spec §9.2,
 // §9.3): it sends each applied block, oldest first. After a reorg the
 // next block sent is the fork point + 1; reverted blocks are never sent.
-// Auth and rate limits run once, at open, as for ws subscriptions.
+// Auth and rate limits run once, at open: auth as eth_getBlockByNumber,
+// rate limits as for ws newHeads subscriptions.
 func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsevm.StreamService_StreamBlocksServer) error {
 	ctx := stream.Context()
 	start, err := streamBlocksStart(req)
 	if err != nil {
 		return err
 	}
-	input, err := gs.extractRequestInput(ctx, MethodEthSubscribe)
+	input, err := gs.extractRequestInput(ctx, streamBlocksAuthMethod)
 	if err != nil {
 		return err
 	}
@@ -83,7 +89,7 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	}
 	done := make(chan error, 1)
 	if !nw.bg.Go(func() {
-		done <- nw.taps.RunChain(tapCtx, nw.Label(), "grpc", indexer.SubTypeNewHeads, feed, start, indexer.ReadOpts{}, emit)
+		done <- nw.taps.RunChain(tapCtx, nw.Label(), "grpc", indexer.SubTypeNewHeads, feed, start, indexer.ReadOpts{Resumable: true}, emit)
 	}) {
 		return status.Error(codes.Unavailable, "network is stopping")
 	}
@@ -138,7 +144,7 @@ func (gs *GrpcServer) openBlockStream(ctx context.Context, input *RequestInput) 
 	if input.UserAgent != "" {
 		nq.SetAgentName(input.UserAgent)
 	}
-	user, err := project.AuthenticateConsumer(ctx, nq, MethodEthSubscribe, input.AuthPayload)
+	user, err := project.AuthenticateConsumer(ctx, nq, streamBlocksAuthMethod, input.AuthPayload)
 	if err != nil {
 		return nil, err
 	}

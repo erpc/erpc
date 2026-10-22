@@ -24,7 +24,8 @@ var (
 // by number, each answer checked against the parentHash of the block above,
 // and a mismatch fetched by hash. A walk takes class 1 and at most
 // reorgWindow blocks; fill takes class 3 and runs until the root joins
-// another tree or reaches the window base.
+// another tree or reaches the window base. Below reorgWindow blocks under
+// the head, fill waits for demand (fillsBelow) without ending.
 type extension struct {
 	sender string // the voter a walk asks by hash; "" sweeps
 	walk   int    // blocks left to walk; 0 fills
@@ -195,6 +196,16 @@ func (t *ChainTracker) extendRoots() {
 	}
 }
 
+// fillsBelow reports whether fill fetches height n: within reorgWindow
+// blocks below the window's reference, or deeper while a Resumable tap is
+// open or a Read waits on fill. Only consumers that resume from their own
+// cursor read below reorgWindow, so the rest of the window is fetched for
+// them alone.
+func (t *ChainTracker) fillsBelow(n uint64) bool {
+	ref := t.windowRef()
+	return ref == nil || n+uint64(t.window) >= ref.number || t.deepFill.Load() > 0
+}
+
 // windowRef is the header the window hangs from: the head, or the highest
 // held header while nothing is pinned.
 func (t *ChainTracker) windowRef() *chainHeader {
@@ -217,6 +228,8 @@ func (t *ChainTracker) extend(r *node, e *extension, pinTree bool) {
 	class := classFill
 	if e.walk > 0 {
 		class = classHead
+	} else if !t.fillsBelow(r.h.number - 1) {
+		return
 	}
 	want := r.h.parentHash
 	method, ref, upstream := "eth_getBlockByNumber", fmt.Sprintf("0x%x", r.h.number-1), ""

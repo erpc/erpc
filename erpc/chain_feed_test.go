@@ -2785,17 +2785,24 @@ func (s *chaosSeed) mailboxBurst() {
 	case <-time.After(5 * time.Second):
 		s.t.Fatalf("the tracker never handled a header from %s", v.id)
 	}
-	from := time.Now()
+	from, fromTip := time.Now(), s.chain.tip().number
 	before := heads()
 	pushed := v.burst(chaosMailboxBurst)
 	require.Eventually(s.t, func() bool { return heads()-before >= float64(pushed) }, 5*time.Second, 10*time.Millisecond, "intake takes the burst")
 	handled := s.hook.countFrom(v.id)
 	release()
 	s.addQuiet(interval{from, time.Now()})
+	stalledFor := s.chain.tip().number - fromTip
+	// A stall longer than the window leaves logs taps more than the window
+	// behind the head (spec §9.2); fill does not join the gap below the
+	// window for ws taps, so they may close.
+	if stalledFor > uint64(chaosReorgWindow) {
+		s.allowCloses(from, time.Now(), 0)
+	}
 	s.blocks(3)
 	got := s.hook.countFrom(v.id) - handled
 	require.Less(s.t, got, int64(pushed), "the mailbox sheds superseded headers once full")
-	s.occur(fMailbox, fmt.Sprintf("%s pushed %d headers while the tracker stalled; it handled %d", v.id, pushed, got))
+	s.occur(fMailbox, fmt.Sprintf("%s pushed %d headers while the tracker stalled %d blocks; it handled %d", v.id, pushed, stalledFor, got))
 }
 
 func trackerResets() float64 {

@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -497,6 +499,10 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
+	fillFetches := func() float64 {
+		return metricSum(telemetry.MetricChainTrackerFetchTotal, map[string]string{"project": "test", "class": "fill"})
+	}
+	fillsAtStart := fillFetches()
 	// The counters count only fetches made for a Forward under test, which
 	// carry the marker in their context: tracker fetches (fill, no-source
 	// asks) run on the network's context and cannot change them.
@@ -515,6 +521,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	// root with one transaction, 0x3eb the empty-trie root in a header whose
 	// hash does not recompute.
 	headers := make(map[int64]string)
+	hashes := make(map[int64]gethcommon.Hash)
 	var parent gethcommon.Hash
 	for n := int64(0); n <= 0x3f0; n++ {
 		h := &gethtypes.Header{ParentHash: parent, UncleHash: gethtypes.EmptyUncleHash, TxHash: gethtypes.EmptyTxsHash,
@@ -537,6 +544,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		require.NoError(t, err)
 		headers[n] = string(raw)
 		parent = h.Hash()
+		hashes[n] = parent
 	}
 	refRe := regexp.MustCompile(`"params":\["(0x[0-9a-fA-F]+)"`)
 	blockRef := func(body string) int64 {
@@ -591,12 +599,19 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	require.NoError(t, err)
 	resp.Release()
 	require.Eventually(t, func() bool { return evm.HasVerifiedEmptyTraceBlock(warm) }, 2*time.Second, 10*time.Millisecond)
-	// Fill holds the pinned chain down to maxBackfill below the head (5m at
-	// one block a second); once it is done, no block is fetched by number.
+	// Fill holds the pinned chain reorgWindow blocks below the head and
+	// stops there: no resumable tap is open.
+	tracker := evm.ChainTrackerOf(ctx, n, "")
+	window := int64(tracker.ReorgWindow())
 	require.Eventually(t, func() bool {
-		from, _, ok := evm.ChainTrackerOf(ctx, n, "").FollowedRange()
-		return ok && from == 0x3e8-300
+		from, _, ok := tracker.FollowedRange()
+		return ok && from == 0x3e8-window
 	}, 10*time.Second, 10*time.Millisecond)
+	fills := fillFetches()
+	time.Sleep(500 * time.Millisecond)
+	from, _, _ := tracker.FollowedRange()
+	require.Equal(t, 0x3e8-window, from, "fill stops reorgWindow blocks below the head")
+	require.Equal(t, fills, fillFetches(), "no fill fetch below reorgWindow")
 	empty.Store(true)
 	// 0x3e8 and 0x3e7 are pinned with no transactions; latest is a tag and
 	// 0x100 lies below the window, so neither is proven.
@@ -715,4 +730,34 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		}
 		t.Logf("policy=%s traceCalls=%d", tc.name, calls)
 	}
+	// The heads since moved the window's top only: one fill fetch per
+	// block of reorgWindow over the whole flow.
+	from, _, _ = tracker.FollowedRange()
+	require.Equal(t, 0x3e8-window, from)
+	require.Equal(t, float64(window), fillFetches()-fillsAtStart, "fill fetches without a resumable tap")
+
+	// A gRPC resume 2× reorgWindow below the head, inside maxBackfill (5m
+	// at one block a second): fill reaches the cursor on demand, and the
+	// stream sends every block above it, oldest first. While the stream is
+	// open, fill holds the whole window.
+	tip, ok := tracker.Tip()
+	require.True(t, ok)
+	cursor := tip.Number - uint64(2*window)
+	conn, mdCtx := grpcConn(t, ctx, n)
+	sctx, stopStream := context.WithTimeout(mdCtx, 10*time.Second)
+	defer stopStream()
+	stream, err := bdsevm.NewStreamServiceClient(conn).StreamBlocks(sctx, &bdsevm.StreamBlocksRequest{FromBlock: &cursor, FromHash: hashes[int64(cursor)].Bytes()})
+	require.NoError(t, err)
+	// 0x3e9 has no transactionsRoot, so the stream cannot encode it.
+	for want := int64(cursor) + 1; want <= 0x3e8; want++ {
+		msg, err := stream.Recv()
+		require.NoError(t, err, "block %d", want)
+		require.Equal(t, uint64(want), msg.GetHeader().GetNumber())
+		require.Equal(t, hashes[want].Bytes(), msg.GetHeader().GetHash(), "block %d", want)
+	}
+	require.Eventually(t, func() bool {
+		from, _, ok := tracker.FollowedRange()
+		return ok && from == int64(tip.Number)-300
+	}, 10*time.Second, 10*time.Millisecond, "an open resumable tap fills down to maxBackfill")
+	stopStream()
 }

@@ -61,7 +61,7 @@ func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
 			err = fmt.Errorf("tap panicked: %v", rec)
 		}
 	}()
-	if o.MayMatch != nil {
+	if o.MayMatch != nil || o.Resumable {
 		release := f.Want(o)
 		defer release()
 	}

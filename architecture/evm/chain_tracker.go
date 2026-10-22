@@ -81,7 +81,11 @@ type ChainTracker struct {
 	wantMu      sync.Mutex
 	wants       map[uint64]indexer.ReadOpts
 	wantID      uint64
-	wantVersion atomic.Uint64 // moves on each Want and release
+	wantVersion atomic.Uint64 // moves on each MayMatch Want and release
+	// deepFill counts open Resumable taps and Reads that wait on fill:
+	// while any is, fill runs down to the window base, else it stops
+	// reorgWindow blocks below the head.
+	deepFill atomic.Int32
 
 	reconfirmMu   sync.Mutex
 	reconfirmedAt map[int64]time.Time
@@ -1449,6 +1453,8 @@ func (t *ChainTracker) sourceLive() bool {
 //     upstream, out of range; any other failure, fetched again after the
 //     key's backoff.
 //
+// While Read waits on fill, fill runs below reorgWindow (wantFill).
+//
 // Read waits only on the state the tracker publishes, and the tracker
 // never waits on a Read.
 //
@@ -1462,13 +1468,26 @@ func (t *ChainTracker) Read(ctx context.Context, c indexer.Cursor, o indexer.Rea
 	rr := &readReceipts{o: o, got: make(map[[32]byte]*heldReceipts)}
 	var job *receiptsJob
 	var stalled *chainHeader // a block whose job ended without receipts
-	defer func() { t.leaveJob(job) }()
+	var unfill func()        // set while the Read holds fill below reorgWindow
+	defer func() {
+		t.leaveJob(job)
+		if unfill != nil {
+			unfill()
+		}
+	}()
 	for {
 		s, tr := t.state.Load(), t.trees.Load()
 		rr.missing = nil
 		b, step, err := t.readAt(s, tr, c, rr)
 		if err != nil || len(b.Applied) > 0 || len(b.Reverted) > 0 {
 			return b, err
+		}
+		switch {
+		case step == readWaitFill && unfill == nil:
+			unfill = t.wantFill()
+		case step != readWaitFill && unfill != nil:
+			unfill()
+			unfill = nil
 		}
 		var retry <-chan time.Time
 		var receipts <-chan struct{}
@@ -1548,6 +1567,7 @@ type readStep uint8
 const (
 	readWaitPins  readStep = iota // until the pins change
 	readWaitTrees                 // until the pins or the held trees change
+	readWaitFill                  // as readWaitTrees, while fill may place c
 	readFetch                     // fetch c by hash
 )
 
@@ -1577,8 +1597,11 @@ func (t *ChainTracker) readAt(s *feedState, tr *treeState, c indexer.Cursor, rr 
 	if held != nil {
 		return t.revert(s, tr, held, rr)
 	}
-	if c.Number > head.number || c.Number < s.base {
+	if c.Number > head.number {
 		return indexer.Batch{}, readWaitTrees, nil
+	}
+	if c.Number < s.base {
+		return indexer.Batch{}, readWaitFill, nil
 	}
 	return indexer.Batch{}, readFetch, nil
 }
@@ -1659,7 +1682,7 @@ func (t *ChainTracker) unlinked(tr *treeState, root *chainHeader) (indexer.Batch
 	if _, ended := tr.ended[root.hash]; ended && !tr.pinsMayJoin(root) {
 		return indexer.Batch{}, readWaitPins, indexer.OutOfRangeError{Reason: indexer.OutOfRangeForkLeftWindow}
 	}
-	return indexer.Batch{}, readWaitTrees, nil
+	return indexer.Batch{}, readWaitFill, nil
 }
 
 // baseFinal reports whether the lowest pin is the window's base for good:
@@ -1722,24 +1745,47 @@ func (t *ChainTracker) fetchCursor(ctx context.Context, c indexer.Cursor) (retry
 }
 
 // Want registers o until release; the tracker then fetches, at pin time,
-// the receipts of each block o.MayMatch wants (spec §10).
+// the receipts of each block o.MayMatch wants (spec §10), and fills the
+// whole window while o is Resumable.
 func (t *ChainTracker) Want(o indexer.ReadOpts) (release func()) {
-	t.wantMu.Lock()
-	t.wantID++
-	id := t.wantID
-	t.wants[id] = o
-	t.wantMu.Unlock()
-	t.wantVersion.Add(1)
+	var id uint64
+	if o.MayMatch != nil {
+		t.wantMu.Lock()
+		t.wantID++
+		id = t.wantID
+		t.wants[id] = o
+		t.wantMu.Unlock()
+		t.wantVersion.Add(1)
+	}
+	if o.Resumable {
+		t.deepFill.Add(1)
+	}
 	t.mb.put(trackerMsg{kind: msgTick})
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			t.wantMu.Lock()
-			delete(t.wants, id)
-			t.wantMu.Unlock()
-			t.wantVersion.Add(1)
+			if o.MayMatch != nil {
+				t.wantMu.Lock()
+				delete(t.wants, id)
+				t.wantMu.Unlock()
+				t.wantVersion.Add(1)
+			}
+			if o.Resumable {
+				t.deepFill.Add(-1)
+			}
 			t.mb.put(trackerMsg{kind: msgTick})
 		})
+	}
+}
+
+// wantFill holds fill below reorgWindow until release: for a Read that
+// waits on fill (spec §9.1).
+func (t *ChainTracker) wantFill() (release func()) {
+	t.deepFill.Add(1)
+	t.mb.put(trackerMsg{kind: msgTick})
+	return func() {
+		t.deepFill.Add(-1)
+		t.mb.put(trackerMsg{kind: msgTick})
 	}
 }
 

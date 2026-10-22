@@ -34,6 +34,10 @@ type ReadOpts struct {
 	// MayMatch: Read also returns receipts of each block whose logsBloom
 	// may match. Nil: headers only.
 	MayMatch func(bloom []byte) bool
+	// Resumable: the tap's clients resume from their own cursor, anywhere
+	// in the window, so the feed fills the whole window while it is open.
+	// Without one, fill stops reorgWindow blocks below the head.
+	Resumable bool
 }
 
 // ChainFeed is the reader side of one tracker.
@@ -45,7 +49,8 @@ type ChainFeed interface {
 	// bounded by ctx. ErrOutOfRange: the feed cannot continue c.
 	Read(ctx context.Context, c Cursor, o ReadOpts) (Batch, error)
 	// Want registers a tap's ReadOpts until release; the feed fetches
-	// receipts when a block is pinned and any registered MayMatch wants it.
+	// receipts when a block is pinned and any registered MayMatch wants it,
+	// and fills the whole window while any registered tap is Resumable.
 	Want(o ReadOpts) (release func())
 	// LogsHead is the highest pin up to which every block's receipts are
 	// held or not needed; ws logs taps measure lag from it.

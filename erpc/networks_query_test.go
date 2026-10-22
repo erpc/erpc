@@ -288,6 +288,14 @@ func queryJson(t *testing.T, ctx context.Context, ntw *Network, method string, p
 // a QueryService client of it, with the metadata the server requires.
 func queryGrpc(t *testing.T, ctx context.Context, ntw *Network) (bdsevm.QueryServiceClient, context.Context) {
 	t.Helper()
+	conn, mdCtx := grpcConn(t, ctx, ntw)
+	return bdsevm.NewQueryServiceClient(conn), mdCtx
+}
+
+// grpcConn serves ntw on a real eRPC gRPC server (project prjA) and returns
+// a client connection to it, with the metadata the server requires.
+func grpcConn(t *testing.T, ctx context.Context, ntw *Network) (*grpc.ClientConn, context.Context) {
+	t.Helper()
 	networks := &NetworksRegistry{}
 	networks.preparedNetworks.Store(ntw.Id(), ntw)
 	erpcInstance := &ERPC{projectsRegistry: &ProjectsRegistry{preparedProjects: map[string]*PreparedProject{
@@ -299,7 +307,7 @@ func queryGrpc(t *testing.T, ctx context.Context, ntw *Network) (bdsevm.QuerySer
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 	md := metadata.New(map[string]string{"x-erpc-project": "prjA", "x-erpc-chain-id": "123"})
-	return bdsevm.NewQueryServiceClient(conn), metadata.NewOutgoingContext(ctx, md)
+	return conn, metadata.NewOutgoingContext(ctx, md)
 }
 
 // serveGrpc serves e on a real eRPC gRPC server until stop.
