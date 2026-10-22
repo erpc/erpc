@@ -123,9 +123,9 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		if err != nil {
 			h.t.Fatal(err)
 		}
-		px := h.newProxy(id, v.Addr(), vs.ws)
+		px := h.newProxy(v.Addr(), vs.ws)
 		s.vendors[vs.key], s.proxies[vs.key] = v, px
-		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name})
+		s.net.ups = append(s.net.ups, upSpec{id: id, vendor: vs.name, px: px})
 	}
 	s.chain.Start()
 	return s
@@ -138,11 +138,35 @@ func (s *scenario) upstream(key string) string {
 
 func (s *scenario) network() string { return fmt.Sprintf("evm:%d", s.chain.ID()) }
 
-// runPhase boots fresh redis and pods for specs, then runs every spec
-// concurrently on them, each on its own chain id from firstChain.
-func runPhase(t *testing.T, root, name string, firstChain int64, specs []spec) {
+// run is one TestRealWorld run: its dir, the host load record, and one
+// summary row per scenario.
+type run struct {
+	root string
+	host *hostLoad
+
+	mu   sync.Mutex
+	rows []summaryRow
+}
+
+type summaryRow struct {
+	phase, name, result string
+	wall                time.Duration
+	load                string
+}
+
+// phase waits for a quiet host, boots fresh redis and pods for specs, then
+// runs every spec concurrently on them, each on its own chain id from
+// firstChain.
+func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 	t.Run(name, func(t *testing.T) {
-		h := newHarness(t, filepath.Join(root, name))
+		if err := r.host.waitQuiet(t.Logf); err != nil {
+			t.Fatal(err)
+		}
+		h := newHarness(t, filepath.Join(r.root, name))
+		h.host = r.host
+		// A phase of one scenario is a triage run: a stalled tap there
+		// earns its pod a goroutine dump.
+		h.dumpStalls = len(specs) == 1
 		var scs []*scenario
 		var nets []*netSpec
 		for i, sp := range specs {
@@ -154,10 +178,32 @@ func runPhase(t *testing.T, root, name string, firstChain int64, specs []spec) {
 		for _, sc := range scs {
 			t.Run(sc.name, func(t *testing.T) {
 				t.Parallel()
+				start := time.Now()
+				defer func() {
+					result := "pass"
+					if t.Failed() {
+						result = "fail"
+					}
+					r.mu.Lock()
+					r.rows = append(r.rows, summaryRow{phase: name, name: sc.name, result: result, wall: time.Since(start), load: r.host.record(start, time.Now())})
+					r.mu.Unlock()
+				}()
 				sc.execute(t)
 			})
 		}
 	})
+}
+
+// summary prints one line per scenario: result, wall time, load record.
+func (r *run) summary(t *testing.T) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var b strings.Builder
+	b.WriteString("run summary:\n")
+	for _, row := range r.rows {
+		fmt.Fprintf(&b, "  %-8s %-7s %s %5s  %s\n", row.phase, row.name, row.result, row.wall.Round(time.Second), row.load)
+	}
+	t.Log(b.String())
 }
 
 func (s *scenario) execute(t *testing.T) {
@@ -182,9 +228,57 @@ func (s *scenario) execute(t *testing.T) {
 	} else {
 		s.baseClients()
 	}
+	if s.h.dumpStalls {
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.watchStalls() }()
+	}
 	s.body(s)
 	s.finish()
 	s.judge(time.Since(start))
+}
+
+// stallDump: a header tap silent this long on a pod that should serve it
+// gets the pod a SIGQUIT goroutine dump (triage, not a bound).
+const stallDump = 10 * time.Second
+
+// watchStalls dumps a pod's goroutines, once per pod, when one of its
+// header taps is silent past stallDump while the chain mints and no fault
+// excuses the pod; it then restarts the pod.
+func (s *scenario) watchStalls() {
+	dumped := map[int]bool{}
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+		s.mu.Lock()
+		halted := !s.haltAt.IsZero()
+		var taps []*clientBase
+		for _, c := range s.heads {
+			taps = append(taps, &c.clientBase)
+		}
+		for _, g := range s.grpcs {
+			taps = append(taps, &g.clientBase)
+		}
+		s.mu.Unlock()
+		if halted {
+			return
+		}
+		for _, c := range taps {
+			pod, since, ok := c.silence()
+			if !ok || c.slow || dumped[pod] || since < stallDump || s.excused(pod, time.Now().Add(-since), time.Now()) {
+				continue
+			}
+			dumped[pod] = true
+			p := s.h.pods[pod]
+			log := p.quit()
+			s.logf("%s silent %s on pod-%d: SIGQUIT goroutine dump in %s; restarting pod-%d", c.name, since.Round(time.Second), pod+1, log, pod+1)
+			if err := p.start(); err != nil {
+				s.logf("pod-%d restart after the dump: %v", pod+1, err)
+			}
+		}
+	}
 }
 
 // waitServing waits until pod idx serves the scenario network's head.
@@ -585,7 +679,8 @@ func (s *scenario) judgeDelivery(c *clientBase, stalls bool) []time.Duration {
 		l := d.at.Sub(d.minted)
 		out = append(out, l)
 		if l > s.bound && !s.excused(d.pod, d.minted, d.at) {
-			s.violate(c.name, "pod-%d: block %d %s reached the client %s after it was minted (bound %s)", d.pod+1, d.number, short(d.hash), l.Round(time.Millisecond), s.bound)
+			msg := fmt.Sprintf("pod-%d: block %d %s reached the client %s after it was minted (bound %s)", d.pod+1, d.number, short(d.hash), l.Round(time.Millisecond), s.bound)
+			s.violate(c.name, "%s", s.h.host.verdict(d.minted, d.at, msg))
 		}
 	}
 	if !stalls {
@@ -606,7 +701,8 @@ func (s *scenario) judgeDelivery(c *clientBase, stalls bool) []time.Duration {
 			to = s.haltAt
 		}
 		if gap := to.Sub(from); gap > s.bound && !s.excused(pod, from, to) {
-			s.violate(c.name, "pod-%d: no block from %s to %s (%s, bound %s)", pod+1, from.Format("15:04:05.000"), to.Format("15:04:05.000"), gap.Round(time.Millisecond), s.bound)
+			msg := fmt.Sprintf("pod-%d: no block from %s to %s (%s, bound %s)", pod+1, from.Format("15:04:05.000"), to.Format("15:04:05.000"), gap.Round(time.Millisecond), s.bound)
+			s.violate(c.name, "%s", s.h.host.verdict(from, to, msg))
 		}
 	}
 	return out

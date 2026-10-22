@@ -2,6 +2,7 @@ package realworld
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -28,11 +29,12 @@ type harness struct {
 	pods  []*pod
 	start time.Time
 	cpu0  time.Duration
-	// lookups time how long the proxies take to tell pods apart.
-	lookups *lookups
+	// host labels latency verdicts taken while the host was overloaded.
+	host *hostLoad
+	// dumpStalls: a stalled header tap gets its pod a goroutine dump.
+	dumpStalls bool
 
 	mu      sync.Mutex
-	pids    map[int]*pod
 	proxies []*proxy
 }
 
@@ -40,7 +42,7 @@ func newHarness(t *testing.T, dir string) *harness {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{}}
+	h := &harness{t: t, dir: dir, start: time.Now(), cpu0: selfCPU()}
 	h.redis = startRedis(t, dir)
 	t.Cleanup(h.stop)
 	return h
@@ -67,7 +69,7 @@ func (h *harness) stop() {
 	}
 	h.redis.stop()
 	wall := time.Since(h.start)
-	h.t.Logf("phase used %s CPU in the harness and simulators over %s wall; proxies: %s", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second), h.lookups.summary())
+	h.t.Logf("phase used %s CPU in the harness and simulators over %s wall", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second))
 	for _, p := range h.pods {
 		p.mu.Lock()
 		h.t.Logf("%s used %s CPU (%.1f cores)", p.name, p.cpu.Round(time.Second), p.cpu.Seconds()/wall.Seconds())
@@ -80,13 +82,6 @@ func (h *harness) stop() {
 			}
 		}
 	}
-}
-
-// podOfPid is the pod that runs process pid, if any.
-func (h *harness) podOfPid(pid int) *pod {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.pids[pid]
 }
 
 func freePort(t *testing.T) int {
@@ -193,9 +188,6 @@ func (p *pod) start() error {
 	exited := make(chan struct{})
 	p.cmd, p.exited = cmd, exited
 	p.mu.Unlock()
-	p.h.mu.Lock()
-	p.h.pids[cmd.Process.Pid] = p
-	p.h.mu.Unlock()
 	go func() {
 		_ = cmd.Wait()
 		p.mu.Lock()
@@ -238,9 +230,27 @@ func (p *pod) kill() {
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	<-exited
-	p.h.mu.Lock()
-	delete(p.h.pids, cmd.Process.Pid)
-	p.h.mu.Unlock()
+}
+
+// quit sends SIGQUIT to the pod: the Go runtime writes every goroutine's
+// stack to the pod's stderr log, whose path quit returns, and exits.
+func (p *pod) quit() string {
+	p.mu.Lock()
+	cmd, exited := p.cmd, p.exited
+	p.cmd = nil
+	log := p.logs[len(p.logs)-1]
+	p.mu.Unlock()
+	if cmd == nil {
+		return ""
+	}
+	_ = cmd.Process.Signal(syscall.SIGQUIT)
+	select {
+	case <-exited:
+	case <-time.After(30 * time.Second):
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-exited
+	}
+	return log
 }
 
 func (p *pod) running() bool {
@@ -407,17 +417,58 @@ func startRedis(t *testing.T, dir string) *redisServer {
 }
 
 func (r *redisServer) ping() bool {
+	reply, err := r.do("PING")
+	return err == nil && reply == "+PONG"
+}
+
+// do sends one command and returns the first line of its reply.
+func (r *redisServer) do(args ...string) (string, error) {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", r.port), time.Second)
 	if err != nil {
-		return false
+		return "", err
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(time.Second))
-	if _, err := c.Write([]byte("PING\r\n")); err != nil {
-		return false
+	var b strings.Builder
+	fmt.Fprintf(&b, "*%d\r\n", len(args))
+	for _, a := range args {
+		fmt.Fprintf(&b, "$%d\r\n%s\r\n", len(a), a)
+	}
+	if _, err := io.WriteString(c, b.String()); err != nil {
+		return "", err
 	}
 	line, err := bufio.NewReader(c).ReadString('\n')
-	return err == nil && strings.HasPrefix(line, "+PONG")
+	if err != nil {
+		return "", err
+	}
+	line = strings.TrimRight(line, "\r\n")
+	if strings.HasPrefix(line, "-") {
+		return "", fmt.Errorf("redis %s: %s", args[0], line[1:])
+	}
+	return line, nil
+}
+
+// skewCounter writes shared counter key (without the cluster key) as a
+// peer whose clock runs skew ahead would: its state with UpdatedAt now +
+// skew, stored and published as data/shared_state_variable.go and
+// data/redis.go do ("<cluster>/<key>:value", channel "counter:<cluster>/<key>").
+func (r *redisServer) skewCounter(key string, value int64, skew time.Duration) error {
+	full := clusterKey + "/" + key
+	st, err := json.Marshal(map[string]interface{}{"v": value, "t": time.Now().Add(skew).UnixMilli(), "b": "skewed-peer"})
+	if err != nil {
+		return err
+	}
+	if _, err := r.do("SET", full+":value", string(st)); err != nil {
+		return err
+	}
+	_, err = r.do("PUBLISH", "counter:"+full, string(st))
+	return err
+}
+
+// networkHeadKey is the network's delivered-head counter
+// (erpc/networks_registry.go).
+func networkHeadKey(project, network string) string {
+	return fmt.Sprintf("network/%s/%s/latestBlock", project, network)
 }
 
 func (r *redisServer) stop() {
@@ -444,7 +495,14 @@ type netSpec struct {
 	ups     []upSpec
 }
 
-type upSpec struct{ id, endpoint, vendor string }
+// upSpec is one upstream; each pod reaches it through its own link of px.
+type upSpec struct {
+	id, vendor string
+	px         *proxy
+}
+
+// clusterKey prefixes every shared-state key of the pods.
+const clusterKey = "realworld"
 
 // podConfig is the YAML the pod's own strict loader reads.
 func podConfig(p *pod, redisPort int, nets []*netSpec) []byte {
@@ -469,7 +527,7 @@ func podConfig(p *pod, redisPort int, nets []*netSpec) []byte {
 			pr["networks"] = append(pr["networks"].([]m), nw)
 		}
 		for _, u := range n.ups {
-			up := m{"id": u.id, "endpoint": u.endpoint}
+			up := m{"id": u.id, "endpoint": u.px.URL(p)}
 			if !n.minimal {
 				up["vendorName"] = u.vendor
 				up["evm"] = m{"chainId": n.chainID}
@@ -494,7 +552,7 @@ func podConfig(p *pod, redisPort int, nets []*netSpec) []byte {
 		},
 		"metrics": m{"enabled": true, "listenV4": true, "hostV4": "127.0.0.1", "port": p.metricsPort},
 		"database": m{"sharedState": m{
-			"clusterKey": "realworld",
+			"clusterKey": clusterKey,
 			"connector": m{"id": "shared", "driver": "redis", "redis": m{
 				"uri": fmt.Sprintf("redis://127.0.0.1:%d/0", redisPort),
 			}},

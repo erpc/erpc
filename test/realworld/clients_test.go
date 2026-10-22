@@ -91,6 +91,8 @@ type clientBase struct {
 	ends        []clientEnd
 	pausedUntil time.Time
 	reconnect   chan struct{}
+	// connAt is when the open connection opened; zero while none is open.
+	connAt time.Time
 	// allow holds the ends and jumps this client may see beyond its
 	// scenario's.
 	allow map[string]bool
@@ -107,6 +109,28 @@ func (c *clientBase) currentPod() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.pod
+}
+
+// connected marks a connection open since at, or closed (zero at).
+func (c *clientBase) connected(at time.Time) {
+	c.mu.Lock()
+	c.connAt = at
+	c.mu.Unlock()
+}
+
+// silence is how long the open connection on pod has delivered nothing;
+// ok is false while no connection is open.
+func (c *clientBase) silence() (pod int, since time.Duration, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.connAt.IsZero() {
+		return 0, 0, false
+	}
+	last := c.connAt
+	if n := len(c.deliveries); n > 0 && c.deliveries[n-1].at.After(last) {
+		last = c.deliveries[n-1].at
+	}
+	return c.pod, time.Since(last), true
 }
 
 func (c *clientBase) otherPod() int {
@@ -282,6 +306,7 @@ func (c *headsClient) run(ctx context.Context) {
 			continue
 		}
 		c.tr.logf("connected pod=%d", pod+1)
+		c.connected(start)
 		first := true
 		server := false
 	loop:
@@ -305,6 +330,7 @@ func (c *headsClient) run(ctx context.Context) {
 			}
 		}
 		closeFn()
+		c.connected(time.Time{})
 		if server {
 			c.otherPod()
 			sleepCtx(ctx, clientRedial)
@@ -719,6 +745,8 @@ func (g *grpcClient) stream(ctx context.Context, pod int) (codes.Code, string, b
 		g.tr.logf("open pod=%d", pod+1)
 	}
 	start := time.Now()
+	g.connected(start)
+	defer g.connected(time.Time{})
 	limit := 0
 	if g.switchEvery > 0 {
 		limit = g.switchEvery + rand.IntN(g.switchEvery+1)

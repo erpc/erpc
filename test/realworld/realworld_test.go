@@ -13,22 +13,41 @@ import (
 
 // TestRealWorld runs the catalogue scenarios (review §3): network-scoped
 // ones concurrently on shared pods, pod-scoped ones each in their own phase
-// with fresh pods and redis.
+// with fresh pods and redis. REALWORLD_ALONE=C1,X4 instead runs only the
+// named scenarios, each alone in its own phase.
 func TestRealWorld(t *testing.T) {
 	root, err := os.MkdirTemp("", "erpc-realworld-run-")
 	if err != nil {
 		t.Fatal(err)
 	}
+	r := &run{root: root, host: startHostLoad()}
 	t.Cleanup(func() {
+		r.host.stop()
+		r.summary(t)
 		if t.Failed() {
 			fmt.Fprintf(os.Stderr, "realworld: run dir kept: %s\n", root)
 			return
 		}
 		_ = os.RemoveAll(root)
 	})
-	runPhase(t, root, "shared", 9101, []spec{x1(), c1(), c3(), u3(), u8(false), u8(true), u9(), n5(), k2(), d1(), d2()})
-	runPhase(t, root, "n4", 9201, []spec{n4()})
-	runPhase(t, root, "x4", 9301, []spec{x4()})
+	shared := []spec{x1(), c1(), c3(), u3(), u8(false), u8(true), u9(), n5(), k2(), d1(), d2()}
+	if alone := os.Getenv("REALWORLD_ALONE"); alone != "" {
+		known := map[string]spec{}
+		for _, sp := range append(shared, n4(), x4()) {
+			known[sp.name] = sp
+		}
+		for i, name := range strings.Split(alone, ",") {
+			sp, ok := known[name]
+			if !ok {
+				t.Fatalf("REALWORLD_ALONE names %q, no scenario", name)
+			}
+			r.phase(t, "alone-"+name, 9401+int64(i), []spec{sp})
+		}
+		return
+	}
+	r.phase(t, "shared", 9101, shared)
+	r.phase(t, "n4", 9201, []spec{n4()})
+	r.phase(t, "x4", 9301, []spec{x4()})
 }
 
 // reconnectSlack is harness time, not spec: a scrape, a dial, a backoff
