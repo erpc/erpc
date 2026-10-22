@@ -191,7 +191,9 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 
 	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{ChainId: 123}, 2)
 	defer shutdown()
+	// A major head jump applies only after an async chain-identity check.
 	leader.EvmStatePoller().SuggestLatestBlock(tip)
+	require.Eventually(t, func() bool { return leader.EvmStatePoller().LatestBlock() == tip }, 5*time.Second, 5*time.Millisecond)
 	require.Equal(t, "rpc2", nw.EvmLeaderUpstream(context.Background()).Id())
 
 	statusCode, _, body := sendRequest(`{
