@@ -293,21 +293,28 @@ func queryGrpc(t *testing.T, ctx context.Context, ntw *Network) (bdsevm.QuerySer
 	erpcInstance := &ERPC{projectsRegistry: &ProjectsRegistry{preparedProjects: map[string]*PreparedProject{
 		"prjA": {Config: &common.ProjectConfig{Id: "prjA"}, networksRegistry: networks},
 	}}}
-	gs, err := NewGrpcServer(ctx, &log.Logger, &common.ServerConfig{
-		GrpcMaxRecvMsgSize: util.IntPtr(1 << 20),
-		GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
-		GrpcReflection:     util.BoolPtr(false),
-	}, erpcInstance)
-	require.NoError(t, err)
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	go func() { _ = gs.server.Serve(lis) }()
-	t.Cleanup(gs.server.Stop)
-	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	addr, stop := serveGrpc(t, ctx, erpcInstance)
+	t.Cleanup(stop)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 	md := metadata.New(map[string]string{"x-erpc-project": "prjA", "x-erpc-chain-id": "123"})
 	return bdsevm.NewQueryServiceClient(conn), metadata.NewOutgoingContext(ctx, md)
+}
+
+// serveGrpc serves e on a real eRPC gRPC server until stop.
+func serveGrpc(t *testing.T, ctx context.Context, e *ERPC) (addr string, stop func()) {
+	t.Helper()
+	gs, err := NewGrpcServer(ctx, &log.Logger, &common.ServerConfig{
+		GrpcMaxRecvMsgSize: util.IntPtr(1 << 20),
+		GrpcMaxSendMsgSize: util.IntPtr(1 << 20),
+		GrpcReflection:     util.BoolPtr(false),
+	}, e)
+	require.NoError(t, err)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = gs.server.Serve(lis) }()
+	return lis.Addr().String(), gs.server.Stop
 }
 
 // grpcPages reads every page of a server stream, and the status code it

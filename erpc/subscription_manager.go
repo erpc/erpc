@@ -2,12 +2,14 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -27,7 +29,7 @@ const (
 // network's mempool feed.
 type SubscriptionManager struct {
 	logger *zerolog.Logger
-	heads  newHeadsPayloads
+	heads  *blockEncodings[json.RawMessage]
 
 	// connMu guards conns and every WsConnection.subsClosed, so no adapter
 	// is created for a connection after CleanupConnection.
@@ -42,6 +44,7 @@ type SubscriptionManager struct {
 func NewSubscriptionManager(logger *zerolog.Logger) *SubscriptionManager {
 	return &SubscriptionManager{
 		logger: logger,
+		heads:  newBlockEncodings(evm.NewHeadsPayload),
 		conns:  make(map[string]*wsclient.Adapter),
 	}
 }
@@ -92,7 +95,7 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, nil, common.NewErrInstanceSubscriptionLimitExceeded(maxTotal)
 	}
 
-	if err := sm.acquireRateLimits(ctx, project, nw, nq); err != nil {
+	if err := acquireSubscribeRateLimits(ctx, project, nw, nq); err != nil {
 		return nil, nil, err
 	}
 
@@ -215,7 +218,7 @@ func (sm *SubscriptionManager) Unsubscribe(
 	}
 	nq.SetNetwork(nw)
 
-	if err := sm.acquireRateLimits(ctx, project, nw, nq); err != nil {
+	if err := acquireSubscribeRateLimits(ctx, project, nw, nq); err != nil {
 		return nil, err
 	}
 
@@ -334,7 +337,9 @@ func (sm *SubscriptionManager) getOrCreateConn(wsc *WsConnection, networkLabel s
 	return conn
 }
 
-func (sm *SubscriptionManager) acquireRateLimits(
+// acquireSubscribeRateLimits takes a subscription's project and network
+// rate limit permits, once, when it opens.
+func acquireSubscribeRateLimits(
 	ctx context.Context,
 	project *PreparedProject,
 	nw *Network,

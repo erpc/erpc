@@ -110,6 +110,11 @@ const (
 	fBadBaseFeeLone = "a network with one vendor serves headers whose base fee breaks baseFeeDerivation"
 	fForgedAhead    = "one vendor pushes headers with garbage hashes near and far ahead of the chain"
 	fSlowWalk       = "a reorg whose walk is slow, while clients ask the new fork under a strict profile"
+
+	fStreamResume     = "gRPC streams that disconnect at random and resume on the other instance"
+	fStreamOutOfRange = "gRPC resume from a header older than the window, and from an orphan no vendor serves"
+	fStreamAhead      = "gRPC resume above a fresh instance's head"
+	fStreamSlow       = "gRPC client that stops reading"
 )
 
 var chaosFaults = []string{
@@ -117,6 +122,7 @@ var chaosFaults = []string{
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice, fPendingSilent,
 	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower, fFetchPanic,
 	fForgedLog, fForgedHash, fReorg3, fClientGetLogs, fBadBaseFee, fBadBaseFeeLone, fForgedAhead, fSlowWalk,
+	fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow,
 }
 
 // TestChainFeed_ConvergesUnderFaults runs real eRPC against 4 mocked vendors
@@ -129,7 +135,10 @@ var chaosFaults = []string{
 // applies its logs, removed:true included; its logs must end equal to the
 // canonical chain's matching logs, and only the 60s block, the 90s outage,
 // the 2-minute outage of every vendor and a reorg deeper than the window
-// may close it with 1013.
+// may close it with 1013. In the gRPC seed a second eRPC instance runs, and
+// gRPC StreamBlocks clients apply headers by the gRPC client rule, resuming
+// on the other instance from their last header; each stream's chain must
+// end equal to the canonical chain, every header linked to the one below.
 func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 	origWatch := wsupstream.HeadsWatchInterval.Load()
 	wsupstream.HeadsWatchInterval.Store(chaosHeadsWatch)
@@ -147,6 +156,10 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{logsReceiptsWait, chaosScaled(60 * time.Second)},
 		{logsCloseSpread, chaosScaled(60 * time.Second)},
 		{pendingSilentAfter, chaosScaled(60 * time.Second)},
+		// Above the waits of the gRPC seed's other faults, so only the
+		// faults that test them end a stream with UNAVAILABLE.
+		{streamBlocksReadWait, 15 * chaosBlock},
+		{streamBlocksSendWait, 5 * chaosBlock},
 	}
 	orig := make([]time.Duration, len(scale))
 	for i, sc := range scale {
@@ -178,6 +191,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{67, true, chaosOpts{integrity: true, badBaseFee: true}, []string{fBadBaseFee}},
 		{71, true, chaosOpts{integrity: true, badBaseFee: true, oneVendor: true}, []string{fBadBaseFeeLone}},
 		{73, true, chaosOpts{integrity: true, strict: true}, []string{fSlowWalk}},
+		{79, true, chaosOpts{grpc: true}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fReorg3}},
 	}
 	before := erpcGoroutines()
 	covered := make(map[string][]int64)
@@ -479,6 +493,10 @@ type simChain struct {
 	// matchLast: every matching block minted from now ends with a log both
 	// filters match, in a transaction with another log.
 	matchLast bool
+	// padExtra pads every header's extraData by this many bytes, so a few
+	// headers fill a gRPC stream's flow-control windows; set before the
+	// first block.
+	padExtra int
 }
 
 // simTrap is one block's held first receipts call.
@@ -487,9 +505,9 @@ type simTrap struct {
 	during     int // other receipts calls for the block while it was held
 }
 
-func newSimChain(seed int64, badBaseFee bool) *simChain {
+func newSimChain(seed int64, badBaseFee bool, padExtra int) *simChain {
 	c := &simChain{seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 1)), byHash: make(map[[32]byte]*simBlock),
-		txRng: rand.New(rand.NewPCG(uint64(seed), 2)), pendingSent: make(map[string]bool), badBaseFee: badBaseFee}
+		txRng: rand.New(rand.NewPCG(uint64(seed), 2)), pendingSent: make(map[string]bool), badBaseFee: badBaseFee, padExtra: padExtra}
 	start := time.Now().Add(-time.Duration(chaosHistoryBlocks) * chaosBlock)
 	var parent *simBlock
 	for i := range chaosHistoryBlocks {
@@ -548,7 +566,7 @@ func (c *simChain) mintLocked(parent *simBlock, number uint64, at time.Time, min
 		Number:      new(big.Int).SetUint64(number),
 		GasLimit:    30_000_000,
 		Time:        ts,
-		Extra:       fmt.Appendf(nil, "%d/%d", c.seed, c.minted),
+		Extra:       append(fmt.Appendf(nil, "%d/%d", c.seed, c.minted), make([]byte, c.padExtra)...),
 		BaseFee:     big.NewInt(7),
 	}
 	if c.badBaseFee {
@@ -1803,6 +1821,17 @@ type chaosSeed struct {
 	// violators are the upstreams that serve forged data, the only ones
 	// integrity may count violations against.
 	violators map[string]bool
+
+	// The gRPC seed's instances, 0 the primary and 1 a second eRPC, each
+	// nil while down; its stream clients; and the eth_getBlockByNumber
+	// requests clients had sent through the request path when streams
+	// began.
+	grpcMu        sync.Mutex
+	grpcs         [2]*grpcInstance
+	streams       []*chaosStream
+	streamsWG     sync.WaitGroup
+	stopStreams   context.CancelFunc
+	byNumberAsked float64
 }
 
 // faultSpan is when one fault ran; to is zero while it runs.
@@ -1852,18 +1881,24 @@ func (s *chaosSeed) faultsSince(since time.Time) string {
 // would: level authoritative, baseFeeDerivation enabled for the simulated
 // chain), strict (a reorg-sensitive mismatch on an unfinalized block is a
 // hard reject), a chain whose base fee no parent derives, a network of one
-// vendor.
+// vendor, gRPC streams on 2 eRPC instances (with headers padded by
+// chaosStreamPad).
 type chaosOpts struct {
 	integrity  bool
 	strict     bool
 	badBaseFee bool
 	oneVendor  bool
+	grpc       bool
 }
 
 func newChaosSeed(t *testing.T, seed int64, pollSources bool, opts chaosOpts) *chaosSeed {
 	s := &chaosSeed{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 0)), pollSources: pollSources, opts: opts,
 		occurred: make(map[string]string), paths: make(map[string]string)}
-	s.chain = newSimChain(seed, opts.badBaseFee)
+	pad := 0
+	if opts.grpc {
+		pad = chaosStreamPad
+	}
+	s.chain = newSimChain(seed, opts.badBaseFee, pad)
 	if opts.oneVendor {
 		s.wsA = s.chain.addVendor(t, "ws-a", "vendor-a", true)
 		s.httpA = s.chain.addVendor(t, "http-a", "vendor-a", false)
@@ -1939,13 +1974,23 @@ func (s *chaosSeed) config() *common.Config {
 	return cfg
 }
 
-// startERPC boots an eRPC instance and waits for its network.
+// startERPC boots the primary eRPC instance and, in the gRPC seed, its
+// gRPC server.
 func (s *chaosSeed) startERPC() {
-	srv, addr, cancel := startTestERPCServer(s.t, s.config())
+	srv, addr, cancel, nw := s.bootERPC()
 	s.srv, s.addr, s.cancel = srv, addr, cancel
 	s.mu.Lock()
 	s.liveAddr = addr
 	s.mu.Unlock()
+	s.nw.Store(nw)
+	if s.opts.grpc {
+		s.startGrpc(0, srv, nil, nw)
+	}
+}
+
+// bootERPC boots an eRPC instance and waits for its network.
+func (s *chaosSeed) bootERPC() (*HttpServer, string, context.CancelFunc, *Network) {
+	srv, addr, cancel := startTestERPCServer(s.t, s.config())
 	var nw *Network
 	require.Eventually(s.t, func() bool {
 		n, err := srv.erpc.GetNetwork(context.Background(), "test_ws", "evm:123")
@@ -1955,13 +2000,15 @@ func (s *chaosSeed) startERPC() {
 		nw = n
 		return true
 	}, 15*time.Second, 20*time.Millisecond, "network initializes")
-	s.nw.Store(nw)
+	return srv, addr, cancel, nw
 }
 
-// stopERPC stops the running instance, if any, and waits for its
-// network's goroutines; a failed seed stops it in cleanup, so nothing it
-// runs outlives the seed into later tests.
+// stopERPC stops the running instances, if any, and waits for their
+// networks' goroutines; a failed seed stops them in cleanup, so nothing
+// they run outlives the seed into later tests.
 func (s *chaosSeed) stopERPC() {
+	s.stopGrpc(1)
+	s.stopGrpc(0)
 	if s.srv == nil {
 		return
 	}
@@ -2084,6 +2131,11 @@ func (s *chaosSeed) run(faults []string) {
 	s.dialLogs("first")
 	s.pending = &chaosPendingClient{done: make(chan struct{})}
 	go s.pending.run(ctx, s)
+	if s.opts.grpc {
+		streamsCtx, stopStreams := context.WithCancel(context.Background())
+		defer stopStreams()
+		s.startStreams(streamsCtx, stopStreams)
+	}
 	s.blocks(4)
 
 	var bg sync.WaitGroup
@@ -2150,6 +2202,9 @@ func (s *chaosSeed) run(faults []string) {
 		}
 	}
 	require.Empty(s.t, diff, "every open logs client holds the canonical logs up to %d", tip.number)
+	if s.opts.grpc {
+		s.awaitStreams(tip)
+	}
 	end := time.Now()
 	s.stopERPC()
 	s.judge(end)
@@ -2281,6 +2336,14 @@ func (s *chaosSeed) inject(f string) {
 		s.forgedHash()
 	case fReorg3:
 		s.reorg3()
+	case fStreamResume:
+		s.streamResume()
+	case fStreamOutOfRange:
+		s.streamOutOfRange()
+	case fStreamAhead:
+		s.streamAhead()
+	case fStreamSlow:
+		s.streamSlow()
 	case fForgedAhead:
 		s.forgedAhead()
 	case fSlowWalk:
@@ -3002,6 +3065,9 @@ func (s *chaosSeed) judge(end time.Time) {
 	require.NotZero(t, p.received, "the pending-transaction client got no transaction")
 	t.Logf("pending-transaction client: %d transactions over %d subscriptions", p.received, p.sessions)
 	s.judgeIntegrity()
+	if s.opts.grpc {
+		s.judgeStreams()
+	}
 }
 
 //
@@ -3244,9 +3310,15 @@ func (s *chaosSeed) forgedHash() {
 }
 
 func (s *chaosSeed) reorg3() {
+	from := time.Now()
 	tip := s.chain.reorg(3)
 	s.blocks(3)
-	s.occur(fReorg3, fmt.Sprintf("new head %d", tip.number))
+	evidence := fmt.Sprintf("new head %d", tip.number)
+	if s.opts.grpc {
+		// reorg(3) mints 4 blocks above the fork point.
+		evidence += "; " + s.awaitResend(tip.number-3, from)
+	}
+	s.occur(fReorg3, evidence)
 }
 
 // forgeAt is raw renumbered to n, with a hash it does not hash to.

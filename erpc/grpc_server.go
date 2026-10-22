@@ -34,6 +34,7 @@ type GrpcServer struct {
 	processor *RequestProcessor
 	logger    *zerolog.Logger
 	server    *grpc.Server
+	heads     *blockEncodings[*evm.StreamBlocksResponse]
 
 	trustedForwarderNets []net.IPNet
 	trustedForwarderIPs  map[string]struct{}
@@ -69,6 +70,7 @@ func NewGrpcServer(
 		erpc:      erpcInstance,
 		processor: NewRequestProcessor(erpcInstance, logger),
 		logger:    logger,
+		heads:     newBlockEncodings(streamBlocksResponse),
 	}
 	if cfg != nil {
 		gs.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
@@ -459,16 +461,6 @@ func serveQuery[Res any](gs *GrpcServer, req proto.Message, stream grpc.ServerSt
 	}
 	return queryGrpcError(gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
 		return stream.Send(any(page).(*Res))
-	}))
-}
-
-func (gs *GrpcServer) StreamBlocks(req *evm.StreamBlocksRequest, stream evm.StreamService_StreamBlocksServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_getBlockByNumber")
-	if err != nil {
-		return err
-	}
-	return grpcStatusOf(gs.processor.ProcessBlockStream(stream.Context(), input, func(header *evm.BlockHeader) error {
-		return stream.Send(&evm.StreamBlocksResponse{Header: header})
 	}))
 }
 

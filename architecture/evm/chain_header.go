@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
@@ -186,4 +187,19 @@ func NewHeadsPayload(block json.RawMessage) (json.RawMessage, error) {
 		}
 	}
 	return root.MarshalJSON()
+}
+
+// StreamBlockHeader is the gRPC StreamBlocks header of a block: its proto
+// header, transactions and withdrawals left out.
+func StreamBlockHeader(block json.RawMessage) (*bdsevm.BlockHeader, error) {
+	var b bdsevm.JsonRpcBlock
+	if err := sonic.Unmarshal(block, &b); err != nil {
+		return nil, err
+	}
+	b.Transactions, b.Withdrawals = nil, nil
+	pb, err := b.ToProto()
+	if err != nil {
+		return nil, err
+	}
+	return pb.Header, nil
 }

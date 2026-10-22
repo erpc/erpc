@@ -2,12 +2,9 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"sync"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 )
@@ -74,41 +71,4 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 			}
 		}
 	}
-}
-
-// newHeadsPayloadsKept bounds the projected blocks kept for reuse.
-const newHeadsPayloadsKept = 256
-
-// newHeadsPayloads projects each block once for every ws subscription:
-// concurrent taps on one block wait for the one projection.
-type newHeadsPayloads struct {
-	mu    sync.Mutex
-	byKey map[[32]byte]*newHeadsPayload
-	order [][32]byte
-}
-
-type newHeadsPayload struct {
-	once    sync.Once
-	payload json.RawMessage
-	err     error
-}
-
-func (p *newHeadsPayloads) get(b indexer.Block) (json.RawMessage, error) {
-	p.mu.Lock()
-	if p.byKey == nil {
-		p.byKey = make(map[[32]byte]*newHeadsPayload, newHeadsPayloadsKept)
-	}
-	e := p.byKey[b.Hash]
-	if e == nil {
-		e = &newHeadsPayload{}
-		p.byKey[b.Hash] = e
-		p.order = append(p.order, b.Hash)
-		if len(p.order) > newHeadsPayloadsKept {
-			delete(p.byKey, p.order[0])
-			p.order = p.order[1:]
-		}
-	}
-	p.mu.Unlock()
-	e.once.Do(func() { e.payload, e.err = evm.NewHeadsPayload(b.Header) })
-	return e.payload, e.err
 }
