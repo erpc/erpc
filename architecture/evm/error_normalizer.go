@@ -346,12 +346,16 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//   "no EVM execution in transaction 0x…": a NEAR-native transaction
 		//     surfaced in the EVM block, so there is nothing to trace;
 		//   "EVM tracing failed in transaction 0x… due to ContractError {…}":
-		//     the engine's own verdict for that transaction.
+		//     the engine's own verdict for that transaction;
+		//   "StandaloneError(TransactionHashNotFound(0x…))": the tracer has no
+		//     EVM record of a transaction the chain does list (engine system
+		//     calls to 0x4444…192b), for old and new blocks alike.
 		// As a server-side exception every request was retried until the
 		// failsafe gave up (12 attempts each) and the caller saw
 		// ErrUpstreamsExhausted instead of the real reason.
 		if strings.Contains(msg, "no EVM execution in transaction") ||
-			strings.Contains(msg, "EVM tracing failed in transaction") {
+			strings.Contains(msg, "EVM tracing failed in transaction") ||
+			strings.Contains(msg, "StandaloneError(TransactionHashNotFound(") {
 			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),

@@ -116,6 +116,13 @@ func TestExtractJsonRpcError_InsufficientFunds_TracingMethodsRetryable(t *testin
 			message:       "Error: no EVM execution in transaction 0x37c6ca677fb7d9f6fe0d53a72288d89fb37b9483ff90950684de6e697e013a00",
 			wantRetryable: false,
 		},
+		{
+			// Aurora engine system call (to 0x4444…192b) the tracer has no EVM record of.
+			name:          "debug_traceTransaction Aurora TransactionHashNotFound stays non-retried",
+			method:        "debug_traceTransaction",
+			message:       "StandaloneError(TransactionHashNotFound(0x1e5f1daaab9c1e10582a8defeb63f0716e8e1071c8a0327e973ff47732f50141))",
+			wantRetryable: false,
+		},
 	}
 
 	for _, tc := range cases {
