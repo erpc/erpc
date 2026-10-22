@@ -23,6 +23,7 @@ type Faults struct {
 	Lag           uint64        // serves the canonical block this far below the head
 	Frozen        bool          // head stops moving; still answers what it holds
 	WrongChainID  bool          // eth_chainId answers another chain
+	ChainIDHeld   bool          // eth_chainId answers wait until it clears
 	NullHeld      bool          // null for blocks by number or hash, even below its head
 	WrongHashes   bool          // newHeads pushes carry a hash the header does not hash to
 	TruncReceipts bool          // receipts without their last 10
@@ -61,6 +62,8 @@ type Vendor struct {
 	faults Faults
 	fork   *Fork
 	conns  map[*wsConn]bool
+	// held closes when ChainIDHeld clears; nil while it is off.
+	held chan struct{}
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls atomic.Int64
 	subSeq                                                               atomic.Int64
@@ -164,6 +167,13 @@ func (v *Vendor) SetFaults(f Faults) {
 	c := v.chain
 	c.mu.Lock()
 	v.faults = f
+	switch {
+	case f.ChainIDHeld && v.held == nil:
+		v.held = make(chan struct{})
+	case !f.ChainIDHeld && v.held != nil:
+		close(v.held)
+		v.held = nil
+	}
 	var drop []*wsConn
 	if f.Down {
 		for w := range v.conns {
@@ -456,6 +466,14 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		time.Sleep(slow)
 	}
 	c := v.chain
+	if method == "eth_chainId" {
+		c.mu.Lock()
+		held := v.held
+		c.mu.Unlock()
+		if held != nil {
+			<-held
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	f := v.faults

@@ -39,6 +39,9 @@ type spec struct {
 	vendors   []vendorSpec
 	integrity bool
 	minimal   bool
+	// late: vendor keys whose upstreams register only once the network
+	// serves on every pod; their heads vote from the first one.
+	late []string
 	// lone: one pod with in-memory shared state and no redis, as a
 	// single-instance deployment runs; its phase holds lone specs only.
 	lone      bool
@@ -131,6 +134,9 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name})
 	}
 	s.chain.Start()
+	for _, key := range sp.late {
+		s.vendors[key].Update(func(f *chainsim.Faults) { f.ChainIDHeld = true })
+	}
 	return s
 }
 
@@ -226,6 +232,10 @@ func (s *scenario) execute(t *testing.T) {
 	}
 	for _, p := range s.h.pods {
 		s.waitServing(p.idx)
+	}
+	for _, key := range s.late {
+		s.vendors[key].Update(func(f *chainsim.Faults) { f.ChainIDHeld = false })
+		s.logf("%s registers after the network serves on every pod", s.upstream(key))
 	}
 	start := time.Now()
 	if s.clients != nil {
@@ -635,6 +645,21 @@ func (s *scenario) judge(wall time.Duration) {
 	if len(lat) > 0 {
 		s.logf("%d deliveries in %s: latency p50 %s p99 %s max %s (bound %s)", len(lat), wall.Round(time.Second),
 			lat[len(lat)/2].Round(time.Millisecond), lat[len(lat)*99/100].Round(time.Millisecond), lat[len(lat)-1].Round(time.Millisecond), s.bound)
+	}
+	for _, key := range s.late {
+		up := s.upstream(key)
+		for pod := range s.h.pods {
+			heads := func(outcome string) float64 {
+				v, _ := s.metric(pod, "erpc_chain_tracker_source_heads_total", map[string]string{"upstream": up, "outcome": outcome})
+				return v
+			}
+			if v := heads("voted"); v == 0 {
+				s.violate(s.name, "pod-%d: %s, registered after the network started, never voted", pod+1, up)
+			}
+			if v := heads("gated_authority"); v > 0 {
+				s.violate(s.name, "pod-%d: %v heads of %s, registered after the network started, counted gated_authority", pod+1, v, up)
+			}
+		}
 	}
 	s.mu.Lock()
 	vs := slices.Clone(s.violations)

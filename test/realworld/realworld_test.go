@@ -243,13 +243,17 @@ func halfOpenWsA(s *scenario) {
 // U8: ws-a pushes headers whose hash the header does not hash to, for 100
 // blocks. No client ever receives one (the oracle rejects unknown hashes).
 // With integrity on, intake drops them and counts the violations on ws-a
-// only.
+// only. With integrity off, ws-b registers after the network started: its
+// heads vote from the first one, so ws-a's never stand alone.
 func u8(integrity bool) spec {
 	name := "U8-off"
+	var late []string
 	if integrity {
 		name = "U8-on"
+	} else {
+		late = []string{"ws-b"}
 	}
-	return spec{name: name, integrity: integrity, bound: settleDelivery, body: func(s *scenario) {
+	return spec{name: name, integrity: integrity, late: late, bound: settleDelivery, body: func(s *scenario) {
 		s.blocks(25)
 		ws := s.vendors["ws-a"]
 		ws.Update(func(f *chainsim.Faults) { f.WrongHashes = true })

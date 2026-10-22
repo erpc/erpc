@@ -183,6 +183,10 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 				return err
 			}
 			ups.SetNetworkConfig(ntw.cfg)
+			// Routing and head votes read the policy's eligible set: it takes
+			// the upstream in before its source opens, so no head of it is
+			// held back from the vote.
+			pp.policyEngine.UpstreamsChanged(ntwId)
 			// A new upstream may be a source: the reconciler picks it up now.
 			ntw.sources.wake()
 			return nil
