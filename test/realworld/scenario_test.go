@@ -209,7 +209,7 @@ func (r *run) summary(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("run summary:\n")
 	for _, row := range r.rows {
-		fmt.Fprintf(&b, "  %-8s %-7s %s %5s  %s\n", row.phase, row.name, row.result, row.wall.Round(time.Second), row.load)
+		fmt.Fprintf(&b, "  %-16s %-8s %s %6s  %s\n", row.phase, row.name, row.result, row.wall.Round(time.Second), row.load)
 	}
 	t.Log(b.String())
 }
