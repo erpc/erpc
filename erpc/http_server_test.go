@@ -2845,9 +2845,11 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		// Configure multiple upstreams to test failover behavior
+		// 8 attempts × 2 upstreams × 3 tries sleep ~4.5s in retry delays;
+		// the timeout leaves room for scheduling stalls under load.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				MaxTimeout: common.Duration(15 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
