@@ -3108,6 +3108,19 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	}
 	_ = aliasMethodSet
 	_ = aliasFinalitySet
+	if c.EvalMethods == "" {
+		c.EvalMethodsMatcher = nil
+	} else {
+		if c.EvalScope != EvalScopeNetworkMethod && c.EvalScope != EvalScopeNetworkMethodFinality {
+			return fmt.Errorf("selectionPolicy.evalMethods=%q needs evalScope network-method or network-method-finality, got %q",
+				c.EvalMethods, c.EvalScope)
+		}
+		matcher, err := NewWildcardMatcher(c.EvalMethods)
+		if err != nil {
+			return fmt.Errorf("selectionPolicy.evalMethods=%q: %w", c.EvalMethods, err)
+		}
+		c.EvalMethodsMatcher = matcher
+	}
 	if c.EvalFunc == "" {
 		c.EvalFunc = DefaultSelectionPolicySource
 	}

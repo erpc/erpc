@@ -1783,6 +1783,16 @@ export interface SelectionPolicyConfig {
    * future SetDefaults can distinguish "absent" from "explicitly false".
    */
   evalPerBoundary?: boolean;
+  /**
+   * EvalMethods narrows the method axis of a per-method EvalScope
+   * (`network-method` / `network-method-finality`) to the methods this
+   * pattern matches (WildcardMatch grammar, e.g. `debug_trace* | trace_*`).
+   * A matching method gets its own slot; every other method keeps the
+   * method-wildcard slot, so its ranking is the same as under a scope
+   * without the method axis. Empty = every method gets its own slot.
+   * Rejected with a scope that has no method axis.
+   */
+  evalMethods?: string;
   evalTimeout?: Duration;
   /**
    * EvalFunc is the per-tick evaluation function. In YAML it's a JS

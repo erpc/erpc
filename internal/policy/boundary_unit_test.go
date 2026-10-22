@@ -64,4 +64,18 @@ func TestEffectiveKey_BoundaryGating(t *testing.T) {
 	require.Equal(t,
 		slotKey{"evm:1", "eth_call", "*", "a|b"},
 		effectiveKey(cfgMB, "evm:1", "eth_call", "finalized", "a|b"))
+
+	// evalMethods narrows the method axis: a matching method gets its own
+	// slot, any other method stays on the method wildcard.
+	cfgTrace := &common.SelectionPolicyConfig{EvalScope: common.EvalScopeNetworkMethod, EvalMethods: "debug_trace* | trace_*"}
+	require.NoError(t, cfgTrace.SetDefaults())
+	require.Equal(t,
+		slotKey{"evm:56", "debug_traceBlockByNumber", "*", "*"},
+		effectiveKey(cfgTrace, "evm:56", "debug_traceBlockByNumber", "finalized", "*"))
+	require.Equal(t,
+		slotKey{"evm:56", "*", "*", "*"},
+		effectiveKey(cfgTrace, "evm:56", "eth_getLogs", "finalized", "*"))
+
+	// evalMethods without a method axis is a config error, not a silent no-op.
+	require.Error(t, (&common.SelectionPolicyConfig{EvalScope: common.EvalScopeNetworkFinality, EvalMethods: "trace_*"}).SetDefaults())
 }

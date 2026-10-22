@@ -103,7 +103,9 @@ const DefaultEngineIdleEvictionAfter = 1 * time.Hour
 // driven by `SelectionPolicyConfig.EvalScope`:
 //
 //   - `network`                 → only `("*", "*")` per network
-//   - `network-method`          → `(method, "*")` lazy-created per request
+//   - `network-method`          -> `(method, "*")` lazy-created per request;
+//     with `evalMethods` set, only for matching methods - the rest stay on
+//     `("*", "*")`
 //   - `network-finality`        → `("*", finality)` lazy-created per request
 //   - `network-method-finality` → `(method, finality)` lazy-created per request
 //
@@ -582,7 +584,8 @@ func effectiveKey(cfg *common.SelectionPolicyConfig, networkID, method, finality
 	m, f, b := "*", "*", "*"
 	if cfg != nil {
 		perMethod, perFinality := scopeAxes(cfg.EvalScope)
-		if perMethod && method != "" && method != "*" {
+		if perMethod && method != "" && method != "*" &&
+			(cfg.EvalMethodsMatcher == nil || cfg.EvalMethodsMatcher(method)) {
 			m = method
 		}
 		if perFinality && finality != "" && finality != "*" {
