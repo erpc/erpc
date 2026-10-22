@@ -275,6 +275,8 @@ type replacement struct {
 	at     time.Time
 }
 
+// jump is a header past the client's last + 1 on one connection, or
+// (newConn) a new subscription's first header, wherever it lands.
 type jump struct {
 	at       time.Time
 	from, to uint64
@@ -429,16 +431,19 @@ func (c *headsClient) onHead(pod int, raw json.RawMessage, connStart time.Time, 
 	last := c.hc.last
 	kind := c.hc.apply(n, h.Hash, h.ParentHash)
 	now := time.Now()
-	switch {
-	case kind == appliedReplace:
+	if kind == appliedReplace {
 		c.replacements = append(c.replacements, replacement{number: n, at: now})
-	case kind == appliedJump:
-		c.jumps = append(c.jumps, jump{at: now, from: last, to: n, newConn: first})
-	case kind == appliedUnlinked && first:
-		// A new subscription starts after the pod's head: no link to the
-		// old one is owed.
+	}
+	switch {
+	case first && kind != appliedStart:
+		// Every new subscription's first header, linked or not: it starts
+		// after the pod's head, so no link to the old one is owed.
 		c.jumps = append(c.jumps, jump{at: now, from: last, to: n, newConn: true})
-		kind = appliedJump
+		if kind == appliedUnlinked {
+			kind = appliedJump
+		}
+	case kind == appliedJump:
+		c.jumps = append(c.jumps, jump{at: now, from: last, to: n})
 	}
 	c.mu.Unlock()
 	c.tr.logf("head pod=%d n=%d h=%s p=%s %s", pod+1, n, short(h.Hash), short(h.ParentHash), kind)
