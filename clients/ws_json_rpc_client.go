@@ -72,6 +72,10 @@ type WsJsonRpcClient struct {
 	// written under connMu, epochs counts connections ever installed.
 	epoch  atomic.Uint64
 	epochs uint64
+	// probing is the connection whose liveness probe is armed; a frame or
+	// pong on it disarms it. Later timeouts on it never re-arm the probe,
+	// so a stream of them cannot push the probe's deadline back.
+	probing atomic.Pointer[websocket.Conn]
 
 	// Write synchronization (gorilla/websocket requires synchronized writes)
 	writeMu sync.Mutex
@@ -438,9 +442,10 @@ func (c *WsJsonRpcClient) connect() error {
 	}
 
 	// Every pong (here) and data frame (in readLoop) extends the liveness
-	// deadline.
+	// deadline and disarms a probe.
 	_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	conn.SetPongHandler(func(string) error {
+		c.probing.CompareAndSwap(conn, nil)
 		return conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	})
 
@@ -475,6 +480,7 @@ func (c *WsJsonRpcClient) teardownConn(conn *websocket.Conn, cause error) {
 	c.connMu.Unlock()
 
 	if conn != nil {
+		c.probing.CompareAndSwap(conn, nil)
 		_ = conn.Close()
 	}
 	c.subHandlersMu.Lock()
@@ -564,6 +570,7 @@ func (c *WsJsonRpcClient) readLoop() {
 			continue
 		}
 
+		c.probing.CompareAndSwap(conn, nil)
 		_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 
 		c.handleMessage(message, epoch)
@@ -715,8 +722,12 @@ func (c *WsJsonRpcClient) writeToConn(conn *websocket.Conn, messageType int, dat
 
 // probe pings conn and gives it probeWait to answer: a pong or any frame
 // restores the liveness deadline, and a half-open peer sends neither, so
-// readLoop tears the connection down and fails its pending requests.
+// readLoop tears the connection down and fails its pending requests. A
+// probe already armed on conn keeps its deadline.
 func (c *WsJsonRpcClient) probe(conn *websocket.Conn) {
+	if c.probing.Swap(conn) == conn {
+		return
+	}
 	_ = conn.SetReadDeadline(time.Now().Add(min(c.probeWait, c.pongWait)))
 	if err := c.writeToConn(conn, websocket.PingMessage, nil); err != nil {
 		_ = conn.Close()

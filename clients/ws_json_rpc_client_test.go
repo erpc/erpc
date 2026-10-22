@@ -423,7 +423,8 @@ func TestWsClientFailsFastWhileRedialing(t *testing.T) {
 
 // TestWsClientHalfOpenRequestTimeoutTearsDown: on a half-open socket (TCP
 // open, nothing comes back, the liveness deadline still far off), the first
-// request that times out makes the client find the socket dead: every other
+// request that times out makes the client find the socket dead within
+// wsProbeWait, though more requests keep timing out on it: every other
 // request pending on it fails with a transport failure, so the network
 // fails it over, instead of waiting out the liveness deadline.
 func TestWsClientHalfOpenRequestTimeoutTearsDown(t *testing.T) {
@@ -441,7 +442,6 @@ func TestWsClientHalfOpenRequestTimeoutTearsDown(t *testing.T) {
 		return err
 	}
 	waiting := make(chan error, 1)
-	start := time.Now()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -452,13 +452,30 @@ func TestWsClientHalfOpenRequestTimeoutTearsDown(t *testing.T) {
 	defer cancel()
 	err := send(ctx)
 	require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout), "got %v", err)
+	timedOut := time.Now()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	step := wsProbeWait / 4
+	go func() {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), step)
+			_ = send(ctx)
+			cancel()
+			select {
+			case <-stop:
+				return
+			case <-time.After(step / 4):
+			}
+		}
+	}()
 
 	select {
 	case err := <-waiting:
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointTransportFailure), "got %v", err)
-		assert.Less(t, time.Since(start), 3*time.Second)
-	case <-time.After(10 * time.Second):
-		t.Fatal("a request pending on the half-open socket waited for the liveness deadline")
+		assert.Less(t, time.Since(timedOut), wsProbeWait+time.Second)
+	case <-time.After(wsProbeWait + 5*time.Second):
+		t.Fatal("requests timing out after the first kept the half-open socket alive")
 	}
 }
 
