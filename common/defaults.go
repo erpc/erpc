@@ -907,10 +907,6 @@ func (s *ServerConfig) SetDefaults() error {
 		// Same as the HTTP/2 per-connection stream limit on this listener.
 		s.WebSocket.MaxConcurrentRequestsPerConnection = 250
 	}
-	if s.WebSocket.SubscriptionBufferSize == 0 {
-		// Absorbs a block's worth of matching logs for a briefly slow client.
-		s.WebSocket.SubscriptionBufferSize = 256
-	}
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
 		// Only loopback by default; do not trust private subnets unless explicitly configured

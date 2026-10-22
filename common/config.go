@@ -47,7 +47,6 @@ type Config struct {
 	Projects     []*ProjectConfig   `yaml:"projects,omitempty" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters,omitempty" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics,omitempty" json:"metrics"`
-	Indexer      *IndexerConfig     `yaml:"indexer,omitempty" json:"indexer"`
 	ProxyPools   []*ProxyPoolConfig `yaml:"proxyPools,omitempty" json:"proxyPools"`
 	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
 
@@ -84,16 +83,6 @@ var LegacyTranslateFn func(*Config) ([]string, error)
 // LegacyTranslateLogger lets the caller observe deprecation warnings
 // emitted by LegacyTranslateFn. If nil, warnings are dropped silently.
 var LegacyTranslateLogger func(warning string)
-
-// IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
-type IndexerConfig struct {
-	// Deprecated: ignored; the indexer no longer tracks a canonical chain.
-	// Kept so configs that still set it load under strict decoding.
-	CanonicalChainDepth int `yaml:"canonicalChainDepth,omitempty" json:"canonicalChainDepth"`
-	// DedupWindowSize is the per-filter seen-set capacity for log and
-	// pending-tx fan-out across upstreams. 0 uses the default (8192).
-	DedupWindowSize int `yaml:"dedupWindowSize,omitempty" json:"dedupWindowSize"`
-}
 
 // LoadConfig loads the configuration from the specified file.
 // It supports both YAML and TypeScript (.ts) files.
@@ -203,11 +192,6 @@ type WebSocketServerConfig struct {
 	// in flight; further frames wait (backpressure) instead of being rejected.
 	// A batch is one message; its requests run concurrently, as over HTTP.
 	MaxConcurrentRequestsPerConnection int `yaml:"maxConcurrentRequestsPerConnection,omitempty" json:"maxConcurrentRequestsPerConnection"`
-	// SubscriptionBufferSize is the number of notifications queued per
-	// subscription for a client that is behind. On overflow newHeads and
-	// newPendingTransactions drop their oldest entry; logs close the
-	// connection instead (1013), so the client knows it missed data.
-	SubscriptionBufferSize int `yaml:"subscriptionBufferSize,omitempty" json:"subscriptionBufferSize"`
 	// MaxConnections caps concurrent client connections on this instance
 	// (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
 	// unknown or spoofed.

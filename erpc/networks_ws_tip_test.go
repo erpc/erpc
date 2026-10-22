@@ -341,30 +341,6 @@ func TestDeliveredHeadFloor_IsScopedPerProject(t *testing.T) {
 	assert.Equal(t, int64(0), sibling.latestBlockShared.GetValue())
 }
 
-// Filter subscriptions follow the same tiers as heads: eligible primaries
-// carry them, the fallback tier stands in, and without failover every
-// WebSocket upstream is a default.
-func TestTierWsIngresses(t *testing.T) {
-	ws := []common.Upstream{
-		common.NewFakeUpstream("p1"),
-		common.NewFakeUpstream("p2"),
-		common.NewFakeUpstream("fb", common.WithTags(common.TagTierFallback)),
-	}
-	eligible := map[string]struct{}{"p1": {}, "fb": {}}
-
-	d, f := tierWsIngresses(ws, eligible, true)
-	assert.Equal(t, []string{"ws:p1"}, d, "an ineligible primary does not carry filters")
-	assert.Equal(t, []string{"ws:fb"}, f)
-
-	d, f = tierWsIngresses(ws, nil, true)
-	assert.Empty(t, d, "no eligible primary: only the fallbacks remain")
-	assert.Equal(t, []string{"ws:fb"}, f)
-
-	d, f = tierWsIngresses(ws, nil, false)
-	assert.Equal(t, []string{"ws:p1", "ws:p2", "ws:fb"}, d)
-	assert.Empty(t, f)
-}
-
 // A head far past the poller's (a major jump) is verified asynchronously
 // before the poller takes it. Until then it must not vote: a head from an
 // endpoint now answering for another chain must never reach clients.

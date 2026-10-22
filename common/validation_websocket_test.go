@@ -24,7 +24,6 @@ func TestServerConfig_Validate_WebSocket(t *testing.T) {
 		"sizes":                              func(ws *WebSocketServerConfig) { ws.MaxMessageSize = -1 },
 		"maxSubscriptionsPerConnection":      func(ws *WebSocketServerConfig) { ws.MaxSubscriptionsPerConnection = -1 },
 		"maxConcurrentRequestsPerConnection": func(ws *WebSocketServerConfig) { ws.MaxConcurrentRequestsPerConnection = -1 },
-		"subscriptionBufferSize":             func(ws *WebSocketServerConfig) { ws.SubscriptionBufferSize = -1 },
 	}
 	for field, mutate := range cases {
 		t.Run("invalid "+field+" rejected", func(t *testing.T) {

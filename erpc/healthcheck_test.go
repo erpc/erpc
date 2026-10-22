@@ -134,7 +134,7 @@ func TestHealthCheckSvmNetworkScope(t *testing.T) {
 		upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{svmUp}, ssr, nil, vr, pr, nil, mtk, nil),
 	}
 	pp.upstreamsRegistry.Bootstrap(ctx)
-	pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, nil, logger)
+	pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 	s := &HttpServer{
 		logger: logger,

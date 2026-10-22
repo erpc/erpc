@@ -145,23 +145,11 @@ var (
 		Help:      "Upstream WebSocket reconnects forced by a silent newHeads subscription while the upstream head advanced.",
 	}, []string{"project", "network", "upstream"})
 
-	MetricWebsocketSubscriptionNotificationsDroppedTotal = DefineCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "websocket_subscription_notifications_dropped_total",
-		Help:      "Subscription notifications dropped because a client's per-subscription buffer was full. For logs the client connection is closed with 1013.",
-	}, []string{"project", "network", "kind"})
-
 	MetricWebsocketConnectionsActive = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "websocket_connections_active",
 		Help:      "Open client WebSocket connections.",
 	}, []string{"project"})
-
-	MetricWebsocketSubscriptionsActive = DefineGauge(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "websocket_subscriptions_active",
-		Help:      "Open client eth_subscribe subscriptions.",
-	}, []string{"project", "network", "kind"})
 
 	MetricWebsocketNotificationsSentTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -178,7 +166,7 @@ var (
 	MetricUpstreamSubscriptionsActive = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_subscriptions_active",
-		Help:      "eth_subscribe subscriptions live on upstream WebSocket connections; one per filter shared by every client.",
+		Help:      "eth_subscribe subscriptions live on upstream WebSocket connections; one per topic a source feeds.",
 	}, []string{"project", "network", "upstream", "kind"})
 
 	MetricUpstreamSubscriptionEventsTotal = DefineCounter(prometheus.CounterOpts{
@@ -204,12 +192,6 @@ var (
 		Name:      "subscription_dedup_entries",
 		Help:      "Transaction hashes held by the network's mempool feed dedup set: those added within 60s, at most 100,000 per network.",
 	}, []string{"project", "network"})
-
-	MetricSubscriptionUndeliveredTotal = DefineCounter(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "subscription_undelivered_total",
-		Help:      "Upstream subscription events that passed dedup but matched no client subscription.",
-	}, []string{"project", "network", "kind"})
 
 	MetricNetworkSubscriptionLastHeadTimestamp = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -1364,15 +1346,6 @@ var (
 		Help:      "Size of the result body of upstream JSON-RPC responses in bytes (decoded post-gzip), per network/method/finality.",
 		Buckets:   []float64{4096, 65536, 1048576, 16777216, 104857600},
 	}, []string{"project", "network", "category", "finality"})
-
-	// Each client subscription has its own queue (server.webSocket.subscriptionBufferSize,
-	// default 256); a connection has no queue of its own.
-	MetricWebsocketSendQueueLength = DefineLabeledHistogram(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "websocket_send_queue_length",
-		Help:      "Notifications still queued on a client subscription when its writer takes the next one.",
-		Buckets:   []float64{0, 1, 4, 16, 64, 128, 256, 1024},
-	}, []string{"project", "network", "kind"})
 )
 
 func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {

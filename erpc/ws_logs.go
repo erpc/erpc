@@ -57,7 +57,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	feed := nw.chainTracker
 	window := uint64(feed.ReorgWindow())
 	write := func(log json.RawMessage) error {
-		if err := wsc.WriteSubscriptionNotification(sub, log, 0); err != nil {
+		if err := wsc.WriteSubscriptionNotification(sub, log); err != nil {
 			return wsWriteError{err}
 		}
 		return nil

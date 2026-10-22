@@ -130,8 +130,8 @@ func TestWebSocket_UpstreamDiesUngracefully_SelfHeals(t *testing.T) {
 		t.Fatal("eRPC never connected to the WS upstream")
 	}
 
-	// Client subscribes to newHeads (this lazily bootstraps the network's
-	// indexer ingress, which issues the upstream eth_subscribe).
+	// Client subscribes to newHeads; the network's wss source already
+	// subscribed it upstream at init.
 	client := dialWs(t, addr)
 	defer client.Close()
 	resp := sendAndReceive(t, client, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)

@@ -222,24 +222,8 @@ export interface Config {
   projects?: (ProjectConfig | undefined)[];
   rateLimiters?: RateLimiterConfig;
   metrics?: MetricsConfig;
-  indexer?: IndexerConfig;
   proxyPools?: (ProxyPoolConfig | undefined)[];
   tracing?: TracingConfig;
-}
-/**
- * IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
- */
-export interface IndexerConfig {
-  /**
-   * Deprecated: ignored; the indexer no longer tracks a canonical chain.
-   * Kept so configs that still set it load under strict decoding.
-   */
-  canonicalChainDepth?: number /* int */;
-  /**
-   * DedupWindowSize is the per-filter seen-set capacity for log and
-   * pending-tx fan-out across upstreams. 0 uses the default (8192).
-   */
-  dedupWindowSize?: number /* int */;
 }
 export interface ServerConfig {
   listenV4?: boolean;
@@ -304,13 +288,6 @@ export interface WebSocketServerConfig {
    * A batch is one message; its requests run concurrently, as over HTTP.
    */
   maxConcurrentRequestsPerConnection?: number /* int */;
-  /**
-   * SubscriptionBufferSize is the number of notifications queued per
-   * subscription for a client that is behind. On overflow newHeads and
-   * newPendingTransactions drop their oldest entry; logs close the
-   * connection instead (1013), so the client knows it missed data.
-   */
-  subscriptionBufferSize?: number /* int */;
   /**
    * MaxConnections caps concurrent client connections on this instance
    * (0 = unlimited). Unlike the per-IP cap it holds when client IPs are

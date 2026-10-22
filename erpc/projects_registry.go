@@ -13,7 +13,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/internal/policy/stdlib"
 	"github.com/erpc/erpc/thirdparty"
@@ -70,9 +69,6 @@ type ProjectsRegistry struct {
 	// closure variables + module-level helpers live in the same scope
 	// as the `evalFunc` arrow functions the user wrote.
 	userScript *sobek.Program
-	// idx is where each network registers its wss upstreams as ingresses;
-	// nil registers none.
-	idx *indexer.Indexer
 }
 
 func NewProjectsRegistry(
@@ -86,7 +82,6 @@ func NewProjectsRegistry(
 	vendorsRegistry *thirdparty.VendorsRegistry,
 	proxyPoolRegistry *clients.ProxyPoolRegistry,
 	userScript *sobek.Program,
-	idx *indexer.Indexer,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
 		appCtx:               appCtx,
@@ -100,7 +95,6 @@ func NewProjectsRegistry(
 		vendorsRegistry:      vendorsRegistry,
 		proxyPoolRegistry:    proxyPoolRegistry,
 		userScript:           userScript,
-		idx:                  idx,
 	}
 
 	for _, prjCfg := range staticProjects {
@@ -221,7 +215,6 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.svmJsonRpcCache,
 		r.rateLimitersRegistry,
 		pp.policyEngine,
-		r.idx,
 		&lg,
 	)
 	if prjCfg.AllowClientDirectives != nil {

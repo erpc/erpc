@@ -25,34 +25,39 @@ import (
 
 // --- test doubles -------------------------------------------------------
 
-type fakeNetworkHandle struct{}
-
-func (fakeNetworkHandle) Id() string                     { return "evm:123" }
-func (fakeNetworkHandle) DedupDropped(indexer.EventKind) {}
-func (fakeNetworkHandle) DedupEntriesAdded(int)          {}
-func (fakeNetworkHandle) Undelivered(indexer.EventKind)  {}
-
-// fakeSink is the adapter's indexer sink and its intake.
-type fakeSink struct {
-	events chan indexer.StreamEvent
-	heads  chan json.RawMessage
+type txEvent struct {
+	variant string
+	raw     string
 }
 
-func (s *fakeSink) Ingest(ev indexer.StreamEvent) {
-	if ev.Kind != indexer.KindNewHead {
-		s.events <- ev
-	}
+type answer struct {
+	topic indexer.Topic
+	err   error
+}
+
+// fakeSink is the adapter's intake.
+type fakeSink struct {
+	heads   chan json.RawMessage
+	txs     chan txEvent
+	answers chan answer
 }
 
 func (s *fakeSink) Header(_ string, raw json.RawMessage) { s.heads <- raw }
 
-func (s *fakeSink) Subscribed(string, indexer.Topic, error) {}
+func (s *fakeSink) Subscribed(_ string, t indexer.Topic, err error) {
+	select {
+	case s.answers <- answer{t, err}:
+	default:
+	}
+}
 
-func (s *fakeSink) PendingTx(string, string, json.RawMessage) {}
+func (s *fakeSink) PendingTx(_ string, variant string, raw json.RawMessage) {
+	s.txs <- txEvent{variant, string(raw)}
+}
 
 // notifyServer is a WS upstream that answers eth_subscribe with ids from a
 // per-connection counter ("0x1", "0x2", …, as real nodes do), follows each
-// logs subscribe response with one notification for it, answers any other
+// newPendingTransactions subscribe response with one notification for it, answers any other
 // method with true, and can push notification frames.
 type notifyServer struct {
 	srv     *httptest.Server
@@ -186,15 +191,14 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), u, nil, evm.NewJsonRpcErrorExtractor())
 	require.NoError(t, err)
 	wsc := ci.(*clients.WsJsonRpcClient)
-	sink := &fakeSink{events: make(chan indexer.StreamEvent, 64), heads: make(chan json.RawMessage, 64)}
+	sink := &fakeSink{heads: make(chan json.RawMessage, 64), txs: make(chan txEvent, 64), answers: make(chan answer, 64)}
 	a := &Adapter{
 		upstreamID:   "test-ws-upstream",
-		networkID:    "evm:123",
 		projectID:    "test-project",
 		networkLabel: "evm:123",
 		wsClient:     wsc,
 		logger:       &logger,
-		filters:      make(map[string]*filterSub),
+		topics:       make(map[indexer.Topic]*pendingSub),
 		intake:       sink,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
 			return wsc.SendRequest(ctx, nq)
@@ -206,11 +210,9 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 	return a, sink
 }
 
-// startHeadsSource starts a as the network starts a wss source: an indexer
-// ingress that feeds newHeads.
-func startHeadsSource(t *testing.T, a *Adapter, sink *fakeSink) {
-	t.Helper()
-	require.NoError(t, a.Start(context.Background(), fakeNetworkHandle{}, sink))
+// startHeadsSource starts a as the network starts a wss source: feeding
+// newHeads.
+func startHeadsSource(a *Adapter) {
 	a.Set([]indexer.Topic{indexer.TopicNewHeads})
 }
 
@@ -227,9 +229,21 @@ func subscribedHeads(a *Adapter) func() bool {
 	}
 }
 
-// txParams is a newPendingTransactions filter; tag tells filters apart.
-func txParams(tag string) []interface{} {
-	return []interface{}{indexer.SubTypeNewPendingTransactions, map[string]interface{}{"tag": tag}}
+// txTopic is a newPendingTransactions topic; tag tells topics apart.
+func txTopic(t *testing.T, tag string) indexer.Topic {
+	t.Helper()
+	v, err := indexer.PendingTxVariantOf([]interface{}{indexer.SubTypeNewPendingTransactions, map[string]interface{}{"tag": tag}})
+	require.NoError(t, err)
+	return indexer.PendingTxTopic(v)
+}
+
+// topicLive reports whether topic's subscription is live on the current
+// connection.
+func topicLive(a *Adapter, topic indexer.Topic) bool {
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	sub := a.topics[topic]
+	return sub != nil && sub.id != ""
 }
 
 // nextHead returns the number of the next header the adapter hands intake.
@@ -250,17 +264,31 @@ func nextHead(t *testing.T, sink *fakeSink) int64 {
 	}
 }
 
-func nextEvent(t *testing.T, sink *fakeSink, kind indexer.EventKind) indexer.StreamEvent {
+// nextTx returns the next pending transaction the adapter hands intake.
+func nextTx(t *testing.T, sink *fakeSink) txEvent {
+	t.Helper()
+	select {
+	case tx := <-sink.txs:
+		return tx
+	case <-time.After(3 * time.Second):
+		t.Fatal("no pending transaction reached intake")
+		return txEvent{}
+	}
+}
+
+// nextAnswer returns the next subscribe answer for topic, skipping others.
+func nextAnswer(t *testing.T, sink *fakeSink, topic indexer.Topic) error {
 	t.Helper()
 	timeout := time.After(3 * time.Second)
 	for {
 		select {
-		case ev := <-sink.events:
-			if ev.Kind == kind {
-				return ev
+		case ans := <-sink.answers:
+			if ans.topic == topic {
+				return ans.err
 			}
 		case <-timeout:
-			t.Fatalf("no %v event delivered", kind)
+			t.Fatalf("no subscribe answer for %s", topic)
+			return nil
 		}
 	}
 }
@@ -288,7 +316,7 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 		return send(ctx, nq, bypass)
 	}
 
-	startHeadsSource(t, a, sink)
+	startHeadsSource(a)
 
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
 		"adapter never subscribed newHeads despite the failures stopping after %d", failuresPerEpoch)
@@ -316,28 +344,42 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 	require.Equal(t, int64(101), nextHead(t, sink))
 }
 
-// TestAdapterResubscribesAllFiltersAfterReconnect: subscription ids come
+// TestAdapterResubscribesAllTopicsAfterReconnect: subscription ids come
 // from a per-connection counter, so the new connection reuses the old
-// ids for different subscriptions. Every filter must deliver after the
+// ids for different subscriptions. Every topic must deliver after the
 // resubscribe, and each must be subscribed exactly once.
-func TestAdapterResubscribesAllFiltersAfterReconnect(t *testing.T) {
+func TestAdapterResubscribesAllTopicsAfterReconnect(t *testing.T) {
 	compressResubRetry(t)
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	conn1 := <-server.newConn
-	startHeadsSource(t, a, sink)
-	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
+	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
 
-	const numFilters = 8
-	for i := 0; i < numFilters; i++ {
-		params := txParams(fmt.Sprintf("0x%x", i))
-		require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, indexer.BuildParamsKey(params), params))
+	const numTopics = 8
+	topics := []indexer.Topic{indexer.TopicNewHeads}
+	for i := range numTopics {
+		topics = append(topics, txTopic(t, fmt.Sprintf("0x%x", i)))
+	}
+	a.Set(topics)
+	for range numTopics + 1 {
+		conn1.nextRequest(t, methodEthSubscribe)
+	}
+	require.Eventually(t, func() bool {
+		for _, topic := range topics[1:] {
+			if !topicLive(a, topic) {
+				return false
+			}
+		}
+		return subscribedHeads(a)()
+	}, 3*time.Second, 10*time.Millisecond)
+	for range numTopics {
+		nextTx(t, sink)
 	}
 
 	_ = conn1.conn.UnderlyingConn().Close()
 	conn2 := <-server.newConn
 	subscribes := make(map[string]string) // sub id -> first param
-	for i := 0; i < numFilters+1; i++ {
+	for range numTopics + 1 {
 		req := conn2.nextRequest(t, methodEthSubscribe)
 		subscribes[req.SubID] = fmt.Sprint(req.Params[0])
 	}
@@ -349,8 +391,10 @@ func TestAdapterResubscribesAllFiltersAfterReconnect(t *testing.T) {
 		}
 	}
 	delivered := make(map[string]bool)
-	for len(delivered) < numFilters {
-		delivered[nextEvent(t, sink, indexer.KindPendingTx).FilterHash] = true
+	for len(delivered) < numTopics {
+		if tx := nextTx(t, sink); tx.raw == `"0xtx2"` {
+			delivered[tx.variant] = true
+		}
 	}
 
 	select {
@@ -363,76 +407,75 @@ func TestAdapterResubscribesAllFiltersAfterReconnect(t *testing.T) {
 }
 
 // TestAdapterDeliversFirstNotificationAfterSubscribe: the upstream sends a
-// log right behind the subscribe response; it must not be dropped.
+// transaction right behind the subscribe response; it must not be dropped.
 func TestAdapterDeliversFirstNotificationAfterSubscribe(t *testing.T) {
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	<-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
 
-	params := txParams("0xabc")
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, indexer.BuildParamsKey(params), params))
-	assert.Equal(t, indexer.BuildParamsKey(params), nextEvent(t, sink, indexer.KindPendingTx).FilterHash)
+	topic := txTopic(t, "0xabc")
+	a.Set([]indexer.Topic{topic})
+	require.NoError(t, nextAnswer(t, sink, topic))
+	variant, _ := topic.PendingTxVariant()
+	assert.Equal(t, txEvent{variant: variant, raw: `"0xtx1"`}, nextTx(t, sink))
 }
 
-// TestAdapterRemoveFilterDuringSubscribe: RemoveFilter while the subscribe
-// is in flight must not leave the late subscription behind upstream.
-func TestAdapterRemoveFilterDuringSubscribe(t *testing.T) {
+// TestAdapterDropTopicDuringSubscribe: a Set that drops a topic while its
+// subscribe is in flight must not leave the late subscription behind
+// upstream.
+func TestAdapterDropTopicDuringSubscribe(t *testing.T) {
 	server := newNotifyServer(t)
 	server.gate = make(chan struct{})
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	conn := <-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
 
-	params := txParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	ensured := make(chan error, 1)
-	go func() {
-		ensured <- a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params)
-	}()
+	topic := txTopic(t, "0xabc")
+	a.Set([]indexer.Topic{topic})
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
+	a.Set(nil)
 	server.gate <- struct{}{}
-	require.NoError(t, <-ensured)
 
 	unsub := conn.nextRequest(t, methodEthUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 	a.subsMu.Lock()
-	assert.Empty(t, a.filters)
+	assert.Empty(t, a.topics)
 	a.subsMu.Unlock()
+	select {
+	case ans := <-sink.answers:
+		t.Fatalf("a dropped topic got an answer: %+v", ans)
+	default:
+	}
 }
 
-// TestAdapterEnsureFilterWhileDisconnected: EnsureFilter must report the
-// failure (so the indexer tries other ingresses) and keep the filter, to
-// subscribe it once connected.
-func TestAdapterEnsureFilterWhileDisconnected(t *testing.T) {
+// TestAdapterSetWhileDisconnected: Set must report the failure at once (so
+// the reconciler knows) and keep the topic, to subscribe it once connected.
+func TestAdapterSetWhileDisconnected(t *testing.T) {
 	server := newNotifyServer(t)
 	u := server.wsURL(t)
 	server.srv.Close()
-	a, _ := newTestAdapter(t, u)
+	a, sink := newTestAdapter(t, u)
 
-	params := txParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	err := a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params)
-	require.ErrorIs(t, err, errNotConnected)
-	assert.False(t, a.FilterLive(indexer.SubTypeNewPendingTransactions, hash))
+	topic := txTopic(t, "0xabc")
+	a.Set([]indexer.Topic{topic})
+	require.ErrorIs(t, nextAnswer(t, sink, topic), errNotConnected)
+	assert.False(t, topicLive(a, topic))
 	a.subsMu.Lock()
-	assert.Len(t, a.filters, 1)
+	assert.Len(t, a.topics, 1)
 	a.subsMu.Unlock()
 }
 
-// TestAdapterRetriesFailedEnsureFilter: a filter whose subscribe failed on
-// a live connection is retried in the background until it is live, and
-// RemoveFilter ends that.
-func TestAdapterRetriesFailedEnsureFilter(t *testing.T) {
+// TestAdapterRetriesFailedTopic: a topic whose subscribe failed on a live
+// connection is retried in the background until it is live, and a Set
+// without it ends that.
+func TestAdapterRetriesFailedTopic(t *testing.T) {
 	compressResubRetry(t)
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	<-server.newConn
-	startHeadsSource(t, a, sink)
+	startHeadsSource(a)
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	var failuresLeft atomic.Int64
@@ -445,25 +488,23 @@ func TestAdapterRetriesFailedEnsureFilter(t *testing.T) {
 		return send(ctx, nq, bypass)
 	}
 
-	params := txParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	require.Error(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
-	require.Eventually(t, func() bool { return a.FilterLive(indexer.SubTypeNewPendingTransactions, hash) },
-		3*time.Second, 10*time.Millisecond, "the failed filter must be retried until live")
+	topic := txTopic(t, "0xabc")
+	a.Set([]indexer.Topic{indexer.TopicNewHeads, topic})
+	require.Error(t, nextAnswer(t, sink, topic))
+	require.Eventually(t, func() bool { return topicLive(a, topic) },
+		3*time.Second, 10*time.Millisecond, "the failed topic must be retried until live")
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
-	assert.False(t, a.FilterLive(indexer.SubTypeNewPendingTransactions, hash))
+	a.Set([]indexer.Topic{indexer.TopicNewHeads})
+	assert.False(t, topicLive(a, topic))
 }
 
-// Cancelling a subscription upstream must not depend on the caller's
-// context: a client that unsubscribes and disconnects at once still releases
-// the upstream subscription.
-func TestAdapterRemoveFilterWithCancelledContextUnsubscribes(t *testing.T) {
+// Cancelling a subscription upstream must not depend on a done context: a
+// dropped topic still releases the upstream subscription.
+func TestAdapterDroppedTopicUnsubscribes(t *testing.T) {
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	conn := <-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
 	// Like the real path, refuse to send once the context is done.
 	send := a.forward
 	a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
@@ -473,42 +514,48 @@ func TestAdapterRemoveFilterWithCancelledContextUnsubscribes(t *testing.T) {
 		return send(ctx, nq, bypass)
 	}
 
-	params := txParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
+	topic := txTopic(t, "0xabc")
+	a.Set([]indexer.Topic{topic})
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+	require.NoError(t, nextAnswer(t, sink, topic))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeNewPendingTransactions, hash))
+	a.Set(nil)
 	unsub := conn.nextRequest(t, methodEthUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 }
 
-// A caller deadline still in the future bounds the upstream cancel, so
-// connection teardown keeps its budget when the upstream stops answering.
-func TestAdapterReleaseHonoursLiveCallerDeadline(t *testing.T) {
+// A Set that drops a topic never waits on the upstream's unsubscribe, so
+// the reconciler keeps its pace when the upstream stops answering; the
+// unsubscribe itself stops at the attempt timeout.
+func TestAdapterSetDoesNotWaitOnRelease(t *testing.T) {
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
+	a.attemptTimeout = 300 * time.Millisecond
 	conn := <-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
 
-	params := txParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
+	topic := txTopic(t, "0xabc")
+	a.Set([]indexer.Topic{topic})
 	_ = conn.nextRequest(t, methodEthSubscribe)
+	require.NoError(t, nextAnswer(t, sink, topic))
 
 	// The upstream never answers the unsubscribe.
+	released := make(chan time.Duration, 1)
 	a.forward = func(ctx context.Context, _ *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+		start := time.Now()
 		<-ctx.Done()
+		released <- time.Since(start)
 		return nil, ctx.Err()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	start := time.Now()
-	require.NoError(t, a.RemoveFilter(ctx, indexer.SubTypeNewPendingTransactions, hash))
-	assert.Less(t, time.Since(start), 2*time.Second, "release must stop at the caller's deadline, not the attempt timeout")
+	a.Set(nil)
+	assert.Less(t, time.Since(start), 100*time.Millisecond, "Set must not wait on the unsubscribe")
+	select {
+	case d := <-released:
+		assert.Less(t, d, 2*time.Second, "the unsubscribe must stop at the attempt timeout")
+	case <-time.After(3 * time.Second):
+		t.Fatal("the unsubscribe never ended")
+	}
 }
 
 func failFirstUnsubscribe(a *Adapter) *atomic.Bool {
@@ -523,67 +570,59 @@ func failFirstUnsubscribe(a *Adapter) *atomic.Bool {
 	return &failed
 }
 
-// RemoveFilter's unsubscribe fails while the connection stays up; the
+// A dropped topic's unsubscribe fails while the connection stays up; the
 // still-live upstream subscription must be cancelled when it next notifies.
 func TestAdapterFailedUnsubscribeIsRetried(t *testing.T) {
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	conn := <-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
 	failed := failFirstUnsubscribe(a)
 
-	params := txParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
+	topic := txTopic(t, "0xabc")
+	a.Set([]indexer.Topic{topic})
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
-	nextEvent(t, sink, indexer.KindPendingTx)
+	nextTx(t, sink)
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
-	require.True(t, failed.Load())
+	a.Set(nil)
+	require.Eventually(t, failed.Load, 3*time.Second, 10*time.Millisecond)
 
 	conn.sendTx(subID, 2) // the upstream subscription is still live
 	unsub := conn.nextRequest(t, methodEthUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 	select {
-	case ev := <-sink.events:
-		t.Fatalf("removed filter delivered %+v", ev)
+	case tx := <-sink.txs:
+		t.Fatalf("dropped topic delivered %+v", tx)
 	default:
 	}
 }
 
 // The same, for an in-flight subscribe whose result is released because its
-// filter was removed meanwhile.
+// topic was dropped meanwhile.
 func TestAdapterFailedReleaseOfUncommittedSubscribeIsRetried(t *testing.T) {
 	server := newNotifyServer(t)
 	gate := make(chan struct{})
 	server.gate = gate
-	a, sink := newTestAdapter(t, server.wsURL(t))
+	a, _ := newTestAdapter(t, server.wsURL(t))
 	conn := <-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
 	failed := failFirstUnsubscribe(a)
 
-	params := txParams("0xabc")
-	hash := indexer.BuildParamsKey(params)
-	done := make(chan error, 1)
-	go func() {
-		done <- a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params)
-	}()
+	a.Set([]indexer.Topic{txTopic(t, "0xabc")})
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
+	a.Set(nil)
 	close(gate)
-	require.NoError(t, <-done)
-	require.True(t, failed.Load())
+	require.Eventually(t, failed.Load, 3*time.Second, 10*time.Millisecond)
 
 	conn.sendTx(subID, 2)
 	unsub := conn.nextRequest(t, methodEthUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 }
 
-// A filter subscribe whose reply never arrives must still return: callers
-// hold locks across it (the indexer's reconcile, client subscribes).
-func TestAdapterEnsureFilterIsBounded(t *testing.T) {
+// A subscribe whose reply never arrives must still end at the attempt
+// timeout and report its failure, so the topic is retried and a waiting
+// client subscribe gets an answer.
+func TestAdapterSubscribeIsBounded(t *testing.T) {
 	server := newNotifyServer(t)
 	a, sink := newTestAdapter(t, server.wsURL(t))
 	a.attemptTimeout = 300 * time.Millisecond
@@ -599,16 +638,15 @@ func TestAdapterEnsureFilterIsBounded(t *testing.T) {
 	})
 	<-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
 	// The upstream never answers the subscribe.
 	a.forward = func(ctx context.Context, _ *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
 
-	params := txParams("0xabc")
+	topic := txTopic(t, "0xabc")
 	start := time.Now()
-	err := a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, indexer.BuildParamsKey(params), params)
-	require.Error(t, err)
-	assert.Less(t, time.Since(start), 3*time.Second, "EnsureFilter must stop at the attempt timeout")
+	a.Set([]indexer.Topic{topic})
+	require.Error(t, nextAnswer(t, sink, topic))
+	assert.Less(t, time.Since(start), 3*time.Second, "the subscribe must stop at the attempt timeout")
 }

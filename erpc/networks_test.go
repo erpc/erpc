@@ -7829,7 +7829,6 @@ func TestNetwork_Forward(t *testing.T) {
 			nil, // svmJsonRpcCache
 			rateLimitersRegistry,
 			prj.policyEngine,
-			nil, // indexer
 			&logger,
 		)
 

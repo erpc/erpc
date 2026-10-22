@@ -1,26 +1,37 @@
-package indexer
+package wsclient
 
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"hash/fnv"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/indexer"
 )
 
-// BuildParamsKey returns a short hash of eth_subscribe params that is stable
-// across sources and processes. encoding/json is used because it sorts map
-// keys.
-func BuildParamsKey(params []interface{}) string {
-	data, err := json.Marshal(params)
-	if err != nil {
-		return fmt.Sprintf("%v", params)
+// EventKind is the eth_subscribe subscription type of a client
+// subscription.
+type EventKind uint8
+
+const (
+	KindUnknown EventKind = iota
+	KindNewHead
+	KindLog
+	KindPendingTx
+)
+
+// String returns the matching eth_subscribe subscription type.
+func (k EventKind) String() string {
+	switch k {
+	case KindNewHead:
+		return indexer.SubTypeNewHeads
+	case KindLog:
+		return indexer.SubTypeLogs
+	case KindPendingTx:
+		return indexer.SubTypeNewPendingTransactions
+	default:
+		return "unknown"
 	}
-	h := fnv.New64a()
-	_, _ = h.Write(data)
-	return fmt.Sprintf("%x", h.Sum64())
 }
 
 // ExtractSubscriptionType returns the subscription type of eth_subscribe

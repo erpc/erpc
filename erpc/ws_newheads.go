@@ -53,7 +53,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 				sm.logger.Warn().Err(err).Uint64("block", blk.Number).Msg("cannot project a held header as newHeads")
 				continue
 			}
-			if err := wsc.WriteSubscriptionNotification(sub, payload, 0); err != nil {
+			if err := wsc.WriteSubscriptionNotification(sub, payload); err != nil {
 				return wsWriteError{err}
 			}
 		}

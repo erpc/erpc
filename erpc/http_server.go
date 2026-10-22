@@ -104,7 +104,7 @@ func NewHttpServer(
 		draining:            &draining,
 		drained:             make(chan struct{}),
 		gzipPool:            gzipPool,
-		subscriptionManager: NewSubscriptionManager(&subMgrLogger, erpc.idx),
+		subscriptionManager: NewSubscriptionManager(&subMgrLogger),
 		reqMaxTimeout:       reqMaxTimeout,
 	}
 

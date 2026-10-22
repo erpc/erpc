@@ -1,7 +1,6 @@
 package wsupstream
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -16,18 +15,19 @@ import (
 // notification; a quiet one holds a per-connection slot until reconnect.
 func TestAdapterQuietSubscriptionReleasedDespiteFailedUnsubscribe(t *testing.T) {
 	server := newNotifyServer(t)
-	a, sink := newTestAdapter(t, server.wsURL(t))
+	a, _ := newTestAdapter(t, server.wsURL(t))
 	conn := <-server.newConn
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
-	a.sink = sink
 	failed := failFirstUnsubscribe(a)
 
-	params := []interface{}{indexer.SubTypeNewPendingTransactions}
-	hash := indexer.BuildParamsKey(params)
-	require.NoError(t, a.EnsureFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash, params))
+	variant, err := indexer.PendingTxVariantOf([]interface{}{indexer.SubTypeNewPendingTransactions})
+	require.NoError(t, err)
+	topic := indexer.PendingTxTopic(variant)
+	a.Set([]indexer.Topic{topic})
 	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+	require.Eventually(t, func() bool { return topicLive(a, topic) }, 3*time.Second, 10*time.Millisecond)
 
-	require.NoError(t, a.RemoveFilter(context.Background(), indexer.SubTypeNewPendingTransactions, hash))
-	require.True(t, failed.Load())
+	a.Set(nil)
+	require.Eventually(t, failed.Load, 3*time.Second, 10*time.Millisecond)
 	assert.Equal(t, []interface{}{subID}, conn.nextRequest(t, methodEthUnsubscribe).Params)
 }

@@ -161,16 +161,16 @@ func wsConnCount(s *HttpServer) (active, subscribed int) {
 }
 
 // wsGauges reads the pressure gauges of the test_ws project on evm:123:
-// client connections, client subscriptions of kind, and the subscriptions
-// of kind live on ws-upstream.
+// client connections, ws taps of kind (one per client subscription), and
+// the subscriptions of kind live on ws-upstream.
 func wsGauges(kind string) (conns, clientSubs, upstreamSubs float64) {
 	return testutil.ToFloat64(telemetry.MetricWebsocketConnectionsActive.WithLabelValues("test_ws")),
-		testutil.ToFloat64(telemetry.MetricWebsocketSubscriptionsActive.WithLabelValues("test_ws", "evm:123", kind)),
+		testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues("test_ws", "evm:123", "ws", kind)),
 		testutil.ToFloat64(telemetry.MetricUpstreamSubscriptionsActive.WithLabelValues("test_ws", "evm:123", "ws-upstream", kind))
 }
 
-// A client that subscribes and immediately closes must not leave an egress
-// adapter attached to the indexer (it would receive every event forever).
+// A client that subscribes and immediately closes must not leave its
+// subscriptions or their taps behind.
 func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
@@ -214,8 +214,10 @@ func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 	resp := sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 	subID, ok := resp["result"].(string)
 	require.True(t, ok, "subscribe failed: %v", resp)
-	_, clientSubs, _ := wsGauges("newHeads")
-	assert.Equal(t, 1.0, clientSubs)
+	require.Eventually(t, func() bool {
+		_, clientSubs, _ := wsGauges("newHeads")
+		return clientSubs == 1
+	}, 5*time.Second, 10*time.Millisecond, "the subscription must open one tap")
 	require.Eventually(t, func() bool {
 		conns, _, _ := wsGauges("newHeads")
 		return conns == 2
@@ -227,16 +229,20 @@ func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
 
 	resp = sendAndReceive(t, connA, unsub)
 	assert.Equal(t, true, resp["result"], "owner must still be able to unsubscribe: %v", resp)
-	_, clientSubs, _ = wsGauges("newHeads")
-	assert.Equal(t, 0.0, clientSubs, "unsubscribe must drop the client subscription gauge")
+	require.Eventually(t, func() bool {
+		_, clientSubs, _ := wsGauges("newHeads")
+		return clientSubs == 0
+	}, 5*time.Second, 10*time.Millisecond, "unsubscribe must end the tap")
 
 	// The upstream may still be connecting: the subscribe opens, and the
 	// source subscribes the topic once connected.
 	resp = sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":3,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
 	_, ok = resp["result"].(string)
 	require.True(t, ok, "newPendingTransactions subscribe must succeed: %v", resp)
-	_, clientSubs, _ = wsGauges("newPendingTransactions")
-	assert.Equal(t, 1.0, clientSubs)
+	require.Eventually(t, func() bool {
+		_, clientSubs, _ := wsGauges("newPendingTransactions")
+		return clientSubs == 1
+	}, 5*time.Second, 10*time.Millisecond, "the subscription must open one tap")
 	require.Eventually(t, func() bool {
 		_, _, upstreamSubs := wsGauges("newPendingTransactions")
 		return upstreamSubs == 1

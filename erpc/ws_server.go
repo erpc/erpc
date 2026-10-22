@@ -15,7 +15,6 @@ import (
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/gorilla/websocket"
@@ -46,7 +45,7 @@ type WsConnection struct {
 	// writeMessage); set at upgrade from headerCostFrames and costHeaders.
 	costFrames bool
 	// notifyCostBlocks caches each subscription kind's notification block.
-	notifyCostBlocks [indexer.KindPendingTx + 1]atomic.Pointer[[]byte]
+	notifyCostBlocks [wsclient.KindPendingTx + 1]atomic.Pointer[[]byte]
 
 	// Write synchronization (gorilla/websocket requires synchronized writes)
 	writeMu sync.Mutex
@@ -69,8 +68,6 @@ type WsConnection struct {
 
 	// subsClosed is guarded by SubscriptionManager.connMu.
 	subsClosed bool
-
-	lastDropLogAt atomic.Int64
 }
 
 // handleWebSocket upgrades an HTTP connection to WebSocket and runs the
@@ -685,7 +682,7 @@ func (wsc *WsConnection) teardown() {
 		_ = wsc.conn.WriteControl(
 			websocket.CloseMessage,
 			websocket.FormatCloseMessage(wsc.closeCode, wsc.closeReason),
-			time.Now().Add(unsubscribeTimeout),
+			time.Now().Add(wsWriteDeadline),
 		)
 	}
 	_ = wsc.conn.Close()
@@ -708,9 +705,8 @@ func (wsc *WsConnection) waitInflight(timeout time.Duration) {
 	}
 }
 
-func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription, result json.RawMessage, queued int) error {
+func (wsc *WsConnection) WriteSubscriptionNotification(sub wsclient.Subscription, result json.RawMessage) error {
 	labels := []string{wsc.project.Config.Id, wsc.networkLabel, sub.Kind.String()}
-	telemetry.ObserverHandle(telemetry.MetricWebsocketSendQueueLength, labels...).Observe(float64(queued))
 
 	notification := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -742,25 +738,4 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.n += n
 	return n, err
-}
-
-// NotificationDropped records a notification lost to a full subscription
-// buffer. Losing one that is not lossy closes the connection with 1013 so
-// the client reconnects knowing it missed data instead of silently
-// diverging.
-func (wsc *WsConnection) NotificationDropped(sub wsclient.Subscription, lossy bool) {
-	telemetry.CounterHandle(telemetry.MetricWebsocketSubscriptionNotificationsDroppedTotal,
-		wsc.project.Config.Id, wsc.networkLabel, sub.Kind.String(),
-	).Inc()
-
-	now := time.Now().UnixNano()
-	if last := wsc.lastDropLogAt.Load(); now-last > int64(10*time.Second) && wsc.lastDropLogAt.CompareAndSwap(last, now) {
-		wsc.logger.Warn().Str("connId", wsc.id).Str("clientSubId", sub.ClientSubID).
-			Str("kind", sub.Kind.String()).Bool("closingConnection", !lossy).
-			Msg("client is not keeping up; subscription notifications dropped")
-	}
-
-	if !lossy {
-		wsc.stop(websocket.CloseTryAgainLater, "subscription buffer overflow: notifications were dropped", 0)
-	}
 }

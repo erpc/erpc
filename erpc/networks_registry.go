@@ -30,7 +30,6 @@ type NetworksRegistry struct {
 	svmJsonRpcCache      *svm.SvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	policyEngine         *policy.Engine
-	idx                  *indexer.Indexer
 	preparedNetworks     sync.Map // map[string]*Network
 	aliasToNetworkId     map[string]aliasEntry
 	aliasMu              *sync.RWMutex
@@ -52,7 +51,6 @@ func NewNetworksRegistry(
 	svmJsonRpcCache *svm.SvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	policyEngine *policy.Engine,
-	idx *indexer.Indexer,
 	logger *zerolog.Logger,
 ) *NetworksRegistry {
 	lg := logger.With().Str("component", "networksRegistry").Logger()
@@ -65,7 +63,6 @@ func NewNetworksRegistry(
 		svmJsonRpcCache:      svmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		policyEngine:         policyEngine,
-		idx:                  idx,
 		preparedNetworks:     sync.Map{},
 		aliasToNetworkId:     map[string]aliasEntry{},
 		aliasMu:              &sync.RWMutex{},

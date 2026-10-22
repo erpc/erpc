@@ -82,7 +82,6 @@ func directiveMatcherProjects(t *testing.T) *ProjectsRegistry {
 		thirdparty.NewVendorsRegistry(),
 		nil,
 		nil,
-		nil, // indexer
 	)
 	require.NoError(t, err)
 	return reg

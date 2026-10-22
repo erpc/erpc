@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -49,11 +48,9 @@ var HeadsReaskInterval = util.NewDuration(10 * time.Minute)
 
 var errNotConnected = errors.New("upstream websocket is not connected")
 
-// Adapter is the source and the EventIngress of one WS upstream on one
-// network.
+// Adapter is the source of one WS upstream on one network.
 type Adapter struct {
 	upstreamID string
-	networkID  string
 	// projectID and networkLabel label the adapter's metrics.
 	projectID    string
 	networkLabel string
@@ -74,11 +71,9 @@ type Adapter struct {
 	headsSeen  atomic.Uint64
 	lastHead   atomic.Int64
 
-	// intake takes every newHeads push and subscribe answer; sink takes
-	// filter events and a payload-free head event that rechecks where
-	// filters belong. sink is set by Start, before Set subscribes anything.
+	// intake takes every newHeads and pending-transaction push and every
+	// subscribe answer.
 	intake indexer.Intake
-	sink   indexer.Sink
 
 	hooksOnce sync.Once
 
@@ -98,17 +93,16 @@ type Adapter struct {
 	headsWanted  bool
 	headsRefused bool
 	headsReask   *time.Timer
-	// filters (by filterKey) survive disconnects to be resubscribed.
-	filters map[string]*filterSub
-	// topics are the pending-transaction topics Set asked for; they too
-	// survive disconnects.
-	topics map[indexer.Topic]*filterSub
+	// topics are the pending-transaction topics Set asked for; they
+	// survive disconnects to be resubscribed.
+	topics map[indexer.Topic]*pendingSub
 }
 
-// upstreamSub is one upstream subscription: newHeads or a filter.
+// upstreamSub is one upstream subscription: newHeads or a pending-transaction
+// topic.
 type upstreamSub struct {
-	// mu serialises subscribe attempts so EnsureFilter and the resubscribe
-	// loop can't create duplicates.
+	// mu serialises subscribe attempts so Set and the resubscribe loop
+	// can't create duplicates.
 	mu sync.Mutex
 	// id and epoch identify the live upstream subscription (id "" when
 	// none); removed is set once it is dropped. Guarded by Adapter.subsMu.
@@ -124,14 +118,12 @@ type Options struct {
 	NetworkLabel string
 }
 
-type filterSub struct {
+// pendingSub is one pending-transaction topic of Set.
+type pendingSub struct {
 	upstreamSub
-	subType    string
-	paramsHash string
-	params     []interface{}
-	// topic and variant are set for a pending-transaction topic of Set.
 	topic   indexer.Topic
 	variant string
+	params  []interface{}
 }
 
 // New returns the adapter of up, or nil if up is not a WebSocket upstream.
@@ -144,13 +136,11 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 	lg := logger.With().Str("upstreamId", up.Id()).Str("networkId", networkID).Logger()
 	return &Adapter{
 		upstreamID:   up.Id(),
-		networkID:    networkID,
 		projectID:    up.ProjectId,
 		networkLabel: opts.NetworkLabel,
 		wsClient:     wsClient,
 		logger:       &lg,
-		filters:      make(map[string]*filterSub),
-		topics:       make(map[indexer.Topic]*filterSub),
+		topics:       make(map[indexer.Topic]*pendingSub),
 		intake:       intake,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, bypassMethodExclusion bool) (*common.NormalizedResponse, error) {
 			return up.Forward(ctx, nq, bypassMethodExclusion, false)
@@ -167,17 +157,6 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 	}
 }
 
-func (a *Adapter) Name() string { return "ws:" + a.upstreamID }
-
-// Start takes the indexer's sink and registers the connection hooks;
-// filters added later subscribe in the background, detached from ctx.
-func (a *Adapter) Start(_ context.Context, _ indexer.NetworkHandle, sink indexer.Sink) error {
-	a.sink = sink
-	a.attach()
-	a.startResubscribe()
-	return nil
-}
-
 // Set feeds what topics name: newHeads, and each pending-transaction topic.
 // A topic Set adds is subscribed in the background and its answer reported
 // through Intake.Subscribed; a dropped one is released upstream.
@@ -187,7 +166,7 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 		id    string
 		epoch uint64
 	}
-	var added []*filterSub
+	var added []*pendingSub
 	var releases []released
 	a.subsMu.Lock()
 	headsChanged := wantHeads != a.headsWanted
@@ -210,7 +189,7 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 			a.logger.Warn().Err(err).Str("topic", string(t)).Msg("cannot subscribe a pending-transaction topic with unparsable params")
 			continue
 		}
-		sub := &filterSub{subType: indexer.SubTypeNewPendingTransactions, topic: t, variant: variant, params: params}
+		sub := &pendingSub{topic: t, variant: variant, params: params}
 		a.topics[t] = sub
 		added = append(added, sub)
 	}
@@ -221,7 +200,7 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 		delete(a.topics, t)
 		// Marked here, so a subscribe in flight releases its result.
 		if sub.id != "" {
-			a.liveGauge(sub.subType).Dec()
+			a.liveGauge(indexer.SubTypeNewPendingTransactions).Dec()
 			releases = append(releases, released{sub.id, sub.epoch})
 		}
 		sub.id, sub.removed = "", true
@@ -252,7 +231,7 @@ var _ indexer.Source = (*Adapter)(nil)
 // belongs to one network, and a network creates its sources once.
 func (a *Adapter) attach() {
 	a.hooksOnce.Do(func() {
-		cbID := a.Name()
+		cbID := "ws:" + a.upstreamID
 		a.wsClient.SetOnReconnect(cbID, func() {
 			a.logger.Info().Msg("upstream websocket reconnected, resubscribing")
 			a.startResubscribe()
@@ -273,15 +252,9 @@ func (a *Adapter) attach() {
 			// The next connection asks again; headsRefused stays until
 			// it answers.
 			a.stopReaskLocked()
-			for _, sub := range a.filters {
-				if sub.id != "" {
-					a.liveGauge(sub.subType).Dec()
-				}
-				sub.id = ""
-			}
 			for _, sub := range a.topics {
 				if sub.id != "" {
-					a.liveGauge(sub.subType).Dec()
+					a.liveGauge(indexer.SubTypeNewPendingTransactions).Dec()
 				}
 				sub.id = ""
 			}
@@ -381,71 +354,10 @@ func (a *Adapter) startResubscribe() {
 	go a.resubscribeWithRetry(ctx)
 }
 
-// EnsureFilter subscribes a newPendingTransactions filter; a no-op if it
-// is already subscribed. On failure the filter is kept and retried in the
-// background, like every other subscription of this upstream, until
-// RemoveFilter. logs come from the chain feed, never from an upstream
-// subscription.
-func (a *Adapter) EnsureFilter(ctx context.Context, subType, paramsHash string, params []interface{}) error {
-	if subType != indexer.SubTypeNewPendingTransactions {
-		return fmt.Errorf("upstream subscriptions serve only %s, not %q", indexer.SubTypeNewPendingTransactions, subType)
-	}
-	key := filterKey(subType, paramsHash)
-
-	a.subsMu.Lock()
-	sub, exists := a.filters[key]
-	if !exists {
-		sub = &filterSub{subType: subType, paramsHash: paramsHash, params: params}
-		a.filters[key] = sub
-	}
-	a.subsMu.Unlock()
-
-	// Bound the attempt: callers (the indexer's reconcile, client
-	// subscribes) hold locks across it, and a reply the upstream drops
-	// while its connection stays busy would otherwise never time out. A
-	// timed-out filter keeps retrying in the background.
-	ctx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
-	defer cancel()
-	sub.mu.Lock()
-	err := a.subscribeFilterLocked(ctx, sub)
-	sub.mu.Unlock()
-	if err != nil {
-		a.startResubscribe()
-	}
-	return err
-}
-
-// FilterLive reports whether the filter's subscription is live on the
-// current connection.
-func (a *Adapter) FilterLive(subType, paramsHash string) bool {
-	a.subsMu.Lock()
-	defer a.subsMu.Unlock()
-	sub, ok := a.filters[filterKey(subType, paramsHash)]
-	return ok && sub.id != ""
-}
-
-// RemoveFilter unsubscribes a filter and stops resubscribing it.
-func (a *Adapter) RemoveFilter(ctx context.Context, subType, paramsHash string) error {
-	key := filterKey(subType, paramsHash)
-
-	a.subsMu.Lock()
-	sub, ok := a.filters[key]
-	delete(a.filters, key)
-	a.subsMu.Unlock()
-	if ok {
-		a.drop(ctx, &sub.upstreamSub, sub.subType)
-	}
-	return nil
-}
-
-func filterKey(subType, paramsHash string) string {
-	return subType + ":" + paramsHash
-}
-
-// resubscribeWithRetry (re)subscribes newHeads and every filter, retrying
-// with backoff until all succeed or ctx is cancelled, so one failed
-// subscribe doesn't leave the adapter without heads until the next
-// reconnect.
+// resubscribeWithRetry (re)subscribes newHeads and every pending-transaction
+// topic, retrying with backoff until all succeed or ctx is cancelled, so
+// one failed subscribe doesn't leave the adapter without heads until the
+// next reconnect.
 func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 	backoff := a.retryMin
 	for {
@@ -488,26 +400,23 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		}
 
 		a.subsMu.Lock()
-		filters := make([]*filterSub, 0, len(a.filters)+len(a.topics))
-		for _, sub := range a.filters {
-			filters = append(filters, sub)
-		}
+		subs := make([]*pendingSub, 0, len(a.topics))
 		for _, sub := range a.topics {
-			filters = append(filters, sub)
+			subs = append(subs, sub)
 		}
 		a.subsMu.Unlock()
-		for _, sub := range filters {
+		for _, sub := range subs {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			sub.mu.Lock()
-			err := a.subscribeFilterLocked(attemptCtx, sub)
+			err := a.subscribePendingLocked(attemptCtx, sub)
 			sub.mu.Unlock()
 			cancel()
 			if err != nil {
 				done = false
-				a.logger.Warn().Err(err).Str("subType", sub.subType).Str("paramsHash", sub.paramsHash).Str("topic", string(sub.topic)).
-					Msg("failed to re-subscribe filter, will retry")
+				a.logger.Warn().Err(err).Str("topic", string(sub.topic)).
+					Msg("failed to re-subscribe pending-transaction topic, will retry")
 			}
-			if sub.topic == "" || ctx.Err() != nil {
+			if ctx.Err() != nil {
 				continue
 			}
 			// A topic Set dropped (or replaced) meanwhile has no answer.
@@ -541,14 +450,9 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 	}
 }
 
-func (a *Adapter) subscribeFilterLocked(ctx context.Context, sub *filterSub) error {
-	outParams := append([]interface{}{sub.subType}, sub.params[1:]...)
-	return a.subscribeLocked(ctx, &sub.upstreamSub, outParams, func(params []byte) {
-		if sub.topic != "" {
-			a.handlePendingTx(sub.variant, params)
-			return
-		}
-		a.handleFilter(sub.subType, sub.paramsHash, params)
+func (a *Adapter) subscribePendingLocked(ctx context.Context, sub *pendingSub) error {
+	return a.subscribeLocked(ctx, &sub.upstreamSub, sub.params, func(params []byte) {
+		a.handlePendingTx(sub.variant, params)
 	})
 }
 
@@ -686,25 +590,6 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 		}
 	}
 	a.intake.Header(a.upstreamID, outer.Result)
-	if a.sink != nil {
-		a.sink.Ingest(indexer.StreamEvent{Kind: indexer.KindNewHead, NetworkId: a.networkID, SourceId: a.Name()})
-	}
-}
-
-func (a *Adapter) handleFilter(subType, paramsHash string, raw []byte) {
-	a.countEvent(subType, raw)
-	var outer notificationParams
-	if err := common.SonicCfg.Unmarshal(raw, &outer); err != nil {
-		a.logger.Warn().Err(err).Str("subType", subType).Msg("failed to parse filter notification envelope")
-		return
-	}
-	a.sink.Ingest(indexer.StreamEvent{
-		Kind:       indexer.KindPendingTx,
-		NetworkId:  a.networkID,
-		SourceId:   a.Name(),
-		FilterHash: paramsHash,
-		Payload:    outer.Result,
-	})
 }
 
 func (a *Adapter) handlePendingTx(variant string, raw []byte) {

@@ -1,40 +1,9 @@
-package indexer
+package wsclient
 
 import (
 	"strings"
 	"testing"
 )
-
-func TestBuildParamsKey_StableAcrossCalls(t *testing.T) {
-	a := BuildParamsKey([]interface{}{"logs", map[string]interface{}{"topics": []string{"0x1"}}})
-	b := BuildParamsKey([]interface{}{"logs", map[string]interface{}{"topics": []string{"0x1"}}})
-	if a != b {
-		t.Fatalf("same params must hash identically, got %q vs %q", a, b)
-	}
-}
-
-func TestBuildParamsKey_IndependentOfMapOrder(t *testing.T) {
-	params := []interface{}{"logs", map[string]interface{}{
-		"address":   "0xabc",
-		"topics":    []interface{}{"0x1", nil},
-		"fromBlock": "latest",
-		"toBlock":   "latest",
-	}}
-	want := BuildParamsKey(params)
-	for i := 0; i < 200; i++ {
-		if got := BuildParamsKey(params); got != want {
-			t.Fatalf("call %d: same params hashed to %q, want %q", i, got, want)
-		}
-	}
-}
-
-func TestBuildParamsKey_DifferentParamsDiffer(t *testing.T) {
-	a := BuildParamsKey([]interface{}{"logs", map[string]interface{}{"topics": []string{"0x1"}}})
-	b := BuildParamsKey([]interface{}{"logs", map[string]interface{}{"topics": []string{"0x2"}}})
-	if a == b {
-		t.Fatalf("different params must produce different keys")
-	}
-}
 
 func TestExtractSubscriptionType(t *testing.T) {
 	cases := []struct {

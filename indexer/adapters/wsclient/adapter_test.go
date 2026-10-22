@@ -1,83 +1,42 @@
 package wsclient
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/erpc/erpc/indexer"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-type fakeWriter struct {
-	mu      sync.Mutex
-	written []string
-	block   chan struct{} // writes wait on it while non-nil
-	dropped []bool        // lossy flag per NotificationDropped call
-}
-
-func (w *fakeWriter) WriteSubscriptionNotification(_ Subscription, result json.RawMessage, _ int) error {
-	if w.block != nil {
-		<-w.block
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.written = append(w.written, string(result))
-	return nil
-}
-
-func (w *fakeWriter) NotificationDropped(_ Subscription, lossy bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.dropped = append(w.dropped, lossy)
-}
-
-func (w *fakeWriter) snapshot() (written []string, dropped []bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return append([]string(nil), w.written...), append([]bool(nil), w.dropped...)
-}
-
-func newTestAdapter(w *fakeWriter, bufferSize int) *Adapter {
-	lg := zerolog.Nop()
-	return New("c1", w, &lg, bufferSize)
-}
-
-func deliver(a *Adapter, kind indexer.EventKind, filterHash string, n int) {
-	for i := 0; i < n; i++ {
-		a.Deliver(indexer.IndexedEvent{StreamEvent: indexer.StreamEvent{
-			Kind: kind, NetworkId: "evm:1", FilterHash: filterHash, Payload: json.RawMessage(fmt.Sprintf("%d", i)),
-		}})
-	}
+func add(a *Adapter, id string, kind EventKind) error {
+	_, err := a.AddSubscription(id, "evm:1", kind, 10, func() {})
+	return err
 }
 
 func TestAdapter_AddAfterDrainIsRefused(t *testing.T) {
-	a := newTestAdapter(&fakeWriter{}, 8)
-	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindLog, "f", 10))
+	a := New()
+	require.NoError(t, add(a, "s1", KindLog))
 
 	removed := a.Drain()
 	require.Len(t, removed, 1)
 	assert.Equal(t, "s1", removed[0].ClientSubID)
 
-	assert.ErrorIs(t, a.AddSubscription("s2", "evm:1", indexer.KindLog, "f", 10), ErrClosed)
+	assert.ErrorIs(t, add(a, "s2", KindLog), ErrClosed)
 	assert.Equal(t, 0, a.Count())
 }
 
 // A sub removed by RemoveSubscription is not returned by a later Drain, so
-// its filter reference is released exactly once.
+// it is released exactly once.
 func TestAdapter_RemoveAndDrainAreExclusive(t *testing.T) {
-	a := newTestAdapter(&fakeWriter{}, 8)
-	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindLog, "f", 10))
-	require.NoError(t, a.AddSubscription("s2", "evm:1", indexer.KindLog, "f", 10))
+	a := New()
+	require.NoError(t, add(a, "s1", KindLog))
+	require.NoError(t, add(a, "s2", KindLog))
 
-	_, _, _, existed := a.RemoveSubscription("s1")
+	_, existed := a.RemoveSubscription("s1")
 	require.True(t, existed)
-	_, _, _, existed = a.RemoveSubscription("s1")
+	_, existed = a.RemoveSubscription("s1")
 	assert.False(t, existed)
 
 	removed := a.Drain()
@@ -86,14 +45,14 @@ func TestAdapter_RemoveAndDrainAreExclusive(t *testing.T) {
 }
 
 func TestAdapter_SubscriptionLimitIsAtomic(t *testing.T) {
-	a := newTestAdapter(&fakeWriter{}, 8)
+	a := New()
 	var ok atomic.Int32
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if a.AddSubscription(fmt.Sprintf("s%d", i), "evm:1", indexer.KindNewHead, "", 10) == nil {
+			if add(a, fmt.Sprintf("s%d", i), KindNewHead) == nil {
 				ok.Add(1)
 			}
 		}(i)
@@ -102,95 +61,4 @@ func TestAdapter_SubscriptionLimitIsAtomic(t *testing.T) {
 	assert.EqualValues(t, 10, ok.Load())
 	assert.Equal(t, 10, a.Count())
 	a.Drain()
-}
-
-// A burst within the buffer reaches a client that keeps up.
-func TestAdapter_BurstWithinBufferIsDelivered(t *testing.T) {
-	w := &fakeWriter{}
-	a := newTestAdapter(w, 256)
-	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindLog, "f", 10))
-	a.Open("s1")
-	defer a.Drain()
-
-	deliver(a, indexer.KindLog, "f", 200)
-	require.Eventually(t, func() bool {
-		written, _ := w.snapshot()
-		return len(written) == 200
-	}, 2*time.Second, 10*time.Millisecond)
-	_, dropped := w.snapshot()
-	assert.Empty(t, dropped)
-}
-
-// Overflow on a lossy kind evicts the oldest queued notification and
-// reports it as lossy.
-func TestAdapter_NewHeadsOverflowDropsOldest(t *testing.T) {
-	w := &fakeWriter{block: make(chan struct{})}
-	a := newTestAdapter(w, 2)
-	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindNewHead, "", 10))
-	a.Open("s1")
-	defer a.Drain()
-
-	// The writer takes one event and blocks on it; two more fill the buffer.
-	deliver(a, indexer.KindNewHead, "", 1)
-	time.Sleep(50 * time.Millisecond)
-	deliver(a, indexer.KindNewHead, "", 5)
-	close(w.block)
-
-	require.Eventually(t, func() bool {
-		written, _ := w.snapshot()
-		return len(written) == 3
-	}, 2*time.Second, 10*time.Millisecond)
-	written, dropped := w.snapshot()
-	assert.Equal(t, []string{"0", "3", "4"}, written, "newest heads must survive")
-	assert.Equal(t, []bool{true, true, true}, dropped)
-}
-
-// Overflow on logs keeps what is queued and reports the loss as not lossy,
-// so the transport can end the connection.
-func TestAdapter_LogsOverflowIsReportedNotEvicted(t *testing.T) {
-	w := &fakeWriter{block: make(chan struct{})}
-	a := newTestAdapter(w, 2)
-	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindLog, "f", 10))
-	a.Open("s1")
-	defer a.Drain()
-
-	deliver(a, indexer.KindLog, "f", 1)
-	time.Sleep(50 * time.Millisecond)
-	deliver(a, indexer.KindLog, "f", 5)
-	close(w.block)
-
-	require.Eventually(t, func() bool {
-		written, _ := w.snapshot()
-		return len(written) == 3
-	}, 2*time.Second, 10*time.Millisecond)
-	written, dropped := w.snapshot()
-	assert.Equal(t, []string{"0", "0", "1"}, written, "queued logs must be kept in order")
-	assert.Equal(t, []bool{false, false, false}, dropped)
-}
-
-// A subscription removed after Deliver matched it has stopped consuming; a
-// full buffer then must not be reported as a lost logs notification, which
-// would close the client's connection.
-func TestAdapter_RemovedSubOverflowIsNotReported(t *testing.T) {
-	w := &fakeWriter{block: make(chan struct{})}
-	defer close(w.block)
-	a := newTestAdapter(w, 2)
-	require.NoError(t, a.AddSubscription("s1", "evm:1", indexer.KindLog, "f", 10))
-	a.Open("s1")
-	defer a.Drain()
-
-	deliver(a, indexer.KindLog, "f", 1)
-	time.Sleep(50 * time.Millisecond) // the writer holds the first entry
-	deliver(a, indexer.KindLog, "f", 2)
-	_, dropped := w.snapshot()
-	require.Empty(t, dropped, "the buffer is full but nothing was dropped yet")
-
-	a.mu.RLock()
-	sub := a.subs["s1"]
-	a.mu.RUnlock()
-	a.RemoveSubscription("s1")
-	a.deliverTo(sub, json.RawMessage("x"))
-
-	_, dropped = w.snapshot()
-	assert.Empty(t, dropped, "a removed subscription must not report a drop")
 }

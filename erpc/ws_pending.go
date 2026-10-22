@@ -42,7 +42,7 @@ func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnect
 			return ctx.Err()
 		}
 		for _, tx := range txs {
-			if err := wsc.WriteSubscriptionNotification(sub, tx, 0); err != nil {
+			if err := wsc.WriteSubscriptionNotification(sub, tx); err != nil {
 				return wsWriteError{err}
 			}
 		}

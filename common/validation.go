@@ -65,20 +65,6 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	if c.Indexer != nil {
-		if err := c.Indexer.Validate(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Validate rejects nonsensical values; zeros pass through and resolve to
-// internal defaults inside the indexer.
-func (i *IndexerConfig) Validate() error {
-	if i.DedupWindowSize < 0 {
-		return fmt.Errorf("indexer.dedupWindowSize must be >= 0 (0 uses the default)")
-	}
 	return nil
 }
 
@@ -118,9 +104,6 @@ func (s *ServerConfig) Validate() error {
 		}
 		if ws.MaxConcurrentRequestsPerConnection < 1 {
 			return fmt.Errorf("server.webSocket.maxConcurrentRequestsPerConnection must be at least 1")
-		}
-		if ws.SubscriptionBufferSize < 1 {
-			return fmt.Errorf("server.webSocket.subscriptionBufferSize must be at least 1")
 		}
 		if ws.MaxConnections < 0 || ws.MaxConnectionsPerIP < 0 || ws.MaxSubscriptions < 0 {
 			return fmt.Errorf("server.webSocket.maxConnections, maxConnectionsPerIP and maxSubscriptions must not be negative")
