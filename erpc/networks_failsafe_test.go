@@ -1415,9 +1415,9 @@ func TestGetFailsafeExecutor_MatchCommitment(t *testing.T) {
 		rule, err := NewNetworkExecutor(&common.FailsafeConfig{
 			MatchMethod:     "*",
 			MatchCommitment: []string{"finalized", "confirmed"},
-		}, &log.Logger, nil, nil)
+		}, &log.Logger, nil, nil, nil)
 		require.NoError(t, err)
-		catchAll, err := NewNetworkExecutor(nil, &log.Logger, nil, nil)
+		catchAll, err := NewNetworkExecutor(nil, &log.Logger, nil, nil, nil)
 		require.NoError(t, err)
 		return &Network{cfg: cfg, failsafeExecutors: []*networkExecutor{rule, catchAll}}
 	}

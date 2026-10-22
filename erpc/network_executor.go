@@ -41,6 +41,11 @@ type networkExecutor struct {
 	emptyResultAccept []string
 
 	dynamicBlockUnavailableDelay func() time.Duration
+
+	// cacheRecheck re-reads the cache for req; nil when the network has no
+	// cache. Used only when Retry.EmptyResultRecheckCache is on and the
+	// retry is a data-not-yet-available catch-up (see runRetry).
+	cacheRecheck func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
 // consensusRunner is the minimal interface this package needs from
@@ -60,6 +65,7 @@ func NewNetworkExecutor(
 	logger *zerolog.Logger,
 	consensus consensusRunner,
 	dynamicBlockUnavailableDelay func() time.Duration,
+	cacheRecheck func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
 ) (*networkExecutor, error) {
 	if cfg == nil {
 		return &networkExecutor{
@@ -68,6 +74,7 @@ func NewNetworkExecutor(
 			logger:                       logger,
 			emptyResultAccept:            common.DefaultEmptyResultAccept(),
 			dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
+			cacheRecheck:                 cacheRecheck,
 		}, nil
 	}
 
@@ -87,6 +94,7 @@ func NewNetworkExecutor(
 		requestKind:                  cfg.MatchRequestKind,
 		consensus:                    consensus,
 		dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
+		cacheRecheck:                 cacheRecheck,
 	}
 	if e.method == "" {
 		e.method = "*"
@@ -247,30 +255,46 @@ func (e *networkExecutor) Run(
 	}
 	if e.HasConsensus() && e.consensus != nil && !skipConsensus && !singleDispatchWrite {
 		slotInner := func(slotCtx context.Context, slotReq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream)
+			// No cache recheck inside a consensus slot: a cached answer has
+			// no upstream and would be an unattributed vote.
+			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream, nil)
 		}
 		return e.consensus.Run(ctx, req, slotInner)
 	}
 
 	// Non-consensus branch: retry(hedge(runUpstreamSweep)).
-	return e.runRetryHedge(ctx, req, runUpstreamSweep)
+	return e.runRetryHedge(ctx, req, runUpstreamSweep, e.cacheRecheckIfEnabled())
+}
+
+// cacheRecheckIfEnabled returns the cache re-read hook when the retry policy
+// opts in (emptyResultRecheckCache) and the network has a cache; nil otherwise.
+func (e *networkExecutor) cacheRecheckIfEnabled() func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	if e.cacheRecheck == nil || e.cfg == nil || e.cfg.Retry == nil {
+		return nil
+	}
+	if on := e.cfg.Retry.EmptyResultRecheckCache; on == nil || !*on {
+		return nil
+	}
+	return e.cacheRecheck
 }
 
 func (e *networkExecutor) runRetryHedge(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
+	cacheRecheck func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
 ) (*common.NormalizedResponse, error) {
 	hedgeWrapped := func(ctx context.Context) (*common.NormalizedResponse, error) {
 		return e.runHedge(ctx, req, inner)
 	}
-	return e.runRetry(ctx, req, hedgeWrapped)
+	return e.runRetry(ctx, req, hedgeWrapped, cacheRecheck)
 }
 
 func (e *networkExecutor) runRetry(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	hedged func(ctx context.Context) (*common.NormalizedResponse, error),
+	cacheRecheck func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
 ) (*common.NormalizedResponse, error) {
 	maxAttempts := 1
 	if e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.MaxAttempts > 0 {
@@ -400,6 +424,19 @@ func (e *networkExecutor) runRetry(
 					return bestResp, cause
 				}
 				return bestResp, serr
+			}
+			// After a catch-up wait, a block-backed cache may hold the data the
+			// upstreams lacked a block ago: read it before paying for another
+			// sweep. A cached empty is no better than bestResp, so only a
+			// non-empty hit ends the retry.
+			if cacheRecheck != nil && isDataUnavailableReason(retryReason) {
+				if cached, cerr := cacheRecheck(ctx, req); cerr == nil && cached != nil &&
+					!cached.IsObjectNull(ctx) && !cached.IsResultEmptyish(ctx) {
+					if bestResp != nil {
+						bestResp.Release()
+					}
+					return cached, nil
+				}
 			}
 		}
 	}

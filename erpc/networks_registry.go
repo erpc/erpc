@@ -119,6 +119,16 @@ func NewNetwork(
 
 	// Build one networkExecutor per Failsafe config entry, plus a no-op
 	// catch-all so unmatched (method, finality) pairs always resolve.
+	// The executors read the cache through the Network: cacheDal is set
+	// after NewNetwork returns (prepareNetwork), so the closure resolves it
+	// per call rather than capturing a nil.
+	network := &Network{}
+	cacheRecheck := func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		if network.cacheDal == nil || req.ShouldSkipCacheRead("") {
+			return nil, nil
+		}
+		return network.cacheDal.Get(ctx, req)
+	}
 	var failsafeExecutors []*networkExecutor
 	if len(nwCfg.Failsafe) > 0 {
 		for _, fsCfg := range nwCfg.Failsafe {
@@ -130,7 +140,7 @@ func NewNetwork(
 				}
 				cons = c
 			}
-			ex, err := NewNetworkExecutor(fsCfg, &lg, cons, dynamicBlockUnavailableDelay)
+			ex, err := NewNetworkExecutor(fsCfg, &lg, cons, dynamicBlockUnavailableDelay, cacheRecheck)
 			if err != nil {
 				return nil, err
 			}
@@ -139,7 +149,7 @@ func NewNetwork(
 	}
 
 	// Catch-all no-op executor.
-	noop, _ := NewNetworkExecutor(nil, &lg, nil, dynamicBlockUnavailableDelay)
+	noop, _ := NewNetworkExecutor(nil, &lg, nil, dynamicBlockUnavailableDelay, cacheRecheck)
 	failsafeExecutors = append(failsafeExecutors, noop)
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))
@@ -152,7 +162,7 @@ func NewNetwork(
 		netLabel = a
 	}
 
-	network := &Network{
+	*network = Network{
 		cfg:          nwCfg,
 		logger:       &lg,
 		projectId:    projectId,
