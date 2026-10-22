@@ -8,7 +8,8 @@
     "enabled": true
   },
   "security": {
-    "trusted_author_associations": ["OWNER", "MEMBER", "COLLABORATOR"]
+    "trusted_author_associations": ["OWNER", "MEMBER", "COLLABORATOR"],
+    "expose_issue_in_github": false
   },
   "sandbox": {
     "setup_commands": {

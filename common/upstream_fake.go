@@ -301,6 +301,8 @@ func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	p.latestBlockNumber = blockNumber
 }
 
+func (p *FakeEvmStatePoller) RefreshLatestBlock() {}
+
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
 }
@@ -316,9 +318,11 @@ func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
 
 // FakeHealthTracker is a no-op implementation of HealthTracker for testing
 type FakeHealthTracker struct {
-	MisbehaviorRecorded bool
-	MisbehaviorCount    int
-	mu                  sync.Mutex
+	MisbehaviorRecorded     bool
+	MisbehaviorCount        int
+	LastMisbehaviorMethod   string
+	LastMisbehaviorFinality DataFinalityState
+	mu                      sync.Mutex
 }
 
 func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState) {
@@ -326,6 +330,8 @@ func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string
 	defer t.mu.Unlock()
 	t.MisbehaviorRecorded = true
 	t.MisbehaviorCount++
+	t.LastMisbehaviorMethod = method
+	t.LastMisbehaviorFinality = finality
 }
 
 func (t *FakeHealthTracker) RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState) {

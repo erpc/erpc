@@ -150,6 +150,15 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		r.setTimeout = options.WriteTimeout
 	}
 
+	// Honor context deadlines on in-flight commands. go-redis v9 defaults
+	// ContextTimeoutEnabled to false, where a ctx deadline only gates pool
+	// acquisition and an in-flight read waits for the socket ReadTimeout —
+	// so every WithTimeout wrapper in this file (getTimeout/setTimeout) and
+	// the connector-failsafe timeout silently failed to bound a slow
+	// command. ReadTimeout/WriteTimeout remain the safety net for
+	// deadline-less contexts.
+	options.ContextTimeoutEnabled = true
+
 	/**
 	* if tls.enabled: true in config → build a tls.Config and
 	* apply or merge it.
@@ -350,9 +359,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
 		// Maintain a reverse index for fast wildcard lookups (idx_reverse) similar to Memory connector.
 		// Only index EVM partition keys that are not already wildcarded.
-		parts := strings.SplitAfterN(partitionKey, ":", 3)
-		if len(parts) >= 2 {
-			wildcardPartitionKey := parts[0] + parts[1] + "*"
+		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
 			// Best-effort: log on error but do not fail the primary SET.
 			if err := r.client.Set(ctx, reverseKey, partitionKey, duration).Err(); err != nil {
@@ -690,11 +697,10 @@ func (r *RedisConnector) Delete(ctx context.Context, partitionKey, rangeKey stri
 		return err
 	}
 
-	// Clean up reverse index if it exists
+	// Clean up reverse index if Set would have written one. Same
+	// WithReverseIndex ctx as Set — without it the rvi# companion leaks.
 	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
-		parts := strings.SplitAfterN(partitionKey, ":", 3)
-		if len(parts) >= 2 {
-			wildcardPartitionKey := parts[0] + parts[1] + "*"
+		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
 			// Best-effort: log on error but do not fail the primary DELETE
 			if err := r.client.Del(ctx, reverseKey).Err(); err != nil {

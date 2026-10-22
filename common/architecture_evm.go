@@ -30,20 +30,14 @@ type EvmUpstream interface {
 	EvmBlockAvailabilityBounds() (int64, int64)
 }
 
-// EvmStateProvenReader is the OPTIONAL, separately-asserted surface for the
-// state-proven boundary (see the integrity state prober). Deliberately NOT part
-// of EvmUpstream: that interface is implemented outside this repo, and widening
-// it broke every existing implementor — the chainId suggest-gate silently
-// degraded when its upstream stopped satisfying the assertion. Optional
-// capabilities are asserted narrowly, never added to the core interface.
-type EvmStateProvenReader interface {
-	// EvmStateProvenBlock is the highest block for which this upstream has
-	// PROVEN it holds the state trie. 0 = never proven (probe disabled,
-	// warming up, or unsupported) — callers fall back to the claimed head.
-	EvmStateProvenBlock() int64
-}
-
-// EvmStateProvenWriter is the prober-facing half.
+// EvmStateProvenWriter is the OPTIONAL, separately-asserted surface the
+// integrity state prober records proofs through. The proven head is telemetry
+// (the state-proven block / proven-lag gauges), never a routing input.
+// Deliberately NOT part of EvmUpstream: that interface is implemented outside
+// this repo, and widening it broke every existing implementor — the chainId
+// suggest-gate silently degraded when its upstream stopped satisfying the
+// assertion. Optional capabilities are asserted narrowly, never added to the
+// core interface.
 type EvmStateProvenWriter interface {
 	// EvmSetStateProvenBlock records a successful state proof at a height.
 	// Monotonic: a lower value than the current one is ignored.
@@ -55,20 +49,18 @@ type AvailbilityConfidence int
 const (
 	AvailbilityConfidenceBlockHead AvailbilityConfidence = 1
 	AvailbilityConfidenceFinalized AvailbilityConfidence = 2
-	// AvailbilityConfidenceStateProven gates on the state-PROVEN head rather
-	// than the claimed head: the highest block for which the integrity state
-	// probe verified the upstream truly executes in that block's context /
-	// holds its state trie. Nodes sometimes answer state queries (eth_call,
-	// eth_getBalance, ...) from OLDER state while their reported head is
-	// current; this confidence exists so routing for state methods can refuse
-	// to outrun proof. Falls back to blockHead while nothing is proven yet.
-	AvailbilityConfidenceStateProven AvailbilityConfidence = 3
+	// NOTE: there is deliberately no "state-proven" confidence. The proven head
+	// (see the integrity state prober) advances at probe cadence, so on any
+	// chain whose block time is shorter than that cadence it sits structurally
+	// behind every honest upstream's claimed head — a routing bound built on it
+	// would refuse the entire network's tip traffic. Absence of proof is not
+	// evidence; only DISPROOF is, and the prober publishes that as upstream
+	// misbehavior on the health tracker for selection policies to act on
+	// (misbehaviorRateAbove), not as an availability confidence.
 )
 
 func (c AvailbilityConfidence) String() string {
 	switch c {
-	case AvailbilityConfidenceStateProven:
-		return "stateProven"
 	case AvailbilityConfidenceBlockHead:
 		return "blockHead"
 	case AvailbilityConfidenceFinalized:
@@ -144,6 +136,9 @@ type EvmStatePoller interface {
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)
 	SuggestLatestBlock(blockNumber int64)
+	// RefreshLatestBlock polls the latest block in the background when the
+	// stored head is older than the poll debounce; non-blocking, one in flight.
+	RefreshLatestBlock()
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64
@@ -185,17 +180,4 @@ type EvmProbeEarliestInfo struct {
 	ProbeType        EvmAvailabilityProbeType `json:"probeType"`
 	EarliestBlock    int64                    `json:"earliestBlock"`
 	SchedulerRunning bool                     `json:"schedulerRunning,omitempty"`
-}
-
-// IsEvmStateQueryMethod reports whether a method reads the STATE TRIE at a
-// block (as opposed to chain data like blocks/receipts/logs). These are the
-// methods a node can silently answer from older state, so they are the ones
-// the state-proven boundary applies to.
-func IsEvmStateQueryMethod(methodLower string) bool {
-	switch methodLower {
-	case "eth_call", "eth_getbalance", "eth_getcode", "eth_getstorageat",
-		"eth_gettransactioncount", "eth_estimategas":
-		return true
-	}
-	return false
 }

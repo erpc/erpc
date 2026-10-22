@@ -9,6 +9,7 @@ export type {
     AuthType,
     AuthStrategyConfig,
     EvmNetworkConfigForDefaults,
+    SvmNetworkConfigForDefaults,
     BoolOrString,
   } from "./generic";
   export type {

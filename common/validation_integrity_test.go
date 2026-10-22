@@ -27,9 +27,9 @@ func TestIntegrityConfigValidate(t *testing.T) {
 			IntegritySettings: IntegritySettings{
 				Level: "authoritative",
 				Checks: map[string]*IntegrityCheckConfig{
-					"receiptVsBlock": {Enabled: boolPtr(true), OnFailure: "soft-flag"},
+					"receiptVsBlock": {Enabled: boolPtr(true), OnFailure: "recordOnly"},
 				},
-				InvalidBehavior: &IntegrityInvalidBehaviorConfig{Finalized: "reject", Unfinalized: "soft-flag"},
+				InvalidBehavior: &IntegrityInvalidBehaviorConfig{Finalized: "hardReject", Unfinalized: "recordOnly"},
 				Budget:          &IntegrityBudgetConfig{MaxPerSecond: 50, MaxConcurrent: 8},
 				ReorgWindow:     256,
 			},
@@ -63,7 +63,7 @@ func TestIntegrityConfigValidate(t *testing.T) {
 
 	t.Run("unknown onFailure rejected", func(t *testing.T) {
 		c := &IntegrityConfig{IntegritySettings: IntegritySettings{
-			Checks: map[string]*IntegrityCheckConfig{"hashStability": {OnFailure: "soft_flagg"}},
+			Checks: map[string]*IntegrityCheckConfig{"hashStability": {OnFailure: "recordOnlyy"}},
 		}}
 		require.Error(t, c.Validate())
 	})

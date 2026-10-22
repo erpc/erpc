@@ -360,6 +360,8 @@ func ResetGock() {
 	gock.CleanUnmatchedRequest()
 	gock.Disable()
 
+	// Networking filters accumulate across tests unless cleared.
+	gock.DisableNetworkingFilters()
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		host := strings.Split(req.URL.Host, ":")[0]

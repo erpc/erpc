@@ -30,11 +30,11 @@ func TestTracker_BlockHeadLag_SurvivesContinuousRotationEviction(t *testing.T) {
 	defer cancel()
 	tracker.Bootstrap(ctx) // start rotation + idle-sweep loops
 
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	fin := common.DataFinalityStateUnfinalized
 
-	// Churn for ~1.5s across many rotation + eviction cycles. rpc2 advances at
-	// the tip; rpc1 stays frozen ~900+ blocks behind.
+	// Churn for ~1.5s across many rotation + eviction cycles. rpc2 and rpc3
+	// advance at the tip; rpc1 stays frozen ~900+ blocks behind.
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	tip := int64(1000)
 	checks := 0
@@ -44,6 +44,7 @@ func TestTracker_BlockHeadLag_SurvivesContinuousRotationEviction(t *testing.T) {
 			tracker.RecordUpstreamDuration(u, "eth_getLogs", 5*time.Millisecond, true, "none", fin, "n/a")
 		}
 		tracker.SetLatestBlockNumber(ups[1], tip, 0) // rpc2 at tip
+		tracker.SetLatestBlockNumber(ups[2], tip, 0) // rpc3 corroborates it
 		tracker.SetLatestBlockNumber(ups[0], 100, 0) // rpc1 frozen
 		tip += 5
 

@@ -111,7 +111,7 @@ Reference: https://docs.erpc.cloud/config/projects/shadow-upstreams.llms.txt`}
 
 **Context lifecycle.** The shadow goroutine derives its context from `p.networksRegistry.appCtx` (not the inbound request context). Client disconnects do not cancel shadow requests.
 
-**Per-upstream loop.** For each shadow upstream, eRPC launches a dedicated goroutine with a fresh context derived from `appCtx`: (1) `ShouldHandleMethod` check — skip silently if the upstream's allow/ignore lists reject the method; (2) sample rate check — if `rand.Float64() >= sampleRate`, skip with debug log; (3) forward with `byPassMethodExclusion=true` (`upstream/upstream.go:L410-L450`) so the selection-engine's `shouldSkip` guard doesn't block it; (4) compare responses; (5) call `shadowResp.Release()` to free the cloned response.
+**Per-upstream loop.** For each shadow upstream, eRPC launches a dedicated goroutine with a fresh context derived from `appCtx`: (1) `ShouldHandleMethod` check — skip silently if the upstream's allow/ignore lists reject the method; (2) **block-availability check** — if the request names a CONCRETE block height the upstream states it does not hold (`maxAvailableRecentBlocks`, or an explicit `blockAvailability` bound), skip with debug log; (3) sample rate check — if `rand.Float64() >= sampleRate`, skip with debug log; (4) forward with `byPassMethodExclusion=true` (`upstream/upstream.go:L410-L450`) so the selection-engine's `shouldSkip` guard doesn't block it; (5) compare responses; (6) call `shadowResp.Release()` to free the cloned response.
 
 **Comparison algorithm.** eRPC computes a content hash of both the primary and shadow responses. If `ignoreFields` is configured for the method, both hashes are computed with those JSON keys masked before comparison. Result is one of three outcomes: **Identical** (hashes match, or both emptyish) — logged at Trace; **Mismatch** (hashes differ) — logged at Error with full request, both responses, both hashes, and the ignored fields list; **Error** (shadow request failed or hash computation failed) — counter incremented with stable error fingerprint.
 
@@ -124,6 +124,19 @@ All fields live under `projects[*].upstreams[*].shadow`. Struct at <SourceLink f
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
 | `shadow.enabled` | `bool` | `false` | When `true`, this upstream is registered into `networkShadowUpstreams` and excluded from all normal routing. Must be `true` for any shadow behavior to activate. Source: <SourceLink file="common/config.go" lines="983" />, <SourceLink file="upstream/registry.go" lines="574" /> |
+**Block availability.** Shadow honours the upstream's declared block range, the same
+question the real routing path asks (`EvmAssertBlockAvailability`). Without it a
+recent-window upstream — a replica configured with `maxAvailableRecentBlocks`, or an
+explicit `blockAvailability` lower bound — was mirrored archive-depth traffic it can
+only refuse: every such request burns the shadow upstream's capacity on work it cannot
+do, and then registers as a shadow *mismatch*, polluting the very comparison the shadow
+exists to produce.
+
+The check **fails open**, deliberately and in the same places the real path does: a
+block tag (`latest`, `pending`), an unparseable reference, or an errored assertion all
+mirror exactly as before. Only a concrete height the upstream states it does not have is
+skipped.
+
 | `shadow.sampleRate` | `*float64` | `nil` → `1.0` (always fire) | Fraction of eligible shadow requests to execute. `0.5` fires 50% at random. Check is `rand.Float64() >= sampleRate` — setting `0.0` suppresses all traffic; setting `nil` or `1.0` fires every request. Source: <SourceLink file="common/config.go" lines="984" />, <SourceLink file="erpc/shadow.go" lines="65-75" /> |
 | `shadow.ignoreFields` | `map[string][]string` | `nil` (no fields ignored) | Keys are JSON-RPC method names; values are JSON field names to mask before hash comparison. Both the primary and shadow response are hashed with the same mask. Prevents false mismatches for fields that legitimately differ (e.g., clock-skewed `timestamp`). Source: <SourceLink file="common/config.go" lines="985" />, <SourceLink file="erpc/shadow.go" lines="167-191" /> |
 

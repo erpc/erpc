@@ -260,7 +260,7 @@ Full struct: <SourceLink file="common/config.go" lines="218-235" />.
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
 | `tracing.enabled` | bool | `false` (Go zero value) | Master switch. When `false`, sets `IsTracingEnabled = false` globally; all span calls are no-ops (<SourceLink file="common/tracing_core.go" lines="53-58" />). |
-| `tracing.endpoint` | string | `"localhost:4317"` (gRPC) or `"http://localhost:4318"` (HTTP) — derived from `protocol` in `SetDefaults` (<SourceLink file="common/defaults.go" lines="622-628" />) | OTLP collector endpoint. gRPC: `host:port` with no scheme. HTTP: full URL including scheme. **Footgun:** `OTEL_EXPORTER_OTLP_ENDPOINT` is always overridden by this field even when it holds the default value. |
+| `tracing.endpoint` | string | `"localhost:4317"` (gRPC) or `"http://localhost:4318"` (HTTP) — derived from `protocol` in `SetDefaults` (<SourceLink file="common/defaults.go" lines="622-628" />) | OTLP collector endpoint. gRPC: `host:port` with no scheme. HTTP: `http(s)://host:port[/path]` or `host:port`; the URL scheme decides TLS (`http://` with `tls.enabled` is an init error), and a URL without a path exports to `/v1/traces`. **Footgun:** `OTEL_EXPORTER_OTLP_ENDPOINT` is always overridden by this field even when it holds the default value. |
 | `tracing.protocol` | TracingProtocol | `"grpc"` (<SourceLink file="common/defaults.go" lines="619-621" />) | `"grpc"` uses `otlptracegrpc`; `"http"` uses `otlptracehttp`. Any other value → error at init (<SourceLink file="common/tracing_core.go" lines="71-78" />). |
 | `tracing.sampleRate` | float64 | `1.0` (<SourceLink file="common/defaults.go" lines="629-631" />) | `<= 0` → `NeverSample()`, `>= 1.0` → `AlwaysSample()`, otherwise → `ParentBased(TraceIDRatioBased(rate))`. **Footgun:** `SetDefaults` replaces `0` with `1.0`, so `sampleRate: 0` in YAML means "always sample", not "never sample". To keep tracing on but silent, use a very small positive value like `0.0000001`. |
 | `tracing.detailed` | bool | `false` (Go zero value) | When `true`, sets `IsTracingDetailed = true`, enabling `StartDetailSpan` calls. Roughly 2× span count. Includes request params, block numbers, lock spans, hook execution spans. |
@@ -575,6 +575,7 @@ only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start`
 | `Network.Forward` | normal | `erpc/networks.go:L943` |
 | `Network.GetFinality` | detail | `erpc/networks.go:L1646` |
 | `Network.NormalizeResponse` | detail | `erpc/networks.go:L2235` |
+| `Network.PostForward.eth_blockNumber` | detail | `architecture/evm/eth_blockNumber.go:L69` |
 | `Network.PostForward.eth_getBlockByNumber` | detail | `architecture/evm/eth_getBlockByNumber.go:L44` |
 | `Network.PostForward.eth_sendRawTransaction` | detail | `architecture/evm/eth_sendRawTransaction.go:L280` |
 | `Network.PostForwardHook` | detail | `architecture/evm/hooks.go:L64` |
@@ -596,7 +597,6 @@ only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start`
 | `PostgreSQLConnector.getWithWildcard` | detail | `data/postgresql.go:L1006` |
 | `Project.Forward` | detail | `erpc/projects.go:L103` |
 | `Project.PreForwardHook` | detail | `architecture/evm/hooks.go:L14` |
-| `Project.PreForwardHook.eth_blockNumber` | detail | `architecture/evm/eth_blockNumber.go:L16` |
 | `Project.PreForwardHook.eth_chainId` | detail | `architecture/evm/eth_chainId.go:L30` |
 | `Project.executeShadowRequest` | detail | `erpc/shadow.go:L82` |
 | `Query.Execute` | detail | `erpc/query_executor.go:L45` |

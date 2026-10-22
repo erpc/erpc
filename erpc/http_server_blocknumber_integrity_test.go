@@ -28,11 +28,12 @@ import (
 // only upstream HTTP responses are mocked):
 //
 //	rpc1 (lagging): head 0x800
-//	rpc2 (healthy): head 0x1000  →  network tip (default max mode) = 0x1000
+//	rpc2 (healthy): head 0x1000
+//	rpc3 (healthy): head 0x1000  →  network tip (corroborated head) = 0x1000
 //
-// The selection order is pinned to [rpc1, rpc2] so user traffic lands on the
-// lagging upstream first, mirroring the customer's "a small amount of volume
-// is handled by lagging nodes" condition.
+// The selection order is pinned to [rpc1, rpc2, rpc3] so user traffic lands on
+// the lagging upstream first, mirroring the customer's "a small amount of
+// volume is handled by lagging nodes" condition.
 //
 // Bug inventory exercised here (hook: architecture/evm/eth_blockNumber.go):
 //
@@ -57,12 +58,12 @@ import (
 //	   silently ignored for eth_blockNumber.
 const (
 	bniLaggingHead = int64(0x800)  // rpc1's head
-	bniHealthyHead = int64(0x1000) // rpc2's head == expected network tip
+	bniHealthyHead = int64(0x1000) // rpc2/rpc3's head == expected network tip
 )
 
 // setupBniPollerMocks registers persistent state-poller bootstrap mocks for
-// both upstreams (chainId / syncing / latest / finalized), giving rpc1 a
-// lagging head and rpc2 a healthy head. The state pollers fetch heads via
+// every upstream (chainId / syncing / latest / finalized), giving rpc1 a
+// lagging head and rpc2/rpc3 a healthy head. The state pollers fetch heads via
 // eth_getBlockByNumber, so these never collide with user eth_blockNumber
 // traffic.
 func setupBniPollerMocks() {
@@ -73,6 +74,7 @@ func setupBniPollerMocks() {
 	}{
 		{"http://rpc1.localhost", "0x800", "0x700"},
 		{"http://rpc2.localhost", "0x1000", "0x900"},
+		{"http://rpc3.localhost", "0x1000", "0x900"},
 	} {
 		gock.New(h.host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
@@ -104,7 +106,7 @@ func setupBniPollerMocks() {
 }
 
 // setupBniBlockNumberMocks registers persistent user-facing eth_blockNumber
-// mocks: the lagging upstream answers with its stale head, the healthy one
+// mocks: the lagging upstream answers with its stale head, the healthy ones
 // with the tip. Persist (rather than Times(1)) keeps every sub-test
 // deterministic regardless of how many forwards the implementation performs.
 func setupBniBlockNumberMocks() {
@@ -114,15 +116,17 @@ func setupBniBlockNumberMocks() {
 		}).
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x800"}`))
-	gock.New("http://rpc2.localhost").Post("").Persist().
-		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), "eth_blockNumber")
-		}).
-		Reply(200).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+	for _, host := range []string{"http://rpc2.localhost", "http://rpc3.localhost"} {
+		gock.New(host).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_blockNumber")
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1000"}`))
+	}
 }
 
-// bniConfig builds a 2-upstream EVM project. integrity==nil exercises the
+// bniConfig builds a 3-upstream EVM project. integrity==nil exercises the
 // modern config path (only DirectiveDefaults, which default enforcement to
 // true). withCache adds a realtime cache policy on eth_blockNumber backed by
 // a real in-memory connector — the customer's setup (theirs had a 2s TTL; we
@@ -163,6 +167,15 @@ func bniConfig(withCache bool, integrity *common.EvmIntegrityConfig) *common.Con
 							StatePollerInterval: common.Duration(10 * time.Second),
 						},
 					},
+					{
+						Id:       "rpc3",
+						Endpoint: "http://rpc3.localhost",
+						Type:     common.UpstreamTypeEvm,
+						Evm: &common.EvmUpstreamConfig{
+							ChainId:             123,
+							StatePollerInterval: common.Duration(10 * time.Second),
+						},
+					},
 				},
 			},
 		},
@@ -195,7 +208,7 @@ func bniConfig(withCache bool, integrity *common.EvmIntegrityConfig) *common.Con
 }
 
 // bniBoot spins up the server, pins upstream order to [rpc1(lagging),
-// rpc2(healthy)] and waits until the pollers have learned the healthy head so
+// rpc2, rpc3 (healthy)] and waits until the pollers have learned the healthy head so
 // the network tip is deterministic before any assertion runs.
 func bniBoot(t *testing.T, cfg *common.Config) (
 	func(body string, headers map[string]string, queryParams map[string]string) (int, map[string]string, string),
@@ -207,7 +220,7 @@ func bniBoot(t *testing.T, cfg *common.Config) (
 
 	prj, err := erpcInstance.GetProject("test_project")
 	require.NoError(t, err)
-	policy.OverrideAllForTest(prj.policyEngine, "rpc1", "rpc2")
+	policy.OverrideAllForTest(prj.policyEngine, "rpc1", "rpc2", "rpc3")
 
 	ntw, err := prj.GetNetwork(context.Background(), util.EvmNetworkId(123))
 	require.NoError(t, err)
@@ -383,20 +396,23 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 		send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
 		defer shutdown()
 
-		first, _ := bniSend(t, send, nil, nil)
-		require.Equal(t, bniHealthyHead, first, "precondition: fresh-path correction must work")
-
-		// The fix may either write the corrected value back (entry >= tip) or
-		// skip caching the stale original (no entry). Both satisfy the
-		// invariant; today the stale 0x800 lands in the cache (bug B1).
+		// With the head known, an enforced eth_blockNumber is answered from the
+		// served head before dispatch and writes nothing to the cache. The path
+		// that still dispatches AND persists is a request that opts out of
+		// enforcement: the lagging upstream answers first and its raw 0x800
+		// lands in the shared cache.
+		raw, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
+		require.Equal(t, bniLaggingHead, raw, "precondition: the opt-out request is answered by the lagging upstream")
 		v, ok := bniWaitForCachedValue(ntw, 2*time.Second)
-		if !ok {
-			t.Log("no eth_blockNumber cache entry written — acceptable (stale value skipped)")
-			return
-		}
-		assert.GreaterOrEqual(t, v, bniHealthyHead,
-			"cache poisoned: the forward path persisted the stale upstream value (0x%x) instead of the corrected value it served to the client (0x%x)",
-			v, first)
+		require.True(t, ok, "precondition: the dispatched opt-out response must reach the cache, or this test exercises nothing")
+		t.Logf("cache now holds eth_blockNumber=0x%x", v)
+
+		// Every enforced client reading that entry must still see the tip.
+		got, hdrs := bniSend(t, send, nil, nil)
+		assert.Equal(t, "HIT", hdrs["X-Erpc-Cache"], "the enforced read must come from the entry the opt-out request wrote")
+		assert.Equal(t, bniHealthyHead, got,
+			"cache poisoned: a stale upstream value persisted by the forward path (0x%x) reached an enforced client below the tip (0x%x)",
+			v, bniHealthyHead)
 	})
 
 	// ── B2 isolated: a stale entry already in the (possibly shared) cache ───
@@ -436,7 +452,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 		// The request is explicitly pinned to the lagging upstream. Per the
 		// selector-scoped served-tip semantics (#912, honored by max-mode
-		// tipCandidateUpstreams when the ctx carries the request), "latest"
+		// EvmRoutableUpstreams when the ctx carries the request), "latest"
 		// must be decided AMONG the pinned subset — advertising the
 		// network-wide tip promises a block rpc1 cannot serve.
 		got, _ := bniSend(t, send, map[string]string{"X-ERPC-Use-Upstream": "rpc1"}, nil)

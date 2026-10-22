@@ -138,7 +138,7 @@ func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
 		res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, rejectAll)
 
 		assert.NoError(t, res.Err, "an unverified pin must not reject an honest response")
-		assert.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+		assert.Equal(t, "record_only", outcomeOf(res, "hashStability"))
 		require.Len(t, res.Recorded, 1, "the mismatch must still be recorded, not swallowed")
 		assert.Equal(t, "hashStability", res.Recorded[0].CheckID)
 		assert.Equal(t, 1, hist.calls)
@@ -152,7 +152,7 @@ func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
 		for i := 0; i < 24; i++ {
 			res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, rejectAll)
 			require.NoErrorf(t, res.Err, "request %d was rejected on an unverified pin", i)
-			require.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+			require.Equal(t, "record_only", outcomeOf(res, "hashStability"))
 		}
 		assert.Equal(t, 24, hist.calls)
 	})
@@ -162,7 +162,7 @@ func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
 		policy := ReorgPolicy{Finalized: BehaviorRecord, Unfinalized: BehaviorRecord}
 		res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, policy)
 		assert.NoError(t, res.Err)
-		assert.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+		assert.Equal(t, "record_only", outcomeOf(res, "hashStability"))
 	})
 
 	t.Run("a fresh reconfirm still rejects a genuine mismatch", func(t *testing.T) {
@@ -184,7 +184,7 @@ func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
 		}
 		res := validateBlockPolicy(t, blockResult("0x11", "0xchild", "0xrealparent"), only("parentHashLinkage", nil), hist, rejectAll)
 		assert.NoError(t, res.Err)
-		assert.Equal(t, "soft_flag", outcomeOf(res, "parentHashLinkage"))
+		assert.Equal(t, "record_only", outcomeOf(res, "parentHashLinkage"))
 	})
 }
 
@@ -239,4 +239,67 @@ func TestReconfirm_ReceiptVsBlockPinBranch(t *testing.T) {
 	assert.NoError(t, res.Err)
 	assert.Equal(t, "reconfirmed", outcomeOf(res, "receiptVsBlock"))
 	assert.Equal(t, "0xnew", hist.pins[0x10])
+}
+
+// registerForTest adds a check for the duration of t, then removes it from the
+// method registry and allChecks so other tests are unaffected. The id stays in
+// the common validation catalog (same as other test-time RegisterIntegrityCheckID
+// calls) — that is harmless.
+func registerForTest(t *testing.T, c *Check) {
+	t.Helper()
+	register(c)
+	t.Cleanup(func() {
+		for _, m := range c.Methods {
+			list := registry[m]
+			out := list[:0:0]
+			for _, x := range list {
+				if x != c {
+					out = append(out, x)
+				}
+			}
+			if len(out) == 0 {
+				delete(registry, m)
+			} else {
+				registry[m] = out
+			}
+		}
+		kept := allChecks[:0:0]
+		for _, x := range allChecks {
+			if x != c {
+				kept = append(kept, x)
+			}
+		}
+		allChecks = kept
+	})
+}
+
+// Regression: a panic on the post-PinFresh re-run must record "panic", not
+// "reconfirmed". Discarding the panicked flag made incomplete verification look
+// like successful reorg recovery in erpc_integrity_check.
+func TestReconfirm_PanicOnRerunReportsPanic(t *testing.T) {
+	var calls int
+	c := &Check{
+		ID:      "testPanicOnRerun",
+		Family:  FamilyContinuity,
+		Class:   ReorgSensitive,
+		Methods: []string{"eth_getblockbynumber"},
+		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
+			calls++
+			if calls == 1 {
+				return failf("disputed pin").disputes(0x10)
+			}
+			panic("simulated check panic on reconfirm re-run")
+		},
+	}
+	registerForTest(t, c)
+
+	hist := &reconfirmingHistory{
+		pins:      map[int64]string{0x10: "0xold"},
+		canonical: map[int64]string{0x10: "0xnew"},
+	}
+	res := validateBlockPolicy(t, blockResult("0x10", "0xnew", "0xparent"), only(c.ID, nil), hist, rejectAll)
+	assert.NoError(t, res.Err, "a panicked check must not reject the response")
+	assert.Equal(t, "panic", outcomeOf(res, c.ID))
+	assert.Equal(t, 1, hist.calls)
+	assert.Equal(t, 2, calls)
 }

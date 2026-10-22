@@ -62,7 +62,7 @@ func TestSendRawTransaction_ConsensusRule(t *testing.T) {
 		}
 
 		require.NotNil(t, matchedRule, "eth_sendRawTransaction rule should match")
-		assert.Contains(t, matchedRule.Description, "eth_sendRawTransaction")
+		assert.Contains(t, matchedRule.Description, "tx broadcast")
 
 		result := matchedRule.Action(analysis)
 		require.NotNil(t, result)
@@ -113,10 +113,10 @@ func TestSendRawTransaction_ConsensusRule(t *testing.T) {
 			},
 			groups: map[string]*responseGroup{
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        1,
-					ResponseType: ResponseTypeConsensusError, // Error, not non-empty
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               1,
+					ResponseType:        ResponseTypeConsensusError, // Error, not non-empty
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 1,
@@ -152,10 +152,10 @@ func TestSendRawTransaction_ConsensusRule(t *testing.T) {
 					},
 				},
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        2, // More errors than successes
-					ResponseType: ResponseTypeConsensusError,
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               2, // More errors than successes
+					ResponseType:        ResponseTypeConsensusError,
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 3,
@@ -210,7 +210,7 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 
 		// Find and test the eth_sendRawTransaction short-circuit rule (should be first)
 		shortCircuitRule := shortCircuitRules[0]
-		assert.Contains(t, shortCircuitRule.Description, "eth_sendRawTransaction")
+		assert.Contains(t, shortCircuitRule.Description, "tx broadcast")
 		assert.Equal(t, "sendrawtx_first_success", shortCircuitRule.Reason)
 
 		shouldShortCircuit := shortCircuitRule.Condition(winner, analysis)
@@ -260,10 +260,10 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 			},
 			groups: map[string]*responseGroup{
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        1,
-					ResponseType: ResponseTypeInfrastructureError,
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               1,
+					ResponseType:        ResponseTypeInfrastructureError,
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 1,
@@ -301,10 +301,10 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 					LargestResult: resp,
 				},
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        1,
-					ResponseType: ResponseTypeConsensusError,
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               1,
+					ResponseType:        ResponseTypeConsensusError,
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 2,
@@ -327,11 +327,11 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 func TestSendRawTransaction_RulePriority(t *testing.T) {
 	t.Run("eth_sendRawTransaction rule is evaluated first", func(t *testing.T) {
 		// Verify the eth_sendRawTransaction consensus rule is first
-		assert.Contains(t, consensusRules[0].Description, "eth_sendRawTransaction",
+		assert.Contains(t, consensusRules[0].Description, "tx broadcast",
 			"eth_sendRawTransaction consensus rule should be first in the rules list")
 
 		// Verify the eth_sendRawTransaction short-circuit rule is first
-		assert.Contains(t, shortCircuitRules[0].Description, "eth_sendRawTransaction",
+		assert.Contains(t, shortCircuitRules[0].Description, "tx broadcast",
 			"eth_sendRawTransaction short-circuit rule should be first in the rules list")
 	})
 
@@ -363,10 +363,10 @@ func TestSendRawTransaction_RulePriority(t *testing.T) {
 					},
 				},
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        2, // Majority (meets threshold)
-					ResponseType: ResponseTypeConsensusError,
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               2, // Majority (meets threshold)
+					ResponseType:        ResponseTypeConsensusError,
+					RepresentativeError: testError,
 					Results: []*execResult{
 						{Err: testError},
 						{Err: testError},
@@ -450,10 +450,10 @@ func TestSendRawTransaction_Integration(t *testing.T) {
 					},
 				},
 				"infra_error": {
-					Hash:         "infra_error_hash",
-					Count:        2,
-					ResponseType: ResponseTypeInfrastructureError,
-					FirstError:   testError,
+					Hash:                "infra_error_hash",
+					Count:               2,
+					ResponseType:        ResponseTypeInfrastructureError,
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 3,

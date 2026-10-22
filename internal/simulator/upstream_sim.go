@@ -62,6 +62,70 @@ func blockTimestamp(block int64) int64 {
 	return simGenesisUnix + block*simBlockTimeSec
 }
 
+// SVM slot model: 400ms slots from a Solana-mainnet-ish genesis. Same
+// rationale as blockTimestamp — deltas must be stable so lag math
+// converges. The per-upstream `BlockTimeMs` knob (defaulted to 400 for
+// `arch:svm`-tagged upstreams in defaultKnobsFor) drives head
+// ADVANCEMENT; this is the canonical on-the-wire timestamp per slot.
+const svmGenesisUnix int64 = 1_584_332_940 // Mar 2020, near Solana mainnet genesis
+
+func svmSlotTimestamp(slot int64) int64 {
+	return svmGenesisUnix + (slot*2)/5 // 400ms per slot
+}
+
+// svmCommitment extracts the `commitment` field from a Solana-style
+// params array (the options object may sit at any position). Returns
+// "finalized" when absent — Solana's documented default.
+func svmCommitment(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "finalized"
+	}
+	var ps []any
+	if err := json.Unmarshal(raw, &ps); err != nil {
+		return "finalized"
+	}
+	for _, p := range ps {
+		if m, ok := p.(map[string]any); ok {
+			if c, ok := m["commitment"].(string); ok && c != "" {
+				return c
+			}
+		}
+	}
+	return "finalized"
+}
+
+// firstNumberParam returns the first numeric param — Solana methods
+// address blocks by bare slot number where EVM uses hex strings.
+func firstNumberParam(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var ps []any
+	if err := json.Unmarshal(raw, &ps); err != nil || len(ps) == 0 {
+		return 0, false
+	}
+	f, ok := ps[0].(float64)
+	if !ok {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+// b58ish renders a deterministic base58-alphabet string of length n
+// from a seed — shaped like Solana blockhashes (44) and signatures (87).
+func b58ish(seed uint64, n int) string {
+	const alpha = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	b := make([]byte, n)
+	x := seed | 1
+	for i := range b {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		b[i] = alpha[x%58]
+	}
+	return string(b)
+}
+
 type UpstreamHub struct {
 	mu    sync.RWMutex
 	knobs map[string]*UpstreamKnobs
@@ -186,6 +250,26 @@ func (h *UpstreamHub) headFor(id string) *upstreamHead {
 	uh.headBlock.Store(h.hubHead.Load())
 	actual, _ := h.heads.LoadOrStore(id, uh)
 	return actual.(*upstreamHead)
+}
+
+// svmSlotFor maps this upstream's synthetic head to a Solana slot at
+// the given commitment: head-BlockLag is the PROCESSED slot; confirmed
+// trails it by 2 and finalized by 32 (typical mainnet offsets). So the
+// BlockLag knob means "slots behind" for SVM upstreams, and the
+// selection policy's blockNumberLagAbove(...) predicate reads slot lag.
+func (h *UpstreamHub) svmSlotFor(k *UpstreamKnobs, commitment string) int64 {
+	s := h.headFor(k.ID).headBlock.Load() - int64(k.BlockLag)
+	switch commitment {
+	case "processed":
+	case "confirmed":
+		s -= 2
+	default: // finalized — Solana's default when commitment is omitted
+		s -= 32
+	}
+	if s < 0 {
+		return 0
+	}
+	return s
 }
 
 // AddUpstream registers (or replaces) one upstream's knobs.
@@ -601,6 +685,101 @@ func (h *UpstreamHub) synthResult(k *UpstreamKnobs, req jsonRPCRequest) *jsonRPC
 		))
 	case "eth_feeHistory":
 		resp.Result = json.RawMessage(`{"oldestBlock":"0x0","reward":[],"baseFeePerGas":["0x0"],"gasUsedRatio":[]}`)
+
+	// ── SVM (Solana) methods ─────────────────────────────────────────
+	// Same head/knob model as EVM: the per-upstream head (minus the
+	// BlockLag knob) is the PROCESSED slot; svmSlotFor derives confirmed
+	// and finalized views from it.
+	case "getSlot":
+		resp.Result = json.RawMessage(fmt.Sprintf(`%d`, h.svmSlotFor(k, svmCommitment(req.Params))))
+	case "getHealth":
+		resp.Result = json.RawMessage(`"ok"`)
+	case "getVersion":
+		resp.Result = json.RawMessage(`{"solana-core":"2.3.0-sim","feature-set":1}`)
+	case "getGenesisHash":
+		// Real mainnet-beta genesis so the SVM bootstrap's fail-closed
+		// genesis gate passes for `cluster: mainnet-beta` upstreams.
+		resp.Result = json.RawMessage(`"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"`)
+	case "getMaxShredInsertSlot":
+		resp.Result = json.RawMessage(fmt.Sprintf(`%d`, h.svmSlotFor(k, "processed")+1))
+	case "getBlockHeight":
+		resp.Result = json.RawMessage(fmt.Sprintf(`%d`, h.svmSlotFor(k, svmCommitment(req.Params))))
+	case "getEpochInfo":
+		s := h.svmSlotFor(k, svmCommitment(req.Params))
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"absoluteSlot":%d,"blockHeight":%d,"epoch":%d,"slotIndex":%d,"slotsInEpoch":432000,"transactionCount":%d}`,
+			s, s, s/432000, s%432000, s*1500))
+	case "getLatestBlockhash":
+		s := h.svmSlotFor(k, svmCommitment(req.Params))
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"context":{"slot":%d},"value":{"blockhash":"%s","lastValidBlockHeight":%d}}`,
+			s, b58ish(uint64(s)^0xb10c, 44), s+150))
+	case "getBalance":
+		lam := absHashFromParams(req.Params) % 1_000_000_000_000
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"context":{"slot":%d},"value":%d}`, h.svmSlotFor(k, svmCommitment(req.Params)), lam))
+	case "getAccountInfo":
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"context":{"slot":%d},"value":{"lamports":%d,"owner":"11111111111111111111111111111111","data":["","base64"],"executable":false,"rentEpoch":361}}`,
+			h.svmSlotFor(k, svmCommitment(req.Params)), absHashFromParams(req.Params)%1_000_000_000))
+	case "getMultipleAccounts":
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"context":{"slot":%d},"value":[]}`, h.svmSlotFor(k, svmCommitment(req.Params))))
+	case "getBlock":
+		// Solana addresses blocks by bare slot number. Beyond this
+		// upstream's view → the canonical -32004 (block not available)
+		// so eRPC's SVM missing-data classification gets exercised
+		// rather than a bare null.
+		s := h.svmSlotFor(k, "processed")
+		n, ok := firstNumberParam(req.Params)
+		if !ok {
+			n = s
+		}
+		if n > s {
+			resp.Error = &jsonRPCError{Code: -32004, Message: fmt.Sprintf("Block not available for slot %d", n)}
+			return resp
+		}
+		if n < 1 {
+			n = 1
+		}
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"blockhash":"%s","previousBlockhash":"%s","parentSlot":%d,"blockHeight":%d,"blockTime":%d,"transactions":[]}`,
+			b58ish(uint64(n), 44), b58ish(uint64(n-1), 44), n-1, n, svmSlotTimestamp(n)))
+	case "getTransaction":
+		// Sparse-data model like eth receipts: 80% baseline scaled by
+		// the DataAvailability knob; a miss is a legitimate null.
+		if !upstreamHasData(k.ID, req.Method, req.Params, scaleAvailability(80, k)) {
+			resp.Result = json.RawMessage(`null`)
+			return resp
+		}
+		s := h.svmSlotFor(k, "finalized")
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"slot":%d,"blockTime":%d,"meta":{"err":null,"fee":5000},"transaction":{"signatures":["%s"]}}`,
+			s, svmSlotTimestamp(s), b58ish(absHashFromParams(req.Params), 87)))
+	case "getSignatureStatuses":
+		s := h.svmSlotFor(k, "processed")
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"context":{"slot":%d},"value":[{"slot":%d,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}`, s, s-40))
+	case "getSignaturesForAddress":
+		s := h.svmSlotFor(k, "finalized")
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`[{"signature":"%s","slot":%d,"err":null,"blockTime":%d}]`,
+			b58ish(absHashFromParams(req.Params), 87), s, svmSlotTimestamp(s)))
+	case "sendTransaction":
+		resp.Result = json.RawMessage(fmt.Sprintf(`"%s"`, b58ish(absHashFromParams(req.Params), 87)))
+	case "simulateTransaction":
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`{"context":{"slot":%d},"value":{"err":null,"logs":[],"unitsConsumed":2100}}`, h.svmSlotFor(k, "processed")))
+	case "getRecentPrioritizationFees":
+		s := h.svmSlotFor(k, "processed")
+		resp.Result = json.RawMessage(fmt.Sprintf(
+			`[{"slot":%d,"prioritizationFee":0},{"slot":%d,"prioritizationFee":1200}]`, s-1, s))
+	case "getFirstAvailableBlock":
+		s := h.svmSlotFor(k, "finalized") - 100_000
+		if s < 0 {
+			s = 0
+		}
+		resp.Result = json.RawMessage(fmt.Sprintf(`%d`, s))
 	default:
 		resp.Result = json.RawMessage(`"0x0"`)
 	}

@@ -114,6 +114,57 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 	return blockRef, blockNumber, nil
 }
 
+// ResolveCacheBlockRef is ExtractBlockReferenceFromRequest for cache keys: a
+// "latest" or "finalized" tag resolves to a concrete block so each tip advance
+// gets its own key. It uses the response's block number when given (SET), else
+// the network's current tip for the tag (GET). Other refs, including "safe",
+// are returned unchanged.
+func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (string, int64, error) {
+	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, req)
+	if err != nil {
+		return blockRef, blockNumber, err
+	}
+
+	if blockRef != "latest" && blockRef != "finalized" {
+		return blockRef, blockNumber, nil
+	}
+
+	if resp != nil {
+		if _, respBN, rerr := ExtractBlockReferenceFromResponse(ctx, resp); rerr == nil && respBN > 0 {
+			if hex, herr := common.NormalizeHex(respBN); herr == nil {
+				return hex, respBN, nil
+			}
+		}
+	}
+
+	// Without a known tip, fall back to the tag-literal key.
+	net := req.Network()
+	if net == nil {
+		return blockRef, blockNumber, nil
+	}
+	var num int64
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				num = 0
+			}
+		}()
+		switch blockRef {
+		case "latest":
+			num = common.EvmHighestLatestBlockNumber(net, ctx)
+		case "finalized":
+			num = common.EvmHighestFinalizedBlockNumber(net, ctx)
+		}
+	}()
+	if num > 0 {
+		if hex, herr := common.NormalizeHex(num); herr == nil {
+			return hex, num, nil
+		}
+	}
+
+	return blockRef, blockNumber, nil
+}
+
 func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.NormalizedResponse) (string, int64, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Evm.ExtractBlockReferenceFromResponse")
 	defer span.End()
@@ -373,27 +424,17 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 func getMethodConfig(method string, network common.Network) (cfg *common.CacheMethodConfig) {
 	// Try to get method config from network if available
 	if network != nil {
-		networkCfg := network.Config()
-		if networkCfg != nil && networkCfg.Methods != nil && networkCfg.Methods.Definitions != nil {
-			if methodCfg, ok := networkCfg.Methods.Definitions[method]; ok {
-				cfg = methodCfg
-			}
+		if networkCfg := network.Config(); networkCfg != nil {
+			cfg = networkCfg.Methods.FindMethodConfig(method)
 		}
 	}
 
 	if cfg == nil {
 		// If network config is not available or missing the method, we should get the method config from the default set of known methods.
 		// This is necessary so that usual blockNumber detection used in various flows still resolves correctly.
-		cfg = common.DefaultWithBlockCacheMethods[method]
-		if cfg == nil {
-			cfg = common.DefaultSpecialCacheMethods[method]
-		}
-		if cfg == nil {
-			cfg = common.DefaultRealtimeCacheMethods[method]
-		}
-		if cfg == nil {
-			cfg = common.DefaultStaticCacheMethods[method]
-		}
+		// Networks configured with preserveDefaultMethods:false keep only their own
+		// definitions, so this fallback is what still resolves the standard methods.
+		cfg = common.FindDefaultCacheMethodConfig(method)
 	}
 
 	return

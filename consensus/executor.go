@@ -949,7 +949,7 @@ func (e *executor) enforceAcceptancePolicy(lg *zerolog.Logger, req *common.Norma
 	if winner == nil || len(policies) == 0 {
 		return winner
 	}
-	if analysis.method == "eth_sendRawTransaction" {
+	if isTxBroadcastMethod(analysis.method) {
 		return winner
 	}
 	g := analysis.groupOf(winner)
@@ -1052,7 +1052,7 @@ func (e *executor) warnOnStructurallyUnsatisfiableQuotas(lg *zerolog.Logger, ana
 // hashes into a different group, and its upstream must still count toward
 // the composition quota.
 func (e *executor) agreeingResults(analysis *consensusAnalysis, g *responseGroup) []*execResult {
-	fields := e.config.preferHighestValueFor[analysis.method]
+	fields, _ := methodFields(e.config.preferHighestValueFor, analysis.method)
 	if len(fields) == 0 {
 		return g.Results
 	}
@@ -1335,9 +1335,9 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 						"error": fmt.Sprintf("<error extracting consensus response: %v>", err),
 					})
 				}
-			} else if consensusGroup.FirstError != nil {
+			} else if consensusGroup.RepresentativeError != nil {
 				consensusBody, _ = common.SonicCfg.Marshal(map[string]interface{}{
-					"error": fmt.Sprintf("<consensus error: %v>", consensusGroup.FirstError),
+					"error": fmt.Sprintf("<consensus error: %v>", consensusGroup.RepresentativeError),
 				})
 			}
 

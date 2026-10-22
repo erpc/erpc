@@ -37,7 +37,7 @@ func TestSelectionPolicy_HeadLagExclusion_AllScopes(t *testing.T) {
 			defer engine.Stop()
 			tracker.EnableFinalityTracking()
 
-			ups := mkUps("rpc1", "rpc2")
+			ups := mkUps("rpc1", "rpc2", "rpc3")
 			cfg := &common.SelectionPolicyConfig{
 				EvalInterval: 0,
 				EvalTimeout:  common.Duration(50 * time.Millisecond),
@@ -57,8 +57,9 @@ func TestSelectionPolicy_HeadLagExclusion_AllScopes(t *testing.T) {
 				}
 			}
 
-			// Real lag path: rpc2 at tip (1000), rpc1 frozen far behind (lag 900).
+			// Real lag path: rpc2 and rpc3 at tip (1000), rpc1 frozen far behind (lag 900).
 			tracker.SetLatestBlockNumber(ups[1], 1000, 0)
+			tracker.SetLatestBlockNumber(ups[2], 1000, 0)
 			tracker.SetLatestBlockNumber(ups[0], 100, 0)
 
 			_ = engine.GetOrdered("evm:1", sc.tickMeth, "*") // lazy-create the per-grain slot
@@ -81,7 +82,7 @@ func TestTracker_BlockHeadLag_ReachesMethodAllRollup(t *testing.T) {
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	tracker.EnableFinalityTracking()
 
-	ups := mkUps("rpc1", "rpc2")
+	ups := mkUps("rpc1", "rpc2", "rpc3")
 	fin := common.DataFinalityStateUnfinalized
 	for _, u := range ups {
 		tracker.RecordUpstreamRequest(u, "eth_getLogs", fin)
@@ -89,6 +90,7 @@ func TestTracker_BlockHeadLag_ReachesMethodAllRollup(t *testing.T) {
 	}
 
 	tracker.SetLatestBlockNumber(ups[1], 1000, 0) // network tip
+	tracker.SetLatestBlockNumber(ups[2], 1000, 0) // corroborates it
 	tracker.SetLatestBlockNumber(ups[0], 100, 0)  // lag 900
 
 	got := tracker.GetUpstreamMethodMetrics(ups[0], "eth_getLogs", common.DataFinalityStateAll).BlockHeadLag.Load()

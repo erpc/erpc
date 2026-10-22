@@ -4,8 +4,9 @@ import "context"
 
 // indexMagnitude — no logIndex / transactionIndex may exceed a physically
 // possible block index. Catches 32-bit underflow garbage (e.g. 0xfffffff7 ==
-// 4294967287). This is an always-on sanity check for the receipt/log family;
-// it supersedes the standalone recursive walk that previously lived inline.
+// 4294967287). Replaces the standalone recursive walk that previously ran
+// unconditionally for the receipt/log family; it now runs only when integrity
+// checks are configured (LevelIntrinsic and above).
 func init() {
 	register(&Check{
 		ID:      "indexMagnitude",

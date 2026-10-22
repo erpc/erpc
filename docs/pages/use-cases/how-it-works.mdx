@@ -89,8 +89,8 @@ authenticates the consumer via `project.AuthenticateConsumer`, resolves
 
 `PreparedProject.Forward` acquires a project-level rate-limit permit (no-op when
 `rateLimitBudget` is unset), fires `HandleProjectPreForward` — the first EVM hook, which
-handles `eth_blockNumber` (early cache return), `eth_call` (static call optimisation),
-`eth_chainId` (served from config), and proactive `eth_getLogs` / `trace_filter` range
+handles `eth_call` / `eth_estimateGas` (default block tag), `eth_chainId` (served from
+config), and proactive `eth_getLogs` / `trace_filter` range
 splitting. If the hook handles the request, `HandleNetworkPostForward` is called on the
 result before returning. Otherwise the call proceeds to `network.Forward`.
 
@@ -107,9 +107,10 @@ result before returning. Otherwise the call proceeds to `network.Forward`.
 4. **Upstream ordering** — `policyEngine.GetOrdered` returns upstreams ranked by selection
    policy scores; falls back to registry order on cold start.
 5. **EVM network pre-forward hook** (`HandleNetworkPreForward`) — upstream-aware
-   short-circuits for `eth_getLogs` range enforcement, `eth_chainId`, `trace_filter`.
-6. **Future-block short-circuit** — requests for a concrete block beyond every eligible
-   upstream head return `null` immediately without touching any upstream.
+   short-circuits for `eth_getLogs` range enforcement, `eth_chainId`, `trace_filter`, and
+   `eth_blockNumber` (answered from the served tip while `enforceHighestBlock` is on).
+6. **Future-block short-circuit** — with `evm.shortCircuitFutureBlocks: true`, a numbered
+   `eth_getBlockByNumber` beyond every upstream's head returns `null` without touching any upstream.
 7. **Method guard** — `eth_accounts` and `eth_sign` are hardcoded unsupported; stateful
    methods require exactly one targeted upstream.
 8. **Network rate limiting** — network-level budget checked.
@@ -176,15 +177,18 @@ body is streamed. An async goroutine fires `cacheDal.Set` with a 10-second deadl
 `appCtx` — a client disconnect never aborts the cache write. Panics in the write goroutine
 are recovered and reported via `erpc_unexpected_panic_total{scope="cache-set"}`.
 
-**gRPC query-stream path**
+**eth_query\* (MIP-16) path**
 
-`ProcessQueryStream` handles `eth_queryBlocks`, `eth_queryTransactions`, `eth_queryLogs`,
-`eth_queryTraces`, and `eth_queryTransfers`. Auth and rate limiting are identical to the
-unary path. `EvmQueryExecutor.Execute` attempts native pipe-through to an upstream gRPC BDS
-client; if no upstream supports structured queries, it shims via sequential JSON-RPC
-subrequests (`eth_getBlockByNumber`, `eth_getLogs`, `trace_block`, etc.) with block-boundary-
-aware pagination. Composite subrequests set `IsCompositeRequest=true` to skip network-scope
-retry and hedge, preventing exponential amplification.
+One `EvmQueryExecutor` answers `eth_queryBlocks`, `eth_queryTransactions`, `eth_queryLogs`,
+`eth_queryTraces`, and `eth_queryTransfers` for both transports. gRPC `QueryService` streams
+enter through `ProcessQueryStream` (auth and rate limiting identical to the unary path);
+JSON-RPC calls enter through `Network.Forward`, which hands them to the executor before the
+cache and per-upstream dispatch and returns one page per call. The executor resolves the
+range once, checks availability, tries native gRPC BDS upstreams first (MIP-16 request
+passed through unchanged), and otherwise builds block-aligned pages from
+`eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getLogs` and `trace_block` /
+`debug_traceBlockByNumber` sub-requests, each sent through `Network.Forward` with the client
+request as parent. See [method handlers](/reference/evm/method-handlers).
 
 ### Config schema
 
@@ -238,9 +242,7 @@ primary control surface.
 | `evm.blockUnavailableDelayMultiplier` | `*float64` | `1.0` | Multiplies EMA-estimated block time to derive the dynamic retry delay for `ErrUpstreamBlockUnavailable`/`ErrEndpointMissingData`. Returns `0` before EMA warms up — falls back to `failsafe[*].retry.emptyResultDelay`. |
 | `evm.idempotentTransactionBroadcast` | `*bool` | nil (enabled) | When enabled, `eth_sendRawTransaction` converts "already known" to success and verifies "nonce too low" via `eth_getTransactionByHash`. Set to `false` to return raw upstream errors. |
 | `evm.emptyResultConfidence` | `AvailbilityConfidence` | `blockHead` | Confidence level for empty-result retries: `blockHead` = retry empties for blocks ≤ latest head; `finalizedBlock` = stricter, only retry for blocks ≤ finalized head. <SourceLink file="common/defaults.go" lines="2075-2079" /> |
-| `evm.servedTip.enabledFor` | `[]string` | `[]` | Tags using cluster-min mode; valid values: `"latest"`, `"finalized"`, `"safe"`. |
-| `evm.servedTip.clusterDelta` | int64 | `0` (auto-derived, clamped [2,10]) | Max block gap to group upstreams into one cluster for served-tip computation. |
-| `evm.servedTip.guaranteedMethods` | `[]string` | `[]` | Glob patterns for methods whose supporting-upstreams subset is used for cluster computation. |
+| `evm.servedTip` | object | `nil` (quorum 2) | Tunes how `latest`/`finalized` is chosen: `quorum`, `maxRegressionBlocks`, `guaranteedMethods`, `guaranteedFor`. Keys: [Networks config](/config/projects/networks#config-schema); rule: [Block tracking](/reference/evm/block-tracking#served-tip). |
 | `evm.integrity.enforceHighestBlock` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceHighestBlock`. |
 | `evm.integrity.enforceGetLogsBlockRange` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceGetLogsBlockRange`. |
 | `evm.integrity.enforceNonNullTaggedBlocks` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceNonNullTaggedBlocks`. |
@@ -442,7 +444,7 @@ all waiting followers with a response ID patch per follower:
     <SourceLink file="erpc/networks.go" lines="1494-1518" />
 11. **Query shim retry safety**: a gRPC query stream error is only retried on the next upstream
     if no page has been emitted (`StreamError.PageEmitted` gate). Partial-result retries are
-    forbidden. <SourceLink file="erpc/query_executor.go" lines="247-253" />
+    forbidden. <SourceLink file="erpc/query_executor.go" lines="126-136" />
 12. **`TranslateToJsonRpcException` dominant-code selection**: when all upstreams return skipped
     or unsupported errors, the wire JSON-RPC code depends on the first child's error type — either
     `-32601` (method not found) or `-32603` (server error). Clients cannot reliably distinguish
@@ -494,10 +496,9 @@ all waiting followers with a response ID patch per follower:
 | `erpc_network_static_response_served_total` | counter | project, network, category | Static response matched |
 | `erpc_upstream_wrong_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned empty while another returned data |
 | `erpc_upstream_request_errors_total` | counter | (upstream error labels) | Upstream skip due to block availability check failure |
-| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served-tip block number computed for the network |
-| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Deliberate cushion below the freshest upstream tip |
-| `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream dropped from served-tip computation (velocity/outlier gate) |
 | `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | One increment per upstream attempt with its terminal outcome |
+
+Served-tip and bench metrics: see the [metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking).
 
 Key OpenTelemetry spans:
 

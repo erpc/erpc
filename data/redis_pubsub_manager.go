@@ -15,11 +15,43 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// subscriberChannel wraps a channel with metadata to prevent double-close
+// subscriberChannel wraps the delivery channel with a done signal, closed
+// once, so senders never need a lock or risk sending on a closed channel.
 type subscriberChannel struct {
-	ch     chan CounterInt64State
-	closed bool
-	mu     sync.Mutex
+	ch        chan CounterInt64State
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// close marks the subscriber as gone. It is idempotent and leaves ch open.
+func (sc *subscriberChannel) close() {
+	sc.closeOnce.Do(func() { close(sc.done) })
+}
+
+// sendKeepLatest delivers value without blocking: when the buffer is full,
+// the fresher of the buffered and new value (by UpdatedAt) is kept, so a
+// monotonic counter never loses its newest value to a slow consumer.
+func (sc *subscriberChannel) sendKeepLatest(value CounterInt64State) {
+	for {
+		select {
+		case sc.ch <- value:
+			return
+		case <-sc.done:
+			return
+		default:
+		}
+		// Buffer full: drain it and retry with whichever value is fresher.
+		select {
+		case queued := <-sc.ch:
+			if queued.UpdatedAt > value.UpdatedAt {
+				value = queued
+			}
+		case <-sc.done:
+			return
+		default:
+			// A consumer drained it concurrently; retry.
+		}
+	}
 }
 
 // RedisPubSubManager is a self-healing manager for Redis pubsub subscriptions.
@@ -108,14 +140,8 @@ func (m *RedisPubSubManager) stop() {
 
 	// Close all subscriber channels
 	m.subscribers.Range(func(key, value interface{}) bool {
-		channels := value.([]*subscriberChannel)
-		for _, sc := range channels {
-			sc.mu.Lock()
-			if !sc.closed {
-				close(sc.ch)
-				sc.closed = true
-			}
-			sc.mu.Unlock()
+		for _, sc := range value.([]*subscriberChannel) {
+			sc.close()
 		}
 		return true
 	})
@@ -191,7 +217,8 @@ func (m *RedisPubSubManager) Subscribe(key string) (<-chan CounterInt64State, fu
 	}
 
 	sc := &subscriberChannel{
-		ch: make(chan CounterInt64State, 1),
+		ch:   make(chan CounterInt64State, 1),
+		done: make(chan struct{}),
 	}
 
 	// Add the channel to subscribers
@@ -200,26 +227,14 @@ func (m *RedisPubSubManager) Subscribe(key string) (<-chan CounterInt64State, fu
 	// Get initial value in background
 	go func() {
 		if val, ok, err := m.getCurrentValue(m.appCtx, key); err == nil && ok {
-			sc.mu.Lock()
-			if !sc.closed {
-				select {
-				case sc.ch <- val:
-				case <-m.appCtx.Done():
-				}
-			}
-			sc.mu.Unlock()
+			sc.sendKeepLatest(val)
 		}
 	}()
 
 	// Return cleanup function
 	cleanup := func() {
 		m.removeSubscriber(key, sc)
-		sc.mu.Lock()
-		if !sc.closed {
-			close(sc.ch)
-			sc.closed = true
-		}
-		sc.mu.Unlock()
+		sc.close()
 	}
 
 	return sc.ch, cleanup, nil
@@ -444,17 +459,7 @@ func (m *RedisPubSubManager) notifySubscribers(key string, value CounterInt64Sta
 	if !ok {
 		return
 	}
-
-	channels := subsValue.([]*subscriberChannel)
-	for _, sc := range channels {
-		sc.mu.Lock()
-		if !sc.closed {
-			select {
-			case sc.ch <- value:
-			default:
-				// Channel is full, skip
-			}
-		}
-		sc.mu.Unlock()
+	for _, sc := range subsValue.([]*subscriberChannel) {
+		sc.sendKeepLatest(value)
 	}
 }

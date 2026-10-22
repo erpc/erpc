@@ -106,13 +106,13 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -248,13 +248,13 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -394,13 +394,13 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -3757,7 +3757,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3811,7 +3811,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3842,7 +3842,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3873,7 +3873,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3914,7 +3914,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3945,7 +3945,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -3984,7 +3984,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -4032,7 +4032,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, upBad}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -4090,7 +4090,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x7b"}`)
 
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -4133,7 +4133,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				authReg, _ := auth.NewAuthRegistry(ctx, logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 					{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Value: "test-secret"}},
@@ -4177,7 +4177,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4209,7 +4209,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4241,7 +4241,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4274,7 +4274,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -4308,7 +4308,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4346,7 +4346,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4378,7 +4378,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -4416,7 +4416,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4466,7 +4466,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, up2}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -5576,6 +5576,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
 					},
 				},
 			},
@@ -5738,6 +5747,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
 					},
 				},
 			},
@@ -5829,6 +5847,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Id:       "rpc2",
 							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             123,
@@ -6875,6 +6902,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								StatePollerDebounce: common.Duration(10 * time.Second),
 							},
 						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
 					},
 				},
 			},
@@ -6955,6 +6991,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								ChainId:             123,
 								StatePollerInterval: common.Duration(30 * time.Second),
 								StatePollerDebounce: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -7812,7 +7857,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		require.NoError(t, err)
 	}
 
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, evmJsonRpcCache, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, evmJsonRpcCache, nil, cfg)
 	require.NoError(t, err)
 
 	// Callback now set at construction; do not mutate in tests
@@ -7820,7 +7865,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8105,14 +8150,14 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, ssCfg)
 	require.NoError(t, err)
 
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
 	// Give state poller more time to initialize and update shared state
 	time.Sleep(1 * time.Second)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8227,11 +8272,11 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8278,6 +8323,50 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	require.True(t, resp.Close, "drain-window responses must carry Connection: close so pooled clients migrate before Shutdown")
 }
 
+func TestHttpServer_IgnoredMethodKeepsRequestId(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id:            "test_project",
+				IgnoreMethods: []string{"eth_getBalance"},
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm:          &common.EvmNetworkConfig{ChainId: 123},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+	defer shutdown()
+
+	statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":7}`, nil, nil)
+	assert.Equal(t, http.StatusOK, statusCode)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(body), &resp))
+	assert.Equal(t, float64(7), resp["id"], "the error response must echo the request id")
+	errMap, _ := resp["error"].(map[string]interface{})
+	assert.Contains(t, errMap["message"], "method not supported")
+}
+
 func TestHttpServer_AdminMethodFilter(t *testing.T) {
 	const adminSecret = "test-secret"
 
@@ -8320,11 +8409,11 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 		require.NoError(t, err)
 		erpcInstance.Bootstrap(ctx)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 		require.NoError(t, err)
 
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8494,4 +8583,54 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		_, hasError := result["error"]
 		assert.True(t, hasError, "invalid pattern expression should propagate as a request error")
 	})
+}
+
+// eth_subscribe/eth_unsubscribe require a persistent connection and are served
+// only on the WebSocket path. Over HTTP eRPC must reject them, not forward: with
+// a WS link to the upstream it would otherwise create a real upstream
+// subscription and hand the HTTP client a subscription id that is immediately
+// orphaned (notifications flow to eRPC's link, not the client) — a fail-open
+// where a "did we subscribe?" guard gets a false positive on a dead stream.
+func TestHttpServer_RejectsSubscriptionMethodsOverHttp(t *testing.T) {
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm:          &common.EvmNetworkConfig{ChainId: 123},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+	defer shutdown()
+
+	for _, method := range []string{"eth_subscribe", "eth_unsubscribe"} {
+		statusCode, _, body := sendRequest(
+			fmt.Sprintf(`{"jsonrpc":"2.0","method":%q,"params":["newHeads"],"id":1}`, method), nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode, "%s: JSON-RPC errors ride a 200 for POST", method)
+		assert.Contains(t, body, "-32601", "%s over HTTP must be method-not-supported (-32601)", method)
+		assert.Contains(t, body, "WebSocket", "%s rejection must point the client at WebSocket", method)
+		assert.NotContains(t, body, `"result"`, "%s must not fail open with a subscription id", method)
+	}
 }

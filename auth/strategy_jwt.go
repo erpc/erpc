@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -85,38 +86,38 @@ func (s *JwtStrategy) Supports(ap *AuthPayload) bool {
 func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	token, _, err := s.parser.ParseUnverified(ap.Jwt.Token, jwt.MapClaims{})
 	if err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", "failed to parse JWT")
+		return nil, common.NewErrAuthUnauthorized("jwt", "parse_failed", "failed to parse JWT")
 	}
 
 	if len(s.cfg.AllowedAlgorithms) > 0 {
 		if !contains(s.cfg.AllowedAlgorithms, token.Method.Alg()) {
-			return nil, common.NewErrAuthUnauthorized("jwt", "unexpected signing method")
+			return nil, common.NewErrAuthUnauthorized("jwt", "unexpected_algorithm", "unexpected signing method")
 		}
 	}
 
 	key, err := s.findVerificationKey(ctx, token)
 	if err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", err.Error())
+		return nil, common.NewErrAuthUnauthorized("jwt", "no_verification_key", err.Error())
 	}
 
-	// Verify the signature
+	// Verify the signature (and standard claims such as exp via jwt.Parse).
 	token, err = jwt.Parse(ap.Jwt.Token, key)
 	if err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", "invalid signature")
+		return nil, errAuthUnauthorizedFromJwtParse(err)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return nil, common.NewErrAuthUnauthorized("jwt", "invalid JWT claims")
+		return nil, common.NewErrAuthUnauthorized("jwt", "invalid_claims", "invalid JWT claims")
 	}
 
 	if err := s.validateClaims(claims); err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", err.Error())
+		return nil, common.NewErrAuthUnauthorized("jwt", "claims_invalid", err.Error())
 	}
 
 	id, ok := claims["sub"].(string)
 	if !ok {
-		return nil, common.NewErrAuthUnauthorized("jwt", "missing 'sub' claim to be used as user id")
+		return nil, common.NewErrAuthUnauthorized("jwt", "missing_sub", "missing 'sub' claim to be used as user id")
 	}
 
 	user := &common.User{Id: id}
@@ -215,6 +216,25 @@ func (s *JwtStrategy) findVerificationKey(ctx context.Context, token *jwt.Token)
 	}
 
 	return nil, fmt.Errorf("no suitable verification key found")
+}
+
+// errAuthUnauthorizedFromJwtParse maps jwt.Parse errors onto
+// AuthUnauthorizedReason (message comes from the reason). Classification stays
+// here so common/ does not import golang-jwt.
+func errAuthUnauthorizedFromJwtParse(err error) error {
+	var ve *jwt.ValidationError
+	if errors.As(err, &ve) {
+		// Signature first: claims (including exp) are untrusted if the sig failed.
+		if ve.Errors&jwt.ValidationErrorSignatureInvalid != 0 {
+			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature)
+		}
+		if ve.Errors&jwt.ValidationErrorExpired != 0 {
+			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonTokenExpired)
+		}
+		// Other ValidationError flags (nbf, iat, malformed, …) keep jwt's text.
+		return common.NewErrAuthUnauthorized("jwt", "invalid_token", err.Error())
+	}
+	return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature)
 }
 
 func (s *JwtStrategy) validateClaims(claims jwt.MapClaims) error {

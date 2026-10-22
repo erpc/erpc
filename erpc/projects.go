@@ -127,6 +127,15 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, req *common.
 	return nil, nil
 }
 
+// AcceptsConsumerPayload reports whether any consumer auth strategy accepts
+// ap for some method (see auth.AuthRegistry.AcceptsPayload).
+func (p *PreparedProject) AcceptsConsumerPayload(ctx context.Context, req *common.NormalizedRequest, ap *auth.AuthPayload) error {
+	if p.consumerAuthRegistry != nil {
+		return p.consumerAuthRegistry.AcceptsPayload(ctx, req, ap)
+	}
+	return nil
+}
+
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	start := time.Now()
 	ctx, span := common.StartDetailSpan(ctx, "Project.Forward")
@@ -241,9 +250,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			upstreamId = upstream.Id()
 		}
 
-		if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
-			// Record block-range heatmap using dynamic buckets and human-readable labels
-			recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+		if network.cfg.Architecture == common.ArchitectureEvm {
+			if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
+				// Record block-range heatmap using dynamic buckets and human-readable labels
+				recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+			}
 		}
 		telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
 			p.Config.Id,
@@ -275,6 +286,26 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		).Observe(dur.Seconds())
 		return resp, err
 	} else {
+		// FALLBACK SERVE: a fallback-eligible rejection (recordOnly verdict
+		// escalated by autoCorrectWhenPossible) hunted a validated replacement
+		// and found none. The policy's promise is that the client never pays
+		// an error for such a mismatch — serve the flagged original, recorded
+		// loudly. Deliberately checked before any error classification: ANY
+		// terminal failure while a stash exists is strictly worse for the
+		// client than the stashed answer the policy already deemed serveable.
+		if fb := nq.TakeIntegrityFallbackResponse(); fb != nil && fb.Response != nil {
+			telemetry.MetricIntegrityFallbackServed.WithLabelValues(
+				p.Config.Id, network.Label(), method, fb.CheckID, fb.Finality,
+			).Inc()
+			lg.Warn().
+				Str("check", fb.CheckID).
+				Str("finality", fb.Finality).
+				Str("reason", fb.Reason).
+				Err(err).
+				Msg("integrity: no validated replacement found — serving the flagged original (recordOnly policy)")
+			fb.Response.SetDuration(time.Since(start))
+			return fb.Response, nil
+		}
 		// Failed due to integrity: a check rejected a response and no good one was
 		// found (every candidate failed), so the request errored rather than serving
 		// bad data. The rejecting check is the "why".
@@ -333,17 +364,30 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	switch network.cfg.Architecture {
-	case common.ArchitectureEvm:
+	resp, err := p.forwardWithHooks(ctx, network, nq)
+	// Post-forward hooks, short-circuits and cache hits build responses from
+	// the typed request id, so the client's id is stamped last, here.
+	if serr := stampClientResponseID(ctx, nq, resp); serr != nil && err == nil {
+		err = serr
+	}
+	return resp, err
+}
+
+func (p *PreparedProject) forwardWithHooks(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	h := network.architectureHandler
+	if h != nil {
 		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)
-		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
-			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+		if handled, resp, err := h.HandleProjectPreForward(ctx, network, nq); handled {
+			return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
 		}
 	}
 
 	// If not handled, then fallback to the normal forward
 	resp, err := network.Forward(ctx, nq)
-	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	if h != nil {
+		return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	}
+	return resp, err
 }
 
 func (p *PreparedProject) AcquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {

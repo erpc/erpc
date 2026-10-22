@@ -691,7 +691,7 @@ erpc dump --config erpc.yaml --format json
 
 `dump` resolves the effective selection policies (including TypeScript `evalFunc` sentinels back to their source) and prints the complete config as YAML or JSON.
 
-**Defaults cascade.** `SetDefaults` fills every nil/zero field after decode — no field is silently undefined at runtime. If `projects` is empty after loading, a synthetic `main` project with `repository` + `envio` providers is injected automatically. <SourceLink file="common/defaults.go" lines="49-176" />
+**Defaults cascade.** `SetDefaults` fills every nil/zero field after decode — no field is silently undefined at runtime. If `projects` is empty after loading, a synthetic `main` project with a `repository` provider is injected automatically. <SourceLink file="common/defaults.go" lines="49-176" />
 
 ### Per-section documentation map
 
@@ -728,7 +728,7 @@ erpc dump --config erpc.yaml --format json
 - `SetDefaults` fills every nil/zero field after decode — no field is silently undefined at runtime. <SourceLink file="common/defaults.go" lines="49-176" />
 - `Validate` runs after `SetDefaults` and returns an error if any invariant is violated; `erpc validate` exposes the full report. <SourceLink file="common/validation.go" lines="15" />
 - TypeScript configs are bundled by embedded esbuild (no Node.js required) and evaluated in sobek; `process.env` is pre-populated from `os.Environ()`. <SourceLink file="common/config.go" lines="2686" />
-- If `projects` is empty after loading, a synthetic `main` project with `repository` + `envio` providers is injected automatically. <SourceLink file="common/defaults.go" lines="100-167" />
+- If `projects` is empty after loading, a synthetic `main` project with a `repository` provider is injected automatically. <SourceLink file="common/defaults.go" lines="100-167" />
 
 ### Worked examples
 
@@ -874,11 +874,14 @@ pipeline, env-var semantics, validate/dump tooling — applies to whichever form
 | `metrics.port` | int | `4001` | Prometheus scrape port. |
 | `metrics.errorLabelMode` | string | `"compact"` | Controls the `error` label on error-count metrics. `"compact"` condenses error codes; `"verbose"` emits full class names. |
 | `metrics.histogramBuckets` | string | `""` (built-in defaults) | Comma-separated float64 bucket boundaries for request-duration histograms. Validation rejects non-float values. |
-| `metrics.histogramDropLabels` | []string | nil | Label names removed from every histogram to reduce cardinality; counters/gauges unaffected. |
-| `metrics.histogramLabelOverrides` | map | nil | Per-metric label keep-list; key is metric name without `erpc_` prefix (e.g. `"network_request_duration_seconds"`). |
+| `metrics.customizations` | []object | nil | List of `{subject, action, labels, buckets}` entries controlling which metric families are exposed, which labels they carry, and their histogram buckets. `subject` is a metric name without the `erpc_` prefix, optionally ending in `*`. Rules apply by specificity (exact > longer prefix > shorter prefix > `*`), not list order. |
+| `metrics.histogramDropLabels` | []string | nil | **Deprecated** — use `metrics.customizations` with `labels: [{subject, action: drop}]`. Label names removed from every histogram to reduce cardinality; counters/gauges unaffected. |
+| `metrics.histogramLabelOverrides` | map | nil | **Deprecated** — use `metrics.customizations`. Per-metric label keep-list; key is metric name without `erpc_` prefix (e.g. `"network_request_duration_seconds"`). |
+| `metrics.counterDropLabels` | []string | nil | **Deprecated** — use `metrics.customizations` with `labels: [{subject, action: drop}]`. Label names removed from every counter carrying caller-controlled dimensions; sums are preserved, the dimension is not. |
+| `metrics.counterLabelOverrides` | map | nil | **Deprecated** — use `metrics.customizations`. Per-metric label keep-list for counters; key is metric name without `erpc_` prefix. |
 
 **Default project synthesis.** When `projects` is empty, `SetDefaults` injects a synthetic `main` project (<SourceLink file="common/defaults.go" lines="100-167" />) with:
-- `repository` and `envio` providers
+- a `repository` provider (id `public`)
 - An aliasing rule so `/evm/<chainId>` resolves without a project prefix
 - Network defaults: `evm.getLogsMaxAllowedRange=30_000`, `getLogsSplitOnError=true`, integrity enforcement enabled
 - Network-level failsafe: retry(maxAttempts=5), timeout(120s), hedge(p70 quantile, maxCount=2)

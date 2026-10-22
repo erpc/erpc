@@ -76,7 +76,6 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	34443:      "mode-mainnet",
 	919:        "mode-sepolia",
 	69000:      "anime-mainnet",
-	6900:       "anime-sepolia",
 	33139:      "apechain-mainnet",
 	33111:      "apechain-curtis",
 	232:        "lens-mainnet",
@@ -152,6 +151,14 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	351243127:  "xmtp-ropsten",
 	728126428:  "tron-mainnet",
 	3448148188: "tron-testnet",
+}
+
+// alchemyCollidingChainIds holds chain ids under which Alchemy serves a
+// different chain than the one that id usually names. eth_chainId cannot tell
+// the two apart, so an auto-discovered upstream would serve another chain's
+// blocks.
+var alchemyCollidingChainIds = map[int64]struct{}{
+	6900: {}, // Alchemy: anime-sepolia testnet; 6900 is Nibiru mainnet
 }
 
 const DefaultAlchemyRecheckInterval = 24 * time.Hour
@@ -462,7 +469,16 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 
 	upstream.VendorName = v.Name()
 
-	logger.Debug().Int64("chainId", upstream.Evm.ChainId).Interface("upstream", upstream).Interface("settings", map[string]interface{}{
+	// upstream.Evm is nil for a non-EVM upstream. Alchemy sells Solana endpoints,
+	// so a user-supplied `https://solana-mainnet.g.alchemy.com/v2/KEY` with
+	// `type: svm` reaches here having skipped the endpoint-derivation branch
+	// above (which is the only thing that requires Evm). zerolog evaluates its
+	// arguments eagerly, so an unguarded deref panicked at ANY log level.
+	logEvt := logger.Debug()
+	if upstream.Evm != nil {
+		logEvt = logEvt.Int64("chainId", upstream.Evm.ChainId)
+	}
+	logEvt.Interface("upstream", upstream).Interface("settings", map[string]interface{}{
 		"recheckInterval": settings["recheckInterval"],
 	}).Msg("generated upstream from alchemy provider")
 
@@ -614,6 +630,9 @@ func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context, apiUrl string)
 		if _, exists := newData[chainID]; !exists {
 			newData[chainID] = subdomain
 		}
+	}
+	for chainID := range alchemyCollidingChainIds {
+		delete(newData, chainID)
 	}
 
 	return newData, nil

@@ -841,6 +841,96 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	connector.AssertExpectations(t)
 }
 
+// The background refresh gets at least the caller's context deadline rather
+// than being capped at fallbackTimeout.
+func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
+	// refreshFn deliberately returns an error so applyRefreshResult short-circuits
+	// before scheduleBackgroundPushCurrent, avoiding a background Publish goroutine
+	// that would race across t.Run boundaries.
+	refreshErr := errors.New("intentional")
+	makeCounter := func(t *testing.T, registry *sharedStateRegistry, key string) *counterInt64 {
+		t.Helper()
+		c := &counterInt64{
+			registry:         registry,
+			key:              key,
+			ignoreRollbackOf: 1024,
+		}
+		c.value.Store(5)
+		c.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+		return c
+	}
+
+	t.Run("ctx deadline longer than fallback is honored", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 500 * time.Millisecond
+		registry.updateMaxWait = 5 * time.Second
+
+		counter := makeCounter(t, registry, "test-ctx-deadline")
+
+		const callerDeadline = 4 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+		defer cancel()
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.Greater(t, fnTimeout, registry.fallbackTimeout,
+			"fn timeout should honor caller ctx deadline when longer than fallbackTimeout")
+		assert.LessOrEqual(t, fnTimeout, callerDeadline)
+	})
+
+	t.Run("no ctx deadline falls back to fallbackTimeout", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 500 * time.Millisecond
+
+		counter := makeCounter(t, registry, "test-no-deadline")
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(context.Background(), time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.LessOrEqual(t, fnTimeout, registry.fallbackTimeout,
+			"fn timeout should be bounded by fallbackTimeout when caller has no deadline")
+	})
+
+	t.Run("ctx deadline shorter than fallback uses fallback", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 2 * time.Second
+		registry.updateMaxWait = 5 * time.Second
+
+		counter := makeCounter(t, registry, "test-short-deadline")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.Greater(t, fnTimeout, 500*time.Millisecond,
+			"fn timeout should use fallbackTimeout when caller deadline is shorter")
+	})
+}
+
 func TestCounterInt64_ReaderStarvation(t *testing.T) {
 	t.Run("GetValue NOT blocked by long-running TryUpdateIfStale", func(t *testing.T) {
 		counter := &counterInt64{
@@ -1741,4 +1831,207 @@ func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
 		assert.Equal(t, int64(100), setCallValue, "should push fresher local value to remote")
 		setCallMu.Unlock()
 	})
+}
+
+func TestCounterInt64_TryUpdate_NoRemoteWriteWithoutAdvance(t *testing.T) {
+	registry, connector, ctx := setupTest("no-advance")
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(100)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+
+	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 100))
+	assert.Equal(t, int64(100), counter.TryUpdate(ctx, 99))
+	time.Sleep(50 * time.Millisecond)
+	connector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	connector.AssertNotCalled(t, "PublishCounterInt64", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// A lagging instance advancing its local value must not overwrite a higher
+// remote value just because its local timestamp is newer.
+func TestCounterInt64_BackgroundPush_DoesNotRegressHigherRemote(t *testing.T) {
+	registry, connector, ctx := setupTest("no-regress")
+
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil)
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(`{"v":105,"t":1,"b":"other-instance"}`), nil)
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(100)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+
+	counter.TryUpdate(ctx, 101)
+	assert.Eventually(t, func() bool { return counter.GetValue() == 105 }, time.Second, 10*time.Millisecond,
+		"local counter should adopt the higher remote value")
+	connector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestCounterInt64_ZeroIsNotAHeadObservation covers the case where a shared head
+// counter is asked to move to zero.
+//
+// Zero is the zero VALUE of an unset CounterInt64State, not an observation of a
+// chain. When it reaches a head counter it is read as a rollback the size of the
+// entire chain, which is by definition larger than ignoreRollbackOf, so the
+// "only real reorgs get applied" rule waves it through and the shared head goes
+// to 0 across every instance that receives it.
+//
+// Observed in production on the goldsky ECS edge on 2026-08-18: upstreams on
+// unrelated networks and unrelated vendors recorded
+// erpc_upstream_block_head_large_rollback values equal to their chain's full
+// height (gravity-mainnet 129,890,975 against a head of 129,890,991;
+// zksync-mainnet 71,589,976 against 71,589,993), in region-synchronised bursts
+// that lined up with task restarts rather than with anything happening on-chain.
+func TestCounterInt64_ZeroIsNotAHeadObservation(t *testing.T) {
+	newHeadCounter := func(current int64) *counterInt64 {
+		c := &counterInt64{
+			ignoreRollbackOf: 1024, // latest/finalized heads: DefaultToleratedBlockHeadRollback
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+		c.value.Store(current)
+		c.updatedAtUnixMs.Store(1)
+		return c
+	}
+
+	t.Run("remote zero does not roll the head back", func(t *testing.T) {
+		counter := newHeadCounter(129_890_991)
+
+		var rollbacks int
+		counter.OnLargeRollback(func(int64, int64) { rollbacks++ })
+
+		// Exactly what a restarting instance pushes when it has not polled yet:
+		// a well-formed state, a fresher timestamp, and an empty value.
+		updated := counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{
+			Value:     0,
+			UpdatedAt: 2,
+			UpdatedBy: "instance-that-just-started",
+		})
+
+		assert.False(t, updated, "a zero head must be rejected, not applied")
+		assert.Equal(t, int64(129_890_991), counter.GetValue(), "head must survive a remote zero")
+		assert.Zero(t, rollbacks, "a zero head is not a reorg and must not fire the rollback callback")
+	})
+
+	t.Run("the rejected zero must not keep winning reconciliation", func(t *testing.T) {
+		counter := newHeadCounter(129_890_991)
+
+		counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{
+			Value:     0,
+			UpdatedAt: 500,
+			UpdatedBy: "instance-that-just-started",
+		})
+
+		// Same handling as a rejected small rollback: our higher local value has
+		// to out-rank the remote zero, or reconciliation pushes the zero straight
+		// back at us on the next tick and the counter flaps forever.
+		assert.Greater(t, counter.updatedAtMs(), int64(500),
+			"local timestamp must advance past the rejected remote state")
+	})
+
+	t.Run("local zero does not roll the head back", func(t *testing.T) {
+		counter := newHeadCounter(71_589_993)
+
+		var rollbacks int
+		counter.OnLargeRollback(func(int64, int64) { rollbacks++ })
+
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 0)
+
+		assert.False(t, updated, "a zero head must be rejected on the local path too")
+		assert.Equal(t, int64(71_589_993), counter.GetValue())
+		assert.Zero(t, rollbacks)
+	})
+
+	t.Run("negative values are rejected too", func(t *testing.T) {
+		counter := newHeadCounter(1_000_000)
+
+		assert.False(t, counter.processNewValue(UpdateSourceTryUpdate, -1))
+		assert.Equal(t, int64(1_000_000), counter.GetValue())
+	})
+
+	t.Run("a real reorg is still applied", func(t *testing.T) {
+		counter := newHeadCounter(1_000_000)
+
+		var rollbacks int
+		counter.OnLargeRollback(func(int64, int64) { rollbacks++ })
+
+		// The guard must not blunt the behaviour it sits next to: a genuine deep
+		// reorg is a positive value and still exceeds ignoreRollbackOf.
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 995_000)
+
+		assert.True(t, updated, "a real reorg must still be applied")
+		assert.Equal(t, int64(995_000), counter.GetValue())
+		assert.Equal(t, 1, rollbacks)
+	})
+
+	t.Run("earliest-block counters may still hold zero", func(t *testing.T) {
+		// evm_state_poller creates the earliest-block counter with
+		// ignoreRollbackOf=0. An archive node's earliest block IS 0, so the floor
+		// must not apply there.
+		counter := &counterInt64{
+			ignoreRollbackOf: 0,
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+		counter.value.Store(5_000_000)
+		counter.updatedAtUnixMs.Store(1)
+
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 0)
+
+		assert.True(t, updated, "earliest-block counters legitimately move to 0")
+		assert.Equal(t, int64(0), counter.GetValue())
+	})
+}
+
+// A refresh that outlives updateMaxWait finishes in the background. When the
+// caller's deadline extends fnTimeout past fallbackTimeout, a result that
+// arrives after fallbackTimeout must still be applied.
+func TestCounterInt64_TryUpdateIfStale_AsyncResultWithinExtendedTimeoutIsApplied(t *testing.T) {
+	registry, connector, _ := setupTest("my-dev")
+	registry.fallbackTimeout = 200 * time.Millisecond
+	registry.updateMaxWait = 20 * time.Millisecond
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test-async-extended", mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "my-dev/test-async-extended", mock.Anything).Return(nil, errors.New("not acquired")).Maybe()
+
+	counter := &counterInt64{registry: registry, key: "my-dev/test-async-extended", ignoreRollbackOf: 1024}
+	counter.value.Store(5)
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	refreshFn := func(fnCtx context.Context) (int64, error) {
+		select {
+		case <-time.After(2 * time.Second):
+			return 42, nil
+		case <-fnCtx.Done():
+			return 0, fnCtx.Err()
+		}
+	}
+
+	value, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+	if !assert.NoError(t, err) {
+		return
+	}
+	assert.Equal(t, int64(5), value, "foreground returns the current value once updateMaxWait passes")
+
+	assert.Eventually(t, func() bool { return counter.GetValue() == 42 }, 4*time.Second, 20*time.Millisecond,
+		"result delivered after fallbackTimeout but within the caller's deadline must be applied")
 }

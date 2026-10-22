@@ -445,10 +445,15 @@ budget so the last retry isn't silently cut short:
 }]`}
 />
 
-**4. Cache connector timeout (static, not adaptive).** Cache connectors use `failsafeForGets` /
-`failsafeForSets`; quantile mode is rejected at cache scope. A static timeout ensures a slow
-remote cache read is abandoned quickly so eRPC falls through to upstream — a cache read that
-takes longer than an upstream call is never worth it:
+**4. Cache connector timeout (adaptive against the connector's own latency).** Cache
+connectors use `failsafeForGets` / `failsafeForSets`; quantile mode resolves against the
+connector's own 1-minute sliding latency window, tracked per (method, finality) executor
+(<SourceLink file="data/cache_executor.go" lines="14-20" />, <SourceLink file="data/cache_executor.go" lines="244-249" />)
+— not against network metrics. `max` keeps the hard ceiling: a slow remote cache read is
+abandoned quickly so eRPC falls through to upstream — a cache read that takes longer than an
+upstream call is never worth it. When `min` is unset, the same auto-floor as
+`NewTimeoutFunc` applies at executor construction: `min = base/2` (or `500ms` when
+`base == 0`) — <SourceLink file="data/cache_executor.go" lines="75-85" />:
 
 <ConfigTabs
   path="database.evmJsonRpcCache.connectors[].failsafeForGets[]"
@@ -457,10 +462,14 @@ takes longer than an upstream call is never worth it:
     driver: grpc
     failsafeForGets:
       - matchMethod: "*"
-        # static: quantile is rejected at cache scope; connector latency is stable enough
         timeout:
-          # 400ms hard ceiling: a slow cache read is worse than a direct upstream call
-          duration: 400ms
+          duration:
+            # p99 of this connector's own completed reads (1-minute window)
+            quantile: 0.99
+            # cold-start fallback is base + min; min unset → auto-floor = base/2 (50ms)
+            base: 100ms
+            # 400ms hard ceiling: a slow cache read is worse than a direct upstream call
+            max: 400ms
         retry: { maxAttempts: 2, delay: "0" }
         hedge: { delay: 100ms, maxCount: 1 }`}
   ts={`connectors: [{
@@ -468,10 +477,11 @@ takes longer than an upstream call is never worth it:
   driver: "grpc",
   failsafeForGets: [{
     matchMethod: "*",
-    // static: quantile is rejected at cache scope; connector latency is stable enough
     timeout: {
+      // p99 of this connector's own completed reads (1-minute window);
+      // cold start = base + min; min unset → auto-floor = base/2 (50ms);
       // 400ms hard ceiling: a slow cache read is worse than a direct upstream call
-      duration: "400ms",
+      duration: { quantile: 0.99, base: "100ms", max: "400ms" },
     },
     retry: { maxAttempts: 2, delay: "0" },
     hedge: { delay: "100ms", maxCount: 1 },

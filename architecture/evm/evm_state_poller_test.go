@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -172,4 +173,24 @@ func TestEvmStatePoller_BootstrapWithZeroIntervalStartsNothing(t *testing.T) {
 	assert.LessOrEqual(t, after-before, 0, "interval=0 must not start any poll loop")
 	assert.Equal(t, int64(0), up.forwards.Load(), "interval=0 must not poll the upstream")
 	assert.False(t, poller.Enabled)
+}
+
+// Request-path polls (block-availability gates, block-skip refresh) respect
+// the debounce: concurrent and repeated calls within it share one fetch.
+func TestEvmStatePoller_RequestPathPollsAreCoalesced(t *testing.T) {
+	poller, up, ctx := newTestStatePoller(t, time.Hour, time.Minute)
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = poller.PollLatestBlockNumber(ctx)
+		}()
+	}
+	wg.Wait()
+	for range 20 {
+		_, _ = poller.PollLatestBlockNumber(ctx)
+	}
+	assert.Equal(t, int64(1), up.forwards.Load())
 }

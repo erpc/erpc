@@ -695,8 +695,8 @@ func TestRecordMetricsAndTracing_InfoSeverityNotCountedAsConsensusError(t *testi
 			}
 			group.Count++
 			group.Results = append(group.Results, r)
-			if group.FirstError == nil {
-				group.FirstError = r.Err
+			if group.RepresentativeError == nil {
+				group.RepresentativeError = r.Err
 			}
 		}
 		return analysis

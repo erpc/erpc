@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -212,6 +213,34 @@ func (e *BaseError) WithRetryableTowardNetwork(r bool) RetryableError {
 			e.Details = map[string]interface{}{}
 		}
 		e.Details["retryableTowardNetwork"] = r
+	}
+	return e
+}
+
+// WithPermanentMissingData marks a MissingData verdict as permanent — the data
+// is skipped/absent, not merely not-yet-indexed — so a time-delayed re-fetch
+// cannot change it. Distinct from retryableTowardNetwork (which governs whether
+// another *upstream* is worth trying): a skipped slot stays retryable across
+// upstreams for one sweep, yet must not trigger a wait-and-retry afterwards.
+func (e *BaseError) WithPermanentMissingData(p bool) *BaseError {
+	if e != nil {
+		if e.Details == nil {
+			e.Details = map[string]interface{}{}
+		}
+		e.Details["permanentMissingData"] = p
+	}
+	return e
+}
+
+// WithHistorySweepContinuation marks MissingData that exists only to continue a
+// serial upstream sweep after an incomplete-but-successful JSON-RPC body — not
+// proof that the upstream lacked data other peers had.
+func (e *BaseError) WithHistorySweepContinuation(p bool) *BaseError {
+	if e != nil {
+		if e.Details == nil {
+			e.Details = map[string]interface{}{}
+		}
+		e.Details["historySweepContinuation"] = p
 	}
 	return e
 }
@@ -533,20 +562,61 @@ type ErrAuthUnauthorized struct{ BaseError }
 
 const ErrCodeAuthUnauthorized ErrorCode = "ErrAuthUnauthorized"
 
-var NewErrAuthUnauthorized = func(strategy string, message string) error {
+// AuthUnauthorizedReason is a stable denial class for ErrAuthUnauthorized.
+// Message text is derived from the reason so callers do not invent labels.
+type AuthUnauthorizedReason string
+
+const (
+	AuthUnauthorizedReasonTokenExpired     AuthUnauthorizedReason = "token_expired"
+	AuthUnauthorizedReasonInvalidSignature AuthUnauthorizedReason = "invalid_signature"
+)
+
+func (r AuthUnauthorizedReason) Message() string {
+	switch r {
+	case AuthUnauthorizedReasonTokenExpired:
+		return "token expired"
+	case AuthUnauthorizedReasonInvalidSignature:
+		return "invalid signature"
+	default:
+		return string(r)
+	}
+}
+
+// NewErrAuthUnauthorized builds ErrAuthUnauthorized with a closed reason label
+// for metrics (Details.reason) and a separate client-facing message.
+var NewErrAuthUnauthorized = func(strategy, reason, message string) error {
 	return &ErrAuthUnauthorized{
 		BaseError{
 			Code:    ErrCodeAuthUnauthorized,
 			Message: message,
 			Details: map[string]interface{}{
 				"strategy": strategy,
+				"reason":   reason,
 			},
 		},
 	}
 }
 
+// NewErrAuthUnauthorizedReason builds ErrAuthUnauthorized with Message from reason.
+var NewErrAuthUnauthorizedReason = func(strategy string, reason AuthUnauthorizedReason) error {
+	return NewErrAuthUnauthorized(strategy, string(reason), reason.Message())
+}
+
 func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
 	return http.StatusUnauthorized
+}
+
+func (e *ErrAuthUnauthorized) Reason() AuthUnauthorizedReason {
+	if e == nil || e.Details == nil {
+		return ""
+	}
+	if r, ok := e.Details["reason"].(AuthUnauthorizedReason); ok {
+		return r
+	}
+	if s, ok := e.Details["reason"].(string); ok {
+		return AuthUnauthorizedReason(s)
+	}
+	return ""
 }
 
 type ErrAuthRateLimitRuleExceeded struct{ BaseError }
@@ -671,10 +741,12 @@ func (e *ErrUnknownNetworkArchitecture) ErrorStatusCode() int {
 
 type ErrNotImplemented struct{ BaseError }
 
+const ErrCodeNotImplemented ErrorCode = "ErrNotImplemented"
+
 var NewErrNotImplemented = func(msg string) error {
 	return &ErrNotImplemented{
 		BaseError{
-			Code:    "ErrNotImplemented",
+			Code:    ErrCodeNotImplemented,
 			Message: msg,
 		},
 	}
@@ -875,6 +947,92 @@ func (e *ErrUpstreamsExhausted) Request() *NormalizedRequest {
 
 const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
+// orderCauses drains a per-upstream error map into a slice with a deterministic,
+// data-safe total order.
+//
+// sync.Map.Range yields Go-map order, which varies run to run. Everything
+// downstream that picks ONE representative cause out of the bundle — most
+// visibly TranslateToJsonRpcException's dominance scan — would then hand the
+// client a different wire code on every request for an identical set of
+// upstream failures. The order imposed here is the single source of
+// determinism for all of them.
+//
+// Two ranks, both architecture-neutral:
+//
+//  1. Retryable-toward-network causes before terminal ones. When upstreams
+//     disagree about the same datum — one says "not available yet", another
+//     says "gone forever" — the retryable verdict is the safe representative.
+//     Reporting "gone forever" can make a consumer permanently skip data that
+//     does exist (unrecoverable); reporting "not yet" merely costs a retry.
+//     This reads the very same flag the retry path consults, so no
+//     chain-specific error code leaks into common/.
+//  2. Then by upstream id, so equally-retryable causes still have exactly one
+//     canonical order. Causes that tie on both ranks fall back to their text;
+//     if that also ties they are indistinguishable to every consumer.
+func orderCauses(ersObj *sync.Map) []error {
+	if ersObj == nil {
+		return nil
+	}
+	type orderedCause struct {
+		err       error
+		key       string
+		retryable bool
+	}
+	ocs := []orderedCause{}
+	ersObj.Range(func(key, value any) bool {
+		err, ok := value.(error)
+		if !ok || err == nil {
+			return true
+		}
+		ocs = append(ocs, orderedCause{
+			err:       err,
+			key:       causeSortKey(key, err),
+			retryable: IsRetryableTowardNetwork(err),
+		})
+		return true
+	})
+	sort.Slice(ocs, func(i, j int) bool {
+		a, b := &ocs[i], &ocs[j]
+		if a.retryable != b.retryable {
+			return a.retryable
+		}
+		if a.key != b.key {
+			return a.key < b.key
+		}
+		// ponytail: Error() only on a key tie (same upstream twice, or
+		// upstream-less causes) — never on the common path.
+		return a.err.Error() < b.err.Error()
+	})
+	ers := make([]error, len(ocs))
+	for i := range ocs {
+		ers[i] = ocs[i].err
+	}
+	return ers
+}
+
+// causeSortKey derives a stable identity for one cause of an exhausted bundle.
+// Callers key the map by the Upstream itself; tests key it by id string. Either
+// way the id is the natural key (at most one cause per upstream). Falls back to
+// the upstream carried on the error, then to the error text — never to the map
+// key's address, which would not be stable across runs.
+func causeSortKey(key any, err error) string {
+	switch k := key.(type) {
+	case Upstream:
+		if k != nil {
+			return k.Id()
+		}
+	case string:
+		return k
+	}
+	var ue interface{ Upstream() Upstream }
+	if errors.As(err, &ue) {
+		if up := ue.Upstream(); up != nil {
+			return up.Id()
+		}
+	}
+	return err.Error()
+}
+
 var NewErrUpstreamsExhausted = func(
 	req *NormalizedRequest,
 	ersObj *sync.Map,
@@ -882,11 +1040,7 @@ var NewErrUpstreamsExhausted = func(
 	duration time.Duration,
 	attempts, retries, hedges, upstreams int,
 ) error {
-	ers := []error{}
-	ersObj.Range(func(key, value any) bool {
-		ers = append(ers, value.(error))
-		return true
-	})
+	ers := orderCauses(ersObj)
 	e := &ErrUpstreamsExhausted{
 		BaseError: BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
@@ -1274,6 +1428,47 @@ var NewErrNetworkInitializing = func(project string, network string) error {
 }
 
 func (e *ErrNetworkInitializing) ErrorStatusCode() int { return http.StatusServiceUnavailable }
+
+// ErrNetworkNoUpstreamsAvailable is the terminal counterpart of
+// ErrNetworkInitializing: the network has been initializing for longer than
+// NoUpstreamsAvailableAfter and still has zero upstreams registered.
+//
+// It exists because "initializing; please retry shortly" is true of the first
+// seconds and a lie after the first hour. A chain that no configured upstream
+// or provider serves — removed from config, deprecated, never supported — sits
+// in that state permanently, so callers keep retrying and operators read the
+// message as a temporary blip. This one names the actual condition.
+//
+// It maps to 404, not 503. The state is terminal rather than transient: once a
+// network has sat past NoUpstreamsAvailableAfter with zero upstreams registered,
+// no amount of caller retrying changes the outcome — the project does not serve
+// that network. A 5xx invites a retry that cannot succeed and reports what is
+// really a coverage gap as a server fault. Operators should alert on the
+// erpc_network_no_upstreams_available_total counter, which is emitted regardless
+// of the wire status.
+type ErrNetworkNoUpstreamsAvailable struct{ BaseError }
+
+const ErrCodeNetworkNoUpstreamsAvailable ErrorCode = "ErrNetworkNoUpstreamsAvailable"
+
+var NewErrNetworkNoUpstreamsAvailable = func(project string, network string) error {
+	return &ErrNetworkNoUpstreamsAvailable{
+		BaseError{
+			Code: ErrCodeNetworkNoUpstreamsAvailable,
+			Message: fmt.Sprintf(
+				"no RPC providers are available for network '%s' in project '%s'",
+				network, project,
+			),
+			Details: map[string]interface{}{
+				"project": project,
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkNoUpstreamsAvailable) ErrorStatusCode() int {
+	return http.StatusNotFound
+}
 
 // ErrNetworkNotSupported indicates that providers do not support the requested network
 // and no static upstreams exist. It should be treated as fatal for initialization tasks.
@@ -2398,7 +2593,9 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 //     nothing to recover — terminal), OR
 //   - every child of a multi-error wrapper cause (ErrUpstreamsExhausted,
 //     ErrConsensusDispute, ErrConsensusLowParticipants, or any errors.Join
-//     bundle) is itself non-retryable, OR
+//     bundle) is itself non-retryable or an upstream's method verdict
+//     (unsupported or ignored): the sweep already asked every upstream, and
+//     asking again cannot change that answer, OR
 //   - any error along the linear Cause chain carries
 //     WithRetryableTowardNetwork(false).
 //
@@ -2433,7 +2630,7 @@ func IsRetryableTowardNetwork(err error) bool {
 		if ew, ok := cause.(interface{ Unwrap() []error }); ok {
 			if children := ew.Unwrap(); len(children) > 0 {
 				for _, child := range children {
-					if IsRetryableTowardNetwork(child) {
+					if IsRetryableTowardNetwork(child) && !isUpstreamMethodVerdict(child) {
 						return true
 					}
 				}
@@ -2467,6 +2664,77 @@ func IsRetryableTowardNetwork(err error) bool {
 	return true
 }
 
+// isUpstreamMethodVerdict reports whether err's single-cause chain says the
+// upstream does not serve the method (-32601 or ignoreMethods). Alone it
+// stays retryable toward the network, so a sweep moves on to an upstream
+// that may serve it.
+func isUpstreamMethodVerdict(err error) bool {
+	for cur := err; cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			return false
+		}
+		if base := cse.Base(); base != nil && (base.Code == ErrCodeEndpointUnsupported || base.Code == ErrCodeUpstreamMethodIgnored) {
+			return true
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			return false
+		}
+		cur = next
+	}
+	return false
+}
+
+// IsPermanentlyMissingData reports whether a MissingData verdict is permanent —
+// the data is skipped/absent, not merely not-yet-indexed — so a time-delayed
+// re-fetch cannot change it. Mirrors IsRetryableTowardNetwork's single-cause
+// chain walk (never descending into multi-error wrappers). Default false: a
+// plain MissingData error is treated as potentially-transient (a not-yet-indexed
+// block that may appear as the tip advances), preserving existing retry
+// behaviour for every caller that does not set the flag.
+func IsPermanentlyMissingData(err error) bool {
+	for cur := err; cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			break
+		}
+		if base := cse.Base(); base != nil && base.Details != nil {
+			if p, ok := base.Details["permanentMissingData"].(bool); ok && p {
+				return true
+			}
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			break
+		}
+		cur = next
+	}
+	return false
+}
+
+// IsHistorySweepContinuation reports MissingData emitted to continue a serial
+// sweep after an incomplete 200 — not a wrong-empty disagreement with the winner.
+func IsHistorySweepContinuation(err error) bool {
+	for cur := err; cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			break
+		}
+		if base := cse.Base(); base != nil && base.Details != nil {
+			if p, ok := base.Details["historySweepContinuation"].(bool); ok && p {
+				return true
+			}
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			break
+		}
+		cur = next
+	}
+	return false
+}
+
 func IsRetryableTowardsUpstream(err error) bool {
 	// Check if this is an exhausted upstreams error with retryable underlying errors
 	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
@@ -2494,6 +2762,11 @@ func IsRetryableTowardsUpstream(err error) bool {
 		ErrCodeUpstreamRequestSkipped,
 		ErrCodeUpstreamMethodIgnored,
 		ErrCodeEndpointUnsupported,
+
+		// Method the network cannot serve in this configuration (stateful method
+		// under multiple upstreams, eth_accounts/eth_sign) -> No Retry: this is a
+		// deterministic pre-forward rejection, not a transient upstream fault.
+		ErrCodeNotImplemented,
 
 		// Do not try when 3rd-party providers run out of monthly capacity or billing issues
 		ErrCodeEndpointBillingIssue,
@@ -2554,6 +2827,9 @@ func IsClientError(err error) bool {
 		ErrCodeGetLogsExceededMaxAllowedRange,
 		ErrCodeGetLogsExceededMaxAllowedAddresses,
 		ErrCodeGetLogsExceededMaxAllowedTopics,
+		ErrCodeGetLogsExceededMaxAllowedResponseSize,
+		ErrCodeSubscriptionNotFound,
+		ErrCodeSubscriptionLimitExceeded,
 	))
 }
 
@@ -2573,13 +2849,11 @@ func ClassifySeverity(err error) Severity {
 	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException) {
 		return SeverityInfo
 	}
-	// ErrUpstreamBlockUnavailable is *intentionally* retryable toward the upstream:
-	// network_executor runs a block-time-aware catch-up retry keyed on this exact
-	// code, and that nuance must not change. But it only means an upstream hasn't
-	// synced the requested block yet — an expected, self-healing condition, not an
-	// infra failure an operator must urgently act on — so it is a warning. Classified
-	// explicitly here, ahead of the retryable->critical fall-through below.
-	if HasErrorCode(err, ErrCodeUpstreamBlockUnavailable) {
+	// ErrUpstreamBlockUnavailable / ErrEndpointMissingData are both intentionally
+	// retryable (the retry loop is keyed on these codes), but they only mean an
+	// upstream hasn't indexed the requested block yet — expected, self-healing
+	// conditions, not infra failures an operator must urgently act on.
+	if HasErrorCode(err, ErrCodeUpstreamBlockUnavailable, ErrCodeEndpointMissingData) {
 		return SeverityWarning
 	}
 	// ErrNetworkNotSupported is, like block-unavailable, intentionally retryable —
@@ -2751,6 +3025,32 @@ func (e *ErrConsensusLowParticipants) SummarizeParticipants() string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
+type ErrGetLogsExceededMaxAllowedResponseSize struct{ BaseError }
+
+const ErrCodeGetLogsExceededMaxAllowedResponseSize ErrorCode = "ErrGetLogsExceededMaxAllowedResponseSize"
+
+// NewErrGetLogsExceededMaxAllowedResponseSize reports that a MERGED eth_getLogs response
+// crossed the network's GetLogsMaxResponseBytes budget. Deliberately its own code rather
+// than ErrEndpointRequestTooLarge: the too-large code is what networkPostForward_eth_getLogs
+// treats as a cue to split and merge, so raising it here would feed the very path this
+// budget exists to bound.
+var NewErrGetLogsExceededMaxAllowedResponseSize = func(responseBytes int64, maxAllowedBytes int64) error {
+	return &ErrGetLogsExceededMaxAllowedResponseSize{
+		BaseError{
+			Code:    ErrCodeGetLogsExceededMaxAllowedResponseSize,
+			Message: "getLogs response exceeded max allowed size; narrow the block range, addresses or topics",
+			Details: map[string]interface{}{
+				"responseBytes":   responseBytes,
+				"maxAllowedBytes": maxAllowedBytes,
+			},
+		},
+	}
+}
+
+func (e *ErrGetLogsExceededMaxAllowedResponseSize) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 type ErrGetLogsExceededMaxAllowedRange struct{ BaseError }
 
 const ErrCodeGetLogsExceededMaxAllowedRange ErrorCode = "ErrGetLogsExceededMaxAllowedRange"
@@ -2876,4 +3176,82 @@ var NewErrEndpointNonceException = func(cause error, reason NonceExceptionReason
 
 func (e *ErrEndpointNonceException) ErrorStatusCode() int {
 	return http.StatusOK
+}
+
+//
+// WebSocket / Subscription errors
+//
+
+type ErrSubscriptionNotFound struct{ BaseError }
+
+const ErrCodeSubscriptionNotFound ErrorCode = "ErrSubscriptionNotFound"
+
+var NewErrSubscriptionNotFound = func(subId string) error {
+	return &ErrSubscriptionNotFound{
+		BaseError{
+			Code:    ErrCodeSubscriptionNotFound,
+			Message: "subscription not found",
+			Details: map[string]interface{}{
+				"subscriptionId": subId,
+			},
+		},
+	}
+}
+
+func (e *ErrSubscriptionNotFound) ErrorStatusCode() int {
+	return http.StatusNotFound
+}
+
+type ErrNoWsUpstreamAvailable struct{ BaseError }
+
+const ErrCodeNoWsUpstreamAvailable ErrorCode = "ErrNoWsUpstreamAvailable"
+
+var NewErrNoWsUpstreamAvailable = func(networkId string) error {
+	return &ErrNoWsUpstreamAvailable{
+		BaseError{
+			Code:    ErrCodeNoWsUpstreamAvailable,
+			Message: fmt.Sprintf("eth_subscribe requires a WebSocket-capable upstream, none configured for network %s", networkId),
+			Details: map[string]interface{}{
+				"networkId": networkId,
+			},
+		},
+	}
+}
+
+func (e *ErrNoWsUpstreamAvailable) ErrorStatusCode() int {
+	return http.StatusBadRequest
+}
+
+type ErrSubscriptionLimitExceeded struct{ BaseError }
+
+const ErrCodeSubscriptionLimitExceeded ErrorCode = "ErrSubscriptionLimitExceeded"
+
+var NewErrSubscriptionLimitExceeded = func(max int) error {
+	return &ErrSubscriptionLimitExceeded{
+		BaseError{
+			Code:    ErrCodeSubscriptionLimitExceeded,
+			Message: "maximum subscriptions per connection exceeded",
+			Details: map[string]interface{}{
+				"maxPerConnection": max,
+			},
+		},
+	}
+}
+
+// NewErrInstanceSubscriptionLimitExceeded is the instance-wide counterpart
+// of NewErrSubscriptionLimitExceeded (server.webSocket.maxSubscriptions).
+var NewErrInstanceSubscriptionLimitExceeded = func(max int) error {
+	return &ErrSubscriptionLimitExceeded{
+		BaseError{
+			Code:    ErrCodeSubscriptionLimitExceeded,
+			Message: "maximum subscriptions per instance exceeded",
+			Details: map[string]interface{}{
+				"maxPerInstance": max,
+			},
+		},
+	}
+}
+
+func (e *ErrSubscriptionLimitExceeded) ErrorStatusCode() int {
+	return http.StatusTooManyRequests
 }

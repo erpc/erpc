@@ -1,4 +1,4 @@
-import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults, SelectionPolicyEvalFunction } from "./types";
+import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults, SvmNetworkConfigForDefaults as TsSvmNetworkConfigForDefaults, SelectionPolicyEvalFunction } from "./types";
 /**
  * AdaptiveDuration describes a duration that may be static, derived from a
  * per-method latency quantile, or both. It's the reusable building block
@@ -28,8 +28,25 @@ export interface AdaptiveDuration {
     min?: Duration;
     max?: Duration;
 }
+/**
+ * ArchitectureHandler abstracts all architecture-specific pipeline hooks.
+ * Each architecture (evm, svm, …) registers exactly one handler via its package init().
+ * Pipeline files dispatch through the registry — they never need to change for a new chain.
+ */
+export type ArchitectureHandler = any;
 export declare const UpstreamTypeEvm: UpstreamType;
 export type EvmUpstream = Upstream;
+/**
+ * EvmStateProvenWriter is the OPTIONAL, separately-asserted surface the
+ * integrity state prober records proofs through. The proven head is telemetry
+ * (the state-proven block / proven-lag gauges), never a routing input.
+ * Deliberately NOT part of EvmUpstream: that interface is implemented outside
+ * this repo, and widening it broke every existing implementor — the chainId
+ * suggest-gate silently degraded when its upstream stopped satisfying the
+ * assertion. Optional capabilities are asserted narrowly, never added to the
+ * core interface.
+ */
+export type EvmStateProvenWriter = any;
 export type AvailbilityConfidence = number;
 export declare const AvailbilityConfidenceBlockHead: AvailbilityConfidence;
 export declare const AvailbilityConfidenceFinalized: AvailbilityConfidence;
@@ -88,6 +105,37 @@ export interface EvmProbeEarliestInfo {
     earliestBlock: number;
     schedulerRunning?: boolean;
 }
+export declare const UpstreamTypeSvm: UpstreamType;
+/**
+ * SlotSharedVariable mirrors the EVM SharedStateVariable pattern for int64 slot numbers.
+ * It lets the state poller publish slot progress to a shared-state backend (memory or Redis)
+ * while keeping callers synchronous via the cached local value.
+ */
+export type SlotSharedVariable = any;
+/**
+ * SvmUpstream narrows common.Upstream to the surface SVM hooks need to reach
+ * into per-upstream state (currently just the state poller). Keeping this a
+ * tiny sub-interface avoids committing the full Upstream struct to common/ and
+ * parallels the existing EvmUpstream pattern.
+ */
+export type SvmUpstream = Upstream;
+/**
+ * SvmStatePoller is the per-upstream slot/health tracker. Concrete type lives in
+ * architecture/svm to avoid pulling the full implementation into common.
+ */
+export type SvmStatePoller = any;
+/**
+ * MaxShredInsertSlotLagThreshold is the cutoff beyond which an upstream is treated
+ * as degraded for shred-insert lag. Solana nodes with high `latest - maxShredInsertSlot`
+ * are receiving shreds but not processing them; their reads go stale silently.
+ */
+export declare const MaxShredInsertSlotLagThreshold: number;
+/**
+ * SvmChainSolana is the canonical Solana chain identifier. Empty Chain values
+ * in SvmNetworkConfig normalize to this constant at NetworkId derivation time
+ * so pre-multi-chain configs keep producing "svm:<cluster>" IDs.
+ */
+export declare const SvmChainSolana = "solana";
 /**
  * BlockTimeAdaptiveDuration is a duration that is either a fixed value or derived from the
  * network's estimated block time. It's the reusable shape for knobs (e.g. cache
@@ -127,8 +175,24 @@ export interface Config {
     projects?: (ProjectConfig | undefined)[];
     rateLimiters?: RateLimiterConfig;
     metrics?: MetricsConfig;
+    indexer?: IndexerConfig;
     proxyPools?: (ProxyPoolConfig | undefined)[];
     tracing?: TracingConfig;
+}
+/**
+ * IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
+ */
+export interface IndexerConfig {
+    /**
+     * Deprecated: ignored; the indexer no longer tracks a canonical chain.
+     * Kept so configs that still set it load under strict decoding.
+     */
+    canonicalChainDepth?: number;
+    /**
+     * DedupWindowSize is the per-filter seen-set capacity for log and
+     * pending-tx fan-out across upstreams. 0 uses the default (8192).
+     */
+    dedupWindowSize?: number;
 }
 export interface ServerConfig {
     listenV4?: boolean;
@@ -160,6 +224,7 @@ export interface ServerConfig {
     responseHeaders?: {
         [key: string]: string;
     };
+    webSocket?: WebSocketServerConfig;
     /**
      * ExecutionHeaders controls the per-request diagnostic headers
      * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
@@ -176,6 +241,31 @@ export interface ServerConfig {
      * CreditUnitsProvider and UpstreamConfig.CreditUnits.
      */
     costHeaders?: boolean;
+}
+export interface WebSocketServerConfig {
+    /**
+     * Enabled accepts WebSocket upgrades on the HTTP port. Off by default:
+     * with it off an upgrade request is ordinary HTTP.
+     */
+    enabled?: boolean;
+    readBufferSize?: number;
+    writeBufferSize?: number;
+    maxMessageSize?: number;
+    pingInterval?: Duration;
+    maxSubscriptionsPerConnection?: number;
+    /**
+     * MaxConcurrentRequestsPerConnection bounds the messages a connection has
+     * in flight; further frames wait (backpressure) instead of being rejected.
+     * A batch is one message; its requests run concurrently, as over HTTP.
+     */
+    maxConcurrentRequestsPerConnection?: number;
+    /**
+     * SubscriptionBufferSize is the number of notifications queued per
+     * subscription for a client that is behind. On overflow newHeads and
+     * newPendingTransactions drop their oldest entry; logs close the
+     * connection instead (1013), so the client knows it missed data.
+     */
+    subscriptionBufferSize?: number;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -272,6 +362,7 @@ export interface AliasingRuleConfig {
 }
 export interface DatabaseConfig {
     evmJsonRpcCache?: CacheConfig;
+    svmJsonRpcCache?: CacheConfig;
     sharedState?: SharedStateConfig;
 }
 export interface SharedStateConfig {
@@ -390,6 +481,20 @@ export interface GrpcConnectorConfig {
     };
     getTimeout?: Duration;
     /**
+     * NetworkId pins every server in this connector to one network and skips
+     * the eth_chainId bootstrap probe.
+     * Required for SVM. Solana has no numeric chain id — cluster identity is
+     * the genesis hash — and eth_chainId returns Unimplemented, so the probe
+     * fails and no client is ever registered. Probing GetGenesisHash instead
+     * is not an option either: the BDS reader deliberately does not publish
+     * one until it can verify its own, so identity here has to be asserted by
+     * configuration rather than discovered.
+     * Leave unset for EVM to keep the probe, which also arms the per-request
+     * chain-identity assertion that catches an endpoint cross-wired LATER — a
+     * static binding cannot.
+     */
+    networkId?: string;
+    /**
      * PoolSize is the number of independent gRPC connections opened to each
      * backing server, selected round-robin per request. Larger values raise the
      * concurrent-stream ceiling and shrink the blast radius of a single wedged
@@ -397,6 +502,12 @@ export interface GrpcConnectorConfig {
      * (0) a built-in default is used.
      */
     poolSize?: number;
+    /**
+     * HealthCheckService is a grpc.health.v1 service name. When set, each
+     * connection watches it on every resolved address and sends requests only
+     * to addresses reporting SERVING. Empty (default) disables health checking.
+     */
+    healthCheckService?: string;
 }
 export interface MemoryConnectorConfig {
     maxItems: number;
@@ -551,6 +662,11 @@ export interface ProjectConfig {
     ignoreMethods?: string[];
     allowMethods?: string[];
     /**
+     * Integrity is the project-wide data-integrity configuration. It applies to
+     * all networks; each network may override it with its own integrity block.
+     */
+    integrity?: IntegrityConfig;
+    /**
      * ScoreMetricsWindowSize is the tumbling window the per-upstream
      * health tracker uses for its rolling counters (errorRate, p50/p70/
      * p95 latency, throttledRate, misbehaviorRate). At each tick the
@@ -600,7 +716,22 @@ export interface NetworkDefaults {
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
+    svm?: TsSvmNetworkConfigForDefaults;
     multiplexing?: boolean;
+    cacheKeySuffix?: string;
+    failover?: FailoverConfig;
+}
+/**
+ * FailoverConfig controls per-request escalation to fallback-tier upstreams,
+ * independent of the selection policy.
+ */
+export interface FailoverConfig {
+    /**
+     * OnDefaultsExhausted tries upstreams not tagged `tier:fallback` first and
+     * advances to the fallback tier within the same request only once every
+     * other upstream failed with an error retryable toward the network.
+     */
+    onDefaultsExhausted?: boolean;
 }
 export interface CORSConfig {
     allowedOrigins: string[];
@@ -624,6 +755,11 @@ export interface ProviderConfig {
         [key: string]: UpstreamConfig | undefined;
     };
 }
+/**
+ * TagTierFallback marks an upstream as part of the fallback tier, used only
+ * when the other upstreams are unavailable.
+ */
+export declare const TagTierFallback = "tier:fallback";
 /**
  * RateLimitCountMode selects the accounting unit an upstream's rate-limit
  * budget charges per call.
@@ -666,6 +802,7 @@ export interface UpstreamConfig {
     vendorName?: string;
     endpoint?: string;
     evm?: EvmUpstreamConfig;
+    svm?: SvmUpstreamConfig;
     jsonRpc?: JsonRpcUpstreamConfig;
     grpc?: GrpcUpstreamConfig;
     ignoreMethods?: string[];
@@ -786,7 +923,22 @@ export interface ShadowUpstreamConfig {
     ignoreFields?: {
         [key: string]: string[];
     };
+    /**
+     * PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
+     * concrete height before forwarding: the primary's resolved block number when its response
+     * carries one, else the network's tracked head at mirror time. Without it the shadow executes
+     * the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
+     * (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
+     * reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
+     * requests, exactly as before.
+     */
+    pinBlockTag?: boolean;
 }
+/**
+ * Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
+ * read at runtime). Configure data integrity via the network `integrity` block.
+ * Retained only so existing YAML still parses.
+ */
 export interface UpstreamIntegrityConfig {
     eth_getBlockReceipts?: UpstreamIntegrityEthGetBlockReceiptsConfig;
 }
@@ -817,7 +969,7 @@ export interface JsonRpcUpstreamConfig {
     proxyPool?: string;
 }
 /**
- * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+ * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
  * gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
  * knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
  * every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -832,6 +984,10 @@ export interface GrpcUpstreamConfig {
      * When unset (0) a built-in default is used.
      */
     poolSize?: number;
+    /**
+     * HealthCheckService: see GrpcConnectorConfig.HealthCheckService.
+     */
+    healthCheckService?: string;
 }
 export interface EvmUpstreamConfig {
     chainId: number;
@@ -859,6 +1015,27 @@ export interface EvmUpstreamConfig {
      * misleading and causes circuit breaker false positives.
      */
     skipSyncingCheck?: boolean;
+    /**
+     * HeadLagToleranceBlocks lets the block-availability gate send requests pinned up to N blocks
+     * ABOVE this upstream's observed head instead of rerouting them as stale. Useful for upstreams
+     * that follow the chain tightly but become able to serve a new block a moment after it is
+     * announced elsewhere (they hold or briefly wait for the block internally): with a hard
+     * head comparison every request pinned at head+1 in that moment is rerouted even though the
+     * upstream would have answered it. 0 (default) keeps the exact head comparison.
+     */
+    headLagToleranceBlocks?: number;
+    /**
+     * PinLatestTag sends this upstream the network head as a concrete block number wherever a
+     * state call (eth_call, eth_getBalance, ...) asks for "latest" or omits the block, and skips the
+     * upstream when its blockAvailability upper bound is below that head or the head is unknown.
+     * For an upstream whose own head lags the network: it answers only blocks it holds, and a block
+     * it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+     */
+    pinLatestTag?: boolean;
+    /**
+     * Deprecated: never read at runtime. Configure data integrity via the network
+     * `integrity` block instead. Retained only so existing YAML still parses.
+     */
     integrity?: UpstreamIntegrityConfig;
     /**
      * @deprecated: use blockAvailability bounds instead; kept for config back-compat only
@@ -870,13 +1047,27 @@ export interface EvmUpstreamConfig {
     maxAvailableRecentBlocks?: number;
     queryShim?: EvmQueryShimConfig;
 }
+/**
+ * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
+ * eth_getBlockReceipts, eth_getLogs, trace_block / debug_traceBlockByNumber) the
+ * eth_query* executor issues when no native QueryService upstream answers. The
+ * sub-requests go through the network like any request; the budget bounds the
+ * work of one MIP-16 page.
+ */
 export interface EvmQueryShimConfig {
     enabled?: boolean;
     allowedMethods?: string[];
-    concurrency?: number;
-    maxBlockRange?: number;
-    maxLimit?: number;
-    defaultLimit?: number;
+    /**
+     * MaxBlocksPerPage is the budget of blocks one page may scan. A page that
+     * reaches it ends at the last scanned block.
+     */
+    maxBlocksPerPage?: number;
+    /**
+     * MaxPageDuration is the budget of time one page may scan. A page that
+     * reaches it ends at the last complete block, or fails with -32005 when no
+     * block completed.
+     */
+    maxPageDuration?: Duration;
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -907,6 +1098,25 @@ export interface EvmAvailabilityBoundConfig {
 export interface FailsafeConfig {
     matchMethod?: string;
     matchFinality?: DataFinalityState[];
+    /**
+     * MatchCommitment scopes a network-scope policy by the Solana commitment
+     * erpc pins on the wire: the caller's value, else the svm.commitment default
+     * that injection writes, else "none". Empty = any. Values are OR-ed and
+     * exact (confirmed does not match processed). Non-SVM requests and SVM
+     * write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
+     * Rejected at upstream and connector scopes.
+     */
+    matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
+    /**
+     * MatchRequestKind scopes this policy by who issued the request:
+     * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
+     * the integrity module's canonical corroboration), or ""/"*" for both.
+     * This is what lets an operator give INTERNAL canonical fetches a
+     * consensus policy (quorum-verified ground truth, deduplicated to ~once
+     * per block by the ChainView) while user data methods rely on integrity
+     * validation instead of per-request fan-out.
+     */
+    matchRequestKind?: 'user' | 'internal' | '*';
     retry?: RetryPolicyConfig;
     circuitBreaker?: CircuitBreakerPolicyConfig;
     timeout?: TimeoutPolicyConfig;
@@ -928,8 +1138,10 @@ export type NetworkFailsafeConfig = FailsafeConfig;
 export type UpstreamFailsafeConfig = FailsafeConfig;
 /**
  * CacheFailsafeConfig is the scope-specific alias for cache-connector
- * failsafe policies. Hedge.Quantile is not allowed here (no per-method
- * quantile data on cache reads); validation enforces this.
+ * failsafe policies. Timeout.Duration and Hedge.Delay support quantile
+ * (dynamic) mode at this scope, resolved from a per-executor latency
+ * tracker fed by the connector's own operations (see data/cache_executor.go).
+ * Consensus is not supported here; validation enforces this.
  */
 export type CacheFailsafeConfig = FailsafeConfig;
 export interface RetryPolicyConfig {
@@ -1129,6 +1341,11 @@ export interface S3FlushConfig {
      */
     region?: string;
     /**
+     * Custom S3 endpoint URL for S3-compatible providers (Tigris, MinIO, R2, …).
+     * Empty = real AWS S3. When set, path-style addressing is used.
+     */
+    endpoint?: string;
+    /**
      * AWS credentials config (optional). If not specified, uses standard AWS credential chain:
      * 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
      * 2. IAM role (for EC2/ECS/EKS)
@@ -1153,6 +1370,15 @@ export interface RateLimiterConfig {
 export interface RateLimitBudgetConfig {
     id: string;
     rules: RateLimitRuleConfig[];
+    /**
+     * CreditUnits prices methods for this budget's countMode: credit rules. "*"
+     * is the fallback, an unpriced method costs 1, and a method priced 0 is
+     * exempt. An upstream on rateLimitCountMode: credit prices from its vendor
+     * instead and may not combine the two.
+     */
+    creditUnits?: {
+        [key: string]: number;
+    };
 }
 export interface RateLimitRuleConfig {
     method: string;
@@ -1165,6 +1391,13 @@ export interface RateLimitRuleConfig {
     perIP?: boolean;
     perUser?: boolean;
     perNetwork?: boolean;
+    /**
+     * CountMode selects what this rule counts. "request" charges 1 per call and
+     * counts per method. "credit" charges the method's cost from the budget's
+     * creditUnits and pools all methods into one counter, making maxCount a
+     * wallet. Empty inherits the caller's mode.
+     */
+    countMode?: RateLimitCountMode;
 }
 /**
  * RateLimitPeriod enumerates supported periods for rate limiting.
@@ -1194,12 +1427,27 @@ export interface NetworkConfig {
     rateLimitBudget?: string;
     failsafe?: (FailsafeConfig | undefined)[];
     evm?: EvmNetworkConfig;
+    svm?: SvmNetworkConfig;
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
     alias?: string;
     methods?: MethodsConfig;
     multiplexing?: boolean;
     staticResponses?: (StaticResponseConfig | undefined)[];
+    failover?: FailoverConfig;
+    /**
+     * Integrity overrides the project-wide data-integrity configuration for this
+     * network. Merges over the project block (network wins).
+     */
+    integrity?: IntegrityConfig;
+    /**
+     * CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
+     * key as {networkId}:{suffix}:{blockRef} so two networks that share a
+     * chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+     * When {networkId}:{suffix} is itself a valid network id, colons in the
+     * network id are escaped; see CachePartitionKey.
+     */
+    cacheKeySuffix?: string;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1244,50 +1492,142 @@ export interface DirectiveDefaultsConfig {
     enforceGetLogsBlockRange?: boolean;
     enforceNonNullTaggedBlocks?: boolean;
     /**
-     * ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
-     * Defaults to true. Disable for non-standard chains that use unusual trie roots.
+     * --- Deprecated data-integrity validation flags ---
+     * Deprecated: data integrity is now configured via the `integrity` block
+     * (projects[].integrity / networks[].integrity). These per-check flags are
+     * retained only so existing YAML still parses. At startup the flags that map
+     * to a current check are translated into `integrity.checks` by
+     * migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
+     * they are NOT read at runtime. The receipt-count / expected-block /
+     * receipt-to-transaction flags have no equivalent in the new model and are
+     * accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
      */
     validateTransactionsRoot?: boolean;
-    /**
-     * Validation: Header Field Lengths
-     */
     validateHeaderFieldLengths?: boolean;
-    /**
-     * Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
-     */
     validateTransactionFields?: boolean;
     validateTransactionBlockInfo?: boolean;
-    /**
-     * Validation: Receipts & Logs
-     */
     enforceLogIndexStrictIncrements?: boolean;
     validateTxHashUniqueness?: boolean;
     validateTransactionIndex?: boolean;
     validateLogFields?: boolean;
-    /**
-     * Validation: Bloom Filter (simplified to 2 checks)
-     * ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
-     */
     validateLogsBloomEmptiness?: boolean;
-    /**
-     * ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
-     */
     validateLogsBloomMatch?: boolean;
-    /**
-     * Validation: Receipt-to-Transaction Cross-Validation (requires GroundTruthTransactions in library-mode)
-     */
     validateReceiptTransactionMatch?: boolean;
     validateContractCreation?: boolean;
-    /**
-     * Validation: numeric checks
-     */
     receiptsCountExact?: number;
     receiptsCountAtLeast?: number;
-    /**
-     * Validation: Expected Ground Truths
-     */
     validationExpectedBlockHash?: string;
     validationExpectedBlockNumber?: number;
+}
+/**
+ * SvmNetworkConfig mirrors EvmNetworkConfig for SVM networks.
+ * Most fields are Solana-specific and do not have EVM equivalents.
+ */
+export interface SvmNetworkConfig {
+    /**
+     * Chain identifies which SVM chain this network runs on. Defaults to "solana"
+     * when empty for backward compatibility. Set explicitly for forks/variants
+     * such as "fogo" or "eclipse" so eRPC can host multiple SVM chains side by
+     * side without network-ID or cache-key collisions.
+     * When Chain is empty or "solana", the derived NetworkId is "svm:<cluster>"
+     * — identical to the pre-multi-chain format. For any other Chain value the
+     * NetworkId is "svm:<chain>:<cluster>".
+     */
+    chain?: string;
+    /**
+     * Cluster the upstreams of this network serve (e.g. "mainnet-beta", "devnet").
+     * The NetworkId is derived from this value together with Chain — see the
+     * Chain field above for the exact format.
+     */
+    cluster?: string;
+    /**
+     * Commitment is the default commitment level injected into requests whose params
+     * omit one. One of "finalized", "confirmed", "processed". No default: when unset,
+     * no commitment is injected and each upstream's own server-side default governs
+     * (Solana's is "finalized"). Set this to pin one commitment across all upstreams
+     * so the cache and consensus key on identical data regardless of vendor defaults;
+     * note that doing so makes finality classification track the configured level.
+     */
+    commitment?: string;
+    /**
+     * StatePollerDebounce sets the minimum interval between polls of an upstream's
+     * slot/health view. Default: 400ms (one slot).
+     */
+    statePollerDebounce?: Duration;
+    /**
+     * MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
+     * trail the pool's highest FinalizedSlot before it is excluded from
+     * consensus voting on finalized data. Only applied when a consensus policy
+     * is active AND the request's resolved finality is Finalized.
+     * Pointer so an explicit 0 is distinguishable from "unset": nil takes the
+     * 100-slot default (filled by SetDefaults, the only place that materializes
+     * it), an explicit 0 disables the filter entirely. A plain int64 collapses
+     * those two cases and makes the documented disable switch unreachable.
+     * Readers downstream of SetDefaults just check `lag != nil && *lag > 0`.
+     */
+    maxFinalizedSlotLag?: number;
+    /**
+     * EnforceBlockAvailability controls whether the networkPreForward_getBlock
+     * guard is active. When enabled (default), getBlock/getConfirmedBlock
+     * requests for slots above the highest indexed slot known to any upstream
+     * are short-circuited with ErrEndpointMissingData before hitting providers
+     * — saving quota and triggering the 500ms indexing-lag retry immediately.
+     * Set to false to disable the guard when ShredInsertSlot tracking is
+     * unavailable or unreliable on a given deployment.
+     */
+    enforceBlockAvailability?: boolean;
+}
+/**
+ * SvmUpstreamConfig carries per-upstream SVM settings.
+ */
+export interface SvmUpstreamConfig {
+    /**
+     * Chain identifies which SVM chain this upstream serves. Must match the
+     * network-level Chain. Empty defaults to "solana" for backward compat.
+     */
+    chain?: string;
+    /**
+     * Cluster this upstream serves. Must match the network-level cluster for the
+     * upstream to be eligible.
+     */
+    cluster?: string;
+    /**
+     * CheckGenesisHash opts unknown clusters in to runtime validation via getGenesisHash
+     * at bootstrap. Known clusters (mainnet-beta, devnet, testnet) are always validated
+     * regardless of this flag: a single getGenesisHash RPC runs at bootstrap and is
+     * compared against the hardcoded genesis-hash table — a mismatch OR a fetch failure
+     * fails the upstream, catching nodes mis-pointed at the wrong cluster (and refusing
+     * to register one we could not verify). For unknown clusters the same check (with
+     * no table comparison) runs only when this flag is set; otherwise it is skipped so
+     * private/local clusters with no published genesis hash still work.
+     */
+    checkGenesisHash?: boolean;
+    /**
+     * BlockAvailability is an operator restriction on the slot window this
+     * upstream may serve. Only what the operator declares is enforced; the
+     * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
+     * used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
+     * mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+     */
+    blockAvailability?: SvmBlockAvailabilityConfig;
+}
+/**
+ * SvmBlockAvailabilityConfig is the per-upstream declared slot window.
+ * Presence of lower/upper implies the restriction is active. When both are
+ * nil, it is effectively off.
+ */
+export interface SvmBlockAvailabilityConfig {
+    lower?: SvmAvailabilityBoundConfig;
+    upper?: SvmAvailabilityBoundConfig;
+}
+/**
+ * SvmAvailabilityBoundConfig is a single declared slot bound.
+ * Exactly one field must be set.
+ */
+export interface SvmAvailabilityBoundConfig {
+    exactSlot?: number;
+    latestSlotMinus?: number;
+    firstAvailableSlotPlus?: number;
 }
 export interface EvmNetworkConfig {
     chainId: number;
@@ -1297,8 +1637,7 @@ export interface EvmNetworkConfig {
     /**
      * ServedTip configures how the network derives the "latest"/"finalized"
      * block it advertises to clients (and enforces via block-availability).
-     * Nil or disabled selects the default max mode (MAX latest across eligible
-     * upstreams); set Enabled to opt into the cluster-min tip. See
+     * Nil uses the defaults: quorum 2, regression guard on, no guarantees. See
      * EvmServedTipConfig.
      */
     servedTip?: EvmServedTipConfig;
@@ -1307,6 +1646,21 @@ export interface EvmNetworkConfig {
     getLogsMaxAllowedTopics?: number;
     getLogsSplitOnError?: boolean;
     getLogsSplitConcurrency?: number;
+    /**
+     * GetLogsMaxResponseBytes caps the total size of a MERGED eth_getLogs response —
+     * the sum of every sub-response a split assembles, not the size of any one piece.
+     * Splitting exists to get past an upstream's per-request limits, so once a request
+     * is split there is no remaining bound on what the client can make the proxy hold
+     * in memory: a range the upstream refuses is halved, fetched concurrently, and
+     * merged whole. This is the only bound on that total.
+     * Sub-requests are cancelled as soon as the running total crosses the cap, so the
+     * in-flight ones do not materialise either, and the client gets
+     * ErrGetLogsExceededMaxAllowedResponseSize (HTTP 413) — a distinct code from
+     * ErrEndpointRequestTooLarge precisely so it does NOT feed the splitting path that
+     * produced the response.
+     * Zero (the default) disables the cap and preserves the historical behaviour.
+     */
+    getLogsMaxResponseBytes?: number;
     /**
      * TraceFilterSplitOnError controls reactive splitting for trace_filter and
      * arbtrace_filter requests when the upstream returns a range-too-large error.
@@ -1341,6 +1695,13 @@ export interface EvmNetworkConfig {
      */
     markEmptyAsErrorMethods?: string[];
     /**
+     * StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
+     * logs filters before forwarding upstream. fromBlock has no meaning for a
+     * live subscription, and backends that prune history reject it.
+     * DEFAULT: false.
+     */
+    stripSubscribeFromBlockZero?: boolean;
+    /**
      * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
      * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
      * the estimated block time, preferring fresher data at the cost of slightly more
@@ -1348,6 +1709,16 @@ export interface EvmNetworkConfig {
      * Default: 0.7 (30% under the estimated block time).
      */
     dynamicBlockTimeDebounceMultiplier?: number;
+    /**
+     * FinalizedDebounceDepthMultiplier sets how stale an upstream's finalized block may
+     * get before the state poller fetches it again, as a fraction of the chain's
+     * finality depth in time: (latest - finalized) x EMA block time x multiplier. The
+     * result applies only when it is longer than the regular debounce. Finalized
+     * advances once per finality window, so polling it at the latest-block cadence
+     * mostly returns the same number. 0 disables it (finalized uses the regular debounce).
+     * Default: 0.05 (refresh about 20 times per finality window).
+     */
+    finalizedDebounceDepthMultiplier?: number;
     /**
      * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
      * retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
@@ -1377,6 +1748,18 @@ export interface EvmNetworkConfig {
      */
     emptyResultConfidence?: AvailbilityConfidence;
     /**
+     * ShortCircuitFutureBlocks returns null for a numbered eth_getBlockByNumber
+     * above the highest latest head across every upstream of the network
+     * (regardless of selection policy, tier or syncing state), without
+     * dispatching it; it never fires while any upstream's head is unknown.
+     * Clients that poll the next block by number otherwise walk every routed
+     * upstream on each poll.
+     * The head is what the state poller and head subscriptions last reported, so
+     * a block an upstream produced since then gets null until eRPC sees it: only
+     * enable it where heads arrive promptly (e.g. over WebSocket).
+     */
+    shortCircuitFutureBlocks?: boolean;
+    /**
      * SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
      * requests carrying the `safe` block tag. Matching upstreams define and
      * serve `safe`; empty (without an inherited network default) keeps existing
@@ -1387,36 +1770,53 @@ export interface EvmNetworkConfig {
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
  * block it advertises (and enforces) from its upstreams.
- * In the default max mode the served tip is the MAX latest block across eligible
- * non-syncing upstreams — which can advertise a block only the single most-ahead
- * upstream has, causing "block not found" churn when requests route to a
- * slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
- * served value is instead the freshest block a strict MAJORITY of the eligible
- * upstreams already have, so interpolated requests land on upstreams that can
- * serve the advertised block.
+ * Both axes use one rule: among the eligible (selection-policy), non-syncing
+ * upstreams, only the best voter rank present votes (live, then benched, then
+ * static-capped, then benched and static-capped), and the served block is the
+ * highest one at least Quorum of those voters already have. The health
+ * tracker benches an upstream whose head stopped moving while another kept
+ * advancing, until it catches up again.
  */
 export interface EvmServedTipConfig {
     /**
-     * EnabledFor lists the block tags whose served value uses the cluster-min tip
-     * instead of the default max. Valid entries: "latest" and "finalized" (the
-     * "safe" tag follows "finalized"). Empty selects the max mode for all tags.
+     * Quorum is how many eligible upstreams must already have a block before it
+     * is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
+     * uses DefaultServedTipQuorum (2). A ballot with fewer voters than the
+     * quorum serves the block all of them have.
      */
-    enabledFor?: string[];
-    /**
-     * Deprecated: ClusterDelta configured the former cluster-based picker and is
-     * ignored — the majority order statistic needs no tuning. Kept only so
-     * existing configs keep parsing.
-     */
-    clusterDelta?: number;
+    quorum?: number | 'majority';
     /**
      * GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
      * "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
      * serve the advertised latest. For a request on a matching method, "latest"
      * resolves against the majority of only the upstreams that support it
      * (membership auto-detected via ShouldHandleMethod — no per-upstream config).
-     * Empty means only the global (all-eligible) majority is computed.
+     * Empty means only the global ballot is computed.
      */
     guaranteedMethods?: string[];
+    /**
+     * GuaranteedFor lists upstream SELECTORS (id or tag glob — the same
+     * vocabulary as use-upstream and consensus.requiredParticipants, e.g.
+     * "type:internal") whose group must be able to serve the advertised tip.
+     * For each selector the tip is clamped down to that group's OWN majority,
+     * exactly as GuaranteedMethods clamps to a method's supporting set. The
+     * clamp is a group MAJORITY, not a group minimum, so one stuck member
+     * cannot pin the network; an empty group constrains nothing.
+     */
+    guaranteedFor?: string[];
+    /**
+     * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
+     * (the second-highest live head) the pick may fall before it is treated as
+     * a poisoned ballot rather than as reality. While a pick is below that
+     * bound the network keeps serving its last corroborated pick (in-process,
+     * for at most one minute, then it fails open and serves the pick as
+     * computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
+     * rollback tolerance the state poller and health tracker apply to a
+     * retreating head, so all three layers agree on what counts as a genuine
+     * deep correction. -1 disables the regression guard entirely; no other
+     * negative value is accepted.
+     */
+    maxRegressionBlocks?: number;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -1491,6 +1891,20 @@ export interface SelectionPolicyConfig {
      * genuinely (method, finality)-specific health.
      */
     evalScope?: EvalScope | "network" | "network-method" | "network-finality" | "network-method-finality";
+    /**
+     * EvalPerBoundary scopes selection-policy evaluation by block-availability
+     * "lane" — the set of upstreams whose configured block range can actually
+     * serve the request's block. Unlike EvalPerMethod / EvalPerFinality this is
+     * deliberately NOT folded into EvalScope: it must not change the
+     * health-tracker grain (boundary is a decision/pool axis, not a metrics
+     * axis), so the engine reads it directly as an orthogonal slot dimension.
+     * When on, a request whose block excludes some upstream is evaluated
+     * against a lane-scoped pool — an upstream that cannot serve the range is
+     * absent from the pool (a capability fact), distinct from the policy's
+     * soft health-based deprioritization. Default off. Pointer-typed so a
+     * future SetDefaults can distinguish "absent" from "explicitly false".
+     */
+    evalPerBoundary?: boolean;
     evalTimeout?: Duration;
     /**
      * EvalFunc is the per-tick evaluation function. In YAML it's a JS
@@ -1635,19 +2049,48 @@ export interface MetricsConfig {
     errorLabelMode?: LabelMode;
     histogramBuckets?: string;
     /**
-     * HistogramDropLabels removes these labels from every histogram. Counters
-     * and gauges are unaffected. Useful to cap per-instance /metrics response
-     * size when high-cardinality labels (e.g. "user") push a scrape past the
-     * managed scraper's sample/body limits.
+     * Customizations is the single knob for shaping /metrics: which metric
+     * families are exposed at all, which of their labels survive, and which
+     * buckets a histogram uses. Entries are applied by specificity rather than
+     * by list order — see MetricsCustomizationConfig.
+     * 	metrics:
+     * 	  customizations:
+     * 	    - subject: "consensus_*"
+     * 	      action: drop
+     * 	    - subject: upstream_request_total
+     * 	      labels:
+     * 	        - subject: "agent_*"
+     * 	          action: drop
+     * 	        - subject: agent_name
+     * 	          action: keep
+     * 	    - subject: network_request_duration_seconds
+     * 	      buckets: [0.05, 0.5, 5]
+     */
+    customizations?: (MetricsCustomizationConfig | undefined)[];
+    /**
+     * Deprecated: use Customizations with a `labels` list. Kept working so
+     * existing configs keep loading; it is desugared onto the same rules as an
+     * every-histogram label drop.
      */
     histogramDropLabels?: string[];
     /**
-     * HistogramLabelOverrides re-adds labels for specific histograms even if
-     * they appear in HistogramDropLabels. Key is the metric Name (without the
-     * "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
-     * Value is the list of label names to keep for that metric.
+     * Deprecated: use Customizations with an exact `subject` and a `labels` list
+     * keeping what this metric needs.
      */
     histogramLabelOverrides?: {
+        [key: string]: string[];
+    };
+    /**
+     * Deprecated: use Customizations with a `labels` list. Kept working so
+     * existing configs keep loading; it is desugared onto the same rules as an
+     * every-counter label drop.
+     */
+    counterDropLabels?: string[];
+    /**
+     * Deprecated: use Customizations with an exact `subject` and a `labels` list
+     * keeping what this metric needs.
+     */
+    counterLabelOverrides?: {
         [key: string]: string[];
     };
     /**
@@ -1664,6 +2107,68 @@ export interface MetricsConfig {
     counterIdleEvictionAfter?: Duration;
 }
 /**
+ * MetricCustomizationAction is what a customization entry does to what it
+ * selects.
+ */
+export type MetricCustomizationAction = string;
+export declare const MetricActionKeep: MetricCustomizationAction;
+export declare const MetricActionDrop: MetricCustomizationAction;
+/**
+ * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
+ * selecting metric families, and what to do with them.
+ * Overlapping subjects resolve by specificity, not by list order: an exact
+ * family name beats a prefix, a longer prefix beats a shorter one, and equally
+ * specific subjects break to the one written later. So "drop consensus_*, keep
+ * consensus_duration_seconds" means the same thing whichever order it is written
+ * in.
+ */
+export interface MetricsCustomizationConfig {
+    /**
+     * Subject selects metric families: an exact name ("upstream_request_total"),
+     * a prefix ending in "*" ("consensus_*"), or "*" for every family. The
+     * "erpc_" namespace prefix is optional. The Go runtime, process and promhttp
+     * collectors are named in full ("go_goroutines") and are subject to the same
+     * rules, so `subject: "*", action: drop` drops them too.
+     */
+    subject: string;
+    /**
+     * Action drops the matched families from /metrics, or keeps them against a
+     * broader drop. Omit it to leave exposure alone and only customize labels or
+     * buckets.
+     * A dropped eRPC family is never registered, so it costs no series and no
+     * collection time — but that makes it a startup decision, undone only by a
+     * restart. Stock collectors are registered outside eRPC and so are filtered
+     * out of the scrape response instead, which shrinks the page without saving
+     * collection.
+     */
+    action?: 'keep' | 'drop';
+    /**
+     * Labels projects the matched families' label sets. Same precedence rules as
+     * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
+     * drops the group and spares the one label.
+     * Dropping a label collapses every series that differed only in it. Counter
+     * sums stay correct, but the dimension stops being queryable — check what
+     * reads it (billing or attribution pipelines, dashboards) first. Gauges have
+     * no projection, because collapsing gauge series would report whichever
+     * writer wrote last rather than a coarser number.
+     */
+    labels?: (MetricLabelCustomizationConfig | undefined)[];
+    /**
+     * Buckets replaces the bucket boundaries of the matched histograms,
+     * overriding both metrics.histogramBuckets and what the metric declares in
+     * code. Must be strictly increasing.
+     */
+    buckets?: number[];
+}
+/**
+ * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
+ * group of them, on the families its parent customization matched.
+ */
+export interface MetricLabelCustomizationConfig {
+    subject: string;
+    action: 'keep' | 'drop';
+}
+/**
  * RateLimitStoreConfig defines where rate limit counters are stored
  */
 export interface RateLimitStoreConfig {
@@ -1671,6 +2176,209 @@ export interface RateLimitStoreConfig {
     redis?: RedisConnectorConfig;
     cacheKeyPrefix?: string;
     nearLimitRatio?: number;
+}
+/**
+ * IntegrityHeaderModeOff ignores per-request integrity headers entirely.
+ */
+export declare const IntegrityHeaderModeOff = "off";
+/**
+ * IntegrityHeaderModeProfiles lets a request select only a named profile.
+ */
+export declare const IntegrityHeaderModeProfiles = "profiles";
+/**
+ * IntegrityHeaderModeFull lets a request set a level / per-check overrides.
+ */
+export declare const IntegrityHeaderModeFull = "full";
+/**
+ * IntegritySettings is the reusable body of an integrity configuration: the
+ * front-door level plus the axes (checks / budget) and the per-finality
+ * verdict. The top-level/per-network blocks and every named profile share this
+ * shape — only IntegrityConfig adds the header surface and profiles on top.
+ */
+export interface IntegritySettings {
+    /**
+     * Level is the front-door preset: off | intrinsic | corroborated | authoritative.
+     */
+    level?: string;
+    /**
+     * Checks overrides individual checks by their catalog id (enable/disable,
+     * params, per-check failure mode).
+     */
+    checks?: {
+        [key: string]: IntegrityCheckConfig | undefined;
+    };
+    /**
+     * Budget caps the canonical force-fetches the authoritative tier issues.
+     */
+    budget?: IntegrityBudgetConfig;
+    /**
+     * AutoCorrectWhenPossible controls whether a violation triggers a hunt for a
+     * validated replacement (retry/hedge against other upstreams) BEFORE the
+     * InvalidBehavior verdict applies. Default TRUE (nil = true). The two knobs
+     * are orthogonal on purpose:
+     *   autoCorrectWhenPossible | invalidBehavior | on violation
+     *   ------------------------+-----------------+---------------------------------
+     *   true                    | recordOnly      | seek replacement; serve it if one
+     *                           |                 | validates; exhausted -> serve the
+     *                           |                 | flagged ORIGINAL (never an error)
+     *   true                    | hardReject      | seek replacement; exhausted -> error
+     *   false                   | recordOnly      | serve original immediately + record
+     *   false                   | hardReject      | fail immediately, no alternates
+     */
+    autoCorrectWhenPossible?: boolean;
+    /**
+     * InvalidBehavior is the per-finality verdict for reorg-sensitive checks,
+     * where invalid data is ambiguously a node bug or a reorg: recordOnly |
+     * hardReject | off. Deterministic checks ignore it and always hardReject
+     * (override per check via checks.<id>.onFailure).
+     */
+    invalidBehavior?: IntegrityInvalidBehaviorConfig;
+    /**
+     * ReorgWindow is how many blocks back from the tip the integrity ChainView
+     * keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
+     * deep-reorg chains (e.g. polygon 256).
+     */
+    reorgWindow?: number;
+    /**
+     * ObserveOnly runs every enabled check but never lets a verdict touch the
+     * response: violations that WOULD have been rejected are recorded with the
+     * outcome "would_reject" and served anyway. This is the safe way to enable
+     * integrity on a network for the first time — it reveals both bad upstream
+     * data AND the module's own gaps on that chain at zero request risk, and
+     * the would_reject rate is exactly the client-facing cost enforcement
+     * would incur.
+     * It is ABSOLUTE and overrides everything else, including a per-check
+     * onFailure: reject and invalidBehavior — so a future release adding a new
+     * check cannot start rejecting on an observe-only network. Deterministic
+     * checks are covered too, which invalidBehavior alone cannot do (they
+     * ignore it by design).
+     */
+    observeOnly?: boolean;
+    /**
+     * StateProbe proves, per upstream, that the node actually holds the state
+     * trie it claims: on each new followed block, probe every upstream with an
+     * execution-context call (and eth_getProof where supported) verified
+     * against the follower's verified header, and advance that upstream's
+     * state-proven head only on success. The probes PUBLISH evidence, they
+     * never route: proofs feed the state-proven telemetry, and a sustained
+     * streak of wrong-height answers is recorded as upstream misbehavior on
+     * the health tracker — the same ledger consensus disputes and integrity
+     * rejects feed — for the selection policy to act on (e.g. the
+     * misbehaviorRateAbove predicate); absence of proof has no effect at all,
+     * and ObserveOnly suppresses the misbehavior recording like every other
+     * integrity effect. Requires follow to be enabled (the verified header is
+     * the trust anchor). Off by default.
+     */
+    stateProbe?: IntegrityStateProbeConfig;
+    /**
+     * Follow turns the ChainView into an actual chain follower: it walks the
+     * chain forward block by block, requires each block to name its
+     * predecessor's hash, and reconciles reorgs by finding the common ancestor.
+     * Off by default — it costs one eth_getBlockByNumber per block per network.
+     */
+    follow?: IntegrityFollowConfig;
+    /**
+     * MisbehaviorsDestination durably archives every integrity catch (reject or
+     * soft-flag) as a JSONL record — same file/S3 destination shape as the
+     * consensus policy's misbehaviorsDestination. Catches are rare, so the
+     * volume is low; the archive is the forensic record metrics can't carry.
+     */
+    misbehaviorsDestination?: MisbehaviorsDestinationConfig;
+}
+/**
+ * IntegrityFollowConfig configures the ChainView chain follower.
+ * Following gives the module a CONTIGUOUS, parent-linked view of the chain
+ * instead of the sparse scatter of heights that client traffic happens to
+ * touch. That is what lets it answer "is this block canonical" from a verified
+ * chain rather than from whichever source was observed first, and it is the
+ * precondition for any check that compares consecutive headers.
+ */
+export interface IntegrityFollowConfig {
+    /**
+     * Enabled turns the follower on for this network. Default false.
+     */
+    enabled?: boolean;
+    /**
+     * Interval is how often to check for new blocks (default 1s). Keep it below
+     * the chain's block time or the follower will run a step behind.
+     */
+    interval?: Duration;
+    /**
+     * MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
+     * follower starting far behind converges steadily instead of bursting.
+     */
+    maxBlocksPerTick?: number;
+}
+/**
+ * IntegrityStateProbeConfig configures the per-upstream state-trie probes.
+ */
+export interface IntegrityStateProbeConfig {
+    /**
+     * Enabled turns the probes on. Default false.
+     */
+    enabled?: boolean;
+    /**
+     * Interval is the minimum time between probes of the same upstream
+     * (default 2s) — a bound on probe cost, not a schedule; probes fire on
+     * followed-block arrival.
+     */
+    interval?: Duration;
+}
+/**
+ * IntegrityConfig is an IntegritySettings plus the per-request header-control
+ * surface and the named profiles a request may select. It lives at the project
+ * level (applies to all networks) and the network level (overrides).
+ */
+export interface IntegrityConfig {
+    integritysettings: IntegritySettings;
+    /**
+     * HeaderMode controls whether/how per-request X-ERPC-Integrity headers may
+     * adjust integrity: off | profiles | full. Defaults to off.
+     */
+    headerMode?: string;
+    /**
+     * Profiles are named settings an operator defines; a request may select one
+     * by name via header when HeaderMode permits.
+     */
+    profiles?: {
+        [key: string]: IntegritySettings | undefined;
+    };
+}
+/**
+ * IntegrityCheckConfig overrides a single check by its catalog id.
+ */
+export interface IntegrityCheckConfig {
+    /**
+     * Enabled forces the check on/off; nil leaves the level's decision intact.
+     */
+    enabled?: boolean;
+    /**
+     * Params are check-specific knobs (e.g. bloom equality-vs-superset).
+     */
+    params?: {
+        [key: string]: string;
+    };
+    /**
+     * OnFailure overrides this check's failure mode: recordOnly | hardReject.
+     */
+    onFailure?: string;
+}
+/**
+ * IntegrityBudgetConfig caps the authoritative tier's canonical fetches.
+ */
+export interface IntegrityBudgetConfig {
+    maxPerSecond?: number;
+    maxConcurrent?: number;
+}
+/**
+ * IntegrityInvalidBehaviorConfig is the per-finality verdict for reorg-sensitive
+ * checks: recordOnly | hardReject | off, split by whether the response's block
+ * is finalized. The verdict describes what happens when no valid answer is
+ * obtainable; whether a replacement is sought first is AutoCorrectWhenPossible.
+ */
+export interface IntegrityInvalidBehaviorConfig {
+    finalized?: string;
+    unfinalized?: string;
 }
 export type DataFinalityState = number;
 /**
@@ -1880,9 +2588,66 @@ export interface ExecStateSnapshot {
 }
 export type NetworkArchitecture = string;
 export declare const ArchitectureEvm: NetworkArchitecture;
+export declare const ArchitectureSvm: NetworkArchitecture;
 export type Network = any;
+/**
+ * EvmNetwork is the EVM-specific view of a Network. Callers that need
+ * block-number accessors or leader-upstream selection should go through the
+ * EvmHighestLatestBlockNumber / EvmHighestFinalizedBlockNumber / EvmLeaderUpstream
+ * helpers below, which type-assert and degrade to zero-value on mismatch.
+ */
+export type EvmNetwork = Network;
+/**
+ * SvmNetwork is the SVM-specific view of a Network. Production Network
+ * implementations satisfy this automatically when the underlying network is
+ * SVM; EVM networks correctly fail the assertion.
+ */
+export type SvmNetwork = Network;
 export type QuantileTracker = any;
 export type TrackedMetrics = any;
+/**
+ * ServedTipPick is the picker's output.
+ */
+export interface ServedTipPick {
+    /**
+     * Tip is the value to advertise as latest/finalized: the highest block
+     * number that at least quorum of the inputs have already reached (all of
+     * them when there are fewer inputs than the quorum), or 0 when there are
+     * no valid inputs.
+     */
+    tip: number;
+    /**
+     * Freshest is the freshest CORROBORATED view: the 2nd-highest valid input
+     * (or the only input when N=1) — the reference for the deliberate-lag
+     * gauge (Freshest - Tip). Using the 2nd-highest instead of the raw max
+     * means a single rogue far-future upstream cannot inflate the lag gauge.
+     * The absolute per-upstream maxima remain observable via
+     * erpc_upstream_latest_block_number.
+     */
+    freshest: number;
+    /**
+     * Max is the highest valid input: the raw ceiling no pick may exceed. It is
+     * deliberately not corroborated — a ceiling a single rogue can only RAISE
+     * cannot be used to make a caller serve anything the rogue chose — and it
+     * is the one place a lone far-ahead head is still visible to callers.
+     */
+    max: number;
+    /**
+     * Inputs is the number of valid (> 0) heads.
+     */
+    inputs: number;
+}
+/**
+ * ServedTipQuorum is how many voters must already have a block before it is
+ * served: a fixed count (>= 1), or ServedTipQuorumMajority for floor(N/2)+1 of
+ * the N voters. The zero value is DefaultServedTipQuorum. In YAML/JSON it is a
+ * positive integer or the string "majority".
+ */
+export type ServedTipQuorum = number;
+/**
+ * ServedTipQuorumMajority requires a strict majority of the voters.
+ */
+export declare const ServedTipQuorumMajority: ServedTipQuorum;
 /**
  * TimeoutFunc computes the timeout for a request. Returns nil when no
  * timeout applies (caller skips context.WithTimeout).

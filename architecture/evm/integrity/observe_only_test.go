@@ -109,9 +109,9 @@ func TestObserveOnly(t *testing.T) {
 		res := validateBlockPolicy(t, blockResult("0x10", "0xnew", "0xparent"),
 			only("hashStability", nil), mockHistory{0x10: "0xold"}, DefaultReorgPolicy())
 		require.NoError(t, res.Err)
-		assert.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+		assert.Equal(t, "record_only", outcomeOf(res, "hashStability"))
 		require.Len(t, res.Recorded, 1)
-		assert.Equal(t, "soft_flag", res.Recorded[0].Verdict)
+		assert.Equal(t, "record_only", res.Recorded[0].Verdict)
 	})
 
 	// Off must stay off: observe mode reports what enforcement WOULD do, so it
@@ -150,10 +150,10 @@ func TestObserveOnly_IsMarginalOverInvalidBehavior(t *testing.T) {
 		})
 	}
 	enforce, observe := run(false), run(true)
-	assert.Equal(t, "soft_flag", outcomeOf(enforce, "hashStability"))
-	assert.Equal(t, "soft_flag", outcomeOf(observe, "hashStability"),
+	assert.Equal(t, "record_only", outcomeOf(enforce, "hashStability"))
+	assert.Equal(t, "record_only", outcomeOf(observe, "hashStability"),
 		"a soft-flag must NOT be relabelled would_reject — otherwise would_reject overstates the enforcement cost")
 	require.Len(t, observe.Recorded, 1)
-	assert.Equal(t, "soft_flag", observe.Recorded[0].Verdict)
+	assert.Equal(t, "record_only", observe.Recorded[0].Verdict)
 	assert.NoError(t, enforce.Err, "already served under the policy, nothing for observe mode to suppress")
 }

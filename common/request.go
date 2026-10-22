@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
 )
 
@@ -20,11 +19,7 @@ const (
 	CompositeTypeLogsSplitProactive        = "logs-split-proactive"
 	CompositeTypeTraceFilterSplitOnError   = "trace-filter-split-on-error"
 	CompositeTypeTraceFilterSplitProactive = "trace-filter-split-proactive"
-	CompositeTypeQueryBlocksShim           = "query-blocks-shim"
-	CompositeTypeQueryTransactionsShim     = "query-transactions-shim"
-	CompositeTypeQueryLogsShim             = "query-logs-shim"
-	CompositeTypeQueryTracesShim           = "query-traces-shim"
-	CompositeTypeQueryTransfersShim        = "query-transfers-shim"
+	CompositeTypeMulticall3                = "multicall3"
 )
 
 const RequestContextKey ContextKey = "rq"
@@ -70,6 +65,32 @@ func WithSweepIteration(ctx context.Context) context.Context {
 func IsSweepIteration(ctx context.Context) bool {
 	v, _ := ctx.Value(SweepIterationContextKey).(bool)
 	return v
+}
+
+// wireParamsContextKey carries the JSON-RPC params one upstream attempt sends
+// for one request in place of its own. The request keeps its params, so the
+// cache key, response binding and every other upstream see the original question.
+type wireParamsContextKey struct{}
+
+// wireParams binds the override to its request: any other request sent with a
+// derived ctx on the same attempt (a probe, a state poll) keeps its own params.
+type wireParams struct {
+	req    *NormalizedRequest
+	params []interface{}
+}
+
+// WithWireParams returns ctx whose upstream attempt sends params for req on the wire.
+func WithWireParams(ctx context.Context, req *NormalizedRequest, params []interface{}) context.Context {
+	return context.WithValue(ctx, wireParamsContextKey{}, wireParams{req: req, params: params})
+}
+
+// WireParams returns the params an upstream client sends for req under ctx:
+// the attempt's override for exactly req when set, else req's own params.
+func WireParams(ctx context.Context, req *NormalizedRequest, params []interface{}) []interface{} {
+	if w, ok := ctx.Value(wireParamsContextKey{}).(wireParams); ok && w.req == req {
+		return w.params
+	}
+	return params
 }
 
 type directiveKeyNames struct {
@@ -223,10 +244,14 @@ type NormalizedRequest struct {
 	body           []byte
 	ForwardHeaders http.Header
 
-	method                      string
 	directives                  *RequestDirectives
 	allowClientDirectiveMatcher MatcherFunc
 	jsonRpcRequest              atomic.Pointer[JsonRpcRequest]
+	// parseMu serializes the one parse of body into jsonRpcRequest. Hedge and
+	// consensus fan-out share a request, so without it two goroutines can both
+	// miss the cache and read body while a third releases it.
+	parseMu     sync.Mutex
+	bodyCleared atomic.Bool
 
 	// Upstream selection fields - protected by upstreamMutex
 	upstreamMutex    sync.Mutex
@@ -237,14 +262,23 @@ type NormalizedRequest struct {
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
-	lastValidResponse      atomic.Pointer[NormalizedResponse]
-	integrityCaught        atomic.Bool  // an integrity check rejected a response during this request
+	// escalatedToFallbacks makes the per-request fallback escape happen at
+	// most once across retries and hedges.
+	escalatedToFallbacks atomic.Bool
+
+	lastValidResponse         atomic.Pointer[NormalizedResponse]
+	integrityCaught           atomic.Bool  // an integrity check rejected a response during this request
 	integrityRejectedCheck    atomic.Value // id of the last check that rejected (the "why")
 	integrityRejectedFinality atomic.Value // finality of the last rejected block (for saved/failed metric)
-	integrityOverheadNs       atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
-	lastUpstream           atomic.Value
-	evmBlockRef            atomic.Value
-	evmBlockNumber         atomic.Value
+	// integrityFallback holds the newest FALLBACK-ELIGIBLE original: a response
+	// a recordOnly verdict flagged, escalated to a rejection only so the
+	// failsafe could hunt a validated replacement. If the hunt exhausts,
+	// project.Forward serves this instead of an error.
+	integrityFallback   atomic.Pointer[IntegrityFallback]
+	integrityOverheadNs atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
+	lastUpstream        atomic.Value
+	evmBlockRef         atomic.Value
+	evmBlockNumber      atomic.Value
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -458,6 +492,37 @@ func (r *NormalizedRequest) IntegrityCaught() bool {
 	return r != nil && r.integrityCaught.Load()
 }
 
+// IntegrityFallback is a flagged-but-serveable original response stashed by a
+// fallback-eligible integrity rejection (recordOnly verdict escalated by
+// autoCorrectWhenPossible), plus the violation metadata a fallback serve is
+// recorded with.
+type IntegrityFallback struct {
+	Response *NormalizedResponse
+	CheckID  string
+	Finality string
+	Reason   string
+}
+
+// SetIntegrityFallbackResponse stashes resp as the fallback to serve if no
+// upstream produces a validated replacement. The newest stash wins: every
+// eligible original satisfies the recordOnly policy equally, and the newest
+// is the most likely to be post-reorg.
+func (r *NormalizedRequest) SetIntegrityFallbackResponse(resp *NormalizedResponse, checkID, finality, reason string) {
+	if r == nil || resp == nil {
+		return
+	}
+	r.integrityFallback.Store(&IntegrityFallback{Response: resp, CheckID: checkID, Finality: finality, Reason: reason})
+}
+
+// TakeIntegrityFallbackResponse returns the stashed fallback (nil if none) and
+// clears the slot so a fallback is served at most once.
+func (r *NormalizedRequest) TakeIntegrityFallbackResponse() *IntegrityFallback {
+	if r == nil {
+		return nil
+	}
+	return r.integrityFallback.Swap(nil)
+}
+
 // IntegrityRejectedCheck returns the id of the last integrity check that
 // rejected during this request (the failure reason), or "" if none.
 func (r *NormalizedRequest) IntegrityRejectedCheck() string {
@@ -530,6 +595,24 @@ func (r *NormalizedRequest) NetworkId() string {
 		return "n/a"
 	}
 	return r.network.Id()
+}
+
+// CacheKeySuffix returns the optional JSON-RPC cache partition-key suffix
+// configured on this request's network, or "" when unset / no network.
+func (r *NormalizedRequest) CacheKeySuffix() string {
+	if r == nil {
+		return ""
+	}
+	r.RLock()
+	defer r.RUnlock()
+	if r.network == nil {
+		return ""
+	}
+	cfg := r.network.Config()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.CacheKeySuffix
 }
 
 // NetworkLabel returns a user-friendly label for the network suitable for metrics.
@@ -837,16 +920,29 @@ func (r *NormalizedRequest) RLockWithTrace(ctx context.Context) {
 	r.RLock()
 }
 
-// Extract and prepare the request for forwarding.
-func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequest, error) {
+// resolveJsonRpc returns this request's parsed envelope, parsing the raw body
+// on first call and caching the result for every later caller. It is the only
+// place NormalizedRequest turns a body into a JsonRpcRequest, so the method
+// erpc authenticates, rate-limits, and caches on is by construction the method
+// it sends upstream.
+//
+// It leaves the raw body in place; JsonRpcRequest is the caller that decides
+// the body is no longer needed.
+func (r *NormalizedRequest) resolveJsonRpc(ctx ...context.Context) (*JsonRpcRequest, error) {
+	// Fast path: every caller after the first reads the published envelope
+	// without touching the lock.
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		return jrq, nil
+	}
+
 	if len(ctx) > 0 {
 		_, span := StartDetailSpan(ctx[0], "Request.ResolveJsonRpc")
 		defer span.End()
 	}
 
-	if r == nil {
-		return nil, nil
-	}
+	r.parseMu.Lock()
+	defer r.parseMu.Unlock()
+
 	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
 		return jrq, nil
 	}
@@ -856,43 +952,88 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 		return nil, NewErrJsonRpcRequestUnmarshal(err, r.body)
 	}
 
-	method := rpcReq.Method
-	if method == "" {
+	if rpcReq.Method == "" {
 		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
+	// Publish last: callers compare this pointer and mutate what it points at
+	// (params rewrites, cache-hash memoization), so one request must hand out
+	// one envelope.
 	r.jsonRpcRequest.Store(rpcReq)
-	// Safe to drop the raw body after successful parse to reduce retention of ReadAll buffers.
-	r.body = nil
 
 	return rpcReq, nil
 }
 
+// Extract and prepare the request for forwarding.
+func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequest, error) {
+	if r == nil {
+		return nil, nil
+	}
+
+	rpcReq, err := r.resolveJsonRpc(ctx...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Safe to drop the raw body after successful parse to reduce retention of
+	// ReadAll buffers. Take parseMu so the release cannot land while another
+	// goroutine is still parsing that same body, and CAS so fan-out callers
+	// write it once rather than once per attempt.
+	if r.bodyCleared.CompareAndSwap(false, true) {
+		r.parseMu.Lock()
+		r.body = nil
+		r.parseMu.Unlock()
+	}
+
+	return rpcReq, nil
+}
+
+// Method returns the method erpc authenticates, rate-limits, routes, and meters
+// on. It reads the shared envelope rather than peeking at the raw body, so it
+// reports the same method the upstream is asked to run. The envelope is the
+// only cache: a second copy on the request would be a plain field read and
+// written by every hedge and consensus goroutine at once.
 func (r *NormalizedRequest) Method() (string, error) {
 	if r == nil {
 		return "", nil
 	}
 
-	if r.method != "" {
-		return r.method, nil
-	}
-
 	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
-		r.method = jrq.Method
 		return jrq.Method, nil
 	}
 
 	if len(r.body) > 0 {
-		method, err := sonic.Get(r.body, "method")
+		// resolveJsonRpc rather than JsonRpcRequest: this runs before routing,
+		// which still reads the raw body.
+		jrq, err := r.resolveJsonRpc()
 		if err != nil {
-			return "", NewErrJsonRpcRequestUnmarshal(err, r.body)
+			return "", err
 		}
-		m, err := method.String()
-		r.method = m
-		return m, err
+		return jrq.Method, nil
 	}
 
 	return "", NewErrJsonRpcRequestUnresolvableMethod(r.body)
+}
+
+// NetworkIdHint returns the "networkId" member carried in the request body,
+// which routes a request that gave no /<architecture>/<chainId> path segments.
+// Empty when the body omitted it or could not be parsed — an unparseable body
+// is reported by Validate, well before routing asks.
+func (r *NormalizedRequest) NetworkIdHint() string {
+	if r == nil {
+		return ""
+	}
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		return jrq.NetworkIdHint()
+	}
+	if len(r.body) == 0 {
+		return ""
+	}
+	jrq, err := r.resolveJsonRpc()
+	if err != nil {
+		return ""
+	}
+	return jrq.NetworkIdHint()
 }
 
 func (r *NormalizedRequest) Body() []byte {
@@ -1169,6 +1310,15 @@ func (r *NormalizedRequest) Upstreams() []Upstream {
 	out := make([]Upstream, len(r.upstreamList))
 	copy(out, r.upstreamList)
 	return out
+}
+
+// MarkEscalatedToFallbacks reports true only for the first caller, so a
+// request escalates to the fallback tier at most once.
+func (r *NormalizedRequest) MarkEscalatedToFallbacks() bool {
+	if r == nil {
+		return false
+	}
+	return r.escalatedToFallbacks.CompareAndSwap(false, true)
 }
 
 // UserId returns the user ID from the user object, or "n/a" if not available

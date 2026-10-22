@@ -21,6 +21,7 @@ type CounterInt64SharedVariable interface {
 	SharedVariable
 	GetValue() int64
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
+	TryUpdateIfLocallyStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
@@ -101,6 +102,7 @@ func (v *baseSharedVariable) advanceTimestampPast(remoteTs int64) {
 
 type counterInt64 struct {
 	baseSharedVariable
+	localRefresh           baseSharedVariable
 	registry               *sharedStateRegistry
 	key                    string
 	value                  atomic.Int64
@@ -203,6 +205,34 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		}
 	}
 
+	// A head counter never legitimately moves to zero or below. Zero is the zero
+	// VALUE of an unset CounterInt64State, not an observation of a chain, and it
+	// arrives here from ordinary sources: an instance that pushes its counter
+	// before its first poll, or a connector handing back an empty record with a
+	// live timestamp. Left alone it reads as a rollback the size of the whole
+	// chain, which is necessarily larger than ignoreRollbackOf, so the branch
+	// below -- whose entire job is to admit only real reorgs -- waves it through,
+	// and every instance that receives it drops its head to 0.
+	//
+	// The floor is scoped to counters that ignore small rollbacks. The
+	// earliest-block counter is created with ignoreRollbackOf=0 and legitimately
+	// sits at 0 on an archive node, so it keeps the old behaviour.
+	if newVal <= 0 && c.ignoreRollbackOf > 0 {
+		// Same bookkeeping as a rejected small rollback: our higher local value
+		// must out-rank the remote state, or reconciliation hands the zero back
+		// to us on the next tick and the counter flaps.
+		if isRemoteUpdate {
+			c.advanceTimestampPast(st.UpdatedAt)
+		}
+		c.registry.logger.Warn().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Msg("rejected non-positive value for a head counter (remote)")
+		return false
+	}
+
 	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
 	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
 	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
@@ -298,6 +328,18 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 		}
 	}
 
+	// See processNewState: zero is an unset state, not a head. Same floor, same
+	// scoping to counters that ignore small rollbacks.
+	if newVal <= 0 && c.ignoreRollbackOf > 0 {
+		c.registry.logger.Warn().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Msg("rejected non-positive value for a head counter (local)")
+		return false
+	}
+
 	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
 	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
 	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
@@ -388,6 +430,18 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 }
 
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
+	return c.tryUpdateIfStale(ctx, staleness, executeNewValueFn, false)
+}
+
+func (c *counterInt64) TryUpdateIfLocallyStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
+	return c.tryUpdateIfStale(ctx, staleness, executeNewValueFn, true)
+}
+
+func (c *counterInt64) tryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error), local bool) (int64, error) {
+	freshness := &c.baseSharedVariable
+	if local {
+		freshness = &c.localRefresh
+	}
 	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale",
 		trace.WithAttributes(
 			attribute.String("key", c.key),
@@ -396,7 +450,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	)
 	defer span.End()
 
-	if !c.IsStale(staleness) {
+	if !freshness.IsStale(staleness) {
 		span.SetAttributes(attribute.Bool("skipped_not_stale", true))
 		return c.value.Load(), nil
 	}
@@ -408,7 +462,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	defer c.updateMu.Unlock()
 
 	// Double-check staleness after acquiring mutex
-	if !c.IsStale(staleness) {
+	if !freshness.IsStale(staleness) {
 		span.SetAttributes(attribute.Bool("skipped_not_stale_after_mutex", true))
 		return c.value.Load(), nil
 	}
@@ -419,18 +473,29 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// Do NOT acquire distributed locks or do any remote I/O here, otherwise degraded shared state
 	// (e.g. Redis lock acquisition) can block normal request flow.
 	span.SetAttributes(attribute.Bool("foreground_remote_io_disabled", true))
+	c.localRefresh.allocateUpdatedAtMs()
 
-	// Execute the refresh function (e.g., RPC call to get latest block) in background
+	// Execute the refresh function (e.g., RPC call to get latest block) in background.
+	// fallbackTimeout is sized for remote storage ops; honor a longer caller
+	// deadline since the refresh itself can legitimately take longer. The
+	// parent stays appCtx so the fetch survives foreground cancellation.
+	fnTimeout := c.registry.fallbackTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > fnTimeout {
+			fnTimeout = remaining
+		}
+	}
+
 	resultCh := make(chan refreshResult, 1)
 	go func() {
-		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, fnTimeout)
 		defer fnCancel()
 
 		// Create a span for the actual RPC/refresh call - this is usually what takes time
 		_, fnSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.ExecuteRefresh",
 			trace.WithAttributes(
 				attribute.String("key", c.key),
-				attribute.Int64("timeout_ms", c.registry.fallbackTimeout.Milliseconds()),
+				attribute.Int64("timeout_ms", fnTimeout.Milliseconds()),
 			),
 		)
 		value, err := executeNewValueFn(fnCtx)
@@ -463,7 +528,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			attribute.Bool("async_refresh", true),
 		)
 		c.markFreshAttempt()
-		c.continueAsyncRefresh(resultCh)
+		c.continueAsyncRefresh(resultCh, fnTimeout)
 		return initialVal, nil
 	}
 }
@@ -501,14 +566,14 @@ func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (in
 	return c.value.Load(), nil
 }
 
-func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult) {
+func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult, fnTimeout time.Duration) {
 	go func() {
 		// Bound the helper's lifetime. The paired refresh worker is capped by
-		// fnCtx (fallbackTimeout), but if a downstream call ignores its context
-		// the worker may never send and this goroutine would leak permanently.
-		// Cap at fallbackTimeout + a small buffer; drop the eventual value in
-		// the pathological case — the next TryUpdateIfStale will refresh again.
-		timer := time.NewTimer(c.registry.fallbackTimeout + time.Second)
+		// fnCtx (fnTimeout), but if a downstream call ignores its context the
+		// worker may never send and this goroutine would leak permanently.
+		// Cap at fnTimeout + a small buffer; drop the eventual value in the
+		// pathological case — the next TryUpdateIfStale will refresh again.
+		timer := time.NewTimer(fnTimeout + time.Second)
 		defer timer.Stop()
 
 		select {
@@ -688,6 +753,13 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 					_ = c.processNewState(UpdateSourceRemoteCheck, remote)
 					c.updateMu.Unlock()
 					local = c.localState()
+				}
+
+				// Remote ahead by no more than ignoreRollbackOf means we are
+				// lagging: adopt it instead of overwriting it with a lower value.
+				if remoteOk && remote.Value > local.Value && remote.Value-local.Value <= c.ignoreRollbackOf {
+					c.processNewValue(UpdateSourceRemoteCheck, remote.Value)
+					return
 				}
 
 				// If our local state is newer (or remote missing), push it to remote.

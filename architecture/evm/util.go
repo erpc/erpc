@@ -6,14 +6,21 @@ import (
 
 // IsNonRetryableWriteMethod returns true for write methods that should NOT be retried/hedged.
 // Note: eth_sendRawTransaction is intentionally excluded because it supports idempotency handling.
+// Matching is case-insensitive like hook dispatch: a guard against re-sending a
+// write must not be escapable by the casing the client chose.
 func IsNonRetryableWriteMethod(method string) bool {
-	return method == "eth_sendTransaction" ||
-		method == "eth_createAccessList" ||
-		method == "eth_submitTransaction" ||
-		method == "eth_submitWork" ||
-		method == "eth_newFilter" ||
-		method == "eth_newBlockFilter" ||
-		method == "eth_newPendingTransactionFilter"
+	switch strings.ToLower(method) {
+	case "eth_sendtransaction",
+		"eth_createaccesslist",
+		"eth_submittransaction",
+		"eth_submitwork",
+		"eth_newfilter",
+		"eth_newblockfilter",
+		"eth_newpendingtransactionfilter":
+		return true
+	default:
+		return false
+	}
 }
 
 func IsMissingDataError(err error) bool {
@@ -41,6 +48,8 @@ func IsMissingDataError(err error) bool {
 		strings.Contains(txt, "cannot find transaction") ||
 		strings.Contains(txt, "after last accepted block") ||
 		strings.Contains(txt, "No state available") ||
+		strings.Contains(txt, "no state found for block") ||
+		(strings.Contains(txt, "state at block") && strings.Contains(txt, "is pruned")) ||
 		(strings.Contains(txt, "historical state") && (strings.Contains(txt, "is not available") || strings.Contains(txt, "unavailable"))) ||
 		strings.Contains(txt, "trie does not") ||
 		strings.Contains(txt, "greater than latest") ||

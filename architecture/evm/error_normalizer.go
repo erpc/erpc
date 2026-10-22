@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	bdscommon "github.com/blockchain-data-standards/manifesto/common"
@@ -16,6 +17,9 @@ import (
 func init() {
 	_ = (&bdscommon.ErrorDetails{}).ProtoReflect().Descriptor()
 }
+
+// reth prints a revert as Debug text in the message and sends no "data" field.
+var rethRevertError = regexp.MustCompile(`RevertError \{ output: (?:Some\((0x[0-9a-fA-F]*)\)|None) \}`)
 
 func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
 	if (jr != nil && jr.Error != nil) || r.StatusCode > 299 {
@@ -56,11 +60,16 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				msg += " Data: " + s
 			}
 		default:
-			// passthrough error data as is
-			details["data"] = err.Data
+			// Absent "data" unmarshals to a nil interface; appending it would
+			// turn e.g. Monad's bare "rejected" into "rejected Data: <nil>" and
+			// silently break every whole-message (equality/suffix) check below.
+			if err.Data != nil {
+				// passthrough error data as is
+				details["data"] = err.Data
 
-			// Add the data as string to the message for text-based checks below
-			msg += " Data: " + fmt.Sprintf("%v", err.Data)
+				// Add the data as string to the message for text-based checks below
+				msg += " Data: " + fmt.Sprintf("%v", err.Data)
+			}
 		}
 
 		//----------------------------------------------------------------
@@ -88,7 +97,21 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "too many results") ||
 			strings.Contains(msg, "try paginating") ||
 			(strings.Contains(msg, "maximum") && strings.Contains(msg, "blocks distance")) ||
-			strings.Contains(msg, "eth_getLogs is limited") {
+			strings.Contains(msg, "eth_getLogs is limited") ||
+			// jsonrpsee — which reth and everything built on it uses — rejects an
+			// oversized response body with "Response is too big" and carries the
+			// byte cap in Data ("Exceeded max limit of 167772160"). That is a SIZE
+			// complaint, so narrowing the block range is exactly the right remedy
+			// and the eth_getLogs / trace_filter splitters already know how. It
+			// matched none of the range-shaped phrases above, so it fell through to
+			// a generic server-side exception, which does not split and surfaces to
+			// the caller as a hard failure.
+			//
+			// Matched on "is too big" rather than the full sentence so a reworded
+			// subject ("Result is too big") still lands here, and deliberately NOT
+			// on the Data prefix "Exceeded max limit of" — that phrasing is not
+			// specific to size and would swallow rate/quota complaints.
+			strings.Contains(msg, "is too big") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -136,6 +159,19 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				return re.WithRetryableTowardNetwork(false)
 			}
 			return capErr
+		}
+
+		// jsonrpsee per-connection eth_subscribe cap (reth -32006): a full socket, not an unhealthy upstream.
+		if strings.Contains(msg, "Too many subscriptions") {
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		}
 
 		if r.StatusCode == 402 ||
@@ -225,6 +261,35 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		}
 
+		// HyperEVM read precompiles (0x…0800 onwards) execute against HyperCore
+		// state for the requested block. Many nodes hold that state only for
+		// their live tip; for any other block they answer
+		//   -32003 "out of gas: gas exhausted during precompiled contract execution: <rpc gas cap>"
+		// while a node that holds the state answers the same call. This is a
+		// data gap on the node, not an execution result, so it must not reach
+		// the generic "out of gas" branch below, which returns it to the caller
+		// as a final execution exception. eth_sendRawTransaction keeps its
+		// existing transaction-rejected handling.
+		if strings.Contains(msg, "gas exhausted during precompiled contract execution") {
+			isSendRawTx := false
+			if nr != nil && nr.Request() != nil {
+				m, _ := nr.Request().Method()
+				isSendRawTx = strings.EqualFold(m, "eth_sendRawTransaction")
+			}
+			if !isSendRawTx {
+				return common.NewErrEndpointMissingData(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorMissingData,
+						err.Message,
+						nil,
+						details,
+					),
+					upstream,
+				)
+			}
+		}
+
 		//----------------------------------------------------------------
 		// "Timeouts / node-level" errors
 		//----------------------------------------------------------------
@@ -246,7 +311,12 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//----------------------------------------------------------------
 		// "EVM reverts and execution" errors
 		//----------------------------------------------------------------
-		if strings.Contains(msg, "reverted") ||
+		rethRevert := rethRevertError.FindStringSubmatch(msg)
+		if len(rethRevert) > 1 && rethRevert[1] != "" && details["data"] == nil {
+			details["data"] = rethRevert[1]
+		}
+		if rethRevert != nil ||
+			strings.Contains(msg, "reverted") ||
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||
 			strings.Contains(msg, "VM Exception") ||
@@ -271,13 +341,59 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			}
 			return execErr
 		}
-		// Hack for some chains (Berachain) to make the message compatible with Subgraph and other tools.
-		if strings.Contains(msg, "EVM error: InvalidJump") {
+		// Aurora (Borealis engine) answers debug_trace* with -32603 for two
+		// per-transaction outcomes that no other node can change:
+		//   "no EVM execution in transaction 0x…": a NEAR-native transaction
+		//     surfaced in the EVM block, so there is nothing to trace;
+		//   "EVM tracing failed in transaction 0x… due to ContractError {…}":
+		//     the engine's own verdict for that transaction.
+		// As a server-side exception every request was retried until the
+		// failsafe gave up (12 attempts each) and the caller saw
+		// ErrUpstreamsExhausted instead of the real reason.
+		if strings.Contains(msg, "no EVM execution in transaction") ||
+			strings.Contains(msg, "EVM tracing failed in transaction") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCallException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+		// EVM HALTS reported as "EVM error: <HaltReason>".
+		//
+		// A halt — out of gas, invalid opcode, insufficient funds, stack
+		// overflow — is an EXECUTION outcome, exactly like a revert: the
+		// EVM ran and stopped for a protocol reason, and every upstream
+		// agrees on that verdict. It is not an endpoint failure and must
+		// not be scored as one.
+		//
+		// Without this, upstreams that use revm's own wording fell through
+		// to the generic server-side-exception branch below and every
+		// out-of-gas call in the stream was counted against the endpoint.
+		// Measured 2026-08-20 on a shadow stream: an upstream whose real
+		// failure rate was 0.01% read as 7% because its halts were graded
+		// as errors.
+		//
+		// This began as a one-line special case for "EVM error: InvalidJump"
+		// (Berachain); the prefix is what actually identifies the class, so
+		// it is matched as a prefix and the reason carried through. The
+		// InvalidJump wording stays mapped to the geth phrasing Subgraph
+		// and other tools already parse.
+		if strings.Contains(msg, "EVM error: ") {
+			normalized := "revert: " + strings.TrimSpace(
+				msg[strings.Index(msg, "EVM error: ")+len("EVM error: "):],
+			)
+			if strings.Contains(msg, "EVM error: InvalidJump") {
+				normalized = "revert: invalid jump destination"
+			}
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmReverted,
-					"revert: invalid jump destination",
+					normalized,
 					nil,
 					details,
 				),
@@ -309,7 +425,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(ml, "already in the mempool") ||
 			strings.Contains(ml, "transaction already exists") ||
 			strings.Contains(ml, "already have transaction") ||
-			strings.Contains(ml, "already exists in mempool") {
+			strings.Contains(ml, "already exists in mempool") ||
+			strings.Contains(ml, "tx_replay_attack") {
 			// These indicate the exact same transaction is already known - idempotent success case
 			return common.NewErrEndpointNonceException(
 				common.NewErrJsonRpcExceptionInternal(
@@ -340,6 +457,79 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		}
 
+		// HyperEVM (Hyperliquid) returns opaque HyperCore↔HyperEVM boundary
+		// errors as JSON-RPC -32100 with message "Unexpected error (code=10055)".
+		// Per Hyperliquid docs that bucket covers nonce conflicts, duplicate
+		// hashes, insufficient funds, and underpriced replacements. Scope the
+		// match to eth_sendRawTransaction only — the message is too broad to
+		// reinterpret as NonceTooLow on other methods (would stop failover).
+		// Treat as nonce-too-low (verify via eth_getTransactionByHash) rather
+		// than already-known (blind success).
+		// https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm
+		if strings.Contains(ml, "code=10055") &&
+			nr != nil && nr.Request() != nil {
+			if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+				return common.NewErrEndpointNonceException(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorTransactionRejected,
+						err.Message,
+						nil,
+						details,
+					),
+					common.NonceExceptionReasonNonceTooLow,
+				)
+			}
+		}
+
+		//----------------------------------------------------------------
+		// "Mempool policy rejection" errors
+		// Observed from Monad, which surfaces every EthTxPoolDropReason as
+		// code -32603 with no data field (monad-bft:
+		// monad-eth-txpool-types/src/lib.rs as_user_string, and
+		// monad-rpc/src/handlers/eth/txn.rs submit_to_txpool):
+		//   - "An existing transaction had higher priority" (ExistingHigherPriority)
+		//   - "A newer transaction had higher priority"      (ReplacedByHigherPriority)
+		//   - "Transaction fee too low"                      (FeeTooLow)
+		//   - bare "rejected"                                (TxStatus::Evicted)
+		// These are deterministic pool verdicts about the transaction; the
+		// node is healthy and answered correctly. Left unclassified they fall
+		// through to ErrEndpointServerSideException, which counts toward the
+		// circuit breaker: a burst of rejections used to open the catch-all
+		// breaker and cordon the upstream for ALL methods, reads included.
+		// The bare-"rejected" equality intentionally checks err.Message (the
+		// pristine wire message), not ml, which may carry a " Data: …" suffix.
+		// geth-family "replacement transaction underpriced" is deliberately
+		// NOT reclassified here (see the nonce/duplicate note above).
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "existing transaction had higher priority") ||
+			strings.Contains(ml, "newer transaction had higher priority") ||
+			strings.Contains(ml, "transaction fee too low") ||
+			strings.EqualFold(strings.TrimSpace(err.Message), "rejected") {
+			execErr := common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+			// Mempool contents and min-fee policies are node-local: another
+			// upstream may accept the same broadcast. Keep eth_sendRawTransaction
+			// failover, consistent with the -32003 "transaction rejected" branch
+			// below; only the breaker/scoring treatment changes.
+			if nr != nil && nr.Request() != nil {
+				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+					if re, ok := execErr.(common.RetryableError); ok {
+						return re.WithRetryableTowardNetwork(true)
+					}
+				}
+			}
+			return execErr
+		}
+
 		//----------------------------------------------------------------
 		// "Insufficient funds / balance" errors
 		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors.
@@ -347,8 +537,11 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// failures, so they should not be retried across upstreams by default.
 		//----------------------------------------------------------------
 
+		// Monad reports the same condition as "reserve balance violation" from
+		// eth_call and eth_fillTransaction (it replaced "insufficient balance").
 		if strings.Contains(msg, "insufficient funds") ||
-			strings.Contains(msg, "insufficient balance") {
+			strings.Contains(msg, "insufficient balance") ||
+			strings.Contains(msg, "reserve balance violation") {
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),

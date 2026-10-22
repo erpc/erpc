@@ -90,7 +90,7 @@ non-standard encoding). Reference: https://docs.erpc.cloud/config/failsafe/integ
 	prompt={`I want the strongest data-integrity guarantees on my mainnet network, including
 force-fetching the canonical block to corroborate single receipts. Set integrity level
 to authoritative with a sensible budget, and explain the per-finality invalidBehavior
-(reject on finalized, soft-flag on unfinalized). Reference:
+(hardReject on finalized, recordOnly on unfinalized) and autoCorrectWhenPossible. Reference:
 https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 />
 
@@ -128,19 +128,21 @@ at network scope (try another upstream), not retryable at the same upstream, fee
 Configured under `networks[].directiveDefaults`. On by default; toggle per-request via
 `X-ERPC-Enforce-*` headers / `?enforce-*=` query params.
 
-**Highest-block enforcement — `eth_blockNumber`.** Reads `dirs.EnforceHighestBlock`. If
-the response block is below the network-known highest, eRPC replaces the response with a
-synthetic JSON-RPC result containing the highest hex block number — no re-request is
-made. Applies to EVERY response source, including cache hits, so a stale value planted in
-a shared cache can never be served below the tip this instance knows. The tip is resolved
-request-aware: a `use-upstream` selector scopes it to the targeted subset. <SourceLink file="architecture/evm/eth_blockNumber.go" lines="31-123" />
+**Highest-block enforcement — `eth_blockNumber`.** Reads `dirs.EnforceHighestBlock`. While
+the network's served head is known, eRPC answers `eth_blockNumber` from it without
+dispatching. Otherwise the request is forwarded, and every response — including cache
+hits — is pinned exactly to the served head once it is known: a higher value is lowered,
+a lower one raised, with no re-request. The head is resolved request-aware: a
+`use-upstream` selector scopes it to the targeted subset. See
+[Block tracking](/reference/evm/block-tracking). <SourceLink file="architecture/evm/eth_blockNumber.go" lines="13-171" />
 
 **Highest-block enforcement — `eth_getBlockByNumber[latest/finalized]`.** Reads
 `dirs.EnforceHighestBlock`. If the returned block is behind the network-known highest,
-eRPC re-requests that block against a different upstream (`SkipCacheRead=true`,
-`UseUpstream=!<id>`); `pickHighestBlock` keeps the higher of the two — protecting against
-a corrupted state pointer. Cache responses skip the re-fetch (the read-side realtime age
-guard handles staleness instead). <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="111-283" />
+eRPC re-requests that block (`SkipCacheRead=true`), keeping the request's own
+`use-upstream` selector if any; the upstream that answered is not excluded, since on fast
+chains it is often the only one that already has the tip block. `pickHighestBlock` keeps
+the higher of the two — protecting against a corrupted state pointer. Cache hits are enforced the same way, so a cached block behind the tip is
+re-fetched rather than served. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="111-283" />
 
 **Stale-tip cache write guard.** Under `enforceHighestBlock`, a realtime-finality
 response already behind the network-wide tip is never written to cache (the classic
@@ -161,7 +163,7 @@ not-yet-produced blocks. Fail-open on unknown head or block tags. <SourceLink fi
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
-| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber` (synthetic upgrade, incl. cache hits) and `eth_getBlockByNumber[latest/finalized]` (re-fetch). Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
+| `enforceHighestBlock` | `*bool` | `true` | Highest-block enforcement for `eth_blockNumber` (answered from the served head; every response pinned to it, incl. cache hits) and `eth_getBlockByNumber[latest/finalized]` (re-fetch). Gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
 | `enforceGetLogsBlockRange` | `*bool` | `true` | Pre-screens `eth_getLogs`/`trace_filter` ranges against upstream availability. The actual hooks read `evm.integrity.enforceGetLogsBlockRange` directly. Header: `X-ERPC-Enforce-GetLogs-Range`. <SourceLink file="common/defaults.go" lines="1461-1463" /> |
 | `enforceNonNullTaggedBlocks` | `*bool` | `true` | Converts null tagged `eth_getBlockByNumber` responses into `ErrEndpointMissingData`. Disable for chains that legitimately return null for some tags (e.g. ZKSync Era). Header: `X-ERPC-Enforce-Non-Null-Tagged-Blocks`. <SourceLink file="common/defaults.go" lines="1464-1466" /> |
 
@@ -200,16 +202,21 @@ One knob picks a preset over the check catalog. Each level is a superset of the 
 	yaml={`integrity:
   level: authoritative              # off | intrinsic | corroborated | authoritative
 
-  # Per-finality verdict for the reorg-sensitive checks only. At the tip you can't
-  # tell a node bug from a reorg, so unfinalized mismatches are recorded, not rejected.
+  # Whether a violation hunts for a validated replacement (retry other
+  # upstreams) BEFORE the invalidBehavior verdict applies. Default true.
+  autoCorrectWhenPossible: true
+
+  # Per-finality verdict for the reorg-sensitive checks only — what happens
+  # when no valid answer is obtainable. At the tip you can't tell a node bug
+  # from a reorg, so unfinalized mismatches are recorded, not rejected.
   invalidBehavior:
-    finalized: reject               # reject | soft-flag | off
-    unfinalized: soft-flag
+    finalized: hardReject           # recordOnly | hardReject | off
+    unfinalized: recordOnly
 
   # Override individual checks by id (enable / disable / params / onFailure).
   checks:
     receiptVsBlock: { enabled: false }          # drop one authoritative check
-    bloomMatch:     { onFailure: soft-flag }     # record instead of reject
+    bloomMatch:     { onFailure: recordOnly }    # record instead of reject
     txHashUniqueness: { params: { strict: "true" } }  # the one check with a param
 
   # Cost cap on the canonical force-fetches the authoritative tier issues.
@@ -218,10 +225,11 @@ One knob picks a preset over the check catalog. Each level is a superset of the 
     maxConcurrent: 8`}
 	ts={`integrity: {
   level: "authoritative",
-  invalidBehavior: { finalized: "reject", unfinalized: "soft-flag" },
+  autoCorrectWhenPossible: true,
+  invalidBehavior: { finalized: "hardReject", unfinalized: "recordOnly" },
   checks: {
     receiptVsBlock: { enabled: false },
-    bloomMatch: { onFailure: "soft-flag" },
+    bloomMatch: { onFailure: "recordOnly" },
     txHashUniqueness: { params: { strict: "true" } },
   },
   budget: { maxPerSecond: 50, maxConcurrent: 8 },
@@ -280,8 +288,24 @@ they always reject. A handful are **reorg-sensitive** (`parentHashLinkage`,
 tip a disagreement may be a benign reorg rather than a bug. `invalidBehavior` decides
 what to do for those, by the block's finality (read from the upstream state poller):
 
-- `finalized` → default `reject` (a finalized block can't reorg; a mismatch is corruption).
-- `unfinalized` → default `soft-flag` (record a metric/log, still serve — it may be a reorg). `off` skips the check (and any force-fetch) on the hot tip entirely.
+- `finalized` → default `hardReject` (a finalized block can't reorg; a mismatch is corruption).
+- `unfinalized` → default `recordOnly` (record a metric/log, still serve — it may be a reorg). `off` skips the check (and any force-fetch) on the hot tip entirely.
+
+The verdict is only half the policy. **`autoCorrectWhenPossible`** (default `true`)
+decides whether a violation first hunts for a **validated replacement** — the
+rejection routes the request to another upstream, whose response runs the same
+checks. The two knobs compose:
+
+| `autoCorrectWhenPossible` | verdict | on violation |
+|---|---|---|
+| `true` | `recordOnly` | seek a replacement; serve it if one validates; **exhausted → serve the flagged original** (never a client error; counted in `erpc_integrity_fallback_served_total`) |
+| `true` | `hardReject` | seek a replacement; exhausted → error (correct-or-die) |
+| `false` | `recordOnly` | serve the original immediately + record; no correction attempted |
+| `false` | `hardReject` | fail immediately; no alternates tried |
+
+The vocabulary is exactly `recordOnly | hardReject | off` — anything else
+(including the pre-release `reject`/`soft-flag` words) fails config validation
+loudly rather than aliasing silently.
 
 ### Rolling out safely: `observeOnly`
 
@@ -564,6 +588,7 @@ integrity:
 3. **Continuity never fetches.** `parentHashLinkage`/`hashStability` only compare against blocks already observed (bounded per-network `number→hash` store); an unseen parent skips the check.
 4. **`authoritative` force-fetches are recursion-guarded** (marked internal, skipped by the engine) and budgeted; on budget exhaustion the corroboration check no-ops.
 5. **Project⊕network precedence.** A project-wide `integrity:` applies to all networks; a network block overrides field-by-field (profiles unioned).
+- **Kaia root compatibility.** Kaia mainnet (`8217`) and Kairos (`1001`) exclude `transactionsRootRecompute` and `receiptsRootRecompute` through their architecture profile. Kaia uses native serialization and governance-selected root derivation, so matching Ethereum transaction hashes does not prove Ethereum trie compatibility. Identity, structural, and follower checks remain enabled. These exclusions provide no native root verification; explicit per-check overrides still win.
 6. **Some chains need recompute checks disabled — proven: HyperEVM (chainId 999).** A chain whose `eth_getBlock` keeps *system transactions* in the header's `transactionsRoot` but omits them from the returned `transactions` list will **systematically** fail `transactionsRootRecompute` (and, by the same mechanism, `receiptsRootRecompute`) — even though every returned tx is valid. The skip-guard in #2 can't catch it: each individual tx hash verifies, only the Merkle root differs. This is a chain representation quirk, **not corruption**. Disable the affected check(s) on that network — the level preset stays, the one check is turned off:
    ```yaml
    networks:

@@ -416,6 +416,54 @@ func TestExtractBlockReference(t *testing.T) {
 			expectedNum: 437,
 			expectedErr: false,
 		},
+		// Non-canonical method casings must extract the same refs as canonical
+		// casing: hook dispatch routes methods case-insensitively, so the
+		// method-config lookup resolves case-insensitively too (lookup-only —
+		// the wire method string itself stays verbatim).
+		{
+			name: "ETH_CALL uppercase casing extracts like eth_call",
+			request: &common.JsonRpcRequest{
+				Method: "ETH_CALL",
+				Params: []interface{}{
+					map[string]interface{}{
+						"to": "0x6b175474e89094c44da98b954eedeac495271d0f",
+					},
+					"0x1b4",
+				},
+			},
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
+		},
+		{
+			name: "eth_getblockbynumber all-lowercase casing extracts like eth_getBlockByNumber",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getblockbynumber",
+				Params: []interface{}{"0xc5043f", false},
+			},
+			expectedRef: "12911679",
+			expectedNum: 12911679,
+			expectedErr: false,
+		},
+		{
+			name: "ETH_GETTRANSACTIONRECEIPT uppercase casing extracts from response like canonical",
+			request: &common.JsonRpcRequest{
+				Method: "ETH_GETTRANSACTIONRECEIPT",
+			},
+			response:    common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`{"blockNumber":"0x1b4","blockHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`), nil),
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
+		},
+		{
+			name: "eth_ChainId mixed casing resolves the static-table entry",
+			request: &common.JsonRpcRequest{
+				Method: "eth_ChainId",
+			},
+			expectedRef: "*",
+			expectedNum: 1,
+			expectedErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -448,4 +496,116 @@ func TestExtractBlockReference(t *testing.T) {
 			assert.Equal(t, tt.expectedNum, blkNum)
 		})
 	}
+}
+
+func TestResolveCacheBlockRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("numeric ref passes through unchanged (no rewrite for non-tag)", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"0x1234", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "4660", ref)
+		assert.Equal(t, int64(0x1234), num)
+	})
+
+	t.Run("latest tag + response with block number rewrites ref to response hex", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"latest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+		rpcResp := common.MustNewJsonRpcResponseFromBytes(nil, []byte(`{"number":"0xabcdef","hash":"0x1","parentHash":"0x0"}`), nil)
+		nrs := common.NewNormalizedResponse().WithJsonRpcResponse(rpcResp).WithRequest(nrq)
+		nrq.SetLastValidResponse(ctx, nrs)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nrs)
+		assert.NoError(t, err)
+		assert.Equal(t, "0xabcdef", ref, "write path must key by response's actual block number, not 'latest'")
+		assert.Equal(t, int64(0xabcdef), num)
+	})
+
+	t.Run("latest tag with no network and no response falls back to tag literal", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"latest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "latest", ref, "with no response and no network, helper must fall back to tag so caller can decide to skip caching")
+		assert.Equal(t, int64(0), num)
+	})
+
+	t.Run("finalized tag rewrite on write path uses response block number", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"finalized", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+		rpcResp := common.MustNewJsonRpcResponseFromBytes(nil, []byte(`{"number":"0x100","hash":"0x1","parentHash":"0x0"}`), nil)
+		nrs := common.NewNormalizedResponse().WithJsonRpcResponse(rpcResp).WithRequest(nrq)
+		nrq.SetLastValidResponse(ctx, nrs)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nrs)
+		assert.NoError(t, err)
+		assert.Equal(t, "0x100", ref)
+		assert.Equal(t, int64(0x100), num)
+	})
+
+	t.Run("safe tag keeps the literal key on both paths", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"safe", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+		nrq.SetNetwork(&testNetwork{highestLatest: 0x200})
+		rpcResp := common.MustNewJsonRpcResponseFromBytes(nil, []byte(`{"number":"0x180","hash":"0x1","parentHash":"0x0"}`), nil)
+		nrs := common.NewNormalizedResponse().WithJsonRpcResponse(rpcResp).WithRequest(nrq)
+
+		getRef, _, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		setRef, _, err := ResolveCacheBlockRef(ctx, nrq, nrs)
+		assert.NoError(t, err)
+		assert.Equal(t, "safe", getRef)
+		assert.Equal(t, getRef, setRef, "GET and SET must derive the same key")
+	})
+
+	t.Run("earliest tag not rewritten (not tip-bound, existing semantics preserved)", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"earliest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, _, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "earliest", ref, "earliest does not move with the tip; must not be rewritten")
+	})
+}
+
+// Operator-defined methods.definitions keys resolve case-insensitively as
+// well, with an exact-case hit taking precedence (see
+// common.FindCacheMethodConfig for the tie-break rules).
+func TestGetMethodConfigOperatorDefinitionsCaseInsensitive(t *testing.T) {
+	customCfg := &common.CacheMethodConfig{ReqRefs: common.FirstParam}
+	n := &mockNetwork{}
+	n.On("Config").Return(&common.NetworkConfig{
+		Methods: &common.MethodsConfig{
+			Definitions: map[string]*common.CacheMethodConfig{
+				"custom_traceThing": customCfg,
+			},
+		},
+	})
+
+	assert.Same(t, customCfg, getMethodConfig("custom_traceThing", n), "exact casing resolves")
+	assert.Same(t, customCfg, getMethodConfig("CUSTOM_TRACETHING", n), "non-canonical casing resolves the operator key")
+	assert.Same(t, customCfg, getMethodConfig("custom_tracething", n), "lowercase casing resolves the operator key")
+	assert.Nil(t, getMethodConfig("custom_otherThing", n), "unrelated methods still miss")
 }

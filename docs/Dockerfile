@@ -2,13 +2,13 @@
 FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10.28.2
 
 # Set the working directory to /app
 WORKDIR /app
 
-# Copy the package.json and pnpm-lock.yaml files to the working directory
-COPY package.json pnpm-lock.yaml ./
+# Copy dependency manifests and build-script policy before installing
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # Install dependencies using pnpm
 RUN pnpm install 

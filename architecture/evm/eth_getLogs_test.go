@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
@@ -106,6 +108,15 @@ func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 
 	args := m.Called(ctx)
 	return args.Get(0).(int64)
 }
+
+// EvmLeaderUpstream is required by common.EvmNetwork. Tests that don't
+// exercise leader selection leave this unstubbed — returning nil is safe
+// because the helpers only use the leader where it's explicitly configured.
+func (m *mockNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
+	return nil
+}
+
+func (m *mockNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
 
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
@@ -461,6 +472,36 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 		expectSplit bool
 		expectError bool
 	}{
+		{
+			name: "genesis_range_still_checks_availability",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x0",
+					"toBlock":   "0x5",
+				})
+				n.On("Id").Return("evm:123")
+				n.On("Config").Return(&common.NetworkConfig{
+					Evm: &common.EvmNetworkConfig{
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:      util.BoolPtr(true),
+						},
+					},
+				})
+				u.On("Id").Return("rpc1").Maybe()
+				stp := new(mockStatePoller)
+				u.On("EvmStatePoller").Return(stp)
+				stp.On("LatestBlock").Return(int64(1000))
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(0)).Return(true, nil)
+
+				return n, u, r
+			},
+			expectSplit: false,
+			expectError: false,
+		},
 		{
 			name: "range_within_limits",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
@@ -994,18 +1035,51 @@ func TestNetworkPostForward_NoSplitOnNonTooLargeError(t *testing.T) {
 }
 
 func TestNetworkPreForward_eth_getLogs_blockHash_with_filters(t *testing.T) {
-	n := new(mockNetwork)
-	r := createTestRequest(map[string]interface{}{
-		"fromBlock": "0x1",
-		"toBlock":   "0x5",
-		"blockHash": "0xabc",
-		"address":   []interface{}{"0xA"},
-		"topics":    []interface{}{[]interface{}{"0xT"}},
-	})
-	handled, resp, err := networkPreForward_eth_getLogs(context.Background(), n, nil, r)
+	addr := "0x" + strings.Repeat("a", 40)
+	topic := "0x" + strings.Repeat("d", 64)
+	// Both hooks, the project one guarding the cache read and the network one
+	// as backstop, must agree on every filter.
+	run := func(address, topics interface{}) (bool, error) {
+		var outs [2]struct {
+			handled bool
+			err     error
+		}
+		for i := range outs {
+			r := createTestRequest(map[string]interface{}{
+				"blockHash": "0x" + strings.Repeat("b", 64),
+				"address":   address,
+				"topics":    topics,
+			})
+			var resp *common.NormalizedResponse
+			if i == 0 {
+				outs[i].handled, resp, outs[i].err = projectPreForward_eth_getLogs(context.Background(), new(mockNetwork), r)
+			} else {
+				outs[i].handled, resp, outs[i].err = networkPreForward_eth_getLogs(context.Background(), new(mockNetwork), nil, r)
+			}
+			assert.Nil(t, resp)
+		}
+		assert.Equal(t, outs[0].handled, outs[1].handled, "%v %v", address, topics)
+		assert.Equal(t, outs[0].err == nil, outs[1].err == nil, "%v %v", address, topics)
+		return outs[0].handled, outs[0].err
+	}
+
+	handled, err := run([]interface{}{addr}, []interface{}{[]interface{}{topic}, nil})
 	assert.NoError(t, err)
 	assert.False(t, handled)
-	assert.Nil(t, resp)
+
+	// A value of the wrong length must refuse, never pass on: a cache that
+	// drops it widens the filter to every log (a 32-byte "address" once did).
+	for _, bad := range []struct{ address, topics interface{} }{
+		{"0x" + strings.Repeat("a", 64), nil},
+		{[]interface{}{addr, "0xA"}, nil},
+		{addr, []interface{}{"0x" + strings.Repeat("d", 62)}},
+		{nil, []interface{}{nil, []interface{}{topic, "0xzz" + strings.Repeat("d", 62)}}},
+		{nil, []interface{}{nil, nil, nil, nil, topic}},
+	} {
+		handled, err := run(bad.address, bad.topics)
+		assert.True(t, handled, "%v %v", bad.address, bad.topics)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeInvalidRequest), "%v %v", bad.address, bad.topics)
+	}
 }
 
 func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
@@ -1186,6 +1260,42 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		assert.Error(t, err)
 	})
 
+	t.Run("genesis_range_still_enforces_max_allowed_range", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		// 0x0–0x1ff is 512 blocks. Block 0 must not be treated as unresolved.
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x1ff",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("genesis_block_within_cap_passes", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x0",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
 	t.Run("enforce_max_allowed_range_hard_limit", func(t *testing.T) {
 		n := new(mockNetwork)
 		n.On("Config").Return(&common.NetworkConfig{
@@ -1212,7 +1322,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x1",
 			"toBlock":   "0x2",
-			"address":   []interface{}{"0xA", "0xB", "0xC"},
+			"address":   []interface{}{"0x" + strings.Repeat("a", 40), "0x" + strings.Repeat("b", 40), "0x" + strings.Repeat("c", 40)},
 		})
 
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
@@ -1231,7 +1341,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x1",
 			"toBlock":   "0x2",
-			"topics":    []interface{}{[]interface{}{"0xAAA", "0xBBB", "0xCCC"}},
+			"topics":    []interface{}{[]interface{}{"0x" + strings.Repeat("a", 64), "0x" + strings.Repeat("b", 64), "0x" + strings.Repeat("c", 64)}},
 		})
 
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
@@ -1426,6 +1536,55 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 	})
 }
 
+func TestProjectPreForward_eth_getLogs_UseUpstreamTip(t *testing.T) {
+	// Selected upstream tip is 1000; the unscoped tip is 2000. From block 996
+	// to latest is 5 blocks against the selected tip and 1005 against the
+	// unscoped one. Cap is 10.
+	newNet := func(selected int64) *mockNetwork {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		})
+		n.On("ProjectId").Return("test")
+		if selected > 0 {
+			n.On("EvmHighestLatestBlockNumber", mock.MatchedBy(func(ctx context.Context) bool {
+				req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+				return ok && req != nil && req.Directives() != nil && req.Directives().UseUpstream == "slow"
+			})).Return(selected)
+		}
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(2000)).Maybe()
+		return n
+	}
+	req := func(useUpstream string) *common.NormalizedRequest {
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x3e4", // 996
+			"toBlock":   "latest",
+		})
+		if useUpstream != "" {
+			r.SetDirectives(&common.RequestDirectives{UseUpstream: useUpstream})
+		}
+		return r
+	}
+
+	t.Run("selected_tip_within_cap", func(t *testing.T) {
+		n := newNet(1000)
+		handled, resp, err := projectPreForward_eth_getLogs(context.Background(), n, req("slow"))
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("unscoped_tip_exceeds_cap", func(t *testing.T) {
+		n := newNet(0)
+		handled, resp, err := projectPreForward_eth_getLogs(context.Background(), n, req(""))
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+}
+
 func createTestRequest(filter interface{}) *common.NormalizedRequest {
 	params := []interface{}{filter}
 	jrq := common.NewJsonRpcRequest("eth_getLogs", params)
@@ -1591,3 +1750,70 @@ func (p *fixedPoller) LatestBlock() int64 { return p.latest }
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 
 func (p *fixedPoller) IsObjectNull() bool { return false }
+
+// TestExecuteGetLogsSubRequests_MergedResponseSizeBudget covers the bound on the MERGED
+// eth_getLogs response. Splitting exists to get past an upstream's per-request limits, so
+// without this budget nothing caps what a single client request can make the proxy hold:
+// the halves are fetched concurrently and merged whole. Zero must keep that historical
+// behaviour, so both directions are asserted here.
+func TestExecuteGetLogsSubRequests_MergedResponseSizeBudget(t *testing.T) {
+	// ~120 bytes of result per sub-response.
+	bigLog := `["` + strings.Repeat("a", 116) + `"]`
+
+	newReq := func() *common.NormalizedRequest {
+		return common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x8"}],"id":1}`))
+	}
+	subs := []ethGetLogsSubRequest{
+		{fromBlock: 1, toBlock: 2}, {fromBlock: 3, toBlock: 4},
+		{fromBlock: 5, toBlock: 6}, {fromBlock: 7, toBlock: 8},
+	}
+	setup := func(n *mockNetwork, maxBytes int64) {
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{
+			GetLogsSplitConcurrency: 1, // deterministic: one piece at a time
+			GetLogsMaxResponseBytes: maxBytes,
+		}}).Maybe()
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		// A fresh response per call: the executor releases each one, so a single
+		// shared object would come back bodyless on the second sub-request.
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				return common.NewNormalizedResponse().WithJsonRpcResponse(
+					common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(bigLog), nil),
+				), nil
+			},
+			nil,
+		).Maybe()
+	}
+
+	t.Run("merged response over budget is refused, not assembled", func(t *testing.T) {
+		n := new(mockNetwork)
+		setup(n, 200) // two pieces fit, the third crosses
+
+		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "")
+
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.True(t,
+			common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedResponseSize),
+			"want ErrGetLogsExceededMaxAllowedResponseSize, got %v", err)
+		// Must NOT surface as the code that drives splitting, or the refusal would feed
+		// the very path it exists to bound.
+		assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge),
+			"budget refusal must not be reported as ErrEndpointRequestTooLarge")
+		assert.True(t, common.IsClientError(err), "the client asked for too much; this is a 4xx")
+	})
+
+	t.Run("zero budget keeps the historical unbounded behaviour", func(t *testing.T) {
+		n := new(mockNetwork)
+		setup(n, 0)
+
+		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "")
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		size, err := result.Size(context.Background())
+		require.NoError(t, err)
+		assert.Greater(t, size, 200, "all four pieces should have been merged")
+	})
+}

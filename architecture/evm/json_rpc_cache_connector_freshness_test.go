@@ -186,7 +186,7 @@ func TestEvmJsonRpcCache_ConnectorFreshnessThroughFailsafeWrapper(t *testing.T) 
 
 	wrap := func(t *testing.T, base data.Connector) data.Connector {
 		t.Helper()
-		w, err := data.NewFailsafeConnector(&logger, base, nil, nil)
+		w, err := data.NewFailsafeConnector(context.Background(), &logger, base, nil, nil)
 		require.NoError(t, err)
 		return w
 	}

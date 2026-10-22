@@ -63,6 +63,7 @@ func (m *mockEvmStatePollerEnhanced) IsBlockFinalized(blockNumber int64) (bool, 
 }
 func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)       {}
+func (m *mockEvmStatePollerEnhanced) RefreshLatestBlock()                        {}
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
 func (m *mockEvmStatePollerEnhanced) GetDiagnostics() *common.EvmStatePollerDiagnostics {
@@ -625,6 +626,7 @@ func (m *mockEvmStatePollerWithCustomBehavior) IsBlockFinalized(blockNumber int6
 }
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)       {}
+func (m *mockEvmStatePollerWithCustomBehavior) RefreshLatestBlock()                        {}
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }
 func (m *mockEvmStatePollerWithCustomBehavior) GetDiagnostics() *common.EvmStatePollerDiagnostics {
@@ -1203,5 +1205,43 @@ func BenchmarkEvmAssertBlockAvailability(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			_, _ = upstream.EvmAssertBlockAvailability(ctx, "test_method", common.AvailbilityConfidenceFinalized, false, 9800)
 		}
+	})
+}
+
+func TestEvmAssertBlockAvailability_HeadLagTolerance(t *testing.T) {
+	newUpstream := func(tolerance int64) *Upstream {
+		return &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					HeadLagToleranceBlocks: tolerance,
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
+		}
+	}
+
+	t.Run("DefaultZeroKeepsExactHeadComparison", func(t *testing.T) {
+		upstream := newUpstream(0)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1001)
+		assert.NoError(t, err)
+		assert.False(t, canHandle)
+	})
+
+	t.Run("WithinToleranceIsServable", func(t *testing.T) {
+		upstream := newUpstream(2)
+		for _, block := range []int64{1000, 1001, 1002} {
+			canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, block)
+			assert.NoError(t, err)
+			assert.True(t, canHandle, "block %d should be within head+2 tolerance", block)
+		}
+	})
+
+	t.Run("BeyondToleranceIsStale", func(t *testing.T) {
+		upstream := newUpstream(2)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1003)
+		assert.NoError(t, err)
+		assert.False(t, canHandle)
 	})
 }

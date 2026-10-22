@@ -51,7 +51,7 @@ func TestExportIntegrityCatch_WritesJSONL(t *testing.T) {
 
 // An empty-response record marshals cleanly (response omitted, not "").
 func TestIntegrityCatchRecord_MarshalOmitsEmptyResponse(t *testing.T) {
-	line, err := common.SonicCfg.Marshal(integrityCatchRecord{Check: "x", Verdict: "soft_flag"})
+	line, err := common.SonicCfg.Marshal(integrityCatchRecord{Check: "x", Verdict: "record_only"})
 	require.NoError(t, err)
 	assert.NotContains(t, string(line), `"response"`)
 }

@@ -30,17 +30,25 @@ func logsResult(logIndexes ...string) []byte {
 // run builds a response for method+result and validates it with the given set.
 func run(t *testing.T, method string, result []byte, cs CheckSet) error {
 	t.Helper()
+	return runRes(t, method, result, cs).Err
+}
+
+// runRes is run() with the whole Result, for tests that assert on the per-check
+// OUTCOME rather than just the verdict — "skip" and "pass" are both non-errors,
+// so only the outcome distinguishes a verification that ran from one that could
+// not.
+func runRes(t *testing.T, method string, result []byte, cs CheckSet) Result {
+	t.Helper()
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":[]}`, method)))
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), result, nil)
 	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
-	res := Validate(context.Background(), Input{
+	return Validate(context.Background(), Input{
 		Reorg:    DefaultReorgPolicy(),
 		Method:   method,
 		Upstream: common.NewFakeUpstream("u"),
 		Response: rs,
 		Checks:   cs,
 	})
-	return res.Err
 }
 
 func magnitudeOnly() CheckSet { return CheckSet{}.Enable("indexMagnitude", nil) }

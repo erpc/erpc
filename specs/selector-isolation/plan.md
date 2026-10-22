@@ -74,8 +74,8 @@ Foundation for the lag fence; no behavior change yet.
 
 ### Acceptance
 - Unit test: `poolMax` over a mixed pool; ignores syncing / zero-head upstreams
-  (mirror `gatherEvmTipInputsForMethod` filters at
-  [erpc/networks.go:283-298](../../erpc/networks.go)).
+  (mirror the voter rule, `tipVoterRank` in
+  [erpc/networks.go](../../erpc/networks.go)).
 
 ---
 
@@ -117,12 +117,12 @@ Foundation for the lag fence; no behavior change yet.
 ## Phase 3 — Selector-scoped served tip
 
 ### 3.1 Pure path (glob / id / untargeted)
-- `gatherEvmTipInputsForMethod` ([erpc/networks.go:275-305](../../erpc/networks.go))
+- `EvmRoutableUpstreams` ([erpc/networks.go](../../erpc/networks.go))
   gains a selector filter.
 - Untargeted → existing network counter (unchanged).
 - Glob/id → stateless cluster-min over filtered inputs; optional per-pod
   `atomic.Int64` monotonic guard (in-memory, evictable, never shared).
-- `ComputeServedTipCandidate` ([architecture/evm/served_tip.go:102-196](../../architecture/evm/served_tip.go))
+- `common.PickServedTip` ([common/served_tip.go](../../common/served_tip.go))
   unchanged.
 
 ### 3.2 `EvmHighest*` resolve the partition

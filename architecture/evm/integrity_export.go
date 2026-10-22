@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Integrity catches (rejects and soft-flags) are rare and each one is
+// Integrity catches (rejects, record-only flags, fallback serves) are rare and each one is
 // forensic gold: metrics carry the counts, this archive carries the WHAT —
 // upstream, check, verbatim reason, and the offending response body — as
 // durable JSONL via integrity.misbehaviorsDestination (same file/S3 shape as
@@ -52,7 +52,7 @@ type integrityCatchRecord struct {
 	Method    string `json:"method"`
 	Check     string `json:"check"`
 	Class     string `json:"class"`
-	Verdict   string `json:"verdict"` // reject | soft_flag
+	Verdict   string `json:"verdict"` // reject | record_only | would_reject | served_fallback
 	Finality  string `json:"finality"`
 	Reason    string `json:"reason"`
 	Response  string `json:"response,omitempty"`

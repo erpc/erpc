@@ -10,28 +10,47 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// networkPostForward_eth_blockNumber enforces the network's served tip on
-// every eth_blockNumber response regardless of its source — a live upstream OR
-// the cache. The correction is a pure in-memory synthesis (poller state),
-// never an extra upstream call.
+// networkPreForward_eth_blockNumber answers eth_blockNumber from the served
+// head without dispatching whenever enforce-highest-block is on and the head is
+// known: the post-forward hook below pins every response to that head EXACTLY,
+// so an upstream's answer is always discarded and the call buys nothing but
+// vendor cost and latency. Each answer also asks the ballot's pollers for a
+// debounced background refresh, so on a quiet network the head a client polls
+// for is not held at the ticker interval. An unknown head (cold pollers) and
+// enforce-highest-block=false keep forwarding.
+func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	if dirs := nq.Directives(); dirs == nil || !dirs.EnforceHighestBlock {
+		return false, nil, nil
+	}
+	ctx = context.WithValue(ctx, common.RequestContextKey, nq)
+	tip := common.EvmHighestLatestBlockNumber(network, ctx)
+	if tip <= 0 {
+		return false, nil, nil
+	}
+	common.EvmRefreshLatestBlock(network, ctx)
+	hex, err := common.NormalizeHex(tip)
+	if err != nil {
+		return true, nil, err
+	}
+	jrr, err := common.NewJsonRpcResponse(nq.ID(), hex, nil)
+	if err != nil {
+		return true, nil, err
+	}
+	return true, common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr), nil
+}
+
+// networkPostForward_eth_blockNumber pins every eth_blockNumber response to the
+// network's served head EXACTLY, regardless of its source — a live upstream
+// (cold head at pre-forward time, or a per-request override path) OR the
+// cache. The correction is a pure in-memory synthesis (poller state), never an
+// extra upstream call.
 //
-// In the default max mode the served tip is the MAX head across upstreams, so
-// the enforcement is floor-only: a response behind the tip is raised to it and
-// a response at/above it is fresher truth that passes through. In majority
-// served-tip mode (EvmServedTipConfig.EnabledFor "latest") the response is
-// pinned to the tip EXACTLY — above-tip responses are capped too — because
-// "latest" interpolation (resolveBlockTagToHex) anchors block-tagged methods
-// (eth_call, eth_getLogs, ...) to that same majority tip: letting a fresher
-// head, or a cache entry written from one, through the floor-only check makes
-// clients observe eth_blockNumber AHEAD of the block "latest" actually
-// executes at, even when the same upstream serves both calls.
-//
-// Positioning this at the network post-forward layer (it used to be a project
-// pre-forward wrapper that explicitly skipped FromCache responses) is what
-// guarantees cache hits are corrected too: a stale value planted in the
-// (possibly shared) cache must not be served below the tip this instance
-// already advertises, otherwise clients observe the block number moving
-// backwards by the full upstream lag for an entire TTL window.
+// Exact, not floor-only, because "latest" interpolation (resolveBlockTagToHex)
+// anchors block-tagged methods (eth_call, eth_getLogs, ...) to that same served
+// head: a fresher upstream answer, or a cache entry written from one, would
+// show clients an eth_blockNumber AHEAD of the block "latest" actually executes
+// at; a staler one (e.g. a value planted in a shared cache) would show the
+// block number moving backwards for an entire TTL window.
 //
 // Gating on the request directives (instead of the deprecated
 // evm.integrity config) matches eth_getBlockByNumber enforcement: the
@@ -63,7 +82,7 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 	// use-upstream selector scopes the tip to the targeted subset (the
 	// selector-scoped served-tip semantics): a request pinned to a lagging
 	// group must not be promised a block that group cannot serve.
-	highestBlock := network.EvmHighestLatestBlockNumber(context.WithValue(ctx, common.RequestContextKey, nq))
+	highestBlock := common.EvmHighestLatestBlockNumber(network, context.WithValue(ctx, common.RequestContextKey, nq))
 	if common.IsTracingDetailed {
 		blockNumberLag := highestBlock - blockNumber
 		if blockNumberLag < 0 {
@@ -83,23 +102,13 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		return nr, re
 	}
 
-	pinToTip := false
-	if cfg := network.Config(); cfg != nil && cfg.Evm != nil {
-		pinToTip = cfg.Evm.ServedTipEnabledFor("latest")
-	}
-	if pinToTip {
-		if blockNumber == highestBlock {
-			return nr, re
-		}
-	} else if highestBlock <= blockNumber {
+	if blockNumber == highestBlock {
 		return nr, re
 	}
-
 	ups := nr.Upstream()
 	if blockNumber > highestBlock {
-		// Pin-down (served-tip mode only): the response is AHEAD of the
-		// majority tip — freshness, not staleness, so the stale-block metric
-		// stays out of it.
+		// Pin-down: the response is AHEAD of the served head — freshness, not
+		// staleness, so the stale-block metric stays out of it.
 		evt := network.Logger().Debug().
 			Str("method", "eth_blockNumber").
 			Int64("servedTip", highestBlock).
@@ -108,7 +117,7 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		if ups != nil {
 			evt = evt.Str("upstreamId", ups.Id())
 		}
-		evt.Msg("response is ahead of the served tip, pinning to the majority tip")
+		evt.Msg("response is ahead of the served tip, pinning to the served tip")
 	} else if ups != nil {
 		telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 			network.ProjectId(),

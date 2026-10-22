@@ -118,18 +118,40 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 		m.cache.Set(key, value, 0)
 	}
 
-	/**
-	 * TODO Find a better way to store a reverse index for cache entries with unknown block ref (*):
-	 */
-	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
-		parts := strings.SplitAfterN(partitionKey, ":", 3)
-		if len(parts) >= 2 {
-			wildcardPartitionKey := parts[0] + parts[1] + "*"
+	// Reverse index: let wildcard Gets ("evm:1:*" / "svm:mainnet-beta:*" /
+	// "evm:998:systx:*") resolve to the concrete partition key that was most
+	// recently written, so callers can look up cached entries without knowing
+	// the block/slot ref up front. The wildcard partition comes from
+	// WithReverseIndex / WithReverseIndexWildcard
+	// (CachePartitionKey(networkId, suffix, "*")), not from splitting the
+	// opaque concrete key.
+	if isReverseIndexable(partitionKey) {
+		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, []byte(partitionKey), 0)
 		}
 	}
 
 	return nil
+}
+
+// isReverseIndexable reports whether the given partition key should have a
+// reverse-index companion entry written. It filters out:
+//   - already-wildcard keys (they're the lookup target, not a concrete value)
+//   - keys without at least two colons (not <arch>:<id>:<ref> shape)
+//
+// Any three-segment arch-prefixed key is accepted — adding a new architecture
+// no longer requires touching this connector.
+func isReverseIndexable(partitionKey string) bool {
+	if strings.HasSuffix(partitionKey, "*") {
+		return false
+	}
+	// Need at least two ':' separators → three segments.
+	first := strings.Index(partitionKey, ":")
+	if first < 0 {
+		return false
+	}
+	second := strings.Index(partitionKey[first+1:], ":")
+	return second >= 0
 }
 
 func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
@@ -300,11 +322,12 @@ func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey str
 	// Delete main entry
 	m.cache.Del(key)
 
-	// Clean up reverse index if it exists
-	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
-		parts := strings.SplitAfterN(partitionKey, ":", 3)
-		if len(parts) >= 2 {
-			wildcardPartitionKey := parts[0] + parts[1] + "*"
+	// Clean up reverse index if Set would have written one. Must mirror Set
+	// exactly (same WithReverseIndex ctx) — anything Set writes, Delete must
+	// clear, or wildcard lookups will return stale pointers to evicted
+	// partition keys.
+	if isReverseIndexable(partitionKey) {
+		if wildcardPartitionKey, ok := reverseIndexWildcardKey(ctx, partitionKey); ok {
 			reverseKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
 			m.cache.Del(reverseKey)
 		}

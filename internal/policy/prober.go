@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
@@ -425,6 +426,12 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 func isProbeUnsafeMethod(method string) bool {
 	if method == "" {
 		return true // unknown method → skip
+	}
+	// SVM write set (bare, unprefixed names): sendTransaction,
+	// sendRawTransaction, requestAirdrop. Mirroring a broadcast is a
+	// duplicate wire send; mirroring requestAirdrop double-airdrops.
+	if svm.IsNonRetryableWriteMethod(method) {
+		return true
 	}
 	// Lowercase prefix check — covers eth_sendRawTransaction,
 	// eth_sendTransaction, eth_sign*, personal_sign*,

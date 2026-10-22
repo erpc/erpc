@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
 	"github.com/rs/zerolog"
@@ -48,6 +49,14 @@ func NewUpstreamExecutor(cfg *common.UpstreamFailsafeConfig, logger *zerolog.Log
 			errors.New("consensus does not make sense for upstream-level requests"),
 			map[string]interface{}{
 				"policy": cfg.Consensus,
+			},
+		)
+	}
+	if len(cfg.MatchCommitment) > 0 {
+		return nil, common.NewErrFailsafeConfiguration(
+			errors.New("matchCommitment is only supported for network-level failsafe"),
+			map[string]interface{}{
+				"matchCommitment": cfg.MatchCommitment,
 			},
 		)
 	}
@@ -246,7 +255,7 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 		return false
 	}
 	if req != nil {
-		if m, _ := req.Method(); m != "" && evm.IsNonRetryableWriteMethod(m) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return false
 		}
 	}
@@ -284,7 +293,7 @@ func (e *upstreamExecutor) runHedge(
 		if req.IsCompositeRequest() {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
-		if m, _ := req.Method(); m != "" && evm.IsNonRetryableWriteMethod(m) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
 	}

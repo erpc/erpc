@@ -1,4 +1,4 @@
-import type { DynamoDBConnectorConfig, EvmNetworkConfig, AuthStrategyConfig as GenAuthStrategyConfig, JwtStrategyConfig, MemoryConnectorConfig, NetworkStrategyConfig, PostgreSQLConnectorConfig, RedisConnectorConfig, SecretStrategyConfig, SiweStrategyConfig } from "../generated";
+import type { DynamoDBConnectorConfig, EvmNetworkConfig, SvmNetworkConfig, AuthStrategyConfig as GenAuthStrategyConfig, JwtStrategyConfig, MemoryConnectorConfig, NetworkStrategyConfig, PostgreSQLConnectorConfig, RedisConnectorConfig, SecretStrategyConfig, SiweStrategyConfig } from "../generated";
 /**
  * Possible log level configuration
  */
@@ -15,7 +15,7 @@ export type ByteSize = `${number}kb` | `${number}mb` | `${number}b` | number;
 /**
  * Suported network architecture
  */
-export type NetworkArchitecture = "evm";
+export type NetworkArchitecture = "evm" | "svm";
 /**
  * Supported connector driver type overide
  */
@@ -43,7 +43,7 @@ export type ConnectorConfig = {
 /**
  * Supported upstream type
  */
-export type UpstreamType = "evm" | "evm+goldsky" | "evm+alchemy" | "evm+blastapi" | "evm+conduit" | "evm+drpc" | "evm+dwellir" | "evm+envio" | "evm+etherspot" | "evm+infura" | "evm+pimlico" | "evm+quicknode" | "evm+llama" | "evm+thirdweb" | "evm+repository" | "evm+superchain" | "evm+chainstack" | "evm+tenderly" | "evm+onfinality" | "evm+erpc" | "evm+blockpi" | "evm+ankr" | "evm+routemesh";
+export type UpstreamType = "evm" | "evm+goldsky" | "evm+alchemy" | "evm+blastapi" | "evm+conduit" | "evm+drpc" | "evm+dwellir" | "evm+envio" | "evm+etherspot" | "evm+infura" | "evm+pimlico" | "evm+quicknode" | "evm+llama" | "evm+thirdweb" | "evm+repository" | "evm+superchain" | "evm+chainstack" | "evm+tenderly" | "evm+onfinality" | "evm+erpc" | "evm+blockpi" | "evm+ankr" | "evm+routemesh" | "svm";
 /**
  * Supported auth type
  */
@@ -68,6 +68,10 @@ export type AuthStrategyConfig = Omit<GenAuthStrategyConfig, "type" | "network" 
   * Network defaults override (chainId isn't needed for defaults config)
   */
 export type EvmNetworkConfigForDefaults = Omit<EvmNetworkConfig, "chainId">;
+/**
+ * Network defaults override (cluster isn't needed for defaults config)
+ */
+export type SvmNetworkConfigForDefaults = Omit<SvmNetworkConfig, "cluster">;
 /**
  * Accepts both boolean (backward compat) and string (connector ID pattern) values.
  * Examples: true, false, "redis*", "memory*|dynamo*"

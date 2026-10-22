@@ -179,3 +179,57 @@ func TestCheck_ReceiptsRootRecompute(t *testing.T) {
 		assert.NoError(t, res.Err)
 	})
 }
+
+// A skip must be REPORTED as a skip. Both block-side recompute checks bail out
+// on data they cannot model — a header field the reference encoder does not
+// know, a hashes-only transaction list — and reporting those as "pass" claims a
+// cryptographic verification that never ran. receiptsRootRecompute in this same
+// file already returns Skipped on every such path; these two did not.
+//
+// It is not hypothetical. Every Arbitrum One block carries `l1BlockNumber`, and
+// post-Nitro blocks add `sendCount`/`sendRoot` — none of them geth header
+// fields — so blockHashRecompute can never verify a single block on that chain,
+// on either side of the Nitro fork, while the outcome metric read 100% pass at
+// ~1.7k block responses per second.
+func TestRecompute_UnverifiableDataReportsSkipNotPass(t *testing.T) {
+	h := sampleHeader()
+	realHash := h.Hash().Hex()
+
+	t.Run("blockHashRecompute: a real header still passes", func(t *testing.T) {
+		res := runRes(t, MethodGetBlockByNumber, blockJSON(t, h, realHash, nil), only("blockHashRecompute", nil))
+		require.NoError(t, res.Err)
+		assert.Equal(t, "pass", outcomeOf(res, "blockHashRecompute"))
+	})
+
+	t.Run("blockHashRecompute: an Arbitrum-shaped header reports skip", func(t *testing.T) {
+		raw := blockJSON(t, h, realHash, map[string]string{
+			"l1BlockNumber": "0x14f2b60",
+			"sendCount":     "0x26da10",
+			"sendRoot":      "0x7777777777777777777777777777777777777777777777777777777777777777",
+		})
+		res := runRes(t, MethodGetBlockByNumber, raw, only("blockHashRecompute", nil))
+		require.NoError(t, res.Err)
+		assert.Equal(t, "skip", outcomeOf(res, "blockHashRecompute"),
+			"nothing was verified — reporting a pass would claim a proof that never ran")
+	})
+
+	t.Run("transactionsRootRecompute: full transactions still pass", func(t *testing.T) {
+		tx1, _ := signTx(t, 0)
+		tx2, _ := signTx(t, 1)
+		root := gethtypes.DeriveSha(gethtypes.Transactions{tx1, tx2}, trie.NewStackTrie(nil)).Hex()
+		j1, _ := tx1.MarshalJSON()
+		j2, _ := tx2.MarshalJSON()
+		raw := []byte(fmt.Sprintf(`{"transactionsRoot":"%s","transactions":[%s,%s]}`, root, j1, j2))
+		res := runRes(t, MethodGetBlockByNumber, raw, only("transactionsRootRecompute", nil))
+		require.NoError(t, res.Err)
+		assert.Equal(t, "pass", outcomeOf(res, "transactionsRootRecompute"))
+	})
+
+	t.Run("transactionsRootRecompute: a hashes-only list reports skip", func(t *testing.T) {
+		tx1, _ := signTx(t, 0)
+		raw := []byte(fmt.Sprintf(`{"transactionsRoot":"0x4444444444444444444444444444444444444444444444444444444444444444","transactions":["%s"]}`, tx1.Hash().Hex()))
+		res := runRes(t, MethodGetBlockByNumber, raw, only("transactionsRootRecompute", nil))
+		require.NoError(t, res.Err)
+		assert.Equal(t, "skip", outcomeOf(res, "transactionsRootRecompute"))
+	})
+}

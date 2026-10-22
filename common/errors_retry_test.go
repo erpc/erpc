@@ -2,6 +2,7 @@ package common
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -321,6 +322,31 @@ func TestClassifySeverity_UpstreamBlockUnavailable(t *testing.T) {
 	})
 }
 
+func TestClassifySeverity_EndpointMissingData(t *testing.T) {
+	// "Block not yet indexed" is an expected transient condition — same rationale as
+	// ErrUpstreamBlockUnavailable. Should be warning, not critical.
+	err := NewErrEndpointMissingData(
+		fmt.Errorf("slot 12345 not yet indexed by provider"),
+		nil,
+	)
+
+	t.Run("IsWarningSeverity", func(t *testing.T) {
+		assert.Equal(t, SeverityWarning, ClassifySeverity(err),
+			"missing-data is a self-healing indexing lag condition, not critical")
+	})
+	t.Run("StaysRetryableTowardsUpstream", func(t *testing.T) {
+		assert.True(t, IsRetryableTowardsUpstream(err),
+			"REGRESSION GUARD: 500ms indexing-lag retry depends on missing-data staying retryable")
+	})
+	t.Run("ExhaustedWrappingMissingData_IsWarningSeverity", func(t *testing.T) {
+		// ErrUpstreamsExhausted wrapping all-missing causes should also be warning
+		// (HasErrorCode recurses through errors.Join).
+		exhausted := NewErrUpstreamsExhaustedWithCause(err)
+		assert.Equal(t, SeverityWarning, ClassifySeverity(exhausted),
+			"exhausted(all-missing-data) is still a transient indexing lag, not critical")
+	})
+}
+
 func TestClassifySeverity_NetworkNotSupported(t *testing.T) {
 	// Either "client requested an unconfigured network" or "upstreams not ready yet
 	// during bootstrap" — a client/transient condition, never a critical infra error.
@@ -335,6 +361,29 @@ func TestClassifySeverity_NetworkNotSupported(t *testing.T) {
 			"REGRESSION GUARD: registry.go's network-readiness wait loop returns this as "+
 				"retryable so bootstrap recovery works — it must stay retryable")
 	})
+}
+
+func TestClassifySeverity_NotImplemented(t *testing.T) {
+	// ErrNotImplemented is a deterministic pre-forward rejection — a stateful
+	// method under multiple upstreams, or eth_accounts/eth_sign. No upstream
+	// will ever accept it and no retry or operator action can fix it, so it must
+	// not page: not retryable, warning severity (not the critical fall-through).
+	err := NewErrNotImplemented("stateful method requires a single targeted upstream")
+	assert.False(t, IsRetryableTowardsUpstream(err),
+		"not-implemented is a deterministic rejection — retrying is pointless")
+	assert.Equal(t, SeverityWarning, ClassifySeverity(err),
+		"not-implemented must be warning, not the critical fall-through")
+}
+
+func TestClassifySeverity_SubscriptionNotFound(t *testing.T) {
+	// eth_unsubscribe for an already-gone / unknown subscription is a benign
+	// client condition (JSON-RPC convention is to return false, not fault). It
+	// must classify as a client error → info severity, not the critical
+	// fall-through that would page on routine WS unsubscribe churn.
+	err := NewErrSubscriptionNotFound("0xdeadbeef")
+	assert.True(t, IsClientError(err), "subscription-not-found is a client condition")
+	assert.Equal(t, SeverityInfo, ClassifySeverity(err),
+		"subscription-not-found must be info, not the critical fall-through")
 }
 
 func BenchmarkIsRetryableTowardNetwork(b *testing.B) {

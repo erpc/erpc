@@ -53,7 +53,7 @@ func TestCompileIntegritySettings(t *testing.T) {
 	t.Run("invalidBehavior maps to the reorg policy", func(t *testing.T) {
 		_, p := compileIntegritySettings(&common.IntegritySettings{
 			Level:           "authoritative",
-			InvalidBehavior: &common.IntegrityInvalidBehaviorConfig{Finalized: "reject", Unfinalized: "off"},
+			InvalidBehavior: &common.IntegrityInvalidBehaviorConfig{Finalized: "hardReject", Unfinalized: "off"},
 		}, 0)
 		assert.Equal(t, integrity.BehaviorError, p.Finalized)
 		assert.Equal(t, integrity.BehaviorIgnore, p.Unfinalized)
@@ -62,7 +62,7 @@ func TestCompileIntegritySettings(t *testing.T) {
 	t.Run("per-check onFailure becomes a fail override", func(t *testing.T) {
 		cs, _ := compileIntegritySettings(&common.IntegritySettings{
 			Level:  "intrinsic",
-			Checks: map[string]*common.IntegrityCheckConfig{"bloomMatch": {OnFailure: "soft-flag"}},
+			Checks: map[string]*common.IntegrityCheckConfig{"bloomMatch": {OnFailure: "recordOnly"}},
 		}, 0)
 		require.NotNil(t, cs.For("bloomMatch").FailOverride)
 		assert.Equal(t, integrity.BehaviorRecord, *cs.For("bloomMatch").FailOverride)
@@ -108,8 +108,8 @@ func TestParseBehavior(t *testing.T) {
 		want integrity.Behavior
 		ok   bool
 	}{
-		"reject":    {integrity.BehaviorError, true},
-		"soft-flag": {integrity.BehaviorRecord, true},
+		"hardReject":    {integrity.BehaviorError, true},
+		"recordOnly": {integrity.BehaviorRecord, true},
 		"off":       {integrity.BehaviorIgnore, true},
 		"":          {integrity.BehaviorError, false},
 		"nonsense":  {integrity.BehaviorError, false},

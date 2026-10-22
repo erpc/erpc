@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
@@ -26,6 +27,7 @@ func NewERPC(
 	logger *zerolog.Logger,
 	sharedState data.SharedStateRegistry,
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
+	svmJsonRpcCache *svm.SvmJsonRpcCache,
 	cfg *common.Config,
 ) (*ERPC, error) {
 	if err := common.InitializeTracing(appCtx, logger, cfg.Tracing); err != nil {
@@ -71,6 +73,7 @@ func NewERPC(
 		cfg.Projects,
 		sharedState,
 		evmJsonRpcCache,
+		svmJsonRpcCache,
 		rateLimitersRegistry,
 		vendorsRegistry,
 		proxyPoolRegistry,

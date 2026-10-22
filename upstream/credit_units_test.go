@@ -68,23 +68,25 @@ func TestAttemptCreditUnits_Drpc(t *testing.T) {
 	assert.Equal(t, int64(20), over.attemptCreditUnits(creditReq(t, "eth_call")), "unoverridden method keeps the flat table")
 }
 
-// rateLimitHits resolves the per-call budget weight: a flat 1 in the default
-// request-count mode, or the pre-flight estimated CU when the upstream opts
-// into credit counting (0-CU methods consume nothing).
-func TestRateLimitHits_CountMode(t *testing.T) {
+// rateLimitCost resolves the per-call budget cost: a flat 1 request hit in the
+// default request-count mode, or the pre-flight estimated CU when the upstream
+// opts into credit counting (0-CU methods consume nothing). The mode travels
+// with the cost because it also decides whether the budget pools across
+// methods.
+func TestRateLimitCost_CountMode(t *testing.T) {
 	alchemy := thirdparty.NewVendorsRegistry().LookupByName("alchemy")
 	require.NotNil(t, alchemy)
 
 	// Default (request) mode: always 1, regardless of method cost.
 	reqMode := &Upstream{vendor: alchemy, config: &common.UpstreamConfig{}}
-	assert.Equal(t, uint32(1), reqMode.rateLimitHits(creditReq(t, "eth_getLogs")))
-	assert.Equal(t, uint32(1), reqMode.rateLimitHits(creditReq(t, "eth_chainId")))
+	assert.Equal(t, PermitCost{Hits: 1, Mode: common.RateLimitCountModeRequest}, reqMode.rateLimitCost(creditReq(t, "eth_getLogs")))
+	assert.Equal(t, PermitCost{Hits: 1, Mode: common.RateLimitCountModeRequest}, reqMode.rateLimitCost(creditReq(t, "eth_chainId")))
 
 	// Credit mode: the pre-flight estimated CU is the hit weight.
 	creditMode := &Upstream{vendor: alchemy, config: &common.UpstreamConfig{RateLimitCountMode: common.RateLimitCountModeCredit}}
-	assert.Equal(t, uint32(60), creditMode.rateLimitHits(creditReq(t, "eth_getLogs")))
-	assert.Equal(t, uint32(26), creditMode.rateLimitHits(creditReq(t, "eth_call")))
-	assert.Equal(t, uint32(0), creditMode.rateLimitHits(creditReq(t, "eth_chainId")), "0-CU method consumes nothing")
+	assert.Equal(t, PermitCost{Hits: 60, Mode: common.RateLimitCountModeCredit}, creditMode.rateLimitCost(creditReq(t, "eth_getLogs")))
+	assert.Equal(t, PermitCost{Hits: 26, Mode: common.RateLimitCountModeCredit}, creditMode.rateLimitCost(creditReq(t, "eth_call")))
+	assert.Equal(t, PermitCost{Hits: 0, Mode: common.RateLimitCountModeCredit}, creditMode.rateLimitCost(creditReq(t, "eth_chainId")), "0-CU method consumes nothing")
 }
 
 func TestResolveCreditUnits_Precedence(t *testing.T) {

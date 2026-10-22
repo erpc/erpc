@@ -545,6 +545,7 @@ drain:
 			labelConnectorId,
 			labelPolicyStr,
 			labelTTL,
+			missReason,
 		).Inc()
 		telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 			c.projectId,
@@ -570,6 +571,7 @@ drain:
 				connector.Id(),
 				policy.String(),
 				policy.GetTTL().String(),
+				"empty_result",
 			).Inc()
 			telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 				c.projectId,
@@ -664,7 +666,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		attribute.String("network.id", ntwId),
 	)
 
-	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, req)
+	// Key "latest"/"finalized" by the response's block (see ResolveCacheBlockRef).
+	blockRef, blockNumber, err := ResolveCacheBlockRef(ctx, req, resp)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return err
@@ -844,7 +847,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, valueToStore, storageTTL)
+			setCtx := data.WithReverseIndex(ctx, req.NetworkId(), req.CacheKeySuffix())
+			err = connector.Set(setCtx, pk, rk, valueToStore, storageTTL)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -1083,7 +1087,8 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	rpcReq.RLockWithTrace(ctx)
 	defer rpcReq.RUnlock()
 
-	blockRef, _, err := ExtractBlockReferenceFromRequest(ctx, req)
+	// Key "latest"/"finalized" by the network's current tip (see ResolveCacheBlockRef).
+	blockRef, _, err := ResolveCacheBlockRef(ctx, req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1187,7 +1192,7 @@ func shouldCacheResponse(
 			if dirs := req.Directives(); dirs != nil && dirs.EnforceHighestBlock {
 				if ntw := req.Network(); ntw != nil {
 					if _, respBlock, err := ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlock > 0 {
-						if tip := ntw.EvmHighestLatestBlockNumber(ctx); tip > respBlock {
+						if tip := common.EvmHighestLatestBlockNumber(ntw, ctx); tip > respBlock {
 							lg.Debug().
 								Int64("responseBlockNumber", respBlock).
 								Int64("knownHighestBlock", tip).
@@ -1205,7 +1210,7 @@ func shouldCacheResponse(
 	// Never cache an empty result for a not-yet-produced (future) block: the block
 	// will exist later, so a cached null would be served as a wrong answer until the
 	// TTL expires. This holds regardless of the policy's empty behavior.
-	if isEmpty && resp != nil && emptyResultBeyondConfidence(ctx, resp.Request()) {
+	if isEmpty && resp != nil && EmptyResultBeyondConfidence(ctx, resp.Request()) {
 		lg.Debug().Msg("skip caching empty result for a not-yet-produced (future) block")
 		return false, nil
 	}
@@ -1240,11 +1245,11 @@ func generateKeysForJsonRpcRequest(
 		return "", "", err
 	}
 
-	if blockRef != "" {
-		return fmt.Sprintf("%s:%s", req.NetworkId(), blockRef), cacheKey, nil
-	} else {
-		return fmt.Sprintf("%s:nil", req.NetworkId()), cacheKey, nil
+	ref := blockRef
+	if ref == "" {
+		ref = "nil"
 	}
+	return common.CachePartitionKey(req.NetworkId(), req.CacheKeySuffix(), ref), cacheKey, nil
 }
 
 // compressValueBytes compresses byte data using zstd

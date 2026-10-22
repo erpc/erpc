@@ -1,0 +1,152 @@
+package common
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+// The served-tip contract: PickServedTip returns the freshest block at least
+// quorum inputs have reached. These tests pin the order-statistic semantics
+// for the default quorum (2) and "majority", and the two protections that
+// motivated the design — one rogue far-future tip cannot move the pick, one
+// stuck upstream cannot hold it back.
+
+func TestPickServedTip_MajorityIndexAcrossN(t *testing.T) {
+	// N=1: the only head.
+	assert.Equal(t, int64(100), PickServedTip([]int64{100}, ServedTipQuorumMajority).Tip)
+	// N=2: the LOWER — never advertise a block only one upstream claims.
+	assert.Equal(t, int64(100), PickServedTip([]int64{200, 100}, ServedTipQuorumMajority).Tip)
+	// N=3: 2nd highest (2 of 3 have it).
+	assert.Equal(t, int64(101), PickServedTip([]int64{102, 101, 100}, ServedTipQuorumMajority).Tip)
+	// N=4: 3rd highest (3 of 4 have it).
+	assert.Equal(t, int64(101), PickServedTip([]int64{103, 102, 101, 100}, ServedTipQuorumMajority).Tip)
+	// N=5: 3rd highest (3 of 5 have it).
+	assert.Equal(t, int64(102), PickServedTip([]int64{104, 103, 102, 101, 100}, ServedTipQuorumMajority).Tip)
+	// N=7: 4th highest (4 of 7 have it).
+	assert.Equal(t, int64(103), PickServedTip([]int64{106, 105, 104, 103, 102, 101, 100}, ServedTipQuorumMajority).Tip)
+}
+
+func TestPickServedTip_DefaultQuorumIsSecondHighest(t *testing.T) {
+	var q ServedTipQuorum // zero value = DefaultServedTipQuorum
+	assert.Equal(t, int64(100), PickServedTip([]int64{100}, q).Tip)
+	assert.Equal(t, int64(100), PickServedTip([]int64{200, 100}, q).Tip)
+	assert.Equal(t, int64(102), PickServedTip([]int64{103, 102, 101, 100, 99}, q).Tip,
+		"N=5: 2nd highest, where majority would serve the 3rd")
+	assert.Equal(t, int64(101), PickServedTip([]int64{999_999_999, 101, 100}, q).Tip,
+		"one rogue still cannot move the pick")
+	assert.Equal(t, int64(100), PickServedTip([]int64{103, 102, 101, 100}, ServedTipQuorum(4)).Tip)
+	assert.Equal(t, int64(101), PickServedTip([]int64{101, 100}, ServedTipQuorum(1)).Tip)
+}
+
+func TestPickServedTip_GarbageTipCannotMoveThePick(t *testing.T) {
+	// A rogue upstream reporting a fantasy-future block (wrong chain,
+	// misconfigured endpoint) is just one voice — the majority ignores it.
+	// This is the wrong-chain endpoint shape that used to inflate lag gauges
+	// and, under the earlier persistent-counter design, could poison the counter.
+	p := PickServedTip([]int64{999_999_999, 101, 100}, ServedTipQuorumMajority)
+	assert.Equal(t, int64(101), p.Tip)
+	assert.Equal(t, int64(101), p.Freshest,
+		"the lag reference (corroborated freshest) must ignore the lone rogue too")
+
+	// Even two agreeing rogues lose against a 5-upstream majority.
+	assert.Equal(t, int64(102), PickServedTip([]int64{999_999_999, 999_999_999, 102, 101, 100}, ServedTipQuorumMajority).Tip)
+
+	// N=2 with one rogue: the SANE (lower) head wins — the old cluster
+	// tie-break picked the garbage here.
+	assert.Equal(t, int64(100), PickServedTip([]int64{999_999_999, 100}, ServedTipQuorumMajority).Tip)
+}
+
+func TestPickServedTip_StuckUpstreamCannotHoldThePickBack(t *testing.T) {
+	// One frozen/lagging upstream cannot pin the advertised tip while the
+	// majority advances — the inverse of the garbage case.
+	assert.Equal(t, int64(200), PickServedTip([]int64{5, 201, 200}, ServedTipQuorumMajority).Tip)
+	assert.Equal(t, int64(201), PickServedTip([]int64{5, 202, 201, 200, 201}, ServedTipQuorumMajority).Tip)
+}
+
+func TestPickServedTip_AllAgreeingIsIdentity(t *testing.T) {
+	p := PickServedTip([]int64{100, 100, 100}, ServedTipQuorumMajority)
+	assert.Equal(t, int64(100), p.Tip)
+	assert.Equal(t, int64(100), p.Freshest)
+	assert.Equal(t, 3, p.Inputs)
+}
+
+func TestPickServedTip_ZeroAndEmptyInputs(t *testing.T) {
+	// Zero/negative heads are "no data yet" and filtered.
+	assert.Equal(t, int64(100), PickServedTip([]int64{0, 100, 0}, ServedTipQuorumMajority).Tip)
+	assert.Equal(t, 1, PickServedTip([]int64{0, 100, 0}, ServedTipQuorumMajority).Inputs)
+	assert.Equal(t, int64(0), PickServedTip([]int64{0, 0}, ServedTipQuorumMajority).Tip)
+	assert.Equal(t, int64(0), PickServedTip(nil, ServedTipQuorumMajority).Tip)
+}
+
+func TestPickServedTip_TipNeverExceedsFreshestAndIsAlwaysAHead(t *testing.T) {
+	// Structural properties consumers rely on: the tip is one of the live
+	// heads (never an invented number) and never ahead of the freshest view.
+	cases := [][]int64{
+		{100}, {100, 200}, {1, 2, 3}, {7, 7, 9, 9},
+		{5, 100, 101, 102, 999999},
+	}
+	for _, heads := range cases {
+		p := PickServedTip(heads, ServedTipQuorumMajority)
+		assert.LessOrEqual(t, p.Tip, p.Freshest, "heads=%v", heads)
+		assert.Contains(t, heads, p.Tip, "tip must be a real observed head; heads=%v", heads)
+	}
+}
+func TestPickServedTip_Scenario_VendorPropagationJitter(t *testing.T) {
+	// The quorum head sits inside the vendor propagation jitter band, so no
+	// grouping parameter is needed.
+	assert.Equal(t, int64(100), PickServedTip([]int64{101, 100, 100}, ServedTipQuorumMajority).Tip)
+	assert.Equal(t, int64(101), PickServedTip([]int64{101, 101, 100}, ServedTipQuorumMajority).Tip,
+		"two fresh vs one 1-block lagger: tip moves forward")
+}
+
+func TestPickServedTip_Scenario_SingleLaggerDoesNotHoldBack(t *testing.T) {
+	// Old: the dominant (fresh) cluster outvoted a stuck/lagging upstream.
+	assert.Equal(t, int64(101), PickServedTip([]int64{101, 101, 50}, ServedTipQuorumMajority).Tip)
+}
+
+func TestPickServedTip_Scenario_SingleLeaderDoesNotDefineTip(t *testing.T) {
+	// Old: a lone most-ahead node (flashblocks-style) formed a 1-node cluster
+	// and lost to the agreeing pair. Advertising the loner's head is exactly
+	// the "block not found" churn that motivated served-tip in PR #900.
+	assert.Equal(t, int64(100), PickServedTip([]int64{120, 100, 99}, ServedTipQuorumMajority).Tip,
+		"the loner's head must never be advertised")
+}
+
+func TestPickServedTip_Scenario_MajorityLaggersWin(t *testing.T) {
+	// Old: 4 laggers outvoted 3 leaders by cluster size — the network truth
+	// is what most upstreams can serve. New: same outcome with a fresher
+	// representative (the BEST lagger instead of the worst).
+	assert.Equal(t, int64(50), PickServedTip([]int64{103, 102, 101, 50, 49, 48, 47}, ServedTipQuorumMajority).Tip)
+}
+
+func TestPickServedTip_Scenario_BurstCatchupServedImmediately(t *testing.T) {
+	// Old: the velocity gate carried slack+buffer tuned to ALLOW legitimate
+	// burst catch-up (L2 sequencer batches, a halted chain resuming), plus
+	// fail-open for when that tuning was wrong — mis-tuning froze the
+	// tip. New: stateless, so a jump is served the moment a majority
+	// reports it; there is no window to outrun and nothing to mis-arm.
+	assert.Equal(t, int64(100), PickServedTip([]int64{100, 100, 99}, ServedTipQuorumMajority).Tip)
+	assert.Equal(t, int64(1100), PickServedTip([]int64{1100, 1100, 1099}, ServedTipQuorumMajority).Tip)
+}
+
+func TestPickServedTip_Scenario_GarbageCannotInflateLagReference(t *testing.T) {
+	// Old: MaxEligible (the velocity-gated max) kept a rogue far-future tip
+	// out of the lag gauge — without that, dashboards read days behind
+	// on healthy chains (a wrong-chain endpoint). New: Freshest is the
+	// 2nd-highest head, so a single rogue cannot touch the gauge either.
+	p := PickServedTip([]int64{999_999_999, 102, 101, 100}, ServedTipQuorumMajority)
+	assert.Equal(t, int64(101), p.Tip)
+	assert.Equal(t, int64(102), p.Freshest, "lag reference ignores the lone rogue")
+	assert.Equal(t, int64(1), p.Freshest-p.Tip, "deliberate lag stays in single digits")
+}
+
+func TestPickServedTip_Scenario_HaltedChainHoldsHonestly(t *testing.T) {
+	// Old: a halted chain froze the counter (and, later, tripped the
+	// stuck watchdog). New: picks over frozen heads keep returning the same
+	// honest consensus value — no invented progress; the advance-age
+	// watchdog still fires at the Network layer.
+	frozen := []int64{500, 500, 499}
+	assert.Equal(t, int64(500), PickServedTip(frozen, ServedTipQuorumMajority).Tip)
+	assert.Equal(t, PickServedTip(frozen, ServedTipQuorumMajority), PickServedTip(frozen, ServedTipQuorumMajority), "pure function: same inputs, same pick")
+}

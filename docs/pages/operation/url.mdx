@@ -41,6 +41,16 @@ Illustrative, not a tuned production config — map a dedicated domain to a sing
 }`}
 />
 
+## WebSocket
+
+You can also connect via WebSocket using the same URL path with a `ws://` or `wss://` scheme:
+
+```
+ws://localhost:4000/main/evm/1
+```
+
+WebSocket connections support all JSON-RPC methods, batch requests, and real-time subscriptions (`eth_subscribe`). Read more in the [WebSocket](/operation/websocket) page.
+
 ## Agent reference
 
 Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
@@ -90,9 +100,11 @@ https://docs.erpc.cloud/operation/url.llms.txt`}
 
 Routing happens in two phases. First, the server evaluates `server.aliasing.rules` against the stripped `Host` header (port removed). The first matching rule wins and pre-populates up to all three of `(projectId, architecture, chainId)`. Then `parseUrlPath` reads the remaining URL path segments and fills in any fields not yet set by domain aliasing.
 
-After path parsing, `common.IsValidArchitecture` validates the architecture string. Currently only `"evm"` is valid; any other value — including an empty string when chainId is present — returns HTTP 400. If `projectId` is still empty after all resolution, the request is also rejected with 400.
+After path parsing, `common.IsValidArchitecture` validates the architecture string. `"evm"` and `"svm"` are both valid; any other value — including an empty string when chainId is present — returns HTTP 400. If `projectId` is still empty after all resolution, the request is also rejected with 400.
 
-For POST requests where `architecture` and `chainId` are still unknown after the path, the server inspects the JSON-RPC body for a top-level `"networkId"` field of the form `"evm:42161"`. This allows project-level requests (`POST /main`) to self-describe their network inline without a URL change.
+**The third segment is not always a numeric chain id.** It is a generic identifier slot whose meaning depends on the architecture: for EVM it is the numeric chain id (`/main/evm/42161`), and for SVM it is the cluster — `/main/svm/mainnet-beta` for Solana, or `<chain>:<cluster>` for a fork, e.g. `/main/svm/fogo:mainnet`. The colon inside a fork's identifier is carried intact in that one segment and reassembled as `svm:fogo:mainnet`.
+
+For POST requests where `architecture` and `chainId` are still unknown after the path, the server inspects the JSON-RPC body for a top-level `"networkId"` field — `"evm:42161"`, `"svm:mainnet-beta"`, or `"svm:fogo:mainnet"`. The split is `SplitN(networkId, ":", 2)`, so a fork's `chain:cluster` tail stays intact as the chainId component. This allows project-level requests (`POST /main`) to self-describe their network inline without a URL change.
 
 Any request whose HTTP method is neither POST nor OPTIONS has `isHealthCheck` forced to `true` after path parsing — meaning `GET /main/evm/1` silently becomes a network-scoped healthcheck rather than an error. Architecture validation still runs first; a GET to an invalid architecture path returns 400, not 200.
 
@@ -265,10 +277,13 @@ Content-Type: application/json
 - Non-POST/non-OPTIONS methods: `isHealthCheck` is forced `true` after path parsing; the client receives a healthcheck response with no indication the substitution occurred. [<SourceLink file="erpc/http_server.go" lines="1001-1003" />]
 - Unknown project (`ErrProjectNotFound`): `s.erpc.GetProject(projectId)` returns HTTP 404 with a JSON-RPC envelope and message `"project <id> is not configured"`. [Source: <SourceLink file="erpc/projects_registry.go" lines="118" />]
 - Networks are lazily initialized: `ErrNetworkNotFound` (HTTP 404) is returned only when the networkId format is valid but resolution definitively fails. A network that has never been requested may succeed on first call for provider-based projects. [Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />]
+- The request envelope is parsed once per request. `method`, `id`, `params`, and the body's `networkId` hint all come from that single parse, so the method erpc authenticates and rate-limits on is the method it sends upstream. [<SourceLink file="common/request.go" lines="887-921" />]
+- `networkId` is routing input only and is never relayed: the upstream body is rebuilt from `jsonrpc`, `method`, `params`, and `id`. [<SourceLink file="clients/http_json_rpc_client.go" lines="702-707" />]
 - Batch detection fires on `body[0] == '['` — no Content-Type gate, no pre-parse. A body like `[invalid json` is detected as batch then fails unmarshalling with a 400. [<SourceLink file="erpc/http_server.go" lines="405-409" />]
 - Request gzip decompression is unconditional: `Content-Encoding: gzip` always triggers decompression regardless of the `server.enableGzip` setting (which controls response compression only). Corrupt gzip → 400 `ErrInvalidRequest` immediately. [<SourceLink file="erpc/http_server.go" lines="349-370" />]
 - `MaxHeaderBytes` is `1 MiB` on both IPv4 and IPv6 servers; requests with oversized headers are rejected at the Go net/http layer with HTTP 431 before any eRPC handler runs. Body size has no configured cap. [<SourceLink file="erpc/http_server.go" lines="186" />]
-- gRPC dispatch (`Content-Type: application/grpc` + HTTP/2) happens before URL parsing — only when `grpcSharesHttpV4` is enabled; IPv6 never gets gRPC sharing. [<SourceLink file="erpc/http_server.go" lines="161-177" />]
+- gRPC dispatch (`Content-Type: application/grpc` + HTTP/2) happens before URL parsing — only when `grpcSharesHttpV4` is enabled; IPv6 never gets gRPC sharing. [<SourceLink file="erpc/http_server.go" lines="162-175" />]
+- Cleartext HTTP/2 (h2c) prior-knowledge connections are served on every non-TLS listener (IPv4 and IPv6) regardless of whether gRPC sharing is enabled: both servers set `http.Server.Protocols` to HTTP/1.1 + unencrypted HTTP/2. HTTP/1.1 `Upgrade: h2c` is not honored (the request is served over HTTP/1.1). With TLS, HTTP/2 is negotiated via ALPN instead. [<SourceLink file="erpc/http_server.go" lines="179-192" />]
 - The admin endpoint is exactly `POST /admin` or `OPTIONS /admin`; `GET /admin` is a healthcheck; `/admin/foo` fails with a URL parse error. [<SourceLink file="erpc/http_server.go" lines="836-838" />]
 
 ### Best practices
@@ -297,7 +312,9 @@ Content-Type: application/json
 13. **Body size has no configured cap.** The 1 MiB limit is headers only. Arbitrarily large bodies are read into memory. Apply body-size limits at the reverse-proxy layer. Source: <SourceLink file="erpc/http_server.go" lines="186" />, <SourceLink file="erpc/http_server.go" lines="374" />
 14. **Unknown network may succeed on first call for provider-based projects.** Networks are lazily initialized. `ErrNetworkNotFound` (HTTP 404) is returned only when resolution definitively fails. Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />
 15. **`serveArchitecture: "evm"` with no `serveChain` lets callers omit `evm` from the path.** With a domain alias pre-selecting architecture, the URL becomes `POST /<project>/<chainId>` — no need to include `evm` in every call. Source: <SourceLink file="erpc/http_server.go" lines="963-983" />
-16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="161-177" />
+16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="162-175" />
+17. **Cleartext HTTP/2 (h2c) is prior-knowledge only.** Without TLS, both the IPv4 and IPv6 listeners accept HTTP/2 prior-knowledge connections natively, independent of gRPC. An HTTP/1.1 `Upgrade: h2c` request is answered over HTTP/1.1, so clients that rely on the upgrade dance stay on HTTP/1.1. Source: <SourceLink file="erpc/http_server.go" lines="179-192" />
+18. **A request object that states `method` more than once is rejected.** JSON decoders do not agree on which occurrence wins, so erpc reads none of them and returns 400 `ErrCodeInvalidRequest` (JSON-RPC `-32700`, the same shape as any unparseable body) before auth, rate limiting, and routing. This covers a repeated key, an escaped spelling (`"\u006dethod"`), and a case variant (`"Method"`) that Go's case-insensitive field matching folds onto the same field. A `"method"` key nested inside `params` or any other member is untouched. Source: <SourceLink file="common/json_rpc.go" lines="1245-1266" />
 
 ### Observability
 
@@ -320,7 +337,9 @@ Content-Type: application/json
 
 - [`erpc/http_server.go:L226-L292`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L226-L292) — domain alias evaluation in `handleRequest`; `Host` header stripping; routing dispatch
 - [`erpc/http_server.go:L810-L1006`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L810-L1006) — `parseUrlPath`: full path parsing state machine (all 6 cases), alias resolution, healthcheck/admin detection, validation
-- [`erpc/http_server.go:L615-L633`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L615-L633) — `networkId` fallback from request body
+- [`erpc/http_server.go:L671-L689`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L671-L689) — `networkId` fallback from request body
+- [`common/request.go:L887-L921`](https://github.com/erpc/erpc/blob/main/common/request.go#L887-L921) — `resolveJsonRpc`: the one body parse every consumer reads
+- [`common/json_rpc.go:L1245-L1266`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1245-L1266) — `uniqueString`: rejects a member stated more than once
 - [`erpc/http_server.go:L1285-L1317`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1285-L1317) — `httpStatusCode(err)`: full HTTP status code mapping (400/401/404/429/200)
 - [`erpc/networks_registry.go:L22-L81`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L22-L81) — `NetworksRegistry` struct + `NewNetworksRegistry` (eager alias registration from static config)
 - [`erpc/networks_registry.go:L247-L255`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L247-L255) — `ResolveAlias`: alias lookup under read lock

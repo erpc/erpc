@@ -21,12 +21,12 @@ func TestCacheExecutor_RejectsConsensus(t *testing.T) {
 	cfg := &common.FailsafeConfig{
 		Consensus: &common.ConsensusPolicyConfig{},
 	}
-	_, err := NewCacheExecutor(cfg, &logger)
+	_, err := NewCacheExecutor(context.Background(), cfg, &logger)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "consensus is not supported")
 }
 
-func TestCacheExecutor_RejectsHedgeQuantile(t *testing.T) {
+func TestCacheExecutor_AcceptsHedgeQuantile(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	cfg := &common.FailsafeConfig{
 		Hedge: &common.HedgePolicyConfig{
@@ -36,9 +36,12 @@ func TestCacheExecutor_RejectsHedgeQuantile(t *testing.T) {
 			MaxCount: 1,
 		},
 	}
-	_, err := NewCacheExecutor(cfg, &logger)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "hedge quantile is not supported")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex, err := NewCacheExecutor(ctx, cfg, &logger)
+	require.NoError(t, err)
+	require.NotNil(t, ex)
+	require.NotNil(t, ex.latency, "quantile-driven hedge must create the latency tracker")
 }
 
 func TestCacheExecutor_AcceptsValid(t *testing.T) {
@@ -61,7 +64,7 @@ func TestCacheExecutor_AcceptsValid(t *testing.T) {
 			MaxCount: 1,
 		},
 	}
-	ex, err := NewCacheExecutor(cfg, &logger)
+	ex, err := NewCacheExecutor(context.Background(), cfg, &logger)
 	require.NoError(t, err)
 	require.NotNil(t, ex)
 }
@@ -74,7 +77,7 @@ func TestCacheFailsafe_RetryPolicy_DoesNotRetryRecordNotFound(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, notFoundErr)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
@@ -98,7 +101,7 @@ func TestCacheFailsafe_RetryPolicy_DoesNotRetryContextCanceled(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, context.Canceled)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
@@ -123,7 +126,7 @@ func TestCacheFailsafe_RetryPolicy_RetriesConnectionError(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return([]byte("data"), nil).Once()
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 5,
@@ -147,7 +150,7 @@ func TestCacheFailsafe_RetryPolicy_RespectsMaxAttempts(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, connErr)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
@@ -171,7 +174,7 @@ func TestCacheFailsafe_CircuitBreaker_DoesNotCountCacheMiss(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, notFoundErr)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount: 2,
@@ -198,7 +201,7 @@ func TestCacheFailsafe_CircuitBreaker_OpensOnConnectionErrors(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, connErr)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount: 2,
@@ -233,7 +236,7 @@ func TestCacheFailsafe_Timeout_Exceeded(t *testing.T) {
 		}).
 		Return(nil, context.DeadlineExceeded)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Timeout: &common.TimeoutPolicyConfig{
 				Duration: common.NewStaticDuration(50 * time.Millisecond),
@@ -257,7 +260,7 @@ func TestCacheFailsafe_Set_RetriesOnError(t *testing.T) {
 	mc.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil).Once()
 
-	fc, err := NewFailsafeConnector(&logger, mc, nil, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, nil, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
@@ -283,7 +286,7 @@ func TestCacheFailsafe_Delete_RetriesOnError(t *testing.T) {
 	mc.On("Delete", mock.Anything, mock.Anything, mock.Anything).
 		Return(nil).Once()
 
-	fc, err := NewFailsafeConnector(&logger, mc, nil, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, nil, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
@@ -306,7 +309,7 @@ func TestCacheFailsafe_Passthrough_List(t *testing.T) {
 	mc.On("List", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(expected, "next", nil)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{Retry: &common.RetryPolicyConfig{MaxAttempts: 3}},
 	}, nil)
 	require.NoError(t, err)
@@ -337,10 +340,9 @@ func TestCacheFailsafe_Get_UsesGetExecutors_Set_UsesSetExecutors(t *testing.T) {
 		Return(connErr)
 
 	// Get: 2 max attempts, Set: 4 max attempts — proves they use separate executors
-	fc, err := NewFailsafeConnector(&logger, mc,
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc,
 		[]*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(10 * time.Millisecond)}}},
-		[]*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 4, Delay: common.Duration(10 * time.Millisecond)}}},
-	)
+		[]*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 4, Delay: common.Duration(10 * time.Millisecond)}}})
 	require.NoError(t, err)
 
 	_, _ = fc.Get(context.Background(), "", "pk", "rk", nil)
@@ -364,7 +366,7 @@ func TestCacheFailsafe_ExecutorSelection_ByMethodFromContext(t *testing.T) {
 
 	// Specific config for eth_getLogs: 2 attempts
 	// Default config: 4 attempts
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			MatchMethod: "eth_getLogs",
 			Retry:       &common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(10 * time.Millisecond)},
@@ -416,7 +418,7 @@ func TestCacheFailsafe_NoConfig_PassesThrough(t *testing.T) {
 		Return([]byte("data"), nil)
 
 	// Even with empty configs, no-op fallback executor ensures normal operation
-	fc, err := NewFailsafeConnector(&logger, mc, nil, nil)
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, nil, nil)
 	require.NoError(t, err)
 
 	result, err := fc.Get(context.Background(), "", "pk", "rk", nil)
@@ -439,7 +441,7 @@ func TestCacheFailsafe_Validation_RejectsConsensus(t *testing.T) {
 	assert.Contains(t, err.Error(), "consensus is not supported")
 }
 
-func TestCacheFailsafe_Validation_RejectsHedgeQuantile(t *testing.T) {
+func TestCacheFailsafe_Validation_AcceptsHedgeQuantile(t *testing.T) {
 	cfg := &common.ConnectorConfig{
 		Id:     "test",
 		Driver: common.DriverMemory,
@@ -451,9 +453,7 @@ func TestCacheFailsafe_Validation_RejectsHedgeQuantile(t *testing.T) {
 			}},
 		},
 	}
-	err := cfg.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "hedge quantile is not supported")
+	require.NoError(t, cfg.Validate())
 }
 
 func TestCacheFailsafe_Validation_AcceptsValidConfig(t *testing.T) {
@@ -480,7 +480,7 @@ func TestCacheFailsafe_RetryPolicy_DoesNotRetryRecordExpired(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, expiredErr)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(10 * time.Millisecond)}},
 	}, nil)
 	require.NoError(t, err)
@@ -498,7 +498,7 @@ func TestCacheFailsafe_Get_Success(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return([]byte("hello"), nil)
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(1 * time.Second)},
 			Retry:   &common.RetryPolicyConfig{MaxAttempts: 3},
@@ -518,7 +518,7 @@ func TestCacheFailsafe_Set_Success(t *testing.T) {
 	mc.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil)
 
-	fc, err := NewFailsafeConnector(&logger, mc, nil, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, nil, []*common.FailsafeConfig{
 		{
 			Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(1 * time.Second)},
 		},
@@ -541,7 +541,7 @@ func TestCacheFailsafe_RetryWithBackoff(t *testing.T) {
 	mc.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return([]byte("data"), nil).Once()
 
-	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
+	fc, err := NewFailsafeConnector(context.Background(), &logger, mc, []*common.FailsafeConfig{
 		{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts:     5,

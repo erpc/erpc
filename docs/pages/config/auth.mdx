@@ -582,7 +582,7 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 ### Request/response behavior
 
 - A successful auth attaches `User{Id, RateLimitBudget}` to the request; `User.Id` flows into log context and Prometheus labels on every downstream metric. [<SourceLink file="auth/registry.go" lines="74-76" />]
-- `ErrAuthUnauthorized` → HTTP 401. Carries `{strategy}` in `Details`. [<SourceLink file="common/errors.go" lines="524-542" />]
+- `ErrAuthUnauthorized` → HTTP 401. Carries `{strategy}` in `Details`; JWT parse denials also set `{reason}` (`token_expired` / `invalid_signature`) via `AuthUnauthorizedReason`, and `Message` is derived from that reason. [<SourceLink file="common/errors.go" lines="548-615" />]
 - `ErrAuthRateLimitRuleExceeded` → HTTP 429. Carries `{projectId, strategy, budget, rule, userId, clientIp}` in `Details`. The `rule` value is formatted as `"method:<rpc_method>"`. [<SourceLink file="common/errors.go" lines="545-568" />]
 - If no strategy's `Supports` returns true (e.g., a JWT token arrives but only `network` is configured), the response is `"no auth strategy matched"` — not a per-strategy auth failure. [<SourceLink file="auth/registry.go" lines="46-96" />]
 - For admin scope, when `adminCfg != nil` but `adminAuthRegistry == nil`, `AdminAuthenticate` returns a plain `fmt.Errorf` with no typed error code → HTTP 200 (not 401/500). When `adminCfg` is nil, the path returns `ErrAuthUnauthorized` → HTTP 401. [<SourceLink file="erpc/admin.go" lines="26-30" />]
@@ -629,11 +629,14 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 25. **Admin auth registry DOES support rate-limit budgets.** Unlike the healthcheck scope, the admin `AuthRegistry` is created with the same `rateLimitersRegistry` as projects. Rate-limit budgets on admin auth strategies are applied when configured.
 26. **`verificationJwksUrl` must be absolute HTTP(S).** Non-empty values are parsed at startup; scheme must be `http` or `https` and a host is required. Scheme-less hosts, `file://`, and other schemes fail validation even when static `verificationKeys` are also set. [<SourceLink file="common/validation.go" />]
 
+27. **JWT `jwt.Parse` failures are classified into closed reasons.** Bad signatures → `invalid_signature`; expired → `token_expired`. If both bits are set, signature wins. Other `ValidationError` flags use `invalid_token` and keep jwt library text as the message. [<SourceLink file="auth/strategy_jwt.go" />]
+28. **`erpc_auth_failed_total` increments when an `ErrAuthUnauthorized` is returned to the client** (`processErrorBody` / gRPC status mapping via `RecordAuthFailed`). Strategies stamp a closed `Details.reason` via `NewErrAuthUnauthorized`; intermediate strategy rejects on a request that later succeeds are not counted. `agent_name` is always `"unknown"`; `project`/`network` are `"n/a"` unless a resolved network is already on the request. [<SourceLink file="auth/auth_metrics.go" />]
+
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_auth_failed_total` | counter | `project`, `network`, `strategy`, `reason`, `agent_name` | Database strategy only. Reason values: `missing_secret`, `empty_secret`, `cached_unknown_api_key`, `db_fail_open_fast_path`, `db_not_ready`, `db_timeout`, `db_connection`, `db_query_error`, `invalid_api_key`, `disabled_key`, `db_record_parse_error`, `db_record_missing_user_id`, `internal_error`. |
+| `erpc_auth_failed_total` | counter | `project`, `network`, `strategy`, `reason`, `agent_name` | Client-facing `ErrAuthUnauthorized` counter via `RecordAuthFailed` (<SourceLink file="auth/auth_metrics.go" />). Closed `reason` sets: **database** — `missing_secret`, `empty_secret`, `cached_unknown_api_key`, `db_not_ready`, `db_timeout`, `db_connection`, `db_query_error`, `invalid_api_key`, `disabled_key`, `db_record_parse_error`, `db_record_missing_user_id`; **jwt** — `parse_failed`, `unexpected_algorithm`, `no_verification_key`, `token_expired`, `invalid_signature`, `invalid_token`, `invalid_claims`, `claims_invalid`, `missing_sub`; **secret** — `invalid_secret`; **siwe** — `missing_payload`, `parse_failed`, `invalid_signature`, `domain_not_allowed`, `message_not_valid_now`; **network** — `missing_request`, `invalid_client_ip`, `ip_not_allowed`. Fallback reason `unauthorized`. `agent_name` always `unknown`. No `user` label. |
 | `erpc_rate_limits_total` | counter | `project`, `network`, `vendor`, `upstream`, `category`, `finality`, `user`, `agent_name`, `budget`, `scope`, `auth`, `origin` | When auth-level rate-limit budget is exhausted. `origin="auth"`, `auth="<type>:<index>"` (e.g. `"secret:0"`, `"database:1"`). |
 
 **Log messages (database strategy):**

@@ -654,8 +654,10 @@ func (e *ERPC) findUpstreamById(projectID, upstreamID string) (*upstream.Upstrea
 }
 
 // handleCordonUpstream marks an upstream cordoned (cordon=true) or
-// uncordoned (cordon=false) for a specific method scope.
-func (e *ERPC) handleCordonUpstream(_ context.Context, nq *common.NormalizedRequest, cordon bool) (*common.NormalizedResponse, error) {
+// uncordoned (cordon=false) for a specific method scope. The whole-upstream
+// scope ("*") is the operator cordon shared across replicas through
+// database.sharedState; a method scope stays on this replica.
+func (e *ERPC) handleCordonUpstream(ctx context.Context, nq *common.NormalizedRequest, cordon bool) (*common.NormalizedResponse, error) {
 	p, err := parseCordonParams(nq)
 	if err != nil {
 		return nil, err
@@ -672,10 +674,15 @@ func (e *ERPC) handleCordonUpstream(_ context.Context, nq *common.NormalizedRequ
 			reason = "admin: manual uncordon"
 		}
 	}
-	if cordon {
+	switch {
+	case p.Method != "*" && cordon:
 		u.Cordon(p.Method, reason)
-	} else {
+	case p.Method != "*":
 		u.Uncordon(p.Method, reason)
+	case cordon:
+		u.CordonAdmin(ctx, reason)
+	default:
+		u.UncordonAdmin(ctx, reason)
 	}
 	return makeSelectionResponse(nq, map[string]interface{}{
 		"projectId": p.ProjectID,

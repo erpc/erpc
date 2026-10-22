@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"time"
 
 	"strings"
 
 	"github.com/bytedance/sonic"
 	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
@@ -45,6 +47,7 @@ type Config struct {
 	Projects     []*ProjectConfig   `yaml:"projects,omitempty" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters,omitempty" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics,omitempty" json:"metrics"`
+	Indexer      *IndexerConfig     `yaml:"indexer,omitempty" json:"indexer"`
 	ProxyPools   []*ProxyPoolConfig `yaml:"proxyPools,omitempty" json:"proxyPools"`
 	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
 
@@ -81,6 +84,16 @@ var LegacyTranslateFn func(*Config) ([]string, error)
 // LegacyTranslateLogger lets the caller observe deprecation warnings
 // emitted by LegacyTranslateFn. If nil, warnings are dropped silently.
 var LegacyTranslateLogger func(warning string)
+
+// IndexerConfig tunes the event-stream indexer behind eth_subscribe fan-out.
+type IndexerConfig struct {
+	// Deprecated: ignored; the indexer no longer tracks a canonical chain.
+	// Kept so configs that still set it load under strict decoding.
+	CanonicalChainDepth int `yaml:"canonicalChainDepth,omitempty" json:"canonicalChainDepth"`
+	// DedupWindowSize is the per-filter seen-set capacity for log and
+	// pending-tx fan-out across upstreams. 0 uses the default (8192).
+	DedupWindowSize int `yaml:"dedupWindowSize,omitempty" json:"dedupWindowSize"`
+}
 
 // LoadConfig loads the configuration from the specified file.
 // It supports both YAML and TypeScript (.ts) files.
@@ -160,6 +173,8 @@ type ServerConfig struct {
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
 
+	WebSocket *WebSocketServerConfig `yaml:"webSocket,omitempty" json:"webSocket"`
+
 	// ExecutionHeaders controls the per-request diagnostic headers
 	// (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
 	// eRPC routed and resolved each request. Defaults to "all" — set
@@ -173,6 +188,36 @@ type ServerConfig struct {
 	// default. Credit-unit pricing is vendor-level configuration — see
 	// CreditUnitsProvider and UpstreamConfig.CreditUnits.
 	CostHeaders *bool `yaml:"costHeaders,omitempty" json:"costHeaders"`
+}
+
+type WebSocketServerConfig struct {
+	// Enabled accepts WebSocket upgrades on the HTTP port. Off by default:
+	// with it off an upgrade request is ordinary HTTP.
+	Enabled                       *bool     `yaml:"enabled,omitempty" json:"enabled"`
+	ReadBufferSize                int       `yaml:"readBufferSize,omitempty" json:"readBufferSize"`
+	WriteBufferSize               int       `yaml:"writeBufferSize,omitempty" json:"writeBufferSize"`
+	MaxMessageSize                int64     `yaml:"maxMessageSize,omitempty" json:"maxMessageSize"`
+	PingInterval                  *Duration `yaml:"pingInterval,omitempty" json:"pingInterval" tstype:"Duration"`
+	MaxSubscriptionsPerConnection int       `yaml:"maxSubscriptionsPerConnection,omitempty" json:"maxSubscriptionsPerConnection"`
+	// MaxConcurrentRequestsPerConnection bounds the messages a connection has
+	// in flight; further frames wait (backpressure) instead of being rejected.
+	// A batch is one message; its requests run concurrently, as over HTTP.
+	MaxConcurrentRequestsPerConnection int `yaml:"maxConcurrentRequestsPerConnection,omitempty" json:"maxConcurrentRequestsPerConnection"`
+	// SubscriptionBufferSize is the number of notifications queued per
+	// subscription for a client that is behind. On overflow newHeads and
+	// newPendingTransactions drop their oldest entry; logs close the
+	// connection instead (1013), so the client knows it missed data.
+	SubscriptionBufferSize int `yaml:"subscriptionBufferSize,omitempty" json:"subscriptionBufferSize"`
+	// MaxConnections caps concurrent client connections on this instance
+	// (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+	// unknown or spoofed.
+	MaxConnections int `yaml:"maxConnections,omitempty" json:"maxConnections"`
+	// MaxConnectionsPerIP caps concurrent client connections from one
+	// resolved client IP (0 = unlimited); see trustedIPForwarders.
+	MaxConnectionsPerIP int `yaml:"maxConnectionsPerIP,omitempty" json:"maxConnectionsPerIP"`
+	// MaxSubscriptions caps active subscriptions across all connections on
+	// this instance (0 = unlimited).
+	MaxSubscriptions int `yaml:"maxSubscriptions,omitempty" json:"maxSubscriptions"`
 }
 
 // ExecutionHeadersMode controls how much per-request execution detail is
@@ -273,6 +318,7 @@ type AliasingRuleConfig struct {
 
 type DatabaseConfig struct {
 	EvmJsonRpcCache *CacheConfig       `yaml:"evmJsonRpcCache,omitempty" json:"evmJsonRpcCache"`
+	SvmJsonRpcCache *CacheConfig       `yaml:"svmJsonRpcCache,omitempty" json:"svmJsonRpcCache"`
 	SharedState     *SharedStateConfig `yaml:"sharedState,omitempty" json:"sharedState"`
 }
 
@@ -380,12 +426,32 @@ type GrpcConnectorConfig struct {
 	Headers    map[string]string `yaml:"headers,omitempty" json:"headers"`
 	GetTimeout Duration          `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 
+	// NetworkId pins every server in this connector to one network and skips
+	// the eth_chainId bootstrap probe.
+	//
+	// Required for SVM. Solana has no numeric chain id — cluster identity is
+	// the genesis hash — and eth_chainId returns Unimplemented, so the probe
+	// fails and no client is ever registered. Probing GetGenesisHash instead
+	// is not an option either: the BDS reader deliberately does not publish
+	// one until it can verify its own, so identity here has to be asserted by
+	// configuration rather than discovered.
+	//
+	// Leave unset for EVM to keep the probe, which also arms the per-request
+	// chain-identity assertion that catches an endpoint cross-wired LATER — a
+	// static binding cannot.
+	NetworkId string `yaml:"networkId,omitempty" json:"networkId"`
+
 	// PoolSize is the number of independent gRPC connections opened to each
 	// backing server, selected round-robin per request. Larger values raise the
 	// concurrent-stream ceiling and shrink the blast radius of a single wedged
 	// connection, at the cost of more open connections per server. When unset
 	// (0) a built-in default is used.
 	PoolSize int `yaml:"poolSize,omitempty" json:"poolSize"`
+
+	// HealthCheckService is a grpc.health.v1 service name. When set, each
+	// connection watches it on every resolved address and sends requests only
+	// to addresses reporting SERVING. Empty (default) disables health checking.
+	HealthCheckService string `yaml:"healthCheckService,omitempty" json:"healthCheckService"`
 }
 
 type MemoryConnectorConfig struct {
@@ -690,7 +756,27 @@ type NetworkDefaults struct {
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
+	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm" tstype:"TsSvmNetworkConfigForDefaults"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+	CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
+	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
+}
+
+// FailoverConfig controls per-request escalation to fallback-tier upstreams,
+// independent of the selection policy.
+type FailoverConfig struct {
+	// OnDefaultsExhausted tries upstreams not tagged `tier:fallback` first and
+	// advances to the fallback tier within the same request only once every
+	// other upstream failed with an error retryable toward the network.
+	OnDefaultsExhausted *bool `yaml:"onDefaultsExhausted,omitempty" json:"onDefaultsExhausted"`
+}
+
+// Enabled reports whether any failover behaviour is configured.
+func (f *FailoverConfig) Enabled() bool {
+	if f == nil {
+		return false
+	}
+	return f.OnDefaultsExhausted != nil && *f.OnDefaultsExhausted
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -723,6 +809,9 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
 		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
 		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
+		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
+		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
+		Failover          *FailoverConfig          `yaml:"failover,omitempty"`
 	}
 
 	var old oldNetworkDefaults
@@ -734,9 +823,12 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 
 	// Convert old format to new format
 	n.RateLimitBudget = old.RateLimitBudget
+	n.CacheKeySuffix = old.CacheKeySuffix
 	n.SelectionPolicy = old.SelectionPolicy
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Evm = old.Evm
+	n.Svm = old.Svm
+	n.Failover = old.Failover
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -820,6 +912,10 @@ func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
 	}, nil
 }
 
+// TagTierFallback marks an upstream as part of the fallback tier, used only
+// when the other upstreams are unavailable.
+const TagTierFallback = "tier:fallback"
+
 // RateLimitCountMode selects the accounting unit an upstream's rate-limit
 // budget charges per call.
 type RateLimitCountMode string
@@ -863,6 +959,7 @@ type UpstreamConfig struct {
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
+	Svm                          *SvmUpstreamConfig       `yaml:"svm,omitempty" json:"svm"`
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
 	Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty" json:"grpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
@@ -1007,6 +1104,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		VendorName                   string                   `yaml:"vendorName,omitempty"`
 		Endpoint                     string                   `yaml:"endpoint,omitempty"`
 		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
+		Svm                          *SvmUpstreamConfig       `yaml:"svm,omitempty"`
 		JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty"`
 		Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty"`
 		IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty"`
@@ -1029,6 +1127,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.VendorName = old.VendorName
 	u.Endpoint = old.Endpoint
 	u.Evm = old.Evm
+	u.Svm = old.Svm
 	u.JsonRpc = old.JsonRpc
 	u.Grpc = old.Grpc
 	u.IgnoreMethods = old.IgnoreMethods
@@ -1098,6 +1197,9 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	if c.Evm != nil {
 		copied.Evm = c.Evm.Copy()
 	}
+	if c.Svm != nil {
+		copied.Svm = c.Svm.Copy()
+	}
 	if c.Failsafe != nil {
 		copied.Failsafe = make([]*FailsafeConfig, len(c.Failsafe))
 		for i, failsafe := range c.Failsafe {
@@ -1131,6 +1233,14 @@ type ShadowUpstreamConfig struct {
 	Enabled      bool                `yaml:"enabled" json:"enabled"`
 	SampleRate   *float64            `yaml:"sampleRate,omitempty" json:"sampleRate,omitempty"`
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
+	// PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
+	// concrete height before forwarding: the primary's resolved block number when its response
+	// carries one, else the network's tracked head at mirror time. Without it the shadow executes
+	// the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
+	// (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
+	// reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
+	// requests, exactly as before.
+	PinBlockTag bool `yaml:"pinBlockTag,omitempty" json:"pinBlockTag,omitempty"`
 }
 
 // Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
@@ -1244,7 +1354,7 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 	return copied
 }
 
-// GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+// GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
 // gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
 // knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
 // every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -1255,6 +1365,9 @@ type GrpcUpstreamConfig struct {
 	// upstream, selected round-robin per request. See GrpcConnectorConfig.PoolSize.
 	// When unset (0) a built-in default is used.
 	PoolSize int `yaml:"poolSize,omitempty" json:"poolSize"`
+
+	// HealthCheckService: see GrpcConnectorConfig.HealthCheckService.
+	HealthCheckService string `yaml:"healthCheckService,omitempty" json:"healthCheckService"`
 }
 
 func (c *GrpcUpstreamConfig) Copy() *GrpcUpstreamConfig {
@@ -1293,6 +1406,19 @@ type EvmUpstreamConfig struct {
 	// Use for nodes that always return a syncing object (e.g. Pharos/Antora) where the response is
 	// misleading and causes circuit breaker false positives.
 	SkipSyncingCheck *bool `yaml:"skipSyncingCheck,omitempty" json:"skipSyncingCheck"`
+	// HeadLagToleranceBlocks lets the block-availability gate send requests pinned up to N blocks
+	// ABOVE this upstream's observed head instead of rerouting them as stale. Useful for upstreams
+	// that follow the chain tightly but become able to serve a new block a moment after it is
+	// announced elsewhere (they hold or briefly wait for the block internally): with a hard
+	// head comparison every request pinned at head+1 in that moment is rerouted even though the
+	// upstream would have answered it. 0 (default) keeps the exact head comparison.
+	HeadLagToleranceBlocks int64 `yaml:"headLagToleranceBlocks,omitempty" json:"headLagToleranceBlocks"`
+	// PinLatestTag sends this upstream the network head as a concrete block number wherever a
+	// state call (eth_call, eth_getBalance, ...) asks for "latest" or omits the block, and skips the
+	// upstream when its blockAvailability upper bound is below that head or the head is unknown.
+	// For an upstream whose own head lags the network: it answers only blocks it holds, and a block
+	// it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+	PinLatestTag *bool `yaml:"pinLatestTag,omitempty" json:"pinLatestTag"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
@@ -1313,15 +1439,42 @@ type EvmUpstreamConfig struct {
 	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 
 	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+	// Multicall3 packs eth_calls bound for this upstream that share a block into one
+	// Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+	// per pack. Nil (default) sends every eth_call alone.
+	Multicall3 *EvmMulticall3Config `yaml:"multicall3,omitempty" json:"multicall3"`
 }
 
+// EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+// and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+// A call the pack cannot answer exactly (multicall failed, inner call reverted
+// or returned nothing) is sent alone, as it would be without packing.
+type EvmMulticall3Config struct {
+	MaxWait  Duration `yaml:"maxWait,omitempty" json:"maxWait" tstype:"Duration"`
+	MaxCalls int      `yaml:"maxCalls,omitempty" json:"maxCalls"`
+	// BypassContracts are target addresses whose calls are never packed, for
+	// contracts that answer differently when the caller is Multicall3 instead
+	// of the zero address (msg.sender or caller-code checks) without reverting.
+	// Contracts that revert inside a pack but succeed alone are learned at
+	// runtime and need no entry.
+	BypassContracts []string `yaml:"bypassContracts,omitempty" json:"bypassContracts"`
+}
+
+// EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
+// eth_getBlockReceipts, eth_getLogs, trace_block / debug_traceBlockByNumber) the
+// eth_query* executor issues when no native QueryService upstream answers. The
+// sub-requests go through the network like any request; the budget bounds the
+// work of one MIP-16 page.
 type EvmQueryShimConfig struct {
 	Enabled        *bool    `yaml:"enabled,omitempty" json:"enabled"`
 	AllowedMethods []string `yaml:"allowedMethods,omitempty" json:"allowedMethods"`
-	Concurrency    int      `yaml:"concurrency,omitempty" json:"concurrency"`
-	MaxBlockRange  int64    `yaml:"maxBlockRange,omitempty" json:"maxBlockRange"`
-	MaxLimit       int      `yaml:"maxLimit,omitempty" json:"maxLimit"`
-	DefaultLimit   int      `yaml:"defaultLimit,omitempty" json:"defaultLimit"`
+	// MaxBlocksPerPage is the budget of blocks one page may scan. A page that
+	// reaches it ends at the last scanned block.
+	MaxBlocksPerPage int64 `yaml:"maxBlocksPerPage,omitempty" json:"maxBlocksPerPage"`
+	// MaxPageDuration is the budget of time one page may scan. A page that
+	// reaches it ends at the last complete block, or fails with -32005 when no
+	// block completed.
+	MaxPageDuration Duration `yaml:"maxPageDuration,omitempty" json:"maxPageDuration" tstype:"Duration"`
 }
 
 func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
@@ -1329,10 +1482,8 @@ func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
 		return nil
 	}
 	copied := &EvmQueryShimConfig{
-		Concurrency:   c.Concurrency,
-		MaxBlockRange: c.MaxBlockRange,
-		MaxLimit:      c.MaxLimit,
-		DefaultLimit:  c.DefaultLimit,
+		MaxBlocksPerPage: c.MaxBlocksPerPage,
+		MaxPageDuration:  c.MaxPageDuration,
 	}
 	if c.Enabled != nil {
 		v := *c.Enabled
@@ -1343,6 +1494,23 @@ func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
 		copy(copied.AllowedMethods, c.AllowedMethods)
 	}
 	return copied
+}
+
+// AllowsMethod reports whether the shim is enabled for the eth_query* method:
+// enabled, and the method matches allowedMethods (empty allows all).
+func (c *EvmQueryShimConfig) AllowsMethod(method string) bool {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return false
+	}
+	if len(c.AllowedMethods) == 0 {
+		return true
+	}
+	for _, allowed := range c.AllowedMethods {
+		if match, err := WildcardMatch(allowed, method); err == nil && match {
+			return true
+		}
+	}
+	return false
 }
 
 // EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -1428,6 +1596,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 		v := *c.SkipSyncingCheck
 		copied.SkipSyncingCheck = &v
 	}
+	if c.PinLatestTag != nil {
+		v := *c.PinLatestTag
+		copied.PinLatestTag = &v
+	}
 	if c.DeprecatedIntegrity != nil {
 		copied.DeprecatedIntegrity = c.DeprecatedIntegrity.Copy()
 	}
@@ -1438,6 +1610,11 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.QueryShim != nil {
 		copied.QueryShim = c.QueryShim.Copy()
 	}
+	if c.Multicall3 != nil {
+		v := *c.Multicall3
+		v.BypassContracts = slices.Clone(c.Multicall3.BypassContracts)
+		copied.Multicall3 = &v
+	}
 
 	return copied
 }
@@ -1445,6 +1622,13 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 type FailsafeConfig struct {
 	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
 	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	// MatchCommitment scopes a network-scope policy by the Solana commitment
+	// erpc pins on the wire: the caller's value, else the svm.commitment default
+	// that injection writes, else "none". Empty = any. Values are OR-ed and
+	// exact (confirmed does not match processed). Non-SVM requests and SVM
+	// write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
+	// Rejected at upstream and connector scopes.
+	MatchCommitment []string `yaml:"matchCommitment,omitempty" json:"matchCommitment" tstype:"('none' | 'processed' | 'confirmed' | 'finalized')[]"`
 	// MatchRequestKind scopes this policy by who issued the request:
 	// "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
 	// the integrity module's canonical corroboration), or ""/"*" for both.
@@ -1472,8 +1656,10 @@ type NetworkFailsafeConfig = FailsafeConfig
 type UpstreamFailsafeConfig = FailsafeConfig
 
 // CacheFailsafeConfig is the scope-specific alias for cache-connector
-// failsafe policies. Hedge.Quantile is not allowed here (no per-method
-// quantile data on cache reads); validation enforces this.
+// failsafe policies. Timeout.Duration and Hedge.Delay support quantile
+// (dynamic) mode at this scope, resolved from a per-executor latency
+// tracker fed by the connector's own operations (see data/cache_executor.go).
+// Consensus is not supported here; validation enforces this.
 type CacheFailsafeConfig = FailsafeConfig
 
 func (c *FailsafeConfig) Copy() *FailsafeConfig {
@@ -1488,6 +1674,10 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	if c.MatchFinality != nil {
 		copied.MatchFinality = make([]DataFinalityState, len(c.MatchFinality))
 		copy(copied.MatchFinality, c.MatchFinality)
+	}
+
+	if c.MatchCommitment != nil {
+		copied.MatchCommitment = slices.Clone(c.MatchCommitment)
 	}
 
 	if c.Retry != nil {
@@ -2103,6 +2293,11 @@ type RateLimiterConfig struct {
 type RateLimitBudgetConfig struct {
 	Id    string                 `yaml:"id" json:"id"`
 	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules" tstype:"RateLimitRuleConfig[]"`
+	// CreditUnits prices methods for this budget's countMode: credit rules. "*"
+	// is the fallback, an unpriced method costs 1, and a method priced 0 is
+	// exempt. An upstream on rateLimitCountMode: credit prices from its vendor
+	// instead and may not combine the two.
+	CreditUnits map[string]int64 `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
 }
 
 type RateLimitRuleConfig struct {
@@ -2114,6 +2309,11 @@ type RateLimitRuleConfig struct {
 	PerIP      bool            `yaml:"perIP,omitempty" json:"perIP,omitempty"`
 	PerUser    bool            `yaml:"perUser,omitempty" json:"perUser,omitempty"`
 	PerNetwork bool            `yaml:"perNetwork,omitempty" json:"perNetwork,omitempty"`
+	// CountMode selects what this rule counts. "request" charges 1 per call and
+	// counts per method. "credit" charges the method's cost from the budget's
+	// creditUnits and pools all methods into one counter, making maxCount a
+	// wallet. Empty inherits the caller's mode.
+	CountMode RateLimitCountMode `yaml:"countMode,omitempty" json:"countMode,omitempty"`
 }
 
 // ScopeString returns a comma-separated list of enabled scopes in deterministic order.
@@ -2130,6 +2330,14 @@ func (c *RateLimitRuleConfig) ScopeString() string {
 		scopes = append(scopes, "ip")
 	}
 	return strings.Join(scopes, ",")
+}
+
+// CountModeString returns the count mode with the empty default resolved.
+func (c *RateLimitRuleConfig) CountModeString() string {
+	if c.CountMode == "" {
+		return string(RateLimitCountModeRequest)
+	}
+	return string(c.CountMode)
 }
 
 // RateLimitPeriod enumerates supported periods for rate limiting.
@@ -2269,15 +2477,20 @@ func (p RateLimitPeriod) Unit() pb.RateLimitResponse_RateLimit_Unit {
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
-	if c.RateLimiters == nil || len(c.RateLimiters.Budgets) == 0 {
-		return false
+	return c.RateLimiterBudget(id) != nil
+}
+
+// RateLimiterBudget returns the budget with the given id, or nil.
+func (c *Config) RateLimiterBudget(id string) *RateLimitBudgetConfig {
+	if c.RateLimiters == nil {
+		return nil
 	}
 	for _, budget := range c.RateLimiters.Budgets {
-		if budget.Id == id {
-			return true
+		if budget != nil && budget.Id == id {
+			return budget
 		}
 	}
-	return false
+	return nil
 }
 
 type ProxyPoolConfig struct {
@@ -2288,6 +2501,11 @@ type ProxyPoolConfig struct {
 type MethodsConfig struct {
 	PreserveDefaultMethods bool                          `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
 	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
+
+	// lowerIndex is a lowercase-keyed snapshot of Definitions built by
+	// SetDefaults so FindMethodConfig resolves a non-canonical casing with one
+	// map lookup instead of scanning every entry per request.
+	lowerIndex map[string]*CacheMethodConfig
 }
 
 type NetworkConfig struct {
@@ -2295,15 +2513,23 @@ type NetworkConfig struct {
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
+	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 	StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty" json:"staticResponses,omitempty"`
+	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
 	// Integrity overrides the project-wide data-integrity configuration for this
 	// network. Merges over the project block (network wins).
 	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
+	// CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
+	// key as {networkId}:{suffix}:{blockRef} so two networks that share a
+	// chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+	// When {networkId}:{suffix} is itself a valid network id, colons in the
+	// network id are escaped; see CachePartitionKey.
+	CacheKeySuffix string `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2368,11 +2594,14 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty"`
 		Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty"`
 		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
+		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
 		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
 		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
 		Alias             string                   `yaml:"alias,omitempty"`
 		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
 		StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty"`
+		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
+		Failover          *FailoverConfig          `yaml:"failover,omitempty"`
 	}
 
 	var old oldNetworkConfig
@@ -2386,11 +2615,14 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.Architecture = old.Architecture
 	n.RateLimitBudget = old.RateLimitBudget
 	n.Evm = old.Evm
+	n.Svm = old.Svm
 	n.SelectionPolicy = old.SelectionPolicy
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Alias = old.Alias
 	n.Methods = old.Methods
 	n.StaticResponses = old.StaticResponses
+	n.CacheKeySuffix = old.CacheKeySuffix
+	n.Failover = old.Failover
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -2467,6 +2699,150 @@ func (d *DirectiveDefaultsConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SvmNetworkConfig mirrors EvmNetworkConfig for SVM networks.
+// Most fields are Solana-specific and do not have EVM equivalents.
+type SvmNetworkConfig struct {
+	// Chain identifies which SVM chain this network runs on. Defaults to "solana"
+	// when empty for backward compatibility. Set explicitly for forks/variants
+	// such as "fogo" or "eclipse" so eRPC can host multiple SVM chains side by
+	// side without network-ID or cache-key collisions.
+	//
+	// When Chain is empty or "solana", the derived NetworkId is "svm:<cluster>"
+	// — identical to the pre-multi-chain format. For any other Chain value the
+	// NetworkId is "svm:<chain>:<cluster>".
+	Chain string `yaml:"chain,omitempty" json:"chain"`
+
+	// Cluster the upstreams of this network serve (e.g. "mainnet-beta", "devnet").
+	// The NetworkId is derived from this value together with Chain — see the
+	// Chain field above for the exact format.
+	Cluster string `yaml:"cluster,omitempty" json:"cluster"`
+
+	// Commitment is the default commitment level injected into requests whose params
+	// omit one. One of "finalized", "confirmed", "processed". No default: when unset,
+	// no commitment is injected and each upstream's own server-side default governs
+	// (Solana's is "finalized"). Set this to pin one commitment across all upstreams
+	// so the cache and consensus key on identical data regardless of vendor defaults;
+	// note that doing so makes finality classification track the configured level.
+	Commitment string `yaml:"commitment,omitempty" json:"commitment"`
+
+	// StatePollerDebounce sets the minimum interval between polls of an upstream's
+	// slot/health view. Default: 400ms (one slot).
+	StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+
+	// MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
+	// trail the pool's highest FinalizedSlot before it is excluded from
+	// consensus voting on finalized data. Only applied when a consensus policy
+	// is active AND the request's resolved finality is Finalized.
+	//
+	// Pointer so an explicit 0 is distinguishable from "unset": nil takes the
+	// 100-slot default (filled by SetDefaults, the only place that materializes
+	// it), an explicit 0 disables the filter entirely. A plain int64 collapses
+	// those two cases and makes the documented disable switch unreachable.
+	// Readers downstream of SetDefaults just check `lag != nil && *lag > 0`.
+	MaxFinalizedSlotLag *int64 `yaml:"maxFinalizedSlotLag,omitempty" json:"maxFinalizedSlotLag,omitempty"`
+
+	// EnforceBlockAvailability controls whether the networkPreForward_getBlock
+	// guard is active. When enabled (default), getBlock/getConfirmedBlock
+	// requests for slots above the highest indexed slot known to any upstream
+	// are short-circuited with ErrEndpointMissingData before hitting providers
+	// — saving quota and triggering the 500ms indexing-lag retry immediately.
+	// Set to false to disable the guard when ShredInsertSlot tracking is
+	// unavailable or unreliable on a given deployment.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
+}
+
+// SvmUpstreamConfig carries per-upstream SVM settings.
+type SvmUpstreamConfig struct {
+	// Chain identifies which SVM chain this upstream serves. Must match the
+	// network-level Chain. Empty defaults to "solana" for backward compat.
+	Chain string `yaml:"chain,omitempty" json:"chain"`
+
+	// Cluster this upstream serves. Must match the network-level cluster for the
+	// upstream to be eligible.
+	Cluster string `yaml:"cluster,omitempty" json:"cluster"`
+
+	// CheckGenesisHash opts unknown clusters in to runtime validation via getGenesisHash
+	// at bootstrap. Known clusters (mainnet-beta, devnet, testnet) are always validated
+	// regardless of this flag: a single getGenesisHash RPC runs at bootstrap and is
+	// compared against the hardcoded genesis-hash table — a mismatch OR a fetch failure
+	// fails the upstream, catching nodes mis-pointed at the wrong cluster (and refusing
+	// to register one we could not verify). For unknown clusters the same check (with
+	// no table comparison) runs only when this flag is set; otherwise it is skipped so
+	// private/local clusters with no published genesis hash still work.
+	CheckGenesisHash bool `yaml:"checkGenesisHash,omitempty" json:"checkGenesisHash"`
+
+	// BlockAvailability is an operator restriction on the slot window this
+	// upstream may serve. Only what the operator declares is enforced; the
+	// upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
+	// every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
+	// earliestBlockPlus. Unknown floor = unbounded.
+	BlockAvailability *SvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
+}
+
+// SvmBlockAvailabilityConfig is the per-upstream declared slot window.
+// Presence of lower/upper implies the restriction is active. When both are
+// nil, it is effectively off.
+type SvmBlockAvailabilityConfig struct {
+	Lower *SvmAvailabilityBoundConfig `yaml:"lower,omitempty" json:"lower,omitempty"`
+	Upper *SvmAvailabilityBoundConfig `yaml:"upper,omitempty" json:"upper,omitempty"`
+}
+
+func (c *SvmBlockAvailabilityConfig) Copy() *SvmBlockAvailabilityConfig {
+	if c == nil {
+		return nil
+	}
+	out := &SvmBlockAvailabilityConfig{}
+	if c.Lower != nil {
+		out.Lower = c.Lower.Copy()
+	}
+	if c.Upper != nil {
+		out.Upper = c.Upper.Copy()
+	}
+	return out
+}
+
+// SvmAvailabilityBoundConfig is a single declared slot bound.
+// Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+// UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+// anchors on is re-probed. 0 freezes it after the first observation, as EVM.
+type SvmAvailabilityBoundConfig struct {
+	ExactSlot              *int64   `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
+	LatestSlotMinus        *int64   `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
+	FirstAvailableSlotPlus *int64   `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+	UpdateRate             Duration `yaml:"updateRate,omitempty" json:"updateRate,omitempty" tstype:"Duration"`
+}
+
+func (c *SvmAvailabilityBoundConfig) Copy() *SvmAvailabilityBoundConfig {
+	if c == nil {
+		return nil
+	}
+	out := &SvmAvailabilityBoundConfig{UpdateRate: c.UpdateRate}
+	if c.ExactSlot != nil {
+		v := *c.ExactSlot
+		out.ExactSlot = &v
+	}
+	if c.LatestSlotMinus != nil {
+		v := *c.LatestSlotMinus
+		out.LatestSlotMinus = &v
+	}
+	if c.FirstAvailableSlotPlus != nil {
+		v := *c.FirstAvailableSlotPlus
+		out.FirstAvailableSlotPlus = &v
+	}
+	return out
+}
+
+func (s *SvmUpstreamConfig) Copy() *SvmUpstreamConfig {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.BlockAvailability != nil {
+		out.BlockAvailability = s.BlockAvailability.Copy()
+	}
+	return &out
+}
+
 type EvmNetworkConfig struct {
 	ChainId                     int64               `yaml:"chainId" json:"chainId"`
 	FallbackFinalityDepth       int64               `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
@@ -2475,8 +2851,7 @@ type EvmNetworkConfig struct {
 
 	// ServedTip configures how the network derives the "latest"/"finalized"
 	// block it advertises to clients (and enforces via block-availability).
-	// Nil or disabled selects the default max mode (MAX latest across eligible
-	// upstreams); set Enabled to opt into the cluster-min tip. See
+	// Nil uses the defaults: quorum 2, regression guard on, no guarantees. See
 	// EvmServedTipConfig.
 	ServedTip                  *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
 	GetLogsMaxAllowedRange     int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
@@ -2484,6 +2859,21 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics    int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError        *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency    int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	// GetLogsMaxResponseBytes caps the total size of a MERGED eth_getLogs response —
+	// the sum of every sub-response a split assembles, not the size of any one piece.
+	// Splitting exists to get past an upstream's per-request limits, so once a request
+	// is split there is no remaining bound on what the client can make the proxy hold
+	// in memory: a range the upstream refuses is halved, fetched concurrently, and
+	// merged whole. This is the only bound on that total.
+	//
+	// Sub-requests are cancelled as soon as the running total crosses the cap, so the
+	// in-flight ones do not materialise either, and the client gets
+	// ErrGetLogsExceededMaxAllowedResponseSize (HTTP 413) — a distinct code from
+	// ErrEndpointRequestTooLarge precisely so it does NOT feed the splitting path that
+	// produced the response.
+	//
+	// Zero (the default) disables the cap and preserves the historical behaviour.
+	GetLogsMaxResponseBytes int64 `yaml:"getLogsMaxResponseBytes,omitempty" json:"getLogsMaxResponseBytes"`
 	// TraceFilterSplitOnError controls reactive splitting for trace_filter and
 	// arbtrace_filter requests when the upstream returns a range-too-large error.
 	// Nil disables the feature.
@@ -2510,12 +2900,32 @@ type EvmNetworkConfig struct {
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
 
+	// LocalAnswers turns off eRPC's own answer for a method on this network:
+	// `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+	// method in LocalAnswerMethods is answered by eRPC unless set false here.
+	LocalAnswers map[string]bool `yaml:"localAnswers,omitempty" json:"localAnswers,omitempty"`
+
+	// StripSubscribeFromBlockZero removes a zero `fromBlock` from eth_subscribe
+	// logs filters before forwarding upstream. fromBlock has no meaning for a
+	// live subscription, and backends that prune history reject it.
+	// DEFAULT: false.
+	StripSubscribeFromBlockZero *bool `yaml:"stripSubscribeFromBlockZero,omitempty" json:"stripSubscribeFromBlockZero,omitempty"`
+
 	// DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
 	// the debounce interval for block polling. A value of 0.7 means debounce = 70% of
 	// the estimated block time, preferring fresher data at the cost of slightly more
 	// polling. Lower values reduce staleness risk; higher values reduce RPC calls.
 	// Default: 0.7 (30% under the estimated block time).
 	DynamicBlockTimeDebounceMultiplier *float64 `yaml:"dynamicBlockTimeDebounceMultiplier,omitempty" json:"dynamicBlockTimeDebounceMultiplier,omitempty"`
+
+	// FinalizedDebounceDepthMultiplier sets how stale an upstream's finalized block may
+	// get before the state poller fetches it again, as a fraction of the chain's
+	// finality depth in time: (latest - finalized) x EMA block time x multiplier. The
+	// result applies only when it is longer than the regular debounce. Finalized
+	// advances once per finality window, so polling it at the latest-block cadence
+	// mostly returns the same number. 0 disables it (finalized uses the regular debounce).
+	// Default: 0.05 (refresh about 20 times per finality window).
+	FinalizedDebounceDepthMultiplier *float64 `yaml:"finalizedDebounceDepthMultiplier,omitempty" json:"finalizedDebounceDepthMultiplier,omitempty"`
 
 	// BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
 	// retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
@@ -2542,6 +2952,17 @@ type EvmNetworkConfig struct {
 	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
 
+	// ShortCircuitFutureBlocks returns null for a numbered eth_getBlockByNumber
+	// above the highest latest head across every upstream of the network
+	// (regardless of selection policy, tier or syncing state), without
+	// dispatching it; it never fires while any upstream's head is unknown.
+	// Clients that poll the next block by number otherwise walk every routed
+	// upstream on each poll.
+	// The head is what the state poller and head subscriptions last reported, so
+	// a block an upstream produced since then gets null until eRPC sees it: only
+	// enable it where heads arrive promptly (e.g. over WebSocket).
+	ShortCircuitFutureBlocks *bool `yaml:"shortCircuitFutureBlocks,omitempty" json:"shortCircuitFutureBlocks,omitempty"`
+
 	// SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
 	// requests carrying the `safe` block tag. Matching upstreams define and
 	// serve `safe`; empty (without an inherited network default) keeps existing
@@ -2557,51 +2978,63 @@ type EvmNetworkConfig struct {
 // EvmServedTipConfig controls how the network derives the "latest"/"finalized"
 // block it advertises (and enforces) from its upstreams.
 //
-// In the default max mode the served tip is the MAX latest block across eligible
-// non-syncing upstreams — which can advertise a block only the single most-ahead
-// upstream has, causing "block not found" churn when requests route to a
-// slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
-// served value is instead the freshest block a strict MAJORITY of the eligible
-// upstreams already have, so interpolated requests land on upstreams that can
-// serve the advertised block.
+// Both axes use one rule: among the eligible (selection-policy), non-syncing
+// upstreams, only the best voter rank present votes (live, then benched, then
+// static-capped, then benched and static-capped), and the served block is the
+// highest one at least Quorum of those voters already have. The health
+// tracker benches an upstream whose head stopped moving while another kept
+// advancing, until it catches up again.
 type EvmServedTipConfig struct {
-	// EnabledFor lists the block tags whose served value uses the cluster-min tip
-	// instead of the default max. Valid entries: "latest" and "finalized" (the
-	// "safe" tag follows "finalized"). Empty selects the max mode for all tags.
-	EnabledFor []string `yaml:"enabledFor,omitempty" json:"enabledFor,omitempty"`
-
-	// Deprecated: ClusterDelta configured the former cluster-based picker and is
-	// ignored — the majority order statistic needs no tuning. Kept only so
-	// existing configs keep parsing.
-	ClusterDelta int64 `yaml:"clusterDelta,omitempty" json:"clusterDelta,omitempty"`
+	// Quorum is how many eligible upstreams must already have a block before it
+	// is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
+	// uses DefaultServedTipQuorum (2). A ballot with fewer voters than the
+	// quorum serves the block all of them have.
+	Quorum ServedTipQuorum `yaml:"quorum,omitempty" json:"quorum,omitempty" tstype:"number | 'majority'"`
 
 	// GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
 	// "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
 	// serve the advertised latest. For a request on a matching method, "latest"
 	// resolves against the majority of only the upstreams that support it
 	// (membership auto-detected via ShouldHandleMethod — no per-upstream config).
-	// Empty means only the global (all-eligible) majority is computed.
+	// Empty means only the global ballot is computed.
 	GuaranteedMethods []string `yaml:"guaranteedMethods,omitempty" json:"guaranteedMethods,omitempty"`
+
+	// GuaranteedFor lists upstream SELECTORS (id or tag glob — the same
+	// vocabulary as use-upstream and consensus.requiredParticipants, e.g.
+	// "type:internal") whose group must be able to serve the advertised tip.
+	// For each selector the tip is clamped down to that group's OWN majority,
+	// exactly as GuaranteedMethods clamps to a method's supporting set. The
+	// clamp is a group MAJORITY, not a group minimum, so one stuck member
+	// cannot pin the network; an empty group constrains nothing.
+	GuaranteedFor []string `yaml:"guaranteedFor,omitempty" json:"guaranteedFor,omitempty"`
+
+	// MaxRegressionBlocks is how far below the corroborated LIVE upstream head
+	// (the second-highest live head) the pick may fall before it is treated as
+	// a poisoned ballot rather than as reality. While a pick is below that
+	// bound the network keeps serving its last corroborated pick (in-process,
+	// for at most one minute, then it fails open and serves the pick as
+	// computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
+	// rollback tolerance the state poller and health tracker apply to a
+	// retreating head, so all three layers agree on what counts as a genuine
+	// deep correction. -1 disables the regression guard entirely; no other
+	// negative value is accepted.
+	MaxRegressionBlocks int64 `yaml:"maxRegressionBlocks,omitempty" json:"maxRegressionBlocks,omitempty"`
 }
 
-// ServedTipEnabledFor reports whether the majority served tip is enabled for
-// the given block axis ("latest" or "finalized"). The "safe" tag resolves to the
-// finalized axis, so listing "safe" in EnabledFor enables it for "finalized".
-// Anything not listed uses the default max mode. Nil-receiver safe.
-func (c *EvmNetworkConfig) ServedTipEnabledFor(tag string) bool {
+// ShortCircuitFutureBlocksEnabled reports whether a numbered eth_getBlockByNumber
+// above every upstream's head returns null without dispatching. Nil-receiver
+// safe.
+func (c *EvmNetworkConfig) ShortCircuitFutureBlocksEnabled() bool {
+	return c != nil && c.ShortCircuitFutureBlocks != nil && *c.ShortCircuitFutureBlocks
+}
+
+// ServedTipQuorum is the network's configured served-tip quorum (zero = the
+// default). Nil-receiver safe.
+func (c *EvmNetworkConfig) ServedTipQuorum() ServedTipQuorum {
 	if c == nil || c.ServedTip == nil {
-		return false
+		return 0
 	}
-	for _, t := range c.ServedTip.EnabledFor {
-		if strings.EqualFold(t, tag) {
-			return true
-		}
-		// "safe" resolves to the finalized axis.
-		if strings.EqualFold(tag, "finalized") && strings.EqualFold(t, "safe") {
-			return true
-		}
-	}
-	return false
+	return c.ServedTip.Quorum
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -2940,37 +3373,41 @@ type MetricsConfig struct {
 	ErrorLabelMode   LabelMode `yaml:"errorLabelMode,omitempty" json:"errorLabelMode"`
 	HistogramBuckets string    `yaml:"histogramBuckets,omitempty" json:"histogramBuckets"`
 
-	// HistogramDropLabels removes these labels from every histogram. Counters
-	// and gauges are unaffected. Useful to cap per-instance /metrics response
-	// size when high-cardinality labels (e.g. "user") push a scrape past the
-	// managed scraper's sample/body limits.
+	// Customizations is the single knob for shaping /metrics: which metric
+	// families are exposed at all, which of their labels survive, and which
+	// buckets a histogram uses. Entries are applied by specificity rather than
+	// by list order — see MetricsCustomizationConfig.
+	//
+	//	metrics:
+	//	  customizations:
+	//	    - subject: "consensus_*"
+	//	      action: drop
+	//	    - subject: upstream_request_total
+	//	      labels:
+	//	        - subject: "agent_*"
+	//	          action: drop
+	//	        - subject: agent_name
+	//	          action: keep
+	//	    - subject: network_request_duration_seconds
+	//	      buckets: [0.05, 0.5, 5]
+	Customizations []*MetricsCustomizationConfig `yaml:"customizations,omitempty" json:"customizations,omitempty"`
+
+	// Deprecated: use Customizations with a `labels` list. Kept working so
+	// existing configs keep loading; it is desugared onto the same rules as an
+	// every-histogram label drop.
 	HistogramDropLabels []string `yaml:"histogramDropLabels,omitempty" json:"histogramDropLabels,omitempty"`
 
-	// HistogramLabelOverrides re-adds labels for specific histograms even if
-	// they appear in HistogramDropLabels. Key is the metric Name (without the
-	// "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
-	// Value is the list of label names to keep for that metric.
+	// Deprecated: use Customizations with an exact `subject` and a `labels` list
+	// keeping what this metric needs.
 	HistogramLabelOverrides map[string][]string `yaml:"histogramLabelOverrides,omitempty" json:"histogramLabelOverrides,omitempty"`
 
-	// CounterDropLabels removes these labels from every counter that carries
-	// caller-controlled dimensions (user, agent_name, attempt, composite,
-	// hedge, error). Histograms and gauges are unaffected; use
-	// HistogramDropLabels for the histogram side.
-	//
-	// Counters are usually the largest contributor to /metrics size, because a
-	// label like a client-supplied user-agent is unbounded and every tuple ever
-	// seen is re-emitted on every scrape. Dropping a label collapses the series
-	// that differed only in it — sums stay correct, but the dimension stops
-	// being queryable, so check what consumes it (billing/attribution
-	// pipelines, dashboards) before dropping.
+	// Deprecated: use Customizations with a `labels` list. Kept working so
+	// existing configs keep loading; it is desugared onto the same rules as an
+	// every-counter label drop.
 	CounterDropLabels []string `yaml:"counterDropLabels,omitempty" json:"counterDropLabels,omitempty"`
 
-	// CounterLabelOverrides re-adds labels for specific counters even if they
-	// appear in CounterDropLabels. Key is the metric Name (without the "erpc_"
-	// namespace prefix), e.g. "upstream_request_total". Value is the list of
-	// label names to keep for that metric. Use this to drop a label fleet-wide
-	// while preserving it on the one or two counters a downstream pipeline
-	// actually reads.
+	// Deprecated: use Customizations with an exact `subject` and a `labels` list
+	// keeping what this metric needs.
 	CounterLabelOverrides map[string][]string `yaml:"counterLabelOverrides,omitempty" json:"counterLabelOverrides,omitempty"`
 
 	// CounterIdleEvictionAfter bounds /metrics cardinality for hot-path
@@ -2983,6 +3420,109 @@ type MetricsConfig struct {
 	// only clearly-dead label combinations are released). Set to 0 to
 	// disable eviction entirely.
 	CounterIdleEvictionAfter *Duration `yaml:"counterIdleEvictionAfter,omitempty" json:"counterIdleEvictionAfter,omitempty"`
+}
+
+// MetricCustomizationAction is what a customization entry does to what it
+// selects.
+type MetricCustomizationAction string
+
+const (
+	MetricActionKeep MetricCustomizationAction = telemetry.ActionKeep
+	MetricActionDrop MetricCustomizationAction = telemetry.ActionDrop
+)
+
+// MetricsCustomizationConfig is one entry of metrics.customizations: a subject
+// selecting metric families, and what to do with them.
+//
+// Overlapping subjects resolve by specificity, not by list order: an exact
+// family name beats a prefix, a longer prefix beats a shorter one, and equally
+// specific subjects break to the one written later. So "drop consensus_*, keep
+// consensus_duration_seconds" means the same thing whichever order it is written
+// in.
+type MetricsCustomizationConfig struct {
+	// Subject selects metric families: an exact name ("upstream_request_total"),
+	// a prefix ending in "*" ("consensus_*"), or "*" for every family. The
+	// "erpc_" namespace prefix is optional. The Go runtime, process and promhttp
+	// collectors are named in full ("go_goroutines") and are subject to the same
+	// rules, so `subject: "*", action: drop` drops them too.
+	Subject string `yaml:"subject" json:"subject"`
+
+	// Action drops the matched families from /metrics, or keeps them against a
+	// broader drop. Omit it to leave exposure alone and only customize labels or
+	// buckets.
+	//
+	// A dropped eRPC family is never registered, so it costs no series and no
+	// collection time — but that makes it a startup decision, undone only by a
+	// restart. Stock collectors are registered outside eRPC and so are filtered
+	// out of the scrape response instead, which shrinks the page without saving
+	// collection.
+	Action MetricCustomizationAction `yaml:"action,omitempty" json:"action,omitempty" tstype:"'keep' | 'drop'"`
+
+	// Labels projects the matched families' label sets. Same precedence rules as
+	// Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
+	// drops the group and spares the one label.
+	//
+	// Dropping a label collapses every series that differed only in it. Counter
+	// sums stay correct, but the dimension stops being queryable — check what
+	// reads it (billing or attribution pipelines, dashboards) first. Gauges have
+	// no projection, because collapsing gauge series would report whichever
+	// writer wrote last rather than a coarser number.
+	Labels []*MetricLabelCustomizationConfig `yaml:"labels,omitempty" json:"labels,omitempty"`
+
+	// Buckets replaces the bucket boundaries of the matched histograms,
+	// overriding both metrics.histogramBuckets and what the metric declares in
+	// code. Must be strictly increasing.
+	Buckets []float64 `yaml:"buckets,omitempty" json:"buckets,omitempty"`
+}
+
+// MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
+// group of them, on the families its parent customization matched.
+type MetricLabelCustomizationConfig struct {
+	Subject string                    `yaml:"subject" json:"subject"`
+	Action  MetricCustomizationAction `yaml:"action" json:"action" tstype:"'keep' | 'drop'"`
+}
+
+// TelemetryOptions maps the metrics config onto what the telemetry manager
+// needs. telemetry cannot import common (common imports telemetry), so the
+// translation lives here.
+func (m *MetricsConfig) TelemetryOptions() *telemetry.Options {
+	if m == nil {
+		return nil
+	}
+	o := &telemetry.Options{
+		HistogramBuckets: m.HistogramBuckets,
+		LegacyLabels: telemetry.LegacyLabelConfig{
+			HistogramDropLabels:     m.HistogramDropLabels,
+			HistogramLabelOverrides: m.HistogramLabelOverrides,
+			CounterDropLabels:       m.CounterDropLabels,
+			CounterLabelOverrides:   m.CounterLabelOverrides,
+		},
+	}
+	for _, c := range m.Customizations {
+		if c == nil {
+			continue
+		}
+		tc := telemetry.Customization{
+			Subject: c.Subject,
+			Action:  string(c.Action),
+			Buckets: c.Buckets,
+		}
+		for _, l := range c.Labels {
+			if l == nil {
+				continue
+			}
+			tc.Labels = append(tc.Labels, telemetry.LabelCustomization{
+				Subject: l.Subject,
+				Action:  string(l.Action),
+			})
+		}
+		o.Customizations = append(o.Customizations, tc)
+	}
+	if m.CounterIdleEvictionAfter != nil {
+		d := m.CounterIdleEvictionAfter.Duration()
+		o.CounterIdleEvictionAfter = &d
+	}
+	return o
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.
@@ -3011,14 +3551,66 @@ type RateLimitStoreConfig struct {
 	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
 }
 
+// CachePartitionKey builds the JSON-RPC cache partition key.
+// Empty suffix keeps {networkId}:{ref}; a set suffix yields {networkId}:{suffix}:{ref}.
+// ':' and '\' inside suffix and ref are backslash-escaped so those segments
+// cannot be re-split into a different pair — an unsuffixed ref "systx:foo"
+// must not share a key with suffix "systx" and ref "foo". Segments without
+// those bytes are unchanged, including ordinary block numbers and the
+// reverse-index wildcard "*".
+//
+// Network ids are not escaped in the common case: every id contains ':', and
+// escaping them would orphan every historical unsuffixed key. The remaining
+// collision is a suffixed key whose networkId+":"+suffix is itself a valid
+// network id — svm:<cluster> plus suffix "bar" is the unsuffixed key of
+// svm:<cluster>:bar. Only that case escapes the network id's colons. EVM ids
+// (evm:<digits>) cannot grow a valid extra segment, so their suffixed keys
+// stay byte-for-byte.
+func CachePartitionKey(networkId, suffix, ref string) string {
+	ref = escapePartitionSegment(ref)
+	if suffix == "" {
+		return networkId + ":" + ref
+	}
+	if util.IsValidNetworkId(networkId + ":" + suffix) {
+		networkId = escapePartitionSegment(networkId)
+	}
+	return networkId + ":" + escapePartitionSegment(suffix) + ":" + ref
+}
+
+// escapePartitionSegment backslash-escapes ':' and '\'. Other bytes are copied
+// unchanged so historical keys stay put.
+func escapePartitionSegment(s string) string {
+	if !strings.ContainsAny(s, `:\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 1)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\', ':':
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 func (c *NetworkConfig) NetworkId() string {
-	if c.Architecture == "" || c.Evm == nil {
+	if c.Architecture == "" {
 		return ""
 	}
 
 	switch c.Architecture {
-	case "evm":
+	case ArchitectureEvm:
+		if c.Evm == nil {
+			return ""
+		}
 		return util.EvmNetworkId(c.Evm.ChainId)
+	case ArchitectureSvm:
+		if c.Svm == nil || c.Svm.Cluster == "" {
+			return ""
+		}
+		return util.SvmNetworkId(c.Svm.Chain, c.Svm.Cluster)
 	default:
 		return ""
 	}

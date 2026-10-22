@@ -26,7 +26,9 @@ Illustrative, not a tuned production config — a minimal upstream definition:
   yaml={`projects:
   - id: main
     upstreams:
-      - # chain ID auto-detected; state poller starts automatically
+      - # chain ID auto-detected; state poller starts automatically.
+        # http(s) and ws(s) schemes are supported; use ws:// or wss://
+        # for WebSocket upstreams (required for eth_subscribe support).
         endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY`}
   ts={`projects: [{
   id: "main",
@@ -102,8 +104,10 @@ https://docs.erpc.cloud/config/projects/upstreams.llms.txt`}
 **Config-time pipeline.** When eRPC loads a project, each upstream in `upstreams[]`
 first runs `ApplyDefaults` against `upstreamDefaults` — only-if-unset for scalar
 fields; all-or-nothing for `tags`, `failsafe`, and `routing`; per-field merge for
-EVM sub-fields — then `SetDefaults` fills remaining gaps: deriving an `id` if empty,
-forcing `type: evm`, injecting `ignoreMethods: ["*"]` when `allowMethods` is set
+EVM sub-fields; wholesale-then-per-field for SVM sub-fields — then `SetDefaults` fills
+remaining gaps: deriving an `id` if empty,
+defaulting `type` to `evm` **only when it was omitted** (so an SVM upstream must say
+`type: svm`), injecting `ignoreMethods: ["*"]` when `allowMethods` is set
 without an explicit `ignoreMethods`. Endpoints using a vendor shorthand
 (`alchemy://KEY`, `drpc://KEY`, and 20+ other prefixes) are converted into provider
 configs at this stage; the rest of the upstream block travels as a `"*"` override.
@@ -134,6 +138,44 @@ the next rather than failing the request. The network layer turns an unavailable
 skip into `ErrUpstreamBlockUnavailable`, retryable when the block is within 128 blocks
 of the tip (configurable via `networks[].evm.maxRetryableBlockDistance`).
 (<SourceLink file="erpc/networks.go" lines="1919-1987" />)
+
+**SVM slot availability.** Solana upstreams declare the same kind of window as
+`svm.blockAvailability`, with slot-native bound names (`exactSlot`,
+`latestSlotMinus`, `firstAvailableSlotPlus`). Only what the operator
+declares is enforced. The upstream's oldest stored block, probed with
+`getBlocksWithLimit(0, 1)`, anchors a `firstAvailableSlotPlus` bound, like EVM's
+`earliestBlockPlus`; it is probed for every upstream. The network-level
+`svm.enforceBlockAvailability` switch gates the declared window.
+(<SourceLink file="architecture/svm/slot_bounds.go" />)
+(<SourceLink file="erpc/networks.go" lines="3105-3148" />)
+
+Set it once for a whole project under `upstreamDefaults` instead of repeating it on
+every upstream — useful when a pool is uniformly pruned (e.g. nodes started with a
+retention window). An upstream that declares its own `blockAvailability` **or** the
+deprecated `maxAvailableRecentBlocks` keeps its own value; the project default only
+fills upstreams that declare neither, and it takes precedence over the 128-block
+window otherwise derived from `nodeType: full`.
+(<SourceLink file="common/defaults.go" lines="2029-2042" />)
+
+```yaml
+projects:
+  - id: main
+    upstreamDefaults:
+      evm:
+        blockAvailability:
+          lower:
+            latestBlockMinus: 604800 # serve only the most recent ~604800 blocks
+```
+
+When every upstream skips the block, the client receives a JSON-RPC error with code
+`-32014` ("block not available") rather than a generic internal error, so a pruned
+range is distinguishable from eRPC itself failing.
+(<SourceLink file="common/json_rpc.go" lines="1715-1740" />)
+
+Every upstream must agree. If one of them instead timed out or returned a server
+error, that upstream never answered, so the request falls back to a generic
+retryable error rather than claiming the block is definitively absent.
+(<SourceLink file="common/json_rpc.go" lines="1588-1606" />)
 
 **Cordoning.** Cordon state lives on the health tracker as an explicit flag — it is
 NOT a rolling-window metric and survives window rotation and idle eviction. Admin
@@ -171,8 +213,8 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
 | `upstreams[*].id` | string | Derived: native-scheme endpoint → `<hostname>-<N>`; non-native → `<scheme>-<N>`; if `vendorName` set → `<vendorName>-<N>` (<SourceLink file="common/defaults.go" lines="1596-1615" />) | Used in task names, metrics labels, `use-upstream` matching, admin cordon RPCs. |
-| `upstreams[*].type` | `UpstreamType` | `"evm"` (<SourceLink file="common/defaults.go" lines="1616-1619" />) | Only `evm` is supported at runtime. The `evm+<vendor>` shorthand schemes are normalized to `"evm"` at defaults time. |
-| `upstreams[*].endpoint` | string | `""` (required) | Native schemes: `http://`, `https://`, `grpc://`, `grpc+bds://`. Non-native (e.g. `alchemy://KEY`) converts the upstream into a provider. `ws://`/`wss://` pass validation but fail at client creation with "websocket client not implemented yet" — retries forever. Redacted in JSON/YAML output. |
+| `upstreams[*].type` | `UpstreamType` | `"evm"` when omitted (<SourceLink file="common/defaults.go" lines="1715-1718" />) | `evm` and `svm` are both supported at runtime. The `evm+<vendor>` shorthand schemes are normalized to `"evm"` at defaults time. **Footgun**: `svm` is never inferred — an upstream serving Solana that omits `type` silently becomes an EVM upstream and fails to bootstrap. Always write `type: svm` explicitly. |
+| `upstreams[*].endpoint` | string | `""` (required) | Native schemes: `http://`, `https://`, `ws://`, `wss://`, `grpc://`, `grpc+bds://`. Non-native (e.g. `alchemy://KEY`) converts the upstream into a provider. `ws://`/`wss://` create a persistent WebSocket client (auto-reconnect, keepalive) that serves regular requests and `eth_subscribe` — see [WebSocket](/operation/websocket). Redacted in JSON/YAML output. |
 | `upstreams[*].tags` | `[]string` | nil; all-or-nothing inheritance from `upstreamDefaults.tags` (<SourceLink file="common/defaults.go" lines="1505-1510" />) | `<dim>:<value>` convention. Matched by `use-upstream` and policy stdlib. **Footgun**: one tag on the upstream drops ALL defaults tags. |
 | `upstreams[*].vendorName` | string | `""`; at runtime filled by URL pattern match or `guessVendorName()` | When non-empty, forces name-lookup only — `OwnsUpstream` URL matching is skipped. Mismatch silently applies the wrong error normalizer. No warning is logged. |
 | `upstreams[*].ignoreMethods` | `[]string` | nil; **forced to `["*"]` when `allowMethods` set and `ignoreMethods` nil** (<SourceLink file="common/defaults.go" lines="1706-1712" />) | Evaluated first in `ShouldHandleMethod`. Glob wildcards + `\|` OR + `&` AND + `!` NOT. Result cached per method forever. |
@@ -180,7 +222,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].autoIgnoreUnsupportedMethods` | `*bool` | nil (no global default); `true` for repository-provider upstreams (<SourceLink file="thirdparty/repository.go" lines="89-91" />) | When true, `ErrCodeEndpointUnsupported` reply triggers `IgnoreMethod` (appends to `IgnoreMethods`; permanent for process lifetime). |
 | `upstreams[*].failsafe[]` | `[]*FailsafeConfig` | nil; deep-copied from `upstreamDefaults.failsafe` when absent (all-or-nothing) | Per-entry `matchMethod` defaults to `"*"`. Match priority: method+finality &gt; method &gt; finality &gt; catch-all. `consensus` rejected at upstream scope. |
 | `upstreams[*].rateLimitBudget` | string | `""` | References `rateLimiters.budgets[].id`. Checked before each `Forward`; trips `ErrUpstreamRateLimitRuleExceeded`. |
-| `upstreams[*].rateLimitCountMode` | `"request"` \| `"credit"` | `"request"` | How the upstream's `rateLimitBudget` counts a call. `"request"` charges a flat 1 hit; `"credit"` charges the request's resolved vendor credit-unit cost (same table as `X-ERPC-Credits`), so a heavy `eth_getLogs` drains the budget faster than a cheap `eth_blockNumber` — a `0`-CU method consumes nothing. Uses the pre-flight table estimate (real cost isn't known until after the call). |
+| `upstreams[*].rateLimitCountMode` | `"request"` \| `"credit"` | `"request"` | How the upstream's `rateLimitBudget` counts a call. `"request"` charges a flat 1 hit; `"credit"` charges the request's resolved vendor credit-unit cost (same table as `X-ERPC-Credits`), so a heavy `eth_getLogs` drains the budget faster than a cheap `eth_blockNumber` — a `0`-CU method consumes nothing. Uses the pre-flight table estimate (real cost isn't known until after the call). In `"credit"` the budget is one pool shared by all methods rather than a counter per method. The referenced budget must not define its own `creditUnits` or rule-level `countMode`, which is a second cost source for the same counter and fails validation; budgets outside the upstream scope use those instead. |
 | `upstreams[*].creditUnits` | `map[string]int64` | `nil` | Per-method credit-unit overrides for the cost accounting behind `X-ERPC-Credits` (`server.costHeaders`) and `rateLimitCountMode: credit`, merged over the vendor's built-in `CreditUnitsProvider` table (`"*"` = fallback for unlisted methods). Usually set once per provider via `providers[].settings.creditUnits` instead of per upstream. |
 | `upstreams[*].rateLimitAutoTune.enabled` | `*bool` | `true` (<SourceLink file="common/defaults.go" lines="2490-2492" />) | Auto-created when `rateLimitBudget != ""`. |
 | `upstreams[*].rateLimitAutoTune.adjustmentPeriod` | Duration | `1m` (<SourceLink file="common/defaults.go" lines="2493-2495" />) | Tuning cadence. |
@@ -209,6 +251,11 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].evm.statePollerDebounce` | Duration | `0` → inferred from chain block time | Minimum spacing between forced polls. |
 | `upstreams[*].evm.skipWhenSyncing` | `*bool` | `false` (<SourceLink file="common/defaults.go" lines="1766-1772" />) | Skip requests with `ErrUpstreamSyncing` while the poller reports syncing state. |
 | `upstreams[*].evm.skipSyncingCheck` | `*bool` | `false` | Disable `eth_syncing` polling for this upstream and hard-set syncing state to `NotSyncing`. Use for nodes that always return a syncing object (e.g. Pharos/Antora) even when fully caught up, which would otherwise cause permanent circuit-breaker false positives. |
+| `upstreams[*].evm.pinLatestTag` | `*bool` | `false` (inherits `upstreamDefaults.evm.pinLatestTag`) | For `eth_call`, `eth_getBalance`, `eth_getCode`, `eth_getTransactionCount`, `eth_getStorageAt` asking `"latest"` (or omitting the block): this upstream receives the network head as a hex number; other upstreams, the cache and the response keep `"latest"`. Skipped when the head is above its `blockAvailability.upper` bound or unknown. For an upstream whose own head lags the network: a block it lacks fails as missing data and the next upstream answers. |
+| `upstreams[*].evm.multicall3` | object | nil = off (inherits `upstreamDefaults.evm.multicall3`) | Packs `eth_call`s sent to this upstream for the same block into one [Multicall3](https://github.com/mds1/multicall3) `aggregate3` call at `0xcA11…CA11`, so a vendor billed per request bills once per pack. Below retries, hedging, consensus and cache: each call keeps its own. Packed: `{to, data\|input, gas?}` calls with no `from`, `value` or state override; a call with `gas` packs only with calls of the same `gas`, which the multicall carries. A call is sent alone, exactly as without packing, when no other call joins its pack, the multicall fails or is malformed, its inner call reverts, runs out of gas or returns no data, or its block predates Multicall3 on this upstream. Not invisible: a packed call runs with `msg.sender` = Multicall3 instead of the zero address and with less gas left, so a view that returns data based on `msg.sender` or `gasleft()` can answer differently; enable it where the callers' calls do not depend on either. Metrics: `erpc_upstream_multicall3_calls_total{outcome}`, `erpc_upstream_multicall3_batch_size`; requests saved = `packed` − batches. |
+| `upstreams[*].evm.multicall3.maxWait` | Duration | `10ms` | A pack is sent this long after its first call. |
+| `upstreams[*].evm.multicall3.maxCalls` | int | `20` (min `2`) | A pack is sent at once when it holds this many calls. |
+| `upstreams[*].evm.multicall3.bypassContracts` | `[]string` | `[]` | Target addresses never packed: contracts that answer differently, without reverting, when the caller is Multicall3 (`msg.sender` or caller-code checks). A contract whose call reverts inside a pack but succeeds alone is learned at runtime (logged once, for the process lifetime) and needs no entry. |
 | `upstreams[*].evm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Each bound sets exactly one of `exactBlock`, `latestBlockMinus`, `earliestBlockPlus`. Cross-bound validation: `latestBlockMinus` lower value must be ≥ upper value. |
 | `upstreams[*].evm.blockAvailability.{lower,upper}.latestBlockMinus` | `*int64` | nil | Bound = latest − N. Recomputed on each check from state poller. |
 | `upstreams[*].evm.blockAvailability.{lower,upper}.earliestBlockPlus` | `*int64` | nil | Bound = detected earliest block + N via probe. Earliest `0` before detection computes `0+N`. |
@@ -223,7 +270,15 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].evm.integrity.eth_getBlockReceipts.checkLogIndexStrictIncrements` | `*bool` | nil | Sub-check: verify log indices strictly increment within a block. |
 | `upstreams[*].evm.integrity.eth_getBlockReceipts.checkLogsBloom` | `*bool` | nil | Sub-check: verify logs bloom filter consistency. |
 | `upstreams[*].evm.getLogsMaxAllowedRange` / `getLogsMaxAllowedAddresses` / `getLogsMaxAllowedTopics` / `getLogsSplitOnError` / `getLogsMaxBlockRange` | int64 / int64 / int64 / `*bool` / int64 | all zero/nil | **Deprecated and ignored at runtime.** Tagged `json:"-"` so invisible in JSON config dumps. A WARN is logged at registration if any `maxAllowed*` value `> 0` or `getLogsSplitOnError != nil`. Migrate to `networks[*].evm.*` equivalents. (<SourceLink file="upstream/registry.go" lines="107-118" />) |
-| `upstreams[*].evm.queryShim.*` | object | all zero/nil | Query-shim feature config (`enabled`, `allowedMethods`, `concurrency`, `maxBlockRange`, `maxLimit`, `defaultLimit`). Covered by the query-shim reference; listed here because the fields live on `EvmUpstreamConfig`. |
+| `upstreams[*].evm.queryShim.*` | object | all zero/nil | MIP-16 `eth_query*` shim: `enabled` and `allowedMethods` (this upstream may serve the shim's sub-requests for those methods), `maxBlocksPerPage` (default `1000`) and `maxPageDuration` (default `10s`), the page budget. The old `concurrency`, `maxBlockRange`, `maxLimit` and `defaultLimit` fields are gone: MIP-16 pages by `target` and budget, with no `limit` or `cursor`. See the [method handlers reference](/reference/evm/method-handlers). |
+| `upstreams[*].svm.cluster` | string | `""`; inherited from `upstreamDefaults.svm.cluster` | The cluster this upstream serves. Must match the network-level `svm.cluster` for the upstream to be eligible for that network. Unlike the network side, cluster **is** inherited here — on an upstream it only says "which cluster do I serve", and a pool homogeneous across one cluster is the common case. |
+| `upstreams[*].svm.chain` | string | `""` → treated as `"solana"`; inherited from `upstreamDefaults.svm.chain` | Which SVM chain this upstream serves. Must match the network-level `svm.chain`. |
+| `upstreams[*].svm.checkGenesisHash` | bool | `false` | Opts an **unknown** `(chain, cluster)` pair into `getGenesisHash` validation at bootstrap. Known Solana clusters (`mainnet-beta`, `devnet`, `testnet`) are always validated regardless of this flag: a mismatch **or a fetch failure** fails the upstream, catching nodes mis-pointed at the wrong cluster and refusing to register one that could not be verified. For unknown clusters the same check (with no table comparison) runs only when this flag is set, so private and local clusters with no published genesis hash still work. |
+| `upstreams[*].svm.blockAvailability.lower` / `.upper` | object | nil = unbounded side | Operator restriction on the slot window this upstream may serve. Each bound sets exactly one of `exactSlot`, `latestSlotMinus`, `firstAvailableSlotPlus`. Only declared bounds are enforced; the observed floor is probed for every upstream but skips nothing unless a bound uses `firstAvailableSlotPlus`. Gated by `networks[*].svm.enforceBlockAvailability`. (<SourceLink file="common/config.go" lines="2660-2699" />) |
+| `upstreams[*].svm.blockAvailability.{lower,upper}.exactSlot` | `*int64` | nil | Fixed slot bound. Must be ≥ 0. |
+| `upstreams[*].svm.blockAvailability.{lower,upper}.latestSlotMinus` | `*int64` | nil | Bound = poller's `LatestSlot()` − N. Recomputed on each check. Cold poller (latest ≤ 0) fail-opens that side. |
+| `upstreams[*].svm.blockAvailability.{lower,upper}.firstAvailableSlotPlus` | `*int64` | nil | Bound = oldest stored block (`getBlocksWithLimit(0, 1)`) + N. Unobserved floor fail-opens that side — unknown is not slot 0. |
+| `upstreams[*].svm.blockAvailability.{lower,upper}.updateRate` | Duration | `0` = freeze after first observation | Floor re-probe cadence, as EVM's `earliestBlockPlus`. Until the first observation the floor retries every `30s`. `firstAvailableSlotPlus` bounds only; the smaller of `lower`/`upper` wins. |
 | `upstreamDefaults` | `*UpstreamConfig` | nil | Project-level template. Gets its own `SetDefaults(nil)` first. Each upstream runs `ApplyDefaults` then `SetDefaults`. |
 | `proxyPools[*].id` | string | required | Pool name referenced by `upstreams[*].jsonRpc.proxyPool`. |
 | `proxyPools[*].urls` | `[]string` | required, min 1 | Proxy URLs. Accepted schemes: `http://`, `https://`, `socks5://` (case-insensitive prefix check — `socks4://` rejected at startup). |
@@ -237,6 +292,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 - **`failsafe`**: all-or-nothing — any `failsafe` entry on the upstream means none from defaults apply.
 - **`routing`**: all-or-nothing — same rule.
 - **EVM sub-fields** (`statePollerInterval`, `statePollerDebounce`, `maxAvailableRecentBlocks`, auto-splitting thresholds, `integrity`): per-field merge when both sides are non-nil.
+- **SVM sub-fields** (`chain`, `cluster`, `checkGenesisHash`, `blockAvailability`): an upstream with no `svm` block inherits `upstreamDefaults.svm` **wholesale** (copied, not pointer-shared); one with a partial block fills only its empty fields, including copying `blockAvailability` when the upstream omitted it. This is the field set that lets a homogeneous pool declare `chain`/`cluster` (and a shared slot window) once instead of repeating it per upstream.
 - **`jsonRpc`**: shallow-copied from defaults only when the upstream has no `jsonRpc` block at all; even `jsonRpc: {}` blocks inheritance.
 
 **Block-availability bound kinds and probe types** (for `earliestBlockPlus` bounds):
@@ -707,6 +763,59 @@ export default createConfig({
 });`}
 />
 
+**6. A Solana upstream pool with `upstreamDefaults.svm`.** `type: svm` must be explicit on
+every upstream — it is never inferred from the endpoint or from the network. `chain` and
+`cluster` are the two fields that decide network eligibility, and unlike the network side
+they *are* inheritable, so a pool homogeneous across one cluster declares them once. Each
+SVM upstream gets its own slot/health poller automatically:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  focusYaml="4-8,11,15,19-21"
+  focusTs="3-6,9,12,15-17"
+  yaml={`projects:
+  - id: main
+    upstreamDefaults:
+      # type is NOT inferred — declaring it here covers the whole pool
+      type: svm
+      svm:
+        # cluster IS inherited on upstreams (it is network identity only on networks)
+        cluster: mainnet-beta
+    upstreams:
+      - id: solana-labs-mainnet
+        endpoint: https://api.mainnet-beta.solana.com
+      - id: helius-mainnet
+        endpoint: https://mainnet.helius-rpc.com/?api-key=\${HELIUS_KEY}
+      # a fork lives in its own network; checkGenesisHash opts the unknown
+      # (chain, cluster) pair into bootstrap verification
+      - id: fogo-mainnet
+        endpoint: https://mainnet.fogo.io
+        svm:
+          chain: fogo
+          cluster: mainnet
+          checkGenesisHash: true`}
+  ts={`projects: [{
+  id: "main",
+  upstreamDefaults: {
+    // type is NOT inferred — declaring it here covers the whole pool
+    type: "svm",
+    // cluster IS inherited on upstreams (it is network identity only on networks)
+    svm: { cluster: "mainnet-beta" },
+  },
+  upstreams: [
+    { id: "solana-labs-mainnet", endpoint: "https://api.mainnet-beta.solana.com" },
+    { id: "helius-mainnet", endpoint: "https://mainnet.helius-rpc.com/?api-key=\${HELIUS_KEY}" },
+    // a fork lives in its own network; checkGenesisHash opts the unknown
+    // (chain, cluster) pair into bootstrap verification
+    {
+      id: "fogo-mainnet",
+      endpoint: "https://mainnet.fogo.io",
+      svm: { chain: "fogo", cluster: "mainnet", checkGenesisHash: true },
+    },
+  ],
+}]`}
+/>
+
 ### Request/response behavior
 
 - `shouldSkip` runs before every `Forward` call. Skip reasons surface as
@@ -757,8 +866,10 @@ export default createConfig({
 
 ### Edge cases & gotchas
 
-1. **`ws://`/`wss://` pass config validation but fail at client creation** with
-   "websocket client not implemented yet" and retry forever. Use `http://`/`https://` instead.
+1. **`ws://`/`wss://` upstreams serve regular requests and feed subscriptions, but a plain
+   HTTP `eth_subscribe` is never forwarded to them** (the subscription would have no owner).
+   Clients subscribe through eRPC's own [WebSocket server](/operation/websocket)
+   (`server.webSocket.enabled: true`).
 2. **`allowMethods` without `ignoreMethods`** silently blocks all other methods via an
    injected `ignoreMethods: ["*"]`. To allow specific methods while keeping defaults,
    use `ignoreMethods` with explicit patterns instead.
@@ -812,6 +923,35 @@ export default createConfig({
     allowlist, eRPC retries on another upstream. If all upstreams return malformed
     responses the request ends as `ErrUpstreamsExhausted`. HTTP status code on propagation
     is 400 (method-level), but the JSON-RPC wire response to the caller is still HTTP 200.
+21. **`type` is not inferred from the endpoint.** A Solana endpoint without `type: svm`
+    defaults to `evm`, and bootstrap then tries `eth_chainId` against it. Set `type: svm`
+    on the upstream or on `upstreamDefaults`.
+22. **An SVM upstream whose `svm.chain`/`svm.cluster` do not match the network's is not
+    eligible for it.** There is no fuzzy match — an upstream with `cluster: mainnet-beta`
+    never serves the `svm:testnet` network. Remember `chain: ""` means `solana`, so an
+    upstream omitting `chain` cannot serve a `chain: fogo` network.
+23. **Genesis-hash validation is fail-closed for known clusters.** For Solana
+    `mainnet-beta`/`devnet`/`testnet`, both a hash mismatch **and** a `getGenesisHash`
+    fetch failure fail the upstream — eRPC refuses to register one it could not verify.
+    `checkGenesisHash` only affects *unknown* `(chain, cluster)` pairs.
+24. **SVM upstreams are cordoned by their own state poller.** Beyond manual and
+    breaker-driven cordons, a failing `getHealth` or a shred-insert lag above 100 slots
+    removes an SVM upstream from selection until it recovers. See
+    [SVM slot tracking & health](/reference/svm/slot-tracking).
+
+25. **SVM never gates on a vendor-reported floor by default.** An upstream's
+    floor is probed, but skips nothing unless it declares `firstAvailableSlotPlus`. Otherwise every
+    slot-named read reaches the upstream; `exactSlot: 0` explicitly declares full history.
+    (<SourceLink file="erpc/networks.go" />)
+26. **SVM declared bounds fail-open when state is unknown.** A cold poller, an
+    unobserved floor, or a computed min>max range treats that
+    window as unbounded rather than refusing traffic. `firstAvailableSlotPlus` with an
+    unobserved floor is unbounded — unlike EVM's `earliestBlockPlus`, unknown is not slot 0.
+27. **`svm.blockAvailability` inherits from `upstreamDefaults.svm`.** Wholesale copy when
+    the upstream omits its `svm` block; per-field copy of `blockAvailability` when the
+    upstream has a partial `svm` block and left the field unset. Copies are deep — two
+    upstreams must not alias the same pointer. (<SourceLink file="common/defaults.go" lines="1850-1877" />)
+
 
 ### Observability
 
@@ -829,8 +969,8 @@ export default createConfig({
 | `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category, reason | 1 on cordon, 0 on uncordon |
 | `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Edge transitions (cordon/uncordon) only |
 | `erpc_upstream_cordon_duration_seconds` | histogram (1 s … 86 400 s) | project, network, upstream | Observed on each uncordon |
-| `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block above upper bound or not yet finalized |
-| `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block below lower bound / outside pruning window |
+| `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot above upper bound. SVM `confidence` is `"configured"` for declared `svm.blockAvailability.upper`. |
+| `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot below lower bound. SVM `confidence` is `"configured"` (declared `svm.blockAvailability`). |
 
 ### Source code entry points
 
@@ -851,6 +991,8 @@ export default createConfig({
 - [Matcher / use-upstream](/config/matcher) — directive that pins a request to a specific upstream or tag.
 - [Admin API](/operation/admin) — cordon/uncordon RPCs and listing cordoned upstreams.
 - [getLogs splitting](/reference/evm/getlogs-splitting) — auto-splitting thresholds for `eth_getLogs` and `trace_filter`.
+- [SVM slot tracking & health](/reference/svm/slot-tracking) — the per-upstream Solana slot/health poller and its cordoning behavior.
+- [SVM commitment & finality](/reference/svm/commitment) — how requests are normalized before they reach an SVM upstream.
 - [Survive provider outages](/use-cases/survive-provider-outages) — how upstreams + failsafe combine to keep requests flowing.
 
 </AISection>

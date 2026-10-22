@@ -113,12 +113,12 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -149,7 +149,7 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 		return resp.StatusCode, string(b)
 	}
 
-	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x18100","toBlock":"0x182ff","topics":["0x1234"]}],"id":1}`
+	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x18100","toBlock":"0x182ff","topics":["0x0000000000000000000000000000000000000000000000000000000000001234"]}],"id":1}`
 	status, body := 0, ""
 	status, body = send(payload, nil)
 	if status != 200 {
@@ -258,12 +258,12 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -306,6 +306,120 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	require.Equal(t, 3, len(arr))
 }
 
+// The network's getLogsMaxAllowedRange is enforced before the cache read: an
+// over-cap eth_getLogs is refused even when the cache holds an answer for it, so
+// a request the network will refuse never costs a cache connector (on edge, one
+// wide Prism scan) first. A within-cap request is still served from the cache.
+func TestHttp_EvmGetLogs_MaxRange_EnforcedBeforeCache(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	gock.EnableNetworking()
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		return strings.Split(req.URL.Host, ":")[0] == "localhost"
+	})
+	util.SetupMocksForEvmStatePoller()
+	// No eth_getLogs mock: neither request may reach the upstream.
+	defer util.AssertNoPendingMocks(t, 0)
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{MaxTimeout: common.Duration(10 * time.Second).Ptr()},
+		Database: &common.DatabaseConfig{
+			EvmJsonRpcCache: &common.CacheConfig{
+				Connectors: []*common.ConnectorConfig{
+					{
+						Id:     "mem",
+						Driver: common.DriverMemory,
+						Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+					},
+				},
+				Policies: []*common.CachePolicyConfig{
+					{
+						Network:   "*",
+						Method:    "eth_getLogs",
+						Finality:  common.DataFinalityStateFinalized,
+						Connector: "mem",
+						TTL:       common.FixedDuration(5 * time.Minute),
+					},
+				},
+			},
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm:          &common.EvmNetworkConfig{ChainId: 123, GetLogsMaxAllowedRange: 10},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Id:       "rpc1",
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	send, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+	defer shutdown()
+
+	prj, err := erpcInstance.GetProject("test_project")
+	require.NoError(t, err)
+	ntw, err := prj.GetNetwork(context.Background(), util.EvmNetworkId(123))
+	require.NoError(t, err)
+
+	// Both ranges sit far below the finalized tip (0x11117777), so their cache
+	// entries are finalized and served by the policy above.
+	const overCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x1ff"}]}`
+	const withinCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x104"}]}`
+	// 0x0 is genesis, not an unresolved tag. 0x0–0x1ff is 512 blocks and must
+	// be refused before the cache read, same as any other over-cap range.
+	const genesisOverCap = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x1ff"}]}`
+	seed := func(body, blockNumber string) {
+		req := common.NewNormalizedRequest([]byte(body))
+		req.SetNetwork(ntw)
+		jrr, err := common.NewJsonRpcResponse(1, []map[string]interface{}{{"blockNumber": blockNumber, "logIndex": "0x0"}}, nil)
+		require.NoError(t, err)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).WithFinality(common.DataFinalityStateFinalized)
+		require.NoError(t, ntw.cacheDal.Set(context.Background(), req, resp))
+		// The memory connector writes asynchronously; wait until it reads back.
+		require.Eventually(t, func() bool {
+			probe := common.NewNormalizedRequest([]byte(body))
+			probe.SetNetwork(ntw)
+			got, err := ntw.cacheDal.Get(context.Background(), probe)
+			return err == nil && got != nil && !got.IsObjectNull()
+		}, 2*time.Second, 20*time.Millisecond, "seeded cache entry must be readable back")
+	}
+	seed(overCap, "0x150")
+	seed(withinCap, "0x102")
+	seed(genesisOverCap, "0x10")
+
+	// Unhappy path: 256 blocks against a cap of 10 is refused, though cached.
+	// JSON-RPC application errors stay HTTP 200 with the error in the body.
+	status, _, body := send(overCap, nil, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.Contains(t, body, "ErrGetLogsExceededMaxAllowedRange")
+	require.Contains(t, body, `"code":-32012`)
+	require.NotContains(t, body, "0x150", "an over-cap request must not be answered from the cache")
+
+	// Genesis-anchored over-cap range: block 0 must not skip the pre-cache check.
+	status, _, body = send(genesisOverCap, nil, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.Contains(t, body, "ErrGetLogsExceededMaxAllowedRange")
+	require.Contains(t, body, `"code":-32012`)
+	require.NotContains(t, body, `"blockNumber":"0x10"`, "a genesis over-cap request must not be answered from the cache")
+
+	// Happy path: a 5-block request is still served from the cache.
+	status, _, body = send(withinCap, nil, nil)
+	require.Equal(t, http.StatusOK, status, "body: %s", body)
+	require.Contains(t, body, "0x102")
+}
+
 // On-error split by addresses for single-block range; ensure merged output contains both halves
 func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 	util.ResetGock()
@@ -337,7 +451,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 		Post("/").
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x1\"") && strings.Contains(b, "\"toBlock\":\"0x1\"") && strings.Contains(b, "\"address\":[\"0xA\"]")
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x1\"") && strings.Contains(b, "\"toBlock\":\"0x1\"") && strings.Contains(b, "\"address\":[\"0x000000000000000000000000000000000000000a\"]")
 		}).
 		Times(1).
 		Reply(200).
@@ -345,7 +459,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      2,
 			"result": []map[string]interface{}{
-				{"blockNumber": "0x1", "logIndex": "0x1", "address": "0xA"},
+				{"blockNumber": "0x1", "logIndex": "0x1", "address": "0x000000000000000000000000000000000000000a"},
 			},
 		})
 
@@ -353,7 +467,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 		Post("/").
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x1\"") && strings.Contains(b, "\"toBlock\":\"0x1\"") && strings.Contains(b, "\"address\":[\"0xB\"]")
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x1\"") && strings.Contains(b, "\"toBlock\":\"0x1\"") && strings.Contains(b, "\"address\":[\"0x000000000000000000000000000000000000000b\"]")
 		}).
 		Times(1).
 		Reply(200).
@@ -361,7 +475,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      3,
 			"result": []map[string]interface{}{
-				{"blockNumber": "0x1", "logIndex": "0x2", "address": "0xB"},
+				{"blockNumber": "0x1", "logIndex": "0x2", "address": "0x000000000000000000000000000000000000000b"},
 			},
 		})
 
@@ -384,11 +498,11 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -398,7 +512,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
-	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x1","address":["0xA","0xB"]}],"id":1}`
+	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x1","address":["0x000000000000000000000000000000000000000a","0x000000000000000000000000000000000000000b"]}],"id":1}`
 	req, err := http.NewRequest("POST", baseURL+"/test_project/evm/123", strings.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -443,14 +557,14 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 		Post("/").
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"topics\":[[\"0xT1\"]]")
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"topics\":[[\"0x0000000000000000000000000000000000000000000000000000000000000001\"]]")
 		}).
 		Times(1).
 		Reply(200).
 		JSON(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      2,
-			"result":  []map[string]interface{}{{"blockNumber": "0x2", "logIndex": "0x1", "topics": []string{"0xT1"}}},
+			"result":  []map[string]interface{}{{"blockNumber": "0x2", "logIndex": "0x1", "topics": []string{"0x0000000000000000000000000000000000000000000000000000000000000001"}}},
 		})
 
 	// Subrequest for topic0 = 0xT2
@@ -458,14 +572,14 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 		Post("/").
 		Filter(func(r *http.Request) bool {
 			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"topics\":[[\"0xT2\"]]")
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"topics\":[[\"0x0000000000000000000000000000000000000000000000000000000000000002\"]]")
 		}).
 		Times(1).
 		Reply(200).
 		JSON(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      3,
-			"result":  []map[string]interface{}{{"blockNumber": "0x2", "logIndex": "0x2", "topics": []string{"0xT2"}}},
+			"result":  []map[string]interface{}{{"blockNumber": "0x2", "logIndex": "0x2", "topics": []string{"0x0000000000000000000000000000000000000000000000000000000000000002"}}},
 		})
 
 	// Server
@@ -482,11 +596,11 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 	}
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -495,7 +609,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 	defer httpServer.serverV4.Shutdown(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x2","toBlock":"0x2","topics":[["0xT1","0xT2"]]}],"id":1}`
+	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x2","toBlock":"0x2","topics":[["0x0000000000000000000000000000000000000000000000000000000000000001","0x0000000000000000000000000000000000000000000000000000000000000002"]]}],"id":1}`
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%d/test_project/evm/123", port), strings.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -568,11 +682,11 @@ func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testin
 	}
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -636,11 +750,11 @@ func TestHttp_ConcurrentIdenticalRequests_NoEmptyBodyParse(t *testing.T) {
 
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
