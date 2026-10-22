@@ -717,7 +717,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | Component | Failure | Detection | Automatic recovery | Bound |
 |---|---|---|---|---|
 | wss source | socket drops | disconnect | reconnect, jittered 1–30s backoff; other voters carry; walks link the missed blocks | 30s |
-| wss source | socket alive, `newHeads` silent | no push for 15s while its own head counter stands above its last push | hash vote ages out after W; reconnect (`watchHeads`) | 30s after its head counter passes its last push |
+| wss source | socket alive, `newHeads` silent (half-open TCP included) | hash age above 15s against the lag reference, so a lone instance whose head polls ride the same dead socket still sees it; a network with one upstream has only the socket's ping/pong | hash vote ages out after W; reconnect (`watchHeads`) | 30s after the reference passes its last push; ping/pong wait with one upstream |
 | wss source | `newHeads` refused as unsupported | `Intake.Subscribed` error | polls instead; asks again on each reconnect and every 10 min | 10 min |
 | any upstream | lags but keeps advancing | number age | benched after `max(30s, 3 × backed-off cadence)`; no hash voter after W | 90s |
 | any upstream | on a minority fork | hash vote off the pins | loses its number vote and goes last in routing | W |
