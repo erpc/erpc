@@ -32,8 +32,8 @@ type harness struct {
 	cpu0  time.Duration
 	// host labels latency verdicts taken while the host was overloaded.
 	host *hostLoad
-	// dumpStalls: a stalled header tap gets its pod a goroutine dump.
-	dumpStalls bool
+	// dumped are the pods that got a goroutine dump this phase.
+	dumped map[int]bool
 	// lookups time how long the proxies take to tell pods apart.
 	lookups *lookups
 
@@ -46,7 +46,7 @@ func newHarness(t *testing.T, dir string, withRedis bool) *harness {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{}}
+	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), dumped: make(map[int]bool), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{}}
 	if withRedis {
 		h.redis = startRedis(t, dir)
 	}
@@ -115,6 +115,17 @@ func (h *harness) forget(pid int) {
 	h.mu.Lock()
 	delete(h.pids, pid)
 	h.mu.Unlock()
+}
+
+// claimDump reports whether pod may get this phase's one goroutine dump.
+func (h *harness) claimDump(pod int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.dumped[pod] {
+		return false
+	}
+	h.dumped[pod] = true
+	return true
 }
 
 func freePort(t *testing.T) int {

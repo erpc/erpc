@@ -168,9 +168,6 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 		lone := specs[0].lone
 		h := newHarness(t, filepath.Join(r.root, name), !lone)
 		h.host = r.host
-		// A phase of one scenario is a triage run: a stalled tap there
-		// earns its pod a goroutine dump.
-		h.dumpStalls = len(specs) == 1
 		var scs []*scenario
 		var nets []*netSpec
 		for i, sp := range specs {
@@ -236,10 +233,8 @@ func (s *scenario) execute(t *testing.T) {
 	} else {
 		s.baseClients()
 	}
-	if s.h.dumpStalls {
-		s.wg.Add(1)
-		go func() { defer s.wg.Done(); s.watchStalls() }()
-	}
+	s.wg.Add(1)
+	go func() { defer s.wg.Done(); s.watchStalls() }()
 	s.body(s)
 	s.finish()
 	s.judge(time.Since(start))
@@ -249,11 +244,12 @@ func (s *scenario) execute(t *testing.T) {
 // gets the pod a SIGQUIT goroutine dump (triage, not a bound).
 const stallDump = 10 * time.Second
 
-// watchStalls dumps a pod's goroutines, once per pod, when one of its
-// header taps is silent past stallDump while the chain mints and no fault
-// excuses the pod; it then restarts the pod.
+// watchStalls dumps a pod's goroutines, once per pod and phase, when one of
+// the scenario's header taps is silent past stallDump while the chain
+// mints and no fault excuses the pod; it then restarts the pod. Verdicts
+// of the phase's other scenarios on that pod after the dump carry the
+// restart.
 func (s *scenario) watchStalls() {
-	dumped := map[int]bool{}
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -275,10 +271,9 @@ func (s *scenario) watchStalls() {
 		}
 		for _, c := range taps {
 			pod, since, ok := c.silence()
-			if !ok || c.slow || dumped[pod] || since < stallDump || s.excused(pod, time.Now().Add(-since), time.Now()) {
+			if !ok || c.slow || since < stallDump || s.excused(pod, time.Now().Add(-since), time.Now()) || !s.h.claimDump(pod) {
 				continue
 			}
-			dumped[pod] = true
 			p := s.h.pods[pod]
 			log := p.quit()
 			s.logf("%s silent %s on pod-%d: SIGQUIT goroutine dump in %s; restarting pod-%d", c.name, since.Round(time.Second), pod+1, log, pod+1)
