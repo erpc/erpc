@@ -188,6 +188,14 @@ func (s *feedState) pinAt(n uint64) *chainHeader {
 	return s.pins[n-s.base]
 }
 
+// pinned is c's header while c is pinned.
+func (s *feedState) pinned(c indexer.Cursor) *chainHeader {
+	if h := s.pinAt(c.Number); h != nil && h.hash == c.Hash {
+		return h
+	}
+	return nil
+}
+
 // treeState is what a Read whose cursor is outside the pins waits on: the
 // roots whose walk or fill ended for good without joining another tree,
 // and the root of the pins' tree, computed over state. The tracker
@@ -1408,7 +1416,7 @@ func (t *ChainTracker) receiptsCap() int {
 func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
 	s := t.state.Load()
 	prev := s.sendHead()
-	if prev != nil && t.sourceLive() {
+	if prev != nil && t.SourceLive() {
 		return prev.cursor(), nil
 	}
 	for {
@@ -1427,9 +1435,9 @@ func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
 	}
 }
 
-// sourceLive reports whether any of the network's sources is live; a
+// SourceLive reports whether any of the network's sources is live; a
 // network without intake counts as live.
-func (t *ChainTracker) sourceLive() bool {
+func (t *ChainTracker) SourceLive() bool {
 	if n, ok := t.network.(interface{ EvmAnySourceLive() bool }); ok {
 		return n.EvmAnySourceLive()
 	}
@@ -1805,6 +1813,11 @@ func (t *ChainTracker) SendTip() (indexer.Cursor, bool) {
 	}
 	return indexer.Cursor{}, false
 }
+
+// Pinned reports whether c is pinned now. A tap checks each block just
+// before it sends it, so a block a reorg reverted after the tap's Read is
+// never sent.
+func (t *ChainTracker) Pinned(c indexer.Cursor) bool { return t.state.Load().pinned(c) != nil }
 
 // Changed is closed once the tracker publishes a newer state: the pins, and
 // with them the block time and the live bound, may have moved.

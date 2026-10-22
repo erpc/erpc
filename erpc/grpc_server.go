@@ -34,7 +34,6 @@ type GrpcServer struct {
 	processor *RequestProcessor
 	logger    *zerolog.Logger
 	server    *grpc.Server
-	heads     *blockEncodings[*evm.StreamBlocksResponse]
 
 	trustedForwarderNets []net.IPNet
 	trustedForwarderIPs  map[string]struct{}
@@ -70,7 +69,6 @@ func NewGrpcServer(
 		erpc:      erpcInstance,
 		processor: NewRequestProcessor(erpcInstance, logger),
 		logger:    logger,
-		heads:     newBlockEncodings(streamBlocksResponse),
 	}
 	if cfg != nil {
 		gs.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))

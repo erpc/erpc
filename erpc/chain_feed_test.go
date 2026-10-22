@@ -115,6 +115,7 @@ const (
 	fStreamOutOfRange = "gRPC resume from a header older than the window, and from an orphan no vendor serves"
 	fStreamAhead      = "gRPC resume above a fresh instance's head"
 	fStreamSlow       = "gRPC client that stops reading"
+	fStreamBadHeader  = "gRPC header that cannot be encoded"
 )
 
 var chaosFaults = []string{
@@ -122,7 +123,7 @@ var chaosFaults = []string{
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice, fPendingSilent,
 	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower, fFetchPanic,
 	fForgedLog, fForgedHash, fReorg3, fClientGetLogs, fBadBaseFee, fBadBaseFeeLone, fForgedAhead, fSlowWalk,
-	fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow,
+	fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader,
 }
 
 // TestChainFeed_ConvergesUnderFaults runs real eRPC against 4 mocked vendors
@@ -191,7 +192,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{67, true, chaosOpts{integrity: true, badBaseFee: true}, []string{fBadBaseFee}},
 		{71, true, chaosOpts{integrity: true, badBaseFee: true, oneVendor: true}, []string{fBadBaseFeeLone}},
 		{73, true, chaosOpts{integrity: true, strict: true}, []string{fSlowWalk}},
-		{79, true, chaosOpts{grpc: true}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fReorg3}},
+		{79, true, chaosOpts{grpc: true}, []string{fStreamResume, fStreamOutOfRange, fStreamAhead, fStreamSlow, fStreamBadHeader, fReorg3}},
 	}
 	before := erpcGoroutines()
 	covered := make(map[string][]int64)
@@ -1832,6 +1833,9 @@ type chaosSeed struct {
 	streamsWG     sync.WaitGroup
 	stopStreams   context.CancelFunc
 	byNumberAsked float64
+	// internalOK are the times a stream may end with INTERNAL: a header
+	// that cannot be encoded is pinned; to is zero while it lasts.
+	internalOK []interval
 }
 
 // faultSpan is when one fault ran; to is zero while it runs.
@@ -2344,6 +2348,8 @@ func (s *chaosSeed) inject(f string) {
 		s.streamAhead()
 	case fStreamSlow:
 		s.streamSlow()
+	case fStreamBadHeader:
+		s.streamBadHeader()
 	case fForgedAhead:
 		s.forgedAhead()
 	case fSlowWalk:
@@ -3318,13 +3324,21 @@ func (s *chaosSeed) forgedHash() {
 
 func (s *chaosSeed) reorg3() {
 	from := time.Now()
-	tip := s.chain.reorg(3)
-	s.blocks(3)
-	evidence := fmt.Sprintf("new head %d", tip.number)
-	if s.opts.grpc {
-		// reorg(3) mints 4 blocks above the fork point.
-		evidence += "; " + s.awaitResend(tip.number-3, from)
+	if !s.opts.grpc {
+		tip := s.chain.reorg(3)
+		s.blocks(3)
+		s.occur(fReorg3, fmt.Sprintf("new head %d", tip.number))
+		return
 	}
+	// The second instance is down through the reorg, so it never holds
+	// the old branch.
+	s.stopGrpc(1)
+	orphan := s.chain.tip()
+	tip := s.chain.reorg(3)
+	g := s.startSecond()
+	s.blocks(3)
+	// reorg(3) mints 4 blocks above the fork point.
+	evidence := fmt.Sprintf("new head %d; %s; %s", tip.number, s.awaitResend(tip.number-3, from), s.resumeOrphan(g, orphan, tip.number-4))
 	s.occur(fReorg3, evidence)
 }
 

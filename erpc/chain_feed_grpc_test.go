@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -27,6 +29,10 @@ const chaosStreamPad = 16 << 10
 // chaosStreams is how many background stream clients the gRPC seed runs.
 const chaosStreams = 3
 
+// streamPinGrace is how long after its block left the sending instance's
+// pins a header may still arrive: it was checked before its send.
+var streamPinGrace = 2 * chaosBlock
+
 // grpcInstance is one eRPC instance with a gRPC server that the gRPC
 // seed's streams connect to. srv and cancel are set when the instance is
 // the second one, which it owns; the primary's are the seed's.
@@ -39,6 +45,9 @@ type grpcInstance struct {
 	stopServer func()
 	srv        *HttpServer
 	cancel     context.CancelFunc
+
+	pinsMu sync.Mutex
+	left   map[[32]byte]time.Time // when a block left the pins, while it stays out
 }
 
 // startGrpc serves the gRPC server of instance i on srv's eRPC; own,
@@ -48,7 +57,8 @@ func (s *chaosSeed) startGrpc(i int, srv *HttpServer, own context.CancelFunc, nw
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(s.t, err)
 	g := &grpcInstance{name: fmt.Sprintf("instance-%d", i), nw: nw, addr: addr, conn: conn,
-		client: bdsevm.NewStreamServiceClient(conn), stopServer: stopServer}
+		client: bdsevm.NewStreamServiceClient(conn), stopServer: stopServer, left: make(map[[32]byte]time.Time)}
+	go g.watchPins()
 	if own != nil {
 		g.srv, g.cancel = srv, own
 	}
@@ -56,6 +66,59 @@ func (s *chaosSeed) startGrpc(i int, srv *HttpServer, own context.CancelFunc, nw
 	s.grpcs[i] = g
 	s.grpcMu.Unlock()
 	return g
+}
+
+// watchPins records when each block leaves the instance's pins, until the
+// instance's network stops.
+func (g *grpcInstance) watchPins() {
+	tr := g.nw.chainTracker
+	pinned := make(map[indexer.Cursor]bool)
+	for {
+		changed := tr.Changed()
+		now := time.Now()
+		for c := range pinned {
+			if !tr.Pinned(c) {
+				delete(pinned, c)
+				g.pinsMu.Lock()
+				g.left[c.Hash] = now
+				g.pinsMu.Unlock()
+			}
+		}
+		// New pins come from the head down to the first pin seen before.
+		if tip, ok := tr.Tip(); ok {
+			for n := tip.Number; ; n-- {
+				hx, ok := tr.HashAt(int64(n))
+				raw, err := hex.DecodeString(strings.TrimPrefix(hx, "0x"))
+				if !ok || err != nil || len(raw) != 32 {
+					break
+				}
+				c := indexer.Cursor{Number: n, Hash: [32]byte(raw)}
+				if pinned[c] || !tr.Pinned(c) {
+					break
+				}
+				pinned[c] = true
+				g.pinsMu.Lock()
+				delete(g.left, c.Hash)
+				g.pinsMu.Unlock()
+				if n == 0 {
+					break
+				}
+			}
+		}
+		select {
+		case <-g.nw.appCtx.Done():
+			return
+		case <-changed:
+		}
+	}
+}
+
+// leftPins is when block h left the instance's pins, if it is out of them.
+func (g *grpcInstance) leftPins(h [32]byte) (time.Time, bool) {
+	g.pinsMu.Lock()
+	defer g.pinsMu.Unlock()
+	at, ok := g.left[h]
+	return at, ok
 }
 
 // startSecond boots the second eRPC instance and its gRPC server.
@@ -136,6 +199,7 @@ type chaosStream struct {
 	resumes     int
 	moves       int // resumes on another instance than the last header's
 	unavailable int
+	internal    int // INTERNAL ends while a header that cannot be encoded is pinned
 	resends     []streamResend
 	problems    []string
 	lastFrom    int
@@ -187,7 +251,7 @@ func (st *chaosStream) session(ctx context.Context, s *chaosSeed, g *grpcInstanc
 	for err == nil {
 		var resp *bdsevm.StreamBlocksResponse
 		if resp, err = stream.Recv(); err == nil {
-			st.apply(s, resp.GetHeader(), idx)
+			st.apply(s, resp.GetHeader(), g, idx)
 		}
 	}
 	switch status.Code(err) {
@@ -197,6 +261,15 @@ func (st *chaosStream) session(ctx context.Context, s *chaosSeed, g *grpcInstanc
 		st.unavailable++
 		st.mu.Unlock()
 		time.Sleep(chaosBlock / 4)
+	case codes.Internal:
+		if !s.internalAllowed(time.Now()) {
+			st.problem("session on %s ended with %v", g.name, err)
+			return
+		}
+		st.mu.Lock()
+		st.internal++
+		st.mu.Unlock()
+		time.Sleep(chaosBlock / 4)
 	default:
 		if ctx.Err() == nil {
 			st.problem("session on %s ended with %v", g.name, err)
@@ -204,7 +277,21 @@ func (st *chaosStream) session(ctx context.Context, s *chaosSeed, g *grpcInstanc
 	}
 }
 
-func (st *chaosStream) apply(s *chaosSeed, h *bdsevm.BlockHeader, idx int) {
+// internalAllowed reports whether a stream may end with INTERNAL at at.
+func (s *chaosSeed) internalAllowed(at time.Time) bool {
+	s.grpcMu.Lock()
+	defer s.grpcMu.Unlock()
+	for _, iv := range s.internalOK {
+		if !at.Before(iv.from) && (iv.to.IsZero() || !at.After(iv.to)) {
+			return true
+		}
+	}
+	return false
+}
+
+// apply applies a header g sent; one that arrives more than streamPinGrace
+// after its block left g's pins is a problem.
+func (st *chaosStream) apply(s *chaosSeed, h *bdsevm.BlockHeader, g *grpcInstance, idx int) {
 	if len(h.GetHash()) != 32 || len(h.GetParentHash()) != 32 {
 		st.problem("malformed header %d", h.GetNumber())
 		return
@@ -213,6 +300,11 @@ func (st *chaosStream) apply(s *chaosSeed, h *bdsevm.BlockHeader, idx int) {
 	copy(hash[:], h.Hash)
 	copy(parent[:], h.ParentHash)
 	n := h.Number
+	if left, ok := g.leftPins(hash); ok {
+		if late := time.Since(left); late > streamPinGrace {
+			st.problem("header %d %x arrived %s after it left %s's pins", n, hash[:4], late.Round(time.Millisecond), g.name)
+		}
+	}
 	b := s.chain.block(hash)
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -284,8 +376,8 @@ func (s *chaosSeed) judgeStreams() {
 			require.NotNil(t, want)
 			require.Equal(t, hex.EncodeToString(want.hash[:]), hex.EncodeToString(got[:]), "stream %s block %d", st.name, n)
 		}
-		t.Logf("stream %s: blocks %d..%d over %d sessions, %d resumes (%d on the other instance), %d UNAVAILABLE, %d resends",
-			st.name, st.first, st.last, st.opens, st.resumes, st.moves, st.unavailable, len(st.resends))
+		t.Logf("stream %s: blocks %d..%d over %d sessions, %d resumes (%d on the other instance), %d UNAVAILABLE, %d INTERNAL, %d resends",
+			st.name, st.first, st.last, st.opens, st.resumes, st.moves, st.unavailable, st.internal, len(st.resends))
 		st.mu.Unlock()
 	}
 	require.Zero(t, byNumberAsked()-s.byNumberAsked, "streams send no eth_getBlockByNumber through the request path")
@@ -382,8 +474,10 @@ func (s *chaosSeed) streamOutOfRange() {
 
 // streamAhead restarts the second instance while the chain stands still
 // and every vendor holds its block answers, so the fresh instance holds no
-// header; a resume there from the canonical head waits, sending nothing,
-// then continues with the next blocks once vendors answer.
+// header and no source is live there. A resume there from the canonical
+// head that waits past the read wait ends with UNAVAILABLE, sending
+// nothing; one opened later waits, sending nothing, then continues with
+// the next blocks once vendors answer.
 func (s *chaosSeed) streamAhead() {
 	from := time.Now()
 	s.stopGrpc(1)
@@ -410,6 +504,20 @@ func (s *chaosSeed) streamAhead() {
 		require.Less(s.t, head.Number, tip.number, "the fresh instance's head is below the cursor")
 	}
 
+	type stallEnd struct {
+		got []*bdsevm.BlockHeader
+		err error
+		in  time.Duration
+	}
+	readWait := streamBlocksReadWait.Load()
+	stalled := make(chan stallEnd, 1)
+	go func() {
+		opened := time.Now()
+		got, err := openOnce(g, resumeFrom(tip.number, tip.hash), readWait+10*chaosBlock)
+		stalled <- stallEnd{got, err, time.Since(opened)}
+	}()
+	time.Sleep(readWait - 5*chaosBlock)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stream, err := g.client.StreamBlocks(streamMD(ctx), resumeFrom(tip.number, tip.hash))
@@ -433,6 +541,11 @@ func (s *chaosSeed) streamAhead() {
 		s.t.Fatalf("the resume on the fresh instance ended while it waited: %v", err)
 	case <-time.After(4 * chaosBlock):
 	}
+	st := <-stalled
+	require.Equal(s.t, codes.Unavailable, status.Code(st.err), "a resume that waits past the read wait with vendors held: %v", st.err)
+	require.Contains(s.t, status.Convert(st.err).Message(), errStreamBlocksStalled.Error())
+	require.Empty(s.t, st.got, "the stalled resume sends nothing")
+	require.GreaterOrEqual(s.t, st.in, readWait, "the stalled resume waits the read wait")
 	_, _, held := s.hook.firstHeader(tr)
 	release()
 	s.addQuiet(interval{from, time.Now()})
@@ -450,7 +563,8 @@ func (s *chaosSeed) streamAhead() {
 			s.t.Fatalf("the resume on the fresh instance sent nothing after %d", want.number)
 		}
 	}
-	s.occur(fStreamAhead, fmt.Sprintf("resumed at %d on a fresh instance (held a header while it waited: %t); then %d", tip.number, held, want.number))
+	s.occur(fStreamAhead, fmt.Sprintf("resumed at %d on a fresh instance (held a header while it waited: %t); then %d; a resume held %s ended UNAVAILABLE",
+		tip.number, held, want.number, st.in.Round(time.Millisecond)))
 }
 
 // streamSlow resumes a stream from a dozen blocks back on a client with the
@@ -485,4 +599,86 @@ func (s *chaosSeed) streamSlow() {
 	require.Contains(s.t, status.Convert(err).Message(), errStreamBlocksSlow.Error())
 	require.Less(s.t, read, 12, "the stream ended before it sent the replay")
 	s.occur(fStreamSlow, fmt.Sprintf("UNAVAILABLE after %d headers, read %s after open", read, time.Since(opened).Round(time.Millisecond)))
+}
+
+// streamBadHeader makes the canonical tip, for a moment, a block whose
+// gasLimit does not fit in uint64, so StreamBlocks cannot encode it: on each
+// instance a resume from its parent ends with INTERNAL and sends nothing,
+// and so does the next one, as the encoding's error is kept. A 1-block
+// reorg then replaces it.
+func (s *chaosSeed) streamBadHeader() {
+	c := s.chain
+	c.mu.Lock()
+	c.halted = true
+	parent := c.tipLocked()
+	c.plan = append([]simKind{simEmpty}, c.plan...)
+	bad := c.childLocked(parent, time.Now(), false)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(bad.raw, &fields); err != nil {
+		panic(err)
+	}
+	fields["gasLimit"] = json.RawMessage(`"0x10000000000000000"`)
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		panic(err)
+	}
+	bad.raw = raw
+	c.canon = append(c.canon, bad)
+	c.mu.Unlock()
+	s.grpcMu.Lock()
+	s.internalOK = append(s.internalOK, interval{from: time.Now()})
+	k := len(s.internalOK) - 1
+	s.grpcMu.Unlock()
+	c.refresh()
+
+	bc := indexer.Cursor{Number: bad.number, Hash: bad.hash}
+	var got []string
+	for i := range 2 {
+		g := s.grpcAt(i)
+		require.NotNil(s.t, g)
+		tr := g.nw.chainTracker
+		require.Eventually(s.t, func() bool {
+			send, ok := tr.SendTip()
+			return ok && send == bc
+		}, 10*time.Second, 10*time.Millisecond, "%s may send block %d", g.name, bad.number)
+		for range 2 {
+			sent, err := openOnce(g, resumeFrom(parent.number, parent.hash), 10*time.Second)
+			require.Equal(s.t, codes.Internal, status.Code(err), "resume before a header that cannot be encoded, on %s: %v", g.name, err)
+			require.Contains(s.t, status.Convert(err).Message(), fmt.Sprintf("cannot encode block %d", bad.number))
+			require.Empty(s.t, sent, "nothing after the previous header %d", parent.number)
+		}
+		got = append(got, g.name)
+	}
+
+	c.reorg(1)
+	c.mu.Lock()
+	c.halted = false
+	c.mu.Unlock()
+	for i := range 2 {
+		tr := s.grpcAt(i).nw.chainTracker
+		require.Eventually(s.t, func() bool { return !tr.Pinned(bc) }, 10*time.Second, 10*time.Millisecond, "a reorg replaces block %d", bad.number)
+	}
+	s.grpcMu.Lock()
+	s.internalOK[k].to = time.Now().Add(streamPinGrace)
+	s.grpcMu.Unlock()
+	s.occur(fStreamBadHeader, fmt.Sprintf("block %d: INTERNAL twice on %s, nothing sent", bad.number, strings.Join(got, ", ")))
+}
+
+// resumeOrphan resumes on g, which never held it, from orphan: a block of a
+// branch a reorg replaced, that vendors still serve by hash. The stream
+// starts at the fork point + 1, linked to the fork point.
+func (s *chaosSeed) resumeOrphan(g *grpcInstance, orphan *simBlock, fork uint64) string {
+	forkAt := s.chain.canonAt(fork)
+	require.NotNil(s.t, forkAt)
+	require.NotEqual(s.t, orphan, s.chain.canonAt(orphan.number), "block %d is an orphan", orphan.number)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := g.client.StreamBlocks(streamMD(ctx), resumeFrom(orphan.number, orphan.hash))
+	require.NoError(s.t, err)
+	resp, err := stream.Recv()
+	require.NoError(s.t, err, "resume from orphan %d on %s", orphan.number, g.name)
+	h := resp.Header
+	require.Equal(s.t, fork+1, h.Number, "the resume from orphan %d starts after the fork point", orphan.number)
+	require.Equal(s.t, hex.EncodeToString(forkAt.hash[:]), hex.EncodeToString(h.ParentHash), "block %d links to the fork point", h.Number)
+	return fmt.Sprintf("resume from orphan %d on the fresh %s started at %d", orphan.number, g.name, h.Number)
 }

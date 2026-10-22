@@ -37,6 +37,10 @@ type chainHeader struct {
 	// intakePassed: this header passed intake's header checks, so a source
 	// that sends the same hash is not validated again.
 	intakePassed atomic.Bool
+
+	// encodings holds each transport's encoding of the header (a
+	// *HeaderEncoding key), so it is dropped with the header.
+	encodings sync.Map
 }
 
 var errMalformedHeader = errors.New("malformed block header")

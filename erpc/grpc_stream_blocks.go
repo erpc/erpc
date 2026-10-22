@@ -33,6 +33,9 @@ var (
 // name eth_getBlockByNumber admit it.
 const streamBlocksAuthMethod = "eth_getBlockByNumber"
 
+// streamBlocksEncoding is each pinned header's StreamBlocks message.
+var streamBlocksEncoding = evm.NewHeaderEncoding("grpc", streamBlocksResponse)
+
 // streamEncodeError is a held header the stream cannot encode: sending
 // past it would break the parentHash linkage the client relies on.
 type streamEncodeError struct {
@@ -46,7 +49,8 @@ func (e streamEncodeError) Error() string {
 
 // StreamBlocks is one tap on the network-wide chain tracker (spec §9.2,
 // §9.3): it sends each applied block, oldest first. After a reorg the
-// next block sent is the fork point + 1; reverted blocks are never sent.
+// next block sent is the fork point + 1; reverted blocks are never sent,
+// nor is a block that left the pins before its send.
 // Auth and rate limits run once, at open: auth as eth_getBlockByNumber,
 // rate limits as for ws newHeads subscriptions.
 func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsevm.StreamService_StreamBlocksServer) error {
@@ -73,11 +77,16 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	defer context.AfterFunc(ctx, stop)()
 	sender := newStreamSender(stream)
 	defer sender.stop()
-	feed := waitBoundedFeed{ChainFeed: nw.chainTracker, wait: streamBlocksReadWait.Load()}
+	tracker := nw.chainTracker
+	feed := &cutFeed{ChainFeed: waitBoundedFeed{ChainTracker: tracker, wait: streamBlocksReadWait.Load()}}
 	sendWait := streamBlocksSendWait.Load()
 	emit := func(b indexer.Batch) error {
 		for _, blk := range b.Applied {
-			resp, err := gs.heads.get(blk)
+			resp, pinned, err := streamBlocksEncoding.Of(tracker, blk)
+			if !pinned {
+				feed.cut(blk)
+				return nil
+			}
 			if err != nil {
 				return streamEncodeError{blk.Number, err}
 			}
@@ -176,33 +185,81 @@ func streamBlocksResponse(header json.RawMessage) (*bdsevm.StreamBlocksResponse,
 	return &bdsevm.StreamBlocksResponse{Header: h}, nil
 }
 
-// waitBoundedFeed ends any Head or Read wait longer than wait with
-// errStreamBlocksStalled: a pod that lags, restarted or fills slowly tells
-// the client to reconnect (spec §13.1).
+// waitBoundedFeed ends a wait the client should not sit through with
+// errStreamBlocksStalled, so a pod that lags, restarted or fills slowly
+// tells the client to reconnect (spec §13.1): a Head wait longer than
+// wait, and a Read wait that spends wait while the sendable head is not the
+// cursor and stands at or above it, or while no source is live. A Read at
+// the head of a live chain that makes no blocks waits without end.
 type waitBoundedFeed struct {
-	indexer.ChainFeed
+	*evm.ChainTracker
 	wait time.Duration
 }
 
 func (f waitBoundedFeed) Head(ctx context.Context) (indexer.Cursor, error) {
 	ctx, cancel := context.WithTimeoutCause(ctx, f.wait, errStreamBlocksStalled)
 	defer cancel()
-	c, err := f.ChainFeed.Head(ctx)
-	return c, stalledErr(ctx, err)
+	c, err := f.ChainTracker.Head(ctx)
+	if err != nil && errors.Is(context.Cause(ctx), errStreamBlocksStalled) {
+		return c, errStreamBlocksStalled
+	}
+	return c, err
 }
 
 func (f waitBoundedFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts) (indexer.Batch, error) {
-	ctx, cancel := context.WithTimeoutCause(ctx, f.wait, errStreamBlocksStalled)
-	defer cancel()
-	b, err := f.ChainFeed.Read(ctx, c, o)
-	return b, stalledErr(ctx, err)
+	rctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go f.watchStall(rctx, c, cancel)
+	b, err := f.ChainTracker.Read(rctx, c, o)
+	if err != nil && context.Cause(rctx) == errStreamBlocksStalled && ctx.Err() == nil {
+		return indexer.Batch{}, errStreamBlocksStalled
+	}
+	return b, err
 }
 
-func stalledErr(ctx context.Context, err error) error {
-	if err != nil && errors.Is(context.Cause(ctx), errStreamBlocksStalled) {
-		return errStreamBlocksStalled
+// watchStall ends a Read on c with errStreamBlocksStalled once it waited
+// f.wait in a row while stalled. Liveness changes without a published
+// state, so it is checked again every quarter of the wait too.
+func (f waitBoundedFeed) watchStall(ctx context.Context, c indexer.Cursor, cancel context.CancelCauseFunc) {
+	recheck := f.wait / 4
+	timer := time.NewTimer(recheck)
+	defer timer.Stop()
+	var since time.Time
+	for {
+		changed := f.Changed()
+		next := recheck
+		if f.stalled(c) {
+			if since.IsZero() {
+				since = time.Now()
+			}
+			left := f.wait - time.Since(since)
+			if left <= 0 {
+				cancel(errStreamBlocksStalled)
+				return
+			}
+			next = min(next, left)
+		} else {
+			since = time.Time{}
+		}
+		timer.Reset(next)
+		select {
+		case <-ctx.Done():
+			return
+		case <-changed:
+		case <-timer.C:
+		}
 	}
-	return err
+}
+
+// stalled reports whether a Read on c waits on this pod rather than on the
+// chain: the sendable head stands above c, or at c's number on another
+// branch, or no source is live.
+func (f waitBoundedFeed) stalled(c indexer.Cursor) bool {
+	if !f.SourceLive() {
+		return true
+	}
+	send, ok := f.SendTip()
+	return ok && (send.Number > c.Number || send.Number == c.Number && send.Hash != c.Hash)
 }
 
 // streamSender sends on a stream from its own goroutine, so a client that

@@ -49,13 +49,15 @@ func parseLogsSubscribe(params []interface{}) (*logfilter.LogsFilter, error) {
 // runLogs is one ws logs subscription: a tap on the network-wide tracker
 // that reads the receipts of each block the filter's bloom test may match.
 // For a reorg it writes the Reverted blocks' matched logs, newest first,
-// with removed:true, then the logs of the Applied blocks. Any end other
-// than ctx or a failed write closes the connection with 1013 after a
-// random delay within logsCloseSpread, so the client reconnects knowing it
-// may have missed logs.
+// with removed:true, then the logs of the Applied blocks; an Applied block
+// that left the pins before its logs are written ends the batch there. Any
+// end other than ctx or a failed write closes the connection with 1013
+// after a random delay within logsCloseSpread, so the client reconnects
+// knowing it may have missed logs.
 func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, f *logfilter.LogsFilter) {
-	feed := nw.chainTracker
-	window := uint64(feed.ReorgWindow())
+	tracker := nw.chainTracker
+	feed := &cutFeed{ChainFeed: logsFeed{tracker}}
+	window := uint64(tracker.ReorgWindow())
 	write := func(log json.RawMessage) error {
 		if err := wsc.WriteSubscriptionNotification(sub, log); err != nil {
 			return wsWriteError{err}
@@ -75,7 +77,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			return ctx.Err()
 		}
 		if len(b.Applied) > 0 {
-			if lh := feed.LogsHead(); lh.Number > b.Applied[0].Number-1+window {
+			if lh := tracker.LogsHead(); lh.Number > b.Applied[0].Number-1+window {
 				return errLogsLag
 			}
 		}
@@ -83,7 +85,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			if !sent || blk.Number < sentFrom {
 				continue
 			}
-			logs := feed.MatchedLogs(blk, f)
+			logs := tracker.MatchedLogs(blk, f)
 			for i := len(logs) - 1; i >= 0; i-- {
 				removed, err := removedLog(logs[i])
 				if err != nil {
@@ -96,10 +98,14 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 			}
 		}
 		for _, blk := range b.Applied {
+			if !tracker.Pinned(indexer.Cursor{Number: blk.Number, Hash: blk.Hash}) {
+				feed.cut(blk)
+				return nil
+			}
 			if !sent || blk.Number < sentFrom {
 				sentFrom, sent = blk.Number, true
 			}
-			for _, log := range feed.MatchedLogs(blk, f) {
+			for _, log := range tracker.MatchedLogs(blk, f) {
 				if err := write(log); err != nil {
 					return err
 				}
@@ -107,7 +113,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		}
 		return nil
 	}
-	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, logsFeed{feed}, nil,
+	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, feed, nil,
 		indexer.ReadOpts{MayMatch: f.MayMatch}, emit)
 	var writeErr wsWriteError
 	if ctx.Err() != nil || errors.As(err, &writeErr) {

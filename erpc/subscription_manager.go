@@ -2,14 +2,12 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -29,7 +27,6 @@ const (
 // network's mempool feed.
 type SubscriptionManager struct {
 	logger *zerolog.Logger
-	heads  *blockEncodings[json.RawMessage]
 
 	// connMu guards conns and every WsConnection.subsClosed, so no adapter
 	// is created for a connection after CleanupConnection.
@@ -44,7 +41,6 @@ type SubscriptionManager struct {
 func NewSubscriptionManager(logger *zerolog.Logger) *SubscriptionManager {
 	return &SubscriptionManager{
 		logger: logger,
-		heads:  newBlockEncodings(evm.NewHeadsPayload),
 		conns:  make(map[string]*wsclient.Adapter),
 	}
 }
