@@ -3331,6 +3331,13 @@ func (s *chaosSeed) forgedHash() {
 	s.chain.mu.Lock()
 	forged := v.forged
 	s.chain.mu.Unlock()
+	// Intake counts a push after the vendor wrote it: under load the last
+	// one may still be in flight.
+	for end := time.Now().Add(10 * chaosBlock); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if gated()-gated0 >= float64(forged) && violations()-violations0 >= float64(forged) {
+			break
+		}
+	}
 	require.Equal(s.t, float64(forged), gated()-gated0, "intake holds back every forged head of %s", v.id)
 	require.Equal(s.t, float64(forged), violations()-violations0, "each forged head counts against %s", v.id)
 	s.occur(fForgedHash, fmt.Sprintf("%s pushed %d heads with a wrong hash, the first 2 in a row", v.id, forged))
