@@ -36,6 +36,10 @@ type harness struct {
 	dumped map[int]bool
 	// lookups time how long the proxies take to tell pods apart.
 	lookups *lookups
+	// series ends the per-second record of the pods' vote gauges;
+	// seriesDone, set once it runs, closes when it ended.
+	series     chan struct{}
+	seriesDone chan struct{}
 
 	mu      sync.Mutex
 	pids    map[int]*pod
@@ -46,7 +50,8 @@ func newHarness(t *testing.T, dir string, withRedis bool) *harness {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), dumped: make(map[int]bool), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{}}
+	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), dumped: make(map[int]bool), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{},
+		series: make(chan struct{})}
 	if withRedis {
 		h.redis = startRedis(t, dir)
 	}
@@ -64,6 +69,10 @@ func selfCPU() time.Duration {
 // stop kills every pod and redis, closes the proxies, and fails the phase
 // if a pod's output holds a data race or a panic.
 func (h *harness) stop() {
+	close(h.series)
+	if h.seriesDone != nil {
+		<-h.seriesDone
+	}
 	for _, p := range h.pods {
 		p.kill()
 	}
@@ -202,6 +211,54 @@ func (h *harness) startPods(n int, nets []*netSpec) {
 			h.t.Fatal(err)
 		}
 	}
+	h.seriesDone = make(chan struct{})
+	go h.recordSeries()
+}
+
+// seriesNames are the gauges and counters recordSeries keeps: who votes,
+// who is live, and the selection policy's order (triage, not a bound).
+var seriesNames = []string{"erpc_source_live{", "erpc_chain_tracker_source_heads_total{", "erpc_selection_position{"}
+
+const seriesEvery = 2 * time.Second
+
+// recordSeries appends seriesNames' samples of every running pod to
+// series.log every seriesEvery, so a vote or selection change can be
+// dated. A scrape renders about 1 MB, so it runs no faster.
+func (h *harness) recordSeries() {
+	defer close(h.seriesDone)
+	f, err := os.Create(filepath.Join(h.dir, "series.log"))
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+	tick := time.NewTicker(seriesEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-h.series:
+			return
+		case <-tick.C:
+		}
+		for _, p := range h.pods {
+			if !p.running() {
+				continue
+			}
+			body, err := p.metricsText()
+			if err != nil {
+				continue
+			}
+			at := time.Now().Format("15:04:05.000")
+			for _, line := range strings.Split(string(body), "\n") {
+				for _, name := range seriesNames {
+					if strings.HasPrefix(line, name) {
+						fmt.Fprintf(w, "%s %s %s\n", at, p.name, line)
+					}
+				}
+			}
+		}
+	}
 }
 
 // start boots the pod from its config and waits until its HTTP, gRPC and
@@ -266,8 +323,10 @@ func (p *pod) start() error {
 	return nil
 }
 
-// kill sends SIGKILL to the pod's process group and waits for it.
+// kill saves the pod's metrics, then sends SIGKILL to the pod's process
+// group and waits for it.
 func (p *pod) kill() {
+	p.saveMetrics()
 	p.mu.Lock()
 	cmd, exited := p.cmd, p.exited
 	p.cmd = nil
@@ -280,9 +339,11 @@ func (p *pod) kill() {
 	p.h.forget(cmd.Process.Pid)
 }
 
-// quit sends SIGQUIT to the pod: the Go runtime writes every goroutine's
-// stack to the pod's stderr log, whose path quit returns, and exits.
+// quit saves the pod's metrics, then sends SIGQUIT to the pod: the Go
+// runtime writes every goroutine's stack to the pod's stderr log, whose
+// path quit returns, and exits.
 func (p *pod) quit() string {
+	p.saveMetrics()
 	p.mu.Lock()
 	cmd, exited := p.cmd, p.exited
 	p.cmd = nil
@@ -300,6 +361,31 @@ func (p *pod) quit() string {
 	}
 	p.h.forget(cmd.Process.Pid)
 	return log
+}
+
+// saveMetrics writes the running process's /metrics next to its logs, so
+// counters such as selection exclusions survive the process (triage).
+func (p *pod) saveMetrics() {
+	p.mu.Lock()
+	if p.cmd == nil {
+		p.mu.Unlock()
+		return
+	}
+	path := strings.TrimSuffix(p.logs[len(p.logs)-1], ".stderr.log") + ".metrics.prom"
+	p.mu.Unlock()
+	if body, err := p.metricsText(); err == nil {
+		_ = os.WriteFile(path, body, 0o644)
+	}
+}
+
+// metricsText is the pod's /metrics body.
+func (p *pod) metricsText() ([]byte, error) {
+	resp, err := scrapeClient.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", p.metricsPort))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
 }
 
 func (p *pod) running() bool {
@@ -332,12 +418,7 @@ var scrapeClient = &http.Client{Timeout: 5 * time.Second}
 
 // scrape reads the pod's /metrics.
 func (p *pod) scrape() ([]series, error) {
-	resp, err := scrapeClient.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", p.metricsPort))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := p.metricsText()
 	if err != nil {
 		return nil, err
 	}

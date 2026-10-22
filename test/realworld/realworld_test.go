@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,8 @@ import (
 // TestRealWorld runs the catalogue scenarios (review §3): network-scoped
 // ones concurrently on shared pods, pod-scoped ones each in their own phase
 // with fresh pods and redis. REALWORLD_ALONE=C1,X4 instead runs only the
-// named scenarios, each alone in its own phase.
+// named scenarios, each alone in its own phase; REALWORLD_PHASES=shared,n4
+// runs only the named phases.
 func TestRealWorld(t *testing.T) {
 	root, err := os.MkdirTemp("", "erpc-realworld-run-")
 	if err != nil {
@@ -48,11 +50,22 @@ func TestRealWorld(t *testing.T) {
 		}
 		return
 	}
-	r.phase(t, "shared", 9101, shared)
-	r.phase(t, "n4", 9201, []spec{n4()})
-	r.phase(t, "x4", 9301, []spec{x4()})
-	r.phase(t, "u3-lone", 9501, []spec{u3Lone()})
-	r.phase(t, "n4-lone", 9601, []spec{n4Lone()})
+	phases := os.Getenv("REALWORLD_PHASES")
+	for _, ph := range []struct {
+		name  string
+		chain int64
+		specs []spec
+	}{
+		{"shared", 9101, shared},
+		{"n4", 9201, []spec{n4()}},
+		{"x4", 9301, []spec{x4()}},
+		{"u3-lone", 9501, []spec{u3Lone()}},
+		{"n4-lone", 9601, []spec{n4Lone()}},
+	} {
+		if phases == "" || slices.Contains(strings.Split(phases, ","), ph.name) {
+			r.phase(t, ph.name, ph.chain, ph.specs)
+		}
+	}
 }
 
 // reconnectSlack is harness time, not spec: a scrape, a dial, a backoff
