@@ -33,7 +33,7 @@ func TestRealWorld(t *testing.T) {
 	shared := []spec{x1(), c1(), c3(), u3(), u8(false), u8(true), u9(), n5(), k2(), d1(), d2()}
 	if alone := os.Getenv("REALWORLD_ALONE"); alone != "" {
 		known := map[string]spec{}
-		for _, sp := range append(shared, n4(), x4()) {
+		for _, sp := range append(shared, n4(), x4(), u3Lone(), n4Lone()) {
 			known[sp.name] = sp
 		}
 		for i, name := range strings.Split(alone, ",") {
@@ -48,6 +48,8 @@ func TestRealWorld(t *testing.T) {
 	r.phase(t, "shared", 9101, shared)
 	r.phase(t, "n4", 9201, []spec{n4()})
 	r.phase(t, "x4", 9301, []spec{x4()})
+	r.phase(t, "u3-lone", 9501, []spec{u3Lone()})
+	r.phase(t, "n4-lone", 9601, []spec{n4Lone()})
 }
 
 // reconnectSlack is harness time, not spec: a scrape, a dial, a backoff
@@ -203,29 +205,37 @@ func (c *clientBase) deliveredOn(pod int, after time.Time) bool {
 // the live bound and pod-1 reconnects it within 30s; the other vendors
 // carry every client.
 func u3() spec {
-	return spec{name: "U3", bound: healthyDelivery, body: func(s *scenario) {
-		s.blocks(40)
-		p1, px, up := s.h.pods[0], s.proxies["ws-a"], s.upstream("ws-a")
-		acc := px.accepts(p1)
-		px.set(p1, linkFaults{BlackHole: true})
-		cut := time.Now()
-		if _, ok := s.waitMetric(0, "erpc_source_live", map[string]string{"upstream": up}, liveBound+blockTime+scrapeEvery, func(v float64) bool { return v == 0 }); !ok {
-			s.violate("U3", "pod-1: %s still live %s after its socket went half-open", up, liveBound+blockTime+scrapeEvery)
-		}
-		for px.accepts(p1) == acc && time.Since(cut) < silentReconnect+reconnectSlack {
-			time.Sleep(100 * time.Millisecond)
-		}
-		if px.accepts(p1) == acc {
-			s.violate("U3", "pod-1: no reconnect to %s within %s of the half-open socket", up, silentReconnect+reconnectSlack)
-		} else {
-			s.logf("pod-1 reconnected %s after %s", up, time.Since(cut).Round(100*time.Millisecond))
-		}
-		px.set(p1, linkFaults{})
-		if _, ok := s.waitMetric(0, "erpc_source_live", map[string]string{"upstream": up}, silentReconnect+reconnectSlack, func(v float64) bool { return v == 1 }); !ok {
-			s.violate("U3", "pod-1: %s not live again within %s of the path healing", up, silentReconnect+reconnectSlack)
-		}
-		s.blocks(25)
-	}}
+	return spec{name: "U3", bound: healthyDelivery, body: halfOpenWsA}
+}
+
+// U3-lone: U3 on a single-instance deployment (one pod, shared state in
+// memory), where only the dead socket itself can report ws-a's head.
+func u3Lone() spec {
+	return spec{name: "U3-lone", lone: true, bound: healthyDelivery, body: halfOpenWsA}
+}
+
+func halfOpenWsA(s *scenario) {
+	s.blocks(40)
+	p1, px, up := s.h.pods[0], s.proxies["ws-a"], s.upstream("ws-a")
+	acc := px.accepts(p1)
+	px.set(p1, linkFaults{BlackHole: true})
+	cut := time.Now()
+	if _, ok := s.waitMetric(0, "erpc_source_live", map[string]string{"upstream": up}, liveBound+blockTime+scrapeEvery, func(v float64) bool { return v == 0 }); !ok {
+		s.violate(s.name, "pod-1: %s still live %s after its socket went half-open", up, liveBound+blockTime+scrapeEvery)
+	}
+	for px.accepts(p1) == acc && time.Since(cut) < silentReconnect+reconnectSlack {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if px.accepts(p1) == acc {
+		s.violate(s.name, "pod-1: no reconnect to %s within %s of the half-open socket", up, silentReconnect+reconnectSlack)
+	} else {
+		s.logf("pod-1 reconnected %s after %s", up, time.Since(cut).Round(100*time.Millisecond))
+	}
+	px.set(p1, linkFaults{})
+	if _, ok := s.waitMetric(0, "erpc_source_live", map[string]string{"upstream": up}, silentReconnect+reconnectSlack, func(v float64) bool { return v == 1 }); !ok {
+		s.violate(s.name, "pod-1: %s not live again within %s of the path healing", up, silentReconnect+reconnectSlack)
+	}
+	s.blocks(25)
 }
 
 // U8: ws-a pushes headers whose hash the header does not hash to, for 100
@@ -493,56 +503,66 @@ func nudge(c *clientBase) {
 // gRPC stream on pod-1 ends UNAVAILABLE within the read wait and resumes on
 // pod-2 from its last header with no gap; pod-2's clients never wait.
 func n4() spec {
-	return spec{name: "N4", bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"}, body: func(s *scenario) {
-		s.blocks(50)
-		p1 := s.h.pods[0]
-		var onP1 []*grpcClient
-		for _, g := range s.grpcs {
-			if g.currentPod() == 0 {
-				onP1 = append(onP1, g)
+	return spec{name: "N4", bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"}, body: cutPod1}
+}
+
+// N4-lone: N4 on a single-instance deployment (one pod, shared state in
+// memory): no peer tells the cut pod the chain moved on. Its streams still
+// end UNAVAILABLE within the read wait and resume on it once healed.
+func n4Lone() spec {
+	return spec{name: "N4-lone", lone: true, bound: healthyDelivery, allow: []string{"grpc:Unavailable@pod-1", "ws:jump@pod-1", "ws:logs-end@pod-1"}, body: cutPod1}
+}
+
+func cutPod1(s *scenario) {
+	s.blocks(50)
+	p1 := s.h.pods[0]
+	resumeOn := 1 % len(s.h.pods)
+	var onP1 []*grpcClient
+	for _, g := range s.grpcs {
+		if g.currentPod() == 0 {
+			onP1 = append(onP1, g)
+		}
+	}
+	ex := s.excuse(0, time.Now())
+	for _, px := range s.proxies {
+		px.set(p1, linkFaults{BlackHole: true})
+	}
+	cut := time.Now()
+	s.logf("pod-1 cut from every vendor; %d gRPC streams on it", len(onP1))
+	time.Sleep(2 * time.Minute)
+	for _, px := range s.proxies {
+		px.set(p1, linkFaults{})
+	}
+	lift := time.Now()
+	s.logf("pod-1 path healed")
+	// A dropped wss source reconnects within 30s (§13.1).
+	s.endExcuse(ex, lift.Add(silentReconnect))
+	time.Sleep(silentReconnect + 10*time.Second)
+	for _, g := range onP1 {
+		var end *clientEnd
+		g.mu.Lock()
+		for i, e := range g.ends {
+			if e.at.After(cut) && e.pod == 0 {
+				end = &g.ends[i]
+				break
 			}
 		}
-		ex := s.excuse(0, time.Now())
-		for _, px := range s.proxies {
-			px.set(p1, linkFaults{BlackHole: true})
+		resumes := g.resumes
+		g.mu.Unlock()
+		switch {
+		case end == nil:
+			s.violate(g.name, "StreamBlocks on the cut pod-1 never ended")
+		case !end.server || !strings.HasPrefix(end.reason, "UNAVAILABLE"):
+			s.violate(g.name, "StreamBlocks on the cut pod-1 ended %q, not UNAVAILABLE", end.reason)
+		case end.at.Sub(cut) > grpcReadWait+reconnectSlack:
+			s.violate(g.name, "StreamBlocks on the cut pod-1 ended UNAVAILABLE %s after the cut, above the %s read wait", end.at.Sub(cut).Round(time.Second), grpcReadWait)
+		case !g.deliveredOn(resumeOn, end.at):
+			s.violate(g.name, "did not resume on pod-%d after UNAVAILABLE", resumeOn+1)
 		}
-		cut := time.Now()
-		s.logf("pod-1 cut from every vendor; %d gRPC streams on it", len(onP1))
-		time.Sleep(2 * time.Minute)
-		for _, px := range s.proxies {
-			px.set(p1, linkFaults{})
+		if resumes == 0 {
+			s.violate(g.name, "never resumed from a cursor")
 		}
-		lift := time.Now()
-		s.logf("pod-1 path healed")
-		// A dropped wss source reconnects within 30s (§13.1).
-		s.endExcuse(ex, lift.Add(silentReconnect))
-		time.Sleep(silentReconnect + 10*time.Second)
-		for _, g := range onP1 {
-			var end *clientEnd
-			g.mu.Lock()
-			for i, e := range g.ends {
-				if e.at.After(cut) && e.pod == 0 {
-					end = &g.ends[i]
-					break
-				}
-			}
-			resumes := g.resumes
-			g.mu.Unlock()
-			switch {
-			case end == nil:
-				s.violate(g.name, "StreamBlocks on the cut pod-1 never ended")
-			case !end.server || !strings.HasPrefix(end.reason, "UNAVAILABLE"):
-				s.violate(g.name, "StreamBlocks on the cut pod-1 ended %q, not UNAVAILABLE", end.reason)
-			case end.at.Sub(cut) > grpcReadWait+reconnectSlack:
-				s.violate(g.name, "StreamBlocks on the cut pod-1 ended UNAVAILABLE %s after the cut, above the %s read wait", end.at.Sub(cut).Round(time.Second), grpcReadWait)
-			case !g.deliveredOn(1, end.at):
-				s.violate(g.name, "did not resume on pod-2 after UNAVAILABLE")
-			}
-			if resumes == 0 {
-				s.violate(g.name, "never resumed from a cursor")
-			}
-		}
-	}}
+	}
 }
 
 // X4: pod-1 is killed with SIGKILL during a 3-block reorg. Its clients

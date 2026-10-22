@@ -20,8 +20,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// harness is one phase's real components: a redis-server, the pods that
-// share it, and the fault proxies between the pods and the vendors.
+// harness is one phase's real components: a redis-server (none for a lone
+// pod, which keeps its shared state in memory), the pods that share it,
+// and the fault proxies between the pods and the vendors.
 type harness struct {
 	t     *testing.T
 	dir   string
@@ -33,17 +34,22 @@ type harness struct {
 	host *hostLoad
 	// dumpStalls: a stalled header tap gets its pod a goroutine dump.
 	dumpStalls bool
+	// lookups time how long the proxies take to tell pods apart.
+	lookups *lookups
 
 	mu      sync.Mutex
+	pids    map[int]*pod
 	proxies []*proxy
 }
 
-func newHarness(t *testing.T, dir string) *harness {
+func newHarness(t *testing.T, dir string, withRedis bool) *harness {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, dir: dir, start: time.Now(), cpu0: selfCPU()}
-	h.redis = startRedis(t, dir)
+	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{}}
+	if withRedis {
+		h.redis = startRedis(t, dir)
+	}
 	t.Cleanup(h.stop)
 	return h
 }
@@ -67,9 +73,11 @@ func (h *harness) stop() {
 	for _, px := range proxies {
 		px.close()
 	}
-	h.redis.stop()
+	if h.redis != nil {
+		h.redis.stop()
+	}
 	wall := time.Since(h.start)
-	h.t.Logf("phase used %s CPU in the harness and simulators over %s wall", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second))
+	h.t.Logf("phase used %s CPU in the harness and simulators over %s wall; proxies: %s", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second), h.lookups.summary())
 	for _, p := range h.pods {
 		p.mu.Lock()
 		h.t.Logf("%s used %s CPU (%.1f cores)", p.name, p.cpu.Round(time.Second), p.cpu.Seconds()/wall.Seconds())
@@ -82,6 +90,31 @@ func (h *harness) stop() {
 			}
 		}
 	}
+}
+
+// podOfPid is the pod that runs process pid, if any.
+func (h *harness) podOfPid(pid int) *pod {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pids[pid]
+}
+
+// podPids are the pids of the running pods.
+func (h *harness) podPids() []int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pids := make([]int, 0, len(h.pids))
+	for pid := range h.pids {
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
+// forget drops an exited pod process from the pid table.
+func (h *harness) forget(pid int) {
+	h.mu.Lock()
+	delete(h.pids, pid)
+	h.mu.Unlock()
 }
 
 func freePort(t *testing.T) int {
@@ -138,7 +171,7 @@ func (h *harness) startPods(n int, nets []*netSpec) {
 		p := &pod{h: h, idx: i, name: fmt.Sprintf("pod-%d", i+1),
 			httpPort: freePort(h.t), grpcPort: freePort(h.t), metricsPort: freePort(h.t)}
 		p.cfgPath = filepath.Join(h.dir, p.name+".yaml")
-		if err := os.WriteFile(p.cfgPath, podConfig(p, h.redis.port, nets), 0o644); err != nil {
+		if err := os.WriteFile(p.cfgPath, podConfig(p, h.redis, nets), 0o644); err != nil {
 			h.t.Fatal(err)
 		}
 		h.pods = append(h.pods, p)
@@ -188,6 +221,9 @@ func (p *pod) start() error {
 	exited := make(chan struct{})
 	p.cmd, p.exited = cmd, exited
 	p.mu.Unlock()
+	p.h.mu.Lock()
+	p.h.pids[cmd.Process.Pid] = p
+	p.h.mu.Unlock()
 	go func() {
 		_ = cmd.Wait()
 		p.mu.Lock()
@@ -230,6 +266,7 @@ func (p *pod) kill() {
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	<-exited
+	p.h.forget(cmd.Process.Pid)
 }
 
 // quit sends SIGQUIT to the pod: the Go runtime writes every goroutine's
@@ -250,6 +287,7 @@ func (p *pod) quit() string {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-exited
 	}
+	p.h.forget(cmd.Process.Pid)
 	return log
 }
 
@@ -495,17 +533,16 @@ type netSpec struct {
 	ups     []upSpec
 }
 
-// upSpec is one upstream; each pod reaches it through its own link of px.
-type upSpec struct {
-	id, vendor string
-	px         *proxy
-}
+// upSpec is one upstream; every pod names the same endpoint, as pods of
+// one deployment do, so they share its shared-state keys.
+type upSpec struct{ id, endpoint, vendor string }
 
 // clusterKey prefixes every shared-state key of the pods.
 const clusterKey = "realworld"
 
-// podConfig is the YAML the pod's own strict loader reads.
-func podConfig(p *pod, redisPort int, nets []*netSpec) []byte {
+// podConfig is the YAML the pod's own strict loader reads. Without redis
+// the pod keeps its shared state in memory.
+func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 	type m = map[string]interface{}
 	projects := map[string]m{}
 	var order []string
@@ -527,7 +564,7 @@ func podConfig(p *pod, redisPort int, nets []*netSpec) []byte {
 			pr["networks"] = append(pr["networks"].([]m), nw)
 		}
 		for _, u := range n.ups {
-			up := m{"id": u.id, "endpoint": u.px.URL(p)}
+			up := m{"id": u.id, "endpoint": u.endpoint}
 			if !n.minimal {
 				up["vendorName"] = u.vendor
 				up["evm"] = m{"chainId": n.chainID}
@@ -550,14 +587,16 @@ func podConfig(p *pod, redisPort int, nets []*netSpec) []byte {
 			"grpcEnabled": true, "grpcHostV4": "127.0.0.1", "grpcPortV4": p.grpcPort,
 			"webSocket": m{"enabled": true},
 		},
-		"metrics": m{"enabled": true, "listenV4": true, "hostV4": "127.0.0.1", "port": p.metricsPort},
-		"database": m{"sharedState": m{
+		"metrics":  m{"enabled": true, "listenV4": true, "hostV4": "127.0.0.1", "port": p.metricsPort},
+		"projects": prs,
+	}
+	if redis != nil {
+		cfg["database"] = m{"sharedState": m{
 			"clusterKey": clusterKey,
 			"connector": m{"id": "shared", "driver": "redis", "redis": m{
-				"uri": fmt.Sprintf("redis://127.0.0.1:%d/0", redisPort),
+				"uri": fmt.Sprintf("redis://127.0.0.1:%d/0", redis.port),
 			}},
-		}},
-		"projects": prs,
+		}}
 	}
 	out, err := yaml.Marshal(cfg)
 	if err != nil {

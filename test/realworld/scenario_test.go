@@ -39,6 +39,9 @@ type spec struct {
 	vendors   []vendorSpec
 	integrity bool
 	minimal   bool
+	// lone: one pod with in-memory shared state and no redis, as a
+	// single-instance deployment runs; its phase holds lone specs only.
+	lone      bool
 	headerPad int
 	// bound is the delivery bound for clients that read (§ per scenario).
 	bound time.Duration
@@ -123,9 +126,9 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		if err != nil {
 			h.t.Fatal(err)
 		}
-		px := h.newProxy(v.Addr(), vs.ws)
+		px := h.newProxy(id, v.Addr(), vs.ws)
 		s.vendors[vs.key], s.proxies[vs.key] = v, px
-		s.net.ups = append(s.net.ups, upSpec{id: id, vendor: vs.name, px: px})
+		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name})
 	}
 	s.chain.Start()
 	return s
@@ -162,7 +165,8 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 		if err := r.host.waitQuiet(t.Logf); err != nil {
 			t.Fatal(err)
 		}
-		h := newHarness(t, filepath.Join(r.root, name))
+		lone := specs[0].lone
+		h := newHarness(t, filepath.Join(r.root, name), !lone)
 		h.host = r.host
 		// A phase of one scenario is a triage run: a stalled tap there
 		// earns its pod a goroutine dump.
@@ -174,7 +178,11 @@ func (r *run) phase(t *testing.T, name string, firstChain int64, specs []spec) {
 			scs = append(scs, sc)
 			nets = append(nets, sc.net)
 		}
-		h.startPods(2, nets)
+		pods := 2
+		if lone {
+			pods = 1
+		}
+		h.startPods(pods, nets)
 		for _, sc := range scs {
 			t.Run(sc.name, func(t *testing.T) {
 				t.Parallel()
