@@ -244,6 +244,7 @@ The WebSocket upstream client features:
 - **Ping/pong keepalive** (30s interval) to detect dead connections
 - **Lazy connection** — if the upstream is unavailable at startup, eRPC retries in the background without blocking
 - **Fail-fast while reconnecting** — requests sent while the connection is down fail immediately with a retryable error so they fail over to other upstreams
+- **Half-open detection on timeout** — when a request times out, eRPC pings the connection; with no answer within 5s it reconnects, and the other requests waiting on it fail over at once instead of waiting out the keepalive window
 - **Heads subscribed at startup** — while the WebSocket server is enabled, eRPC subscribes to `newHeads` on every WebSocket upstream as soon as its network initializes, so state pollers use pushed heads instead of polling even before any client subscribes
 - **Silent subscription recovery** — if a `newHeads` subscription stops delivering while the same upstream's polled head keeps advancing, eRPC reconnects to that upstream
 - **Unsupported `newHeads` is not retried** — if an upstream rejects `eth_subscribe newHeads` as unsupported, eRPC stops asking until the next reconnect or resubscribe; its state poller keeps tracking the head
