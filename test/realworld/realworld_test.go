@@ -1,6 +1,7 @@
 package realworld
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/test/chainsim"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // TestRealWorld runs the catalogue scenarios (review §3): network-scoped
@@ -274,22 +277,34 @@ func u8(integrity bool) spec {
 	}}
 }
 
+// u9VendorBLatency is harness, not spec: enough for the selection policy
+// to rank vendor-b's upstreams below vendor-a's.
+const u9VendorBLatency = 100 * time.Millisecond
+
 // U9: vendor-a (ws-a and http-a) serves truncated receipts, then a forged
 // log, then a zero bloom, 50 blocks each, integrity on. Receipts are
 // refetched from vendor-b: every client's logs equal the canonical logs,
 // no forged log reaches a client, and violations count on vendor-a only.
+// vendor-b's links run u9VendorBLatency slower throughout, so the
+// selection policy asks vendor-a first and its faults are exercised.
 func u9() spec {
 	return spec{name: "U9", integrity: true, bound: healthyDelivery, body: func(s *scenario) {
+		for _, key := range []string{"ws-b", "http-b"} {
+			for _, p := range s.h.pods {
+				s.proxies[key].set(p, linkFaults{Latency: u9VendorBLatency})
+			}
+		}
 		s.blocks(25)
 		va := []*chainsim.Vendor{s.vendors["ws-a"], s.vendors["http-a"]}
-		calls := func() int64 { return va[0].Stats().ReceiptsCalls + va[1].Stats().ReceiptsCalls }
-		var during int64
+		vb := []*chainsim.Vendor{s.vendors["ws-b"], s.vendors["http-b"]}
+		calls := func(vs []*chainsim.Vendor) int64 { return vs[0].Stats().ReceiptsCalls + vs[1].Stats().ReceiptsCalls }
+		var during, duringB int64
 		for _, fault := range []func(*chainsim.Faults, bool){
 			func(f *chainsim.Faults, on bool) { f.TruncReceipts = on },
 			func(f *chainsim.Faults, on bool) { f.ForgedLog = on },
 			func(f *chainsim.Faults, on bool) { f.WrongBloom = on },
 		} {
-			c0 := calls()
+			c0, b0 := calls(va), calls(vb)
 			for _, v := range va {
 				v.Update(func(f *chainsim.Faults) { fault(f, true) })
 			}
@@ -297,10 +312,11 @@ func u9() spec {
 			for _, v := range va {
 				v.Update(func(f *chainsim.Faults) { fault(f, false) })
 			}
-			during += calls() - c0
+			during += calls(va) - c0
+			duringB += calls(vb) - b0
 			s.blocks(10)
 		}
-		s.logf("vendor-a answered %d receipts calls under its faults", during)
+		s.logf("under vendor-a's faults, vendor-a answered %d receipts calls, vendor-b %d", during, duringB)
 		if during == 0 {
 			s.violate("U9", "no receipts call reached vendor-a during its faults: nothing exercised them")
 		}
@@ -369,7 +385,10 @@ func n5() spec {
 
 // K2: a minimal config, 1 wss and 1 https upstream with no evm block and no
 // network entry. The wss upstream is a source, the https one is not, the
-// served tip needs both (quorum 2), and every subscription works.
+// served tip needs both (quorum 2), and every subscription works. The
+// network-wide `latest` is floored at the delivered head (feature.md: "the
+// network-wide tracker's pin changes floor it"), and the lag gauge reads 0
+// at quorum ≤ 2, so the quorum shows on a use-upstream lane over both.
 func k2() spec {
 	return spec{name: "K2", project: "k2", minimal: true, bound: healthyDelivery,
 		vendors: []vendorSpec{{"ws-a", "vendor-a", true}, {"http-b", "vendor-b", false}},
@@ -389,9 +408,27 @@ func k2() spec {
 			}
 			hb := s.vendors["http-b"]
 			hb.Update(func(f *chainsim.Faults) { f.Lag = 5 })
-			for pod := range s.h.pods {
-				if v, ok := s.waitMetric(pod, "erpc_network_served_tip_lag_blocks", map[string]string{"lane": "all", "axis": "latest"}, 10*time.Second, func(v float64) bool { return v >= 3 }); !ok {
-					s.violate("K2", "pod-%d: served tip lag %v while %s is 5 blocks behind: the quorum is not 2", pod+1, v, http)
+			for pod, p := range s.h.pods {
+				c, err := rpc.DialOptions(s.ctx, p.httpURL(s.project, s.chain.ID()), rpc.WithHeader("X-ERPC-Use-Upstream", "k2-*"))
+				if err != nil {
+					s.t.Fatal(err)
+				}
+				var bn hexutil.Uint64
+				var behind uint64
+				for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(scrapeEvery) {
+					ctx, cancel := context.WithTimeout(s.ctx, httpCheckWait)
+					err = c.CallContext(ctx, &bn, "eth_blockNumber")
+					cancel()
+					if tip := s.chain.Tip().Number; err == nil && tip > uint64(bn) {
+						behind = tip - uint64(bn)
+					}
+					if behind >= 3 {
+						break
+					}
+				}
+				c.Close()
+				if behind < 3 {
+					s.violate("K2", "pod-%d: eth_blockNumber over both upstreams %d (err %v), %d behind the tip while %s is 5 blocks behind: the quorum is not 2", pod+1, bn, err, behind, http)
 				}
 			}
 			hb.Update(func(f *chainsim.Faults) { f.Lag = 0 })
