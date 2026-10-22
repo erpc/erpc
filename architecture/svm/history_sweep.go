@@ -2,52 +2,14 @@ package svm
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
+	"slices"
 
 	"github.com/erpc/erpc/common"
 )
-
-// PoolFirstAvailableSlot returns the pool's ledger floor: the MIN across
-// upstreams, because a request below one upstream's floor fails over to
-// another. That is the same "never deny data some upstream has" rule that makes
-// the upper guard use MAX.
-//
-// known=false unless EVERY upstream's floor is observed. A MIN over a partial
-// set is not a conservative estimate, it is an over-report in the forbidden
-// direction: with a known validator at 200000 and an unknown archive,
-// MIN-over-known says "history starts at 200000" — unknown reading as
-// unavailable. An upstream we cannot inspect counts as unknown for the same
-// reason.
-//
-// Floors are only observed when an upstream declares firstAvailableSlotPlus
-// (opt-in poll); without that the pool floor is unknown and callers fail open.
-func PoolFirstAvailableSlot(upstreams []common.Upstream) (int64, bool) {
-	if len(upstreams) == 0 {
-		return 0, false
-	}
-	minSlot := int64(math.MaxInt64)
-	for _, u := range upstreams {
-		sup, ok := u.(common.SvmUpstream)
-		if !ok {
-			return 0, false
-		}
-		poller := sup.SvmStatePoller()
-		if poller == nil || poller.IsObjectNull() {
-			return 0, false
-		}
-		slot, known := poller.FirstAvailableSlot()
-		if !known {
-			return 0, false
-		}
-		if slot < minSlot {
-			minSlot = slot
-		}
-	}
-	return minSlot, true
-}
 
 // solanaDefaultSignaturesLimit is the page size agave applies to
 // getSignaturesForAddress when the caller omits `limit`
@@ -61,23 +23,21 @@ const solanaDefaultSignaturesLimit = 1000
 // "this upstream does not have it, another may" verdict a pruned validator's
 // -32011 already produces, for the nodes that answer 200 instead of erroring.
 //
-// An upstream that already holds the pool's deepest known history (floor known
-// and <= PoolFirstAvailableSlot) is exempt: its incomplete answer is the pool's
-// best (see holdsDeepestHistory). Unknown floors keep the sweep going.
+// A short page or a null status is also the normal end of history (a young
+// address, an `until` cursor, a signature that never landed), so the shape alone
+// proves nothing. It continues only when another selected upstream has a known
+// floor strictly below this one's (see deeperFloorSelected): only then can the
+// pool hold history this upstream cannot see. An unknown floor on either side
+// serves the answer as is, the behaviour without this hook.
 //
 // The verdict is whole-request: the original request is re-sent to the next
 // upstream and this response is discarded. There is no splice or merge across
-// upstreams. The discarded response is still the request's last-valid response
-// (stored by the upstream layer before this hook runs), so when every upstream
-// is equally incomplete the client receives that answer rather than an error.
+// upstreams. The discarded response stays the request's last-valid response, so
+// when the deeper upstream fails the client still receives this answer.
 //
 // Consensus participant slots (common.IsConsensusSlot) skip this hook: parallel
-// upstreams vote on the bodies they returned. Converting identical legitimate
-// short pages into MissingData would make consensus agree on an error and the
-// network layer would not fall back to last-valid-response when consensus
-// actually ran (ExecState.ConsensusExecuted). SkipConsensus uses the serial
-// sweep without participant slots, so LVR fallback still applies. Cross-upstream
-// retry belongs to the serial sweep path, not consensus fan-out.
+// upstreams vote on the bodies they returned, and turning identical legitimate
+// short pages into MissingData would make consensus agree on an error.
 //
 // Errors pass through untouched: -32011 / -32020 and friends are classified by
 // the error normalizer and fail over on their own.
@@ -155,7 +115,7 @@ func signatureStatusesNullToMissingData(ctx context.Context, u common.Upstream, 
 			nulls++
 		}
 	}
-	if nulls == 0 || holdsDeepestHistory(u, r) {
+	if nulls == 0 || !deeperFloorSelected(u, r) {
 		return nil
 	}
 	return newHistorySweepMissingData(
@@ -166,9 +126,9 @@ func signatureStatusesNullToMissingData(ctx context.Context, u common.Upstream, 
 }
 
 // signaturesForAddressShortPageToMissingData: a page shorter than the page size
-// the caller asked for means this upstream's history for the address ends
-// early — typically a pruned validator that stops where its ledger does. A full
-// page proves nothing is missing. The effective page size is `limit`, else
+// the caller asked for may mean this upstream's history for the address ends at
+// its floor — a pruned validator stops where its ledger does. A full page
+// proves nothing is missing. The effective page size is `limit`, else
 // agave's default of 1000.
 //
 // A `limit` that is present but not a positive integer is not ours to
@@ -194,7 +154,7 @@ func signaturesForAddressShortPageToMissingData(ctx context.Context, u common.Up
 	if err := common.SonicCfg.Unmarshal(raw, &page); err != nil {
 		return nil
 	}
-	if int64(len(page)) >= limit || holdsDeepestHistory(u, r) {
+	if int64(len(page)) >= limit || !deeperFloorSelected(u, r) {
 		return nil
 	}
 	return newHistorySweepMissingData(
@@ -204,32 +164,80 @@ func signaturesForAddressShortPageToMissingData(ctx context.Context, u common.Up
 	)
 }
 
-// holdsDeepestHistory reports whether u's ledger floor is known and no higher
-// than the pool's floor (MIN across the request's selected upstreams), i.e. no
-// upstream in the pool can reach further back than u. Such an upstream's short
-// page / null status is the best answer the pool has, not a miss: sweeping on
-// would only offer the client a shallower answer, and the last-valid-response
-// slot is last-writer-wins, so a shallower upstream answering later would
-// REPLACE it.
-//
-// Fails open on every unknown: u's floor unobserved, or any pool member's floor
-// unobserved (PoolFirstAvailableSlot) — an unobserved archive may be deeper, so
-// the sweep continues exactly as before.
-func holdsDeepestHistory(u common.Upstream, r *common.NormalizedRequest) bool {
-	sup, ok := u.(common.SvmUpstream)
-	if !ok {
-		return false
+// IsHistoryMethod reports whether method reads arbitrarily old ledger history,
+// so the upstream with the deepest floor gives the most complete answer.
+func IsHistoryMethod(method string) bool {
+	switch method {
+	case "getSignatureStatuses", "getSignaturesForAddress":
+		return true
 	}
-	poller := sup.SvmStatePoller()
-	if poller == nil || poller.IsObjectNull() {
-		return false
+	return false
+}
+
+// OrderByHistoryDepth stably reorders ups so that, inside each run of upstreams
+// sharing a failover tier (sameTier), known floors come first, deepest first, and
+// unknown floors keep their score order after them. A history read then lands on
+// the most complete upstream first and the sweep in upstreamPostForward_historySweep
+// rarely needs a second call. Ordering only: every upstream stays eligible.
+func OrderByHistoryDepth(ups []common.Upstream, sameTier func(a, b common.Upstream) bool) []common.Upstream {
+	if len(ups) < 2 {
+		return ups
 	}
-	floor, known := poller.FirstAvailableSlot()
+	out := slices.Clone(ups)
+	for start := 0; start < len(out); {
+		end := start + 1
+		for end < len(out) && sameTier(out[start], out[end]) {
+			end++
+		}
+		slices.SortStableFunc(out[start:end], func(a, b common.Upstream) int {
+			fa, ka := upstreamFloor(a)
+			fb, kb := upstreamFloor(b)
+			switch {
+			case ka && kb:
+				return cmp.Compare(fa, fb)
+			case ka:
+				return -1
+			case kb:
+				return 1
+			}
+			return 0
+		})
+		start = end
+	}
+	return out
+}
+
+// deeperFloorSelected reports whether another upstream selected for r has a
+// known floor strictly below u's known floor: the only evidence that the pool
+// can reach history u cannot. Ties and unknowns are not evidence, so an
+// upstream at the pool's deepest floor, or one whose floor is unobserved, has
+// the final word.
+func deeperFloorSelected(u common.Upstream, r *common.NormalizedRequest) bool {
+	floor, known := upstreamFloor(u)
 	if !known {
 		return false
 	}
-	poolFloor, poolKnown := PoolFirstAvailableSlot(r.Upstreams())
-	return poolKnown && floor <= poolFloor
+	for _, other := range r.Upstreams() {
+		if other == u {
+			continue
+		}
+		if f, ok := upstreamFloor(other); ok && f < floor {
+			return true
+		}
+	}
+	return false
+}
+
+func upstreamFloor(u common.Upstream) (int64, bool) {
+	sup, ok := u.(common.SvmUpstream)
+	if !ok {
+		return 0, false
+	}
+	poller := sup.SvmStatePoller()
+	if poller == nil || poller.IsObjectNull() {
+		return 0, false
+	}
+	return poller.FirstAvailableSlot()
 }
 
 // newHistorySweepMissingData builds the incomplete-answer verdict: MissingData

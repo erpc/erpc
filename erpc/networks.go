@@ -1833,6 +1833,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		upsList = tierUpstreamsByGroup(upsList)
 	}
 
+	// SVM history reads go deepest known floor first within each tier, so the
+	// first answer is the most complete one the pool holds.
+	if n.Architecture() == common.ArchitectureSvm && svm.IsHistoryMethod(method) {
+		upsList = svm.OrderByHistoryDepth(upsList, func(a, b common.Upstream) bool {
+			return isFallbackTier(a) == isFallbackTier(b)
+		})
+	}
+
 	// Architecture-specific pruning of the upstream list. Currently only SVM
 	// uses this hook; both filters are gated on ArchitectureSvm so EVM networks
 	// never enter this block.
@@ -2395,9 +2403,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// Don't override consensus results with last valid response from individual upstreams
 		// For example if 1 upstream gives empty response another 3 give "reverted" error,
 		// we should still return reverted error, even though there was an empty response before.
-		// SkipConsensus (and other bypasses) run the serial sweep without participant slots —
-		// ConsensusExecuted stays false so history-parity sweeps can still fall back to LVR.
-		if req.ExecState().ConsensusExecuted() {
+		if failsafeExecutor.HasConsensus() {
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
@@ -2543,7 +2549,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// LVR is a borrowed pointer — consensus executor owns releasing non-winner responses.
 	// Just drop our reference so it doesn't outlive the response lifecycle.
-	if req.ExecState().ConsensusExecuted() {
+	if failsafeExecutor.HasConsensus() {
 		req.ClearLastValidResponse()
 	}
 

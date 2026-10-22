@@ -2725,10 +2725,6 @@ func IsHistorySweepContinuation(err error) bool {
 			if p, ok := base.Details["historySweepContinuation"].(bool); ok && p {
 				return true
 			}
-			// Pre-rename detail key (same PR stack may still grep old logs).
-			if p, ok := base.Details["historyParityContinuation"].(bool); ok && p {
-				return true
-			}
 		}
 		next := cse.GetCause()
 		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {

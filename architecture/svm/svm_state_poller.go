@@ -221,13 +221,8 @@ func NewSvmStatePoller(
 	// (a peer's floor of 0 into a zero-valued counter). Those paths are closed
 	// by refreshFirstAvailableSlot's not-stale fast path — but ONLY when no
 	// local refresh is still pending a real observation (see
-	// firstAvailableSlotPending). Gated on declaresFirstAvailableSlotPlus so a
-	// propagated shared counter (same id/endpoint key, different config) cannot
-	// export the floor gauge or mark this poller known without opt-in.
+	// firstAvailableSlotPending).
 	firstAvailableShared.OnValue(func(v int64) {
-		if !e.declaresFirstAvailableSlotPlus() {
-			return
-		}
 		e.firstAvailableSlotPending.Store(false)
 		e.firstAvailableSlotKnown.Store(true)
 		e.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot).Set(float64(v))
@@ -276,12 +271,16 @@ func (e *SvmStatePoller) IsObjectNull() bool {
 // down the whole erpc process (which serves every other network too).
 func (e *SvmStatePoller) recoverPanic(where string) {
 	if r := recover(); r != nil {
-		e.logger.Error().
-			Interface("panic", r).
-			Str("where", where).
-			Bytes("stack", debug.Stack()).
-			Msg("recovered from panic in svm state poller")
+		e.recoverPanicValue(where, r)
 	}
+}
+
+func (e *SvmStatePoller) recoverPanicValue(where string, r interface{}) {
+	e.logger.Error().
+		Interface("panic", r).
+		Str("where", where).
+		Bytes("stack", debug.Stack()).
+		Msg("recovered from panic in svm state poller")
 }
 
 func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
@@ -489,10 +488,9 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 		e.nextHealthPoll = e.pollCount
 	}
 
-	// The floor is probed ONLY for an upstream whose operator declared a
-	// firstAvailableSlotPlus bound (see declaresFirstAvailableSlotPlus), the
-	// same opt-in as EVM's earliestBlockPlus. An upstream with no such bound
-	// costs no extra call and carries no observed floor at all.
+	// The floor is probed for every upstream: history routing compares floors
+	// across the pool (history_sweep.go), and a declared firstAvailableSlotPlus
+	// bound anchors on it. Observing it gates nothing by itself.
 	//
 	// It runs AFTER the fan-out joins, not inside it, because its
 	// edge validation compares the sampled floor against this upstream's own
@@ -502,12 +500,10 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	// path while the value is fresh, and when it does refresh, the foreground
 	// wait is capped by SharedStateConfig.UpdateMaxWait with the fetch
 	// continuing asynchronously.
-	if e.declaresFirstAvailableSlotPlus() {
-		func() {
-			defer e.recoverPanic("fetchFirstAvailableSlot")
-			e.refreshFirstAvailableSlot(ctx)
-		}()
-	}
+	func() {
+		defer e.recoverPanic("fetchFirstAvailableSlot")
+		e.refreshFirstAvailableSlot(ctx)
+	}()
 
 	// A health verdict nobody routes on is not a defense; publish it.
 	e.applyHealthToRouting()
@@ -595,24 +591,6 @@ func (e *SvmStatePoller) IsHealthy() bool {
 	return true
 }
 
-// declaresFirstAvailableSlotPlus reports whether this upstream's operator-
-// declared svm.blockAvailability uses a firstAvailableSlotPlus bound on either
-// side — the only way an observed floor is consulted. Same spirit as EVM's
-// earliestBlockPlus: the floor is polled because a declared bound needs it as
-// its anchor, never by default.
-func (e *SvmStatePoller) declaresFirstAvailableSlotPlus() bool {
-	if e.upstream == nil {
-		return false
-	}
-	cfg := e.upstream.Config()
-	if cfg == nil || cfg.Svm == nil || cfg.Svm.BlockAvailability == nil {
-		return false
-	}
-	ba := cfg.Svm.BlockAvailability
-	return (ba.Lower != nil && ba.Lower.FirstAvailableSlotPlus != nil) ||
-		(ba.Upper != nil && ba.Upper.FirstAvailableSlotPlus != nil)
-}
-
 // refreshFirstAvailableSlot re-reads this upstream's ledger floor, debounced by
 // the counter itself rather than by the poll gate. TryUpdateIfStale returns on
 // a fast path when the value is fresh, so calling it every tick costs one
@@ -632,8 +610,16 @@ func (e *SvmStatePoller) declaresFirstAvailableSlotPlus() bool {
 func (e *SvmStatePoller) refreshFirstAvailableSlot(ctx context.Context) {
 	wasStale := e.firstAvailableSlotShared.IsStale(DefaultFirstAvailableSlotStaleness)
 	slot, err := e.firstAvailableSlotShared.TryUpdateIfStale(ctx, DefaultFirstAvailableSlotStaleness,
-		func(ctx context.Context) (int64, error) {
-			slot, err := e.fetchFirstAvailableSlot(ctx)
+		func(ctx context.Context) (slot int64, err error) {
+			// The shared counter may run this on its own goroutine, outside
+			// Poll's recoverPanic; a panicking transport must not crash the process.
+			defer func() {
+				if r := recover(); r != nil {
+					e.recoverPanicValue("fetchFirstAvailableSlot", r)
+					slot, err = 0, fmt.Errorf("panic in floor probe: %v", r)
+				}
+			}()
+			slot, err = e.fetchFirstAvailableSlot(ctx)
 			if err != nil {
 				// Includes -32601 from an upstream that does not implement the
 				// method, and null/empty results. Returning the error leaves

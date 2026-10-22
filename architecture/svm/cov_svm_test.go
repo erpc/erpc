@@ -13,7 +13,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
-	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
@@ -744,19 +743,6 @@ func covSvmHealthyAnswer(req *common.NormalizedRequest, key string) (*common.Nor
 	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
 }
 
-func covSvmFloorCfg(id string) *common.UpstreamConfig {
-	plus := int64(0)
-	return &common.UpstreamConfig{
-		Id: id, Type: common.UpstreamTypeSvm, Endpoint: "http://" + id,
-		Svm: &common.SvmUpstreamConfig{
-			Cluster: "mainnet-beta",
-			BlockAvailability: &common.SvmBlockAvailabilityConfig{
-				Lower: &common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: &plus},
-			},
-		},
-	}
-}
-
 func TestCovSvmPoller_MalformedSlotAnswersAreIgnored(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
@@ -791,8 +777,7 @@ func TestCovSvmPoller_PanickingUpstreamIsRecovered(t *testing.T) {
 	t.Parallel()
 	var panicking atomic.Bool
 	panicking.Store(true)
-	// No floor opt-in: a panic inside the floor probe runs on the shared-state
-	// refresh goroutine, outside recoverPanic, and would crash the process.
+	// The floor probe runs too; its panic is recovered inside the refresh closure.
 	up := &covSvmFuncUpstream{id: "covsvm-panic",
 		fwd: func(_ context.Context, req *common.NormalizedRequest, key string) (*common.NormalizedResponse, error) {
 			if panicking.Load() {
@@ -824,7 +809,7 @@ func TestCovSvmPoller_FloorProbeFailuresLeaveFloorUnknown(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			up := newScriptedUpstreamDeclaringFloor()
+			up := newScriptedUpstream()
 			scriptAllFour(up)
 			tc.script(up)
 			p := newPollerWithUpstream(t, up)
@@ -842,7 +827,7 @@ func TestCovSvmPoller_FloorProbeFailuresLeaveFloorUnknown(t *testing.T) {
 func TestCovSvmPoller_SlowFloorProbeCompletesAsync(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
-	up := &covSvmFuncUpstream{id: "covsvm-slowfloor", cfg: covSvmFloorCfg("covsvm-slowfloor"),
+	up := &covSvmFuncUpstream{id: "covsvm-slowfloor",
 		fwd: func(ctx context.Context, req *common.NormalizedRequest, key string) (*common.NormalizedResponse, error) {
 			if key == "oldestBlock" {
 				select {
@@ -864,45 +849,6 @@ func TestCovSvmPoller_SlowFloorProbeCompletesAsync(t *testing.T) {
 		floor, known := p.FirstAvailableSlot()
 		return known && floor == 200
 	}, 5*time.Second, 5*time.Millisecond)
-}
-
-// Two pollers whose upstreams share an identity share the floor counter; only
-// the one that declared firstAvailableSlotPlus may treat a value as its floor.
-func TestCovSvmPoller_SharedFloorCounterRequiresOptIn(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	cfg := &common.SharedStateConfig{
-		Connector: &common.ConnectorConfig{
-			Driver: common.DriverMemory,
-			Memory: &common.MemoryConnectorConfig{MaxItems: 1000, MaxTotalSize: "1MB"},
-		},
-		LockMaxWait:     common.Duration(50 * time.Millisecond),
-		UpdateMaxWait:   common.Duration(time.Second),
-		FallbackTimeout: common.Duration(time.Second),
-		LockTtl:         common.Duration(2 * time.Second),
-	}
-	cfg.SetDefaults("test")
-	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, cfg)
-	require.NoError(t, err)
-	tracker := health.NewTracker(&log.Logger, "test", time.Minute)
-
-	declaring := newScriptedUpstreamDeclaringFloor()
-	scriptAllFour(declaring)
-	declaring.script("oldestBlock", []byte(`[300]`))
-	plain := newScriptedUpstream() // same id + endpoint → same counter keys
-	require.Equal(t, common.UniqueUpstreamKey(declaring), common.UniqueUpstreamKey(plain))
-
-	a := NewSvmStatePoller("test", ctx, &log.Logger, declaring, tracker, ssr)
-	b := NewSvmStatePoller("test", ctx, &log.Logger, plain, tracker, ssr)
-
-	require.NoError(t, a.Poll(context.Background()))
-	require.Eventually(t, func() bool {
-		floor, known := a.FirstAvailableSlot()
-		return known && floor == 300
-	}, 5*time.Second, 5*time.Millisecond)
-	_, known := b.FirstAvailableSlot()
-	require.False(t, known, "a poller without the opt-in must not adopt a propagated floor")
 }
 
 func TestCovSvmPoller_LargeRollbackIsRecorded(t *testing.T) {
@@ -940,7 +886,6 @@ func TestCovSvmPoller_NonPositiveSuggestionsIgnored(t *testing.T) {
 func TestCovSvmPoller_NoUpstream(t *testing.T) {
 	t.Parallel()
 	e := &SvmStatePoller{projectId: "covsvm-noupstream"}
-	require.False(t, e.declaresFirstAvailableSlotPlus())
 	e.applyHealthToRouting() // nothing to cordon; must return before touching upstream
 	e.gauge(telemetry.MetricUpstreamSvmFirstAvailableSlot).Set(7)
 	require.Equal(t, 7.0, promUtil.ToFloat64(

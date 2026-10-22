@@ -26,41 +26,6 @@ func sigPage(n int) string {
 }
 
 // ---------------------------------------------------------------------------
-// PoolFirstAvailableSlot — used by holdsDeepestHistory (sig parity)
-// ---------------------------------------------------------------------------
-
-func TestPoolFirstAvailableSlot(t *testing.T) {
-	t.Parallel()
-
-	t.Run("mixed pruned and archive returns MIN", func(t *testing.T) {
-		t.Parallel()
-		pool := []common.Upstream{
-			upstreamWithFloor("validator", 300000, 200000, true),
-			upstreamWithFloor("archive", 300000, 0, true),
-		}
-		slot, known := PoolFirstAvailableSlot(pool)
-		require.True(t, known)
-		require.Equal(t, int64(0), slot)
-	})
-
-	t.Run("one unknown floor is unknown pool floor", func(t *testing.T) {
-		t.Parallel()
-		pool := []common.Upstream{
-			upstreamWithFloor("validator", 300000, 200000, true),
-			upstreamWithFloor("archive", 300000, 0, false),
-		}
-		_, known := PoolFirstAvailableSlot(pool)
-		require.False(t, known)
-	})
-
-	t.Run("empty pool is unknown", func(t *testing.T) {
-		t.Parallel()
-		_, known := PoolFirstAvailableSlot(nil)
-		require.False(t, known)
-	})
-}
-
-// ---------------------------------------------------------------------------
 // getSignatureStatuses — continue on null when searching history
 // ---------------------------------------------------------------------------
 
@@ -69,11 +34,13 @@ func TestPostForward_GetSignatureStatuses_NullContinue(t *testing.T) {
 	ctx := context.Background()
 	h := &SvmArchitectureHandler{}
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
-	up := upstreamWithFloor("u", 300000, 0, true)
+	up := upstreamWithFloor("u", 300000, 200000, true)
+	deeper := upstreamWithFloor("archive", 300000, 0, true)
 
 	run := func(t *testing.T, params, result string) (*common.NormalizedResponse, error) {
 		t.Helper()
 		req := reqOf(t, "getSignatureStatuses", params)
+		req.SetUpstreams([]common.Upstream{up, deeper})
 		return h.HandleUpstreamPostForward(ctx, net, up, req, resultResp(t, req, result), nil, false)
 	}
 
@@ -148,11 +115,13 @@ func TestPostForward_GetSignaturesForAddress_ShortPage(t *testing.T) {
 	ctx := context.Background()
 	h := &SvmArchitectureHandler{}
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
-	up := upstreamWithFloor("u", 300000, 0, true)
+	up := upstreamWithFloor("u", 300000, 200000, true)
+	deeper := upstreamWithFloor("archive", 300000, 0, true)
 
 	run := func(t *testing.T, params, result string) (*common.NormalizedResponse, error) {
 		t.Helper()
 		req := reqOf(t, "getSignaturesForAddress", params)
+		req.SetUpstreams([]common.Upstream{up, deeper})
 		return h.HandleUpstreamPostForward(ctx, net, up, req, resultResp(t, req, result), nil, false)
 	}
 
@@ -232,7 +201,7 @@ func TestPostForward_GetSignaturesForAddress_ShortPage(t *testing.T) {
 	})
 }
 
-// Methods outside the two history-parity entries are untouched.
+// Methods other than the two history reads are untouched.
 func TestPostForward_HistorySweep_OtherMethodsUntouched(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -245,10 +214,10 @@ func TestPostForward_HistorySweep_OtherMethodsUntouched(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// deepest-history exemption
+// continue only toward a known deeper floor
 // ---------------------------------------------------------------------------
 
-func TestPostForward_HistorySweep_DeepestHistoryIsAuthoritative(t *testing.T) {
+func TestPostForward_HistorySweep_ContinuesOnlyTowardDeeperFloor(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	h := &SvmArchitectureHandler{}
@@ -259,71 +228,59 @@ func TestPostForward_HistorySweep_DeepestHistoryIsAuthoritative(t *testing.T) {
 	pruned := upstreamWithFloor("pruned", 300000, 200000, true)
 	unknown := upstreamWithFloor("unknown", 300000, 0, false)
 
-	sigs := func(u common.Upstream, pool ...common.Upstream) (*common.NormalizedResponse, error) {
+	sigs := func(u common.Upstream, pool ...common.Upstream) error {
 		req := reqOf(t, "getSignaturesForAddress", `["addr",{"limit":5}]`)
 		req.SetUpstreams(pool)
-		return h.HandleUpstreamPostForward(ctx, net, u, req, resultResp(t, req, sigPage(2)), nil, false)
+		_, err := h.HandleUpstreamPostForward(ctx, net, u, req, resultResp(t, req, sigPage(2)), nil, false)
+		return err
 	}
-	const withNull = `{"context":{"slot":9},"value":[null]}`
-	statuses := func(u common.Upstream, pool ...common.Upstream) (*common.NormalizedResponse, error) {
+	statuses := func(u common.Upstream, pool ...common.Upstream) error {
 		req := reqOf(t, "getSignatureStatuses", `[["a"],{"searchTransactionHistory":true}]`)
 		req.SetUpstreams(pool)
-		return h.HandleUpstreamPostForward(ctx, net, u, req, resultResp(t, req, withNull), nil, false)
+		_, err := h.HandleUpstreamPostForward(ctx, net, u, req, resultResp(t, req, `{"context":{"slot":9},"value":[null]}`), nil, false)
+		return err
 	}
 
-	t.Run("pool-deepest upstream's short page is served", func(t *testing.T) {
-		t.Parallel()
-		rs, err := sigs(archive, pruned, archive)
-		require.NoError(t, err)
-		require.NotNil(t, rs)
-	})
+	continues := []struct {
+		name string
+		u    common.Upstream
+		pool []common.Upstream
+	}{
+		{"pruned with a deeper archive selected", pruned, []common.Upstream{pruned, archive}},
+		{"pruned with a deeper archive and an unknown", pruned, []common.Upstream{unknown, pruned, archive}},
+	}
+	for _, tc := range continues {
+		t.Run("continues: "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, err := range []error{sigs(tc.u, tc.pool...), statuses(tc.u, tc.pool...)} {
+				require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+				require.True(t, common.IsRetryableTowardNetwork(err))
+			}
+		})
+	}
 
-	t.Run("pool-deepest upstream's null status is served", func(t *testing.T) {
-		t.Parallel()
-		rs, err := statuses(archive, pruned, archive)
-		require.NoError(t, err)
-		require.NotNil(t, rs)
-	})
-
-	t.Run("a tie at the pool floor is authoritative", func(t *testing.T) {
-		t.Parallel()
-		_, err := sigs(archive, archive, archive2)
-		require.NoError(t, err)
-		_, err = statuses(archive2, archive, archive2)
-		require.NoError(t, err)
-	})
-
-	t.Run("a shallower upstream still sweeps on", func(t *testing.T) {
-		t.Parallel()
-		_, err := sigs(pruned, pruned, archive)
-		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
-		require.True(t, common.IsRetryableTowardNetwork(err))
-		_, err = statuses(pruned, pruned, archive)
-		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
-	})
-
-	t.Run("an unknown pool member's floor keeps the sweep going", func(t *testing.T) {
-		t.Parallel()
-		_, err := sigs(archive, archive, unknown)
-		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
-		_, err = statuses(archive, archive, unknown)
-		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
-	})
-
-	t.Run("the upstream's own unknown floor keeps the sweep going", func(t *testing.T) {
-		t.Parallel()
-		_, err := sigs(unknown, unknown, archive)
-		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
-	})
-
-	t.Run("no pool on the request fails open to the sweep", func(t *testing.T) {
-		t.Parallel()
-		_, err := sigs(archive)
-		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
-	})
+	serves := []struct {
+		name string
+		u    common.Upstream
+		pool []common.Upstream
+	}{
+		{"deepest upstream", archive, []common.Upstream{pruned, archive}},
+		{"tie at the deepest floor", archive, []common.Upstream{archive, archive2}},
+		{"deeper upstream's floor unknown", pruned, []common.Upstream{pruned, unknown}},
+		{"own floor unknown", unknown, []common.Upstream{unknown, archive}},
+		{"no other upstream selected", pruned, []common.Upstream{pruned}},
+		{"no pool on the request", pruned, nil},
+	}
+	for _, tc := range serves {
+		t.Run("serves: "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, sigs(tc.u, tc.pool...))
+			require.NoError(t, statuses(tc.u, tc.pool...))
+		})
+	}
 }
 
-// History parity is for serial sweep continuation only. Under consensus, identical
+// The history sweep is for serial sweep continuation only. Under consensus, identical
 // valid short pages must stay 200s so participants can agree; MissingData would
 // collapse to an agreed error with no last-valid-response fallback.
 func TestPostForward_HistorySweep_SkippedUnderConsensusSlot(t *testing.T) {
@@ -332,10 +289,12 @@ func TestPostForward_HistorySweep_SkippedUnderConsensusSlot(t *testing.T) {
 	h := &SvmArchitectureHandler{}
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
 	pruned := upstreamWithFloor("pruned", 300000, 200000, true)
+	pool := []common.Upstream{pruned, upstreamWithFloor("archive", 300000, 0, true)}
 
 	t.Run("getSignaturesForAddress short page is served", func(t *testing.T) {
 		t.Parallel()
 		req := reqOf(t, "getSignaturesForAddress", `["addr",{"limit":5}]`)
+		req.SetUpstreams(pool)
 		rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, sigPage(2)), nil, false)
 		require.NoError(t, err)
 		require.NotNil(t, rs)
@@ -345,6 +304,7 @@ func TestPostForward_HistorySweep_SkippedUnderConsensusSlot(t *testing.T) {
 		t.Parallel()
 		const withNull = `{"context":{"slot":9},"value":[null]}`
 		req := reqOf(t, "getSignatureStatuses", `[["a"],{"searchTransactionHistory":true}]`)
+		req.SetUpstreams(pool)
 		rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, withNull), nil, false)
 		require.NoError(t, err)
 		require.NotNil(t, rs)

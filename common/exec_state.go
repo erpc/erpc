@@ -261,16 +261,6 @@ type ExecStateSnapshot struct {
 	StartedAt time.Time
 }
 
-// ConsensusExecuted reports whether the failsafe consensus executor spawned
-// at least one participant for this request. Zero when the non-consensus
-// path ran (including SkipConsensus and single-dispatch write bypasses).
-func (s *ExecState) ConsensusExecuted() bool {
-	if s == nil {
-		return false
-	}
-	return s.ConsensusSlots.Load() > 0
-}
-
 // Snapshot returns a plain-int view of the current counters. Each Load
 // is independent — under heavy concurrency the totals may briefly drift
 // from the sum of components mid-snapshot. The intended use is

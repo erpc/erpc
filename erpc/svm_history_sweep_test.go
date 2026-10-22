@@ -20,18 +20,6 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-// svmUpstreamConfigWithFloorPoll declares firstAvailableSlotPlus: 0 so the
-// state poller probes getBlocksWithLimit(0, 1). Required after the floor became
-// opt-in — history-parity deepest-history logic needs observed floors.
-func svmUpstreamConfigWithFloorPoll(id, host string) *common.UpstreamConfig {
-	cfg := svmUpstreamConfig(id, host)
-	plus := int64(0)
-	cfg.Svm.BlockAvailability = &common.SvmBlockAvailabilityConfig{
-		Lower: &common.SvmAvailabilityBoundConfig{FirstAvailableSlotPlus: &plus},
-	}
-	return cfg
-}
-
 // mockSvmMethod registers a persistent reply for `method` on host and returns a
 // counter of how many times the upstream actually answered it.
 func mockSvmMethod(host, method, body string) *atomic.Int64 {
@@ -60,7 +48,9 @@ func svmSigPage(n int) string {
 	return `{"jsonrpc":"2.0","id":1,"result":[` + strings.Join(items, ",") + `]}`
 }
 
-func TestSvm_GetSignaturesForAddress_ShortPageContinuesToNextUpstream(t *testing.T) {
+// The archive's deeper known floor puts it first despite the pinned score order,
+// so the full page arrives in one call and the pruned validator is never asked.
+func TestSvm_GetSignaturesForAddress_DeepestFloorAnswersFirst(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-sigs-rpc1.localhost", 1000, 990, 1000, 500)
@@ -75,8 +65,8 @@ func TestSvm_GetSignaturesForAddress_ShortPageContinuesToNextUpstream(t *testing
 	full := mockSvmMethod("svm-sigs-rpc2.localhost", "getSignaturesForAddress", svmSigPage(5))
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfigWithFloorPoll("rpc1", "svm-sigs-rpc1.localhost"),
-		svmUpstreamConfigWithFloorPoll("rpc2", "svm-sigs-rpc2.localhost"),
+		svmUpstreamConfig("rpc1", "svm-sigs-rpc1.localhost"),
+		svmUpstreamConfig("rpc2", "svm-sigs-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 	time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -87,8 +77,8 @@ func TestSvm_GetSignaturesForAddress_ShortPageContinuesToNextUpstream(t *testing
 	jrr, err := resp.JsonRpcResponse()
 	require.NoError(t, err)
 	require.Contains(t, string(jrr.GetResultBytes()), `"sig4"`, "the full page from the archive must win")
-	require.GreaterOrEqual(t, short.Load(), int64(1))
-	require.GreaterOrEqual(t, full.Load(), int64(1))
+	require.Zero(t, short.Load(), "the shallower upstream is not tried before the deepest one")
+	require.EqualValues(t, 1, full.Load())
 }
 
 func TestSvm_GetSignaturesForAddress_FullPageStopsSweep(t *testing.T) {
@@ -117,6 +107,39 @@ func TestSvm_GetSignaturesForAddress_FullPageStopsSweep(t *testing.T) {
 	require.Zero(t, second.Load(), "a full page must not trigger the sweep")
 }
 
+// Equal floors: a short page is the normal end of history, so the first
+// upstream's answer is final and no other upstream is called.
+func TestSvm_GetSignaturesForAddress_ShortPageAtEqualFloorsIsServed(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	hosts := []string{"svm-sigseq-rpc1.localhost", "svm-sigseq-rpc2.localhost", "svm-sigseq-rpc3.localhost"}
+	for _, h := range hosts {
+		util.SetupMocksForSvmStatePoller(h, 1000, 990)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	calls := make([]*atomic.Int64, len(hosts))
+	cfgs := make([]*common.UpstreamConfig, len(hosts))
+	for i, h := range hosts {
+		calls[i] = mockSvmMethod(h, "getSignaturesForAddress", svmSigPage(2))
+		cfgs[i] = svmUpstreamConfig(fmt.Sprintf("rpc%d", i+1), h)
+	}
+	net := setupTestSvmNetwork(t, ctx, cfgs)
+	net.PinUpstreamOrderForTest("rpc1", "rpc2", "rpc3")
+	time.Sleep(300 * time.Millisecond) // let the floor poll land
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr",{"limit":5}]}`))
+	resp, err := svmProjectForward(ctx, net, req)
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
+	require.Equal(t, int64(1), calls[0].Load())
+	require.Zero(t, calls[1].Load()+calls[2].Load(), "equal floors give no reason to call another upstream")
+}
+
 func TestSvm_GetSignaturesForAddress_AllShortServesLastValidPage(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -134,8 +157,8 @@ func TestSvm_GetSignaturesForAddress_AllShortServesLastValidPage(t *testing.T) {
 	mockSvmMethod("svm-sigsall-rpc2.localhost", "getSignaturesForAddress", svmSigPage(2))
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfigWithFloorPoll("rpc1", "svm-sigsall-rpc1.localhost"),
-		svmUpstreamConfigWithFloorPoll("rpc2", "svm-sigsall-rpc2.localhost"),
+		svmUpstreamConfig("rpc1", "svm-sigsall-rpc1.localhost"),
+		svmUpstreamConfig("rpc2", "svm-sigsall-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 	time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -166,8 +189,8 @@ func TestSvm_GetSignatureStatuses_SearchHistoryNullContinuesToNextUpstream(t *te
 	archive := mockSvmMethod("svm-status-rpc2.localhost", "getSignatureStatuses", svmSigStatusFound)
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfigWithFloorPoll("rpc1", "svm-status-rpc1.localhost"),
-		svmUpstreamConfigWithFloorPoll("rpc2", "svm-status-rpc2.localhost"),
+		svmUpstreamConfig("rpc1", "svm-status-rpc1.localhost"),
+		svmUpstreamConfig("rpc2", "svm-status-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 	time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -231,8 +254,8 @@ func TestSvm_GetSignaturesForAddress_DeepestUpstreamShortPageIsAuthoritative(t *
 
 			ids := map[string]string{"archive": archiveHost, "pruned": prunedHost}
 			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-				svmUpstreamConfigWithFloorPoll(order[0], ids[order[0]]),
-				svmUpstreamConfigWithFloorPoll(order[1], ids[order[1]]),
+				svmUpstreamConfig(order[0], ids[order[0]]),
+				svmUpstreamConfig(order[1], ids[order[1]]),
 			})
 			net.PinUpstreamOrderForTest(order[0], order[1])
 			time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -274,8 +297,8 @@ func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.
 
 			ids := map[string]string{"archive": archiveHost, "pruned": prunedHost}
 			net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-				svmUpstreamConfigWithFloorPoll(order[0], ids[order[0]]),
-				svmUpstreamConfigWithFloorPoll(order[1], ids[order[1]]),
+				svmUpstreamConfig(order[0], ids[order[0]]),
+				svmUpstreamConfig(order[1], ids[order[1]]),
 			})
 			net.PinUpstreamOrderForTest(order[0], order[1])
 			time.Sleep(300 * time.Millisecond) // let the floor poll land
@@ -290,11 +313,8 @@ func TestSvm_GetSignatureStatuses_DeepestUpstreamNullIsAuthoritative(t *testing.
 	}
 }
 
-// When every consensus participant returns the same legitimately short page,
-// history sweep must not turn those 200s into MissingData (consensus would
-// agree on an error and last-valid-response fallback is disabled).
 // When rpc1 (shallow) and rpc2 (deepest) return the same legitimately short page,
-// rpc1's parity-continuation MissingData must not record wrong-empty misbehavior.
+// rpc1's sweep-continuation MissingData must not record wrong-empty misbehavior.
 func TestSvm_HistorySweep_NoMisbehaviorForIdenticalShortPages(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -308,8 +328,8 @@ func TestSvm_HistorySweep_NoMisbehaviorForIdenticalShortPages(t *testing.T) {
 	mockSvmMethod("svm-sigsmb-rpc2.localhost", "getSignaturesForAddress", svmSigPage(2))
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfigWithFloorPoll("rpc1", "svm-sigsmb-rpc1.localhost"),
-		svmUpstreamConfigWithFloorPoll("rpc2", "svm-sigsmb-rpc2.localhost"),
+		svmUpstreamConfig("rpc1", "svm-sigsmb-rpc1.localhost"),
+		svmUpstreamConfig("rpc2", "svm-sigsmb-rpc2.localhost"),
 	})
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 	time.Sleep(300 * time.Millisecond)
@@ -328,14 +348,16 @@ func TestSvm_HistorySweep_NoMisbehaviorForIdenticalShortPages(t *testing.T) {
 	}
 	require.NotNil(t, rpc1)
 	metrics := net.metricsTracker.GetUpstreamMethodMetrics(rpc1, "getSignaturesForAddress", common.DataFinalityStateRealtime)
-	require.Zero(t, metrics.MisbehaviorsTotal.Load(), "parity sweep must not punish an upstream that returned the same page as the winner")
+	require.Zero(t, metrics.MisbehaviorsTotal.Load(), "the history sweep must not punish an upstream that returned the same page as the winner")
 }
 
+// Consensus participants vote on the bodies they returned: the shallower
+// participant's short page must stay a 200, or consensus agrees on an error.
 func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
-	util.SetupMocksForSvmStatePoller("svm-cons-sigs-a.localhost", 1000, 990)
-	util.SetupMocksForSvmStatePoller("svm-cons-sigs-b.localhost", 1000, 990)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-cons-sigs-a.localhost", 1000, 990, 1000, 500)
+	util.SetupMocksForSvmStatePollerWithFirstAvailable("svm-cons-sigs-b.localhost", 1000, 990, 1000, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -348,6 +370,7 @@ func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
 		svmUpstreamConfig("a", "svm-cons-sigs-a.localhost"),
 		svmUpstreamConfig("b", "svm-cons-sigs-b.localhost"),
 	}, []common.DataFinalityState{common.DataFinalityStateRealtime})
+	time.Sleep(300 * time.Millisecond) // let the floor poll land
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr",{"limit":5}]}`))
 	resp, err := svmProjectForward(ctx, net, req)
@@ -355,63 +378,4 @@ func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
 	jrr, err := resp.JsonRpcResponse()
 	require.NoError(t, err)
 	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
-}
-
-func TestSvm_SkipConsensus_HistorySweep_AllShortPagesUseLastValidResponse(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForSvmStatePoller("svm-skipcons-sigs-a.localhost", 1000, 990)
-	util.SetupMocksForSvmStatePoller("svm-skipcons-sigs-b.localhost", 1000, 990)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mockSvmMethod("svm-skipcons-sigs-a.localhost", "getSignaturesForAddress", svmSigPage(2))
-	mockSvmMethod("svm-skipcons-sigs-b.localhost", "getSignaturesForAddress", svmSigPage(2))
-
-	net := setupTestSvmNetworkWithConsensus(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfig("a", "svm-skipcons-sigs-a.localhost"),
-		svmUpstreamConfig("b", "svm-skipcons-sigs-b.localhost"),
-	}, []common.DataFinalityState{common.DataFinalityStateRealtime})
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["addr",{"limit":5}]}`))
-	h := http.Header{}
-	h.Set("X-ERPC-Skip-Consensus", "true")
-	req.EnrichFromHttp(h, nil, common.UserAgentTrackingModeSimplified)
-	require.True(t, req.Directives().SkipConsensus)
-
-	resp, err := svmProjectForward(ctx, net, req)
-	require.NoError(t, err, "SkipConsensus serial sweep must fall back to last-valid-response, not fail because consensus is merely configured")
-	jrr, err := resp.JsonRpcResponse()
-	require.NoError(t, err)
-	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
-}
-
-func TestSvm_SkipConsensus_HistorySweep_NullStatusesUseLastValidResponse(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForSvmStatePoller("svm-skipcons-st-a.localhost", 1000, 990)
-	util.SetupMocksForSvmStatePoller("svm-skipcons-st-b.localhost", 1000, 990)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mockSvmMethod("svm-skipcons-st-a.localhost", "getSignatureStatuses", svmSigStatusNull)
-	mockSvmMethod("svm-skipcons-st-b.localhost", "getSignatureStatuses", svmSigStatusNull)
-
-	net := setupTestSvmNetworkWithConsensus(t, ctx, []*common.UpstreamConfig{
-		svmUpstreamConfig("a", "svm-skipcons-st-a.localhost"),
-		svmUpstreamConfig("b", "svm-skipcons-st-b.localhost"),
-	}, []common.DataFinalityState{common.DataFinalityStateRealtime})
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["sig"],{"searchTransactionHistory":true}]}`))
-	h := http.Header{}
-	h.Set("X-ERPC-Skip-Consensus", "true")
-	req.EnrichFromHttp(h, nil, common.UserAgentTrackingModeSimplified)
-
-	resp, err := svmProjectForward(ctx, net, req)
-	require.NoError(t, err)
-	jrr, err := resp.JsonRpcResponse()
-	require.NoError(t, err)
-	require.Contains(t, string(jrr.GetResultBytes()), `null`)
 }
