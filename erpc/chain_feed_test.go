@@ -31,7 +31,9 @@ import (
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
@@ -1075,13 +1077,69 @@ type chaosClient struct {
 	first      uint64
 	last       uint64
 	floor      uint64 // a permitted restart: blocks below are not judged
-	lastLag    float64
+	lastTaps   tapEnds
 	problems   []string
 	conn       *websocket.Conn
 }
 
-func lagRestarts() float64 {
-	return testutil.ToFloat64(telemetry.MetricTapOutOfRangeTotal.WithLabelValues("test_ws", "evm:123", "ws", indexer.SubTypeNewHeads, indexer.OutOfRangeLag))
+// tapEnds counts the ends of ws newHeads taps so far: out of range by
+// reason, and panics.
+type tapEnds map[string]float64
+
+const tapPanic = "panic"
+
+var tapEndReasons = []string{indexer.OutOfRangeLag, indexer.OutOfRangeBelowWindow, indexer.OutOfRangeForkLeftWindow,
+	indexer.OutOfRangeCursorUnknown, indexer.OutOfRangeReceiptsTimeout}
+
+func newHeadsTapEnds() tapEnds {
+	out := make(tapEnds, len(tapEndReasons)+1)
+	for _, r := range tapEndReasons {
+		out[r] = testutil.ToFloat64(telemetry.MetricTapOutOfRangeTotal.WithLabelValues("test_ws", "evm:123", "ws", indexer.SubTypeNewHeads, r))
+	}
+	ch := make(chan prometheus.Metric, 64)
+	go func() {
+		telemetry.MetricUnexpectedPanicTotal.Collect(ch)
+		close(ch)
+	}()
+	for m := range ch {
+		var pb dto.Metric
+		if m.Write(&pb) != nil {
+			continue
+		}
+		for _, l := range pb.GetLabel() {
+			if l.GetName() == "extra" && strings.Contains(l.GetValue(), "kind:"+indexer.SubTypeNewHeads) {
+				out[tapPanic] += pb.GetCounter().GetValue()
+			}
+		}
+	}
+	return out
+}
+
+// restartContext names what may explain a jump: the newHeads tap ends
+// since the client's previous head, the tap's cursor (that head), the
+// tracker's head and sendable head now, and the faults that ran since
+// shortly before the previous head.
+func (s *chaosSeed) restartContext(prev, now tapEnds, cursor uint64, since time.Time) string {
+	var ends []string
+	for _, r := range append(slices.Clone(tapEndReasons), tapPanic) {
+		if d := now[r] - prev[r]; d > 0 {
+			ends = append(ends, fmt.Sprintf("%s+%g", r, d))
+		}
+	}
+	if len(ends) == 0 {
+		ends = append(ends, "none counted")
+	}
+	head, send := "none", "none"
+	if tr := s.tracker(); tr != nil {
+		if c, ok := tr.Tip(); ok {
+			head = fmt.Sprint(c.Number)
+		}
+		if c, ok := tr.SendTip(); ok {
+			send = fmt.Sprint(c.Number)
+		}
+	}
+	return fmt.Sprintf("tap ends %s; tap cursor %d; tracker head %s; sendable head %s; faults %s",
+		strings.Join(ends, " "), cursor, head, send, s.faultsSince(since.Add(-2*time.Second)))
 }
 
 func (s *chaosSeed) dialClient(name string, slow func() bool) *chaosClient {
@@ -1100,7 +1158,7 @@ func (s *chaosSeed) dialClient(name string, slow func() bool) *chaosClient {
 	require.Empty(s.t, resp.Error, "subscribe failed: %s", msg)
 	cl.conn = conn
 	cl.subscribed = time.Now()
-	cl.lastLag = lagRestarts()
+	cl.lastTaps = newHeadsTapEnds()
 	s.mu.Lock()
 	s.clients = append(s.clients, cl)
 	s.mu.Unlock()
@@ -1157,7 +1215,7 @@ func (cl *chaosClient) problem(format string, args ...interface{}) {
 
 func (cl *chaosClient) apply(s *chaosSeed, n uint64, h [32]byte) {
 	b := s.chain.block(h)
-	lag := lagRestarts()
+	ends := newHeadsTapEnds()
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	now := time.Now()
@@ -1173,13 +1231,25 @@ func (cl *chaosClient) apply(s *chaosSeed, n uint64, h [32]byte) {
 		s.chain.mu.Lock()
 		deep := !s.chain.lastDeep.IsZero() && now.Sub(s.chain.lastDeep) < 10*time.Second
 		s.chain.mu.Unlock()
-		if deep || lag > cl.lastLag {
+		since := cl.subscribed
+		if len(cl.notes) > 0 {
+			since = cl.notes[len(cl.notes)-1].at
+		}
+		why := s.restartContext(cl.lastTaps, ends, cl.last, since)
+		// A tap more than the window behind restarts after the head (spec
+		// §9.2), counted as lag or, once its cursor left the window, as
+		// below_window; the jump then spans more than the window.
+		behind := ends[indexer.OutOfRangeLag]+ends[indexer.OutOfRangeBelowWindow] >
+			cl.lastTaps[indexer.OutOfRangeLag]+cl.lastTaps[indexer.OutOfRangeBelowWindow] &&
+			n > cl.last+1+uint64(chaosReorgWindow)
+		if deep || behind {
 			cl.floor = n
 		} else {
-			cl.problems = append(cl.problems, fmt.Sprintf("jump %d → %d with no fault that calls for a restart", cl.last, n))
+			s.t.Logf("client %s: jump %d → %d after a restart; %s", cl.name, cl.last, n, why)
+			cl.problems = append(cl.problems, fmt.Sprintf("jump %d → %d with no fault that calls for a restart; %s", cl.last, n, why))
 		}
 	}
-	cl.lastLag = lag
+	cl.lastTaps = ends
 	for k := range cl.chain {
 		if k >= n {
 			delete(cl.chain, k)
@@ -1447,6 +1517,52 @@ type chaosSeed struct {
 	hook *chaosHook
 }
 
+	faultMu sync.Mutex
+	spans   []faultSpan
+}
+
+// faultSpan is when one fault ran; to is zero while it runs.
+type faultSpan struct {
+	name     string
+	from, to time.Time
+}
+
+// during runs fault f and records when it ran.
+func (s *chaosSeed) during(f string, run func()) {
+	s.faultMu.Lock()
+	i := len(s.spans)
+	s.spans = append(s.spans, faultSpan{name: f, from: time.Now()})
+	s.faultMu.Unlock()
+	defer func() {
+		s.faultMu.Lock()
+		s.spans[i].to = time.Now()
+		s.faultMu.Unlock()
+	}()
+	run()
+}
+
+// faultsSince names the faults that ran at or after since, with their
+// times relative to now.
+func (s *chaosSeed) faultsSince(since time.Time) string {
+	now := time.Now()
+	s.faultMu.Lock()
+	defer s.faultMu.Unlock()
+	var out []string
+	for _, sp := range s.spans {
+		if !sp.to.IsZero() && sp.to.Before(since) {
+			continue
+		}
+		end := "running"
+		if !sp.to.IsZero() {
+			end = fmt.Sprintf("ended %s ago", now.Sub(sp.to).Round(time.Millisecond))
+		}
+		out = append(out, fmt.Sprintf("%q (began %s ago, %s)", sp.name, now.Sub(sp.from).Round(time.Millisecond), end))
+	}
+	if len(out) == 0 {
+		return "none"
+	}
+	return strings.Join(out, ", ")
+
 func newChaosSeed(t *testing.T, seed int64, pollSources bool) *chaosSeed {
 	s := &chaosSeed{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), 0)), pollSources: pollSources,
 		occurred: make(map[string]string), paths: make(map[string]string)}
@@ -1664,21 +1780,21 @@ func (s *chaosSeed) run(faults []string) {
 			s.dialLogs("late")
 		}
 		if s.rng.IntN(2) == 0 {
-			s.reorgSmall()
+			s.during(fReorgSmall, s.reorgSmall)
 		}
 		s.blocks(2 + s.rng.IntN(3))
 		if f == fDown {
 			bg.Add(1)
 			v := s.pick(s.vendors...)
-			go func() { defer bg.Done(); s.vendorDown(v) }()
+			go func() { defer bg.Done(); s.during(fDown, func() { s.vendorDown(v) }) }()
 			s.blocks(2)
 			continue
 		}
-		s.inject(f)
+		s.during(f, func() { s.inject(f) })
 	}
 	bg.Wait()
 	if _, ok := s.occurred[fReorgSmall]; !ok {
-		s.reorgSmall()
+		s.during(fReorgSmall, s.reorgSmall)
 	}
 
 	s.checkSkips()
