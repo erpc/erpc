@@ -215,12 +215,23 @@ func (s *scenario) call(pod int, result interface{}, method string, args ...inte
 // --- clients ---
 //
 
-func (s *scenario) base(name string, pod int) clientBase {
-	return clientBase{s: s, name: name, pod: pod, tr: newTranscript(s.dir, name), reconnect: make(chan struct{}, 1), allow: map[string]bool{}}
+// initBase fills a client's shared part; slow clients stop reading on
+// purpose, and allow names the ends and jumps the client alone may see.
+func (s *scenario) initBase(c *clientBase, name string, pod int, slow bool, allow []string) {
+	c.s, c.name, c.pod, c.slow = s, name, pod, slow
+	c.tr = newTranscript(s.dir, name)
+	c.reconnect = make(chan struct{}, 1)
+	c.allow = map[string]bool{}
+	for _, a := range allow {
+		c.allow[a] = true
+	}
 }
 
-func (s *scenario) addHeads(name string, pod int, raw bool) *headsClient {
-	c := &headsClient{clientBase: s.base(name, pod), raw: raw}
+// addHeads opens a ws newHeads client; a slow one reads a raw WebSocket
+// with a small receive buffer, so pausing it backs up into eRPC.
+func (s *scenario) addHeads(name string, pod int, slow bool, allow ...string) *headsClient {
+	c := &headsClient{}
+	s.initBase(&c.clientBase, name, pod, slow, allow)
 	s.mu.Lock()
 	s.heads = append(s.heads, c)
 	s.mu.Unlock()
@@ -230,7 +241,8 @@ func (s *scenario) addHeads(name string, pod int, raw bool) *headsClient {
 }
 
 func (s *scenario) addLogs(name string, pod, filter int) *logsClient {
-	c := &logsClient{clientBase: s.base(name, pod), filter: filter, live: map[chainsim.LogKey]liveLog{}, ever: map[chainsim.LogKey]bool{}}
+	c := &logsClient{filter: filter, live: map[chainsim.LogKey]liveLog{}, ever: map[chainsim.LogKey]bool{}}
+	s.initBase(&c.clientBase, name, pod, false, nil)
 	s.mu.Lock()
 	s.logs = append(s.logs, c)
 	s.mu.Unlock()
@@ -239,9 +251,9 @@ func (s *scenario) addLogs(name string, pod, filter int) *logsClient {
 	return c
 }
 
-func (s *scenario) addGrpc(name string, pod, switchEvery int, slow bool) *grpcClient {
-	c := &grpcClient{clientBase: s.base(name, pod), switchEvery: switchEvery}
-	c.slow = slow
+func (s *scenario) addGrpc(name string, pod, switchEvery int, slow bool, allow ...string) *grpcClient {
+	c := &grpcClient{switchEvery: switchEvery}
+	s.initBase(&c.clientBase, name, pod, slow, allow)
 	s.mu.Lock()
 	s.grpcs = append(s.grpcs, c)
 	s.mu.Unlock()
@@ -341,13 +353,13 @@ func (s *scenario) metric(pod int, name string, labels map[string]string) (float
 	return sumOf(ss, name, match)
 }
 
-// waitMetric scrapes pod until cond holds or within passes; it returns the
-// last value and whether cond held.
+// waitMetric scrapes pod until the metric exists and cond holds, or within
+// passes; it returns the last value and whether cond held.
 func (s *scenario) waitMetric(pod int, name string, labels map[string]string, within time.Duration, cond func(float64) bool) (float64, bool) {
 	deadline := time.Now().Add(within)
 	for {
-		v, _ := s.metric(pod, name, labels)
-		if cond(v) {
+		v, found := s.metric(pod, name, labels)
+		if found && cond(v) {
 			return v, true
 		}
 		if time.Now().After(deadline) {

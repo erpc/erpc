@@ -1,17 +1,16 @@
 package realworld
 
 import (
-	"context"
+	"encoding/binary"
 	"fmt"
 	"math/rand/v2"
 	"net"
-	"os/exec"
-	"regexp"
-	"strconv"
-	"strings"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // linkFaults are the network faults of one (pod, vendor) link.
@@ -169,7 +168,9 @@ func (px *proxy) serve() {
 }
 
 func (px *proxy) handle(c net.Conn) {
+	start := time.Now()
 	p := px.podOf(c)
+	px.h.lookups.took(time.Since(start))
 	if p == nil {
 		px.unknown.Add(1)
 		_ = c.Close()
@@ -204,34 +205,75 @@ func (px *proxy) handle(c net.Conn) {
 	l.mu.Unlock()
 }
 
-// podOf is the pod whose process owns the socket at c's remote end, as
-// netstat -v reports each socket's process.
+// podOf is the pod whose process owns the socket at c's remote end.
 func (px *proxy) podOf(c net.Conn) *pod {
-	local := fmt.Sprintf("127.0.0.1.%d", c.RemoteAddr().(*net.TCPAddr).Port)
-	foreign := fmt.Sprintf("127.0.0.1.%d", px.ln.Addr().(*net.TCPAddr).Port)
+	from, to := c.RemoteAddr().(*net.TCPAddr).Port, px.ln.Addr().(*net.TCPAddr).Port
 	for range 5 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		out, _ := exec.CommandContext(ctx, "netstat", "-anv", "-p", "tcp").Output()
-		cancel()
-		for _, line := range strings.Split(string(out), "\n") {
-			f := strings.Fields(line)
-			if len(f) < 5 || f[3] != local || f[4] != foreign {
-				continue
-			}
-			for _, m := range pidField.FindAllStringSubmatch(line, -1) {
-				pid, _ := strconv.Atoi(m[1])
-				if p := px.h.podOfPid(pid); p != nil {
-					return p
-				}
-			}
+		if p := px.h.podOfPid(socketOwner(from, to)); p != nil {
+			return p
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	return nil
 }
 
-// pidField is netstat's process:pid column; process names may hold spaces.
-var pidField = regexp.MustCompile(`:(\d+)\s`)
+// socketOwner is the pid that last used the TCP socket with local port
+// lport and foreign port fport, from the kernel's pcb list
+// (net.inet.tcp.pcblist_n, as netstat -v reads it); 0 if none.
+//
+// The list is a run of records, each {u32 len, u32 kind, …}, padded to 8
+// bytes, after an xinpgen header; per socket an xinpcb_n (kind 0x10:
+// fport, lport big-endian at 16, 18) precedes its xsocket_n (kind 0x1:
+// so_last_pid at 68, structs packed to 4).
+func socketOwner(lport, fport int) int {
+	buf, err := unix.SysctlRaw("net.inet.tcp.pcblist_n")
+	if err != nil || len(buf) < 4 {
+		return 0
+	}
+	le := binary.LittleEndian
+	match := false
+	for off := int(le.Uint32(buf)); off+8 <= len(buf); {
+		n := int(le.Uint32(buf[off:]))
+		if n < 8 || off+n > len(buf) {
+			return 0
+		}
+		rec := buf[off : off+n]
+		switch le.Uint32(rec[4:]) {
+		case 0x10:
+			match = n >= 20 && int(binary.BigEndian.Uint16(rec[16:])) == fport && int(binary.BigEndian.Uint16(rec[18:])) == lport
+		case 0x1:
+			if match && n >= 72 {
+				return int(int32(le.Uint32(rec[68:])))
+			}
+		}
+		off += (n + 7) &^ 7
+	}
+	return 0
+}
+
+// lookups are how long each proxied connection waited to be told apart.
+type lookups struct {
+	mu    sync.Mutex
+	waits []time.Duration
+}
+
+func (st *lookups) took(d time.Duration) {
+	st.mu.Lock()
+	st.waits = append(st.waits, d)
+	st.mu.Unlock()
+}
+
+// summary is the count, median and maximum of the waits.
+func (st *lookups) summary() string {
+	st.mu.Lock()
+	w := slices.Clone(st.waits)
+	st.mu.Unlock()
+	if len(w) == 0 {
+		return "no connections"
+	}
+	slices.Sort(w)
+	return fmt.Sprintf("%d connections, wait p50 %s max %s", len(w), w[len(w)/2].Round(time.Millisecond), w[len(w)-1].Round(time.Millisecond))
+}
 
 func (l *link) faults() linkFaults {
 	l.mu.Lock()

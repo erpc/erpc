@@ -26,6 +26,10 @@ type harness struct {
 	dir   string
 	redis *redisServer
 	pods  []*pod
+	start time.Time
+	cpu0  time.Duration
+	// lookups time how long the proxies take to tell pods apart.
+	lookups *lookups
 
 	mu      sync.Mutex
 	pids    map[int]*pod
@@ -36,10 +40,17 @@ func newHarness(t *testing.T, dir string) *harness {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, dir: dir, pids: make(map[int]*pod)}
+	h := &harness{t: t, dir: dir, pids: make(map[int]*pod), start: time.Now(), cpu0: selfCPU(), lookups: &lookups{}}
 	h.redis = startRedis(t, dir)
 	t.Cleanup(h.stop)
 	return h
+}
+
+// selfCPU is the CPU time this test process used so far.
+func selfCPU() time.Duration {
+	var ru syscall.Rusage
+	_ = syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
 // stop kills every pod and redis, closes the proxies, and fails the phase
@@ -55,6 +66,13 @@ func (h *harness) stop() {
 		px.close()
 	}
 	h.redis.stop()
+	wall := time.Since(h.start)
+	h.t.Logf("phase used %s CPU in the harness and simulators over %s wall; proxies: %s", (selfCPU() - h.cpu0).Round(time.Second), wall.Round(time.Second), h.lookups.summary())
+	for _, p := range h.pods {
+		p.mu.Lock()
+		h.t.Logf("%s used %s CPU (%.1f cores)", p.name, p.cpu.Round(time.Second), p.cpu.Seconds()/wall.Seconds())
+		p.mu.Unlock()
+	}
 	for _, p := range h.pods {
 		for _, f := range p.logs {
 			for _, hit := range scanFatal(f) {
@@ -112,6 +130,7 @@ type pod struct {
 	httpPort, grpcPort, metricsPort int
 	cfgPath                         string
 	logs                            []string
+	cpu                             time.Duration // CPU time of every exited process of the pod
 
 	mu     sync.Mutex
 	cmd    *exec.Cmd
@@ -179,6 +198,9 @@ func (p *pod) start() error {
 	p.h.mu.Unlock()
 	go func() {
 		_ = cmd.Wait()
+		p.mu.Lock()
+		p.cpu += cmd.ProcessState.UserTime() + cmd.ProcessState.SystemTime()
+		p.mu.Unlock()
 		_ = stdout.Close()
 		_ = stderr.Close()
 		close(exited)

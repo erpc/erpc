@@ -19,9 +19,10 @@ import (
 const (
 	blockTime = 200 * time.Millisecond
 	// reorgWindow and maxBackfill are each scenario network's
-	// chainTracker config (§14).
+	// chainTracker config (§14); maxBackfill is its 5m default, so a gRPC
+	// cursor from a pod cut off for 2 minutes (N4) is still inside it.
 	reorgWindow = 16
-	maxBackfill = time.Minute
+	maxBackfill = 5 * time.Minute
 
 	// liveBound: max(3 × block time, 2s) (§1). A live source's head is
 	// pinned, and sent, within it.
@@ -64,10 +65,6 @@ var erpcBin string
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("redis-server"); err != nil {
 		fmt.Fprintln(os.Stderr, "realworld: redis-server not found in PATH; install it (macOS: brew install redis; Debian: apt install redis-server)")
-		os.Exit(1)
-	}
-	if _, err := exec.LookPath("netstat"); err != nil {
-		fmt.Fprintln(os.Stderr, "realworld: netstat not found in PATH; the fault proxies need it to tell pods apart")
 		os.Exit(1)
 	}
 	dir, err := os.MkdirTemp("", "erpc-realworld-bin-")

@@ -141,9 +141,12 @@ func (c *clientBase) waitPause(ctx context.Context) {
 	}
 }
 
-// allows reports whether the client may see what key names: "ws:jump",
-// "ws:heads-end", "ws:logs-end", "grpc:Unavailable", "grpc:OutOfRange".
-func (c *clientBase) allows(key string) bool { return c.allow[key] || c.s.allowed(key) }
+// allows reports whether the client may see what key names on pod: "ws:jump",
+// "ws:heads-end", "ws:logs-end", "grpc:Unavailable", "grpc:OutOfRange"; a
+// scenario may allow a key on one pod only, as "key@pod-N".
+func (c *clientBase) allows(key string, pod int) bool {
+	return c.allow[key] || c.s.allowed(key) || c.s.allowed(fmt.Sprintf("%s@pod-%d", key, pod+1))
+}
 
 func (c *clientBase) deliver(pod int, b *chainsim.Block, connStart time.Time) {
 	c.mu.Lock()
@@ -229,12 +232,11 @@ type headJSON struct {
 // --- ws newHeads ---
 //
 
-// headsClient is a ws newHeads subscriber: geth's rpc.Client, or for a
-// client that must stop reading its socket, a raw WebSocket with a small
-// receive buffer.
+// headsClient is a ws newHeads subscriber: geth's rpc.Client, or, for a
+// slow client that must stop reading its socket, a raw WebSocket with a
+// small receive buffer.
 type headsClient struct {
 	clientBase
-	raw bool
 
 	hc           headerChain
 	replacements []replacement
@@ -272,7 +274,7 @@ func (c *headsClient) run(ctx context.Context) {
 		msgs, errc, closeFn, err := c.open(ctx, pod)
 		if err != nil {
 			c.ended(pod, "dial: "+err.Error(), true)
-			if !c.allows("ws:heads-end") {
+			if !c.allows("ws:heads-end", pod) {
 				c.s.violate(c.name, "pod-%d: newHeads subscribe failed: %v", pod+1, err)
 			}
 			c.otherPod()
@@ -292,7 +294,7 @@ func (c *headsClient) run(ctx context.Context) {
 				break loop
 			case err := <-errc:
 				c.ended(pod, errString(err), true)
-				if !c.allows("ws:heads-end") {
+				if !c.allows("ws:heads-end", pod) {
 					c.s.violate(c.name, "pod-%d: newHeads subscription ended: %s", pod+1, errString(err))
 				}
 				server = true
@@ -314,7 +316,7 @@ func (c *headsClient) open(ctx context.Context, pod int) (<-chan json.RawMessage
 	url := c.s.h.pods[pod].wsURL(c.s.project, c.s.chain.ID())
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if !c.raw {
+	if !c.slow {
 		cl, err := rpc.DialOptions(dctx, url)
 		if err != nil {
 			return nil, nil, nil, err
@@ -419,7 +421,7 @@ func (c *headsClient) onHead(pod int, raw json.RawMessage, connStart time.Time, 
 		return
 	case kind == appliedUnlinked:
 		c.s.violate(c.name, "pod-%d: newHeads %d %s does not link: parent %s, client has %d", pod+1, n, short(h.Hash), short(h.ParentHash), last)
-	case kind == appliedJump && !first && !c.allows("ws:jump"):
+	case kind == appliedJump && !first && !c.allows("ws:jump", pod):
 		c.s.violate(c.name, "pod-%d: newHeads jumped from %d to %d on one connection", pod+1, last, n)
 	}
 	c.deliver(pod, b, connStart)
@@ -479,6 +481,7 @@ type logsConn struct {
 	highest  uint64
 	open     bool
 	opened   time.Time
+	closed   time.Time
 }
 
 type logJSON struct {
@@ -509,7 +512,7 @@ func (c *logsClient) run(ctx context.Context) {
 		cancel()
 		if err != nil {
 			c.ended(pod, "subscribe: "+err.Error(), true)
-			if !c.allows("ws:logs-end") {
+			if !c.allows("ws:logs-end", pod) {
 				c.s.violate(c.name, "pod-%d: logs subscribe failed: %v", pod+1, err)
 			}
 			c.otherPod()
@@ -532,7 +535,7 @@ func (c *logsClient) run(ctx context.Context) {
 				break loop
 			case err := <-sub.Err():
 				c.ended(pod, errString(err), true)
-				if !c.allows("ws:logs-end") {
+				if !c.allows("ws:logs-end", pod) {
 					c.s.violate(c.name, "pod-%d: logs subscription ended: %s", pod+1, errString(err))
 				}
 				server = true
@@ -552,24 +555,23 @@ func (c *logsClient) run(ctx context.Context) {
 }
 
 // closeConn ends a subscription's covered range. At the scenario's end it
-// covers up to the final head. Otherwise a client-side close covers up to
-// the block before its last log; a server-side end leaves the last
-// reorgWindow blocks unconfirmed, so their logs leave the live set.
+// covers up to the final head; a client-side close covers up to the block
+// before its last log. A server-side end (1013, a dead pod) tells the client
+// nothing about how deep its logs went stale, so it covers nothing and its
+// logs leave the live set: the client resubscribes and starts over.
 func (c *logsClient) closeConn(conn int, server, final bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	lc := c.conns[conn]
 	lc.open = false
+	lc.closed = time.Now()
 	switch {
 	case final:
 		lc.to = c.s.chain.Tip().Number
 	case server:
 		lc.to = 0
-		if lc.highest > reorgWindow {
-			lc.to = lc.highest - reorgWindow
-		}
 		for k, l := range c.live {
-			if l.conn == conn && l.number > lc.to {
+			if l.conn == conn {
 				delete(c.live, k)
 			}
 		}
@@ -659,14 +661,14 @@ func (g *grpcClient) run(ctx context.Context) {
 			g.otherPod()
 		case code == codes.Unavailable:
 			g.ended(pod, "UNAVAILABLE: "+msg, true)
-			if !g.allows("grpc:Unavailable") {
+			if !g.allows("grpc:Unavailable", pod) {
 				g.s.violate(g.name, "pod-%d: StreamBlocks ended UNAVAILABLE: %s", pod+1, msg)
 			}
 			g.otherPod()
 			sleepCtx(ctx, clientRedial)
 		case code == codes.OutOfRange:
 			g.ended(pod, "OUT_OF_RANGE: "+msg, true)
-			if !g.allows("grpc:OutOfRange") {
+			if !g.allows("grpc:OutOfRange", pod) {
 				g.s.violate(g.name, "pod-%d: StreamBlocks ended OUT_OF_RANGE: %s", pod+1, msg)
 			}
 			g.mu.Lock()
