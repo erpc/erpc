@@ -573,7 +573,10 @@ func cutPod1(s *scenario) {
 	s.logf("pod-1 path healed")
 	// A dropped wss source reconnects within 30s (§13.1).
 	s.endExcuse(ex, lift.Add(silentReconnect))
-	time.Sleep(silentReconnect + 10*time.Second)
+	// pod-1's logs taps, out of range at the heal, close with 1013 up to
+	// logsCloseSpread later; their clients then need blocks on pod-2 to
+	// cover.
+	time.Sleep(max(silentReconnect, logsCloseSpread+reconnectSlack) + 10*time.Second)
 	for _, g := range onP1 {
 		var end *clientEnd
 		g.mu.Lock()

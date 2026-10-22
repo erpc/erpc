@@ -216,8 +216,10 @@ func (h *harness) startPods(n int, nets []*netSpec) {
 }
 
 // seriesNames are the gauges and counters recordSeries keeps: who votes,
-// who is live, and the selection policy's order (triage, not a bound).
-var seriesNames = []string{"erpc_source_live{", "erpc_chain_tracker_source_heads_total{", "erpc_selection_position{"}
+// who is live, the selection policy's order, and the tracker's re-anchors,
+// resets and out-of-range tap ends (triage, not a bound).
+var seriesNames = []string{"erpc_source_live{", "erpc_chain_tracker_source_heads_total{", "erpc_selection_position{",
+	"erpc_chain_tracker_reanchor_total{", "erpc_chain_tracker_reset_total{", "erpc_tap_out_of_range_total{"}
 
 const seriesEvery = 2 * time.Second
 
