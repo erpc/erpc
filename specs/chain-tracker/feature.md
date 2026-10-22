@@ -728,7 +728,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | intake | chain-identity cordon | cordon reason | `eth_chainId` every 5 min; uncordon after 2 matches | 10 min |
 | intake, integrity | a check no upstream passes | §6.9 | suspended; observe-only after 100 blocks; enforced after 2 passing heights | 2 heights |
 | tracker | voters disagree | split votes | the branch with the most votes; ties settle | 1 settle |
-| tracker | reorg deeper than the window, or a gap past it | the majority's tree is not the pinned one | re-anchor; fill joins trees inside the window; other taps end with their transport's signal | `reorgWindow` blocks of walk |
+| tracker | reorg deeper than `reorgWindow`, or a gap past it | the majority's tree is not the pinned one | re-anchor; fill joins the trees at the fork point while the window holds it; taps then get Reverted per §10.2 (ws `logs` more than `reorgWindow` behind end `1013`); a fork point outside the window ends taps with their transport's signal | `reorgWindow` blocks of walk |
 | tracker | a message panics | `recover` | the message drops; 3 in a row reset the tracker to empty | 3 messages |
 | tracker | no hash voter | hash ages | one Ask with a hash need per cadence, a settle on conflict | 12s |
 | Head | ceiling stale | `CeilingAt` older than 1 bt | Ask before any "future" answer | 1 Ask |
@@ -959,7 +959,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | N7 | 2 MB blocks; receipts link throttled to 1 Mbit | receipts timeouts → other vendor or fallback; logs complete |
 | C1 | reorg 1–3 at the tip | `newHeads` gets the new branch; logs `removed:true`; gRPC resends from the fork point |
 | C2 | reorg `reorgWindow` − 1 deep | as C1; no out of range |
-| C3 | reorg `reorgWindow` + 4 deep | re-anchor; logs `1013` spread; `newHeads` restart |
+| C3 | reorg `reorgWindow` + 4 deep | re-anchor; `newHeads` and gRPC get the new branch from the fork point + 1; ws `logs` close `1013`, spread over 60s |
 | C4 | 2 wss voters + 1 https; 1-vs-1 tip split | only the settled hash is sent |
 | C5 | head rewinds 50 blocks on every upstream | `latest` reads succeed within 2 bt |
 | C6 | no blocks for 3 min, with gRPC | nothing reconnects; gRPC not cut; `Latest` frozen |
