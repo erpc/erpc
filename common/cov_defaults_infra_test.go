@@ -30,11 +30,9 @@ func TestCovDefaults_ConfigSetDefaults_EmptyConfigGetsMainProject(t *testing.T) 
 	require.Len(t, cfg.Projects, 1)
 	p := cfg.Projects[0]
 	assert.Equal(t, "main", p.Id)
-	require.Len(t, p.Providers, 2)
+	require.Len(t, p.Providers, 1)
 	assert.Equal(t, "public", p.Providers[0].Id)
 	assert.Equal(t, "repository", p.Providers[0].Vendor)
-	assert.Equal(t, "envio", p.Providers[1].Id)
-	assert.Equal(t, "<PROVIDER>-<NETWORK>", p.Providers[1].UpstreamIdTemplate)
 
 	// The synthetic project's upstream defaults were defaulted in turn.
 	require.Len(t, p.UpstreamDefaults.Failsafe, 1)

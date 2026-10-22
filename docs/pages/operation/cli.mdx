@@ -200,7 +200,7 @@ pprof — build with `-tags pprof` to activate.
 | `healthCheck` | \*HealthCheckConfig | mode=`networks`, defaultEval=`any:initializedUpstreams` | Health check endpoint behaviour. |
 | `admin` | \*AdminConfig | nil | Admin JSON-RPC API; CORS defaults to `*` origin with no credentials when section is present. |
 | `database` | \*DatabaseConfig | nil | EVM JSON-RPC cache and/or shared-state connector. |
-| `projects` | []\*ProjectConfig | synthetic `main` project with public + envio providers when empty | Ordered list of project configs. When empty, `SetDefaults` injects a `main` project. |
+| `projects` | []\*ProjectConfig | synthetic `main` project with the public repository provider when empty | Ordered list of project configs. When empty, `SetDefaults` injects a `main` project. |
 | `rateLimiters` | \*RateLimiterConfig | nil | Rate limiter budgets. Budget IDs referenced by projects/upstreams/networks must exist here. |
 | `proxyPools` | []\*ProxyPoolConfig | nil | HTTP proxy pool definitions. |
 | `tracing` | \*TracingConfig | nil | OTel tracing; defaults when set: protocol=grpc, endpoint=localhost:4317, sampleRate=1.0, serviceName=erpc. |
