@@ -2570,9 +2570,10 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 			)
 		}
 		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
-	case common.ArchitectureSvm:
-		// SVM doesn't need any EVM-style normalization (hex padding, block tag expansion, etc.).
-		// Validate that the request parses as JSON-RPC and move on.
+	case common.ArchitectureSvm, common.ArchitectureJsonRpc:
+		// SVM and generic jsonrpc don't need any EVM-style normalization (hex
+		// padding, block tag expansion, etc.). Validate that the request parses
+		// as JSON-RPC and move on.
 		if _, err := nr.JsonRpcRequest(ctx); err != nil {
 			return common.NewErrJsonRpcExceptionInternal(
 				0,
@@ -2631,10 +2632,15 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 
 	// Architecture-specific finality resolution. SVM uses commitment + slot comparisons,
 	// EVM uses block-number comparisons against the state poller's finalized block.
+	// Generic jsonrpc has no block notion at all: finality is whatever the
+	// methods config said above, otherwise unknown.
 	// Keeping this switch here (rather than inside the ArchitectureHandler) avoids
 	// plumbing Network's internal upstreams registry through the generic interface.
-	if n.cfg.Architecture == common.ArchitectureSvm {
+	switch n.cfg.Architecture {
+	case common.ArchitectureSvm:
 		return svm.GetFinality(ctx, n, req, resp)
+	case common.ArchitectureJsonRpc:
+		return finality
 	}
 
 	blockRef, blockNumber, _ := evm.ExtractBlockReferenceFromRequest(ctx, req)
@@ -3118,8 +3124,19 @@ func eligibleLane(bounds []upstreamBlockBounds, bn int64) []string {
 // the identical guarantee because it hands the leader's response to followers
 // verbatim.
 func (n *Network) multiplexKey(ctx context.Context, req *common.NormalizedRequest) (string, error) {
-	if n.cfg != nil && n.cfg.Architecture == common.ArchitectureSvm {
-		return svm.RequestKey(ctx, req)
+	if n.cfg != nil {
+		switch n.cfg.Architecture {
+		case common.ArchitectureSvm:
+			return svm.RequestKey(ctx, req)
+		case common.ArchitectureJsonRpc:
+			// Same hazard as SVM: eRPC cannot know which params are
+			// case-sensitive on an arbitrary protocol, so never fold case.
+			rpcReq, err := req.JsonRpcRequest(ctx)
+			if err != nil {
+				return "", err
+			}
+			return rpcReq.CanonicalKey()
+		}
 	}
 	return req.CacheHash()
 }

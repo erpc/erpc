@@ -1553,6 +1553,48 @@ func (r *JsonRpcRequest) InvalidateCacheHash() {
 	r.cacheHash.Store("")
 }
 
+// CanonicalKey derives a case-preserving per-request identity key.
+//
+// It deliberately does NOT use CacheHash(): the shared hasher (hashValue)
+// lowercases every string param, which is the right normalization for EVM hex
+// but catastrophic for case-sensitive identifiers — Solana base58 pubkeys and
+// transaction signatures, or arbitrary params on a generic jsonrpc network —
+// where two DISTINCT valid values differing only by letter case would collapse
+// onto one key and be served each other's data. This key preserves case exactly.
+//
+// encoding/json is the encoder on purpose (not sonic): the standard library
+// documents that it sorts map keys, which is what makes the key deterministic
+// across runs and across Go map iteration order. Its grammar is also both
+// type- and structure-delimiting, so structurally different params cannot
+// collide: "abc", ["a","bc"] and {"a":"bc"} all encode to distinct bytes, as
+// do the number 1 and the string "1".
+//
+// Not memoized (unlike CacheHash, which caches on the request object): two
+// marshal+hash passes per request (one Get, one Set) over a handful of small
+// params is not worth a second memo field; revisit if a profile says otherwise.
+func (r *JsonRpcRequest) CanonicalKey() (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("cannot derive canonical key from a nil json-rpc request")
+	}
+	params := r.Params
+	if params == nil {
+		// Normalize "no params" and "params: []" to the same key — they are the
+		// same call, and json.Marshal would otherwise emit `null` vs `[]`.
+		params = []interface{}{}
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode canonical key params: %w", err)
+	}
+	h := sha256.New()
+	// Method is hashed as well as prefixed so a method name containing the ':'
+	// separator cannot forge another method's key.
+	_, _ = h.Write([]byte(r.Method))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(encoded)
+	return fmt.Sprintf("%s:%x", r.Method, h.Sum(nil)), nil
+}
+
 func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
 	if r == nil || len(r.Params) == 0 {
 		return nil, fmt.Errorf("cannot peek path on empty params")

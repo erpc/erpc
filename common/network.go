@@ -14,6 +14,9 @@ type NetworkArchitecture string
 const (
 	ArchitectureEvm NetworkArchitecture = "evm"
 	ArchitectureSvm NetworkArchitecture = "svm"
+	// ArchitectureJsonRpc is the protocol-agnostic architecture: any JSON-RPC
+	// 2.0 endpoint gets load balancing and failsafe with no chain logic.
+	ArchitectureJsonRpc NetworkArchitecture = "jsonrpc"
 )
 
 type Network interface {
@@ -99,7 +102,7 @@ func EvmRefreshLatestBlock(n Network, ctx context.Context) {
 
 func IsValidArchitecture(architecture string) bool {
 	switch NetworkArchitecture(architecture) {
-	case ArchitectureEvm, ArchitectureSvm:
+	case ArchitectureEvm, ArchitectureSvm, ArchitectureJsonRpc:
 		return true
 	}
 	return false
@@ -139,24 +142,30 @@ func IsValidNetwork(network string) bool {
 		if IsValidSvmCluster(chain, cluster) {
 			return true
 		}
-		isIdentifier := func(s string) bool {
-			if s == "" {
-				return true // empty chain is fine — means implicit solana
-			}
-			for _, r := range s {
-				if !(r == '-' || r == '_' || r == '.' ||
-					(r >= 'a' && r <= 'z') ||
-					(r >= 'A' && r <= 'Z') ||
-					(r >= '0' && r <= '9')) {
-					return false
-				}
-			}
-			return true
-		}
-		return isIdentifier(chain) && isIdentifier(cluster)
+		return isNetworkIdentifier(chain) && isNetworkIdentifier(cluster)
+	}
+	if strings.HasPrefix(network, "jsonrpc:") {
+		// "jsonrpc:<slug>" — a single user-chosen identifier, no sub-segments.
+		slug := strings.TrimPrefix(network, "jsonrpc:")
+		return slug != "" && !strings.Contains(slug, ":") && isNetworkIdentifier(slug)
 	}
 
 	return false
+}
+
+// isNetworkIdentifier accepts the character set shared by svm chain/cluster
+// names and jsonrpc slugs. Empty is accepted (an svm chain may be empty,
+// meaning implicit solana); callers reject empty where it is not allowed.
+func isNetworkIdentifier(s string) bool {
+	for _, r := range s {
+		if !(r == '-' || r == '_' || r == '.' ||
+			(r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 type QuantileTracker interface {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/jsonrpc"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
@@ -641,9 +642,11 @@ func (e *networkExecutor) runHedge(
 	// Write methods are not safe to hedge (non-idempotent broadcasts cause
 	// duplicate side-effects). eth_sendRawTransaction has its own consensus
 	// fan-out elsewhere. SVM names are bare (sendTransaction, requestAirdrop),
-	// so both architecture sets are checked.
+	// so both architecture sets are checked. On a generic jsonrpc network the
+	// operator's generic.replaySafeMethods list is the only source of truth:
+	// anything undeclared is treated as a write.
 	if req != nil {
-		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m) || !jsonrpc.IsReplaySafe(req)) {
 			return inner(ctx, req)
 		}
 	}

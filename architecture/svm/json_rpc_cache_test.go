@@ -248,9 +248,9 @@ func TestSvmCache_RequestKey_PreservesBase58Case(t *testing.T) {
 	upper := common.NewJsonRpcRequest("getAccountInfo", []interface{}{"4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"})
 	lower := common.NewJsonRpcRequest("getAccountInfo", []interface{}{"4nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"})
 
-	upperKey, err := svmRequestKey(upper)
+	upperKey, err := upper.CanonicalKey()
 	require.NoError(t, err)
-	lowerKey, err := svmRequestKey(lower)
+	lowerKey, err := lower.CanonicalKey()
 	require.NoError(t, err)
 	require.NotEqual(t, upperKey, lowerKey,
 		"base58 pubkeys differing only by case must not share a cache key")
@@ -258,14 +258,14 @@ func TestSvmCache_RequestKey_PreservesBase58Case(t *testing.T) {
 	// Same guard for transaction signatures, which are base58 too.
 	sigA := common.NewJsonRpcRequest("getTransaction", []interface{}{"5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW"})
 	sigB := common.NewJsonRpcRequest("getTransaction", []interface{}{"5vERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW"})
-	keyA, err := svmRequestKey(sigA)
+	keyA, err := sigA.CanonicalKey()
 	require.NoError(t, err)
-	keyB, err := svmRequestKey(sigB)
+	keyB, err := sigB.CanonicalKey()
 	require.NoError(t, err)
 	require.NotEqual(t, keyA, keyB, "signatures differing only by case must not share a cache key")
 
 	// And identical params still produce a stable key (cache hits still work).
-	again, err := svmRequestKey(common.NewJsonRpcRequest("getAccountInfo", []interface{}{"4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"}))
+	again, err := common.NewJsonRpcRequest("getAccountInfo", []interface{}{"4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"}).CanonicalKey()
 	require.NoError(t, err)
 	require.Equal(t, upperKey, again, "identical params must produce an identical key")
 }
@@ -275,7 +275,7 @@ func TestSvmCache_RequestKey_PreservesBase58Case(t *testing.T) {
 func TestSvmCache_RequestKey_IsTypeAndStructureDelimited(t *testing.T) {
 	t.Parallel()
 	keyOf := func(params ...interface{}) string {
-		k, err := svmRequestKey(common.NewJsonRpcRequest("getAccountInfo", params))
+		k, err := common.NewJsonRpcRequest("getAccountInfo", params).CanonicalKey()
 		require.NoError(t, err)
 		return k
 	}

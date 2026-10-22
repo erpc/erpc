@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/jsonrpc"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
@@ -111,6 +112,12 @@ func NewERPC(
 
 func (e *ERPC) Bootstrap(ctx context.Context) {
 	e.projectsRegistry.Bootstrap(ctx)
+}
+
+// SetGenericJsonRpcCache wires the opt-in `database.genericJsonRpcCache` into
+// every project. Call before Bootstrap so no network is prepared without it.
+func (e *ERPC) SetGenericJsonRpcCache(cache *jsonrpc.GenericJsonRpcCache) {
+	e.projectsRegistry.SetGenericJsonRpcCache(cache)
 }
 
 func (e *ERPC) GetNetwork(ctx context.Context, projectId string, networkId string) (*Network, error) {

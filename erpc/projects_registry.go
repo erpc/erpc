@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/jsonrpc"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
@@ -58,6 +59,7 @@ type ProjectsRegistry struct {
 	sharedState          data.SharedStateRegistry
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	svmJsonRpcCache      *svm.SvmJsonRpcCache
+	genericJsonRpcCache  *jsonrpc.GenericJsonRpcCache
 	preparedProjects     map[string]*PreparedProject
 	staticProjects       []*common.ProjectConfig
 	vendorsRegistry      *thirdparty.VendorsRegistry
@@ -105,6 +107,18 @@ func NewProjectsRegistry(
 	}
 
 	return reg, nil
+}
+
+// SetGenericJsonRpcCache wires the opt-in cache for `jsonrpc` networks into
+// every registered project and any project registered afterwards. A setter
+// (rather than a NewProjectsRegistry parameter) keeps the many existing
+// constructor call sites untouched; NewERPC invokes it before Bootstrap, so
+// no network is prepared without it.
+func (r *ProjectsRegistry) SetGenericJsonRpcCache(cache *jsonrpc.GenericJsonRpcCache) {
+	r.genericJsonRpcCache = cache
+	for _, pp := range r.preparedProjects {
+		pp.networksRegistry.SetGenericJsonRpcCache(cache)
+	}
 }
 
 func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) {
@@ -215,6 +229,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		pp.policyEngine,
 		&lg,
 	)
+	pp.networksRegistry.SetGenericJsonRpcCache(r.genericJsonRpcCache)
 	if prjCfg.AllowClientDirectives != nil {
 		matcher, err := compileClientDirectiveMatcher(*prjCfg.AllowClientDirectives)
 		if err != nil {

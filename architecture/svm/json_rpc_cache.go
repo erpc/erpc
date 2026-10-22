@@ -2,8 +2,6 @@ package svm
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -24,9 +22,9 @@ import (
 //
 // Where it diverges from EvmJsonRpcCache, and why:
 //
-//   - The request key comes from svmRequestKey, NOT req.CacheHash(). The shared
-//     hasher lowercases string params, which is right for EVM hex and wrong for
-//     case-sensitive base58 pubkeys/signatures. See svmRequestKey below.
+//   - The request key comes from JsonRpcRequest.CanonicalKey, NOT req.CacheHash().
+//     The shared hasher lowercases string params, which is right for EVM hex and
+//     wrong for case-sensitive base58 pubkeys/signatures. See common/json_rpc.go.
 //   - No block-timestamp age guard. Only genuinely immutable responses are
 //     classified Finalized (see GetFinality in finality.go); everything that
 //     tracks the rooted head is Realtime, so the TTL on the realtime policy is
@@ -442,7 +440,7 @@ func (c *SvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 }
 
 func (c *SvmJsonRpcCache) generateKeys(req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (string, string, error) {
-	requestKey, err := svmRequestKey(rpcReq)
+	requestKey, err := rpcReq.CanonicalKey()
 	if err != nil {
 		return "", "", err
 	}
@@ -454,49 +452,13 @@ func (c *SvmJsonRpcCache) generateKeys(req *common.NormalizedRequest, rpcReq *co
 	return common.CachePartitionKey(req.NetworkId(), req.CacheKeySuffix(), slotRef), requestKey, nil
 }
 
-// svmRequestKey derives the per-request cache key for SVM.
-//
-// It deliberately does NOT use req.CacheHash(): the shared hasher
-// (common/json_rpc.go hashValue) lowercases every string param, which is the
-// right normalization for EVM hex but catastrophic here — Solana base58
-// pubkeys and transaction signatures are case-sensitive, so two DISTINCT valid
-// accounts differing only by letter case would collapse onto one key and be
-// served each other's data. This key preserves case exactly.
-//
-// encoding/json is the encoder on purpose (not sonic): the standard library
-// documents that it sorts map keys, which is what makes the key deterministic
-// across runs and across Go map iteration order. Its grammar is also both
-// type- and structure-delimiting, so structurally different params cannot
-// collide: "abc", ["a","bc"] and {"a":"bc"} all encode to distinct bytes, as
-// do the number 1 and the string "1".
-//
-// Not memoized (unlike CacheHash, which caches on the request object): the
-// JsonRpcRequest field that would hold it lives in common/ and is owned by the
-// EVM derivation. Two marshal+hash passes per request (one Get, one Set) over
-// a handful of small params is not worth a second memo field; revisit if a
-// profile says otherwise.
-func svmRequestKey(rpcReq *common.JsonRpcRequest) (string, error) {
-	if rpcReq == nil {
-		return "", fmt.Errorf("cannot derive svm cache key from a nil json-rpc request")
-	}
-	params := rpcReq.Params
-	if params == nil {
-		// Normalize "no params" and "params: []" to the same key — they are the
-		// same call, and json.Marshal would otherwise emit `null` vs `[]`.
-		params = []interface{}{}
-	}
-	encoded, err := json.Marshal(params)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode svm cache key params: %w", err)
-	}
-	h := sha256.New()
-	// Method is hashed as well as prefixed so a method name containing the ':'
-	// separator cannot forge another method's key.
-	_, _ = h.Write([]byte(rpcReq.Method))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write(encoded)
-	return fmt.Sprintf("%s:%x", rpcReq.Method, h.Sum(nil)), nil
-}
+// The per-request cache key for SVM is common.JsonRpcRequest.CanonicalKey: a
+// case-preserving sha256 over method + encoding/json(params). It deliberately
+// does NOT use req.CacheHash(): the shared hasher (common/json_rpc.go
+// hashValue) lowercases every string param, which is the right normalization
+// for EVM hex but catastrophic here — Solana base58 pubkeys and transaction
+// signatures are case-sensitive, so two DISTINCT valid accounts differing only
+// by letter case would collapse onto one key and be served each other's data.
 
 // RequestKey exposes the SVM request-identity key to the rest of the pipeline.
 //
@@ -514,7 +476,7 @@ func RequestKey(ctx context.Context, r *common.NormalizedRequest) (string, error
 	if err != nil {
 		return "", err
 	}
-	return svmRequestKey(rpcReq)
+	return rpcReq.CanonicalKey()
 }
 
 // compress returns the zstd-compressed payload when compression is enabled and
