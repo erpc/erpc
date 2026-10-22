@@ -198,7 +198,7 @@ func Init(
 		var metricsListeners []net.Listener
 		closeMetricsListeners := func() {
 			for _, ln := range metricsListeners {
-				ln.Close()
+				_ = ln.Close()
 			}
 		}
 		// JoinHostPort brackets an IPv6 literal itself, so accept both the
