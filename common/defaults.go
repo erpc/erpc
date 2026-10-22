@@ -1365,14 +1365,7 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			if err := repositoryCfg.SetDefaults(p.UpstreamDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for repository provider: %w", err)
 			}
-			envioCfg := &ProviderConfig{
-				Id:     "envio",
-				Vendor: "envio",
-			}
-			if err := envioCfg.SetDefaults(p.UpstreamDefaults); err != nil {
-				return fmt.Errorf("failed to set defaults for envio provider: %w", err)
-			}
-			p.Providers = append(p.Providers, repositoryCfg, envioCfg)
+			p.Providers = append(p.Providers, repositoryCfg)
 		}
 	}
 	if p.Providers == nil {

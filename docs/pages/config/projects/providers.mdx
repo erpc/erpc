@@ -25,7 +25,7 @@ at all gets a sensible zero-cost default automatically.
 
 - One line to cover all chains a vendor supports — no manual network list.
 - Hot-path chain discovery with no I/O: static maps and lock-free remote caches keep routing decisions off the slow path.
-- Zero-config fallback: eRPC auto-injects `repository` + `envio` providers when no upstreams or providers are configured.
+- Zero-config fallback: eRPC auto-injects a `repository` provider when no upstreams or providers are configured.
 
 ## Quick taste
 
@@ -124,7 +124,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 
 **URL shorthand scheme.** Any upstream whose endpoint scheme is not `http`, `https`, `grpc`, or `grpc+bds` is converted to a `ProviderConfig` at config-defaults time. The `evm+` prefix is stripped first (`evm+alchemy://` equals `alchemy://`). The original upstream config (failsafe, rate limits, method filters, etc.) is placed into `overrides: {"*": ...}` so it applies to every generated upstream. The provider id defaults to `<vendor>-<n>` (process-wide counter per vendor name). Unknown scheme is a config-load error. <SourceLink file="common/defaults.go" lines="1113-1241" />
 
-**Default providers.** A project with zero upstreams, zero providers, and no CLI `--endpoint` flags automatically gets `{id:"public", vendor:"repository"}` + `{id:"envio", vendor:"envio"}` injected with all defaults, and logs a warning. Setting `providers: []` explicitly still satisfies the zero-providers condition — the injection fires unless you have at least one upstream or one CLI endpoint. <SourceLink file="common/defaults.go" lines="1113-1146" />
+**Default providers.** A project with zero upstreams, zero providers, and no CLI `--endpoint` flags automatically gets `{id:"public", vendor:"repository"}` injected with all defaults, and logs a warning. Setting `providers: []` explicitly still satisfies the zero-providers condition — the injection fires unless you have at least one upstream or one CLI endpoint. <SourceLink file="common/defaults.go" lines="1113-1146" />
 
 **Vendors also serve statically-configured upstreams.** At `NewUpstream`, `LookupByUpstream` finds a vendor by explicit `upstream.vendorName` (exact match, wins — if the name is unknown, `OwnsUpstream` is NOT consulted and the result is nil) or the first vendor whose `OwnsUpstream` matches the endpoint (in registration order). If no vendor matches, `vendorName` is guessed as `unknown-<rootDomain>` from the endpoint host. The vendor's `GenerateConfigs` is invoked with `settings == nil` to apply vendor defaults (e.g. dRPC forcing `autoIgnoreUnsupportedMethods: false`, envio's method allow-list). Vendor-specific JSON-RPC error mapping fires before generic normalization: `GetVendorSpecificErrorIfAny` is called on the upstream's attached vendor first. <SourceLink file="architecture/evm/error_normalizer.go" lines="878-900" /> <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
 
