@@ -2766,7 +2766,7 @@ type SelectionPolicyConfig struct {
 	// absent from the pool (a capability fact), distinct from the policy's
 	// soft health-based deprioritization. Default off. Pointer-typed so a
 	// future SetDefaults can distinguish "absent" from "explicitly false".
-	EvalPerBoundary *bool    `yaml:"evalPerBoundary,omitempty" json:"evalPerBoundary,omitempty" tstype:"boolean"`
+	EvalPerBoundary *bool `yaml:"evalPerBoundary,omitempty" json:"evalPerBoundary,omitempty" tstype:"boolean"`
 	// EvalMethods narrows the method axis of a per-method EvalScope
 	// (`network-method` / `network-method-finality`) to the methods this
 	// pattern matches (WildcardMatch grammar, e.g. `debug_trace* | trace_*`).
@@ -2778,7 +2778,7 @@ type SelectionPolicyConfig struct {
 	// EvalMethodsMatcher is compiled from EvalMethods by SetDefaults;
 	// nil means every method matches. Never marshalled.
 	EvalMethodsMatcher MatcherFunc `yaml:"-" json:"-"`
-	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
+	EvalTimeout        Duration    `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
 	// EvalFunc is the per-tick evaluation function. In YAML it's a JS
 	// source string; in TS configs it's a real arrow function compiled
 	// into `CompiledProgram` at config load.
