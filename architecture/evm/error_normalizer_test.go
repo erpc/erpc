@@ -103,6 +103,19 @@ func TestExtractJsonRpcError_InsufficientFunds_TracingMethodsRetryable(t *testin
 			message:       "insufficient funds for gas * price + value",
 			wantRetryable: false,
 		},
+		{
+			// Aurora's engine verdict for the mined tx; every Aurora node repeats it.
+			name:          "debug_traceTransaction Aurora ERR_OUT_OF_FUND stays non-retried",
+			method:        "debug_traceTransaction",
+			message:       `Error: EVM tracing failed in transaction 0xe373b20df8aa743e52c77d8aae113810157af9e330c8f4165cce7f2f4f759a80 due to ContractError { message: "ERR_OUT_OF_FUND" }`,
+			wantRetryable: false,
+		},
+		{
+			name:          "debug_traceTransaction Aurora NEAR-native tx stays non-retried",
+			method:        "debug_traceTransaction",
+			message:       "Error: no EVM execution in transaction 0x37c6ca677fb7d9f6fe0d53a72288d89fb37b9483ff90950684de6e697e013a00",
+			wantRetryable: false,
+		},
 	}
 
 	for _, tc := range cases {
