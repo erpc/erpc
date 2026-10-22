@@ -376,7 +376,6 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 	}
 	user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 	if err != nil {
-		auth.RecordAuthFailed(project.Config.Id, err)
 		return fail(err, wsc.server.serverCfg.IncludeErrorDetails), notification
 	}
 	nq.SetUser(user)

@@ -668,7 +668,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				if isAdmin {
 					_, err := s.erpc.AdminAuthenticate(requestCtx, nq, method, ap)
 					if err != nil {
-						auth.RecordAuthFailed(projectId, err)
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
@@ -676,7 +675,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				} else {
 					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 					if err != nil {
-						auth.RecordAuthFailed(projectId, err)
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails, common.NetworkArchitecture(architecture))
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
@@ -734,17 +732,15 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						common.EndRequestSpan(requestCtx, resp, nil)
 						return
 					} else {
-						adminErr := common.NewErrAuthUnauthorized(
-							"",
-							"unauthorized",
-							"admin is not enabled for this project",
-						)
-						auth.RecordAuthFailed(projectId, adminErr)
 						responses[index] = processErrorBody(
 							&rlg,
 							&startedAt,
 							nq,
-							adminErr,
+							common.NewErrAuthUnauthorized(
+								"",
+								"unauthorized",
+								"admin is not enabled for this project",
+							),
 							s.serverCfg.IncludeErrorDetails,
 						)
 						common.EndRequestSpan(requestCtx, nil, err)
@@ -1770,6 +1766,7 @@ func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
 
 func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool, architectureHint ...common.NetworkArchitecture) interface{} {
 	err := origErr
+	auth.RecordAuthFailed(nq, err)
 
 	// Build the response first, then log with it. Authentication runs before
 	// network resolution, so its caller passes the URL-parsed architecture as a

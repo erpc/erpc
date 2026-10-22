@@ -505,7 +505,7 @@ func grpcStatusOf(err error) error {
 	case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
 		return status.Error(codes.Unimplemented, err.Error())
 	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized):
-		auth.RecordAuthFailed("", err)
+		auth.RecordAuthFailed(nil, err)
 		return status.Error(codes.Unauthenticated, err.Error())
 	case common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized):
 		return status.Error(codes.Unauthenticated, err.Error())

@@ -16,9 +16,9 @@ import (
 
 func init() { util.ConfigureTestLogger() }
 
-func authFailedCount(project, strategy, reason string) float64 {
+func authFailedCount(strategy, reason string) float64 {
 	return testutil.ToFloat64(telemetry.MetricAuthFailedTotal.WithLabelValues(
-		project, "n/a", strategy, reason, "unknown",
+		"n/a", "n/a", strategy, reason, "unknown",
 	))
 }
 
@@ -31,30 +31,30 @@ func TestRecordAuthFailed_MetersOncePerClientDenial(t *testing.T) {
 	})
 
 	t.Run("successful second key does not meter", func(t *testing.T) {
-		before := authFailedCount("n/a", "secret", "invalid_secret")
+		before := authFailedCount("secret", "invalid_secret")
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
 		user, err := registry.Authenticate(context.Background(), req, "eth_chainId", &AuthPayload{
 			Type: common.AuthTypeSecret, Secret: &SecretPayload{Value: "token-b"},
 		})
 		require.NoError(t, err)
 		require.Equal(t, "b", user.Id)
-		assert.Equal(t, before, authFailedCount("n/a", "secret", "invalid_secret"))
+		assert.Equal(t, before, authFailedCount("secret", "invalid_secret"))
 	})
 
 	t.Run("client denial meters once", func(t *testing.T) {
-		beforeSecret := authFailedCount("proj-a", "secret", "invalid_secret")
-		beforeJoined := authFailedCount("proj-a", "n/a", "unauthorized")
+		beforeSecret := authFailedCount("secret", "invalid_secret")
+		beforeJoined := authFailedCount("n/a", "unauthorized")
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
 		_, err := registry.Authenticate(context.Background(), req, "eth_chainId", &AuthPayload{
 			Type: common.AuthTypeSecret, Secret: &SecretPayload{Value: "wrong"},
 		})
 		require.Error(t, err)
-		assert.Equal(t, beforeSecret, authFailedCount("proj-a", "secret", "invalid_secret"))
-		assert.Equal(t, beforeJoined, authFailedCount("proj-a", "n/a", "unauthorized"))
-		RecordAuthFailed("proj-a", err)
+		assert.Equal(t, beforeSecret, authFailedCount("secret", "invalid_secret"))
+		assert.Equal(t, beforeJoined, authFailedCount("n/a", "unauthorized"))
+		RecordAuthFailed(req, err)
 		// Two secret strategies both reject with invalid_secret → keep those labels.
-		assert.Equal(t, beforeSecret+1, authFailedCount("proj-a", "secret", "invalid_secret"))
-		assert.Equal(t, beforeJoined, authFailedCount("proj-a", "n/a", "unauthorized"))
+		assert.Equal(t, beforeSecret+1, authFailedCount("secret", "invalid_secret"))
+		assert.Equal(t, beforeJoined, authFailedCount("n/a", "unauthorized"))
 	})
 
 	t.Run("single strategy denial keeps strategy reason labels", func(t *testing.T) {
@@ -63,14 +63,14 @@ func TestRecordAuthFailed_MetersOncePerClientDenial(t *testing.T) {
 				{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Id: "a", Value: "token-a"}},
 			},
 		})
-		before := authFailedCount("proj-b", "secret", "invalid_secret")
+		before := authFailedCount("secret", "invalid_secret")
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
 		_, err := reg.Authenticate(context.Background(), req, "eth_chainId", &AuthPayload{
 			Type: common.AuthTypeSecret, Secret: &SecretPayload{Value: "wrong"},
 		})
 		require.Error(t, err)
-		RecordAuthFailed("proj-b", err)
-		assert.Equal(t, before+1, authFailedCount("proj-b", "secret", "invalid_secret"))
+		RecordAuthFailed(req, err)
+		assert.Equal(t, before+1, authFailedCount("secret", "invalid_secret"))
 	})
 }
 
@@ -86,19 +86,9 @@ func TestNewErrAuthUnauthorized_AttachesReason(t *testing.T) {
 }
 
 func TestRecordAuthFailed_IgnoresNonAuthErrors(t *testing.T) {
-	before := authFailedCount("n/a", "n/a", "unauthorized")
-	RecordAuthFailed("n/a", common.NewErrInvalidRequest(context.Canceled))
-	assert.Equal(t, before, authFailedCount("n/a", "n/a", "unauthorized"))
-}
-
-func TestRecordAuthFailed_UsesProjectId(t *testing.T) {
-	err := common.NewErrAuthUnauthorizedReason(
-		"jwt",
-		common.AuthUnauthorizedReasonTokenExpired,
-	)
-	before := authFailedCount("arbitrum-mainnet", "jwt", "token_expired")
-	RecordAuthFailed("arbitrum-mainnet", err)
-	assert.Equal(t, before+1, authFailedCount("arbitrum-mainnet", "jwt", "token_expired"))
+	before := authFailedCount("n/a", "unauthorized")
+	RecordAuthFailed(nil, common.NewErrInvalidRequest(context.Canceled))
+	assert.Equal(t, before, authFailedCount("n/a", "unauthorized"))
 }
 
 func TestUnauthorized_PreservesAgreedJwtTokenExpired(t *testing.T) {
@@ -134,9 +124,9 @@ func TestUnauthorized_PreservesAgreedJwtTokenExpired(t *testing.T) {
 	assert.Equal(t, "jwt", authErr.Details["strategy"])
 	assert.Equal(t, common.AuthUnauthorizedReasonTokenExpired, authErr.Reason())
 
-	before := authFailedCount("proj-jwt", "jwt", "token_expired")
-	RecordAuthFailed("proj-jwt", err)
-	assert.Equal(t, before+1, authFailedCount("proj-jwt", "jwt", "token_expired"))
+	before := authFailedCount("jwt", "token_expired")
+	RecordAuthFailed(nil, err)
+	assert.Equal(t, before+1, authFailedCount("jwt", "token_expired"))
 }
 
 func TestUnauthorized_PrefersTokenExpiredAmongJwtAttempts(t *testing.T) {

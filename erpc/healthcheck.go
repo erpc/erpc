@@ -98,7 +98,6 @@ func (s *HttpServer) handleHealthCheck(
 			nq.SetClientIP(clientIP)
 			_, err := s.healthCheckAuthRegistry.Authenticate(ctx, nq, "healthcheck", ap)
 			if err != nil {
-				auth.RecordAuthFailed(projectId, err)
 				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 				return
 			}

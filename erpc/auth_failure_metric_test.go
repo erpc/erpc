@@ -2,12 +2,13 @@ package erpc
 
 import (
 	"testing"
+	"time"
 
-	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -15,22 +16,24 @@ import (
 
 func init() { util.ConfigureTestLogger() }
 
-func authFailureCount(project, strategy, reason string) float64 {
+func authFailureCount(strategy, reason string) float64 {
 	return testutil.ToFloat64(telemetry.MetricAuthFailedTotal.WithLabelValues(
-		project, "n/a", strategy, reason, "unknown",
+		"n/a", "n/a", strategy, reason, "unknown",
 	))
 }
 
-func TestRecordAuthFailed_RecordsClientFacingUnauthorized(t *testing.T) {
+func TestProcessErrorBody_RecordsClientFacingUnauthorized(t *testing.T) {
 	err := common.NewErrAuthUnauthorizedReason(
 		"jwt",
 		common.AuthUnauthorizedReasonTokenExpired,
 	)
-	before := authFailureCount("proj-x", "jwt", "token_expired")
+	before := authFailureCount("jwt", "token_expired")
+	startedAt := time.Now()
+	logger := zerolog.Nop()
 
-	auth.RecordAuthFailed("proj-x", err)
+	processErrorBody(&logger, &startedAt, nil, err, &common.FALSE)
 
-	assert.Equal(t, before+1, authFailureCount("proj-x", "jwt", "token_expired"))
+	assert.Equal(t, before+1, authFailureCount("jwt", "token_expired"))
 }
 
 func TestGrpcStatusOf_RecordsClientFacingUnauthorized(t *testing.T) {
@@ -38,10 +41,10 @@ func TestGrpcStatusOf_RecordsClientFacingUnauthorized(t *testing.T) {
 		"jwt",
 		common.AuthUnauthorizedReasonInvalidSignature,
 	)
-	before := authFailureCount("n/a", "jwt", "invalid_signature")
+	before := authFailureCount("jwt", "invalid_signature")
 
 	got := grpcStatusOf(err)
 
 	assert.Equal(t, codes.Unauthenticated, status.Code(got))
-	assert.Equal(t, before+1, authFailureCount("n/a", "jwt", "invalid_signature"))
+	assert.Equal(t, before+1, authFailureCount("jwt", "invalid_signature"))
 }
