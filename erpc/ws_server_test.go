@@ -1911,10 +1911,16 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 
 	// With integrity on, eth_getLogs by blockHash stands in only while no
 	// upstream serves receipts; its logs pass the bloom check and
-	// logIndexContiguity.
+	// logIndexContiguity, and a block's logs are held only once 2 vendors
+	// answered the same ones. Vendor-b, the one the sweep asks, caps every
+	// answer one log short over the first planned blocks: those wait for it
+	// to answer in full, and no client ever holds a block with a log missing.
 	t.Run("integrity on, no upstream serves receipts: logs by eth_getLogs", func(t *testing.T) {
 		s := newChaosSeed(t, 7, true, chaosOpts{integrity: true})
 		s.ignore = []string{"eth_getBlockReceipts"}
+		s.chain.mu.Lock()
+		s.wsB.capLogs, s.httpB.capLogs, s.chain.matchLast = true, true, true
+		s.chain.mu.Unlock()
 		s.startERPC()
 		defer s.stopERPC()
 		tick(s, 3)
@@ -1922,31 +1928,45 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		tick(s, 2)
 		from := s.chain.tip().number + 1
 		s.chain.mu.Lock()
-		s.chain.plan = []simKind{simMatching, simMatching, simQuiet, simMatching}
+		s.chain.plan = []simKind{simMatching, simMatching, simQuiet, simMatching, simMatching, simMatching, simMatching, simMatching}
 		s.chain.mu.Unlock()
-		tick(s, 6)
+		tick(s, 5)
+		s.chain.mu.Lock()
+		s.wsB.capLogs, s.httpB.capLogs = false, false
+		s.chain.mu.Unlock()
+		tick(s, 5)
 		require.Eventually(t, func() bool {
 			for _, cl := range s.openLogs() {
 				cl.mu.Lock()
-				d := cl.logsDiffLocked(s, from, from+3)
+				d := cl.logsDiffLocked(s, from, from+7)
 				cl.mu.Unlock()
 				if d != "" {
 					return false
 				}
 			}
 			return true
-		}, 10*time.Second, 20*time.Millisecond, "both clients hold the matching logs of every planned block")
+		}, 10*time.Second, 20*time.Millisecond, "both clients hold the matching logs of every planned block, none missing")
 		require.Len(t, s.openLogs(), len(simFilters))
 		for _, cl := range s.openLogs() {
 			cl.mu.Lock()
 			assert.Empty(t, cl.problems, "logs client %s", cl.name)
 			cl.mu.Unlock()
 		}
-		var getLogs int64
-		for _, v := range s.vendors {
-			getLogs += v.getLogsCalls.Load()
-		}
-		assert.Positive(t, getLogs, "logs come from eth_getLogs by blockHash")
+		assert.Positive(t, s.wsB.capped.Load()+s.httpB.capped.Load(), "vendor-b cut answers short")
+		assert.Positive(t, s.wsA.getLogsCalls.Load()+s.httpA.getLogsCalls.Load(), "vendor-a answers eth_getLogs by blockHash")
+	})
+
+	t.Run("integrity on, one vendor serves eth_getLogs and none receipts", func(t *testing.T) {
+		s := newChaosSeed(t, 8, true, chaosOpts{integrity: true, oneVendor: true})
+		s.ignore = []string{"eth_getBlockReceipts"}
+		s.startERPC()
+		defer s.stopERPC()
+		tick(s, 3)
+		conn, rerr := s.subscribeLogs(0)
+		require.Nil(t, conn)
+		require.NotNil(t, rerr, "logs subscribe is refused: one vendor's logs cannot be compared")
+		assert.EqualValues(t, common.JsonRpcErrorUnsupportedException, rerr["code"], "ErrNoSubscriptionSource maps to -32601: %v", rerr)
+		assert.Zero(t, receiptsAndLogsCalls(s), "no receipts or eth_getLogs fetch")
 	})
 }
 

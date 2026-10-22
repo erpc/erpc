@@ -2,8 +2,10 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"regexp"
 	"strings"
@@ -12,9 +14,10 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
-	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	gethcommon "github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -506,17 +509,34 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	var latestNum atomic.Int64
 	latestNum.Store(0x3e8)
 	// Headers carry no transactions array, as source headers do: only
-	// transactionsRoot and gasUsed prove a block empty. Blocks are held as
-	// first answered, so each root is its own height: 0x3e8 the empty-trie
-	// root, 0x3e9 no root, 0x3ea a root with one transaction.
-	rootFor := func(n int64) string {
+	// transactionsRoot and gasUsed prove a block empty, and only in a header
+	// whose hash recomputes. Blocks are held as first answered, so each case
+	// is its own height: 0x3e8 the empty-trie root, 0x3e9 no root, 0x3ea a
+	// root with one transaction, 0x3eb the empty-trie root in a header whose
+	// hash does not recompute.
+	headers := make(map[int64]string)
+	var parent gethcommon.Hash
+	for n := int64(0); n <= 0x3f0; n++ {
+		h := &gethtypes.Header{ParentHash: parent, UncleHash: gethtypes.EmptyUncleHash, TxHash: gethtypes.EmptyTxsHash,
+			ReceiptHash: gethtypes.EmptyReceiptsHash, Difficulty: big.NewInt(0), Number: big.NewInt(n), GasLimit: 30_000_000,
+			Time: uint64(0x6702a8f0 + n), BaseFee: big.NewInt(7)}
+		if n == 0x3ea {
+			h.TxHash = gethcommon.HexToHash("0x" + strings.Repeat("ab", 32))
+		}
+		raw, err := h.MarshalJSON()
+		require.NoError(t, err)
+		var fields map[string]any
+		require.NoError(t, json.Unmarshal(raw, &fields))
 		switch n {
 		case 0x3e9:
-			return ``
-		case 0x3ea:
-			return `"transactionsRoot":"0x` + strings.Repeat("ab", 32) + `",`
+			delete(fields, "transactionsRoot")
+		case 0x3eb:
+			fields["extraData"] = "0x01"
 		}
-		return `"transactionsRoot":"` + integrity.EmptyTrieRoot + `",`
+		raw, err = json.Marshal(fields)
+		require.NoError(t, err)
+		headers[n] = string(raw)
+		parent = h.Hash()
 	}
 	refRe := regexp.MustCompile(`"params":\["(0x[0-9a-fA-F]+)"`)
 	blockRef := func(body string) int64 {
@@ -538,8 +558,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 			if n < 0 {
 				n = latestNum.Load()
 			}
-			r.Body = io.NopCloser(strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","gasUsed":"0x0",%s"timestamp":"0x%x"}}`,
-				n, n, n-1, rootFor(n), 0x6702a8f0+n)))
+			r.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":` + headers[n] + `}`))
 			return r
 		}).BodyString(`{}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "debug_traceBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
@@ -629,6 +648,22 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	resp.Release()
 	require.Equal(t, int32(2), traceCalls.Load()-beforeNonempty)
 	t.Logf("known nonempty traceCalls=%d", traceCalls.Load()-beforeNonempty)
+	latestNum.Store(0x3eb)
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		u.EvmStatePoller().SuggestLatestBlock(0x3eb)
+	}
+	require.Eventually(t, func() bool {
+		_, ok := evm.ChainTrackerOf(ctx, n, "").HashAt(0x3eb)
+		return ok
+	}, 15*time.Second, 10*time.Millisecond)
+	forged := request("0x3eb")
+	require.False(t, evm.HasVerifiedEmptyTraceBlock(forged), "an empty-trie root in a header whose hash does not recompute proves nothing")
+	beforeForged := traceCalls.Load()
+	resp, err = n.Forward(fctx(ctx), forged)
+	require.NoError(t, err)
+	resp.Release()
+	require.Greater(t, traceCalls.Load()-beforeForged, int32(1), "the empty trace is not trusted on that header's word")
+	t.Logf("non-recomputing header traceCalls=%d", traceCalls.Load()-beforeForged)
 	for _, tc := range []struct {
 		name    string
 		list    []string

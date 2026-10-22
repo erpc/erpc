@@ -156,7 +156,7 @@ func TestReconfirmPinFetchesFreshRatherThanReplayingTheCache(t *testing.T) {
 		voteChain(t, c, "a", "0", 0, uint64(height), testHash("f", 0))
 
 		_, status := c.ReconfirmPin(context.Background(), height)
-		assert.NotEqual(t, integrity.PinFresh, status, "a settle answer for another hash ties with the one vote")
+		assert.Equal(t, integrity.PinRateLimited, status, "a settle answer for another hash ties with the one vote")
 		assert.NotNil(t, net.directivesFor("latest"), "the re-confirmation settled")
 	})
 

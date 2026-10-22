@@ -2,7 +2,6 @@ package evm
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
@@ -30,6 +29,8 @@ type integrityRun struct {
 	// source header), so checks read only what the tracker holds and never
 	// fetch (spec §7).
 	held bool
+	// header is the response's parsed header when the caller has it.
+	header *chainHeader
 }
 
 // runIntegrity validates rs and reports what the checks found: per-check
@@ -57,7 +58,7 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 	}
 	sus := suspensionsOf(n)
 	if sus != nil {
-		input.Modes = sus.mode
+		input.Modes = sus.modeFn
 	}
 	// The span wraps Validate so its duration is the integrity overhead and
 	// the aux force-fetches nest under it. Detailed tracing adds the actual
@@ -90,8 +91,10 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 	span.End()
 
 	if sus != nil && isBlockMethod(r.method) {
-		if height, ok := responseBlockNumber(ctx, rs); ok {
-			sus.recordOutcomes(height, res.Outcomes)
+		if r.header != nil {
+			sus.recordOutcomes(r.header.number, vendorKey(u), res.Outcomes)
+		} else if height, ok := responseBlockNumber(ctx, rs); ok {
+			sus.recordOutcomes(height, vendorKey(u), res.Outcomes)
 		}
 	}
 	// Per-check attempts/outcomes — sum = total attempts. "pass" means an
@@ -166,24 +169,61 @@ func responseBlockNumber(ctx context.Context, rs *common.NormalizedResponse) (ui
 	return uint64(n), true
 }
 
+// headerChecks is a network's header checks, compiled from its integrity
+// config once per config.
+type headerChecks struct {
+	cfg         *common.IntegrityConfig
+	chainId     int64
+	checks      integrity.CheckSet
+	policy      integrity.ReorgPolicy
+	observeOnly bool
+}
+
+// headerChecksOf is n's header checks, compiled again only once n's
+// integrity config changed.
+func (nt *networkTrackers) headerChecksOf(n common.Network) *headerChecks {
+	var cfg *common.IntegrityConfig
+	var chainId int64
+	if c := n.Config(); c != nil {
+		cfg = c.Integrity
+		if c.Evm != nil {
+			chainId = c.Evm.ChainId
+		}
+	}
+	if hc := nt.checks.Load(); hc != nil && hc.cfg == cfg && hc.chainId == chainId {
+		return hc
+	}
+	cs, policy, observeOnly, _ := resolveIntegrity(n, nil)
+	hc := &headerChecks{cfg: cfg, chainId: chainId, checks: integrity.HeaderCheckSet(cs), policy: policy, observeOnly: observeOnly}
+	nt.checks.Store(hc)
+	return hc
+}
+
 // CheckSourceHeader is intake check 1 (spec §5.3): while integrity is on, a
 // source header must pass the network's header checks, judged against the
-// network-wide tracker's held headers only. false: drop it; the violation
-// is counted against u.
-func CheckSourceHeader(n common.Network, u common.Upstream, raw json.RawMessage) bool {
-	cs, policy, observeOnly, _ := resolveIntegrity(n, nil)
-	hcs := integrity.HeaderCheckSet(cs)
-	if len(hcs) == 0 {
+// network-wide tracker's held headers only. A header whose hash the tracker
+// holds from an earlier source that passed is not validated again. false:
+// drop it; the violation is counted against u.
+func CheckSourceHeader(n common.Network, u common.Upstream, sh SourceHeader) bool {
+	nt := registeredTrackers(n)
+	if nt == nil {
 		return true
 	}
-	h, err := parseChainHeader(raw)
-	if err != nil {
-		return false
+	hc := nt.headerChecksOf(n)
+	if len(hc.checks) == 0 {
+		return true
+	}
+	h := sh.h
+	view := nt.suspend.tracker.Load()
+	if view != nil {
+		if held := view.heldHeader(h.hash); held != nil && held.intakePassed.Load() {
+			return true
+		}
 	}
 	ctx := context.Background()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + h.parsed.Number + `",false]}`))
 	req.SetNetwork(n)
-	jrr, err := common.NewJsonRpcResponseFromBytes([]byte("1"), raw, nil)
+	jrr, err := common.NewJsonRpcResponseFromBytes([]byte("1"), h.raw, nil)
 	if err != nil {
 		return false
 	}
@@ -191,11 +231,16 @@ func CheckSourceHeader(n common.Network, u common.Upstream, raw json.RawMessage)
 	res := runIntegrity(ctx, n, u, nil, rs, integrityRun{
 		method:      integrity.MethodGetBlockByNumber,
 		category:    sourceHeaderCategory,
-		checks:      hcs,
-		policy:      policy,
-		observeOnly: observeOnly,
-		view:        lookupChainTracker(n, ""),
+		checks:      hc.checks,
+		policy:      hc.policy,
+		observeOnly: hc.observeOnly,
+		view:        view,
 		held:        true,
+		header:      h,
 	})
-	return res.Err == nil
+	if res.Err != nil {
+		return false
+	}
+	h.intakePassed.Store(true)
+	return true
 }

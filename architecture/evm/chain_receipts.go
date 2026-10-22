@@ -3,6 +3,7 @@ package evm
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,7 +92,8 @@ type bloomProfile struct {
 	emptyOff bool
 	// logsFallback: integrity is off, so eth_getLogs by blockHash may
 	// stand in for receipts that keep failing. With integrity on it stands
-	// in only while no upstream serves eth_getBlockReceipts.
+	// in only while no upstream serves eth_getBlockReceipts, and only logs
+	// 2 vendors agree on are held.
 	logsFallback bool
 	// logIndexes: integrity checks logIndexContiguity, so logs from
 	// eth_getLogs by blockHash must run 0..N-1 as receipts' do.
@@ -241,6 +243,8 @@ type heldReceipts struct {
 	raw      json.RawMessage
 	fromLogs bool // built from eth_getLogs: receipts that carry only their logs
 	bloom    bloomVerdict
+	// digest is what vendors must agree on for logs from eth_getLogs.
+	digest logsDigest
 
 	logs     []json.RawMessage
 	addr     []string   // per log, lowercase
@@ -263,11 +267,22 @@ type receiptLite struct {
 type logLite struct {
 	Address          string   `json:"address"`
 	Topics           []string `json:"topics"`
+	Data             string   `json:"data"`
 	BlockHash        string   `json:"blockHash"`
 	BlockNumber      string   `json:"blockNumber"`
 	TransactionHash  string   `json:"transactionHash"`
 	TransactionIndex string   `json:"transactionIndex"`
 	LogIndex         string   `json:"logIndex"`
+}
+
+// logsDigest is one block's logs from eth_getLogs as vendors must agree on
+// them with integrity on: how many, the last logIndex, and a hash over
+// every log's transaction, index, address, topics and data. A vendor that
+// caps or drops logs answers another digest.
+type logsDigest struct {
+	count int
+	last  int64 // -1 with no logs
+	set   [32]byte
 }
 
 // method is the method that answered r.
@@ -414,6 +429,8 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexe
 	bloomBad := false
 	synth := []synthReceipt{}
 	indexes := make([]string, 0, len(raws))
+	set := sha256.New()
+	r.digest = logsDigest{count: len(raws), last: -1}
 	for i, raw := range raws {
 		l, err := r.addLog(raw)
 		if err != nil {
@@ -438,12 +455,24 @@ func parseLogs(result []byte, hash [32]byte, h *chainHeader, checking, logIndexe
 		}
 		synth[len(synth)-1].Logs = append(synth[len(synth)-1].Logs, raw)
 		indexes = append(indexes, l.LogIndex)
+		idx, err := common.HexToInt64(l.LogIndex)
+		if err != nil {
+			idx = -1
+		}
+		r.digest.last = idx
+		fmt.Fprintf(set, "%s|%d|%s|%s|", strings.ToLower(l.TransactionHash), idx, r.addr[i], strings.ToLower(l.Data))
+		for _, tp := range r.topics[i] {
+			set.Write([]byte(tp))
+			set.Write([]byte{','})
+		}
+		set.Write([]byte{'\n'})
 	}
 	if logIndexes {
 		if err := integrity.LogIndexesContiguous(len(indexes), func(i int) string { return indexes[i] }); err != nil {
 			return nil, fmt.Errorf("%w: %v", errReceiptsAnswer, err)
 		}
 	}
+	set.Sum(r.digest.set[:0])
 	raw, err := common.SonicCfg.Marshal(synth)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errReceiptsAnswer, err)
@@ -648,7 +677,9 @@ func (t *ChainTracker) evictReceipts() {
 // receiptsJob fetches one block's receipts until they are held: at pin time
 // for the feed (keep), or for the Reads that wait on it. A bloom mismatch
 // moves the next attempt to an upstream of another vendor; receipts that
-// keep failing switch to eth_getLogs while integrity is off.
+// keep failing switch to eth_getLogs while integrity is off. With integrity
+// on, logs from eth_getLogs are held only once 2 vendors answered the same
+// logsDigest.
 type receiptsJob struct {
 	h       *chainHeader
 	keep    bool // the feed wants this pinned block's receipts held
@@ -663,6 +694,13 @@ type receiptsJob struct {
 	started    time.Time
 	mismatched map[string]bool // vendors whose answer mismatched, this round
 	tried      map[string]bool // upstreams asked by name, this round
+	agree      []logsVote      // the logs digests vendors answered, this round
+}
+
+// logsVote is one logsDigest and the vendors that answered it.
+type logsVote struct {
+	digest  logsDigest
+	vendors []string
 }
 
 func (t *ChainTracker) startJob(h *chainHeader, keep bool) *receiptsJob {
@@ -674,25 +712,44 @@ func (t *ChainTracker) startJob(h *chainHeader, keep bool) *receiptsJob {
 }
 
 func (j *receiptsJob) newRound() {
-	j.mismatched, j.tried = make(map[string]bool), make(map[string]bool)
+	j.mismatched, j.tried, j.agree = make(map[string]bool), make(map[string]bool), nil
+}
+
+// answered reports whether vendor answered logs this round.
+func (j *receiptsJob) answered(vendor string) bool {
+	for _, v := range j.agree {
+		if slices.Contains(v.vendors, vendor) {
+			return true
+		}
+	}
+	return false
 }
 
 // runJob makes the job's next attempt: a sweep, or after a mismatch an
 // upstream of a vendor not yet asked this round. With every vendor asked,
 // the block counts as mismatched for the network, and a new round sweeps
-// once the key's backoff ends; a check that turned off accepts it.
+// once the key's backoff ends; a check that turned off accepts it. Logs
+// waiting for agreement ask a vendor that has not answered them; with
+// every vendor asked, a new round starts a block time later.
 func (t *ChainTracker) runJob(j *receiptsJob) {
 	if j.cancel != nil {
 		j.cancel()
 	}
+	fallback := t.fetch.bloom.prof().logsFallback
 	if j.started.IsZero() {
 		j.started = time.Now()
-	} else if !j.logs && t.fetch.bloom.prof().logsFallback && time.Since(j.started) >= LogsFallbackAfter.Load() {
+	} else if !j.logs && fallback && time.Since(j.started) >= LogsFallbackAfter.Load() {
 		j.logs = true
 		j.newRound()
 	}
-	if receipts, logs := t.usableMethods(); !j.logs && !receipts && logs {
+	switch receipts, logs := t.usableMethods(); {
+	case !j.logs && !receipts && logs:
 		j.logs = true
+		j.newRound()
+	case j.logs && receipts && !fallback:
+		// Receipts are served again: they prove the logs, so the job leaves
+		// the stand-in.
+		j.logs = false
 		j.newRound()
 	}
 	spec := t.receiptsSpec(t.fetchClassAt(int64(j.h.number), classTipReceipts), j.h.hash, j.h, j.logs)
@@ -703,6 +760,13 @@ func (t *ChainTracker) runJob(j *receiptsJob) {
 		if spec.upstream = t.nextVendorUpstream(j, spec.method); spec.upstream == "" {
 			t.fetch.bloom.mismatched(j.h, len(j.mismatched), t.vendorCount(spec.method))
 			j.newRound()
+		}
+	} else if len(j.agree) > 0 {
+		spec.fresh = true
+		if spec.upstream = t.nextAgreeUpstream(j); spec.upstream == "" {
+			j.newRound()
+			t.runJobLater(j)
+			return
 		}
 	}
 	ctx, cancel := context.WithCancel(t.ctx)
@@ -728,6 +792,55 @@ func (t *ChainTracker) nextVendorUpstream(j *receiptsJob, method string) string 
 	return ""
 }
 
+// nextAgreeUpstream is the first upstream serving eth_getLogs of a vendor
+// that has not answered the job's logs this round, not asked yet.
+func (t *ChainTracker) nextAgreeUpstream(j *receiptsJob) string {
+	for _, u := range t.methodUpstreams("eth_getLogs") {
+		if !j.answered(u.VendorName()) && !j.tried[u.Id()] {
+			return u.Id()
+		}
+	}
+	return ""
+}
+
+// runJobLater makes j's next attempt a block time from now, at most
+// ReceiptsProbeCeiling, unless j moved on or ended first.
+func (t *ChainTracker) runJobLater(j *receiptsJob) {
+	attempt := j.attempt
+	time.AfterFunc(min(t.BlockTime(), ReceiptsProbeCeiling.Load()), func() {
+		if t.ctx.Err() != nil {
+			return
+		}
+		t.mb.put(trackerMsg{kind: msgCall, fn: func() {
+			if t.jobs[j.h.hash] == j && j.attempt == attempt {
+				t.runJob(j)
+			}
+		}})
+	})
+}
+
+// logsAgreed notes that upstreamId answered r, logs from eth_getLogs, and
+// reports whether 2 vendors have answered its digest this round. A cached
+// answer names no vendor: it counts for none, and the cache is not read
+// again.
+func (t *ChainTracker) logsAgreed(j *receiptsJob, upstreamId string, r *heldReceipts) bool {
+	if upstreamId == "" {
+		j.fresh = true
+		return false
+	}
+	j.tried[upstreamId] = true
+	vendor := t.vendorOf(upstreamId)
+	i := slices.IndexFunc(j.agree, func(v logsVote) bool { return v.digest == r.digest })
+	if i < 0 {
+		j.agree = append(j.agree, logsVote{digest: r.digest})
+		i = len(j.agree) - 1
+	}
+	if !slices.Contains(j.agree[i].vendors, vendor) {
+		j.agree[i].vendors = append(j.agree[i].vendors, vendor)
+	}
+	return len(j.agree[i].vendors) >= 2
+}
+
 func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec, res fetchResult) {
 	if t.jobs[j.h.hash] != j || j.attempt != attempt {
 		return
@@ -736,6 +849,10 @@ func (t *ChainTracker) jobResult(j *receiptsJob, attempt uint64, spec fetchSpec,
 	case res.err == nil:
 		r := res.val.(*heldReceipts)
 		t.noteReceiptsFetch(true)
+		if r.fromLogs && !t.fetch.bloom.prof().logsFallback && !t.logsAgreed(j, res.upstream, r) {
+			t.runJob(j)
+			return
+		}
 		t.holdReceipts(r)
 		t.endJob(j, r)
 	case errors.Is(res.err, errSchedulerClosed) || t.ctx.Err() != nil:
@@ -794,7 +911,8 @@ func (t *ChainTracker) armProbe(after time.Duration) {
 // (spec §10), or its logs when no upstream serves receipts or, with
 // integrity off, once receipts have failed for LogsFallbackAfter, as a job
 // switches; the next one follows a block time later, at most
-// ReceiptsProbeCeiling, until one succeeds.
+// ReceiptsProbeCeiling, until one succeeds. With integrity on, the logs it
+// fetched end the outage but are not held: one vendor's logs prove nothing.
 func (t *ChainTracker) runProbe() {
 	since := t.receiptsFailing.Load()
 	if since == 0 {
@@ -816,7 +934,9 @@ func (t *ChainTracker) runProbe() {
 			switch {
 			case res.err == nil:
 				t.noteReceiptsFetch(true)
-				t.holdReceipts(res.val.(*heldReceipts))
+				if r := res.val.(*heldReceipts); !r.fromLogs || t.fetch.bloom.prof().logsFallback {
+					t.holdReceipts(r)
+				}
 			case t.ctx.Err() == nil:
 				t.armProbe(next)
 			}
@@ -827,12 +947,16 @@ func (t *ChainTracker) runProbe() {
 // usableMethods reports whether an upstream of the group serves
 // eth_getBlockReceipts, and whether eth_getLogs by blockHash may stand in:
 // with integrity off, or with integrity on while no upstream serves
-// receipts. That stand-in proves less than receipts: logs carry no
-// receiptsRoot to check, only the header's bloom and their logIndexes.
+// receipts and upstreams of 2 or more vendors serve eth_getLogs, so their
+// answers can be compared. That stand-in proves less than receipts: logs
+// carry no receiptsRoot to check, only the header's bloom, their
+// logIndexes and, with integrity on, the agreement of 2 vendors.
 func (t *ChainTracker) usableMethods() (receipts, logs bool) {
 	receipts = len(t.methodUpstreams("eth_getBlockReceipts")) > 0
-	logs = (t.fetch.bloom.prof().logsFallback || !receipts) && len(t.methodUpstreams("eth_getLogs")) > 0
-	return receipts, logs
+	if t.fetch.bloom.prof().logsFallback {
+		return receipts, len(t.methodUpstreams("eth_getLogs")) > 0
+	}
+	return receipts, !receipts && t.vendorCount("eth_getLogs") >= 2
 }
 
 // ServesLogs reports whether logs subscribes may start (spec §10): an

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm/integrity"
@@ -31,6 +32,10 @@ type chainHeader struct {
 
 	recompute  sync.Once
 	recomputes bool // the header hashes to its hash (blockHashRecompute)
+
+	// intakePassed: this header passed intake's header checks, so a source
+	// that sends the same hash is not validated again.
+	intakePassed atomic.Bool
 }
 
 var errMalformedHeader = errors.New("malformed block header")
@@ -84,6 +89,21 @@ func ParseHeader(raw json.RawMessage) (indexer.Cursor, error) {
 	}
 	return h.cursor(), nil
 }
+
+// SourceHeader is a source header past intake check 0, parsed once for the
+// later checks and every tracker it votes in.
+type SourceHeader struct{ h *chainHeader }
+
+// ParseSourceHeader is intake check 0 for a source header.
+func ParseSourceHeader(raw json.RawMessage) (SourceHeader, error) {
+	h, err := parseChainHeader(raw)
+	if err != nil {
+		return SourceHeader{}, err
+	}
+	return SourceHeader{h}, nil
+}
+
+func (s SourceHeader) Cursor() indexer.Cursor { return s.h.cursor() }
 
 func (h *chainHeader) cursor() indexer.Cursor {
 	return indexer.Cursor{Number: h.number, Hash: h.hash}

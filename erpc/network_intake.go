@@ -97,13 +97,15 @@ func (in *networkIntake) Header(upstreamId string, raw json.RawMessage) {
 }
 
 // header is Header; replay: raw is a header integrity held back before a
-// check was suspended, so it moves its source's newest header only forward.
+// check was suspended, so it votes only when it is newer than its source's
+// newest accepted header: a replay never moves a vote back.
 func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay bool) {
-	cur, err := evm.ParseHeader(raw)
+	sh, err := evm.ParseSourceHeader(raw)
 	if err != nil {
 		in.count(upstreamId, "malformed")
 		return
 	}
+	cur := sh.Cursor()
 	u := in.upstream(upstreamId)
 	if u == nil {
 		return
@@ -116,7 +118,7 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		in.count(upstreamId, "duplicate")
 		return
 	}
-	if !evm.CheckSourceHeader(in.nw, u, raw) {
+	if !evm.CheckSourceHeader(in.nw, u, sh) {
 		in.mu.Lock()
 		in.rejected = append(in.rejected, rejectedHeader{upstreamId, raw})
 		if over := len(in.rejected) - rejectedKept; over > 0 {
@@ -131,23 +133,16 @@ func (in *networkIntake) header(upstreamId string, raw json.RawMessage, replay b
 		in.count(upstreamId, "gated_identity")
 		return
 	}
-	if !replay || in.newer(upstreamId, cur) {
-		in.accept(upstreamId, cur)
+	if !in.accept(upstreamId, cur, replay) {
+		in.count(upstreamId, "duplicate")
+		return
 	}
-	evm.ObserveSourceHeader(in.nw, u, raw)
+	evm.ObserveSourceHeader(in.nw, u, sh)
 	if in.votes(upstreamId) {
 		in.count(upstreamId, "voted")
 	} else {
 		in.count(upstreamId, "gated_authority")
 	}
-}
-
-// newer reports whether cur is above the source's newest accepted header.
-func (in *networkIntake) newer(upstreamId string, cur indexer.Cursor) bool {
-	in.mu.Lock()
-	defer in.mu.Unlock()
-	s := in.sources[upstreamId]
-	return s == nil || cur.Number > s.last.Number
 }
 
 // replayRejected runs the headers integrity held back through intake
@@ -209,10 +204,16 @@ func (in *networkIntake) newestKnown() uint64 {
 	return newest
 }
 
-func (in *networkIntake) accept(upstreamId string, cur indexer.Cursor) {
+// accept makes cur its source's newest accepted header; onlyNewer: only
+// when it is above the newest one, compared and set in one section.
+func (in *networkIntake) accept(upstreamId string, cur indexer.Cursor, onlyNewer bool) bool {
 	newest, bound, now := in.newestKnown(), in.nw.chainTracker.LiveBound(), time.Now()
 	in.mu.Lock()
 	s := in.sources[upstreamId]
+	if onlyNewer && s != nil && cur.Number <= s.last.Number {
+		in.mu.Unlock()
+		return false
+	}
 	if s == nil {
 		s = &sourceState{}
 		in.sources[upstreamId] = s
@@ -223,6 +224,7 @@ func (in *networkIntake) accept(upstreamId string, cur indexer.Cursor) {
 	if changed {
 		in.changed()
 	}
+	return true
 }
 
 // evaluateLocked updates s.live: a source stays live unless the newest known

@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -107,13 +108,15 @@ const (
 	fClientGetLogs  = "client eth_getLogs for a block a logs tap fetched"
 	fBadBaseFee     = "every vendor serves headers whose base fee breaks baseFeeDerivation"
 	fBadBaseFeeLone = "a network with one vendor serves headers whose base fee breaks baseFeeDerivation"
+	fForgedAhead    = "one vendor pushes headers with garbage hashes near and far ahead of the chain"
+	fSlowWalk       = "a reorg whose walk is slow, while clients ask the new fork under a strict profile"
 )
 
 var chaosFaults = []string{
 	fReorgSmall, fMinorityFork, fAheadFork, fDeepReorg, fSilent, fLagging, fDown, fAllDown, fHalt,
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice, fPendingSilent,
 	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower, fFetchPanic,
-	fForgedLog, fForgedHash, fReorg3, fClientGetLogs, fBadBaseFee, fBadBaseFeeLone,
+	fForgedLog, fForgedHash, fReorg3, fClientGetLogs, fBadBaseFee, fBadBaseFeeLone, fForgedAhead, fSlowWalk,
 }
 
 // TestChainFeed_ConvergesUnderFaults runs real eRPC against 4 mocked vendors
@@ -171,10 +174,12 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{37, true, chaosOpts{}, []string{fAllDown, fHalt, fLoad, fOrphanCached, fRestart, fChainBloom, fNullReceipts}},
 		{41, false, chaosOpts{}, []string{fSplit, fLate, fDeepReorg, fBlockDown60, fReceiptsDown90, fNoReceipts}},
 		{53, true, chaosOpts{}, []string{fSilent, fLate, fLateReceipts, fBloomFollower, fPendingSilent, fFetchPanic}},
-		{61, true, chaosOpts{integrity: true}, []string{fForgedLog, fForgedHash, fReorg3, fClientGetLogs}},
+		{61, true, chaosOpts{integrity: true}, []string{fForgedLog, fForgedHash, fForgedAhead, fReorg3, fClientGetLogs}},
 		{67, true, chaosOpts{integrity: true, badBaseFee: true}, []string{fBadBaseFee}},
 		{71, true, chaosOpts{integrity: true, badBaseFee: true, oneVendor: true}, []string{fBadBaseFeeLone}},
+		{73, true, chaosOpts{integrity: true, strict: true}, []string{fSlowWalk}},
 	}
+	before := erpcGoroutines()
 	covered := make(map[string][]int64)
 	for _, p := range plans {
 		ok := t.Run(fmt.Sprintf("seed=%d", p.seed), func(t *testing.T) {
@@ -201,6 +206,44 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 	for _, p := range chaosPaths {
 		require.NotEmpty(t, covered[p], "receipts path %q ran in no seed", p)
 	}
+	// Every seed stopped its eRPC: no goroutine of eRPC or the harness
+	// outlives it, so a load-dependent timing flake is not one.
+	var leaked []string
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		leaked = leaked[:0]
+		for id, stack := range erpcGoroutines() {
+			if _, ok := before[id]; !ok {
+				leaked = append(leaked, stack)
+			}
+		}
+		if len(leaked) == 0 || time.Now().After(deadline) {
+			break
+		}
+	}
+	require.Empty(t, leaked, "goroutines outlive every seed's eRPC")
+}
+
+// erpcGoroutines are the live goroutines, by their "goroutine N" line,
+// that run eRPC or harness code, test runners excepted.
+func erpcGoroutines() map[string]string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	out := make(map[string]string)
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if !strings.Contains(g, "github.com/erpc/erpc/") || strings.Contains(g, "testing.tRunner") {
+			continue
+		}
+		id, _, _ := strings.Cut(g, " [")
+		out[id] = g
+	}
+	return out
 }
 
 //
@@ -345,6 +388,30 @@ func (b *simBlock) logsOf() []map[string]interface{} {
 	return out
 }
 
+// lastLogCovered reports whether the block's other logs carry its last
+// log's address, topic0 and transaction topic, so the bloom of the logs
+// without it is the header's.
+func (b *simBlock) lastLogCovered() bool {
+	if len(b.txs) == 0 {
+		return false
+	}
+	lastTx := b.txs[len(b.txs)-1]
+	if len(lastTx) < 2 {
+		return false
+	}
+	last := lastTx[len(lastTx)-1]
+	addr, topic := false, false
+	for i, tx := range b.txs {
+		for k, l := range tx {
+			if i == len(b.txs)-1 && k == len(tx)-1 {
+				continue
+			}
+			addr, topic = addr || l.addr == last.addr, topic || l.topic == last.topic
+		}
+	}
+	return addr && topic
+}
+
 // matched are the logIndexes of the block's logs that filter f matches.
 func (b *simBlock) matched(f int) []int {
 	var out []int
@@ -406,6 +473,12 @@ type simChain struct {
 	// badBaseFee: every block's base fee is 1000 + its number, which no
 	// parent derives (baseFeeDerivation); set before the first block.
 	badBaseFee bool
+	// walkDelay delays every answer by hash, and by number below the tip,
+	// as a slow node does: a tracker's walk crawls.
+	walkDelay time.Duration
+	// matchLast: every matching block minted from now ends with a log both
+	// filters match, in a transaction with another log.
+	matchLast bool
 }
 
 // simTrap is one block's held first receipts call.
@@ -453,6 +526,12 @@ func (c *simChain) mintLocked(parent *simBlock, number uint64, at time.Time, min
 		}
 	}
 	txs := simContent(c.rng, kind)
+	if c.matchLast && kind == simMatching {
+		// The block ends with a second log of its last transaction that
+		// both filters match, as its first log does.
+		last := len(txs) - 1
+		txs[last] = append(txs[last][:1], simLog{addr: 0, topic: 1})
+	}
 	bloom := make([]byte, logfilter.BloomLen)
 	tag := fmt.Sprintf("%d/%d", c.seed, c.minted)
 	for i, tx := range txs {
@@ -742,6 +821,13 @@ type simVendor struct {
 	noReceipts    bool
 	wrongBloom    bool
 	forgedLog     bool
+	// capLogs answers eth_getLogs one log short of the block's, as a
+	// vendor's result cap does, whenever the block's other logs carry the
+	// last one's address and topics: logIndexes stay contiguous and the
+	// bloom stays the header's, so only another vendor's answer shows the
+	// gap. Other blocks it answers in full.
+	capLogs bool
+	capped  atomic.Int64 // eth_getLogs answers capLogs cut short
 	// forgeHashes is how many of the vendor's next pushes carry a wrong
 	// hash; forged counts those pushed.
 	forgeHashes int
@@ -876,6 +962,13 @@ func (v *simVendor) answer(method string, params []interface{}) (interface{}, *s
 	if method == "eth_getBlockReceipts" || method == "eth_getLogs" {
 		late += v.lateReceipts
 	}
+	if c.walkDelay > 0 && len(params) > 0 {
+		ref, _ := params[0].(string)
+		n, err := common.HexToInt64(ref)
+		if method == "eth_getBlockByHash" || method == "eth_getBlockByNumber" && err == nil && v.tip != nil && uint64(n) < v.tip.number {
+			late += c.walkDelay
+		}
+	}
 	c.mu.Unlock()
 	if method == "eth_getBlockReceipts" {
 		if res, ok := v.trapped(params); ok {
@@ -1001,7 +1094,12 @@ func (v *simVendor) receiptsLocked(method string, params []interface{}) (interfa
 		return nil, nil
 	}
 	if method == "eth_getLogs" {
-		return b.logsOf(), nil
+		logs := b.logsOf()
+		if v.capLogs && b.lastLogCovered() {
+			logs = logs[:len(logs)-1]
+			v.capped.Add(1)
+		}
+		return logs, nil
 	}
 	if v.nullReceipts {
 		return nil, nil
@@ -1752,10 +1850,12 @@ func (s *chaosSeed) faultsSince(since time.Time) string {
 
 // chaosOpts shape one seed: integrity on (checks configured as an operator
 // would: level authoritative, baseFeeDerivation enabled for the simulated
-// chain), a chain whose base fee no parent derives, a network of one
+// chain), strict (a reorg-sensitive mismatch on an unfinalized block is a
+// hard reject), a chain whose base fee no parent derives, a network of one
 // vendor.
 type chaosOpts struct {
 	integrity  bool
+	strict     bool
 	badBaseFee bool
 	oneVendor  bool
 }
@@ -1820,6 +1920,9 @@ func (s *chaosSeed) config() *common.Config {
 				Level:  "authoritative",
 				Checks: map[string]*common.IntegrityCheckConfig{"baseFeeDerivation": {Enabled: util.BoolPtr(true)}},
 			}}
+			if s.opts.strict {
+				nw.Integrity.InvalidBehavior = &common.IntegrityInvalidBehaviorConfig{Unfinalized: "hardReject"}
+			}
 		}
 	}, ups...)
 	cfg.RateLimiters = &common.RateLimiterConfig{Budgets: budgets}
@@ -2178,6 +2281,10 @@ func (s *chaosSeed) inject(f string) {
 		s.forgedHash()
 	case fReorg3:
 		s.reorg3()
+	case fForgedAhead:
+		s.forgedAhead()
+	case fSlowWalk:
+		s.slowWalk()
 	case fClientGetLogs:
 		s.clientGetLogs()
 	case fBadBaseFee, fBadBaseFeeLone:
@@ -3142,6 +3249,107 @@ func (s *chaosSeed) reorg3() {
 	s.occur(fReorg3, fmt.Sprintf("new head %d", tip.number))
 }
 
+// forgeAt is raw renumbered to n, with a hash it does not hash to.
+func forgeAt(raw json.RawMessage, n uint64) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	fields["number"], _ = json.Marshal(fmt.Sprintf("0x%x", n))
+	out, _ := json.Marshal(fields)
+	return forgeHash(out)
+}
+
+// forgedAhead: one wss vendor pushes, for 6 blocks, headers with garbage
+// hashes 1 and 2 blocks above its tip and 1000 and 1001 above it. They fail
+// blockHashRecompute at 2 heights in a row for longer than a live bound,
+// but one vendor alone, and far ahead of the head, never suspends the
+// check; intake drops each, and no client sees one.
+func (s *chaosSeed) forgedAhead() {
+	v := s.pick(s.wsA, s.wsB)
+	s.violator(v.id)
+	gated := func() float64 {
+		return metricSum(telemetry.MetricChainTrackerSourceHeadsTotal, chaosLabels("upstream", v.id, "outcome", "gated_integrity"))
+	}
+	gated0, pushed := gated(), 0
+	for range 6 {
+		s.chain.mu.Lock()
+		var pushes []simPush
+		for conn, sub := range v.conns {
+			if sub == "" {
+				continue
+			}
+			for _, ahead := range []uint64{1, 2, 1000, 1001} {
+				pushes = append(pushes, simPush{conn: conn, sub: sub, raw: forgeAt(v.tip.json(), v.tip.number+ahead)})
+			}
+		}
+		s.chain.mu.Unlock()
+		writePushes(pushes)
+		pushed += len(pushes)
+		s.blocks(1)
+	}
+	require.Positive(s.t, pushed, "%s has a newHeads subscription to push on", v.id)
+	require.Eventually(s.t, func() bool { return gated()-gated0 == float64(pushed) }, 10*chaosBlock, 10*time.Millisecond,
+		"intake holds back every forged head of %s", v.id)
+	for _, id := range integrity.HeaderChecks {
+		require.Equal(s.t, s.baseline.suspended[id], metricSum(telemetry.MetricIntegrityCheckSuspendedTotal, chaosLabels("check", id)),
+			"one vendor's forged heads never suspend %s", id)
+	}
+	s.occur(fForgedAhead, fmt.Sprintf("%s pushed %d forged heads, near and far ahead", v.id, pushed))
+}
+
+// slowWalk: every answer by hash or below the tip takes 2 block times, so
+// the walk of a 3-block reorg crawls while the sources' new votes wait on
+// it. Clients meanwhile ask the new fork's blocks by number under a strict
+// profile: the pins the walking votes dispute settle before any verdict,
+// so every honest answer is served.
+func (s *chaosSeed) slowWalk() {
+	s.chain.mu.Lock()
+	s.chain.walkDelay = 2 * chaosBlock
+	s.chain.mu.Unlock()
+	defer func() {
+		s.chain.mu.Lock()
+		s.chain.walkDelay = 0
+		s.chain.mu.Unlock()
+	}()
+	rejects := func() float64 {
+		return metricSum(telemetry.MetricIntegrityViolation, chaosLabels("verdict", "reject"))
+	}
+	rejects0 := rejects()
+	tip := s.chain.reorg(3)
+	time.Sleep(chaosBlock / 2) // the sources' new votes reach the trackers
+	var asked []*simBlock
+	for b := tip; b != nil && b.number+4 > tip.number; b = b.parent {
+		asked = append(asked, b)
+	}
+	type answer struct {
+		b    *simBlock
+		resp map[string]interface{}
+		code int
+		err  error
+	}
+	answers := make(chan answer, len(asked))
+	for _, b := range asked {
+		go func() {
+			resp, code, err := s.rpc("eth_getBlockByNumber", fmt.Sprintf("0x%x", b.number), false)
+			answers <- answer{b, resp, code, err}
+		}()
+	}
+	for range asked {
+		a := <-answers
+		require.NoError(s.t, a.err)
+		require.Equal(s.t, http.StatusOK, a.code, "block %d: %v", a.b.number, a.resp)
+		require.Nil(s.t, a.resp["error"], "block %d of the new fork is served, not rejected", a.b.number)
+		res, _ := a.resp["result"].(map[string]interface{})
+		require.NotNil(s.t, res, "block %d: %v", a.b.number, a.resp)
+	}
+	s.blocks(3)
+	// Mismatches against the old pins are recorded, never a reject: the
+	// walk's disputed pins are no verdict's evidence.
+	require.Equal(s.t, rejects0, rejects(), "no honest answer is hard-rejected during the walk")
+	s.occur(fSlowWalk, fmt.Sprintf("new head %d; %d blocks of the new fork served during the walk", tip.number, len(asked)))
+}
+
 // clientGetLogs: a client asks eth_getLogs for a block whose receipts the
 // feed holds for a logs tap; getLogsCompleteness compares them with no
 // canonical_receipts fetch.
@@ -3215,8 +3423,11 @@ func (s *chaosSeed) judgeIntegrity() {
 		}
 		require.Equal(s.t, want, now.suspended[id]-s.baseline.suspended[id], "suspensions of %s", id)
 	}
-	if s.opts.badBaseFee {
-		return // every upstream served the base fee the check rejected
+	if s.opts.badBaseFee || s.opts.strict {
+		// badBaseFee: every upstream served the base fee the check
+		// rejected. strict: a reorg's mismatches against the old pins are
+		// recorded against honest upstreams; slowWalk judges the rejects.
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

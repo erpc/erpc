@@ -182,7 +182,7 @@ func TestChainTracker_Receipts(t *testing.T) {
 
 func TestChainTracker_NarrowAnchors(t *testing.T) {
 	anchors := func(c *ChainTracker, fin int64, body string) {
-		c.observeNarrowAnchors(fin, []byte(body))
+		c.observeNarrowAnchors(fin, "vendor-a", []byte(body))
 		c.sync(context.Background())
 	}
 	t.Run("finalized block → anchored", func(t *testing.T) {
@@ -216,6 +216,52 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 		assert.Equal(t, h, v)
 		_, ok = c.HashAt(0x11)
 		assert.True(t, ok)
+	})
+
+	// One vendor's narrow answer must not hard-reject another vendor's
+	// honest block below the window: an anchor is a fresh confirmation only
+	// once 2 vendors agree on it.
+	t.Run("an anchor one vendor alone answered never hard-rejects", func(t *testing.T) {
+		const n = 0x10
+		wrong, honest := testHash("e", n), testHash("b", n)
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		// 2 sources pin 0x20..0x30, so 0x10 lies below the window.
+		voteChain(t, c, "a", "c", 0x20, 0x30, testHash("c", 0x1f))
+		voteChain(t, c, "b", "c", 0x20, 0x30, testHash("c", 0x1f))
+		say := func(vendor, hash string) {
+			c.observeNarrowAnchors(0x40, vendor, []byte(fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s"}`, hash)))
+			c.sync(context.Background())
+		}
+		validate := func(hash string) integrity.Result {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`))
+			jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), testHeader(n, hash, testHash("b", n-1)), nil)
+			return integrity.Validate(context.Background(), integrity.Input{
+				Method:   integrity.MethodGetBlockByNumber,
+				Response: common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr),
+				Checks:   integrity.CheckSet{}.Enable("hashStability", nil),
+				History:  c,
+				Reorg:    integrity.ReorgPolicy{Finalized: integrity.BehaviorError, Unfinalized: integrity.BehaviorError},
+			})
+		}
+
+		say("vendor-a", wrong)
+		got, status := c.ReconfirmPin(context.Background(), n)
+		assert.Equal(t, wrong, got)
+		assert.Equal(t, integrity.PinRateLimited, status)
+		res := validate(honest)
+		require.NoError(t, res.Err, "an honest block is served while one vendor alone backs the anchor")
+		assert.Equal(t, []integrity.CheckOutcome{{CheckID: "hashStability", Outcome: "record_only"}}, res.Outcomes)
+
+		say("vendor-b", honest)
+		_, status = c.ReconfirmPin(context.Background(), n)
+		assert.Equal(t, integrity.PinRateLimited, status, "1 vendor against 1 is no agreement")
+
+		say("vendor-c", honest)
+		got, status = c.ReconfirmPin(context.Background(), n)
+		assert.Equal(t, honest, got, "the hash 2 vendors answered wins")
+		assert.Equal(t, integrity.PinFresh, status)
+		require.NoError(t, validate(honest).Err)
+		assert.Error(t, validate(wrong).Err, "the wrong hash is rejected once 2 vendors agree on the anchor")
 	})
 }
 
