@@ -63,22 +63,46 @@ type Vendor struct {
 	conns  map[*wsConn]bool
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls atomic.Int64
-	subSeq                                                atomic.Int64
+	subSeq                                                               atomic.Int64
 }
 
 type wsConn struct {
 	c  *websocket.Conn
 	mu sync.Mutex
+	// pushes queues subscription notifications for the connection's own
+	// writer, so a peer that stops reading never stalls the chain's tick
+	// for every other connection; done ends the writer.
+	pushes chan interface{}
+	done   chan struct{}
 	// Guarded by chain.mu.
 	heads   map[string]bool
 	pending map[string]bool
 }
+
+// wsPushQueue is how many notifications a connection may owe its peer;
+// past it the vendor drops the peer, as a node drops a subscriber that
+// does not read.
+const wsPushQueue = 1024
 
 func (w *wsConn) write(v interface{}) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	_ = w.c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return w.c.WriteJSON(v)
+}
+
+func (w *wsConn) writePushes() {
+	for {
+		select {
+		case <-w.done:
+			return
+		case m := <-w.pushes:
+			if w.write(m) != nil {
+				_ = w.c.Close()
+				return
+			}
+		}
+	}
 }
 
 type push struct {
@@ -89,10 +113,12 @@ type push struct {
 
 func writePushes(ps []push) {
 	for _, p := range ps {
-		if p.conn.write(map[string]interface{}{
+		select {
+		case p.conn.pushes <- map[string]interface{}{
 			"jsonrpc": "2.0", "method": "eth_subscription",
 			"params": map[string]interface{}{"subscription": p.sub, "result": p.res},
-		}) != nil {
+		}:
+		default:
 			_ = p.conn.c.Close()
 		}
 	}
@@ -310,7 +336,9 @@ func (v *Vendor) serveWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.connects.Add(1)
-	wc := &wsConn{c: conn, heads: make(map[string]bool), pending: make(map[string]bool)}
+	wc := &wsConn{c: conn, pushes: make(chan interface{}, wsPushQueue), done: make(chan struct{}),
+		heads: make(map[string]bool), pending: make(map[string]bool)}
+	go wc.writePushes()
 	c := v.chain
 	c.mu.Lock()
 	v.conns[wc] = true
@@ -319,6 +347,7 @@ func (v *Vendor) serveWS(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		delete(v.conns, wc)
 		c.mu.Unlock()
+		close(wc.done)
 		_ = conn.Close()
 	}()
 	for {
