@@ -472,12 +472,13 @@ func (e *Engine) GetExcluded(networkID, method, finality string) []common.Upstre
 	return nil
 }
 
-// PublishRequest hands a freshly-served request to the network's
-// probe-bus (if a Prober exists for this network). Non-blocking —
-// drops on bus overflow with a metric. Called from the request path
-// AFTER the primary upstream's response is determined; the probe
-// subsystem runs entirely on its own goroutines so the user's
-// response is never delayed.
+// PublishRequest hands an incoming request to the network's probe-bus
+// (if a Prober exists for this network). Non-blocking — drops on bus
+// overflow with a metric. Called from the request path BEFORE the
+// primary upstream is dispatched, so probes run concurrently with the
+// caller's own attempts: the prober detaches its own request and never
+// writes to this one. The probe subsystem runs entirely on its own
+// goroutines so the user's response is never delayed.
 //
 // No-op when no Prober is registered for the network (the chain
 // doesn't include `probeExcluded` OR the engine hasn't ticked yet).

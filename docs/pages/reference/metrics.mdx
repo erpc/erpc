@@ -416,7 +416,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 | `erpc_upstream_breaker_state_change_total` | counter | project, upstream, transition | Circuit-breaker state transition. `transition` ∈ `"closed_to_open"`, `"half_open_to_open"`, `"half_open_to_closed"`, `"open_to_half_open"`. |
 | `erpc_selection_probe_requests_total` | counter | network, upstream, method | Probe-mirror request fired at an excluded upstream. |
 | `erpc_selection_probe_errors_total` | counter | network, upstream, method, reason | Probe request errored. `reason` ∈ `"timeout"`, `"throttled"`, `"auth"`, `"skipped"`, `"error"`. `"skipped"` = upstream intentionally rejected; `"error"` = other failures. |
-| `erpc_selection_probe_skipped_total` | counter | network, reason | Probe candidate skipped pre-fire. `reason` ∈ `"write_method"`, `"opt_out"`, `"sampled_out"`, `"max_concurrent"`, `"no_method"`. |
+| `erpc_selection_probe_skipped_total` | counter | network, reason | Probe candidate skipped pre-fire. `reason` ∈ `"write_method"`, `"method_ignored"` (upstream `ignoreMethods`/`allowMethods` forbid the method), `"opt_out"`, `"sampled_out"`, `"max_concurrent"`, `"no_method"`. |
 | `erpc_selection_probe_dropped_total` | counter | network, reason | Probe-bus publish dropped — per-network feed channel full. |
 
 #### Area 8: Selection policy

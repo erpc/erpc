@@ -217,6 +217,14 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 	}
 
 	for _, u := range excluded {
+		// The upstream's own ignoreMethods/allowMethods veto a probe: mirror
+		// bypasses shouldSkip, and nothing un-learns a method, so a probe of
+		// an ignored method can never re-admit the upstream. An error is not
+		// a verdict - one bad glob must not end re-admission.
+		if handle, herr := u.ShouldHandleMethod(method); herr == nil && !handle {
+			telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "method_ignored").Inc()
+			continue
+		}
 		if !p.tryReserveProbe(u, cfg) {
 			continue
 		}
