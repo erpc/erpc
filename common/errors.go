@@ -232,6 +232,19 @@ func (e *BaseError) WithPermanentMissingData(p bool) *BaseError {
 	return e
 }
 
+// WithHistorySweepContinuation marks MissingData that exists only to continue a
+// serial upstream sweep after an incomplete-but-successful JSON-RPC body — not
+// proof that the upstream lacked data other peers had.
+func (e *BaseError) WithHistorySweepContinuation(p bool) *BaseError {
+	if e != nil {
+		if e.Details == nil {
+			e.Details = map[string]interface{}{}
+		}
+		e.Details["historySweepContinuation"] = p
+	}
+	return e
+}
+
 func (e *BaseError) GetCode() ErrorCode {
 	return e.Code
 }
@@ -2688,6 +2701,28 @@ func IsPermanentlyMissingData(err error) bool {
 		}
 		if base := cse.Base(); base != nil && base.Details != nil {
 			if p, ok := base.Details["permanentMissingData"].(bool); ok && p {
+				return true
+			}
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			break
+		}
+		cur = next
+	}
+	return false
+}
+
+// IsHistorySweepContinuation reports MissingData emitted to continue a serial
+// sweep after an incomplete 200 — not a wrong-empty disagreement with the winner.
+func IsHistorySweepContinuation(err error) bool {
+	for cur := err; cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			break
+		}
+		if base := cse.Base(); base != nil && base.Details != nil {
+			if p, ok := base.Details["historySweepContinuation"].(bool); ok && p {
 				return true
 			}
 		}

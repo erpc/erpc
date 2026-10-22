@@ -1849,6 +1849,12 @@ func (b *SvmAvailabilityBoundConfig) Validate() error {
 	if b.FirstAvailableSlotPlus != nil && *b.FirstAvailableSlotPlus < 0 {
 		return fmt.Errorf("bound.firstAvailableSlotPlus must be >= 0")
 	}
+	if b.UpdateRate < 0 {
+		return fmt.Errorf("bound.updateRate must be >= 0")
+	}
+	if b.UpdateRate != 0 && b.FirstAvailableSlotPlus == nil {
+		return fmt.Errorf("bound.updateRate applies only to firstAvailableSlotPlus")
+	}
 	return nil
 }
 

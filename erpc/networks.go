@@ -1833,6 +1833,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		upsList = tierUpstreamsByGroup(upsList)
 	}
 
+	// SVM history reads go deepest known floor first within each tier, so the
+	// first answer is the most complete one the pool holds.
+	if n.Architecture() == common.ArchitectureSvm && svm.IsHistoryMethod(method) {
+		upsList = svm.OrderByHistoryDepth(upsList, func(a, b common.Upstream) bool {
+			return isFallbackTier(a) == isFallbackTier(b)
+		})
+	}
+
 	// Architecture-specific pruning of the upstream list. Currently only SVM
 	// uses this hook; both filters are gated on ArchitectureSvm so EVM networks
 	// never enter this block.
@@ -2490,6 +2498,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		req.ErrorsByUpstream.Range(func(key, value any) bool {
 			upstreamErr, ok := value.(error)
 			if !ok || !common.HasErrorCode(upstreamErr, common.ErrCodeEndpointMissingData) {
+				return true
+			}
+			// SVM history sweep uses MissingData to continue a sweep after an
+			// incomplete 200 — not evidence this upstream disagreed with the winner.
+			if common.IsHistorySweepContinuation(upstreamErr) {
 				return true
 			}
 			upstream := key.(*upstream.Upstream)

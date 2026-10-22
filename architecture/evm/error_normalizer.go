@@ -341,6 +341,27 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			}
 			return execErr
 		}
+		// Aurora (Borealis engine) answers debug_trace* with -32603 for two
+		// per-transaction outcomes that no other node can change:
+		//   "no EVM execution in transaction 0x…": a NEAR-native transaction
+		//     surfaced in the EVM block, so there is nothing to trace;
+		//   "EVM tracing failed in transaction 0x… due to ContractError {…}":
+		//     the engine's own verdict for that transaction.
+		// As a server-side exception every request was retried until the
+		// failsafe gave up (12 attempts each) and the caller saw
+		// ErrUpstreamsExhausted instead of the real reason.
+		if strings.Contains(msg, "no EVM execution in transaction") ||
+			strings.Contains(msg, "EVM tracing failed in transaction") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCallException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
 		// EVM HALTS reported as "EVM error: <HaltReason>".
 		//
 		// A halt — out of gas, invalid opcode, insufficient funds, stack
