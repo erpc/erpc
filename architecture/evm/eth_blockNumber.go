@@ -14,9 +14,7 @@ import (
 // head without dispatching whenever enforce-highest-block is on and the head is
 // known: the post-forward hook below pins every response to that head EXACTLY,
 // so an upstream's answer is always discarded and the call buys nothing but
-// vendor cost and latency. Each answer also asks the ballot's pollers for a
-// debounced background refresh, so on a quiet network the head a client polls
-// for is not held at the ticker interval. An unknown head (cold pollers) and
+// vendor cost and latency. An unknown head (cold pollers) and
 // enforce-highest-block=false keep forwarding.
 func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	if dirs := nq.Directives(); dirs == nil || !dirs.EnforceHighestBlock {
@@ -27,7 +25,6 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	if tip <= 0 {
 		return false, nil, nil
 	}
-	common.EvmRefreshLatestBlock(network, ctx)
 	hex, err := common.NormalizeHex(tip)
 	if err != nil {
 		return true, nil, err
@@ -40,12 +37,13 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 }
 
 // networkPostForward_eth_blockNumber pins every eth_blockNumber response to the
-// network's served head EXACTLY, regardless of its source — a live upstream
-// (cold head at pre-forward time, or a per-request override path) OR the
-// cache. The correction is a pure in-memory synthesis (poller state), never an
-// extra upstream call. Enforced answers also ask the ballot's pollers for a
-// debounced background refresh here: Network.Forward can return a cache hit
-// before networkPreForward_eth_blockNumber runs, and without this the head a
+// network's served head EXACTLY, regardless of its source — the pre-forward
+// answer above, a live upstream (cold head at pre-forward time, or a
+// per-request override path) OR the cache. The correction is a pure in-memory
+// synthesis (poller state), never an extra upstream call. Every enforced answer
+// also asks the ballot's pollers for a debounced background refresh here, the
+// one hook every path reaches: Network.Forward returns a cache hit before
+// networkPreForward_eth_blockNumber runs, and without the refresh the head a
 // quiet network serves stays at the ticker interval despite frequent polls.
 //
 // Exact, not floor-only, because "latest" interpolation (resolveBlockTagToHex)
@@ -106,8 +104,7 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		return nr, re
 	}
 
-	// Same debounced refresh the pre-forward path fires: covers cache hits
-	// (and equality returns) that never reached networkPreForward_eth_blockNumber.
+	// The one debounced refresh per enforced answer, whatever produced it.
 	common.EvmRefreshLatestBlock(network, reqCtx)
 
 	if blockNumber == highestBlock {

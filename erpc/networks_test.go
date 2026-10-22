@@ -11678,17 +11678,17 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		require.NotNil(t, clampedUpstream)
 		require.NotNil(t, unclampedUpstream)
 
-		// Set up block numbers. The network head is the corroborated (second-
-		// highest) effective head, so the unclamped node sits between the
-		// clamped node's effective and raw values: only the effective value
-		// yields 1900, the raw value would yield 1950.
+		// Set up block numbers. Two voters: the pair rule serves the higher
+		// effective head, so the unclamped node sits below the clamped
+		// node's effective value: only the effective value yields 1900, the
+		// raw value would yield 2000.
 		// Clamped node: raw latest = 2000, effective = 2000 - 100 = 1900
 		clampedUpstream.EvmStatePoller().SuggestLatestBlock(2000)
-		// Unclamped node: raw latest = 1950, effective = 1950
-		unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950)
+		// Unclamped node: raw latest = 1850, effective = 1850
+		unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1850)
 		time.Sleep(50 * time.Millisecond)
 
-		// Second-highest of effective blocks {1900, 1950} = 1900
+		// Higher of the effective pair {1900, 1850} = 1900
 		highest := common.EvmHighestLatestBlockNumber(network, ctx)
 
 		assert.Equal(t, int64(1900), highest, "Should use effective (clamped) block values when upper bound is configured")
@@ -11943,18 +11943,19 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		require.NotNil(t, unclampedUpstream)
 
 		// Set up block numbers. Same shape as the latest-axis case: the
-		// unclamped node's finalized head sits between the clamped node's
-		// effective (1800) and raw (1900) finalized values.
+		// unclamped node's finalized head sits below the clamped node's
+		// effective (1800) finalized value, so the pair rule serves 1800 from
+		// effective values and would serve 1900 from raw ones.
 		// Clamped node: latest = 2000, finalized = 1900, upper bound = 2000 - 200 = 1800
 		// So effective finalized = min(1900, 1800) = 1800
 		clampedUpstream.EvmStatePoller().SuggestLatestBlock(2000)
 		clampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1900)
-		// Unclamped node: latest = 1950, finalized = 1850, no upper bound
+		// Unclamped node: latest = 1950, finalized = 1750, no upper bound
 		unclampedUpstream.EvmStatePoller().SuggestLatestBlock(1950)
-		unclampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1850)
+		unclampedUpstream.EvmStatePoller().SuggestFinalizedBlock(1750)
 		time.Sleep(50 * time.Millisecond)
 
-		// Second-highest of effective finalized blocks {1800, 1850} = 1800
+		// Higher of the effective finalized pair {1800, 1750} = 1800
 		highest := common.EvmHighestFinalizedBlockNumber(network, ctx)
 
 		assert.Equal(t, int64(1800), highest, "Should use effective (clamped) finalized block values when upper bound is configured")

@@ -206,7 +206,7 @@ func TestStateBoundary_TipChosenFromClaimedHeadsMustRoute(t *testing.T) {
 		}
 		ups = append(ups, u)
 	}
-	tip := common.PickServedTip(tips, 0).Tip
+	tip := common.PickServedTip(tips, 0, 0).Tip
 	require.Equal(t, head, tip, "sanity: a healthy fleet's served tip is the head")
 
 	// The precondition, asserted so the fixture cannot rot into triviality: the
