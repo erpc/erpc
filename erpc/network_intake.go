@@ -264,11 +264,19 @@ func (in *networkIntake) live(upstreamId string) bool {
 	return s != nil && s.live
 }
 
-// authoritative: upstreamId is in the selection policy's eligible set, and,
-// with failover on, outside the fallback tier or no primary source leads.
+// authoritative: upstreamId is in the selection policy's eligible set, not
+// syncing, and, with failover on, outside the fallback tier or no primary
+// source leads.
 func (in *networkIntake) authoritative(upstreamId string) bool {
 	primary, eligible, leads := in.authority(upstreamId)
 	return eligible && in.admits(primary, leads)
+}
+
+// syncing: u reports itself syncing (#202). It neither votes nor feeds a
+// topic as authoritative, as tipVoterRank keeps it out of the served tip.
+func syncing(u common.Upstream) bool {
+	eu, ok := u.(common.EvmUpstream)
+	return ok && eu.EvmSyncingState() == common.EvmSyncingStateSyncing
 }
 
 // admits is the tier half of authority: with failover on, a fallback-tier
@@ -278,12 +286,15 @@ func (in *networkIntake) admits(primary, leads bool) bool {
 }
 
 // authoritativeIn lists, in the policy's selection order, the authoritative
-// upstreams; for a group selector, the eligible upstreams it matches, whose
-// headers vote before the authority gate.
+// upstreams; for a group selector, the eligible upstreams it matches that
+// are not syncing, whose headers vote before the authority gate.
 func (in *networkIntake) authoritativeIn(selector string) []string {
 	_, _, leads := in.authority("")
 	var out []string
 	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
+		if syncing(c) {
+			continue
+		}
 		if selector != "" {
 			if m, _ := common.UpstreamMatchesSelector(selector, c); m {
 				out = append(out, c.Id())
@@ -297,12 +308,14 @@ func (in *networkIntake) authoritativeIn(selector string) []string {
 	return out
 }
 
-// authority reads the policy's eligible set now: whether upstreamId is in
-// it and outside the fallback tier, and whether some primary source has
-// been live and eligible for primaryLeadAfter. A primary counts as live
-// only while it is eligible. It publishes the authoritative upstreams to
-// authorities. The set is read under in.mu, so a caller holding an older
-// set cannot overwrite eligibleSince or authorities after a newer one.
+// authority reads the policy's eligible set now, syncing upstreams left
+// out: whether upstreamId is in it and outside the fallback tier, and
+// whether some primary source has been live and eligible for
+// primaryLeadAfter. A primary counts as live only while it is eligible. It
+// publishes the authoritative upstreams to authorities; a change of that
+// set, as of the leads, makes the trackers count votes again. The set is
+// read under in.mu, so a caller holding an older set cannot overwrite
+// eligibleSince or authorities after a newer one.
 func (in *networkIntake) authority(upstreamId string) (primary, eligible, leads bool) {
 	in.mu.Lock()
 	now := time.Now()
@@ -312,6 +325,9 @@ func (in *networkIntake) authority(upstreamId string) (primary, eligible, leads 
 	var buf [16]authorityCandidate
 	cands := buf[:0]
 	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
+		if syncing(c) {
+			continue
+		}
 		isPrimary := !isFallbackTier(c)
 		cands = append(cands, authorityCandidate{c.Id(), isPrimary})
 		if c.Id() == upstreamId {
@@ -335,7 +351,7 @@ func (in *networkIntake) authority(upstreamId string) (primary, eligible, leads 
 	}
 	flipped := leads != in.primaryLeads
 	in.primaryLeads = leads
-	in.publishAuthoritiesLocked(cands, leads)
+	flipped = in.publishAuthoritiesLocked(cands, leads) || flipped
 	in.mu.Unlock()
 	if flipped {
 		in.changed()
@@ -349,9 +365,9 @@ type authorityCandidate struct {
 }
 
 // publishAuthoritiesLocked stores the authoritative ones of cands, the
-// eligible set in selection order; a set equal to the stored one is kept,
-// so a steady set allocates nothing.
-func (in *networkIntake) publishAuthoritiesLocked(cands []authorityCandidate, leads bool) {
+// eligible set in selection order, and reports whether they changed; a set
+// equal to the stored one is kept, so a steady set allocates nothing.
+func (in *networkIntake) publishAuthoritiesLocked(cands []authorityCandidate, leads bool) (changed bool) {
 	old := in.authorities.Load()
 	n, same := 0, old != nil
 	for _, c := range cands {
@@ -362,7 +378,7 @@ func (in *networkIntake) publishAuthoritiesLocked(cands []authorityCandidate, le
 		n++
 	}
 	if same && n == len(*old) {
-		return
+		return false
 	}
 	ids := make([]string, 0, n)
 	for _, c := range cands {
@@ -371,6 +387,7 @@ func (in *networkIntake) publishAuthoritiesLocked(cands []authorityCandidate, le
 		}
 	}
 	in.authorities.Store(&ids)
+	return true
 }
 
 func later(a, b time.Time) time.Time {
@@ -385,8 +402,8 @@ func later(a, b time.Time) time.Time {
 var livenessInterval = func(bound time.Duration) time.Duration { return bound / 4 }
 
 // run re-evaluates liveness until ctx ends, so a silent or lagging source
-// stops voting within the live bound. The bound shrinks once pins date the
-// block time (from 12s to the chain's), so each pin change may bring the
+// stops voting within the live bound. The bound shrinks once the block time
+// is known (from 12s to the chain's), so each pin change may bring the
 // next evaluation forward.
 func (in *networkIntake) run(ctx context.Context) {
 	tr := in.nw.chainTracker
@@ -456,13 +473,15 @@ func (in *networkIntake) anyLive() bool {
 
 // EvmSourceVotes reports whether upstreamId's vote counts now in the tracker
 // of selector ("" network-wide); the trackers count only these votes. A
-// group tracker's upstreams vote while live, before the authority gate.
+// group tracker's upstreams vote while live and not syncing, before the
+// authority gate.
 func (n *Network) EvmSourceVotes(upstreamId, selector string) bool {
 	if n.intake == nil {
 		return false
 	}
 	if selector != "" {
-		return n.intake.live(upstreamId)
+		u := n.intake.upstream(upstreamId)
+		return u != nil && !syncing(u) && n.intake.live(upstreamId)
 	}
 	return n.intake.votes(upstreamId)
 }

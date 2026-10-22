@@ -39,14 +39,15 @@ var (
 // sourceReconciler decides which topics each source of one network feeds:
 //
 //	push u: newHeads                    always, from network init
-//	poll u: newHeads                    while demand has newHeads and authoritative(u)
+//	poll u: newHeads                    while demand has newHeads, authoritative(u) and u serves latest
 //	push u: newPendingTransactions:<v>  while demand has it and authoritative(u)
 //
 // A push source whose newHeads the upstream refused as unsupported is polled
-// under the poll rule until a subscribe succeeds. It runs on one goroutine,
-// from network init whether or not a WebSocket or gRPC server runs, and
-// wakes on demand changes, liveness and authority changes, subscribe
-// answers, and a timer at the live bound.
+// under the poll rule until a subscribe succeeds. An upstream that refused
+// latest as unsupported is no poll source until its give-up expires (#240).
+// It runs on one goroutine, from network init whether or not a WebSocket or
+// gRPC server runs, and wakes on demand changes, liveness and authority
+// changes, subscribe answers, and a timer at the live bound.
 type sourceReconciler struct {
 	nw *Network
 
@@ -463,7 +464,7 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 		if s.poll == nil {
 			continue
 		}
-		pollOn := polling && (s.push == nil || s.push.HeadsRefused()) && r.nw.intake.authoritative(s.id)
+		pollOn := polling && (s.push == nil || s.push.HeadsRefused()) && !s.poll.LatestUnsupported() && r.nw.intake.authoritative(s.id)
 		if pollOn != s.pollOn {
 			s.poll.Set(topicsIf(pollOn))
 			s.pollOn = pollOn
@@ -593,7 +594,7 @@ func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 	}
 	if s.isSource {
 		if p, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
-			p.BindIntake(r.nw.intake, r.nw.chainTracker.BlockTime)
+			p.BindIntake(r.nw.intake)
 			s.poll = p
 		}
 	}

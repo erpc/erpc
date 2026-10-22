@@ -2212,7 +2212,22 @@ func (c *mockChain) answerBlock(params []interface{}, markServed bool, polls *at
 type mockHttpVendor struct {
 	chain       *mockChain
 	latestPolls atomic.Int64
+	chainIdAsks atomic.Int64
+	// syncing answers eth_syncing as a node still syncing.
+	syncing atomic.Bool
+	// noLatest refuses eth_getBlockByNumber(latest) as unsupported.
+	noLatest atomic.Bool
+	// wrongChain answers for another chain: eth_chainId 0x1, and latest a
+	// block mockWrongChainLead above the chain's head.
+	wrongChain atomic.Bool
 }
+
+// mockWrongChainLead is how far another chain's latest is above the
+// mock chain's: a major head move on any block time.
+const mockWrongChainLead = 100_000
+
+// mockSyncingAnswer is eth_syncing from a node still syncing.
+var mockSyncingAnswer = map[string]interface{}{"startingBlock": "0x0", "currentBlock": "0x10", "highestBlock": "0x100000"}
 
 func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httptest.Server) {
 	t.Helper()
@@ -2224,13 +2239,31 @@ func newMockHttpVendor(t *testing.T, chain *mockChain) (*mockHttpVendor, *httpte
 			var result interface{} = "0x1"
 			switch req["method"] {
 			case "eth_chainId":
+				v.chainIdAsks.Add(1)
 				result = "0x7b"
+				if v.wrongChain.Load() {
+					result = "0x1"
+				}
 			case "eth_syncing":
 				result = false
+				if v.syncing.Load() {
+					result = mockSyncingAnswer
+				}
 			case "eth_blockNumber":
 				result = fmt.Sprintf("0x%x", chain.Head())
 			case "eth_getBlockByNumber":
-				result = chain.answerBlock(params, true, &v.latestPolls)
+				tag, _ := params[0].(string)
+				switch {
+				case tag == "latest" && v.noLatest.Load():
+					v.latestPolls.Add(1)
+					return map[string]interface{}{"jsonrpc": "2.0", "id": req["id"],
+						"error": map[string]interface{}{"code": -32004, "message": "tag not supported"}}
+				case tag == "latest" && v.wrongChain.Load():
+					v.latestPolls.Add(1)
+					result = mockHead(chain.Head() + mockWrongChainLead)
+				default:
+					result = chain.answerBlock(params, true, &v.latestPolls)
+				}
 			}
 			return map[string]interface{}{"jsonrpc": "2.0", "id": req["id"], "result": result}
 		}
@@ -2263,6 +2296,8 @@ type mockWsVendor struct {
 	// staleRPC answers latest with the first block, so only pushes move
 	// the upstream's head.
 	staleRPC bool
+	// syncing answers eth_syncing as a node still syncing.
+	syncing bool
 	// refusePending, if set, gives the JSON-RPC error answering the n-th
 	// newPendingTransactions subscribe (from 1), nil to accept it.
 	refusePending func(n int32) map[string]interface{}
@@ -2333,6 +2368,9 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 				reply["result"] = "0x7b"
 			case "eth_syncing":
 				reply["result"] = false
+				if v.syncing {
+					reply["result"] = mockSyncingAnswer
+				}
 			case "eth_blockNumber":
 				reply["result"] = fmt.Sprintf("0x%x", first)
 			case "eth_getBlockByNumber":
@@ -2488,19 +2526,44 @@ func pollsSettle(t *testing.T, polls *atomic.Int64, window time.Duration, msg st
 
 // An HTTP-only network whose upstream is a subscription source feeds
 // newHeads by polling: heads arrive in order, projected without
-// transactions.
+// transactions. Beside it, sources that cannot serve heads: a syncing HTTP
+// source is never polled as a source and a syncing wss source never votes
+// (#202); an HTTP source that refuses latest as unsupported stops being
+// polled after 10 refusals and is asked again once its give-up expires
+// (#240). The client's heads stay contiguous throughout.
 func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
+	prevBackoff, prevExpiry := evm.PollSourceMaxBackoff.Load(), evm.LatestBlockSkipExpiry.Load()
+	evm.PollSourceMaxBackoff.Store(200 * time.Millisecond)
+	evm.LatestBlockSkipExpiry.Store(3 * time.Second)
+	defer func() {
+		evm.PollSourceMaxBackoff.Store(prevBackoff)
+		evm.LatestBlockSkipExpiry.Store(prevExpiry)
+	}()
 
 	chain := newMockChain(0x100, true)
 	_, srv := newMockHttpVendor(t, chain)
+	syncingHttp, syncingSrv := newMockHttpVendor(t, chain)
+	syncingHttp.syncing.Store(true)
+	noLatest, noLatestSrv := newMockHttpVendor(t, chain)
+	noLatest.noLatest.Store(true)
+	_, syncingWsURL := newMockWsVendor(t, chain, func(v *mockWsVendor) { v.syncing = true })
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	go chain.run(ctx, 150*time.Millisecond)
 
-	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true))))
-	defer cleanup()
+	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(nil,
+		sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true)),
+		sourceUpstream("rpc-syncing", syncingSrv.URL, util.BoolPtr(true)),
+		sourceUpstream("rpc-no-latest", noLatestSrv.URL, util.BoolPtr(true)),
+		sourceUpstream("ws-syncing", syncingWsURL, nil),
+	))
+	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
+	prj, err := erpcSrv.erpc.GetProject("test_ws")
+	require.NoError(t, err)
+	nw, err := prj.GetNetwork(ctx, "evm:123")
+	require.NoError(t, err)
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	subscribeNewHeads(t, conn)
@@ -2515,6 +2578,97 @@ func TestWebSocket_HttpSourcePolledHeads(t *testing.T) {
 		assert.Equal(t, fmt.Sprintf("0x%064x", n), head["hash"])
 		assert.NotContains(t, head, "transactions", "newHeads is projected")
 	}
+
+	for _, id := range []string{"rpc-syncing", "ws-syncing"} {
+		require.Eventually(t, func() bool {
+			for _, u := range nw.upstreamsRegistry.GetNetworkUpstreams(ctx, nw.networkId) {
+				if u.Id() == id {
+					return u.EvmSyncingState() == common.EvmSyncingStateSyncing
+				}
+			}
+			return false
+		}, 5*time.Second, 10*time.Millisecond, "%s reports itself syncing", id)
+	}
+	heads := func(outcome string) float64 {
+		return testutil.ToFloat64(telemetry.MetricChainTrackerSourceHeadsTotal.WithLabelValues("test_ws", "evm:123", "ws-syncing", outcome))
+	}
+	pollsSettle(t, &syncingHttp.latestPolls, 700*time.Millisecond, "a syncing source is not polled for heads")
+	syncingPolls, voted, gated := syncingHttp.latestPolls.Load(), heads("voted"), heads("gated_authority")
+	require.Eventually(t, func() bool { return heads("gated_authority") >= gated+3 }, 10*time.Second, 10*time.Millisecond,
+		"a syncing wss source's heads reach intake and are held back")
+	prev = requireContiguous(t, conn, 3, prev)
+	assert.Equal(t, syncingPolls, syncingHttp.latestPolls.Load(), "a syncing source is not polled for heads")
+	assert.Equal(t, voted, heads("voted"), "a syncing wss source's heads never vote")
+
+	pollsSettle(t, &noLatest.latestPolls, 700*time.Millisecond, "a source that refuses latest stops being polled")
+	refused := noLatest.latestPolls.Load()
+	assert.GreaterOrEqual(t, refused, int64(10), "polled until 10 refusals")
+	require.Eventually(t, func() bool { return noLatest.latestPolls.Load() > refused }, 10*time.Second, 20*time.Millisecond,
+		"latest is asked again once the give-up expires")
+	requireContiguous(t, conn, 3, prev)
+}
+
+// A poll source that starts answering for another chain, with a head far
+// above, is cordoned by the chain-identity gate. Its cordon lifts only
+// after 2 matching eth_chainId checks a recheck interval apart (#997), and
+// a major move right after the lift goes through the gate again and
+// cordons it again. The client's heads stay contiguous: the other chain's
+// head never reaches it.
+func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
+	setupGock()
+	defer util.ResetGock()
+	prevRecheck := evm.ChainIdCordonRecheck.Load()
+	evm.ChainIdCordonRecheck.Store(500 * time.Millisecond)
+	defer evm.ChainIdCordonRecheck.Store(prevRecheck)
+
+	chain := newMockChain(0x100, false)
+	_, srv := newMockHttpVendor(t, chain)
+	crossed, crossedSrv := newMockHttpVendor(t, chain)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go chain.run(ctx, 150*time.Millisecond)
+
+	crossedCfg := sourceUpstream("rpc-crossed", crossedSrv.URL, util.BoolPtr(true))
+	// Its own state polls reach it while it is no poll source, cordoned.
+	crossedCfg.Evm.StatePollerInterval = common.Duration(200 * time.Millisecond)
+	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(nil,
+		sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true)), crossedCfg))
+	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
+	prj, err := erpcSrv.erpc.GetProject("test_ws")
+	require.NoError(t, err)
+	nw, err := prj.GetNetwork(ctx, "evm:123")
+	require.NoError(t, err)
+	var up common.Upstream
+	for _, u := range nw.upstreamsRegistry.GetNetworkUpstreams(ctx, nw.networkId) {
+		if u.Id() == "rpc-crossed" {
+			up = u
+		}
+	}
+	require.NotNil(t, up)
+	cordoned := func() bool { return nw.metricsTracker.IsCordoned(up, "eth_getBlockByNumber") }
+	conn := dialWs(t, addr)
+	defer conn.Close()
+	subscribeNewHeads(t, conn)
+	last := requireContiguous(t, conn, 3, 0)
+
+	crossed.wrongChain.Store(true)
+	require.Eventually(t, cordoned, 5*time.Second, 10*time.Millisecond, "a major move answered by another chain cordons the upstream")
+	last = requireContiguous(t, conn, 2, last)
+	crossed.wrongChain.Store(false)
+	asks := crossed.chainIdAsks.Load()
+	require.Eventually(t, func() bool { return crossed.chainIdAsks.Load() > asks }, 5*time.Second, 10*time.Millisecond,
+		"the cordon is checked again")
+	// Well inside the recheck interval: the first check's answer is in.
+	time.Sleep(200 * time.Millisecond)
+	assert.True(t, cordoned(), "one matching check does not lift the cordon")
+	require.Eventually(t, func() bool { return !cordoned() }, 5*time.Second, 10*time.Millisecond,
+		"a second matching check lifts the cordon")
+	assert.GreaterOrEqual(t, crossed.chainIdAsks.Load(), asks+2, "lifted after 2 matching checks")
+
+	crossed.wrongChain.Store(true)
+	require.Eventually(t, cordoned, 5*time.Second, 10*time.Millisecond,
+		"a major move right after the lift goes through the chain-identity gate again")
+	requireContiguous(t, conn, 3, last)
 }
 
 // A network with a wss source and an HTTP poll source: each head reaches

@@ -99,6 +99,7 @@ const (
 	fWrongBloom     = "one vendor whose receipts have a wrong bloom"
 	fChainBloom     = "every vendor's receipts carry a bloom other than the header's"
 	fBloomFollower  = "client asking the receipts the tracker fetches while the first answer has a wrong bloom"
+	fFetchPanic     = "client asking the receipts the tracker fetches while the fetch's answer check panics"
 
 	fForgedLog      = "one vendor serves receipts with a forged log"
 	fForgedHash     = "one vendor pushes headers with a wrong hash, first at 2 heights in a row"
@@ -111,7 +112,7 @@ const (
 var chaosFaults = []string{
 	fReorgSmall, fMinorityFork, fAheadFork, fDeepReorg, fSilent, fLagging, fDown, fAllDown, fHalt,
 	f429, fLate, fLoad, fSplit, fNonLinking, fRestart, fOrphanCached, fMailbox, fPanicOnce, fPanicThrice, fPendingSilent,
-	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower,
+	fNullReceipts, fTruncReceipts, fLateReceipts, fNoReceipts, fReceiptsDown13, fBlockDown60, fReceiptsDown90, fWrongBloom, fChainBloom, fBloomFollower, fFetchPanic,
 	fForgedLog, fForgedHash, fReorg3, fClientGetLogs, fBadBaseFee, fBadBaseFeeLone,
 }
 
@@ -169,7 +170,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{23, true, chaosOpts{}, []string{fDown, fLagging, fDeepReorg, fPanicThrice, fNonLinking, fReceiptsDown13}},
 		{37, true, chaosOpts{}, []string{fAllDown, fHalt, fLoad, fOrphanCached, fRestart, fChainBloom, fNullReceipts}},
 		{41, false, chaosOpts{}, []string{fSplit, fLate, fDeepReorg, fBlockDown60, fReceiptsDown90, fNoReceipts}},
-		{53, true, chaosOpts{}, []string{fSilent, fLate, fLateReceipts, fBloomFollower, fPendingSilent}},
+		{53, true, chaosOpts{}, []string{fSilent, fLate, fLateReceipts, fBloomFollower, fPendingSilent, fFetchPanic}},
 		{61, true, chaosOpts{integrity: true}, []string{fForgedLog, fForgedHash, fReorg3, fClientGetLogs}},
 		{67, true, chaosOpts{integrity: true, badBaseFee: true}, []string{fBadBaseFee}},
 		{71, true, chaosOpts{integrity: true, badBaseFee: true, oneVendor: true}, []string{fBadBaseFeeLone}},
@@ -2165,6 +2166,8 @@ func (s *chaosSeed) inject(f string) {
 		s.chainBloom()
 	case fBloomFollower:
 		s.bloomFollower()
+	case fFetchPanic:
+		s.fetchPanic()
 	case fPanicThrice:
 		s.panicThrice()
 	case fPendingSilent:
@@ -3422,13 +3425,63 @@ func httptestServer(t *testing.T, h http.Handler) string {
 // client asks the same receipts: it joins the sweep, and gets only an
 // answer whose blooms are the block's.
 func (s *chaosSeed) bloomFollower() {
+	held, joined, failed := s.followTrapped()
+	require.Positive(s.t, joined, "a client joins the tracker's receipts sweep while its first answer is held (%d blocks held)", held)
+	s.occur(fBloomFollower, fmt.Sprintf("%d blocks' first receipts answers held with a wrong bloom; %d client requests joined the tracker's sweep and got the right blooms; %d got an error", held, joined, failed))
+}
+
+// fetchPanic is bloomFollower with the tracker's answer check panicking on
+// each held answer (#1060): the panic fails the tracker's fetch, counted in
+// erpc_unexpected_panic_total, and the client that joined its sweep gets
+// an answer, never the unchecked one: only the block's own receipts.
+func (s *chaosSeed) fetchPanic() {
+	panics := func() float64 {
+		return metricSum(telemetry.MetricUnexpectedPanicTotal, map[string]string{"scope": "chain-fetch"})
+	}
+	before := panics()
+	c := s.chain
+	panicked := make(map[[32]byte]bool) // guarded by c.mu
+	hook := func(method, params string) {
+		var refs []string
+		if method != "eth_getBlockReceipts" || json.Unmarshal([]byte(params), &refs) != nil || len(refs) != 1 {
+			return
+		}
+		raw, err := hex.DecodeString(strings.TrimPrefix(refs[0], "0x"))
+		if err != nil || len(raw) != 32 {
+			return
+		}
+		h := [32]byte(raw)
+		c.mu.Lock()
+		tr := c.traps[h]
+		first := tr != nil && !tr.answeredAt.IsZero() && !panicked[h]
+		panicked[h] = panicked[h] || first
+		c.mu.Unlock()
+		if first {
+			panic(fmt.Sprintf("chaos: the receipts check of block %x panics", h[:4]))
+		}
+	}
+	evm.TrackerFetchHook.Store(&hook)
+	defer evm.TrackerFetchHook.Store(nil)
+	held, joined, failed := s.followTrapped()
+	require.Positive(s.t, joined, "a client joins the tracker's receipts sweep whose check panics (%d blocks held)", held)
+	c.mu.Lock()
+	n := len(panicked)
+	c.mu.Unlock()
+	require.GreaterOrEqual(s.t, panics()-before, float64(n), "each panicking fetch is counted")
+	s.occur(fFetchPanic, fmt.Sprintf("%d receipts checks panicked; %d client requests that joined those sweeps got the block's own receipts; %d got an error", n, joined, failed))
+}
+
+// followTrapped holds each block's first receipts call, answered with a
+// wrong bloom, and asks the same receipts as a client while it is held,
+// until 2 clients joined a held sweep or 40 blocks passed. Every answer a
+// client gets carries the block's receipts in full with their blooms.
+func (s *chaosSeed) followTrapped() (held, joined, failed int) {
 	require.NotEmpty(s.t, s.openLogs(), "logs clients are open, so receipts are wanted")
 	c := s.chain
 	c.mu.Lock()
 	c.trapOn, c.traps = true, make(map[[32]byte]*simTrap)
 	c.mu.Unlock()
 	asked := make(map[[32]byte]bool)
-	joined, failed := 0, 0
 	for deadline := time.Now().Add(40 * chaosBlock); joined < 2 && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		var b *simBlock
 		c.mu.Lock()
@@ -3472,10 +3525,9 @@ func (s *chaosSeed) bloomFollower() {
 	}
 	c.mu.Lock()
 	c.trapOn = false
-	held := len(c.traps)
+	held = len(c.traps)
 	c.mu.Unlock()
-	require.Positive(s.t, joined, "a client joins the tracker's receipts sweep while its first answer is held (%d blocks held)", held)
-	s.occur(fBloomFollower, fmt.Sprintf("%d blocks' first receipts answers held with a wrong bloom; %d client requests joined the tracker's sweep and got the right blooms; %d got an error", held, joined, failed))
+	return held, joined, failed
 }
 
 //

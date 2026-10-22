@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -30,6 +31,12 @@ var (
 	errFetchBackoff    = errors.New("tracker fetch key is in backoff")
 	errSchedulerClosed = errors.New("chain fetch scheduler closed")
 )
+
+// TrackerFetchHook, when set, runs in each tracker fetch's answer check,
+// before the answer decodes, with the fetch's method and params; a panic in
+// it is the fetch's panic. Tests use it to panic a fetch; production never
+// sets it.
+var TrackerFetchHook atomic.Pointer[func(method, params string)]
 
 // fetchClass orders tracker fetches: a lower class starts first, and every
 // class keeps at least one slot.
@@ -409,7 +416,9 @@ func (s *fetchScheduler) run(r *fetchRequest) {
 	close(r.done)
 }
 
-// do makes the request's one sweep. A panic in it fails the fetch.
+// do makes the request's one sweep. A panic in it, in the sweep, its
+// answer check or decode, fails the fetch: its waiters get the error, run
+// frees its slot and backs its key off.
 func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -438,6 +447,9 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	_, err := s.sweep(ctx, req, r.spec.upstream, func(resp *common.NormalizedResponse) error {
 		if u := resp.Upstream(); u != nil && !resp.FromCache() {
 			upstreamId = u.Id()
+		}
+		if hook := TrackerFetchHook.Load(); hook != nil {
+			(*hook)(r.spec.method, r.spec.params)
 		}
 		jrr, err := resp.JsonRpcResponse(ctx)
 		if err != nil {

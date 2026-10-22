@@ -48,14 +48,16 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 		return nil, err
 	}
 
+	// checked: check passed on resp; a panic in check leaves it false.
+	checked := false
 	if d := req.Directives(); upstreamId == "" && (d == nil || d.UseUpstream == "") {
 		if mlx := n.leadMultiplexer(ctx, req); mlx != nil {
 			// Followers get only an answer that passed check; on anything
-			// else they forward on their own, with their own failsafe
-			// policies.
+			// else, a panic included, they forward on their own, with
+			// their own failsafe policies.
 			defer func() {
 				var shared *common.NormalizedResponse
-				if err == nil && !resp.IsResultEmptyish(ctx) {
+				if checked && !resp.IsResultEmptyish(ctx) {
 					shared = resp
 				}
 				mlx.Close(ctx, shared, nil)
@@ -70,6 +72,7 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 	if err = check(resp); err != nil {
 		return resp, err
 	}
+	checked = true
 	if n.cacheDal != nil && !resp.FromCache() {
 		lg := n.logger.With().Str("method", method).Logger()
 		n.storeInCache(ctx, trace.SpanContextFromContext(ctx), &lg, method, req, resp)

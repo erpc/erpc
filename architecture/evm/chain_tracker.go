@@ -1696,16 +1696,17 @@ func (t *ChainTracker) TxHeadAt() time.Time {
 // ReorgWindow is the tracker's window in blocks.
 func (t *ChainTracker) ReorgWindow() int { return t.window }
 
-// BlockTime is the mean header-time step over the pins; until 2 exist, the
-// network's estimate, else 12s.
+// BlockTime is the network's block-time EMA (GetNetworkBlockTime, which the
+// poller's debounce reads too); while that is unknown (cold start), the
+// mean header-time step over the pins; else 12s.
 func (t *ChainTracker) BlockTime() time.Duration {
-	if bt := t.state.Load().blockTime; bt > 0 {
-		return bt
-	}
 	if n, ok := t.network.(interface{ EvmBlockTime() time.Duration }); ok {
 		if bt := n.EvmBlockTime(); bt > 0 {
 			return bt
 		}
+	}
+	if bt := t.state.Load().blockTime; bt > 0 {
+		return bt
 	}
 	return defaultBlockTime
 }
