@@ -82,21 +82,17 @@ func c1() spec {
 			s.reorg(1 + rand.IntN(3))
 		}
 		s.blocks(25)
-		s.requireReorgsTold(true)
+		s.requireReorgsTold()
 	}}
 }
 
 // requireReorgsTold: each header client that received a block a reorg
 // replaced got a header at the fork point + 1 after the reorg; each logs
-// client holds none of the logs of replaced blocks. newHeads clients are
-// held to it only for reorgs within reorgWindow: past it they restart.
-func (s *scenario) requireReorgsTold(heads bool) {
+// client holds none of the logs of replaced blocks.
+func (s *scenario) requireReorgsTold() {
 	s.mu.Lock()
 	reorgs, hs, grpcs, logs := s.reorgs, s.heads, s.grpcs, s.logs
 	s.mu.Unlock()
-	if !heads {
-		hs = nil
-	}
 	for _, r := range reorgs {
 		old := map[hash]bool{}
 		for _, b := range r.old {
@@ -140,12 +136,13 @@ func (s *scenario) requireReorgsTold(heads bool) {
 	}
 }
 
-// C3: a reorg reorgWindow+4 deep. Trackers re-anchor; every ws logs tap
-// ends with 1013 within the close spread; every ws newHeads tap restarts
-// after the head; gRPC streams resend from the fork point, which the window
-// still holds (maxBackfill ≫ the depth).
+// C3: a reorg reorgWindow+4 deep. Trackers re-anchor, and fill joins the
+// new branch to the fork point, which the window still holds (maxBackfill
+// ≫ the depth): newHeads and gRPC clients get the new branch from the fork
+// point + 1, and every ws logs tap, more than reorgWindow behind the logs
+// head, ends with 1013 within the close spread.
 func c3() spec {
-	return spec{name: "C3", bound: deepReorgDelivery, allow: []string{"ws:jump", "ws:logs-end"}, body: func(s *scenario) {
+	return spec{name: "C3", bound: deepReorgDelivery, allow: []string{"ws:logs-end"}, body: func(s *scenario) {
 		s.blocks(50)
 		var before [2]float64
 		for pod := range s.h.pods {
@@ -163,18 +160,7 @@ func c3() spec {
 				s.violate(c.name, "no 1013 close within %s of the %d-deep reorg", logsCloseSpread, reorgWindow+4)
 			}
 		}
-		for _, c := range s.heads {
-			c.mu.Lock()
-			restarted := false
-			for _, j := range c.jumps {
-				restarted = restarted || (!j.newConn && j.at.After(r.at))
-			}
-			c.mu.Unlock()
-			if !restarted {
-				s.violate(c.name, "newHeads did not restart after the head on the %d-deep reorg", reorgWindow+4)
-			}
-		}
-		s.requireReorgsTold(false)
+		s.requireReorgsTold()
 		s.blocks(25)
 	}}
 }
