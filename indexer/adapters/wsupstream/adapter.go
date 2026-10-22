@@ -83,9 +83,11 @@ type Adapter struct {
 	resubCancel context.CancelFunc
 	resubEpoch  uint64
 	// resubDone is set once that loop has established everything;
-	// resubAgain asks a running loop for another pass before it finishes.
+	// resubAgain asks a running loop for another pass, and resubWake cuts
+	// its backoff short, so a topic Set adds is asked at once.
 	resubDone  bool
 	resubAgain bool
+	resubWake  chan struct{}
 	heads      upstreamSub
 	// headsWanted is what Set asked for. headsRefused is set from the
 	// upstream's unsupported answer to newHeads until a subscribe succeeds
@@ -105,9 +107,11 @@ type upstreamSub struct {
 	// can't create duplicates.
 	mu sync.Mutex
 	// id and epoch identify the live upstream subscription (id "" when
-	// none); removed is set once it is dropped. Guarded by Adapter.subsMu.
+	// none), made at since; removed is set once it is dropped. Guarded by
+	// Adapter.subsMu.
 	id      string
 	epoch   uint64
+	since   time.Time
 	removed bool
 }
 
@@ -124,6 +128,11 @@ type pendingSub struct {
 	topic   indexer.Topic
 	variant string
 	params  []interface{}
+	// heard is when its last message arrived, in unix nanoseconds.
+	heard atomic.Int64
+	// resub marks a subscribe Resubscribe asked for and none sent yet.
+	// Guarded by Adapter.subsMu.
+	resub bool
 }
 
 // New returns the adapter of up, or nil if up is not a WebSocket upstream.
@@ -141,6 +150,7 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 		wsClient:     wsClient,
 		logger:       &lg,
 		topics:       make(map[indexer.Topic]*pendingSub),
+		resubWake:    make(chan struct{}, 1),
 		intake:       intake,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, bypassMethodExclusion bool) (*common.NormalizedResponse, error) {
 			return up.Forward(ctx, nq, bypassMethodExclusion, false)
@@ -225,6 +235,49 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 }
 
 var _ indexer.Source = (*Adapter)(nil)
+
+// Connected reports whether the upstream's socket is up.
+func (a *Adapter) Connected() bool { return a.wsClient.IsConnected() }
+
+// Activity is pending-transaction topic t's last message and the start of
+// its live upstream subscription, each zero if none.
+func (a *Adapter) Activity(t indexer.Topic) (heard, subscribed time.Time) {
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	sub := a.topics[t]
+	if sub == nil {
+		return time.Time{}, time.Time{}
+	}
+	if n := sub.heard.Load(); n != 0 {
+		heard = time.Unix(0, n)
+	}
+	if sub.id != "" {
+		subscribed = sub.since
+	}
+	return heard, subscribed
+}
+
+// Resubscribe drops pending-transaction topic t's live upstream
+// subscription and subscribes it again. The new subscribe counts in
+// erpc_source_resubscribe_total once it is sent.
+func (a *Adapter) Resubscribe(t indexer.Topic) {
+	a.subsMu.Lock()
+	sub := a.topics[t]
+	if sub == nil {
+		a.subsMu.Unlock()
+		return
+	}
+	id, epoch := sub.id, sub.epoch
+	if id != "" {
+		a.liveGauge(indexer.SubTypeNewPendingTransactions).Dec()
+	}
+	sub.id, sub.resub = "", true
+	a.subsMu.Unlock()
+	if id != "" {
+		go a.release(context.Background(), id, epoch)
+	}
+	a.startResubscribe()
+}
 
 // attach registers the connection hooks and the silent-newHeads watch once.
 // One adapter per client: each project has its own clients, an upstream
@@ -343,10 +396,18 @@ func (a *Adapter) startResubscribe() {
 	}
 	if epoch == a.resubEpoch && !a.resubDone {
 		a.resubAgain = true
+		select {
+		case a.resubWake <- struct{}{}:
+		default:
+		}
 		return
 	}
 	if a.resubCancel != nil {
 		a.resubCancel()
+	}
+	select {
+	case <-a.resubWake:
+	default:
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.resubCancel, a.resubEpoch = cancel, epoch
@@ -366,12 +427,14 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		}
 		done := true
 		a.subsMu.Lock()
+		// This pass covers every ask made so far.
+		a.resubAgain = false
 		askHeads := a.headsWanted && a.headsReask == nil
 		a.subsMu.Unlock()
 		if askHeads {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			a.heads.mu.Lock()
-			err := a.subscribeLocked(attemptCtx, &a.heads, []interface{}{indexer.SubTypeNewHeads}, a.handleNewHeads)
+			err := a.subscribeLocked(attemptCtx, &a.heads, []interface{}{indexer.SubTypeNewHeads}, a.handleNewHeads, nil)
 			a.heads.mu.Unlock()
 			cancel()
 			switch {
@@ -444,6 +507,8 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-a.resubWake:
+			continue
 		case <-time.After(backoff):
 		}
 		backoff = min(backoff*2, a.retryMax)
@@ -452,14 +517,23 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 
 func (a *Adapter) subscribePendingLocked(ctx context.Context, sub *pendingSub) error {
 	return a.subscribeLocked(ctx, &sub.upstreamSub, sub.params, func(params []byte) {
-		a.handlePendingTx(sub.variant, params)
+		a.handlePendingTx(sub, params)
+	}, func() {
+		a.subsMu.Lock()
+		resub := sub.resub
+		sub.resub = false
+		a.subsMu.Unlock()
+		if resub {
+			telemetry.CounterHandle(telemetry.MetricSourceResubscribeTotal, a.projectID, a.networkLabel, a.upstreamID, string(sub.topic)).Inc()
+		}
 	})
 }
 
 // subscribeLocked subscribes sub unless it is live or dropped; the caller
-// holds sub.mu. The result is kept only if sub is still wanted and its
-// connection is still up, and released upstream otherwise.
-func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params []interface{}, handler func(params []byte)) error {
+// holds sub.mu. sending, if set, runs just before the subscribe is sent.
+// The result is kept only if sub is still wanted and its connection is
+// still up, and released upstream otherwise.
+func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params []interface{}, handler func(params []byte), sending func()) error {
 	a.subsMu.Lock()
 	skip := sub.id != "" || sub.removed
 	a.subsMu.Unlock()
@@ -470,6 +544,9 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 		return errNotConnected
 	}
 
+	if sending != nil {
+		sending()
+	}
 	ws := &clients.WsSubscription{Handler: handler}
 	if err := a.send(clients.WithWsSubscription(ctx, ws), methodEthSubscribe, params); err != nil {
 		return err
@@ -482,7 +559,7 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 	connUp := ws.Epoch == a.wsClient.Epoch()
 	commit := connUp && !sub.removed
 	if commit {
-		sub.id, sub.epoch = ws.ID, ws.Epoch
+		sub.id, sub.epoch, sub.since = ws.ID, ws.Epoch, time.Now()
 		// params[0] is the eth_subscribe subscription type.
 		a.liveGauge(params[0].(string)).Inc()
 	}
@@ -592,12 +669,15 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 	a.intake.Header(a.upstreamID, outer.Result)
 }
 
-func (a *Adapter) handlePendingTx(variant string, raw []byte) {
+func (a *Adapter) handlePendingTx(sub *pendingSub, raw []byte) {
+	// Counted before intake: a topic whose messages intake gates is not
+	// silent.
+	sub.heard.Store(time.Now().UnixNano())
 	a.countEvent(indexer.SubTypeNewPendingTransactions, raw)
 	var outer notificationParams
 	if err := common.SonicCfg.Unmarshal(raw, &outer); err != nil {
 		a.logger.Warn().Err(err).Msg("failed to parse newPendingTransactions notification envelope")
 		return
 	}
-	a.intake.PendingTx(a.upstreamID, variant, outer.Result)
+	a.intake.PendingTx(a.upstreamID, sub.variant, outer.Result)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
+	"github.com/erpc/erpc/indexer/mempool"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -25,8 +26,11 @@ var (
 	// subscriptions keep running after the last tap needing them closed.
 	sourceIdleStop = util.NewDuration(60 * time.Second)
 	// pendingSilentAfter: a pending-transaction topic with no message this
-	// long, while heads carry transactions, is subscribed again.
+	// long, while heads carry transactions, is subscribed again; each
+	// further silence of the topic on that source waits twice as long, up
+	// to pendingSilentMax, until it sends a message.
 	pendingSilentAfter = util.NewDuration(60 * time.Second)
+	pendingSilentMax   = util.NewDuration(30 * time.Minute)
 	// pendingOpenWait bounds how long a subscribe that opens a variant
 	// waits for its push sources' first answers.
 	pendingOpenWait = util.NewDuration(10 * time.Second)
@@ -61,15 +65,20 @@ type sourceReconciler struct {
 	// heads: some upstream is a subscription source; push: some push
 	// source can carry pending transactions.
 	heads, push bool
-	// pending holds each pending-transaction topic that is demanded, being
-	// opened, idle within sourceIdleStop, or still set on a source.
+	// pending holds each pending-transaction topic that is held, demanded,
+	// idle within sourceIdleStop, or still set on a source.
 	pending map[indexer.Topic]*pendingTopic
 }
 
-// pendingTopic is one pending-transaction topic: who opens it, when it was
+// pendingTopic is one pending-transaction topic: who holds it, when it was
 // last wanted, and the push sources it is set on with their answers.
 type pendingTopic struct {
-	opening int
+	// holders are the subscribes holding the topic; its variant's ring on
+	// the mempool feed is open while there are some.
+	holders int
+	// open is the verdict every holder since the first waits for; nil
+	// while there are no holders.
+	open    *pendingOpen
 	seen    time.Time
 	on      map[string]*pendingOn
 	answers int
@@ -77,14 +86,24 @@ type pendingTopic struct {
 	changed chan struct{}
 }
 
-// pendingOn is the topic on one push source since it was set (or set
-// again): its last message and its first subscribe answer.
+// pendingOpen is one open of a topic: decided by the first holder to see
+// the sources' answers settle, or open at deadline.
+type pendingOpen struct {
+	deadline time.Time
+	decided  bool
+	refusal  error
+}
+
+// pendingOn is the topic on one push source since it was set: its first
+// subscribe answer, and when it was last subscribed again for silence.
 type pendingOn struct {
-	since    time.Time
-	heard    time.Time
-	answered bool
-	err      error
-	order    int
+	since time.Time
+	// silentAfter is the silence that subscribes it again; 0 is
+	// pendingSilentAfter.
+	silentAfter time.Duration
+	answered    bool
+	err         error
+	order       int
 }
 
 func (st *pendingTopic) notifyLocked() {
@@ -92,21 +111,30 @@ func (st *pendingTopic) notifyLocked() {
 	st.changed = make(chan struct{})
 }
 
-// verdictLocked decides an opening subscribe: done once every source the
-// topic is set on answered or one answered other than with a refusal; the
-// refusal is the first one when every source refused.
+// activeLocked: st counts against mempool.MaxVariants while it is held or
+// set on sources within sourceIdleStop of when it was last wanted.
+func (st *pendingTopic) activeLocked(now time.Time, idle time.Duration) bool {
+	return st.holders > 0 || (!st.seen.IsZero() && now.Sub(st.seen) < idle)
+}
+
+// verdictLocked decides an open from the answers of every source the topic
+// is set on: open once one answered other than with a refusal; the first
+// refusal once every one refused; not done while none accepted and some
+// has not answered.
 func (st *pendingTopic) verdictLocked() (refusal error, done bool) {
-	first := -1
+	first, waiting := -1, false
 	for _, on := range st.on {
-		if !on.answered {
-			return nil, false
-		}
-		if !pendingRefusal(on.err) {
+		switch {
+		case !on.answered:
+			waiting = true
+		case !pendingRefusal(on.err):
 			return nil, true
-		}
-		if first < 0 || on.order < first {
+		case first < 0 || on.order < first:
 			first, refusal = on.order, on.err
 		}
+	}
+	if waiting {
+		return nil, false
 	}
 	return refusal, true
 }
@@ -202,64 +230,124 @@ func (r *sourceReconciler) subscribed(upstreamId string, t indexer.Topic, err er
 	}
 }
 
-// heard notes a message of t from upstreamId, before any intake check.
-func (r *sourceReconciler) heard(upstreamId string, t indexer.Topic) {
-	if r == nil {
-		return
-	}
-	now := time.Now()
-	r.mu.Lock()
-	if st := r.pending[t]; st != nil {
-		if on := st.on[upstreamId]; on != nil {
-			on.heard = now
-		}
-	}
-	r.mu.Unlock()
-}
-
-// awaitPending opens t: it holds t as demand while it waits, up to
-// pendingOpenWait, for the first answers of the push sources a pass set t
-// on. It returns the first refusal when every one of them refused (spec
-// §11), else nil. A refused topic stops at the next pass unless a tap
-// demands it.
-func (r *sourceReconciler) awaitPending(ctx context.Context, t indexer.Topic) (refusal error) {
+// openPending holds variant's topic until release: its ring on the mempool
+// feed opens with the first holder and closes with the last. A topic not
+// counted against mempool.MaxVariants takes the place of the idle topic
+// wanted longest ago, or is refused with ErrSubscriptionLimitExceeded when
+// none is idle. Every subscribe from the first holder on waits for the
+// same verdict, up to pendingOpenWait from the first: the first refusal
+// when every push source a pass set the topic on refused it (spec §11).
+func (r *sourceReconciler) openPending(ctx context.Context, variant string) (release func(), err error) {
+	t := indexer.PendingTxTopic(variant)
+	now, idle := time.Now(), sourceIdleStop.Load()
 	r.mu.Lock()
 	st := r.pending[t]
+	if st == nil || !st.activeLocked(now, idle) {
+		if err := r.admitLocked(now, idle); err != nil {
+			r.mu.Unlock()
+			return nil, err
+		}
+	}
 	if st == nil {
 		st = &pendingTopic{on: make(map[string]*pendingOn), changed: make(chan struct{})}
 		r.pending[t] = st
 	}
-	st.opening++
-	st.seen = time.Now()
+	if st.holders == 0 {
+		if err := r.nw.mempool.Open(variant); err != nil {
+			r.mu.Unlock()
+			return nil, common.NewErrPendingVariantLimitExceeded(mempool.MaxVariants)
+		}
+		st.open = &pendingOpen{deadline: now.Add(pendingOpenWait.Load())}
+	}
+	st.holders++
+	st.seen = now
+	o := st.open
 	r.mu.Unlock()
-	defer func() {
-		r.mu.Lock()
-		st.opening--
-		if refusal != nil {
-			st.seen = time.Time{}
-		}
-		r.mu.Unlock()
-		if refusal != nil {
-			r.wake()
-		}
-	}()
 
-	wctx, cancel := context.WithTimeout(ctx, pendingOpenWait.Load())
-	defer cancel()
-	if r.sync(wctx) != nil {
+	var once sync.Once
+	release = func() { once.Do(func() { r.releasePending(variant, st) }) }
+	if err := r.awaitOpen(ctx, st, o); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+// admitLocked makes room for one more active topic: at mempool.MaxVariants
+// it stops the idle one wanted longest ago, so the next pass releases it
+// on its sources.
+func (r *sourceReconciler) admitLocked(now time.Time, idle time.Duration) error {
+	active := 0
+	var oldest *pendingTopic
+	for _, st := range r.pending {
+		if !st.activeLocked(now, idle) {
+			continue
+		}
+		active++
+		if st.holders == 0 && (oldest == nil || st.seen.Before(oldest.seen)) {
+			oldest = st
+		}
+	}
+	if active < mempool.MaxVariants {
 		return nil
 	}
+	if oldest == nil {
+		return common.NewErrPendingVariantLimitExceeded(mempool.MaxVariants)
+	}
+	oldest.seen = time.Time{}
+	r.wake()
+	return nil
+}
+
+// releasePending drops one holder of st. The last closes the ring; the
+// topic then idles from now, or stops at the next pass if refused.
+func (r *sourceReconciler) releasePending(variant string, st *pendingTopic) {
+	r.mu.Lock()
+	st.holders--
+	last := st.holders == 0
+	if last {
+		if st.open.decided && st.open.refusal != nil {
+			st.seen = time.Time{}
+		} else {
+			st.seen = time.Now()
+		}
+		st.open = nil
+		r.nw.mempool.Close(variant)
+	}
+	r.mu.Unlock()
+	if last {
+		r.wake()
+	}
+}
+
+// awaitOpen waits for o's verdict. A pass that started after the call sets
+// the topic on the push sources first, so the answers are theirs; ctx
+// ending first fails only this subscribe.
+func (r *sourceReconciler) awaitOpen(ctx context.Context, st *pendingTopic, o *pendingOpen) error {
+	wctx, cancel := context.WithDeadline(ctx, o.deadline)
+	defer cancel()
+	synced := r.sync(wctx) == nil
 	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		r.mu.Lock()
-		err, done := st.verdictLocked()
-		changed := st.changed
+		if !o.decided {
+			switch refusal, done := st.verdictLocked(); {
+			case synced && done:
+				o.decided, o.refusal = true, refusal
+			case wctx.Err() != nil && ctx.Err() == nil:
+				// The deadline, shared by every holder: the topic opens.
+				o.decided = true
+			}
+		}
+		decided, refusal, changed := o.decided, o.refusal, st.changed
 		r.mu.Unlock()
-		if done {
-			return err
+		if decided {
+			return refusal
 		}
 		select {
 		case <-wctx.Done():
-			return nil
 		case <-changed:
 		}
 	}
@@ -388,7 +476,7 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 	return next
 }
 
-// pendingWanted marks the demanded and opening pending topics seen now and
+// pendingWanted marks the demanded and held pending topics seen now and
 // returns, sorted, every topic seen within sourceIdleStop, with the time
 // until the next idle one stops (0 if none). A topic no longer wanted and
 // set on no source is forgotten.
@@ -408,7 +496,7 @@ func (r *sourceReconciler) pendingWanted(demand []indexer.Topic, now time.Time) 
 		st.seen = now
 	}
 	for t, st := range r.pending {
-		if st.opening > 0 {
+		if st.holders > 0 {
 			st.seen = now
 		}
 		l := idle - now.Sub(st.seen)
@@ -428,20 +516,30 @@ func (r *sourceReconciler) pendingWanted(demand []indexer.Topic, now time.Time) 
 }
 
 // setPush sets push source s to newHeads plus the wanted pending topics
-// while s is authoritative, and subscribes again each pending topic that
-// stayed silent for pendingSilentAfter while heads carried transactions.
+// while s is authoritative. While s is connected, each pending topic it
+// carries that stayed silent for its silentAfter, while heads carried
+// transactions, is subscribed again, and its next silentAfter doubles.
 func (r *sourceReconciler) setPush(s *source, wanted []indexer.Topic, now, txHeadAt time.Time) {
 	topics := []indexer.Topic{indexer.TopicNewHeads}
 	if len(wanted) > 0 && r.nw.intake.authoritative(s.id) {
 		topics = append(topics, wanted...)
 	}
-	silentAfter := pendingSilentAfter.Load()
+	type activity struct{ heard, subscribed time.Time }
+	var acts []activity
+	if s.push.Connected() {
+		acts = make([]activity, len(topics))
+		for i, t := range topics[1:] {
+			acts[i+1].heard, acts[i+1].subscribed = s.push.Activity(t)
+		}
+	}
+	minSilent, maxSilent := pendingSilentAfter.Load(), pendingSilentMax.Load()
 	var silent []indexer.Topic
 	r.mu.Lock()
 	for t, st := range r.pending {
 		on := st.on[s.id]
+		i := slices.Index(topics, t)
 		switch {
-		case !slices.Contains(topics, t):
+		case i < 0:
 			if on != nil {
 				delete(st.on, s.id)
 				st.notifyLocked()
@@ -450,28 +548,29 @@ func (r *sourceReconciler) setPush(s *source, wanted []indexer.Topic, now, txHea
 			// Recorded before Set, so its first answer finds it.
 			st.on[s.id] = &pendingOn{since: now}
 			st.notifyLocked()
-		default:
-			if base := later(on.since, on.heard); now.Sub(base) >= silentAfter && txHeadAt.After(base) {
+		case acts != nil:
+			a := acts[i]
+			if a.heard.After(on.since) {
+				on.silentAfter = 0
+			}
+			after := max(on.silentAfter, minSilent)
+			if base := later(later(on.since, a.heard), a.subscribed); now.Sub(base) >= after && txHeadAt.After(base) {
 				silent = append(silent, t)
-				*on = pendingOn{since: now}
-				st.notifyLocked()
+				on.since, on.silentAfter = now, min(2*after, maxSilent)
 			}
 		}
 	}
 	r.mu.Unlock()
 
-	if len(silent) > 0 {
-		s.push.Set(slices.DeleteFunc(slices.Clone(topics), func(t indexer.Topic) bool { return slices.Contains(silent, t) }))
-		for _, t := range silent {
-			telemetry.CounterHandle(telemetry.MetricSourceResubscribeTotal, r.nw.projectId, r.nw.Label(), s.id, string(t)).Inc()
-			r.nw.logger.Warn().Str("upstreamId", s.id).Str("topic", string(t)).
-				Msg("pending-transaction subscription silent while heads carry transactions, subscribing again")
-		}
-		s.push.Set(topics)
-	} else if !slices.Equal(topics, s.pushTopics) {
+	if !slices.Equal(topics, s.pushTopics) {
 		s.push.Set(topics)
 	}
 	s.pushTopics = topics
+	for _, t := range silent {
+		r.nw.logger.Warn().Str("upstreamId", s.id).Str("topic", string(t)).
+			Msg("pending-transaction subscription silent while heads carry transactions, subscribing again")
+		s.push.Resubscribe(t)
+	}
 }
 
 func topicsIf(newHeads bool) []indexer.Topic {

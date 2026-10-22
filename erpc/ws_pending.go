@@ -28,9 +28,10 @@ func (m *mempoolFrom) Tail(variant string) uint64 {
 }
 
 // runPendingTxs is one ws newPendingTransactions subscription: a tap on
-// the network's mempool feed from subscribe time, writing only once
-// opened, after the client has its id. Out of range skips to the newest
-// inside the tap. It ends only with ctx or a failed write; a panic or any
+// the network's mempool feed that starts after from, the variant's tail at
+// subscribe time, and writes only once opened, after the client has its
+// id. A start older than the ring skips to the newest, counted as lag
+// (spec §11). It ends only with ctx or a failed write; a panic or any
 // other error restarts it after the newest entry, so the subscription
 // never goes silent.
 func (sm *SubscriptionManager) runPendingTxs(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, variant string, from uint64) {

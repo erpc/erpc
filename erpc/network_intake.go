@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -30,6 +31,9 @@ type networkIntake struct {
 	// primaryLeads: some primary source has been live and policy-eligible
 	// for primaryLeadAfter; fallback-tier sources are not authoritative.
 	primaryLeads bool
+	// authorities is the authoritative upstreams as authority last read
+	// them, for per-transaction checks that take no lock.
+	authorities atomic.Pointer[[]string]
 }
 
 type sourceState struct {
@@ -63,11 +67,13 @@ func (in *networkIntake) Subscribed(upstreamId string, t indexer.Topic, err erro
 	in.nw.sources.subscribed(upstreamId, t, err)
 }
 
-// PendingTx takes one pending transaction of a push source: it counts for
-// the topic's silence first, then passes check 4 into the mempool feed.
+// PendingTx takes one pending transaction of a push source into the
+// mempool feed while the source is authoritative as authority last read.
 func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessage) {
-	in.nw.sources.heard(upstreamId, indexer.PendingTxTopic(variant))
-	if in.nw.mempool == nil || !in.authoritative(upstreamId) {
+	if in.nw.mempool == nil {
+		return
+	}
+	if ids := in.authorities.Load(); ids == nil || !slices.Contains(*ids, upstreamId) {
 		return
 	}
 	in.nw.mempool.Add(variant, raw)
@@ -227,16 +233,20 @@ func (in *networkIntake) authoritativeIn(selector string) []string {
 // authority reads the policy's eligible set now: whether upstreamId is in
 // it and outside the fallback tier, and whether some primary source has
 // been live and eligible for primaryLeadAfter. A primary counts as live
-// only while it is eligible. The set is read under in.mu, so a caller
-// holding an older set cannot overwrite eligibleSince after a newer one.
+// only while it is eligible. It publishes the authoritative upstreams to
+// authorities. The set is read under in.mu, so a caller holding an older
+// set cannot overwrite eligibleSince or authorities after a newer one.
 func (in *networkIntake) authority(upstreamId string) (primary, eligible, leads bool) {
 	in.mu.Lock()
 	now := time.Now()
 	for _, s := range in.sources {
 		s.eligibleNow = false
 	}
+	var buf [16]authorityCandidate
+	cands := buf[:0]
 	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
 		isPrimary := !isFallbackTier(c)
+		cands = append(cands, authorityCandidate{c.Id(), isPrimary})
 		if c.Id() == upstreamId {
 			primary, eligible = isPrimary, true
 		}
@@ -258,11 +268,42 @@ func (in *networkIntake) authority(upstreamId string) (primary, eligible, leads 
 	}
 	flipped := leads != in.primaryLeads
 	in.primaryLeads = leads
+	in.publishAuthoritiesLocked(cands, leads)
 	in.mu.Unlock()
 	if flipped {
 		in.changed()
 	}
 	return primary, eligible, leads
+}
+
+type authorityCandidate struct {
+	id      string
+	primary bool
+}
+
+// publishAuthoritiesLocked stores the authoritative ones of cands, the
+// eligible set in selection order; a set equal to the stored one is kept,
+// so a steady set allocates nothing.
+func (in *networkIntake) publishAuthoritiesLocked(cands []authorityCandidate, leads bool) {
+	old := in.authorities.Load()
+	n, same := 0, old != nil
+	for _, c := range cands {
+		if !in.admits(c.primary, leads) {
+			continue
+		}
+		same = same && n < len(*old) && (*old)[n] == c.id
+		n++
+	}
+	if same && n == len(*old) {
+		return
+	}
+	ids := make([]string, 0, n)
+	for _, c := range cands {
+		if in.admits(c.primary, leads) {
+			ids = append(ids, c.id)
+		}
+	}
+	in.authorities.Store(&ids)
 }
 
 func later(a, b time.Time) time.Time {

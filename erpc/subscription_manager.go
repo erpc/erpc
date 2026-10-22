@@ -12,7 +12,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
-	"github.com/erpc/erpc/indexer/mempool"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 )
@@ -302,9 +301,8 @@ func resolveSubscription(subType string) (wsclient.EventKind, error) {
 }
 
 // openPendingVariant opens the variant of newPendingTransactions params on
-// nw's mempool feed until release. A subscribe that opens it waits for its
-// push sources' first answers and fails with the first refusal when every
-// one refused (spec §11).
+// nw's mempool feed until release; the reconciler admits it and decides
+// whether its push sources refused it (spec §11).
 func (sm *SubscriptionManager) openPendingVariant(ctx context.Context, nw *Network, params []interface{}) (variant string, release func(), err error) {
 	if nw.mempool == nil {
 		return "", nil, common.NewErrNoSubscriptionSource(nw.networkId, indexer.SubTypeNewPendingTransactions)
@@ -313,18 +311,8 @@ func (sm *SubscriptionManager) openPendingVariant(ctx context.Context, nw *Netwo
 		return "", nil, common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
 			"invalid newPendingTransactions params: "+err.Error(), nil, nil)
 	}
-	release, opened, err := nw.mempool.Acquire(variant)
-	if errors.Is(err, mempool.ErrVariantLimit) {
-		return "", nil, common.NewErrPendingVariantLimitExceeded(mempool.MaxVariants)
-	}
-	if err != nil {
+	if release, err = nw.sources.openPending(ctx, variant); err != nil {
 		return "", nil, err
-	}
-	if opened {
-		if err := nw.sources.awaitPending(ctx, indexer.PendingTxTopic(variant)); err != nil {
-			release()
-			return "", nil, err
-		}
 	}
 	return variant, release, nil
 }

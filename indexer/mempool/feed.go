@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Bounds of one network's feed (spec §13.2).
@@ -27,32 +29,37 @@ const (
 // tests can change it.
 var DedupFor = util.NewDuration(60 * time.Second)
 
-// ErrVariantLimit refuses a variant past MaxVariants open ones.
+// ErrVariantLimit refuses a ring past MaxVariants open ones.
 var ErrVariantLimit = errors.New("too many newPendingTransactions variants on the network")
 
 // Feed is one network's mempool feed. Sources Add what they receive; taps
 // read a variant's ring from their own sequence.
 type Feed struct {
 	projectId, network string
+	// entries is the dedup set's size, set under mu on every change.
+	entries prometheus.Gauge
 
 	mu    sync.Mutex
 	rings map[string]*ring
-	// seen holds the dedup keys (variant, hash) added within DedupFor, at
-	// most MaxHashes; order lists them oldest first from head.
-	seen  map[string]struct{}
+	// slots marks the ring slots in use; each open ring has one bit.
+	slots uint16
+	// seen holds each transaction hash added within DedupFor, at most
+	// MaxHashes, with the slots of the rings it was added to; order lists
+	// those hashes, each once, oldest first from head.
+	seen  map[string]uint16
 	order []seenKey
 	head  int
 }
 
 type seenKey struct {
-	key string
-	at  time.Time
+	hash string
+	at   time.Time // its first add
 }
 
 // ring holds a variant's newest RingSize entries; entry seq s (from 1) is
 // at entries[s%RingSize]. next is the seq the next entry gets.
 type ring struct {
-	refs    int
+	slot    uint16 // its bit in slots and seen
 	entries []json.RawMessage
 	next    uint64
 	changed chan struct{}
@@ -62,43 +69,71 @@ var _ indexer.MempoolFeed = (*Feed)(nil)
 
 // New returns an empty feed; projectId and network label its metrics.
 func New(projectId, network string) *Feed {
-	return &Feed{projectId: projectId, network: network, rings: make(map[string]*ring), seen: make(map[string]struct{})}
+	return &Feed{
+		projectId: projectId,
+		network:   network,
+		entries:   telemetry.GaugeHandle(telemetry.MetricSubscriptionDedupEntries, projectId, network),
+		rings:     make(map[string]*ring),
+		seen:      make(map[string]uint16),
+	}
 }
 
-// Acquire opens variant until release; opened reports that no one held it,
-// so its sources are only now asked for it. A variant past MaxVariants
-// open ones fails with ErrVariantLimit. The ring goes with its last holder.
-func (f *Feed) Acquire(variant string) (release func(), opened bool, err error) {
+// Open opens variant's ring if it is not open; ErrVariantLimit when
+// MaxVariants rings are open.
+func (f *Feed) Open(variant string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.rings[variant] != nil {
+		return nil
+	}
+	if len(f.rings) >= MaxVariants {
+		return ErrVariantLimit
+	}
+	slot := uint16(1)
+	for f.slots&slot != 0 {
+		slot <<= 1
+	}
+	f.slots |= slot
+	f.rings[variant] = &ring{slot: slot, entries: make([]json.RawMessage, RingSize), next: 1, changed: make(chan struct{})}
+	return nil
+}
+
+// Close closes variant's ring: its readers end and its hashes stop
+// suppressing. The last ring to close empties the dedup set.
+func (f *Feed) Close(variant string) {
+	f.mu.Lock()
 	r := f.rings[variant]
 	if r == nil {
-		if len(f.rings) >= MaxVariants {
-			return nil, false, ErrVariantLimit
-		}
-		r = &ring{entries: make([]json.RawMessage, RingSize), next: 1, changed: make(chan struct{})}
-		f.rings[variant] = r
-		opened = true
+		f.mu.Unlock()
+		return
 	}
-	r.refs++
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			f.mu.Lock()
-			defer f.mu.Unlock()
-			if r.refs--; r.refs == 0 && f.rings[variant] == r {
-				delete(f.rings, variant)
-				close(r.changed)
+	delete(f.rings, variant)
+	close(r.changed)
+	f.slots &^= r.slot
+	if len(f.rings) == 0 {
+		f.seen, f.order, f.head = make(map[string]uint16), nil, 0
+	} else {
+		order := make([]seenKey, 0, len(f.seen))
+		for _, k := range f.order[f.head:] {
+			if slots := f.seen[k.hash] &^ r.slot; slots != 0 {
+				f.seen[k.hash] = slots
+				order = append(order, k)
+			} else {
+				delete(f.seen, k.hash)
 			}
-		})
-	}, opened, nil
+		}
+		f.order, f.head = order, 0
+	}
+	f.entries.Set(float64(len(f.seen)))
+	f.mu.Unlock()
 }
 
 // Add puts raw on variant's ring unless the variant is closed or the
-// transaction was added to it within DedupFor. A payload without a hash
-// is kept without dedup.
+// transaction was added to it while its hash is held: for DedupFor from
+// its first add to any ring. A payload without a hash is kept without
+// dedup.
 func (f *Feed) Add(variant string, raw json.RawMessage) {
-	key := txHash(raw)
+	hash := txHash(raw)
 	now := time.Now()
 	f.mu.Lock()
 	r := f.rings[variant]
@@ -107,18 +142,21 @@ func (f *Feed) Add(variant string, raw json.RawMessage) {
 		return
 	}
 	dropped := false
-	if key != "" {
+	if hash != "" {
 		f.expireLocked(now)
-		key = variant + "\x00" + key
-		if _, ok := f.seen[key]; ok {
+		switch slots, ok := f.seen[hash]; {
+		case slots&r.slot != 0:
 			dropped = true
-		} else {
-			f.seen[key] = struct{}{}
-			f.order = append(f.order, seenKey{key: key, at: now})
+		case ok:
+			f.seen[hash] = slots | r.slot
+		default:
+			f.seen[hash] = r.slot
+			f.order = append(f.order, seenKey{hash: hash, at: now})
 			if len(f.seen) > MaxHashes {
 				f.popLocked()
 			}
 		}
+		f.entries.Set(float64(len(f.seen)))
 	}
 	if !dropped {
 		r.entries[r.next%RingSize] = raw
@@ -126,14 +164,9 @@ func (f *Feed) Add(variant string, raw json.RawMessage) {
 		close(r.changed)
 		r.changed = make(chan struct{})
 	}
-	entries := len(f.seen)
 	f.mu.Unlock()
 	if dropped {
 		telemetry.CounterHandle(telemetry.MetricSubscriptionDedupDroppedTotal, f.projectId, f.network, indexer.SubTypeNewPendingTransactions).Inc()
-		return
-	}
-	if key != "" {
-		telemetry.GaugeHandle(telemetry.MetricSubscriptionDedupEntries, f.projectId, f.network).Set(float64(entries))
 	}
 }
 
@@ -145,12 +178,13 @@ func (f *Feed) expireLocked(now time.Time) {
 }
 
 func (f *Feed) popLocked() {
-	delete(f.seen, f.order[f.head].key)
+	delete(f.seen, f.order[f.head].hash)
 	f.order[f.head] = seenKey{}
 	f.head++
-	// Compact once the popped half dominates, so order stays O(MaxHashes).
+	// Compact into a new array once the popped half dominates, so order
+	// stays O(MaxHashes) and the old array is freed.
 	if f.head > len(f.order)/2 && f.head > 1024 {
-		f.order = append(f.order[:0], f.order[f.head:]...)
+		f.order = slices.Clone(f.order[f.head:])
 		f.head = 0
 	}
 }

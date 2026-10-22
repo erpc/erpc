@@ -1343,13 +1343,16 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 	})
 
 	// Every source refuses a new variant as bad params: the client gets the
-	// upstream's -32602.
+	// upstream's -32602, and so does a second client that subscribes the
+	// same variant while the first waits for the answers.
 	t.Run("EverySourceRefusesNewVariant", func(t *testing.T) {
 		setupGock()
 		defer util.ResetGock()
 		chain := newMockChain(0x100, false)
+		answer := make(chan struct{})
 		refuse := func(v *mockWsVendor) {
 			v.refusePending = func(int32) map[string]interface{} {
+				<-answer
 				return map[string]interface{}{"code": -32602, "message": "invalid argument 1: unknown field"}
 			}
 		}
@@ -1357,15 +1360,30 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		b, urlB := newMockWsVendor(t, chain, refuse)
 		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, nil), sourceUpstream("rpc-b", urlB, nil)))
 		defer cleanup()
-		conn := dialWs(t, addr)
-		defer conn.Close()
+		const subscribe = `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions",{"bogus":true}]}`
+		conn1, conn2 := dialWs(t, addr), dialWs(t, addr)
+		defer conn1.Close()
+		defer conn2.Close()
 
-		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions",{"bogus":true}]}`)
-		errObj, ok := resp["error"].(map[string]interface{})
-		require.True(t, ok, "subscribe must fail: %v", resp)
-		assert.EqualValues(t, -32602, errObj["code"], "%v", errObj)
-		assert.GreaterOrEqual(t, a.pendingSubscribes.Load(), int32(1))
-		assert.GreaterOrEqual(t, b.pendingSubscribes.Load(), int32(1))
+		require.NoError(t, conn1.WriteMessage(websocket.TextMessage, []byte(subscribe)))
+		require.Eventually(t, func() bool { return a.pendingSubscribes.Load() == 1 && b.pendingSubscribes.Load() == 1 },
+			5*time.Second, 10*time.Millisecond, "each source is asked for the variant")
+		require.NoError(t, conn2.WriteMessage(websocket.TextMessage, []byte(subscribe)))
+		time.Sleep(300 * time.Millisecond)
+		close(answer)
+
+		for i, conn := range []*websocket.Conn{conn1, conn2} {
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(15*time.Second)))
+			_, msg, err := conn.ReadMessage()
+			require.NoError(t, err)
+			var resp map[string]interface{}
+			require.NoError(t, json.Unmarshal(msg, &resp))
+			errObj, ok := resp["error"].(map[string]interface{})
+			require.True(t, ok, "client %d's subscribe must fail: %s", i+1, msg)
+			assert.EqualValues(t, -32602, errObj["code"], "client %d: %v", i+1, errObj)
+		}
+		assert.EqualValues(t, 1, a.pendingSubscribes.Load(), "the joiner shares the first open")
+		assert.EqualValues(t, 1, b.pendingSubscribes.Load(), "the joiner shares the first open")
 	})
 
 	// Every source answers a new variant with a capacity error: the

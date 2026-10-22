@@ -493,8 +493,13 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
-	// numberedBlockCalls counts every block fetch by number; the tracker's
-	// own asks name latest.
+	// The counters count only fetches made for a Forward under test, which
+	// carry the marker in their context: tracker fetches (fill, no-source
+	// asks) run on the network's context and cannot change them.
+	type forwardUnderTest struct{}
+	fctx := func(ctx context.Context) context.Context { return context.WithValue(ctx, forwardUnderTest{}, true) }
+	marked := func(r *http.Response) bool { return r.Request.Context().Value(forwardUnderTest{}) != nil }
+	// numberedBlockCalls counts block fetches by number.
 	var traceCalls, numberedBlockCalls atomic.Int32
 	var empty atomic.Bool
 	var latestNum atomic.Int64
@@ -524,7 +529,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).Reply(200).BodyString(`{"jsonrpc":"2.0","id":1,"result":false}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
 			n := blockRef(util.SafeReadBody(r.Request))
-			if n >= 0 {
+			if n >= 0 && marked(r) {
 				numberedBlockCalls.Add(1)
 			}
 			if n < 0 {
@@ -535,7 +540,9 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 			return r
 		}).BodyString(`{}`)
 		gock.New(host).Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "debug_traceBlockByNumber") }).Reply(200).Map(func(r *http.Response) *http.Response {
-			traceCalls.Add(1)
+			if marked(r) {
+				traceCalls.Add(1)
+			}
 			result := `[{"result":{"type":"CALL","gasUsed":"0x0"}}]`
 			if empty.Load() && (blockRef(util.SafeReadBody(r.Request)) != 0x3ea || host == "http://rpc1.localhost") {
 				result = "[" + strings.Repeat(" ", 128) + "]"
@@ -574,7 +581,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	for _, ref := range []string{"0x3e8", "0x3e7", "latest", "0x100"} {
 		beforeTrace, beforeBlock := traceCalls.Load(), numberedBlockCalls.Load()
 		start := time.Now()
-		resp, err = n.Forward(ctx, request(ref))
+		resp, err = n.Forward(fctx(ctx), request(ref))
 		require.NoError(t, err)
 		jrr, e := resp.JsonRpcResponse()
 		require.NoError(t, e)
@@ -604,13 +611,13 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 	nullTxs := request("0x3e9")
 	require.False(t, evm.HasVerifiedEmptyTraceBlock(nullTxs), "null transactions prove nothing")
 	beforeMissing := traceCalls.Load()
-	resp, err = n.Forward(ctx, nullTxs)
+	resp, err = n.Forward(fctx(ctx), nullTxs)
 	require.NoError(t, err)
 	resp.Release()
 	require.Greater(t, traceCalls.Load()-beforeMissing, int32(1))
 	t.Logf("null transactions traceCalls=%d", traceCalls.Load()-beforeMissing)
 	beforeNonempty := traceCalls.Load()
-	resp, err = n.Forward(ctx, request("0x3ea"))
+	resp, err = n.Forward(fctx(ctx), request("0x3ea"))
 	require.NoError(t, err)
 	jrr, err := resp.JsonRpcResponse()
 	require.NoError(t, err)
@@ -658,7 +665,7 @@ func TestEmptyResultAcceptFollowedTraceBlock(t *testing.T) {
 			}
 		}
 		before := traceCalls.Load()
-		resp, err = n.Forward(ctx, request("0x3e8"))
+		resp, err = n.Forward(fctx(ctx), request("0x3e8"))
 		require.NoError(t, err)
 		resp.Release()
 		calls := traceCalls.Load() - before

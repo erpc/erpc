@@ -199,6 +199,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 		wsClient:     wsc,
 		logger:       &logger,
 		topics:       make(map[indexer.Topic]*pendingSub),
+		resubWake:    make(chan struct{}, 1),
 		intake:       sink,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
 			return wsc.SendRequest(ctx, nq)
