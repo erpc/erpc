@@ -401,8 +401,8 @@ func upstreamBreakerEligible(req *common.NormalizedRequest, isHedge bool) bool {
 
 // upstreamBreakerOutcome classifies a (resp, err) pair for the upstream
 // breaker. Most ignorable errors return OutcomeIgnore so they don't move
-// the breaker; transport / 5xx / sync-empty open the circuit; success
-// closes it.
+// the breaker; transport / 5xx / timeout / sync-empty open the circuit;
+// success closes it.
 func upstreamBreakerOutcome(resp *common.NormalizedResponse, err error) failsafe.Outcome {
 	if err != nil {
 		// Cancellations / capacity / known-soft errors are ignored.
@@ -412,12 +412,18 @@ func upstreamBreakerOutcome(resp *common.NormalizedResponse, err error) failsafe
 		if common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) {
 			return failsafe.OutcomeIgnore
 		}
-		// 5xx, transport, unauthorized, billing → breaker failure.
+		// 5xx, transport, unauthorized, billing, and an endpoint that
+		// accepted the request and never answered → breaker failure. The
+		// hung-node case is the one the breaker exists for: a node whose
+		// worker pool is saturated keeps answering eth_blockNumber while
+		// every state read times out, and only the breaker takes it out
+		// of rotation. A caller that went away is RequestCanceled, above.
 		if common.HasErrorCode(err,
 			common.ErrCodeEndpointServerSideException,
 			common.ErrCodeEndpointTransportFailure,
 			common.ErrCodeEndpointUnauthorized,
 			common.ErrCodeEndpointBillingIssue,
+			common.ErrCodeEndpointRequestTimeout,
 		) {
 			return failsafe.OutcomeFailure
 		}

@@ -553,6 +553,36 @@ func TestUpstreamForward_CircuitBreakerOpensAndBlocks(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
+// A node that accepts requests and never answers is the breaker's main case:
+// its own timeout opens the circuit, while a caller walking away does not.
+func TestUpstreamForward_CircuitBreakerOpensOnHungUpstream(t *testing.T) {
+	env := newFwdEnv(t, nil)
+	sc := newStubClient(func(context.Context, *common.NormalizedRequest, int32) (*common.NormalizedResponse, error) {
+		return nil, common.NewErrEndpointRequestCanceled(context.Canceled)
+	})
+	u := env.mustUpstream(t, &common.UpstreamConfig{
+		Id:       "cb-hung",
+		Failsafe: []*common.FailsafeConfig{{CircuitBreaker: breakerCfg()}},
+	}, sc)
+
+	_, err := u.Forward(env.ctx, fwdReq("eth_call"), false, false)
+	require.Error(t, err)
+	assert.Equal(t, failsafe.StateClosed, u.CircuitBreakerState(), "a caller-side cancellation never moves the breaker")
+
+	sc.fn = func(context.Context, *common.NormalizedRequest, int32) (*common.NormalizedResponse, error) {
+		return nil, common.NewErrEndpointRequestTimeout(time.Second, context.DeadlineExceeded)
+	}
+	_, err = u.Forward(env.ctx, fwdReq("eth_call"), false, false)
+	require.Error(t, err)
+	assert.Equal(t, failsafe.StateOpen, u.CircuitBreakerState(), "an endpoint timeout is a breaker failure")
+	assert.True(t, u.IsDown("eth_call", common.DataFinalityStateUnknown))
+
+	_, err = u.Forward(env.ctx, fwdReq("eth_call"), false, false)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen), "%v", err)
+	assert.Equal(t, int32(2), sc.calls.Load(), "an open breaker never dials")
+}
+
 func TestUpstreamForward_HedgeWinsOverSlowPrimary(t *testing.T) {
 	env := newFwdEnv(t, nil)
 	sc := newStubClient(func(ctx context.Context, req *common.NormalizedRequest, call int32) (*common.NormalizedResponse, error) {
