@@ -541,6 +541,7 @@ func (o *Orchestrator) RecentPolicyDecisions(method string, limit int) []PolicyD
 					FinalizationLag:        m.FinalizationLag,
 					BlockHeadLagSeconds:    m.BlockHeadLagSeconds,
 					FinalizationLagSeconds: m.FinalizationLagSeconds,
+					BlockHeadMissing:       m.BlockHeadMissing,
 					P50ResponseMs:          m.P50ResponseSeconds * 1000,
 					P70ResponseMs:          m.P70ResponseSeconds * 1000,
 					P90ResponseMs:          m.P90ResponseSeconds * 1000,
@@ -934,6 +935,7 @@ func (o *Orchestrator) snapshotUpstreamRows(last bucketTotals) map[string]Upstre
 						row.BlockHeadLagSeconds = float64(row.BlockHeadLag) * btSec
 						row.FinalizationLagSeconds = float64(row.FinalizationLag) * btSec
 					}
+					row.BlockHeadMissing = tracker.BlockHeadMissing(up)
 					row.RequestsTotal = m.RequestsTotal.Load()
 					row.ErrorsTotal = m.ErrorsTotal.Load()
 					if m.Cordoned.Load() {

@@ -8,6 +8,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +17,7 @@ import (
 // newTimeoutEngine registers evm:1 with rpc1 and rpc2 and the given eval.
 // The ticker never starts, so the only ticks are RegisterNetwork's first
 // eval and the ones a test drives with TickForTest.
-func newTimeoutEngine(t *testing.T, evalFunc string, timeout time.Duration) *policy.Engine {
+func newTimeoutEngine(t *testing.T, label, evalFunc string, timeout time.Duration) *policy.Engine {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -31,7 +33,7 @@ func newTimeoutEngine(t *testing.T, evalFunc string, timeout time.Duration) *pol
 	}
 	require.NoError(t, cfg.SetDefaults())
 	ups := []common.Upstream{&fakeUpstream{id: "rpc1"}, &fakeUpstream{id: "rpc2"}}
-	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", label, func() []common.Upstream { return ups }, cfg))
 	return engine
 }
 
@@ -50,6 +52,10 @@ func lastDecisionError(t *testing.T, e *policy.Engine) string {
 	return ds[len(ds)-1].Error
 }
 
+func evalTimeouts(label string) float64 {
+	return testutil.ToFloat64(telemetry.MetricSelectionEvalErrorsTotal.WithLabelValues("p1", label, "*", "timeout"))
+}
+
 // fastThenSlow returns rpc1 alone on its first call, and busy-waits on
 // every later call before returning both upstreams.
 const fastThenSlow = `(ups, _ctx) => {
@@ -60,59 +66,69 @@ const fastThenSlow = `(ups, _ctx) => {
 	return ups;
 }`
 
-// Once the slot holds an ordering, a timed-out tick keeps it, and the
-// timeout reaches the decision. Before, the late result overwrote the
-// timeout error, so the slow result was published and no timeout was ever
-// recorded or counted.
-func TestSlot_EvalTimeout_KeepsThePreviousOrderAndRecordsTheTimeout(t *testing.T) {
-	e := newTimeoutEngine(t, fastThenSlow, 100*time.Millisecond)
+// sobek cannot interrupt a running eval, so a tick past evalTimeout is
+// counted as a timeout and its result still replaces the older ordering.
+// Before #1284 the timeout branch raced the eval goroutine for the outcome
+// and the late write always won, so no timeout was ever counted.
+func TestSlot_EvalTimeout_AppliesTheLateResultAndCountsTheTimeout(t *testing.T) {
+	const label = "slot-timeout-applies"
+	e := newTimeoutEngine(t, label, fastThenSlow, 100*time.Millisecond)
 	require.Equal(t, []string{"rpc1"}, orderedIDs(e))
+	before := evalTimeouts(label)
 
 	policy.TickForTest(e, "evm:1", "*")
 
-	require.Contains(t, lastDecisionError(t, e), "selection policy eval timed out")
-	require.Equal(t, []string{"rpc1"}, orderedIDs(e),
-		"a timed-out tick must not publish its late result over an existing ordering")
+	require.Equal(t, before+1, evalTimeouts(label))
+	require.Empty(t, lastDecisionError(t, e), "a slow eval is not an eval failure")
+	require.Equal(t, []string{"rpc1", "rpc2"}, orderedIDs(e), "the late result replaces the older ordering")
 }
 
 // The first eval runs inside RegisterNetwork, where a busy host can miss
-// the deadline. With no ordering yet, discarding the late result would
-// leave the network on raw registration order until the next tick. The
-// slot publishes it, and the decision still records the timeout.
+// the deadline. The slot must not leave the network on raw registration
+// order until the next tick.
 func TestSlot_EvalTimeout_FirstTickPublishesItsLateResult(t *testing.T) {
-	e := newTimeoutEngine(t, `(ups, _ctx) => {
+	const label = "slot-timeout-first"
+	before := evalTimeouts(label)
+	e := newTimeoutEngine(t, label, `(ups, _ctx) => {
 		const t = Date.now();
 		while (Date.now() - t < 300) {}
 		return ups.filter((u) => u.id === 'rpc2');
 	}`, 20*time.Millisecond)
 
 	require.Equal(t, []string{"rpc2"}, orderedIDs(e))
-	require.Contains(t, lastDecisionError(t, e), "selection policy eval timed out")
+	require.Equal(t, before+1, evalTimeouts(label))
 }
 
-// Only a valid late result is published: a first eval that overruns and
-// then throws leaves the slot empty.
+// A first eval that overruns and then throws leaves the slot empty and
+// reports the throw, not the timeout.
 func TestSlot_EvalTimeout_FirstTickLateThrowPublishesNothing(t *testing.T) {
-	e := newTimeoutEngine(t, `(ups, _ctx) => {
+	const label = "slot-timeout-throw"
+	before := evalTimeouts(label)
+	e := newTimeoutEngine(t, label, `(ups, _ctx) => {
 		const t = Date.now();
 		while (Date.now() - t < 300) {}
 		throw new Error('boom');
 	}`, 20*time.Millisecond)
 
 	require.Empty(t, orderedIDs(e))
-	require.Contains(t, lastDecisionError(t, e), "selection policy eval timed out")
+	require.Contains(t, lastDecisionError(t, e), "boom")
+	require.Equal(t, before+1, evalTimeouts(label))
 }
 
 // Many timed-out ticks give the race detector a wide window on the eval
-// goroutine and the timeout branch, which used to write the same variable.
+// and the timeout accounting, which used to write the same variable from
+// two goroutines.
 func TestSlot_EvalTimeout_HasNoRaceOnTheOutcome(t *testing.T) {
-	e := newTimeoutEngine(t, `(ups, _ctx) => {
+	const label = "slot-timeout-race"
+	before := evalTimeouts(label)
+	e := newTimeoutEngine(t, label, `(ups, _ctx) => {
 		const t = Date.now();
 		while (Date.now() - t < 30) {}
 		return ups;
 	}`, time.Millisecond)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		policy.TickForTest(e, "evm:1", "*")
 	}
-	require.Contains(t, lastDecisionError(t, e), "selection policy eval timed out")
+	require.Equal(t, before+11, evalTimeouts(label))
+	require.Equal(t, []string{"rpc1", "rpc2"}, orderedIDs(e))
 }

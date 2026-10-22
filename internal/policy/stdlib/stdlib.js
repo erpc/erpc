@@ -388,10 +388,13 @@
   define('removeByMisbehavior', function (max) {
     return this.filter(u => u.metrics.misbehaviorRate <= max);
   });
+  // An upstream that never reported a head (`blockHeadMissing`) reads
+  // blockHeadLag=0 by absence; a head-lag bound treats it as unbounded lag.
   define('removeByLag', function (opts) {
     const bh = (opts && opts.blockHead != null) ? opts.blockHead : Infinity;
     const fz = (opts && opts.finalization != null) ? opts.finalization : Infinity;
-    return this.filter(u => u.metrics.blockHeadLag < bh && u.metrics.finalizationLag < fz);
+    return this.filter(u => (bh === Infinity || !u.metrics.blockHeadMissing)
+      && u.metrics.blockHeadLag < bh && u.metrics.finalizationLag < fz);
   });
   define('removeByMinRequests', function (min) {
     return this.filter(u => u.metrics.requestsTotal >= min);
@@ -432,6 +435,7 @@
     return this.filter(u => {
       const m = u.metrics;
       return m.errorRate <= maxErr
+        && !m.blockHeadMissing
         && m.blockHeadLag <= maxLag
         && (m.p95ResponseSeconds * 1000) <= maxP95
         && m.throttledRate <= maxThr;
@@ -1540,8 +1544,12 @@
       'latency_p' + quantile + '_deviation_above');
   };
 
-  // Lag-based factories — block-count thresholds.
-  globalThis.blockNumberLagAbove  = function (blocks) { return _leaf(u => u.metrics.blockHeadLag    > blocks, 'blockHeadLag>'    + blocks, 'block_head_lag_above'); };
+  // Lag-based factories — block-count thresholds. An upstream whose head the
+  // tracker has never seen (`blockHeadMissing`) has blockHeadLag=0 by
+  // absence, not freshness: a syncing-from-genesis node that answers
+  // eth_chainId and reports block 0 would otherwise pass every lag gate for
+  // its whole lifetime (erpc#1129). Head-lag gates trip on it.
+  globalThis.blockNumberLagAbove  = function (blocks) { return _leaf(u => u.metrics.blockHeadMissing || u.metrics.blockHeadLag > blocks, 'blockHeadLag>' + blocks, 'block_head_lag_above'); };
   globalThis.finalizationLagAbove = function (blocks) { return _leaf(u => u.metrics.finalizationLag > blocks, 'finalizationLag>' + blocks, 'finalization_lag_above'); };
 
   // Time-based lag — block-count × network's EMA-estimated block time.
@@ -1550,7 +1558,7 @@
   // seconds after first traffic. Useful when you want a wall-clock SLO
   // ("trip if more than 60s behind tip") instead of a chain-relative
   // block count that means different things on different chains.
-  globalThis.blockSecondsLagAbove         = function (seconds) { return _leaf(u => u.metrics.blockHeadLagSeconds    > seconds, 'blockHeadLagSeconds>'    + seconds, 'block_head_lag_seconds_above'); };
+  globalThis.blockSecondsLagAbove         = function (seconds) { return _leaf(u => u.metrics.blockHeadMissing || u.metrics.blockHeadLagSeconds > seconds, 'blockHeadLagSeconds>' + seconds, 'block_head_lag_seconds_above'); };
   globalThis.finalizationSecondsLagAbove  = function (seconds) { return _leaf(u => u.metrics.finalizationLagSeconds > seconds, 'finalizationLagSeconds>' + seconds, 'finalization_lag_seconds_above'); };
 
   // Sample-size guard — useful as an AND-term to avoid tripping rules on

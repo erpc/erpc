@@ -289,6 +289,51 @@ func TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded(t *testing.T) {
 		"frozen upstream must receive zero traffic — excluded by the lag predicate")
 }
 
+// TestNetworkPolicy_RealPoll_NeverReportedHeadExcluded (erpc#1129): a node
+// syncing from genesis answers eth_chainId and reports block 0 as `latest`.
+// The poller discards 0, the tracker never writes its lag, and its {*, All}
+// BlockHeadLag reads 0 — the same value a node at the tip reads — so the
+// default policy's blockNumberLagAbove(16) could never exclude it and it
+// served at rank 1. The policy must treat "never reported" as unbounded lag.
+func TestNetworkPolicy_RealPoll_NeverReportedHeadExcluded(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
+		{id: "healthy-a", latest: 1000},
+		{id: "healthy-b", latest: 1000},
+		{id: "genesis", latest: 0},
+	})
+
+	// The value the policy reads cannot tell genesis from the tip.
+	require.EqualValues(t, 0, blockHeadLagOf(t, network, "genesis"),
+		"a never-reported head leaves the {*, All} rollup at its zero value")
+	require.EqualValues(t, 0, blockHeadLagOf(t, network, "healthy-a"))
+	require.True(t, network.metricsTracker.BlockHeadMissing(upstreamByID(t, network, "genesis")))
+
+	order, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
+	assert.Contains(t, excluded, "genesis",
+		"an upstream that never reported a head must be excluded by the lag gate")
+	assert.NotContains(t, order, "genesis")
+	assert.Contains(t, order, "healthy-a")
+	assert.Contains(t, order, "healthy-b")
+
+	mockClean(t, upstreamHostFromID("healthy-a"), "eth_getBalance", "0xaaa")
+	mockClean(t, upstreamHostFromID("healthy-b"), "eth_getBalance", "0xbbb")
+	mockClean(t, upstreamHostFromID("genesis"), "eth_getBalance", "0x000")
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	assert.Equal(t, 0, gockHits(upstreamHostFromID("genesis")),
+		"an upstream with no reported head must receive zero traffic")
+}
+
 // TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded guards the other
 // direction: small, normal lag (a few blocks behind the tip) must NOT trip
 // blockNumberLagAbove(16). Same real-poll path, no exclusion expected.

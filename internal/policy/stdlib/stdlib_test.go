@@ -482,6 +482,58 @@ func TestStdlib_DefaultPolicy_DropsLaggingErrorFreeUpstream(t *testing.T) {
 		"rpc1 has 0 errors but blockHeadLag=30 > 16 → must be excluded by keepHealthy, not just ranked lower")
 }
 
+// TestStdlib_DefaultPolicy_DropsUpstreamWithNoReportedHead (erpc#1129):
+// a node syncing from genesis answers eth_chainId and reports block 0.
+// The tracker never writes its BlockHeadLag (non-positive heads are
+// skipped), so it reads 0 — identical to "at the tip" — and the default
+// policy's lag gate could never exclude it. Once the network has a head
+// and this upstream still has none, the lag gate must trip.
+func TestStdlib_DefaultPolicy_DropsUpstreamWithNoReportedHead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2", "genesis")
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	for _, u := range ups {
+		for range 100 {
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
+			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		}
+	}
+
+	// Before any head is known there is nothing to lag behind: everyone
+	// stays in, including the upstream that has not reported.
+	policy.TickForTest(engine, "evm:1", "*")
+	require.ElementsMatch(t, []string{"rpc1", "rpc2", "genesis"}, ids(engine.GetOrdered("evm:1", "*", "*")),
+		"with no network head yet, a missing upstream head is not lag")
+
+	// rpc1 and rpc2 report the tip; genesis reports block 0, which the
+	// poller/tracker discard — its lag bucket stays at 0.
+	tracker.SetLatestBlockNumber(ups[0], 1_000_000, 0)
+	tracker.SetLatestBlockNumber(ups[1], 1_000_000, 0)
+	tracker.SetLatestBlockNumber(ups[2], 0, 0)
+	require.EqualValues(t, 0, tracker.GetUpstreamMethodMetrics(ups[2], "*", common.DataFinalityStateAll).BlockHeadLag.Load(),
+		"precondition: the never-reported head leaves lag at its zero value")
+
+	policy.TickForTest(engine, "evm:1", "*")
+	require.ElementsMatch(t, []string{"rpc1", "rpc2"}, ids(engine.GetOrdered("evm:1", "*", "*")),
+		"an upstream with no reported head must be excluded by the lag gate, not ranked as if at the tip")
+	_, excluded := policy.LatestDecisionOutputForTest(engine, "evm:1", "*")
+	require.Contains(t, excluded, "genesis")
+
+	// Once it reports a head within tolerance it is re-admitted.
+	tracker.SetLatestBlockNumber(ups[2], 1_000_000, 0)
+	policy.TickForTest(engine, "evm:1", "*")
+	require.ElementsMatch(t, []string{"rpc1", "rpc2", "genesis"}, ids(engine.GetOrdered("evm:1", "*", "*")))
+}
+
 // TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream (G2):
 // an upstream with 0 errors but p95 > 10s is excluded. This is the
 // "slow-vendor drag" class — one upstream serving 3-second traces
