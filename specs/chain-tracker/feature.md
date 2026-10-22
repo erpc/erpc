@@ -445,7 +445,7 @@ Owner: `health/tracker.go`. Readers: freshness (§6.1), routing lag (`blockNumbe
 ### 6.7 Block time: how long is a block?
 
 - The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of accepted source headers. Both are local samples (#1208).
-- Until the EMA has 4 samples, every reader uses one default.
+- Until the EMA has 4 samples, bt = 1s for every reader: the poller's fallback on `main`. `fallbackStatePollerDebounce` still sets the cadence then.
 - The poll cadence is the poller's debounce: bt × `dynamicBlockTimeDebounceMultiplier` (0.7), at most 12s; `statePollerDebounce` overrides (#790).
 
 Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, the by-hash wait, the window. Bounds: on a halt or a restart the caps hold (cadence 12s, W 60s). Keeps: #790, #1208.
@@ -839,7 +839,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_served_tip_quorum{project,network,lane}` | new gauge: effective q |
 | `erpc_upstream_report_age_seconds{project,network,upstream,evidence}` | new gauge; evidence: `number`, `hash` (§6.1) |
 | `erpc_upstream_head_benched_total` | existing; bench flaps |
-| `erpc_upstream_tag_state_stale{upstream}` | new gauge: 1 while the tag-state gate skips it |
+| `erpc_upstream_tag_state_stale{project,network,upstream}` | new gauge: 1 while the tag-state gate skips it |
 | `erpc_upstream_tag_state_all_stale_total{project,network,outcome}` | new; outcome: `routed`, `refused` |
 | `erpc_shared_counter_remote_rejected_total{reason}` | new (§14) |
 | `erpc_chain_tracker_source_heads_total{project,network,upstream,outcome}` | new; outcome: `voted`, `duplicate`, `malformed`, `gated_identity`, `gated_integrity`, `gated_voter` |
@@ -925,10 +925,10 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | Network faults | 7 | N1–N7 |
 | Chain behaviour | 14 | C1–C14 |
 | Client behaviour | 9 | D1–D9 |
-| Cross-instance | 8 | X1–X8 |
+| Cross-instance | 9 | X1–X9 |
 | Config | 7 | K1–K7 |
-| HTTP consistency | 11 | H1–H11 |
-| Total | 74 | |
+| HTTP consistency | 11 | P1–P11 |
+| Total | 75 | |
 
 | ID | Setup and fault | Expected |
 |---|---|---|
@@ -988,6 +988,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | X6 | breaker open only on instance 1 for vendor X | `Latest` may differ by instance; the oracle holds |
 | X7 | old-image instance + new-image instance, one Redis | no client sees `latest` regress across instances by more than 1 bt; counters agree |
 | X8 | canary instance writes a bogus +1000 head to a counter | `Latest` unchanged on control; only the ceiling rises |
+| X9 | 1 wss + 2 https non-sources, 3 instances, Redis; `eth_blockNumber` traffic on instance 2 only | taps on instance 1 never wait longer than W: only voters that sent instance 1 a header within W count toward its hash quorum |
 | K1 | YAML and TS configs with each deleted key | boot refuses and names the key |
 | K2 | minimal YAML: 1 wss + 1 https, no `evm` block | wss is a source, https is not; q = 2; subscriptions work |
 | K3 | 2 networks, `reorgWindow` 64 on one; 40-deep reorg on both | 64: Reverted; 32: re-anchor + `1013` |
@@ -995,17 +996,17 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | K5 | same seed and plan, integrity on vs off | identical client chains and logs |
 | K6 | `servedTip.quorum: majority`, `guaranteedFor`, failover tiers | taps never above the guarantee-clamped `Latest`; no deadlock |
 | K7 | `shortCircuitFutureBlocks` on and off; head+1 polling | on: `null` with 0 dispatch above the ceiling, at most 1 retry in the band; off: at most 2 dispatches |
-| H1 | U10, C1 | `eth_blockNumber` ≥ N on the same instance at delivery; on the other within 1 Ask |
-| H2 | C1 | `eth_getBlockByNumber(N).hash` = delivered hash, or a reorg the client was told about |
-| H3 | C1 | `eth_getBlockByHash(delivered)` not null on both instances until a reorg notice |
-| H4 | C1, U9 | `eth_getLogs(N,N)` = delivered logs, both instances |
-| H5 | no fault | `getBlockByNumber("latest").number` = `eth_blockNumber` ≥ N |
-| H6 | tip moves during the request | `eth_call(latest)` Multicall3 `getBlockNumber()` = the number the request used; cached under it |
-| H7 | C12 | `finalized` = `Head.Finalized`; a hash at or below it never changes; permanent cache only if the serving upstream finalized it |
-| H8 | reorg after a by-number read | the orphan is not served from cache after the reorg notice |
-| H9 | head+1 polling | as K7 |
-| H10 | `flashblocks*` + normal groups; use-upstream client fetches a delivered block | lane-consistent result; no `retried_missing` |
-| H11 | `translateLatestTag: false` method; one stale-state vendor | stale vendor skipped; all stale → highest tag-state head, not `-32603` |
+| P1 | U10, C1 | `eth_blockNumber` ≥ N on the same instance at delivery; on the other within 1 Ask |
+| P2 | C1 | `eth_getBlockByNumber(N).hash` = delivered hash, or a reorg the client was told about |
+| P3 | C1 | `eth_getBlockByHash(delivered)` not null on both instances until a reorg notice |
+| P4 | C1, U9 | `eth_getLogs(N,N)` = delivered logs, both instances |
+| P5 | no fault | `getBlockByNumber("latest").number` = `eth_blockNumber` ≥ N |
+| P6 | tip moves during the request | `eth_call(latest)` Multicall3 `getBlockNumber()` = the number the request used; cached under it |
+| P7 | C12 | `finalized` = `Head.Finalized`; a hash at or below it never changes; permanent cache only if the serving upstream finalized it |
+| P8 | reorg after a by-number read | the orphan is not served from cache after the reorg notice |
+| P9 | head+1 polling | as K7 |
+| P10 | `flashblocks*` + normal groups; use-upstream client fetches a delivered block | lane-consistent result; no `retried_missing` |
+| P11 | `translateLatestTag: false` method; one stale-state vendor | stale vendor skipped; all stale → highest tag-state head, not `-32603` |
 
 - The in-process chaos test `TestChainFeed_ConvergesUnderFaults` (`erpc/chain_feed_test.go`) stays as the fast CI test and uses the `test/chainsim` simulator. Panic recovery (`TrackerMessageHook`) is tested only there: no black-box trigger exists.
 

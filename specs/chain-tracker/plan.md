@@ -53,7 +53,7 @@ T   the rest of the real-world catalogue
   - Tap start and the gRPC stall rule read hash voters; the reconciler timer, suspension window, cold window and every re-arm read W.
   - Group trackers count the voters of their lane.
 - Delete: live bound, `live`, `SourceLive`, `newestKnown`, `authoritative(u)`, `authoritativeIn`, `EvmAuthoritativeUpstreams`, `EvmDeliveryQuorum`, `votingSources`, `SendTip`, the `max(2, need)` floor; `erpc_source_live`; outcome `gated_authority` → `gated_voter`.
-- Tests, real-world: D8 (1 wss + 2 https non-sources), U3, N3, U10, U11, U18, K6 (tiered network, no deadlock).
+- Tests, real-world: X9 (1 wss + 2 https non-sources, 3 instances), U3, N3, U10, U11, U18, K6 (tiered network, no deadlock).
 
 ## H2: Head, refusal rule, lanes, finality, per-method tags, block time
 
@@ -67,7 +67,7 @@ T   the rest of the real-world catalogue
   - Finality split: reads `Head.Finalized`; permanent writes also the serving upstream's finalized; the cache write guard reads the network-wide lane.
   - Block-time EMA sampled from accepted source headers; one default.
 - Delete: per-request served-tip evaluation; post-forward raise, `pickHighestBlock`, `enforceHighestBlock` for `eth_getBlockByNumber`; raw-max consensus leader; `EvmLowestFinalizedBlockNumber`; `pinLatestTag` re-read per attempt; the cache key on the word `latest`; the tracker's pins-mean block time and its 12s default.
-- Tests, real-world: X2, U12, U14, H1, H5, H6, H7, H9, H10, K7, C9, C12, C13. Extend `erpc/networks_served_tip_invariants_test.go` (assertions unchanged) and the existing interpolation tests.
+- Tests, real-world: X2, U12, U14, P1, P5, P6, P7, P9, P10, K7, C9, C12, C13. Extend `erpc/networks_served_tip_invariants_test.go` (assertions unchanged) and the existing interpolation tests.
 
 ## H3: fetch schedule
 
@@ -93,7 +93,7 @@ T   the rest of the real-world catalogue
 
 - Add (spec §6.11): tag-state head per upstream from the state prober and Multicall3 evidence; skip in `checkEvmUpstreamBlockAvailability` for tag requests; tolerance W with sample age credited; readmit after 3 fresh samples or a W without stale evidence; all stale → highest tag-state head, counted; `-32603` only past 60s; probe from network start, at most every 2s per upstream, re-probe on each skip; `eth_estimateGas` in `latestTagParamIndex`.
 - Delete: #1303's misbehavior record for stale `latest` state.
-- Tests, real-world: H11.
+- Tests, real-world: P11.
 
 ## H6: signals
 
@@ -108,9 +108,9 @@ T   the rest of the real-world catalogue
 
 ## T: the rest of the catalogue
 
-- Add every spec §19 scenario not yet run: U2, U4–U7, U13, U15, N1, N2, N4, N5, N7, C1–C3, C6, C8, C10, C11, C14, D1–D7, D9, X1, X4, X6, K1–K4, H2–H4, H8.
+- Add every spec §19 scenario not yet run: U2, U4–U7, U13, U15, N1, N2, N4, N5, N7, C1–C3, C6, C8, C10, C11, C14, D1–D7, D9, X1, X4, X6, K1–K4, P2–P4, P8.
 - Change: `erpc/chain_feed_test.go` uses `test/chainsim`; it stays the fast CI test.
-- Tests: all 74 scenarios pass on `make test-realworld`; the chaos test passes 3 runs under `-race`.
+- Tests: all 75 scenarios pass on `make test-realworld`; the chaos test passes 3 runs under `-race`.
 
 ## Slice 7: docs, last deletions, verify, smoke
 
