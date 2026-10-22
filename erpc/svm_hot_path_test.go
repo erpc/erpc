@@ -23,8 +23,8 @@ func svmUpstreamCfg(id, host string) *common.UpstreamConfig {
 	}
 }
 
-// With no declared firstAvailableSlotPlus the floor is neither probed nor
-// enforced, so every slot-named read — point or range — reaches the upstream.
+// Every upstream's floor is probed, but without a declared firstAvailableSlotPlus
+// it is never enforced, so every slot-named read — point or range — reaches the upstream.
 func TestSvm_ObservedFloor_NeverSkipsWithoutDeclaredBound(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -46,7 +46,7 @@ func TestSvm_ObservedFloor_NeverSkipsWithoutDeclaredBound(t *testing.T) {
 	for i := range ups {
 		selected[i] = ups[i]
 		_, known := ups[i].SvmStatePoller().FirstAvailableSlot()
-		require.Falsef(t, known, "%s declared no firstAvailableSlotPlus, so its floor is never polled", ups[i].Id())
+		require.Truef(t, known, "%s floor is probed even without a declared bound", ups[i].Id())
 	}
 
 	for _, body := range []struct{ method, req string }{
@@ -64,7 +64,7 @@ func TestSvm_ObservedFloor_NeverSkipsWithoutDeclaredBound(t *testing.T) {
 	}
 }
 
-// firstAvailableSlotPlus is the opt-in: the operator anchors a declared window
+// firstAvailableSlotPlus is what enforces the floor: the operator anchors a declared window
 // on the observed floor, and only that upstream is skipped below it. An
 // upstream declaring exactSlot: 0 overrides the vendor's higher reported floor.
 func TestSvm_FirstAvailableSlotPlus_OptInUsesObservedFloor(t *testing.T) {
@@ -98,10 +98,11 @@ func TestSvm_FirstAvailableSlotPlus_OptInUsesObservedFloor(t *testing.T) {
 	}
 
 	floor, known := byId["validator"].(common.SvmUpstream).SvmStatePoller().FirstAvailableSlot()
-	require.True(t, known, "the opted-in upstream's floor must be polled")
+	require.True(t, known, "the declaring upstream's floor is observed")
 	require.EqualValues(t, 200000, floor)
-	_, known = byId["archive"].(common.SvmUpstream).SvmStatePoller().FirstAvailableSlot()
-	require.False(t, known, "exactSlot needs no floor, so none is polled")
+	floor, known = byId["archive"].(common.SvmUpstream).SvmStatePoller().FirstAvailableSlot()
+	require.True(t, known, "every upstream's floor is probed")
+	require.EqualValues(t, 200000, floor, "the archive's vendor-reported floor is known but overridden by exactSlot")
 
 	below := common.NewNormalizedRequest(
 		[]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[1000]}`))
