@@ -389,19 +389,32 @@ func k2() spec {
 		}}
 }
 
+// slowHeaderPad and slowPauseBlocks: D1's header size, and how long its
+// ws client stops reading. Loopback TCP holds up to slowKernelHeld bytes
+// between eRPC's write and the client's read whatever SO_RCVBUF says
+// (macOS autosizes both buffers: 479 KiB measured with a 4 KiB SO_RCVBUF),
+// so the tap falls behind only once those are full. The pause covers
+// them, then reorgWindow blocks, then 4 more, and stays inside the 10s ws
+// write deadline (erpc/ws_server.go wsWriteDeadline).
+const (
+	slowHeaderPad   = 64 << 10
+	slowKernelHeld  = 512 << 10
+	slowPauseBlocks = slowKernelHeld/slowHeaderPad + reorgWindow + 4
+)
+
 // D1: on a chain with 64 KiB headers, a ws newHeads client stops reading
-// for 20 blocks and a gRPC client for twice the send wait. The newHeads tap
-// restarts past reorgWindow, the stream ends UNAVAILABLE after its send
-// wait, and no other tap waits.
+// for slowPauseBlocks and a gRPC client for twice the send wait. The
+// newHeads tap restarts past reorgWindow, the stream ends UNAVAILABLE after
+// its send wait, and no other tap waits.
 func d1() spec {
-	return spec{name: "D1", headerPad: 64 << 10, bound: healthyDelivery, body: func(s *scenario) {
+	return spec{name: "D1", headerPad: slowHeaderPad, bound: healthyDelivery, body: func(s *scenario) {
 		sh := s.addHeads("p1-heads-slow", 0, true, "ws:jump")
 		sg := s.addGrpc("p1-grpc-slow", 0, 0, true, "grpc:Unavailable")
 		s.blocks(25)
 		lag := map[string]string{"transport": "ws", "kind": "newHeads", "reason": "lag"}
 		lag0, _ := s.metric(0, "erpc_tap_out_of_range_total", lag)
 		at := time.Now()
-		sh.pause(20 * blockTime)
+		sh.pause(slowPauseBlocks * blockTime)
 		sg.pause(2 * grpcSendWait)
 		time.Sleep(2*grpcSendWait + reconnectSlack)
 		sh.mu.Lock()
@@ -411,7 +424,7 @@ func d1() spec {
 		}
 		sh.mu.Unlock()
 		if !restarted {
-			s.violate(sh.name, "no restart past reorgWindow after it stopped reading for 20 blocks")
+			s.violate(sh.name, "no restart past reorgWindow after it stopped reading for %d blocks", slowPauseBlocks)
 		}
 		if v, _ := s.metric(0, "erpc_tap_out_of_range_total", lag); v <= lag0 {
 			s.violate(sh.name, "pod-1: erpc_tap_out_of_range_total{reason=lag} stayed %v", v)

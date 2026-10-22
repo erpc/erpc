@@ -398,7 +398,8 @@ func (c *headsClient) open(ctx context.Context, pod int) (<-chan json.RawMessage
 }
 
 // smallRcvBuf dials with a 4 KiB receive buffer, so a client that stops
-// reading backs up into eRPC's socket within a few headers.
+// reading backs up into eRPC's socket as soon as the kernel lets it: Linux
+// honours the size; macOS autosizes anyway (see slowKernelHeld).
 var smallRcvBuf = &net.Dialer{Timeout: 10 * time.Second, Control: func(_, _ string, rc syscall.RawConn) error {
 	var serr error
 	if err := rc.Control(func(fd uintptr) {
