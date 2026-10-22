@@ -24,7 +24,7 @@ request pinned to the normal group). Built so far:
   [erpc/networks.go](../../erpc/networks.go) shouldHandleMethod). Targeting +
   failover containment.
 - **Phase 2′ — selector-scoped served tip** *(done)*: the request is bound to
-  ctx at the top of `Forward`; `tipCandidateUpstreams` filters the served-tip
+  ctx at the top of `Forward`; `EvmRoutableUpstreams` filters the served-tip
   input set by the request's selector, so both max-mode (`evmHighestBlockMax`)
   and cluster-mode (`clusteredServedTip`) resolve `latest`/`finalized` AMONG the
   selected subset (plus the future-block short-circuit and
@@ -172,7 +172,7 @@ request's selector so a `systx`-targeted request never resolves `latest` to a
 block only a faster family has.
 
 - The picker, `common.PickServedTip` ([common/served_tip.go](../../common/served_tip.go)),
-  stays a **pure** function. The candidate walk, `tipCandidateUpstreams`
+  stays a **pure** function. The candidate walk, `EvmRoutableUpstreams`
   ([erpc/networks.go](../../erpc/networks.go)), applies the selector filter to
   its inputs.
 - **Untargeted** → existing network-wide monotonic counter

@@ -293,7 +293,7 @@ func (in *networkIntake) admits(primary, leads bool) bool {
 func (in *networkIntake) authoritativeIn(selector string) []string {
 	_, _, leads := in.authority("")
 	var out []string
-	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
+	for c := range in.nw.EvmRoutableUpstreams(context.Background()) {
 		if syncing(c) {
 			continue
 		}
@@ -326,7 +326,7 @@ func (in *networkIntake) authority(upstreamId string) (primary, eligible, leads 
 	}
 	var buf [16]authorityCandidate
 	cands := buf[:0]
-	for c := range in.nw.tipCandidateUpstreams(context.Background()) {
+	for c := range in.nw.EvmRoutableUpstreams(context.Background()) {
 		if syncing(c) {
 			continue
 		}

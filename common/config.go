@@ -2660,9 +2660,9 @@ type SvmUpstreamConfig struct {
 
 	// BlockAvailability is an operator restriction on the slot window this
 	// upstream may serve. Only what the operator declares is enforced; the
-	// upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
-	// used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
-	// mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+	// upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
+	// every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
+	// earliestBlockPlus. Unknown floor = unbounded.
 	BlockAvailability *SvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 }
 
@@ -2689,18 +2689,21 @@ func (c *SvmBlockAvailabilityConfig) Copy() *SvmBlockAvailabilityConfig {
 }
 
 // SvmAvailabilityBoundConfig is a single declared slot bound.
-// Exactly one field must be set.
+// Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+// UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+// anchors on is re-probed. 0 freezes it after the first observation, as EVM.
 type SvmAvailabilityBoundConfig struct {
-	ExactSlot              *int64 `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
-	LatestSlotMinus        *int64 `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
-	FirstAvailableSlotPlus *int64 `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+	ExactSlot              *int64   `yaml:"exactSlot,omitempty" json:"exactSlot,omitempty"`
+	LatestSlotMinus        *int64   `yaml:"latestSlotMinus,omitempty" json:"latestSlotMinus,omitempty"`
+	FirstAvailableSlotPlus *int64   `yaml:"firstAvailableSlotPlus,omitempty" json:"firstAvailableSlotPlus,omitempty"`
+	UpdateRate             Duration `yaml:"updateRate,omitempty" json:"updateRate,omitempty" tstype:"Duration"`
 }
 
 func (c *SvmAvailabilityBoundConfig) Copy() *SvmAvailabilityBoundConfig {
 	if c == nil {
 		return nil
 	}
-	out := &SvmAvailabilityBoundConfig{}
+	out := &SvmAvailabilityBoundConfig{UpdateRate: c.UpdateRate}
 	if c.ExactSlot != nil {
 		v := *c.ExactSlot
 		out.ExactSlot = &v
@@ -2786,6 +2789,11 @@ type EvmNetworkConfig struct {
 	// empty result likely means the upstream hasn't indexed that data yet.
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
+
+	// LocalAnswers turns off eRPC's own answer for a method on this network:
+	// `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+	// method in LocalAnswerMethods is answered by eRPC unless set false here.
+	LocalAnswers map[string]bool `yaml:"localAnswers,omitempty" json:"localAnswers,omitempty"`
 
 	// DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
 	// the debounce interval for block polling. A value of 0.7 means debounce = 70% of

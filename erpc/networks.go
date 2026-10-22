@@ -501,7 +501,7 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 }
 
 // evmTipBallot builds the served-tip pick for an axis under quorum q from the
-// request's tip candidates (tipCandidateUpstreams) that satisfy member (nil =
+// request's tip candidates (EvmRoutableUpstreams) that satisfy member (nil =
 // all of them): the heads of the best-ranked voters (tipVoterRank). live
 // reports whether live, non-capped heads decided it (benched or not): a
 // cap-only ballot gives the regression guard no live reference.
@@ -520,7 +520,7 @@ func (n *Network) evmTipBallot(ctx context.Context, useFinalized bool, q common.
 	var buf [16]int64
 	heads := buf[:0]
 	best := -1
-	for u := range n.tipCandidateUpstreams(ctx) {
+	for u := range n.EvmRoutableUpstreams(ctx) {
 		if member != nil && !member(u) {
 			continue
 		}
@@ -592,8 +592,9 @@ func configuredUpperExactBlock(u common.Upstream) *int64 {
 	return cfg.Evm.BlockAvailability.Upper.ExactBlock
 }
 
-// tipCandidateUpstreams yields, in routing order, the upstreams that may vote
-// on the request's served tip: the selection policy's eligible set, so an
+// EvmRoutableUpstreams yields, in routing order, the upstreams eRPC can route
+// the request to, which are also those that may vote on its served tip (and
+// eRPC's peers for net_peerCount): the selection policy's eligible set, so an
 // upstream the user (or an integrity guard) excluded or cordoned drops out of
 // head tracking where it drops out of routing, else the full registered set
 // while the policy is absent or has made no decision yet. It walks the
@@ -607,7 +608,7 @@ func configuredUpperExactBlock(u common.Upstream) *int64 {
 // other group, causing "block not found" churn. The filter is stateless, so an
 // arbitrary selector value can never grow per-pod memory. No-op when there is
 // no request or no selector in ctx (background/admin callers).
-func (n *Network) tipCandidateUpstreams(ctx context.Context) iter.Seq[common.Upstream] {
+func (n *Network) EvmRoutableUpstreams(ctx context.Context) iter.Seq[common.Upstream] {
 	// Kept this small so it inlines: the closure then stays on the caller's
 	// stack instead of costing a heap allocation per walk.
 	return func(yield func(common.Upstream) bool) { n.walkTipCandidates(ctx, yield) }
@@ -797,7 +798,7 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 // allocation.
 func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 	best, voters := -1, 0
-	for u := range n.tipCandidateUpstreams(ctx) {
+	for u := range n.EvmRoutableUpstreams(ctx) {
 		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok {
 			switch {
 			case best < 0 || rank < best:
@@ -815,7 +816,7 @@ func (n *Network) EvmRefreshLatestBlock(ctx context.Context) {
 		q = n.cfg.Evm.ServedTipQuorum()
 	}
 	need := q.Of(voters)
-	for u := range n.tipCandidateUpstreams(ctx) {
+	for u := range n.EvmRoutableUpstreams(ctx) {
 		if _, rank, ok := tipVoterRank(u, false, n.metricsTracker); ok && rank == best {
 			u.(common.EvmUpstream).EvmStatePoller().RefreshLatestBlock()
 			if need--; need == 0 {
@@ -1776,7 +1777,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// Bind the request to ctx so downstream served-tip resolution can decide
 	// `latest`/`finalized` AMONG the use-upstream-selected subset (see
-	// tipCandidateUpstreams / requestSelector). The failsafe executor re-sets
+	// EvmRoutableUpstreams / requestSelector). The failsafe executor re-sets
 	// the same value below for its own readers; setting it here makes it
 	// available to the earlier pre-forward / short-circuit paths too.
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
@@ -1877,6 +1878,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	upsList = n.preferUpstreams(ctx, req, method, upsList)
+
+	// SVM history reads go deepest known floor first within each tier, so the
+	// first answer is the most complete one the pool holds.
+	if n.Architecture() == common.ArchitectureSvm && svm.IsHistoryMethod(method) {
+		upsList = svm.OrderByHistoryDepth(upsList, func(a, b common.Upstream) bool {
+			return isFallbackTier(a) == isFallbackTier(b)
+		})
+	}
 
 	// Architecture-specific pruning of the upstream list. Currently only SVM
 	// uses this hook; both filters are gated on ArchitectureSvm so EVM networks
@@ -2507,6 +2516,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		req.ErrorsByUpstream.Range(func(key, value any) bool {
 			upstreamErr, ok := value.(error)
 			if !ok || !common.HasErrorCode(upstreamErr, common.ErrCodeEndpointMissingData) {
+				return true
+			}
+			// SVM history sweep uses MissingData to continue a sweep after an
+			// incomplete 200 — not evidence this upstream disagreed with the winner.
+			if common.IsHistorySweepContinuation(upstreamErr) {
 				return true
 			}
 			upstream := key.(*upstream.Upstream)

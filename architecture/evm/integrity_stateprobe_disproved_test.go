@@ -174,3 +174,93 @@ func TestStateProber_WrongCanaryFailsSymmetrically(t *testing.T) {
 			"%s: nothing proves under a wrong canary", u.Id())
 	}
 }
+
+// A vendor can answer every pinned call right and still resolve "latest" to old
+// state (HyperEVM, 2026-10: one vendor froze 31,733 blocks back, another ran
+// ~110 back and then split, 9 of 20 answers 9-15 blocks back, all with a
+// current head). Where clients' "latest" eth_calls reach upstreams as the tag,
+// each stale answer is one misbehavior record, so a split fleet scores in
+// proportion, while a healthy sibling that jitters a few blocks under the
+// shared head stays clean. Where eRPC sends a number
+// instead (the default translateLatestTag, or the upstream's pinLatestTag),
+// the tag is never probed.
+func TestStateProber_StaleLatestTag(t *testing.T) {
+	const head = int64(1000)
+	rounds := stateProbeDisprovedStreak + 2
+	run := func(t *testing.T, methods *common.MethodsConfig) (ups map[string]*common.FakeUpstream, latestCalls map[string]int) {
+		t.Helper()
+		ups = map[string]*common.FakeUpstream{}
+		var list []common.Upstream
+		for _, id := range []string{"stale", "split", "healthy", "pinned-stale"} {
+			u := common.NewFakeUpstream(id, common.WithEvmStatePoller(common.NewFakeEvmStatePoller(head, head-10))).(*common.FakeUpstream)
+			ups[id] = u
+			list = append(list, u)
+		}
+		ups["pinned-stale"].Config().Evm = &common.EvmUpstreamConfig{PinLatestTag: util.BoolPtr(true)}
+		latestCalls = map[string]int{}
+		net := &fleetNetwork{ups: list, cfg: &common.NetworkConfig{Methods: methods}}
+		net.forward = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			jrq, _ := req.JsonRpcRequest()
+			if jrq.Method != "eth_call" {
+				return nil, fmt.Errorf("method not found")
+			}
+			id := req.Directives().UseUpstream
+			executed := head // every node runs pinned calls at the pin
+			if jrq.Params[1] == "latest" {
+				latestCalls[id]++
+				odd := latestCalls[id]%2 == 1
+				switch {
+				case id == "stale" || id == "pinned-stale":
+					executed = head - 110
+				case id == "split" && !odd:
+					executed = head - stateProbeLatestToleranceBlocks - 1
+				case id == "healthy" && !odd:
+					executed = head - stateProbeLatestToleranceBlocks
+				default:
+					executed = head + 1
+				}
+			}
+			ret := fmt.Sprintf(`"0x%064x"`, executed)
+			return common.NewNormalizedResponse().WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(ret), nil)), nil
+		}
+		v := newChainView(net, 32, "", "", nil)
+		v.adoptFollowed(head, &integrity.Header{
+			Number: fmt.Sprintf("0x%x", head), Hash: "0xhead", ParentHash: "0xpar",
+		})
+		p := &stateProber{
+			network: net, view: v, interval: 0,
+			ctxProbe:  integrity.ChainStateContextProbe(999),
+			lastProbe: map[string]time.Time{}, work: make(chan int64, 1),
+		}
+		for i := 0; i < rounds; i++ {
+			p.probeAll(head)
+		}
+		return ups, latestCalls
+	}
+
+	t.Run("latest reaches vendors as the tag: each stale answer is recorded", func(t *testing.T) {
+		ups, latestCalls := run(t, &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
+			"eth_call": {TranslateLatestTag: util.BoolPtr(false)},
+		}})
+		assert.Equal(t, rounds, fakeTrackerOf(t, ups["stale"]).MisbehaviorCount,
+			"right pinned answers must not hide a stale \"latest\"")
+		assert.Equal(t, rounds/2, fakeTrackerOf(t, ups["split"]).MisbehaviorCount,
+			"a fleet half stale never builds a streak; each stale answer must still count")
+		assert.Equal(t, 0, fakeTrackerOf(t, ups["healthy"]).MisbehaviorCount)
+		for _, id := range []string{"stale", "split", "healthy"} {
+			assert.EqualValues(t, head, ups[id].EvmStateProvenBlock(), "%s holds state at the pin", id)
+		}
+		assert.Equal(t, 0, latestCalls["pinned-stale"], "a pinLatestTag upstream never receives \"latest\"")
+		assert.Equal(t, 0, fakeTrackerOf(t, ups["pinned-stale"]).MisbehaviorCount)
+	})
+
+	t.Run("eRPC translates latest to a number: no latest probe at all", func(t *testing.T) {
+		ups, latestCalls := run(t, nil)
+		assert.Empty(t, latestCalls)
+		for id, u := range ups {
+			assert.Equal(t, 0, fakeTrackerOf(t, u).MisbehaviorCount, id)
+			assert.EqualValues(t, head, u.EvmStateProvenBlock(), id)
+		}
+	})
+}

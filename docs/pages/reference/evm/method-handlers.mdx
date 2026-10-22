@@ -96,9 +96,9 @@ https://docs.erpc.cloud/reference/evm/method-handlers.llms.txt`}
 
 **Hook topology.** Five hook layers fire at specific points in the request lifecycle, ordered around the cache read and the failsafe retry loop:
 
-1. **Project.PreForward** (`HandleProjectPreForward`, `architecture/evm/hooks.go:L10`) — fires before cache read. Handles `eth_blockNumber` (returns highest known, replaces real upstream response), `eth_call` and `eth_estimateGas` (inject missing block param), `eth_chainId` (responds from config), `net_listening` (responds `true`), and records `trace_filter`/`arbtrace_filter` range histogram.
-2. **Network.PreForward** (`HandleNetworkPreForward`, `architecture/evm/hooks.go:L40`) — fires after upstream selection. Handles `eth_chainId` (responds from config), and proactive `trace_filter`/`arbtrace_filter` auto-splitting when the request range exceeds the per-upstream threshold.
-3. **Upstream.PreForward** (`HandleUpstreamPreForward`, `architecture/evm/hooks.go:L86`) — fires once per upstream attempt. Handles `eth_getLogs`/`trace_filter` block-range availability and the `eth_chainId` fallback (upstream config → network ID string → network config).
+1. **Project.PreForward** (`HandleProjectPreForward`, `architecture/evm/hooks.go:L10`) — fires before cache read. Answers the [local-answer methods](#local-answers), handles `eth_blockNumber` (returns highest known, replaces real upstream response), `eth_call` and `eth_estimateGas` (inject missing block param), and records `trace_filter`/`arbtrace_filter` range histogram.
+2. **Network.PreForward** (`HandleNetworkPreForward`, `architecture/evm/hooks.go:L40`) — fires after upstream selection. Handles proactive `trace_filter`/`arbtrace_filter` auto-splitting when the request range exceeds the per-upstream threshold.
+3. **Upstream.PreForward** (`HandleUpstreamPreForward`, `architecture/evm/hooks.go:L86`) — fires once per upstream attempt. Handles `eth_getLogs`/`trace_filter` block-range availability.
 4. **Upstream.PostForward** (`HandleUpstreamPostForward`, `architecture/evm/hooks.go:L109`) — fires after each upstream response. Handles `eth_getBlockByNumber`/`eth_getBlockByHash` block validation, `eth_getBlockReceipts` integrity checks, and `eth_sendRawTransaction` nonce-exception interception. Also applies the configurable `markEmptyAsErrorMethods` gate to convert null/empty results to retryable `ErrEndpointMissingData`. Conversion only fires when the `RetryEmpty` directive is `true` on the request; when `RetryEmpty=false`, null/empty passes through unchanged even for methods in the list.
 5. **Network.PostForward** (`HandleNetworkPostForward`, `architecture/evm/hooks.go:L62`) — fires once after the failsafe loop. Handles `eth_getBlockByNumber` highest-block enforcement, `eth_sendRawTransaction` exhausted-broadcast recovery, and reactive `trace_filter` splitting.
 
@@ -110,9 +110,20 @@ Resolution is lock-efficient: param values are extracted under a read lock, reso
 
 **eth_call / eth_estimateGas missing-block-param injection.** If the request arrives with exactly one parameter (the call object, no block tag), the project pre-forward hook appends `"latest"` as the second param before forwarding; interpolation then pins it to the network's latest block number, so no upstream applies its own default block. `eth_call` is intentionally excluded from `markEmptyAsErrorMethods` and from structured error wrapping — callers expect raw ABI revert data (a hex string), not a structured error object.
 
-**eth_chainId synthetic response.** All three hook levels (project, network, upstream) attempt to return a synthetic response from config without contacting any upstream. The check gates on `ShouldSkipCacheRead("")`: when `x-erpc-skip-cache-read: true` is set, all three layers are bypassed so force-refresh requests reach a real upstream for validation. At the upstream level, the handler prefers `upstreams[].evm.chainId`, then falls back to parsing from the upstream's network ID string (e.g. `"evm:1"`), then falls back to the network config value.
+#### Local answers
 
-**net_listening.** eRPC answers `true` itself at the project level, always: the node a client reaches is eRPC, which is listening while it answers. Many upstreams reject the method, so routing it made one upstream a single point of failure for a constant. Source: <SourceLink file="architecture/evm/net_listening.go" lines="10-24" />
+eRPC answers these methods itself, before cache and upstream selection, because the true answer does not depend on which upstream serves it, or is about eRPC, the node the client talks to. Routing them made one upstream a single point of failure for a constant (upstreams often reject `net_*` methods) or returned one node's view where eRPC fronts several.
+
+| Method | eRPC's answer | Routed instead when |
+|---|---|---|
+| `eth_chainId` | `networks[].evm.chainId` as hex | chain id not configured |
+| `net_version` | `networks[].evm.chainId` as a decimal string | chain id not configured |
+| `net_listening` | `true` | never |
+| `net_peerCount` | the number of upstreams eRPC can route the request to now (the selection policy's eligible set, narrowed by `use-upstream`), as hex | never |
+| `web3_clientVersion` | `erpc/<version>/<os>-<arch>/<go version>` | never |
+| `eth_syncing` | `false` while one routable upstream is synced | no routable upstream is known synced |
+
+Every one is on by default. `networks[].evm.localAnswers` turns one off per network: `{net_peerCount: false}` routes `net_peerCount` to the upstreams as any other method, with no eRPC answer. `networkDefaults.evm.localAnswers` applies to each network per method, unless the network sets that method itself. A key that is not in the table fails config validation. A request with `x-erpc-skip-cache-read: true` is routed too, so a force-refresh can read an upstream's own answer. Source: <SourceLink file="common/evm_local_answers.go" />, <SourceLink file="architecture/evm/local_answer.go" />
 
 **eth_blockNumber highest-block enforcement.** With the `enforceHighestBlock` directive on (`directiveDefaults.enforceHighestBlock`, default `true`, overridable per request), the network pre-forward hook answers from the served tip without dispatching and the post-forward hook pins every response to it; refresh, freshness and pin rules: [Block tracking](/reference/evm/block-tracking#eth_blocknumber).
 
@@ -302,7 +313,7 @@ upstreams: [
 ### Request/response behavior
 
 - `eth_call` and `eth_estimateGas` with one param always have `"latest"` appended before forwarding; callers never see this normalization. [<SourceLink file="architecture/evm/eth_call.go" lines="12-34" />]
-- `eth_chainId` synthetic response is skipped when `ShouldSkipCacheRead("")` is true, allowing force-refresh requests to reach real upstreams. [<SourceLink file="architecture/evm/eth_chainId.go" lines="26" />]
+- Local answers are skipped when `ShouldSkipCacheRead("")` is true, allowing force-refresh requests to reach real upstreams. [<SourceLink file="architecture/evm/local_answer.go" />]
 - `eth_blockNumber` is answered from the served head while it is known; any forwarded or cached response is pinned exactly to it. [<SourceLink file="architecture/evm/eth_blockNumber.go" lines="13-171" />]
 - `eth_getBlockByNumber` `enforceHighestBlock` re-forward keeps every upstream eligible, including the one that answered stale, and skips the cache; a re-fetched block that no upstream has comes back empty and `pickHighestBlock` keeps the original block. [<SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="276-303" />]
 - `emptyResultBeyondConfidence` with head=0 (unknown) fails open — any block is treated as potentially retryable. [<SourceLink file="architecture/evm/common.go" lines="62-89" />]
@@ -327,7 +338,7 @@ upstreams: [
 ### Edge cases & gotchas
 
 1. **eth_call / eth_estimateGas missing block param auto-injection** — a client sending only the call object (no block tag) gets `"latest"` silently appended. Source: <SourceLink file="architecture/evm/eth_call.go" lines="18-30" />.
-2. **eth_chainId skip-cache-read bypasses all synthetic levels** — `x-erpc-skip-cache-read: true` causes all three hook levels to fall through to real upstreams. Source: <SourceLink file="architecture/evm/eth_chainId.go" lines="26" />.
+2. **Skip-cache-read routes local answers** — `x-erpc-skip-cache-read: true` sends `eth_chainId`, `net_*`, `web3_clientVersion` and `eth_syncing` to real upstreams. Source: <SourceLink file="architecture/evm/local_answer.go" />.
 3. **eth_blockNumber never reaches an upstream while the served head is known** (with `enforceHighestBlock` on) — the network pre-forward hook answers it; a forwarded or cached response is pinned exactly to the served head, never above or below it. Source: <SourceLink file="architecture/evm/eth_blockNumber.go" lines="13-171" />.
 4. **enforceHighestBlock never excludes the stale upstream** — the re-forward is a fresh request for the higher block number, eligible on every upstream; the stale-block counters increment only when the original response contained a real block number (non-zero). Source: <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="173-188" />, <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="276-303" />.
 5. **pickHighestBlock safety** — always compares old vs new response rather than blindly returning the re-fetched block, guarding against corrupt poller state. If one response is null/empty, returns the other; if both are null/empty, returns the error from the re-forward rather than a null block. Source: <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="335-415" />.
@@ -369,10 +380,9 @@ upstreams: [
 
 **Trace span names** (for distributed tracing / APM):
 - `Project.PreForwardHook` — parent span for all project-level hooks
-- `Project.PreForwardHook.eth_chainId`
-- `Network.PreForwardHook`, `Network.PreForwardHook.eth_chainId`
+- `Network.PreForwardHook`
 - `Network.PostForward.eth_blockNumber`, `Network.PostForward.eth_getBlockByNumber`, `Network.PostForward.eth_sendRawTransaction`
-- `Upstream.PreForwardHook`, `Upstream.PreForwardHook.eth_chainId`, `Upstream.PreForwardHook.trace_filter`
+- `Upstream.PreForwardHook`, `Upstream.PreForwardHook.trace_filter`
 - `Upstream.PostForwardHook.eth_getBlockByNumber`, `Upstream.PostForwardHook.eth_getBlockReceipts`, `Upstream.PostForwardHook.eth_sendRawTransaction`
 - `Evm.PickHighestBlock`, `extractTxHashFromSendRawTransaction`, `createSyntheticSuccessResponse`, `verifyAndHandleNonceTooLow`
 

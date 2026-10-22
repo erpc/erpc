@@ -21,9 +21,9 @@ import (
 // still answer eth_call/eth_getBalance from older state — silently, with a
 // well-formed response. The claimed head says nothing about the state trie.
 //
-// Two probes, both judged against the chain follower's VERIFIED header for a
-// height (the trust anchor — without the follower this verification would be
-// circular, judging the node against its own claims):
+// Three probes. The first two are judged against the chain follower's
+// VERIFIED header for a height (the trust anchor — without the follower this
+// verification would be circular, judging the node against its own claims):
 //
 //   - context probe: eth_call to the Multicall3 getBlockNumber() pinned at
 //     block N. The EVM answers from the execution context it actually used, so
@@ -40,6 +40,15 @@ import (
 //     Not all providers expose eth_getProof — support is DISCOVERED per
 //     upstream, never assumed.
 //
+//   - latest probe: the context call at the "latest" tag, judged against the
+//     head the same upstream reports. A node can hold state at its head and
+//     answer every pinned call right, yet resolve "latest" for state calls to
+//     an older block: measured on HyperEVM vendors, one froze 31,733 blocks
+//     back, another ran ~110 back, both with a current head. It runs only
+//     where clients' "latest" eth_calls reach the upstream as the tag; where
+//     eRPC sends a number instead (translateLatestTag, pinLatestTag) the
+//     node's tag resolution is never used.
+//
 // The prober PUBLISHES evidence; it holds no routing authority of its own.
 // A success advances the upstream's state-proven head (monotonic) — pure
 // telemetry, never a routing bound: the proven head advances at probe cadence,
@@ -47,10 +56,11 @@ import (
 // every honest upstream's claimed head, and a bound built on it would refuse
 // the network's own advertised tip. A single failure just fails to advance —
 // a mismatch at the tip can be a fork-transient. Only a SUSTAINED streak of
-// wrong-height answers is evidence against a node, and that evidence goes
-// where every other proven-bad-data signal already goes: upstream misbehavior
-// on the health tracker (the ledger consensus disputes, integrity
-// deterministic rejects and wrong-empty responses feed — see noteDisproved).
+// wrong-height pinned answers is evidence against a node; a stale "latest"
+// is evidence each time (see probeUpstream). Both go where every other
+// proven-bad-data signal already goes: upstream misbehavior on the health
+// tracker (the ledger consensus disputes, integrity deterministic rejects and
+// wrong-empty responses feed — see recordMisbehavior).
 // Whether and when to exclude is the operator's selection policy's call, via
 // the existing misbehaviorRateAbove predicate.
 // The context-probe target is per-ARCHITECTURE (integrity.ChainStateContextProbe):
@@ -188,9 +198,17 @@ func (p *stateProber) probeAll(ctx context.Context, headN int64) {
 	}
 }
 
-// probeUpstream runs both probes against one upstream and advances its proven
+// probeUpstream runs the probes against one upstream and advances its proven
 // head when the evidence supports it.
 func (p *stateProber) probeUpstream(ctx context.Context, u common.Upstream, n int64, h *integrity.Header) {
+	// A stale "latest" is judged against the upstream's own head, so a reorg
+	// cannot fake it: each one is a wrong answer clients would get, recorded
+	// at once. A vendor fleet split across healthy and stale nodes (measured:
+	// 9 of 20 answers 9-15 blocks back) never builds the streak below.
+	if p.probeLatest(ctx, u) == probeMismatch {
+		p.recordMisbehavior(u)
+	}
+
 	ctxMatch := p.probeContext(ctx, u, n)
 	proofMatch := p.probeProof(ctx, u, n, h)
 
@@ -235,23 +253,8 @@ const (
 // probeContext asks the upstream's EVM which block it executes in when pinned
 // at N. Stale state answers with the stale height.
 func (p *stateProber) probeContext(ctx context.Context, u common.Upstream, n int64) probeOutcome {
-	body := fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"%s","data":"%s"},"0x%x"]}`,
-		p.ctxProbe.To, p.ctxProbe.Data, n)
-	res, err := p.forwardTo(ctx, u, body)
-	if err != nil {
-		p.count(u, "context", "error")
-		return probeUnknown
-	}
-	if res == "" || res == "0x" {
-		// No returndata: Multicall3 is not deployed on this chain (or this
-		// node prunes code) — no evidence, not a failure.
-		p.count(u, "context", "unsupported")
-		return probeUnknown
-	}
-	got, ok := parseHexQuantity(res)
+	got, ok := p.executedBlock(ctx, u, "context", fmt.Sprintf("0x%x", n))
 	if !ok {
-		p.count(u, "context", "error")
 		return probeUnknown
 	}
 	if got != n {
@@ -273,6 +276,80 @@ func (p *stateProber) probeContext(ctx context.Context, u common.Upstream, n int
 	}
 	p.count(u, "context", "match")
 	return probeMatch
+}
+
+// stateProbeLatestToleranceBlocks is how far "latest" may run behind the
+// upstream's head before it counts as stale. The head is the highest block any
+// replica saw from any node behind the upstream's URL, so a healthy fleet can
+// answer a block or two under it: healthy vendors measured -1 to +3 on
+// Ethereum, Base, Arbitrum and HyperEVM; stale ones -7 and further. Like the
+// streak, it only rules out jitter, so it is a constant and not config.
+const stateProbeLatestToleranceBlocks = 3
+
+// probeLatest asks which block the upstream's EVM executes in at "latest",
+// against the head read just before the call.
+func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) probeOutcome {
+	eu, isEvm := u.(common.EvmUpstream)
+	if !isEvm {
+		return probeUnknown
+	}
+	head := eu.EvmEffectiveLatestBlock()
+	if head <= 0 || !p.latestReachesUpstream(u) {
+		return probeUnknown // no head to judge against, or "latest" never reaches u
+	}
+	got, ok := p.executedBlock(ctx, u, "latest", "latest")
+	if !ok {
+		return probeUnknown
+	}
+	if got < head-stateProbeLatestToleranceBlocks {
+		p.count(u, "latest", "stale")
+		log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
+			Int64("head", head).Int64("executedBlock", got).
+			Msg("state probe: upstream executes \"latest\" calls in state older than its own head")
+		return probeMismatch
+	}
+	p.count(u, "latest", "match")
+	return probeMatch
+}
+
+// latestReachesUpstream reports whether a client's eth_call at "latest" reaches
+// u as the tag rather than as a block number eRPC chose.
+func (p *stateProber) latestReachesUpstream(u common.Upstream) bool {
+	if cfg := u.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.PinLatestTag != nil && *cfg.Evm.PinLatestTag {
+		return false
+	}
+	m := getMethodConfig("eth_call", p.network)
+	return m != nil && m.TranslateLatestTag != nil && !*m.TranslateLatestTag
+}
+
+// executedBlock sends the context probe call at blockParam and returns the
+// block the upstream's EVM executed it in. ok is false when the answer is no
+// evidence; that outcome is already counted under probe.
+func (p *stateProber) executedBlock(ctx context.Context, u common.Upstream, probe, blockParam string) (int64, bool) {
+	if ok, _ := u.ShouldHandleMethod("eth_call"); !ok {
+		p.count(u, probe, "unsupported")
+		return 0, false
+	}
+	body := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"%s","data":"%s"},"%s"]}`,
+		p.ctxProbe.To, p.ctxProbe.Data, blockParam)
+	res, err := p.forwardTo(ctx, u, body)
+	if err != nil {
+		p.count(u, probe, "error")
+		return 0, false
+	}
+	if res == "" || res == "0x" {
+		// No returndata: Multicall3 is not deployed on this chain (or this
+		// node prunes code) — no evidence, not a failure.
+		p.count(u, probe, "unsupported")
+		return 0, false
+	}
+	got, ok := parseHexQuantity(res)
+	if !ok {
+		p.count(u, probe, "error")
+		return 0, false
+	}
+	return got, true
 }
 
 // probeProof verifies the upstream can produce an account proof rooted at the
@@ -380,6 +457,10 @@ func (p *stateProber) noteDisproved(u common.Upstream) {
 	if v.(*atomic.Int64).Add(1) < stateProbeDisprovedStreak {
 		return
 	}
+	p.recordMisbehavior(u)
+}
+
+func (p *stateProber) recordMisbehavior(u common.Upstream) {
 	// Under integrity observeOnly no check may influence routing: rejections
 	// are suppressed before they reach misbehavior scoring, so probe disproof
 	// stays consistent and records nothing either.
@@ -387,10 +468,10 @@ func (p *stateProber) noteDisproved(u common.Upstream) {
 		return
 	}
 	if ht := u.Tracker(); ht != nil {
-		// Recorded under the context probe's own method: the probe IS a pinned
-		// eth_call, and eth_call traffic is what a wrong-height execution
-		// context silently corrupts. The probe pins the followed (not yet
-		// finalized) head, hence the unfinalized stratum.
+		// Recorded under the context probes' own method: they ARE eth_calls,
+		// and eth_call traffic is what a wrong-height execution context
+		// silently corrupts. They run at the followed (not yet finalized) head,
+		// hence the unfinalized stratum.
 		ht.RecordUpstreamMisbehavior(u, "eth_call", common.DataFinalityStateUnfinalized)
 	}
 }

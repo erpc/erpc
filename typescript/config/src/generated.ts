@@ -1647,9 +1647,9 @@ export interface SvmUpstreamConfig {
   /**
    * BlockAvailability is an operator restriction on the slot window this
    * upstream may serve. Only what the operator declares is enforced; the
-   * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed and
-   * used as a lower anchor solely when a bound uses firstAvailableSlotPlus,
-   * mirroring EVM's earliestBlockPlus. Unknown floor = unbounded.
+   * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
+   * every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
+   * earliestBlockPlus. Unknown floor = unbounded.
    */
   blockAvailability?: SvmBlockAvailabilityConfig;
 }
@@ -1664,12 +1664,15 @@ export interface SvmBlockAvailabilityConfig {
 }
 /**
  * SvmAvailabilityBoundConfig is a single declared slot bound.
- * Exactly one field must be set.
+ * Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+ * UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+ * anchors on is re-probed. 0 freezes it after the first observation, as EVM.
  */
 export interface SvmAvailabilityBoundConfig {
   exactSlot?: number /* int64 */;
   latestSlotMinus?: number /* int64 */;
   firstAvailableSlotPlus?: number /* int64 */;
+  updateRate?: Duration;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
@@ -1741,6 +1744,12 @@ export interface EvmNetworkConfig {
    * Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
    */
   markEmptyAsErrorMethods?: string[];
+  /**
+   * LocalAnswers turns off eRPC's own answer for a method on this network:
+   * `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+   * method in LocalAnswerMethods is answered by eRPC unless set false here.
+   */
+  localAnswers?: { [key: string]: boolean};
   /**
    * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
    * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
@@ -2467,6 +2476,17 @@ export type JsonRpcErrorExtractor = any;
  * Similar to http.HandlerFunc style adapters.
  */
 export type JsonRpcErrorExtractorFunc = any;
+
+//////////
+// source: evm_local_answers.go
+
+/**
+ * EvmRoutableUpstreamsProvider is the optional surface a network exposes its
+ * routable upstreams through: the selection policy's eligible set in routing
+ * order, narrowed to the request's use-upstream selector. Asserted narrowly,
+ * like EvmStateProvenWriter, so EvmNetwork implementations need not change.
+ */
+export type EvmRoutableUpstreamsProvider = any;
 
 //////////
 // source: exec_state.go
