@@ -70,7 +70,7 @@ func TestUpstreamState_IgnoreMethod_OnlyWhenAutoIgnoreEnabled(t *testing.T) {
 	ok, err = on.ShouldHandleMethod("trace_block")
 	require.NoError(t, err)
 	assert.False(t, ok)
-	assert.Equal(t, []string{"trace_block"}, on.Config().IgnoreMethods)
+	assert.Empty(t, on.Config().IgnoreMethods, "a learned ignore expires, so it is never written into the config")
 
 	_, err = on.Forward(env.ctx, fwdReq("trace_block"), false, false)
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamMethodIgnored), "learned ignore is enforced on Forward: %v", err)

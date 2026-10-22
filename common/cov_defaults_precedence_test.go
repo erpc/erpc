@@ -420,7 +420,6 @@ func TestCovDefaults_NetworkSetDefaults_NetworkDefaultsPrecedence(t *testing.T) 
 			ServedTip:                          &EvmServedTipConfig{Quorum: 3},
 			EmptyResultConfidence:              AvailbilityConfidenceFinalized,
 			ShortCircuitFutureBlocks:           util.BoolPtr(true),
-			StripSubscribeFromBlockZero:        util.BoolPtr(true),
 			LocalAnswers:                       map[string]bool{"eth_chainId": true, "net_version": false},
 		},
 	}
@@ -458,7 +457,6 @@ func TestCovDefaults_NetworkSetDefaults_NetworkDefaultsPrecedence(t *testing.T) 
 	assert.NotSame(t, defaults.Evm.ServedTip, e.ServedTip)
 	assert.Equal(t, AvailbilityConfidenceFinalized, e.EmptyResultConfidence)
 	assert.True(t, e.ShortCircuitFutureBlocksEnabled())
-	assert.True(t, *e.StripSubscribeFromBlockZero)
 	assert.Equal(t, map[string]bool{"eth_chainId": false, "net_version": false}, e.LocalAnswers, "network's own localAnswers entry wins")
 	assert.Equal(t, int64(30_000), e.GetLogsMaxAllowedRange, "fields absent from both fall to built-ins")
 

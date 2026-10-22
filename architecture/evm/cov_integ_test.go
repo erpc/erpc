@@ -2,8 +2,10 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,8 @@ import (
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	gethcommon "github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,9 +36,9 @@ func newCovIntegNet(id string, cfg *common.NetworkConfig, fwd func(req *common.N
 	return &covIntegNet{id: id, cfg: cfg, forward: fwd}
 }
 
-func (n *covIntegNet) Id() string                     { return n.id }
-func (n *covIntegNet) Label() string                  { return "covnet" }
-func (n *covIntegNet) ProjectId() string              { return "test" }
+func (n *covIntegNet) Id() string                    { return n.id }
+func (n *covIntegNet) Label() string                 { return "covnet" }
+func (n *covIntegNet) ProjectId() string             { return "test" }
 func (n *covIntegNet) Config() *common.NetworkConfig { return n.cfg }
 func (n *covIntegNet) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	n.mu.Lock()
@@ -83,8 +87,10 @@ type covIntegHeadNet struct {
 	latest, finalized int64
 }
 
-func (n *covIntegHeadNet) EvmHighestLatestBlockNumber(ctx context.Context) int64    { return n.latest }
-func (n *covIntegHeadNet) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 { return n.finalized }
+func (n *covIntegHeadNet) EvmHighestLatestBlockNumber(ctx context.Context) int64 { return n.latest }
+func (n *covIntegHeadNet) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+	return n.finalized
+}
 
 // covIntegPlainUp hides every EVM capability of the wrapped upstream.
 type covIntegPlainUp struct{ common.Upstream }
@@ -102,41 +108,36 @@ func covIntegResp(result string) *common.NormalizedResponse {
 		common.MustNewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(result), nil))
 }
 
-func covIntegHeaderJSON(num int64, hash, parent string) string {
-	return fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s"}`, num, hash, parent)
-}
+// covIntegSweepNet also serves tracker fetches, through the same scripted
+// forward.
+type covIntegSweepNet struct{ *covIntegNet }
 
-// covIntegChainForward serves a fakeChain's blocks by number or by hash.
-func covIntegChainForward(chain *fakeChain) func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	return func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-		jrq, err := req.JsonRpcRequest()
-		if err != nil {
-			return nil, err
-		}
-		ref, _ := jrq.Params[0].(string)
-		chain.mu.Lock()
-		chain.fetches++
-		var b fakeBlock
-		var found bool
-		if jrq.Method == "eth_getBlockByHash" {
-			b, found = chain.byHash[ref]
-		} else {
-			var num int64
-			_, _ = fmt.Sscanf(ref, "0x%x", &num)
-			b, found = chain.byNumber[num]
-		}
-		chain.mu.Unlock()
-		if !found {
-			return covIntegResp("null"), nil
-		}
-		return covIntegResp(covIntegHeaderJSON(b.num, b.hash, b.parent)), nil
+func (n *covIntegSweepNet) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, _ string, check func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error) {
+	resp, err := n.Forward(ctx, req)
+	if err != nil {
+		return nil, err
 	}
+	return resp, check(resp)
 }
 
-func covIntegFetches(chain *fakeChain) int {
-	chain.mu.Lock()
-	defer chain.mu.Unlock()
-	return chain.fetches
+// covIntegEmptyHeader is a header whose hash recomputes, with the empty-trie
+// transactionsRoot and the given gasUsed.
+func covIntegEmptyHeader(t *testing.T, n, gasUsed uint64) json.RawMessage {
+	t.Helper()
+	h := &gethtypes.Header{
+		ParentHash: gethcommon.Hash{byte(n), 0xff}, UncleHash: gethtypes.EmptyUncleHash, TxHash: gethtypes.EmptyTxsHash,
+		ReceiptHash: gethtypes.EmptyReceiptsHash, Difficulty: big.NewInt(0), Number: new(big.Int).SetUint64(n),
+		GasLimit: 30_000_000, GasUsed: gasUsed, Time: 1_700_000_000 + n, BaseFee: big.NewInt(7),
+	}
+	raw, err := h.MarshalJSON()
+	require.NoError(t, err)
+	return raw
+}
+
+func covIntegHeldCount(c *ChainTracker) int {
+	n := 0
+	c.held.Range(func(_, _ any) bool { n++; return true })
+	return n
 }
 
 func covIntegStreak(p *stateProber, id string) int64 {
@@ -147,152 +148,20 @@ func covIntegStreak(p *stateProber, id string) int64 {
 	return v.(*atomic.Int64).Load()
 }
 
-func TestCovInteg_DoOnceJoinsInflightFetch(t *testing.T) {
-	var mu sync.Mutex
-	inflight := map[string]*flight[int]{}
-	f := &flight[int]{val: 7, ok: true}
-	f.wg.Add(1)
-	inflight["k"] = f
-
-	type res struct {
-		v  int
-		ok bool
-	}
-	done := make(chan res, 1)
-	called := atomic.Bool{}
-	go func() {
-		v, ok := doOnce(&mu, inflight, "k", func() (int, bool) {
-			called.Store(true)
-			return 99, false
-		})
-		done <- res{v, ok}
-	}()
-	f.wg.Done()
-	got := <-done
-	assert.Equal(t, res{7, true}, got, "a joiner must receive the in-flight result")
-	assert.False(t, called.Load(), "a joiner must never issue its own fetch")
-}
-
-func TestCovInteg_ChainViewStateTransitions(t *testing.T) {
-	t.Run("adoptFollowed ignores headers without a hash", func(t *testing.T) {
-		c := newChainView(nil, 8, "", "", nil)
-		c.adoptFollowed(5, nil)
-		c.adoptFollowed(5, &integrity.Header{Number: "0x5"})
-		_, _, ok := c.FollowedRange()
-		assert.False(t, ok)
-		_, ok = c.HashAt(5)
-		assert.False(t, ok)
-	})
-
-	t.Run("observeHeader and observeReceipts ignore empty keys and values", func(t *testing.T) {
-		c := newChainView(nil, 8, "", "", nil)
-		c.observeHeader("", &integrity.Header{Hash: "0xa"})
-		c.observeHeader("0xa", nil)
-		c.observeReceipts("", []integrity.Receipt{{BlockHash: "0xb"}})
-		c.observeReceipts("0xb", nil)
-		assert.Empty(t, c.headers)
-		_, ok := c.CachedReceipts("0xb")
-		assert.False(t, ok)
-	})
-
+func TestCovInteg_ChainTrackerHeldData(t *testing.T) {
 	t.Run("CachedReceipts serves only warm blocks", func(t *testing.T) {
-		c := newChainView(nil, 8, "", "", nil)
-		c.observeReceipts("0xbb", []integrity.Receipt{{TransactionHash: "0x1", BlockHash: "0xbb"}})
-		got, ok := c.CachedReceipts("0xbb")
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		putReceipts(c, testHash("b", 1), []integrity.Receipt{{TransactionHash: "0x1"}})
+		got, ok := c.CachedReceipts(testHash("b", 1))
 		require.True(t, ok)
 		assert.Equal(t, "0x1", got[0].TransactionHash)
-		_, ok = c.CachedReceipts("0xcold")
+		_, ok = c.CachedReceipts(testHash("c", 1))
 		assert.False(t, ok)
-	})
-
-	t.Run("eviction drops reconfirmation stamps below the window", func(t *testing.T) {
-		c := newChainView(nil, 2, "", "", nil)
-		c.observe(1, "0x1", nil)
-		c.mu.Lock()
-		c.reconfirmedAt[1] = time.Now()
-		c.mu.Unlock()
-		c.observe(10, "0xa", nil)
-		c.mu.RLock()
-		_, kept := c.reconfirmedAt[1]
-		c.mu.RUnlock()
-		assert.False(t, kept)
-	})
-
-	t.Run("a followed segment fully below the window is forgotten", func(t *testing.T) {
-		c := newChainView(nil, 2, "", "", nil)
-		c.adoptFollowed(5, &integrity.Header{Number: "0x5", Hash: "0x5"})
-		_, _, ok := c.FollowedRange()
-		require.True(t, ok)
-		c.observe(10, "0xa", nil) // lo=8 > followHead=5
-		_, _, ok = c.FollowedRange()
-		assert.False(t, ok, "the range must not claim heights that were evicted")
 	})
 
 	t.Run("finality unknown when the getter reports no finalized height", func(t *testing.T) {
-		c := newChainView(nil, 8, "", "", func() int64 { return 0 })
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", func() int64 { return 0 }, newFetchScheduler(t.Context(), nil))
 		assert.Equal(t, "unknown", c.finalityLabel(5))
-	})
-}
-
-func TestCovInteg_Reconcile(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("malformed branch heads are refused", func(t *testing.T) {
-		c := newChainView(nil, 8, "", "", nil)
-		for _, h := range []*integrity.Header{
-			nil,
-			{Number: "0x5"},
-			{Hash: "0xa"},
-			{Hash: "0xa", Number: "0xzz"},
-			{Hash: "0xa", Number: "0x0", ParentHash: "0xp"}, // parent below genesis
-		} {
-			depth, ok := c.reconcile(ctx, h)
-			assert.False(t, ok)
-			assert.Zero(t, depth)
-		}
-	})
-
-	t.Run("sparse view with no held parent anchors the branch", func(t *testing.T) {
-		c := newChainView(nil, 8, "", "", nil)
-		depth, ok := c.reconcile(ctx, &integrity.Header{Number: "0xa", Hash: "0xnew10", ParentHash: "0xnew9"})
-		require.True(t, ok)
-		assert.Equal(t, 1, depth)
-		assert.Equal(t, "0xnew10", mustHashAt(t, c, 10))
-		from, to, ok := c.FollowedRange()
-		require.True(t, ok)
-		assert.Equal(t, [2]int64{10, 10}, [2]int64{from, to})
-	})
-
-	t.Run("diverging parent that cannot be fetched fails", func(t *testing.T) {
-		c := newChainView(nil, 8, "", "", nil)
-		c.observe(9, "0xheld9", nil)
-		_, ok := c.reconcile(ctx, &integrity.Header{Number: "0xa", Hash: "0xnew10", ParentHash: "0xnew9"})
-		assert.False(t, ok)
-		assert.Equal(t, "0xheld9", mustHashAt(t, c, 9))
-	})
-
-	t.Run("parent claiming the wrong height fails", func(t *testing.T) {
-		net := newCovIntegNet("cov-integ-rec", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			return covIntegResp(covIntegHeaderJSON(5, "0xnew9", "0xnew8")), nil
-		})
-		c := newChainView(net, 8, "", "", nil)
-		c.observe(9, "0xheld9", nil)
-		_, ok := c.reconcile(ctx, &integrity.Header{Number: "0xa", Hash: "0xnew10", ParentHash: "0xnew9"})
-		assert.False(t, ok)
-		assert.Equal(t, "0xheld9", mustHashAt(t, c, 9))
-	})
-
-	t.Run("no common ancestor within the window fails", func(t *testing.T) {
-		net := newCovIntegNet("cov-integ-rec2", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			return covIntegResp(covIntegHeaderJSON(9, "0xnew9", "0xnew8")), nil
-		})
-		c := newChainView(net, 1, "", "", nil)
-		c.observe(9, "0xheld9", nil)
-		_, ok := c.reconcile(ctx, &integrity.Header{Number: "0xa", Hash: "0xnew10", ParentHash: "0xnew9"})
-		assert.False(t, ok)
-		assert.Equal(t, "0xheld9", mustHashAt(t, c, 9))
-		assert.Equal(t, 1, net.callCount())
-		assert.Equal(t, "true", net.lastDirs().SkipCacheRead, "the ancestry walk must bypass the cache")
 	})
 }
 
@@ -300,11 +169,11 @@ func TestCovInteg_ResolveAnchors(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("a by-number answer for another height is discarded", func(t *testing.T) {
-		net := newCovIntegNet("cov-integ-anchor", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			return covIntegResp(covIntegHeaderJSON(0x11, "0xwrong", "0xp")), nil
-		})
-		c := newChainView(net, 8, "", "", nil)
-		h, ok := c.resolveHeader(ctx, "eth_getBlockByNumber", "0x10", false)
+		net := &covIntegSweepNet{newCovIntegNet("cov-integ-anchor", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			return covIntegResp(string(testHeader(0x11, testHash("e", 0x11), testHash("e", 0x10)))), nil
+		})}
+		c := newChainTracker(t.Context(), net, 8, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		h, ok := c.headerByNumber(ctx, 0x10, "0x10")
 		assert.False(t, ok)
 		assert.Nil(t, h)
 		_, pinned := c.HashAt(0x11)
@@ -313,29 +182,31 @@ func TestCovInteg_ResolveAnchors(t *testing.T) {
 		assert.False(t, pinned)
 	})
 
+	want := testHash("b", 0x10)
 	receiptsCases := []struct {
 		name string
 		body string
 	}{
-		{"another block's receipts", `[{"blockHash":"0xother","blockNumber":"0x10","transactionHash":"0x1"}]`},
+		{"another block's receipts", fmt.Sprintf(`[{"blockHash":"%s","blockNumber":"0x10","transactionHash":"0x1"}]`, testHash("c", 0x10))},
 		{"an empty receipt set", `[]`},
 	}
 	for _, tc := range receiptsCases {
 		t.Run(tc.name+" is canonical-unavailable and not cached", func(t *testing.T) {
-			net := newCovIntegNet("cov-integ-rcpt", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			net := &covIntegSweepNet{newCovIntegNet("cov-integ-rcpt", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 				return covIntegResp(tc.body), nil
-			})
-			c := newChainView(net, 8, "", "", nil)
-			got, ok := c.receiptsByHash(ctx, "0xwant")
+			})}
+			c := newChainTracker(t.Context(), net, 8, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+			got, ok := c.receiptsByHash(ctx, want, -1)
 			assert.False(t, ok)
 			assert.Nil(t, got)
-			_, cached := c.CachedReceipts("0xwant")
+			_, cached := c.CachedReceipts(want)
 			assert.False(t, cached)
 		})
 	}
 }
 
 func TestCovInteg_HasVerifiedEmptyTraceBlock(t *testing.T) {
+	ctx := t.Context()
 	net := &covIntegGroupNet{newCovIntegNet("cov-integ-trace", nil, nil)}
 	mkReq := func(body string, withNet bool, dirs *common.RequestDirectives) *common.NormalizedRequest {
 		r := common.NewNormalizedRequest([]byte(body))
@@ -350,101 +221,67 @@ func TestCovInteg_HasVerifiedEmptyTraceBlock(t *testing.T) {
 	traceBody := func(ref string) string {
 		return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"trace_block","params":["%s"]}`, ref)
 	}
-	store := func(group string, h *integrity.Header, n int64) {
-		v := newChainView(net, 32, "", "", nil)
-		v.adoptFollowed(n, h)
-		key := chainViewKey{network: net, group: group}
-		chainViewStore.Store(key, v)
-		t.Cleanup(func() { chainViewStore.Delete(key) })
+	pin := func(c *ChainTracker, n, gasUsed uint64) {
+		c.Observe("a", covIntegEmptyHeader(t, n, gasUsed), true)
+		c.sync(context.Background())
 	}
-	empty := func(num, hash, gas string) *integrity.Header {
-		return &integrity.Header{Number: num, Hash: hash, GasUsed: gas, RawTransactions: []any{}}
-	}
-	store("", empty("0x10", "0xh10", "0x0"), 0x10)
+	pin(StartChainTrackers(ctx, net), 0x10, 0)
 
 	assert.False(t, HasVerifiedEmptyTraceBlock(nil))
 	assert.False(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("0x10"), false, nil)), "no network")
 	assert.False(t, HasVerifiedEmptyTraceBlock(mkReq(`not-json`, true, nil)), "unparseable request")
 	assert.False(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("16"), true, nil)), "decimal ref is not a hex block")
 	assert.False(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("0xzz"), true, nil)), "malformed hex")
-	assert.False(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("0x11"), true, nil)), "outside the followed range")
+	assert.False(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("0x11"), true, nil)), "no pin at that height")
 	assert.True(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("0x10"), true, nil)))
 
-	t.Run("group-scoped request reads only its group's view", func(t *testing.T) {
+	t.Run("group-scoped request reads only its group's tracker", func(t *testing.T) {
 		dirs := &common.RequestDirectives{UseUpstream: "grp"}
-		assert.False(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("0x10"), true, dirs)), "group view absent")
-		store("g:grp", empty("0x20", "0xh20", "0x0"), 0x20)
+		assert.False(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("0x10"), true, dirs)), "group tracker absent")
+		pin(ChainTrackerOf(ctx, net, "grp"), 0x20, 0)
 		assert.True(t, HasVerifiedEmptyTraceBlock(mkReq(traceBody("0x20"), true, dirs)))
 	})
 
-	t.Run("header disagreeing with the pinned height or carrying gas is not proof", func(t *testing.T) {
+	t.Run("a pinned header carrying gas is not proof", func(t *testing.T) {
 		net2 := &covIntegGroupNet{newCovIntegNet("cov-integ-trace2", nil, nil)}
-		for _, tc := range []struct {
-			name string
-			h    *integrity.Header
-		}{
-			{"wrong number", empty("0x31", "0xh30", "0x0")},
-			{"non-zero gas", empty("0x30", "0xh30", "0x5208")},
-		} {
-			v := newChainView(net2, 32, "", "", nil)
-			v.adoptFollowed(0x30, tc.h)
-			key := chainViewKey{network: net2}
-			chainViewStore.Store(key, v)
-			r := common.NewNormalizedRequest([]byte(traceBody("0x30")))
-			r.SetNetwork(net2)
-			assert.False(t, HasVerifiedEmptyTraceBlock(r), tc.name)
-			chainViewStore.Delete(key)
-		}
+		pin(StartChainTrackers(ctx, net2), 0x30, 0x5208)
+		r := common.NewNormalizedRequest([]byte(traceBody("0x30")))
+		r.SetNetwork(net2)
+		assert.False(t, HasVerifiedEmptyTraceBlock(r))
 	})
 }
 
-func TestCovInteg_GroupChainView(t *testing.T) {
-	ctx := context.Background()
-	assert.Nil(t, groupChainView(ctx, nil, ""))
+func TestCovInteg_ChainTrackerOf(t *testing.T) {
+	ctx := t.Context()
+	assert.Nil(t, ChainTrackerOf(ctx, nil, ""))
 
-	t.Run("selector carving a group gets its own pinned view", func(t *testing.T) {
+	t.Run("selector carving a group gets its own tracker", func(t *testing.T) {
 		net := &covIntegGroupNet{newCovIntegNet("cov-integ-gcv-grp", nil, nil)}
-		t.Cleanup(func() {
-			chainViewStore.Delete(chainViewKey{network: net})
-			chainViewStore.Delete(chainViewKey{network: net, group: "g:grp"})
-		})
-		g := groupChainView(ctx, net, "grp")
-		wide := groupChainView(ctx, net, "")
+		assert.Nil(t, ChainTrackerOf(ctx, net, ""), "no tracker before the network starts its trackers")
+		wide := StartChainTrackers(ctx, net)
+		g := ChainTrackerOf(ctx, net, "grp")
 		require.NotSame(t, g, wide)
 		assert.Equal(t, "grp", g.selector)
 		assert.Equal(t, "lane-grp", g.group)
 		assert.Empty(t, wide.selector)
-		assert.Same(t, wide, groupChainView(ctx, net, "not-a-group"), "a non-group selector falls back to the network view")
-		assert.Same(t, g, groupChainView(ctx, net, "grp"), "views are created once")
-		assert.Equal(t, defaultReorgWindow, g.window)
+		assert.Same(t, wide, ChainTrackerOf(ctx, net, "not-a-group"), "a non-group selector falls back to the network-wide tracker")
+		assert.Same(t, g, ChainTrackerOf(ctx, net, "grp"), "trackers are created once")
+		assert.Equal(t, 32, g.ReorgWindow())
 		assert.Nil(t, g.finalized)
 	})
 
-	t.Run("integrity config sizes the window and starts follower and prober", func(t *testing.T) {
+	t.Run("chainTracker config sizes the window; integrity follow starts the prober", func(t *testing.T) {
 		cfg := &common.NetworkConfig{
-			Evm: &common.EvmNetworkConfig{ChainId: 1},
+			Evm: &common.EvmNetworkConfig{ChainId: 1, ChainTracker: &common.EvmChainTrackerConfig{ReorgWindow: 7}},
 			Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
-				ReorgWindow: 7,
-				Follow:      &common.IntegrityFollowConfig{Enabled: util.BoolPtr(true), Interval: common.Duration(time.Hour)},
-				StateProbe:  &common.IntegrityStateProbeConfig{Enabled: util.BoolPtr(true), Interval: common.Duration(5 * time.Second)},
+				Follow:     &common.IntegrityFollowConfig{Enabled: util.BoolPtr(true)},
+				StateProbe: &common.IntegrityStateProbeConfig{Enabled: util.BoolPtr(true), Interval: common.Duration(5 * time.Second)},
 			}},
 		}
 		net := &covIntegHeadNet{covIntegNet: newCovIntegNet("cov-integ-gcv-follow", cfg, nil), finalized: 42}
-		v := groupChainView(ctx, net, "")
+		v := StartChainTrackers(ctx, net)
 		p := stateProberFor(net.Id())
-		t.Cleanup(func() {
-			if v.follower != nil {
-				close(v.follower.stop)
-			}
-			chainViewStore.Delete(chainViewKey{network: net})
-			if p != nil {
-				stateProbers.Delete(net.Id())
-				close(p.work)
-			}
-		})
-		assert.Equal(t, 7, v.window)
-		require.NotNil(t, v.follower)
-		assert.Equal(t, time.Hour, v.follower.interval)
+		assert.Equal(t, 7, v.ReorgWindow())
 		require.NotNil(t, p)
 		assert.Equal(t, 5*time.Second, p.interval)
 		assert.Same(t, v, p.view)
@@ -465,156 +302,40 @@ func TestCovInteg_ObserveViews(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("observeBlockView ignores nil inputs and non-header results", func(t *testing.T) {
-		c := newChainView(nil, 8, "", "", nil)
-		observeBlockView(ctx, nil, covIntegResp(covIntegHeaderJSON(1, "0x1", "0x0")), "eth_getblockbynumber")
-		observeBlockView(ctx, c, nil, "eth_getblockbynumber")
-		observeBlockView(ctx, c, covIntegResp(`"0x1"`), "eth_getblockbynumber")
-		observeBlockView(ctx, c, covIntegResp(`{"number":"0x1"}`), "eth_getblockbynumber")
-		assert.Empty(t, c.canonical)
-		assert.Empty(t, c.headers)
+		c := newChainTracker(t.Context(), nil, 8, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		observeBlockView(ctx, nil, nil, covIntegResp(string(testHeader(1, testHash("a", 1), testHash("a", 0)))))
+		observeBlockView(ctx, c, nil, nil)
+		observeBlockView(ctx, c, nil, covIntegResp(`"0x1"`))
+		observeBlockView(ctx, c, nil, covIntegResp(`{"number":"0x1"}`))
+		c.sync(ctx)
+		_, ok := c.HashAt(1)
+		assert.False(t, ok)
+		assert.Zero(t, covIntegHeldCount(c))
 	})
 
-	t.Run("observeNarrowView pins only from EVM upstreams with known finality", func(t *testing.T) {
-		anchor := covIntegResp(`{"blockNumber":"0x10","blockHash":"0xbb"}`)
+	t.Run("observeNarrowView anchors only from EVM upstreams with known finality", func(t *testing.T) {
+		hash := testHash("b", 0x10)
+		anchor := covIntegResp(fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s"}`, hash))
 		evmUp := common.NewFakeUpstream("u", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(0x30, 0x20)))
 
-		c := newChainView(nil, 32, "", "", nil)
+		c := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
 		observeNarrowView(ctx, nil, evmUp, anchor)
 		observeNarrowView(ctx, c, evmUp, nil)
 		observeNarrowView(ctx, c, covIntegPlainUp{evmUp}, anchor)
+		c.sync(ctx)
 		_, ok := c.HashAt(0x10)
-		assert.False(t, ok, "a non-EVM upstream has no finality to gate the pin")
+		assert.False(t, ok, "a non-EVM upstream has no finality to gate the anchor")
 
 		observeNarrowView(ctx, c, evmUp, covIntegResp(`{"blockNumber":"0x11","blockHash":""}`))
+		c.sync(ctx)
 		_, ok = c.HashAt(0x11)
-		assert.False(t, ok, "an anchor without a hash pins nothing")
+		assert.False(t, ok, "an anchor without a hash anchors nothing")
 
 		observeNarrowView(ctx, c, evmUp, anchor)
-		assert.Equal(t, "0xbb", mustHashAt(t, c, 0x10))
-	})
-}
-
-func TestCovInteg_ChainFollower(t *testing.T) {
-	ctx := context.Background()
-	newFollower := func(t *testing.T, chain *fakeChain, head *int64, cfg *common.IntegrityFollowConfig) (*chainView, *chainFollower, *covIntegNet) {
-		t.Helper()
-		net := newCovIntegNet("cov-integ-follow-"+t.Name(), nil, covIntegChainForward(chain))
-		v := newChainView(net, 32, "", "", nil)
-		f := newChainFollower(v, func(context.Context) int64 { return *head }, cfg)
-		return v, f, net
-	}
-
-	t.Run("config overrides interval and per-tick bound", func(t *testing.T) {
-		chain := newFakeChain()
-		chain.build(100, 110, "a", "0xgenesis")
-		head := int64(100)
-		v, f, _ := newFollower(t, chain, &head, &common.IntegrityFollowConfig{MaxBlocksPerTick: 2, Interval: common.Duration(time.Minute)})
-		assert.Equal(t, time.Minute, f.interval)
-		f.advance(ctx)
-		head = 110
-		f.advance(ctx)
-		assert.Equal(t, int64(102), mustFollowHead(t, v), "catch-up is bounded per tick")
-	})
-
-	t.Run("no head means no work", func(t *testing.T) {
-		chain := newFakeChain()
-		head := int64(0)
-		v, f, _ := newFollower(t, chain, &head, nil)
-		f.advance(ctx)
-		assert.Zero(t, covIntegFetches(chain))
-		_, _, ok := v.FollowedRange()
-		assert.False(t, ok)
-	})
-
-	t.Run("bootstrap that cannot fetch the head does not start following", func(t *testing.T) {
-		chain := newFakeChain()
-		head := int64(100)
-		v, f, _ := newFollower(t, chain, &head, nil)
-		f.advance(ctx)
-		assert.Equal(t, 1, covIntegFetches(chain))
-		_, _, ok := v.FollowedRange()
-		assert.False(t, ok)
-	})
-
-	t.Run("a missing block stops the walk where it is", func(t *testing.T) {
-		chain := newFakeChain()
-		chain.build(100, 102, "a", "0xgenesis")
-		head := int64(100)
-		v, f, _ := newFollower(t, chain, &head, nil)
-		f.advance(ctx)
-		head = 105
-		f.advance(ctx)
-		assert.Equal(t, int64(102), mustFollowHead(t, v))
-	})
-
-	t.Run("a cancelled tick advances nothing", func(t *testing.T) {
-		chain := newFakeChain()
-		chain.build(100, 105, "a", "0xgenesis")
-		head := int64(100)
-		v, f, _ := newFollower(t, chain, &head, nil)
-		f.advance(ctx)
-		head = 105
-		cctx, cancel := context.WithCancel(ctx)
-		cancel()
-		f.advance(cctx)
-		assert.Equal(t, int64(100), mustFollowHead(t, v))
-	})
-
-	t.Run("an evicted parent re-anchors on the next block", func(t *testing.T) {
-		chain := newFakeChain()
-		chain.build(100, 101, "a", "0xgenesis")
-		head := int64(100)
-		v, f, _ := newFollower(t, chain, &head, nil)
-		f.advance(ctx)
-		v.mu.Lock()
-		delete(v.canonical, 100)
-		v.mu.Unlock()
-		head = 101
-		f.advance(ctx)
-		assert.Equal(t, int64(101), mustFollowHead(t, v))
-		assert.Equal(t, chain.hashAt(101), mustHashAt(t, v, 101))
-	})
-
-	t.Run("a new followed head is handed to the network's prober", func(t *testing.T) {
-		chain := newFakeChain()
-		chain.build(100, 103, "a", "0xgenesis")
-		head := int64(100)
-		v, f, net := newFollower(t, chain, &head, nil)
-		p := &stateProber{work: make(chan int64, 1)}
-		stateProbers.Store(net.Id(), p)
-		t.Cleanup(func() { stateProbers.Delete(net.Id()) })
-		f.advance(ctx)
-		head = 103
-		f.advance(ctx)
-		require.Equal(t, int64(103), mustFollowHead(t, v))
-		select {
-		case got := <-p.work:
-			assert.Equal(t, int64(103), got)
-		default:
-			t.Fatal("the prober was not handed the new head")
-		}
-	})
-
-	t.Run("settled heights are read from cache, the tip fresh", func(t *testing.T) {
-		chain := newFakeChain()
-		chain.build(100, 110, "a", "0xgenesis")
-		net := newCovIntegNet("cov-integ-follow-fresh", nil, covIntegChainForward(chain))
-		v := newChainView(net, 32, "", "", func() int64 { return 105 })
-		_, ok := v.fetchFollowHeader(ctx, 104)
+		c.sync(ctx)
+		got, ok := c.HashAt(0x10)
 		require.True(t, ok)
-		assert.Empty(t, net.lastDirs().SkipCacheRead)
-		_, ok = v.fetchFollowHeader(ctx, 106)
-		require.True(t, ok)
-		assert.Equal(t, "true", net.lastDirs().SkipCacheRead)
-	})
-
-	t.Run("run returns once stopped without ticking", func(t *testing.T) {
-		calls := atomic.Int32{}
-		v := newChainView(nil, 8, "", "", nil)
-		f := newChainFollower(v, func(context.Context) int64 { calls.Add(1); return 1 }, nil)
-		close(f.stop)
-		f.run()
-		assert.Zero(t, calls.Load())
+		assert.Equal(t, hash, got)
 	})
 }
 
@@ -655,9 +376,11 @@ func TestCovInteg_StateProber(t *testing.T) {
 			ups: ups,
 		}
 	}
+	// The prober's view pins the head only: probes judge the upstreams, never
+	// fetch through the tracker.
 	mkProber := func(net common.Network, interval time.Duration) *stateProber {
-		v := newChainView(net, 32, "", "", nil)
-		v.adoptFollowed(head, hdr)
+		v := newChainTracker(t.Context(), nil, 32, 0, "", "", nil, newFetchScheduler(t.Context(), nil))
+		voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 		return &stateProber{
 			network: net, view: v, interval: interval,
 			ctxProbe:  integrity.ChainStateContextProbe(1),
@@ -777,7 +500,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 			return covIntegResp(atHead), nil
 		})
 		p := mkProber(net, 0)
-		p.probeAll(head)
+		p.probeAll(ctx, head)
 		assert.Zero(t, net.callCount())
 	})
 
@@ -786,24 +509,27 @@ func TestCovInteg_StateProber(t *testing.T) {
 		u.Config().IgnoreMethods = []string{"eth_getProof"}
 		net := mkNet("cov-integ-sp-due", &script{callRes: atHead}, u)
 		p := mkProber(net, time.Hour)
-		p.probeAll(head)
+		p.probeAll(ctx, head)
 		first := net.callCount()
 		require.Positive(t, first)
-		p.probeAll(head)
+		p.probeAll(ctx, head)
 		assert.Equal(t, first, net.callCount())
 		assert.Equal(t, head, u.EvmStateProvenBlock())
 	})
 
-	t.Run("run drains handed heads; the newest replaces a queued one", func(t *testing.T) {
+	t.Run("run probes the newest handed head; the newest replaces a queued one", func(t *testing.T) {
 		u := common.NewFakeUpstream("u1").(*common.FakeUpstream)
 		u.Config().IgnoreMethods = []string{"eth_getProof"}
 		net := mkNet("cov-integ-sp-run", &script{callRes: atHead}, u)
 		p := mkProber(net, 0)
 		p.onNewHead(5)
 		p.onNewHead(head)
-		close(p.work)
-		p.run()
-		assert.Equal(t, head, u.EvmStateProvenBlock(), "only the newest head is probed")
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { p.run(runCtx); close(done) }()
+		require.Eventually(t, func() bool { return u.EvmStateProvenBlock() == head }, 5*time.Second, 5*time.Millisecond, "only the newest head is probed")
+		cancel()
+		<-done
 		assert.Equal(t, 1, net.callCount())
 	})
 
@@ -814,33 +540,27 @@ func TestCovInteg_StateProber(t *testing.T) {
 
 func TestCovInteg_StartStateProber(t *testing.T) {
 	assert.Nil(t, stateProberFor("cov-integ-no-such-network"))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 
 	cfg := &common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 42161}}
 	net := newCovIntegNet("cov-integ-start", cfg, nil)
-	v1 := newChainView(net, 8, "", "", nil)
-	v2 := newChainView(net, 8, "", "", nil)
-	startStateProber(net, v1, &common.IntegrityStateProbeConfig{Interval: common.Duration(3 * time.Second)})
+	v1 := newChainTracker(ctx, nil, 8, 0, "", "", nil, newFetchScheduler(ctx, nil))
+	v2 := newChainTracker(ctx, nil, 8, 0, "", "", nil, newFetchScheduler(ctx, nil))
+	startStateProber(ctx, net, v1, &common.IntegrityStateProbeConfig{Interval: common.Duration(3 * time.Second)})
 	p := stateProberFor(net.Id())
 	require.NotNil(t, p)
-	t.Cleanup(func() {
-		stateProbers.Delete(net.Id())
-		close(p.work)
-	})
 	assert.Equal(t, 3*time.Second, p.interval)
 	assert.Equal(t, integrity.ChainStateContextProbe(42161), p.ctxProbe, "the probe target follows the chain architecture")
 
-	startStateProber(net, v2, nil)
+	startStateProber(ctx, net, v2, nil)
 	assert.Same(t, p, stateProberFor(net.Id()), "one prober per network")
 	assert.Same(t, v1, p.view)
 
 	net2 := newCovIntegNet("cov-integ-start-default", nil, nil)
-	startStateProber(net2, v1, nil)
+	startStateProber(ctx, net2, v1, nil)
 	p2 := stateProberFor(net2.Id())
 	require.NotNil(t, p2)
-	t.Cleanup(func() {
-		stateProbers.Delete(net2.Id())
-		close(p2.work)
-	})
 	assert.Equal(t, stateProbeMinInterval, p2.interval)
 }
 
@@ -864,7 +584,7 @@ func TestCovInteg_IsMethodUnsupportedErr(t *testing.T) {
 
 func TestCovInteg_Resolver(t *testing.T) {
 	ctx := context.Background()
-	assert.Nil(t, newIntegrityResolver(ctx, nil, nil, ""))
+	assert.Nil(t, newIntegrityResolver(nil, nil, nil, false))
 
 	t.Run("finality needs an EVM upstream", func(t *testing.T) {
 		r := &integrityResolver{upstream: covIntegPlainUp{common.NewFakeUpstream("u")}}
@@ -875,44 +595,49 @@ func TestCovInteg_Resolver(t *testing.T) {
 
 	t.Run("no view means canonical unavailable", func(t *testing.T) {
 		r := &integrityResolver{}
-		_, ok := r.CanonicalReceipts(ctx, "0xbb")
+		_, ok := r.CanonicalReceipts(ctx, "0xbb", -1)
 		assert.False(t, ok)
 		_, ok = r.CanonicalHeader(ctx, "0x10")
 		assert.False(t, ok)
 	})
 
+	// Only votes move pins (spec §16): a fetched header is held, never pinned.
 	t.Run("refs route by hash, number, or tag", func(t *testing.T) {
-		hash := "0x" + fmt.Sprintf("%064x", 0xabc)
-		net := newCovIntegNet("cov-integ-resolver", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		hash := testHash("abc", 0x20)
+		n10, latest := testHash("a", 0x10), testHash("a", 0x30)
+		net := &covIntegSweepNet{newCovIntegNet("cov-integ-resolver", nil, func(req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			jrq, _ := req.JsonRpcRequest()
 			ref := jrq.Params[0].(string)
 			switch {
 			case jrq.Method == "eth_getBlockByHash" && ref == hash:
-				return covIntegResp(covIntegHeaderJSON(0x20, hash, "0xp")), nil
+				return covIntegResp(string(testHeader(0x20, hash, testHash("abc", 0x1f)))), nil
 			case jrq.Method == "eth_getBlockByNumber" && ref == "0x10":
-				return covIntegResp(covIntegHeaderJSON(0x10, "0xn10", "0xp")), nil
+				return covIntegResp(string(testHeader(0x10, n10, testHash("a", 0xf)))), nil
 			case jrq.Method == "eth_getBlockByNumber" && ref == "latest":
-				return covIntegResp(covIntegHeaderJSON(0x30, "0xlatest", "0xp")), nil
+				return covIntegResp(string(testHeader(0x30, latest, testHash("a", 0x2f)))), nil
 			}
 			return covIntegResp("null"), nil
-		})
-		r := &integrityResolver{network: net, view: newChainView(net, 64, "", "", nil)}
+		})}
+		view := newChainTracker(t.Context(), net, 64, 0, "", "", nil, newFetchScheduler(t.Context(), net))
+		r := &integrityResolver{network: net, view: view}
 
 		h, ok := r.CanonicalHeader(ctx, hash)
 		require.True(t, ok)
 		assert.Equal(t, hash, h.Hash)
-		_, pinned := r.view.HashAt(0x20)
+		_, pinned := view.HashAt(0x20)
 		assert.False(t, pinned, "a by-hash lookup never pins")
 
 		h, ok = r.CanonicalHeader(ctx, "0x10")
 		require.True(t, ok)
-		assert.Equal(t, "0xn10", h.Hash)
-		assert.Equal(t, "0xn10", mustHashAt(t, r.view, 0x10))
+		assert.Equal(t, n10, h.Hash)
+		_, pinned = view.HashAt(0x10)
+		assert.False(t, pinned, "a by-number lookup never pins")
 
 		h, ok = r.CanonicalHeader(ctx, "latest")
 		require.True(t, ok)
-		assert.Equal(t, "0xlatest", h.Hash)
-		assert.Equal(t, "0xlatest", mustHashAt(t, r.view, 0x30))
+		assert.Equal(t, latest, h.Hash)
+		_, pinned = view.HashAt(0x30)
+		assert.False(t, pinned, "a tag lookup never pins")
 	})
 }
 

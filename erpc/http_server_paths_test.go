@@ -84,7 +84,7 @@ func httpPathsStart(t *testing.T, cfg *common.Config) (*HttpServer, string) {
 	require.NoError(t, err)
 	instance.Bootstrap(ctx)
 
-	srv, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, instance)
+	srv, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, instance)
 	require.NoError(t, err)
 	ts := httptest.NewServer(srv.serverV4.Handler)
 	t.Cleanup(func() {
@@ -369,7 +369,6 @@ func TestHttpPaths_AuxServerOptions(t *testing.T) {
 				"X-Paths-Empty":  "${HTTP_PATHS_SURELY_UNSET_ENV}",
 			},
 		},
-		Indexer:  &common.IndexerConfig{DedupWindowSize: 16},
 		Projects: []*common.ProjectConfig{httpPathsProject("test_project")},
 	}
 	srv, base := httpPathsStart(t, cfg)
@@ -429,7 +428,7 @@ func TestHttpPaths_NewHttpServerHealthAuthError(t *testing.T) {
 	require.NoError(t, cfg.SetDefaults())
 	_, err := NewHttpServer(ctx, &logger, cfg,
 		&common.HealthCheckConfig{Auth: &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{{Type: "bogus"}}}},
-		nil, nil, &ERPC{})
+		nil, &ERPC{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create healthcheck auth registry")
 }
@@ -996,49 +995,4 @@ func TestHttpPaths_StartAndShutdownErrors(t *testing.T) {
 		require.NoError(t, s.Shutdown(&logger))
 		assert.True(t, s.draining.Load())
 	})
-}
-
-func TestHttpPaths_PrewarmSettlesHttpOnlyNetworks(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	cfg := &common.Config{
-		Server:   &common.ServerConfig{WebSocket: &common.WebSocketServerConfig{Enabled: util.BoolPtr(true)}},
-		Projects: []*common.ProjectConfig{httpPathsProject("test_project")},
-	}
-	srv, _ := httpPathsStart(t, cfg)
-	prj, err := srv.erpc.GetProject("test_project")
-	require.NoError(t, err)
-	_, err = prj.GetNetwork(context.Background(), "evm:123")
-	require.NoError(t, err)
-
-	old := prewarmInterval
-	prewarmInterval = 10 * time.Millisecond
-	defer func() { prewarmInterval = old }()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		srv.PrewarmUpstreamSubscriptions(ctx)
-		close(done)
-	}()
-	time.AfterFunc(100*time.Millisecond, cancel)
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("prewarm did not stop on context cancel")
-	}
-	_, bootstrapped := srv.subscriptionManager.networks.Load("test_project/evm:123")
-	assert.False(t, bootstrapped, "an HTTP-only network is never bootstrapped for subscriptions")
-
-	// Disabled WebSocket: returns immediately even with a live context.
-	off := &HttpServer{serverCfg: &common.ServerConfig{}, erpc: srv.erpc, subscriptionManager: srv.subscriptionManager}
-	finished := make(chan struct{})
-	go func() { off.PrewarmUpstreamSubscriptions(context.Background()); close(finished) }()
-	select {
-	case <-finished:
-	case <-time.After(2 * time.Second):
-		t.Fatal("prewarm with WebSocket disabled must return immediately")
-	}
 }

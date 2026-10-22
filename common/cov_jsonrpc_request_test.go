@@ -53,7 +53,7 @@ func TestCovJsonrpcRequest_NilReceiver(t *testing.T) {
 	assert.Nil(t, r.ExecState())
 	assert.Zero(t, r.CreditUnitsTotal())
 	assert.Nil(t, r.CreditUnitsByVendor())
-	assert.False(t, r.IsInternal())
+	assert.Equal(t, UpstreamPoliciesConfigured, r.UpstreamPolicies())
 	r.SetUser(&User{Id: "x"})
 	r.SetUserFromTrustedHeader("x")
 	assert.Nil(t, r.User())
@@ -125,11 +125,11 @@ func TestCovJsonrpcRequest_ExecStateAndCredits(t *testing.T) {
 	assert.Nil(t, r.CreditUnitsByVendor())
 }
 
-func TestCovJsonrpcRequest_IsInternal(t *testing.T) {
+func TestCovJsonrpcRequest_UpstreamPolicies(t *testing.T) {
 	r := NewNormalizedRequest(nil)
-	assert.False(t, r.IsInternal(), "no directives")
-	r.SetDirectives(&RequestDirectives{IsInternal: true})
-	assert.True(t, r.IsInternal())
+	assert.Equal(t, UpstreamPoliciesConfigured, r.UpstreamPolicies(), "no directives")
+	r.SetDirectives(&RequestDirectives{UpstreamPolicies: UpstreamPoliciesTracker})
+	assert.Equal(t, UpstreamPoliciesTracker, r.UpstreamPolicies())
 }
 
 func TestCovJsonrpcRequest_UserAndUpstreamAccessors(t *testing.T) {
