@@ -279,7 +279,7 @@ func ttlString(ttl *time.Duration) string {
 	return ttl.String()
 }
 
-// Set writes the response to every matching policy concurrently. Failures are
+// Set writes the response to every matching policy sequentially. Failures are
 // logged and swallowed per-policy — a single flaky connector must not fail the
 // upstream request path.
 func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
@@ -358,6 +358,10 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			).Add(float64(len(valueToStore)))
 		}
 		setCtx := data.WithReverseIndex(ctx, req.NetworkId(), req.CacheKeySuffix())
+		// Per-connector clock: the loop is sequential, so a shared start would
+		// fold earlier policies' latency into later connectors' samples and
+		// mis-attribute "Cache Set Latency (Success)" panels.
+		setStart := time.Now()
 		if err := connector.Set(setCtx, groupKey, requestKey, valueToStore, ttl); err != nil {
 			telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 				c.projectId, req.NetworkLabel(), rpcReq.Method,
@@ -369,6 +373,14 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				Msg("svm cache set failed")
 			continue
 		}
+		telemetry.MetricCacheSetSuccessTotal.WithLabelValues(
+			c.projectId, req.NetworkLabel(), rpcReq.Method,
+			connector.Id(), policy.String(), ttlLabel,
+		).Inc()
+		telemetry.MetricCacheSetSuccessDuration.WithLabelValues(
+			c.projectId, req.NetworkLabel(), rpcReq.Method,
+			connector.Id(), policy.String(), ttlLabel,
+		).Observe(time.Since(setStart).Seconds())
 	}
 	return nil
 }

@@ -125,7 +125,7 @@ https://docs.erpc.cloud/config/database/svm-json-rpc-cache.llms.txt`}
 | 4 | `slotPinnedMethods` at any weaker commitment | `unfinalized` |
 | 5 | everything else | `realtime` (moving-head read) |
 
-Step 5 is the rule that matters, and it is why step 3 needs an explicit table at all. **`commitment: finalized` on Solana means "the state at the latest ROOTED slot", and the rooted slot advances roughly every 400 ms — it is a moving head, not an immutability promise.** `getBalance`, `getAccountInfo`, `getProgramAccounts`, and `getTokenAccountBalance` at `finalized` therefore answer a *different question every slot*, exactly like EVM's `latest` block tag. Classifying them `finalized` would be a permanent-cache bug: `finalized` is the zero value of the Go enum that a policy with no explicit `finality` matches, and an unset TTL means "no expiry" in every connector — so a later transfer would never invalidate the cached balance.
+Step 5 is the rule that matters, and it is why step 3 needs an explicit table at all. **`commitment: finalized` on Solana means "the state at the latest ROOTED slot", and the rooted slot advances roughly every 400 ms — it is a moving head, not an immutability promise.** `getAccountInfo` and `getProgramAccounts` at `finalized` therefore answer a *different question every slot*, exactly like EVM's `latest` block tag. Classifying them `finalized` would be a permanent-cache bug: `finalized` is the zero value of the Go enum that a policy with no explicit `finality` matches, and an unset TTL means "no expiry" in every connector — so a later transfer would never invalidate the cached account. Direct balance reads (`getBalance`, `getTokenAccountBalance`) take that one step further: they are in `neverCacheMethods` and hard-skipped before any policy runs, so a realtime TTL cannot cache them either.
 
 Only a response pinned to an explicit positional identifier — a slot number or a transaction signature — is genuinely immutable once that slot is rooted. That is the whole content of `slotPinnedMethods`:
 
@@ -144,10 +144,11 @@ alwaysFinalizedMethods = getInflationReward   (defined only over finalized epoch
 neverCacheMethods = sendTransaction, sendRawTransaction, simulateTransaction, requestAirdrop,
                     getLatestBlockhash, getRecentBlockhash, getFeeForMessage,
                     getSignatureStatuses, getVoteAccounts, getLeaderSchedule, getEpochInfo,
-                    getSlotLeaders, getRecentPerformanceSamples, getRecentPrioritizationFees
+                    getSlotLeaders, getRecentPerformanceSamples, getRecentPrioritizationFees,
+                    getBalance, getTokenAccountBalance
 ```
 
-Two categories live in `neverCacheMethods`: **mutating or effectful** calls, where caching would break the at-least-once semantics callers expect, and **transient realtime snapshots** that go stale in under one slot. `getEpochSchedule` is deliberately *excluded* — its constants only change at epoch boundaries (~432,000 slots), so it falls through to the moving-head bucket and is cached under the realtime policy's TTL.
+Three categories live in `neverCacheMethods`: **mutating or effectful** calls, where caching would break the at-least-once semantics callers expect; **transient realtime snapshots** that go stale in under one slot; and **direct balance reads** (`getBalance`, `getTokenAccountBalance`) that feed financial decisions and must never return a stale value. `getEpochSchedule` is deliberately *excluded* — its constants only change at epoch boundaries (~432,000 slots), so it falls through to the moving-head bucket and is cached under the realtime policy's TTL.
 
 **Never-cache is hard-enforced, not policy-driven.** `realtime` is still a *cacheable* finality at the policy layer, so mapping these methods to `realtime` is not sufficient on its own. `Get` and `Set` both check `neverCacheMethods` **before** policy matching and return early. An operator's stray `finality: realtime` catch-all therefore cannot cache `sendTransaction`.
 
@@ -207,8 +208,9 @@ All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig
         method: "*"
         finality: unfinalized
         ttl: 800ms
-      # Everything else: getBalance, getAccountInfo, getProgramAccounts, getSlot,
+      # Everything else: getAccountInfo, getProgramAccounts, getSlot,
       # getBlockHeight, getSignaturesForAddress, ... all moving-head reads.
+      # (getBalance / getTokenAccountBalance are neverCacheMethods — hard-skipped.)
       - connector: mem
         network: "*"
         method: "*"
@@ -224,8 +226,9 @@ All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig
       // getBlock/getTransaction at confirmed/processed — pinned to a slot, but a
       // fork switch can still drop it. ~2 slots of tolerance.
       { connector: "mem", network: "*", method: "*", finality: "unfinalized", ttl: "800ms" },
-      // Everything else: getBalance, getAccountInfo, getProgramAccounts, getSlot,
+      // Everything else: getAccountInfo, getProgramAccounts, getSlot,
       // getBlockHeight, getSignaturesForAddress, ... all moving-head reads.
+      // (getBalance / getTokenAccountBalance are neverCacheMethods — hard-skipped.)
       { connector: "mem", network: "*", method: "*", finality: "realtime", ttl: "2s" },
     ],
   },
@@ -377,7 +380,7 @@ All fields live under `database.svmJsonRpcCache` and use the **same `CacheConfig
 
 ### Best practices
 
-- **Always define a `realtime` policy.** It is not an edge case on SVM — it is the majority of your traffic. `getBalance`, `getAccountInfo`, `getProgramAccounts`, `getTokenAccountBalance`, `getSlot`, `getBlockHeight`, and `getSignaturesForAddress` are all `realtime` at *every* commitment level, including `finalized`. A config with only a `finality: finalized` policy caches almost nothing.
+- **Always define a `realtime` policy.** It is not an edge case on SVM — it is the majority of your traffic. `getAccountInfo`, `getProgramAccounts`, `getSlot`, `getBlockHeight`, and `getSignaturesForAddress` are all `realtime` at *every* commitment level, including `finalized`. (`getBalance` / `getTokenAccountBalance` are hard-skipped via `neverCacheMethods` and never match a policy.) A config with only a `finality: finalized` policy caches almost nothing.
 - **Never "fix" a low hit rate by forcing state reads to `finalized`.** There is no config knob to do this on SVM, and that is deliberate — it would be a permanent-cache correctness bug, not a tuning win. If you need higher hit rates on account reads, raise the `realtime` TTL knowingly.
 - **Keep `realtime` TTL in the 1–3 s range.** One Solana slot is ~400 ms. A 2 s TTL means a caller may observe state up to ~5 slots old; anything much larger starts to surface visibly stale balances.
 - **Set `unfinalized` TTL to roughly two slots (≈800 ms).** That bucket only ever holds `getBlock`/`getTransaction` below `finalized` commitment, where a fork switch is the risk being bounded.
@@ -412,10 +415,13 @@ The SVM cache emits the **same `erpc_cache_*` metric family** as the EVM cache, 
 | `erpc_cache_get_success_miss_total` | counter | Every matched policy missed |
 | `erpc_cache_get_skipped_total` | counter | No policy matched the request's network/method/finality |
 | `erpc_cache_get_error_total` | counter | A connector `Get` errored; the walk continues to the next policy |
+| `erpc_cache_set_success_total` | counter | A connector `Set` succeeded |
 | `erpc_cache_set_skipped_total` | counter | Payload rejected by a policy's size limits |
 | `erpc_cache_set_error_total` | counter | A connector `Set` errored (logged at WARN, swallowed) |
-| `erpc_cache_set_original_bytes` / `erpc_cache_set_compressed_bytes` | counter | Pre- and post-zstd payload accounting; the compressed counter only advances when compression actually shrank the value |
-| `erpc_cache_get_success_hit_duration` / `erpc_cache_get_success_miss_duration` | histogram | Hit and miss latency |
+| `erpc_cache_set_original_bytes_total` / `erpc_cache_set_compressed_bytes_total` | counter | Pre- and post-zstd payload accounting; the compressed counter only advances when compression actually shrank the value |
+| `erpc_cache_get_success_hit_duration_seconds` / `erpc_cache_get_success_miss_duration_seconds` / `erpc_cache_set_success_duration_seconds` | histogram | Hit, miss, and successful-set latency |
+
+Use the `*_total` **counters** (not duration histograms) for hit/miss rates. `neverCacheMethods` short-circuits stay silent — they are not cache skips and do not inflate skipped counters.
 
 **Notably absent on SVM:** `erpc_cache_get_age_guard_reject_total` never fires — there is no block-timestamp age gate.
 
