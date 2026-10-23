@@ -288,7 +288,7 @@ type chaosClient struct {
 	conn       *websocket.Conn
 }
 
-// tapEnds counts the ends of ws newHeads taps so far: out of range by
+// tapEnds counts the ends of one kind of ws taps so far: out of range by
 // reason, and panics.
 type tapEnds map[string]float64
 
@@ -297,10 +297,10 @@ const tapPanic = "panic"
 var tapEndReasons = []string{indexer.OutOfRangeLag, indexer.OutOfRangeBelowWindow, indexer.OutOfRangeForkLeftWindow,
 	indexer.OutOfRangeCursorUnknown, indexer.OutOfRangeReceiptsTimeout}
 
-func newHeadsTapEnds() tapEnds {
+func tapEndsOf(kind string) tapEnds {
 	out := make(tapEnds, len(tapEndReasons)+1)
 	for _, r := range tapEndReasons {
-		out[r] = testutil.ToFloat64(telemetry.MetricTapOutOfRangeTotal.WithLabelValues("test_ws", "evm:123", "ws", indexer.SubTypeNewHeads, r))
+		out[r] = testutil.ToFloat64(telemetry.MetricTapOutOfRangeTotal.WithLabelValues("test_ws", "evm:123", "ws", kind, r))
 	}
 	ch := make(chan prometheus.Metric, 64)
 	go func() {
@@ -313,7 +313,7 @@ func newHeadsTapEnds() tapEnds {
 			continue
 		}
 		for _, l := range pb.GetLabel() {
-			if l.GetName() == "extra" && strings.Contains(l.GetValue(), "kind:"+indexer.SubTypeNewHeads) {
+			if l.GetName() == "extra" && strings.Contains(l.GetValue(), "kind:"+kind) {
 				out[tapPanic] += pb.GetCounter().GetValue()
 			}
 		}
@@ -326,6 +326,11 @@ func newHeadsTapEnds() tapEnds {
 // tracker's head and sendable head now, and the faults that ran since
 // shortly before the previous head.
 func (s *chaosSeed) restartContext(prev, now tapEnds, cursor uint64, since time.Time) string {
+	return fmt.Sprintf("tap ends %s; tap cursor %d; %s", endsSince(prev, now), cursor, s.trackerContext(since))
+}
+
+// endsSince names the tap ends counted from prev to now.
+func endsSince(prev, now tapEnds) string {
 	var ends []string
 	for _, r := range append(slices.Clone(tapEndReasons), tapPanic) {
 		if d := now[r] - prev[r]; d > 0 {
@@ -333,8 +338,14 @@ func (s *chaosSeed) restartContext(prev, now tapEnds, cursor uint64, since time.
 		}
 	}
 	if len(ends) == 0 {
-		ends = append(ends, "none counted")
+		return "none counted"
 	}
+	return strings.Join(ends, " ")
+}
+
+// trackerContext is the tracker's head and sendable head now, and the
+// faults that ran since shortly before since.
+func (s *chaosSeed) trackerContext(since time.Time) string {
 	head, send := "none", "none"
 	if tr := s.tracker(); tr != nil {
 		if c, ok := tr.Tip(); ok {
@@ -344,8 +355,7 @@ func (s *chaosSeed) restartContext(prev, now tapEnds, cursor uint64, since time.
 			send = fmt.Sprint(c.Number)
 		}
 	}
-	return fmt.Sprintf("tap ends %s; tap cursor %d; tracker head %s; sendable head %s; faults %s",
-		strings.Join(ends, " "), cursor, head, send, s.faultsSince(since.Add(-2*time.Second)))
+	return fmt.Sprintf("tracker head %s; sendable head %s; faults %s", head, send, s.faultsSince(since.Add(-2*time.Second)))
 }
 
 func (s *chaosSeed) dialClient(name string, slow func() bool) *chaosClient {
@@ -365,7 +375,7 @@ func (s *chaosSeed) dialClient(name string, slow func() bool) *chaosClient {
 	require.NotEmpty(s.t, resp.Result, "client %s: the first message is the subscription id, as geth sends it: %s", name, msg)
 	cl.conn = conn
 	cl.subscribed = time.Now()
-	cl.lastTaps = newHeadsTapEnds()
+	cl.lastTaps = tapEndsOf(indexer.SubTypeNewHeads)
 	s.mu.Lock()
 	s.clients = append(s.clients, cl)
 	s.mu.Unlock()
@@ -420,7 +430,7 @@ func (cl *chaosClient) problem(format string, args ...interface{}) {
 
 func (cl *chaosClient) apply(s *chaosSeed, n uint64, h chainsim.Hash) {
 	b := s.chain.Block(h)
-	ends := newHeadsTapEnds()
+	ends := tapEndsOf(indexer.SubTypeNewHeads)
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	now := time.Now()
@@ -482,10 +492,12 @@ type chaosLogsClient struct {
 	added     int
 	ended     time.Time
 	endTip    uint64
-	closeCode int  // the server's close code, 0 when it did not close
-	byTest    bool // the test closed it
-	notes     int  // notifications received
-	noteBytes int  // their message lengths
+	closeCode int     // the server's close code, 0 when it did not close
+	why       string  // what may explain a close: tap ends, tracker, faults
+	byTest    bool    // the test closed it
+	taps      tapEnds // logs tap ends as it opened
+	notes     int     // notifications received
+	noteBytes int     // their message lengths
 	problems  []string
 }
 
@@ -519,7 +531,8 @@ func (s *chaosSeed) dialLogs(name string) {
 			conn, _ = s.subscribeLogs(f)
 			return conn != nil
 		}, 15*time.Second, chaosBlock, "logs subscribe on filter %d is accepted", f)
-		cl := &chaosLogsClient{name: fmt.Sprintf("%s/%d", name, f), filter: f, conn: conn, held: make(map[chainsim.LogKey]uint64)}
+		cl := &chaosLogsClient{name: fmt.Sprintf("%s/%d", name, f), filter: f, conn: conn, held: make(map[chainsim.LogKey]uint64),
+			taps: tapEndsOf(indexer.SubTypeLogs)}
 		s.mu.Lock()
 		s.logs = append(s.logs, cl)
 		s.mu.Unlock()
@@ -562,8 +575,10 @@ func (cl *chaosLogsClient) read(s *chaosSeed) {
 		_ = cl.conn.SetReadDeadline(time.Now().Add(time.Minute))
 		_, msg, err := cl.conn.ReadMessage()
 		if err != nil {
+			ended := time.Now()
+			why := fmt.Sprintf("logs tap ends since it opened %s; %s", endsSince(cl.taps, tapEndsOf(indexer.SubTypeLogs)), s.trackerContext(ended.Add(-logsCloseBound())))
 			cl.mu.Lock()
-			cl.ended, cl.endTip = time.Now(), s.chain.Tip().Number
+			cl.ended, cl.endTip, cl.why = ended, s.chain.Tip().Number, why
 			var ce *websocket.CloseError
 			if errors.As(err, &ce) {
 				cl.closeCode = ce.Code
@@ -1863,7 +1878,7 @@ func (s *chaosSeed) judge(end time.Time) {
 					}
 				}
 			}
-			require.True(t, allowed, "logs client %s closed with 1013 at %s with no fault that calls for it", cl.name, cl.ended.Format(time.StampMilli))
+			require.True(t, allowed, "logs client %s closed with 1013 at %s with no fault that calls for it; %s", cl.name, cl.ended.Format(time.StampMilli), cl.why)
 		}
 		// Clients open at the end were judged up to the head. A client that
 		// ended earlier is judged where a reorg after its end can no
