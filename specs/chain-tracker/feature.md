@@ -321,13 +321,17 @@ Each concept answers one question and has one home. W (§1) is the one freshness
 ### 6.1 Freshness: is upstream U current?
 
 - Two ages, by evidence, against one reference: the lag reference (§6.6), never `Latest`, which would loop through the policy.
-  - Number age reads the shared counter, by local receive time (§14).
-  - Hash age reads the newest hash vote (§6.3).
-- Number age decides the bench: an upstream is benched after `max(30s, 3 × its backed-off cadence)` (§6.8), and readmitted once its counter reaches the lag reference. A benched upstream is no voter.
+  - Number age reads the shared counter, by local receive time (§14): how long U's counter, credited one fetch cadence, has stood below the reference, counted only while the reference rose within W.
+  - Hash age reads the newest hash vote (§6.3): how long since another voter's first local header above U's vote, at or below the reference, arrived.
+- Number age decides the bench: an upstream is benched after `max(30s, 3 × its backed-off cadence)` (§6.8), and readmitted once its counter reaches the lag reference. A wss source's cadence is its poll cadence, so it benches at the 30s floor. A benched upstream is no voter.
+- #1263's stall rules stay beside number age: a head frozen above peers whose newest blocks are a stall window younger is benched by block age, so a frozen pair above the chain never benches the honest pair below it.
 - Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W.
+- Routing hints, ordering only; every upstream stays eligible:
+  - Reached N: for a request at block N, by number or by a block hash the tracker holds, the upstreams that reached N go first, the policy's order kept within each part. A source reached N when its hash vote on this instance did, since its requests ride its socket here; any other upstream when its head counter did. Tracker fetches use the same rule (§8).
+  - A request with no block: a source whose hash age exceeds W, or whose socket closed, goes after the others until it reports again, so a half-open socket holds no client request. Hash age never reorders an upstream that is no source: its freshness follows the poll schedule, which is no evidence of a fault. Being behind by less than W reorders nobody.
 - A chain that makes no blocks moves no reference: every age stays 0 and nothing reconnects.
 
-Owner: `health/tracker.go`. Readers: the `Head` ballots (bench), the confirmed head (hash voters), the reconciler, tap start, the gRPC stall rule (§10.2). Bounds: one upstream ahead with its peers stalled holds `Latest` until the bench, at most 90s. Keeps: #1263 (one bench rule, 30s floor), #1296 (lag credit for slow polls), #1208 (local samples only).
+Owner: `health/tracker.go`. Readers: the `Head` ballots (bench), the confirmed head (hash voters), routing (sources), the reconciler, tap start, the gRPC stall rule (§10.2). Bounds: one upstream ahead with its peers stalled holds `Latest` until the bench, at most 90s. Keeps: #1263 (one bench rule, 30s floor), #1296 (lag credit for slow polls), #1208 (local samples only).
 
 ### 6.2 Voters: who votes?
 
@@ -345,7 +349,7 @@ Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle tar
 ### 6.3 Reports: what does a voter say?
 
 - Numbers are shared: each upstream's latest and finalized live in shared counters (§14), and every instance's `Head` reads them. Every `latest` header this instance fetches from an upstream, by poll, Ask or settle, also moves that upstream's counter.
-- A hash vote comes only from this instance's tracker or poller: a push, a poll-source poll, an Ask answer, or a full poll, each fetched with cache reads skipped. Client answers and cached answers never vote (#1001).
+- A hash vote comes only from this instance's tracker or poller: a push, a poll-source poll, an Ask answer, or any other poll of the upstream's `latest` (full poll, refresh, catch-up), each fetched with cache reads skipped. So an upstream that is no source votes too, as fresh as its last poll. Client answers and cached answers never vote (#1001).
 - Minority fork: a voter whose hash vote stays off the pins for longer than W loses its number vote and goes last in routing, until its hash vote is on the pins again.
 
 Owner: `erpc/network_intake.go` (hash votes), `EvmStatePoller.ObserveHead` (numbers). Readers: `Head`, trackers, routing. Keeps: #1001, #450, #1256 (a fresh shared counter saves a fetch).
@@ -409,8 +413,8 @@ Confirmed head:
 
 - The confirmed head is the highest pin with `q.Of(hash voters)` hash votes at or above it and a number at or below the lane's `Latest`. The second clause proves that q upstreams hold N.
 - Cold window: for W after a tracker starts or resets, a voter that is a source and has not reported yet counts as a hash voter, so a cold instance's first header waits for a second.
-- Every transport delivers only up to the confirmed head (§10). Tap lag is measured from it.
-- Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, the voters whose number is below it, once per bt and at most 1s apart. Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
+- Every transport delivers only up to the confirmed head (§10). Tap lag is measured from it. A tap waits at most W after the block's first header on its instance, plus the tracker's processing (at most 50 ms): a silent hash voter stops counting exactly at W, and the next pass sends.
+- Catch-up: while a tap is open and `Latest` holds back a pin its hash votes back, the tracker Asks, with a number need, the voters whose number is below it, once per bt and at most 1s apart. When the hash-vote need holds a pin back for one bt, it polls the voters without a fresh hash vote; each poll is a hash vote (§6.3). Every move of an upstream's counter, from any path or instance, wakes the tracker, so the pin goes out as soon as `Latest` reaches it.
 - `PinFresh` = confirmed ∧ evidence quorum (§6.10) ∧ undisputed (no hash voter on another branch at that height). `ReconfirmPin(n)` returns `PinFresh` only then; otherwise it settles, or returns `PinRateLimited` when the settle cannot run.
 - A hash-proven rollback lowers the shared counters (§14).
 
@@ -445,7 +449,8 @@ Owner: `health/tracker.go`. Readers: freshness (§6.1), routing lag (`blockNumbe
 ### 6.7 Block time: how long is a block?
 
 - The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of accepted source headers. Both are local samples (#1208).
-- Until the EMA has 4 samples, bt = 1s for every reader, the poll cadence included (0.7s). `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
+- A sample spans two observations whose timestamps differ: seconds elapsed over blocks elapsed. Equal timestamps extend the span, so integer-second timestamps need no special case: on a 0.4s chain each sample spans 2 or 3 blocks; on a chain with blocks of 1s or more, each block is one sample.
+- Until the first sample, bt = 1s for every reader, the poll cadence included (0.7s); the first sample seeds the EMA. `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
 - The poll cadence is the poller's debounce: bt × `dynamicBlockTimeDebounceMultiplier` (0.7), at most 12s; `statePollerDebounce` overrides (#790).
 
 Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, the by-hash wait, the window. Bounds: on a halt or a restart the caps hold (cadence 12s, W 60s). Keeps: #790, #1208.
@@ -553,7 +558,7 @@ Every tracker fetch goes through one scheduler per (network, instance). Head fet
 | 3 fill | fill, cursor fetches, older receipts | at least 1 slot |
 
 - Limit: 16 fetches in flight per (network, instance). A sweep that ends in capacity errors on every upstream it tried (HTTP 429, `-32005`, compute units, a denied upstream permit) halves the share of the lowest busy class, never below 1 slot; 10 successes in a row in a class add 1 slot back. One throttled upstream is the selection policy's job (`ThrottledRate`).
-- One fetch makes one sweep over the upstreams the selection policy orders, or the one upstream it names: no hedge, no network retry, timeout 10s. Failsafe config does not apply to it, an `internal` consensus policy included.
+- One fetch makes one sweep over the upstreams the selection policy orders, or the one upstream it names: no hedge, no network retry, timeout 10s. Failsafe config does not apply to it, an `internal` consensus policy included. A fetch for block N orders them by the reached-N hint (§6.1), so a half-open socket never makes the tip's receipts wait out its attempt share, and HTTP upstreams keep their share of tracker load.
 - A sweep skips an upstream whose breaker is open, and tracker fetches never feed a breaker: tracker load, such as slow receipts of large blocks, must not open a breaker that blocks clients. Subscription calls bypass the breaker entirely.
 - Tracker fetches skip project and network rate limits, which budget clients. Classes 1 and 2 take upstream rate permits as client requests do. Class 3 takes one only when one is free, so catch-up never crowds out clients; a denied permit counts as a capacity error. Upstream scores count every tracker fetch.
 - By-hash fetches use the cache. Every other tracker fetch skips cache reads, tags included, because a cached answer is not a fresh view.
@@ -606,7 +611,7 @@ From cursor `c`, first matching case:
 - ws `newHeads` is lossy, as in geth: a restart shows as a jump in numbers.
 - `removed:true` logs go to every filter matching now, as geth does. They are the sent logs, from the same receipts.
 - ws writes keep the deadline of 10s per message (`wsWriteDeadline`). The subscription id reaches the client before the first notification.
-- gRPC stall: a Read wait counts toward the 60s only while the confirmed head stands above the cursor, or at its number on another branch, or no hash voter exists. A Read at the head of a chain that makes no blocks waits without end.
+- gRPC stall: a Read wait counts toward the 60s only while the confirmed head stands above the cursor, or at its number on another branch, or no hash voter exists, counted then from the newest hash vote's arrival. A Read at the head of a chain that makes no blocks waits without end.
 - gRPC client rule: a header with a number at or below the last one replaces that number and every number above it.
   - The first resent number is fork point + 1: the same fact as Substreams `BlockUndoSignal.last_valid_block`, with no extra message.
   - Per-block removal (Firehose `STEP_UNDO`, geth `removed:true`) costs one message per dropped block and keeps every sent payload until finality.
@@ -935,7 +940,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 |---|---|---|
 | U1 | one https vendor answers after 15s, for 30 blocks | no tap waits more than W; HTTP hedges; no breaker opened by a tracker fetch |
 | U2 | proxy sends RST after half of a header or receipts body | fetch fails over; no malformed vote; logs complete |
-| U3 | wss TCP half-open: proxy stops forwarding, socket kept | hash vote expires within W; reconnect within 15s after the counter passes; no gap past `reorgWindow` |
+| U3 | wss TCP half-open: proxy stops forwarding, socket kept | hash vote expires within W; no tap waits more than W after another voter's first header for a block; reconnect within 15s after the counter passes; no gap past `reorgWindow` |
 | U4 | https keep-alive pool black-holed | one timeout, then new connections; `Latest` keeps moving |
 | U5 | 429 on every vendor for 4 blocks | nobody benched; delivery resumes within 2 bt |
 | U6 | one vendor `-32005` / compute units for 60s | throttled vendor bypassed; scheduler share unchanged |
@@ -943,14 +948,14 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U8 | vendor pushes headers with wrong hashes; integrity off and on | never pinned or sent; integrity on: counted on that upstream only |
 | U9 | truncated receipts, forged log, wrong bloom from one vendor | refetched from the other vendor; logs equal canonical |
 | U10 | primary 40 behind, still advancing | `Latest` unchanged; its hash vote expires; benched after 30s or more |
-| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow; gRPC resumes at most once |
+| U11 | 2 upstreams only; one head frozen, still answering | taps and `latest` wait for the bench (at most 90s), then flow; a wait longer than `reorgWindow` blocks ends as §10.2 states: one `newHeads` restart, ws `logs` close `1013` within the spread; gRPC resumes at most once |
 | U12 | one upstream reports +30M, same chainId | `Latest`, `Leader`, lag unchanged; ceiling raised, no short-circuit |
 | U13 | one endpoint answers another chainId | cordoned, out of ceiling; uncordoned after 2 matches 5 min apart |
 | U14 | archive syncing at head+5; `eth_getBlockByNumber(head+3)` | served by the archive in the refusal band, not `null` |
 | U15 | one vendor lacks `eth_getBlockReceipts` | logs from the other vendor; subscribe accepted |
 | U16 | wss refuses `newHeads` as unsupported | polled at cadence; asked again on reconnect and every 10 min |
 | U17 | https refuses `latest` 10 times | give-up; re-probed after 10 min; never a stuck poll source |
-| U18 | one vendor on a minority fork at the same heights, 20 blocks | taps never send its blocks; HTTP never serves them |
+| U18 | one HTTP vendor that is no source on a minority fork at the same heights, 20 blocks | taps never send its blocks; HTTP never serves them once W has passed since this instance first polled a fork header from it (its hash vote, §6.3) |
 | N1 | +300 ms constant latency to one vendor | delivery p99 within 2 bt; `Latest` from the faster voters |
 | N2 | 0–2 bt jitter on every vendor; pushes reordered | `newHeads` in order, parent-linked, no duplicate |
 | N3 | instance 1 cut from vendor X for 50 blocks | instance 1 flows on vendor Y's votes; no stall |
@@ -966,7 +971,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C6 | no blocks for 3 min, with gRPC | nothing reconnects; gRPC not cut; `Latest` frozen |
 | C7 | halt, then 100 blocks in 1s | catch-up within `maxBackfill`; batches at most `reorgWindow`; no gap |
 | C8 | 100 ms blocks; U5 + C1 | same results at 2× rate |
-| C9 | cold instance; 0.4s blocks with integer-second timestamps | thresholds reach chain values within 4 headers |
+| C9 | cold instance; 0.4s blocks with integer-second timestamps | bt = 1s until the second timestamp change (at most 6 headers), then within 25% of 400 ms; never 0, never 12s; W stays at its 2s floor |
 | C10 | 100 empty blocks | no receipts fetch; `newHeads` continuous |
 | C11 | 5,000-receipt blocks | logs complete; no breaker opened by tracker fetches |
 | C12 | majority reverts a finalized block | followed; `final_hash_changed` logged; no permanent cache entry |
@@ -989,7 +994,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | X6 | breaker open only on instance 1 for vendor X | `Latest` may differ by instance; the oracle holds |
 | X7 | old-image instance + new-image instance, one Redis | no client sees `latest` regress across instances by more than 1 bt; counters agree |
 | X8 | canary instance writes a bogus +1000 head to a counter | `Latest` unchanged on control; only the ceiling rises |
-| X9 | 1 wss + 2 https non-sources, 3 instances, Redis; `eth_blockNumber` traffic on instance 2 only | taps on instance 1 never wait longer than W: only voters that sent instance 1 a header within W count toward its hash quorum |
+| X9 | 1 wss + 2 https non-sources, 3 instances, Redis; `eth_blockNumber` traffic on instance 2 only | taps on instance 1 never wait longer than W after the block's first header there: only voters that sent instance 1 a header within W count toward its hash quorum |
 | K1 | YAML and TS configs with each deleted key | boot refuses and names the key |
 | K2 | minimal YAML: 1 wss + 1 https, no `evm` block | wss is a source, https is not; q = 2; subscriptions work |
 | K3 | 2 networks, `reorgWindow` 64 on one; 40-deep reorg on both | 64: Reverted; 32: re-anchor + `1013` |

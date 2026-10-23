@@ -18,8 +18,8 @@ Spec: [feature.md](feature.md). One step per commit; each ships on its own. Befo
 
 ```
 H0  delete the delivered-head floor
-H1  freshness, voters, reports, confirmed head
-H2  Head, refusal rule, lanes, finality, per-method tags, block time
+H1  freshness, voters, reports, confirmed head, block time
+H2  Head, refusal rule, lanes, finality, per-method tags
 H3  fetch schedule
 H4  suspension parameters, evidence quorum
 H5  tag-state head and gate
@@ -54,13 +54,14 @@ T   the rest of the real-world catalogue
   - Confirmed head = highest pin with `q.Of(hash voters)` hash votes and number ≤ the lane's `Latest`; cold window W; a use-upstream connection gates on its lane (spec §6.5).
   - `PinFresh` = confirmed ∧ evidence quorum ∧ undisputed; `ReconfirmPin` returns it only then.
   - `erpc_upstream_report_age_seconds`.
+  - Block time (spec §6.7): the EMA samples accepted source headers; one default, 1s, until 4 samples, the poll cadence included; `fallbackStatePollerDebounce` loses its 5s default (X9 needs it at cold start).
 - Change:
   - Tap start and the gRPC stall rule read hash voters; the reconciler timer, suspension window, cold window and every re-arm read W.
   - Group trackers count the voters of their lane.
-- Delete: live bound, `live`, `SourceLive`, `newestKnown`, `authoritative(u)`, `authoritativeIn`, `EvmAuthoritativeUpstreams`, `EvmDeliveryQuorum`, `votingSources`, `SendTip`, the `max(2, need)` floor; `erpc_source_live`; outcome `gated_authority` → `gated_voter`.
-- Tests, real-world: X9 (1 wss + 2 https non-sources, 3 instances), U3, N3, U10, U11, U18, K6 (tiered network, no deadlock).
+- Delete: live bound, `live`, `SourceLive`, `newestKnown`, `authoritative(u)`, `authoritativeIn`, `EvmAuthoritativeUpstreams`, `EvmDeliveryQuorum`, `votingSources`, `SendTip`, the `max(2, need)` floor; `erpc_source_live`; outcome `gated_authority` → `gated_voter`; the tracker's pins-mean block time and its 12s default.
+- Tests, real-world: X9 (1 wss + 2 https non-sources, 3 instances), U3, U3-lone, N3, N4-lone, N5, U10, U11, U18, K6 (tiered network, no deadlock), C9 (block time at cold start).
 
-## H2: Head, refusal rule, lanes, finality, per-method tags, block time
+## H2: Head, refusal rule, lanes, finality, per-method tags
 
 - Add:
   - `Head` per (network, lane), published atomically; triggers: head change (local or remote), bench change, eligible-set change, 1s timer for every lane. `Leader` within `Latest + maxRetryableBlockDistance`; ceiling with `CeilingAt` (spec §6.4).
@@ -70,9 +71,9 @@ T   the rest of the real-world catalogue
   - Per-method interpolation: absent params, EIP-1898 leaves, method config for `eth_callMany` and `eth_createAccessList`, `erigon_blockNumber` = `Latest`; `eth_getBlockByNumber(latest|finalized)` interpolated with a pre-forward refresh.
   - `enforceNonNullTaggedBlocks` reads the original tag; one head predicate with `headLagToleranceBlocks`.
   - Finality split: reads `Head.Finalized`; permanent writes also the serving upstream's finalized; the cache write guard reads the network-wide lane.
-  - Block-time EMA sampled from accepted source headers; one default, 1s, until 4 samples, the poll cadence included; `fallbackStatePollerDebounce` loses its 5s default.
-- Delete: per-request served-tip evaluation; post-forward raise, `pickHighestBlock`, `enforceHighestBlock` for `eth_getBlockByNumber`; raw-max consensus leader; `EvmLowestFinalizedBlockNumber`; `pinLatestTag` re-read per attempt; the cache key on the word `latest`; the tracker's pins-mean block time and its 12s default.
-- Tests, real-world: X2, U12, U14, P1, P5, P6, P7, P9, P10, K7, C9, C12, C13. Extend `erpc/networks_served_tip_invariants_test.go` (assertions unchanged) and the existing interpolation tests.
+  - Lane taps read their lane's `Head`; the 50ms re-read H1 left for them is deleted.
+- Delete: per-request served-tip evaluation; post-forward raise, `pickHighestBlock`, `enforceHighestBlock` for `eth_getBlockByNumber`; raw-max consensus leader; `EvmLowestFinalizedBlockNumber`; `pinLatestTag` re-read per attempt; the cache key on the word `latest`.
+- Tests, real-world: X2, U12, U14, P1, P5, P6, P7, P9, P10, K7, C12, C13. Extend `erpc/networks_served_tip_invariants_test.go` (assertions unchanged) and the existing interpolation tests.
 
 ## H3: fetch schedule
 
