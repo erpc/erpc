@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"runtime/debug"
 	"slices"
 	"sync"
@@ -58,6 +59,9 @@ type sourceReconciler struct {
 	// demandChangedAt is when the network's demand last gained or lost a
 	// topic, in unix nanoseconds.
 	demandChangedAt atomic.Int64
+	// pushes are the push sources by upstream id, as the last pass set them
+	// up; read without a lock by routing and intake (pushSource).
+	pushes atomic.Pointer[map[string]*wsupstream.Adapter]
 
 	// Owned by the run goroutine.
 	sources    map[string]*source
@@ -462,10 +466,12 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 	r.nw.intake.admit(now, r.nw.chainTracker.W())
 
 	heads, push := false, false
+	pushes := make(map[string]*wsupstream.Adapter)
 	for _, s := range r.sources {
 		heads = heads || s.isSource
 		if s.push != nil && s.isSource {
 			push = true
+			pushes[s.id] = s.push
 			r.setPush(s, pending, now, txHeadAt)
 		}
 		if s.poll == nil {
@@ -477,6 +483,9 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 			s.pollOn = pollOn
 			r.nw.logger.Debug().Str("upstreamId", s.id).Bool("polling", pollOn).Msg("poll source changed")
 		}
+	}
+	if old := r.pushes.Load(); old == nil || !maps.Equal(*old, pushes) {
+		r.pushes.Store(&pushes)
 	}
 	r.mu.Lock()
 	r.heads, r.push = heads, push
@@ -586,6 +595,22 @@ func topicsIf(newHeads bool) []indexer.Topic {
 		return []indexer.Topic{indexer.TopicNewHeads}
 	}
 	return nil
+}
+
+// pushSource reports whether upstreamId is a push source (spec §6.1): a
+// WebSocket subscription source whose newHeads the upstream did not refuse,
+// so its requests ride the socket its pushes come on. A push source whose
+// socket closed is one still: its expired vote moves it last.
+func (r *sourceReconciler) pushSource(upstreamId string) bool {
+	if r == nil {
+		return false
+	}
+	ps := r.pushes.Load()
+	if ps == nil {
+		return false
+	}
+	a := (*ps)[upstreamId]
+	return a != nil && !a.HeadsRefused()
 }
 
 // newSource sets up u's transports: its WebSocket client as a push source

@@ -816,8 +816,8 @@ func (n *Network) EvmRefreshHeadsBelow(ctx context.Context, block int64) {
 
 // EvmPollHeads polls the latest header of each upstream in ids for a hash
 // vote (spec §6.3, §6.5): a voter whose vote the pins moved off, or that a
-// held vote need waits on. Each poller skips a poll inside its debounce on
-// this instance and keeps one in flight.
+// held vote need waits on. The tracker paces these asks; each poller keeps
+// one poll in flight.
 func (n *Network) EvmPollHeads(ids []string) {
 	if n.upstreamsRegistry == nil {
 		return
@@ -3579,16 +3579,16 @@ func isFallbackTier(u common.Upstream) bool {
 
 // partitionUpstreamsByLatestBlock moves the upstreams known not to have
 // reached block bn behind the rest, preserving order within each group
-// (spec §6.1, §8). A source is judged by its hash vote on this instance, as
-// its requests ride this instance's socket, which may be half-open while
-// the shared head counter moves; any other upstream by its head counter. An
-// upstream with no known head keeps its place.
+// (spec §6.1, §8). A push source is judged by its hash vote on this
+// instance, as its requests ride this instance's socket, which may be
+// half-open while the shared head counter moves; any other upstream by its
+// head counter. An upstream with no known head keeps its place.
 func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
 	return stablePartition(ups, func(u common.Upstream) bool {
-		if cfg := u.Config(); n.intake != nil && cfg != nil && cfg.IsSubscriptionSource() {
+		if n.intake != nil && n.sources.pushSource(u.Id()) {
 			v, voted := n.intake.hashVote(u)
 			return voted && v.Number < bn
 		}

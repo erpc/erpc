@@ -95,8 +95,10 @@ type Adapter struct {
 	// headsWanted is what Set asked for. headsRefused is set from the
 	// upstream's unsupported answer to newHeads until a subscribe succeeds
 	// or Set drops newHeads; headsReask, while set, holds off asking again.
+	// headsRefused is written under subsMu and read without it: routing
+	// reads it per request.
 	headsWanted  bool
-	headsRefused bool
+	headsRefused atomic.Bool
 	headsReask   *time.Timer
 	// topics are the pending-transaction topics Set asked for; they
 	// survive disconnects to be resubscribed.
@@ -190,7 +192,7 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 			a.heads.removed = false
 		} else {
 			a.stopReaskLocked()
-			a.headsRefused = false
+			a.headsRefused.Store(false)
 		}
 	}
 	for _, t := range topics {
@@ -336,7 +338,7 @@ func (a *Adapter) stopReaskLocked() {
 // refuseHeadsLocked records an unsupported newHeads answer and asks again
 // after HeadsReaskInterval.
 func (a *Adapter) refuseHeadsLocked() {
-	a.headsRefused = true
+	a.headsRefused.Store(true)
 	a.stopReaskLocked()
 	var t *time.Timer
 	// The caller holds subsMu until t is stored, so the callback reads it
@@ -357,9 +359,7 @@ func (a *Adapter) refuseHeadsLocked() {
 // HeadsRefused reports whether the upstream refused newHeads as unsupported
 // and no subscribe has succeeded since.
 func (a *Adapter) HeadsRefused() bool {
-	a.subsMu.Lock()
-	defer a.subsMu.Unlock()
-	return a.headsRefused
+	return a.headsRefused.Load()
 }
 
 // watchHeads reconnects when the newHeads subscription stays silent for
@@ -453,7 +453,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 			switch {
 			case err == nil:
 				a.subsMu.Lock()
-				a.headsRefused = false
+				a.headsRefused.Store(false)
 				a.subsMu.Unlock()
 			case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
 				// Retrying can't change the answer soon: the source polls
