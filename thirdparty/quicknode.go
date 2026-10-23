@@ -28,6 +28,9 @@ type QuicknodeVendor struct {
 	// (as a string). Populated from GET /v0/api-credits/{slug}; CreditUnits
 	// reads it lock-free and falls back to quicknodeCreditUnits.
 	cuCache *RemoteDataCache[map[string]int64]
+	// usageCache holds the account's current-period usage keyed by admin
+	// apiKey, from GET /v0/usage/rpc; CreditUsage reads it lock-free.
+	usageCache *RemoteDataCache[common.CreditUsage]
 }
 
 // quicknodeCreditUnits is the built-in FALLBACK API-credit model
@@ -194,6 +197,78 @@ func fetchQuicknodeCreditUnits(ctx context.Context, apiKey, slug string) (map[st
 	return merged, nil
 }
 
+// DefaultQuicknodeUsageRecheckInterval is how long a fetched account usage
+// reading is fresh. QuickNode's usage counter lags minutes, so polling
+// faster buys nothing.
+const DefaultQuicknodeUsageRecheckInterval = 5 * time.Minute
+
+// quicknodeUsageURL returns account-wide credits used in the current billing
+// period. Declared as a var so tests can point it at a mock server.
+var quicknodeUsageURL = "https://api.quicknode.com/v0/usage/rpc"
+
+// CreditUsage implements common.CreditUsageProvider. Lock-free read of the
+// last reading; a stale or missing one triggers a background refresh.
+func (v *QuicknodeVendor) CreditUsage(logger *zerolog.Logger, allowance *common.CreditAllowanceConfig) (common.CreditUsage, bool) {
+	if v == nil || v.usageCache == nil || allowance == nil || allowance.ApiKey == "" {
+		return common.CreditUsage{}, false
+	}
+	usage, fresh := v.usageCache.Lookup(allowance.ApiKey, DefaultQuicknodeUsageRecheckInterval)
+	if !fresh {
+		apiKey := allowance.ApiKey
+		v.usageCache.TriggerAsyncRefresh(logger, apiKey, func(ctx context.Context) (common.CreditUsage, error) {
+			return fetchQuicknodeUsage(ctx, apiKey)
+		})
+	}
+	return usage, usage.Used > 0 || !usage.PeriodStart.IsZero()
+}
+
+// fetchQuicknodeUsage reads GET /v0/usage/rpc. Live shape (2026-10-19):
+// {"data":{"start_time":<unix>,"end_time":<unix now>,"credits_used":<int>,
+// "limit":<int>,...},"error":null}. end_time is the query time, not the
+// period end, and limit is the plan's base limit, not a prepaid commit, so
+// the period end is start + 1 calendar month and the allowance is config.
+func fetchQuicknodeUsage(ctx context.Context, apiKey string) (common.CreditUsage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, quicknodeUsageURL, nil)
+	if err != nil {
+		return common.CreditUsage{}, err
+	}
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return common.CreditUsage{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return common.CreditUsage{}, fmt.Errorf("quicknode usage returned status %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Data *struct {
+			StartTime   int64 `json:"start_time"`
+			CreditsUsed int64 `json:"credits_used"`
+		} `json:"data"`
+		Error string `json:"error"`
+	}
+	if err := common.SonicCfg.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return common.CreditUsage{}, fmt.Errorf("failed to decode quicknode usage response: %w", err)
+	}
+	if body.Error != "" {
+		return common.CreditUsage{}, fmt.Errorf("quicknode usage error: %s", body.Error)
+	}
+	if body.Data == nil || body.Data.StartTime <= 0 {
+		return common.CreditUsage{}, fmt.Errorf("quicknode usage: no billing period in response")
+	}
+	start := time.Unix(body.Data.StartTime, 0).UTC()
+	return common.CreditUsage{
+		Used:        body.Data.CreditsUsed,
+		PeriodStart: start,
+		PeriodEnd:   start.AddDate(0, 1, 0),
+	}, nil
+}
+
 type QuicknodeEndpoint struct {
 	ID      string `json:"id"`
 	HttpUrl string `json:"http_url"`
@@ -219,8 +294,9 @@ const DefaultQuicknodeRecheckInterval = 1 * time.Hour
 
 func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{
-		cache:   NewRemoteDataCache[[]*QuicknodeEndpoint]("quicknode"),
-		cuCache: NewRemoteDataCache[map[string]int64]("quicknode-cu"),
+		cache:      NewRemoteDataCache[[]*QuicknodeEndpoint]("quicknode"),
+		cuCache:    NewRemoteDataCache[map[string]int64]("quicknode-cu"),
+		usageCache: NewRemoteDataCache[common.CreditUsage]("quicknode-usage"),
 	}
 }
 

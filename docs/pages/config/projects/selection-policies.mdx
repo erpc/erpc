@@ -342,7 +342,9 @@ Global JS helpers available inside every `evalFunc`:
 
 **Exclusion attribution leaf slugs.** `excludeIf` records which leaf predicate actually tripped per upstream. Bounded-cardinality slugs emitted by `erpc_selection_exclusion_total{reason}`:
 
-`error_rate_above`, `error_rate_below`, `throttle_rate_above`, `throttle_rate_below`, `misbehavior_rate_above`, `latency_p<Q>_above`, `latency_p<Q>_deviation_above`, `block_head_lag_above`, `finalization_lag_above`, `block_head_lag_seconds_above`, `finalization_lag_seconds_above`, `samples_below`, `samples_above` (guard — not a failure slug), `not_<child_slug>`, `custom`.
+`error_rate_above`, `error_rate_below`, `throttle_rate_above`, `throttle_rate_below`, `misbehavior_rate_above`, `credit_pace_above`, `latency_p<Q>_above`, `latency_p<Q>_deviation_above`, `block_head_lag_above`, `finalization_lag_above`, `block_head_lag_seconds_above`, `finalization_lag_seconds_above`, `samples_below`, `samples_above` (guard — not a failure slug), `not_<child_slug>`, `custom`.
+
+**Prepaid credit pacing (`creditPaceAbove`).** `u.creditPace` is the upstream's vendor-account credits used this billing period over its `creditAllowance` pro-rated to now: `1.0` spends exactly the allowance by period end. `excludeIf(creditPaceAbove(1.0), { probe: false })` keeps a prepaid vendor first while usage is on pace and drops it once usage runs ahead, so spare prepaid credits are used without overage. Unset pace (no allowance, or before the first usage reading) never trips.
 
 Note: `samplesAbove`/`samplesBelow` predicates are marked `isGuard=true` so they do not appear as primary exclusion reasons when they do NOT trip; they only appear when they are the leaf that fires.
 
