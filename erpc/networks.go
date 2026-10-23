@@ -943,10 +943,10 @@ func (n *Network) servedTip(ctx context.Context, span trace.Span, finalized bool
 	}
 
 	// Watchdog anchor: when did this process last see the served value
-	// change. A change of the network-wide latest also wakes the network's
-	// tracker, whose taps send no block above it (spec §6.5).
+	// change. A change of a lane's latest also wakes the network's trackers,
+	// whose taps send no block above their lane's (spec §6.5).
 	if lane != nil {
-		if tip > 0 && anchor.observe(tip) && lane == &n.servedTipAll && !finalized {
+		if tip > 0 && anchor.observe(tip) && !finalized {
 			evm.LatestChanged(n)
 		}
 		n.observeServedTipMetrics(axis, lane.label, tip, pick.Freshest, anchor.age())

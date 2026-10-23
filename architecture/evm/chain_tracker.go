@@ -2783,13 +2783,9 @@ func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader) {
 // VotersChanged makes every tracker of n read its voters again.
 func VotersChanged(n common.Network) { tickTrackers(n) }
 
-// LatestChanged makes the network-wide tracker of n gate its sends on the
-// network's latest block again. It never blocks.
-func LatestChanged(n common.Network) {
-	if t := lookupChainTracker(n, ""); t != nil {
-		t.mb.put(trackerMsg{kind: msgTick})
-	}
-}
+// LatestChanged makes every tracker of n gate its sends on its lane's
+// Latest again: a group tracker's taps stop at its lane's. It never blocks.
+func LatestChanged(n common.Network) { tickTrackers(n) }
 
 // DemandChanged makes every tracker of n check whether it asks for latest
 // with no hash voter (§6 rule 6). It never blocks.
