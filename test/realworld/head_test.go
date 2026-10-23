@@ -29,10 +29,12 @@ const (
 	// time estimate runs 25% short (§6.7).
 	c13History = 12000
 	// c9BlockTime and coldHeaders: C9's chain, and the headers by which a
-	// cold instance's block time reaches the chain's (§6.7: the EMA counts
-	// after 4 samples; §19 C9).
-	c9BlockTime = 400 * time.Millisecond
-	coldHeaders = 4
+	// cold instance's first block time sample lands: it spans the first two
+	// timestamp changes (§6.7; §19 C9). c9WatchHeaders: how long C9 checks
+	// the estimate after that.
+	c9BlockTime    = 400 * time.Millisecond
+	coldHeaders    = 6
+	c9WatchHeaders = 25
 	// blockTimeQuantization: integer-second timestamps at 0.4s blocks make
 	// one sample 1s over 2 or 3 blocks, 0.33–0.5s (§6.7, §19 C9).
 	blockTimeQuantization = 0.25
@@ -566,9 +568,11 @@ func (s *scenario) requireCachedAs(pod int, n uint64, connector string) {
 	}
 }
 
-// C9: 0.4s blocks with integer-second timestamps. pod-1 restarts cold; by
-// the time one source has delivered coldHeaders headers, its block time
-// reads the chain's within the timestamps' quantization (§6.7).
+// C9: 0.4s blocks with integer-second timestamps. pod-1 restarts cold; its
+// block time stays the cold 1s (no gauge) until the second timestamp
+// change, at most coldHeaders headers of one source, then reads the
+// chain's within the timestamps' quantization; never 0 or 12s, and W stays
+// at its 2s floor (§6.7).
 func c9() spec {
 	return spec{name: "C9", bound: healthyDelivery, sim: chainsim.Config{BlockTime: c9BlockTime},
 		clients: func(s *scenario) {
@@ -584,31 +588,45 @@ func c9() spec {
 				s.t.Fatalf("pod-1 restart: %v", err)
 			}
 			s.logf("pod-1 restarted cold")
+			want := float64(c9BlockTime.Milliseconds())
+			firstAt := -1.0
 			deadline := time.Now().Add(podBootWait)
 			for {
-				ss, err := p.scrape()
-				if err == nil {
-					most := 0.0
-					for key := range s.vendors {
-						v, _ := sumOf(ss, "erpc_chain_tracker_source_heads_total", map[string]string{"project": s.project, "network": s.network(), "upstream": s.upstream(key), "outcome": "voted"})
-						most = math.Max(most, v)
-					}
-					if most >= coldHeaders {
-						bt, found := sumOf(ss, "erpc_network_dynamic_block_time_milliseconds", map[string]string{"project": s.project, "network": s.network()})
-						want := float64(c9BlockTime.Milliseconds())
-						if !found || math.Abs(bt-want) > want*blockTimeQuantization {
-							s.violate(s.name, "pod-%d: block time %vms (exported %v) after %v voted headers of one source; the chain's is %vms", 1, bt, found, most, want)
-						} else {
-							s.logf("pod-1: block time %vms after %v headers", bt, most)
-						}
-						break
-					}
-				}
 				if time.Now().After(deadline) {
-					s.violate(s.name, "pod-1: no source delivered %d headers within %s of the restart", coldHeaders, podBootWait)
+					s.violate(s.name, "pod-1: no source delivered %d headers within %s of the restart", coldHeaders+c9WatchHeaders, podBootWait)
 					break
 				}
 				time.Sleep(50 * time.Millisecond)
+				ss, err := p.scrape()
+				if err != nil {
+					continue
+				}
+				most := 0.0
+				for key := range s.vendors {
+					v, _ := sumOf(ss, "erpc_chain_tracker_source_heads_total", map[string]string{"project": s.project, "network": s.network(), "upstream": s.upstream(key), "outcome": "voted"})
+					most = math.Max(most, v)
+				}
+				bt, found := sumOf(ss, "erpc_network_dynamic_block_time_milliseconds", map[string]string{"project": s.project, "network": s.network()})
+				if !found {
+					if most > coldHeaders {
+						s.violate(s.name, "pod-1: block time still cold after %v voted headers of one source (bound %d)", most, coldHeaders)
+						break
+					}
+					continue
+				}
+				if firstAt < 0 {
+					firstAt = most
+					s.logf("pod-1: first block time %vms after %v headers", bt, most)
+				}
+				w := math.Max(3*bt, 2000)
+				if bt == 0 || bt >= 12000 || math.Abs(bt-want) > want*blockTimeQuantization || w != 2000 {
+					s.violate(s.name, "pod-1: block time %vms, W %vms, after %v voted headers of one source; the chain's is %vms", bt, w, most, want)
+					break
+				}
+				if most >= firstAt+c9WatchHeaders {
+					s.logf("pod-1: block time %vms after %v headers", bt, most)
+					break
+				}
 			}
 			s.waitServing(0)
 			s.endExcuse(ex, time.Now().Add(liveBound))

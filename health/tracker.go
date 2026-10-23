@@ -125,16 +125,17 @@ type NetworkMetadata struct {
 	// count gap. For fast chains where consecutive blocks share the same
 	// timestamp, samples are skipped until the timestamp advances, then
 	// blockGap normalization recovers sub-second precision.
-	// Callers should use GetNetworkBlockTime which returns 0 until 4
-	// headers set it (sampleBlockTime).
-	evmBlockTime                atomic.Int64 // computed result in nanoseconds (read by consumers)
-	evmBlockTimeMu              sync.Mutex   // protects EMA state below
-	evmBlockTimePrevBlock       int64        // last block number fed to EMA
-	evmBlockTimePrevTimestamp   int64        // block.timestamp (seconds) of that block
-	evmBlockTimeEmaNs           float64      // current EMA value in nanoseconds
-	evmBlockTimeSamples         int          // number of EMA samples collected
-	evmBlockTimeAnchorBlock     int64        // first observation: the cold estimate's base
-	evmBlockTimeAnchorTimestamp int64
+	// Callers should use GetNetworkBlockTime which returns 0 until the
+	// first sample (sampleBlockTime).
+	evmBlockTime              atomic.Int64 // computed result in nanoseconds (read by consumers)
+	evmBlockTimeMu            sync.Mutex   // protects EMA state below
+	evmBlockTimePrevBlock     int64        // last block number fed to EMA
+	evmBlockTimePrevTimestamp int64        // block.timestamp (seconds) of that block
+	evmBlockTimeEmaNs         float64      // current EMA value in nanoseconds
+	evmBlockTimeSamples       int          // number of EMA samples collected
+	// evmBlockTimeSpanStart: prev is a timestamp change, so a sample may
+	// span from it.
+	evmBlockTimeSpanStart bool
 }
 
 type Timer struct {
@@ -2108,16 +2109,12 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 // Dynamic Block Time (EMA)
 // ------------------------------------
 
-const (
-	blockTimeEmaAlpha   = 0.1 // smoothing factor; effective window ~19 samples
-	blockTimeMinSamples = 3   // minimum EMA samples before emitting (requires 4 observations total)
-	// blockTimeColdSpan is how many blocks past the first observation a
-	// cold estimate needs: 4 headers (spec §6.7, row C9).
-	blockTimeColdSpan = 3
-)
+// blockTimeEmaAlpha is the EMA's smoothing factor; effective window ~19
+// samples.
+const blockTimeEmaAlpha = 0.1
 
-// ColdBlockTime is every reader's block time until the network's has 4
-// samples (spec §6.7).
+// ColdBlockTime is every reader's block time until the network's first
+// sample (spec §6.7).
 const ColdBlockTime = time.Second
 
 // FreshnessWindow is W for block time bt (spec §1): max(3 × bt, 2s), at
@@ -2150,60 +2147,46 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 	}
 }
 
-// sampleBlockTime feeds a new block into m's block time EMA using on-chain
-// block.timestamp (integer seconds), and reports whether it stored a new
-// evmBlockTime. For fast chains where consecutive blocks share the same
-// timestamp, we skip the sample and do NOT advance prev — the block gap
-// accumulates until the timestamp ticks, then normalization recovers
-// sub-second precision (e.g. 1s / 4 blocks = 250ms for Arbitrum). Until
-// the EMA emits, each observation blockTimeColdSpan or more blocks past
-// the first one stores the mean step since it, so 4 headers set the block
-// time even when they share few timestamp ticks (spec §6.7).
+// sampleBlockTime feeds a block's on-chain timestamp (integer seconds) into
+// m's block time EMA and reports whether it stored a new evmBlockTime (spec
+// §6.7). A sample spans two observations whose timestamps differ: seconds
+// elapsed over blocks elapsed. Blocks that share a timestamp extend the
+// span, so integer-second timestamps need no special case. The first block
+// seen may sit anywhere in its second, so spans start at the first
+// timestamp change after it; the first sample seeds the EMA.
 func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int64) bool {
 	m.evmBlockTimeMu.Lock()
 	defer m.evmBlockTimeMu.Unlock()
 
-	prevBlock := m.evmBlockTimePrevBlock
-	prevTimestamp := m.evmBlockTimePrevTimestamp
-
-	// First observation: store as previous and as the cold anchor.
+	prevBlock, prevTimestamp := m.evmBlockTimePrevBlock, m.evmBlockTimePrevTimestamp
 	if prevBlock == 0 {
 		m.evmBlockTimePrevBlock, m.evmBlockTimePrevTimestamp = blockNumber, blockTimestamp
-		m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
 		return false
 	}
 
 	// Reject out-of-order or duplicate blocks. A block far behind prev means the
-	// head was corrected by a large rollback: re-anchor so sampling resumes
-	// instead of stalling until the chain re-passes the old (possibly bogus) prev.
+	// head was corrected by a large rollback: start over from it, so sampling
+	// resumes instead of stalling until the chain re-passes the old prev.
 	blockGap := blockNumber - prevBlock
 	if blockGap <= 0 {
 		if prevBlock-blockNumber > common.DefaultToleratedBlockHeadRollback {
 			m.evmBlockTimePrevBlock, m.evmBlockTimePrevTimestamp = blockNumber, blockTimestamp
-			m.evmBlockTimeAnchorBlock, m.evmBlockTimeAnchorTimestamp = blockNumber, blockTimestamp
+			m.evmBlockTimeSpanStart = false
 		}
 		return false
 	}
-
-	stored := false
-	if m.evmBlockTimeSamples < blockTimeMinSamples {
-		span, secs := blockNumber-m.evmBlockTimeAnchorBlock, blockTimestamp-m.evmBlockTimeAnchorTimestamp
-		if span >= blockTimeColdSpan && secs > 0 {
-			stored = m.storeBlockTime(int64(float64(secs) * 1e9 / float64(span)))
-		}
-	}
-
-	// Skip if timestamp hasn't advanced (fast chains where blocks share the same second).
-	// Do NOT advance prev — let blockGap accumulate until the timestamp ticks.
 	timestampDeltaSec := blockTimestamp - prevTimestamp
 	if timestampDeltaSec <= 0 {
-		return stored
+		return false
+	}
+	spanned := m.evmBlockTimeSpanStart
+	m.evmBlockTimePrevBlock, m.evmBlockTimePrevTimestamp = blockNumber, blockTimestamp
+	m.evmBlockTimeSpanStart = true
+	if !spanned {
+		return false
 	}
 
-	// Per-block sample in nanoseconds (seconds → ms → ns, divided by block count).
 	sampleNs := float64(timestampDeltaSec) * 1e9 / float64(blockGap)
-
-	// Update EMA.
 	if m.evmBlockTimeSamples == 0 {
 		m.evmBlockTimeEmaNs = sampleNs
 	} else {
@@ -2211,17 +2194,7 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 	}
 	m.evmBlockTimeSamples++
 
-	// Store current as previous.
-	m.evmBlockTimePrevBlock = blockNumber
-	m.evmBlockTimePrevTimestamp = blockTimestamp
-
-	// Don't emit until we have enough samples.
-	if m.evmBlockTimeSamples < blockTimeMinSamples {
-		return stored
-	}
-
-	blockTimeNs := int64(m.evmBlockTimeEmaNs)
-	if !m.storeBlockTime(blockTimeNs) {
+	if !m.storeBlockTime(int64(m.evmBlockTimeEmaNs)) {
 		// Reset the internal EMA to the last published value so that recovery
 		// from a prolonged halt doesn't create a delayed spike when the EMA
 		// first crosses back below the threshold (e.g. jumping from 2s to
@@ -2229,7 +2202,7 @@ func (m *NetworkMetadata) sampleBlockTime(blockNumber int64, blockTimestamp int6
 		if lastGood := m.evmBlockTime.Load(); lastGood > 0 {
 			m.evmBlockTimeEmaNs = float64(lastGood)
 		}
-		return stored
+		return false
 	}
 	return true
 }
@@ -2245,7 +2218,7 @@ func (m *NetworkMetadata) storeBlockTime(ns int64) bool {
 }
 
 // GetNetworkBlockTime returns the estimated block time for a network: 0
-// until 4 headers set it (sampleBlockTime); readers that need a value
+// until its first sample (sampleBlockTime); readers that need a value
 // meanwhile use ColdBlockTime.
 func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
