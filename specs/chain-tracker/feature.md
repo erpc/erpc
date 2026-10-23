@@ -445,7 +445,7 @@ Owner: `health/tracker.go`. Readers: freshness (§6.1), routing lag (`blockNumbe
 ### 6.7 Block time: how long is a block?
 
 - The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of accepted source headers. Both are local samples (#1208).
-- Until the EMA has 4 samples, bt = 1s for every reader: the poller's fallback on `main`. `fallbackStatePollerDebounce` still sets the cadence then.
+- Until the EMA has 4 samples, bt = 1s for every reader, the poll cadence included (0.7s). `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
 - The poll cadence is the poller's debounce: bt × `dynamicBlockTimeDebounceMultiplier` (0.7), at most 12s; `statePollerDebounce` overrides (#790).
 
 Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, the by-hash wait, the window. Bounds: on a halt or a restart the caps hold (cadence 12s, W 60s). Keeps: #790, #1208.
@@ -823,6 +823,7 @@ networks:
 | `server.webSocket.subscriptionBufferSize` | deleted: no per-subscription queue |
 | `indexer` (`canonicalChainDepth`, `dedupWindowSize`) | deleted: the mempool bounds in §15.2 replace `dedupWindowSize` |
 | `translateLatestTag` default for `eth_getBlockByNumber` | now on, as for every method; `enforceHighestBlock` for it is deleted |
+| `networks[].evm.fallbackStatePollerDebounce` | default removed (was 5s): unset, the cold-start cadence follows bt's 1s default (§6.7) |
 
 Strict decoding rejects the deleted keys and names the key: a breaking config change, no aliases. The head model adds no config key.
 
