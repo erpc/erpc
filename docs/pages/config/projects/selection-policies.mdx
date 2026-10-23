@@ -363,7 +363,7 @@ Defaults: <SourceLink file="common/defaults.go" lines="2512-2609" />
 
 | Field | Type | Default | Footguns |
 |---|---|---|---|
-| `evalInterval` | `Duration` | `15s` ([`common/defaults.go:L2532`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2532)) | `0` disables the ticker (frozen cache); tests only. Should be ≥ 3× `scoreMetricsWindowSize / 10` for stable quantile reads. |
+| `evalInterval` | `Duration` | `15s` ([`common/defaults.go:L2532`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2532)) | `0` disables the ticker (frozen cache); tests only. Should be ≥ 3× `scoreMetricsWindowSize / 10` for stable quantile reads. An upstream that registers after its network started is evaluated at once, not at the next tick. |
 | `evalTimeout` | `Duration` | `100ms` ([`common/defaults.go:L3125-3126`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L3125-3126)) | Exceeded → warning logged and `timeout` counted; the eval cannot be interrupted, so its result is still applied. Must be `< evalInterval`. |
 | `evalScope` | `EvalScope` enum | `"network"` ([`common/defaults.go:L2556-2583`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2556-2583)) | `"network"` \| `"network-method"` \| `"network-finality"` \| `"network-method-finality"`. Narrower scopes multiply goroutines and JS evals. `scoreMultipliers.method`-specific entries **never match** in `"network"` scope because `ctx.method == "*"`. |
 | `evalPerMethod` | `*bool` | `nil` — **deprecated** | Pointer-bool alias for the method axis. `SetDefaults` nils it unconditionally and derives `evalScope` instead. Excluded from TS surface (`tstype:"-"`). |
