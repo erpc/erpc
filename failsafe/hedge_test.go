@@ -195,3 +195,58 @@ func BenchmarkHedgeTimerPool_vs_NewTimer(b *testing.B) {
 		}
 	})
 }
+
+// TestRunHedged_PanicBecomesAttemptError — a panicking attempt must not kill
+// the process. A healthy sibling should win; when every attempt panics the
+// returned error must be short (no stack) so clients never see internal paths.
+func TestRunHedged_PanicBecomesAttemptError(t *testing.T) {
+	t.Run("sibling wins after a panicked primary", func(t *testing.T) {
+		var fireCount atomic.Int32
+		delayFn := func(idx int) time.Duration { return 5 * time.Millisecond }
+		inner := func(ctx context.Context) ([]byte, error) {
+			idx := fireCount.Add(1)
+			if idx == 1 {
+				panic("simulated primary panic")
+			}
+			return []byte("hedge"), nil
+		}
+		keep := func(r []byte, err error) bool { return err == nil && r != nil }
+
+		r, err := RunHedged[[]byte](
+			context.Background(),
+			1,
+			delayFn,
+			inner,
+			keep,
+			nil,
+			HedgeHooks{},
+		)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("hedge"), r)
+		assert.GreaterOrEqual(t, fireCount.Load(), int32(2))
+	})
+
+	t.Run("all attempts panic → short error, no stack", func(t *testing.T) {
+		delayFn := func(idx int) time.Duration { return 1 * time.Millisecond }
+		inner := func(ctx context.Context) ([]byte, error) {
+			panic("simulated hedge panic")
+		}
+		keep := func(r []byte, err error) bool { return err == nil }
+
+		_, err := RunHedged[[]byte](
+			context.Background(),
+			1,
+			delayFn,
+			inner,
+			keep,
+			nil,
+			HedgeHooks{},
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "hedge attempt panic:")
+		assert.NotContains(t, err.Error(), "goroutine",
+			"stack traces must stay in logs, not in the returned error")
+		assert.NotContains(t, err.Error(), "\n",
+			"returned panic error must be a single short line")
+	})
+}
