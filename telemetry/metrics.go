@@ -373,6 +373,12 @@ var (
 		Help:      "Per-upstream WOULD-HAVE-BEEN-EXCLUDED events from `shadowExcludeIf` predicates. Same leaf-slug attribution as `selection_exclusion_total`, but the upstream stays in rotation — meant for safely auditioning a new (or removed) exclusion rule in production before promoting it to a real `excludeIf`.",
 	}, []string{"project", "network", "method", "upstream", "reason"})
 
+	MetricSelectionMethodBlockTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_method_block_total",
+		Help:      "Ticks where `blockMethods` blocked an upstream for one method; it stays in rotation for other methods. `method` is the blocked method, `reason` the leaf-predicate slug.",
+	}, []string{"project", "network", "method", "upstream", "reason"})
+
 	MetricSelectionExcludedSeconds = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "selection_excluded_seconds",
