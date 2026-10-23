@@ -1452,14 +1452,17 @@ func (t *ChainTracker) receiptsCap() int {
 
 // Head is a new tap's start: the sendable head (the delivery gate) while a
 // source is live, else its next change; fill moving the pins' base is not
-// one. After a wait it returns the new sendable head's parent, so that
-// head is the tap's first block.
+// one. After a wait the tap starts after the pins' head as it waited, the
+// newest block it could have known, so a gate that opens several blocks up
+// still sends every block pinned since; with no pin then, or one a reorg
+// replaced, the new sendable head is the tap's first block.
 func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
 	s := t.state.Load()
 	prev := s.sendHead()
 	if prev != nil && t.SourceLive() {
 		return prev.cursor(), nil
 	}
+	known := s.head()
 	for {
 		select {
 		case <-ctx.Done():
@@ -1467,12 +1470,17 @@ func (t *ChainTracker) Head(ctx context.Context) (indexer.Cursor, error) {
 		case <-s.changed:
 		}
 		s = t.state.Load()
-		if h := s.sendHead(); h != nil && h != prev {
-			if h.number == 0 {
-				return h.cursor(), nil
-			}
-			return indexer.Cursor{Number: h.number - 1, Hash: h.parentHash}, nil
+		h := s.sendHead()
+		if h == nil || h == prev {
+			continue
 		}
+		switch {
+		case known != nil && known.number < h.number && s.pinned(known.cursor()) != nil:
+			return known.cursor(), nil
+		case h.number == 0:
+			return h.cursor(), nil
+		}
+		return indexer.Cursor{Number: h.number - 1, Hash: h.parentHash}, nil
 	}
 }
 

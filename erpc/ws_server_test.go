@@ -1888,6 +1888,46 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		t.Logf("planned blocks %d..%d, head %d", from, from+uint64(len(plan))-1, tip.Number)
 	})
 
+	// A cold instance pins ws-a's heads while the other sources, held,
+	// have not reported: the delivery gate stays shut, then opens several
+	// blocks up at once. A logs client subscribed while it was shut gets
+	// the logs of every block minted after its subscription id arrived.
+	t.Run("subscribed before the first sendable head", func(t *testing.T) {
+		s := newChaosSeed(t, 9, true, chaosOpts{})
+		for _, v := range []*chainsim.Vendor{s.wsB, s.httpA, s.httpB} {
+			v.Update(func(f *chainsim.Faults) { f.Held = true })
+		}
+		start(s)
+		defer s.stopERPC()
+		tr := s.tracker()
+		require.Eventually(t, func() bool { _, ok := tr.Tip(); return ok }, 10*time.Second, 10*time.Millisecond, "ws-a's heads are pinned")
+		_, sendable := tr.SendTip()
+		require.False(t, sendable, "the delivery gate waits for the held sources")
+		s.dialLogs("cold")
+		from := s.chain.Tip().Number + 1
+		s.blocks(4)
+		_, sendable = tr.SendTip()
+		require.False(t, sendable, "the gate is still shut %d blocks after the subscription", 4)
+		for _, v := range []*chainsim.Vendor{s.wsB, s.httpA, s.httpB} {
+			v.Update(func(f *chainsim.Faults) { f.Held = false })
+		}
+		s.blocks(4)
+		tip := s.chain.Tip()
+		diff := "not checked"
+		for deadline := time.Now().Add(10 * time.Second); diff != "" && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			diff = ""
+			for _, cl := range s.openLogs() {
+				cl.mu.Lock()
+				if d := cl.logsDiffLocked(s, from, tip.Number); d != "" {
+					diff = fmt.Sprintf("%s (first log at %d): %s", cl.name, cl.first, d)
+				}
+				cl.mu.Unlock()
+			}
+		}
+		require.Empty(t, diff, "both clients hold the matching logs of every block from %d, minted after they subscribed", from)
+		require.Len(t, s.openLogs(), len(chainsim.Filters))
+	})
+
 	t.Run("no upstream serves receipts or eth_getLogs", func(t *testing.T) {
 		s := newChaosSeed(t, 6, true, chaosOpts{})
 		s.ignore = []string{"eth_getBlockReceipts", "eth_getLogs"}
