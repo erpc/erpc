@@ -346,7 +346,7 @@ Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle tar
 ### 6.3 Reports: what does a voter say?
 
 - Numbers are shared: each upstream's latest and finalized live in shared counters (§14), and every instance's `Head` reads them. Every `latest` header this instance fetches from an upstream, by poll, Ask or settle, also moves that upstream's counter.
-- A hash vote comes only from this instance's tracker or poller: a push, a poll-source poll, an Ask answer, or a full poll, each fetched with cache reads skipped. Client answers and cached answers never vote (#1001).
+- A hash vote comes only from this instance's tracker or poller: a push, a poll-source poll, an Ask answer, or any other poll of the upstream's `latest` (full poll, refresh, catch-up), each fetched with cache reads skipped. So an upstream that is no source votes too, as fresh as its last poll. Client answers and cached answers never vote (#1001).
 - Minority fork: a voter whose hash vote stays off the pins for longer than W loses its number vote and goes last in routing, until its hash vote is on the pins again.
 
 Owner: `erpc/network_intake.go` (hash votes), `EvmStatePoller.ObserveHead` (numbers). Readers: `Head`, trackers, routing. Keeps: #1001, #450, #1256 (a fresh shared counter saves a fetch).
@@ -446,7 +446,8 @@ Owner: `health/tracker.go`. Readers: freshness (§6.1), routing lag (`blockNumbe
 ### 6.7 Block time: how long is a block?
 
 - The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of accepted source headers. Both are local samples (#1208).
-- Until the EMA has 4 samples, bt = 1s for every reader, the poll cadence included (0.7s); a mean step since the first observation is published once 3 blocks past it. `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
+- A sample spans two observations whose timestamps differ: seconds elapsed over blocks elapsed. Equal timestamps extend the span, so integer-second timestamps need no special case: on a 0.4s chain each sample spans 2 or 3 blocks; on a chain with blocks of 1s or more, each block is one sample.
+- Until the first sample, bt = 1s for every reader, the poll cadence included (0.7s); the first sample seeds the EMA. `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
 - The poll cadence is the poller's debounce: bt × `dynamicBlockTimeDebounceMultiplier` (0.7), at most 12s; `statePollerDebounce` overrides (#790).
 
 Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, the by-hash wait, the window. Bounds: on a halt or a restart the caps hold (cadence 12s, W 60s). Keeps: #790, #1208.
@@ -951,7 +952,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | U15 | one vendor lacks `eth_getBlockReceipts` | logs from the other vendor; subscribe accepted |
 | U16 | wss refuses `newHeads` as unsupported | polled at cadence; asked again on reconnect and every 10 min |
 | U17 | https refuses `latest` 10 times | give-up; re-probed after 10 min; never a stuck poll source |
-| U18 | one vendor on a minority fork at the same heights, 20 blocks | taps never send its blocks; after W from the fork, HTTP never serves them (§6.3 demotion) |
+| U18 | one HTTP vendor that is no source on a minority fork at the same heights, 20 blocks | taps never send its blocks; HTTP never serves them once W has passed since this instance first polled a fork header from it (its hash vote, §6.3) |
 | N1 | +300 ms constant latency to one vendor | delivery p99 within 2 bt; `Latest` from the faster voters |
 | N2 | 0–2 bt jitter on every vendor; pushes reordered | `newHeads` in order, parent-linked, no duplicate |
 | N3 | instance 1 cut from vendor X for 50 blocks | instance 1 flows on vendor Y's votes; no stall |
@@ -967,7 +968,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | C6 | no blocks for 3 min, with gRPC | nothing reconnects; gRPC not cut; `Latest` frozen |
 | C7 | halt, then 100 blocks in 1s | catch-up within `maxBackfill`; batches at most `reorgWindow`; no gap |
 | C8 | 100 ms blocks; U5 + C1 | same results at 2× rate |
-| C9 | cold instance; 0.4s blocks with integer-second timestamps | thresholds reach chain values within 4 headers |
+| C9 | cold instance; 0.4s blocks with integer-second timestamps | bt = 1s until the second timestamp change (at most 6 headers), then within 25% of 400 ms; never 0, never 12s; W stays at its 2s floor |
 | C10 | 100 empty blocks | no receipts fetch; `newHeads` continuous |
 | C11 | 5,000-receipt blocks | logs complete; no breaker opened by tracker fetches |
 | C12 | majority reverts a finalized block | followed; `final_hash_changed` logged; no permanent cache entry |
