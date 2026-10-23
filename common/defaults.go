@@ -2874,6 +2874,9 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	if r.EmptyResultDelay == 0 && defaults != nil && defaults.EmptyResultDelay != 0 {
 		r.EmptyResultDelay = defaults.EmptyResultDelay
 	}
+	if r.EmptyResultRecheckCache == nil && defaults != nil && defaults.EmptyResultRecheckCache != nil {
+		r.EmptyResultRecheckCache = defaults.EmptyResultRecheckCache
+	}
 
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1363,6 +1364,71 @@ func TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry(t *testin
 		assert.GreaterOrEqual(t, rpc1Calls, 2, "rpc1 should be called in both rounds")
 		// Physical calls = 3 (round 1: rpc1 + rpc2 missing-data; round 2: rpc1 success).
 		assert.Equal(t, 3, resp.Attempts(), "should make 3 physical calls (round 1: rpc1 + rpc2 missing-data; round 2: rpc1 success)")
+	})
+
+	// #986: with emptyResultRecheckCache, the catch-up delay is followed by a
+	// cache read; a block-backed cache that ingested the tip meanwhile serves
+	// round 2 and no upstream is swept again.
+	t.Run("BothUpstreamsMissingData_Round2_ServedFromCacheRecheck", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		upstreamCalls := 0
+		for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+			gock.New(host).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+				}).
+				Persist().
+				Reply(200).
+				Map(func(r *http.Response) *http.Response { upstreamCalls++; return r }).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error":   map[string]interface{}{"code": -32000, "message": "missing trie node"},
+				})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkForMissingDataRetry(t, ctx,
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{
+				MaxAttempts:             3,
+				Delay:                   common.Duration(10 * time.Millisecond),
+				EmptyResultDelay:        common.Duration(10 * time.Millisecond),
+				EmptyResultRecheckCache: util.BoolPtr(true),
+			},
+		)
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		jrr, err := common.NewJsonRpcResponse(req.ID(), "0xde0b6b3a7640000", nil)
+		require.NoError(t, err)
+		cachedResp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).WithFromCache(true)
+
+		cache := &common.MockCacheDal{}
+		// Pre-forward read: miss. Recheck after the first catch-up delay: hit.
+		cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Once()
+		cache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
+		network.cacheDal = cache
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.True(t, resp.FromCache(), "round 2 must be served by the cache recheck")
+		got, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, got.GetResultString(), "0xde0b6b3a7640000")
+
+		assert.Equal(t, 2, upstreamCalls, "round 1 sweeps both upstreams; the cache serves round 2, no second sweep")
+		cache.AssertNumberOfCalls(t, "Get", 2)
+		cache.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything)
 	})
 }
 

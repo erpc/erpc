@@ -1239,6 +1239,15 @@ export interface RetryPolicyConfig {
    * estimate warms up. (Supersedes the now-deprecated BlockUnavailableDelay.)
    */
   emptyResultDelay?: Duration;
+  /**
+   * EmptyResultRecheckCache re-reads the cache after a data-not-yet-available
+   * retry delay (empty / missing-data / block-unavailable), before the upstream
+   * sweep runs again. A block-backed cache connector that ingests the tip within
+   * about one block time then serves the retry instead of a remote upstream.
+   * Off by default: for a purely remote cache it is a wasted extra read. Not
+   * applied inside consensus rounds, where a cache hit would carry no upstream vote.
+   */
+  emptyResultRecheckCache?: boolean;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
