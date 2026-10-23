@@ -327,8 +327,8 @@ Each concept answers one question and has one home. W (§1) is the one freshness
 - #1263's stall rules stay beside number age: a head frozen above peers whose newest blocks are a stall window younger is benched by block age, so a frozen pair above the chain never benches the honest pair below it.
 - Hash age decides the hash voters: a voter is a hash voter while its hash age is at most W.
 - Routing hints, ordering only; every upstream stays eligible:
-  - Reached N: for a request at block N, by number or by a block hash the tracker holds, the upstreams that reached N go first, the policy's order kept within each part. A source reached N when its hash vote on this instance did, since its requests ride its socket here; any other upstream when its head counter did. Tracker fetches use the same rule (§8).
-  - A request with no block: a source whose hash age exceeds W, or whose socket closed, goes after the others until it reports again, so a half-open socket holds no client request. Hash age never reorders an upstream that is no source: its freshness follows the poll schedule, which is no evidence of a fault. Being behind by less than W reorders nobody.
+  - Reached N: for a request at block N, by number or by a block hash the tracker holds, the upstreams that reached N go first, the policy's order kept within each part. A push source (a wss upstream whose `newHeads` subscription is live) reached N when its hash vote on this instance did, since its requests ride that socket; any other upstream when its head counter did. Tracker fetches use the same rule (§8).
+  - A request with no block: a push source whose hash age exceeds W, or whose socket closed, goes after the others until it reports again, so a half-open socket holds no client request. Hash age never reorders any other upstream: its freshness follows the poll schedule, which is no evidence of a fault. Being behind by less than W reorders nobody.
 - A chain that makes no blocks moves no reference: every age stays 0 and nothing reconnects.
 
 Owner: `health/tracker.go`. Readers: the `Head` ballots (bench), the confirmed head (hash voters), routing (sources), the reconciler, tap start, the gRPC stall rule (§10.2). Bounds: one upstream ahead with its peers stalled holds `Latest` until the bench, at most 90s. Keeps: #1263 (one bench rule, 30s floor), #1296 (lag credit for slow polls), #1208 (local samples only).
@@ -350,7 +350,7 @@ Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle tar
 
 - Numbers are shared: each upstream's latest and finalized live in shared counters (§14), and every instance's `Head` reads them. Every `latest` header this instance fetches from an upstream, by poll, Ask or settle, also moves that upstream's counter.
 - A hash vote comes only from this instance's tracker or poller: a push, a poll-source poll, an Ask answer, or any other poll of the upstream's `latest` (full poll, refresh, catch-up), each fetched with cache reads skipped. So an upstream that is no source votes too, as fresh as its last poll. Client answers and cached answers never vote (#1001).
-- Minority fork: a voter whose hash vote stays off the pins for longer than W loses its number vote and goes last in routing, until its hash vote is on the pins again.
+- Minority fork: when the pins move off a voter's hash vote, the tracker polls that voter at once, and at most once per W while its vote stays off; a voter whose newest hash vote is still off the pins W after the first such poll loses its number vote and goes last in routing, until its hash vote is on the pins again. A vote from before a reorg is no evidence of a fork: a healthy upstream polled every 30s answers on the new branch.
 
 Owner: `erpc/network_intake.go` (hash votes), `EvmStatePoller.ObserveHead` (numbers). Readers: `Head`, trackers, routing. Keeps: #1001, #450, #1256 (a fresh shared counter saves a fetch).
 
@@ -448,7 +448,7 @@ Owner: `health/tracker.go`. Readers: freshness (§6.1), routing lag (`blockNumbe
 
 ### 6.7 Block time: how long is a block?
 
-- The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of accepted source headers. Both are local samples (#1208).
+- The network EMA (`GetNetworkBlockTime`), sampled from poller timestamps and from the timestamps of source headers the confirmed head reached. Both are local samples (#1208). A sample above 3× the EMA counts as 3× the EMA, so one span across a halt never sets W to its 60s cap.
 - A sample spans two observations whose timestamps differ: seconds elapsed over blocks elapsed. Equal timestamps extend the span, so integer-second timestamps need no special case: on a 0.4s chain each sample spans 2 or 3 blocks; on a chain with blocks of 1s or more, each block is one sample.
 - Until the first sample, bt = 1s for every reader, the poll cadence included (0.7s); the first sample seeds the EMA. `fallbackStatePollerDebounce` has no default any more: set, it overrides that cold-start cadence.
 - The poll cadence is the poller's debounce: bt × `dynamicBlockTimeDebounceMultiplier` (0.7), at most 12s; `statePollerDebounce` overrides (#790).
@@ -754,7 +754,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | mempool | subscription silent | no message for 60s while blocks carry transactions | resubscribe, backing off to 30 min | 60s |
 | integrity follow tap | out of range | Read error | restart after the confirmed head | 1 Read |
 | Kafka writer | lease lost | renewal fails | tap stops; the transactional epoch fences it; the next holder resumes from the last record | lease TTL |
-| block time | halt or restart | header timestamps | caps: cadence 12s, W 60s; the EMA recovers within 4 samples | 4 headers |
+| block time | halt or restart | header timestamps | a span across the halt counts as at most 3× the EMA; caps: cadence 12s, W 60s | 1 sample |
 
 ### 15.2 Bounds
 
