@@ -29,10 +29,9 @@ const (
 	// u10Lag, k6Lag: how far behind the faulty upstream serves (§19).
 	u10Lag = 40
 	k6Lag  = 5
-	// u18OthersLatency is harness, not spec: enough for the selection
-	// policy to rank the forked vendor first, so a read the head model
-	// does not steer would reach it.
-	u18OthersLatency = 100 * time.Millisecond
+	// u18PollInterval is harness, not spec: http-b's statePollerInterval,
+	// short enough that each pod polls it several times during the fork.
+	u18PollInterval = time.Second
 )
 
 // X9: 1 wss + 2 https non-sources, 3 pods, redis. Only pod-2 gets
@@ -298,87 +297,88 @@ func (s *scenario) requireLiveAfter(from time.Time, bound time.Duration) {
 }
 
 // U18: http-b, an HTTP vendor that is no source, serves a minority fork at
-// the same heights for 20 blocks; the other vendors run u18OthersLatency
-// slower, so the policy ranks it first. No tap sends a fork block; an HTTP
-// read by number or tag may serve one until W, plus the tracker's
-// processing, after a fork block first reached the pod as a latest answer:
-// http-b's hash vote (§6.3), after which it loses its number vote.
+// the same heights for 20 blocks, and the selection policy ranks it first,
+// so every read the head model does not steer reaches it. No tap sends a
+// fork block; an HTTP read by number or tag may serve one until W, plus the
+// tracker's processing, after a fork block first reached the pod as a
+// latest answer: http-b's hash vote (§6.3), after which it loses its number
+// vote and goes last. http-b polls every u18PollInterval, as a non-source an
+// operator polls often does, so every pod sees the fork through its own
+// polls and the bound runs.
 func u18() spec {
-	return spec{name: "U18", bound: settleDelivery, body: func(s *scenario) {
-		s.blocks(25)
-		forked := "http-b"
-		var others []string
-		for key := range s.vendors {
-			if key != forked {
-				others = append(others, key)
-			}
-		}
-		for _, key := range others {
-			for _, p := range s.h.pods {
-				s.proxies[key].set(p, linkFaults{Latency: u18OthersLatency})
-			}
-		}
-		s.blocks(10)
-		f := s.chain.StartFork(1, 1, s.vendors[forked])
-		at := time.Now()
-		s.mu.Lock()
-		s.fork = s.vendors[forked].Head()
-		s.mu.Unlock()
-		s.logf("%s, ranked first, on a minority fork", s.upstream(forked))
-		done := make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-done:
-					return
-				case <-time.After(s.chain.BlockTime()):
-				}
-				for pod := range s.h.pods {
-					s.requireNoMinority(pod, at, "eth_getBlockByNumber(latest)", "latest")
-					var bn hexutil.Uint64
-					if err := s.call(pod, &bn, "eth_blockNumber"); err != nil {
-						continue
+	return spec{name: "U18", bound: settleDelivery,
+		upEvm: map[string]map[string]interface{}{
+			"http-b": {"statePollerInterval": u18PollInterval.String()},
+		},
+		network: map[string]interface{}{"selectionPolicy": map[string]interface{}{
+			"evalFunc": `(upstreams, ctx) => upstreams.filter(u => true).sort((a, b) => (b.id.endsWith('-http-b') ? 1 : 0) - (a.id.endsWith('-http-b') ? 1 : 0))`,
+		}},
+		body: func(s *scenario) {
+			s.blocks(35)
+			forked := "http-b"
+			f := s.chain.StartFork(1, 1, s.vendors[forked])
+			at := time.Now()
+			s.mu.Lock()
+			s.fork = s.vendors[forked].Head()
+			s.mu.Unlock()
+			s.logf("%s, ranked first, on a minority fork", s.upstream(forked))
+			done := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-done:
+						return
+					case <-time.After(s.chain.BlockTime()):
 					}
-					for _, n := range []uint64{uint64(bn), uint64(bn) - 1} {
-						s.requireNoMinority(pod, at, fmt.Sprintf("eth_getBlockByNumber(%d)", n), hexutil.EncodeUint64(n))
+					for pod := range s.h.pods {
+						s.requireNoMinority(pod, at, "eth_getBlockByNumber(latest)", "latest")
+						var bn hexutil.Uint64
+						if err := s.call(pod, &bn, "eth_blockNumber"); err != nil {
+							continue
+						}
+						// Older heights too: http-b's polls keep its head counter
+						// a few blocks back, and only reads at or below it try
+						// http-b first (the reached-N hint, §6.1).
+						for _, n := range []uint64{uint64(bn), uint64(bn) - 1, uint64(bn) - 5, uint64(bn) - 8} {
+							s.requireNoMinority(pod, at, fmt.Sprintf("eth_getBlockByNumber(%d)", n), hexutil.EncodeUint64(n))
+						}
 					}
 				}
+			}()
+			s.blocks(20)
+			s.chain.EndFork(f)
+			s.logf("%s back on the canonical chain", s.upstream(forked))
+			time.Sleep(liveBound)
+			close(done)
+			wg.Wait()
+			served := s.minorityServed()
+			if served == 0 {
+				s.violate(s.name, "no read reached the forked vendor inside the grace, so demotion was never exercised")
 			}
-		}()
-		s.blocks(20)
-		s.chain.EndFork(f)
-		s.logf("%s back on the canonical chain", s.upstream(forked))
-		time.Sleep(liveBound)
-		close(done)
-		wg.Wait()
-		for _, key := range others {
-			for _, p := range s.h.pods {
-				s.proxies[key].set(p, linkFaults{})
+			s.logf("%d reads served a fork block inside the grace", served)
+			s.requireNoMinorityDelivered()
+			for pod := range s.h.pods {
+				latest, header := s.forkFirsts(pod)
+				if latest.IsZero() {
+					s.h.headersMu.Lock()
+					n := len(s.h.latests[pod])
+					s.h.headersMu.Unlock()
+					s.violate(s.name, "pod-%d: no fork block reached it as a latest answer (%d latest answers), so the bound never ran", pod+1, n)
+					continue
+				}
+				s.logf("pod-%d: first fork latest answer %s after the fork's first header", pod+1, latest.Sub(header).Round(time.Millisecond))
 			}
-		}
-		s.requireNoMinorityDelivered()
-		for pod := range s.h.pods {
-			latest, header := s.forkFirsts(pod)
-			if latest.IsZero() {
-				s.h.headersMu.Lock()
-				n := len(s.h.latests[pod])
-				s.h.headersMu.Unlock()
-				s.logf("pod-%d: no fork block reached it as a latest answer (%d latest answers)", pod+1, n)
-				continue
-			}
-			s.logf("pod-%d: first fork latest answer %s after the fork's first header", pod+1, latest.Sub(header).Round(time.Millisecond))
-		}
-		s.blocks(25)
-	}}
+			s.blocks(25)
+		}}
 }
 
 // requireNoMinority reads a block by tag or number on pod and fails on a
 // minority-fork answer to a read that started more than W, plus the
 // tracker's processing, after a fork block first reached pod as a latest
-// answer (minorityGrace); it logs the answers the grace allows.
+// answer (minorityGrace); it logs and counts the answers the grace allows.
 func (s *scenario) requireNoMinority(pod int, forkAt time.Time, what, ref string) {
 	start := time.Now()
 	got := s.blockAnswer(pod, "", "eth_getBlockByNumber", ref, false)
@@ -397,7 +397,11 @@ func (s *scenario) requireNoMinority(pod int, forkAt time.Time, what, ref string
 		since = start.Sub(latest).Round(time.Millisecond).String() + " after its first fork latest answer"
 	}
 	s.logf("pod-%d: %s served minority-fork block %d, read %s after the fork, %s", pod+1, what, b.Number, start.Sub(forkAt).Round(time.Millisecond), since)
+	s.graceServed.Add(1)
 }
+
+// minorityServed is how many reads the minority grace allowed.
+func (s *scenario) minorityServed() int64 { return s.graceServed.Load() }
 
 // blockOf is the chain's block of a blockAnswer, nil for null or an error.
 func (s *scenario) blockOf(answer string) *chainsim.Block {

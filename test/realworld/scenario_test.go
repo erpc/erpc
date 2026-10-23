@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,11 +53,13 @@ type spec struct {
 	sim chainsim.Config
 	// faults are vendor faults set before any pod boots, by vendor key.
 	faults map[string]chainsim.Faults
-	// tags are upstream tags by vendor key; evm and network are merged into
+	// tags are upstream tags by vendor key; upEvm are keys merged into an
+	// upstream's evm block, by vendor key; evm and network are merged into
 	// the network's evm block and network entry; cache gives the network an
 	// evmJsonRpcCache with a permanent and a recent connector (cacheFinal,
 	// cacheRecent).
 	tags    map[string][]string
+	upEvm   map[string]map[string]interface{}
 	evm     map[string]interface{}
 	network map[string]interface{}
 	cache   bool
@@ -89,6 +92,8 @@ type scenario struct {
 	rpcs  map[string][]*rpc.Client
 	httpc *http.Client
 	tr    *transcript
+	// graceServed counts reads the minority grace allowed (U18).
+	graceServed atomic.Int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -199,7 +204,7 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		if f, ok := sp.faults[vs.key]; ok {
 			v.SetFaults(f)
 		}
-		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name, tags: sp.tags[vs.key]})
+		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name, tags: sp.tags[vs.key], evm: sp.upEvm[vs.key]})
 	}
 	s.chain.Start()
 	for _, key := range sp.late {

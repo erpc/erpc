@@ -682,6 +682,8 @@ type netSpec struct {
 type upSpec struct {
 	id, endpoint, vendor string
 	tags                 []string
+	// evm is merged into the upstream's evm block (statePollerInterval, …).
+	evm map[string]interface{}
 }
 
 // The evmJsonRpcCache connectors of networks with cache: permanent
@@ -736,7 +738,11 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 			up := m{"id": u.id, "endpoint": u.endpoint}
 			if !n.minimal {
 				up["vendorName"] = u.vendor
-				up["evm"] = m{"chainId": n.chainID}
+				upEvm := m{"chainId": n.chainID}
+				for k, v := range u.evm {
+					upEvm[k] = v
+				}
+				up["evm"] = upEvm
 				if len(u.tags) > 0 {
 					up["tags"] = u.tags
 				}
