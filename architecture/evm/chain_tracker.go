@@ -895,16 +895,19 @@ func (t *ChainTracker) capOrphans(number uint64, keep *node) {
 			return
 		}
 		if n != keep && len(n.children) == 0 && !t.pinned(n) && !slices.ContainsFunc(counted, func(v voter) bool { return v.n == n }) {
-			t.drop(n)
+			t.drop(n, true)
 			orphans--
 		}
 	}
 }
 
-// drop releases a held header. Its children become roots at the window's
-// edge: fill does not fetch the dropped parent again. Only eviction drops
-// a header with children.
-func (t *ChainTracker) drop(n *node) {
+// drop releases a held header. Only eviction drops a header with children;
+// they become roots. base: n left the window below the head, so fill does
+// not fetch it again. Else only the reorgWindow cap of a tree without the
+// pins dropped it: the children's tree stays capped, and fill fetches n
+// again once that tree holds the pins (spec §10.1: a cursor held in the
+// other tree waits while fill links it).
+func (t *ChainTracker) drop(n *node, base bool) {
 	delete(t.nodes, n.h.hash)
 	t.held.Delete(n.h.hashHex)
 	t.treesDirty = true
@@ -921,7 +924,7 @@ func (t *ChainTracker) drop(n *node) {
 	for _, c := range n.children {
 		c.parent = nil
 		t.waiting[c.h.parentHash] = append(t.waiting[c.h.parentHash], c)
-		t.exts[c] = &extension{atBase: true}
+		t.exts[c] = &extension{atBase: base, capped: !base}
 	}
 	n.children = nil
 	for u, v := range t.votes {
@@ -1272,7 +1275,7 @@ func (t *ChainTracker) evict() {
 	}
 	for _, n := range out {
 		if t.alive(n) {
-			t.drop(n)
+			t.drop(n, !t.holds(ref, n.h))
 		}
 	}
 	t.evictReceipts()
